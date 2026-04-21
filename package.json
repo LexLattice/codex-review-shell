@@ -1,0 +1,28 @@
+{
+  "name": "codex-review-shell",
+  "private": false,
+  "version": "0.4.0",
+  "description": "Dual-partner Codex + ChatGPT workflow shell with WSL backend attachment and project-bound thread deck",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LexLattice/codex-review-shell.git"
+  },
+  "bugs": {
+    "url": "https://github.com/LexLattice/codex-review-shell/issues"
+  },
+  "homepage": "https://github.com/LexLattice/codex-review-shell#readme",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "npm run dev",
+    "dev": "node ./scripts/run-electron.mjs .",
+    "smoke": "env CODEX_REVIEW_SHELL_SMOKE_EXIT_MS=1500 xvfb-run -a node ./scripts/run-electron.mjs .",
+    "check:syntax": "node --check src/main.js && node --check src/preload.js && node --check src/main/workspace-backend.js && node --check src/backend/wsl-agent.js && node --check src/renderer/app.js && node --check src/renderer/codex-surface.js && node --check scripts/run-electron.mjs && node --check scripts/smoke-agent.mjs && node --check scripts/smoke-config-migration.mjs",
+    "agent:smoke": "node ./scripts/smoke-agent.mjs",
+    "validate": "npm run check:syntax && npm run migration:smoke && npm run agent:smoke",
+    "migration:smoke": "node ./scripts/smoke-config-migration.mjs"
+  },
+  "dependencies": {
+    "electron": "^41.2.0"
+  }
+}
