@@ -4,6 +4,8 @@ Status: implementation support note.
 
 This version keeps the standalone shell bounded: it is not a general orchestration studio and not a unified generic super-chat. It is a dual-partner workflow shell that coordinates familiar Codex and ChatGPT surfaces through an explicit control plane.
 
+For the later middle-plane morphology and operator-attention principles, see [`MIDDLE_PLANE_MORPHIC_UX_NOTES.md`](./MIDDLE_PLANE_MORPHIC_UX_NOTES.md).
+
 ## Product boundary
 
 The standalone shell optimizes for day-to-day implementation/review flow:
