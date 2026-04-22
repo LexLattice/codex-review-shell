@@ -11,8 +11,10 @@ const {
 } = require("electron");
 const fs = require("node:fs/promises");
 const path = require("node:path");
-const { pathToFileURL } = require("node:url");
 const crypto = require("node:crypto");
+const { CodexAppServerManager } = require("./main/codex-app-server");
+const { LocalSurfaceServer } = require("./main/local-surface-server");
+const { CodexSurfaceSession } = require("./main/codex-surface-session");
 const { WorkspaceBackendManager, workspaceLabel, workspaceRoot } = require("./main/workspace-backend");
 
 const APP_TITLE = "Codex Review Shell";
@@ -23,10 +25,11 @@ const PREVIEW_LIMIT_BYTES = 384 * 1024;
 const DIRECTORY_ENTRY_LIMIT = 500;
 
 const appRoot = path.resolve(__dirname, "..");
-const repoRoot = path.resolve(appRoot, "..", "..");
+const repoRoot = appRoot;
+const legacyStandaloneRepoRoot = path.resolve(appRoot, "..", "..");
 const rendererRoot = path.join(__dirname, "renderer");
 const shellHtmlPath = path.join(rendererRoot, "index.html");
-const codexSurfaceHtmlPath = path.join(rendererRoot, "codex-surface.html");
+const codexSurfacePreloadPath = path.join(__dirname, "preload-codex-surface.js");
 const smokeExitMs = Number.parseInt(process.env.CODEX_REVIEW_SHELL_SMOKE_EXIT_MS ?? "", 10);
 const workspaceAgentPath = path.join(__dirname, "backend", "wsl-agent.js");
 
@@ -41,6 +44,9 @@ let currentProject = null;
 let layoutPingTimer = null;
 let geometrySyncTimer = null;
 let workspaceBackends = null;
+let codexAppServer = null;
+let localSurfaceServer = null;
+let codexSurfaceSessions = null;
 
 function nowIso() {
   return new Date().toISOString();
@@ -54,8 +60,48 @@ function configPath() {
   return path.join(app.getPath("userData"), CONFIG_FILE_NAME);
 }
 
+function normalizeLinuxPathValue(value, fallback = "/home") {
+  const text = (typeof value === "string" && value.trim() ? value.trim() : fallback).replace(/\\/g, "/");
+  return text.startsWith("/") ? text : `/${text}`;
+}
+
+function defaultProjectWorkspaceConfig() {
+  const preferredWslPath = typeof process.env.CODEX_REVIEW_SHELL_DEFAULT_WSL_PATH === "string"
+    ? process.env.CODEX_REVIEW_SHELL_DEFAULT_WSL_PATH.trim()
+    : "";
+  if (process.platform === "win32" && preferredWslPath) {
+    return {
+      kind: "wsl",
+      distro: typeof process.env.CODEX_REVIEW_SHELL_DEFAULT_WSL_DISTRO === "string"
+        ? process.env.CODEX_REVIEW_SHELL_DEFAULT_WSL_DISTRO.trim()
+        : "",
+      linuxPath: normalizeLinuxPathValue(preferredWslPath, "/home"),
+      label: "WSL workspace",
+    };
+  }
+  return {
+    kind: "local",
+    localPath: repoRoot,
+    label: "Local checkout",
+  };
+}
+
+function defaultProjectRepoPath(workspace = defaultProjectWorkspaceConfig()) {
+  if (workspace.kind === "wsl") {
+    const distro = workspace.distro || "default";
+    return `wsl:${distro}:${workspace.linuxPath}`;
+  }
+  return workspace.localPath;
+}
+
+function defaultCodexRuntimeForWorkspace(workspace) {
+  return workspace?.kind === "wsl" && process.platform === "win32" ? "wsl" : "auto";
+}
+
 function defaultConfig() {
   const defaultProjectId = "project_example";
+  const defaultWorkspace = defaultProjectWorkspaceConfig();
+  const defaultRepoPath = defaultProjectRepoPath(defaultWorkspace);
   return {
     version: 4,
     selectedProjectId: defaultProjectId,
@@ -67,17 +113,17 @@ function defaultConfig() {
       {
         id: defaultProjectId,
         name: "Example Project",
-        repoPath: repoRoot,
-        workspace: {
-          kind: "local",
-          localPath: repoRoot,
-          label: "Local checkout",
-        },
+        repoPath: defaultRepoPath,
+        workspace: defaultWorkspace,
         surfaceBinding: {
           codex: {
-            mode: "local",
-            target: "codex://local-workspace",
-            label: "Local Codex lane",
+            mode: "managed",
+            runtime: defaultCodexRuntimeForWorkspace(defaultWorkspace),
+            target: "",
+            binaryPath: "codex",
+            model: "",
+            reasoningEffort: "",
+            label: "Managed Codex lane",
           },
           chatgpt: {
             reviewThreadUrl: "https://chatgpt.com/",
@@ -118,6 +164,48 @@ function isPlainObject(value) {
 
 function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function normalizeCodexMode(value) {
+  const candidate = normalizeString(value, "managed").toLowerCase();
+  if (candidate === "local" || candidate === "command") return "managed";
+  if (["managed", "url", "fallback"].includes(candidate)) return candidate;
+  return "managed";
+}
+
+function normalizeCodexRuntime(value) {
+  const candidate = normalizeString(value, "auto").toLowerCase();
+  return ["auto", "host", "wsl"].includes(candidate) ? candidate : "auto";
+}
+
+function normalizeReasoningEffort(value) {
+  const candidate = normalizeString(value, "").toLowerCase();
+  return ["low", "medium", "high", "xhigh"].includes(candidate) ? candidate : "";
+}
+
+function isDefaultExampleProject(raw, fallback) {
+  if (!raw || fallback.id !== "project_example") return false;
+  const projectId = normalizeString(raw.id, "");
+  const projectName = normalizeString(raw.name, "");
+  return projectId === fallback.id && projectName === fallback.name;
+}
+
+function shouldRepairExampleProjectRoot(raw, fallback, workspace, repoPath) {
+  if (!isDefaultExampleProject(raw, fallback)) return false;
+  if (workspace.kind !== "local") return false;
+  const localPath = normalizeString(workspace.localPath, "");
+  const repoCandidate = normalizeString(repoPath, "");
+  return localPath === legacyStandaloneRepoRoot || repoCandidate === legacyStandaloneRepoRoot;
+}
+
+function shouldPromoteExampleProjectToDefaultWsl(raw, fallback, workspace, repoPath) {
+  const preferredWorkspace = defaultProjectWorkspaceConfig();
+  if (preferredWorkspace.kind !== "wsl") return false;
+  if (!isDefaultExampleProject(raw, fallback)) return false;
+  if (workspace.kind !== "local") return false;
+  const localPath = normalizeString(workspace.localPath, "");
+  const repoCandidate = normalizeString(repoPath, "");
+  return [repoRoot, legacyStandaloneRepoRoot].includes(localPath) || [repoRoot, legacyStandaloneRepoRoot].includes(repoCandidate);
 }
 
 
@@ -421,8 +509,7 @@ function normalizeProject(input, index = 0) {
   const rawCodex = isPlainObject(surfaceBinding.codex) ? surfaceBinding.codex : {};
   const rawChatgpt = isPlainObject(surfaceBinding.chatgpt) ? surfaceBinding.chatgpt : {};
   const rawFlow = isPlainObject(raw.flowProfile) ? raw.flowProfile : {};
-  const modeCandidate = normalizeString(rawCodex.mode, "local");
-  const codexMode = ["local", "url", "command"].includes(modeCandidate) ? modeCandidate : "local";
+  const codexMode = normalizeCodexMode(rawCodex.mode);
   const patterns = Array.isArray(rawFlow.watchedFilePatterns)
     ? rawFlow.watchedFilePatterns.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim())
     : fallback.flowProfile.watchedFilePatterns;
@@ -430,8 +517,16 @@ function normalizeProject(input, index = 0) {
   const id = normalizeString(raw.id, index === 0 ? fallback.id : newId("project"));
   const now = nowIso();
   const legacyRepoPath = normalizeString(raw.repoPath, repoRoot);
-  const workspace = normalizeWorkspaceConfig(raw.workspace, legacyRepoPath);
-  const repoPath = workspaceToRepoPath(workspace, legacyRepoPath);
+  let workspace = normalizeWorkspaceConfig(raw.workspace, legacyRepoPath);
+  let repoPath = workspaceToRepoPath(workspace, legacyRepoPath);
+  if (shouldRepairExampleProjectRoot(raw, fallback, workspace, repoPath)) {
+    workspace = { ...workspace, localPath: repoRoot };
+    repoPath = repoRoot;
+  }
+  if (shouldPromoteExampleProjectToDefaultWsl(raw, fallback, workspace, repoPath)) {
+    workspace = defaultProjectWorkspaceConfig();
+    repoPath = defaultProjectRepoPath(workspace);
+  }
   const chatThreads = normalizeChatThreads(raw, rawChatgpt);
   const threadIds = new Set(chatThreads.map((thread) => thread.id));
   const activeThreadCandidate = normalizeString(raw.activeChatThreadId, normalizeString(raw.lastActiveThreadId, ""));
@@ -452,8 +547,12 @@ function normalizeProject(input, index = 0) {
     surfaceBinding: {
       codex: {
         mode: codexMode,
-        target: normalizeString(rawCodex.target, codexMode === "local" ? "codex://local-workspace" : ""),
-        label: normalizeString(rawCodex.label, codexMode === "local" ? "Local Codex lane" : "Codex target"),
+        runtime: normalizeCodexRuntime(normalizeString(rawCodex.runtime, defaultCodexRuntimeForWorkspace(workspace))),
+        target: normalizeString(rawCodex.target, codexMode === "url" ? "http://127.0.0.1:3000" : ""),
+        binaryPath: normalizeString(rawCodex.binaryPath, "codex"),
+        model: normalizeString(rawCodex.model, ""),
+        reasoningEffort: normalizeReasoningEffort(rawCodex.reasoningEffort),
+        label: normalizeString(rawCodex.label, codexMode === "managed" ? "Managed Codex lane" : "Codex target"),
       },
       chatgpt: {
         reviewThreadUrl: safeChatgptUrl(primaryReview?.url || rawChatgpt.reviewThreadUrl, "https://chatgpt.com/"),
@@ -587,6 +686,78 @@ function ensureWorkspaceBackendManager() {
   return workspaceBackends;
 }
 
+function ensureCodexAppServerManager() {
+  if (codexAppServer) return codexAppServer;
+  codexAppServer = new CodexAppServerManager();
+  codexAppServer.on("status", (payload) => {
+    emitShellEvent({ type: "codex-runtime-status", ...payload });
+    const sessionStatus = payload?.session?.status || "starting";
+    const eventType =
+      sessionStatus === "ready"
+        ? "loaded"
+        : ["failed", "exited"].includes(sessionStatus)
+          ? "load-failed"
+          : "loading";
+    emitToShell("surface:event", {
+      surface: "codex",
+      type: eventType,
+      title: sessionStatus,
+      url: payload?.session?.wsUrl || "",
+      errorDescription: payload?.session?.error || "",
+      at: payload.at,
+    });
+  });
+  return codexAppServer;
+}
+
+function ensureLocalSurfaceServer() {
+  if (localSurfaceServer) return localSurfaceServer;
+  localSurfaceServer = new LocalSurfaceServer(rendererRoot);
+  return localSurfaceServer;
+}
+
+function ensureCodexSurfaceSessions() {
+  if (codexSurfaceSessions) return codexSurfaceSessions;
+  codexSurfaceSessions = new Map();
+  return codexSurfaceSessions;
+}
+
+function isCodexSurfaceSender(sender) {
+  return Boolean(codexView?.webContents && !codexView.webContents.isDestroyed() && sender.id === codexView.webContents.id);
+}
+
+function codexSurfaceSessionFor(sender) {
+  if (!isCodexSurfaceSender(sender)) throw new Error("Codex surface bridge is not available from this renderer.");
+  const sessions = ensureCodexSurfaceSessions();
+  if (sessions.has(sender.id)) return sessions.get(sender.id);
+  const session = new CodexSurfaceSession(sender);
+  session.on("event", (payload) => {
+    if (payload?.type === "rpc-request") {
+      const reason = payload.params?.reason || payload.params?.command || "";
+      emitShellEvent({
+        type: "codex-approval-requested",
+        method: payload.method,
+        reason,
+        at: nowIso(),
+      });
+    }
+  });
+  sessions.set(sender.id, session);
+  sender.once("destroyed", () => {
+    session.dispose({ silent: true, reason: "Codex surface renderer destroyed." }).catch(() => {});
+    sessions.delete(sender.id);
+  });
+  return session;
+}
+
+async function disposeCodexSurfaceSession() {
+  if (!codexSurfaceSessions || !codexView?.webContents) return;
+  const session = codexSurfaceSessions.get(codexView.webContents.id);
+  if (!session) return;
+  codexSurfaceSessions.delete(codexView.webContents.id);
+  await session.dispose({ silent: true, reason: "Codex surface reloaded." });
+}
+
 async function attachProjectWorkspace(project, options = {}) {
   const manager = ensureWorkspaceBackendManager();
   const wait = options.wait !== false;
@@ -645,6 +816,10 @@ function safeLoadableUrl(value, surfaceName) {
 }
 
 function encodeProjectForLocalSurface(project) {
+  return encodeCodexSurfacePayload(project, {});
+}
+
+function encodeCodexSurfacePayload(project, extra = {}) {
   const payload = {
     project: {
       id: project.id,
@@ -662,21 +837,55 @@ function encodeProjectForLocalSurface(project) {
       generatedAt: nowIso(),
       doctrine: "Codex plane is a work chat. ADEU control plane owns the binding. ChatGPT plane remains the review/world-model thread.",
     },
+    codexConnection: extra.codexConnection || null,
+    error: normalizeString(extra.error, ""),
   };
   return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
 }
 
 async function loadCodexSurface(project) {
   if (!codexView || codexView.webContents.isDestroyed()) return;
+  await disposeCodexSurfaceSession();
   const codex = project.surfaceBinding.codex;
+  const localSurfaceBaseUrl = await ensureLocalSurfaceServer().ensureStarted();
   if (codex.mode === "url") {
+    await ensureCodexAppServerManager().dispose();
     const target = safeLoadableUrl(codex.target, "codex");
     if (target) {
       await codexView.webContents.loadURL(target);
       return;
     }
   }
-  const localUrl = `${pathToFileURL(codexSurfaceHtmlPath).toString()}#${encodeProjectForLocalSurface(project)}`;
+  if (codex.mode === "managed") {
+    try {
+      const session = await ensureCodexAppServerManager().ensureForProject(project);
+      const localUrl = `${localSurfaceBaseUrl}/codex-surface.html#${encodeCodexSurfacePayload(project, {
+        codexConnection: {
+          wsUrl: session.wsUrl,
+          readyUrl: session.readyUrl,
+          runtime: session.runtime,
+          workspaceRoot: session.workspaceRoot,
+          binaryPath: session.binaryPath,
+        },
+      })}`;
+      await codexView.webContents.loadURL(localUrl);
+      return;
+    } catch (error) {
+      emitToShell("surface:event", {
+        surface: "codex",
+        type: "load-failed",
+        title: error.message,
+        at: nowIso(),
+      });
+      const degradedUrl = `${localSurfaceBaseUrl}/codex-surface.html#${encodeCodexSurfacePayload(project, {
+        error: error.message,
+      })}`;
+      await codexView.webContents.loadURL(degradedUrl);
+      return;
+    }
+  }
+  await ensureCodexAppServerManager().dispose();
+  const localUrl = `${localSurfaceBaseUrl}/codex-surface.html#${encodeCodexSurfacePayload(project)}`;
   await codexView.webContents.loadURL(localUrl);
 }
 
@@ -771,7 +980,6 @@ function scheduleChatgptPolish() {
 
 async function loadProjectSurfaces(project) {
   currentProject = project;
-  attachProjectWorkspace(project, { wait: false });
   emitToShell("surface:event", {
     surface: "shell",
     type: "project-selected",
@@ -1128,9 +1336,10 @@ async function createWindow() {
 
   codexView = new WebContentsView({
     webPreferences: {
+      preload: codexSurfacePreloadPath,
       nodeIntegration: false,
       contextIsolation: true,
-      sandbox: true,
+      sandbox: false,
       partition: CODEX_PARTITION,
       devTools: true,
     },
@@ -1171,6 +1380,14 @@ async function createWindow() {
     stopGeometrySyncLoop();
     workspaceBackends?.disposeAll();
     workspaceBackends = null;
+    codexAppServer?.dispose();
+    codexAppServer = null;
+    for (const session of codexSurfaceSessions?.values() || []) {
+      session.dispose({ silent: true, reason: "Main window closed." }).catch(() => {});
+    }
+    codexSurfaceSessions = null;
+    localSurfaceServer?.dispose();
+    localSurfaceServer = null;
     closeView(codexView);
     closeView(chatgptView);
     closeView(shellView);
@@ -1186,7 +1403,16 @@ async function createWindow() {
 
 ipcMain.handle("config:load", async () => {
   const config = await loadConfig();
-  return { config, configPath: configPath(), repoRoot, appVersion: app.getVersion() };
+  const defaultWorkspace = defaultProjectWorkspaceConfig();
+  return {
+    config,
+    configPath: configPath(),
+    repoRoot,
+    appVersion: app.getVersion(),
+    platform: process.platform,
+    defaultWorkspace,
+    defaultCodexRuntime: defaultCodexRuntimeForWorkspace(defaultWorkspace),
+  };
 });
 
 ipcMain.handle("config:save", async (_event, nextConfig) => {
@@ -1232,10 +1458,40 @@ ipcMain.handle("surface:set-visible", async (_event, visible) => {
 });
 
 ipcMain.handle("surface:reload", async (_event, surfaceName) => {
+  if (surfaceName === "codex" && currentProject) {
+    await loadCodexSurface(currentProject);
+    return true;
+  }
   const view = surfaceName === "chatgpt" ? chatgptView : codexView;
   if (!view || view.webContents.isDestroyed()) return false;
   view.webContents.reload();
   return true;
+});
+
+ipcMain.handle("codex-surface:connect", async (event, payload) => {
+  const session = codexSurfaceSessionFor(event.sender);
+  return session.connect(payload?.connection || null);
+});
+
+ipcMain.handle("codex-surface:disconnect", async (event) => {
+  const session = codexSurfaceSessionFor(event.sender);
+  await session.dispose({ reason: "Renderer requested disconnect." });
+  return true;
+});
+
+ipcMain.handle("codex-surface:request", async (event, payload) => {
+  const session = codexSurfaceSessionFor(event.sender);
+  return session.request(payload?.method, payload?.params || {});
+});
+
+ipcMain.handle("codex-surface:notify", async (event, payload) => {
+  const session = codexSurfaceSessionFor(event.sender);
+  return session.notify(payload?.method, payload?.params || {});
+});
+
+ipcMain.handle("codex-surface:respond", async (event, payload) => {
+  const session = codexSurfaceSessionFor(event.sender);
+  return session.respond(payload?.id, payload?.result || {});
 });
 
 ipcMain.handle("surface:open-external", async (_event, surfaceName) => {
@@ -1324,10 +1580,8 @@ ipcMain.handle("chatgpt:force-dark", async () => forceChatgptDark());
 
 app.whenReady().then(async () => {
   nativeTheme.themeSource = "dark";
-  const config = await loadConfig();
   ensureWorkspaceBackendManager();
-  const selectedProject = getSelectedProject(config);
-  if (selectedProject) attachProjectWorkspace(selectedProject, { wait: false });
+  await loadConfig();
   await createWindow();
   if (Number.isFinite(smokeExitMs) && smokeExitMs > 0) {
     setTimeout(() => {

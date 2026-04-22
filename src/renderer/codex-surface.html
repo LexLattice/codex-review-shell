@@ -4,57 +4,37 @@
     <meta charset="UTF-8" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws://127.0.0.1:* http://127.0.0.1:* ws://localhost:* http://localhost:*"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Codex Work Companion</title>
     <link rel="stylesheet" href="./codex-surface.css" />
   </head>
   <body>
-    <main class="codex-chat-shell">
-      <header class="chat-header">
-        <div>
+    <main class="codex-shell">
+      <header class="topbar">
+        <div class="title-block">
           <p class="eyebrow">Codex plane</p>
-          <h1 id="projectName">Codex work companion</h1>
-          <p id="repoPath" class="repo mono">—</p>
+          <h1 id="projectName">Codex session</h1>
+          <p id="repoPath" class="subline mono">—</p>
         </div>
-        <div class="header-actions">
-          <button id="copyPromptButton" type="button">Copy review prompt</button>
-          <button id="copyHeaderButton" type="button">Copy return header</button>
+        <div class="meta">
+          <span id="connectionBadge" class="badge">offline</span>
+          <span id="accountBadge" class="badge subtle">account unknown</span>
+          <span id="modelBadge" class="badge subtle">default model</span>
         </div>
       </header>
 
       <section class="transcript" id="transcript" aria-label="Codex transcript"></section>
 
-      <footer class="composer-shell">
-        <div class="control-row">
-          <label>
-            Model
-            <select id="modelSelect">
-              <option>Codex default</option>
-              <option>Codex fast</option>
-              <option>Codex deep</option>
-            </select>
-          </label>
-          <label>
-            Reasoning
-            <select id="reasoningSelect">
-              <option>Auto</option>
-              <option>Low latency</option>
-              <option>High rigor</option>
-            </select>
-          </label>
-          <span id="bindingLabel" class="binding-label mono">local</span>
-        </div>
-        <form id="composerForm" class="composer">
-          <textarea
-            id="composerInput"
-            rows="3"
-            placeholder="Paste GPT feedback or tell Codex what to do next…"
-          ></textarea>
-          <button type="submit">Queue note</button>
-        </form>
-      </footer>
+      <form id="composerForm" class="composer-shell">
+        <textarea
+          id="composerInput"
+          rows="4"
+          placeholder="Ask Codex to inspect, change, or explain the project…"
+        ></textarea>
+        <button id="sendButton" type="submit">Send</button>
+      </form>
     </main>
     <script src="./codex-surface.js"></script>
   </body>

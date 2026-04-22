@@ -29,6 +29,9 @@ const state = {
   config: null,
   configPath: "",
   repoRoot: "",
+  platform: "",
+  defaultWorkspace: null,
+  defaultCodexRuntime: "auto",
   surfaceEvents: {
     codex: { type: "idle" },
     chatgpt: { type: "idle" },
@@ -110,6 +113,10 @@ const els = {
   wslLinuxPathInput: document.getElementById("wslLinuxPathInput"),
   codexModeInput: document.getElementById("codexModeInput"),
   codexLabelInput: document.getElementById("codexLabelInput"),
+  codexRuntimeInput: document.getElementById("codexRuntimeInput"),
+  codexBinaryPathInput: document.getElementById("codexBinaryPathInput"),
+  codexModelInput: document.getElementById("codexModelInput"),
+  codexReasoningEffortInput: document.getElementById("codexReasoningEffortInput"),
   codexTargetInput: document.getElementById("codexTargetInput"),
   chatgptUrlInput: document.getElementById("chatgptUrlInput"),
   reduceChromeInput: document.getElementById("reduceChromeInput"),
@@ -219,6 +226,28 @@ function workspaceSummary(project) {
 function workspaceRootValue(project) {
   const workspace = projectWorkspace(project);
   return workspace.kind === "wsl" ? workspace.linuxPath : workspace.localPath;
+}
+
+function workspaceRepoPath(workspace) {
+  if (workspace?.kind === "wsl") return `wsl:${workspace.distro || "default"}:${workspace.linuxPath || "/home"}`;
+  return workspace?.localPath || state.repoRoot || "";
+}
+
+function defaultWorkspaceDraft() {
+  const workspace = state.defaultWorkspace;
+  if (workspace?.kind === "wsl") {
+    return {
+      kind: "wsl",
+      distro: workspace.distro || "",
+      linuxPath: workspace.linuxPath || "/home",
+      label: workspace.label || "WSL workspace",
+    };
+  }
+  return {
+    kind: "local",
+    localPath: workspace?.localPath || state.repoRoot || "",
+    label: workspace?.label || "Local workspace",
+  };
 }
 
 function chatThreads(project) {
@@ -405,7 +434,10 @@ function renderSelectedProject() {
   els.workspacePath.title = workspaceText;
   els.backendStatus.textContent = backendStatusText(project);
   els.backendStatus.title = backendStatusText(project);
-  els.bindingStatus.textContent = `${workspace.kind.toUpperCase()} · ${codex.mode} Codex · ${nonArchivedThreads.length} ChatGPT threads`;
+  const codexDetails = codex.mode === "managed"
+    ? `managed/${codex.runtime || "auto"}${codex.model ? ` · ${codex.model}` : ""}`
+    : codex.mode;
+  els.bindingStatus.textContent = `${workspace.kind.toUpperCase()} · ${codexDetails} Codex · ${nonArchivedThreads.length} ChatGPT threads`;
   els.activeThreadStatus.textContent = currentThread ? `Active ${roleLabel(currentThread.role)} · ${currentThread.title}` : "No active ChatGPT thread";
   els.activeThreadStatus.title = currentThread?.url || "";
   els.watchedRulesPreview.textContent = (project.flowProfile?.watchedFilePatterns || []).join("\n");
@@ -726,13 +758,22 @@ function openDrawer(mode) {
   els.deleteProjectButton.style.display = mode === "new" ? "none" : "inline-flex";
 
   const now = nowIso();
+  const defaultWorkspace = defaultWorkspaceDraft();
   const draft = project ?? {
     id: createId("project"),
     name: "New project",
-    repoPath: state.repoRoot || "",
-    workspace: { kind: "local", localPath: state.repoRoot || "", label: "Local workspace" },
+    repoPath: workspaceRepoPath(defaultWorkspace),
+    workspace: defaultWorkspace,
     surfaceBinding: {
-      codex: { mode: "local", target: "codex://local-workspace", label: "Local Codex lane" },
+      codex: {
+        mode: "managed",
+        runtime: state.defaultCodexRuntime || "auto",
+        binaryPath: "codex",
+        target: "",
+        model: "",
+        reasoningEffort: "",
+        label: "Managed Codex lane",
+      },
       chatgpt: { reviewThreadUrl: "https://chatgpt.com/", reduceChrome: true },
     },
     chatThreads: [
@@ -776,6 +817,10 @@ function openDrawer(mode) {
   updateWorkspaceFieldVisibility();
   els.codexModeInput.value = draft.surfaceBinding.codex.mode;
   els.codexLabelInput.value = draft.surfaceBinding.codex.label;
+  els.codexRuntimeInput.value = draft.surfaceBinding.codex.runtime || "auto";
+  els.codexBinaryPathInput.value = draft.surfaceBinding.codex.binaryPath || "codex";
+  els.codexModelInput.value = draft.surfaceBinding.codex.model || "";
+  els.codexReasoningEffortInput.value = draft.surfaceBinding.codex.reasoningEffort || "";
   els.codexTargetInput.value = draft.surfaceBinding.codex.target;
   els.chatgptUrlInput.value = primary?.url || draft.surfaceBinding.chatgpt.reviewThreadUrl || "https://chatgpt.com/";
   els.reduceChromeInput.checked = draft.surfaceBinding.chatgpt.reduceChrome !== false;
@@ -863,8 +908,14 @@ function projectFromForm() {
     surfaceBinding: {
       codex: {
         mode: els.codexModeInput.value,
+        runtime: els.codexRuntimeInput.value,
+        binaryPath: els.codexBinaryPathInput.value.trim() || "codex",
         target: els.codexTargetInput.value.trim(),
-        label: els.codexLabelInput.value.trim() || "Codex target",
+        model: els.codexModelInput.value.trim(),
+        reasoningEffort: els.codexReasoningEffortInput.value,
+        label:
+          els.codexLabelInput.value.trim() ||
+          (els.codexModeInput.value === "managed" ? "Managed Codex lane" : els.codexModeInput.value === "fallback" ? "Fallback Codex lane" : "Codex target"),
       },
       chatgpt: {
         reviewThreadUrl: primaryUrl,
@@ -1477,6 +1528,15 @@ function bindEvents() {
       else if (event.session.status === "attached") setLastEvent(`Workspace backend attached: ${event.session.transport}`);
       else if (event.session.status === "failed") setLastEvent(`Workspace backend failed: ${event.session.lastError || "unknown"}`);
     }
+    if (event.type === "codex-runtime-status") {
+      const status = event.session?.status || "unknown";
+      const details = event.session?.error ? `: ${event.session.error}` : "";
+      setLastEvent(`Codex runtime ${status}${details}`);
+    }
+    if (event.type === "codex-approval-requested") {
+      const details = event.reason ? `: ${event.reason}` : "";
+      setLastEvent(`Codex approval requested via ${event.method}${details}`);
+    }
   });
 }
 
@@ -1490,6 +1550,9 @@ async function init() {
   state.config = result.config;
   state.configPath = result.configPath;
   state.repoRoot = result.repoRoot;
+  state.platform = result.platform || "";
+  state.defaultWorkspace = result.defaultWorkspace || null;
+  state.defaultCodexRuntime = result.defaultCodexRuntime || "auto";
   render();
   await selectProject(state.config.selectedProjectId);
 }

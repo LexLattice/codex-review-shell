@@ -17,7 +17,7 @@
     "start": "npm run dev",
     "dev": "node ./scripts/run-electron.mjs .",
     "smoke": "env CODEX_REVIEW_SHELL_SMOKE_EXIT_MS=1500 xvfb-run -a node ./scripts/run-electron.mjs .",
-    "check:syntax": "node --check src/main.js && node --check src/preload.js && node --check src/main/workspace-backend.js && node --check src/backend/wsl-agent.js && node --check src/renderer/app.js && node --check src/renderer/codex-surface.js && node --check scripts/run-electron.mjs && node --check scripts/smoke-agent.mjs && node --check scripts/smoke-config-migration.mjs",
+    "check:syntax": "node --check src/main.js && node --check src/preload.js && node --check src/preload-codex-surface.js && node --check src/main/codex-app-server.js && node --check src/main/codex-surface-session.js && node --check src/main/local-surface-server.js && node --check src/main/workspace-backend.js && node --check src/backend/wsl-agent.js && node --check src/renderer/app.js && node --check src/renderer/codex-surface.js && node --check scripts/run-electron.mjs && node --check scripts/smoke-agent.mjs && node --check scripts/smoke-config-migration.mjs",
     "agent:smoke": "node ./scripts/smoke-agent.mjs",
     "validate": "npm run check:syntax && npm run migration:smoke && npm run agent:smoke",
     "migration:smoke": "node ./scripts/smoke-config-migration.mjs"

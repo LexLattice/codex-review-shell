@@ -48,6 +48,10 @@ function normalizeLinuxPath(value, fallback = "/home") {
   return text.startsWith("/") ? text : `/${text}`;
 }
 
+function shellSingleQuote(value) {
+  return `'${String(value ?? "").replace(/'/g, `'\"'\"'`)}'`;
+}
+
 function workspaceRoot(project, fallbackRoot) {
   const workspace = normalizeWorkspace(project?.workspace, project?.repoPath, fallbackRoot);
   return workspace.kind === "wsl" ? workspace.linuxPath : workspace.localPath;
@@ -81,6 +85,8 @@ function launchDescriptor(project, options) {
   const projectId = project.id || "unknown-project";
 
   if (workspace.kind === "wsl" && process.platform === "win32") {
+    const quotedAgentPath = shellSingleQuote(agentPath);
+    const quotedProjectId = shellSingleQuote(projectId);
     const args = [];
     if (workspace.distro) args.push("-d", workspace.distro);
     args.push(
@@ -92,12 +98,8 @@ function launchDescriptor(project, options) {
       [
         "set -e",
         "if ! command -v node >/dev/null 2>&1; then echo 'Node.js is required inside the selected WSL distro.' >&2; exit 127; fi",
-        "AGENT_PATH=$(wslpath -a \"$1\")",
-        "exec node \"$AGENT_PATH\" --root \"$PWD\" --workspace-kind wsl --project-id \"$2\"",
+        `exec node "$(wslpath -a -- ${quotedAgentPath})" --root "$(pwd)" --workspace-kind wsl --project-id ${quotedProjectId}`,
       ].join("; "),
-      "adeu-wsl-agent-launch",
-      agentPath,
-      projectId,
     );
     return {
       command: "wsl.exe",

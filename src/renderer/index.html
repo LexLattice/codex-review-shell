@@ -271,9 +271,9 @@
           <label>
             Codex mode
             <select id="codexModeInput">
-              <option value="local">Local controlled Codex-style chat</option>
+              <option value="managed">Managed local app-server</option>
               <option value="url">Embedded URL</option>
-              <option value="command">Command / manual target</option>
+              <option value="fallback">Local fallback surface</option>
             </select>
           </label>
           <label>
@@ -282,9 +282,41 @@
           </label>
         </div>
 
+        <div class="form-grid">
+          <label>
+            Codex runtime
+            <select id="codexRuntimeInput">
+              <option value="auto">Auto</option>
+              <option value="host">Host</option>
+              <option value="wsl">WSL</option>
+            </select>
+          </label>
+          <label>
+            Codex binary / command
+            <input id="codexBinaryPathInput" autocomplete="off" placeholder="codex" />
+          </label>
+        </div>
+
+        <div class="form-grid">
+          <label>
+            Codex model <span class="muted">optional</span>
+            <input id="codexModelInput" autocomplete="off" placeholder="gpt-5.4" />
+          </label>
+          <label>
+            Reasoning effort <span class="muted">optional</span>
+            <select id="codexReasoningEffortInput">
+              <option value="">Default</option>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+              <option value="xhigh">XHigh</option>
+            </select>
+          </label>
+        </div>
+
         <label>
-          Codex target
-          <input id="codexTargetInput" autocomplete="off" placeholder="codex://local-workspace or http://localhost:3000" />
+          Codex target <span class="muted">URL mode only</span>
+          <input id="codexTargetInput" autocomplete="off" placeholder="http://127.0.0.1:3000" />
         </label>
 
         <label>
