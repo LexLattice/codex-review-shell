@@ -725,7 +725,7 @@ function renderRecentChatgptThreadBrowser() {
     const message =
       state.chatgptRecentThreadsStatus === "error" || state.chatgptRecentThreadsStatus === "unavailable"
         ? `No recent ChatGPT threads available right now.${source}`
-        : "No recent ChatGPT threads loaded yet. Refresh this source to import from the authenticated ChatGPT session.";
+        : "No recent ChatGPT threads loaded yet. Refresh this source to import from the authenticated ChatGPT session. For project-folder threads, expand the folder in the ChatGPT sidebar first.";
     els.recentChatThreadList.innerHTML = `<div class="empty-state">${message}</div>`;
     return;
   }
@@ -742,12 +742,20 @@ function renderRecentChatgptThreadBrowser() {
       <span class="thread-meta truncate"></span>
       <span class="thread-notes truncate"></span>
     `;
-    row.querySelector(".role-badge").textContent = attached ? "Imported into project" : "Recent ChatGPT";
+    row.querySelector(".role-badge").textContent = attached
+      ? "Imported into project"
+      : thread.projectName
+        ? `Project · ${thread.projectName}`
+        : "Recent ChatGPT";
     row.querySelector("strong").textContent = thread.title || "Untitled ChatGPT thread";
     row.querySelector(".thread-meta").textContent = shortPath(thread.url || "");
     row.querySelector(".thread-notes").textContent =
       attached
         ? `Attached as ${attached.title}`
+        : thread.projectName
+          ? thread.updatedAt
+            ? `Project ${thread.projectName} · Updated ${formatTime(thread.updatedAt)}`
+            : `Project ${thread.projectName}`
         : thread.updatedAt
           ? `Updated ${formatTime(thread.updatedAt)}`
           : "No timestamp";
@@ -772,7 +780,7 @@ function renderChatgptThreadSource() {
   els.importRecentChatThreadButton.disabled = !recentActive || !state.selectedRecentChatgptThreadId;
   els.refreshRecentChatThreadsButton.disabled = state.chatgptRecentThreadsStatus === "loading";
   els.chatgptThreadBrowserHint.textContent = recentActive
-    ? "Import a recent ChatGPT thread into this project before using it in a lane binding."
+    ? "Import a thread from ChatGPT recents or project folders into this project before using it in a lane binding. For best project coverage, expand the folder in ChatGPT before refreshing."
     : "Project-attached ChatGPT threads can be linked directly to Codex threads.";
   renderProjectChatThreadBrowser();
   renderRecentChatgptThreadBrowser();
@@ -790,7 +798,7 @@ function renderThreadsWorkbench() {
     const recentThread = recentChatgptThreadById(state.selectedRecentChatgptThreadId);
     els.threadLinkHint.textContent = recentThread
       ? `Import ${recentThread.title} into the project before creating or updating a lane binding.`
-      : "Select one recent ChatGPT thread to import, or switch back to Project threads for lane binding.";
+      : "Select one ChatGPT thread (recent or project-folder) to import, or switch back to Project threads for lane binding.";
   } else {
     els.threadLinkHint.textContent = codexThread && chatThread
       ? `Link ${codexThread.title} to ${chatThread.title} for the selected lane.`

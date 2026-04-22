@@ -196,8 +196,16 @@ body.dragging .splitter {
 }
 
 .middle-tab-panel {
-  display: grid;
+  display: none;
   gap: 10px;
+}
+
+.middle-tab-panel.active {
+  display: grid;
+}
+
+.middle-tab-panel[hidden] {
+  display: none !important;
 }
 
 .control-header,
@@ -553,6 +561,10 @@ button:active {
   gap: 8px;
   max-height: clamp(280px, 45vh, 600px);
   overflow: auto;
+}
+
+.thread-browser-list[hidden] {
+  display: none !important;
 }
 
 .thread-browser-item {

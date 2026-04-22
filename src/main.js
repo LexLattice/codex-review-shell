@@ -953,10 +953,33 @@ function chatgptRecentThreadsScript(limit = 40) {
     (async () => {
       const limit = ${safeLimit};
       const origin = location.origin || "https://chatgpt.com";
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const normalizeText = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+      const visible = (element) => {
+        if (!element) return false;
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== "none" && style.visibility !== "hidden" && rect.width > 3 && rect.height > 3;
+      };
+      const click = (element) => {
+        if (!element) return false;
+        element.scrollIntoView?.({ block: "center", inline: "center" });
+        element.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, view: window }));
+        element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
+        element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
+        element.click();
+        return true;
+      };
 
-      const normalizeEntry = (item) => {
+      const normalizeEntry = (item, extra = {}) => {
         if (!item || !item.id) return null;
         const externalId = String(item.id || "");
+        const projectName = String(extra.projectName || "").trim();
+        const sourceKind = projectName ? "project" : String(extra.sourceKind || "recent");
+        const workspaceId =
+          item.workspace_id != null && item.workspace_id !== ""
+            ? String(item.workspace_id)
+            : String(extra.workspaceId || "");
         return {
           externalId,
           title: String(item.title || "Untitled ChatGPT thread"),
@@ -965,21 +988,52 @@ function chatgptRecentThreadsScript(limit = 40) {
           createdAt: String(item.create_time || ""),
           archived: Boolean(item.is_archived),
           snippet: typeof item.snippet === "string" ? item.snippet : "",
+          projectName,
+          workspaceId,
+          sourceKind,
+          source: String(extra.source || ""),
         };
+      };
+
+      const mergeEntries = (current, incoming) => {
+        if (!current) return incoming;
+        const incomingUpdated = String(incoming.updatedAt || "");
+        const currentUpdated = String(current.updatedAt || "");
+        const merged = {
+          ...current,
+          ...incoming,
+          title:
+            incoming.title && incoming.title !== "Untitled ChatGPT thread"
+              ? incoming.title
+              : current.title || incoming.title || "Untitled ChatGPT thread",
+          url: incoming.url || current.url,
+          updatedAt: incomingUpdated > currentUpdated ? incomingUpdated : currentUpdated,
+          createdAt: current.createdAt || incoming.createdAt || "",
+          archived: Boolean(current.archived && incoming.archived),
+          snippet: current.snippet || incoming.snippet || "",
+          projectName: incoming.projectName || current.projectName || "",
+          workspaceId: incoming.workspaceId || current.workspaceId || "",
+          sourceKind:
+            incoming.sourceKind === "project" || current.sourceKind === "project"
+              ? "project"
+              : "recent",
+          source: [current.source, incoming.source].filter(Boolean).join("+"),
+        };
+        return merged;
       };
 
       const dedupe = (items) => {
         const byId = new Map();
         for (const item of items) {
           if (!item || !item.externalId) continue;
-          const current = byId.get(item.externalId);
-          if (!current || String(item.updatedAt || "") > String(current.updatedAt || "")) {
-            byId.set(item.externalId, item);
-          }
+          byId.set(item.externalId, mergeEntries(byId.get(item.externalId), item));
         }
-        return Array.from(byId.values())
-          .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))
-          .slice(0, limit);
+        const entries = Array.from(byId.values()).sort((a, b) =>
+          String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""))
+        );
+        const projectEntries = entries.filter((entry) => entry.sourceKind === "project");
+        const otherEntries = entries.filter((entry) => entry.sourceKind !== "project");
+        return [...projectEntries, ...otherEntries].slice(0, limit);
       };
 
       const fromCache = () => {
@@ -991,7 +1045,10 @@ function chatgptRecentThreadsScript(limit = 40) {
             const pages = parsed?.value?.pages || [];
             for (const page of pages) {
               for (const item of page?.items || []) {
-                const normalized = normalizeEntry(item);
+                const normalized = normalizeEntry(item, {
+                  source: "localStorage-cache",
+                  sourceKind: item?.workspace_id != null && item.workspace_id !== "" ? "project" : "recent",
+                });
                 if (normalized) items.push(normalized);
               }
             }
@@ -1000,26 +1057,79 @@ function chatgptRecentThreadsScript(limit = 40) {
         return dedupe(items);
       };
 
-      const fromDom = () => {
+      const parseLinkEntry = (link, fallbackKind, source) => {
+        try {
+          const url = new URL(link.href, origin);
+          const match = url.pathname.match(/\\/c\\/([^/?#]+)/);
+          if (!match) return null;
+          const aria = normalizeText(link.getAttribute("aria-label"));
+          const projectMatch = aria.match(/chat in project\\s+(.+)$/i);
+          const projectName = projectMatch ? normalizeText(projectMatch[1]) : "";
+          const sourceKind = projectName ? "project" : fallbackKind;
+          return {
+            externalId: match[1],
+            title: normalizeText(link.textContent) || "Untitled ChatGPT thread",
+            url: url.toString(),
+            updatedAt: "",
+            createdAt: "",
+            archived: false,
+            snippet: "",
+            projectName,
+            workspaceId: "",
+            sourceKind,
+            source,
+          };
+        } catch {
+          return null;
+        }
+      };
+
+      const fromDomRoot = (root, fallbackKind, source) => {
         const items = [];
-        for (const link of Array.from(document.querySelectorAll('a[href*="/c/"]'))) {
-          try {
-            const url = new URL(link.href, origin);
-            const match = url.pathname.match(/\\/c\\/([^/?#]+)/);
-            if (!match) continue;
-            items.push({
-              externalId: match[1],
-              title: (link.textContent || "").trim() || "Untitled ChatGPT thread",
-              url: url.toString(),
-              updatedAt: "",
-              createdAt: "",
-              archived: false,
-              snippet: "",
-            });
-          } catch {}
+        for (const link of Array.from((root || document).querySelectorAll('a[href*="/c/"]'))) {
+          const parsed = parseLinkEntry(link, fallbackKind, source);
+          if (parsed) items.push(parsed);
         }
         return dedupe(items);
       };
+
+      const ensureSidebarVisible = async () => {
+        const openButton = document.querySelector('[data-testid="open-sidebar-button"]');
+        if (openButton && visible(openButton)) {
+          click(openButton);
+          await sleep(480);
+        }
+        const candidates = Array.from(
+          document.querySelectorAll("button,[role='button'],summary,a")
+        );
+        let showMoreClicks = 0;
+        for (const element of candidates) {
+          if (showMoreClicks >= 8) break;
+          const label = normalizeText(element.textContent || element.getAttribute("aria-label"));
+          if (!label || !/^show more$/i.test(label)) continue;
+          if (!visible(element)) continue;
+          if (click(element)) {
+            showMoreClicks += 1;
+            await sleep(140);
+          }
+        }
+        await sleep(320);
+      };
+
+      const fromSidebarDom = async () => {
+        await ensureSidebarVisible();
+        const sidebar =
+          document.querySelector('[data-testid="history-sidebar"]') ||
+          document.querySelector('[data-testid="sidebar"]') ||
+          document.querySelector('nav[aria-label="Chat history"]') ||
+          document.querySelector('[aria-label="Chat history"]') ||
+          document.querySelector("aside") ||
+          null;
+        if (!sidebar) return [];
+        return fromDomRoot(sidebar, "recent", "sidebar-dom");
+      };
+
+      const fromDom = () => fromDomRoot(document, "recent", "dom-fallback");
 
       const fromBackendApi = async () => {
         try {
@@ -1035,23 +1145,37 @@ function chatgptRecentThreadsScript(limit = 40) {
               : Array.isArray(payload)
                 ? payload
                 : [];
-          return dedupe(rows.map(normalizeEntry));
+          return dedupe(
+            rows
+              .map((item) =>
+                normalizeEntry(item, {
+                  source: "backend-api",
+                  sourceKind: item?.workspace_id != null && item.workspace_id !== "" ? "project" : "recent",
+                })
+              )
+              .filter(Boolean)
+          );
         } catch {
           return [];
         }
       };
 
       const cached = fromCache();
-      if (cached.length) return { source: "localStorage-cache", available: true, entries: cached };
-
       const fetched = await fromBackendApi();
-      if (fetched.length) return { source: "backend-api", available: true, entries: fetched };
-
+      const sidebar = await fromSidebarDom();
       const dom = fromDom();
+      const combined = dedupe([...cached, ...fetched, ...sidebar, ...dom]);
+
+      const sourceParts = [];
+      if (cached.length) sourceParts.push("localStorage-cache");
+      if (fetched.length) sourceParts.push("backend-api");
+      if (sidebar.length) sourceParts.push("sidebar-dom");
+      if (dom.length) sourceParts.push("dom-fallback");
+
       return {
-        source: dom.length ? "dom-fallback" : "unavailable",
-        available: dom.length > 0,
-        entries: dom,
+        source: sourceParts.length ? sourceParts.join("+") : "unavailable",
+        available: combined.length > 0,
+        entries: combined,
       };
     })()
   `;
