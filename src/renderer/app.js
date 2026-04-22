@@ -47,9 +47,14 @@ const state = {
   workspaceStatuses: {},
   watchedArtifacts: [],
   codexThreads: [],
+  chatgptRecentThreads: [],
+  chatgptRecentThreadsStatus: "idle",
+  chatgptRecentThreadsSource: "",
   selectedCodexThreadId: "",
   selectedProjectChatThreadId: "",
+  selectedRecentChatgptThreadId: "",
   selectedBindingId: "",
+  activeChatgptThreadBrowserTab: "project",
 };
 
 const els = {
@@ -102,6 +107,7 @@ const els = {
   watchedRulesPreview: document.getElementById("watchedRulesPreview"),
   returnHeaderPreview: document.getElementById("returnHeaderPreview"),
   refreshCodexThreadsButton: document.getElementById("refreshCodexThreadsButton"),
+  refreshRecentChatThreadsButton: document.getElementById("refreshRecentChatThreadsButton"),
   bindingLaneInput: document.getElementById("bindingLaneInput"),
   bindingLabelInput: document.getElementById("bindingLabelInput"),
   bindingDefaultLaneInput: document.getElementById("bindingDefaultLaneInput"),
@@ -110,11 +116,17 @@ const els = {
   newBindingButton: document.getElementById("newBindingButton"),
   saveBindingButton: document.getElementById("saveBindingButton"),
   laneBindingList: document.getElementById("laneBindingList"),
+  projectChatThreadsTabButton: document.getElementById("projectChatThreadsTabButton"),
+  recentChatThreadsTabButton: document.getElementById("recentChatThreadsTabButton"),
+  chatgptThreadBrowserHint: document.getElementById("chatgptThreadBrowserHint"),
   codexThreadCount: document.getElementById("codexThreadCount"),
   codexThreadList: document.getElementById("codexThreadList"),
   projectChatThreadCount: document.getElementById("projectChatThreadCount"),
   projectChatThreadList: document.getElementById("projectChatThreadList"),
+  recentChatThreadCount: document.getElementById("recentChatThreadCount"),
+  recentChatThreadList: document.getElementById("recentChatThreadList"),
   openThreadAttachButton: document.getElementById("openThreadAttachButton"),
+  importRecentChatThreadButton: document.getElementById("importRecentChatThreadButton"),
   refreshWorkTreeButton: document.getElementById("refreshWorkTreeButton"),
   workTree: document.getElementById("workTree"),
   previewPath: document.getElementById("previewPath"),
@@ -302,6 +314,20 @@ function threadById(project, threadId) {
   return chatThreads(project).find((thread) => thread.id === threadId) || null;
 }
 
+function extractChatgptConversationId(value) {
+  try {
+    const url = new URL(String(value || ""), "https://chatgpt.com/");
+    const match = url.pathname.match(/\/c\/([^/?#]+)/);
+    return match ? match[1] : "";
+  } catch {
+    return "";
+  }
+}
+
+function projectThreadByConversationId(project, externalId) {
+  return chatThreads(project).find((thread) => extractChatgptConversationId(thread.url) === externalId) || null;
+}
+
 function laneBindings(project) {
   return Array.isArray(project?.laneBindings) ? project.laneBindings : [];
 }
@@ -312,6 +338,10 @@ function laneBindingById(project, bindingId) {
 
 function codexThreadById(threadId) {
   return state.codexThreads.find((thread) => thread.threadId === threadId) || null;
+}
+
+function recentChatgptThreadById(externalId) {
+  return state.chatgptRecentThreads.find((thread) => thread.externalId === externalId) || null;
 }
 
 function laneBindingStatus(project, binding) {
@@ -678,17 +708,94 @@ function renderProjectChatThreadBrowser() {
   }
 }
 
+function renderRecentChatgptThreadBrowser() {
+  const project = activeProject();
+  if (!project) return;
+  const threads = state.chatgptRecentThreads;
+  els.recentChatThreadCount.textContent = String(threads.length);
+  els.recentChatThreadList.innerHTML = "";
+
+  if (state.chatgptRecentThreadsStatus === "loading") {
+    els.recentChatThreadList.innerHTML = `<div class="empty-state">Loading recent ChatGPT threads from the authenticated session…</div>`;
+    return;
+  }
+
+  if (!threads.length) {
+    const source = state.chatgptRecentThreadsSource ? ` Source: ${state.chatgptRecentThreadsSource}.` : "";
+    const message =
+      state.chatgptRecentThreadsStatus === "error" || state.chatgptRecentThreadsStatus === "unavailable"
+        ? `No recent ChatGPT threads available right now.${source}`
+        : "No recent ChatGPT threads loaded yet. Refresh this source to import from the authenticated ChatGPT session.";
+    els.recentChatThreadList.innerHTML = `<div class="empty-state">${message}</div>`;
+    return;
+  }
+
+  for (const thread of threads) {
+    const attached = projectThreadByConversationId(project, thread.externalId);
+    const row = document.createElement("article");
+    row.className = `thread-browser-item${thread.externalId === state.selectedRecentChatgptThreadId ? " active" : ""}`;
+    row.innerHTML = `
+      <div class="thread-topline">
+        <span class="role-badge"></span>
+        <strong class="truncate"></strong>
+      </div>
+      <span class="thread-meta truncate"></span>
+      <span class="thread-notes truncate"></span>
+    `;
+    row.querySelector(".role-badge").textContent = attached ? "Imported into project" : "Recent ChatGPT";
+    row.querySelector("strong").textContent = thread.title || "Untitled ChatGPT thread";
+    row.querySelector(".thread-meta").textContent = shortPath(thread.url || "");
+    row.querySelector(".thread-notes").textContent =
+      attached
+        ? `Attached as ${attached.title}`
+        : thread.updatedAt
+          ? `Updated ${formatTime(thread.updatedAt)}`
+          : "No timestamp";
+    row.addEventListener("click", () => {
+      state.selectedRecentChatgptThreadId = thread.externalId;
+      renderThreadsWorkbench();
+    });
+    els.recentChatThreadList.appendChild(row);
+  }
+}
+
+function renderChatgptThreadSource() {
+  const project = activeProject();
+  if (!project) return;
+  const recentActive = state.activeChatgptThreadBrowserTab === "recent";
+  els.projectChatThreadsTabButton.classList.toggle("active", !recentActive);
+  els.recentChatThreadsTabButton.classList.toggle("active", recentActive);
+  els.projectChatThreadList.hidden = recentActive;
+  els.recentChatThreadList.hidden = !recentActive;
+  els.openThreadAttachButton.hidden = recentActive;
+  els.importRecentChatThreadButton.hidden = !recentActive;
+  els.importRecentChatThreadButton.disabled = !recentActive || !state.selectedRecentChatgptThreadId;
+  els.refreshRecentChatThreadsButton.disabled = state.chatgptRecentThreadsStatus === "loading";
+  els.chatgptThreadBrowserHint.textContent = recentActive
+    ? "Import a recent ChatGPT thread into this project before using it in a lane binding."
+    : "Project-attached ChatGPT threads can be linked directly to Codex threads.";
+  renderProjectChatThreadBrowser();
+  renderRecentChatgptThreadBrowser();
+}
+
 function renderThreadsWorkbench() {
   const project = activeProject();
   if (!project) return;
   renderLaneBindingList();
   renderCodexThreadBrowser();
-  renderProjectChatThreadBrowser();
+  renderChatgptThreadSource();
   const codexThread = codexThreadById(state.selectedCodexThreadId);
   const chatThread = threadById(project, state.selectedProjectChatThreadId);
-  els.threadLinkHint.textContent = codexThread && chatThread
-    ? `Link ${codexThread.title} to ${chatThread.title} for the selected lane.`
-    : "Select one Codex thread and one ChatGPT thread, then create or update a lane binding.";
+  if (state.activeChatgptThreadBrowserTab === "recent") {
+    const recentThread = recentChatgptThreadById(state.selectedRecentChatgptThreadId);
+    els.threadLinkHint.textContent = recentThread
+      ? `Import ${recentThread.title} into the project before creating or updating a lane binding.`
+      : "Select one recent ChatGPT thread to import, or switch back to Project threads for lane binding.";
+  } else {
+    els.threadLinkHint.textContent = codexThread && chatThread
+      ? `Link ${codexThread.title} to ${chatThread.title} for the selected lane.`
+      : "Select one Codex thread and one ChatGPT project thread, then create or update a lane binding.";
+  }
 }
 
 function renderHandoffTargetSelect() {
@@ -920,6 +1027,28 @@ async function loadCodexThreads() {
   renderThreadsWorkbench();
 }
 
+async function loadChatgptRecentThreads() {
+  if (!bridge.listChatgptRecentThreads) return;
+  state.chatgptRecentThreadsStatus = "loading";
+  renderThreadsWorkbench();
+  try {
+    const result = await bridge.listChatgptRecentThreads(60);
+    state.chatgptRecentThreads = Array.isArray(result.entries) ? result.entries : [];
+    state.chatgptRecentThreadsSource = result.source || "";
+    state.chatgptRecentThreadsStatus = result.available === false ? "unavailable" : "loaded";
+    if (result.error) setLastEvent(`ChatGPT recent-thread discovery: ${result.error}`);
+  } catch (error) {
+    state.chatgptRecentThreads = [];
+    state.chatgptRecentThreadsSource = "error";
+    state.chatgptRecentThreadsStatus = "error";
+    setLastEvent(`ChatGPT recent-thread discovery failed: ${error.message}`);
+  }
+  if (state.selectedRecentChatgptThreadId && !recentChatgptThreadById(state.selectedRecentChatgptThreadId)) {
+    state.selectedRecentChatgptThreadId = "";
+  }
+  renderThreadsWorkbench();
+}
+
 async function selectProject(projectId) {
   const previous = state.config?.selectedProjectId;
   state.surfaceEvents.codex = { type: "loading" };
@@ -932,6 +1061,8 @@ async function selectProject(projectId) {
   state.selectedBindingId = "";
   state.selectedCodexThreadId = "";
   state.selectedProjectChatThreadId = "";
+  state.selectedRecentChatgptThreadId = "";
+  state.activeChatgptThreadBrowserTab = "project";
   render();
   const project = activeProject();
   if (project?.lastActiveBindingId) {
@@ -1339,6 +1470,61 @@ function setMiddleTab(tab) {
   state.activeMiddleTab = tab === "threads" ? "threads" : "overview";
   renderMiddleTabs();
   scheduleResizeBurst();
+}
+
+function setChatgptThreadBrowserTab(tab) {
+  state.activeChatgptThreadBrowserTab = tab === "recent" ? "recent" : "project";
+  renderThreadsWorkbench();
+  if (state.activeChatgptThreadBrowserTab === "recent" && state.chatgptRecentThreadsStatus === "idle") {
+    loadChatgptRecentThreads().catch((error) => {
+      setLastEvent(`ChatGPT recent-thread discovery failed: ${error.message}`);
+    });
+  }
+}
+
+async function importRecentChatgptThread() {
+  const project = activeProject();
+  if (!project || !state.config) return;
+  const recent = recentChatgptThreadById(state.selectedRecentChatgptThreadId);
+  if (!recent) {
+    setLastEvent("Select a recent ChatGPT thread before importing.");
+    return;
+  }
+
+  const existing = projectThreadByConversationId(project, recent.externalId);
+  if (existing) {
+    state.selectedProjectChatThreadId = existing.id;
+    state.activeChatgptThreadBrowserTab = "project";
+    renderThreadsWorkbench();
+    setLastEvent(`ChatGPT thread already attached as ${existing.title}.`);
+    return;
+  }
+
+  const now = nowIso();
+  const importedThread = {
+    id: createId("thread"),
+    role: "custom",
+    title: recent.title || "Imported ChatGPT thread",
+    url: normalizeHttpsUrl(recent.url),
+    notes: "Imported from recent ChatGPT threads.",
+    isPrimary: false,
+    pinned: false,
+    archived: false,
+    createdAt: now,
+    updatedAt: now,
+    lastOpenedAt: "",
+  };
+  const threads = normalizeThreadSet([importedThread, ...chatThreads(project)]);
+  const updatedProject = {
+    ...project,
+    chatThreads: threads,
+    updatedAt: now,
+  };
+  await saveConfig({ ...state.config, projects: state.config.projects.map((item) => (item.id === project.id ? updatedProject : item)) });
+  state.selectedProjectChatThreadId = importedThread.id;
+  state.activeChatgptThreadBrowserTab = "project";
+  renderThreadsWorkbench();
+  setLastEvent(`Imported ChatGPT thread: ${importedThread.title}.`);
 }
 
 async function saveLaneBinding() {
@@ -1763,12 +1949,16 @@ function bindEvents() {
   els.closeThreadDrawerButton.addEventListener("click", closeThreadDrawer);
   els.cancelThreadButton.addEventListener("click", closeThreadDrawer);
   els.deleteThreadButton.addEventListener("click", deleteThreadFromDrawer);
+  els.projectChatThreadsTabButton.addEventListener("click", () => setChatgptThreadBrowserTab("project"));
+  els.recentChatThreadsTabButton.addEventListener("click", () => setChatgptThreadBrowserTab("recent"));
   els.openThreadAttachButton.addEventListener("click", () => {
     const project = activeProject();
     const selected = threadById(project, state.selectedProjectChatThreadId);
     openThreadDrawer(selected ? "edit" : "new", selected?.id || "");
   });
   els.refreshCodexThreadsButton.addEventListener("click", loadCodexThreads);
+  els.refreshRecentChatThreadsButton.addEventListener("click", loadChatgptRecentThreads);
+  els.importRecentChatThreadButton.addEventListener("click", importRecentChatgptThread);
   els.newBindingButton.addEventListener("click", () => {
     state.selectedBindingId = "";
     resetBindingEditor();

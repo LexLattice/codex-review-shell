@@ -265,14 +265,31 @@
               <div class="section-heading">
                 <div>
                   <p class="eyebrow">ChatGPT threads</p>
-                  <h3>Project-attached deliberation threads</h3>
+                  <h3>Project and recent deliberation threads</h3>
                 </div>
                 <div class="heading-actions">
+                  <button class="ghost small" id="refreshRecentChatThreadsButton" type="button">Refresh recent</button>
+                </div>
+              </div>
+              <div class="thread-source-tabs" aria-label="ChatGPT thread sources">
+                <button class="thread-source-tab active" id="projectChatThreadsTabButton" type="button">
+                  Project
                   <span id="projectChatThreadCount" class="counter">0</span>
+                </button>
+                <button class="thread-source-tab" id="recentChatThreadsTabButton" type="button">
+                  Recent
+                  <span id="recentChatThreadCount" class="counter">0</span>
+                </button>
+              </div>
+              <div class="threads-action-bar thread-source-actions">
+                <p id="chatgptThreadBrowserHint" class="muted">Project-attached ChatGPT threads can be linked directly. Recent threads can be imported into the project first.</p>
+                <div class="heading-actions">
                   <button class="ghost small" id="openThreadAttachButton" type="button">Attach / edit</button>
+                  <button class="primary small" id="importRecentChatThreadButton" type="button" hidden>Import selected</button>
                 </div>
               </div>
               <div class="thread-browser-list project-chat-thread-list" id="projectChatThreadList"></div>
+              <div class="thread-browser-list recent-chat-thread-list" id="recentChatThreadList" hidden></div>
             </section>
           </section>
         </section>

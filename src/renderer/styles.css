@@ -512,6 +512,10 @@ button:active {
   margin-bottom: 10px;
 }
 
+.thread-source-actions {
+  align-items: flex-start;
+}
+
 .binding-list {
   display: grid;
   gap: 8px;
@@ -568,6 +572,30 @@ button:active {
 
 .thread-browser-item strong {
   font-size: 13px;
+}
+
+.thread-source-tabs {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.thread-source-tab {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 38px;
+  padding: 0 10px;
+  border-radius: 12px;
+  background: rgba(5, 7, 11, 0.42);
+}
+
+.thread-source-tab.active {
+  border-color: rgba(141, 180, 255, 0.42);
+  background: linear-gradient(135deg, rgba(141, 180, 255, 0.13), rgba(111, 224, 255, 0.045));
 }
 
 .work-tool {
@@ -810,7 +838,8 @@ body.dragging {
   .compact-actions,
   .form-grid,
   .threads-lane-editor,
-  .threads-split {
+  .threads-split,
+  .thread-source-tabs {
     grid-template-columns: 1fr;
   }
 

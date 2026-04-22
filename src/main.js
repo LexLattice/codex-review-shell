@@ -947,6 +947,116 @@ async function loadChatgptSurface(project, threadId = "") {
   await chatgptView.webContents.loadURL(target);
 }
 
+function chatgptRecentThreadsScript(limit = 40) {
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 40, 200));
+  return `
+    (async () => {
+      const limit = ${safeLimit};
+      const origin = location.origin || "https://chatgpt.com";
+
+      const normalizeEntry = (item) => {
+        if (!item || !item.id) return null;
+        const externalId = String(item.id || "");
+        return {
+          externalId,
+          title: String(item.title || "Untitled ChatGPT thread"),
+          url: externalId ? origin.replace(/\\/$/, "") + "/c/" + encodeURIComponent(externalId) : "",
+          updatedAt: String(item.update_time || ""),
+          createdAt: String(item.create_time || ""),
+          archived: Boolean(item.is_archived),
+          snippet: typeof item.snippet === "string" ? item.snippet : "",
+        };
+      };
+
+      const dedupe = (items) => {
+        const byId = new Map();
+        for (const item of items) {
+          if (!item || !item.externalId) continue;
+          const current = byId.get(item.externalId);
+          if (!current || String(item.updatedAt || "") > String(current.updatedAt || "")) {
+            byId.set(item.externalId, item);
+          }
+        }
+        return Array.from(byId.values())
+          .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))
+          .slice(0, limit);
+      };
+
+      const fromCache = () => {
+        const items = [];
+        for (const key of Object.keys(localStorage)) {
+          if (!key.includes("/conversation-history")) continue;
+          try {
+            const parsed = JSON.parse(localStorage.getItem(key) || "null");
+            const pages = parsed?.value?.pages || [];
+            for (const page of pages) {
+              for (const item of page?.items || []) {
+                const normalized = normalizeEntry(item);
+                if (normalized) items.push(normalized);
+              }
+            }
+          } catch {}
+        }
+        return dedupe(items);
+      };
+
+      const fromDom = () => {
+        const items = [];
+        for (const link of Array.from(document.querySelectorAll('a[href*="/c/"]'))) {
+          try {
+            const url = new URL(link.href, origin);
+            const match = url.pathname.match(/\\/c\\/([^/?#]+)/);
+            if (!match) continue;
+            items.push({
+              externalId: match[1],
+              title: (link.textContent || "").trim() || "Untitled ChatGPT thread",
+              url: url.toString(),
+              updatedAt: "",
+              createdAt: "",
+              archived: false,
+              snippet: "",
+            });
+          } catch {}
+        }
+        return dedupe(items);
+      };
+
+      const fromBackendApi = async () => {
+        try {
+          const response = await fetch("/backend-api/conversations?offset=0&limit=" + limit + "&order=updated", {
+            credentials: "include",
+          });
+          if (!response.ok) return [];
+          const payload = await response.json();
+          const rows = Array.isArray(payload?.items)
+            ? payload.items
+            : Array.isArray(payload?.conversations)
+              ? payload.conversations
+              : Array.isArray(payload)
+                ? payload
+                : [];
+          return dedupe(rows.map(normalizeEntry));
+        } catch {
+          return [];
+        }
+      };
+
+      const cached = fromCache();
+      if (cached.length) return { source: "localStorage-cache", available: true, entries: cached };
+
+      const fetched = await fromBackendApi();
+      if (fetched.length) return { source: "backend-api", available: true, entries: fetched };
+
+      const dom = fromDom();
+      return {
+        source: dom.length ? "dom-fallback" : "unavailable",
+        available: dom.length > 0,
+        entries: dom,
+      };
+    })()
+  `;
+}
+
 function chatgptDarkCss() {
   return `
     html, body {
@@ -1371,6 +1481,33 @@ async function openChatgptSettings() {
   }
 }
 
+async function listChatgptRecentThreads(limit = 40) {
+  if (!chatgptView || chatgptView.webContents.isDestroyed()) {
+    return { source: "unavailable", available: false, entries: [], error: "ChatGPT surface is unavailable." };
+  }
+  const currentUrl = chatgptView.webContents.getURL() || "";
+  if (!currentUrl.includes("chatgpt.com") && !currentUrl.includes("chat.openai.com")) {
+    return { source: "unavailable", available: false, entries: [], error: "ChatGPT surface is not loaded yet." };
+  }
+  try {
+    const result = await chatgptView.webContents.executeJavaScript(chatgptRecentThreadsScript(limit), true);
+    return {
+      source: normalizeString(result?.source, "unknown"),
+      available: result?.available !== false,
+      entries: Array.isArray(result?.entries) ? result.entries : [],
+      limit: Math.max(1, Math.min(Number(limit) || 40, 200)),
+    };
+  } catch (error) {
+    return {
+      source: "execute-failed",
+      available: false,
+      entries: [],
+      error: error.message,
+      limit: Math.max(1, Math.min(Number(limit) || 40, 200)),
+    };
+  }
+}
+
 async function createWindow() {
   Menu.setApplicationMenu(null);
   app.setName(APP_TITLE);
@@ -1614,6 +1751,10 @@ ipcMain.handle("chatgpt:select-thread", async (_event, payload) => {
     scheduleLayoutPing("chatgpt-thread-selected");
   }
   return { config: saved, project, thread };
+});
+
+ipcMain.handle("chatgpt:recent-threads", async (_event, payload) => {
+  return listChatgptRecentThreads(payload?.limit);
 });
 
 ipcMain.handle("workspace:attach", async (_event, payload) => {

@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld("workspaceShell", {
   readProjectFile: (projectId, relPath) => ipcRenderer.invoke("worktree:read-file", { projectId, relPath }),
   listWatchedArtifacts: (projectId) => ipcRenderer.invoke("worktree:list-watched", { projectId }),
   listCodexThreads: (projectId) => ipcRenderer.invoke("codex-threads:list", { projectId }),
+  listChatgptRecentThreads: (limit) => ipcRenderer.invoke("chatgpt:recent-threads", { limit }),
   revealProjectFile: (projectId, relPath) => ipcRenderer.invoke("worktree:reveal-file", { projectId, relPath }),
   attachWorkspace: (projectId) => ipcRenderer.invoke("workspace:attach", { projectId }),
   workspaceStatus: (projectId) => ipcRenderer.invoke("workspace:status", { projectId }),
