@@ -175,6 +175,31 @@ body.dragging .splitter {
   overflow: auto;
 }
 
+.middle-tabs {
+  display: flex;
+  gap: 8px;
+}
+
+.middle-tab {
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.middle-tab.active {
+  color: var(--accent-strong);
+  border-color: rgba(141, 180, 255, 0.32);
+  background: rgba(141, 180, 255, 0.12);
+}
+
+.middle-tab-panel {
+  display: grid;
+  gap: 10px;
+}
+
 .control-header,
 .selected-card,
 .control-card,
@@ -462,6 +487,89 @@ button:active {
   flex: 1 0 auto;
 }
 
+.threads-workbench-card,
+.thread-source-card {
+  min-height: 0;
+}
+
+.threads-lane-editor {
+  display: grid;
+  grid-template-columns: minmax(140px, 0.9fr) minmax(180px, 1.2fr) auto auto;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.threads-lane-editor .checkbox-row {
+  align-self: end;
+  min-height: 42px;
+}
+
+.threads-action-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.binding-list {
+  display: grid;
+  gap: 8px;
+}
+
+.binding-item {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: rgba(5, 7, 11, 0.42);
+}
+
+.binding-item.active {
+  border-color: rgba(141, 180, 255, 0.42);
+  background: linear-gradient(135deg, rgba(141, 180, 255, 0.13), rgba(111, 224, 255, 0.045));
+}
+
+.binding-meta {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.threads-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 10px;
+  min-height: 360px;
+}
+
+.thread-browser-list {
+  display: grid;
+  gap: 8px;
+  max-height: clamp(280px, 45vh, 600px);
+  overflow: auto;
+}
+
+.thread-browser-item {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: rgba(5, 7, 11, 0.42);
+  cursor: pointer;
+}
+
+.thread-browser-item.active {
+  border-color: rgba(141, 180, 255, 0.42);
+  background: linear-gradient(135deg, rgba(141, 180, 255, 0.13), rgba(111, 224, 255, 0.045));
+}
+
+.thread-browser-item strong {
+  font-size: 13px;
+}
+
 .work-tool {
   height: clamp(280px, 45vh, 560px);
   display: grid;
@@ -700,12 +808,19 @@ body.dragging {
 
   .button-grid,
   .compact-actions,
-  .form-grid {
+  .form-grid,
+  .threads-lane-editor,
+  .threads-split {
     grid-template-columns: 1fr;
   }
 
   .button-grid .span-2 {
     grid-column: auto;
+  }
+
+  .threads-action-bar {
+    align-items: flex-start;
+    flex-direction: column;
   }
 }
 

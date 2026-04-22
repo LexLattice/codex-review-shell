@@ -142,6 +142,8 @@ function defaultConfig() {
           }),
         ],
         activeChatThreadId: "thread_review_primary",
+        laneBindings: [],
+        lastActiveBindingId: "",
         promptTemplates: defaultPromptTemplates(),
         flowProfile: {
           reviewPromptTemplate: defaultPromptTemplateText("review"),
@@ -290,6 +292,34 @@ function defaultChatThread(overrides = {}) {
   };
 }
 
+function roleLabelText(role) {
+  return role[0].toUpperCase() + role.slice(1);
+}
+
+function defaultLaneBinding(overrides = {}) {
+  const now = nowIso();
+  const lane = normalizeRole(overrides.lane, "review");
+  const rawCodex = isPlainObject(overrides.codexThreadRef) ? overrides.codexThreadRef : {};
+  return {
+    id: normalizeString(overrides.id, newId("binding")),
+    lane,
+    label: normalizeString(overrides.label, roleLabelText(lane)),
+    codexThreadRef: {
+      threadId: normalizeString(rawCodex.threadId, ""),
+      originator: normalizeString(rawCodex.originator, ""),
+      titleSnapshot: normalizeString(rawCodex.titleSnapshot, ""),
+      cwdSnapshot: normalizeString(rawCodex.cwdSnapshot, ""),
+    },
+    chatThreadId: normalizeString(overrides.chatThreadId, ""),
+    isDefaultForLane: Boolean(overrides.isDefaultForLane),
+    openOnProjectActivate: Boolean(overrides.openOnProjectActivate),
+    lastActivatedAt: normalizeString(overrides.lastActivatedAt, ""),
+    status: normalizeString(overrides.status, "resolved"),
+    createdAt: normalizeString(overrides.createdAt, now),
+    updatedAt: normalizeString(overrides.updatedAt, now),
+  };
+}
+
 function normalizeChatThreads(rawProject, rawChatgpt) {
   const rawThreads = Array.isArray(rawProject.chatThreads) ? rawProject.chatThreads : [];
   const threads = [];
@@ -344,6 +374,22 @@ function normalizeChatThreads(rawProject, rawChatgpt) {
   }
 
   return threads;
+}
+
+function normalizeLaneBindings(rawBindings, chatThreads) {
+  if (!Array.isArray(rawBindings)) return [];
+  const chatThreadIds = new Set((chatThreads || []).map((thread) => thread.id));
+  const ids = new Set();
+  return rawBindings
+    .filter(isPlainObject)
+    .map((binding) => {
+      const normalized = defaultLaneBinding(binding);
+      if (ids.has(normalized.id)) normalized.id = newId("binding");
+      ids.add(normalized.id);
+      if (!chatThreadIds.has(normalized.chatThreadId)) normalized.status = "missing_chatgpt_thread";
+      return normalized;
+    })
+    .filter((binding) => binding.chatThreadId || binding.codexThreadRef.threadId);
 }
 
 function primaryReviewThread(project) {
@@ -534,6 +580,7 @@ function normalizeProject(input, index = 0) {
     ? activeThreadCandidate
     : primaryReviewThread({ chatThreads })?.id || chatThreads[0]?.id;
   const primaryReview = primaryReviewThread({ chatThreads });
+  const laneBindings = normalizeLaneBindings(raw.laneBindings, chatThreads);
   const promptTemplates = normalizePromptTemplates(raw.promptTemplates, rawFlow);
   const ignoredWatchedArtifactPaths = Array.isArray(raw.ignoredWatchedArtifactPaths)
     ? raw.ignoredWatchedArtifactPaths.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim())
@@ -562,6 +609,8 @@ function normalizeProject(input, index = 0) {
     chatThreads,
     activeChatThreadId: activeThreadId,
     lastActiveThreadId: normalizeString(raw.lastActiveThreadId, activeThreadId),
+    laneBindings,
+    lastActiveBindingId: normalizeString(raw.lastActiveBindingId, ""),
     promptTemplates,
     flowProfile: {
       reviewPromptTemplate: normalizeString(rawFlow.reviewPromptTemplate, promptTemplates.review.text),
@@ -1163,6 +1212,19 @@ async function listWatchedArtifacts(projectId) {
   };
 }
 
+async function listCodexThreads(projectId) {
+  const project = await getProjectById(projectId);
+  const result = await requestWorkspace(project, "listCodexThreads", {
+    limit: 120,
+    originators: ["codex_vscode", "Codex Desktop"],
+  }, 30_000);
+  return {
+    ...result,
+    workspace: project.workspace,
+    workspaceLabel: workspaceLabel(project, repoRoot),
+  };
+}
+
 async function revealProjectFile(projectId, relPath) {
   const project = await getProjectById(projectId);
   const result = await requestWorkspace(project, "resolvePath", { relPath }, 10_000);
@@ -1519,6 +1581,10 @@ ipcMain.handle("worktree:read-file", async (_event, payload) => {
 
 ipcMain.handle("worktree:list-watched", async (_event, payload) => {
   return listWatchedArtifacts(payload?.projectId);
+});
+
+ipcMain.handle("codex-threads:list", async (_event, payload) => {
+  return listCodexThreads(payload?.projectId);
 });
 
 ipcMain.handle("worktree:reveal-file", async (_event, payload) => {

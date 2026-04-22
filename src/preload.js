@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld("workspaceShell", {
   listWorkTree: (projectId, relPath) => ipcRenderer.invoke("worktree:list", { projectId, relPath }),
   readProjectFile: (projectId, relPath) => ipcRenderer.invoke("worktree:read-file", { projectId, relPath }),
   listWatchedArtifacts: (projectId) => ipcRenderer.invoke("worktree:list-watched", { projectId }),
+  listCodexThreads: (projectId) => ipcRenderer.invoke("codex-threads:list", { projectId }),
   revealProjectFile: (projectId, relPath) => ipcRenderer.invoke("worktree:reveal-file", { projectId, relPath }),
   attachWorkspace: (projectId) => ipcRenderer.invoke("workspace:attach", { projectId }),
   workspaceStatus: (projectId) => ipcRenderer.invoke("workspace:status", { projectId }),

@@ -32,6 +32,7 @@ const state = {
   platform: "",
   defaultWorkspace: null,
   defaultCodexRuntime: "auto",
+  activeMiddleTab: "overview",
   surfaceEvents: {
     codex: { type: "idle" },
     chatgpt: { type: "idle" },
@@ -45,6 +46,10 @@ const state = {
   selectedFilePreview: null,
   workspaceStatuses: {},
   watchedArtifacts: [],
+  codexThreads: [],
+  selectedCodexThreadId: "",
+  selectedProjectChatThreadId: "",
+  selectedBindingId: "",
 };
 
 const els = {
@@ -55,6 +60,10 @@ const els = {
   backendStatus: document.getElementById("backendStatus"),
   bindingStatus: document.getElementById("bindingStatus"),
   activeThreadStatus: document.getElementById("activeThreadStatus"),
+  overviewTabButton: document.getElementById("overviewTabButton"),
+  threadsTabButton: document.getElementById("threadsTabButton"),
+  overviewTabPanel: document.getElementById("overviewTabPanel"),
+  threadsTabPanel: document.getElementById("threadsTabPanel"),
   projectList: document.getElementById("projectList"),
   projectCount: document.getElementById("projectCount"),
   threadDeck: document.getElementById("threadDeck"),
@@ -92,6 +101,20 @@ const els = {
   refreshWatchedButton: document.getElementById("refreshWatchedButton"),
   watchedRulesPreview: document.getElementById("watchedRulesPreview"),
   returnHeaderPreview: document.getElementById("returnHeaderPreview"),
+  refreshCodexThreadsButton: document.getElementById("refreshCodexThreadsButton"),
+  bindingLaneInput: document.getElementById("bindingLaneInput"),
+  bindingLabelInput: document.getElementById("bindingLabelInput"),
+  bindingDefaultLaneInput: document.getElementById("bindingDefaultLaneInput"),
+  bindingOpenOnProjectInput: document.getElementById("bindingOpenOnProjectInput"),
+  threadLinkHint: document.getElementById("threadLinkHint"),
+  newBindingButton: document.getElementById("newBindingButton"),
+  saveBindingButton: document.getElementById("saveBindingButton"),
+  laneBindingList: document.getElementById("laneBindingList"),
+  codexThreadCount: document.getElementById("codexThreadCount"),
+  codexThreadList: document.getElementById("codexThreadList"),
+  projectChatThreadCount: document.getElementById("projectChatThreadCount"),
+  projectChatThreadList: document.getElementById("projectChatThreadList"),
+  openThreadAttachButton: document.getElementById("openThreadAttachButton"),
   refreshWorkTreeButton: document.getElementById("refreshWorkTreeButton"),
   workTree: document.getElementById("workTree"),
   previewPath: document.getElementById("previewPath"),
@@ -279,6 +302,38 @@ function threadById(project, threadId) {
   return chatThreads(project).find((thread) => thread.id === threadId) || null;
 }
 
+function laneBindings(project) {
+  return Array.isArray(project?.laneBindings) ? project.laneBindings : [];
+}
+
+function laneBindingById(project, bindingId) {
+  return laneBindings(project).find((binding) => binding.id === bindingId) || null;
+}
+
+function codexThreadById(threadId) {
+  return state.codexThreads.find((thread) => thread.threadId === threadId) || null;
+}
+
+function laneBindingStatus(project, binding) {
+  if (!binding) return "unresolved";
+  if (!threadById(project, binding.chatThreadId)) return "missing_chatgpt_thread";
+  if (binding.codexThreadRef?.threadId && !codexThreadById(binding.codexThreadRef.threadId)) return "missing_codex_thread";
+  return binding.status || "resolved";
+}
+
+function laneBindingStatusLabel(status) {
+  const labels = {
+    resolved: "resolved",
+    missing_codex_thread: "missing Codex thread",
+    missing_chatgpt_thread: "missing ChatGPT thread",
+    chatgpt_discovery_unavailable: "ChatGPT discovery unavailable",
+    stale_snapshot: "stale snapshot",
+    manually_attached: "manually attached",
+    unresolved: "unresolved",
+  };
+  return labels[status] || status;
+}
+
 function sortedThreads(project, includeArchived = true) {
   const order = Object.fromEntries(THREAD_ROLES.map((role, index) => [role, index]));
   return chatThreads(project)
@@ -395,6 +450,19 @@ function renderStatus() {
   }
 }
 
+function renderMiddleTabs() {
+  const tabs = [
+    [els.overviewTabButton, els.overviewTabPanel, "overview"],
+    [els.threadsTabButton, els.threadsTabPanel, "threads"],
+  ];
+  for (const [button, panel, tab] of tabs) {
+    const active = state.activeMiddleTab === tab;
+    button.classList.toggle("active", active);
+    panel.classList.toggle("active", active);
+    panel.hidden = !active;
+  }
+}
+
 function renderProjectList() {
   const config = state.config;
   if (!config) return;
@@ -484,6 +552,143 @@ function renderThreadDeck() {
     row.querySelector(".edit-thread").addEventListener("click", () => openThreadDrawer("edit", thread.id));
     els.threadDeck.appendChild(row);
   }
+}
+
+function resetBindingEditor() {
+  state.selectedBindingId = "";
+  els.bindingLaneInput.value = "review";
+  els.bindingLabelInput.value = "";
+  els.bindingDefaultLaneInput.checked = false;
+  els.bindingOpenOnProjectInput.checked = false;
+}
+
+function populateBindingEditor(binding) {
+  if (!binding) {
+    resetBindingEditor();
+    return;
+  }
+  state.selectedBindingId = binding.id;
+  els.bindingLaneInput.value = binding.lane || "review";
+  els.bindingLabelInput.value = binding.label || "";
+  els.bindingDefaultLaneInput.checked = Boolean(binding.isDefaultForLane);
+  els.bindingOpenOnProjectInput.checked = Boolean(binding.openOnProjectActivate);
+  state.selectedCodexThreadId = binding.codexThreadRef?.threadId || "";
+  state.selectedProjectChatThreadId = binding.chatThreadId || "";
+}
+
+function renderLaneBindingList() {
+  const project = activeProject();
+  if (!project) return;
+  const bindings = laneBindings(project);
+  els.laneBindingList.innerHTML = "";
+  if (!bindings.length) {
+    els.laneBindingList.innerHTML = `<div class="empty-state">No lane bindings yet. Link a Codex thread and a project-attached ChatGPT thread to create one.</div>`;
+    return;
+  }
+
+  for (const binding of bindings) {
+    const codexThread = codexThreadById(binding.codexThreadRef?.threadId || "");
+    const chatThread = threadById(project, binding.chatThreadId);
+    const status = laneBindingStatus(project, binding);
+    const row = document.createElement("article");
+    row.className = `binding-item${binding.id === state.selectedBindingId ? " active" : ""}`;
+    row.innerHTML = `
+      <div class="thread-topline">
+        <span class="role-badge"></span>
+        <strong class="truncate"></strong>
+      </div>
+      <div class="binding-meta"></div>
+      <div class="thread-actions">
+        <button class="ghost small select-binding" type="button">Edit</button>
+      </div>
+    `;
+    row.querySelector(".role-badge").textContent = `${roleLabel(binding.lane)}${binding.isDefaultForLane ? " · default" : ""}${binding.openOnProjectActivate ? " · open" : ""}`;
+    row.querySelector("strong").textContent = binding.label || `${roleLabel(binding.lane)} lane`;
+    row.querySelector(".binding-meta").textContent =
+      `Codex: ${codexThread?.title || binding.codexThreadRef?.titleSnapshot || "missing"} · ChatGPT: ${chatThread?.title || "missing"} · ${laneBindingStatusLabel(status)}`;
+    row.querySelector(".select-binding").addEventListener("click", () => {
+      populateBindingEditor(binding);
+      renderThreadsWorkbench();
+      setLastEvent(`Editing lane binding: ${binding.label || roleLabel(binding.lane)}.`);
+    });
+    els.laneBindingList.appendChild(row);
+  }
+}
+
+function renderCodexThreadBrowser() {
+  els.codexThreadCount.textContent = String(state.codexThreads.length);
+  els.codexThreadList.innerHTML = "";
+  if (!state.codexThreads.length) {
+    els.codexThreadList.innerHTML = `<div class="empty-state">No Codex threads discovered yet. Attach the workspace backend and refresh this view.</div>`;
+    return;
+  }
+  for (const thread of state.codexThreads) {
+    const row = document.createElement("article");
+    row.className = `thread-browser-item${thread.threadId === state.selectedCodexThreadId ? " active" : ""}`;
+    row.innerHTML = `
+      <div class="thread-topline">
+        <span class="role-badge"></span>
+        <strong class="truncate"></strong>
+      </div>
+      <span class="thread-meta truncate"></span>
+      <span class="thread-notes truncate"></span>
+    `;
+    row.querySelector(".role-badge").textContent = thread.originator || "Codex";
+    row.querySelector("strong").textContent = thread.title || "Untitled Codex thread";
+    row.querySelector(".thread-meta").textContent = shortPath(thread.cwd || "");
+    row.querySelector(".thread-notes").textContent = thread.updatedAt ? `Updated ${formatTime(thread.updatedAt)}` : "No timestamp";
+    row.addEventListener("click", () => {
+      state.selectedCodexThreadId = thread.threadId;
+      renderThreadsWorkbench();
+    });
+    els.codexThreadList.appendChild(row);
+  }
+}
+
+function renderProjectChatThreadBrowser() {
+  const project = activeProject();
+  if (!project) return;
+  const threads = sortedThreads(project, true);
+  els.projectChatThreadCount.textContent = String(threads.length);
+  els.projectChatThreadList.innerHTML = "";
+  if (!threads.length) {
+    els.projectChatThreadList.innerHTML = `<div class="empty-state">No project-attached ChatGPT threads yet. Use Attach / edit to add one.</div>`;
+    return;
+  }
+  for (const thread of threads) {
+    const row = document.createElement("article");
+    row.className = `thread-browser-item${thread.id === state.selectedProjectChatThreadId ? " active" : ""}`;
+    row.innerHTML = `
+      <div class="thread-topline">
+        <span class="role-badge"></span>
+        <strong class="truncate"></strong>
+      </div>
+      <span class="thread-meta truncate"></span>
+      <span class="thread-notes truncate"></span>
+    `;
+    row.querySelector(".role-badge").textContent = `${roleLabel(thread.role)}${thread.isPrimary ? " · primary" : ""}`;
+    row.querySelector("strong").textContent = thread.title;
+    row.querySelector(".thread-meta").textContent = shortPath(thread.url);
+    row.querySelector(".thread-notes").textContent = thread.notes || (thread.lastOpenedAt ? `Last opened ${formatTime(thread.lastOpenedAt)}` : "No notes");
+    row.addEventListener("click", () => {
+      state.selectedProjectChatThreadId = thread.id;
+      renderThreadsWorkbench();
+    });
+    els.projectChatThreadList.appendChild(row);
+  }
+}
+
+function renderThreadsWorkbench() {
+  const project = activeProject();
+  if (!project) return;
+  renderLaneBindingList();
+  renderCodexThreadBrowser();
+  renderProjectChatThreadBrowser();
+  const codexThread = codexThreadById(state.selectedCodexThreadId);
+  const chatThread = threadById(project, state.selectedProjectChatThreadId);
+  els.threadLinkHint.textContent = codexThread && chatThread
+    ? `Link ${codexThread.title} to ${chatThread.title} for the selected lane.`
+    : "Select one Codex thread and one ChatGPT thread, then create or update a lane binding.";
 }
 
 function renderHandoffTargetSelect() {
@@ -591,9 +796,11 @@ function render() {
   if (!state.config) return;
   els.configPath.textContent = state.configPath;
   els.configPath.title = state.configPath;
+  renderMiddleTabs();
   renderProjectList();
   renderSelectedProject();
   renderThreadDeck();
+  renderThreadsWorkbench();
   renderHandoffTargetSelect();
   renderPromptPreview();
   renderHandoffQueue();
@@ -699,6 +906,20 @@ async function saveConfig(config) {
   return result.config;
 }
 
+async function loadCodexThreads() {
+  const project = activeProject();
+  if (!project || !bridge.listCodexThreads) return;
+  try {
+    const result = await bridge.listCodexThreads(project.id);
+    state.codexThreads = result.entries || [];
+  } catch (error) {
+    state.codexThreads = [];
+    setLastEvent(`Codex thread discovery failed: ${error.message}`);
+  }
+  if (state.selectedCodexThreadId && !codexThreadById(state.selectedCodexThreadId)) state.selectedCodexThreadId = "";
+  renderThreadsWorkbench();
+}
+
 async function selectProject(projectId) {
   const previous = state.config?.selectedProjectId;
   state.surfaceEvents.codex = { type: "loading" };
@@ -708,8 +929,18 @@ async function selectProject(projectId) {
   state.config = result.config;
   state.selectedFileRelPath = "";
   state.selectedFilePreview = null;
+  state.selectedBindingId = "";
+  state.selectedCodexThreadId = "";
+  state.selectedProjectChatThreadId = "";
   render();
   const project = activeProject();
+  if (project?.lastActiveBindingId) {
+    const binding = laneBindingById(project, project.lastActiveBindingId);
+    if (binding) populateBindingEditor(binding);
+  } else {
+    resetBindingEditor();
+    state.selectedProjectChatThreadId = activeThread(project)?.id || "";
+  }
   setLastEvent(`Selected ${project?.name ?? projectId}.`);
   if (project && bridge.attachWorkspace) {
     setLastEvent(`Attaching workspace: ${workspaceSummary(project)}…`);
@@ -717,9 +948,12 @@ async function selectProject(projectId) {
       const status = await bridge.attachWorkspace(project.id);
       state.workspaceStatuses[project.id] = status;
       renderSelectedProject();
+      await loadCodexThreads();
     } catch (error) {
+      state.codexThreads = [];
       state.workspaceStatuses[project.id] = { status: "failed", lastError: error.message };
       renderSelectedProject();
+      renderThreadsWorkbench();
     }
   }
   await loadWorkTreeRoot();
@@ -791,6 +1025,8 @@ function openDrawer(mode) {
       },
     ],
     activeChatThreadId: "thread_review_primary",
+    laneBindings: [],
+    lastActiveBindingId: "",
     promptTemplates: defaultPromptTemplates(),
     flowProfile: {
       reviewPromptTemplate: defaultPromptText("review"),
@@ -925,6 +1161,8 @@ function projectFromForm() {
     chatThreads: threads,
     activeChatThreadId: existing?.activeChatThreadId || currentPrimary?.id || threads[0]?.id,
     lastActiveThreadId: existing?.lastActiveThreadId || existing?.activeChatThreadId || currentPrimary?.id || threads[0]?.id,
+    laneBindings: existing?.laneBindings || [],
+    lastActiveBindingId: existing?.lastActiveBindingId || "",
     promptTemplates: templates,
     flowProfile: {
       reviewPromptTemplate: templates.review.text,
@@ -1095,6 +1333,64 @@ async function deleteThreadFromDrawer() {
   closeThreadDrawer();
   if (activeId) await selectThread(activeId);
   setLastEvent(`Removed thread binding: ${thread.title}.`);
+}
+
+function setMiddleTab(tab) {
+  state.activeMiddleTab = tab === "threads" ? "threads" : "overview";
+  renderMiddleTabs();
+  scheduleResizeBurst();
+}
+
+async function saveLaneBinding() {
+  const project = activeProject();
+  if (!project || !state.config) return;
+  const codexThread = codexThreadById(state.selectedCodexThreadId);
+  const chatThread = threadById(project, state.selectedProjectChatThreadId);
+  if (!codexThread || !chatThread) {
+    setLastEvent("Select one Codex thread and one ChatGPT thread before linking.");
+    return;
+  }
+  const lane = THREAD_ROLES.includes(els.bindingLaneInput.value) ? els.bindingLaneInput.value : "custom";
+  const label = els.bindingLabelInput.value.trim() || `${roleLabel(lane)} lane`;
+  const now = nowIso();
+  let bindings = laneBindings(project).slice();
+  const bindingId = state.selectedBindingId || createId("binding");
+  const nextBinding = {
+    id: bindingId,
+    lane,
+    label,
+    codexThreadRef: {
+      threadId: codexThread.threadId,
+      originator: codexThread.originator || "",
+      titleSnapshot: codexThread.title || "",
+      cwdSnapshot: codexThread.cwd || "",
+    },
+    chatThreadId: chatThread.id,
+    isDefaultForLane: els.bindingDefaultLaneInput.checked,
+    openOnProjectActivate: els.bindingOpenOnProjectInput.checked,
+    lastActivatedAt: now,
+    status: "resolved",
+    createdAt: laneBindingById(project, bindingId)?.createdAt || now,
+    updatedAt: now,
+  };
+  bindings = bindings.filter((binding) => binding.id !== bindingId);
+  if (nextBinding.isDefaultForLane) {
+    bindings = bindings.map((binding) => binding.lane === lane ? { ...binding, isDefaultForLane: false } : binding);
+  }
+  if (nextBinding.openOnProjectActivate) {
+    bindings = bindings.map((binding) => ({ ...binding, openOnProjectActivate: false }));
+  }
+  bindings.unshift(nextBinding);
+  const updatedProject = {
+    ...project,
+    laneBindings: bindings,
+    lastActiveBindingId: bindingId,
+    updatedAt: now,
+  };
+  await saveConfig({ ...state.config, projects: state.config.projects.map((item) => (item.id === project.id ? updatedProject : item)) });
+  state.selectedBindingId = bindingId;
+  renderThreadsWorkbench();
+  setLastEvent(`Saved lane binding: ${label}.`);
 }
 
 async function copyActivePrompt() {
@@ -1449,6 +1745,8 @@ async function previewFile(relPath, row) {
 }
 
 function bindEvents() {
+  els.overviewTabButton.addEventListener("click", () => setMiddleTab("overview"));
+  els.threadsTabButton.addEventListener("click", () => setMiddleTab("threads"));
   els.addProjectButton.addEventListener("click", () => openDrawer("new"));
   els.editProjectButton.addEventListener("click", () => openDrawer("edit"));
   els.closeDrawerButton.addEventListener("click", closeDrawer);
@@ -1465,6 +1763,18 @@ function bindEvents() {
   els.closeThreadDrawerButton.addEventListener("click", closeThreadDrawer);
   els.cancelThreadButton.addEventListener("click", closeThreadDrawer);
   els.deleteThreadButton.addEventListener("click", deleteThreadFromDrawer);
+  els.openThreadAttachButton.addEventListener("click", () => {
+    const project = activeProject();
+    const selected = threadById(project, state.selectedProjectChatThreadId);
+    openThreadDrawer(selected ? "edit" : "new", selected?.id || "");
+  });
+  els.refreshCodexThreadsButton.addEventListener("click", loadCodexThreads);
+  els.newBindingButton.addEventListener("click", () => {
+    state.selectedBindingId = "";
+    resetBindingEditor();
+    renderThreadsWorkbench();
+  });
+  els.saveBindingButton.addEventListener("click", saveLaneBinding);
   els.threadRoleInput.addEventListener("change", () => {
     if (els.threadRoleInput.value !== "review") els.threadPrimaryInput.checked = false;
   });

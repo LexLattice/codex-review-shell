@@ -12,6 +12,7 @@
 
 const fs = require("node:fs/promises");
 const fsSync = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline");
 const { spawn } = require("node:child_process");
@@ -24,6 +25,7 @@ const COMMAND_OUTPUT_LIMIT_BYTES = 256 * 1024;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
 const MATCH_SCAN_LIMIT = 240;
 const MATCH_WALK_LIMIT = 8000;
+const CODEX_THREAD_LIMIT = 120;
 
 const SKIPPED_DIR_NAMES = new Set([
   ".git",
@@ -396,6 +398,165 @@ async function watchStatus() {
   };
 }
 
+async function pathExists(target) {
+  try {
+    await fs.access(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveCodexHome(params = {}) {
+  const requestedHomes = Array.isArray(params.homePaths)
+    ? params.homePaths.filter((item) => typeof item === "string" && item.trim()).map((item) => path.resolve(item))
+    : [];
+  const candidates = requestedHomes.length
+    ? requestedHomes
+    : [path.join(os.homedir(), ".codex"), path.join(os.homedir(), ".codex-custom")];
+  for (const candidate of candidates) {
+    if (await pathExists(path.join(candidate, "session_index.jsonl"))) return candidate;
+  }
+  return candidates[0];
+}
+
+async function walkJsonlFiles(rootDir, onFile) {
+  const stack = [rootDir];
+  while (stack.length) {
+    const current = stack.pop();
+    let dirents;
+    try {
+      dirents = await fs.readdir(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const dirent of dirents) {
+      const fullPath = path.join(current, dirent.name);
+      if (dirent.isDirectory()) {
+        stack.push(fullPath);
+        continue;
+      }
+      if (dirent.isFile() && dirent.name.endsWith(".jsonl")) {
+        const shouldStop = await onFile(fullPath);
+        if (shouldStop) return;
+      }
+    }
+  }
+}
+
+async function readJsonlFirstLine(fullPath) {
+  const handle = await fs.open(fullPath, "r");
+  try {
+    const chunkSize = 16 * 1024;
+    const maxBytes = 512 * 1024;
+    const parts = [];
+    let position = 0;
+    let totalBytes = 0;
+
+    while (totalBytes < maxBytes) {
+      const chunk = Buffer.alloc(chunkSize);
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, position);
+      if (!bytesRead) break;
+      const slice = chunk.subarray(0, bytesRead);
+      const newline = slice.indexOf(10);
+      if (newline >= 0) {
+        parts.push(slice.subarray(0, newline));
+        break;
+      }
+      parts.push(slice);
+      position += bytesRead;
+      totalBytes += bytesRead;
+    }
+
+    return Buffer.concat(parts).toString("utf8").trim();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function listCodexThreads(params = {}) {
+  const limit = Number.isFinite(Number(params.limit))
+    ? Math.max(1, Math.min(Number(params.limit), 300))
+    : CODEX_THREAD_LIMIT;
+  const originators = new Set(
+    (Array.isArray(params.originators) ? params.originators : [])
+      .filter((item) => typeof item === "string" && item.trim())
+      .map((item) => item.trim()),
+  );
+  const codexHome = await resolveCodexHome(params);
+  const sessionIndexPath = path.join(codexHome, "session_index.jsonl");
+  const sessionsRoot = path.join(codexHome, "sessions");
+  const rawIndex = await fs.readFile(sessionIndexPath, "utf8");
+  const rows = rawIndex
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean)
+    .slice(-limit)
+    .reverse();
+  const wantedIds = new Set(rows.map((row) => String(row.id || "")).filter(Boolean));
+  const metadataById = new Map();
+  await walkJsonlFiles(sessionsRoot, async (fullPath) => {
+    if (metadataById.size >= wantedIds.size) return true;
+    let line;
+    try {
+      line = await readJsonlFirstLine(fullPath);
+    } catch {
+      return false;
+    }
+    if (!line) return false;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      return false;
+    }
+    const payload = entry?.payload || {};
+    const sessionId = String(payload.id || "");
+    if (!wantedIds.has(sessionId) || metadataById.has(sessionId)) return false;
+    metadataById.set(sessionId, {
+      sessionId,
+      cwd: String(payload.cwd || ""),
+      originator: String(payload.originator || "unknown"),
+      filePath: fullPath,
+      createdAt: String(payload.timestamp || entry.timestamp || ""),
+    });
+    return metadataById.size >= wantedIds.size;
+  });
+
+  const entries = [];
+  for (const row of rows) {
+    const sessionId = String(row.id || "");
+    const meta = metadataById.get(sessionId) || {};
+    const originator = String(meta.originator || "unknown");
+    if (originators.size && !originators.has(originator)) continue;
+    entries.push({
+      threadId: sessionId,
+      title: String(row.thread_name || "Untitled Codex thread"),
+      updatedAt: String(row.updated_at || ""),
+      cwd: String(meta.cwd || ""),
+      originator,
+      sessionFilePath: String(meta.filePath || ""),
+      createdAt: String(meta.createdAt || ""),
+      sourceHome: codexHome,
+    });
+  }
+
+  return {
+    root,
+    source: workspaceKind,
+    codexHome,
+    entries,
+    limit,
+  };
+}
+
 async function handleRequest(method, params = {}) {
   if (method === "hello") {
     const stat = await fs.stat(root);
@@ -417,6 +578,7 @@ async function handleRequest(method, params = {}) {
         listMatchingFiles: true,
         resolvePath: true,
         watchScaffold: true,
+        listCodexThreads: true,
       },
     };
   }
@@ -426,6 +588,7 @@ async function handleRequest(method, params = {}) {
   if (method === "resolvePath") return resolvePathPreview(params);
   if (method === "runCommand") return runCommand(params);
   if (method === "watchStatus") return watchStatus(params);
+  if (method === "listCodexThreads") return listCodexThreads(params);
   throw new Error(`Unknown workspace-agent method: ${method}`);
 }
 

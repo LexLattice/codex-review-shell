@@ -57,145 +57,225 @@
           <p id="activeThreadStatus" class="pill">No active ChatGPT thread</p>
         </section>
 
-        <section class="control-grid compact-actions">
-          <button class="primary" id="addProjectButton" type="button">New project</button>
-          <button class="ghost" id="editProjectButton" type="button">Edit project</button>
-        </section>
+        <nav class="middle-tabs" aria-label="Middle plane views">
+          <button class="middle-tab active" id="overviewTabButton" data-tab="overview" type="button">Overview</button>
+          <button class="middle-tab" id="threadsTabButton" data-tab="threads" type="button">Threads</button>
+        </nav>
 
-        <section class="control-card projects-card">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Project tree</p>
-              <h3>Workspace bindings</h3>
-            </div>
-            <span id="projectCount" class="counter">0</span>
-          </div>
-          <div class="project-list" id="projectList"></div>
-        </section>
+        <section class="middle-tab-panel active" id="overviewTabPanel" data-tab-panel="overview">
+          <section class="control-grid compact-actions">
+            <button class="primary" id="addProjectButton" type="button">New project</button>
+            <button class="ghost" id="editProjectButton" type="button">Edit project</button>
+          </section>
 
-        <section class="control-card thread-card">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">ChatGPT thread deck</p>
-              <h3>Project-bound deliberation threads</h3>
-            </div>
-            <div class="heading-actions">
-              <span id="threadCount" class="counter">0</span>
-              <button class="ghost small" id="addThreadButton" type="button">Add</button>
-            </div>
-          </div>
-          <div class="thread-deck" id="threadDeck"></div>
-        </section>
-
-        <section class="control-card prompt-card">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Role-aware prompt</p>
-              <h3 id="promptRoleLabel">Active thread prompt</h3>
-            </div>
-            <button class="ghost small" id="copyPromptButton" type="button">Copy prompt</button>
-          </div>
-          <pre id="activePromptPreview" class="prompt-preview">—</pre>
-        </section>
-
-        <section class="control-card relay-card">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Relay controls</p>
-              <h3>Manual handoff accelerators</h3>
-            </div>
-          </div>
-          <label class="compact-label">
-            Handoff target thread
-            <select id="handoffTargetThreadSelect"></select>
-          </label>
-          <div class="button-grid">
-            <button class="primary" id="stageSelectedFileButton" type="button">Stage selected file</button>
-            <button class="ghost" id="stageTextReviewButton" type="button">Stage text review</button>
-            <button class="ghost" id="stageArchitectureQuestionButton" type="button">Stage architecture question</button>
-            <button class="ghost" id="stageResearchQuestionButton" type="button">Stage research question</button>
-            <button class="ghost" id="copyHeaderButton" type="button">Copy return header</button>
-            <button class="ghost" id="reloadCodexButton" type="button">Reload Codex</button>
-            <button class="ghost" id="reloadChatButton" type="button">Reload ChatGPT</button>
-            <button class="ghost" id="forceDarkButton" type="button">Force ChatGPT dark</button>
-            <button class="ghost" id="chatSettingsButton" type="button">ChatGPT settings</button>
-            <button class="ghost span-2" id="externalChatButton" type="button">Open ChatGPT externally</button>
-          </div>
-        </section>
-
-        <section class="control-card handoff-card">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Handoff queue</p>
-              <h3>Visible workflow spine</h3>
-            </div>
-            <span id="handoffCount" class="counter">0</span>
-          </div>
-          <div class="handoff-list" id="handoffQueue"></div>
-        </section>
-
-        <section class="control-card watched-card">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Watched artifacts</p>
-              <h3>Review files from workspace backend</h3>
-            </div>
-            <div class="heading-actions">
-              <span id="watchedCount" class="counter">0</span>
-              <button class="ghost small" id="refreshWatchedButton" type="button">Scan</button>
-            </div>
-          </div>
-          <div class="artifact-list" id="watchedArtifactList"></div>
-        </section>
-
-        <section class="control-card flow-card">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">FlowProfile</p>
-              <h3>Loop metadata</h3>
-            </div>
-          </div>
-          <dl class="flow-list">
-            <div>
-              <dt>Watched rules</dt>
-              <dd id="watchedRulesPreview" class="mono">—</dd>
-            </div>
-            <div>
-              <dt>Return header</dt>
-              <dd id="returnHeaderPreview" class="mono">—</dd>
-            </div>
-          </dl>
-        </section>
-
-        <section class="control-card work-card">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Work tree</p>
-              <h3>Repo files + preview</h3>
-            </div>
-            <div class="heading-actions">
-              <button class="ghost small" id="stagePreviewButton" type="button">Stage preview</button>
-              <button class="ghost small" id="refreshWorkTreeButton" type="button">Refresh</button>
-            </div>
-          </div>
-          <div class="work-tool">
-            <div class="work-tree" id="workTree" role="tree" aria-label="Project work tree">
-              <div class="empty-state">Select a project to load its workspace tree.</div>
-            </div>
-            <div class="file-preview">
-              <div class="preview-header">
-                <span id="previewPath" class="mono truncate">No file selected</span>
-                <span id="previewMeta" class="muted">—</span>
+          <section class="control-card projects-card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Project tree</p>
+                <h3>Workspace bindings</h3>
               </div>
-              <pre id="filePreview"><code>Select a text/code file from the work tree.</code></pre>
+              <span id="projectCount" class="counter">0</span>
             </div>
-          </div>
+            <div class="project-list" id="projectList"></div>
+          </section>
+
+          <section class="control-card thread-card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">ChatGPT thread deck</p>
+                <h3>Project-bound deliberation threads</h3>
+              </div>
+              <div class="heading-actions">
+                <span id="threadCount" class="counter">0</span>
+                <button class="ghost small" id="addThreadButton" type="button">Add</button>
+              </div>
+            </div>
+            <div class="thread-deck" id="threadDeck"></div>
+          </section>
+
+          <section class="control-card prompt-card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Role-aware prompt</p>
+                <h3 id="promptRoleLabel">Active thread prompt</h3>
+              </div>
+              <button class="ghost small" id="copyPromptButton" type="button">Copy prompt</button>
+            </div>
+            <pre id="activePromptPreview" class="prompt-preview">—</pre>
+          </section>
+
+          <section class="control-card relay-card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Relay controls</p>
+                <h3>Manual handoff accelerators</h3>
+              </div>
+            </div>
+            <label class="compact-label">
+              Handoff target thread
+              <select id="handoffTargetThreadSelect"></select>
+            </label>
+            <div class="button-grid">
+              <button class="primary" id="stageSelectedFileButton" type="button">Stage selected file</button>
+              <button class="ghost" id="stageTextReviewButton" type="button">Stage text review</button>
+              <button class="ghost" id="stageArchitectureQuestionButton" type="button">Stage architecture question</button>
+              <button class="ghost" id="stageResearchQuestionButton" type="button">Stage research question</button>
+              <button class="ghost" id="copyHeaderButton" type="button">Copy return header</button>
+              <button class="ghost" id="reloadCodexButton" type="button">Reload Codex</button>
+              <button class="ghost" id="reloadChatButton" type="button">Reload ChatGPT</button>
+              <button class="ghost" id="forceDarkButton" type="button">Force ChatGPT dark</button>
+              <button class="ghost" id="chatSettingsButton" type="button">ChatGPT settings</button>
+              <button class="ghost span-2" id="externalChatButton" type="button">Open ChatGPT externally</button>
+            </div>
+          </section>
+
+          <section class="control-card handoff-card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Handoff queue</p>
+                <h3>Visible workflow spine</h3>
+              </div>
+              <span id="handoffCount" class="counter">0</span>
+            </div>
+            <div class="handoff-list" id="handoffQueue"></div>
+          </section>
+
+          <section class="control-card watched-card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Watched artifacts</p>
+                <h3>Review files from workspace backend</h3>
+              </div>
+              <div class="heading-actions">
+                <span id="watchedCount" class="counter">0</span>
+                <button class="ghost small" id="refreshWatchedButton" type="button">Scan</button>
+              </div>
+            </div>
+            <div class="artifact-list" id="watchedArtifactList"></div>
+          </section>
+
+          <section class="control-card flow-card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">FlowProfile</p>
+                <h3>Loop metadata</h3>
+              </div>
+            </div>
+            <dl class="flow-list">
+              <div>
+                <dt>Watched rules</dt>
+                <dd id="watchedRulesPreview" class="mono">—</dd>
+              </div>
+              <div>
+                <dt>Return header</dt>
+                <dd id="returnHeaderPreview" class="mono">—</dd>
+              </div>
+            </dl>
+          </section>
+
+          <section class="control-card work-card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Work tree</p>
+                <h3>Repo files + preview</h3>
+              </div>
+              <div class="heading-actions">
+                <button class="ghost small" id="stagePreviewButton" type="button">Stage preview</button>
+                <button class="ghost small" id="refreshWorkTreeButton" type="button">Refresh</button>
+              </div>
+            </div>
+            <div class="work-tool">
+              <div class="work-tree" id="workTree" role="tree" aria-label="Project work tree">
+                <div class="empty-state">Select a project to load its workspace tree.</div>
+              </div>
+              <div class="file-preview">
+                <div class="preview-header">
+                  <span id="previewPath" class="mono truncate">No file selected</span>
+                  <span id="previewMeta" class="muted">—</span>
+                </div>
+                <pre id="filePreview"><code>Select a text/code file from the work tree.</code></pre>
+              </div>
+            </div>
+          </section>
+
+          <footer class="config-footer">
+            <p class="label">Config</p>
+            <p id="configPath" class="mono muted truncate">Loading…</p>
+          </footer>
         </section>
 
-        <footer class="config-footer">
-          <p class="label">Config</p>
-          <p id="configPath" class="mono muted truncate">Loading…</p>
-        </footer>
+        <section class="middle-tab-panel" id="threadsTabPanel" data-tab-panel="threads" hidden>
+          <section class="control-card threads-workbench-card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Threads workbench</p>
+                <h3>Lane bindings</h3>
+              </div>
+              <button class="ghost small" id="refreshCodexThreadsButton" type="button">Refresh Codex</button>
+            </div>
+            <div class="threads-lane-editor">
+              <label>
+                Lane
+                <select id="bindingLaneInput">
+                  <option value="review">Review</option>
+                  <option value="brainstorming">Brainstorming</option>
+                  <option value="architecture">Architecture</option>
+                  <option value="research">Research</option>
+                  <option value="debugging">Debugging</option>
+                  <option value="planning">Planning</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </label>
+              <label>
+                Binding label
+                <input id="bindingLabelInput" autocomplete="off" placeholder="Module A review" />
+              </label>
+              <label class="checkbox-row">
+                <input id="bindingDefaultLaneInput" type="checkbox" />
+                <span>Default for lane</span>
+              </label>
+              <label class="checkbox-row">
+                <input id="bindingOpenOnProjectInput" type="checkbox" />
+                <span>Open on project activate</span>
+              </label>
+            </div>
+            <div class="threads-action-bar">
+              <p id="threadLinkHint" class="muted">Select one Codex thread and one ChatGPT thread, then create or update a lane binding.</p>
+              <div class="heading-actions">
+                <button class="ghost small" id="newBindingButton" type="button">New binding</button>
+                <button class="primary small" id="saveBindingButton" type="button">Link selected threads</button>
+              </div>
+            </div>
+            <div class="binding-list" id="laneBindingList"></div>
+          </section>
+
+          <section class="threads-split" aria-label="Threads linking workbench">
+            <section class="control-card thread-source-card">
+              <div class="section-heading">
+                <div>
+                  <p class="eyebrow">Codex threads</p>
+                  <h3>External implementation threads</h3>
+                </div>
+                <span id="codexThreadCount" class="counter">0</span>
+              </div>
+              <div class="thread-browser-list codex-thread-list" id="codexThreadList"></div>
+            </section>
+
+            <section class="control-card thread-source-card">
+              <div class="section-heading">
+                <div>
+                  <p class="eyebrow">ChatGPT threads</p>
+                  <h3>Project-attached deliberation threads</h3>
+                </div>
+                <div class="heading-actions">
+                  <span id="projectChatThreadCount" class="counter">0</span>
+                  <button class="ghost small" id="openThreadAttachButton" type="button">Attach / edit</button>
+                </div>
+              </div>
+              <div class="thread-browser-list project-chat-thread-list" id="projectChatThreadList"></div>
+            </section>
+          </section>
+        </section>
       </main>
 
       <div class="splitter right-splitter" id="rightSplitter" title="Drag to resize control/ChatGPT planes"></div>
