@@ -578,6 +578,112 @@ button:active {
   min-height: 360px;
 }
 
+.analytics-card {
+  min-height: 0;
+}
+
+.analytics-split {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.7fr) minmax(0, 1.3fr);
+  gap: 10px;
+  min-height: clamp(320px, 50vh, 700px);
+}
+
+.analytics-thread-list,
+.analytics-dashboard {
+  min-height: 0;
+}
+
+.analytics-dashboard {
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: rgba(5, 7, 11, 0.42);
+  padding: 10px;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.analytics-summary-strip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.analytics-metric-card {
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 8px;
+  display: grid;
+  gap: 4px;
+}
+
+.analytics-metric-card .metric-key {
+  color: var(--muted-2);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-weight: 800;
+}
+
+.analytics-metric-card .metric-value {
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.analytics-metric-card .metric-evidence {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.analytics-chart {
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 8px;
+  display: grid;
+  gap: 6px;
+}
+
+.analytics-chart h4 {
+  margin: 0;
+  font-size: 12px;
+}
+
+.analytics-bars {
+  display: grid;
+  gap: 5px;
+}
+
+.analytics-bar-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 0.5fr) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+}
+
+.analytics-bar {
+  position: relative;
+  height: 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(141, 180, 255, 0.2);
+  background: rgba(141, 180, 255, 0.08);
+  overflow: hidden;
+}
+
+.analytics-bar-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(141, 180, 255, 0.75), rgba(111, 224, 255, 0.68));
+}
+
 .thread-browser-list {
   display: grid;
   gap: 8px;
@@ -906,6 +1012,7 @@ body.dragging {
   .form-grid,
   .threads-lane-editor,
   .threads-split,
+  .analytics-split,
   .thread-source-tabs {
     grid-template-columns: 1fr;
   }
@@ -923,6 +1030,10 @@ body.dragging {
     width: 100%;
     justify-content: flex-start;
     flex-wrap: wrap;
+  }
+
+  .analytics-summary-strip {
+    grid-template-columns: 1fr;
   }
 }
 

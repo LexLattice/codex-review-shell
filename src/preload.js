@@ -14,6 +14,12 @@ contextBridge.exposeInMainWorld("workspaceShell", {
   readProjectFile: (projectId, relPath) => ipcRenderer.invoke("worktree:read-file", { projectId, relPath }),
   listWatchedArtifacts: (projectId) => ipcRenderer.invoke("worktree:list-watched", { projectId }),
   listCodexThreads: (projectId) => ipcRenderer.invoke("codex-threads:list", { projectId }),
+  listThreadAnalytics: (projectId, options = {}) =>
+    ipcRenderer.invoke("thread-analytics:list", { projectId, limit: options?.limit }),
+  updateThreadAnalytics: (projectId, options = {}) =>
+    ipcRenderer.invoke("thread-analytics:update", { projectId, scope: options?.scope || "project" }),
+  getThreadAnalytics: (projectId, threadKey) =>
+    ipcRenderer.invoke("thread-analytics:detail", { projectId, threadKey }),
   selectCodexThread: (projectId, threadId, sourceHome = "", sessionFilePath = "") =>
     ipcRenderer.invoke("codex:select-thread", { projectId, threadId, sourceHome, sessionFilePath }),
   listCachedChatgptRecentThreads: (limit) => ipcRenderer.invoke("chatgpt:cached-threads", { limit }),
