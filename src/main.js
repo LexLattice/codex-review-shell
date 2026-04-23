@@ -69,6 +69,36 @@ function chatgptThreadCachePath() {
   return path.join(app.getPath("userData"), CHATGPT_THREAD_CACHE_FILE_NAME);
 }
 
+function tempFilePath(targetPath) {
+  return `${targetPath}.${process.pid}.${Date.now()}.${crypto.randomUUID().slice(0, 8)}.tmp`;
+}
+
+async function writeTextAtomic(targetPath, text) {
+  const directory = path.dirname(targetPath);
+  const tempPath = tempFilePath(targetPath);
+  try {
+    await fs.mkdir(directory, { recursive: true });
+    await fs.writeFile(tempPath, text, "utf8");
+    await fs.rename(tempPath, targetPath);
+  } catch (error) {
+    try {
+      await fs.unlink(tempPath);
+    } catch {}
+    throw error;
+  }
+}
+
+async function preserveMalformedJson(targetPath, rawContents, reason = "parse-error") {
+  try {
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const backupPath = `${targetPath}.bad.${stamp}.${reason}.json`;
+    await writeTextAtomic(backupPath, typeof rawContents === "string" ? rawContents : String(rawContents || ""));
+    return backupPath;
+  } catch {
+    return "";
+  }
+}
+
 function normalizeLinuxPathValue(value, fallback = "/home") {
   const text = (typeof value === "string" && value.trim() ? value.trim() : fallback).replace(/\\/g, "/");
   return text.startsWith("/") ? text : `/${text}`;
@@ -342,6 +372,7 @@ const HANDOFF_STATUSES = new Set([
   "response-captured",
   "pasted-back",
   "dismissed",
+  "orphaned",
 ]);
 
 function defaultPromptTemplateText(role) {
@@ -383,10 +414,26 @@ function normalizeRole(value, fallback = "custom") {
   return CHAT_THREAD_ROLES.has(candidate) ? candidate : fallback;
 }
 
+function isAllowedChatgptHost(hostname) {
+  const host = String(hostname || "").toLowerCase();
+  return (
+    host === "chatgpt.com" ||
+    host === "www.chatgpt.com" ||
+    host === "chat.openai.com" ||
+    host === "www.chat.openai.com"
+  );
+}
+
+function allowNonChatgptUrls() {
+  const raw = typeof process !== "undefined" ? process.env.CODEX_REVIEW_SHELL_ALLOW_NON_CHATGPT_URLS : "";
+  return /^(1|true|yes)$/i.test(String(raw || "").trim());
+}
+
 function safeChatgptUrl(value, fallback = "https://chatgpt.com/") {
   try {
     const parsed = new URL(normalizeString(value, fallback));
     if (parsed.protocol !== "https:") return fallback;
+    if (!allowNonChatgptUrls() && !isAllowedChatgptHost(parsed.hostname)) return fallback;
     return parsed.toString();
   } catch {
     return fallback;
@@ -562,7 +609,9 @@ function normalizeHandoffs(rawHandoffs, projectId, threadIds) {
   return rawHandoffs
     .filter(isPlainObject)
     .map((raw) => {
-      const targetThreadId = threadIds.has(raw.targetThreadId) ? raw.targetThreadId : "";
+      const hasTarget = threadIds.has(raw.targetThreadId);
+      const targetThreadId = hasTarget ? raw.targetThreadId : "";
+      const normalizedStatus = HANDOFF_STATUSES.has(raw.status) ? raw.status : "staged";
       return {
         id: normalizeString(raw.id, newId("handoff")),
         projectId,
@@ -572,12 +621,12 @@ function normalizeHandoffs(rawHandoffs, projectId, threadIds) {
         fileRelPath: normalizeString(raw.fileRelPath, ""),
         title: normalizeString(raw.title, "Untitled handoff"),
         promptText: normalizeString(raw.promptText, ""),
-        status: HANDOFF_STATUSES.has(raw.status) ? raw.status : "staged",
+        status: hasTarget ? normalizedStatus : "orphaned",
         createdAt: normalizeString(raw.createdAt, now),
         updatedAt: normalizeString(raw.updatedAt, now),
       };
     })
-    .filter((item) => item.targetThreadId && item.promptText);
+    .filter((item) => item.promptText);
 }
 
 function parseWslUncPath(value) {
@@ -776,42 +825,61 @@ function normalizeConfig(input) {
 
 async function loadConfig() {
   if (configCache) return configCache;
+  const targetPath = configPath();
   try {
-    const raw = await fs.readFile(configPath(), "utf8");
-    configCache = normalizeConfig(JSON.parse(raw));
-    return configCache;
-  } catch {
-    configCache = normalizeConfig(defaultConfig());
-    await saveConfig(configCache);
-    return configCache;
+    const raw = await fs.readFile(targetPath, "utf8");
+    try {
+      configCache = normalizeConfig(JSON.parse(raw));
+      return configCache;
+    } catch {
+      await preserveMalformedJson(targetPath, raw, "json-parse");
+      configCache = normalizeConfig(defaultConfig());
+      await saveConfig(configCache);
+      return configCache;
+    }
+  } catch (error) {
+    if (error && error.code === "ENOENT") {
+      configCache = normalizeConfig(defaultConfig());
+      await saveConfig(configCache);
+      return configCache;
+    }
+    throw error;
   }
 }
 
 async function saveConfig(nextConfig) {
   const normalized = normalizeConfig(nextConfig);
   configCache = normalized;
-  await fs.mkdir(path.dirname(configPath()), { recursive: true });
-  await fs.writeFile(configPath(), `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+  await writeTextAtomic(configPath(), `${JSON.stringify(normalized, null, 2)}\n`);
   return normalized;
 }
 
 async function loadChatgptThreadCache() {
   if (chatgptThreadCache) return chatgptThreadCache;
+  const targetPath = chatgptThreadCachePath();
   try {
-    const raw = await fs.readFile(chatgptThreadCachePath(), "utf8");
-    chatgptThreadCache = normalizeChatgptThreadCache(JSON.parse(raw));
-    return chatgptThreadCache;
-  } catch {
-    chatgptThreadCache = normalizeChatgptThreadCache({ entries: [] });
-    return chatgptThreadCache;
+    const raw = await fs.readFile(targetPath, "utf8");
+    try {
+      chatgptThreadCache = normalizeChatgptThreadCache(JSON.parse(raw));
+      return chatgptThreadCache;
+    } catch {
+      await preserveMalformedJson(targetPath, raw, "json-parse");
+      chatgptThreadCache = normalizeChatgptThreadCache({ entries: [] });
+      return chatgptThreadCache;
+    }
+  } catch (error) {
+    if (error && error.code === "ENOENT") {
+      chatgptThreadCache = normalizeChatgptThreadCache({ entries: [] });
+      return chatgptThreadCache;
+    }
+    throw error;
   }
 }
 
 async function saveChatgptThreadCache(nextCache) {
   const normalized = normalizeChatgptThreadCache(nextCache);
   chatgptThreadCache = normalized;
-  await fs.mkdir(path.dirname(chatgptThreadCachePath()), { recursive: true });
-  await fs.writeFile(chatgptThreadCachePath(), `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+  await writeTextAtomic(chatgptThreadCachePath(), `${JSON.stringify(normalized, null, 2)}\n`);
   return normalized;
 }
 
@@ -1926,15 +1994,23 @@ async function revealProjectFile(projectId, relPath) {
   const project = await getProjectById(projectId);
   const result = await requestWorkspace(project, "resolvePath", { relPath }, 10_000);
   if (project.workspace?.kind === "local" && result.absolutePath) {
-    shell.showItemInFolder(result.absolutePath);
-    return { ...result, opened: true, method: "local-show-item" };
+    try {
+      shell.showItemInFolder(result.absolutePath);
+      return { ...result, opened: true, method: "local-show-item" };
+    } catch {
+      await clipboard.writeText(result.absolutePath);
+      return { ...result, opened: false, method: "copied-path" };
+    }
   }
   if (project.workspace?.kind === "wsl" && process.platform === "win32") {
     const distro = project.workspace.distro || "Ubuntu";
     const linuxPath = `${project.workspace.linuxPath.replace(/\/$/, "")}/${String(relPath || "").replace(/^\/+/, "")}`;
     const unc = `\\\\wsl$\\${distro}${linuxPath.split("/").join("\\")}`;
-    shell.showItemInFolder(unc);
-    return { ...result, opened: true, method: "wsl-unc-fallback", uncPath: unc };
+    try {
+      shell.showItemInFolder(unc);
+    } catch {}
+    await clipboard.writeText(unc);
+    return { ...result, opened: true, method: "wsl-unc-fallback", uncPath: unc, copiedPath: true };
   }
   await clipboard.writeText(result.absolutePath || relPath || "");
   return { ...result, opened: false, method: "copied-path" };
@@ -2277,6 +2353,7 @@ ipcMain.handle("config:load", async () => {
     platform: process.platform,
     defaultWorkspace,
     defaultCodexRuntime: defaultCodexRuntimeForWorkspace(defaultWorkspace),
+    allowNonChatgptUrls: allowNonChatgptUrls(),
   };
 });
 

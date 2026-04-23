@@ -17,6 +17,7 @@ const sandbox = {
   crypto,
   path,
   URL,
+  process,
   repoRoot: appRoot,
 };
 vm.createContext(sandbox);
