@@ -33,6 +33,7 @@ const state = {
   platform: "",
   defaultWorkspace: null,
   defaultCodexRuntime: "auto",
+  allowNonChatgptUrls: false,
   activeMiddleTab: "overview",
   surfaceEvents: {
     codex: { type: "idle" },
@@ -1438,7 +1439,7 @@ function normalizeHttpsUrl(value) {
   try {
     const url = new URL(text);
     if (url.protocol !== "https:") return "https://chatgpt.com/";
-    if (!CHATGPT_ALLOWED_HOSTS.has(url.hostname.toLowerCase())) return "https://chatgpt.com/";
+    if (!state.allowNonChatgptUrls && !CHATGPT_ALLOWED_HOSTS.has(url.hostname.toLowerCase())) return "https://chatgpt.com/";
     return url.toString();
   } catch {
     return "https://chatgpt.com/";
@@ -1874,18 +1875,22 @@ async function stageFileHandoff(relPath = state.selectedFileRelPath, targetThrea
     setLastEvent("Select a file before staging a file review handoff.");
     return;
   }
+  const snapshot = projectRequestSnapshot(project.id);
   let preview = state.selectedFilePreview && state.selectedFilePreview.relPath === relPath ? state.selectedFilePreview : null;
   if (!preview) {
     try {
-      preview = await bridge.readProjectFile(project.id, relPath);
+      preview = await bridge.readProjectFile(snapshot.projectId, relPath);
+      if (isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
       state.selectedFilePreview = preview;
       state.selectedFileRelPath = preview.relPath;
     } catch (error) {
+      if (isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
       state.selectedFilePreview = null;
       setLastEvent(`Unable to read file for handoff: ${error.message}`);
       return;
     }
   }
+  if (isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
   const thread = threadById(project, targetThreadId) || targetThreadForKind("file-review");
   if (!thread) return;
   const prompt = interpolatePrompt(templateForThread(project, thread), {
@@ -2342,6 +2347,7 @@ async function init() {
   state.platform = result.platform || "";
   state.defaultWorkspace = result.defaultWorkspace || null;
   state.defaultCodexRuntime = result.defaultCodexRuntime || "auto";
+  state.allowNonChatgptUrls = Boolean(result.allowNonChatgptUrls);
   render();
   await selectProject(state.config.selectedProjectId);
   await loadChatgptRecentThreads({ refresh: false });

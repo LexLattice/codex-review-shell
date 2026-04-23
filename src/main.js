@@ -76,9 +76,16 @@ function tempFilePath(targetPath) {
 async function writeTextAtomic(targetPath, text) {
   const directory = path.dirname(targetPath);
   const tempPath = tempFilePath(targetPath);
-  await fs.mkdir(directory, { recursive: true });
-  await fs.writeFile(tempPath, text, "utf8");
-  await fs.rename(tempPath, targetPath);
+  try {
+    await fs.mkdir(directory, { recursive: true });
+    await fs.writeFile(tempPath, text, "utf8");
+    await fs.rename(tempPath, targetPath);
+  } catch (error) {
+    try {
+      await fs.unlink(tempPath);
+    } catch {}
+    throw error;
+  }
 }
 
 async function preserveMalformedJson(targetPath, rawContents, reason = "parse-error") {
@@ -2346,6 +2353,7 @@ ipcMain.handle("config:load", async () => {
     platform: process.platform,
     defaultWorkspace,
     defaultCodexRuntime: defaultCodexRuntimeForWorkspace(defaultWorkspace),
+    allowNonChatgptUrls: allowNonChatgptUrls(),
   };
 });
 
