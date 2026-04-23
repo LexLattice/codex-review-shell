@@ -135,6 +135,11 @@ Override source by setting:
 - `CODEX_REVIEW_SHELL_DEFAULT_WSL_DISTRO`
 - `CODEX_REVIEW_SHELL_DEFAULT_WSL_PATH`
 
+If your Windows checkout predates these scripts, copy these tracked files from WSL once into `C:\LexLattice\codex-review-shell`:
+
+- `start-codex-review-shell.cmd`
+- `sync-from-wsl.cmd`
+
 To attach to a WSL workspace, edit the project binding:
 
 - Workspace kind: `WSL workspace`
