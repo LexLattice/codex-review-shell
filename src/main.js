@@ -1017,7 +1017,13 @@ function chatgptRecentThreadsScript(limit = 40) {
             incoming.sourceKind === "project" || current.sourceKind === "project"
               ? "project"
               : "recent",
-          source: [current.source, incoming.source].filter(Boolean).join("+"),
+          source: Array.from(
+            new Set(
+              [current.source, incoming.source]
+                .filter(Boolean)
+                .flatMap((value) => String(value).split("+").map((part) => part.trim()).filter(Boolean))
+            )
+          ).join("+"),
         };
         return merged;
       };
@@ -1057,18 +1063,26 @@ function chatgptRecentThreadsScript(limit = 40) {
         return dedupe(items);
       };
 
-      const parseLinkEntry = (link, fallbackKind, source) => {
+      const parseLinkEntry = (link, fallbackKind, source, forcedProjectName = "") => {
         try {
           const url = new URL(link.href, origin);
           const match = url.pathname.match(/\\/c\\/([^/?#]+)/);
           if (!match) return null;
           const aria = normalizeText(link.getAttribute("aria-label"));
           const projectMatch = aria.match(/chat in project\\s+(.+)$/i);
-          const projectName = projectMatch ? normalizeText(projectMatch[1]) : "";
+          const projectName = normalizeText(forcedProjectName || (projectMatch ? projectMatch[1] : ""));
           const sourceKind = projectName ? "project" : fallbackKind;
+          let title = normalizeText(aria || link.textContent) || "Untitled ChatGPT thread";
+          if (!aria) {
+            const chatInProjectTitle = title.match(/^(.+?),\\s*chat in project\\b/i);
+            if (chatInProjectTitle) title = normalizeText(chatInProjectTitle[1]);
+          }
+          if (source === "project-iframe" && title.length > 120) {
+            title = title.slice(0, 117).trimEnd() + "...";
+          }
           return {
             externalId: match[1],
-            title: normalizeText(link.textContent) || "Untitled ChatGPT thread",
+            title,
             url: url.toString(),
             updatedAt: "",
             createdAt: "",
@@ -1084,13 +1098,51 @@ function chatgptRecentThreadsScript(limit = 40) {
         }
       };
 
-      const fromDomRoot = (root, fallbackKind, source) => {
+      const fromDomRoot = (root, fallbackKind, source, forcedProjectName = "") => {
         const items = [];
         for (const link of Array.from((root || document).querySelectorAll('a[href*="/c/"]'))) {
-          const parsed = parseLinkEntry(link, fallbackKind, source);
+          const parsed = parseLinkEntry(link, fallbackKind, source, forcedProjectName);
           if (parsed) items.push(parsed);
         }
         return dedupe(items);
+      };
+
+      const parseProjectAnchor = (link) => {
+        try {
+          const rawHref = String(link?.getAttribute("href") || "").trim();
+          if (!rawHref || !rawHref.includes("/g/g-p-") || !rawHref.includes("/project")) return null;
+          const url = new URL(rawHref, origin);
+          const match = url.pathname.match(/^\\/g\\/(g-p-[^/]+)\\/project(?:\\/)?$/i);
+          if (!match) return null;
+          const title = normalizeText(link.textContent);
+          const aria = normalizeText(link.getAttribute("aria-label"));
+          const openMatch = aria.match(/^open\\s+(.+?)\\s+project$/i);
+          const projectName = normalizeText(openMatch ? openMatch[1] : title);
+          const projectIdMatch = match[1].match(/^g-p-[0-9a-f]+/i);
+          return {
+            key: match[1].toLowerCase(),
+            projectId: projectIdMatch ? projectIdMatch[0].toLowerCase() : "",
+            url: url.toString(),
+            projectName,
+          };
+        } catch {
+          return null;
+        }
+      };
+
+      const collectProjectAnchors = () => {
+        const byKey = new Map();
+        for (const link of Array.from(document.querySelectorAll('a[href*="/g/g-p-"][href*="/project"]'))) {
+          const parsed = parseProjectAnchor(link);
+          if (!parsed || !parsed.key) continue;
+          const current = byKey.get(parsed.key);
+          if (!current) {
+            byKey.set(parsed.key, parsed);
+            continue;
+          }
+          if (!current.projectName && parsed.projectName) byKey.set(parsed.key, parsed);
+        }
+        return Array.from(byKey.values());
       };
 
       const ensureSidebarVisible = async () => {
@@ -1131,6 +1183,67 @@ function chatgptRecentThreadsScript(limit = 40) {
 
       const fromDom = () => fromDomRoot(document, "recent", "dom-fallback");
 
+      const fromProjectIframes = async () => {
+        await ensureSidebarVisible();
+        const projectAnchors = collectProjectAnchors().slice(0, 5);
+        if (!projectAnchors.length) return [];
+        const items = [];
+        for (const project of projectAnchors) {
+          const frame = document.createElement("iframe");
+          frame.style.position = "fixed";
+          frame.style.left = "-16000px";
+          frame.style.top = "0";
+          frame.style.width = "1200px";
+          frame.style.height = "900px";
+          frame.style.opacity = "0";
+          frame.style.pointerEvents = "none";
+          frame.setAttribute("aria-hidden", "true");
+          frame.src = project.url;
+          document.body.appendChild(frame);
+          await new Promise((resolve) => {
+            let done = false;
+            const finish = () => {
+              if (done) return;
+              done = true;
+              resolve();
+            };
+            frame.addEventListener("load", () => setTimeout(finish, 2600), { once: true });
+            setTimeout(finish, 9000);
+          });
+          try {
+            const doc = frame.contentDocument;
+            if (doc) {
+              const links = Array.from(doc.querySelectorAll('a[href*="/c/"]'));
+              const scopedEntries = [];
+              for (const link of links) {
+                let include = true;
+                if (project.projectId) {
+                  try {
+                    const linkUrl = new URL(link.href, origin);
+                    const pathMatch = linkUrl.pathname.match(/^\\/g\\/(g-p-[^/]+)\\/c\\/[^/?#]+/i);
+                    if (!pathMatch) {
+                      include = false;
+                    } else {
+                      const idMatch = pathMatch[1].match(/^g-p-[0-9a-f]+/i);
+                      include = Boolean(idMatch && idMatch[0].toLowerCase() === project.projectId);
+                    }
+                  } catch {
+                    include = false;
+                  }
+                }
+                if (!include) continue;
+                const parsed = parseLinkEntry(link, "project", "project-iframe", project.projectName || "");
+                if (parsed) scopedEntries.push(parsed);
+              }
+              for (const entry of scopedEntries.slice(0, 5)) items.push(entry);
+            }
+          } catch {}
+          frame.remove();
+          await sleep(120);
+        }
+        return dedupe(items);
+      };
+
       const fromBackendApi = async () => {
         try {
           const response = await fetch("/backend-api/conversations?offset=0&limit=" + limit + "&order=updated", {
@@ -1164,13 +1277,17 @@ function chatgptRecentThreadsScript(limit = 40) {
       const fetched = await fromBackendApi();
       const sidebar = await fromSidebarDom();
       const dom = fromDom();
-      const combined = dedupe([...cached, ...fetched, ...sidebar, ...dom]);
+      const baseline = dedupe([...cached, ...fetched, ...sidebar, ...dom]);
+      const baselineProjectCount = baseline.filter((entry) => entry.sourceKind === "project").length;
+      const iframeProjects = baselineProjectCount >= 3 ? [] : await fromProjectIframes();
+      const combined = dedupe([...baseline, ...iframeProjects]);
 
       const sourceParts = [];
       if (cached.length) sourceParts.push("localStorage-cache");
       if (fetched.length) sourceParts.push("backend-api");
       if (sidebar.length) sourceParts.push("sidebar-dom");
       if (dom.length) sourceParts.push("dom-fallback");
+      if (iframeProjects.length) sourceParts.push("project-iframe");
 
       return {
         source: sourceParts.length ? sourceParts.join("+") : "unavailable",

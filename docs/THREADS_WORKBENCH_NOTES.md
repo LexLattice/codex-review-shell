@@ -46,3 +46,21 @@ This note tracks concrete additions and behavior changes in the middle-plane `Th
   - open ChatGPT sidebar
   - expand the project folder you care about
   - click `Refresh recent` in the workbench
+
+## 2026-04-23 (follow-up)
+
+### 3. Added project-iframe fallback for Windows/WSL parity
+
+- Symptom observed:
+  - some sessions only returned global recents (for example 28 recents) even though project threads existed.
+  - this happened when the current page/session did not expose expanded project-folder thread links in the active DOM.
+- Added fallback in `chatgptRecentThreadsScript`:
+  - when baseline discovery finds fewer than 3 `project` entries, it now:
+    - collects sidebar project anchors (`/g/g-p-.../project`)
+    - loads project pages in hidden same-origin iframes (off-screen)
+    - extracts project-scoped thread links (`/g/g-p-.../c/...`)
+    - tags these entries as `source: project-iframe`, `sourceKind: project`
+  - per-project cap is applied to keep list size bounded.
+- Net effect:
+  - discovery no longer depends only on currently expanded sidebar state.
+  - sessions that previously showed only recents can now include project-folder threads without manual sidebar expansion.
