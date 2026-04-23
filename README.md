@@ -113,6 +113,28 @@ npm install
 npm run start
 ```
 
+## Windows + WSL mirror launcher
+
+While building, use the tracked Windows launcher scripts in this repo so the Windows checkout mirrors the WSL worktree before each run:
+
+```powershell
+cd C:\LexLattice\codex-review-shell
+.\start-codex-review-shell.cmd
+```
+
+What it does:
+
+- mirrors `\\wsl.localhost\<distro>\<path>` to the Windows repo root via `sync-from-wsl.cmd`
+- runs `npm install` on Windows after mirror
+- writes `.wsl-sync-head.txt` in the Windows repo with the mirrored WSL commit hash
+- starts Electron via `scripts/run-electron.mjs`
+
+Default source path is `/home/rose/work/LexLattice/codex-review-shell` in `Ubuntu`.
+Override source by setting:
+
+- `CODEX_REVIEW_SHELL_DEFAULT_WSL_DISTRO`
+- `CODEX_REVIEW_SHELL_DEFAULT_WSL_PATH`
+
 To attach to a WSL workspace, edit the project binding:
 
 - Workspace kind: `WSL workspace`
