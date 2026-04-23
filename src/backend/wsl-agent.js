@@ -26,6 +26,7 @@ const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
 const MATCH_SCAN_LIMIT = 240;
 const MATCH_WALK_LIMIT = 8000;
 const CODEX_THREAD_LIMIT = 120;
+const CODEX_TRANSCRIPT_ENTRY_LIMIT = 800;
 
 const SKIPPED_DIR_NAMES = new Set([
   ".git",
@@ -407,17 +408,461 @@ async function pathExists(target) {
   }
 }
 
-async function resolveCodexHome(params = {}) {
+async function defaultCodexHomeCandidates() {
+  const primary = path.join(os.homedir(), ".codex");
+  const legacy = path.join(os.homedir(), ".codex-custom");
+  const candidates = [await pathExists(path.join(primary, "session_index.jsonl")) ? primary : legacy];
+  const windowsUsersRoot = "/mnt/c/Users";
+  try {
+    const userDirs = await fs.readdir(windowsUsersRoot, { withFileTypes: true });
+    for (const dirent of userDirs) {
+      if (!dirent.isDirectory()) continue;
+      const candidate = path.join(windowsUsersRoot, dirent.name, ".codex");
+      if (await pathExists(path.join(candidate, "session_index.jsonl"))) candidates.push(candidate);
+    }
+  } catch {
+    // Non-WSL environments won't expose /mnt/c. Ignore silently.
+  }
+  return candidates;
+}
+
+async function resolveCodexHomes(params = {}) {
   const requestedHomes = Array.isArray(params.homePaths)
     ? params.homePaths.filter((item) => typeof item === "string" && item.trim()).map((item) => path.resolve(item))
     : [];
-  const candidates = requestedHomes.length
-    ? requestedHomes
-    : [path.join(os.homedir(), ".codex"), path.join(os.homedir(), ".codex-custom")];
-  for (const candidate of candidates) {
-    if (await pathExists(path.join(candidate, "session_index.jsonl"))) return candidate;
+  const candidates = requestedHomes.length ? requestedHomes : await defaultCodexHomeCandidates();
+  const dedupedCandidates = Array.from(new Set(candidates));
+  const resolved = [];
+  for (const candidate of dedupedCandidates) {
+    if (await pathExists(path.join(candidate, "session_index.jsonl"))) resolved.push(candidate);
   }
-  return candidates[0];
+  return resolved.length ? resolved : dedupedCandidates.slice(0, 1);
+}
+
+async function resolveCodexHome(params = {}) {
+  const homes = await resolveCodexHomes(params);
+  if (homes.length) return homes[0];
+  const fallback = path.join(os.homedir(), ".codex");
+  return fallback;
+}
+
+function sortCodexThreadEntries(entries) {
+  return entries.slice().sort((a, b) => {
+    const updatedDelta = String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
+    if (updatedDelta !== 0) return updatedDelta;
+    const createdDelta = String(b.createdAt || "").localeCompare(String(a.createdAt || ""));
+    if (createdDelta !== 0) return createdDelta;
+    return String(a.title || "").localeCompare(String(b.title || ""));
+  });
+}
+
+async function listCodexThreadsFromHome(codexHome, options = {}) {
+  const { originators, includeSubagents, perHomeScanLimit, fastMode } = options;
+  const sessionIndexPath = path.join(codexHome, "session_index.jsonl");
+  const sessionsRoot = path.join(codexHome, "sessions");
+  const rawIndex = await fs.readFile(sessionIndexPath, "utf8");
+  const rows = rawIndex
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean)
+    .slice(-perHomeScanLimit)
+    .reverse();
+
+  const inferredOriginator = String(codexHome || "").includes("/mnt/c/Users/")
+    ? "Codex Desktop"
+    : "codex_vscode";
+
+  if (fastMode) {
+    const fastEntries = [];
+    for (const row of rows) {
+      fastEntries.push({
+        threadId: String(row.id || ""),
+        title: String(row.thread_name || "Untitled Codex thread"),
+        updatedAt: String(row.updated_at || ""),
+        cwd: "",
+        originator: inferredOriginator,
+        sessionFilePath: "",
+        createdAt: "",
+        sourceHome: codexHome,
+        parentThreadId: "",
+        agentRole: "",
+        agentNickname: "",
+        isSubagent: false,
+      });
+    }
+    return fastEntries.filter((entry) => entry.threadId);
+  }
+  const wantedIds = new Set(rows.map((row) => String(row.id || "")).filter(Boolean));
+  const metadataById = new Map();
+  await walkJsonlFiles(sessionsRoot, async (fullPath) => {
+    if (metadataById.size >= wantedIds.size) return true;
+    let line;
+    try {
+      line = await readJsonlFirstLine(fullPath);
+    } catch {
+      return false;
+    }
+    if (!line) return false;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      return false;
+    }
+    const payload = entry?.payload || {};
+    const sessionId = String(payload.id || "");
+    if (!wantedIds.has(sessionId) || metadataById.has(sessionId)) return false;
+    const subagentSpawn = payload?.source?.subagent?.thread_spawn;
+    metadataById.set(sessionId, {
+      sessionId,
+      cwd: String(payload.cwd || ""),
+      originator: String(payload.originator || "unknown"),
+      filePath: fullPath,
+      createdAt: String(payload.timestamp || entry.timestamp || ""),
+      parentThreadId: String(subagentSpawn?.parent_thread_id || ""),
+      agentRole: String(payload.agent_role || ""),
+      agentNickname: String(payload.agent_nickname || ""),
+      isSubagent: Boolean(subagentSpawn),
+    });
+    return metadataById.size >= wantedIds.size;
+  });
+
+  const entries = [];
+  for (const row of rows) {
+    const sessionId = String(row.id || "");
+    const meta = metadataById.get(sessionId) || {};
+    const originator = String(meta.originator || inferredOriginator || "unknown");
+    if (originators.size && !originators.has(originator)) continue;
+    if (!includeSubagents && meta.isSubagent) continue;
+    entries.push({
+      threadId: sessionId,
+      title: String(row.thread_name || "Untitled Codex thread"),
+      updatedAt: String(row.updated_at || ""),
+      cwd: String(meta.cwd || ""),
+      originator,
+      sessionFilePath: String(meta.filePath || ""),
+      createdAt: String(meta.createdAt || ""),
+      sourceHome: codexHome,
+      parentThreadId: String(meta.parentThreadId || ""),
+      agentRole: String(meta.agentRole || ""),
+      agentNickname: String(meta.agentNickname || ""),
+      isSubagent: Boolean(meta.isSubagent),
+    });
+  }
+  return entries;
+}
+
+function dedupeCodexThreadEntries(entries) {
+  const byId = new Map();
+  for (const entry of entries) {
+    const key = String(entry.threadId || "");
+    if (!key) continue;
+    if (!byId.has(key)) {
+      byId.set(key, entry);
+      continue;
+    }
+    const current = byId.get(key);
+    const updatedDelta = String(entry.updatedAt || "").localeCompare(String(current.updatedAt || ""));
+    if (updatedDelta > 0) {
+      byId.set(key, entry);
+      continue;
+    }
+    if (updatedDelta === 0) {
+      const currentIsLegacy = String(current.sourceHome || "").endsWith(".codex-custom");
+      const incomingIsLegacy = String(entry.sourceHome || "").endsWith(".codex-custom");
+      if (currentIsLegacy && !incomingIsLegacy) byId.set(key, entry);
+    }
+  }
+  return Array.from(byId.values());
+}
+
+async function listCodexThreads(params = {}) {
+  const limit = Number.isFinite(Number(params.limit))
+    ? Math.max(1, Math.min(Number(params.limit), 300))
+    : CODEX_THREAD_LIMIT;
+  const originators = new Set(
+    (Array.isArray(params.originators) ? params.originators : [])
+      .filter((item) => typeof item === "string" && item.trim())
+      .map((item) => item.trim()),
+  );
+  const includeSubagents = Boolean(params.includeSubagents);
+  const fastMode = Boolean(params.fastMode);
+  const codexHomes = await resolveCodexHomes(params);
+  const perHomeScanLimit = Number.isFinite(Number(params.perHomeScanLimit))
+    ? Math.max(40, Math.min(Number(params.perHomeScanLimit), 800))
+    : Math.max(Math.min(limit * 2, 360), 120);
+  const allEntries = [];
+  for (const codexHome of codexHomes) {
+    try {
+      const homeEntries = await listCodexThreadsFromHome(codexHome, {
+        originators,
+        includeSubagents,
+        fastMode,
+        perHomeScanLimit,
+      });
+      allEntries.push(...homeEntries);
+    } catch {
+      // Ignore unavailable/invalid homes and keep the remaining sources.
+    }
+  }
+  const entries = sortCodexThreadEntries(dedupeCodexThreadEntries(allEntries)).slice(0, limit);
+  return {
+    root,
+    source: workspaceKind,
+    codexHome: codexHomes[0] || "",
+    sourceHomes: codexHomes,
+    entries,
+    limit,
+    includeSubagents,
+    fastMode,
+    perHomeScanLimit,
+  };
+}
+
+function safeCodexTranscriptLimit(value) {
+  if (!Number.isFinite(Number(value))) return CODEX_TRANSCRIPT_ENTRY_LIMIT;
+  return Math.max(50, Math.min(Number(value), 2000));
+}
+
+function extractContentText(content = []) {
+  if (!Array.isArray(content)) return "";
+  const chunks = [];
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    const text = typeof part.text === "string" ? part.text.trim() : "";
+    if (text) {
+      chunks.push(text);
+      continue;
+    }
+    if (part.type === "input_image" || part.type === "output_image") {
+      const ref = String(part.image_url || part.path || "").trim();
+      chunks.push(ref ? `[image] ${ref}` : "[image]");
+    }
+  }
+  return chunks.join("\n\n").trim();
+}
+
+function extractTranscriptEntry(row) {
+  if (!row || typeof row !== "object") return null;
+  const payload = row.payload || {};
+  const at = String(row.timestamp || payload.timestamp || "");
+
+  if (row.type === "response_item" && payload.type === "message") {
+    const role = String(payload.role || "").toLowerCase();
+    if (!role || role === "developer") return null;
+    const text = extractContentText(payload.content || []);
+    if (!text) return null;
+    return {
+      role: role === "assistant" || role === "user" ? role : "system",
+      text,
+      at,
+      sourceType: "response_item.message",
+      phase: String(payload.phase || ""),
+    };
+  }
+
+  if (row.type === "event_msg" && payload.type === "user_message") {
+    const text = String(payload.message || "").trim();
+    if (!text) return null;
+    return {
+      role: "user",
+      text,
+      at,
+      sourceType: "event_msg.user_message",
+      phase: "",
+    };
+  }
+
+  if (row.type === "event_msg" && payload.type === "agent_message") {
+    const text = String(payload.message || "").trim();
+    if (!text) return null;
+    return {
+      role: "assistant",
+      text,
+      at,
+      sourceType: "event_msg.agent_message",
+      phase: String(payload.phase || ""),
+    };
+  }
+
+  return null;
+}
+
+function dedupeTranscriptEntries(entries) {
+  const deduped = [];
+  for (const entry of entries) {
+    const last = deduped[deduped.length - 1];
+    if (
+      last &&
+      last.role === entry.role &&
+      last.text === entry.text &&
+      String(last.phase || "") === String(entry.phase || "") &&
+      String(last.sourceType || "") === String(entry.sourceType || "")
+    ) {
+      continue;
+    }
+    deduped.push(entry);
+  }
+  return deduped;
+}
+
+async function readSessionIndexRow(codexHome, threadId) {
+  const sessionIndexPath = path.join(codexHome, "session_index.jsonl");
+  let rawIndex;
+  try {
+    rawIndex = await fs.readFile(sessionIndexPath, "utf8");
+  } catch {
+    return null;
+  }
+  const lines = rawIndex.split(/\r?\n/).filter(Boolean);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    let row;
+    try {
+      row = JSON.parse(lines[index]);
+    } catch {
+      continue;
+    }
+    if (String(row.id || "") === threadId) return row;
+  }
+  return null;
+}
+
+async function readSessionMetaFromFile(fullPath, threadId = "") {
+  let line;
+  try {
+    line = await readJsonlFirstLine(fullPath);
+  } catch {
+    return null;
+  }
+  if (!line) return null;
+  let entry;
+  try {
+    entry = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  const payload = entry?.payload || {};
+  const foundId = String(payload.id || "");
+  if (threadId && foundId !== threadId) return null;
+  return {
+    threadId: foundId,
+    createdAt: String(payload.timestamp || entry.timestamp || ""),
+    cwd: String(payload.cwd || ""),
+    originator: String(payload.originator || "unknown"),
+  };
+}
+
+async function findCodexThreadSession(codexHome, threadId, preferredSessionFilePath = "") {
+  const sessionsRoot = path.join(codexHome, "sessions");
+  const indexRow = await readSessionIndexRow(codexHome, threadId);
+  const preferredFile = String(preferredSessionFilePath || "").trim();
+
+  if (preferredFile) {
+    const meta = await readSessionMetaFromFile(preferredFile, threadId);
+    if (meta) {
+      return {
+        threadId,
+        sourceHome: codexHome,
+        sessionFilePath: preferredFile,
+        title: String(indexRow?.thread_name || "Untitled Codex thread"),
+        updatedAt: String(indexRow?.updated_at || ""),
+        createdAt: meta.createdAt,
+        cwd: meta.cwd,
+        originator: meta.originator,
+      };
+    }
+  }
+
+  let found = null;
+  await walkJsonlFiles(sessionsRoot, async (fullPath) => {
+    const meta = await readSessionMetaFromFile(fullPath, threadId);
+    if (!meta) return false;
+    found = {
+      threadId,
+      sourceHome: codexHome,
+      sessionFilePath: fullPath,
+      title: String(indexRow?.thread_name || "Untitled Codex thread"),
+      updatedAt: String(indexRow?.updated_at || ""),
+      createdAt: meta.createdAt,
+      cwd: meta.cwd,
+      originator: meta.originator,
+    };
+    return true;
+  });
+  return found;
+}
+
+async function readCodexThreadTranscript(params = {}) {
+  const threadId = String(params.threadId || "").trim();
+  if (!threadId) throw new Error("threadId is required.");
+  const sourceHome = String(params.sourceHome || "").trim();
+  const sessionFilePath = String(params.sessionFilePath || "").trim();
+  const limit = safeCodexTranscriptLimit(params.limit);
+  const homes = await resolveCodexHomes(sourceHome ? { homePaths: [sourceHome] } : {});
+
+  let session = null;
+  for (const home of homes) {
+    session = await findCodexThreadSession(home, threadId, sessionFilePath);
+    if (session) break;
+  }
+  if (!session) {
+    throw new Error(`Thread ${threadId} not found in discovered Codex homes.`);
+  }
+
+  const stream = fsSync.createReadStream(session.sessionFilePath, { encoding: "utf8" });
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+  const entries = [];
+  let lineCount = 0;
+  for await (const line of rl) {
+    if (!line.trim()) continue;
+    lineCount += 1;
+    let row;
+    try {
+      row = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const entry = extractTranscriptEntry(row);
+    if (!entry) continue;
+    entries.push(entry);
+  }
+  const deduped = dedupeTranscriptEntries(entries);
+  const truncated = deduped.length > limit;
+  const tail = truncated ? deduped.slice(-limit) : deduped;
+  const normalized = tail.map((entry, index) => ({
+    id: `stored_${index + 1}`,
+    role: entry.role,
+    text: entry.text,
+    at: entry.at,
+    sourceType: entry.sourceType,
+    phase: entry.phase || "",
+  }));
+
+  return {
+    root,
+    source: workspaceKind,
+    threadId,
+    sourceHome: session.sourceHome,
+    title: session.title,
+    updatedAt: session.updatedAt,
+    createdAt: session.createdAt,
+    cwd: session.cwd,
+    originator: session.originator,
+    sessionFilePath: session.sessionFilePath,
+    entries: normalized,
+    count: normalized.length,
+    totalCount: deduped.length,
+    truncated,
+    lineCount,
+    limit,
+  };
 }
 
 async function walkJsonlFiles(rootDir, onFile) {
@@ -474,89 +919,6 @@ async function readJsonlFirstLine(fullPath) {
   }
 }
 
-async function listCodexThreads(params = {}) {
-  const limit = Number.isFinite(Number(params.limit))
-    ? Math.max(1, Math.min(Number(params.limit), 300))
-    : CODEX_THREAD_LIMIT;
-  const originators = new Set(
-    (Array.isArray(params.originators) ? params.originators : [])
-      .filter((item) => typeof item === "string" && item.trim())
-      .map((item) => item.trim()),
-  );
-  const codexHome = await resolveCodexHome(params);
-  const sessionIndexPath = path.join(codexHome, "session_index.jsonl");
-  const sessionsRoot = path.join(codexHome, "sessions");
-  const rawIndex = await fs.readFile(sessionIndexPath, "utf8");
-  const rows = rawIndex
-    .split(/\r?\n/)
-    .filter(Boolean)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return null;
-      }
-    })
-    .filter(Boolean)
-    .slice(-limit)
-    .reverse();
-  const wantedIds = new Set(rows.map((row) => String(row.id || "")).filter(Boolean));
-  const metadataById = new Map();
-  await walkJsonlFiles(sessionsRoot, async (fullPath) => {
-    if (metadataById.size >= wantedIds.size) return true;
-    let line;
-    try {
-      line = await readJsonlFirstLine(fullPath);
-    } catch {
-      return false;
-    }
-    if (!line) return false;
-    let entry;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      return false;
-    }
-    const payload = entry?.payload || {};
-    const sessionId = String(payload.id || "");
-    if (!wantedIds.has(sessionId) || metadataById.has(sessionId)) return false;
-    metadataById.set(sessionId, {
-      sessionId,
-      cwd: String(payload.cwd || ""),
-      originator: String(payload.originator || "unknown"),
-      filePath: fullPath,
-      createdAt: String(payload.timestamp || entry.timestamp || ""),
-    });
-    return metadataById.size >= wantedIds.size;
-  });
-
-  const entries = [];
-  for (const row of rows) {
-    const sessionId = String(row.id || "");
-    const meta = metadataById.get(sessionId) || {};
-    const originator = String(meta.originator || "unknown");
-    if (originators.size && !originators.has(originator)) continue;
-    entries.push({
-      threadId: sessionId,
-      title: String(row.thread_name || "Untitled Codex thread"),
-      updatedAt: String(row.updated_at || ""),
-      cwd: String(meta.cwd || ""),
-      originator,
-      sessionFilePath: String(meta.filePath || ""),
-      createdAt: String(meta.createdAt || ""),
-      sourceHome: codexHome,
-    });
-  }
-
-  return {
-    root,
-    source: workspaceKind,
-    codexHome,
-    entries,
-    limit,
-  };
-}
-
 async function handleRequest(method, params = {}) {
   if (method === "hello") {
     const stat = await fs.stat(root);
@@ -579,6 +941,7 @@ async function handleRequest(method, params = {}) {
         resolvePath: true,
         watchScaffold: true,
         listCodexThreads: true,
+        readCodexThreadTranscript: true,
       },
     };
   }
@@ -589,6 +952,7 @@ async function handleRequest(method, params = {}) {
   if (method === "runCommand") return runCommand(params);
   if (method === "watchStatus") return watchStatus(params);
   if (method === "listCodexThreads") return listCodexThreads(params);
+  if (method === "readCodexThreadTranscript") return readCodexThreadTranscript(params);
   throw new Error(`Unknown workspace-agent method: ${method}`);
 }
 

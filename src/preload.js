@@ -14,7 +14,12 @@ contextBridge.exposeInMainWorld("workspaceShell", {
   readProjectFile: (projectId, relPath) => ipcRenderer.invoke("worktree:read-file", { projectId, relPath }),
   listWatchedArtifacts: (projectId) => ipcRenderer.invoke("worktree:list-watched", { projectId }),
   listCodexThreads: (projectId) => ipcRenderer.invoke("codex-threads:list", { projectId }),
-  listChatgptRecentThreads: (limit) => ipcRenderer.invoke("chatgpt:recent-threads", { limit }),
+  selectCodexThread: (projectId, threadId, sourceHome = "", sessionFilePath = "") =>
+    ipcRenderer.invoke("codex:select-thread", { projectId, threadId, sourceHome, sessionFilePath }),
+  listCachedChatgptRecentThreads: (limit) => ipcRenderer.invoke("chatgpt:cached-threads", { limit }),
+  listChatgptRecentThreads: (limit, options = {}) =>
+    ipcRenderer.invoke("chatgpt:recent-threads", { limit, refresh: Boolean(options?.refresh) }),
+  openChatgptThreadUrl: (url) => ipcRenderer.invoke("chatgpt:open-url", { url }),
   revealProjectFile: (projectId, relPath) => ipcRenderer.invoke("worktree:reveal-file", { projectId, relPath }),
   attachWorkspace: (projectId) => ipcRenderer.invoke("workspace:attach", { projectId }),
   workspaceStatus: (projectId) => ipcRenderer.invoke("workspace:status", { projectId }),

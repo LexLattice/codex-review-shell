@@ -19,6 +19,9 @@ const { WorkspaceBackendManager, workspaceLabel, workspaceRoot } = require("./ma
 
 const APP_TITLE = "Codex Review Shell";
 const CONFIG_FILE_NAME = "workspace-config.json";
+const CHATGPT_THREAD_CACHE_FILE_NAME = "chatgpt-thread-cache.json";
+const CHATGPT_THREAD_CACHE_VERSION = 1;
+const CHATGPT_THREAD_CACHE_MAX_ENTRIES = 1500;
 const CODEX_PARTITION = "persist:codex-review-shell-codex";
 const CHATGPT_PARTITION = "persist:codex-review-shell-chatgpt";
 const PREVIEW_LIMIT_BYTES = 384 * 1024;
@@ -40,7 +43,9 @@ let chatgptView = null;
 let lastSurfaceBounds = null;
 let surfacesVisible = true;
 let configCache = null;
+let chatgptThreadCache = null;
 let currentProject = null;
+let activeCodexSurfaceConnection = null;
 let layoutPingTimer = null;
 let geometrySyncTimer = null;
 let workspaceBackends = null;
@@ -58,6 +63,10 @@ function newId(prefix) {
 
 function configPath() {
   return path.join(app.getPath("userData"), CONFIG_FILE_NAME);
+}
+
+function chatgptThreadCachePath() {
+  return path.join(app.getPath("userData"), CHATGPT_THREAD_CACHE_FILE_NAME);
 }
 
 function normalizeLinuxPathValue(value, fallback = "/home") {
@@ -183,6 +192,116 @@ function normalizeCodexRuntime(value) {
 function normalizeReasoningEffort(value) {
   const candidate = normalizeString(value, "").toLowerCase();
   return ["low", "medium", "high", "xhigh"].includes(candidate) ? candidate : "";
+}
+
+function safeRecentThreadLimit(limit = 40) {
+  return Math.max(1, Math.min(Number(limit) || 40, 200));
+}
+
+function mergeThreadSourceLabels(...values) {
+  return Array.from(
+    new Set(
+      values
+        .filter(Boolean)
+        .flatMap((value) => String(value).split("+").map((part) => part.trim()).filter(Boolean))
+    )
+  ).join("+");
+}
+
+function normalizeRecentThreadEntry(raw, fallbackDiscoveredAt = "") {
+  if (!isPlainObject(raw)) return null;
+  const externalId = normalizeString(raw.externalId, "");
+  if (!externalId) return null;
+  return {
+    externalId,
+    title: normalizeString(raw.title, "Untitled ChatGPT thread"),
+    url: normalizeString(raw.url, ""),
+    updatedAt: normalizeString(raw.updatedAt, ""),
+    createdAt: normalizeString(raw.createdAt, ""),
+    archived: Boolean(raw.archived),
+    snippet: normalizeString(raw.snippet, ""),
+    projectName: normalizeString(raw.projectName, ""),
+    workspaceId: normalizeString(raw.workspaceId, ""),
+    sourceKind: normalizeString(raw.sourceKind, "recent").toLowerCase() === "project" ? "project" : "recent",
+    source: normalizeString(raw.source, ""),
+    discoveredAt: normalizeString(raw.discoveredAt, fallbackDiscoveredAt),
+  };
+}
+
+function mergeRecentThreadEntries(current, incoming) {
+  if (!current) return incoming;
+  const incomingUpdated = String(incoming.updatedAt || "");
+  const currentUpdated = String(current.updatedAt || "");
+  const incomingCreated = String(incoming.createdAt || "");
+  const currentCreated = String(current.createdAt || "");
+  const incomingTitle = normalizeString(incoming.title, "");
+  const currentTitle = normalizeString(current.title, "");
+  const chooseIncomingTitle = incomingTitle && incomingTitle !== "Untitled ChatGPT thread";
+  const incomingHasProjectUrl = /\/g\//.test(String(incoming.url || ""));
+  const currentHasProjectUrl = /\/g\//.test(String(current.url || ""));
+  const preferIncomingUrl = Boolean(
+    incoming.url &&
+      (!current.url ||
+        (incoming.sourceKind === "project" && incomingHasProjectUrl && !currentHasProjectUrl))
+  );
+  return {
+    ...current,
+    ...incoming,
+    title: chooseIncomingTitle ? incomingTitle : currentTitle || incomingTitle || "Untitled ChatGPT thread",
+    url: preferIncomingUrl ? incoming.url : current.url || incoming.url || "",
+    updatedAt: incomingUpdated > currentUpdated ? incomingUpdated : currentUpdated,
+    createdAt:
+      !currentCreated
+        ? incomingCreated
+        : !incomingCreated
+          ? currentCreated
+          : incomingCreated < currentCreated
+            ? incomingCreated
+            : currentCreated,
+    archived: Boolean(current.archived && incoming.archived),
+    snippet: current.snippet || incoming.snippet || "",
+    projectName: incoming.projectName || current.projectName || "",
+    workspaceId: incoming.workspaceId || current.workspaceId || "",
+    sourceKind:
+      incoming.sourceKind === "project" || current.sourceKind === "project"
+        ? "project"
+        : "recent",
+    source: mergeThreadSourceLabels(current.source, incoming.source),
+    discoveredAt:
+      String(incoming.discoveredAt || "") > String(current.discoveredAt || "")
+        ? String(incoming.discoveredAt || "")
+        : String(current.discoveredAt || ""),
+  };
+}
+
+function sortRecentThreadEntries(entries) {
+  return entries.slice().sort((a, b) => {
+    const projectDelta = (b.sourceKind === "project" ? 1 : 0) - (a.sourceKind === "project" ? 1 : 0);
+    if (projectDelta !== 0) return projectDelta;
+    const updatedDelta = String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
+    if (updatedDelta !== 0) return updatedDelta;
+    const createdDelta = String(b.createdAt || "").localeCompare(String(a.createdAt || ""));
+    if (createdDelta !== 0) return createdDelta;
+    return String(a.title || "").localeCompare(String(b.title || ""));
+  });
+}
+
+function normalizeChatgptThreadCache(input) {
+  const raw = isPlainObject(input) ? input : {};
+  const byId = new Map();
+  const now = nowIso();
+  const rows = Array.isArray(raw.entries) ? raw.entries : [];
+  for (const row of rows) {
+    const normalized = normalizeRecentThreadEntry(row, now);
+    if (!normalized) continue;
+    byId.set(normalized.externalId, mergeRecentThreadEntries(byId.get(normalized.externalId), normalized));
+  }
+  const entries = sortRecentThreadEntries(Array.from(byId.values())).slice(0, CHATGPT_THREAD_CACHE_MAX_ENTRIES);
+  return {
+    version: CHATGPT_THREAD_CACHE_VERSION,
+    updatedAt: normalizeString(raw.updatedAt, now),
+    entries,
+  };
 }
 
 function isDefaultExampleProject(raw, fallback) {
@@ -676,6 +795,26 @@ async function saveConfig(nextConfig) {
   return normalized;
 }
 
+async function loadChatgptThreadCache() {
+  if (chatgptThreadCache) return chatgptThreadCache;
+  try {
+    const raw = await fs.readFile(chatgptThreadCachePath(), "utf8");
+    chatgptThreadCache = normalizeChatgptThreadCache(JSON.parse(raw));
+    return chatgptThreadCache;
+  } catch {
+    chatgptThreadCache = normalizeChatgptThreadCache({ entries: [] });
+    return chatgptThreadCache;
+  }
+}
+
+async function saveChatgptThreadCache(nextCache) {
+  const normalized = normalizeChatgptThreadCache(nextCache);
+  chatgptThreadCache = normalized;
+  await fs.mkdir(path.dirname(chatgptThreadCachePath()), { recursive: true });
+  await fs.writeFile(chatgptThreadCachePath(), `${JSON.stringify(normalized, null, 2)}\n`, "utf8");
+  return normalized;
+}
+
 function getSelectedProject(config) {
   return config.projects.find((project) => project.id === config.selectedProjectId) ?? config.projects[0];
 }
@@ -887,18 +1026,27 @@ function encodeCodexSurfacePayload(project, extra = {}) {
       doctrine: "Codex plane is a work chat. ADEU control plane owns the binding. ChatGPT plane remains the review/world-model thread.",
     },
     codexConnection: extra.codexConnection || null,
+    initialThreadId: normalizeString(extra.initialThreadId, ""),
+    initialThreadSourceHome: normalizeString(extra.initialThreadSourceHome, ""),
+    initialThreadSessionFilePath: normalizeString(extra.initialThreadSessionFilePath, ""),
     error: normalizeString(extra.error, ""),
   };
   return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
 }
 
-async function loadCodexSurface(project) {
+function codexSurfaceUrl(baseUrl, project, extra = {}) {
+  const token = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  return `${baseUrl}/codex-surface.html?reload=${token}#${encodeCodexSurfacePayload(project, extra)}`;
+}
+
+async function loadCodexSurface(project, options = {}) {
   if (!codexView || codexView.webContents.isDestroyed()) return;
   await disposeCodexSurfaceSession();
   const codex = project.surfaceBinding.codex;
   const localSurfaceBaseUrl = await ensureLocalSurfaceServer().ensureStarted();
   if (codex.mode === "url") {
     await ensureCodexAppServerManager().dispose();
+    activeCodexSurfaceConnection = null;
     const target = safeLoadableUrl(codex.target, "codex");
     if (target) {
       await codexView.webContents.loadURL(target);
@@ -907,34 +1055,54 @@ async function loadCodexSurface(project) {
   }
   if (codex.mode === "managed") {
     try {
-      const session = await ensureCodexAppServerManager().ensureForProject(project);
-      const localUrl = `${localSurfaceBaseUrl}/codex-surface.html#${encodeCodexSurfacePayload(project, {
+      const requestedCodexHome = normalizeString(options.codexHome, "");
+      const session =
+        options.codexSession ||
+        await ensureCodexAppServerManager().ensureForProject(
+          project,
+          requestedCodexHome ? { codexHome: requestedCodexHome } : {},
+        );
+      const localUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, {
         codexConnection: {
           wsUrl: session.wsUrl,
           readyUrl: session.readyUrl,
           runtime: session.runtime,
           workspaceRoot: session.workspaceRoot,
           binaryPath: session.binaryPath,
+          codexHome: session.codexHome || "",
         },
-      })}`;
+        initialThreadId: normalizeString(options.initialThreadId, ""),
+        initialThreadSourceHome: normalizeString(options.initialThreadSourceHome, ""),
+        initialThreadSessionFilePath: normalizeString(options.initialThreadSessionFilePath, ""),
+      });
+      activeCodexSurfaceConnection = {
+        wsUrl: session.wsUrl,
+        runtime: session.runtime,
+        codexHome: session.codexHome || "",
+      };
       await codexView.webContents.loadURL(localUrl);
       return;
     } catch (error) {
+      activeCodexSurfaceConnection = null;
       emitToShell("surface:event", {
         surface: "codex",
         type: "load-failed",
         title: error.message,
         at: nowIso(),
       });
-      const degradedUrl = `${localSurfaceBaseUrl}/codex-surface.html#${encodeCodexSurfacePayload(project, {
+      const degradedUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, {
+        initialThreadId: normalizeString(options.initialThreadId, ""),
+        initialThreadSourceHome: normalizeString(options.initialThreadSourceHome, ""),
+        initialThreadSessionFilePath: normalizeString(options.initialThreadSessionFilePath, ""),
         error: error.message,
-      })}`;
+      });
       await codexView.webContents.loadURL(degradedUrl);
       return;
     }
   }
   await ensureCodexAppServerManager().dispose();
-  const localUrl = `${localSurfaceBaseUrl}/codex-surface.html#${encodeCodexSurfacePayload(project)}`;
+  activeCodexSurfaceConnection = null;
+  const localUrl = codexSurfaceUrl(localSurfaceBaseUrl, project);
   await codexView.webContents.loadURL(localUrl);
 }
 
@@ -945,6 +1113,126 @@ async function loadChatgptSurface(project, threadId = "") {
     : activeChatThread(project);
   const target = safeLoadableUrl(thread?.url || project.surfaceBinding.chatgpt.reviewThreadUrl, "chatgpt") || "https://chatgpt.com/";
   await chatgptView.webContents.loadURL(target);
+}
+
+async function requestCodexThreadOpen(projectId, threadId, sourceHome = "", sessionFilePath = "") {
+  const nextThreadId = normalizeString(threadId, "");
+  if (!nextThreadId) return { ok: false, error: "Codex thread id is required." };
+  let project = null;
+  try {
+    project = await getProjectById(projectId);
+  } catch (error) {
+    return { ok: false, error: error.message || "Unable to resolve selected project." };
+  }
+  if (!project) return { ok: false, error: "No project is selected." };
+
+  let session = null;
+  let sessionStartupError = "";
+  const requestedHome = normalizeString(sourceHome, "");
+  const requestedSessionFilePath = normalizeString(sessionFilePath, "");
+  if (project.surfaceBinding?.codex?.mode === "managed") {
+    try {
+      session = await ensureCodexAppServerManager().ensureForProject(
+        project,
+        requestedHome ? { codexHome: requestedHome } : {},
+      );
+    } catch (error) {
+      sessionStartupError = `Codex app-server startup failed: ${error.message}`;
+    }
+  }
+
+  if (!codexView || codexView.webContents.isDestroyed()) {
+    return { ok: false, error: "Codex surface is unavailable." };
+  }
+  const currentUrl = codexView.webContents.getURL() || "";
+  const surfaceModeManaged = project.surfaceBinding?.codex?.mode === "managed";
+  const hasLocalSurface = currentUrl.includes("codex-surface.html");
+  const needsSurfaceReload = !hasLocalSurface ||
+    !surfaceModeManaged ||
+    !activeCodexSurfaceConnection ||
+    String(activeCodexSurfaceConnection.wsUrl || "") !== String(session?.wsUrl || "") ||
+    String(activeCodexSurfaceConnection.codexHome || "") !== String(session?.codexHome || "");
+
+  const openEventPayload = {
+    type: "open-thread-request",
+    threadId: nextThreadId,
+    sourceHome: requestedHome || session?.codexHome || "",
+    sessionFilePath: requestedSessionFilePath,
+    at: nowIso(),
+  };
+
+  if (needsSurfaceReload) {
+    if (project.surfaceBinding?.codex?.mode !== "managed") {
+      return { ok: false, error: "Codex surface is not in managed mode." };
+    }
+    const targetContents = codexView.webContents;
+    const dispatchAfterLoad = new Promise((resolve) => {
+      let settled = false;
+      const cleanup = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        targetContents.removeListener("did-finish-load", onLoad);
+      };
+      const onLoad = () => {
+        setTimeout(() => {
+          cleanup();
+          try {
+            if (
+              codexView &&
+              codexView.webContents &&
+              !codexView.webContents.isDestroyed() &&
+              codexView.webContents.id === targetContents.id
+            ) {
+              codexView.webContents.send("codex-surface:event", openEventPayload);
+              resolve(true);
+              return;
+            }
+          } catch {}
+          resolve(false);
+        }, 150);
+      };
+      const timeout = setTimeout(() => {
+        cleanup();
+        resolve(false);
+      }, 2500);
+      targetContents.once("did-finish-load", onLoad);
+    });
+
+    await loadCodexSurface(project, {
+      codexSession: session,
+      initialThreadId: nextThreadId,
+      initialThreadSourceHome: requestedHome || session?.codexHome || "",
+      initialThreadSessionFilePath: requestedSessionFilePath,
+    });
+    const dispatchedAfterReload = await dispatchAfterLoad;
+    return {
+      ok: true,
+      reloaded: true,
+      dispatchedAfterReload,
+      threadId: nextThreadId,
+      sourceHome: requestedHome || session?.codexHome || "",
+      warning: sessionStartupError,
+    };
+  }
+  codexView.webContents.send("codex-surface:event", openEventPayload);
+  return {
+    ok: true,
+    dispatched: true,
+    threadId: nextThreadId,
+    sourceHome: requestedHome || session?.codexHome || "",
+    warning: sessionStartupError,
+  };
+}
+
+async function openChatgptThreadUrl(url) {
+  const target = safeLoadableUrl(url, "chatgpt");
+  if (!target) return { ok: false, error: "Invalid ChatGPT thread URL." };
+  if (!chatgptView || chatgptView.webContents.isDestroyed()) {
+    return { ok: false, error: "ChatGPT surface is unavailable." };
+  }
+  await chatgptView.webContents.loadURL(target);
+  return { ok: true, url: target };
 }
 
 function chatgptRecentThreadsScript(limit = 40) {
@@ -1592,10 +1880,41 @@ async function listWatchedArtifacts(projectId) {
 
 async function listCodexThreads(projectId) {
   const project = await getProjectById(projectId);
-  const result = await requestWorkspace(project, "listCodexThreads", {
-    limit: 120,
-    originators: ["codex_vscode", "Codex Desktop"],
-  }, 30_000);
+  let result;
+  try {
+    result = await requestWorkspace(project, "listCodexThreads", {
+      limit: 160,
+      includeSubagents: false,
+      perHomeScanLimit: 260,
+      fastMode: false,
+    }, 35_000);
+  } catch (primaryError) {
+    result = await requestWorkspace(project, "listCodexThreads", {
+      limit: 120,
+      includeSubagents: true,
+      fastMode: true,
+      perHomeScanLimit: 120,
+    }, 15_000);
+    result.fallback = {
+      mode: "fast",
+      reason: primaryError?.message || "primary discovery failed",
+    };
+  }
+  return {
+    ...result,
+    workspace: project.workspace,
+    workspaceLabel: workspaceLabel(project, repoRoot),
+  };
+}
+
+async function readCodexThreadTranscript(projectId, threadId, sourceHome = "", sessionFilePath = "") {
+  const project = await getProjectById(projectId);
+  const result = await requestWorkspace(project, "readCodexThreadTranscript", {
+    threadId,
+    sourceHome: normalizeString(sourceHome, ""),
+    sessionFilePath: normalizeString(sessionFilePath, ""),
+    limit: 800,
+  }, 45_000);
   return {
     ...result,
     workspace: project.workspace,
@@ -1749,29 +2068,108 @@ async function openChatgptSettings() {
   }
 }
 
-async function listChatgptRecentThreads(limit = 40) {
+async function listCachedChatgptRecentThreads(limit = 40) {
+  const safeLimit = safeRecentThreadLimit(limit);
+  const cache = await loadChatgptThreadCache();
+  const entries = sortRecentThreadEntries(cache.entries).slice(0, safeLimit);
+  return {
+    source: "persisted-cache",
+    available: entries.length > 0,
+    entries,
+    limit: safeLimit,
+    cachedAt: cache.updatedAt,
+    cachedCount: cache.entries.length,
+  };
+}
+
+async function listChatgptRecentThreads(limit = 40, options = {}) {
+  const safeLimit = safeRecentThreadLimit(limit);
+  const refresh = Boolean(options?.refresh);
+  if (!refresh) return listCachedChatgptRecentThreads(safeLimit);
+
+  const cache = await loadChatgptThreadCache();
+  const fallbackEntries = sortRecentThreadEntries(cache.entries).slice(0, safeLimit);
+
   if (!chatgptView || chatgptView.webContents.isDestroyed()) {
-    return { source: "unavailable", available: false, entries: [], error: "ChatGPT surface is unavailable." };
+    return {
+      source: "persisted-cache",
+      available: fallbackEntries.length > 0,
+      entries: fallbackEntries,
+      limit: safeLimit,
+      cachedAt: cache.updatedAt,
+      cachedCount: cache.entries.length,
+      error: "ChatGPT surface is unavailable.",
+    };
   }
+
   const currentUrl = chatgptView.webContents.getURL() || "";
   if (!currentUrl.includes("chatgpt.com") && !currentUrl.includes("chat.openai.com")) {
-    return { source: "unavailable", available: false, entries: [], error: "ChatGPT surface is not loaded yet." };
-  }
-  try {
-    const result = await chatgptView.webContents.executeJavaScript(chatgptRecentThreadsScript(limit), true);
     return {
-      source: normalizeString(result?.source, "unknown"),
-      available: result?.available !== false,
-      entries: Array.isArray(result?.entries) ? result.entries : [],
-      limit: Math.max(1, Math.min(Number(limit) || 40, 200)),
+      source: "persisted-cache",
+      available: fallbackEntries.length > 0,
+      entries: fallbackEntries,
+      limit: safeLimit,
+      cachedAt: cache.updatedAt,
+      cachedCount: cache.entries.length,
+      error: "ChatGPT surface is not loaded yet.",
+    };
+  }
+
+  try {
+    const live = await chatgptView.webContents.executeJavaScript(chatgptRecentThreadsScript(safeLimit), true);
+    const discoveredAt = nowIso();
+    const incoming = Array.isArray(live?.entries)
+      ? live.entries
+        .map((entry) =>
+          normalizeRecentThreadEntry(
+            {
+              ...entry,
+              source: mergeThreadSourceLabels(entry?.source, "manual-refresh"),
+              discoveredAt,
+            },
+            discoveredAt,
+          )
+        )
+        .filter(Boolean)
+      : [];
+
+    if (!incoming.length) {
+      return {
+        source: mergeThreadSourceLabels("persisted-cache", normalizeString(live?.source, "refresh-empty")),
+        available: fallbackEntries.length > 0,
+        entries: fallbackEntries,
+        limit: safeLimit,
+        cachedAt: cache.updatedAt,
+        cachedCount: cache.entries.length,
+        error: normalizeString(live?.error, ""),
+      };
+    }
+
+    const mergedCache = await saveChatgptThreadCache({
+      version: CHATGPT_THREAD_CACHE_VERSION,
+      updatedAt: discoveredAt,
+      entries: [...cache.entries, ...incoming],
+    });
+    const mergedEntries = sortRecentThreadEntries(mergedCache.entries).slice(0, safeLimit);
+    return {
+      source: mergeThreadSourceLabels("persisted-cache", normalizeString(live?.source, "manual-refresh")),
+      available: mergedEntries.length > 0,
+      entries: mergedEntries,
+      limit: safeLimit,
+      fetchedCount: incoming.length,
+      cachedCount: mergedCache.entries.length,
+      cachedAt: mergedCache.updatedAt,
+      error: normalizeString(live?.error, ""),
     };
   } catch (error) {
     return {
-      source: "execute-failed",
-      available: false,
-      entries: [],
+      source: "persisted-cache",
+      available: fallbackEntries.length > 0,
+      entries: fallbackEntries,
+      limit: safeLimit,
+      cachedAt: cache.updatedAt,
+      cachedCount: cache.entries.length,
       error: error.message,
-      limit: Math.max(1, Math.min(Number(limit) || 40, 200)),
     };
   }
 }
@@ -1992,6 +2390,24 @@ ipcMain.handle("codex-threads:list", async (_event, payload) => {
   return listCodexThreads(payload?.projectId);
 });
 
+ipcMain.handle("codex-thread:transcript", async (_event, payload) => {
+  return readCodexThreadTranscript(
+    payload?.projectId,
+    payload?.threadId,
+    payload?.sourceHome,
+    payload?.sessionFilePath,
+  );
+});
+
+ipcMain.handle("codex:select-thread", async (_event, payload) => {
+  return requestCodexThreadOpen(
+    payload?.projectId,
+    payload?.threadId,
+    payload?.sourceHome,
+    payload?.sessionFilePath,
+  );
+});
+
 ipcMain.handle("worktree:reveal-file", async (_event, payload) => {
   return revealProjectFile(payload?.projectId, payload?.relPath);
 });
@@ -2021,8 +2437,16 @@ ipcMain.handle("chatgpt:select-thread", async (_event, payload) => {
   return { config: saved, project, thread };
 });
 
+ipcMain.handle("chatgpt:cached-threads", async (_event, payload) => {
+  return listCachedChatgptRecentThreads(payload?.limit);
+});
+
 ipcMain.handle("chatgpt:recent-threads", async (_event, payload) => {
-  return listChatgptRecentThreads(payload?.limit);
+  return listChatgptRecentThreads(payload?.limit, { refresh: Boolean(payload?.refresh) });
+});
+
+ipcMain.handle("chatgpt:open-url", async (_event, payload) => {
+  return openChatgptThreadUrl(payload?.url);
 });
 
 ipcMain.handle("workspace:attach", async (_event, payload) => {

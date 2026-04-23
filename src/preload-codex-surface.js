@@ -6,6 +6,8 @@ contextBridge.exposeInMainWorld("codexSurfaceBridge", {
   request: (method, params) => ipcRenderer.invoke("codex-surface:request", { method, params }),
   notify: (method, params) => ipcRenderer.invoke("codex-surface:notify", { method, params }),
   respond: (id, result) => ipcRenderer.invoke("codex-surface:respond", { id, result }),
+  readStoredThreadTranscript: (projectId, threadId, sourceHome = "", sessionFilePath = "") =>
+    ipcRenderer.invoke("codex-thread:transcript", { projectId, threadId, sourceHome, sessionFilePath }),
   onEvent: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on("codex-surface:event", listener);

@@ -4,12 +4,35 @@ const { EventEmitter } = require("node:events");
 const { spawn } = require("node:child_process");
 const net = require("node:net");
 
-const READY_TIMEOUT_MS = 15_000;
+const DEFAULT_READY_TIMEOUT_MS = 35_000;
+const DEFAULT_STARTUP_ATTEMPTS = 2;
 const READY_POLL_MS = 200;
+const READY_HTTP_TIMEOUT_MS = 1_000;
+const READY_TCP_TIMEOUT_MS = 650;
+const READY_TCP_STABLE_POLLS = 3;
 
 function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
+
+function normalizeInteger(value, fallback, min, max) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, parsed));
+}
+
+const READY_TIMEOUT_MS = normalizeInteger(
+  process.env.CODEX_APP_SERVER_READY_TIMEOUT_MS,
+  DEFAULT_READY_TIMEOUT_MS,
+  5_000,
+  180_000,
+);
+const STARTUP_ATTEMPTS = normalizeInteger(
+  process.env.CODEX_APP_SERVER_STARTUP_ATTEMPTS,
+  DEFAULT_STARTUP_ATTEMPTS,
+  1,
+  4,
+);
 
 function shellQuote(value) {
   const text = String(value ?? "");
@@ -42,19 +65,79 @@ async function allocatePort() {
   });
 }
 
+function portFromReadyUrl(readyUrl) {
+  try {
+    const parsed = new URL(String(readyUrl || ""));
+    const parsedPort = Number.parseInt(parsed.port, 10);
+    return Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function probeReadyHttpStatus(readyUrl, timeoutMs = READY_HTTP_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(100, timeoutMs));
+  try {
+    const response = await fetch(readyUrl, {
+      method: "GET",
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    return Number(response.status) || 0;
+  } catch {
+    return 0;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function probeTcpPort(port, timeoutMs = READY_TCP_TIMEOUT_MS) {
+  if (!Number.isFinite(port) || port <= 0) return false;
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      try {
+        socket.destroy();
+      } catch {}
+      resolve(Boolean(value));
+    };
+    socket.setTimeout(Math.max(100, timeoutMs));
+    socket.once("connect", () => finish(true));
+    socket.once("timeout", () => finish(false));
+    socket.once("error", () => finish(false));
+    socket.connect({ host: "127.0.0.1", port });
+  });
+}
+
 async function waitForReady(readyUrl, child, timeoutMs = READY_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
+  const port = portFromReadyUrl(readyUrl);
+  let tcpReadyStreak = 0;
+  let lastReadyStatus = 0;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) {
       throw new Error(`Codex app-server exited before becoming ready (code ${child.exitCode}).`);
     }
-    try {
-      const response = await fetch(readyUrl, { method: "GET" });
-      if (response.ok) return true;
-    } catch {}
+    const readyStatus = await probeReadyHttpStatus(readyUrl, READY_HTTP_TIMEOUT_MS);
+    if (readyStatus > 0) lastReadyStatus = readyStatus;
+    if (readyStatus >= 200 && readyStatus < 300) {
+      return { readyBy: "readyz", status: readyStatus };
+    }
+    if (port > 0) {
+      const tcpReachable = await probeTcpPort(port, READY_TCP_TIMEOUT_MS);
+      tcpReadyStreak = tcpReachable ? tcpReadyStreak + 1 : 0;
+      if (tcpReadyStreak >= READY_TCP_STABLE_POLLS) {
+        return { readyBy: "tcp", status: lastReadyStatus };
+      }
+    }
     await new Promise((resolve) => setTimeout(resolve, READY_POLL_MS));
   }
-  throw new Error(`Timed out waiting for Codex app-server readiness at ${readyUrl}.`);
+  const statusNote = lastReadyStatus ? ` (last /readyz status ${lastReadyStatus})` : "";
+  throw new Error(`Timed out waiting for Codex app-server readiness at ${readyUrl}.${statusNote}`);
 }
 
 function resolveRuntime(project, codex) {
@@ -64,16 +147,18 @@ function resolveRuntime(project, codex) {
   return "host";
 }
 
-function buildDescriptor(project, codex, port) {
+function buildDescriptor(project, codex, port, options = {}) {
   const runtime = resolveRuntime(project, codex);
   const wsUrl = `ws://127.0.0.1:${port}`;
   const readyUrl = `http://127.0.0.1:${port}/readyz`;
   const binaryPath = normalizeBinaryCommand(codex.binaryPath, runtime);
+  const codexHome = normalizeString(options.codexHome, "");
   const workspace = project?.workspace || { kind: "local", localPath: project?.repoPath || process.cwd() };
 
   if (runtime === "wsl") {
     const linuxPath = normalizeString(workspace.linuxPath, "/home");
     if (process.platform === "win32") {
+      const codexHomeExport = codexHome ? `export CODEX_HOME=${shellQuote(codexHome)}; ` : "";
       const args = [];
       if (workspace.distro) args.push("-d", workspace.distro);
       args.push(
@@ -82,10 +167,10 @@ function buildDescriptor(project, codex, port) {
         "--",
         "bash",
         "-lc",
-        `set -e; exec ${shellQuote(binaryPath)} app-server --listen ${shellQuote(wsUrl)}`,
+        `set -e; ${codexHomeExport}exec ${shellQuote(binaryPath)} app-server --listen ${shellQuote(wsUrl)}`,
       );
       return {
-        key: `wsl:${workspace.distro || "default"}:${linuxPath}:${binaryPath}`,
+        key: `wsl:${workspace.distro || "default"}:${linuxPath}:${binaryPath}:${codexHome || "default"}`,
         runtime,
         wsUrl,
         readyUrl,
@@ -94,10 +179,12 @@ function buildDescriptor(project, codex, port) {
         cwd: undefined,
         binaryPath,
         workspaceRoot: linuxPath,
+        codexHome,
+        envExtras: {},
       };
     }
     return {
-      key: `linux:${linuxPath}:${binaryPath}`,
+      key: `linux:${linuxPath}:${binaryPath}:${codexHome || "default"}`,
       runtime,
       wsUrl,
       readyUrl,
@@ -106,6 +193,8 @@ function buildDescriptor(project, codex, port) {
       cwd: linuxPath,
       binaryPath,
       workspaceRoot: linuxPath,
+      codexHome,
+      envExtras: codexHome ? { CODEX_HOME: codexHome } : {},
     };
   }
 
@@ -115,7 +204,7 @@ function buildDescriptor(project, codex, port) {
 
   const localPath = normalizeString(workspace.localPath, project?.repoPath || process.cwd());
   return {
-    key: `host:${localPath}:${binaryPath}`,
+    key: `host:${localPath}:${binaryPath}:${codexHome || "default"}`,
     runtime,
     wsUrl,
     readyUrl,
@@ -124,6 +213,8 @@ function buildDescriptor(project, codex, port) {
     cwd: localPath,
     binaryPath,
     workspaceRoot: localPath,
+    codexHome,
+    envExtras: codexHome ? { CODEX_HOME: codexHome } : {},
   };
 }
 
@@ -135,7 +226,7 @@ class CodexAppServerManager extends EventEmitter {
 
   snapshot() {
     if (!this.session) return null;
-    const { key, status, runtime, wsUrl, readyUrl, binaryPath, workspaceRoot, error, logs } = this.session;
+    const { key, status, runtime, wsUrl, readyUrl, binaryPath, workspaceRoot, codexHome, error, logs } = this.session;
     return {
       key,
       status,
@@ -144,6 +235,7 @@ class CodexAppServerManager extends EventEmitter {
       readyUrl,
       binaryPath,
       workspaceRoot,
+      codexHome,
       error,
       logs: logs.slice(-20),
     };
@@ -168,68 +260,91 @@ class CodexAppServerManager extends EventEmitter {
     if (this.session.logs.length > 200) this.session.logs.splice(0, this.session.logs.length - 200);
   }
 
-  async ensureForProject(project) {
+  async ensureForProject(project, options = {}) {
     const codex = project?.surfaceBinding?.codex || {};
-    const port = await allocatePort();
-    const descriptor = buildDescriptor(project, codex, port);
-
-    if (this.session && this.session.key === descriptor.key && this.session.status === "ready") {
+    const probeDescriptor = buildDescriptor(project, codex, 1, options);
+    if (this.session && this.session.key === probeDescriptor.key && this.session.status === "ready") {
       return this.snapshot();
     }
 
-    await this.dispose();
+    const startupAttempts = normalizeInteger(options.startupAttempts, STARTUP_ATTEMPTS, 1, 4);
+    let lastFailure = null;
 
-    const child = spawn(descriptor.command, descriptor.args, {
-      cwd: descriptor.cwd,
-      env: process.env,
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-    });
+    for (let attempt = 1; attempt <= startupAttempts; attempt += 1) {
+      const port = await allocatePort();
+      const descriptor = buildDescriptor(project, codex, port, options);
 
-    this.session = {
-      ...descriptor,
-      child,
-      status: "starting",
-      error: "",
-      logs: [],
-    };
+      await this.dispose();
 
-    child.stdout?.setEncoding("utf8");
-    child.stderr?.setEncoding("utf8");
-    child.stdout?.on("data", (chunk) => this.appendLog("stdout", chunk));
-    child.stderr?.on("data", (chunk) => this.appendLog("stderr", chunk));
-    child.on("error", (error) => {
-      if (!this.session || this.session.child !== child) return;
-      this.session.status = "failed";
-      this.session.error = error.message;
-      this.emitStatus();
-    });
-    child.on("exit", (code, signal) => {
-      if (!this.session || this.session.child !== child) return;
-      if (this.session.status !== "disposed") {
-        this.session.status = "exited";
-        this.session.error = `Codex app-server exited (code=${code ?? "null"} signal=${signal ?? "null"}).`;
-        this.emitStatus();
-      }
-    });
+      const child = spawn(descriptor.command, descriptor.args, {
+        cwd: descriptor.cwd,
+        env: { ...process.env, ...(descriptor.envExtras || {}) },
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+      });
 
-    this.emitStatus();
+      this.session = {
+        ...descriptor,
+        child,
+        status: "starting",
+        error: "",
+        logs: [],
+      };
 
-    try {
-      await waitForReady(descriptor.readyUrl, child);
-      if (!this.session || this.session.child !== child) throw new Error("Codex app-server session was replaced before readiness.");
-      this.session.status = "ready";
-      this.emitStatus();
-      return this.snapshot();
-    } catch (error) {
-      if (this.session && this.session.child === child) {
+      child.stdout?.setEncoding("utf8");
+      child.stderr?.setEncoding("utf8");
+      child.stdout?.on("data", (chunk) => this.appendLog("stdout", chunk));
+      child.stderr?.on("data", (chunk) => this.appendLog("stderr", chunk));
+      child.on("error", (error) => {
+        if (!this.session || this.session.child !== child) return;
         this.session.status = "failed";
         this.session.error = error.message;
         this.emitStatus();
+      });
+      child.on("exit", (code, signal) => {
+        if (!this.session || this.session.child !== child) return;
+        if (this.session.status !== "disposed") {
+          this.session.status = "exited";
+          this.session.error = `Codex app-server exited (code=${code ?? "null"} signal=${signal ?? "null"}).`;
+          this.emitStatus();
+        }
+      });
+
+      this.emitStatus();
+
+      try {
+        const ready = await waitForReady(descriptor.readyUrl, child);
+        if (!this.session || this.session.child !== child) throw new Error("Codex app-server session was replaced before readiness.");
+        this.session.status = "ready";
+        if (ready?.readyBy === "tcp") {
+          this.appendLog(
+            "status",
+            `Codex app-server accepted as ready via TCP probe after /readyz status ${ready.status || "unavailable"}.`,
+          );
+        }
+        this.emitStatus();
+        return this.snapshot();
+      } catch (error) {
+        if (this.session && this.session.child === child) {
+          this.session.status = "failed";
+          const logTail = this.session.logs
+            .slice(-6)
+            .map((entry) => `${entry.kind}: ${entry.line}`)
+            .join(" | ");
+          this.session.error = error.message;
+          this.emitStatus();
+          lastFailure = new Error(logTail ? `${error.message} Last logs: ${logTail}` : error.message);
+        } else {
+          lastFailure = error instanceof Error ? error : new Error(String(error));
+        }
+        await this.dispose();
+        if (attempt < startupAttempts) {
+          await new Promise((resolve) => setTimeout(resolve, 350 * attempt));
+        }
       }
-      await this.dispose();
-      throw error;
     }
+
+    throw lastFailure || new Error("Codex app-server startup failed.");
   }
 
   async dispose() {

@@ -520,6 +520,28 @@ button:active {
   margin-bottom: 10px;
 }
 
+.threads-action-bar > .muted {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  line-height: 1.35;
+}
+
+.threads-action-bar .heading-actions {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  flex-wrap: nowrap;
+}
+
+#threadLinkHint {
+  min-height: calc(2 * 1.35em);
+  max-height: calc(2 * 1.35em);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 .thread-source-actions {
   align-items: flex-start;
 }
@@ -584,6 +606,39 @@ button:active {
 
 .thread-browser-item strong {
   font-size: 13px;
+}
+
+.thread-browser-group {
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: rgba(5, 7, 11, 0.22);
+}
+
+.thread-browser-group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.thread-browser-group-prefix {
+  color: var(--muted-2);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  font-weight: 800;
+}
+
+.thread-browser-group-title {
+  flex: 1;
+  font-size: 12px;
+}
+
+.thread-browser-group-list {
+  display: grid;
+  gap: 8px;
 }
 
 .thread-source-tabs {
@@ -862,6 +917,12 @@ body.dragging {
   .threads-action-bar {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .threads-action-bar .heading-actions {
+    width: 100%;
+    justify-content: flex-start;
+    flex-wrap: wrap;
   }
 }
 
