@@ -2,7 +2,6 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
-const { DatabaseSync } = require("node:sqlite");
 
 const DB_SCHEMA_VERSION = 1;
 
@@ -33,6 +32,15 @@ class ThreadAnalyticsStore {
     this.dbPath = String(dbPath || "").trim();
     if (!this.dbPath) throw new Error("Analytics database path is required.");
     fs.mkdirSync(path.dirname(this.dbPath), { recursive: true });
+    let DatabaseSync = null;
+    try {
+      ({ DatabaseSync } = require("node:sqlite"));
+    } catch (error) {
+      const reason = error && error.message ? ` ${error.message}` : "";
+      throw new Error(
+        `Thread analytics requires runtime SQLite support (node:sqlite).${reason}`.trim(),
+      );
+    }
     this.db = new DatabaseSync(this.dbPath);
     this.db.exec("pragma journal_mode = wal;");
     this.db.exec("pragma synchronous = normal;");
@@ -227,8 +235,8 @@ class ThreadAnalyticsStore {
         is_subagent = excluded.is_subagent,
         last_seen_at = excluded.last_seen_at,
         last_scan_status = case
-          when analytics_threads.last_scan_status = 'error' then analytics_threads.last_scan_status
-          else 'ready'
+          when analytics_threads.last_scan_status = 'unavailable' then 'stale'
+          else analytics_threads.last_scan_status
         end
     `);
 
@@ -248,19 +256,7 @@ class ThreadAnalyticsStore {
         last_seen_at = excluded.last_seen_at
     `);
 
-    const readExistingLinks = this.db.prepare(`
-      select thread_key as threadKey
-      from analytics_project_links
-      where project_id = ?
-    `);
-    const markUnavailable = this.db.prepare(`
-      update analytics_threads
-      set last_scan_status = 'unavailable'
-      where thread_key = ?
-    `);
-
     const seenKeys = new Set();
-    const existingLinks = readExistingLinks.all(normalizedProjectId).map((row) => String(row.threadKey || ""));
     const tx = this.db.transaction(() => {
       for (const entry of Array.isArray(entries) ? entries : []) {
         const sourceHome = normalizeText(entry.sourceHome, "");
@@ -281,7 +277,7 @@ class ThreadAnalyticsStore {
           entry.isSubagent ? 1 : 0,
           seenAt,
           seenAt,
-          "ready",
+          "never processed",
         );
         upsertLink.run(
           normalizedProjectId,
@@ -292,11 +288,6 @@ class ThreadAnalyticsStore {
           seenAt,
         );
         seenKeys.add(threadKey);
-      }
-
-      for (const key of existingLinks) {
-        if (!key || seenKeys.has(key)) continue;
-        markUnavailable.run(key);
       }
     });
     tx();
@@ -318,6 +309,22 @@ class ThreadAnalyticsStore {
       limit 1
     `);
     return stmt.get(normalizeText(threadKey, ""));
+  }
+
+  markThreadReady(threadKey, sessionUpdatedAt = "", seenAt = nowIso()) {
+    const stmt = this.db.prepare(`
+      update analytics_threads
+      set
+        last_scan_status = 'ready',
+        last_session_updated_at = ?,
+        last_seen_at = ?
+      where thread_key = ?
+    `);
+    stmt.run(
+      normalizeText(sessionUpdatedAt, ""),
+      normalizeText(seenAt, nowIso()),
+      normalizeText(threadKey, ""),
+    );
   }
 
   insertErrorSnapshot(threadKey, entry, analyzerVersion, errorMessage, processedAt = nowIso()) {

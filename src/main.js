@@ -2102,6 +2102,7 @@ async function updateThreadAnalytics(projectId, options = {}) {
     const hints = projectAnalyticsBindingHints(project, discoveredEntries);
     store.upsertDiscoveredThreads(project.id, discoveredEntries, hints, nowIso());
 
+    const staleCandidates = [];
     for (const entry of discoveredEntries) {
       const threadKey = buildThreadKey(normalizeString(entry.sourceHome, ""), normalizeString(entry.threadId, ""));
       if (!threadKey || !normalizeString(entry.sessionFilePath, "")) {
@@ -2118,35 +2119,51 @@ async function updateThreadAnalytics(projectId, options = {}) {
 
       const current = store.getCurrentSnapshotFingerprint(threadKey);
       if (analyticsCheapFingerprintMatches(current, entry)) {
+        store.markThreadReady(threadKey, normalizeString(entry.updatedAt, ""), nowIso());
         counts.skipped += 1;
         continue;
       }
-
-      try {
-        const analysis = await requestWorkspace(project, "analyzeCodexThread", {
-          threadId: entry.threadId,
-          sourceHome: entry.sourceHome,
-          sessionFilePath: entry.sessionFilePath,
-        }, 140_000);
-        store.insertSuccessfulSnapshot(
-          threadKey,
-          entry,
-          analysis,
-          THREAD_ANALYTICS_ANALYZER_VERSION,
-          nowIso(),
-        );
-        counts.processed += 1;
-      } catch (error) {
-        store.insertErrorSnapshot(
-          threadKey,
-          entry,
-          THREAD_ANALYTICS_ANALYZER_VERSION,
-          error?.message || "Analytics parse failed.",
-          nowIso(),
-        );
-        counts.failed += 1;
-      }
+      staleCandidates.push({ entry, threadKey });
     }
+
+    const workerCount = Math.max(1, Math.min(Number(options?.concurrency) || 4, 12));
+    let queueIndex = 0;
+    const workers = Array.from({ length: Math.min(workerCount, staleCandidates.length) }, async () => {
+      while (true) {
+        const currentIndex = queueIndex;
+        queueIndex += 1;
+        if (currentIndex >= staleCandidates.length) return;
+        const candidate = staleCandidates[currentIndex];
+        const entry = candidate.entry;
+        const threadKey = candidate.threadKey;
+        const processedAt = nowIso();
+        try {
+          const analysis = await requestWorkspace(project, "analyzeCodexThread", {
+            threadId: entry.threadId,
+            sourceHome: entry.sourceHome,
+            sessionFilePath: entry.sessionFilePath,
+          }, 140_000);
+          store.insertSuccessfulSnapshot(
+            threadKey,
+            entry,
+            analysis,
+            THREAD_ANALYTICS_ANALYZER_VERSION,
+            processedAt,
+          );
+          counts.processed += 1;
+        } catch (error) {
+          store.insertErrorSnapshot(
+            threadKey,
+            entry,
+            THREAD_ANALYTICS_ANALYZER_VERSION,
+            error?.message || "Analytics parse failed.",
+            processedAt,
+          );
+          counts.failed += 1;
+        }
+      }
+    });
+    await Promise.all(workers);
 
     const entries = store.listProjectThreads(project.id, 260);
     store.finishScanRun(runId, counts, "");
