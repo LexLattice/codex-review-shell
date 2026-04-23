@@ -1073,10 +1073,8 @@ function chatgptRecentThreadsScript(limit = 40) {
           const projectName = normalizeText(forcedProjectName || (projectMatch ? projectMatch[1] : ""));
           const sourceKind = projectName ? "project" : fallbackKind;
           let title = normalizeText(aria || link.textContent) || "Untitled ChatGPT thread";
-          if (!aria) {
-            const chatInProjectTitle = title.match(/^(.+?),\\s*chat in project\\b/i);
-            if (chatInProjectTitle) title = normalizeText(chatInProjectTitle[1]);
-          }
+          const chatInProjectTitle = title.match(/^(.+?),\\s*chat in project\\b/i);
+          if (chatInProjectTitle) title = normalizeText(chatInProjectTitle[1]);
           if (source === "project-iframe" && title.length > 120) {
             title = title.slice(0, 117).trimEnd() + "...";
           }
@@ -1145,6 +1143,18 @@ function chatgptRecentThreadsScript(limit = 40) {
         return Array.from(byKey.values());
       };
 
+      const projectKeyFromThreadUrl = (value) => {
+        try {
+          const url = new URL(String(value || ""), origin);
+          const match = url.pathname.match(/^\\/g\\/(g-p-[^/]+)\\/c\\/[^/?#]+/i);
+          if (!match) return "";
+          const idMatch = match[1].match(/^g-p-[0-9a-f]+/i);
+          return idMatch ? idMatch[0].toLowerCase() : "";
+        } catch {
+          return "";
+        }
+      };
+
       const ensureSidebarVisible = async () => {
         const openButton = document.querySelector('[data-testid="open-sidebar-button"]');
         if (openButton && visible(openButton)) {
@@ -1183,9 +1193,9 @@ function chatgptRecentThreadsScript(limit = 40) {
 
       const fromDom = () => fromDomRoot(document, "recent", "dom-fallback");
 
-      const fromProjectIframes = async () => {
+      const fromProjectIframes = async (targets = null) => {
         await ensureSidebarVisible();
-        const projectAnchors = collectProjectAnchors().slice(0, 5);
+        const projectAnchors = (Array.isArray(targets) && targets.length ? targets : collectProjectAnchors()).slice(0, 5);
         if (!projectAnchors.length) return [];
         const items = [];
         for (const project of projectAnchors) {
@@ -1278,8 +1288,25 @@ function chatgptRecentThreadsScript(limit = 40) {
       const sidebar = await fromSidebarDom();
       const dom = fromDom();
       const baseline = dedupe([...cached, ...fetched, ...sidebar, ...dom]);
-      const baselineProjectCount = baseline.filter((entry) => entry.sourceKind === "project").length;
-      const iframeProjects = baselineProjectCount >= 3 ? [] : await fromProjectIframes();
+      const baselineProjects = baseline.filter((entry) => entry.sourceKind === "project");
+      const discoveredProjectNames = new Set(
+        baselineProjects
+          .map((entry) => normalizeText(entry.projectName).toLowerCase())
+          .filter(Boolean)
+      );
+      const discoveredProjectKeys = new Set(
+        baselineProjects
+          .map((entry) => projectKeyFromThreadUrl(entry.url))
+          .filter(Boolean)
+      );
+      const sidebarProjects = collectProjectAnchors().slice(0, 5);
+      const missingSidebarProjects = sidebarProjects.filter((project) => {
+        const projectNameKey = normalizeText(project.projectName).toLowerCase();
+        const knownById = project.projectId && discoveredProjectKeys.has(project.projectId);
+        const knownByName = projectNameKey && discoveredProjectNames.has(projectNameKey);
+        return !(knownById || knownByName);
+      });
+      const iframeProjects = missingSidebarProjects.length ? await fromProjectIframes(missingSidebarProjects) : [];
       const combined = dedupe([...baseline, ...iframeProjects]);
 
       const sourceParts = [];

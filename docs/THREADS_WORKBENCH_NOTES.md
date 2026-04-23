@@ -55,8 +55,9 @@ This note tracks concrete additions and behavior changes in the middle-plane `Th
   - some sessions only returned global recents (for example 28 recents) even though project threads existed.
   - this happened when the current page/session did not expose expanded project-folder thread links in the active DOM.
 - Added fallback in `chatgptRecentThreadsScript`:
-  - when baseline discovery finds fewer than 3 `project` entries, it now:
+  - when baseline discovery does not cover the currently visible project list, it now:
     - collects sidebar project anchors (`/g/g-p-.../project`)
+    - computes which sidebar projects are missing from baseline discovery
     - loads project pages in hidden same-origin iframes (off-screen)
     - extracts project-scoped thread links (`/g/g-p-.../c/...`)
     - tags these entries as `source: project-iframe`, `sourceKind: project`
