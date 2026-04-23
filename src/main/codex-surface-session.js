@@ -1,6 +1,7 @@
 "use strict";
 
 const { EventEmitter } = require("node:events");
+const DEFAULT_RPC_REQUEST_TIMEOUT_MS = 60_000;
 
 function toErrorMessage(error, fallback) {
   return error instanceof Error ? error.message : fallback;
@@ -16,6 +17,9 @@ class CodexSurfaceSession extends EventEmitter {
     this.pending = new Map();
     this.lastError = "";
     this.disposing = false;
+    this.requestTimeoutMs = Number.isFinite(Number(process.env.CODEX_SURFACE_RPC_TIMEOUT_MS))
+      ? Math.max(5_000, Math.min(Number(process.env.CODEX_SURFACE_RPC_TIMEOUT_MS), 5 * 60_000))
+      : DEFAULT_RPC_REQUEST_TIMEOUT_MS;
   }
 
   sendEvent(payload) {
@@ -35,6 +39,7 @@ class CodexSurfaceSession extends EventEmitter {
 
   rejectPending(message) {
     for (const [id, pending] of this.pending.entries()) {
+      if (pending.timer) clearTimeout(pending.timer);
       pending.reject(new Error(message));
       this.pending.delete(id);
     }
@@ -77,6 +82,7 @@ class CodexSurfaceSession extends EventEmitter {
           if (message.id && this.pending.has(message.id)) {
             const pending = this.pending.get(message.id);
             this.pending.delete(message.id);
+            if (pending.timer) clearTimeout(pending.timer);
             if (message.error) pending.reject(new Error(message.error.message || JSON.stringify(message.error)));
             else pending.resolve(message.result);
             return;
@@ -121,8 +127,21 @@ class CodexSurfaceSession extends EventEmitter {
     }
     const id = ++this.nextId;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
+      const timer = setTimeout(() => {
+        if (!this.pending.has(id)) return;
+        this.pending.delete(id);
+        const message = `Codex RPC timed out after ${this.requestTimeoutMs}ms: ${method}`;
+        this.sendEvent({ type: "rpc-timeout", id, method, timeoutMs: this.requestTimeoutMs });
+        reject(new Error(message));
+      }, this.requestTimeoutMs);
+      this.pending.set(id, { resolve, reject, timer });
+      try {
+        this.socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
+      } catch (error) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(error);
+      }
     });
   }
 

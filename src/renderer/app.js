@@ -24,6 +24,7 @@ const HANDOFF_KINDS = {
   "research-question": "Research question",
 };
 const ACTIVE_HANDOFF_STATUSES = new Set(["staged", "copied", "opened-thread", "submitted-manually", "response-pending", "response-captured"]);
+const CHATGPT_ALLOWED_HOSTS = new Set(["chatgpt.com", "www.chatgpt.com", "chat.openai.com", "www.chat.openai.com"]);
 
 const state = {
   config: null,
@@ -46,6 +47,7 @@ const state = {
   selectedFilePreview: null,
   workspaceStatuses: {},
   watchedArtifacts: [],
+  watchedArtifactsScan: null,
   codexThreads: [],
   chatgptRecentThreads: [],
   chatgptRecentThreadsStatus: "idle",
@@ -56,6 +58,15 @@ const state = {
   selectedRecentChatgptThreadId: "",
   selectedBindingId: "",
   activeChatgptThreadBrowserTab: "project",
+  requestVersions: {
+    project: 0,
+    thread: 0,
+    codexThreads: 0,
+    recentThreads: 0,
+    workTree: 0,
+    watchedArtifacts: 0,
+    preview: 0,
+  },
 };
 
 const els = {
@@ -192,6 +203,25 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function nextRequestVersion(kind) {
+  const current = Number(state.requestVersions[kind] || 0) + 1;
+  state.requestVersions[kind] = current;
+  return current;
+}
+
+function isRequestStale(kind, version) {
+  return Number(state.requestVersions[kind] || 0) !== Number(version || 0);
+}
+
+function projectRequestSnapshot(projectId = activeProject()?.id || "") {
+  return { projectId, projectVersion: Number(state.requestVersions.project || 0) };
+}
+
+function isProjectRequestStale(projectId, projectVersion) {
+  const currentProjectId = activeProject()?.id || "";
+  return currentProjectId !== projectId || Number(state.requestVersions.project || 0) !== Number(projectVersion || 0);
+}
+
 function shortPath(value) {
   const text = String(value ?? "");
   if (text.length <= 64) return text;
@@ -300,6 +330,11 @@ function primaryReviewThread(project) {
     threads[0] ||
     null
   );
+}
+
+function activeReviewThreadCount(projectOrThreads) {
+  const threads = Array.isArray(projectOrThreads) ? projectOrThreads : chatThreads(projectOrThreads);
+  return threads.filter((thread) => thread.role === "review" && !thread.archived).length;
 }
 
 function activeThread(project = activeProject()) {
@@ -952,8 +987,10 @@ function renderHandoffQueue() {
     `;
     row.querySelector(".role-badge").textContent = `${HANDOFF_KINDS[item.kind] || item.kind} · ${item.status}`;
     row.querySelector("strong").textContent = item.title;
+    const orphaned = !item.targetThreadId || !thread;
     row.querySelector(".handoff-meta").textContent = `Target: ${thread ? `${roleLabel(thread.role)} · ${thread.title}` : "missing thread"}${item.fileRelPath ? ` · ${item.fileRelPath}` : ""}`;
     row.querySelector(".handoff-prompt-preview").textContent = item.promptText;
+    row.querySelector(".open-handoff").disabled = orphaned;
     row.querySelector(".open-handoff").addEventListener("click", () => openHandoffThread(item.id));
     row.querySelector(".copy-handoff").addEventListener("click", () => copyHandoffPrompt(item.id));
     row.querySelector(".reveal-handoff").disabled = !item.fileRelPath;
@@ -968,8 +1005,17 @@ function renderHandoffQueue() {
 function renderWatchedArtifacts() {
   els.watchedCount.textContent = String(state.watchedArtifacts.length);
   els.watchedArtifactList.innerHTML = "";
+  if (state.watchedArtifactsScan?.warning) {
+    const warning = document.createElement("div");
+    warning.className = "empty-state";
+    warning.textContent = state.watchedArtifactsScan.warning;
+    els.watchedArtifactList.appendChild(warning);
+  }
   if (!state.watchedArtifacts.length) {
-    els.watchedArtifactList.innerHTML = `<div class="empty-state">No matching review artifacts detected. Scan uses configured watched patterns through the workspace backend.</div>`;
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "No matching review artifacts detected. Scan uses configured watched patterns through the workspace backend.";
+    els.watchedArtifactList.appendChild(empty);
     return;
   }
   for (const artifact of state.watchedArtifacts) {
@@ -1109,26 +1155,39 @@ async function saveConfig(config) {
   return result.config;
 }
 
-async function loadCodexThreads() {
-  const project = activeProject();
-  if (!project || !bridge.listCodexThreads) return;
+async function loadCodexThreads(options = {}) {
+  const snapshot = {
+    ...projectRequestSnapshot(),
+    ...(options || {}),
+  };
+  if (!snapshot.projectId || !bridge.listCodexThreads) return;
+  const requestVersion = nextRequestVersion("codexThreads");
   try {
-    const result = await bridge.listCodexThreads(project.id);
+    const result = await bridge.listCodexThreads(snapshot.projectId);
+    if (isRequestStale("codexThreads", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
     state.codexThreads = result.entries || [];
     if (result.fallback?.mode === "fast" && result.fallback?.reason) {
       setLastEvent(`Codex thread discovery used fast fallback: ${result.fallback.reason}`);
     }
   } catch (error) {
+    if (isRequestStale("codexThreads", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
     state.codexThreads = [];
     setLastEvent(`Codex thread discovery failed: ${error.message}`);
   }
+  if (isRequestStale("codexThreads", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
   if (state.selectedCodexThreadId && !codexThreadById(state.selectedCodexThreadId)) state.selectedCodexThreadId = "";
   renderThreadsWorkbench();
 }
 
 async function loadChatgptRecentThreads(options = {}) {
+  const snapshot = {
+    ...projectRequestSnapshot(),
+    ...(options || {}),
+  };
+  if (!snapshot.projectId) return;
   if (!bridge.listChatgptRecentThreads && !bridge.listCachedChatgptRecentThreads) return;
   const refresh = Boolean(options?.refresh);
+  const requestVersion = nextRequestVersion("recentThreads");
   state.chatgptRecentThreadsStatus = "loading";
   state.chatgptRecentThreadsLoadingMode = refresh ? "refresh" : "cache";
   renderThreadsWorkbench();
@@ -1138,6 +1197,7 @@ async function loadChatgptRecentThreads(options = {}) {
       : bridge.listCachedChatgptRecentThreads
         ? await bridge.listCachedChatgptRecentThreads(120)
         : await bridge.listChatgptRecentThreads(120, { refresh: false });
+    if (isRequestStale("recentThreads", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
     state.chatgptRecentThreads = Array.isArray(result.entries) ? result.entries : [];
     state.chatgptRecentThreadsSource = result.source || "";
     state.chatgptRecentThreadsStatus = result.available === false ? "unavailable" : "loaded";
@@ -1146,12 +1206,14 @@ async function loadChatgptRecentThreads(options = {}) {
       setLastEvent(`ChatGPT recent-thread ${modeLabel}: ${result.error}`);
     }
   } catch (error) {
+    if (isRequestStale("recentThreads", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
     state.chatgptRecentThreads = [];
     state.chatgptRecentThreadsSource = "error";
     state.chatgptRecentThreadsStatus = "error";
     const modeLabel = refresh ? "refresh" : "cache load";
     setLastEvent(`ChatGPT recent-thread ${modeLabel} failed: ${error.message}`);
   }
+  if (isRequestStale("recentThreads", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
   if (state.selectedRecentChatgptThreadId && !recentChatgptThreadById(state.selectedRecentChatgptThreadId)) {
     state.selectedRecentChatgptThreadId = "";
   }
@@ -1159,14 +1221,23 @@ async function loadChatgptRecentThreads(options = {}) {
 }
 
 async function selectProject(projectId) {
+  const projectVersion = nextRequestVersion("project");
+  nextRequestVersion("thread");
+  nextRequestVersion("codexThreads");
+  nextRequestVersion("recentThreads");
+  nextRequestVersion("workTree");
+  nextRequestVersion("watchedArtifacts");
+  nextRequestVersion("preview");
   const previous = state.config?.selectedProjectId;
   state.surfaceEvents.codex = { type: "loading" };
   state.surfaceEvents.chatgpt = { type: "loading" };
   renderStatus();
   const result = await bridge.selectProject(projectId);
+  if (isRequestStale("project", projectVersion)) return;
   state.config = result.config;
   state.selectedFileRelPath = "";
   state.selectedFilePreview = null;
+  state.watchedArtifactsScan = null;
   state.selectedBindingId = "";
   state.selectedCodexThreadId = "";
   state.selectedProjectChatThreadId = "";
@@ -1174,6 +1245,7 @@ async function selectProject(projectId) {
   state.activeChatgptThreadBrowserTab = "project";
   render();
   const project = activeProject();
+  if (!project || project.id !== projectId || isRequestStale("project", projectVersion)) return;
   if (project?.lastActiveBindingId) {
     const binding = laneBindingById(project, project.lastActiveBindingId);
     if (binding) populateBindingEditor(binding);
@@ -1186,18 +1258,21 @@ async function selectProject(projectId) {
     setLastEvent(`Attaching workspace: ${workspaceSummary(project)}…`);
     try {
       const status = await bridge.attachWorkspace(project.id);
+      if (isRequestStale("project", projectVersion) || isProjectRequestStale(project.id, projectVersion)) return;
       state.workspaceStatuses[project.id] = status;
       renderSelectedProject();
-      await loadCodexThreads();
+      await loadCodexThreads({ projectId: project.id, projectVersion });
     } catch (error) {
+      if (isRequestStale("project", projectVersion) || isProjectRequestStale(project.id, projectVersion)) return;
       state.codexThreads = [];
       state.workspaceStatuses[project.id] = { status: "failed", lastError: error.message };
       renderSelectedProject();
       renderThreadsWorkbench();
     }
   }
-  await loadWorkTreeRoot();
-  await loadWatchedArtifacts();
+  await loadWorkTreeRoot({ projectId: project.id, projectVersion });
+  await loadWatchedArtifacts({ projectId: project.id, projectVersion });
+  if (isRequestStale("project", projectVersion)) return;
   if (previous !== projectId) scheduleResizeBurst();
 }
 
@@ -1214,12 +1289,16 @@ async function selectThread(threadId) {
   renderThreadsWorkbench();
   state.surfaceEvents.chatgpt = { type: "loading" };
   renderStatus();
+  const threadVersion = nextRequestVersion("thread");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
   try {
     const result = await bridge.selectChatThread(project.id, threadId);
+    if (isRequestStale("thread", threadVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
     state.config = result.config;
     render();
     setLastEvent(`Opened ${roleLabel(result.thread?.role)} thread: ${result.thread?.title}.`);
   } catch (error) {
+    if (isRequestStale("thread", threadVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
     setLastEvent(`Thread open failed: ${error.message}`);
   }
 }
@@ -1359,6 +1438,7 @@ function normalizeHttpsUrl(value) {
   try {
     const url = new URL(text);
     if (url.protocol !== "https:") return "https://chatgpt.com/";
+    if (!CHATGPT_ALLOWED_HOSTS.has(url.hostname.toLowerCase())) return "https://chatgpt.com/";
     return url.toString();
   } catch {
     return "https://chatgpt.com/";
@@ -1454,6 +1534,10 @@ async function handleProjectFormSubmit(event) {
   event.preventDefault();
   if (!state.config) return;
   const project = projectFromForm();
+  if (activeReviewThreadCount(project) < 1) {
+    alert("Each project must keep at least one active Review ChatGPT thread.");
+    return;
+  }
   const existingIndex = state.config.projects.findIndex((item) => item.id === project.id);
   const projects = [...state.config.projects];
   if (existingIndex >= 0) projects[existingIndex] = project;
@@ -1557,6 +1641,10 @@ async function handleThreadFormSubmit(event) {
   if (existingIndex >= 0) threads[existingIndex] = thread;
   else threads.push(thread);
   if (thread.isPrimary) threads = threads.map((item) => ({ ...item, isPrimary: item.id === thread.id && item.role === "review" }));
+  if (activeReviewThreadCount(threads) < 1) {
+    alert("At least one active Review ChatGPT thread is required for each project.");
+    return;
+  }
   threads = normalizeThreadSet(threads);
   const activeId = !thread.archived ? thread.id : activeThread({ ...project, chatThreads: threads })?.id;
   const primary = primaryReviewThread({ ...project, chatThreads: threads });
@@ -1589,9 +1677,14 @@ async function deleteThreadFromDrawer() {
     alert("At least one active ChatGPT thread is required for a project.");
     return;
   }
+  const remainingThreads = chatThreads(project).filter((item) => item.id !== threadId);
+  if (activeReviewThreadCount(remainingThreads) < 1) {
+    alert("At least one active Review ChatGPT thread is required for each project.");
+    return;
+  }
   const confirmed = confirm(`Remove ChatGPT thread binding "${thread.title}"? This does not delete the ChatGPT conversation.`);
   if (!confirmed) return;
-  const threads = normalizeThreadSet(chatThreads(project).filter((item) => item.id !== threadId));
+  const threads = normalizeThreadSet(remainingThreads);
   const activeId = activeThread({ ...project, chatThreads: threads })?.id;
   const primary = primaryReviewThread({ ...project, chatThreads: threads });
   const updatedProject = {
@@ -1657,6 +1750,10 @@ async function importRecentChatgptThread() {
     lastOpenedAt: "",
   };
   const threads = normalizeThreadSet([importedThread, ...chatThreads(project)]);
+  if (activeReviewThreadCount(threads) < 1) {
+    setLastEvent("Cannot import thread: this project has no active Review thread. Add one first.");
+    return;
+  }
   const updatedProject = {
     ...project,
     chatThreads: threads,
@@ -1777,12 +1874,16 @@ async function stageFileHandoff(relPath = state.selectedFileRelPath, targetThrea
     setLastEvent("Select a file before staging a file review handoff.");
     return;
   }
-  if (!state.selectedFilePreview || state.selectedFilePreview.relPath !== relPath) {
+  let preview = state.selectedFilePreview && state.selectedFilePreview.relPath === relPath ? state.selectedFilePreview : null;
+  if (!preview) {
     try {
-      const preview = await bridge.readProjectFile(project.id, relPath);
+      preview = await bridge.readProjectFile(project.id, relPath);
       state.selectedFilePreview = preview;
+      state.selectedFileRelPath = preview.relPath;
     } catch (error) {
+      state.selectedFilePreview = null;
       setLastEvent(`Unable to read file for handoff: ${error.message}`);
+      return;
     }
   }
   const thread = threadById(project, targetThreadId) || targetThreadForKind("file-review");
@@ -1791,7 +1892,7 @@ async function stageFileHandoff(relPath = state.selectedFileRelPath, targetThrea
     project,
     thread,
     fileRelPath: relPath,
-    fileContents: selectedFileContents(),
+    fileContents: preview.binary ? "" : preview.text || "",
   });
   await addHandoff(
     makeHandoff({
@@ -1844,7 +1945,10 @@ function handoffById(project, handoffId) {
 async function openHandoffThread(handoffId) {
   const project = activeProject();
   const item = handoffById(project, handoffId);
-  if (!item) return;
+  if (!item || !item.targetThreadId) {
+    setLastEvent("This handoff is orphaned and needs a valid target thread.");
+    return;
+  }
   await selectThread(item.targetThreadId);
   await updateHandoffStatus(handoffId, "opened-thread");
 }
@@ -1879,15 +1983,41 @@ async function ignoreWatchedArtifact(relPath) {
   setLastEvent(`Ignored watched artifact: ${relPath}.`);
 }
 
-async function loadWatchedArtifacts() {
-  const project = activeProject();
-  if (!project) return;
+async function loadWatchedArtifacts(options = {}) {
+  const snapshot = {
+    ...projectRequestSnapshot(),
+    ...(options || {}),
+  };
+  if (!snapshot.projectId) return;
+  const requestVersion = nextRequestVersion("watchedArtifacts");
   try {
-    const result = await bridge.listWatchedArtifacts(project.id);
-    state.watchedArtifacts = result.entries || [];
+    const result = await bridge.listWatchedArtifacts(snapshot.projectId);
+    if (isRequestStale("watchedArtifacts", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    const entries = Array.isArray(result.entries) ? result.entries : [];
+    const scanLimit = Number(result.limit || 0);
+    const walkLimit = Number(result.walkLimit || 0);
+    const scanned = Number(result.scanned || 0);
+    const scanLimitHit = scanLimit > 0 && entries.length >= scanLimit;
+    const walkLimitHit = walkLimit > 0 && scanned >= walkLimit;
+    const warning = scanLimitHit || walkLimitHit
+      ? `Scan may be partial: ${scanLimitHit ? "entry limit reached" : ""}${scanLimitHit && walkLimitHit ? " · " : ""}${walkLimitHit ? "walk limit reached" : ""}.`
+      : "";
+    state.watchedArtifactsScan = {
+      scanned,
+      scanLimit,
+      walkLimit,
+      scanLimitHit,
+      walkLimitHit,
+      warning,
+    };
+    state.watchedArtifacts = entries;
     renderWatchedArtifacts();
-    setLastEvent(`Watched artifact scan found ${state.watchedArtifacts.length} matching files.`);
+    setLastEvent(
+      `Watched artifact scan found ${state.watchedArtifacts.length} matching files.${warning ? ` ${warning}` : ""}`
+    );
   } catch (error) {
+    if (isRequestStale("watchedArtifacts", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.watchedArtifactsScan = null;
     state.watchedArtifacts = [];
     renderWatchedArtifacts();
     setLastEvent(`Watched artifact scan failed: ${error.message}`);
@@ -1976,13 +2106,20 @@ function renderTreeEntries(container, entries) {
   }
 }
 
-async function loadWorkTreeRoot() {
+async function loadWorkTreeRoot(options = {}) {
+  const snapshot = {
+    ...projectRequestSnapshot(),
+    ...(options || {}),
+  };
+  if (!snapshot.projectId) return;
   const project = activeProject();
-  if (!project) return;
+  if (!project || project.id !== snapshot.projectId) return;
+  const requestVersion = nextRequestVersion("workTree");
   els.workTree.innerHTML = `<div class="empty-state">Loading ${project.name}…</div>`;
   resetPreview("Select a text/code file from the work tree.");
   try {
-    const result = await bridge.listWorkTree(project.id, "");
+    const result = await bridge.listWorkTree(snapshot.projectId, "");
+    if (isRequestStale("workTree", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
     els.workTree.innerHTML = "";
     renderTreeEntries(els.workTree, result.entries);
     if (result.skipped) {
@@ -1993,6 +2130,7 @@ async function loadWorkTreeRoot() {
     }
     setLastEvent(`Loaded work tree for ${project.name}.`);
   } catch (error) {
+    if (isRequestStale("workTree", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
     els.workTree.innerHTML = `<div class="empty-state"></div>`;
     els.workTree.querySelector(".empty-state").textContent = `Work tree error: ${error.message}`;
     setLastEvent(`Work tree error: ${error.message}`);
@@ -2043,6 +2181,8 @@ function resetPreview(message) {
 async function previewFile(relPath, row) {
   const project = activeProject();
   if (!project) return;
+  const requestVersion = nextRequestVersion("preview");
+  const snapshot = projectRequestSnapshot(project.id);
   for (const selected of els.workTree.querySelectorAll(".tree-row.selected")) selected.classList.remove("selected");
   row?.classList.add("selected");
   state.selectedFileRelPath = relPath;
@@ -2053,6 +2193,7 @@ async function previewFile(relPath, row) {
 
   try {
     const result = await bridge.readProjectFile(project.id, relPath);
+    if (isRequestStale("preview", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
     state.selectedFilePreview = result;
     state.selectedFileRelPath = result.relPath;
     els.previewPath.textContent = result.relPath;
@@ -2066,6 +2207,8 @@ async function previewFile(relPath, row) {
     renderPromptPreview();
     setLastEvent(`Previewing ${result.relPath}.`);
   } catch (error) {
+    if (isRequestStale("preview", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.selectedFilePreview = null;
     els.previewMeta.textContent = "error";
     els.filePreview.textContent = error.message;
     setLastEvent(`Preview error: ${error.message}`);
