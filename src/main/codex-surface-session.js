@@ -3,11 +3,13 @@
 const { EventEmitter } = require("node:events");
 const crypto = require("node:crypto");
 const fs = require("node:fs/promises");
+const WebSocket = require("ws");
 
 const DEFAULT_RPC_REQUEST_TIMEOUT_MS = 60_000;
 const OVERLOAD_RETRY_CODE = -32001;
 const OVERLOAD_RETRY_ATTEMPTS = 3;
 const OVERLOAD_RETRY_BASE_MS = 250;
+const MAX_BEARER_TOKEN_FILE_BYTES = 16 * 1024;
 
 const SUPPORTED_SERVER_REQUEST_METHODS = new Set([
   "item/commandExecution/requestApproval",
@@ -112,6 +114,11 @@ async function resolveBearerAuth(connection) {
   if (mode === "bearer-token-file") {
     const tokenFilePath = String(auth.tokenFilePath || "").trim();
     if (!tokenFilePath) throw new Error("Bearer token file path is missing.");
+    const stats = await fs.stat(tokenFilePath);
+    if (!stats.isFile()) throw new Error("Bearer token path must point to a regular file.");
+    if (stats.size > MAX_BEARER_TOKEN_FILE_BYTES) {
+      throw new Error(`Bearer token file is too large. Limit is ${MAX_BEARER_TOKEN_FILE_BYTES} bytes.`);
+    }
     token = (await fs.readFile(tokenFilePath, "utf8")).trim();
   } else if (mode === "bearer-token-env") {
     const tokenEnvVar = String(auth.tokenEnvVar || "").trim();
@@ -356,16 +363,16 @@ class CodexSurfaceSession extends EventEmitter {
         else resolve();
       };
 
-      socket.addEventListener("open", () => {
+      socket.once("open", () => {
         this.socket = socket;
         this.lastError = "";
         this.emitStatus("connected");
         finish();
       });
 
-      socket.addEventListener("message", (event) => {
+      socket.on("message", (data) => {
         try {
-          const message = JSON.parse(String(event.data || ""));
+          const message = JSON.parse(String(data || ""));
           if (!message.method && hasJsonRpcId(message) && this.pending.has(message.id)) {
             const pending = this.pending.get(message.id);
             this.pending.delete(message.id);
@@ -388,14 +395,14 @@ class CodexSurfaceSession extends EventEmitter {
         }
       });
 
-      socket.addEventListener("error", () => {
+      socket.once("error", () => {
         if (this.disposing) return;
         this.lastError = "Codex app-server connection failed.";
         this.emitStatus("error", { error: this.lastError });
         if (socket !== this.socket) finish(new Error(this.lastError));
       });
 
-      socket.addEventListener("close", () => {
+      socket.once("close", () => {
         if (this.disposing) return;
         const message = this.lastError || "Codex app-server connection closed.";
         this.rejectPending(message);

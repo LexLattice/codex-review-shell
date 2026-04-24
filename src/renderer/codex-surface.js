@@ -474,7 +474,7 @@ function renderUserInputRequestDetails(request, details, actions) {
       select.dataset.questionId = question.id || "";
       for (const option of question.options) {
         const opt = document.createElement("option");
-        opt.value = option.label || "";
+        opt.value = option.id || option.label || "";
         opt.textContent = option.description ? `${option.label} - ${option.description}` : option.label || "Option";
         select.appendChild(opt);
       }
