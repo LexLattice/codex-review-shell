@@ -182,6 +182,130 @@ textarea {
   background: rgba(17, 23, 34, 0.94);
 }
 
+.request-focus-pulse .bubble {
+  outline: 2px solid rgba(121, 184, 255, 0.55);
+  outline-offset: 3px;
+}
+
+.codex-request-card {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  white-space: normal;
+}
+
+.codex-request-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.codex-request-header strong {
+  font-size: 13px;
+}
+
+.codex-request-status {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(121, 184, 255, 0.24);
+  background: rgba(121, 184, 255, 0.1);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.codex-request-card.declined .codex-request-status,
+.codex-request-card.canceled .codex-request-status,
+.codex-request-card.timed-out .codex-request-status,
+.codex-request-card.connection-closed .codex-request-status {
+  border-color: rgba(255, 124, 143, 0.3);
+  background: rgba(255, 124, 143, 0.1);
+  color: var(--danger);
+}
+
+.codex-request-card.resolved .codex-request-status {
+  border-color: rgba(111, 222, 165, 0.3);
+  background: rgba(111, 222, 165, 0.1);
+  color: var(--success);
+}
+
+.codex-request-meta {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.codex-request-details {
+  display: grid;
+  gap: 7px;
+}
+
+.codex-request-line {
+  display: grid;
+  grid-template-columns: minmax(86px, 0.22fr) minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
+}
+
+.codex-request-line-key {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.codex-request-line-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+pre.codex-request-line-value {
+  margin: 0;
+  max-height: 280px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.codex-request-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.codex-request-form {
+  display: grid;
+  gap: 10px;
+}
+
+.codex-request-field {
+  display: grid;
+  gap: 5px;
+  color: var(--text);
+}
+
+.codex-request-field small {
+  color: var(--muted);
+}
+
+.codex-request-field select,
+.codex-request-field input,
+.codex-request-field textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #080c13;
+  color: var(--text);
+  padding: 8px 9px;
+}
+
+.codex-request-field textarea {
+  min-height: 74px;
+  resize: vertical;
+}
+
 .thought-process,
 .thought-tools,
 .thought-tool {

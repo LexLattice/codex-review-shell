@@ -24,6 +24,7 @@
     "migration:smoke": "node ./scripts/smoke-config-migration.mjs"
   },
   "dependencies": {
-    "electron": "^41.2.0"
+    "electron": "^41.2.0",
+    "ws": "^8.20.0"
   }
 }

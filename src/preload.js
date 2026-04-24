@@ -31,6 +31,8 @@ contextBridge.exposeInMainWorld("workspaceShell", {
   workspaceStatus: (projectId) => ipcRenderer.invoke("workspace:status", { projectId }),
   runWorkspaceCommand: (projectId, command) => ipcRenderer.invoke("workspace:run-command", { projectId, command }),
   selectChatThread: (projectId, threadId) => ipcRenderer.invoke("chatgpt:select-thread", { projectId, threadId }),
+  respondCodexRequest: (key, result) => ipcRenderer.invoke("codex:respond-request", { key, result }),
+  focusCodexRequest: (key) => ipcRenderer.invoke("codex:focus-request", { key }),
   openChatgptSettings: () => ipcRenderer.invoke("chatgpt:open-settings"),
   forceChatgptDark: () => ipcRenderer.invoke("chatgpt:force-dark"),
   onSurfaceEvent: (callback) => {
