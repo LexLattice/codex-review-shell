@@ -1047,6 +1047,7 @@ body.dragging {
 
 .thread-deck,
 .handoff-list,
+.codex-request-list,
 .artifact-list {
   display: grid;
   gap: 8px;
@@ -1054,6 +1055,7 @@ body.dragging {
 
 .thread-item,
 .handoff-item,
+.codex-request-item,
 .artifact-item {
   display: grid;
   gap: 8px;
@@ -1072,6 +1074,38 @@ body.dragging {
 .handoff-item.status-dismissed,
 .handoff-item.status-pasted-back {
   opacity: 0.58;
+}
+
+.codex-request-list {
+  max-height: 220px;
+  overflow: auto;
+}
+
+.codex-request-item {
+  border-color: rgba(141, 180, 255, 0.22);
+}
+
+.codex-request-item.status-responding {
+  opacity: 0.76;
+}
+
+.codex-request-summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 8px;
+  align-items: center;
+}
+
+.codex-request-summary .codex-request-meta {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.codex-request-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .thread-main {

@@ -47,8 +47,10 @@ const state = {
   threadId: "",
   turnId: "",
   itemMap: new Map(),
+  codexItemMap: new Map(),
   thoughtItemMap: new Map(),
   thoughtTurnByItemId: new Map(),
+  serverRequests: new Map(),
   connected: false,
   liveAttached: false,
   sourceHome: "",
@@ -289,6 +291,321 @@ function respond(id, result) {
   return bridge.respond(id, result);
 }
 
+function respondRequest(key, result) {
+  if (!bridge) return Promise.reject(new Error("Codex surface bridge is unavailable."));
+  if (typeof bridge.respondRequest === "function") return bridge.respondRequest(key, result);
+  return bridge.respond(key, result);
+}
+
+function codexItemKey(threadId, turnId, itemId) {
+  return [threadId, turnId, itemId].map((value) => String(value || "")).join(":");
+}
+
+function rememberCodexItem(context, item) {
+  if (!item?.id) return;
+  const threadId = String(context?.threadId || state.threadId || "");
+  const turnId = String(context?.turnId || item.turnId || state.turnId || "");
+  const itemId = String(context?.itemId || item.id || "");
+  const enriched = { ...item, threadId, turnId, id: itemId };
+  state.codexItemMap.set(codexItemKey(threadId, turnId, itemId), enriched);
+  state.codexItemMap.set(`item:${itemId}`, enriched);
+}
+
+function itemForRequest(request) {
+  const params = request?.params || {};
+  const threadId = String(request?.threadId || params.threadId || state.threadId || "");
+  const turnId = String(request?.turnId || params.turnId || state.turnId || "");
+  const itemId = String(request?.itemId || params.itemId || params.callId || "");
+  return state.codexItemMap.get(codexItemKey(threadId, turnId, itemId)) || state.codexItemMap.get(`item:${itemId}`) || null;
+}
+
+function requestMessageId(request) {
+  return `server_request_${String(request?.key || request?.requestId || Date.now())}`;
+}
+
+function requestStatusLabel(status) {
+  if (status === "pending") return "waiting";
+  if (status === "responding") return "sent";
+  if (status === "resolved") return "resolved";
+  if (status === "declined") return "declined";
+  if (status === "canceled") return "canceled";
+  if (status === "timed-out") return "timed out";
+  if (status === "connection-closed") return "connection closed";
+  return status || "unknown";
+}
+
+function decisionAllowed(params, decision) {
+  const available = Array.isArray(params?.availableDecisions) ? params.availableDecisions : null;
+  if (!available || !available.length) return true;
+  return available.some((entry) => {
+    if (typeof entry === "string") return entry === decision;
+    return Boolean(entry && typeof entry === "object" && Object.prototype.hasOwnProperty.call(entry, decision));
+  });
+}
+
+function appendRequestLine(parent, label, value, options = {}) {
+  const text = typeof value === "string" ? value : compactValue(value, options.maxLength || 1600);
+  if (!text) return;
+  const row = document.createElement("div");
+  row.className = "codex-request-line";
+  const key = document.createElement("span");
+  key.className = "codex-request-line-key";
+  key.textContent = label;
+  const body = document.createElement(options.pre ? "pre" : "span");
+  body.className = options.mono ? "mono codex-request-line-value" : "codex-request-line-value";
+  body.textContent = text;
+  row.append(key, body);
+  parent.appendChild(row);
+}
+
+function createRequestButton(label, className, onClick) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = className || "secondary";
+  button.textContent = label;
+  if (typeof onClick === "function") button.addEventListener("click", onClick);
+  return button;
+}
+
+async function submitRequestResponse(request, result, button) {
+  const key = String(request?.key || "");
+  if (!key) return;
+  if (button) button.disabled = true;
+  try {
+    const response = await respondRequest(key, result);
+    if (response?.request) updateServerRequest(response.request);
+  } catch (error) {
+    addSystemMessage(`Codex request response failed: ${error.message}`);
+    if (button) button.disabled = false;
+  }
+}
+
+function commandText(params) {
+  if (Array.isArray(params?.command)) return params.command.join(" ");
+  return String(params?.command || "");
+}
+
+function fileChangeTextForRequest(request) {
+  const params = request?.params || {};
+  if (params.fileChanges && typeof params.fileChanges === "object") {
+    return Object.entries(params.fileChanges)
+      .map(([filePath, change]) => `${filePath}\n${compactValue(change, 1200)}`)
+      .join("\n\n");
+  }
+  const item = itemForRequest(request);
+  if (item?.type === "fileChange") return thoughtItemBody(item);
+  if (params.grantRoot) return `Requested write grant root: ${params.grantRoot}`;
+  return "";
+}
+
+function renderCommandRequestDetails(request, details, actions) {
+  const params = request.params || {};
+  const network = params.networkApprovalContext || null;
+  if (network) {
+    appendRequestLine(details, "Network", `${network.protocol || "network"}://${network.host || "unknown host"}`, { mono: true });
+  }
+  appendRequestLine(details, "cwd", params.cwd || "", { mono: true });
+  appendRequestLine(details, "command", commandText(params), { mono: true, pre: true });
+  appendRequestLine(details, "reason", params.reason || "");
+  appendRequestLine(details, "permissions", params.additionalPermissions || "", { pre: true });
+
+  const decisions = [
+    ["Approve once", "accept", { decision: "accept" }, ""],
+    ["Approve for session", "acceptForSession", { decision: "acceptForSession" }, ""],
+    ["Decline", "decline", { decision: "decline" }, "secondary"],
+    ["Cancel", "cancel", { decision: "cancel" }, "secondary"],
+  ];
+  for (const [label, decision, result, className] of decisions) {
+    if (!decisionAllowed(params, decision)) continue;
+    actions.appendChild(createRequestButton(label, className, (event) => submitRequestResponse(request, result, event.currentTarget)));
+  }
+}
+
+function renderLegacyCommandRequestDetails(request, details, actions) {
+  const params = request.params || {};
+  appendRequestLine(details, "cwd", params.cwd || "", { mono: true });
+  appendRequestLine(details, "command", commandText(params), { mono: true, pre: true });
+  appendRequestLine(details, "reason", params.reason || "");
+  actions.appendChild(createRequestButton("Approve once", "", (event) => submitRequestResponse(request, { decision: "approved" }, event.currentTarget)));
+  actions.appendChild(createRequestButton("Approve for session", "", (event) => submitRequestResponse(request, { decision: "approved_for_session" }, event.currentTarget)));
+  actions.appendChild(createRequestButton("Deny", "secondary", (event) => submitRequestResponse(request, { decision: "denied" }, event.currentTarget)));
+  actions.appendChild(createRequestButton("Abort", "secondary", (event) => submitRequestResponse(request, { decision: "abort" }, event.currentTarget)));
+}
+
+function renderFileChangeRequestDetails(request, details, actions) {
+  const params = request.params || {};
+  appendRequestLine(details, "reason", params.reason || "");
+  appendRequestLine(details, "grant root", params.grantRoot || "", { mono: true });
+  const diffText = fileChangeTextForRequest(request);
+  appendRequestLine(details, diffText ? "changes" : "changes unavailable", diffText || "Diff unavailable. Open details, decline, or cancel.", {
+    mono: true,
+    pre: true,
+  });
+  if (!diffText && request.method === "item/fileChange/requestApproval") {
+    actions.appendChild(createRequestButton("Decline", "secondary", (event) => submitRequestResponse(request, { decision: "decline" }, event.currentTarget)));
+    actions.appendChild(createRequestButton("Cancel turn", "secondary", (event) => submitRequestResponse(request, { decision: "cancel" }, event.currentTarget)));
+    return;
+  }
+  actions.appendChild(createRequestButton("Approve once", "", (event) => submitRequestResponse(request, { decision: request.method === "applyPatchApproval" ? "approved" : "accept" }, event.currentTarget)));
+  if (request.method === "item/fileChange/requestApproval") {
+    actions.appendChild(createRequestButton("Approve for session", "", (event) => submitRequestResponse(request, { decision: "acceptForSession" }, event.currentTarget)));
+    actions.appendChild(createRequestButton("Decline", "secondary", (event) => submitRequestResponse(request, { decision: "decline" }, event.currentTarget)));
+    actions.appendChild(createRequestButton("Cancel turn", "secondary", (event) => submitRequestResponse(request, { decision: "cancel" }, event.currentTarget)));
+  } else {
+    actions.appendChild(createRequestButton("Deny", "secondary", (event) => submitRequestResponse(request, { decision: "denied" }, event.currentTarget)));
+    actions.appendChild(createRequestButton("Abort", "secondary", (event) => submitRequestResponse(request, { decision: "abort" }, event.currentTarget)));
+  }
+}
+
+function renderUserInputRequestDetails(request, details, actions) {
+  const questions = Array.isArray(request.params?.questions) ? request.params.questions : [];
+  const form = document.createElement("form");
+  form.className = "codex-request-form";
+  for (const question of questions) {
+    const field = document.createElement("label");
+    field.className = "codex-request-field";
+    const title = document.createElement("span");
+    title.textContent = question.header || question.question || question.id || "Question";
+    const prompt = document.createElement("small");
+    prompt.textContent = question.question || "";
+    field.append(title, prompt);
+    if (Array.isArray(question.options) && question.options.length) {
+      const select = document.createElement("select");
+      select.dataset.questionId = question.id || "";
+      for (const option of question.options) {
+        const opt = document.createElement("option");
+        opt.value = option.label || "";
+        opt.textContent = option.description ? `${option.label} - ${option.description}` : option.label || "Option";
+        select.appendChild(opt);
+      }
+      field.appendChild(select);
+    } else {
+      const input = document.createElement(question.isSecret ? "input" : "textarea");
+      input.dataset.questionId = question.id || "";
+      if (question.isSecret) input.type = "password";
+      input.placeholder = question.isOther ? "Other answer" : "Answer";
+      field.appendChild(input);
+    }
+    form.appendChild(field);
+  }
+  const submit = createRequestButton("Submit answers", "", null);
+  submit.addEventListener("click", (event) => {
+    event.preventDefault();
+    const answers = {};
+    for (const input of form.querySelectorAll("[data-question-id]")) {
+      const id = input.dataset.questionId;
+      if (!id) continue;
+      answers[id] = { answers: [String(input.value || "")] };
+    }
+    submitRequestResponse(request, { answers }, submit);
+  });
+  actions.appendChild(submit);
+  details.appendChild(form);
+}
+
+function renderMcpRequestDetails(request, details, actions) {
+  const params = request.params || {};
+  appendRequestLine(details, "server", params.serverName || "");
+  appendRequestLine(details, "message", params.message || "");
+  if (params.mode === "url") {
+    appendRequestLine(details, "url", params.url || "", { mono: true });
+    actions.appendChild(createRequestButton("Open URL", "secondary", () => {
+      try {
+        const parsed = new URL(String(params.url || ""));
+        if (parsed.protocol === "http:" || parsed.protocol === "https:") window.open(parsed.toString(), "_blank");
+        else addSystemMessage("Blocked non-http MCP URL.");
+      } catch {
+        addSystemMessage("Blocked invalid MCP URL.");
+      }
+    }));
+  } else {
+    appendRequestLine(details, "schema", params.requestedSchema || "", { mono: true, pre: true });
+  }
+  actions.appendChild(createRequestButton("Accept", "", (event) => submitRequestResponse(request, { action: "accept", content: params.mode === "form" ? {} : null, _meta: null }, event.currentTarget)));
+  actions.appendChild(createRequestButton("Decline", "secondary", (event) => submitRequestResponse(request, { action: "decline", content: null, _meta: null }, event.currentTarget)));
+  actions.appendChild(createRequestButton("Cancel", "secondary", (event) => submitRequestResponse(request, { action: "cancel", content: null, _meta: null }, event.currentTarget)));
+}
+
+function renderPermissionRequestDetails(request, details, actions) {
+  const params = request.params || {};
+  appendRequestLine(details, "cwd", params.cwd || "", { mono: true });
+  appendRequestLine(details, "reason", params.reason || "");
+  appendRequestLine(details, "permissions", params.permissions || "", { mono: true, pre: true });
+  actions.appendChild(createRequestButton("Grant for turn", "", (event) => submitRequestResponse(request, { permissions: params.permissions || {}, scope: "turn" }, event.currentTarget)));
+  actions.appendChild(createRequestButton("Deny", "secondary", (event) => submitRequestResponse(request, { permissions: {}, scope: "turn" }, event.currentTarget)));
+}
+
+function renderGenericRequestDetails(request, details) {
+  appendRequestLine(details, "method", request.method || "", { mono: true });
+  appendRequestLine(details, "params", request.params || "", { mono: true, pre: true });
+  if (request.errorSummary) appendRequestLine(details, "error", request.errorSummary);
+}
+
+function renderServerRequest(request) {
+  if (!request?.key) return;
+  state.serverRequests.set(request.key, request);
+  const node = ensureMessage(requestMessageId(request), "system", request.title || "Codex request");
+  node.dataset.requestKey = request.key;
+  const bubble = node.querySelector(".bubble");
+  bubble.innerHTML = "";
+
+  const card = document.createElement("section");
+  card.className = `codex-request-card ${request.riskCategory || "unknown"} ${request.status || "pending"}`;
+  const header = document.createElement("div");
+  header.className = "codex-request-header";
+  const title = document.createElement("strong");
+  title.textContent = request.title || request.method || "Codex request";
+  const status = document.createElement("span");
+  status.className = "codex-request-status";
+  status.textContent = requestStatusLabel(request.status);
+  header.append(title, status);
+  card.appendChild(header);
+
+  const meta = document.createElement("div");
+  meta.className = "codex-request-meta";
+  meta.textContent = [request.riskCategory, request.summary].filter(Boolean).join(" · ");
+  card.appendChild(meta);
+
+  const details = document.createElement("div");
+  details.className = "codex-request-details";
+  const actions = document.createElement("div");
+  actions.className = "codex-request-actions";
+  const isPending = request.status === "pending";
+
+  if (request.method === "item/commandExecution/requestApproval") renderCommandRequestDetails(request, details, isPending ? actions : document.createElement("div"));
+  else if (request.method === "execCommandApproval") renderLegacyCommandRequestDetails(request, details, isPending ? actions : document.createElement("div"));
+  else if (request.method === "item/fileChange/requestApproval" || request.method === "applyPatchApproval") renderFileChangeRequestDetails(request, details, isPending ? actions : document.createElement("div"));
+  else if (request.method === "item/tool/requestUserInput") renderUserInputRequestDetails(request, details, isPending ? actions : document.createElement("div"));
+  else if (request.method === "mcpServer/elicitation/request") renderMcpRequestDetails(request, details, isPending ? actions : document.createElement("div"));
+  else if (request.method === "item/permissions/requestApproval") renderPermissionRequestDetails(request, details, isPending ? actions : document.createElement("div"));
+  else renderGenericRequestDetails(request, details);
+
+  if (!isPending) {
+    appendRequestLine(details, "response", request.responseSummary || request.errorSummary || requestStatusLabel(request.status));
+  }
+
+  card.appendChild(details);
+  if (isPending && actions.childElementCount) card.appendChild(actions);
+  bubble.appendChild(card);
+  maybeAutoScrollBottom();
+}
+
+function updateServerRequest(request) {
+  if (!request?.key) return;
+  const previous = state.serverRequests.get(request.key) || {};
+  const next = { ...previous, ...request };
+  state.serverRequests.set(request.key, next);
+  renderServerRequest(next);
+}
+
+function focusServerRequest(key) {
+  const node = els.transcript.querySelector(`[data-request-key="${CSS.escape(String(key || ""))}"]`);
+  if (!node) return;
+  node.scrollIntoView({ block: "center", behavior: "smooth" });
+  node.classList.add("request-focus-pulse");
+  setTimeout(() => node.classList.remove("request-focus-pulse"), 900);
+}
+
 async function readStoredThreadTranscript(threadId, sourceHome = "", sessionFilePath = "") {
   if (!bridge?.readStoredThreadTranscript || !project?.id || !threadId) return null;
   return bridge.readStoredThreadTranscript(project.id, threadId, sourceHome, sessionFilePath);
@@ -309,6 +626,7 @@ function renderStoredTranscript(snapshot, threadId, options = {}) {
   state.isBulkRendering = true;
   els.transcript.innerHTML = "";
   state.itemMap.clear();
+  state.codexItemMap.clear();
   state.thoughtItemMap.clear();
   state.thoughtTurnByItemId.clear();
   state.threadId = threadId;
@@ -456,6 +774,7 @@ async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "")
   state.liveAttached = false;
   els.transcript.innerHTML = "";
   state.itemMap.clear();
+  state.codexItemMap.clear();
   state.thoughtItemMap.clear();
   state.thoughtTurnByItemId.clear();
   addSystemMessage(`Loading thread ${requestedThreadId}…`);
@@ -720,6 +1039,7 @@ function appendThoughtAssistantDelta(itemId, delta, phaseHint = "") {
 
 function renderItem(item) {
   if (!item || !item.id) return;
+  rememberCodexItem({ threadId: state.threadId, turnId: item.turnId || state.turnId, itemId: item.id }, item);
   if (item.type === "userMessage") {
     const text = (item.content || []).map(userInputToText).filter(Boolean).join("\n\n");
     setMessageText(item.id, "user", text, "You");
@@ -799,6 +1119,7 @@ function renderThreadHistory(thread, options = {}) {
   state.isBulkRendering = true;
   els.transcript.innerHTML = "";
   state.itemMap.clear();
+  state.codexItemMap.clear();
   state.thoughtItemMap.clear();
   state.thoughtTurnByItemId.clear();
   const allTurns = Array.isArray(thread?.turns) ? thread.turns : [];
@@ -827,6 +1148,7 @@ function renderThreadHistory(thread, options = {}) {
     const regularItems = [];
     const thoughtItems = [];
     for (const item of turn.items || []) {
+      if (item?.id) rememberCodexItem({ threadId: thread?.id || state.threadId, turnId: turnKey, itemId: item.id }, item);
       if (isThoughtItem(item) || isThoughtAssistantMessageItem(item)) thoughtItems.push(item);
       else regularItems.push(item);
     }
@@ -859,6 +1181,7 @@ async function startNewThread() {
   const result = await rpc("thread/start", params);
   els.transcript.innerHTML = "";
   state.itemMap.clear();
+  state.codexItemMap.clear();
   state.thoughtItemMap.clear();
   state.thoughtTurnByItemId.clear();
   bindThread(result.thread, result.model);
@@ -894,12 +1217,27 @@ async function initializeBridgeSession() {
 }
 
 function handleNotification(method, params) {
+  if (method === "serverRequest/resolved") {
+    const requestId = String(params?.requestId || "");
+    for (const request of state.serverRequests.values()) {
+      if (String(request.requestId) === requestId && request.status !== "resolved") {
+        updateServerRequest({ ...request, status: "resolved", resolvedAt: new Date().toISOString() });
+      }
+    }
+    return;
+  }
   if (method === "item/agentMessage/delta") {
     if (appendThoughtAssistantDelta(params?.itemId, params?.delta || "", params?.phase || "")) return;
     appendMessageText(params?.itemId, "assistant", params?.delta || "", "Codex");
     return;
   }
   if (method === "item/started" || method === "item/completed") {
+    if (params?.item?.id) {
+      rememberCodexItem(
+        { threadId: params.threadId || state.threadId, turnId: params.turnId || params.item.turnId || state.turnId, itemId: params.item.id },
+        params.item,
+      );
+    }
     if (isThoughtItem(params?.item) || isThoughtAssistantMessageItem(params?.item)) {
       const turnKey = String(params?.turnId || params?.item?.turnId || state.turnId || `live_${Date.now()}`);
       if (isThoughtAssistantMessageItem(params?.item)) rememberThoughtAssistantItem(params.item, turnKey);
@@ -980,6 +1318,15 @@ function handleBridgeEvent(event) {
     }
   }
   if (event.type === "rpc-request") {
+    renderServerRequest(event.request || event);
+    return;
+  }
+  if (event.type === "rpc-request-updated") {
+    updateServerRequest(event.request || event);
+    return;
+  }
+  if (event.type === "focus-server-request") {
+    focusServerRequest(event.key);
     return;
   }
   if (event.type === "rpc-notification") {

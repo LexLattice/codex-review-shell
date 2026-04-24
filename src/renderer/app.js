@@ -54,6 +54,7 @@ const state = {
   workspaceStatuses: {},
   watchedArtifacts: [],
   watchedArtifactsScan: null,
+  codexRequests: new Map(),
   codexThreads: [],
   chatgptRecentThreads: [],
   chatgptRecentThreadsStatus: "idle",
@@ -123,6 +124,8 @@ const els = {
   stageResearchQuestionButton: document.getElementById("stageResearchQuestionButton"),
   handoffQueue: document.getElementById("handoffQueue"),
   handoffCount: document.getElementById("handoffCount"),
+  codexRequestList: document.getElementById("codexRequestList"),
+  codexRequestCount: document.getElementById("codexRequestCount"),
   watchedArtifactList: document.getElementById("watchedArtifactList"),
   watchedCount: document.getElementById("watchedCount"),
   refreshWatchedButton: document.getElementById("refreshWatchedButton"),
@@ -1032,6 +1035,89 @@ function renderHandoffQueue() {
   }
 }
 
+function codexRequestResultForAction(request, action) {
+  if (request.method === "item/commandExecution/requestApproval") {
+    return { decision: action === "cancel" ? "cancel" : "decline" };
+  }
+  if (request.method === "item/fileChange/requestApproval") {
+    return { decision: action === "cancel" ? "cancel" : "decline" };
+  }
+  if (request.method === "execCommandApproval" || request.method === "applyPatchApproval") {
+    return { decision: action === "cancel" ? "abort" : "denied" };
+  }
+  if (request.method === "mcpServer/elicitation/request") {
+    return { action: action === "cancel" ? "cancel" : "decline", content: null, _meta: null };
+  }
+  if (request.method === "item/permissions/requestApproval") {
+    return { permissions: {}, scope: "turn" };
+  }
+  return null;
+}
+
+function renderCodexRequests() {
+  const entries = [...state.codexRequests.values()]
+    .filter((request) => ["pending", "responding", "timed-out"].includes(request.status || "pending"))
+    .sort((a, b) => String(a.receivedAt || "").localeCompare(String(b.receivedAt || "")));
+  els.codexRequestCount.textContent = String(entries.length);
+  els.codexRequestList.innerHTML = "";
+
+  if (!entries.length) {
+    els.codexRequestList.innerHTML = `<div class="empty-state">No pending Codex approval or input requests.</div>`;
+    return;
+  }
+
+  for (const request of entries) {
+    const row = document.createElement("article");
+    row.className = `codex-request-item status-${request.status || "pending"}`;
+    row.innerHTML = `
+      <div class="codex-request-summary">
+        <span class="role-badge"></span>
+        <strong class="truncate"></strong>
+        <span class="codex-request-meta truncate"></span>
+      </div>
+      <div class="codex-request-actions">
+        <button class="ghost small focus-request" type="button">Focus</button>
+        <button class="ghost small decline-request" type="button">Decline</button>
+        <button class="ghost small cancel-request" type="button">Cancel</button>
+      </div>
+    `;
+    row.querySelector(".role-badge").textContent = `${request.riskCategory || "request"} · ${request.status || "pending"}`;
+    row.querySelector("strong").textContent = request.title || request.method || "Codex request";
+    row.querySelector(".codex-request-meta").textContent = request.summary || request.method || "";
+    row.querySelector(".focus-request").addEventListener("click", async () => {
+      try {
+        await bridge.focusCodexRequest(request.key);
+        setLastEvent(`Focused Codex request: ${request.title || request.method}.`);
+      } catch (error) {
+        setLastEvent(`Codex request focus failed: ${error.message}`);
+      }
+    });
+    row.querySelector(".decline-request").disabled = request.status !== "pending" || !codexRequestResultForAction(request, "decline");
+    row.querySelector(".cancel-request").disabled = request.status !== "pending" || !codexRequestResultForAction(request, "cancel");
+    row.querySelector(".decline-request").addEventListener("click", async () => {
+      const result = codexRequestResultForAction(request, "decline");
+      if (!result) return;
+      try {
+        await bridge.respondCodexRequest(request.key, result);
+        setLastEvent(`Declined Codex request: ${request.title || request.method}.`);
+      } catch (error) {
+        setLastEvent(`Codex request decline failed: ${error.message}`);
+      }
+    });
+    row.querySelector(".cancel-request").addEventListener("click", async () => {
+      const result = codexRequestResultForAction(request, "cancel");
+      if (!result) return;
+      try {
+        await bridge.respondCodexRequest(request.key, result);
+        setLastEvent(`Canceled Codex request: ${request.title || request.method}.`);
+      } catch (error) {
+        setLastEvent(`Codex request cancel failed: ${error.message}`);
+      }
+    });
+    els.codexRequestList.appendChild(row);
+  }
+}
+
 function renderWatchedArtifacts() {
   els.watchedCount.textContent = String(state.watchedArtifacts.length);
   els.watchedArtifactList.innerHTML = "";
@@ -1277,6 +1363,7 @@ function render() {
   renderHandoffTargetSelect();
   renderPromptPreview();
   renderHandoffQueue();
+  renderCodexRequests();
   renderWatchedArtifacts();
   renderStatus();
   scheduleResizeBurst();
@@ -2657,6 +2744,18 @@ function bindEvents() {
     if (event.type === "codex-approval-requested") {
       const details = event.reason ? `: ${event.reason}` : "";
       setLastEvent(`Codex approval requested via ${event.method}${details}`);
+    }
+    if (event.type === "codex-request-updated" && event.request?.key) {
+      const request = event.request;
+      if (["resolved", "declined", "canceled", "connection-closed"].includes(request.status)) {
+        state.codexRequests.delete(request.key);
+      } else {
+        state.codexRequests.set(request.key, request);
+      }
+      renderCodexRequests();
+      if (request.status === "pending") {
+        setLastEvent(`Codex request pending: ${request.title || request.method}${request.summary ? `: ${request.summary}` : ""}`);
+      }
     }
   });
 }

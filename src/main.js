@@ -171,6 +171,12 @@ function defaultConfig() {
             model: "",
             reasoningEffort: "",
             label: "Managed Codex lane",
+            remoteAuth: {
+              mode: "none",
+              tokenFilePath: "",
+              tokenEnvVar: "",
+              serverAuthScheme: "unknown",
+            },
           },
           chatgpt: {
             reviewThreadUrl: "https://chatgpt.com/",
@@ -225,6 +231,22 @@ function normalizeCodexMode(value) {
 function normalizeCodexRuntime(value) {
   const candidate = normalizeString(value, "auto").toLowerCase();
   return ["auto", "host", "wsl"].includes(candidate) ? candidate : "auto";
+}
+
+function normalizeRemoteAuthConfig(value) {
+  const raw = isPlainObject(value) ? value : {};
+  const modeCandidate = normalizeString(raw.mode, "none").toLowerCase();
+  const mode = ["none", "bearer-token-file", "bearer-token-env"].includes(modeCandidate) ? modeCandidate : "none";
+  const schemeCandidate = normalizeString(raw.serverAuthScheme, "unknown").toLowerCase();
+  const serverAuthScheme = ["unknown", "capability-token", "signed-bearer-token"].includes(schemeCandidate)
+    ? schemeCandidate
+    : "unknown";
+  return {
+    mode,
+    tokenFilePath: mode === "bearer-token-file" ? normalizeString(raw.tokenFilePath, "") : "",
+    tokenEnvVar: mode === "bearer-token-env" ? normalizeString(raw.tokenEnvVar, "") : "",
+    serverAuthScheme,
+  };
 }
 
 function normalizeReasoningEffort(value) {
@@ -776,6 +798,7 @@ function normalizeProject(input, index = 0) {
         model: normalizeString(rawCodex.model, ""),
         reasoningEffort: normalizeReasoningEffort(rawCodex.reasoningEffort),
         label: normalizeString(rawCodex.label, codexMode === "managed" ? "Managed Codex lane" : "Codex target"),
+        remoteAuth: normalizeRemoteAuthConfig(rawCodex.remoteAuth),
       },
       chatgpt: {
         reviewThreadUrl: safeChatgptUrl(primaryReview?.url || rawChatgpt.reviewThreadUrl, "https://chatgpt.com/"),
@@ -1002,8 +1025,15 @@ function codexSurfaceSessionFor(sender) {
   if (sessions.has(sender.id)) return sessions.get(sender.id);
   const session = new CodexSurfaceSession(sender);
   session.on("event", (payload) => {
+    if (payload?.type === "rpc-request" || payload?.type === "rpc-request-updated") {
+      emitShellEvent({
+        type: "codex-request-updated",
+        request: payload.request || payload,
+        at: nowIso(),
+      });
+    }
     if (payload?.type === "rpc-request") {
-      const reason = payload.params?.reason || payload.params?.command || "";
+      const reason = payload.request?.summary || payload.params?.reason || payload.params?.command || "";
       emitShellEvent({
         type: "codex-approval-requested",
         method: payload.method,
@@ -1018,6 +1048,15 @@ function codexSurfaceSessionFor(sender) {
     sessions.delete(sender.id);
   });
   return session;
+}
+
+function findCodexSurfaceSessionForRequest(requestKey) {
+  const key = String(requestKey || "");
+  if (!key || !codexSurfaceSessions) return null;
+  for (const session of codexSurfaceSessions.values()) {
+    if (session?.hasServerRequest?.(key)) return session;
+  }
+  return null;
 }
 
 async function disposeCodexSurfaceSession() {
@@ -1089,6 +1128,19 @@ function encodeProjectForLocalSurface(project) {
   return encodeCodexSurfacePayload(project, {});
 }
 
+function publicCodexSurfaceBinding(codex) {
+  const raw = isPlainObject(codex) ? codex : {};
+  const { remoteAuth: _remoteAuth, ...rest } = raw;
+  const remoteAuth = normalizeRemoteAuthConfig(raw.remoteAuth);
+  return {
+    ...rest,
+    remoteAuth: {
+      mode: remoteAuth.mode,
+      serverAuthScheme: remoteAuth.serverAuthScheme,
+    },
+  };
+}
+
 function encodeCodexSurfacePayload(project, extra = {}) {
   const payload = {
     project: {
@@ -1096,7 +1148,7 @@ function encodeCodexSurfacePayload(project, extra = {}) {
       name: project.name,
       repoPath: project.repoPath,
       workspace: project.workspace,
-      codex: project.surfaceBinding.codex,
+      codex: publicCodexSurfaceBinding(project.surfaceBinding.codex),
       chatgpt: project.surfaceBinding.chatgpt,
       chatThreads: project.chatThreads,
       activeChatThreadId: project.activeChatThreadId,
@@ -1146,6 +1198,7 @@ async function loadCodexSurface(project, options = {}) {
         );
       const localUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, {
         codexConnection: {
+          projectId: project.id,
           wsUrl: session.wsUrl,
           readyUrl: session.readyUrl,
           runtime: session.runtime,
@@ -1158,9 +1211,11 @@ async function loadCodexSurface(project, options = {}) {
         initialThreadSessionFilePath: normalizeString(options.initialThreadSessionFilePath, ""),
       });
       activeCodexSurfaceConnection = {
+        projectId: project.id,
         wsUrl: session.wsUrl,
         runtime: session.runtime,
         codexHome: session.codexHome || "",
+        remoteAuth: project.surfaceBinding?.codex?.remoteAuth || { mode: "none" },
       };
       await codexView.webContents.loadURL(localUrl);
       return;
@@ -2607,7 +2662,14 @@ ipcMain.handle("surface:reload", async (_event, surfaceName) => {
 
 ipcMain.handle("codex-surface:connect", async (event, payload) => {
   const session = codexSurfaceSessionFor(event.sender);
-  return session.connect(payload?.connection || null);
+  const requestedConnection = payload?.connection || null;
+  const connection =
+    activeCodexSurfaceConnection &&
+    requestedConnection &&
+    String(activeCodexSurfaceConnection.wsUrl || "") === String(requestedConnection.wsUrl || "")
+      ? { ...requestedConnection, remoteAuth: activeCodexSurfaceConnection.remoteAuth || { mode: "none" } }
+      : requestedConnection;
+  return session.connect(connection);
 });
 
 ipcMain.handle("codex-surface:disconnect", async (event) => {
@@ -2628,7 +2690,24 @@ ipcMain.handle("codex-surface:notify", async (event, payload) => {
 
 ipcMain.handle("codex-surface:respond", async (event, payload) => {
   const session = codexSurfaceSessionFor(event.sender);
-  return session.respond(payload?.id, payload?.result || {});
+  return session.respond(payload?.key || payload?.id, payload?.result || {});
+});
+
+ipcMain.handle("codex:respond-request", async (_event, payload) => {
+  const requestKey = payload?.key || payload?.id || "";
+  const session = findCodexSurfaceSessionForRequest(requestKey);
+  if (!session) throw new Error("Codex request is no longer pending.");
+  return session.respondServerRequest(requestKey, payload?.result || {});
+});
+
+ipcMain.handle("codex:focus-request", async (_event, payload) => {
+  const requestKey = normalizeString(payload?.key, "");
+  if (!requestKey || !codexView?.webContents || codexView.webContents.isDestroyed()) return false;
+  codexView.webContents.send("codex-surface:event", {
+    type: "focus-server-request",
+    key: requestKey,
+  });
+  return true;
 });
 
 ipcMain.handle("surface:open-external", async (_event, surfaceName) => {
