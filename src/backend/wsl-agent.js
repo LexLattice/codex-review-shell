@@ -27,6 +27,8 @@ const MATCH_SCAN_LIMIT = 240;
 const MATCH_WALK_LIMIT = 8000;
 const CODEX_THREAD_LIMIT = 120;
 const CODEX_TRANSCRIPT_ENTRY_LIMIT = 800;
+const CODEX_ANALYTICS_GAP_MS = 2 * 60 * 1000;
+const CODEX_ANALYTICS_TAIL_HASH_LINE_LIMIT = 24;
 
 const SKIPPED_DIR_NAMES = new Set([
   ".git",
@@ -495,6 +497,8 @@ async function listCodexThreadsFromHome(codexHome, options = {}) {
         agentRole: "",
         agentNickname: "",
         isSubagent: false,
+        sessionFileMtimeMs: 0,
+        sessionFileSizeBytes: 0,
       });
     }
     return fastEntries.filter((entry) => entry.threadId);
@@ -519,6 +523,10 @@ async function listCodexThreadsFromHome(codexHome, options = {}) {
     const payload = entry?.payload || {};
     const sessionId = String(payload.id || "");
     if (!wantedIds.has(sessionId) || metadataById.has(sessionId)) return false;
+    let stat = null;
+    try {
+      stat = await fs.lstat(fullPath);
+    } catch {}
     const subagentSpawn = payload?.source?.subagent?.thread_spawn;
     metadataById.set(sessionId, {
       sessionId,
@@ -530,6 +538,8 @@ async function listCodexThreadsFromHome(codexHome, options = {}) {
       agentRole: String(payload.agent_role || ""),
       agentNickname: String(payload.agent_nickname || ""),
       isSubagent: Boolean(subagentSpawn),
+      sessionFileMtimeMs: Number.isFinite(Number(stat?.mtimeMs)) ? Math.round(Number(stat.mtimeMs)) : 0,
+      sessionFileSizeBytes: Number.isFinite(Number(stat?.size)) ? Math.round(Number(stat.size)) : 0,
     });
     return metadataById.size >= wantedIds.size;
   });
@@ -554,6 +564,8 @@ async function listCodexThreadsFromHome(codexHome, options = {}) {
       agentRole: String(meta.agentRole || ""),
       agentNickname: String(meta.agentNickname || ""),
       isSubagent: Boolean(meta.isSubagent),
+      sessionFileMtimeMs: Number.isFinite(Number(meta.sessionFileMtimeMs)) ? Number(meta.sessionFileMtimeMs) : 0,
+      sessionFileSizeBytes: Number.isFinite(Number(meta.sessionFileSizeBytes)) ? Number(meta.sessionFileSizeBytes) : 0,
     });
   }
   return entries;
@@ -594,6 +606,7 @@ async function listCodexThreads(params = {}) {
   );
   const includeSubagents = Boolean(params.includeSubagents);
   const fastMode = Boolean(params.fastMode);
+  const dedupeByThreadId = params.dedupeByThreadId !== false;
   const codexHomes = await resolveCodexHomes(params);
   const perHomeScanLimit = Number.isFinite(Number(params.perHomeScanLimit))
     ? Math.max(40, Math.min(Number(params.perHomeScanLimit), 800))
@@ -612,7 +625,10 @@ async function listCodexThreads(params = {}) {
       // Ignore unavailable/invalid homes and keep the remaining sources.
     }
   }
-  const entries = sortCodexThreadEntries(dedupeCodexThreadEntries(allEntries)).slice(0, limit);
+  const deduped = dedupeByThreadId
+    ? dedupeCodexThreadEntries(allEntries)
+    : allEntries.filter((entry) => String(entry.threadId || "").trim());
+  const entries = sortCodexThreadEntries(deduped).slice(0, limit);
   return {
     root,
     source: workspaceKind,
@@ -622,6 +638,7 @@ async function listCodexThreads(params = {}) {
     limit,
     includeSubagents,
     fastMode,
+    dedupeByThreadId,
     perHomeScanLimit,
   };
 }
@@ -865,6 +882,362 @@ async function readCodexThreadTranscript(params = {}) {
   };
 }
 
+function parseIsoMillis(value) {
+  const ms = Date.parse(String(value || ""));
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function minuteBucketIso(ms) {
+  return new Date(Math.floor(ms / 60_000) * 60_000).toISOString();
+}
+
+function parseToolWallTimeMs(text) {
+  const source = String(text || "");
+  if (!source) return 0;
+  const match = source.match(/Wall time:\s*([0-9]+(?:\.[0-9]+)?)\s*(ms|milliseconds?|s|sec|seconds?|m|min|minutes?)?/i);
+  if (!match) return 0;
+  const value = Number(match[1]);
+  if (!Number.isFinite(value)) return 0;
+  const unit = String(match[2] || "s").toLowerCase();
+  if (unit.startsWith("ms")) return Math.round(value);
+  if (unit.startsWith("m")) return Math.round(value * 60_000);
+  return Math.round(value * 1000);
+}
+
+function pushMetric(metrics, key, numValue, unit = "", evidenceGrade = "exact", textValue = "") {
+  metrics.push({
+    key,
+    numValue: Number.isFinite(Number(numValue)) ? Number(numValue) : null,
+    textValue: String(textValue || ""),
+    unit: String(unit || ""),
+    evidenceGrade: String(evidenceGrade || "estimated"),
+  });
+}
+
+async function analyzeCodexThread(params = {}) {
+  const threadId = String(params.threadId || "").trim();
+  if (!threadId) throw new Error("threadId is required.");
+  const sourceHome = String(params.sourceHome || "").trim();
+  const sessionFilePath = String(params.sessionFilePath || "").trim();
+  const homes = await resolveCodexHomes(sourceHome ? { homePaths: [sourceHome] } : {});
+
+  let session = null;
+  for (const home of homes) {
+    session = await findCodexThreadSession(home, threadId, sessionFilePath);
+    if (session) break;
+  }
+  if (!session) throw new Error(`Thread ${threadId} not found in discovered Codex homes.`);
+
+  let stat = null;
+  try {
+    stat = await fs.lstat(session.sessionFilePath);
+  } catch {}
+
+  const stream = fsSync.createReadStream(session.sessionFilePath, { encoding: "utf8" });
+  const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
+
+  const activityBuckets = new Map();
+  const gapMap = [];
+  const turnTimeline = [];
+  const tailLines = [];
+
+  const counters = {
+    eventUserMessage: 0,
+    responseUserMessage: 0,
+    eventAssistantMessage: 0,
+    responseAssistantMessage: 0,
+    eventCommentaryMessage: 0,
+    responseCommentaryMessage: 0,
+    eventFinalAnswerMessage: 0,
+    responseFinalAnswerMessage: 0,
+    eventReasoning: 0,
+    responseReasoning: 0,
+    turnCount: 0,
+    abortedTurnCount: 0,
+    commandExecutionCount: 0,
+    mcpToolCallCount: 0,
+    dynamicToolCallCount: 0,
+    collabAgentToolCallCount: 0,
+    webSearchCount: 0,
+    fileChangeCount: 0,
+    contextCompactionCount: 0,
+  };
+
+  let knownToolDurationMs = 0;
+  let lineCount = 0;
+  let firstAtMs = null;
+  let lastAtMs = null;
+  let previousAtMs = null;
+  let firstUserAtMs = null;
+  let firstAgentItemAtMs = null;
+  let firstToolAtMs = null;
+  let idleGapTotalMs = 0;
+  let maxIdleGapMs = 0;
+  let turnOrdinal = 0;
+
+  for await (const line of rl) {
+    const trimmed = String(line || "").trim();
+    if (!trimmed) continue;
+    lineCount += 1;
+
+    tailLines.push(trimmed);
+    if (tailLines.length > CODEX_ANALYTICS_TAIL_HASH_LINE_LIMIT) tailLines.shift();
+
+    let row;
+    try {
+      row = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+
+    const atText = String(row.timestamp || row?.payload?.timestamp || "");
+    const atMs = parseIsoMillis(atText);
+    if (atMs !== null) {
+      if (firstAtMs === null) firstAtMs = atMs;
+      lastAtMs = atMs;
+      const bucketKey = minuteBucketIso(atMs);
+      activityBuckets.set(bucketKey, Number(activityBuckets.get(bucketKey) || 0) + 1);
+
+      if (previousAtMs !== null) {
+        const gap = atMs - previousAtMs;
+        if (Number.isFinite(gap) && gap > CODEX_ANALYTICS_GAP_MS) {
+          idleGapTotalMs += gap;
+          if (gap > maxIdleGapMs) maxIdleGapMs = gap;
+          gapMap.push({
+            xValue: new Date(atMs).toISOString(),
+            yValue: gap,
+            payload: {
+              from: new Date(previousAtMs).toISOString(),
+              to: new Date(atMs).toISOString(),
+              gapMs: gap,
+            },
+          });
+        }
+      }
+      previousAtMs = atMs;
+    }
+
+    const payloadType = String(row?.payload?.type || "").trim();
+
+    if (row.type === "turn_context") {
+      counters.turnCount += 1;
+      turnOrdinal += 1;
+      if (atMs !== null) {
+        turnTimeline.push({
+          xValue: new Date(atMs).toISOString(),
+          yValue: turnOrdinal,
+          payload: { kind: "turn_context" },
+        });
+      }
+      continue;
+    }
+
+    if (row.type === "compacted") {
+      counters.contextCompactionCount += 1;
+      continue;
+    }
+
+    if (row.type === "event_msg") {
+      if (payloadType === "user_message") {
+        counters.eventUserMessage += 1;
+        if (firstUserAtMs === null && atMs !== null) firstUserAtMs = atMs;
+      } else if (payloadType === "agent_message") {
+        counters.eventAssistantMessage += 1;
+        const phase = String(row?.payload?.phase || "").toLowerCase();
+        if (phase === "commentary") counters.eventCommentaryMessage += 1;
+        else counters.eventFinalAnswerMessage += 1;
+        if (firstAgentItemAtMs === null && atMs !== null) firstAgentItemAtMs = atMs;
+      } else if (payloadType === "agent_reasoning") {
+        counters.eventReasoning += 1;
+        if (firstAgentItemAtMs === null && atMs !== null) firstAgentItemAtMs = atMs;
+      } else if (payloadType === "turn_aborted") {
+        counters.abortedTurnCount += 1;
+      } else if (payloadType === "context_compacted" || payloadType === "compaction") {
+        counters.contextCompactionCount += 1;
+      }
+      continue;
+    }
+
+    if (row.type !== "response_item") continue;
+
+    if (payloadType === "message") {
+      const role = String(row?.payload?.role || "").toLowerCase();
+      const phase = String(row?.payload?.phase || "").toLowerCase();
+      if (role === "user") {
+        counters.responseUserMessage += 1;
+        if (firstUserAtMs === null && atMs !== null) firstUserAtMs = atMs;
+      } else if (role === "assistant") {
+        counters.responseAssistantMessage += 1;
+        if (phase === "commentary") counters.responseCommentaryMessage += 1;
+        else counters.responseFinalAnswerMessage += 1;
+        if (firstAgentItemAtMs === null && atMs !== null) firstAgentItemAtMs = atMs;
+      }
+      continue;
+    }
+
+    if (payloadType === "reasoning") {
+      counters.responseReasoning += 1;
+      if (firstAgentItemAtMs === null && atMs !== null) firstAgentItemAtMs = atMs;
+      continue;
+    }
+
+    if (payloadType === "function_call" || payloadType === "mcp_tool_call" || payloadType === "mcpToolCall") {
+      counters.commandExecutionCount += 1;
+      counters.mcpToolCallCount += 1;
+      if (firstToolAtMs === null && atMs !== null) firstToolAtMs = atMs;
+      continue;
+    }
+
+    if (payloadType === "custom_tool_call" || payloadType === "dynamic_tool_call" || payloadType === "dynamicToolCall") {
+      counters.commandExecutionCount += 1;
+      counters.dynamicToolCallCount += 1;
+      if (firstToolAtMs === null && atMs !== null) firstToolAtMs = atMs;
+      continue;
+    }
+
+    if (payloadType === "collab_agent_tool_call" || payloadType === "collabAgentToolCall") {
+      counters.collabAgentToolCallCount += 1;
+      if (firstToolAtMs === null && atMs !== null) firstToolAtMs = atMs;
+      continue;
+    }
+
+    if (payloadType === "web_search" || payloadType === "webSearch") {
+      counters.webSearchCount += 1;
+      continue;
+    }
+
+    if (payloadType === "file_change" || payloadType === "fileChange") {
+      counters.fileChangeCount += 1;
+      continue;
+    }
+
+    if (
+      payloadType === "function_call_output" ||
+      payloadType === "custom_tool_call_output" ||
+      payloadType === "mcp_tool_call_output"
+    ) {
+      knownToolDurationMs += parseToolWallTimeMs(row?.payload?.output || "");
+    }
+  }
+
+  const userMessageCount = counters.eventUserMessage > 0 ? counters.eventUserMessage : counters.responseUserMessage;
+  const assistantMessageCount = counters.eventAssistantMessage > 0 ? counters.eventAssistantMessage : counters.responseAssistantMessage;
+  const commentaryMessageCount = counters.eventAssistantMessage > 0
+    ? counters.eventCommentaryMessage
+    : counters.responseCommentaryMessage;
+  const finalAnswerCount = counters.eventAssistantMessage > 0
+    ? counters.eventFinalAnswerMessage
+    : counters.responseFinalAnswerMessage;
+  const reasoningItemCount = counters.responseReasoning > 0 ? counters.responseReasoning : counters.eventReasoning;
+  const turnCount = counters.turnCount;
+  const abortedTurnCount = counters.abortedTurnCount;
+  const completedTurnCount = Math.max(0, turnCount - abortedTurnCount);
+
+  const wallClockSpanMs = firstAtMs !== null && lastAtMs !== null ? Math.max(0, lastAtMs - firstAtMs) : 0;
+  const activeWorkTimeMs = Math.max(0, wallClockSpanMs - idleGapTotalMs);
+  const threadUtilizationRatio = wallClockSpanMs > 0 ? activeWorkTimeMs / wallClockSpanMs : 0;
+  const residualModelTimeMs = Math.max(0, activeWorkTimeMs - knownToolDurationMs);
+  const reasoningToToolRatio = counters.commandExecutionCount > 0
+    ? reasoningItemCount / counters.commandExecutionCount
+    : null;
+
+  const timeToFirstAgentItemMs = (
+    firstUserAtMs !== null &&
+    firstAgentItemAtMs !== null &&
+    firstAgentItemAtMs >= firstUserAtMs
+  )
+    ? firstAgentItemAtMs - firstUserAtMs
+    : null;
+
+  const timeToFirstToolMs = (
+    firstUserAtMs !== null &&
+    firstToolAtMs !== null &&
+    firstToolAtMs >= firstUserAtMs
+  )
+    ? firstToolAtMs - firstUserAtMs
+    : null;
+
+  const metrics = [];
+  pushMetric(metrics, "thread_wall_clock_span_ms", wallClockSpanMs, "ms", "exact");
+  pushMetric(metrics, "thread_active_work_time_ms", activeWorkTimeMs, "ms", "estimated");
+  pushMetric(metrics, "thread_utilization_ratio", threadUtilizationRatio, "ratio", "estimated");
+  pushMetric(metrics, "turn_count", turnCount, "count", "exact");
+  pushMetric(metrics, "completed_turn_count", completedTurnCount, "count", "estimated");
+  pushMetric(metrics, "failed_turn_count", 0, "count", "estimated");
+  pushMetric(metrics, "aborted_turn_count", abortedTurnCount, "count", "exact");
+  pushMetric(metrics, "idle_gap_total_ms", idleGapTotalMs, "ms", "estimated");
+  pushMetric(metrics, "max_idle_gap_ms", maxIdleGapMs, "ms", "estimated");
+  pushMetric(metrics, "user_message_count", userMessageCount, "count", "exact");
+  pushMetric(metrics, "commentary_message_count", commentaryMessageCount, "count", "exact");
+  pushMetric(metrics, "final_answer_count", finalAnswerCount, "count", "exact");
+  pushMetric(metrics, "reasoning_item_count", reasoningItemCount, "count", "exact");
+  pushMetric(metrics, "command_execution_count", counters.commandExecutionCount, "count", "exact");
+  pushMetric(metrics, "mcp_tool_call_count", counters.mcpToolCallCount, "count", "exact");
+  pushMetric(metrics, "dynamic_tool_call_count", counters.dynamicToolCallCount, "count", "exact");
+  pushMetric(metrics, "collab_agent_tool_call_count", counters.collabAgentToolCallCount, "count", "exact");
+  pushMetric(metrics, "web_search_count", counters.webSearchCount, "count", "exact");
+  pushMetric(metrics, "file_change_count", counters.fileChangeCount, "count", "exact");
+  pushMetric(metrics, "context_compaction_count", counters.contextCompactionCount, "count", "exact");
+  pushMetric(metrics, "known_tool_duration_ms", knownToolDurationMs, "ms", "estimated");
+  pushMetric(metrics, "residual_model_time_ms", residualModelTimeMs, "ms", "estimated");
+  if (reasoningToToolRatio !== null) pushMetric(metrics, "reasoning_to_tool_ratio", reasoningToToolRatio, "ratio", "estimated");
+  if (timeToFirstAgentItemMs !== null) pushMetric(metrics, "time_to_first_agent_item_ms", timeToFirstAgentItemMs, "ms", "rollout-derived");
+  if (timeToFirstToolMs !== null) pushMetric(metrics, "time_to_first_tool_ms", timeToFirstToolMs, "ms", "rollout-derived");
+
+  const activityDensity = Array.from(activityBuckets.entries())
+    .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+    .map(([bucket, count]) => ({
+      xValue: bucket,
+      yValue: Number(count),
+      payload: null,
+    }));
+
+  const workComposition = [
+    { xValue: "final_answer", yValue: Number(finalAnswerCount), payload: null },
+    { xValue: "commentary", yValue: Number(commentaryMessageCount), payload: null },
+    { xValue: "reasoning", yValue: Number(reasoningItemCount), payload: null },
+    { xValue: "tool_calls", yValue: Number(counters.commandExecutionCount), payload: null },
+  ];
+
+  const toolMix = [
+    { xValue: "mcp_tool_call", yValue: Number(counters.mcpToolCallCount), payload: null },
+    { xValue: "dynamic_tool_call", yValue: Number(counters.dynamicToolCallCount), payload: null },
+    { xValue: "collab_agent_tool_call", yValue: Number(counters.collabAgentToolCallCount), payload: null },
+  ];
+
+  const series = [
+    { seriesKey: "activity_density", points: activityDensity },
+    { seriesKey: "work_composition", points: workComposition },
+    { seriesKey: "tool_mix", points: toolMix },
+    { seriesKey: "gap_map", points: gapMap.slice(-120) },
+    { seriesKey: "turn_timeline", points: turnTimeline.slice(-500) },
+  ];
+
+  const tailHash = crypto.createHash("sha1").update(tailLines.join("\n")).digest("hex");
+  const lastRolloutAt = lastAtMs !== null ? new Date(lastAtMs).toISOString() : "";
+
+  return {
+    threadId: session.threadId,
+    sourceHome: session.sourceHome,
+    sessionFilePath: session.sessionFilePath,
+    title: session.title,
+    cwd: session.cwd,
+    originator: session.originator,
+    createdAt: session.createdAt,
+    updatedAt: session.updatedAt,
+    fingerprint: {
+      sessionUpdatedAt: String(session.updatedAt || ""),
+      fileMtimeMs: Number.isFinite(Number(stat?.mtimeMs)) ? Math.round(Number(stat.mtimeMs)) : 0,
+      fileSizeBytes: Number.isFinite(Number(stat?.size)) ? Math.round(Number(stat.size)) : 0,
+      lineCount,
+      lastRolloutAt,
+      tailHash,
+    },
+    metrics,
+    series,
+  };
+}
+
 async function walkJsonlFiles(rootDir, onFile) {
   const stack = [rootDir];
   while (stack.length) {
@@ -942,6 +1315,7 @@ async function handleRequest(method, params = {}) {
         watchScaffold: true,
         listCodexThreads: true,
         readCodexThreadTranscript: true,
+        analyzeCodexThread: true,
       },
     };
   }
@@ -953,6 +1327,7 @@ async function handleRequest(method, params = {}) {
   if (method === "watchStatus") return watchStatus(params);
   if (method === "listCodexThreads") return listCodexThreads(params);
   if (method === "readCodexThreadTranscript") return readCodexThreadTranscript(params);
+  if (method === "analyzeCodexThread") return analyzeCodexThread(params);
   throw new Error(`Unknown workspace-agent method: ${method}`);
 }
 

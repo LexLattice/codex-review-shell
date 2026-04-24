@@ -16,12 +16,15 @@ const { CodexAppServerManager } = require("./main/codex-app-server");
 const { LocalSurfaceServer } = require("./main/local-surface-server");
 const { CodexSurfaceSession } = require("./main/codex-surface-session");
 const { WorkspaceBackendManager, workspaceLabel, workspaceRoot } = require("./main/workspace-backend");
+const { ThreadAnalyticsStore, buildThreadKey } = require("./main/thread-analytics-store");
 
 const APP_TITLE = "Codex Review Shell";
 const CONFIG_FILE_NAME = "workspace-config.json";
 const CHATGPT_THREAD_CACHE_FILE_NAME = "chatgpt-thread-cache.json";
 const CHATGPT_THREAD_CACHE_VERSION = 1;
 const CHATGPT_THREAD_CACHE_MAX_ENTRIES = 1500;
+const THREAD_ANALYTICS_DB_FILE_NAME = "thread-analytics.sqlite";
+const THREAD_ANALYTICS_ANALYZER_VERSION = "analytics-v0.1";
 const CODEX_PARTITION = "persist:codex-review-shell-codex";
 const CHATGPT_PARTITION = "persist:codex-review-shell-chatgpt";
 const PREVIEW_LIMIT_BYTES = 384 * 1024;
@@ -52,6 +55,7 @@ let workspaceBackends = null;
 let codexAppServer = null;
 let localSurfaceServer = null;
 let codexSurfaceSessions = null;
+let threadAnalyticsStore = null;
 
 function nowIso() {
   return new Date().toISOString();
@@ -67,6 +71,10 @@ function configPath() {
 
 function chatgptThreadCachePath() {
   return path.join(app.getPath("userData"), CHATGPT_THREAD_CACHE_FILE_NAME);
+}
+
+function threadAnalyticsDbPath() {
+  return path.join(app.getPath("userData"), THREAD_ANALYTICS_DB_FILE_NAME);
 }
 
 function tempFilePath(targetPath) {
@@ -940,6 +948,12 @@ function ensureWorkspaceBackendManager() {
     emitShellEvent({ type: "backend-agent-event", ...payload });
   });
   return workspaceBackends;
+}
+
+function ensureThreadAnalyticsStore() {
+  if (threadAnalyticsStore) return threadAnalyticsStore;
+  threadAnalyticsStore = new ThreadAnalyticsStore(threadAnalyticsDbPath());
+  return threadAnalyticsStore;
 }
 
 function ensureCodexAppServerManager() {
@@ -1990,6 +2004,185 @@ async function readCodexThreadTranscript(projectId, threadId, sourceHome = "", s
   };
 }
 
+function analyticsCheapFingerprintMatches(current, entry) {
+  if (!current || String(current.parseStatus || "") !== "ready") return false;
+  if (String(current.analyzerVersion || "") !== THREAD_ANALYTICS_ANALYZER_VERSION) return false;
+  if (String(current.sessionUpdatedAt || "") !== String(entry.updatedAt || "")) return false;
+  const currentMtime = Math.round(Number(current.fileMtimeMs || 0));
+  const nextMtime = Math.round(Number(entry.sessionFileMtimeMs || 0));
+  if (currentMtime !== nextMtime) return false;
+  const currentSize = Math.round(Number(current.fileSizeBytes || 0));
+  const nextSize = Math.round(Number(entry.sessionFileSizeBytes || 0));
+  if (currentSize !== nextSize) return false;
+  return true;
+}
+
+function projectAnalyticsBindingHints(project, discoveredEntries) {
+  const hints = new Map();
+  const byThreadId = new Map();
+  for (const entry of discoveredEntries) {
+    const threadId = normalizeString(entry.threadId, "");
+    if (!threadId) continue;
+    if (!byThreadId.has(threadId)) byThreadId.set(threadId, []);
+    byThreadId.get(threadId).push(entry);
+  }
+
+  for (const binding of Array.isArray(project?.laneBindings) ? project.laneBindings : []) {
+    const threadId = normalizeString(binding?.codexThreadRef?.threadId, "");
+    if (!threadId) continue;
+    const candidates = byThreadId.get(threadId) || [];
+    if (!candidates.length) continue;
+    const hintOriginator = normalizeString(binding?.codexThreadRef?.originator, "");
+    const resolved = hintOriginator
+      ? candidates.find((item) => normalizeString(item.originator, "") === hintOriginator) || candidates[0]
+      : candidates[0];
+    const threadKey = buildThreadKey(normalizeString(resolved.sourceHome, ""), normalizeString(resolved.threadId, ""));
+    hints.set(threadKey, {
+      lane: normalizeString(binding?.lane, ""),
+      bindingId: normalizeString(binding?.id, ""),
+      linkedAt: normalizeString(binding?.createdAt, nowIso()),
+    });
+  }
+  return hints;
+}
+
+async function listThreadAnalytics(projectId, options = {}) {
+  const project = await getProjectById(projectId);
+  const store = ensureThreadAnalyticsStore();
+  const limit = Math.max(1, Math.min(Number(options?.limit) || 220, 500));
+  const entries = store.listProjectThreads(project.id, limit);
+  return {
+    projectId: project.id,
+    entries,
+    analyzerVersion: THREAD_ANALYTICS_ANALYZER_VERSION,
+    dbPath: threadAnalyticsDbPath(),
+  };
+}
+
+async function getThreadAnalyticsDashboard(projectId, threadKey) {
+  const project = await getProjectById(projectId);
+  const store = ensureThreadAnalyticsStore();
+  const key = normalizeString(threadKey, "");
+  if (!key) throw new Error("threadKey is required.");
+  const dashboard = store.getProjectThreadDashboard(project.id, key);
+  return {
+    projectId: project.id,
+    threadKey: key,
+    dashboard,
+    analyzerVersion: THREAD_ANALYTICS_ANALYZER_VERSION,
+  };
+}
+
+async function updateThreadAnalytics(projectId, options = {}) {
+  const project = await getProjectById(projectId);
+  const store = ensureThreadAnalyticsStore();
+  const scopeMode = normalizeString(options?.scope, "project");
+  const runId = store.startScanRun(scopeMode || "project", project.id);
+  const counts = {
+    discovered: 0,
+    processed: 0,
+    skipped: 0,
+    failed: 0,
+  };
+
+  try {
+    const discovery = await requestWorkspace(project, "listCodexThreads", {
+      limit: 260,
+      includeSubagents: false,
+      perHomeScanLimit: 420,
+      fastMode: false,
+      dedupeByThreadId: false,
+    }, 70_000);
+
+    const discoveredEntries = Array.isArray(discovery?.entries)
+      ? discovery.entries.filter((entry) => normalizeString(entry?.threadId, "") && normalizeString(entry?.sourceHome, ""))
+      : [];
+    counts.discovered = discoveredEntries.length;
+
+    const hints = projectAnalyticsBindingHints(project, discoveredEntries);
+    store.upsertDiscoveredThreads(project.id, discoveredEntries, hints, nowIso());
+
+    const staleCandidates = [];
+    for (const entry of discoveredEntries) {
+      const threadKey = buildThreadKey(normalizeString(entry.sourceHome, ""), normalizeString(entry.threadId, ""));
+      if (!threadKey || !normalizeString(entry.sessionFilePath, "")) {
+        counts.failed += 1;
+        store.insertErrorSnapshot(
+          threadKey,
+          entry,
+          THREAD_ANALYTICS_ANALYZER_VERSION,
+          "Missing session file path for analytics parsing.",
+          nowIso(),
+        );
+        continue;
+      }
+
+      const current = store.getCurrentSnapshotFingerprint(threadKey);
+      if (analyticsCheapFingerprintMatches(current, entry)) {
+        store.markThreadReady(threadKey, normalizeString(entry.updatedAt, ""), nowIso());
+        counts.skipped += 1;
+        continue;
+      }
+      staleCandidates.push({ entry, threadKey });
+    }
+
+    const workerCount = Math.max(1, Math.min(Number(options?.concurrency) || 4, 12));
+    let queueIndex = 0;
+    const workers = Array.from({ length: Math.min(workerCount, staleCandidates.length) }, async () => {
+      while (true) {
+        const currentIndex = queueIndex;
+        queueIndex += 1;
+        if (currentIndex >= staleCandidates.length) return;
+        const candidate = staleCandidates[currentIndex];
+        const entry = candidate.entry;
+        const threadKey = candidate.threadKey;
+        const processedAt = nowIso();
+        try {
+          const analysis = await requestWorkspace(project, "analyzeCodexThread", {
+            threadId: entry.threadId,
+            sourceHome: entry.sourceHome,
+            sessionFilePath: entry.sessionFilePath,
+          }, 140_000);
+          store.insertSuccessfulSnapshot(
+            threadKey,
+            entry,
+            analysis,
+            THREAD_ANALYTICS_ANALYZER_VERSION,
+            processedAt,
+          );
+          counts.processed += 1;
+        } catch (error) {
+          store.insertErrorSnapshot(
+            threadKey,
+            entry,
+            THREAD_ANALYTICS_ANALYZER_VERSION,
+            error?.message || "Analytics parse failed.",
+            processedAt,
+          );
+          counts.failed += 1;
+        }
+      }
+    });
+    await Promise.all(workers);
+
+    const entries = store.listProjectThreads(project.id, 260);
+    store.finishScanRun(runId, counts, "");
+    return {
+      ok: true,
+      projectId: project.id,
+      runId,
+      counts,
+      entries,
+      analyzerVersion: THREAD_ANALYTICS_ANALYZER_VERSION,
+      sourceHomes: Array.isArray(discovery?.sourceHomes) ? discovery.sourceHomes : [],
+    };
+  } catch (error) {
+    counts.failed += 1;
+    store.finishScanRun(runId, counts, error.message);
+    throw error;
+  }
+}
+
 async function revealProjectFile(projectId, relPath) {
   const project = await getProjectById(projectId);
   const result = await requestWorkspace(project, "resolvePath", { relPath }, 10_000);
@@ -2329,6 +2522,8 @@ async function createWindow() {
     codexSurfaceSessions = null;
     localSurfaceServer?.dispose();
     localSurfaceServer = null;
+    threadAnalyticsStore?.close();
+    threadAnalyticsStore = null;
     closeView(codexView);
     closeView(chatgptView);
     closeView(shellView);
@@ -2485,6 +2680,18 @@ ipcMain.handle("codex:select-thread", async (_event, payload) => {
   );
 });
 
+ipcMain.handle("thread-analytics:list", async (_event, payload) => {
+  return listThreadAnalytics(payload?.projectId, { limit: payload?.limit });
+});
+
+ipcMain.handle("thread-analytics:update", async (_event, payload) => {
+  return updateThreadAnalytics(payload?.projectId, { scope: payload?.scope });
+});
+
+ipcMain.handle("thread-analytics:detail", async (_event, payload) => {
+  return getThreadAnalyticsDashboard(payload?.projectId, payload?.threadKey);
+});
+
 ipcMain.handle("worktree:reveal-file", async (_event, payload) => {
   return revealProjectFile(payload?.projectId, payload?.relPath);
 });
@@ -2572,6 +2779,8 @@ app.whenReady().then(async () => {
 app.on("before-quit", () => {
   workspaceBackends?.disposeAll();
   workspaceBackends = null;
+  threadAnalyticsStore?.close();
+  threadAnalyticsStore = null;
 });
 
 app.on("window-all-closed", () => {

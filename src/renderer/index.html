@@ -60,6 +60,7 @@
         <nav class="middle-tabs" aria-label="Middle plane views">
           <button class="middle-tab active" id="overviewTabButton" data-tab="overview" type="button">Overview</button>
           <button class="middle-tab" id="threadsTabButton" data-tab="threads" type="button">Threads</button>
+          <button class="middle-tab" id="analyticsTabButton" data-tab="analytics" type="button">Analytics</button>
         </nav>
 
         <section class="middle-tab-panel active" id="overviewTabPanel" data-tab-panel="overview">
@@ -290,6 +291,26 @@
               </div>
               <div class="thread-browser-list project-chat-thread-list" id="projectChatThreadList"></div>
               <div class="thread-browser-list recent-chat-thread-list" id="recentChatThreadList" hidden></div>
+            </section>
+          </section>
+        </section>
+
+        <section class="middle-tab-panel" id="analyticsTabPanel" data-tab-panel="analytics" hidden>
+          <section class="control-card analytics-card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Thread analytics</p>
+                <h3>Project-scoped Codex analytics</h3>
+              </div>
+              <div class="heading-actions">
+                <span id="analyticsThreadCount" class="counter">0</span>
+                <button class="ghost small" id="updateAnalyticsButton" type="button">Update analytics</button>
+              </div>
+            </div>
+            <p id="analyticsHint" class="muted">Select a thread to load its persisted analytics snapshot.</p>
+            <section class="analytics-split" aria-label="Thread analytics workbench">
+              <div class="thread-browser-list analytics-thread-list" id="analyticsThreadList"></div>
+              <div class="analytics-dashboard" id="analyticsDashboard"></div>
             </section>
           </section>
         </section>

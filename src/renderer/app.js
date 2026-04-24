@@ -35,6 +35,11 @@ const state = {
   defaultCodexRuntime: "auto",
   allowNonChatgptUrls: false,
   activeMiddleTab: "overview",
+  analyticsThreads: [],
+  analyticsStatus: "idle",
+  analyticsDashboard: null,
+  analyticsDashboardStatus: "idle",
+  selectedAnalyticsThreadKey: "",
   surfaceEvents: {
     codex: { type: "idle" },
     chatgpt: { type: "idle" },
@@ -64,6 +69,8 @@ const state = {
     thread: 0,
     codexThreads: 0,
     recentThreads: 0,
+    analyticsThreads: 0,
+    analyticsDetail: 0,
     workTree: 0,
     watchedArtifacts: 0,
     preview: 0,
@@ -80,8 +87,10 @@ const els = {
   activeThreadStatus: document.getElementById("activeThreadStatus"),
   overviewTabButton: document.getElementById("overviewTabButton"),
   threadsTabButton: document.getElementById("threadsTabButton"),
+  analyticsTabButton: document.getElementById("analyticsTabButton"),
   overviewTabPanel: document.getElementById("overviewTabPanel"),
   threadsTabPanel: document.getElementById("threadsTabPanel"),
+  analyticsTabPanel: document.getElementById("analyticsTabPanel"),
   projectList: document.getElementById("projectList"),
   projectCount: document.getElementById("projectCount"),
   threadDeck: document.getElementById("threadDeck"),
@@ -140,6 +149,11 @@ const els = {
   recentChatThreadList: document.getElementById("recentChatThreadList"),
   openThreadAttachButton: document.getElementById("openThreadAttachButton"),
   importRecentChatThreadButton: document.getElementById("importRecentChatThreadButton"),
+  analyticsThreadCount: document.getElementById("analyticsThreadCount"),
+  updateAnalyticsButton: document.getElementById("updateAnalyticsButton"),
+  analyticsHint: document.getElementById("analyticsHint"),
+  analyticsThreadList: document.getElementById("analyticsThreadList"),
+  analyticsDashboard: document.getElementById("analyticsDashboard"),
   refreshWorkTreeButton: document.getElementById("refreshWorkTreeButton"),
   workTree: document.getElementById("workTree"),
   previewPath: document.getElementById("previewPath"),
@@ -577,6 +591,20 @@ function formatTime(value) {
   }
 }
 
+function formatDurationMs(value) {
+  const ms = Number(value);
+  if (!Number.isFinite(ms) || ms <= 0) return "0s";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${seconds.toFixed(seconds >= 10 ? 1 : 2)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainSeconds = Math.round(seconds % 60);
+  if (minutes < 60) return `${minutes}m ${remainSeconds}s`;
+  const hours = Math.floor(minutes / 60);
+  const remainMinutes = minutes % 60;
+  return `${hours}h ${remainMinutes}m`;
+}
+
 function surfaceStatusLabel(event) {
   if (!event || event.type === "idle") return "idle";
   if (event.type === "loading") return "loading";
@@ -610,6 +638,7 @@ function renderMiddleTabs() {
   const tabs = [
     [els.overviewTabButton, els.overviewTabPanel, "overview"],
     [els.threadsTabButton, els.threadsTabPanel, "threads"],
+    [els.analyticsTabButton, els.analyticsTabPanel, "analytics"],
   ];
   for (const [button, panel, tab] of tabs) {
     const active = state.activeMiddleTab === tab;
@@ -1042,6 +1071,199 @@ function renderWatchedArtifacts() {
   }
 }
 
+function analyticsStatusLabel(entry) {
+  if (!entry) return "never processed";
+  if (entry.status === "unavailable") return "unavailable";
+  if (entry.parseStatus === "error" || entry.status === "error") return "error";
+  if (!entry.snapshotId) return "never processed";
+  return entry.parseStatus === "ready" ? "ready" : entry.status || "ready";
+}
+
+function analyticsMetric(dashboard, key) {
+  return dashboard?.metrics?.[key] || null;
+}
+
+function analyticsMetricDisplay(metric, key) {
+  if (!metric) return "—";
+  const numeric = Number(metric.numValue);
+  if (Number.isFinite(numeric)) {
+    if (metric.unit === "ms" || key.endsWith("_ms")) return formatDurationMs(numeric);
+    if (metric.unit === "ratio" || key.endsWith("_ratio")) return `${(numeric * 100).toFixed(1)}%`;
+    if (Math.abs(numeric) >= 1000) return Math.round(numeric).toLocaleString();
+    if (Number.isInteger(numeric)) return String(numeric);
+    return numeric.toFixed(2);
+  }
+  return metric.textValue || "—";
+}
+
+function buildAnalyticsBarChart(title, points, options = {}) {
+  const wrapper = document.createElement("section");
+  wrapper.className = "analytics-chart";
+  const heading = document.createElement("h4");
+  heading.textContent = title;
+  wrapper.appendChild(heading);
+
+  const rows = Array.isArray(points) ? points : [];
+  if (!rows.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "No data in this snapshot yet.";
+    wrapper.appendChild(empty);
+    return wrapper;
+  }
+
+  const values = rows.map((point) => Number(point?.yValue)).filter((value) => Number.isFinite(value));
+  const maxValue = values.length ? Math.max(...values, 1) : 1;
+  const list = document.createElement("div");
+  list.className = "analytics-bars";
+  const capped = rows.slice(0, Math.max(1, Number(options.limit) || 8));
+
+  for (const point of capped) {
+    const numeric = Number(point?.yValue);
+    const value = Number.isFinite(numeric) ? numeric : 0;
+    const label = point?.xValue || point?.payload?.label || "item";
+    const row = document.createElement("div");
+    row.className = "analytics-bar-row";
+    const labelNode = document.createElement("span");
+    labelNode.textContent = label;
+    const bar = document.createElement("div");
+    bar.className = "analytics-bar";
+    const fill = document.createElement("div");
+    fill.className = "analytics-bar-fill";
+    fill.style.width = `${Math.max(0, Math.min(100, (value / maxValue) * 100))}%`;
+    bar.appendChild(fill);
+    const valueNode = document.createElement("span");
+    if (typeof options.valueFormatter === "function") valueNode.textContent = options.valueFormatter(value);
+    else valueNode.textContent = Math.round(value).toLocaleString();
+    row.append(labelNode, bar, valueNode);
+    list.appendChild(row);
+  }
+
+  wrapper.appendChild(list);
+  return wrapper;
+}
+
+function renderAnalyticsThreadList() {
+  els.analyticsThreadCount.textContent = String(state.analyticsThreads.length);
+  els.analyticsThreadList.innerHTML = "";
+
+  if (state.analyticsStatus === "loading") {
+    els.analyticsThreadList.innerHTML = `<div class="empty-state">Loading saved analytics from local database…</div>`;
+    return;
+  }
+
+  if (!state.analyticsThreads.length) {
+    els.analyticsThreadList.innerHTML = `<div class="empty-state">No analytics snapshots yet. Click Update analytics to scan new/changed Codex threads for this project.</div>`;
+    return;
+  }
+
+  for (const entry of state.analyticsThreads) {
+    const row = document.createElement("article");
+    row.className = `thread-browser-item${entry.threadKey === state.selectedAnalyticsThreadKey ? " active" : ""}`;
+    row.innerHTML = `
+      <div class="thread-topline">
+        <span class="role-badge"></span>
+        <strong class="truncate"></strong>
+      </div>
+      <span class="thread-meta truncate"></span>
+      <span class="thread-notes truncate"></span>
+    `;
+    const statusLabel = analyticsStatusLabel(entry);
+    row.querySelector(".role-badge").textContent = `${entry.lane ? `${roleLabel(entry.lane)} · ` : ""}${statusLabel}`;
+    row.querySelector("strong").textContent = entry.title || "Untitled Codex thread";
+    row.querySelector(".thread-meta").textContent = shortPath(entry.cwd || "");
+    row.querySelector(".thread-notes").textContent = entry.updatedAt
+      ? `Updated ${formatTime(entry.updatedAt)}`
+      : "No source timestamp";
+    row.addEventListener("click", () => {
+      selectAnalyticsThread(entry.threadKey).catch((error) => {
+        setLastEvent(`Analytics dashboard load failed: ${error.message}`);
+      });
+    });
+    els.analyticsThreadList.appendChild(row);
+  }
+}
+
+function renderAnalyticsDashboard() {
+  const container = els.analyticsDashboard;
+  container.innerHTML = "";
+
+  if (state.analyticsDashboardStatus === "loading") {
+    container.innerHTML = `<div class="empty-state">Loading analytics dashboard…</div>`;
+    return;
+  }
+
+  if (!state.selectedAnalyticsThreadKey) {
+    container.innerHTML = `<div class="empty-state">Select a thread to view saved metrics and chart series.</div>`;
+    return;
+  }
+
+  const dashboard = state.analyticsDashboard;
+  if (!dashboard?.thread) {
+    container.innerHTML = `<div class="empty-state">No analytics snapshot for this thread yet. Run Update analytics first.</div>`;
+    return;
+  }
+
+  const threadMeta = document.createElement("div");
+  threadMeta.className = "analytics-chart";
+  const heading = document.createElement("h4");
+  heading.textContent = dashboard.thread.title || "Thread analytics";
+  const meta = document.createElement("p");
+  meta.className = "muted";
+  const processedAt = dashboard.snapshot?.processedAt ? formatTime(dashboard.snapshot.processedAt) : "not processed";
+  meta.textContent = `Status: ${analyticsStatusLabel(dashboard.thread)} · Snapshot: ${processedAt} · Originator: ${dashboard.thread.originator || "unknown"}`;
+  threadMeta.append(heading, meta);
+  container.appendChild(threadMeta);
+
+  const summaryStrip = document.createElement("div");
+  summaryStrip.className = "analytics-summary-strip";
+  const summaryMetrics = [
+    ["turn_count", "Turns"],
+    ["thread_wall_clock_span_ms", "Total period"],
+    ["thread_active_work_time_ms", "Active work"],
+    ["thread_utilization_ratio", "Utilization"],
+    ["command_execution_count", "Tool calls"],
+    ["reasoning_item_count", "Reasoning items"],
+  ];
+  for (const [key, label] of summaryMetrics) {
+    const metric = analyticsMetric(dashboard, key);
+    const card = document.createElement("article");
+    card.className = "analytics-metric-card";
+    const keyNode = document.createElement("span");
+    keyNode.className = "metric-key";
+    keyNode.textContent = label;
+    const valueNode = document.createElement("strong");
+    valueNode.className = "metric-value";
+    valueNode.textContent = analyticsMetricDisplay(metric, key);
+    const evidenceNode = document.createElement("span");
+    evidenceNode.className = "metric-evidence";
+    evidenceNode.textContent = metric?.evidenceGrade ? `Evidence: ${metric.evidenceGrade}` : "Evidence: —";
+    card.append(keyNode, valueNode, evidenceNode);
+    summaryStrip.appendChild(card);
+  }
+  container.appendChild(summaryStrip);
+
+  const series = dashboard.series || {};
+  container.appendChild(buildAnalyticsBarChart("Work composition", series.work_composition || []));
+  container.appendChild(buildAnalyticsBarChart("Tool mix", series.tool_mix || []));
+  const recentDensity = Array.isArray(series.activity_density) ? series.activity_density.slice(-12) : [];
+  container.appendChild(buildAnalyticsBarChart("Activity density (recent buckets)", recentDensity, { valueFormatter: (value) => String(Math.round(value)) }));
+  const topGaps = Array.isArray(series.gap_map)
+    ? series.gap_map.slice().sort((a, b) => Number(b?.yValue || 0) - Number(a?.yValue || 0)).slice(0, 8)
+    : [];
+  container.appendChild(buildAnalyticsBarChart("Longest idle gaps", topGaps, { valueFormatter: (value) => formatDurationMs(value) }));
+}
+
+function renderAnalyticsPanel() {
+  const loading = state.analyticsStatus === "updating";
+  els.updateAnalyticsButton.disabled = loading;
+  els.analyticsHint.textContent = loading
+    ? "Updating analytics snapshots for new/changed project threads…"
+    : "Select a thread to load its persisted analytics snapshot.";
+  renderAnalyticsThreadList();
+  renderAnalyticsDashboard();
+}
+
 function render() {
   if (!state.config) return;
   els.configPath.textContent = state.configPath;
@@ -1051,6 +1273,7 @@ function render() {
   renderSelectedProject();
   renderThreadDeck();
   renderThreadsWorkbench();
+  renderAnalyticsPanel();
   renderHandoffTargetSelect();
   renderPromptPreview();
   renderHandoffQueue();
@@ -1221,11 +1444,95 @@ async function loadChatgptRecentThreads(options = {}) {
   renderThreadsWorkbench();
 }
 
+async function loadAnalyticsThreads(options = {}) {
+  const snapshot = {
+    ...projectRequestSnapshot(),
+    ...(options || {}),
+  };
+  if (!snapshot.projectId || !bridge.listThreadAnalytics) return;
+  const requestVersion = nextRequestVersion("analyticsThreads");
+  state.analyticsStatus = options?.refresh ? "updating" : "loading";
+  renderAnalyticsPanel();
+  try {
+    const result = await bridge.listThreadAnalytics(snapshot.projectId, { limit: 260 });
+    if (isRequestStale("analyticsThreads", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.analyticsThreads = Array.isArray(result?.entries) ? result.entries : [];
+    state.analyticsStatus = "loaded";
+  } catch (error) {
+    if (isRequestStale("analyticsThreads", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.analyticsThreads = [];
+    state.analyticsStatus = "error";
+    setLastEvent(`Analytics list load failed: ${error.message}`);
+  }
+  if (isRequestStale("analyticsThreads", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+  if (state.selectedAnalyticsThreadKey && !state.analyticsThreads.find((entry) => entry.threadKey === state.selectedAnalyticsThreadKey)) {
+    state.selectedAnalyticsThreadKey = "";
+    state.analyticsDashboard = null;
+    state.analyticsDashboardStatus = "idle";
+  }
+  renderAnalyticsPanel();
+}
+
+async function selectAnalyticsThread(threadKey) {
+  const project = activeProject();
+  const key = String(threadKey || "").trim();
+  if (!project || !key || !bridge.getThreadAnalytics) return;
+  state.selectedAnalyticsThreadKey = key;
+  state.analyticsDashboardStatus = "loading";
+  renderAnalyticsPanel();
+  const requestVersion = nextRequestVersion("analyticsDetail");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  try {
+    const result = await bridge.getThreadAnalytics(project.id, key);
+    if (isRequestStale("analyticsDetail", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.analyticsDashboard = result?.dashboard || null;
+    state.analyticsDashboardStatus = "loaded";
+  } catch (error) {
+    if (isRequestStale("analyticsDetail", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.analyticsDashboard = null;
+    state.analyticsDashboardStatus = "error";
+    setLastEvent(`Analytics dashboard load failed: ${error.message}`);
+  }
+  if (isRequestStale("analyticsDetail", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+  renderAnalyticsPanel();
+}
+
+async function updateAnalytics() {
+  const project = activeProject();
+  if (!project || !bridge.updateThreadAnalytics) return;
+  const requestVersion = nextRequestVersion("analyticsThreads");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  state.analyticsStatus = "updating";
+  renderAnalyticsPanel();
+  try {
+    const result = await bridge.updateThreadAnalytics(project.id, { scope: "project" });
+    if (isRequestStale("analyticsThreads", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.analyticsThreads = Array.isArray(result?.entries) ? result.entries : [];
+    state.analyticsStatus = "loaded";
+    const counts = result?.counts || {};
+    setLastEvent(
+      `Analytics updated: ${Number(counts.processed || 0)} processed, ${Number(counts.skipped || 0)} skipped, ${Number(counts.failed || 0)} failed.`,
+    );
+    if (state.selectedAnalyticsThreadKey) {
+      await selectAnalyticsThread(state.selectedAnalyticsThreadKey);
+      return;
+    }
+  } catch (error) {
+    if (isRequestStale("analyticsThreads", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.analyticsStatus = "error";
+    setLastEvent(`Analytics update failed: ${error.message}`);
+  }
+  if (isRequestStale("analyticsThreads", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+  renderAnalyticsPanel();
+}
+
 async function selectProject(projectId) {
   const projectVersion = nextRequestVersion("project");
   nextRequestVersion("thread");
   nextRequestVersion("codexThreads");
   nextRequestVersion("recentThreads");
+  nextRequestVersion("analyticsThreads");
+  nextRequestVersion("analyticsDetail");
   nextRequestVersion("workTree");
   nextRequestVersion("watchedArtifacts");
   nextRequestVersion("preview");
@@ -1243,6 +1550,11 @@ async function selectProject(projectId) {
   state.selectedCodexThreadId = "";
   state.selectedProjectChatThreadId = "";
   state.selectedRecentChatgptThreadId = "";
+  state.selectedAnalyticsThreadKey = "";
+  state.analyticsThreads = [];
+  state.analyticsStatus = "idle";
+  state.analyticsDashboard = null;
+  state.analyticsDashboardStatus = "idle";
   state.activeChatgptThreadBrowserTab = "project";
   render();
   const project = activeProject();
@@ -1263,12 +1575,14 @@ async function selectProject(projectId) {
       state.workspaceStatuses[project.id] = status;
       renderSelectedProject();
       await loadCodexThreads({ projectId: project.id, projectVersion });
+      await loadAnalyticsThreads({ projectId: project.id, projectVersion });
     } catch (error) {
       if (isRequestStale("project", projectVersion) || isProjectRequestStale(project.id, projectVersion)) return;
       state.codexThreads = [];
       state.workspaceStatuses[project.id] = { status: "failed", lastError: error.message };
       renderSelectedProject();
       renderThreadsWorkbench();
+      await loadAnalyticsThreads({ projectId: project.id, projectVersion });
     }
   }
   await loadWorkTreeRoot({ projectId: project.id, projectVersion });
@@ -1703,8 +2017,15 @@ async function deleteThreadFromDrawer() {
 }
 
 function setMiddleTab(tab) {
-  state.activeMiddleTab = tab === "threads" ? "threads" : "overview";
+  if (tab === "threads") state.activeMiddleTab = "threads";
+  else if (tab === "analytics") state.activeMiddleTab = "analytics";
+  else state.activeMiddleTab = "overview";
   renderMiddleTabs();
+  if (state.activeMiddleTab === "analytics" && state.analyticsStatus === "idle") {
+    loadAnalyticsThreads({ refresh: false }).catch((error) => {
+      setLastEvent(`Analytics list load failed: ${error.message}`);
+    });
+  }
   scheduleResizeBurst();
 }
 
@@ -2223,6 +2544,7 @@ async function previewFile(relPath, row) {
 function bindEvents() {
   els.overviewTabButton.addEventListener("click", () => setMiddleTab("overview"));
   els.threadsTabButton.addEventListener("click", () => setMiddleTab("threads"));
+  els.analyticsTabButton.addEventListener("click", () => setMiddleTab("analytics"));
   els.addProjectButton.addEventListener("click", () => openDrawer("new"));
   els.editProjectButton.addEventListener("click", () => openDrawer("edit"));
   els.closeDrawerButton.addEventListener("click", closeDrawer);
@@ -2250,6 +2572,11 @@ function bindEvents() {
   els.refreshRecentChatThreadsButton.addEventListener("click", () => {
     loadChatgptRecentThreads({ refresh: true }).catch((error) => {
       setLastEvent(`ChatGPT recent-thread refresh failed: ${error.message}`);
+    });
+  });
+  els.updateAnalyticsButton.addEventListener("click", () => {
+    updateAnalytics().catch((error) => {
+      setLastEvent(`Analytics update failed: ${error.message}`);
     });
   });
   els.importRecentChatThreadButton.addEventListener("click", importRecentChatgptThread);
