@@ -161,6 +161,21 @@ class ThreadAnalyticsStore {
     this.db = null;
   }
 
+  transaction(callback) {
+    if (!this.db) throw new Error("Analytics database is closed.");
+    this.db.exec("begin immediate;");
+    try {
+      const result = callback();
+      this.db.exec("commit;");
+      return result;
+    } catch (error) {
+      try {
+        this.db.exec("rollback;");
+      } catch {}
+      throw error;
+    }
+  }
+
   startScanRun(mode, scopeProjectId = "") {
     const stmt = this.db.prepare(`
       insert into analytics_scan_runs (
@@ -226,7 +241,10 @@ class ThreadAnalyticsStore {
       on conflict(thread_key) do update set
         source_home = excluded.source_home,
         thread_id = excluded.thread_id,
-        session_file_path = excluded.session_file_path,
+        session_file_path = case
+          when excluded.session_file_path != '' then excluded.session_file_path
+          else analytics_threads.session_file_path
+        end,
         title_snapshot = excluded.title_snapshot,
         cwd_snapshot = excluded.cwd_snapshot,
         originator = excluded.originator,
@@ -257,7 +275,7 @@ class ThreadAnalyticsStore {
     `);
 
     const seenKeys = new Set();
-    const tx = this.db.transaction(() => {
+    this.transaction(() => {
       for (const entry of Array.isArray(entries) ? entries : []) {
         const sourceHome = normalizeText(entry.sourceHome, "");
         const threadId = normalizeText(entry.threadId, "");
@@ -290,7 +308,6 @@ class ThreadAnalyticsStore {
         seenKeys.add(threadKey);
       }
     });
-    tx();
     return Array.from(seenKeys);
   }
 
@@ -316,6 +333,22 @@ class ThreadAnalyticsStore {
       update analytics_threads
       set
         last_scan_status = 'ready',
+        last_session_updated_at = ?,
+        last_seen_at = ?
+      where thread_key = ?
+    `);
+    stmt.run(
+      normalizeText(sessionUpdatedAt, ""),
+      normalizeText(seenAt, nowIso()),
+      normalizeText(threadKey, ""),
+    );
+  }
+
+  markThreadUnavailable(threadKey, sessionUpdatedAt = "", seenAt = nowIso()) {
+    const stmt = this.db.prepare(`
+      update analytics_threads
+      set
+        last_scan_status = 'unavailable',
         last_session_updated_at = ?,
         last_seen_at = ?
       where thread_key = ?
@@ -354,7 +387,7 @@ class ThreadAnalyticsStore {
       where thread_key = ?
     `);
 
-    const tx = this.db.transaction(() => {
+    this.transaction(() => {
       const snapshotResult = insertSnapshot.run(
         normalizeText(threadKey, ""),
         normalizeText(analyzerVersion, "analytics-v0"),
@@ -375,7 +408,6 @@ class ThreadAnalyticsStore {
         normalizeText(threadKey, ""),
       );
     });
-    tx();
   }
 
   insertSuccessfulSnapshot(threadKey, entry, analysis, analyzerVersion, processedAt = nowIso()) {
@@ -435,7 +467,7 @@ class ThreadAnalyticsStore {
       where thread_key = ?
     `);
 
-    const tx = this.db.transaction(() => {
+    this.transaction(() => {
       const snapshotResult = insertSnapshot.run(
         normalizeText(threadKey, ""),
         normalizeText(analyzerVersion, "analytics-v0"),
@@ -490,7 +522,6 @@ class ThreadAnalyticsStore {
         normalizeText(threadKey, ""),
       );
     });
-    tx();
   }
 
   listProjectThreads(projectId, limit = 220) {

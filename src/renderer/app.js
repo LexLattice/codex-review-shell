@@ -1597,8 +1597,9 @@ async function updateAnalytics() {
     state.analyticsThreads = Array.isArray(result?.entries) ? result.entries : [];
     state.analyticsStatus = "loaded";
     const counts = result?.counts || {};
+    const fallbackNote = result?.fallback?.reason ? ` Fallback: ${result.fallback.reason}` : "";
     setLastEvent(
-      `Analytics updated: ${Number(counts.processed || 0)} processed, ${Number(counts.skipped || 0)} skipped, ${Number(counts.failed || 0)} failed.`,
+      `Analytics updated: ${Number(counts.discovered || 0)} discovered, ${Number(counts.processed || 0)} processed, ${Number(counts.skipped || 0)} skipped, ${Number(counts.failed || 0)} failed.${fallbackNote}`,
     );
     if (state.selectedAnalyticsThreadKey) {
       await selectAnalyticsThread(state.selectedAnalyticsThreadKey);
