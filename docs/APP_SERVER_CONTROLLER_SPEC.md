@@ -78,10 +78,15 @@ The shell already uses the right architectural boundary:
 - the renderer initializes the app-server connection
 - thread actions use `thread/start`, `thread/read`, `thread/resume`, and `turn/start`
 - new threads opt into `persistExtendedHistory: true`
+- main process owns a pending server-request registry keyed by connection/request identity
+- Codex request cards and the middle-plane compact queue can answer supported approval/request flows
 
-The missing part is request roundtripping.
+The remaining work is capability hardening and transport maturation.
 
-Today the main bridge receives server-initiated requests and forwards them as `rpc-request` events. The Codex renderer currently drops those requests, and the middle plane only renders a status line. That means approval and input flows are visible as signals but are not actionable.
+- derive request shapes and supported methods from the active executable schema
+- gate Codex UX affordances from a runtime capability profile
+- keep unknown request methods visible and answered with explicit unsupported errors
+- move local managed runtime toward a stdio transport after WebSocket parity is proven
 
 ## Product Doctrine
 
