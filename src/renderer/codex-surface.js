@@ -21,6 +21,7 @@ let connection = payload.codexConnection || null;
 const USER_MESSAGE_PAGE_SIZE = 10;
 const USER_MESSAGE_PREVIEW_LINES = 10;
 const MAX_COMMAND_OUTPUT_CHARS = 1200;
+const EMPTY_TURN_AUTO_RETRY_LIMIT = 1;
 const THOUGHT_ITEM_TYPES = new Set([
   "reasoning",
   "commandExecution",
@@ -50,6 +51,11 @@ const state = {
   codexItemMap: new Map(),
   thoughtItemMap: new Map(),
   thoughtTurnByItemId: new Map(),
+  finalMessageByTurnKey: new Map(),
+  turnActivityMap: new Map(),
+  turnPromptMap: new Map(),
+  turnRetryCountMap: new Map(),
+  emptyTurnRetrying: new Set(),
   serverRequests: new Map(),
   connected: false,
   liveAttached: false,
@@ -149,6 +155,197 @@ function rememberThoughtAssistantItem(item, turnKey = "") {
   state.thoughtTurnByItemId.set(itemId, { turnKey: key, phase });
 }
 
+function normalizeSlashes(value) {
+  return String(value || "").replace(/\\/g, "/");
+}
+
+function stripTokenPunctuation(value) {
+  return String(value || "").replace(/[),.;!?]+$/g, "");
+}
+
+function knownWorkspaceRoots() {
+  const roots = [
+    connection?.workspaceRoot,
+    project?.workspace?.linuxPath,
+    project?.workspace?.localPath,
+    project?.repoPath,
+  ];
+  const repoText = String(project?.repoPath || "");
+  const wslMatch = repoText.match(/^wsl:[^:]+:(\/.*)$/i);
+  if (wslMatch) roots.push(wslMatch[1]);
+  return Array.from(new Set(roots.map((root) => normalizeSlashes(root).replace(/\/+$/, "")).filter(Boolean)));
+}
+
+function relativePathWithinRoot(filePath) {
+  const raw = stripTokenPunctuation(filePath).trim();
+  if (!raw || raw.includes("\0")) return "";
+  const normalized = normalizeSlashes(raw);
+  if (normalized.startsWith("../") || normalized.includes("/../") || normalized === "..") return "";
+  if (/\s/.test(normalized)) return "";
+
+  for (const root of knownWorkspaceRoots()) {
+    const normalizedRoot = normalizeSlashes(root).replace(/\/+$/, "");
+    if (!normalizedRoot) continue;
+    const lowerPath = normalized.toLowerCase();
+    const lowerRoot = normalizedRoot.toLowerCase();
+    if (lowerPath === lowerRoot) return "";
+    if (lowerPath.startsWith(`${lowerRoot}/`)) return normalized.slice(normalizedRoot.length + 1);
+  }
+
+  const isAbsolute = normalized.startsWith("/") || /^[A-Za-z]:\//.test(normalized);
+  if (isAbsolute) return "";
+  if (!normalized.includes("/") && !/\.[A-Za-z0-9]{1,12}$/.test(normalized)) return "";
+  return normalized.replace(/^\.\/+/, "");
+}
+
+function splitLineRef(value) {
+  const text = stripTokenPunctuation(value).trim();
+  const match = text.match(/^(.*?)(?::(\d+)(?::(\d+))?)$/);
+  if (!match) return { path: text, line: null, column: null };
+  if (/^[A-Za-z]$/.test(match[1])) return { path: text, line: null, column: null };
+  return {
+    path: match[1],
+    line: Number(match[2]),
+    column: match[3] ? Number(match[3]) : null,
+  };
+}
+
+function addTokenCandidate(candidates, start, end, token) {
+  if (start < 0 || end <= start) return;
+  candidates.push({ start, end, token });
+}
+
+function chooseTokenCandidates(candidates) {
+  const sorted = candidates
+    .filter((candidate) => candidate?.token?.text)
+    .sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start));
+  const result = [];
+  let cursor = 0;
+  for (const candidate of sorted) {
+    if (candidate.start < cursor) continue;
+    result.push(candidate);
+    cursor = candidate.end;
+  }
+  return result;
+}
+
+function tokenizeTypedContent(text) {
+  const source = String(text || "");
+  if (!source) return [{ type: "text", text: "" }];
+  const candidates = [];
+
+  const urlPattern = /https?:\/\/[^\s<>"'`)\]]+/g;
+  for (const match of source.matchAll(urlPattern)) {
+    const raw = stripTokenPunctuation(match[0]);
+    addTokenCandidate(candidates, match.index, match.index + raw.length, { type: "url", text: raw, href: raw });
+  }
+
+  const backtickPattern = /`([^`\n]{1,240})`/g;
+  for (const match of source.matchAll(backtickPattern)) {
+    const raw = match[1] || "";
+    const lineRef = splitLineRef(raw);
+    const relPath = relativePathWithinRoot(lineRef.path);
+    if (relPath) {
+      addTokenCandidate(candidates, match.index, match.index + match[0].length, {
+        type: lineRef.line ? "line_ref" : "file_path",
+        text: match[0],
+        path: relPath,
+        line: lineRef.line,
+        column: lineRef.column,
+      });
+      continue;
+    }
+    const type = /\s|^(npm|pnpm|yarn|node|git|gh|cargo|python|pytest|uv|make|bash|sh)\b/.test(raw.trim())
+      ? "command"
+      : "symbol";
+    addTokenCandidate(candidates, match.index, match.index + match[0].length, { type, text: match[0], value: raw });
+  }
+
+  const filePattern = /(?:[A-Za-z]:[\\/]|\/|\.{1,2}\/)?[A-Za-z0-9._@+-][A-Za-z0-9._@+:/\\-]*\.[A-Za-z0-9]{1,12}(?::\d+(?::\d+)?)?/g;
+  for (const match of source.matchAll(filePattern)) {
+    const raw = stripTokenPunctuation(match[0]);
+    if (!raw || /^https?:\/\//i.test(raw)) continue;
+    const lineRef = splitLineRef(raw);
+    const relPath = relativePathWithinRoot(lineRef.path);
+    if (!relPath) continue;
+    addTokenCandidate(candidates, match.index, match.index + raw.length, {
+      type: lineRef.line ? "line_ref" : "file_path",
+      text: raw,
+      path: relPath,
+      line: lineRef.line,
+      column: lineRef.column,
+    });
+  }
+
+  const chosen = chooseTokenCandidates(candidates);
+  const tokens = [];
+  let cursor = 0;
+  for (const candidate of chosen) {
+    if (candidate.start > cursor) tokens.push({ type: "text", text: source.slice(cursor, candidate.start) });
+    tokens.push(candidate.token);
+    cursor = candidate.end;
+  }
+  if (cursor < source.length) tokens.push({ type: "text", text: source.slice(cursor) });
+  return tokens.length ? tokens : [{ type: "text", text: source }];
+}
+
+async function openTypedUrl(url) {
+  if (!bridge?.openExternalUrl) {
+    addSystemMessage("External URL opening is unavailable in this Codex surface.");
+    return;
+  }
+  const result = await bridge.openExternalUrl(url);
+  if (!result?.ok) addSystemMessage(`URL open blocked: ${result?.error || "unknown error"}`);
+}
+
+async function revealTypedFile(relPath) {
+  if (!bridge?.revealProjectFile || !project?.id) {
+    addSystemMessage("Project file reveal is unavailable in this Codex surface.");
+    return;
+  }
+  try {
+    const result = await bridge.revealProjectFile(project.id, relPath);
+    if (!result?.opened && result?.method) addSystemMessage(`File path copied: ${result.absolutePath || relPath}`);
+  } catch (error) {
+    addSystemMessage(`File reveal failed: ${error.message}`);
+  }
+}
+
+function renderTypedContent(container, text) {
+  container.textContent = "";
+  const tokens = tokenizeTypedContent(text);
+  for (const token of tokens) {
+    if (!token || token.type === "text") {
+      container.appendChild(document.createTextNode(token?.text || ""));
+      continue;
+    }
+    if (token.type === "url") {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "typed-token typed-token-url";
+      button.textContent = token.text;
+      button.title = "Open link in browser";
+      button.addEventListener("click", () => openTypedUrl(token.href));
+      container.appendChild(button);
+      continue;
+    }
+    if (token.type === "file_path" || token.type === "line_ref") {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `typed-token ${token.type === "line_ref" ? "typed-token-line-ref" : "typed-token-file"}`;
+      button.textContent = token.text;
+      button.title = token.line ? `Reveal ${token.path}:${token.line}` : `Reveal ${token.path}`;
+      button.addEventListener("click", () => revealTypedFile(token.path));
+      container.appendChild(button);
+      continue;
+    }
+    const span = document.createElement("span");
+    span.className = `typed-token typed-token-${token.type.replace(/_/g, "-")}`;
+    span.textContent = token.text;
+    container.appendChild(span);
+  }
+}
+
 function ensureMessage(id, role, title = "") {
   if (state.itemMap.has(id)) return state.itemMap.get(id);
   const article = document.createElement("article");
@@ -164,7 +361,8 @@ function ensureMessage(id, role, title = "") {
 function setMessageText(id, role, text, title = "") {
   const node = ensureMessage(id, role, title);
   const bubble = node.querySelector(".bubble");
-  bubble.textContent = text || "";
+  bubble.dataset.rawText = text || "";
+  renderTypedContent(bubble, text || "");
   configureUserMessagePreview(node, role);
   maybeAutoScrollBottom();
 }
@@ -172,13 +370,128 @@ function setMessageText(id, role, text, title = "") {
 function appendMessageText(id, role, delta, title = "") {
   const node = ensureMessage(id, role, title);
   const bubble = node.querySelector(".bubble");
-  bubble.textContent += delta || "";
+  const next = `${bubble.dataset.rawText || bubble.textContent || ""}${delta || ""}`;
+  bubble.dataset.rawText = next;
+  renderTypedContent(bubble, next);
   configureUserMessagePreview(node, role);
   maybeAutoScrollBottom();
 }
 
 function addSystemMessage(text) {
   setMessageText(`system_${Date.now()}_${Math.random().toString(16).slice(2)}`, "system", text, "System");
+}
+
+function clearRenderedThreadState() {
+  els.transcript.innerHTML = "";
+  state.itemMap.clear();
+  state.codexItemMap.clear();
+  state.thoughtItemMap.clear();
+  state.thoughtTurnByItemId.clear();
+  state.finalMessageByTurnKey.clear();
+  state.turnActivityMap.clear();
+  state.turnPromptMap.clear();
+  state.turnRetryCountMap.clear();
+  state.emptyTurnRetrying.clear();
+}
+
+function turnIdFromNotification(params) {
+  return String(params?.turn?.id || params?.turnId || "");
+}
+
+function ensureTurnActivity(turnId) {
+  const id = String(turnId || "").trim();
+  if (!id) return null;
+  const existing = state.turnActivityMap.get(id);
+  if (existing) return existing;
+  const next = {
+    id,
+    startedAt: null,
+    completedAt: null,
+    status: "",
+    hasCodexOutput: false,
+    errorShown: false,
+    emptyCompletionWarned: false,
+  };
+  state.turnActivityMap.set(id, next);
+  return next;
+}
+
+function markTurnCodexOutput(turnId) {
+  const activity = ensureTurnActivity(turnId);
+  if (activity) activity.hasCodexOutput = true;
+}
+
+function rememberPromptTurn(turnId, text, retryCount = 0) {
+  const id = String(turnId || "").trim();
+  if (!id || !text) return;
+  state.turnPromptMap.set(id, text);
+  state.turnRetryCountMap.set(id, Math.max(0, Number(retryCount) || 0));
+}
+
+async function retryEmptyTurn(turnId) {
+  const id = String(turnId || "").trim();
+  if (!id || state.emptyTurnRetrying.has(id)) return;
+  const prompt = state.turnPromptMap.get(id);
+  const retryCount = state.turnRetryCountMap.get(id) || 0;
+  if (!prompt || retryCount >= EMPTY_TURN_AUTO_RETRY_LIMIT) return;
+
+  state.emptyTurnRetrying.add(id);
+  try {
+    setComposerEnabled(false, "Retrying empty Codex turn…");
+    addSystemMessage("Rolling back the empty Codex turn and retrying the prompt once.");
+    const rollback = await rpc("thread/rollback", { threadId: state.threadId, numTurns: 1 });
+    if (rollback?.thread) {
+      renderThreadHistory(rollback.thread);
+      bindThread(rollback.thread, project?.codex?.model || "", { liveAttached: true });
+    }
+    setComposerEnabled(false, "Retrying empty Codex turn…");
+    await startCodexTurn(prompt, { retryCount: retryCount + 1 });
+  } catch (error) {
+    addSystemMessage(`Automatic retry failed: ${error.message}`);
+    setComposerEnabled(state.liveAttached, state.liveAttached ? "" : "Read-only mode");
+  } finally {
+    state.emptyTurnRetrying.delete(id);
+  }
+}
+
+function renderTurnCompletionNotice(turnId, turn) {
+  const id = String(turnId || turn?.id || "").trim();
+  if (!id) return;
+  const activity = ensureTurnActivity(id);
+  if (!activity || activity.emptyCompletionWarned) return;
+
+  if (turn?.status === "failed" && turn?.error) {
+    if (activity.errorShown) return;
+    activity.errorShown = true;
+    activity.emptyCompletionWarned = true;
+    const details = [
+      turn.error.message || "Codex turn failed.",
+      turn.error.additionalDetails || "",
+    ].filter(Boolean).join("\n");
+    addSystemMessage(details);
+    return;
+  }
+
+  if (activity.hasCodexOutput) return;
+  activity.emptyCompletionWarned = true;
+  const status = String(turn?.status || "completed");
+  const duration = Number.isFinite(turn?.durationMs) ? ` in ${Math.max(0, Math.round(turn.durationMs))}ms` : "";
+  if (status !== "completed") {
+    addSystemMessage(`Codex turn ended as ${status}${duration} without assistant, tool, or reasoning output.`);
+    return;
+  }
+  const prompt = state.turnPromptMap.get(id);
+  const retryCount = state.turnRetryCountMap.get(id) || 0;
+  if (prompt && retryCount < EMPTY_TURN_AUTO_RETRY_LIMIT && state.threadId && state.connected) {
+    addSystemMessage(
+      `Codex accepted the prompt but completed${duration} without assistant, tool, or reasoning output. This empty turn will be rolled back and retried once.`,
+    );
+    retryEmptyTurn(id);
+    return;
+  }
+  addSystemMessage(
+    `Codex accepted the prompt but completed${duration} without assistant, tool, or reasoning output. The prompt was recorded in the thread; this usually means the app-server/core turn stopped before model output was produced.`,
+  );
 }
 
 function removeUserMessagePreviewToggle(node) {
@@ -353,7 +666,7 @@ function appendRequestLine(parent, label, value, options = {}) {
   key.textContent = label;
   const body = document.createElement(options.pre ? "pre" : "span");
   body.className = options.mono ? "mono codex-request-line-value" : "codex-request-line-value";
-  body.textContent = text;
+  renderTypedContent(body, text);
   row.append(key, body);
   parent.appendChild(row);
 }
@@ -510,13 +823,7 @@ function renderMcpRequestDetails(request, details, actions) {
   if (params.mode === "url") {
     appendRequestLine(details, "url", params.url || "", { mono: true });
     actions.appendChild(createRequestButton("Open URL", "secondary", () => {
-      try {
-        const parsed = new URL(String(params.url || ""));
-        if (parsed.protocol === "http:" || parsed.protocol === "https:") window.open(parsed.toString(), "_blank");
-        else addSystemMessage("Blocked non-http MCP URL.");
-      } catch {
-        addSystemMessage("Blocked invalid MCP URL.");
-      }
+      openTypedUrl(String(params.url || ""));
     }));
   } else {
     appendRequestLine(details, "schema", params.requestedSchema || "", { mono: true, pre: true });
@@ -624,11 +931,7 @@ function renderStoredTranscript(snapshot, threadId, options = {}) {
   const previousScrollHeight = options.preserveViewport ? els.transcript.scrollHeight : 0;
 
   state.isBulkRendering = true;
-  els.transcript.innerHTML = "";
-  state.itemMap.clear();
-  state.codexItemMap.clear();
-  state.thoughtItemMap.clear();
-  state.thoughtTurnByItemId.clear();
+  clearRenderedThreadState();
   state.threadId = threadId;
   state.liveAttached = false;
   const title = String(snapshot?.title || "Stored transcript");
@@ -772,11 +1075,7 @@ async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "")
   state.threadId = requestedThreadId;
   state.sourceHome = String(sourceHome || "");
   state.liveAttached = false;
-  els.transcript.innerHTML = "";
-  state.itemMap.clear();
-  state.codexItemMap.clear();
-  state.thoughtItemMap.clear();
-  state.thoughtTurnByItemId.clear();
+  clearRenderedThreadState();
   addSystemMessage(`Loading thread ${requestedThreadId}…`);
   setComposerEnabled(false, "Loading stored transcript and attaching live Codex session…");
   let renderedStored = false;
@@ -909,15 +1208,42 @@ function thoughtItemBody(item) {
   return compactValue(item, 1800);
 }
 
-function renderThoughtProcess(turnKey, thoughtItems) {
+function thoughtMessageId(turnKey) {
+  return `thought_${String(turnKey || "live")}`;
+}
+
+function rememberFinalMessageItem(itemId, turnKey = "") {
+  const id = String(itemId || "").trim();
+  const key = String(turnKey || state.turnId || "").trim();
+  if (!id || !key) return;
+  state.finalMessageByTurnKey.set(key, id);
+  const thoughtNode = state.itemMap.get(thoughtMessageId(key));
+  const finalNode = state.itemMap.get(id);
+  if (thoughtNode && finalNode && finalNode.parentNode === els.transcript) {
+    els.transcript.insertBefore(thoughtNode, finalNode);
+  }
+}
+
+function positionThoughtProcessNode(turnKey, node) {
+  const key = String(turnKey || "").trim();
+  const finalId = state.finalMessageByTurnKey.get(key);
+  const finalNode = finalId ? state.itemMap.get(finalId) : null;
+  if (node && finalNode && finalNode.parentNode === els.transcript) {
+    els.transcript.insertBefore(node, finalNode);
+  }
+}
+
+function renderThoughtProcess(turnKey, thoughtItems, options = {}) {
   if (!Array.isArray(thoughtItems) || !thoughtItems.length) return;
-  const messageId = `thought_${turnKey}`;
+  const messageId = thoughtMessageId(turnKey);
   const node = ensureMessage(messageId, "system", "Thought process");
+  positionThoughtProcessNode(turnKey, node);
   const bubble = node.querySelector(".bubble");
   bubble.innerHTML = "";
 
   const root = document.createElement("details");
   root.className = "thought-process";
+  if (options.open) root.open = true;
   const summary = document.createElement("summary");
   summary.textContent = `Thought process (${thoughtItems.length})`;
   root.appendChild(summary);
@@ -933,7 +1259,7 @@ function renderThoughtProcess(turnKey, thoughtItems) {
   for (const item of reasoningItems) {
     const block = document.createElement("div");
     block.className = "thought-reasoning";
-    block.textContent = thoughtItemBody(item) || "No reasoning text.";
+    renderTypedContent(block, thoughtItemBody(item) || "No reasoning text.");
     body.appendChild(block);
   }
 
@@ -952,7 +1278,7 @@ function renderThoughtProcess(turnKey, thoughtItems) {
       toolSummary.textContent = thoughtItemLabel(item);
       const toolBody = document.createElement("pre");
       toolBody.className = "thought-content";
-      toolBody.textContent = thoughtItemBody(item) || "No details.";
+      renderTypedContent(toolBody, thoughtItemBody(item) || "No details.");
       toolDetail.append(toolSummary, toolBody);
       toolsList.appendChild(toolDetail);
     }
@@ -967,7 +1293,7 @@ function renderThoughtProcess(turnKey, thoughtItems) {
     title.textContent = thoughtItemLabel(item);
     const content = document.createElement("pre");
     content.className = "thought-content";
-    content.textContent = thoughtItemBody(item) || "No details.";
+    renderTypedContent(content, thoughtItemBody(item) || "No details.");
     detail.append(title, content);
     body.appendChild(detail);
   }
@@ -1005,7 +1331,15 @@ function upsertThoughtProcess(turnKey, items, options = {}) {
   const existing = shouldMerge ? state.thoughtItemMap.get(key) || [] : [];
   const merged = shouldMerge ? mergeThoughtItems(existing, items) : [...(items || [])];
   state.thoughtItemMap.set(key, merged);
-  renderThoughtProcess(key, merged);
+  renderThoughtProcess(key, merged, { open: Boolean(options.open) });
+}
+
+function collapseThoughtProcess(turnKey) {
+  const key = String(turnKey || "").trim();
+  if (!key) return;
+  const items = state.thoughtItemMap.get(key);
+  if (!items?.length) return;
+  renderThoughtProcess(key, items, { open: false });
 }
 
 function appendThoughtAssistantDelta(itemId, delta, phaseHint = "") {
@@ -1032,7 +1366,7 @@ function appendThoughtAssistantDelta(itemId, delta, phaseHint = "") {
   upsertThoughtProcess(
     turnKey,
     [{ id, type: "agentMessage", phase, text: `${currentText}${textDelta}` }],
-    { merge: true },
+    { merge: true, open: true },
   );
   return true;
 }
@@ -1049,9 +1383,10 @@ function renderItem(item) {
     if (isThoughtAssistantMessageItem(item)) {
       const turnKey = String(item.turnId || state.turnId || `live_${Date.now()}`);
       rememberThoughtAssistantItem(item, turnKey);
-      upsertThoughtProcess(turnKey, [item], { merge: true });
+      upsertThoughtProcess(turnKey, [item], { merge: true, open: !state.isBulkRendering });
       return;
     }
+    rememberFinalMessageItem(item.id, item.turnId || state.turnId || "");
     setMessageText(item.id, "assistant", item.text || "", "Codex");
     return;
   }
@@ -1117,11 +1452,7 @@ function renderThreadHistory(thread, options = {}) {
   const previousScrollHeight = options.preserveViewport ? els.transcript.scrollHeight : 0;
 
   state.isBulkRendering = true;
-  els.transcript.innerHTML = "";
-  state.itemMap.clear();
-  state.codexItemMap.clear();
-  state.thoughtItemMap.clear();
-  state.thoughtTurnByItemId.clear();
+  clearRenderedThreadState();
   const allTurns = Array.isArray(thread?.turns) ? thread.turns : [];
   const userMessageTurnIndices = [];
   for (let index = 0; index < allTurns.length; index += 1) {
@@ -1145,20 +1476,23 @@ function renderThreadHistory(thread, options = {}) {
     const turn = visibleTurns[index];
     const absoluteTurnIndex = startTurnIndex + index;
     const turnKey = String(turn?.id || `${absoluteTurnIndex + 1}`);
+    const userItems = [];
     const regularItems = [];
     const thoughtItems = [];
     for (const item of turn.items || []) {
       if (item?.id) rememberCodexItem({ threadId: thread?.id || state.threadId, turnId: turnKey, itemId: item.id }, item);
       if (isThoughtItem(item) || isThoughtAssistantMessageItem(item)) thoughtItems.push(item);
+      else if (item?.type === "userMessage") userItems.push(item);
       else regularItems.push(item);
     }
-    for (const item of regularItems) renderItem(item);
+    for (const item of userItems) renderItem(item);
     if (thoughtItems.length) {
       for (const item of thoughtItems) {
         if (isThoughtAssistantMessageItem(item)) rememberThoughtAssistantItem(item, turnKey);
       }
       upsertThoughtProcess(turnKey, thoughtItems, { merge: false });
     }
+    for (const item of regularItems) renderItem(item);
   }
   state.isBulkRendering = false;
   if (options.preserveViewport) {
@@ -1179,12 +1513,20 @@ async function startNewThread() {
     persistExtendedHistory: true,
   };
   const result = await rpc("thread/start", params);
-  els.transcript.innerHTML = "";
-  state.itemMap.clear();
-  state.codexItemMap.clear();
-  state.thoughtItemMap.clear();
-  state.thoughtTurnByItemId.clear();
+  clearRenderedThreadState();
   bindThread(result.thread, result.model);
+}
+
+async function startCodexTurn(text, options = {}) {
+  const result = await rpc("turn/start", {
+    threadId: state.threadId,
+    input: [{ type: "text", text, text_elements: [] }],
+    model: project?.codex?.model || null,
+    effort: project?.codex?.reasoningEffort || null,
+  });
+  const turnId = String(result?.turn?.id || "");
+  if (turnId) rememberPromptTurn(turnId, text, options.retryCount || 0);
+  return result;
 }
 
 async function sendPrompt(text) {
@@ -1195,12 +1537,7 @@ async function sendPrompt(text) {
   }
   els.sendButton.disabled = true;
   try {
-    await rpc("turn/start", {
-      threadId: state.threadId,
-      input: [{ type: "text", text, text_elements: [] }],
-      model: project?.codex?.model || null,
-      effort: project?.codex?.reasoningEffort || null,
-    });
+    await startCodexTurn(text);
     els.composerInput.value = "";
   } finally {
     els.sendButton.disabled = false;
@@ -1217,6 +1554,28 @@ async function initializeBridgeSession() {
 }
 
 function handleNotification(method, params) {
+  if (method === "error") {
+    const turnId = String(params?.turnId || state.turnId || "");
+    const activity = ensureTurnActivity(turnId);
+    if (activity) {
+      activity.hasCodexOutput = true;
+      activity.errorShown = true;
+    }
+    const error = params?.error || {};
+    const message = [
+      params?.willRetry ? "Codex stream error; retrying." : "Codex error.",
+      error.message || "",
+      error.additionalDetails || "",
+    ].filter(Boolean).join("\n");
+    addSystemMessage(message);
+    return;
+  }
+  if (method === "warning") {
+    if (!params?.threadId || String(params.threadId) === String(state.threadId || "")) {
+      addSystemMessage(`Codex warning: ${params?.message || "Unknown warning."}`);
+    }
+    return;
+  }
   if (method === "serverRequest/resolved") {
     const requestId = String(params?.requestId || "");
     for (const request of state.serverRequests.values()) {
@@ -1227,11 +1586,17 @@ function handleNotification(method, params) {
     return;
   }
   if (method === "item/agentMessage/delta") {
+    const turnKey = String(params?.turnId || state.turnId || "");
+    markTurnCodexOutput(turnKey);
     if (appendThoughtAssistantDelta(params?.itemId, params?.delta || "", params?.phase || "")) return;
+    rememberFinalMessageItem(params?.itemId, turnKey);
     appendMessageText(params?.itemId, "assistant", params?.delta || "", "Codex");
     return;
   }
   if (method === "item/started" || method === "item/completed") {
+    if (params?.item?.type && params.item.type !== "userMessage") {
+      markTurnCodexOutput(params?.turnId || params.item.turnId || state.turnId);
+    }
     if (params?.item?.id) {
       rememberCodexItem(
         { threadId: params.threadId || state.threadId, turnId: params.turnId || params.item.turnId || state.turnId, itemId: params.item.id },
@@ -1241,7 +1606,7 @@ function handleNotification(method, params) {
     if (isThoughtItem(params?.item) || isThoughtAssistantMessageItem(params?.item)) {
       const turnKey = String(params?.turnId || params?.item?.turnId || state.turnId || `live_${Date.now()}`);
       if (isThoughtAssistantMessageItem(params?.item)) rememberThoughtAssistantItem(params.item, turnKey);
-      upsertThoughtProcess(turnKey, [params.item], { merge: true });
+      upsertThoughtProcess(turnKey, [params.item], { merge: true, open: true });
     } else {
       renderItem(params?.item);
     }
@@ -1261,11 +1626,29 @@ function handleNotification(method, params) {
   }
   if (method === "turn/completed") {
     els.sendButton.disabled = false;
-    if (params?.turnId) state.turnId = String(params.turnId);
+    const completedTurnId = turnIdFromNotification(params);
+    if (completedTurnId) {
+      state.turnId = completedTurnId;
+      const activity = ensureTurnActivity(completedTurnId);
+      if (activity) {
+        activity.status = String(params?.turn?.status || "completed");
+        activity.completedAt = params?.turn?.completedAt || Date.now() / 1000;
+      }
+      collapseThoughtProcess(completedTurnId);
+      renderTurnCompletionNotice(completedTurnId, params?.turn || {});
+    }
     return;
   }
   if (method === "turn/started") {
-    if (params?.turnId) state.turnId = String(params.turnId);
+    const startedTurnId = turnIdFromNotification(params);
+    if (startedTurnId) {
+      state.turnId = startedTurnId;
+      const activity = ensureTurnActivity(startedTurnId);
+      if (activity) {
+        activity.status = String(params?.turn?.status || "inProgress");
+        activity.startedAt = params?.turn?.startedAt || Date.now() / 1000;
+      }
+    }
   }
 }
 

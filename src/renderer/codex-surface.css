@@ -378,6 +378,49 @@ pre.codex-request-line-value {
   color: var(--muted);
 }
 
+.typed-token {
+  display: inline;
+  min-height: 0;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 4px;
+  font: inherit;
+  line-height: inherit;
+  text-align: left;
+  white-space: inherit;
+  overflow-wrap: anywhere;
+  background: transparent;
+}
+
+button.typed-token {
+  cursor: pointer;
+}
+
+.typed-token-url {
+  color: #8bd5ff;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.typed-token-file,
+.typed-token-line-ref {
+  color: #9de5b2;
+  background: rgba(111, 222, 165, 0.08);
+}
+
+.typed-token-command {
+  color: #f0bf74;
+  background: rgba(240, 191, 116, 0.08);
+  font-family: var(--mono);
+}
+
+.typed-token-symbol,
+.typed-token-commit {
+  color: #c6b8ff;
+  background: rgba(198, 184, 255, 0.08);
+  font-family: var(--mono);
+}
+
 .message.user .bubble {
   background: var(--accent-soft);
   border-color: rgba(121, 184, 255, 0.28);
@@ -452,6 +495,17 @@ button {
 button.secondary {
   background: rgba(255, 255, 255, 0.06);
   border-color: rgba(255, 255, 255, 0.12);
+}
+
+button.typed-token {
+  min-height: 0;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  font: inherit;
+  line-height: inherit;
+  text-align: left;
 }
 
 .mono {

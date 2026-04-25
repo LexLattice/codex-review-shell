@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld("codexSurfaceBridge", {
   notify: (method, params) => ipcRenderer.invoke("codex-surface:notify", { method, params }),
   respond: (id, result) => ipcRenderer.invoke("codex-surface:respond", { id, result }),
   respondRequest: (key, result) => ipcRenderer.invoke("codex-surface:respond", { key, result }),
+  openExternalUrl: (url) => ipcRenderer.invoke("external:open-url", { url }),
+  revealProjectFile: (projectId, relPath) => ipcRenderer.invoke("worktree:reveal-file", { projectId, relPath }),
   readStoredThreadTranscript: (projectId, threadId, sourceHome = "", sessionFilePath = "") =>
     ipcRenderer.invoke("codex-thread:transcript", { projectId, threadId, sourceHome, sessionFilePath }),
   onEvent: (callback) => {
