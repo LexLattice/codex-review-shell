@@ -161,6 +161,21 @@ class ThreadAnalyticsStore {
     this.db = null;
   }
 
+  transaction(callback) {
+    if (!this.db) throw new Error("Analytics database is closed.");
+    this.db.exec("begin immediate;");
+    try {
+      const result = callback();
+      this.db.exec("commit;");
+      return result;
+    } catch (error) {
+      try {
+        this.db.exec("rollback;");
+      } catch {}
+      throw error;
+    }
+  }
+
   startScanRun(mode, scopeProjectId = "") {
     const stmt = this.db.prepare(`
       insert into analytics_scan_runs (
@@ -257,7 +272,7 @@ class ThreadAnalyticsStore {
     `);
 
     const seenKeys = new Set();
-    const tx = this.db.transaction(() => {
+    this.transaction(() => {
       for (const entry of Array.isArray(entries) ? entries : []) {
         const sourceHome = normalizeText(entry.sourceHome, "");
         const threadId = normalizeText(entry.threadId, "");
@@ -290,7 +305,6 @@ class ThreadAnalyticsStore {
         seenKeys.add(threadKey);
       }
     });
-    tx();
     return Array.from(seenKeys);
   }
 
@@ -354,7 +368,7 @@ class ThreadAnalyticsStore {
       where thread_key = ?
     `);
 
-    const tx = this.db.transaction(() => {
+    this.transaction(() => {
       const snapshotResult = insertSnapshot.run(
         normalizeText(threadKey, ""),
         normalizeText(analyzerVersion, "analytics-v0"),
@@ -375,7 +389,6 @@ class ThreadAnalyticsStore {
         normalizeText(threadKey, ""),
       );
     });
-    tx();
   }
 
   insertSuccessfulSnapshot(threadKey, entry, analysis, analyzerVersion, processedAt = nowIso()) {
@@ -435,7 +448,7 @@ class ThreadAnalyticsStore {
       where thread_key = ?
     `);
 
-    const tx = this.db.transaction(() => {
+    this.transaction(() => {
       const snapshotResult = insertSnapshot.run(
         normalizeText(threadKey, ""),
         normalizeText(analyzerVersion, "analytics-v0"),
@@ -490,7 +503,6 @@ class ThreadAnalyticsStore {
         normalizeText(threadKey, ""),
       );
     });
-    tx();
   }
 
   listProjectThreads(projectId, limit = 220) {

@@ -14,9 +14,10 @@ const { EventEmitter } = require("node:events");
 const { spawn } = require("node:child_process");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const fs = require("node:fs");
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
-const ATTACH_TIMEOUT_MS = 8_000;
+const ATTACH_TIMEOUT_MS = 30_000;
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -242,6 +243,8 @@ class WorkspaceSession extends EventEmitter {
     this.descriptor = null;
     this.hello = null;
     this.lastError = null;
+    this.readySeen = false;
+    this.recentDiagnostics = [];
   }
 
   snapshot() {
@@ -254,7 +257,32 @@ class WorkspaceSession extends EventEmitter {
       workspace: this.descriptor?.workspace || normalizeWorkspace(this.project.workspace, this.project.repoPath, this.options.fallbackRoot),
       hello: this.hello,
       lastError: this.lastError,
+      readySeen: this.readySeen,
     };
+  }
+
+  noteDiagnostic(type, value) {
+    const text = normalizeString(value, "");
+    if (!text) return;
+    this.recentDiagnostics.push({
+      type,
+      text: text.slice(0, 500),
+      at: new Date().toISOString(),
+    });
+    if (this.recentDiagnostics.length > 8) this.recentDiagnostics.shift();
+  }
+
+  attachFailureMessage(error) {
+    const details = [];
+    if (this.descriptor) {
+      details.push(`transport=${this.descriptor.transport}`);
+      details.push(`command=${this.descriptor.command}`);
+      if (this.descriptor.cwd) details.push(`cwd=${this.descriptor.cwd}`);
+    }
+    details.push(`readySeen=${this.readySeen ? "yes" : "no"}`);
+    const recent = this.recentDiagnostics.map((item) => `${item.type}: ${item.text}`).join(" | ");
+    if (recent) details.push(`recent=${recent}`);
+    return `${error.message}${details.length ? ` (${details.join("; ")})` : ""}`;
   }
 
   emitStatus(type, extra = {}) {
@@ -281,8 +309,18 @@ class WorkspaceSession extends EventEmitter {
   async attachInner() {
     this.status = "starting";
     this.lastError = null;
+    this.readySeen = false;
+    this.recentDiagnostics = [];
     this.descriptor = launchDescriptor(this.project, this.options);
     this.emitStatus("backend-starting");
+
+    if (!fs.existsSync(this.options.agentPath)) {
+      const message = `Workspace backend agent is missing: ${this.options.agentPath}`;
+      this.status = "failed";
+      this.lastError = message;
+      this.emitStatus("backend-failed", { error: message });
+      throw new Error(message);
+    }
 
     this.child = spawn(this.descriptor.command, this.descriptor.args, {
       cwd: this.descriptor.cwd,
@@ -293,16 +331,24 @@ class WorkspaceSession extends EventEmitter {
     this.transport = new NdjsonTransport(this.child);
     this.transport.on("event", (event) => {
       this.emit("agent-event", { session: this.snapshot(), event });
-      if (event.event === "ready") this.emitStatus("backend-agent-ready", { agent: event });
+      if (event.event === "ready") {
+        this.readySeen = true;
+        this.noteDiagnostic("agent-ready", `${event.platform || "unknown"} pid=${event.pid || "unknown"}`);
+        this.emitStatus("backend-agent-ready", { agent: event });
+      }
       if (event.event === "startup-error") {
         this.lastError = event.error;
+        this.noteDiagnostic("startup-error", event.error);
         this.status = "failed";
         this.emitStatus("backend-failed", { error: event.error });
       }
     });
     this.transport.on("stderr", (chunk) => {
       const text = String(chunk || "").trim();
-      if (text) this.emitStatus("backend-stderr", { stderr: text.slice(0, 2000) });
+      if (text) {
+        this.noteDiagnostic("stderr", text);
+        this.emitStatus("backend-stderr", { stderr: text.slice(0, 2000) });
+      }
     });
     this.transport.on("closed", (error) => {
       if (this.status !== "failed" && this.status !== "disposed") {
@@ -318,11 +364,12 @@ class WorkspaceSession extends EventEmitter {
       this.status = "attached";
       this.emitStatus("backend-attached");
     } catch (error) {
+      const message = this.attachFailureMessage(error);
       this.status = "failed";
-      this.lastError = error.message;
-      this.emitStatus("backend-failed", { error: error.message });
+      this.lastError = message;
+      this.emitStatus("backend-failed", { error: message });
       this.dispose();
-      throw error;
+      throw new Error(message);
     }
   }
 
