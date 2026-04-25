@@ -2199,6 +2199,8 @@ async function saveLaneBinding() {
       originator: codexThread.originator || "",
       titleSnapshot: codexThread.title || "",
       cwdSnapshot: codexThread.cwd || "",
+      sourceHome: codexThread.sourceHome || "",
+      sessionFilePath: codexThread.sessionFilePath || "",
     },
     chatThreadId: chatThread.id,
     isDefaultForLane: els.bindingDefaultLaneInput.checked,

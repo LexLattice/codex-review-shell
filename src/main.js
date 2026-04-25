@@ -508,6 +508,8 @@ function defaultLaneBinding(overrides = {}) {
       originator: normalizeString(rawCodex.originator, ""),
       titleSnapshot: normalizeString(rawCodex.titleSnapshot, ""),
       cwdSnapshot: normalizeString(rawCodex.cwdSnapshot, ""),
+      sourceHome: normalizeString(rawCodex.sourceHome, ""),
+      sessionFilePath: normalizeString(rawCodex.sessionFilePath, ""),
     },
     chatThreadId: normalizeString(overrides.chatThreadId, ""),
     isDefaultForLane: Boolean(overrides.isDefaultForLane),
@@ -611,6 +613,62 @@ function activeChatThread(project) {
     primaryReviewThread(project) ||
     null
   );
+}
+
+function projectActivationBinding(project) {
+  const bindings = Array.isArray(project?.laneBindings)
+    ? project.laneBindings.filter((binding) => binding?.chatThreadId || binding?.codexThreadRef?.threadId)
+    : [];
+  if (!bindings.length) return null;
+  const activeRole = normalizeRole(activeChatThread(project)?.role, "review");
+  return (
+    bindings.find((binding) => binding.openOnProjectActivate) ||
+    bindings.find((binding) => binding.isDefaultForLane && normalizeRole(binding.lane, "review") === activeRole) ||
+    bindings.find((binding) => binding.isDefaultForLane) ||
+    bindings[0] ||
+    null
+  );
+}
+
+function applyProjectActivationBinding(project) {
+  const binding = projectActivationBinding(project);
+  if (!binding) return { project, binding: null };
+  const now = nowIso();
+  const chatThreadId = normalizeString(binding.chatThreadId, "");
+  const hasChatThread = Boolean(project.chatThreads?.some((thread) => thread.id === chatThreadId && !thread.archived));
+  const chatThreads = hasChatThread
+    ? project.chatThreads.map((thread) =>
+      thread.id === chatThreadId ? { ...thread, lastOpenedAt: now, updatedAt: now } : thread,
+    )
+    : project.chatThreads;
+  const laneBindings = (project.laneBindings || []).map((item) =>
+    item.id === binding.id ? { ...item, lastActivatedAt: now, updatedAt: now } : item,
+  );
+  return {
+    binding: { ...binding, lastActivatedAt: now, updatedAt: now },
+    project: {
+      ...project,
+      chatThreads,
+      laneBindings,
+      lastActiveBindingId: binding.id,
+      activeChatThreadId: hasChatThread ? chatThreadId : project.activeChatThreadId,
+      lastActiveThreadId: hasChatThread ? chatThreadId : project.lastActiveThreadId,
+      updatedAt: now,
+    },
+  };
+}
+
+function codexSurfaceOptionsForBinding(binding) {
+  const ref = binding?.codexThreadRef || {};
+  const threadId = normalizeString(ref.threadId, "");
+  if (!threadId) return {};
+  const sourceHome = normalizeString(ref.sourceHome, "");
+  return {
+    codexHome: sourceHome,
+    initialThreadId: threadId,
+    initialThreadSourceHome: sourceHome,
+    initialThreadSessionFilePath: normalizeString(ref.sessionFilePath, ""),
+  };
 }
 
 function normalizePromptTemplates(rawTemplates, rawFlow) {
@@ -1833,7 +1891,7 @@ function scheduleChatgptPolish() {
   }
 }
 
-async function loadProjectSurfaces(project) {
+async function loadProjectSurfaces(project, activationBinding = null) {
   currentProject = project;
   emitToShell("surface:event", {
     surface: "shell",
@@ -1842,7 +1900,10 @@ async function loadProjectSurfaces(project) {
     projectName: project.name,
     at: nowIso(),
   });
-  await Promise.allSettled([loadCodexSurface(project), loadChatgptSurface(project)]);
+  await Promise.allSettled([
+    loadCodexSurface(project, codexSurfaceOptionsForBinding(activationBinding)),
+    loadChatgptSurface(project, normalizeString(activationBinding?.chatThreadId, "")),
+  ]);
   scheduleLayoutPing("project-selected");
 }
 
@@ -2630,10 +2691,18 @@ ipcMain.handle("project:select", async (_event, projectId) => {
   const selectedProjectId = config.projects.some((project) => project.id === projectId)
     ? projectId
     : config.projects[0]?.id;
-  const saved = await saveConfig({ ...config, selectedProjectId });
+  const selectedProject = config.projects.find((project) => project.id === selectedProjectId) || config.projects[0] || null;
+  const activation = applyProjectActivationBinding(selectedProject);
+  const projects = activation.project
+    ? config.projects.map((project) => (project.id === activation.project.id ? activation.project : project))
+    : config.projects;
+  const saved = await saveConfig({ ...config, selectedProjectId, projects });
   const project = getSelectedProject(saved);
-  await loadProjectSurfaces(project);
-  return { config: saved, project };
+  const binding = activation.binding?.id
+    ? project?.laneBindings?.find((item) => item.id === activation.binding.id) || activation.binding
+    : null;
+  await loadProjectSurfaces(project, binding);
+  return { config: saved, project, activationBinding: binding || null };
 });
 
 ipcMain.handle("dialog:choose-directory", async () => {
@@ -2730,6 +2799,20 @@ ipcMain.handle("surface:open-external", async (_event, surfaceName) => {
   if (!url || url.startsWith("file://")) return false;
   await shell.openExternal(url);
   return true;
+});
+
+ipcMain.handle("external:open-url", async (_event, payload) => {
+  const rawUrl = normalizeString(payload?.url, "");
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return { ok: false, error: "Only http and https URLs can be opened externally." };
+    }
+    await shell.openExternal(parsed.toString());
+    return { ok: true, url: parsed.toString() };
+  } catch (error) {
+    return { ok: false, error: error.message || "Invalid URL." };
+  }
 });
 
 ipcMain.handle("clipboard:write-text", async (_event, text) => {
