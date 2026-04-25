@@ -61,6 +61,8 @@ const state = {
   chatgptRecentThreadsLoadingMode: "cache",
   chatgptRecentThreadsSource: "",
   selectedCodexThreadId: "",
+  openedCodexThreadId: "",
+  openedCodexThreadTitle: "",
   selectedProjectChatThreadId: "",
   selectedRecentChatgptThreadId: "",
   selectedBindingId: "",
@@ -392,6 +394,35 @@ function laneBindingById(project, bindingId) {
   return laneBindings(project).find((binding) => binding.id === bindingId) || null;
 }
 
+function codexThreadForBinding(binding) {
+  const ref = binding?.codexThreadRef || {};
+  const threadId = String(ref.threadId || "").trim();
+  if (!threadId) return null;
+  const candidates = state.codexThreads.filter((thread) => thread.threadId === threadId);
+  if (!candidates.length) return null;
+  const sourceHome = String(ref.sourceHome || "").trim();
+  if (sourceHome) {
+    const match = candidates.find((thread) => String(thread.sourceHome || "") === sourceHome);
+    if (match) return match;
+  }
+  const sessionFilePath = String(ref.sessionFilePath || "").trim();
+  if (sessionFilePath) {
+    const match = candidates.find((thread) => String(thread.sessionFilePath || "") === sessionFilePath);
+    if (match) return match;
+  }
+  const originator = String(ref.originator || "").trim();
+  if (originator) {
+    const match = candidates.find((thread) => String(thread.originator || "") === originator);
+    if (match) return match;
+  }
+  const title = String(ref.titleSnapshot || "").trim();
+  if (title) {
+    const match = candidates.find((thread) => String(thread.title || "") === title);
+    if (match) return match;
+  }
+  return candidates[0];
+}
+
 function activeLaneBinding(project) {
   const bindings = laneBindings(project);
   if (!bindings.length) return null;
@@ -406,6 +437,19 @@ function activeLaneBinding(project) {
 
 function codexThreadById(threadId) {
   return state.codexThreads.find((thread) => thread.threadId === threadId) || null;
+}
+
+function activeCodexThreadForHeader(project) {
+  const openedThread = state.openedCodexThreadId ? codexThreadById(state.openedCodexThreadId) : null;
+  if (openedThread) return openedThread;
+  if (state.openedCodexThreadId) {
+    return {
+      threadId: state.openedCodexThreadId,
+      title: state.openedCodexThreadTitle || state.openedCodexThreadId,
+    };
+  }
+  const binding = activeLaneBinding(project);
+  return codexThreadForBinding(binding);
 }
 
 function recentChatgptThreadById(externalId) {
@@ -711,7 +755,7 @@ function renderSelectedProject() {
   els.activeThreadStatus.textContent = currentThread ? `Active ${roleLabel(currentThread.role)} · ${currentThread.title}` : "No active ChatGPT thread";
   els.activeThreadStatus.title = currentThread?.url || "";
   const binding = activeLaneBinding(project);
-  const linkedCodex = codexThreadById(binding?.codexThreadRef?.threadId || "");
+  const linkedCodex = activeCodexThreadForHeader(project);
   const codexTitle = linkedCodex?.title || binding?.codexThreadRef?.titleSnapshot || "Codex implementation companion";
   els.codexSurfaceTitle.textContent = codexTitle;
   els.codexSurfaceTitle.title = binding?.codexThreadRef?.threadId || "";
@@ -1694,10 +1738,47 @@ async function selectProject(projectId) {
       await loadAnalyticsThreads({ projectId: project.id, projectVersion });
     }
   }
+  const currentProject = activeProject();
+  const activationBinding = result.activationBinding || activeLaneBinding(currentProject);
+  if (currentProject && activationBinding?.codexThreadRef?.threadId) {
+    await openProjectCodexBinding(currentProject, activationBinding, { projectId: currentProject.id, projectVersion });
+  }
   await loadWorkTreeRoot({ projectId: project.id, projectVersion });
   await loadWatchedArtifacts({ projectId: project.id, projectVersion });
   if (isRequestStale("project", projectVersion)) return;
   if (previous !== projectId) scheduleResizeBurst();
+}
+
+async function openProjectCodexBinding(project, binding, snapshot) {
+  const ref = binding?.codexThreadRef || {};
+  const threadId = String(ref.threadId || "").trim();
+  if (!project || !threadId || !bridge.selectCodexThread) return;
+  if (isRequestStale("project", snapshot.projectVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+
+  const discovered = codexThreadForBinding(binding);
+  const sourceHome = String(ref.sourceHome || discovered?.sourceHome || "").trim();
+  const sessionFilePath = String(ref.sessionFilePath || discovered?.sessionFilePath || "").trim();
+  state.selectedBindingId = binding.id || state.selectedBindingId;
+  state.selectedProjectChatThreadId = binding.chatThreadId || state.selectedProjectChatThreadId;
+  renderThreadsWorkbench();
+  try {
+    const result = await bridge.selectCodexThread(project.id, threadId, sourceHome, sessionFilePath);
+    if (isRequestStale("project", snapshot.projectVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    if (!result?.ok) {
+      setLastEvent(`Project Codex thread open skipped: ${result?.error || "unknown reason"}`);
+      return;
+    }
+    const title = discovered?.title || ref.titleSnapshot || threadId;
+    state.selectedCodexThreadId = threadId;
+    state.openedCodexThreadId = threadId;
+    state.openedCodexThreadTitle = title;
+    renderSelectedProject();
+    renderThreadsWorkbench();
+    setLastEvent(`Opened project Codex thread: ${title}.`);
+  } catch (error) {
+    if (isRequestStale("project", snapshot.projectVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    setLastEvent(`Project Codex thread open failed: ${error.message}`);
+  }
 }
 
 async function selectThread(threadId) {
@@ -1739,11 +1820,14 @@ async function selectCodexThread(threadId, sourceHome = "", sessionFilePath = ""
     return;
   }
   const thread = codexThreadById(threadId);
+  state.openedCodexThreadId = threadId;
+  state.openedCodexThreadTitle = thread?.title || threadId;
   if (result.warning) {
     setLastEvent(`Requested ${thread?.title || threadId} (read-only fallback): ${result.warning}`);
   } else {
     setLastEvent(`Requested Codex thread open: ${thread?.title || threadId}.`);
   }
+  renderSelectedProject();
 }
 
 async function openRecentChatgptThread(thread) {
