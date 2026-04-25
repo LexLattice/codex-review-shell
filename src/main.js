@@ -2044,6 +2044,27 @@ async function listCodexThreads(projectId) {
   };
 }
 
+async function discoverCodexThreadsForAnalytics(project) {
+  try {
+    return await requestWorkspace(project, "listCodexThreads", {
+      limit: 260,
+      includeSubagents: false,
+      perHomeScanLimit: 420,
+      fastMode: false,
+      dedupeByThreadId: false,
+    }, 70_000);
+  } catch (primaryError) {
+    const fallback = await listCodexThreads(project.id);
+    return {
+      ...fallback,
+      analyticsFallback: {
+        mode: fallback?.fallback?.mode || "thread-list",
+        reason: primaryError?.message || fallback?.fallback?.reason || "analytics discovery failed",
+      },
+    };
+  }
+}
+
 async function readCodexThreadTranscript(projectId, threadId, sourceHome = "", sessionFilePath = "") {
   const project = await getProjectById(projectId);
   const result = await requestWorkspace(project, "readCodexThreadTranscript", {
@@ -2141,13 +2162,7 @@ async function updateThreadAnalytics(projectId, options = {}) {
   };
 
   try {
-    const discovery = await requestWorkspace(project, "listCodexThreads", {
-      limit: 260,
-      includeSubagents: false,
-      perHomeScanLimit: 420,
-      fastMode: false,
-      dedupeByThreadId: false,
-    }, 70_000);
+    const discovery = await discoverCodexThreadsForAnalytics(project);
 
     const discoveredEntries = Array.isArray(discovery?.entries)
       ? discovery.entries.filter((entry) => normalizeString(entry?.threadId, "") && normalizeString(entry?.sourceHome, ""))
@@ -2230,6 +2245,7 @@ async function updateThreadAnalytics(projectId, options = {}) {
       entries,
       analyzerVersion: THREAD_ANALYTICS_ANALYZER_VERSION,
       sourceHomes: Array.isArray(discovery?.sourceHomes) ? discovery.sourceHomes : [],
+      fallback: discovery?.analyticsFallback || discovery?.fallback || null,
     };
   } catch (error) {
     counts.failed += 1;
