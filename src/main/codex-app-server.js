@@ -3,6 +3,10 @@
 const { EventEmitter } = require("node:events");
 const { spawn } = require("node:child_process");
 const net = require("node:net");
+const {
+  SUPPORTED_SERVER_REQUEST_METHODS,
+  AUTO_UNSUPPORTED_SERVER_REQUEST_METHODS,
+} = require("./codex-app-server-protocol");
 
 const DEFAULT_READY_TIMEOUT_MS = 35_000;
 const DEFAULT_STARTUP_ATTEMPTS = 2;
@@ -33,21 +37,6 @@ const STARTUP_ATTEMPTS = normalizeInteger(
   1,
   4,
 );
-
-const SUPPORTED_SERVER_REQUEST_METHODS = [
-  "item/commandExecution/requestApproval",
-  "item/fileChange/requestApproval",
-  "item/tool/requestUserInput",
-  "mcpServer/elicitation/request",
-  "item/permissions/requestApproval",
-  "applyPatchApproval",
-  "execCommandApproval",
-];
-
-const AUTO_UNSUPPORTED_SERVER_REQUEST_METHODS = [
-  "item/tool/call",
-  "account/chatgptAuthTokens/refresh",
-];
 
 function shellQuote(value) {
   const text = String(value ?? "");

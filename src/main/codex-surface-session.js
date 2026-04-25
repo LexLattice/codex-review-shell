@@ -4,6 +4,10 @@ const { EventEmitter } = require("node:events");
 const crypto = require("node:crypto");
 const fs = require("node:fs/promises");
 const WebSocket = require("ws");
+const {
+  SUPPORTED_SERVER_REQUEST_METHODS: SUPPORTED_SERVER_REQUEST_METHOD_LIST,
+  AUTO_UNSUPPORTED_SERVER_REQUEST_METHODS: AUTO_UNSUPPORTED_SERVER_REQUEST_METHOD_LIST,
+} = require("./codex-app-server-protocol");
 
 const DEFAULT_RPC_REQUEST_TIMEOUT_MS = 60_000;
 const OVERLOAD_RETRY_CODE = -32001;
@@ -11,20 +15,8 @@ const OVERLOAD_RETRY_ATTEMPTS = 3;
 const OVERLOAD_RETRY_BASE_MS = 250;
 const MAX_BEARER_TOKEN_FILE_BYTES = 16 * 1024;
 
-const SUPPORTED_SERVER_REQUEST_METHODS = new Set([
-  "item/commandExecution/requestApproval",
-  "item/fileChange/requestApproval",
-  "item/tool/requestUserInput",
-  "mcpServer/elicitation/request",
-  "item/permissions/requestApproval",
-  "applyPatchApproval",
-  "execCommandApproval",
-]);
-
-const AUTO_UNSUPPORTED_SERVER_REQUEST_METHODS = new Set([
-  "item/tool/call",
-  "account/chatgptAuthTokens/refresh",
-]);
+const SUPPORTED_SERVER_REQUEST_METHODS = new Set(SUPPORTED_SERVER_REQUEST_METHOD_LIST);
+const AUTO_UNSUPPORTED_SERVER_REQUEST_METHODS = new Set(AUTO_UNSUPPORTED_SERVER_REQUEST_METHOD_LIST);
 
 const HARD_TIMEOUT_MS_BY_METHOD = new Map([
   ["account/chatgptAuthTokens/refresh", 9_000],

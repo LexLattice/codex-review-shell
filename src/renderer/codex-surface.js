@@ -94,6 +94,7 @@ async function reportThreadState(status, details = {}) {
       sessionFilePath: String(details.sessionFilePath ?? state.sessionFilePath ?? ""),
       title: String(details.title || state.threadTitle || ""),
       status,
+      activationEpoch: Number(payload.activationEpoch) || 0,
       evidence: String(details.evidence || ""),
       errorDescription: String(details.errorDescription || ""),
     });
@@ -1218,6 +1219,11 @@ async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "",
     });
   } catch (error) {
     if (openRequestId !== state.openRequestId) return;
+    const message = String(error?.message || "");
+    if (message.toLowerCase().includes("not connected yet")) {
+      setComposerEnabled(false, "Connecting live Codex session for this thread…");
+      return;
+    }
     if (!renderedStored) {
       await reportThreadState("failed", {
         threadId: requestedThreadId,
@@ -1225,14 +1231,9 @@ async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "",
         sessionFilePath: state.sessionFilePath,
         title: titleHint || payloadTitle || requestedThreadId,
         evidence: "app-server-thread-attach",
-        errorDescription: error.message,
+        errorDescription: message,
       });
       throw error;
-    }
-    const message = String(error?.message || "");
-    if (message.toLowerCase().includes("not connected yet")) {
-      setComposerEnabled(false, "Connecting live Codex session for this thread…");
-      return;
     }
     addSystemMessage(`Live attach failed for ${requestedThreadId}: ${message}`);
     await reportThreadState("failed", {
@@ -1848,10 +1849,19 @@ function handleBridgeEvent(event) {
       setBadge(els.connectionBadge, connection?.runtime || "connected", "success");
       if (state.threadId && !state.liveAttached) {
         const expectedThreadId = state.threadId;
+        const expectedSourceHome = state.sourceHome;
+        const expectedSessionFilePath = state.sessionFilePath;
         attachLiveThread(expectedThreadId)
           .then((result) => {
             if (state.threadId !== expectedThreadId) return;
             applyLiveThreadResult(result);
+            reportThreadState("attached_live", {
+              threadId: expectedThreadId,
+              sourceHome: expectedSourceHome,
+              sessionFilePath: expectedSessionFilePath,
+              title: result?.thread?.title || result?.thread?.name || state.threadTitle || expectedThreadId,
+              evidence: "delayed-connection-live-attach",
+            });
           })
           .catch(() => {});
       }

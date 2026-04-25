@@ -1413,7 +1413,8 @@ async function requestCodexThreadOpen(projectId, threadId, sourceHome = "", sess
               codexView &&
               codexView.webContents &&
               !codexView.webContents.isDestroyed() &&
-              codexView.webContents.id === targetContents.id
+              codexView.webContents.id === targetContents.id &&
+              !isStaleSurfaceActivationEpoch(activationEpoch)
             ) {
               codexView.webContents.send("codex-surface:event", openEventPayload);
               resolve(true);
@@ -2814,6 +2815,7 @@ ipcMain.handle("codex-surface:respond", async (event, payload) => {
 
 ipcMain.handle("codex-surface:thread-state", async (event, payload) => {
   const session = codexSurfaceSessionFor(event.sender);
+  if (isStaleSurfaceActivationEpoch(payload?.activationEpoch)) return { ok: false, stale: true };
   const state = {
     surface: "codex",
     type: "thread-state",
@@ -2823,6 +2825,7 @@ ipcMain.handle("codex-surface:thread-state", async (event, payload) => {
     sessionFilePath: normalizeString(payload?.sessionFilePath, ""),
     title: normalizeString(payload?.title, ""),
     status: normalizeString(payload?.status, "unknown"),
+    activationEpoch: Number(payload?.activationEpoch) || 0,
     evidence: normalizeString(payload?.evidence, ""),
     errorDescription: normalizeString(payload?.errorDescription || payload?.error, ""),
     connectionId: session.connectionId || "",
