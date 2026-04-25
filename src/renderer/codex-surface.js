@@ -64,6 +64,7 @@ const state = {
   pendingOpenThreadEvent: null,
   liveAttached: false,
   sourceHome: "",
+  sessionFilePath: "",
   openRequestId: 0,
   historyKind: "",
   historyKey: "",
@@ -72,6 +73,35 @@ const state = {
   isBulkRendering: false,
   removeBridgeListener: null,
 };
+
+function capabilityArea(area) {
+  return connection?.capabilities?.[area] || {};
+}
+
+function hasCapability(area, name) {
+  const capabilities = capabilityArea(area);
+  if (!Object.keys(capabilities).length) return true;
+  return capabilities[name] !== false;
+}
+
+async function reportThreadState(status, details = {}) {
+  if (!bridge?.reportThreadState) return;
+  try {
+    await bridge.reportThreadState({
+      projectId: project?.id || payload.codexConnection?.projectId || "",
+      threadId: String(details.threadId || state.threadId || ""),
+      sourceHome: String(details.sourceHome ?? state.sourceHome ?? ""),
+      sessionFilePath: String(details.sessionFilePath ?? state.sessionFilePath ?? ""),
+      title: String(details.title || state.threadTitle || ""),
+      status,
+      activationEpoch: Number(payload.activationEpoch) || 0,
+      evidence: String(details.evidence || ""),
+      errorDescription: String(details.errorDescription || ""),
+    });
+  } catch {
+    // Thread-state reporting must never block transcript rendering.
+  }
+}
 
 const els = {
   projectName: document.getElementById("projectName"),
@@ -439,7 +469,22 @@ function openThreadFromEvent(event) {
     return;
   }
   if (String(event.threadId) === String(state.threadId) && (state.liveAttached || state.historyData)) return;
+  reportThreadState("dispatched", {
+    threadId: event.threadId,
+    sourceHome: event.sourceHome || "",
+    sessionFilePath: event.sessionFilePath || "",
+    title: event.title || "",
+    evidence: "open-thread-request",
+  });
   openThreadHybrid(event.threadId, event.sourceHome || "", event.sessionFilePath || "", event.title || "").catch((error) => {
+    reportThreadState("failed", {
+      threadId: event.threadId,
+      sourceHome: event.sourceHome || "",
+      sessionFilePath: event.sessionFilePath || "",
+      title: event.title || "",
+      evidence: "open-thread-request",
+      errorDescription: error.message,
+    });
     addSystemMessage(`Unable to open Codex thread ${event.threadId || ""}: ${error.message}`);
   });
 }
@@ -1101,6 +1146,9 @@ async function attachLiveThread(threadId) {
   const requestedThreadId = String(threadId || "").trim();
   if (!requestedThreadId) throw new Error("Missing Codex thread id.");
   if (!state.connected) throw new Error("Codex surface is not connected yet.");
+  if (!hasCapability("threads", "canResume") && !hasCapability("threads", "canRead")) {
+    throw new Error("Active Codex runtime does not expose live thread read/resume capability.");
+  }
   let result = null;
   try {
     result = await resumeThreadById(requestedThreadId);
@@ -1123,10 +1171,18 @@ async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "",
   state.openRequestId = openRequestId;
   state.threadId = requestedThreadId;
   state.sourceHome = String(sourceHome || "");
+  state.sessionFilePath = String(sessionFilePath || "");
   state.liveAttached = false;
   clearRenderedThreadState();
   const payloadTitle = requestedThreadId === String(payload.initialThreadId || "") ? payload.initialThreadTitle : "";
   updateSurfaceHeader(titleHint || payloadTitle || requestedThreadId, workspaceText());
+  await reportThreadState("requested", {
+    threadId: requestedThreadId,
+    sourceHome: state.sourceHome,
+    sessionFilePath: state.sessionFilePath,
+    title: titleHint || payloadTitle || requestedThreadId,
+    evidence: "openThreadHybrid",
+  });
   addSystemMessage(`Loading thread ${requestedThreadId}…`);
   setComposerEnabled(false, "Loading stored transcript and attaching live Codex session…");
   let renderedStored = false;
@@ -1137,6 +1193,13 @@ async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "",
       updateSurfaceHeader(snapshot.title || titleHint || payloadTitle || requestedThreadId, workspaceText());
       renderStoredTranscript(snapshot, requestedThreadId);
       renderedStored = true;
+      await reportThreadState("rendered_stored", {
+        threadId: requestedThreadId,
+        sourceHome: state.sourceHome,
+        sessionFilePath: state.sessionFilePath,
+        title: snapshot.title || titleHint || payloadTitle || requestedThreadId,
+        evidence: "stored-transcript",
+      });
     }
   } catch (error) {
     if (openRequestId !== state.openRequestId) return;
@@ -1147,15 +1210,40 @@ async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "",
     const liveResult = await attachLiveThread(requestedThreadId);
     if (openRequestId !== state.openRequestId) return;
     applyLiveThreadResult(liveResult);
+    await reportThreadState("attached_live", {
+      threadId: requestedThreadId,
+      sourceHome: state.sourceHome,
+      sessionFilePath: state.sessionFilePath,
+      title: liveResult?.thread?.title || liveResult?.thread?.name || state.threadTitle || requestedThreadId,
+      evidence: "app-server-thread-attach",
+    });
   } catch (error) {
     if (openRequestId !== state.openRequestId) return;
-    if (!renderedStored) throw error;
     const message = String(error?.message || "");
     if (message.toLowerCase().includes("not connected yet")) {
       setComposerEnabled(false, "Connecting live Codex session for this thread…");
       return;
     }
+    if (!renderedStored) {
+      await reportThreadState("failed", {
+        threadId: requestedThreadId,
+        sourceHome: state.sourceHome,
+        sessionFilePath: state.sessionFilePath,
+        title: titleHint || payloadTitle || requestedThreadId,
+        evidence: "app-server-thread-attach",
+        errorDescription: message,
+      });
+      throw error;
+    }
     addSystemMessage(`Live attach failed for ${requestedThreadId}: ${message}`);
+    await reportThreadState("failed", {
+      threadId: requestedThreadId,
+      sourceHome: state.sourceHome,
+      sessionFilePath: state.sessionFilePath,
+      title: state.threadTitle || titleHint || payloadTitle || requestedThreadId,
+      evidence: "live-attach-after-stored-render",
+      errorDescription: message,
+    });
     setComposerEnabled(false, "Live Codex attach failed for this thread. Select another thread or retry.");
   }
 }
@@ -1595,6 +1683,9 @@ function renderThreadHistory(thread, options = {}) {
 }
 
 async function startNewThread() {
+  if (!hasCapability("threads", "canStart")) {
+    throw new Error("Active Codex runtime does not expose thread/start capability.");
+  }
   const cwd = connection?.workspaceRoot || project?.workspace?.linuxPath || project?.workspace?.localPath || project?.repoPath || "";
   const params = {
     cwd,
@@ -1608,6 +1699,9 @@ async function startNewThread() {
 }
 
 async function startCodexTurn(text, options = {}) {
+  if (!hasCapability("turns", "canStart")) {
+    throw new Error("Active Codex runtime does not expose turn/start capability.");
+  }
   const result = await rpc("turn/start", {
     threadId: state.threadId,
     input: [{ type: "text", text, text_elements: [] }],
@@ -1755,10 +1849,19 @@ function handleBridgeEvent(event) {
       setBadge(els.connectionBadge, connection?.runtime || "connected", "success");
       if (state.threadId && !state.liveAttached) {
         const expectedThreadId = state.threadId;
+        const expectedSourceHome = state.sourceHome;
+        const expectedSessionFilePath = state.sessionFilePath;
         attachLiveThread(expectedThreadId)
           .then((result) => {
             if (state.threadId !== expectedThreadId) return;
             applyLiveThreadResult(result);
+            reportThreadState("attached_live", {
+              threadId: expectedThreadId,
+              sourceHome: expectedSourceHome,
+              sessionFilePath: expectedSessionFilePath,
+              title: result?.thread?.title || result?.thread?.name || state.threadTitle || expectedThreadId,
+              evidence: "delayed-connection-live-attach",
+            });
           })
           .catch(() => {});
       }

@@ -2133,12 +2133,9 @@ async function openProjectCodexBinding(project, binding, snapshot) {
     }
     const title = discovered?.title || ref.titleSnapshot || threadId;
     state.selectedCodexThreadId = threadId;
-    state.openedCodexProjectId = project.id;
-    state.openedCodexThreadId = threadId;
-    state.openedCodexThreadTitle = title;
     renderSelectedProject();
     renderThreadsWorkbench();
-    setLastEvent(`Opened project Codex thread: ${title}.`);
+    setLastEvent(`Requested project Codex thread: ${title}.`);
   } catch (error) {
     if (isRequestStale("project", snapshot.projectVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
     setLastEvent(`Project Codex thread open failed: ${error.message}`);
@@ -2184,15 +2181,40 @@ async function selectCodexThread(threadId, sourceHome = "", sessionFilePath = ""
     return;
   }
   const thread = codexThreadById(threadId);
-  state.openedCodexProjectId = project.id;
-  state.openedCodexThreadId = threadId;
-  state.openedCodexThreadTitle = thread?.title || threadId;
   if (result.warning) {
     setLastEvent(`Requested ${thread?.title || threadId} (read-only fallback): ${result.warning}`);
   } else {
     setLastEvent(`Requested Codex thread open: ${thread?.title || threadId}.`);
   }
   renderSelectedProject();
+}
+
+function handleCodexThreadState(event) {
+  const project = activeProject();
+  const projectId = String(event.projectId || project?.id || "");
+  const threadId = String(event.threadId || "");
+  if (!project || !threadId || projectId !== project.id) return;
+
+  const status = String(event.status || "");
+  const title = event.title || codexThreadById(threadId)?.title || threadId;
+  if (status === "rendered_stored" || status === "attached_live") {
+    state.selectedCodexThreadId = threadId;
+    state.openedCodexProjectId = project.id;
+    state.openedCodexThreadId = threadId;
+    state.openedCodexThreadTitle = title;
+    renderSelectedProject();
+    renderThreadsWorkbench();
+    setLastEvent(
+      status === "attached_live"
+        ? `Attached live Codex thread: ${title}.`
+        : `Rendered stored Codex thread: ${title}.`,
+    );
+    return;
+  }
+
+  if (status === "failed" && state.selectedCodexThreadId === threadId) {
+    setLastEvent(`Codex thread open failed: ${event.errorDescription || title}.`);
+  }
 }
 
 async function openRecentChatgptThread(thread) {
@@ -3190,6 +3212,7 @@ function bindEvents() {
       if (event.type === "navigation-blocked") setLastEvent(`${event.surface} blocked navigation: ${event.url}`);
       if (event.type === "settings-opened") setLastEvent(`ChatGPT settings requested via ${event.method}.`);
       if (event.type === "settings-open-failed") setLastEvent(`ChatGPT settings request failed via ${event.method}.`);
+      if (event.surface === "codex" && event.type === "thread-state") handleCodexThreadState(event);
     }
   });
 

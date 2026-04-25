@@ -59,6 +59,7 @@ let codexAppServer = null;
 let localSurfaceServer = null;
 let codexSurfaceSessions = null;
 let threadAnalyticsStore = null;
+let surfaceActivationEpoch = 0;
 
 function nowIso() {
   return new Date().toISOString();
@@ -1020,6 +1021,15 @@ function emitShellEvent(payload) {
   emitToShell("shell:event", payload);
 }
 
+function nextSurfaceActivationEpoch() {
+  surfaceActivationEpoch += 1;
+  return surfaceActivationEpoch;
+}
+
+function isStaleSurfaceActivationEpoch(epoch) {
+  return Number.isFinite(Number(epoch)) && Number(epoch) > 0 && Number(epoch) !== surfaceActivationEpoch;
+}
+
 function ensureWorkspaceBackendManager() {
   if (workspaceBackends) return workspaceBackends;
   workspaceBackends = new WorkspaceBackendManager({
@@ -1222,6 +1232,7 @@ function encodeCodexSurfacePayload(project, extra = {}) {
       doctrine: "Codex plane is a work chat. ADEU control plane owns the binding. ChatGPT plane remains the review/world-model thread.",
     },
     codexConnection: extra.codexConnection || null,
+    activationEpoch: Number(extra.activationEpoch) || 0,
     initialThreadId: normalizeString(extra.initialThreadId, ""),
     initialThreadSourceHome: normalizeString(extra.initialThreadSourceHome, ""),
     initialThreadSessionFilePath: normalizeString(extra.initialThreadSessionFilePath, ""),
@@ -1238,14 +1249,17 @@ function codexSurfaceUrl(baseUrl, project, extra = {}) {
 
 async function loadCodexSurface(project, options = {}) {
   if (!codexView || codexView.webContents.isDestroyed()) return;
+  if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
   await disposeCodexSurfaceSession();
   const codex = project.surfaceBinding.codex;
   const localSurfaceBaseUrl = await ensureLocalSurfaceServer().ensureStarted();
+  if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
   if (codex.mode === "url") {
     await ensureCodexAppServerManager().dispose();
     activeCodexSurfaceConnection = null;
     const target = safeLoadableUrl(codex.target, "codex");
     if (target) {
+      if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
       await codexView.webContents.loadURL(target);
       return;
     }
@@ -1259,6 +1273,7 @@ async function loadCodexSurface(project, options = {}) {
           project,
           requestedCodexHome ? { codexHome: requestedCodexHome } : {},
         );
+      if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
       const localUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, {
         codexConnection: {
           projectId: project.id,
@@ -1268,7 +1283,10 @@ async function loadCodexSurface(project, options = {}) {
           workspaceRoot: session.workspaceRoot,
           binaryPath: session.binaryPath,
           codexHome: session.codexHome || "",
+          capabilities: session.capabilities || null,
+          activationEpoch: Number(options.activationEpoch) || 0,
         },
+        activationEpoch: Number(options.activationEpoch) || 0,
         initialThreadId: normalizeString(options.initialThreadId, ""),
         initialThreadSourceHome: normalizeString(options.initialThreadSourceHome, ""),
         initialThreadSessionFilePath: normalizeString(options.initialThreadSessionFilePath, ""),
@@ -1279,8 +1297,11 @@ async function loadCodexSurface(project, options = {}) {
         wsUrl: session.wsUrl,
         runtime: session.runtime,
         codexHome: session.codexHome || "",
+        capabilities: session.capabilities || null,
+        activationEpoch: Number(options.activationEpoch) || 0,
         remoteAuth: project.surfaceBinding?.codex?.remoteAuth || { mode: "none" },
       };
+      if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
       await codexView.webContents.loadURL(localUrl);
       return;
     } catch (error) {
@@ -1292,28 +1313,33 @@ async function loadCodexSurface(project, options = {}) {
         at: nowIso(),
       });
       const degradedUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, {
+        activationEpoch: Number(options.activationEpoch) || 0,
         initialThreadId: normalizeString(options.initialThreadId, ""),
         initialThreadSourceHome: normalizeString(options.initialThreadSourceHome, ""),
         initialThreadSessionFilePath: normalizeString(options.initialThreadSessionFilePath, ""),
         initialThreadTitle: normalizeString(options.initialThreadTitle, ""),
         error: error.message,
       });
+      if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
       await codexView.webContents.loadURL(degradedUrl);
       return;
     }
   }
   await ensureCodexAppServerManager().dispose();
   activeCodexSurfaceConnection = null;
-  const localUrl = codexSurfaceUrl(localSurfaceBaseUrl, project);
+  const localUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, { activationEpoch: Number(options.activationEpoch) || 0 });
+  if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
   await codexView.webContents.loadURL(localUrl);
 }
 
-async function loadChatgptSurface(project, threadId = "") {
+async function loadChatgptSurface(project, threadId = "", options = {}) {
   if (!chatgptView || chatgptView.webContents.isDestroyed()) return;
+  if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
   const thread = threadId
     ? project.chatThreads?.find((item) => item.id === threadId) || activeChatThread(project)
     : activeChatThread(project);
   const target = safeLoadableUrl(thread?.url || project.surfaceBinding.chatgpt.reviewThreadUrl, "chatgpt") || "https://chatgpt.com/";
+  if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
   await chatgptView.webContents.loadURL(target);
 }
 
@@ -1361,6 +1387,7 @@ async function requestCodexThreadOpen(projectId, threadId, sourceHome = "", sess
     sourceHome: requestedHome || session?.codexHome || "",
     sessionFilePath: requestedSessionFilePath,
     title: "",
+    projectId: project.id,
     at: nowIso(),
   };
 
@@ -1368,6 +1395,7 @@ async function requestCodexThreadOpen(projectId, threadId, sourceHome = "", sess
     if (project.surfaceBinding?.codex?.mode !== "managed") {
       return { ok: false, error: "Codex surface is not in managed mode." };
     }
+    const activationEpoch = nextSurfaceActivationEpoch();
     const targetContents = codexView.webContents;
     const dispatchAfterLoad = new Promise((resolve) => {
       let settled = false;
@@ -1385,7 +1413,8 @@ async function requestCodexThreadOpen(projectId, threadId, sourceHome = "", sess
               codexView &&
               codexView.webContents &&
               !codexView.webContents.isDestroyed() &&
-              codexView.webContents.id === targetContents.id
+              codexView.webContents.id === targetContents.id &&
+              !isStaleSurfaceActivationEpoch(activationEpoch)
             ) {
               codexView.webContents.send("codex-surface:event", openEventPayload);
               resolve(true);
@@ -1404,6 +1433,7 @@ async function requestCodexThreadOpen(projectId, threadId, sourceHome = "", sess
 
     await loadCodexSurface(project, {
       codexSession: session,
+      activationEpoch,
       initialThreadId: nextThreadId,
       initialThreadSourceHome: requestedHome || session?.codexHome || "",
       initialThreadSessionFilePath: requestedSessionFilePath,
@@ -1897,6 +1927,7 @@ function scheduleChatgptPolish() {
 }
 
 async function loadProjectSurfaces(project, activationBinding = null) {
+  const activationEpoch = nextSurfaceActivationEpoch();
   currentProject = project;
   emitToShell("surface:event", {
     surface: "shell",
@@ -1905,11 +1936,12 @@ async function loadProjectSurfaces(project, activationBinding = null) {
     projectName: project.name,
     at: nowIso(),
   });
-  const codexOptions = codexSurfaceOptionsForBinding(activationBinding);
+  const codexOptions = { ...codexSurfaceOptionsForBinding(activationBinding), activationEpoch };
   await Promise.allSettled([
     loadCodexSurface(project, codexOptions),
-    loadChatgptSurface(project, normalizeString(activationBinding?.chatThreadId, "")),
+    loadChatgptSurface(project, normalizeString(activationBinding?.chatThreadId, ""), { activationEpoch }),
   ]);
+  if (isStaleSurfaceActivationEpoch(activationEpoch)) return;
   scheduleLayoutPing("project-selected");
 }
 
@@ -2779,6 +2811,28 @@ ipcMain.handle("codex-surface:notify", async (event, payload) => {
 ipcMain.handle("codex-surface:respond", async (event, payload) => {
   const session = codexSurfaceSessionFor(event.sender);
   return session.respond(payload?.key || payload?.id, payload?.result || {});
+});
+
+ipcMain.handle("codex-surface:thread-state", async (event, payload) => {
+  const session = codexSurfaceSessionFor(event.sender);
+  if (isStaleSurfaceActivationEpoch(payload?.activationEpoch)) return { ok: false, stale: true };
+  const state = {
+    surface: "codex",
+    type: "thread-state",
+    projectId: normalizeString(payload?.projectId, ""),
+    threadId: normalizeString(payload?.threadId, ""),
+    sourceHome: normalizeString(payload?.sourceHome, ""),
+    sessionFilePath: normalizeString(payload?.sessionFilePath, ""),
+    title: normalizeString(payload?.title, ""),
+    status: normalizeString(payload?.status, "unknown"),
+    activationEpoch: Number(payload?.activationEpoch) || 0,
+    evidence: normalizeString(payload?.evidence, ""),
+    errorDescription: normalizeString(payload?.errorDescription || payload?.error, ""),
+    connectionId: session.connectionId || "",
+    at: nowIso(),
+  };
+  emitToShell("surface:event", state);
+  return { ok: true };
 });
 
 ipcMain.handle("codex:respond-request", async (_event, payload) => {

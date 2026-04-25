@@ -3,6 +3,10 @@
 const { EventEmitter } = require("node:events");
 const { spawn } = require("node:child_process");
 const net = require("node:net");
+const {
+  SUPPORTED_SERVER_REQUEST_METHODS,
+  AUTO_UNSUPPORTED_SERVER_REQUEST_METHODS,
+} = require("./codex-app-server-protocol");
 
 const DEFAULT_READY_TIMEOUT_MS = 35_000;
 const DEFAULT_STARTUP_ATTEMPTS = 2;
@@ -147,6 +151,67 @@ function resolveRuntime(project, codex) {
   return "host";
 }
 
+function buildRuntimeCapabilityProfile(session) {
+  const status = normalizeString(session?.status, "unknown");
+  const ready = status === "ready";
+  return {
+    version: 1,
+    status,
+    generatedAt: new Date().toISOString(),
+    coreRuntime: {
+      canConnect: ready,
+      canInitialize: ready,
+      transport: "websocket",
+      transports: ["websocket"],
+      schemaSource: "unknown",
+    },
+    threads: {
+      canStart: ready,
+      canRead: ready,
+      canResume: ready,
+      canList: ready,
+      canFork: ready,
+      canPersistExtendedHistory: true,
+    },
+    turns: {
+      canStart: ready,
+      canSteer: ready,
+      canInterrupt: ready,
+      canOverrideModel: true,
+      canOverrideReasoning: true,
+      canUseOutputSchema: false,
+    },
+    authority: {
+      commandApproval: ready,
+      fileChangeApproval: ready,
+      permissionsApproval: ready,
+      approvalPolicies: [],
+      sandboxModes: [],
+    },
+    requests: {
+      supportedServerMethods: SUPPORTED_SERVER_REQUEST_METHODS,
+      unsupportedButHandledMethods: AUTO_UNSUPPORTED_SERVER_REQUEST_METHODS,
+      unknownRequestPolicy: "error-visible",
+    },
+    fork: {
+      present: false,
+      governancePath: false,
+      contextMaintenance: false,
+      continuationBridge: false,
+      threadMemoryArtifacts: false,
+      refreshPruneMethods: false,
+      agentProgressArtifacts: false,
+    },
+    diagnostics: {
+      runtime: normalizeString(session?.runtime, ""),
+      binaryPath: normalizeString(session?.binaryPath, ""),
+      codexHome: normalizeString(session?.codexHome, ""),
+      readyUrl: normalizeString(session?.readyUrl, ""),
+      source: "runtime-manager",
+    },
+  };
+}
+
 function buildDescriptor(project, codex, port, options = {}) {
   const runtime = resolveRuntime(project, codex);
   const wsUrl = `ws://127.0.0.1:${port}`;
@@ -237,6 +302,7 @@ class CodexAppServerManager extends EventEmitter {
       workspaceRoot,
       codexHome,
       error,
+      capabilities: buildRuntimeCapabilityProfile(this.session),
       logs: logs.slice(-20),
     };
   }
