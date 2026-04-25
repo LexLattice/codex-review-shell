@@ -100,6 +100,8 @@ const els = {
   configPath: document.getElementById("configPath"),
   codexSlot: document.getElementById("codexSlot"),
   chatgptSlot: document.getElementById("chatgptSlot"),
+  codexSurfaceTitle: document.getElementById("codexSurfaceTitle"),
+  chatgptSurfaceTitle: document.getElementById("chatgptSurfaceTitle"),
   leftSplitter: document.getElementById("leftSplitter"),
   rightSplitter: document.getElementById("rightSplitter"),
   codexStatus: document.getElementById("codexStatus"),
@@ -388,6 +390,18 @@ function laneBindings(project) {
 
 function laneBindingById(project, bindingId) {
   return laneBindings(project).find((binding) => binding.id === bindingId) || null;
+}
+
+function activeLaneBinding(project) {
+  const bindings = laneBindings(project);
+  if (!bindings.length) return null;
+  return (
+    laneBindingById(project, project?.lastActiveBindingId) ||
+    bindings.find((binding) => binding.openOnProjectActivate) ||
+    bindings.find((binding) => binding.isDefaultForLane) ||
+    bindings[0] ||
+    null
+  );
 }
 
 function codexThreadById(threadId) {
@@ -696,6 +710,13 @@ function renderSelectedProject() {
   els.bindingStatus.textContent = `${workspace.kind.toUpperCase()} · ${codexDetails} Codex · ${nonArchivedThreads.length} ChatGPT threads`;
   els.activeThreadStatus.textContent = currentThread ? `Active ${roleLabel(currentThread.role)} · ${currentThread.title}` : "No active ChatGPT thread";
   els.activeThreadStatus.title = currentThread?.url || "";
+  const binding = activeLaneBinding(project);
+  const linkedCodex = codexThreadById(binding?.codexThreadRef?.threadId || "");
+  const codexTitle = linkedCodex?.title || binding?.codexThreadRef?.titleSnapshot || "Codex implementation companion";
+  els.codexSurfaceTitle.textContent = codexTitle;
+  els.codexSurfaceTitle.title = binding?.codexThreadRef?.threadId || "";
+  els.chatgptSurfaceTitle.textContent = currentThread?.title || "ChatGPT review/world-model";
+  els.chatgptSurfaceTitle.title = currentThread?.url || "";
   els.watchedRulesPreview.textContent = (project.flowProfile?.watchedFilePatterns || []).join("\n");
   els.returnHeaderPreview.textContent = project.flowProfile?.returnHeader || "GPT feedback";
 }
