@@ -448,8 +448,19 @@
           <input id="codexTargetInput" autocomplete="off" placeholder="http://127.0.0.1:3000" />
         </label>
 
+        <div class="form-grid">
+          <label>
+            Primary ChatGPT thread <span class="muted">project binding</span>
+            <select id="projectChatgptThreadSelect"></select>
+          </label>
+          <label>
+            Primary Codex thread <span class="muted">project binding</span>
+            <select id="projectCodexThreadSelect"></select>
+          </label>
+        </div>
+
         <label>
-          Primary ChatGPT review thread URL <span class="muted">also managed in thread deck</span>
+          ChatGPT thread URL <span class="muted">used when no dropdown thread is selected</span>
           <input id="chatgptUrlInput" autocomplete="off" placeholder="https://chatgpt.com/c/..." />
         </label>
 

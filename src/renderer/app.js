@@ -187,6 +187,8 @@ const els = {
   codexModelInput: document.getElementById("codexModelInput"),
   codexReasoningEffortInput: document.getElementById("codexReasoningEffortInput"),
   codexTargetInput: document.getElementById("codexTargetInput"),
+  projectChatgptThreadSelect: document.getElementById("projectChatgptThreadSelect"),
+  projectCodexThreadSelect: document.getElementById("projectCodexThreadSelect"),
   chatgptUrlInput: document.getElementById("chatgptUrlInput"),
   reduceChromeInput: document.getElementById("reduceChromeInput"),
   reviewPromptInput: document.getElementById("reviewPromptInput"),
@@ -454,6 +456,338 @@ function activeCodexThreadForHeader(project) {
 
 function recentChatgptThreadById(externalId) {
   return state.chatgptRecentThreads.find((thread) => thread.externalId === externalId) || null;
+}
+
+function drawerSelectValue(payload) {
+  return JSON.stringify(payload);
+}
+
+function parseDrawerSelectValue(value) {
+  if (!value) return null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function codexDrawerThreadKey(thread) {
+  return [
+    String(thread?.threadId || ""),
+    String(thread?.sourceHome || ""),
+    String(thread?.sessionFilePath || ""),
+  ].join("\u001f");
+}
+
+function codexThreadFromDrawerSelection(selection) {
+  if (!selection || selection.kind !== "codex" || !selection.threadId) return null;
+  const candidates = state.codexThreads.filter((thread) => thread.threadId === selection.threadId);
+  const discovered =
+    candidates.find((thread) => selection.sourceHome && thread.sourceHome === selection.sourceHome) ||
+    candidates.find((thread) => selection.sessionFilePath && thread.sessionFilePath === selection.sessionFilePath) ||
+    candidates[0] ||
+    null;
+  return {
+    threadId: selection.threadId,
+    originator: discovered?.originator || selection.originator || "",
+    title: discovered?.title || selection.title || selection.threadId,
+    cwd: discovered?.cwd || selection.cwd || "",
+    sourceHome: discovered?.sourceHome || selection.sourceHome || "",
+    sessionFilePath: discovered?.sessionFilePath || selection.sessionFilePath || "",
+  };
+}
+
+function chatgptDrawerThreadFromSelection(selection, existingThreads, primaryUrl, now) {
+  if (selection?.kind === "project") {
+    const thread = existingThreads.find((item) => item.id === selection.threadId);
+    if (thread) {
+      return {
+        ...thread,
+        role: "review",
+        isPrimary: true,
+        archived: false,
+        updatedAt: now,
+      };
+    }
+  }
+  if (selection?.kind === "sourceProject") {
+    const sourceProject = state.config?.projects.find((project) => project.id === selection.projectId);
+    const thread = threadById(sourceProject, selection.threadId);
+    if (thread) {
+      return {
+        id: createId("thread"),
+        role: "review",
+        title: thread.title || "Primary review",
+        url: normalizeHttpsUrl(thread.url),
+        notes: thread.notes || `Linked from ${sourceProject?.name || "another project"}.`,
+        isPrimary: true,
+        pinned: true,
+        archived: false,
+        createdAt: now,
+        updatedAt: now,
+        lastOpenedAt: "",
+      };
+    }
+  }
+  if (selection?.kind === "recent") {
+    const recent = recentChatgptThreadById(selection.externalId);
+    if (recent) {
+      const existing = existingThreads.find((thread) => extractChatgptConversationId(thread.url) === recent.externalId);
+      if (existing) {
+        return {
+          ...existing,
+          role: "review",
+          title: existing.title || recent.title || "Primary review",
+          url: normalizeHttpsUrl(existing.url || recent.url),
+          isPrimary: true,
+          archived: false,
+          updatedAt: now,
+        };
+      }
+      return {
+        id: createId("thread"),
+        role: "review",
+        title: recent.title || "Primary review",
+        url: normalizeHttpsUrl(recent.url),
+        notes: recent.projectName ? `Imported from ChatGPT project ${recent.projectName}.` : "Imported from recent ChatGPT threads.",
+        isPrimary: true,
+        pinned: true,
+        archived: false,
+        createdAt: now,
+        updatedAt: now,
+        lastOpenedAt: "",
+      };
+    }
+  }
+  const existingByUrl = existingThreads.find((thread) => normalizeHttpsUrl(thread.url) === primaryUrl);
+  if (existingByUrl) {
+    return {
+      ...existingByUrl,
+      role: "review",
+      url: primaryUrl,
+      isPrimary: true,
+      archived: false,
+      updatedAt: now,
+    };
+  }
+  const currentPrimary = existingThreads.find((thread) => thread.role === "review" && thread.isPrimary) || existingThreads.find((thread) => thread.role === "review");
+  if (currentPrimary) {
+    return {
+      ...currentPrimary,
+      role: "review",
+      url: primaryUrl,
+      isPrimary: true,
+      archived: false,
+      updatedAt: now,
+    };
+  }
+  return {
+    id: "thread_review_primary",
+    role: "review",
+    title: "Primary review",
+    url: primaryUrl,
+    notes: "Main project-bound ChatGPT review thread.",
+    isPrimary: true,
+    pinned: true,
+    archived: false,
+    createdAt: now,
+    updatedAt: now,
+    lastOpenedAt: "",
+  };
+}
+
+function applyPrimaryReviewThread(threads, selectedThread) {
+  const withoutSelected = threads.filter((thread) => thread.id !== selectedThread.id);
+  return normalizeThreadSet([
+    { ...selectedThread, role: "review", isPrimary: true, archived: false },
+    ...withoutSelected.map((thread) => (thread.role === "review" ? { ...thread, isPrimary: false } : thread)),
+  ]);
+}
+
+function upsertProjectPrimaryLaneBinding(existingProject, bindings, codexThread, chatThread, now) {
+  if (!codexThread?.threadId || !chatThread?.id) {
+    return {
+      laneBindings: bindings,
+      lastActiveBindingId: existingProject?.lastActiveBindingId || "",
+    };
+  }
+  const current = activeLaneBinding(existingProject) || bindings.find((binding) => binding.lane === "review") || null;
+  const bindingId = current?.id || createId("binding");
+  const nextBinding = {
+    id: bindingId,
+    lane: "review",
+    label: current?.label || "Primary review",
+    codexThreadRef: {
+      threadId: codexThread.threadId,
+      originator: codexThread.originator || "",
+      titleSnapshot: codexThread.title || "",
+      cwdSnapshot: codexThread.cwd || "",
+      sourceHome: codexThread.sourceHome || "",
+      sessionFilePath: codexThread.sessionFilePath || "",
+    },
+    chatThreadId: chatThread.id,
+    isDefaultForLane: true,
+    openOnProjectActivate: true,
+    lastActivatedAt: now,
+    status: "resolved",
+    createdAt: current?.createdAt || now,
+    updatedAt: now,
+  };
+  const remaining = bindings
+    .filter((binding) => binding.id !== bindingId)
+    .map((binding) => ({
+      ...binding,
+      isDefaultForLane: binding.lane === "review" ? false : binding.isDefaultForLane,
+      openOnProjectActivate: false,
+    }));
+  return {
+    laneBindings: [nextBinding, ...remaining],
+    lastActiveBindingId: bindingId,
+  };
+}
+
+function clearProjectPrimaryLaneBinding(existingProject, bindings) {
+  const current =
+    laneBindingById(existingProject, existingProject?.lastActiveBindingId) ||
+    bindings.find((binding) => binding.openOnProjectActivate) ||
+    bindings.find((binding) => binding.lane === "review" && binding.isDefaultForLane) ||
+    bindings.find((binding) => binding.lane === "review") ||
+    null;
+  if (!current) {
+    return {
+      laneBindings: bindings,
+      lastActiveBindingId: existingProject?.lastActiveBindingId || "",
+    };
+  }
+  const remaining = bindings.filter((binding) => binding.id !== current.id);
+  return {
+    laneBindings: remaining,
+    lastActiveBindingId: remaining[0]?.id || "",
+  };
+}
+
+function populateProjectThreadSelectors(draft) {
+  if (!els.projectChatgptThreadSelect || !els.projectCodexThreadSelect) return;
+  const binding = activeLaneBinding(draft);
+  const primary = primaryReviewThread(draft);
+  const activeSourceProject = activeProject();
+
+  els.projectChatgptThreadSelect.innerHTML = "";
+  els.projectChatgptThreadSelect.append(new Option("Use URL field", ""));
+  const selectedChatThreadId = binding?.chatThreadId || state.selectedProjectChatThreadId || primary?.id || "";
+  for (const thread of sortedThreads(draft, false)) {
+    const option = new Option(`${thread.title || "Untitled ChatGPT thread"} · project`, drawerSelectValue({ kind: "project", threadId: thread.id }));
+    option.dataset.url = thread.url || "";
+    els.projectChatgptThreadSelect.append(option);
+  }
+  if (state.drawerMode === "new" && activeSourceProject && activeSourceProject.id !== draft.id) {
+    const selected = threadById(activeSourceProject, state.selectedProjectChatThreadId);
+    const sourceThreads = selected ? [selected] : sortedThreads(activeSourceProject, false).slice(0, 8);
+    for (const thread of sourceThreads) {
+      const option = new Option(
+        `${thread.title || "Untitled ChatGPT thread"} · ${activeSourceProject.name}`,
+        drawerSelectValue({ kind: "sourceProject", projectId: activeSourceProject.id, threadId: thread.id }),
+      );
+      option.dataset.url = thread.url || "";
+      els.projectChatgptThreadSelect.append(option);
+    }
+  }
+  const projectConversationIds = new Set(chatThreads(draft).map((thread) => extractChatgptConversationId(thread.url)).filter(Boolean));
+  const recentThreads = state.chatgptRecentThreads
+    .slice()
+    .sort((a, b) => recentThreadSortStamp(b).localeCompare(recentThreadSortStamp(a)))
+    .slice(0, 120);
+  for (const thread of recentThreads) {
+    if (!thread.externalId || projectConversationIds.has(thread.externalId)) continue;
+    const source = thread.projectName ? `ChatGPT project: ${thread.projectName}` : "ChatGPT recent";
+    const option = new Option(`${thread.title || "Untitled ChatGPT thread"} · ${source}`, drawerSelectValue({ kind: "recent", externalId: thread.externalId }));
+    option.dataset.url = thread.url || "";
+    els.projectChatgptThreadSelect.append(option);
+  }
+
+  const selectedRecentId = state.selectedRecentChatgptThreadId;
+  const selectedProjectValue = state.drawerMode !== "new" && selectedChatThreadId ? drawerSelectValue({ kind: "project", threadId: selectedChatThreadId }) : "";
+  const selectedSourceProjectValue =
+    state.drawerMode === "new" && activeSourceProject && state.selectedProjectChatThreadId
+      ? drawerSelectValue({ kind: "sourceProject", projectId: activeSourceProject.id, threadId: state.selectedProjectChatThreadId })
+      : "";
+  const selectedRecentValue = selectedRecentId ? drawerSelectValue({ kind: "recent", externalId: selectedRecentId }) : "";
+  if ([...els.projectChatgptThreadSelect.options].some((option) => option.value === selectedSourceProjectValue)) {
+    els.projectChatgptThreadSelect.value = selectedSourceProjectValue;
+  } else if (state.drawerMode === "new" && [...els.projectChatgptThreadSelect.options].some((option) => option.value === selectedRecentValue)) {
+    els.projectChatgptThreadSelect.value = selectedRecentValue;
+  } else if ([...els.projectChatgptThreadSelect.options].some((option) => option.value === selectedProjectValue)) {
+    els.projectChatgptThreadSelect.value = selectedProjectValue;
+  } else {
+    els.projectChatgptThreadSelect.value = "";
+  }
+
+  els.projectCodexThreadSelect.innerHTML = "";
+  els.projectCodexThreadSelect.append(new Option("No Codex thread binding", ""));
+  const codexOptions = new Map();
+  for (const thread of state.codexThreads) {
+    codexOptions.set(codexDrawerThreadKey(thread), {
+      threadId: thread.threadId,
+      originator: thread.originator || "",
+      title: thread.title || thread.threadId,
+      cwd: thread.cwd || "",
+      sourceHome: thread.sourceHome || "",
+      sessionFilePath: thread.sessionFilePath || "",
+    });
+  }
+  const bindingRef = binding?.codexThreadRef;
+  if (bindingRef?.threadId) {
+    const bindingOption = {
+      threadId: bindingRef.threadId,
+      originator: bindingRef.originator || "",
+      title: bindingRef.titleSnapshot || bindingRef.threadId,
+      cwd: bindingRef.cwdSnapshot || "",
+      sourceHome: bindingRef.sourceHome || "",
+      sessionFilePath: bindingRef.sessionFilePath || "",
+    };
+    codexOptions.set(codexDrawerThreadKey(bindingOption), bindingOption);
+  }
+  for (const thread of codexOptions.values()) {
+    const source = thread.originator || "Codex";
+    const location = thread.cwd ? ` · ${shortPath(thread.cwd)}` : "";
+    els.projectCodexThreadSelect.append(new Option(`${thread.title || thread.threadId} · ${source}${location}`, drawerSelectValue({ kind: "codex", ...thread })));
+  }
+  const selectedCodex = state.drawerMode === "new" && state.selectedCodexThreadId
+    ? state.codexThreads.find((thread) => thread.threadId === state.selectedCodexThreadId)
+    : null;
+  const selectedCodexValue = selectedCodex
+    ? drawerSelectValue({
+      kind: "codex",
+      threadId: selectedCodex.threadId,
+      originator: selectedCodex.originator || "",
+      title: selectedCodex.title || selectedCodex.threadId,
+      cwd: selectedCodex.cwd || "",
+      sourceHome: selectedCodex.sourceHome || "",
+      sessionFilePath: selectedCodex.sessionFilePath || "",
+    })
+    : bindingRef?.threadId
+      ? drawerSelectValue({
+        kind: "codex",
+        threadId: bindingRef.threadId,
+        originator: bindingRef.originator || "",
+        title: bindingRef.titleSnapshot || bindingRef.threadId,
+        cwd: bindingRef.cwdSnapshot || "",
+        sourceHome: bindingRef.sourceHome || "",
+        sessionFilePath: bindingRef.sessionFilePath || "",
+      })
+      : "";
+  if ([...els.projectCodexThreadSelect.options].some((option) => option.value === selectedCodexValue)) {
+    els.projectCodexThreadSelect.value = selectedCodexValue;
+  } else {
+    els.projectCodexThreadSelect.value = "";
+  }
+}
+
+function syncProjectChatgptUrlFromSelection() {
+  if (!els.projectChatgptThreadSelect || !els.chatgptUrlInput) return;
+  const option = els.projectChatgptThreadSelect.selectedOptions?.[0];
+  const url = option?.dataset?.url || "";
+  if (url) els.chatgptUrlInput.value = normalizeHttpsUrl(url);
 }
 
 function recentThreadSortStamp(thread) {
@@ -1919,6 +2253,8 @@ function openDrawer(mode) {
   els.codexReasoningEffortInput.value = draft.surfaceBinding.codex.reasoningEffort || "";
   els.codexTargetInput.value = draft.surfaceBinding.codex.target;
   els.chatgptUrlInput.value = primary?.url || draft.surfaceBinding.chatgpt.reviewThreadUrl || "https://chatgpt.com/";
+  populateProjectThreadSelectors(draft);
+  syncProjectChatgptUrlFromSelection();
   els.reduceChromeInput.checked = draft.surfaceBinding.chatgpt.reduceChrome !== false;
   els.reviewPromptInput.value = templates.review?.text || draft.flowProfile.reviewPromptTemplate;
   els.architecturePromptInput.value = templates.architecture?.text || defaultPromptText("architecture");
@@ -1972,30 +2308,17 @@ function projectFromForm() {
   templates.research = { ...(templates.research || {}), role: "research", text: els.researchPromptInput.value.trim() || defaultPromptText("research"), updatedAt: now };
 
   const primaryUrl = normalizeHttpsUrl(els.chatgptUrlInput.value.trim());
+  const selectedChatSelection = parseDrawerSelectValue(els.projectChatgptThreadSelect?.value || "");
+  const selectedCodexSelection = parseDrawerSelectValue(els.projectCodexThreadSelect?.value || "");
   let threads = chatThreads(existing).slice();
-  if (!threads.length) {
-    threads = [
-      {
-        id: "thread_review_primary",
-        role: "review",
-        title: "Primary review",
-        url: primaryUrl,
-        notes: "Main project-bound ChatGPT review thread.",
-        isPrimary: true,
-        pinned: true,
-        archived: false,
-        createdAt: now,
-        updatedAt: now,
-      },
-    ];
-  }
-  const currentPrimary = threads.find((thread) => thread.role === "review" && thread.isPrimary) || threads.find((thread) => thread.role === "review");
-  if (currentPrimary) {
-    threads = threads.map((thread) => {
-      if (thread.id !== currentPrimary.id) return thread.role === "review" ? { ...thread, isPrimary: false } : thread;
-      return { ...thread, role: "review", url: primaryUrl, isPrimary: true, archived: false, updatedAt: now };
-    });
-  }
+  const selectedChatThread = chatgptDrawerThreadFromSelection(selectedChatSelection, threads, primaryUrl, now);
+  threads = applyPrimaryReviewThread(threads, selectedChatThread);
+  const currentPrimary = primaryReviewThread({ chatThreads: threads });
+  const selectedCodexThread = codexThreadFromDrawerSelection(selectedCodexSelection);
+  const bindings = laneBindings(existing).slice();
+  const bindingDraft = selectedCodexThread
+    ? upsertProjectPrimaryLaneBinding(existing, bindings, selectedCodexThread, currentPrimary, now)
+    : clearProjectPrimaryLaneBinding(existing, bindings);
 
   return {
     id: els.projectIdInput.value || createId("project"),
@@ -2020,10 +2343,10 @@ function projectFromForm() {
       },
     },
     chatThreads: threads,
-    activeChatThreadId: existing?.activeChatThreadId || currentPrimary?.id || threads[0]?.id,
-    lastActiveThreadId: existing?.lastActiveThreadId || existing?.activeChatThreadId || currentPrimary?.id || threads[0]?.id,
-    laneBindings: existing?.laneBindings || [],
-    lastActiveBindingId: existing?.lastActiveBindingId || "",
+    activeChatThreadId: currentPrimary?.id || threads[0]?.id,
+    lastActiveThreadId: currentPrimary?.id || threads[0]?.id,
+    laneBindings: bindingDraft.laneBindings,
+    lastActiveBindingId: bindingDraft.lastActiveBindingId,
     promptTemplates: templates,
     flowProfile: {
       reviewPromptTemplate: templates.review.text,
@@ -2751,6 +3074,7 @@ function bindEvents() {
     if (selected) els.repoPathInput.value = selected;
   });
   els.workspaceKindInput.addEventListener("change", updateWorkspaceFieldVisibility);
+  els.projectChatgptThreadSelect.addEventListener("change", syncProjectChatgptUrlFromSelection);
   els.addThreadButton.addEventListener("click", () => openThreadDrawer("new"));
   els.threadForm.addEventListener("submit", handleThreadFormSubmit);
   els.closeThreadDrawerButton.addEventListener("click", closeThreadDrawer);
