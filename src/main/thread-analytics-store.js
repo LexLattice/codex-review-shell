@@ -241,7 +241,10 @@ class ThreadAnalyticsStore {
       on conflict(thread_key) do update set
         source_home = excluded.source_home,
         thread_id = excluded.thread_id,
-        session_file_path = excluded.session_file_path,
+        session_file_path = case
+          when excluded.session_file_path != '' then excluded.session_file_path
+          else analytics_threads.session_file_path
+        end,
         title_snapshot = excluded.title_snapshot,
         cwd_snapshot = excluded.cwd_snapshot,
         originator = excluded.originator,
@@ -330,6 +333,22 @@ class ThreadAnalyticsStore {
       update analytics_threads
       set
         last_scan_status = 'ready',
+        last_session_updated_at = ?,
+        last_seen_at = ?
+      where thread_key = ?
+    `);
+    stmt.run(
+      normalizeText(sessionUpdatedAt, ""),
+      normalizeText(seenAt, nowIso()),
+      normalizeText(threadKey, ""),
+    );
+  }
+
+  markThreadUnavailable(threadKey, sessionUpdatedAt = "", seenAt = nowIso()) {
+    const stmt = this.db.prepare(`
+      update analytics_threads
+      set
+        last_scan_status = 'unavailable',
         last_session_updated_at = ?,
         last_seen_at = ?
       where thread_key = ?

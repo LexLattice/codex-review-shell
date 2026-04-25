@@ -25,6 +25,9 @@ const CHATGPT_THREAD_CACHE_VERSION = 1;
 const CHATGPT_THREAD_CACHE_MAX_ENTRIES = 1500;
 const THREAD_ANALYTICS_DB_FILE_NAME = "thread-analytics.sqlite";
 const THREAD_ANALYTICS_ANALYZER_VERSION = "analytics-v0.1";
+const ANALYTICS_DISCOVERY_THREAD_LIMIT = 260;
+const ANALYTICS_DISCOVERY_SCAN_LIMIT = 420;
+const ANALYTICS_DISCOVERY_TIMEOUT_MS = 70_000;
 const CODEX_PARTITION = "persist:codex-review-shell-codex";
 const CHATGPT_PARTITION = "persist:codex-review-shell-chatgpt";
 const PREVIEW_LIMIT_BYTES = 384 * 1024;
@@ -2047,19 +2050,19 @@ async function listCodexThreads(projectId) {
 async function discoverCodexThreadsForAnalytics(project) {
   try {
     return await requestWorkspace(project, "listCodexThreads", {
-      limit: 260,
+      limit: ANALYTICS_DISCOVERY_THREAD_LIMIT,
       includeSubagents: false,
-      perHomeScanLimit: 420,
+      perHomeScanLimit: ANALYTICS_DISCOVERY_SCAN_LIMIT,
       fastMode: false,
       dedupeByThreadId: false,
-    }, 70_000);
+    }, ANALYTICS_DISCOVERY_TIMEOUT_MS);
   } catch (primaryError) {
     const fallback = await listCodexThreads(project.id);
     return {
       ...fallback,
       analyticsFallback: {
-        mode: fallback?.fallback?.mode || "thread-list",
-        reason: primaryError?.message || fallback?.fallback?.reason || "analytics discovery failed",
+        mode: fallback?.fallback?.mode ?? "thread-list",
+        reason: primaryError?.message ?? fallback?.fallback?.reason ?? "analytics discovery failed",
       },
     };
   }
@@ -2176,14 +2179,8 @@ async function updateThreadAnalytics(projectId, options = {}) {
     for (const entry of discoveredEntries) {
       const threadKey = buildThreadKey(normalizeString(entry.sourceHome, ""), normalizeString(entry.threadId, ""));
       if (!threadKey || !normalizeString(entry.sessionFilePath, "")) {
-        counts.failed += 1;
-        store.insertErrorSnapshot(
-          threadKey,
-          entry,
-          THREAD_ANALYTICS_ANALYZER_VERSION,
-          "Missing session file path for analytics parsing.",
-          nowIso(),
-        );
+        store.markThreadUnavailable(threadKey, normalizeString(entry.updatedAt, ""), nowIso());
+        counts.skipped += 1;
         continue;
       }
 
@@ -2245,7 +2242,7 @@ async function updateThreadAnalytics(projectId, options = {}) {
       entries,
       analyzerVersion: THREAD_ANALYTICS_ANALYZER_VERSION,
       sourceHomes: Array.isArray(discovery?.sourceHomes) ? discovery.sourceHomes : [],
-      fallback: discovery?.analyticsFallback || discovery?.fallback || null,
+      fallback: discovery?.analyticsFallback ?? discovery?.fallback ?? null,
     };
   } catch (error) {
     counts.failed += 1;
