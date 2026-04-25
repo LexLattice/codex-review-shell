@@ -2698,9 +2698,9 @@ ipcMain.handle("project:select", async (_event, projectId) => {
     : config.projects;
   const saved = await saveConfig({ ...config, selectedProjectId, projects });
   const project = getSelectedProject(saved);
-  const binding = project?.lastActiveBindingId
-    ? projectActivationBinding(project)
-    : activation.binding;
+  const binding = activation.binding?.id
+    ? project?.laneBindings?.find((item) => item.id === activation.binding.id) || activation.binding
+    : null;
   await loadProjectSurfaces(project, binding);
   return { config: saved, project, activationBinding: binding || null };
 });

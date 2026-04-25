@@ -51,6 +51,7 @@ const state = {
   codexItemMap: new Map(),
   thoughtItemMap: new Map(),
   thoughtTurnByItemId: new Map(),
+  pendingThoughtRenderMap: new Map(),
   finalMessageByTurnKey: new Map(),
   turnActivityMap: new Map(),
   turnPromptMap: new Map(),
@@ -362,6 +363,8 @@ function setMessageText(id, role, text, title = "") {
   const node = ensureMessage(id, role, title);
   const bubble = node.querySelector(".bubble");
   bubble.dataset.rawText = text || "";
+  bubble.dataset.typedRendered = "true";
+  bubble.dataset.streamingPlain = "false";
   renderTypedContent(bubble, text || "");
   configureUserMessagePreview(node, role);
   maybeAutoScrollBottom();
@@ -370,11 +373,30 @@ function setMessageText(id, role, text, title = "") {
 function appendMessageText(id, role, delta, title = "") {
   const node = ensureMessage(id, role, title);
   const bubble = node.querySelector(".bubble");
-  const next = `${bubble.dataset.rawText || bubble.textContent || ""}${delta || ""}`;
+  const textDelta = String(delta || "");
+  const previous = bubble.dataset.rawText || bubble.textContent || "";
+  const next = `${previous}${textDelta}`;
   bubble.dataset.rawText = next;
-  renderTypedContent(bubble, next);
+  bubble.dataset.typedRendered = "false";
+  if (bubble.dataset.streamingPlain !== "true") {
+    bubble.textContent = previous;
+    bubble.dataset.streamingPlain = "true";
+  }
+  if (textDelta) bubble.appendChild(document.createTextNode(textDelta));
   configureUserMessagePreview(node, role);
   maybeAutoScrollBottom();
+}
+
+function finalizeMessageTypedContent(id) {
+  const node = state.itemMap.get(String(id || ""));
+  const bubble = node?.querySelector(".bubble");
+  if (!bubble || bubble.dataset.typedRendered === "true") return;
+  const text = bubble.dataset.rawText || bubble.textContent || "";
+  bubble.dataset.rawText = text;
+  bubble.dataset.typedRendered = "true";
+  bubble.dataset.streamingPlain = "false";
+  renderTypedContent(bubble, text);
+  configureUserMessagePreview(node, node.classList.contains("user") ? "user" : node.classList.contains("assistant") ? "assistant" : "system");
 }
 
 function addSystemMessage(text) {
@@ -387,6 +409,10 @@ function clearRenderedThreadState() {
   state.codexItemMap.clear();
   state.thoughtItemMap.clear();
   state.thoughtTurnByItemId.clear();
+  for (const pending of state.pendingThoughtRenderMap.values()) {
+    if (pending?.frameId) cancelAnimationFrame(pending.frameId);
+  }
+  state.pendingThoughtRenderMap.clear();
   state.finalMessageByTurnKey.clear();
   state.turnActivityMap.clear();
   state.turnPromptMap.clear();
@@ -440,10 +466,9 @@ async function retryEmptyTurn(turnId) {
     setComposerEnabled(false, "Retrying empty Codex turn…");
     addSystemMessage("Rolling back the empty Codex turn and retrying the prompt once.");
     const rollback = await rpc("thread/rollback", { threadId: state.threadId, numTurns: 1 });
-    if (rollback?.thread) {
-      renderThreadHistory(rollback.thread);
-      bindThread(rollback.thread, project?.codex?.model || "", { liveAttached: true });
-    }
+    if (!rollback?.thread) throw new Error("Rollback failed to return updated thread state.");
+    renderThreadHistory(rollback.thread);
+    bindThread(rollback.thread, project?.codex?.model || "", { liveAttached: true });
     setComposerEnabled(false, "Retrying empty Codex turn…");
     await startCodexTurn(prompt, { retryCount: retryCount + 1 });
   } catch (error) {
@@ -1331,15 +1356,51 @@ function upsertThoughtProcess(turnKey, items, options = {}) {
   const existing = shouldMerge ? state.thoughtItemMap.get(key) || [] : [];
   const merged = shouldMerge ? mergeThoughtItems(existing, items) : [...(items || [])];
   state.thoughtItemMap.set(key, merged);
+  if (options.defer) {
+    scheduleThoughtProcessRender(key, { open: Boolean(options.open) });
+    return;
+  }
   renderThoughtProcess(key, merged, { open: Boolean(options.open) });
+}
+
+function scheduleThoughtProcessRender(turnKey, options = {}) {
+  const key = String(turnKey || "live");
+  const existing = state.pendingThoughtRenderMap.get(key);
+  if (existing) {
+    existing.open = existing.open || Boolean(options.open);
+    return;
+  }
+  const pending = { open: Boolean(options.open), frameId: 0 };
+  pending.frameId = requestAnimationFrame(() => {
+    state.pendingThoughtRenderMap.delete(key);
+    const items = state.thoughtItemMap.get(key);
+    if (!items?.length) return;
+    renderThoughtProcess(key, items, { open: pending.open });
+  });
+  state.pendingThoughtRenderMap.set(key, pending);
+}
+
+function cancelPendingThoughtRender(turnKey) {
+  const key = String(turnKey || "").trim();
+  const pending = state.pendingThoughtRenderMap.get(key);
+  if (!pending) return;
+  if (pending.frameId) cancelAnimationFrame(pending.frameId);
+  state.pendingThoughtRenderMap.delete(key);
 }
 
 function collapseThoughtProcess(turnKey) {
   const key = String(turnKey || "").trim();
   if (!key) return;
+  cancelPendingThoughtRender(key);
   const items = state.thoughtItemMap.get(key);
   if (!items?.length) return;
   renderThoughtProcess(key, items, { open: false });
+}
+
+function finalizeTurnMessages(turnKey) {
+  const key = String(turnKey || "").trim();
+  if (!key) return;
+  finalizeMessageTypedContent(state.finalMessageByTurnKey.get(key));
 }
 
 function appendThoughtAssistantDelta(itemId, delta, phaseHint = "") {
@@ -1366,7 +1427,7 @@ function appendThoughtAssistantDelta(itemId, delta, phaseHint = "") {
   upsertThoughtProcess(
     turnKey,
     [{ id, type: "agentMessage", phase, text: `${currentText}${textDelta}` }],
-    { merge: true, open: true },
+    { merge: true, open: true, defer: true },
   );
   return true;
 }
@@ -1635,6 +1696,7 @@ function handleNotification(method, params) {
         activity.completedAt = params?.turn?.completedAt || Date.now() / 1000;
       }
       collapseThoughtProcess(completedTurnId);
+      finalizeTurnMessages(completedTurnId);
       renderTurnCompletionNotice(completedTurnId, params?.turn || {});
     }
     return;
