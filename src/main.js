@@ -1317,29 +1317,6 @@ async function loadChatgptSurface(project, threadId = "") {
   await chatgptView.webContents.loadURL(target);
 }
 
-function codexOpenThreadEventForBinding(binding, fallbackSourceHome = "") {
-  const ref = binding?.codexThreadRef || {};
-  const threadId = normalizeString(ref.threadId, "");
-  if (!threadId) return null;
-  return {
-    type: "open-thread-request",
-    threadId,
-    sourceHome: normalizeString(ref.sourceHome, fallbackSourceHome),
-    sessionFilePath: normalizeString(ref.sessionFilePath, ""),
-    title: normalizeString(ref.titleSnapshot, ""),
-    at: nowIso(),
-  };
-}
-
-function dispatchCodexOpenThreadEvent(binding, fallbackSourceHome = "") {
-  const event = codexOpenThreadEventForBinding(binding, fallbackSourceHome);
-  if (!event || !codexView?.webContents || codexView.webContents.isDestroyed()) return;
-  setTimeout(() => {
-    if (!codexView?.webContents || codexView.webContents.isDestroyed()) return;
-    codexView.webContents.send("codex-surface:event", event);
-  }, 200);
-}
-
 async function requestCodexThreadOpen(projectId, threadId, sourceHome = "", sessionFilePath = "") {
   const nextThreadId = normalizeString(threadId, "");
   if (!nextThreadId) return { ok: false, error: "Codex thread id is required." };
@@ -1933,7 +1910,6 @@ async function loadProjectSurfaces(project, activationBinding = null) {
     loadCodexSurface(project, codexOptions),
     loadChatgptSurface(project, normalizeString(activationBinding?.chatThreadId, "")),
   ]);
-  dispatchCodexOpenThreadEvent(activationBinding, normalizeString(codexOptions.initialThreadSourceHome, ""));
   scheduleLayoutPing("project-selected");
 }
 

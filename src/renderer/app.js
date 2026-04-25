@@ -61,6 +61,7 @@ const state = {
   chatgptRecentThreadsLoadingMode: "cache",
   chatgptRecentThreadsSource: "",
   selectedCodexThreadId: "",
+  openedCodexProjectId: "",
   openedCodexThreadId: "",
   openedCodexThreadTitle: "",
   selectedProjectChatThreadId: "",
@@ -442,9 +443,10 @@ function codexThreadById(threadId) {
 }
 
 function activeCodexThreadForHeader(project) {
-  const openedThread = state.openedCodexThreadId ? codexThreadById(state.openedCodexThreadId) : null;
+  const openedForProject = Boolean(state.openedCodexThreadId && state.openedCodexProjectId === project?.id);
+  const openedThread = openedForProject ? codexThreadById(state.openedCodexThreadId) : null;
   if (openedThread) return openedThread;
-  if (state.openedCodexThreadId) {
+  if (openedForProject) {
     return {
       threadId: state.openedCodexThreadId,
       title: state.openedCodexThreadTitle || state.openedCodexThreadId,
@@ -604,6 +606,24 @@ function applyPrimaryReviewThread(threads, selectedThread) {
   ]);
 }
 
+function preservedThreadId(threads, preferredId, fallbackId = "") {
+  const preferred = String(preferredId || "");
+  if (preferred && threads.some((thread) => thread.id === preferred && !thread.archived)) return preferred;
+  return fallbackId;
+}
+
+function projectPrimaryReviewBinding(project) {
+  const bindings = laneBindings(project);
+  const active = laneBindingById(project, project?.lastActiveBindingId);
+  if (active?.lane === "review") return active;
+  return (
+    bindings.find((binding) => binding.lane === "review" && binding.openOnProjectActivate) ||
+    bindings.find((binding) => binding.lane === "review" && binding.isDefaultForLane) ||
+    bindings.find((binding) => binding.lane === "review") ||
+    null
+  );
+}
+
 function upsertProjectPrimaryLaneBinding(existingProject, bindings, codexThread, chatThread, now) {
   if (!codexThread?.threadId || !chatThread?.id) {
     return {
@@ -611,8 +631,10 @@ function upsertProjectPrimaryLaneBinding(existingProject, bindings, codexThread,
       lastActiveBindingId: existingProject?.lastActiveBindingId || "",
     };
   }
-  const current = activeLaneBinding(existingProject) || bindings.find((binding) => binding.lane === "review") || null;
+  const current = projectPrimaryReviewBinding(existingProject);
   const bindingId = current?.id || createId("binding");
+  const anotherOpenBinding = bindings.some((binding) => binding.id !== bindingId && binding.openOnProjectActivate);
+  const openOnProjectActivate = current?.openOnProjectActivate ?? !anotherOpenBinding;
   const nextBinding = {
     id: bindingId,
     lane: "review",
@@ -627,7 +649,7 @@ function upsertProjectPrimaryLaneBinding(existingProject, bindings, codexThread,
     },
     chatThreadId: chatThread.id,
     isDefaultForLane: true,
-    openOnProjectActivate: true,
+    openOnProjectActivate,
     lastActivatedAt: now,
     status: "resolved",
     createdAt: current?.createdAt || now,
@@ -638,21 +660,19 @@ function upsertProjectPrimaryLaneBinding(existingProject, bindings, codexThread,
     .map((binding) => ({
       ...binding,
       isDefaultForLane: binding.lane === "review" ? false : binding.isDefaultForLane,
-      openOnProjectActivate: false,
+      openOnProjectActivate: openOnProjectActivate ? false : binding.openOnProjectActivate,
     }));
+  const nextBindings = [nextBinding, ...remaining];
+  const existingLastActiveId = String(existingProject?.lastActiveBindingId || "");
+  const keepExistingLastActive = !openOnProjectActivate && nextBindings.some((binding) => binding.id === existingLastActiveId);
   return {
-    laneBindings: [nextBinding, ...remaining],
-    lastActiveBindingId: bindingId,
+    laneBindings: nextBindings,
+    lastActiveBindingId: keepExistingLastActive ? existingLastActiveId : bindingId,
   };
 }
 
 function clearProjectPrimaryLaneBinding(existingProject, bindings) {
-  const current =
-    laneBindingById(existingProject, existingProject?.lastActiveBindingId) ||
-    bindings.find((binding) => binding.openOnProjectActivate) ||
-    bindings.find((binding) => binding.lane === "review" && binding.isDefaultForLane) ||
-    bindings.find((binding) => binding.lane === "review") ||
-    null;
+  const current = projectPrimaryReviewBinding(existingProject);
   if (!current) {
     return {
       laneBindings: bindings,
@@ -660,21 +680,25 @@ function clearProjectPrimaryLaneBinding(existingProject, bindings) {
     };
   }
   const remaining = bindings.filter((binding) => binding.id !== current.id);
+  const existingLastActiveId = String(existingProject?.lastActiveBindingId || "");
+  const keepExistingLastActive = remaining.some((binding) => binding.id === existingLastActiveId);
   return {
     laneBindings: remaining,
-    lastActiveBindingId: remaining[0]?.id || "",
+    lastActiveBindingId: keepExistingLastActive ? existingLastActiveId : remaining[0]?.id || "",
   };
 }
 
 function populateProjectThreadSelectors(draft) {
   if (!els.projectChatgptThreadSelect || !els.projectCodexThreadSelect) return;
-  const binding = activeLaneBinding(draft);
+  const binding = projectPrimaryReviewBinding(draft);
   const primary = primaryReviewThread(draft);
   const activeSourceProject = activeProject();
 
   els.projectChatgptThreadSelect.innerHTML = "";
   els.projectChatgptThreadSelect.append(new Option("Use URL field", ""));
-  const selectedChatThreadId = binding?.chatThreadId || state.selectedProjectChatThreadId || primary?.id || "";
+  const selectedChatThreadId = state.drawerMode === "new"
+    ? state.selectedProjectChatThreadId || primary?.id || ""
+    : primary?.id || "";
   for (const thread of sortedThreads(draft, false)) {
     const option = new Option(`${thread.title || "Untitled ChatGPT thread"} · project`, drawerSelectValue({ kind: "project", threadId: thread.id }));
     option.dataset.url = thread.url || "";
@@ -2030,6 +2054,11 @@ async function selectProject(projectId) {
   const result = await bridge.selectProject(projectId);
   if (isRequestStale("project", projectVersion)) return;
   state.config = result.config;
+  if (state.openedCodexThreadId && state.openedCodexProjectId !== projectId) {
+    state.openedCodexProjectId = "";
+    state.openedCodexThreadId = "";
+    state.openedCodexThreadTitle = "";
+  }
   state.selectedFileRelPath = "";
   state.selectedFilePreview = null;
   state.watchedArtifactsScan = null;
@@ -2104,6 +2133,7 @@ async function openProjectCodexBinding(project, binding, snapshot) {
     }
     const title = discovered?.title || ref.titleSnapshot || threadId;
     state.selectedCodexThreadId = threadId;
+    state.openedCodexProjectId = project.id;
     state.openedCodexThreadId = threadId;
     state.openedCodexThreadTitle = title;
     renderSelectedProject();
@@ -2154,6 +2184,7 @@ async function selectCodexThread(threadId, sourceHome = "", sessionFilePath = ""
     return;
   }
   const thread = codexThreadById(threadId);
+  state.openedCodexProjectId = project.id;
   state.openedCodexThreadId = threadId;
   state.openedCodexThreadTitle = thread?.title || threadId;
   if (result.warning) {
@@ -2319,6 +2350,9 @@ function projectFromForm() {
   const bindingDraft = selectedCodexThread
     ? upsertProjectPrimaryLaneBinding(existing, bindings, selectedCodexThread, currentPrimary, now)
     : clearProjectPrimaryLaneBinding(existing, bindings);
+  const fallbackThreadId = currentPrimary?.id || threads[0]?.id || "";
+  const activeChatThreadId = preservedThreadId(threads, existing?.activeChatThreadId, fallbackThreadId);
+  const lastActiveThreadId = preservedThreadId(threads, existing?.lastActiveThreadId, activeChatThreadId);
 
   return {
     id: els.projectIdInput.value || createId("project"),
@@ -2343,8 +2377,8 @@ function projectFromForm() {
       },
     },
     chatThreads: threads,
-    activeChatThreadId: currentPrimary?.id || threads[0]?.id,
-    lastActiveThreadId: currentPrimary?.id || threads[0]?.id,
+    activeChatThreadId,
+    lastActiveThreadId,
     laneBindings: bindingDraft.laneBindings,
     lastActiveBindingId: bindingDraft.lastActiveBindingId,
     promptTemplates: templates,
