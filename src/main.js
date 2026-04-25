@@ -668,6 +668,7 @@ function codexSurfaceOptionsForBinding(binding) {
     initialThreadId: threadId,
     initialThreadSourceHome: sourceHome,
     initialThreadSessionFilePath: normalizeString(ref.sessionFilePath, ""),
+    initialThreadTitle: normalizeString(ref.titleSnapshot, ""),
   };
 }
 
@@ -1224,6 +1225,7 @@ function encodeCodexSurfacePayload(project, extra = {}) {
     initialThreadId: normalizeString(extra.initialThreadId, ""),
     initialThreadSourceHome: normalizeString(extra.initialThreadSourceHome, ""),
     initialThreadSessionFilePath: normalizeString(extra.initialThreadSessionFilePath, ""),
+    initialThreadTitle: normalizeString(extra.initialThreadTitle, ""),
     error: normalizeString(extra.error, ""),
   };
   return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
@@ -1270,6 +1272,7 @@ async function loadCodexSurface(project, options = {}) {
         initialThreadId: normalizeString(options.initialThreadId, ""),
         initialThreadSourceHome: normalizeString(options.initialThreadSourceHome, ""),
         initialThreadSessionFilePath: normalizeString(options.initialThreadSessionFilePath, ""),
+        initialThreadTitle: normalizeString(options.initialThreadTitle, ""),
       });
       activeCodexSurfaceConnection = {
         projectId: project.id,
@@ -1292,6 +1295,7 @@ async function loadCodexSurface(project, options = {}) {
         initialThreadId: normalizeString(options.initialThreadId, ""),
         initialThreadSourceHome: normalizeString(options.initialThreadSourceHome, ""),
         initialThreadSessionFilePath: normalizeString(options.initialThreadSessionFilePath, ""),
+        initialThreadTitle: normalizeString(options.initialThreadTitle, ""),
         error: error.message,
       });
       await codexView.webContents.loadURL(degradedUrl);
@@ -1356,6 +1360,7 @@ async function requestCodexThreadOpen(projectId, threadId, sourceHome = "", sess
     threadId: nextThreadId,
     sourceHome: requestedHome || session?.codexHome || "",
     sessionFilePath: requestedSessionFilePath,
+    title: "",
     at: nowIso(),
   };
 
@@ -1900,8 +1905,9 @@ async function loadProjectSurfaces(project, activationBinding = null) {
     projectName: project.name,
     at: nowIso(),
   });
+  const codexOptions = codexSurfaceOptionsForBinding(activationBinding);
   await Promise.allSettled([
-    loadCodexSurface(project, codexSurfaceOptionsForBinding(activationBinding)),
+    loadCodexSurface(project, codexOptions),
     loadChatgptSurface(project, normalizeString(activationBinding?.chatThreadId, "")),
   ]);
   scheduleLayoutPing("project-selected");

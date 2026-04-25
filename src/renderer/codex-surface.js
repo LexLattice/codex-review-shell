@@ -46,6 +46,7 @@ const THOUGHT_ASSISTANT_PHASES = new Set([
 
 const state = {
   threadId: "",
+  threadTitle: "",
   turnId: "",
   itemMap: new Map(),
   codexItemMap: new Map(),
@@ -59,6 +60,8 @@ const state = {
   emptyTurnRetrying: new Set(),
   serverRequests: new Map(),
   connected: false,
+  readyForThreadOpen: false,
+  pendingOpenThreadEvent: null,
   liveAttached: false,
   sourceHome: "",
   openRequestId: 0,
@@ -86,6 +89,15 @@ function workspaceText() {
   if (!project) return "No project bound";
   if (project.workspace?.kind === "wsl") return `WSL ${project.workspace.distro || "default"}:${project.workspace.linuxPath}`;
   return `Local ${project.workspace?.localPath || project.repoPath}`;
+}
+
+function updateSurfaceHeader(title = "", detail = "") {
+  const cleanTitle = String(title || "").trim();
+  state.threadTitle = cleanTitle || state.threadTitle || "";
+  els.projectName.textContent = state.threadTitle || project?.name || "Codex session";
+  els.projectName.title = state.threadTitle || project?.name || "";
+  els.repoPath.textContent = detail || workspaceText();
+  els.repoPath.title = detail || workspaceText();
 }
 
 function setBadge(element, text, className = "") {
@@ -418,6 +430,18 @@ function clearRenderedThreadState() {
   state.turnPromptMap.clear();
   state.turnRetryCountMap.clear();
   state.emptyTurnRetrying.clear();
+}
+
+function openThreadFromEvent(event) {
+  if (!event?.threadId) return;
+  if (!state.readyForThreadOpen) {
+    state.pendingOpenThreadEvent = event;
+    return;
+  }
+  if (String(event.threadId) === String(state.threadId) && (state.liveAttached || state.historyData)) return;
+  openThreadHybrid(event.threadId, event.sourceHome || "", event.sessionFilePath || "", event.title || "").catch((error) => {
+    addSystemMessage(`Unable to open Codex thread ${event.threadId || ""}: ${error.message}`);
+  });
 }
 
 function turnIdFromNotification(params) {
@@ -1092,7 +1116,7 @@ function applyLiveThreadResult(result) {
   bindThread(result.thread, result.model, { liveAttached: true });
 }
 
-async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "") {
+async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "", titleHint = "") {
   const requestedThreadId = String(threadId || "").trim();
   if (!requestedThreadId) throw new Error("Missing Codex thread id.");
   const openRequestId = state.openRequestId + 1;
@@ -1101,6 +1125,8 @@ async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "")
   state.sourceHome = String(sourceHome || "");
   state.liveAttached = false;
   clearRenderedThreadState();
+  const payloadTitle = requestedThreadId === String(payload.initialThreadId || "") ? payload.initialThreadTitle : "";
+  updateSurfaceHeader(titleHint || payloadTitle || requestedThreadId, workspaceText());
   addSystemMessage(`Loading thread ${requestedThreadId}…`);
   setComposerEnabled(false, "Loading stored transcript and attaching live Codex session…");
   let renderedStored = false;
@@ -1108,6 +1134,7 @@ async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "")
     const snapshot = await readStoredThreadTranscript(requestedThreadId, state.sourceHome, sessionFilePath);
     if (openRequestId !== state.openRequestId) return;
     if (snapshot?.entries?.length) {
+      updateSurfaceHeader(snapshot.title || titleHint || payloadTitle || requestedThreadId, workspaceText());
       renderStoredTranscript(snapshot, requestedThreadId);
       renderedStored = true;
     }
@@ -1136,6 +1163,8 @@ async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "")
 function bindThread(thread, modelName = "", options = {}) {
   state.threadId = thread?.id || "";
   state.liveAttached = options.liveAttached !== false;
+  const title = thread?.title || thread?.name || thread?.preview || state.threadTitle || payload.initialThreadTitle || state.threadId;
+  updateSurfaceHeader(title, workspaceText());
   setBadge(els.modelBadge, modelName || project?.codex?.model || "default model", "subtle");
   setComposerEnabled(state.liveAttached, state.liveAttached ? "" : "Read-only mode");
   setNotice(
@@ -1717,9 +1746,7 @@ function handleNotification(method, params) {
 function handleBridgeEvent(event) {
   if (!event) return;
   if (event.type === "open-thread-request") {
-    openThreadHybrid(event.threadId, event.sourceHome || "", event.sessionFilePath || "").catch((error) => {
-      addSystemMessage(`Unable to open Codex thread ${event.threadId || ""}: ${error.message}`);
-    });
+    openThreadFromEvent(event);
     return;
   }
   if (event.type === "connection-status") {
@@ -1814,13 +1841,13 @@ async function connect() {
   }
   state.removeBridgeListener?.();
   state.removeBridgeListener = bridge.onEvent(handleBridgeEvent);
-  els.projectName.textContent = project.name;
-  els.repoPath.textContent = workspaceText();
+  updateSurfaceHeader(payload.initialThreadTitle || project.name, workspaceText());
 
   if (!connection?.wsUrl) {
     setBadge(els.connectionBadge, "fallback", "warning");
     addSystemMessage(payload.error || "Codex fallback surface loaded. The managed app-server is not connected.");
     setComposerEnabled(false, "Read-only transcript mode (Codex app-server unavailable).");
+    state.readyForThreadOpen = true;
     if (payload.initialThreadId) {
       try {
         await openThreadHybrid(
@@ -1841,7 +1868,12 @@ async function connect() {
   state.connected = true;
   try {
     await initializeBridgeSession();
-    if (payload.initialThreadId) {
+    state.readyForThreadOpen = true;
+    const queuedOpen = state.pendingOpenThreadEvent;
+    state.pendingOpenThreadEvent = null;
+    if (queuedOpen?.threadId) {
+      openThreadFromEvent(queuedOpen);
+    } else if (payload.initialThreadId) {
       try {
         await openThreadHybrid(
           payload.initialThreadId,

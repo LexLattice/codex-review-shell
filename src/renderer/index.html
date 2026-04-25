@@ -16,7 +16,7 @@
         <div class="surface-bar">
           <div>
             <p class="eyebrow">Left plane</p>
-            <h2>Codex implementation companion</h2>
+            <h2 id="codexSurfaceTitle">Codex implementation companion</h2>
           </div>
           <span id="codexStatus" class="status-dot">idle</span>
         </div>
@@ -333,7 +333,7 @@
         <div class="surface-bar">
           <div>
             <p class="eyebrow">Right plane</p>
-            <h2>ChatGPT review/world-model</h2>
+            <h2 id="chatgptSurfaceTitle">ChatGPT review/world-model</h2>
           </div>
           <span id="chatgptStatus" class="status-dot">idle</span>
         </div>
@@ -448,8 +448,19 @@
           <input id="codexTargetInput" autocomplete="off" placeholder="http://127.0.0.1:3000" />
         </label>
 
+        <div class="form-grid">
+          <label>
+            Primary ChatGPT thread <span class="muted">project binding</span>
+            <select id="projectChatgptThreadSelect"></select>
+          </label>
+          <label>
+            Primary Codex thread <span class="muted">project binding</span>
+            <select id="projectCodexThreadSelect"></select>
+          </label>
+        </div>
+
         <label>
-          Primary ChatGPT review thread URL <span class="muted">also managed in thread deck</span>
+          ChatGPT thread URL <span class="muted">used when no dropdown thread is selected</span>
           <input id="chatgptUrlInput" autocomplete="off" placeholder="https://chatgpt.com/c/..." />
         </label>
 
