@@ -17,6 +17,10 @@ const { LocalSurfaceServer } = require("./main/local-surface-server");
 const { CodexSurfaceSession } = require("./main/codex-surface-session");
 const { WorkspaceBackendManager, workspaceLabel, workspaceRoot } = require("./main/workspace-backend");
 const { ThreadAnalyticsStore, buildThreadKey } = require("./main/thread-analytics-store");
+const {
+  createDirectAuthIpcController,
+  registerDirectAuthIpcHandlers,
+} = require("./main/direct/auth/auth-ipc");
 
 const APP_TITLE = "Codex Review Shell";
 const CONFIG_FILE_NAME = "workspace-config.json";
@@ -59,6 +63,7 @@ let codexAppServer = null;
 let localSurfaceServer = null;
 let codexSurfaceSessions = null;
 let threadAnalyticsStore = null;
+let directAuthController = null;
 let surfaceActivationEpoch = 0;
 
 function nowIso() {
@@ -79,6 +84,10 @@ function chatgptThreadCachePath() {
 
 function threadAnalyticsDbPath() {
   return path.join(app.getPath("userData"), THREAD_ANALYTICS_DB_FILE_NAME);
+}
+
+function directAuthRootDir() {
+  return path.join(app.getPath("userData"), "direct-auth");
 }
 
 function tempFilePath(targetPath) {
@@ -1049,6 +1058,14 @@ function ensureThreadAnalyticsStore() {
   if (threadAnalyticsStore) return threadAnalyticsStore;
   threadAnalyticsStore = new ThreadAnalyticsStore(threadAnalyticsDbPath());
   return threadAnalyticsStore;
+}
+
+function ensureDirectAuthController() {
+  if (directAuthController) return directAuthController;
+  directAuthController = createDirectAuthIpcController({
+    rootDir: directAuthRootDir(),
+  });
+  return directAuthController;
 }
 
 function ensureCodexAppServerManager() {
@@ -3016,6 +3033,10 @@ app.on("before-quit", () => {
   workspaceBackends = null;
   threadAnalyticsStore?.close();
   threadAnalyticsStore = null;
+});
+
+registerDirectAuthIpcHandlers(ipcMain, () => ensureDirectAuthController(), {
+  onStatusChange: emitShellEvent,
 });
 
 app.on("window-all-closed", () => {

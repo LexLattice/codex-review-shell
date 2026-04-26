@@ -259,6 +259,18 @@ Storage requirements:
 - Prefer an OS keychain backend later when the app has a stable packaging and
   entitlement story.
 
+Renderer IPC contract:
+
+- `direct-auth:settings` returns the active storage mode, available modes, and
+  redacted auth status.
+- `direct-auth:status` returns only the redacted auth status projection.
+- `direct-auth:set-storage-mode` switches between persistent file storage and
+  memory-only storage without exposing store paths.
+- `direct-auth:logout` clears app-owned direct auth stores and returns redacted
+  post-logout status.
+- `direct-auth:login` is reserved for the live OAuth login path; until that path
+  is implemented it returns a redacted `live_oauth_not_implemented` result.
+
 ## Request Construction
 
 The request builder maps ADEU session state to the ChatGPT Codex backend.
