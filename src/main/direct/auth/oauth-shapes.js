@@ -4,9 +4,15 @@ const crypto = require("node:crypto");
 
 const DEFAULT_AUTHORIZATION_ENDPOINT = "https://auth.openai.com/oauth/authorize";
 const DEFAULT_TOKEN_ENDPOINT = "https://auth.openai.com/oauth/token";
+const DEFAULT_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const DEFAULT_REDIRECT_URI = "http://localhost:1455/auth/callback";
 const DEFAULT_SCOPE = "openid profile email offline_access";
 const DEFAULT_CODE_CHALLENGE_METHOD = "S256";
+const DEFAULT_AUTHORIZATION_EXTRA_PARAMS = Object.freeze({
+  id_token_add_organizations: "true",
+  codex_cli_simplified_flow: "true",
+  originator: "codex-review-shell",
+});
 const CHATGPT_ACCOUNT_CLAIM_PATH = "https://api.openai.com/auth";
 const REDACTED_ACCOUNT_ID = "[REDACTED:account-id]";
 
@@ -291,6 +297,8 @@ function projectRefreshFailureState(input = {}) {
 module.exports = {
   CHATGPT_ACCOUNT_CLAIM_PATH,
   DEFAULT_AUTHORIZATION_ENDPOINT,
+  DEFAULT_AUTHORIZATION_EXTRA_PARAMS,
+  DEFAULT_CLIENT_ID,
   DEFAULT_CODE_CHALLENGE_METHOD,
   DEFAULT_REDIRECT_URI,
   DEFAULT_SCOPE,

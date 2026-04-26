@@ -247,8 +247,9 @@ Flow:
 
 Current implementation note:
 
-- `CODEX_REVIEW_SHELL_DIRECT_AUTH_CLIENT_ID` provides the OAuth client id for
-  the main-process login coordinator.
+- The main-process login coordinator defaults to the observed OpenAI Codex
+  OAuth public client id. `CODEX_REVIEW_SHELL_DIRECT_AUTH_CLIENT_ID` can
+  override it for probe or compatibility runs.
 
 Storage requirements:
 

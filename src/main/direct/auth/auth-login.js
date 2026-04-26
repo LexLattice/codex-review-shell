@@ -4,6 +4,8 @@ const crypto = require("node:crypto");
 const http = require("node:http");
 const {
   DEFAULT_AUTHORIZATION_ENDPOINT,
+  DEFAULT_AUTHORIZATION_EXTRA_PARAMS,
+  DEFAULT_CLIENT_ID,
   DEFAULT_REDIRECT_URI,
   DEFAULT_SCOPE,
   DEFAULT_TOKEN_ENDPOINT,
@@ -24,6 +26,10 @@ const DEFAULT_CALLBACK_PATH = DEFAULT_CALLBACK_URL.pathname || "/auth/callback";
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasOwn(value, key) {
+  return Object.prototype.hasOwnProperty.call(Object(value), key);
 }
 
 function normalizeString(value, fallback = "") {
@@ -185,15 +191,21 @@ function normalizeCallbackPort(value, fallback = DEFAULT_CALLBACK_PORT) {
 
 class DirectAuthLoginCoordinator {
   constructor(options = {}) {
-    this.clientId = normalizeString(options.clientId || process.env.CODEX_REVIEW_SHELL_DIRECT_AUTH_CLIENT_ID, "");
+    const configuredClientId = hasOwn(options, "clientId")
+      ? options.clientId
+      : normalizeString(process.env.CODEX_REVIEW_SHELL_DIRECT_AUTH_CLIENT_ID, DEFAULT_CLIENT_ID);
     this.authorizationEndpoint = normalizeString(options.authorizationEndpoint, DEFAULT_AUTHORIZATION_ENDPOINT);
     this.tokenEndpoint = normalizeString(options.tokenEndpoint, DEFAULT_TOKEN_ENDPOINT);
+    this.clientId = normalizeString(configuredClientId, "");
     this.scope = normalizeString(options.scope, DEFAULT_SCOPE);
     this.callbackHost = normalizeString(options.callbackHost, DEFAULT_CALLBACK_HOST);
     this.callbackPort = normalizeCallbackPort(options.callbackPort, DEFAULT_CALLBACK_PORT);
     this.callbackPath = normalizeString(options.callbackPath, DEFAULT_CALLBACK_PATH);
     this.callbackTimeoutMs = Number(options.callbackTimeoutMs || DEFAULT_CALLBACK_TIMEOUT_MS) || DEFAULT_CALLBACK_TIMEOUT_MS;
-    this.extraParams = isPlainObject(options.extraParams) ? options.extraParams : {};
+    this.extraParams = {
+      ...DEFAULT_AUTHORIZATION_EXTRA_PARAMS,
+      ...(isPlainObject(options.extraParams) ? options.extraParams : {}),
+    };
     this.openExternal = typeof options.openExternal === "function" ? options.openExternal : null;
     this.tokenClient = typeof options.tokenClient === "function" ? options.tokenClient : defaultTokenClient;
     this.currentFlow = null;
