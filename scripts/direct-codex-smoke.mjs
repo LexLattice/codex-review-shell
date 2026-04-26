@@ -36,6 +36,7 @@ const {
   buildDirectRuntimeStatus,
   normalizeCodexRuntimeMode,
 } = require("../src/main/direct/runtime/runtime-status");
+const { DirectSessionStore } = require("../src/main/direct/session/session-store");
 const {
   DEFAULT_PROBE_MANIFEST_DIR,
   runFixtureBackedProbe,
@@ -205,6 +206,55 @@ const memoryDirectRuntimeStatus = buildDirectRuntimeStatus({
   profileDoc,
 });
 assert(memoryDirectRuntimeStatus.auth.capability.storage === "ephemeral-memory", "Expected memory auth storage to be labeled separately.");
+
+const sessionStoreParent = fs.mkdtempSync(path.join(os.tmpdir(), "direct-codex-session-store-"));
+try {
+  const sessionStore = new DirectSessionStore({ rootDir: path.join(sessionStoreParent, "direct-sessions") });
+  const session = sessionStore.createSession({
+    sessionId: "session_fixture",
+    projectId: "project_fixture",
+    workspace: { kind: "local", localPath: "[REDACTED:private-path]" },
+    title: "Fixture direct session",
+    model: "gpt-5.4",
+    profileSnapshotId: profileDoc.profile.profileId,
+  }, { nowMs: 1_700_000_000_000 });
+  const turn = sessionStore.createTurn(session.sessionId, {
+    turnId: "turn_fixture",
+    input: [{ role: "user", text: "hello" }],
+  }, { nowMs: 1_700_000_001_000 });
+  sessionStore.appendNormalizedEvent(session.sessionId, turn.turnId, {
+    type: "message_delta",
+    sequence: 0,
+    text: "ok",
+  }, { nowMs: 1_700_000_002_000 });
+  const completedTurn = sessionStore.updateTurnState(session.sessionId, turn.turnId, "completed", {}, { nowMs: 1_700_000_003_000 });
+  assert(completedTurn.state === "completed", "Expected direct turn to transition to completed.");
+  sessionStore.writeDiagnostic(session.sessionId, "fixture_diag", {
+    message: "redacted diagnostic",
+    accountId: "[REDACTED:account-id]",
+  }, { nowMs: 1_700_000_004_000 });
+  const storeStatus = sessionStore.status();
+  assert(storeStatus.available === true, "Expected direct session store to report available.");
+  assert(storeStatus.rootExposed === false, "Direct session store status must not expose root paths.");
+  assert(storeStatus.sessionCount === 1, "Expected one direct session in store status.");
+  assert(storeStatus.turnCount === 1, "Expected one direct turn in store status.");
+  assert(storeStatus.eventCount === 1, "Expected one normalized event in store status.");
+  const runtimeStatusWithStore = buildDirectRuntimeStatus({
+    project: { surfaceBinding: { codex: { runtimeMode: "direct-experimental" } } },
+    profileDoc,
+    sessionStore: storeStatus,
+  });
+  assert(runtimeStatusWithStore.threads.canPersist === true, "Expected runtime status to expose direct session persistence.");
+  assert(runtimeStatusWithStore.directRuntime.turnRunnable === false, "Session store availability must not imply runnable turns.");
+  assert(runtimeStatusWithStore.sessionStore.rootExposed === false, "Runtime status must not expose direct session store paths.");
+  fs.unlinkSync(sessionStore.indexPath());
+  const statusAfterMissingIndex = sessionStore.status();
+  assert(statusAfterMissingIndex.sessionCount === 1, "Expected status to recover a missing session index from session files.");
+  const recovered = sessionStore.recoverIndex({ write: true });
+  assert(recovered.recovery.recoveredSessionCount === 1, "Expected session index recovery from session files.");
+} finally {
+  fs.rmSync(sessionStoreParent, { recursive: true, force: true });
+}
 
 const secretFixture = {
   headers: {

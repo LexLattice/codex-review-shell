@@ -24,6 +24,7 @@ const {
 const { createDirectAuthLoginCoordinator } = require("./main/direct/auth/auth-login");
 const { codexAuthTokensFromCredentials } = require("./main/direct/auth/app-server-auth-bridge");
 const { loadDirectCodexProfile } = require("./main/direct/odeu-profile/profile-loader");
+const { DirectSessionStore } = require("./main/direct/session/session-store");
 const {
   buildDirectRuntimeStatus,
   directRuntimeLaneLabel,
@@ -37,6 +38,7 @@ const CHATGPT_THREAD_CACHE_FILE_NAME = "chatgpt-thread-cache.json";
 const CHATGPT_THREAD_CACHE_VERSION = 1;
 const CHATGPT_THREAD_CACHE_MAX_ENTRIES = 1500;
 const THREAD_ANALYTICS_DB_FILE_NAME = "thread-analytics.sqlite";
+const DIRECT_SESSION_ROOT_NAME = "direct-sessions";
 const THREAD_ANALYTICS_ANALYZER_VERSION = "analytics-v0.1";
 const ANALYTICS_DISCOVERY_THREAD_LIMIT = 260;
 const ANALYTICS_DISCOVERY_SCAN_LIMIT = 420;
@@ -110,6 +112,7 @@ let threadAnalyticsStore = null;
 let directAuthController = null;
 let directAuthLoginCoordinator = null;
 let directCodexProfileDoc = null;
+let directSessionStore = null;
 let surfaceActivationEpoch = 0;
 
 function nowIso() {
@@ -134,6 +137,10 @@ function threadAnalyticsDbPath() {
 
 function directAuthRootDir() {
   return path.join(app.getPath("userData"), "direct-auth");
+}
+
+function directSessionRootDir() {
+  return path.join(app.getPath("userData"), DIRECT_SESSION_ROOT_NAME);
 }
 
 function tempFilePath(targetPath) {
@@ -1140,6 +1147,12 @@ function ensureDirectCodexProfileDoc() {
   return directCodexProfileDoc;
 }
 
+function ensureDirectSessionStore() {
+  if (directSessionStore) return directSessionStore;
+  directSessionStore = new DirectSessionStore({ rootDir: directSessionRootDir() });
+  return directSessionStore;
+}
+
 function currentLegacyAppServerSnapshot() {
   return codexAppServer?.snapshot?.() || null;
 }
@@ -1153,6 +1166,7 @@ function buildDirectRuntimeStatusForProject(project, options = {}) {
     authSettings,
     authStatus: authSettings.authStatus,
     profileDoc,
+    sessionStore: ensureDirectSessionStore().status(),
     legacySession: currentLegacyAppServerSnapshot(),
   });
 }
@@ -2909,6 +2923,7 @@ async function createWindow() {
     localSurfaceServer = null;
     threadAnalyticsStore?.close();
     threadAnalyticsStore = null;
+    directSessionStore = null;
     closeView(codexView);
     closeView(chatgptView);
     closeView(shellView);
@@ -3259,6 +3274,7 @@ app.on("before-quit", () => {
   threadAnalyticsStore?.close();
   threadAnalyticsStore = null;
   directAuthLoginCoordinator = null;
+  directSessionStore = null;
 });
 
 function emitDirectAuthAndRuntimeStatus(event) {

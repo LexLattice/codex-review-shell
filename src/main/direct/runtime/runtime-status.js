@@ -91,6 +91,7 @@ function buildDirectRuntimeStatus(options = {}) {
   const authSettings = isPlainObject(options.authSettings) ? options.authSettings : {};
   const profileDoc = isPlainObject(options.profileDoc) ? options.profileDoc : {};
   const legacySession = isPlainObject(options.legacySession) ? options.legacySession : null;
+  const sessionStore = isPlainObject(options.sessionStore) ? options.sessionStore : null;
   const modelEntries = modelEntriesFromProfile(profileDoc);
   const directModeSelected = binding.runtimeMode !== "legacy-app-server";
   const directTurnBlockedReason =
@@ -138,7 +139,7 @@ function buildDirectRuntimeStatus(options = {}) {
       canStart: false,
       canRead: false,
       canResume: false,
-      canPersist: false,
+      canPersist: Boolean(sessionStore?.available),
       canImportCodexAppServer: true,
     },
     turns: {
@@ -160,6 +161,16 @@ function buildDirectRuntimeStatus(options = {}) {
       commandApproval: false,
       fileChangeApproval: false,
       networkApproval: false,
+    },
+    sessionStore: {
+      available: Boolean(sessionStore?.available),
+      rootExposed: false,
+      schema: normalizeString(sessionStore?.schema, ""),
+      sessionCount: Number(sessionStore?.sessionCount || 0),
+      turnCount: Number(sessionStore?.turnCount || 0),
+      eventCount: Number(sessionStore?.eventCount || 0),
+      lastSessionUpdatedAt: normalizeString(sessionStore?.lastSessionUpdatedAt, ""),
+      recovery: isPlainObject(sessionStore?.recovery) ? sessionStore.recovery : {},
     },
     diagnostics: {
       profileId: normalizeString(binding.profileId || profileDoc.profile?.profileId || profileDoc.summary?.profileId, ""),
