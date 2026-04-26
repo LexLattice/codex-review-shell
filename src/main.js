@@ -1223,7 +1223,21 @@ async function attachDirectAuthAfterInitialize(session, initializeResult) {
       directAuth: await attachDirectAuthToCodexSession(session),
     };
   } catch (error) {
-    throw new Error(`Codex initialized, but direct auth could not attach to Codex app-server: ${error.message}`);
+    const reason = error?.message || "direct_auth_attach_failed";
+    emitShellEvent({
+      type: "direct-auth-bridge-status",
+      status: "failed",
+      reason,
+      at: nowIso(),
+    });
+    return {
+      result: initializeResult,
+      directAuth: {
+        attached: false,
+        optional: true,
+        reason,
+      },
+    };
   }
 }
 

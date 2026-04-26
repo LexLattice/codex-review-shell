@@ -1129,9 +1129,11 @@ function renderDirectAuthControls() {
   els.directAuthLoginButton.disabled = loading || !settings.liveOAuthAvailable;
   els.directAuthLoginButton.title = settings.liveOAuthAvailable ? "Start direct auth login." : "Live OAuth is not implemented yet.";
   els.directAuthLogoutButton.disabled = loading || (!status?.hasAccessToken && !status?.hasRefreshToken && status?.status !== "refresh_failed");
+  const codex = activeProject()?.surfaceBinding?.codex || {};
+  const codexLane = codex.mode === "managed" ? "legacy app-server bridge" : codex.mode || "unbound";
   els.directAuthEvidence.textContent = state.directAuthError
     ? "Direct auth status unavailable. No raw tokens or paths exposed to renderer."
-    : `Renderer sees redacted status only · tokens exposed: ${status?.rawTokensExposed ? "yes" : "no"} · paths exposed: ${settings.storagePathExposed ? "yes" : "no"}`;
+    : `Codex lane: ${codexLane} · renderer sees redacted auth only · tokens exposed: ${status?.rawTokensExposed ? "yes" : "no"} · paths exposed: ${settings.storagePathExposed ? "yes" : "no"}`;
 }
 
 function renderMiddleTabs() {
@@ -3424,6 +3426,9 @@ function bindEvents() {
       state.directAuthSettings = event.settings || state.directAuthSettings;
       renderDirectAuthControls();
       setLastEvent(`Direct auth ${event.action}: ${directAuthStatusLabel(state.directAuthStatus)}.`);
+    }
+    if (event.type === "direct-auth-bridge-status") {
+      setLastEvent(`Direct auth bridge ${event.status || "unknown"}: ${event.reason || "no details"}`);
     }
     if (event.type === "codex-request-updated" && event.request?.key) {
       const request = event.request;
