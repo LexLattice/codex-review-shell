@@ -80,6 +80,21 @@ function listen(server, host, port) {
   });
 }
 
+async function listenWithPortFallback(server, host, port, options = {}) {
+  try {
+    await listen(server, host, port);
+    return server;
+  } catch (error) {
+    if (error?.code !== "EADDRINUSE" || port === 0 || options.allowFallback === false) {
+      throw error;
+    }
+    await closeServer(server);
+    const fallbackServer = http.createServer();
+    await listen(fallbackServer, host, 0);
+    return fallbackServer;
+  }
+}
+
 function closeServer(server) {
   return new Promise((resolve) => {
     if (!server.listening) {
@@ -255,12 +270,17 @@ class DirectAuthLoginCoordinator {
       return safeLoginFailure("login_already_in_progress", "already_in_progress");
     }
 
-    const server = http.createServer();
+    let server = http.createServer();
     const flow = this.buildFlow(options);
     this.currentFlow = flow;
 
     try {
-      await listen(server, this.callbackHost, normalizeCallbackPort(options.callbackPort, this.callbackPort));
+      server = await listenWithPortFallback(
+        server,
+        this.callbackHost,
+        normalizeCallbackPort(options.callbackPort, this.callbackPort),
+        { allowFallback: options.allowCallbackPortFallback !== false },
+      );
       flow.redirectUri = redirectUriFromServer(server, {
         callbackHost: this.callbackHost,
         callbackPath: this.callbackPath,

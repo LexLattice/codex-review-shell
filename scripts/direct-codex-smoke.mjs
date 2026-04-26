@@ -400,6 +400,54 @@ try {
   assert(!JSON.stringify(liveLoginResult).includes("fixture-login-code-secret"), "Login result must not expose auth code.");
   assert(!JSON.stringify(liveLoginResult).includes("fixture-login-refresh-token-secret"), "Login result must not expose refresh token.");
 
+  const occupiedCallbackServer = http.createServer((_request, response) => {
+    response.writeHead(409, { "content-type": "text/plain; charset=utf-8" });
+    response.end("occupied");
+  });
+  await listenHttp(occupiedCallbackServer);
+  try {
+    const occupiedAddress = occupiedCallbackServer.address();
+    const fallbackRoot = path.join(authStoreParent, "auth-login-callback-fallback");
+    const fallbackController = createDirectAuthIpcController({ rootDir: fallbackRoot });
+    let fallbackAuthUrl = "";
+    let fallbackTokenRequest = null;
+    const fallbackCoordinator = createDirectAuthLoginCoordinator({
+      clientId: "codex-desktop-fixture-client",
+      callbackPort: occupiedAddress.port,
+      callbackTimeoutMs: 5_000,
+      openExternal: async (url) => {
+        fallbackAuthUrl = url;
+      },
+      tokenClient: async (request) => {
+        fallbackTokenRequest = request;
+        return {
+          access_token: syntheticJwt({
+            "https://api.openai.com/auth": { chatgpt_account_id: "acct_callback_fallback_secret" },
+          }),
+          refresh_token: "fixture-fallback-refresh-token-secret",
+          token_type: "Bearer",
+          expires_in: 60,
+        };
+      },
+    });
+    const fallbackLogin = fallbackCoordinator.beginLogin({ nowMs }, fallbackController);
+    await waitForCondition(() => fallbackAuthUrl, "Expected fallback login to open an authorization URL.");
+    const fallbackUrl = new URL(fallbackAuthUrl);
+    const fallbackRedirectUri = fallbackUrl.searchParams.get("redirect_uri");
+    const fallbackRedirect = new URL(fallbackRedirectUri);
+    nodeAssert.notEqual(Number(fallbackRedirect.port), Number(occupiedAddress.port));
+    const fallbackState = fallbackUrl.searchParams.get("state");
+    const fallbackCallbackResponse = await fetch(`${fallbackRedirectUri}?code=fixture-fallback-code-secret&state=${encodeURIComponent(fallbackState)}`);
+    nodeAssert.equal(fallbackCallbackResponse.status, 200);
+    const fallbackResult = await fallbackLogin;
+    nodeAssert.equal(fallbackResult.status, "authenticated");
+    nodeAssert.equal(fallbackTokenRequest.body.code, "fixture-fallback-code-secret");
+    nodeAssert.equal(fallbackTokenRequest.body.redirect_uri, fallbackRedirectUri);
+    assertFixtureRedacted(fallbackResult);
+  } finally {
+    await closeHttp(occupiedCallbackServer);
+  }
+
   const incompleteController = createDirectAuthIpcController({ rootDir: path.join(authStoreParent, "auth-login-incomplete") });
   const incompleteCoordinator = createDirectAuthLoginCoordinator({
     clientId: "codex-desktop-fixture-client",
