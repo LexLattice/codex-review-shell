@@ -1,0 +1,12 @@
+{
+  "operation": "jwt_account_id_extraction",
+  "input": {
+    "syntheticJwt": "e30.payload$.sigfixture"
+  },
+  "expected": {
+    "status": "invalid_jwt",
+    "accountId": "",
+    "claimPath": "https://api.openai.com/auth",
+    "reason": "JWT payload is not valid base64url JSON."
+  }
+}

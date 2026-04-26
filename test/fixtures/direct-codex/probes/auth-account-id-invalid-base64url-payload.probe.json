@@ -1,0 +1,24 @@
+{
+  "schema": "direct_codex_probe_manifest@1",
+  "id": "probe.auth.account_id_invalid_base64url_payload",
+  "name": "OAuth Account Claim Invalid Base64url Payload Shape",
+  "hypothesis": "A synthetic JWT with a non-base64url payload segment is rejected before account claim extraction.",
+  "fixture": {
+    "source": "auth-shape-fixture",
+    "authFixtureId": "auth/account-id-invalid-base64url-payload"
+  },
+  "authShape": {
+    "operation": "jwt_account_id_extraction"
+  },
+  "acceptance": {
+    "expectedState": "candidate",
+    "requiredOutputs": [
+      "status",
+      "reason"
+    ]
+  },
+  "blockedLiveGates": [
+    "No live access token.",
+    "No token storage."
+  ]
+}

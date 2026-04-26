@@ -31,6 +31,9 @@ function base64UrlEncode(buffer) {
 
 function base64UrlDecodeText(value) {
   const text = requireString(value, "base64url value");
+  if (!/^[A-Za-z0-9_-]+$/.test(text) || text.length % 4 === 1) {
+    throw new Error("base64url value is malformed");
+  }
   const normalized = text.replace(/-/g, "+").replace(/_/g, "/");
   const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
   return Buffer.from(padded, "base64").toString("utf8");
@@ -186,7 +189,7 @@ function decodeJwtPayload(jwt) {
     return {
       status: "invalid_jwt",
       payload: null,
-      reason: "JWT payload is not valid JSON.",
+      reason: "JWT payload is not valid base64url JSON.",
     };
   }
 }
