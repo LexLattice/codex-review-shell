@@ -37,6 +37,8 @@ const CODEX_PARTITION = "persist:codex-review-shell-codex";
 const CHATGPT_PARTITION = "persist:codex-review-shell-chatgpt";
 const PREVIEW_LIMIT_BYTES = 384 * 1024;
 const DIRECTORY_ENTRY_LIMIT = 500;
+const PROFILE_ENV_VAR = "CODEX_REVIEW_SHELL_PROFILE";
+const USER_DATA_ROOT_ENV_VAR = "CODEX_REVIEW_SHELL_USER_DATA_ROOT";
 
 const appRoot = path.resolve(__dirname, "..");
 const repoRoot = appRoot;
@@ -46,6 +48,39 @@ const shellHtmlPath = path.join(rendererRoot, "index.html");
 const codexSurfacePreloadPath = path.join(__dirname, "preload-codex-surface.js");
 const smokeExitMs = Number.parseInt(process.env.CODEX_REVIEW_SHELL_SMOKE_EXIT_MS ?? "", 10);
 const workspaceAgentPath = path.join(__dirname, "backend", "wsl-agent.js");
+
+function earlyNormalizeString(value, fallback = "") {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function normalizeProfileName(value) {
+  const text = earlyNormalizeString(value, "");
+  if (!text || text === "default") return "";
+  return text.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
+}
+
+function configureAppProfile() {
+  app.setName(APP_TITLE);
+  const profileName = normalizeProfileName(process.env[PROFILE_ENV_VAR]);
+  if (!profileName) {
+    return {
+      profileName: "default",
+      isolated: false,
+      userData: app.getPath("userData"),
+    };
+  }
+  const configuredRoot = earlyNormalizeString(process.env[USER_DATA_ROOT_ENV_VAR], "");
+  const profileRoot = configuredRoot || path.join(app.getPath("appData"), APP_TITLE);
+  const userData = path.join(profileRoot, profileName);
+  app.setPath("userData", userData);
+  return {
+    profileName,
+    isolated: true,
+    userData,
+  };
+}
+
+const activeAppProfile = configureAppProfile();
 
 let mainWindow = null;
 let shellView = null;
@@ -1947,6 +1982,7 @@ function scheduleChatgptPolish() {
     setTimeout(async () => {
       if (!chatgptView || chatgptView.webContents.isDestroyed()) return;
       await forceChatgptDark();
+      if (!chatgptView || chatgptView.webContents.isDestroyed()) return;
       if (currentProject?.surfaceBinding?.chatgpt?.reduceChrome) {
         chatgptView.webContents.insertCSS(chatgptChromeCss()).catch(() => {});
       }
@@ -2741,6 +2777,11 @@ ipcMain.handle("config:load", async () => {
     repoRoot,
     appVersion: app.getVersion(),
     platform: process.platform,
+    profile: {
+      name: activeAppProfile.profileName,
+      isolated: activeAppProfile.isolated,
+      userData: activeAppProfile.userData,
+    },
     defaultWorkspace,
     defaultCodexRuntime: defaultCodexRuntimeForWorkspace(defaultWorkspace),
     allowNonChatgptUrls: allowNonChatgptUrls(),
