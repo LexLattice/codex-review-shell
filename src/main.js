@@ -21,6 +21,7 @@ const {
   createDirectAuthIpcController,
   registerDirectAuthIpcHandlers,
 } = require("./main/direct/auth/auth-ipc");
+const { createDirectAuthLoginCoordinator } = require("./main/direct/auth/auth-login");
 
 const APP_TITLE = "Codex Review Shell";
 const CONFIG_FILE_NAME = "workspace-config.json";
@@ -64,6 +65,7 @@ let localSurfaceServer = null;
 let codexSurfaceSessions = null;
 let threadAnalyticsStore = null;
 let directAuthController = null;
+let directAuthLoginCoordinator = null;
 let surfaceActivationEpoch = 0;
 
 function nowIso() {
@@ -1064,8 +1066,17 @@ function ensureDirectAuthController() {
   if (directAuthController) return directAuthController;
   directAuthController = createDirectAuthIpcController({
     rootDir: directAuthRootDir(),
+    loginStarter: (payload, controller) => ensureDirectAuthLoginCoordinator().beginLogin(payload, controller),
   });
   return directAuthController;
+}
+
+function ensureDirectAuthLoginCoordinator() {
+  if (directAuthLoginCoordinator) return directAuthLoginCoordinator;
+  directAuthLoginCoordinator = createDirectAuthLoginCoordinator({
+    openExternal: (url) => shell.openExternal(url),
+  });
+  return directAuthLoginCoordinator;
 }
 
 function ensureCodexAppServerManager() {
@@ -3033,6 +3044,7 @@ app.on("before-quit", () => {
   workspaceBackends = null;
   threadAnalyticsStore?.close();
   threadAnalyticsStore = null;
+  directAuthLoginCoordinator = null;
 });
 
 registerDirectAuthIpcHandlers(ipcMain, () => ensureDirectAuthController(), {

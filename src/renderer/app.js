@@ -2153,7 +2153,7 @@ async function beginDirectAuthLogin() {
   try {
     const result = await bridge.beginDirectAuthLogin();
     state.directAuthStatus = result.authStatus || state.directAuthStatus;
-    setLastEvent(result.ok ? "Direct auth login started." : `Direct auth login unavailable: ${result.reason || result.status}.`);
+    setLastEvent(result.ok ? "Direct auth login completed." : `Direct auth login unavailable: ${result.reason || result.status}.`);
   } catch (error) {
     state.directAuthError = sanitizedDirectAuthError("Direct auth login failed.");
     setLastEvent(`Direct auth login failed: ${state.directAuthError}`);

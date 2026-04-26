@@ -24,6 +24,7 @@ const {
   createDirectAuthIpcController,
   registerDirectAuthIpcHandlers,
 } = require("../src/main/direct/auth/auth-ipc");
+const { createDirectAuthLoginCoordinator } = require("../src/main/direct/auth/auth-login");
 const { normalizeDirectCodexEvents, parseSseFixtureText } = require("../src/main/direct/normalizer/codex-event-normalizer");
 const { buildFixtureProfileDelta } = require("../src/main/direct/odeu-profile/profile-delta-builder");
 const { loadDirectCodexProfile } = require("../src/main/direct/odeu-profile/profile-loader");
@@ -47,6 +48,23 @@ function assertThrows(callback, message) {
     callback();
   } catch {
     return;
+  }
+  throw new Error(message);
+}
+
+function base64UrlJson(value) {
+  return Buffer.from(JSON.stringify(value)).toString("base64url");
+}
+
+function syntheticJwt(payload) {
+  return `${base64UrlJson({ alg: "none", typ: "JWT" })}.${base64UrlJson(payload)}.signature`;
+}
+
+async function waitForCondition(callback, message, timeoutMs = 1_000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (callback()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(message);
 }
@@ -293,6 +311,71 @@ try {
   nodeAssert.equal(loginResult.status, "not_implemented");
   nodeAssert.equal(loginResult.reason, "live_oauth_not_implemented");
   assertFixtureRedacted(loginResult);
+
+  const missingClientController = createDirectAuthIpcController({
+    rootDir: path.join(authStoreParent, "auth-login-missing-client"),
+    loginStarter: (payload, controller) => createDirectAuthLoginCoordinator({
+      clientId: "",
+      openExternal: () => {},
+    }).beginLogin(payload, controller),
+  });
+  const missingClientResult = await missingClientController.beginLogin({ nowMs });
+  nodeAssert.equal(missingClientResult.ok, false);
+  nodeAssert.equal(missingClientResult.status, "not_configured");
+  nodeAssert.equal(missingClientResult.reason, "missing_client_id");
+  assertFixtureRedacted(missingClientResult);
+
+  const loginRoot = path.join(authStoreParent, "auth-login");
+  const loginController = createDirectAuthIpcController({ rootDir: loginRoot });
+  let openedAuthUrl = "";
+  let tokenRequest = null;
+  const loginCoordinator = createDirectAuthLoginCoordinator({
+    clientId: "codex-desktop-fixture-client",
+    callbackPort: 0,
+    callbackTimeoutMs: 5_000,
+    openExternal: async (url) => {
+      openedAuthUrl = url;
+    },
+    tokenClient: async (request) => {
+      tokenRequest = request;
+      return {
+        access_token: syntheticJwt({
+          "https://api.openai.com/auth": { chatgpt_account_id: "acct_login_fixture_secret" },
+        }),
+        refresh_token: "fixture-login-refresh-token-secret",
+        id_token: "fixture-login-id-token-secret",
+        token_type: "Bearer",
+        expires_in: 3_600,
+        scope: "openid profile email offline_access",
+      };
+    },
+  });
+  const liveLogin = loginCoordinator.beginLogin({ nowMs }, loginController);
+  await waitForCondition(() => openedAuthUrl, "Expected auth coordinator to open an authorization URL.");
+  const authorizationUrl = new URL(openedAuthUrl);
+  const redirectUri = authorizationUrl.searchParams.get("redirect_uri");
+  const state = authorizationUrl.searchParams.get("state");
+  assert(redirectUri, "Expected authorization URL to include redirect_uri.");
+  assert(state, "Expected authorization URL to include state.");
+  const callbackResponse = await fetch(`${redirectUri}?code=fixture-login-code-secret&state=${encodeURIComponent(state)}`);
+  nodeAssert.equal(callbackResponse.status, 200);
+  const liveLoginResult = await liveLogin;
+  nodeAssert.equal(liveLoginResult.ok, true);
+  nodeAssert.equal(liveLoginResult.status, "authenticated");
+  assertFixtureRedacted(liveLoginResult);
+  nodeAssert.equal(tokenRequest.body.client_id, "codex-desktop-fixture-client");
+  nodeAssert.equal(tokenRequest.body.code, "fixture-login-code-secret");
+  assert(tokenRequest.body.code_verifier.length >= 43, "Expected token request to carry PKCE verifier.");
+  nodeAssert.equal(tokenRequest.body.redirect_uri, redirectUri);
+  const loginStatus = loginController.readStatus({ nowMs });
+  nodeAssert.equal(loginStatus.status, "authenticated");
+  nodeAssert.equal(loginStatus.accountId, "[REDACTED:account-id]");
+  assertFixtureRedacted(loginStatus);
+  const loginCredentials = loginController.activeStore().readCredentials();
+  nodeAssert.equal(loginCredentials.refreshToken, "fixture-login-refresh-token-secret");
+  nodeAssert.equal(loginCredentials.accountId, "[REDACTED:account-id]");
+  assert(!JSON.stringify(liveLoginResult).includes("fixture-login-code-secret"), "Login result must not expose auth code.");
+  assert(!JSON.stringify(liveLoginResult).includes("fixture-login-refresh-token-secret"), "Login result must not expose refresh token.");
 
   const authEvents = [];
   const ipcHandlers = new Map();
