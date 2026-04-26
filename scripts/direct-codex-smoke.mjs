@@ -21,6 +21,11 @@ const { normalizeDirectCodexEvents, parseSseFixtureText } = require("../src/main
 const { buildFixtureProfileDelta } = require("../src/main/direct/odeu-profile/profile-delta-builder");
 const { loadDirectCodexProfile } = require("../src/main/direct/odeu-profile/profile-loader");
 const { buildDirectCodexProfileReport } = require("../src/main/direct/odeu-profile/profile-report");
+const {
+  DEFAULT_PROBE_MANIFEST_DIR,
+  runFixtureBackedProbe,
+  runProbeManifestDir,
+} = require("../src/main/direct/probes/probe-runner");
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -200,13 +205,50 @@ assert(importCandidate.unresolvedObligations.length === 1, "Expected unpaired to
 
 const committedFixtureCount = validateCommittedFixtureCorpus();
 assert(committedFixtureCount >= 4, "Expected committed direct Codex fixture corpus coverage.");
+const probeResults = runProbeManifestDir(DEFAULT_PROBE_MANIFEST_DIR, { fixtureRoot: DEFAULT_FIXTURE_ROOT });
+assert(probeResults.length >= 4, "Expected committed direct Codex probe manifests.");
+const failedProbes = probeResults.filter((probe) => probe.status !== "passed");
+assert(
+  failedProbes.length === 0,
+  `Expected all fixture-backed probes to pass: ${failedProbes.map((probe) => `${probe.id}: ${probe.errorMessage || probe.status}`).join("; ")}`,
+);
+assert(
+  probeResults.every((probe) => probe.source === "committed-fixture" && probe.blockedLiveGates.length > 0),
+  "Expected fixture-backed probes to record blocked live gates.",
+);
+const intentionallyFailedProbe = runFixtureBackedProbe({
+  schema: "direct_codex_probe_manifest@1",
+  id: "probe.fixture.intentional_failure",
+  name: "Intentional Failed Probe",
+  hypothesis: "A bad expected acceptance state should produce a failed probe result.",
+  fixture: {
+    source: "committed-fixture",
+    rawFixtureId: "raw/plain-text-turn",
+  },
+  normalization: {
+    expectedFixtureId: "normalized/plain-text-turn",
+    failOnUnknown: true,
+  },
+  profileDelta: {
+    expectedFixtureId: "profile-deltas/plain-text-turn",
+  },
+  acceptance: {
+    expectedState: "accepted",
+    requiredEventTypes: ["session_started"],
+  },
+  blockedLiveGates: ["No live backend request."],
+}, { fixtureRoot: DEFAULT_FIXTURE_ROOT });
+assert(intentionallyFailedProbe.status === "failed", "Expected failed probes to return a failed result.");
+assert(Boolean(intentionallyFailedProbe.errorMessage), "Expected failed probes to include an error message.");
 
 const report = buildDirectCodexProfileReport({
   profileDoc,
   profileDeltas: [delta],
+  probeResults,
   fixtureSummaries: [{ id: "inline/plain-tool-turn", recordCount: sampleEvents.length, redactionStatus: "passed" }],
 });
 assert(report.includes("imported GPTPro conceptual baseline"), "Expected report to identify the conceptual baseline.");
 assert(report.includes("inline/plain-tool-turn"), "Expected report to include fixture delta evidence.");
+assert(report.includes("## Probe Results"), "Expected report to include probe results.");
 
 console.log("Direct Codex profile harness smoke passed.");

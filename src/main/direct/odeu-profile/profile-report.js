@@ -18,6 +18,7 @@ function buildDirectCodexProfileReport(input = {}) {
   const { profile, capabilityIndex, summary } = profileDoc;
   const fixtureSummaries = Array.isArray(input.fixtureSummaries) ? input.fixtureSummaries : [];
   const deltas = Array.isArray(input.profileDeltas) ? input.profileDeltas : [];
+  const probeResults = Array.isArray(input.probeResults) ? input.probeResults : [];
   const accepted = capabilityIndex.listByStatus("accepted").sort((a, b) => a.id.localeCompare(b.id));
   const unstable = capabilityIndex.listByStatus("unstable").sort((a, b) => a.id.localeCompare(b.id));
   const rejected = capabilityIndex.listByStatus("rejected").sort((a, b) => a.id.localeCompare(b.id));
@@ -74,6 +75,32 @@ function buildDirectCodexProfileReport(input = {}) {
     for (const fixture of fixtureSummaries) {
       lines.push(`- ${fixture.id}: ${fixture.recordCount} records, redaction=${fixture.redactionStatus}`);
     }
+  }
+
+  lines.push("", "## Probe Results", "");
+  if (probeResults.length === 0) {
+    lines.push("- no fixture-backed probes executed");
+  } else {
+    for (const probe of probeResults) {
+      const eventTypes = Object.keys(probe.normalizedEventCounts || {}).sort().join(", ") || "none";
+      lines.push(`- ${probe.id}: ${probe.status}; acceptance=${probe.acceptance}; events=${eventTypes}`);
+      if (probe.fixtureIds) {
+        lines.push(`  fixtures: ${probe.fixtureIds.raw}, ${probe.fixtureIds.normalized}, ${probe.fixtureIds.profileDelta}`);
+      }
+      if (probe.status === "failed" && probe.errorMessage) {
+        lines.push(`  error: ${probe.errorMessage}`);
+      }
+    }
+  }
+
+  const blockedLiveGates = [
+    ...new Set(probeResults.flatMap((probe) => Array.isArray(probe.blockedLiveGates) ? probe.blockedLiveGates : [])),
+  ].sort();
+  lines.push("", "## Blocked Live Gates", "");
+  if (blockedLiveGates.length === 0) {
+    lines.push("- no live gates recorded by fixture-backed probes");
+  } else {
+    lines.push(sectionList(blockedLiveGates));
   }
 
   lines.push("", "## Profile Deltas", "");

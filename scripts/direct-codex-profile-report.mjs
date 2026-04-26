@@ -13,11 +13,13 @@ const { normalizeDirectCodexEvents } = require("../src/main/direct/normalizer/co
 const { buildFixtureProfileDelta } = require("../src/main/direct/odeu-profile/profile-delta-builder");
 const { loadDirectCodexProfile } = require("../src/main/direct/odeu-profile/profile-loader");
 const { buildDirectCodexProfileReport } = require("../src/main/direct/odeu-profile/profile-report");
+const { DEFAULT_PROBE_MANIFEST_DIR, runProbeManifestDir } = require("../src/main/direct/probes/probe-runner");
 
 function parseArgs(argv) {
   const args = {
     output: "",
     fixtures: DEFAULT_FIXTURE_ROOT,
+    probes: DEFAULT_PROBE_MANIFEST_DIR,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -26,6 +28,9 @@ function parseArgs(argv) {
       index += 1;
     } else if (arg === "--fixtures") {
       args.fixtures = argv[index + 1] || DEFAULT_FIXTURE_ROOT;
+      index += 1;
+    } else if (arg === "--probes") {
+      args.probes = argv[index + 1] || DEFAULT_PROBE_MANIFEST_DIR;
       index += 1;
     } else if (arg === "--help" || arg === "-h") {
       args.help = true;
@@ -38,7 +43,7 @@ function parseArgs(argv) {
 
 function usage() {
   return [
-    "Usage: node scripts/direct-codex-profile-report.mjs [--output PATH] [--fixtures PATH]",
+    "Usage: node scripts/direct-codex-profile-report.mjs [--output PATH] [--fixtures PATH] [--probes PATH]",
     "",
     "Generates a human-readable report from the imported direct Codex ODEU baseline.",
     "This script does not perform live OAuth or backend probes.",
@@ -77,6 +82,7 @@ const report = buildDirectCodexProfileReport({
   profileDoc,
   fixtureSummaries,
   profileDeltas,
+  probeResults: runProbeManifestDir(path.resolve(appRoot, args.probes), { fixtureRoot }),
 });
 
 if (args.output) {

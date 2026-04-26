@@ -1,0 +1,32 @@
+{
+  "schema": "direct_codex_probe_manifest@1",
+  "id": "probe.fixture.reasoning_summary_turn",
+  "name": "Reasoning Summary Fixture Turn",
+  "hypothesis": "A committed reasoning-summary stream fixture normalizes visible reasoning summary deltas separately from user-visible text.",
+  "fixture": {
+    "source": "committed-fixture",
+    "rawFixtureId": "raw/reasoning-summary-turn"
+  },
+  "normalization": {
+    "expectedFixtureId": "normalized/reasoning-summary-turn",
+    "failOnUnknown": true
+  },
+  "profileDelta": {
+    "expectedFixtureId": "profile-deltas/reasoning-summary-turn"
+  },
+  "acceptance": {
+    "expectedState": "candidate",
+    "requiredEventTypes": [
+      "session_started",
+      "reasoning_delta",
+      "message_delta",
+      "usage_delta",
+      "response_completed"
+    ]
+  },
+  "blockedLiveGates": [
+    "No live reasoning-summary request.",
+    "No model-specific reasoning capability discovery.",
+    "No encrypted reasoning continuity probe."
+  ]
+}
