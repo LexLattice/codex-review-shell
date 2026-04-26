@@ -169,9 +169,43 @@ try {
     }
   }
 
+  const renameFailureRoot = path.join(authStoreParent, "rename-failure");
+  const renameFailureStore = createDirectAuthStore({ mode: "file", rootDir: renameFailureRoot });
+  const originalRenameSync = fs.renameSync;
+  fs.renameSync = () => {
+    throw Object.assign(new Error("Synthetic auth store rename failure."), { code: "EXDEV" });
+  };
+  try {
+    assertThrows(
+      () => renameFailureStore.writeCredentials(credentials, { nowMs }),
+      "Expected synthetic rename failure to abort auth credential write.",
+    );
+  } finally {
+    fs.renameSync = originalRenameSync;
+  }
+  const renameFailureTmpFiles = fs.existsSync(renameFailureRoot)
+    ? fs.readdirSync(renameFailureRoot).filter((fileName) => fileName.endsWith(".tmp"))
+    : [];
+  nodeAssert.deepStrictEqual(renameFailureTmpFiles, [], "Expected failed auth writes to clean up temp files.");
+
   const reloadedStore = createDirectAuthStore({ mode: "file", rootDir: authStoreRoot });
   nodeAssert.equal(reloadedStore.readCredentials().accessToken, "fixture-access-token-secret");
   nodeAssert.equal(reloadedStore.readStatus({ nowMs: expiresAt + 1 }).status, "expired");
+  const refreshedStatus = reloadedStore.writeCredentials({
+    access_token: "fixture-refreshed-access-token-secret",
+    expires_in: 7_200,
+    token_type: "Bearer",
+    scope: "openid profile email offline_access",
+  }, { nowMs: expiresAt + 1 });
+  assert(refreshedStatus.status === "authenticated", "Expected refreshed credentials to project authenticated status.");
+  assert(refreshedStatus.hasRefreshToken, "Expected partial refresh write to preserve refresh token status.");
+  assert(refreshedStatus.accountId === "[REDACTED:account-id]", "Expected partial refresh write to preserve account id.");
+  assertFixtureRedacted(refreshedStatus);
+  const refreshedCredentials = reloadedStore.readCredentials();
+  nodeAssert.equal(refreshedCredentials.accessToken, "fixture-refreshed-access-token-secret");
+  nodeAssert.equal(refreshedCredentials.refreshToken, "fixture-refresh-token-secret");
+  nodeAssert.equal(refreshedCredentials.accountId, "acct_fixture_secret");
+  nodeAssert.equal(refreshedCredentials.expiresAt, expiresAt + 1 + 7_200_000);
   const refreshFailed = reloadedStore.markRefreshFailed({
     error: "server_error",
     errorDescription: "Synthetic transient refresh failure.",
@@ -203,6 +237,22 @@ try {
   assert(memoryStore.readStatus({ nowMs }).status === "unauthenticated", "Expected memory logout status.");
   assert(reloadedStore.logout({ nowMs }).removed === true, "Expected file logout to delete credentials.");
   assert(!fs.existsSync(authFilePath), "Expected file auth logout to delete auth file.");
+
+  fs.mkdirSync(authStoreRoot, { recursive: true });
+  fs.writeFileSync(authFilePath, "{not-json", "utf8");
+  const corruptStore = createDirectAuthStore({ mode: "file", rootDir: authStoreRoot });
+  nodeAssert.equal(corruptStore.readCredentials(), null);
+  nodeAssert.equal(corruptStore.readStatus({ nowMs }).status, "unauthenticated");
+
+  fs.writeFileSync(authFilePath, JSON.stringify({
+    schema: "direct_codex_auth_store@future",
+    accessToken: "fixture-future-access-token-secret",
+  }), "utf8");
+  const futureSchemaStore = createDirectAuthStore({ mode: "file", rootDir: authStoreRoot });
+  nodeAssert.equal(futureSchemaStore.readCredentials(), null);
+  const futureSchemaStatus = futureSchemaStore.readStatus({ nowMs });
+  nodeAssert.equal(futureSchemaStatus.status, "unauthenticated");
+  assertFixtureRedacted(futureSchemaStatus);
 } finally {
   fs.rmSync(authStoreParent, { recursive: true, force: true });
 }

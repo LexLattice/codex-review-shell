@@ -15,6 +15,10 @@ function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function hasOwn(value, key) {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
 function nowIso(nowMs = Date.now()) {
   return new Date(Number(nowMs) || Date.now()).toISOString();
 }
@@ -39,19 +43,44 @@ function normalizeTokenValue(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function readFirstTokenValue(record, keys) {
+  if (!isPlainObject(record)) return undefined;
+  for (const key of keys) {
+    if (hasOwn(record, key)) return normalizeTokenValue(record[key]);
+  }
+  return undefined;
+}
+
+function readFirstNumberValue(record, keys) {
+  if (!isPlainObject(record)) return undefined;
+  for (const key of keys) {
+    if (hasOwn(record, key)) return Number(record[key]) || 0;
+  }
+  return undefined;
+}
+
 function normalizeStoredCredentials(credentials = {}, options = {}) {
   if (!isPlainObject(credentials)) throw new Error("Direct auth credentials must be a JSON object.");
+  const previousRecord = isPlainObject(options.previousRecord) ? options.previousRecord : {};
   const nowMs = Number(options.nowMs ?? credentials.updatedAtMs ?? Date.now()) || Date.now();
+  const tokenType = readFirstTokenValue(credentials, ["tokenType", "token_type"]);
+  const accessToken = readFirstTokenValue(credentials, ["accessToken", "access", "access_token"]);
+  const refreshToken = readFirstTokenValue(credentials, ["refreshToken", "refresh", "refresh_token"]);
+  const idToken = readFirstTokenValue(credentials, ["idToken", "id_token"]);
+  const accountId = readFirstTokenValue(credentials, ["accountId", "chatgptAccountId"]);
+  const scope = readFirstTokenValue(credentials, ["scope"]);
+  const expiresAt = readFirstNumberValue(credentials, ["expiresAt", "expires"]);
+  const expiresInSeconds = readFirstNumberValue(credentials, ["expiresIn", "expires_in"]);
   return {
     schema: DIRECT_AUTH_STORE_SCHEMA,
     authMode: "chatgpt",
-    tokenType: normalizeTokenValue(credentials.tokenType) || "Bearer",
-    accessToken: normalizeTokenValue(credentials.accessToken || credentials.access),
-    refreshToken: normalizeTokenValue(credentials.refreshToken || credentials.refresh),
-    idToken: normalizeTokenValue(credentials.idToken || credentials.id_token),
-    accountId: normalizeTokenValue(credentials.accountId || credentials.chatgptAccountId),
-    scope: normalizeTokenValue(credentials.scope),
-    expiresAt: Number(credentials.expiresAt ?? credentials.expires ?? 0) || 0,
+    tokenType: tokenType ?? (normalizeTokenValue(previousRecord.tokenType) || "Bearer"),
+    accessToken: accessToken ?? "",
+    refreshToken: refreshToken ?? normalizeTokenValue(previousRecord.refreshToken),
+    idToken: idToken ?? "",
+    accountId: accountId ?? normalizeTokenValue(previousRecord.accountId),
+    scope: scope ?? normalizeTokenValue(previousRecord.scope),
+    expiresAt: expiresAt ?? (expiresInSeconds ? nowMs + (expiresInSeconds * 1000) : 0),
     updatedAt: normalizeTokenValue(credentials.updatedAt) || nowIso(nowMs),
   };
 }
@@ -118,10 +147,19 @@ function writePrivateJsonFile(filePath, value) {
   const directory = path.dirname(filePath);
   ensurePrivateDirectory(directory);
   const tempPath = path.join(directory, `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
-  fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-  if (process.platform !== "win32") fs.chmodSync(tempPath, 0o600);
-  fs.renameSync(tempPath, filePath);
-  if (process.platform !== "win32") fs.chmodSync(filePath, 0o600);
+  try {
+    fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+    if (process.platform !== "win32") fs.chmodSync(tempPath, 0o600);
+    fs.renameSync(tempPath, filePath);
+    if (process.platform !== "win32") fs.chmodSync(filePath, 0o600);
+  } catch (error) {
+    try {
+      fs.unlinkSync(tempPath);
+    } catch {
+      // Best effort cleanup for failed atomic writes.
+    }
+    throw error;
+  }
 }
 
 class FileAuthBackend {
@@ -134,6 +172,7 @@ class FileAuthBackend {
       return JSON.parse(fs.readFileSync(this.filePath, "utf8"));
     } catch (error) {
       if (error && error.code === "ENOENT") return null;
+      if (error instanceof SyntaxError) return null;
       throw error;
     }
   }
@@ -189,13 +228,16 @@ class DirectAuthStore {
     const record = this.backend.load();
     if (!record) return null;
     if (record.schema !== DIRECT_AUTH_STORE_SCHEMA) {
-      throw new Error(`Unsupported direct auth store schema: ${record.schema || "missing"}`);
+      return null;
     }
     return record;
   }
 
   writeCredentials(credentials, options = {}) {
-    const record = normalizeStoredCredentials(credentials, options);
+    const record = normalizeStoredCredentials(credentials, {
+      ...options,
+      previousRecord: this.readCredentials(),
+    });
     this.backend.save(record);
     return this.readStatus(options);
   }
