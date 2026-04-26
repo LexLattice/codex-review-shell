@@ -1,7 +1,12 @@
-# Direct Codex App-Server Replacement Spec
+# Direct ChatGPT/Codex Runtime Cutover Spec
 
-Status: draft architecture spec for removing the runtime dependency on
-`codex app-server` from the direct ChatGPT/Codex branch.
+Status: draft architecture spec for the parallel direct-runtime track on the
+direct ChatGPT/Codex branch.
+
+This spec does not authorize removing legacy `codex app-server` mode from the
+standalone shell until the validation gates pass. The file name preserves the
+original design-thread reference; operationally this is a cutover track, not an
+immediate removal plan.
 
 Related specs:
 
@@ -15,6 +20,11 @@ Related specs:
 
 Define the path from the current hybrid implementation to a fully direct
 left-plane Codex surface.
+
+This branch is the long-lived direct-runtime branch. Mainline remains the
+standard Codex CLI / `codex app-server` runtime until this branch proves direct
+auth, direct model calls, session persistence, tool continuation, import, and
+ODEU gates.
 
 The current branch already owns ChatGPT OAuth credentials, token refresh, and
 the private credential store. It still uses `codex app-server` as the live
@@ -34,7 +44,7 @@ Codex surface UX
   -> chatgpt.com/backend-api/codex/responses
 ```
 
-Non-goal:
+Non-goal before cutover gates pass:
 
 ```text
 Codex surface UX
@@ -66,6 +76,31 @@ The hybrid bridge is useful only as a transition. It proves that direct auth can
 feed the official app-server external token mode, but it does not make the
 runtime direct.
 
+## External Baseline
+
+The official [Codex app-server documentation](https://developers.openai.com/codex/app-server)
+defines app-server as the rich-client interface for Codex integrations, including
+authentication, conversation history, approvals, and streamed agent events. It
+uses JSON-RPC, defaults to stdio transport, marks WebSocket transport as
+experimental, and can emit version-specific TypeScript or JSON Schema artifacts.
+Replacing it means this repo owns protocol drift rather than delegating it.
+
+The official [Codex authentication documentation](https://developers.openai.com/codex/auth)
+distinguishes ChatGPT subscription sign-in from API-key usage and documents
+cached login behavior. Direct OAuth in this branch is therefore its own
+acceptance surface, not proof that direct turns are runnable.
+
+The public [Codex agent-loop article](https://openai.com/index/unrolling-the-codex-agent-loop/)
+identifies `https://chatgpt.com/backend-api/codex/responses` as the ChatGPT
+login path used by Codex CLI, while API-key auth uses the public Responses API.
+Treat this as high-signal evidence for the direct path, not as a stable public
+Platform API guarantee.
+
+The official [Codex model documentation](https://developers.openai.com/codex/models)
+shows that model availability depends on sign-in path and rollout state. Direct
+mode must use ODEU profiles and live probes rather than hard-coded model
+assumptions.
+
 ## Dependency Boundary
 
 The direct branch must remove these hard runtime dependencies before it can be
@@ -88,10 +123,45 @@ Codex CLI/app-server remains useful as:
 
 It must not remain required for new direct sessions.
 
+## Runtime Modes
+
+Runtime family and execution location are separate concepts. Existing choices
+such as `auto`, `host`, and `wsl` describe where a runtime executes; they must
+not be overloaded to mean direct runtime.
+
+Direct branch runtime mode:
+
+```ts
+type CodexRuntimeMode =
+  | "legacy-app-server"
+  | "direct-experimental"
+  | "direct";
+
+type CodexBinding = {
+  provider: "codex-compatible" | "custom-codex-fork" | "direct-chatgpt-codex";
+  runtimeMode: CodexRuntimeMode;
+  target?: string;
+  profileId?: string;
+};
+```
+
+Mode rules:
+
+| Mode | Rule |
+| --- | --- |
+| `legacy-app-server` | Current default while the direct runtime matures. Direct auth attachment is optional bridge behavior. |
+| `direct-experimental` | Explicit opt-in only. UI must show that direct turns are experimental and gated by profile/session status. |
+| `direct` | Unavailable until validation gates pass. Once enabled, it means new left-lane sessions no longer require app-server. |
+
 ## Product Boundary
 
 This replacement is not a generic model-provider layer and not an OpenAI
 Platform API integration.
+
+The direct runtime changes only the left Codex implementation lane. It does not
+replace the right ChatGPT review/world-model thread deck, does not collapse the
+app into a unified chat runtime, and must not modify right-pane thread bindings
+unless the user explicitly stages a handoff.
 
 Initial target:
 
@@ -102,6 +172,28 @@ chatgpt.com/backend-api/codex/responses contract.
 
 The direct adapter is volatile and isolated. Everything above it must consume a
 stable local contract owned by this repo.
+
+Good standalone exposure:
+
+```text
+Runtime: legacy app-server / direct experimental
+Auth status
+Runtime status
+Model list source
+Direct session status
+Tool approval required
+Diagnostics available
+```
+
+Bad standalone exposure:
+
+```text
+Raw backend event stream browser
+Every internal ODEU profile delta as main navigation
+Deep harness control graph
+Meta-orchestrator dashboard
+Provider internals as product identity
+```
 
 ## Architecture
 
@@ -133,6 +225,14 @@ Layer responsibilities:
 
 The renderer should not know whether the backing runtime is app-server or direct
 except through a sanitized capability profile.
+
+Volatility contract:
+
+- Only `ChatGPT Codex transport adapter` may reference raw backend paths,
+  headers, request field names, or raw stream event names.
+- Raw backend events are profile evidence before they are runtime behavior.
+- Unknown events must not crash the session engine unless continuing the turn
+  would be semantically unsafe.
 
 ## Surface Strategy
 
@@ -243,6 +343,50 @@ type DirectRuntimeCapabilityProfile = {
 Renderer affordances must be gated from this profile, not from hard-coded
 assumptions about the backend.
 
+Capability rules:
+
+- Renderer controls are enabled only by accepted direct-runtime capabilities.
+- Observed and probed capabilities may appear in diagnostics, not normal
+  controls.
+- Accepted app-server capability does not imply accepted direct-runtime
+  capability.
+- No request field, stream event, model id, tool shape, continuation shape, or
+  retry behavior may become a normal runtime feature without an accepted ODEU
+  capability record.
+
+Profile layers must remain distinct:
+
+```text
+oai-server capability
+codex-app-server capability
+local-harness capability
+direct-runtime capability
+```
+
+## Direct Auth Capability Profile
+
+Direct auth is separate from runtime readiness.
+
+```ts
+type DirectAuthCapability = {
+  status: "observed" | "probed" | "accepted" | "unstable" | "rejected";
+  acquisition: "browser-callback" | "manual-code-paste" | "imported-codex-auth" | "unknown";
+  refresh: "accepted" | "unstable" | "unavailable";
+  accountIdSource: "token-claim" | "profile-endpoint" | "unknown";
+  storage: "os-keychain" | "encrypted-file" | "plain-file-dev-only";
+};
+```
+
+These states must not be collapsed:
+
+```text
+OAuth login works
+access token refresh works
+account identity is known
+backend request auth works
+Codex turn is runnable
+```
+
 ## Direct Session Model
 
 The direct runtime owns native session ids. New direct sessions must not use
@@ -253,13 +397,30 @@ Recommended local store:
 ```text
 <app userData>/direct-sessions/
   index.json
-  sessions/
-    <session-id>.json
-  turns/
-    <session-id>/
-      <turn-id>.json
-  raw-fixtures/
-    optional-redacted-diagnostics-only
+  sessions/<session-id>/session.json
+  turns/<session-id>/<turn-id>.json
+  events/<session-id>/<turn-id>.normalized.jsonl
+  diagnostics/<session-id>/<fixture-id>.redacted.jsonl
+```
+
+Session writes must be atomic or append-safe. A crash during turn persistence
+must leave either the previous good session state or a recoverable partial turn
+record.
+
+Turn state:
+
+```ts
+type DirectTurnState =
+  | "created"
+  | "request_built"
+  | "streaming"
+  | "tool_waiting"
+  | "authority_waiting"
+  | "continuation_ready"
+  | "completed"
+  | "failed"
+  | "aborted"
+  | "checkpoint_required";
 ```
 
 Minimum persisted state:
@@ -334,6 +495,10 @@ Builder rules:
 - Backend field names live in one module.
 - Prompt cache/session affinity fields must be explicit and explainable.
 - Every optional field must cite the ODEU profile capability that allows it.
+- The following fields are forbidden in normal runtime requests until accepted
+  by profile evidence: `store`, `prompt_cache_key`, `include`, `reasoning`,
+  `text.verbosity`, `parallel_tool_calls`, `tool_choice`, tool-result
+  continuation fields, and cache/session-affinity fields.
 - No renderer code constructs backend requests.
 - No workspace backend code constructs backend requests.
 
@@ -352,6 +517,11 @@ Transport requirements:
 - Apply retry only to transient transport/server/rate failures.
 - Never retry after a tool side effect unless the session engine has recorded
   the tool result and can construct a lawful continuation.
+- Once a local side effect is executed, the original model request is never
+  retried. Only a continuation request built from recorded tool evidence may
+  proceed.
+- A failed direct auth refresh after a stream starts marks the turn failed with
+  an auth-related state and requires explicit user resume.
 
 Retry classes:
 
@@ -394,6 +564,8 @@ Normalizer requirements:
 - Keep enough source metadata for diagnostics.
 - Redact token-bearing data before any fixture write.
 - Treat unknown raw events as `unstable` profile evidence, not as success.
+- Capture malformed or unknown raw stream frames as redacted evidence and
+  classify them before adding any runtime behavior.
 - Do not expose a new event class to UI until it has an accepted rendering rule.
 
 ## Tool Authority Loop
@@ -416,6 +588,10 @@ Flow:
 Authority rules:
 
 - A model tool call is never authority by itself.
+- Every tool call has a stable local obligation id.
+- Every tool result pairs to exactly one tool call.
+- Declined, rejected, canceled, or expired tool calls are persisted as
+  obligations with terminal states.
 - File writes require project/workspace binding evidence.
 - Commands require explicit approval policy.
 - Network requests require explicit network authority.
@@ -457,6 +633,9 @@ type DirectModelList = {
 Do not infer full model availability from docs alone. Use docs/specimens for
 hypotheses and live probes/profile deltas for acceptance.
 
+The renderer must show the model-list source before exposing a model selector:
+`odeu-profile`, `static-baseline`, or `live-probe`.
+
 ## Import And Legacy Mode
 
 Legacy Codex app-server sessions remain import sources.
@@ -470,6 +649,17 @@ Supported modes:
 | `imported-readonly` | Imported legacy session, not yet runnable. |
 | `imported-checkpointed` | Imported session compacted into a direct checkpoint and eligible for continuation. |
 
+Import quarantine state:
+
+```ts
+type ImportedSessionState =
+  | "imported-unvalidated"
+  | "imported-readonly"
+  | "imported-validation-failed"
+  | "checkpoint-candidate"
+  | "checkpointed-runnable";
+```
+
 Import rules:
 
 - Imported app-server JSONL is source evidence, not native direct truth.
@@ -477,6 +667,21 @@ Import rules:
 - Do not continue an imported session directly until a direct checkpoint is
   generated.
 - Do not replay imported tool calls.
+- No imported approval can imply future authority.
+
+## Analytics Source Model
+
+Direct sessions are shell-owned source truth. They must not be projected as if
+they were legacy app-server rollout logs.
+
+Analytics must distinguish at least two source classes:
+
+```text
+legacy-app-server rollout logs
+direct shell sessions
+```
+
+Each source class needs its own ontology label and analyzer version.
 
 ## UX Requirements
 
@@ -505,12 +710,24 @@ run. It must distinguish:
 This avoids repeating the current hybrid gap where auth was valid but the Codex
 panel still had no usable runtime auth.
 
+Rollback requirement:
+
+```text
+If direct runtime enters failed or degraded state repeatedly, the project can
+switch back to legacy-app-server without deleting direct sessions, imported
+evidence, or diagnostics.
+```
+
 ## Security And Redaction
 
 Security rules:
 
 - Raw access tokens stay in main process.
 - Raw refresh tokens stay in the direct auth store.
+- Credential storage preference is OS credential store/keychain/Windows
+  Credential Manager or DPAPI-backed storage, then encrypted local file with an
+  OS-bound key, then private plaintext file only as a clearly labeled dev
+  fallback.
 - Renderer receives no raw tokens, auth headers, backend request body, or raw
   stream frames.
 - Raw backend fixtures are opt-in diagnostics and must run through redaction
@@ -522,20 +739,34 @@ Security rules:
 
 ## Cutover Plan
 
-### Phase 0: Name The Runtime Boundary
+### Phase 0: Runtime Boundary And Status Truth
 
-- Add this spec.
-- Add a config/runtime enum for `legacy-app-server` versus `direct`.
+- Add a config/runtime enum for `legacy-app-server`, `direct-experimental`,
+  and `direct`.
 - Keep current default as `legacy-app-server` until direct model-call probes
   pass.
 - Expose runtime status distinctly from direct auth status.
+- Add direct capability profile and direct auth status facade.
+- Add direct model list from accepted baseline.
+- Add direct session store skeleton.
+- No live model request yet.
 
-### Phase 1: Direct Account/Model Facade
+Acceptance:
 
-- Implement direct `accountRead` from direct auth status.
-- Implement model list from the accepted ODEU profile baseline.
-- Keep app-server unavailable in direct mode.
-- Renderer can connect to a direct runtime and show correct non-runnable states.
+```text
+The app can show direct auth status, direct runtime status, and model-list
+source without requiring codex app-server, while clearly saying turns are not
+runnable yet.
+```
+
+### Phase 1: Fixture-Only ODEU Extraction
+
+- Keep redaction helpers deterministic.
+- Load raw fixtures.
+- Normalize raw-to-local event shapes.
+- Build profile deltas.
+- Generate baseline report.
+- Do not hit the live backend.
 
 ### Phase 2: Direct Text Turn Probe
 
@@ -544,12 +775,16 @@ Security rules:
 - Persist a direct session and one direct turn.
 - Render text deltas in the existing Codex panel.
 - No tools yet.
+- No continuation, import, or automatic retry after the stream starts.
+- Capture redacted diagnostics on failure.
 
-### Phase 3: Tool-Free Session Resume
+### Phase 3: Abort, Refresh, Retry, Resume
 
 - Add `threadRead`, `threadResume`, and session index.
 - Add abort handling.
-- Add auth refresh and retry behavior.
+- Add auth refresh before a stream starts.
+- Add transient retry before a stream starts.
+- Add terminal turn states.
 - Add redacted fixture capture for failed/malformed streams.
 
 ### Phase 4: Tool Call Detection
@@ -559,7 +794,7 @@ Security rules:
 - Do not execute tools yet.
 - Add profile deltas for observed tool-call shapes.
 
-### Phase 5: Tool Authority Loop
+### Phase 5: Minimal Read-Only Tool Authority
 
 - Map a minimal read-only workspace tool.
 - Route approval through existing middle-plane/Codex request cards.
@@ -567,18 +802,23 @@ Security rules:
 - Send tool result continuation.
 - Persist tool evidence and continuation state.
 
-### Phase 6: Direct Default
-
-- New projects default to direct runtime after text + tool + continuation gates
-  pass.
-- App-server mode becomes explicit legacy compatibility.
-- Remove startup requirement for a `codex` executable in direct mode.
-
-### Phase 7: Legacy Import
+### Phase 6: Legacy Import
 
 - Convert app-server JSONL sessions into direct read-only candidates.
 - Generate direct checkpoints for selected imports.
 - Allow continuation only from checkpointed imports.
+
+### Phase 7: Direct Experimental Default For Selected Projects
+
+- Allow `direct-experimental` as the default only for explicitly selected
+  projects after text turn, abort, refresh, resume, tool detection, one
+  read-only continuation, diagnostic redaction, and restart recovery pass.
+
+### Phase 8: Full Default Replacement
+
+- New direct projects no longer require app-server.
+- App-server mode becomes explicit legacy compatibility/import mode.
+- Remove startup requirement for a `codex` executable in direct mode.
 
 ## Validation Gates
 
@@ -587,16 +827,28 @@ Direct mode cannot become default until these gates pass:
 - clean app install can authenticate without `codex` CLI credentials;
 - app can start in direct mode with no `codex` executable on PATH;
 - account status and runtime status are distinct and truthful;
+- model selector source is visible before any model can be selected;
 - one text turn streams and persists without app-server;
 - one interrupted turn records an aborted terminal state;
 - expired access token refreshes before a turn without renderer exposure;
+- failed auth refresh after stream start does not retry the original request
+  blindly and requires explicit resume;
 - malformed stream fails closed and captures a redacted diagnostic;
+- malformed unknown stream events are captured as redacted unstable profile
+  evidence;
 - one harmless tool call is detected, approved, executed, and continued;
 - tool denial/cancel produces a lawful continuation or terminal state;
 - session resumes after app restart without `CODEX_HOME`;
+- completed, failed, aborted, and unresolved-tool turns survive app restart;
 - app-server JSONL import remains read-only until checkpointed;
-- no raw token appears in renderer state, logs, committed fixtures, or IPC
-  payloads.
+- switching a project from `direct-experimental` back to `legacy-app-server`
+  does not delete direct sessions, imports, or diagnostics;
+- no direct runtime code path assumes a WSL workspace can be accessed through a
+  Windows mirror; workspace reads/writes route through the workspace backend;
+- no right-pane ChatGPT thread binding is modified by direct left-lane session
+  state unless the user explicitly stages a handoff;
+- no raw token, auth header, backend request body, or raw backend stream frame
+  appears in renderer state, logs, committed fixtures, or IPC payloads.
 
 ## Open Questions
 
@@ -621,6 +873,7 @@ Preferred first code slice:
 
 ```text
 runtime selector
+direct status truth model
 direct account/model facade
 direct capability profile
 direct session store skeleton
