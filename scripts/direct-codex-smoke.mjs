@@ -20,6 +20,10 @@ const {
 } = require("../src/main/direct/fixtures/fixture-loader");
 const { redactFixture, assertFixtureRedacted, scanFixtureForSecrets } = require("../src/main/direct/fixtures/redaction");
 const { createDirectAuthStore, DEFAULT_DIRECT_AUTH_FILE_NAME } = require("../src/main/direct/auth/auth-store");
+const {
+  createDirectAuthIpcController,
+  registerDirectAuthIpcHandlers,
+} = require("../src/main/direct/auth/auth-ipc");
 const { normalizeDirectCodexEvents, parseSseFixtureText } = require("../src/main/direct/normalizer/codex-event-normalizer");
 const { buildFixtureProfileDelta } = require("../src/main/direct/odeu-profile/profile-delta-builder");
 const { loadDirectCodexProfile } = require("../src/main/direct/odeu-profile/profile-loader");
@@ -32,6 +36,10 @@ const {
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function assertThrows(callback, message) {
@@ -253,6 +261,60 @@ try {
   const futureSchemaStatus = futureSchemaStore.readStatus({ nowMs });
   nodeAssert.equal(futureSchemaStatus.status, "unauthenticated");
   assertFixtureRedacted(futureSchemaStatus);
+
+  const authIpcRoot = path.join(authStoreParent, "auth-ipc");
+  const authIpcController = createDirectAuthIpcController({ rootDir: authIpcRoot });
+  const initialIpcSettings = authIpcController.readSettings({ nowMs });
+  nodeAssert.equal(initialIpcSettings.storageMode, "file");
+  nodeAssert.equal(initialIpcSettings.authStatus.status, "unauthenticated");
+  nodeAssert.equal(initialIpcSettings.storagePathExposed, false);
+  nodeAssert.equal(initialIpcSettings.rawTokensExposed, false);
+  assertFixtureRedacted(initialIpcSettings);
+  assert(!JSON.stringify(initialIpcSettings).includes(authIpcRoot), "Direct auth settings must not expose store paths.");
+
+  const ipcFileStatus = authIpcController.writeCredentials(credentials, { nowMs });
+  nodeAssert.equal(ipcFileStatus.status, "authenticated");
+  const setMemoryResult = authIpcController.setStorageMode("memory", { nowMs });
+  nodeAssert.equal(setMemoryResult.authStatus.status, "unauthenticated");
+  nodeAssert.equal(setMemoryResult.settings.storageMode, "memory");
+  authIpcController.writeCredentials({
+    accessToken: "fixture-memory-access-token-secret",
+    refreshToken: "fixture-memory-refresh-token-secret",
+    expiresAt,
+  }, { nowMs });
+  nodeAssert.equal(authIpcController.readStatus({ nowMs }).storageMode, "memory");
+  nodeAssert.equal(authIpcController.readStatus({ nowMs }).status, "authenticated");
+  const setFileResult = authIpcController.setStorageMode("file", { nowMs });
+  nodeAssert.equal(setFileResult.authStatus.status, "authenticated");
+  nodeAssert.equal(setFileResult.settings.storageMode, "file");
+
+  const loginResult = await authIpcController.beginLogin({ nowMs });
+  nodeAssert.equal(loginResult.ok, false);
+  nodeAssert.equal(loginResult.status, "not_implemented");
+  nodeAssert.equal(loginResult.reason, "live_oauth_not_implemented");
+  assertFixtureRedacted(loginResult);
+
+  const authEvents = [];
+  const ipcHandlers = new Map();
+  registerDirectAuthIpcHandlers(
+    { handle: (channel, handler) => ipcHandlers.set(channel, handler) },
+    () => authIpcController,
+    { onStatusChange: (event) => authEvents.push(event) },
+  );
+  nodeAssert.equal(await ipcHandlers.get("direct-auth:status")({}, { nowMs }).then((status) => status.status), "authenticated");
+  const ipcModeResult = await ipcHandlers.get("direct-auth:set-storage-mode")({}, { mode: "memory", nowMs });
+  nodeAssert.equal(ipcModeResult.settings.storageMode, "memory");
+  const ipcLoginResult = await ipcHandlers.get("direct-auth:login")({}, { nowMs });
+  nodeAssert.equal(ipcLoginResult.reason, "live_oauth_not_implemented");
+  const ipcLogoutResult = await ipcHandlers.get("direct-auth:logout")({}, { nowMs });
+  nodeAssert.equal(ipcLogoutResult.authStatus.status, "unauthenticated");
+  nodeAssert.equal(ipcLogoutResult.removedStorageModes.file, true);
+  nodeAssert.equal(ipcLogoutResult.removedStorageModes.memory, true);
+  assertFixtureRedacted(ipcLogoutResult);
+  assert(authEvents.some((event) => event.action === "set-storage-mode"), "Expected direct auth IPC mode change event.");
+  assert(authEvents.some((event) => event.action === "logout"), "Expected direct auth IPC logout event.");
+  assert(authEvents.every((event) => event.status === null || isPlainObject(event.status)), "Expected auth IPC events to carry auth status objects.");
+  assert(!fs.existsSync(path.join(authIpcRoot, DEFAULT_DIRECT_AUTH_FILE_NAME)), "Expected direct auth IPC logout to clear file credentials.");
 } finally {
   fs.rmSync(authStoreParent, { recursive: true, force: true });
 }

@@ -33,6 +33,11 @@ contextBridge.exposeInMainWorld("workspaceShell", {
   selectChatThread: (projectId, threadId) => ipcRenderer.invoke("chatgpt:select-thread", { projectId, threadId }),
   respondCodexRequest: (key, result) => ipcRenderer.invoke("codex:respond-request", { key, result }),
   focusCodexRequest: (key) => ipcRenderer.invoke("codex:focus-request", { key }),
+  getDirectAuthSettings: () => ipcRenderer.invoke("direct-auth:settings"),
+  getDirectAuthStatus: () => ipcRenderer.invoke("direct-auth:status"),
+  setDirectAuthStorageMode: (mode) => ipcRenderer.invoke("direct-auth:set-storage-mode", { mode }),
+  beginDirectAuthLogin: () => ipcRenderer.invoke("direct-auth:login"),
+  logoutDirectAuth: () => ipcRenderer.invoke("direct-auth:logout"),
   openChatgptSettings: () => ipcRenderer.invoke("chatgpt:open-settings"),
   forceChatgptDark: () => ipcRenderer.invoke("chatgpt:force-dark"),
   onSurfaceEvent: (callback) => {
