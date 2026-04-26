@@ -1,0 +1,67 @@
+{
+  "events": [
+    {
+      "event": "response.incomplete",
+      "data": {
+        "response": {
+          "id": "resp_fixture_incomplete",
+          "incomplete_details": {
+            "reason": "max_output_tokens"
+          }
+        }
+      }
+    },
+    {
+      "event": "response.failed",
+      "data": {
+        "response": {
+          "id": "resp_fixture_failed",
+          "error": {
+            "code": "server_error",
+            "message": "Synthetic server failure.",
+            "retryable": true
+          }
+        }
+      }
+    },
+    {
+      "event": "error",
+      "data": {
+        "error": {
+          "status": 401,
+          "code": "unauthorized",
+          "message": "Synthetic auth failure.",
+          "retryable": false
+        }
+      }
+    },
+    {
+      "event": "error",
+      "data": {
+        "error": {
+          "status": 429,
+          "code": "rate_limit_exceeded",
+          "message": "Synthetic quota failure.",
+          "retryable": true
+        }
+      }
+    },
+    {
+      "event": "error",
+      "data": {
+        "error": {
+          "status": 503,
+          "code": "server_overloaded",
+          "message": "Synthetic transient transport failure.",
+          "retryable": true
+        }
+      }
+    },
+    {
+      "event": "aborted",
+      "data": {
+        "reason": "user_cancelled"
+      }
+    }
+  ]
+}
