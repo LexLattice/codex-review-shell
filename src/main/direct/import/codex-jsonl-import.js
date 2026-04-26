@@ -104,14 +104,15 @@ function buildImportCandidate(records, options = {}) {
     }
   }
 
+  timestamps.sort();
   return {
     schema: "direct_codex_import_candidate@1",
     source: {
       harness: "codex-cli-or-app-server-jsonl",
       filePath: sourcePath,
       threadId: [...threadIds][0] || options.threadId || "",
-      timestampStart: timestamps.sort()[0] || "",
-      timestampEnd: timestamps.sort()[timestamps.length - 1] || "",
+      timestampStart: timestamps[0] || "",
+      timestampEnd: timestamps[timestamps.length - 1] || "",
       recordCount: records.length,
     },
     target: {

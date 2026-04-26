@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 
 const { buildImportCandidate } = require("../src/main/direct/import/codex-jsonl-import");
-const { redactFixture, assertFixtureRedacted } = require("../src/main/direct/fixtures/redaction");
+const { redactFixture, assertFixtureRedacted, scanFixtureForSecrets } = require("../src/main/direct/fixtures/redaction");
 const { normalizeDirectCodexEvents, parseSseFixtureText } = require("../src/main/direct/normalizer/codex-event-normalizer");
 const { buildFixtureProfileDelta } = require("../src/main/direct/odeu-profile/profile-delta-builder");
 const { loadDirectCodexProfile } = require("../src/main/direct/odeu-profile/profile-loader");
@@ -11,6 +11,15 @@ const { buildDirectCodexProfileReport } = require("../src/main/direct/odeu-profi
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
+}
+
+function assertThrows(callback, message) {
+  try {
+    callback();
+  } catch {
+    return;
+  }
+  throw new Error(message);
 }
 
 const profileDoc = loadDirectCodexProfile();
@@ -29,6 +38,14 @@ const secretFixture = {
 };
 const redacted = redactFixture(secretFixture);
 assertFixtureRedacted(redacted);
+const keyScopedSecrets = {
+  access_token: "short-secret",
+  headers: { cookie: "session=short-secret" },
+};
+const secretFindings = scanFixtureForSecrets(keyScopedSecrets);
+assert(secretFindings.some((finding) => finding.includes("access_token")), "Expected access_token key finding.");
+assert(secretFindings.some((finding) => finding.includes("headers.cookie")), "Expected headers.cookie key finding.");
+assertThrows(() => assertFixtureRedacted(keyScopedSecrets), "Expected key-scoped secrets to fail redaction checks.");
 
 const sampleEvents = [
   { event: "response.created", data: { response: { id: "resp_1", model: "gpt-5.4" } } },

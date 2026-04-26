@@ -15,6 +15,7 @@ const PLACEHOLDERS = Object.freeze({
 
 const SENSITIVE_KEY_PATTERN =
   /(^|[_-])(access[_-]?token|refresh[_-]?token|id[_-]?token|auth[_-]?code|authorization[_-]?code|code[_-]?verifier|code[_-]?challenge|client[_-]?secret|cookie|set[_-]?cookie|authorization|account[_-]?id|chatgpt[_-]?account[_-]?id)([_-]|$)/i;
+const REDACTED_PLACEHOLDER_PATTERN = /\[REDACTED:[^\]]+\]/;
 
 const TEXT_REDACTIONS = [
   {
@@ -54,7 +55,6 @@ function uniquePrivatePathRoots(extraRoots = []) {
     os.homedir(),
     process.env.HOME,
     process.env.USERPROFILE,
-    "/mnt/c/Users/Rose",
     ...extraRoots,
   ];
   return [...new Set(roots.filter((root) => typeof root === "string" && root.length > 4))];
@@ -117,8 +117,35 @@ function scanSensitiveText(text, options = {}) {
   return [...new Set(findings)];
 }
 
-function scanFixtureForSecrets(value, options = {}) {
-  return scanSensitiveText(JSON.stringify(value), options);
+function isRedactedSensitiveValue(value) {
+  if (value === null || value === undefined) return true;
+  if (typeof value === "string") return !value.trim() || REDACTED_PLACEHOLDER_PATTERN.test(value);
+  if (Array.isArray(value)) return value.every(isRedactedSensitiveValue);
+  if (value && typeof value === "object") return Object.values(value).every(isRedactedSensitiveValue);
+  return false;
+}
+
+function scanFixtureForSecrets(value, options = {}, keyPath = []) {
+  const findings = [];
+  const key = keyPath[keyPath.length - 1] || "";
+  const keyRedaction = redactionForKey(key);
+  if (keyRedaction && !isRedactedSensitiveValue(value)) {
+    findings.push(`sensitive-key:${keyPath.join(".") || key}`);
+  }
+
+  if (typeof value === "string") {
+    findings.push(...scanSensitiveText(value, options));
+  } else if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      findings.push(...scanFixtureForSecrets(value[index], options, [...keyPath, String(index)]));
+    }
+  } else if (value && typeof value === "object") {
+    for (const [entryKey, entryValue] of Object.entries(value)) {
+      findings.push(...scanFixtureForSecrets(entryValue, options, [...keyPath, entryKey]));
+    }
+  }
+
+  return [...new Set(findings)];
 }
 
 function assertFixtureRedacted(value, options = {}) {
@@ -131,6 +158,7 @@ function assertFixtureRedacted(value, options = {}) {
 
 module.exports = {
   PLACEHOLDERS,
+  REDACTED_PLACEHOLDER_PATTERN,
   SENSITIVE_KEY_PATTERN,
   assertFixtureRedacted,
   redactFixture,
