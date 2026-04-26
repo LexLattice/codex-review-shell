@@ -3,6 +3,7 @@
 const { EventEmitter } = require("node:events");
 const { spawn } = require("node:child_process");
 const net = require("node:net");
+const fs = require("node:fs");
 const {
   SUPPORTED_SERVER_REQUEST_METHODS,
   AUTO_UNSUPPORTED_SERVER_REQUEST_METHODS,
@@ -43,6 +44,11 @@ function shellQuote(value) {
   if (!text) return "''";
   if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(text)) return text;
   return `'${text.replace(/'/g, `'\"'\"'`)}'`;
+}
+
+function mkdirCommand(pathValue) {
+  const text = normalizeString(pathValue, "");
+  return text ? `mkdir -p ${shellQuote(text)}; ` : "";
 }
 
 function normalizeBinaryCommand(binaryPath, runtime) {
@@ -236,6 +242,7 @@ function buildDescriptor(project, codex, port, options = {}) {
   if (runtime === "wsl") {
     const linuxPath = normalizeString(workspace.linuxPath, "/home");
     if (process.platform === "win32") {
+      const codexHomeMkdir = mkdirCommand(codexHome);
       const codexHomeExport = codexHome ? `export CODEX_HOME=${shellQuote(codexHome)}; ` : "";
       const args = [];
       if (workspace.distro) args.push("-d", workspace.distro);
@@ -245,7 +252,7 @@ function buildDescriptor(project, codex, port, options = {}) {
         "--",
         "bash",
         "-lc",
-        `set -e; ${codexHomeExport}exec ${shellQuote(binaryPath)} app-server --listen ${shellQuote(wsUrl)}`,
+        `set -e; ${codexHomeMkdir}${codexHomeExport}exec ${shellQuote(binaryPath)} app-server --listen ${shellQuote(wsUrl)}`,
       );
       return {
         key: `wsl:${workspace.distro || "default"}:${linuxPath}:${binaryPath}:${codexHome || "default"}`,
@@ -352,6 +359,9 @@ class CodexAppServerManager extends EventEmitter {
     for (let attempt = 1; attempt <= startupAttempts; attempt += 1) {
       const port = await allocatePort();
       const descriptor = buildDescriptor(project, codex, port, options);
+      if (descriptor.runtime === "host" && descriptor.codexHome) {
+        fs.mkdirSync(descriptor.codexHome, { recursive: true });
+      }
 
       await this.dispose();
 

@@ -2023,6 +2023,19 @@ async function loadProjectSurfaces(project, activationBinding = null) {
   scheduleLayoutPing("project-selected");
 }
 
+function loadProjectSurfacesDetached(project, activationBinding = null) {
+  const loadPromise = loadProjectSurfaces(project, activationBinding);
+  loadPromise.catch((error) => {
+    emitToShell("surface:event", {
+      surface: "shell",
+      type: "load-failed",
+      title: error.message || "Project surface load failed.",
+      at: nowIso(),
+    });
+  });
+  return loadPromise;
+}
+
 function isLikelyChatAuthOrAppUrl(rawUrl) {
   try {
     const parsed = new URL(rawUrl);
@@ -2822,7 +2835,7 @@ ipcMain.handle("project:select", async (_event, projectId) => {
   const binding = activation.binding?.id
     ? project?.laneBindings?.find((item) => item.id === activation.binding.id) || activation.binding
     : null;
-  await loadProjectSurfaces(project, binding);
+  loadProjectSurfacesDetached(project, binding);
   return { config: saved, project, activationBinding: binding || null };
 });
 
