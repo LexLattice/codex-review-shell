@@ -43,7 +43,7 @@ exit /b 0
 
 :mirror_repo
 robocopy "%WSL_ROOT%" "%SYNC_ROOT%" /MIR /R:1 /W:1 /NFL /NDL /NJH /NJS /NP ^
-  /XD ".git" "node_modules" ".cache" ^
+  /XD ".git" "node_modules" ".cache" ".profiles" ".codex-home" ^
   /XF ".git" ".wsl-sync-head.txt" "launcher-stdout.log" "launcher-stderr.log" "launcher-wsl-stdout.log" "launcher-wsl-stderr.log" "start-debug.log" >nul
 set "RC=%ERRORLEVEL%"
 if %RC% GEQ 8 (

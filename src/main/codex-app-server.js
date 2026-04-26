@@ -53,6 +53,19 @@ function normalizeBinaryCommand(binaryPath, runtime) {
   return text;
 }
 
+function defaultCodexHomeForRuntime(runtime) {
+  if (runtime === "wsl") {
+    return normalizeString(
+      process.env.CODEX_REVIEW_SHELL_DEFAULT_WSL_CODEX_HOME,
+      normalizeString(process.env.CODEX_REVIEW_SHELL_DEFAULT_CODEX_HOME, ""),
+    );
+  }
+  return normalizeString(
+    process.env.CODEX_REVIEW_SHELL_DEFAULT_HOST_CODEX_HOME,
+    normalizeString(process.env.CODEX_REVIEW_SHELL_DEFAULT_CODEX_HOME, ""),
+  );
+}
+
 async function allocatePort() {
   return new Promise((resolve, reject) => {
     const server = net.createServer();
@@ -217,7 +230,7 @@ function buildDescriptor(project, codex, port, options = {}) {
   const wsUrl = `ws://127.0.0.1:${port}`;
   const readyUrl = `http://127.0.0.1:${port}/readyz`;
   const binaryPath = normalizeBinaryCommand(codex.binaryPath, runtime);
-  const codexHome = normalizeString(options.codexHome, "");
+  const codexHome = normalizeString(options.codexHome, "") || defaultCodexHomeForRuntime(runtime);
   const workspace = project?.workspace || { kind: "local", localPath: project?.repoPath || process.cwd() };
 
   if (runtime === "wsl") {
