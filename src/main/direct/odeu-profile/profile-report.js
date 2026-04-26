@@ -123,7 +123,6 @@ function buildDirectCodexProfileReport(input = {}) {
   lines.push("", "## Next Probe Gates", "");
   lines.push(sectionList([
     "Live OAuth login and token exchange.",
-    "Renderer direct auth controls for status/storage/logout.",
     "Plain text SSE turn.",
     "Reasoning-summary SSE turn.",
     "Tool-call request shape.",

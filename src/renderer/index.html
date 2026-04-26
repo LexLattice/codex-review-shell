@@ -130,6 +130,32 @@
             </div>
           </section>
 
+          <section class="control-card direct-auth-card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Direct auth</p>
+                <h3>ChatGPT subscription credentials</h3>
+              </div>
+              <span id="directAuthState" class="status-dot">loading</span>
+            </div>
+            <div class="direct-auth-grid">
+              <label class="compact-label">
+                Storage
+                <select id="directAuthStorageModeSelect"></select>
+              </label>
+              <div class="direct-auth-status" aria-label="Direct auth status">
+                <span id="directAuthStorageBadge" class="pill subtle">storage unknown</span>
+                <span id="directAuthExpiryBadge" class="pill subtle">expiry unknown</span>
+              </div>
+            </div>
+            <div class="direct-auth-actions">
+              <button class="ghost small" id="directAuthRefreshButton" type="button">Refresh</button>
+              <button class="ghost small" id="directAuthLoginButton" type="button">Login</button>
+              <button class="danger small" id="directAuthLogoutButton" type="button">Logout</button>
+            </div>
+            <p id="directAuthEvidence" class="muted direct-auth-evidence">No raw tokens exposed to renderer.</p>
+          </section>
+
           <section class="control-card codex-request-card">
             <div class="section-heading">
               <div>

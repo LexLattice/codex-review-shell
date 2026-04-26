@@ -60,6 +60,10 @@ const state = {
   chatgptRecentThreadsStatus: "idle",
   chatgptRecentThreadsLoadingMode: "cache",
   chatgptRecentThreadsSource: "",
+  directAuthSettings: null,
+  directAuthStatus: null,
+  directAuthLoading: false,
+  directAuthError: "",
   selectedCodexThreadId: "",
   openedCodexProjectId: "",
   openedCodexThreadId: "",
@@ -119,6 +123,14 @@ const els = {
   externalChatButton: document.getElementById("externalChatButton"),
   forceDarkButton: document.getElementById("forceDarkButton"),
   chatSettingsButton: document.getElementById("chatSettingsButton"),
+  directAuthState: document.getElementById("directAuthState"),
+  directAuthStorageModeSelect: document.getElementById("directAuthStorageModeSelect"),
+  directAuthStorageBadge: document.getElementById("directAuthStorageBadge"),
+  directAuthExpiryBadge: document.getElementById("directAuthExpiryBadge"),
+  directAuthRefreshButton: document.getElementById("directAuthRefreshButton"),
+  directAuthLoginButton: document.getElementById("directAuthLoginButton"),
+  directAuthLogoutButton: document.getElementById("directAuthLogoutButton"),
+  directAuthEvidence: document.getElementById("directAuthEvidence"),
   promptRoleLabel: document.getElementById("promptRoleLabel"),
   activePromptPreview: document.getElementById("activePromptPreview"),
   handoffTargetThreadSelect: document.getElementById("handoffTargetThreadSelect"),
@@ -1053,6 +1065,75 @@ function renderStatus() {
   }
 }
 
+function directAuthStatusLabel(status) {
+  const value = status?.status || "unauthenticated";
+  if (value === "authenticated") return "authenticated";
+  if (value === "expired") return "expired";
+  if (value === "refresh_failed") return "refresh failed";
+  return "unauthenticated";
+}
+
+function directAuthExpiryLabel(status) {
+  if (!status || !status.expiresAt) return "no expiry";
+  if (status.status === "expired") return "expired";
+  return `expires in ${formatDurationMs(status.expiresInMs)}`;
+}
+
+function sanitizedDirectAuthError(fallback) {
+  return fallback || "Direct auth request failed.";
+}
+
+function directAuthModeSignature(modes) {
+  return modes.map((mode) => String(mode || "")).join("|");
+}
+
+function renderDirectAuthControls() {
+  if (!els.directAuthState) return;
+  const settings = state.directAuthSettings || {};
+  const status = state.directAuthStatus || settings.authStatus || null;
+  const loading = state.directAuthLoading;
+  const statusLabel = loading ? "loading" : directAuthStatusLabel(status);
+
+  els.directAuthState.textContent = statusLabel;
+  els.directAuthState.title = state.directAuthError || statusLabel;
+  els.directAuthState.className = "status-dot";
+  if (loading) els.directAuthState.classList.add("loading");
+  if (status?.status === "authenticated") els.directAuthState.classList.add("loaded");
+  if (["expired", "refresh_failed"].includes(status?.status) || state.directAuthError) els.directAuthState.classList.add("failed");
+
+  const availableModes = Array.isArray(settings.availableStorageModes) && settings.availableStorageModes.length
+    ? settings.availableStorageModes
+    : ["file", "memory"];
+  const currentMode = settings.storageMode || status?.storageMode || "file";
+  if (els.directAuthStorageModeSelect) {
+    const signature = directAuthModeSignature(availableModes);
+    if (els.directAuthStorageModeSelect.dataset.modeSignature !== signature) {
+      els.directAuthStorageModeSelect.innerHTML = "";
+      for (const mode of availableModes) {
+        const option = document.createElement("option");
+        option.value = mode;
+        option.textContent = mode === "file" ? "Persistent file" : "Memory only";
+        els.directAuthStorageModeSelect.appendChild(option);
+      }
+      els.directAuthStorageModeSelect.dataset.modeSignature = signature;
+    }
+    if (document.activeElement !== els.directAuthStorageModeSelect) {
+      els.directAuthStorageModeSelect.value = currentMode;
+    }
+    els.directAuthStorageModeSelect.disabled = loading;
+  }
+
+  els.directAuthStorageBadge.textContent = currentMode === "memory" ? "memory-only store" : "persistent file store";
+  els.directAuthExpiryBadge.textContent = directAuthExpiryLabel(status);
+  els.directAuthRefreshButton.disabled = loading;
+  els.directAuthLoginButton.disabled = loading || !settings.liveOAuthAvailable;
+  els.directAuthLoginButton.title = settings.liveOAuthAvailable ? "Start direct auth login." : "Live OAuth is not implemented yet.";
+  els.directAuthLogoutButton.disabled = loading || (!status?.hasAccessToken && !status?.hasRefreshToken && status?.status !== "refresh_failed");
+  els.directAuthEvidence.textContent = state.directAuthError
+    ? "Direct auth status unavailable. No raw tokens or paths exposed to renderer."
+    : `Renderer sees redacted status only · tokens exposed: ${status?.rawTokensExposed ? "yes" : "no"} · paths exposed: ${settings.storagePathExposed ? "yes" : "no"}`;
+}
+
 function renderMiddleTabs() {
   const tabs = [
     [els.overviewTabButton, els.overviewTabPanel, "overview"],
@@ -1788,6 +1869,7 @@ function render() {
   renderHandoffQueue();
   renderCodexRequests();
   renderWatchedArtifacts();
+  renderDirectAuthControls();
   renderStatus();
   scheduleResizeBurst();
 }
@@ -2005,6 +2087,99 @@ async function selectAnalyticsThread(threadKey) {
   }
   if (isRequestStale("analyticsDetail", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
   renderAnalyticsPanel();
+}
+
+async function loadDirectAuthSettings() {
+  if (!bridge?.getDirectAuthSettings) return;
+  state.directAuthLoading = true;
+  state.directAuthError = "";
+  renderDirectAuthControls();
+  try {
+    const settings = await bridge.getDirectAuthSettings();
+    state.directAuthSettings = settings;
+    state.directAuthStatus = settings?.authStatus || null;
+  } catch (error) {
+    state.directAuthError = sanitizedDirectAuthError("Direct auth settings failed.");
+  } finally {
+    state.directAuthLoading = false;
+    renderDirectAuthControls();
+  }
+}
+
+async function refreshDirectAuthStatus() {
+  if (!bridge?.getDirectAuthStatus) return;
+  state.directAuthLoading = true;
+  state.directAuthError = "";
+  renderDirectAuthControls();
+  try {
+    state.directAuthStatus = await bridge.getDirectAuthStatus();
+    if (state.directAuthSettings) {
+      state.directAuthSettings = { ...state.directAuthSettings, authStatus: state.directAuthStatus };
+    }
+    setLastEvent(`Direct auth ${directAuthStatusLabel(state.directAuthStatus)}.`);
+  } catch (error) {
+    state.directAuthError = sanitizedDirectAuthError("Direct auth status failed.");
+    setLastEvent(`Direct auth status failed: ${state.directAuthError}`);
+  } finally {
+    state.directAuthLoading = false;
+    renderDirectAuthControls();
+  }
+}
+
+async function setDirectAuthStorageMode(mode) {
+  if (!bridge?.setDirectAuthStorageMode) return;
+  state.directAuthLoading = true;
+  state.directAuthError = "";
+  renderDirectAuthControls();
+  try {
+    const result = await bridge.setDirectAuthStorageMode(mode);
+    state.directAuthSettings = result.settings || state.directAuthSettings;
+    state.directAuthStatus = result.authStatus || result.settings?.authStatus || state.directAuthStatus;
+    setLastEvent(`Direct auth storage: ${state.directAuthSettings?.storageMode || mode}.`);
+  } catch (error) {
+    state.directAuthError = sanitizedDirectAuthError("Direct auth storage switch failed.");
+    setLastEvent(`Direct auth storage failed: ${state.directAuthError}`);
+  } finally {
+    state.directAuthLoading = false;
+    renderDirectAuthControls();
+  }
+}
+
+async function beginDirectAuthLogin() {
+  if (!bridge?.beginDirectAuthLogin) return;
+  state.directAuthLoading = true;
+  state.directAuthError = "";
+  renderDirectAuthControls();
+  try {
+    const result = await bridge.beginDirectAuthLogin();
+    state.directAuthStatus = result.authStatus || state.directAuthStatus;
+    setLastEvent(result.ok ? "Direct auth login started." : `Direct auth login unavailable: ${result.reason || result.status}.`);
+  } catch (error) {
+    state.directAuthError = sanitizedDirectAuthError("Direct auth login failed.");
+    setLastEvent(`Direct auth login failed: ${state.directAuthError}`);
+  } finally {
+    state.directAuthLoading = false;
+    renderDirectAuthControls();
+  }
+}
+
+async function logoutDirectAuth() {
+  if (!bridge?.logoutDirectAuth) return;
+  state.directAuthLoading = true;
+  state.directAuthError = "";
+  renderDirectAuthControls();
+  try {
+    const result = await bridge.logoutDirectAuth();
+    state.directAuthSettings = result.settings || state.directAuthSettings;
+    state.directAuthStatus = result.authStatus || result.settings?.authStatus || state.directAuthStatus;
+    setLastEvent("Direct auth credentials cleared.");
+  } catch (error) {
+    state.directAuthError = sanitizedDirectAuthError("Direct auth logout failed.");
+    setLastEvent(`Direct auth logout failed: ${state.directAuthError}`);
+  } finally {
+    state.directAuthLoading = false;
+    renderDirectAuthControls();
+  }
 }
 
 async function updateAnalytics() {
@@ -3182,6 +3357,10 @@ function bindEvents() {
     const result = await bridge.openChatgptSettings();
     setLastEvent(result.ok ? `Requested ChatGPT settings (${result.method}).` : `ChatGPT settings failed (${result.method}).`);
   });
+  els.directAuthRefreshButton.addEventListener("click", refreshDirectAuthStatus);
+  els.directAuthStorageModeSelect.addEventListener("change", () => setDirectAuthStorageMode(els.directAuthStorageModeSelect.value));
+  els.directAuthLoginButton.addEventListener("click", beginDirectAuthLogin);
+  els.directAuthLogoutButton.addEventListener("click", logoutDirectAuth);
   els.refreshWorkTreeButton.addEventListener("click", loadWorkTreeRoot);
   els.refreshWatchedButton.addEventListener("click", loadWatchedArtifacts);
 
@@ -3234,6 +3413,12 @@ function bindEvents() {
       const details = event.reason ? `: ${event.reason}` : "";
       setLastEvent(`Codex approval requested via ${event.method}${details}`);
     }
+    if (event.type === "direct-auth-status") {
+      state.directAuthStatus = event.status || state.directAuthStatus;
+      state.directAuthSettings = event.settings || state.directAuthSettings;
+      renderDirectAuthControls();
+      setLastEvent(`Direct auth ${event.action}: ${directAuthStatusLabel(state.directAuthStatus)}.`);
+    }
     if (event.type === "codex-request-updated" && event.request?.key) {
       const request = event.request;
       if (["resolved", "declined", "canceled", "connection-closed"].includes(request.status)) {
@@ -3264,6 +3449,7 @@ async function init() {
   state.defaultCodexRuntime = result.defaultCodexRuntime || "auto";
   state.allowNonChatgptUrls = Boolean(result.allowNonChatgptUrls);
   render();
+  await loadDirectAuthSettings();
   await selectProject(state.config.selectedProjectId);
   await loadChatgptRecentThreads({ refresh: false });
 }
