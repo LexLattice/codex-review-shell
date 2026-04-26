@@ -78,7 +78,7 @@ class DirectAuthIpcController {
     this.storeMode = normalizeStoreMode(mode);
     return {
       ok: true,
-      status: this.readStatus(options),
+      authStatus: this.readStatus(options),
       settings: this.readSettings(options),
     };
   }
@@ -119,7 +119,7 @@ class DirectAuthIpcController {
     return {
       ok: true,
       removedStorageModes,
-      status: this.readStatus(options),
+      authStatus: this.readStatus(options),
       settings: this.readSettings(options),
       rawTokensExposed: false,
     };
@@ -138,13 +138,7 @@ function resolveController(controllerRef) {
 
 function emitStatusChange(onStatusChange, action, result) {
   if (typeof onStatusChange !== "function") return;
-  const authStatus = isPlainObject(result?.authStatus)
-    ? result.authStatus
-    : isPlainObject(result?.status)
-      ? result.status
-      : isPlainObject(result?.settings?.authStatus)
-        ? result.settings.authStatus
-        : null;
+  const authStatus = result?.authStatus || result?.settings?.authStatus || null;
   onStatusChange({
     type: "direct-auth-status",
     action,

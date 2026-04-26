@@ -275,7 +275,7 @@ try {
   const ipcFileStatus = authIpcController.writeCredentials(credentials, { nowMs });
   nodeAssert.equal(ipcFileStatus.status, "authenticated");
   const setMemoryResult = authIpcController.setStorageMode("memory", { nowMs });
-  nodeAssert.equal(setMemoryResult.status.status, "unauthenticated");
+  nodeAssert.equal(setMemoryResult.authStatus.status, "unauthenticated");
   nodeAssert.equal(setMemoryResult.settings.storageMode, "memory");
   authIpcController.writeCredentials({
     accessToken: "fixture-memory-access-token-secret",
@@ -285,7 +285,7 @@ try {
   nodeAssert.equal(authIpcController.readStatus({ nowMs }).storageMode, "memory");
   nodeAssert.equal(authIpcController.readStatus({ nowMs }).status, "authenticated");
   const setFileResult = authIpcController.setStorageMode("file", { nowMs });
-  nodeAssert.equal(setFileResult.status.status, "authenticated");
+  nodeAssert.equal(setFileResult.authStatus.status, "authenticated");
   nodeAssert.equal(setFileResult.settings.storageMode, "file");
 
   const loginResult = await authIpcController.beginLogin({ nowMs });
@@ -307,7 +307,7 @@ try {
   const ipcLoginResult = await ipcHandlers.get("direct-auth:login")({}, { nowMs });
   nodeAssert.equal(ipcLoginResult.reason, "live_oauth_not_implemented");
   const ipcLogoutResult = await ipcHandlers.get("direct-auth:logout")({}, { nowMs });
-  nodeAssert.equal(ipcLogoutResult.status.status, "unauthenticated");
+  nodeAssert.equal(ipcLogoutResult.authStatus.status, "unauthenticated");
   nodeAssert.equal(ipcLogoutResult.removedStorageModes.file, true);
   nodeAssert.equal(ipcLogoutResult.removedStorageModes.memory, true);
   assertFixtureRedacted(ipcLogoutResult);
