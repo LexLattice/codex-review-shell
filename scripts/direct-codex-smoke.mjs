@@ -1,8 +1,21 @@
+import nodeAssert from "node:assert/strict";
 import { createRequire } from "node:module";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const appRoot = path.resolve(__dirname, "..");
 
 const { buildImportCandidate } = require("../src/main/direct/import/codex-jsonl-import");
+const {
+  DEFAULT_FIXTURE_ROOT,
+  NORMALIZED_FIXTURE_DIR,
+  PROFILE_DELTAS_FIXTURE_DIR,
+  RAW_FIXTURE_DIR,
+  listFixtureFiles,
+  loadFixtureFile,
+} = require("../src/main/direct/fixtures/fixture-loader");
 const { redactFixture, assertFixtureRedacted, scanFixtureForSecrets } = require("../src/main/direct/fixtures/redaction");
 const { normalizeDirectCodexEvents, parseSseFixtureText } = require("../src/main/direct/normalizer/codex-event-normalizer");
 const { buildFixtureProfileDelta } = require("../src/main/direct/odeu-profile/profile-delta-builder");
@@ -20,6 +33,56 @@ function assertThrows(callback, message) {
     return;
   }
   throw new Error(message);
+}
+
+function stripGeneratedAt(value) {
+  const clone = structuredClone(value);
+  delete clone.generatedAt;
+  return clone;
+}
+
+function expectedFixturePath(directory, rawFixtureId) {
+  const fixtureName = rawFixtureId.replace(/^raw\//, "");
+  return path.join(directory, `${fixtureName}.json`);
+}
+
+function validateCommittedFixtureCorpus() {
+  const fixtureRoot = path.resolve(appRoot, DEFAULT_FIXTURE_ROOT);
+  const rawFiles = listFixtureFiles(RAW_FIXTURE_DIR);
+  assert(rawFiles.length >= 4, "Expected at least four committed direct Codex raw fixtures.");
+
+  for (const rawPath of rawFiles) {
+    const rawFixture = loadFixtureFile(rawPath, { rootDir: fixtureRoot, requireRedacted: true });
+    const normalized = normalizeDirectCodexEvents(rawFixture.records, { failOnUnknown: true });
+
+    const expectedNormalized = loadFixtureFile(
+      expectedFixturePath(NORMALIZED_FIXTURE_DIR, rawFixture.id),
+      { rootDir: fixtureRoot, requireRedacted: true },
+    );
+    nodeAssert.deepStrictEqual(
+      normalized.normalized,
+      expectedNormalized.records,
+      `Normalized fixture mismatch for ${rawFixture.id}.`,
+    );
+
+    const actualDelta = buildFixtureProfileDelta({
+      fixtureId: rawFixture.id,
+      normalizedEvents: normalized.normalized,
+      unknownRawTypes: normalized.unknown.map((event) => event.rawType),
+    });
+    const expectedDelta = loadFixtureFile(
+      expectedFixturePath(PROFILE_DELTAS_FIXTURE_DIR, rawFixture.id),
+      { rootDir: fixtureRoot, requireRedacted: true },
+    );
+    assert(expectedDelta.records.length > 0, `Expected at least one delta record in ${expectedDelta.id}.`);
+    nodeAssert.deepStrictEqual(
+      stripGeneratedAt(actualDelta),
+      stripGeneratedAt(expectedDelta.records[0]),
+      `Profile delta fixture mismatch for ${rawFixture.id}.`,
+    );
+  }
+
+  return rawFiles.length;
 }
 
 const profileDoc = loadDirectCodexProfile();
@@ -134,6 +197,9 @@ const importCandidate = buildImportCandidate([
 ]);
 assert(importCandidate.target.runnable === false, "Imported Codex JSONL must remain non-runnable.");
 assert(importCandidate.unresolvedObligations.length === 1, "Expected unpaired tool obligation.");
+
+const committedFixtureCount = validateCommittedFixtureCorpus();
+assert(committedFixtureCount >= 4, "Expected committed direct Codex fixture corpus coverage.");
 
 const report = buildDirectCodexProfileReport({
   profileDoc,

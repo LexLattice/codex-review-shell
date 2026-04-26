@@ -1,0 +1,86 @@
+{
+  "events": [
+    {
+      "type": "session_started",
+      "sequence": 0,
+      "source": {
+        "rawIndex": 0,
+        "rawType": "response.created"
+      },
+      "responseId": "resp_fixture_tool",
+      "model": "gpt-5.4"
+    },
+    {
+      "type": "tool_call_started",
+      "sequence": 1,
+      "source": {
+        "rawIndex": 1,
+        "rawType": "response.output_item.added"
+      },
+      "itemId": "tool_fixture",
+      "callId": "call_fixture_read",
+      "name": "read_file",
+      "toolType": "function_call"
+    },
+    {
+      "type": "tool_call_delta",
+      "sequence": 2,
+      "source": {
+        "rawIndex": 2,
+        "rawType": "response.function_call_arguments.delta"
+      },
+      "itemId": "tool_fixture",
+      "callId": "call_fixture_read",
+      "argumentsDelta": "{\"path\""
+    },
+    {
+      "type": "tool_call_delta",
+      "sequence": 3,
+      "source": {
+        "rawIndex": 3,
+        "rawType": "response.function_call_arguments.delta"
+      },
+      "itemId": "tool_fixture",
+      "callId": "call_fixture_read",
+      "argumentsDelta": ":\"README.md\"}"
+    },
+    {
+      "type": "tool_call_completed",
+      "sequence": 4,
+      "source": {
+        "rawIndex": 4,
+        "rawType": "response.output_item.done"
+      },
+      "itemId": "tool_fixture",
+      "callId": "call_fixture_read",
+      "name": "read_file",
+      "argumentsJson": "{\"path\":\"README.md\"}",
+      "toolType": "function_call"
+    },
+    {
+      "type": "usage_delta",
+      "sequence": 5,
+      "source": {
+        "rawIndex": 5,
+        "rawType": "response.completed"
+      },
+      "usage": {
+        "inputTokens": 31,
+        "outputTokens": 13,
+        "totalTokens": 44,
+        "cachedInputTokens": 9,
+        "reasoningTokens": 4
+      }
+    },
+    {
+      "type": "response_completed",
+      "sequence": 5,
+      "source": {
+        "rawIndex": 5,
+        "rawType": "response.completed"
+      },
+      "responseId": "resp_fixture_tool",
+      "stopReason": "completed"
+    }
+  ]
+}

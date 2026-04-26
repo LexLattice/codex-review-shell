@@ -1,0 +1,44 @@
+{
+  "events": [
+    {
+      "event": "response.created",
+      "data": {
+        "response": {
+          "id": "resp_fixture_plain",
+          "model": "gpt-5.4"
+        }
+      }
+    },
+    {
+      "event": "response.output_text.delta",
+      "data": {
+        "item_id": "msg_plain",
+        "delta": "Hello from fixture."
+      }
+    },
+    {
+      "event": "response.completed",
+      "data": {
+        "response": {
+          "id": "resp_fixture_plain",
+          "status": "completed",
+          "usage": {
+            "input_tokens": 12,
+            "output_tokens": 4,
+            "total_tokens": 16,
+            "input_tokens_details": {
+              "cached_tokens": 2
+            },
+            "output_tokens_details": {
+              "reasoning_tokens": 0
+            }
+          }
+        }
+      }
+    },
+    {
+      "event": "[DONE]",
+      "data": "[DONE]"
+    }
+  ]
+}

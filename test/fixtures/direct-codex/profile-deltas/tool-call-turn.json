@@ -1,0 +1,78 @@
+{
+  "schema": "direct_codex_profile_delta@1",
+  "source": "fixture",
+  "fixtureId": "raw/tool-call-turn",
+  "normalizedEventCounts": {
+    "session_started": 1,
+    "tool_call_started": 1,
+    "tool_call_delta": 2,
+    "tool_call_completed": 1,
+    "usage_delta": 1,
+    "response_completed": 1
+  },
+  "rawEventTypes": [
+    "response.completed",
+    "response.created",
+    "response.function_call_arguments.delta",
+    "response.output_item.added",
+    "response.output_item.done"
+  ],
+  "unknownRawTypes": [],
+  "proposedCapabilities": [
+    {
+      "capabilityId": "event.normalized.response_completed",
+      "eventType": "response_completed",
+      "proposedState": "probed",
+      "evidence": {
+        "fixtureId": "raw/tool-call-turn",
+        "eventCount": 1
+      }
+    },
+    {
+      "capabilityId": "event.normalized.session_started",
+      "eventType": "session_started",
+      "proposedState": "probed",
+      "evidence": {
+        "fixtureId": "raw/tool-call-turn",
+        "eventCount": 1
+      }
+    },
+    {
+      "capabilityId": "event.normalized.tool_call_completed",
+      "eventType": "tool_call_completed",
+      "proposedState": "probed",
+      "evidence": {
+        "fixtureId": "raw/tool-call-turn",
+        "eventCount": 1
+      }
+    },
+    {
+      "capabilityId": "event.normalized.tool_call_delta",
+      "eventType": "tool_call_delta",
+      "proposedState": "probed",
+      "evidence": {
+        "fixtureId": "raw/tool-call-turn",
+        "eventCount": 2
+      }
+    },
+    {
+      "capabilityId": "event.normalized.tool_call_started",
+      "eventType": "tool_call_started",
+      "proposedState": "probed",
+      "evidence": {
+        "fixtureId": "raw/tool-call-turn",
+        "eventCount": 1
+      }
+    },
+    {
+      "capabilityId": "event.normalized.usage_delta",
+      "eventType": "usage_delta",
+      "proposedState": "probed",
+      "evidence": {
+        "fixtureId": "raw/tool-call-turn",
+        "eventCount": 1
+      }
+    }
+  ],
+  "acceptance": "candidate"
+}
