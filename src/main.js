@@ -23,6 +23,13 @@ const {
 } = require("./main/direct/auth/auth-ipc");
 const { createDirectAuthLoginCoordinator } = require("./main/direct/auth/auth-login");
 const { codexAuthTokensFromCredentials } = require("./main/direct/auth/app-server-auth-bridge");
+const { loadDirectCodexProfile } = require("./main/direct/odeu-profile/profile-loader");
+const {
+  buildDirectRuntimeStatus,
+  directRuntimeLaneLabel,
+  normalizeCodexBindingProvider,
+  normalizeCodexRuntimeMode: normalizeDirectRuntimeModeForStatus,
+} = require("./main/direct/runtime/runtime-status");
 
 const APP_TITLE = "Codex Review Shell";
 const CONFIG_FILE_NAME = "workspace-config.json";
@@ -102,6 +109,7 @@ let codexSurfaceSessions = null;
 let threadAnalyticsStore = null;
 let directAuthController = null;
 let directAuthLoginCoordinator = null;
+let directCodexProfileDoc = null;
 let surfaceActivationEpoch = 0;
 
 function nowIso() {
@@ -201,7 +209,7 @@ function defaultConfig() {
   const defaultWorkspace = defaultProjectWorkspaceConfig();
   const defaultRepoPath = defaultProjectRepoPath(defaultWorkspace);
   return {
-    version: 4,
+    version: 5,
     selectedProjectId: defaultProjectId,
     ui: {
       leftRatio: 0.34,
@@ -216,7 +224,10 @@ function defaultConfig() {
         surfaceBinding: {
           codex: {
             mode: "managed",
+            provider: "codex-compatible",
+            runtimeMode: "legacy-app-server",
             runtime: defaultCodexRuntimeForWorkspace(defaultWorkspace),
+            profileId: "",
             target: "",
             binaryPath: "codex",
             model: "",
@@ -864,6 +875,7 @@ function normalizeProject(input, index = 0) {
   const rawChatgpt = isPlainObject(surfaceBinding.chatgpt) ? surfaceBinding.chatgpt : {};
   const rawFlow = isPlainObject(raw.flowProfile) ? raw.flowProfile : {};
   const codexMode = normalizeCodexMode(rawCodex.mode);
+  const codexRuntimeMode = normalizeDirectRuntimeModeForStatus(rawCodex.runtimeMode);
   const patterns = Array.isArray(rawFlow.watchedFilePatterns)
     ? rawFlow.watchedFilePatterns.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim())
     : fallback.flowProfile.watchedFilePatterns;
@@ -902,7 +914,13 @@ function normalizeProject(input, index = 0) {
     surfaceBinding: {
       codex: {
         mode: codexMode,
+        provider: normalizeCodexBindingProvider(
+          rawCodex.provider,
+          codexRuntimeMode === "legacy-app-server" ? "codex-compatible" : "direct-chatgpt-codex",
+        ),
+        runtimeMode: codexRuntimeMode,
         runtime: normalizeCodexRuntime(normalizeString(rawCodex.runtime, defaultCodexRuntimeForWorkspace(workspace))),
+        profileId: normalizeString(rawCodex.profileId, ""),
         target: normalizeString(rawCodex.target, codexMode === "url" ? "http://127.0.0.1:3000" : ""),
         binaryPath: normalizeString(rawCodex.binaryPath, "codex"),
         model: normalizeString(rawCodex.model, ""),
@@ -957,7 +975,7 @@ function normalizeConfig(input) {
     : dedupedProjects[0].id;
 
   return {
-    version: 4,
+    version: 5,
     selectedProjectId,
     ui: migrateUi(raw.ui),
     projects: dedupedProjects,
@@ -1116,6 +1134,40 @@ function ensureDirectAuthLoginCoordinator() {
   return directAuthLoginCoordinator;
 }
 
+function ensureDirectCodexProfileDoc() {
+  if (directCodexProfileDoc) return directCodexProfileDoc;
+  directCodexProfileDoc = loadDirectCodexProfile();
+  return directCodexProfileDoc;
+}
+
+function currentLegacyAppServerSnapshot() {
+  return codexAppServer?.snapshot?.() || null;
+}
+
+function buildDirectRuntimeStatusForProject(project, options = {}) {
+  const controller = ensureDirectAuthController();
+  const authSettings = controller.readSettings(options);
+  const profileDoc = ensureDirectCodexProfileDoc();
+  return buildDirectRuntimeStatus({
+    project,
+    authSettings,
+    authStatus: authSettings.authStatus,
+    profileDoc,
+    legacySession: currentLegacyAppServerSnapshot(),
+  });
+}
+
+function emitDirectRuntimeStatus(project = currentProject) {
+  if (!project) return null;
+  const status = buildDirectRuntimeStatusForProject(project);
+  emitShellEvent({
+    type: "direct-runtime-status",
+    status,
+    at: nowIso(),
+  });
+  return status;
+}
+
 function ensureCodexAppServerManager() {
   if (codexAppServer) return codexAppServer;
   codexAppServer = new CodexAppServerManager();
@@ -1138,6 +1190,13 @@ function ensureCodexAppServerManager() {
     });
   });
   return codexAppServer;
+}
+
+async function disposeCodexAppServerManager() {
+  if (!codexAppServer) return;
+  const manager = codexAppServer;
+  codexAppServer = null;
+  await manager.dispose();
 }
 
 function ensureLocalSurfaceServer() {
@@ -1373,8 +1432,33 @@ async function loadCodexSurface(project, options = {}) {
   const codex = project.surfaceBinding.codex;
   const localSurfaceBaseUrl = await ensureLocalSurfaceServer().ensureStarted();
   if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
+  const runtimeMode = normalizeDirectRuntimeModeForStatus(codex.runtimeMode);
+  if (runtimeMode !== "legacy-app-server") {
+    await disposeCodexAppServerManager();
+    activeCodexSurfaceConnection = null;
+    const runtimeStatus = buildDirectRuntimeStatusForProject(project);
+    const localUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, {
+      activationEpoch: Number(options.activationEpoch) || 0,
+      error: [
+        `Direct runtime selected: ${runtimeStatus.runtimeModeLabel}.`,
+        "Direct turn execution is not runnable yet; current slice exposes status truth only.",
+        `Model source: ${runtimeStatus.models.source}.`,
+      ].join(" "),
+    });
+    emitToShell("surface:event", {
+      surface: "codex",
+      type: "loaded",
+      title: directRuntimeLaneLabel(codex),
+      url: "",
+      at: nowIso(),
+    });
+    emitDirectRuntimeStatus(project);
+    if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
+    await codexView.webContents.loadURL(localUrl);
+    return;
+  }
   if (codex.mode === "url") {
-    await ensureCodexAppServerManager().dispose();
+    await disposeCodexAppServerManager();
     activeCodexSurfaceConnection = null;
     const target = safeLoadableUrl(codex.target, "codex");
     if (target) {
@@ -1444,7 +1528,7 @@ async function loadCodexSurface(project, options = {}) {
       return;
     }
   }
-  await ensureCodexAppServerManager().dispose();
+  await disposeCodexAppServerManager();
   activeCodexSurfaceConnection = null;
   const localUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, { activationEpoch: Number(options.activationEpoch) || 0 });
   if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
@@ -2056,6 +2140,7 @@ async function loadProjectSurfaces(project, activationBinding = null) {
     projectName: project.name,
     at: nowIso(),
   });
+  emitDirectRuntimeStatus(project);
   const codexOptions = { ...codexSurfaceOptionsForBinding(activationBinding), activationEpoch };
   await Promise.allSettled([
     loadCodexSurface(project, codexOptions),
@@ -2840,6 +2925,7 @@ async function createWindow() {
 ipcMain.handle("config:load", async () => {
   const config = await loadConfig();
   const defaultWorkspace = defaultProjectWorkspaceConfig();
+  const selectedProject = getSelectedProject(config);
   return {
     config,
     configPath: configPath(),
@@ -2853,6 +2939,7 @@ ipcMain.handle("config:load", async () => {
     },
     defaultWorkspace,
     defaultCodexRuntime: defaultCodexRuntimeForWorkspace(defaultWorkspace),
+    directRuntimeStatus: selectedProject ? buildDirectRuntimeStatusForProject(selectedProject) : null,
     allowNonChatgptUrls: allowNonChatgptUrls(),
   };
 });
@@ -3128,6 +3215,11 @@ ipcMain.handle("workspace:status", async (_event, payload) => {
   return getWorkspaceStatus(payload?.projectId);
 });
 
+ipcMain.handle("direct-runtime:status", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return buildDirectRuntimeStatusForProject(project);
+});
+
 ipcMain.handle("workspace:run-command", async (_event, payload) => {
   return runWorkspaceCommand(payload?.projectId, payload?.command);
 });
@@ -3169,8 +3261,13 @@ app.on("before-quit", () => {
   directAuthLoginCoordinator = null;
 });
 
+function emitDirectAuthAndRuntimeStatus(event) {
+  emitShellEvent(event);
+  emitDirectRuntimeStatus(currentProject);
+}
+
 registerDirectAuthIpcHandlers(ipcMain, () => ensureDirectAuthController(), {
-  onStatusChange: emitShellEvent,
+  onStatusChange: emitDirectAuthAndRuntimeStatus,
 });
 
 app.on("window-all-closed", () => {

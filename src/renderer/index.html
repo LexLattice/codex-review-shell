@@ -148,6 +148,11 @@
                 <span id="directAuthExpiryBadge" class="pill subtle">expiry unknown</span>
               </div>
             </div>
+            <div class="direct-auth-status direct-runtime-status" aria-label="Direct runtime status">
+              <span id="directRuntimeModeBadge" class="pill subtle">runtime unknown</span>
+              <span id="directRuntimeStatusBadge" class="pill subtle">turns not runnable</span>
+              <span id="directModelSourceBadge" class="pill subtle">model source unknown</span>
+            </div>
             <div class="direct-auth-actions">
               <button class="ghost small" id="directAuthRefreshButton" type="button">Refresh</button>
               <button class="ghost small" id="directAuthLoginButton" type="button">Login</button>
@@ -447,8 +452,23 @@
             </select>
           </label>
           <label>
+            Runtime mode
+            <select id="codexRuntimeModeInput">
+              <option value="legacy-app-server">Legacy app-server</option>
+              <option value="direct-experimental">Direct experimental</option>
+              <option value="direct" disabled>Direct</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="form-grid">
+          <label>
             Codex binary / command
             <input id="codexBinaryPathInput" autocomplete="off" placeholder="codex" />
+          </label>
+          <label>
+            Direct profile <span class="muted">optional</span>
+            <input id="codexProfileIdInput" autocomplete="off" placeholder="accepted ODEU profile id" />
           </label>
         </div>
 

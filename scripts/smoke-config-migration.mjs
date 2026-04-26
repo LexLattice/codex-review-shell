@@ -2,12 +2,18 @@ import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 import crypto from "node:crypto";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
+const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(__dirname, "..");
 const mainPath = path.join(appRoot, "src", "main.js");
 const source = fs.readFileSync(mainPath, "utf8");
+const {
+  normalizeCodexBindingProvider,
+  normalizeCodexRuntimeMode: normalizeDirectRuntimeModeForStatus,
+} = require("../src/main/direct/runtime/runtime-status");
 const start = source.indexOf("function nowIso()");
 const end = source.indexOf("async function loadConfig()", start);
 if (start < 0 || end < 0) throw new Error("Unable to locate config-normalization block in main.js");
@@ -19,6 +25,8 @@ const sandbox = {
   URL,
   process,
   repoRoot: appRoot,
+  normalizeCodexBindingProvider,
+  normalizeDirectRuntimeModeForStatus,
 };
 vm.createContext(sandbox);
 vm.runInContext(`${source.slice(start, end)}\nthis.normalizeConfig = normalizeConfig;`, sandbox, { filename: "main-config-slice.js" });
@@ -47,8 +55,10 @@ const legacyConfig = {
 
 const migrated = sandbox.normalizeConfig(legacyConfig);
 const project = migrated.projects[0];
-if (migrated.version !== 4) throw new Error(`Expected config version 4, got ${migrated.version}`);
+if (migrated.version !== 5) throw new Error(`Expected config version 5, got ${migrated.version}`);
 if (!Array.isArray(project.chatThreads) || project.chatThreads.length !== 1) throw new Error("Expected one migrated ChatGPT thread.");
+if (project.surfaceBinding.codex.runtimeMode !== "legacy-app-server") throw new Error("Expected migrated Codex runtime mode to stay legacy app-server.");
+if (project.surfaceBinding.codex.provider !== "codex-compatible") throw new Error("Expected migrated Codex provider to stay Codex-compatible.");
 const thread = project.chatThreads[0];
 if (thread.role !== "review" || !thread.isPrimary) throw new Error("Migrated thread is not the primary review thread.");
 if (thread.url !== "https://chatgpt.com/c/legacy-review") throw new Error(`Unexpected migrated URL: ${thread.url}`);

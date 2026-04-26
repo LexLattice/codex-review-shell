@@ -373,7 +373,7 @@ type DirectAuthCapability = {
   acquisition: "browser-callback" | "manual-code-paste" | "imported-codex-auth" | "unknown";
   refresh: "accepted" | "unstable" | "unavailable";
   accountIdSource: "token-claim" | "profile-endpoint" | "unknown";
-  storage: "os-keychain" | "encrypted-file" | "plain-file-dev-only";
+  storage: "os-keychain" | "encrypted-file" | "plain-file-dev-only" | "ephemeral-memory";
 };
 ```
 
