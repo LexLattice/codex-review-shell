@@ -36,7 +36,7 @@ function assertThrows(callback, message) {
 }
 
 function stripGeneratedAt(value) {
-  const clone = JSON.parse(JSON.stringify(value));
+  const clone = structuredClone(value);
   delete clone.generatedAt;
   return clone;
 }
@@ -54,7 +54,6 @@ function validateCommittedFixtureCorpus() {
   for (const rawPath of rawFiles) {
     const rawFixture = loadFixtureFile(rawPath, { rootDir: fixtureRoot, requireRedacted: true });
     const normalized = normalizeDirectCodexEvents(rawFixture.records, { failOnUnknown: true });
-    assert(normalized.unknown.length === 0, `Expected no unknown raw event types for ${rawFixture.id}.`);
 
     const expectedNormalized = loadFixtureFile(
       expectedFixturePath(NORMALIZED_FIXTURE_DIR, rawFixture.id),
@@ -75,6 +74,7 @@ function validateCommittedFixtureCorpus() {
       expectedFixturePath(PROFILE_DELTAS_FIXTURE_DIR, rawFixture.id),
       { rootDir: fixtureRoot, requireRedacted: true },
     );
+    assert(expectedDelta.records.length > 0, `Expected at least one delta record in ${expectedDelta.id}.`);
     nodeAssert.deepStrictEqual(
       stripGeneratedAt(actualDelta),
       stripGeneratedAt(expectedDelta.records[0]),
