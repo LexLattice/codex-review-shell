@@ -144,6 +144,15 @@ function buildDirectRuntimeStatus(options = {}) {
       liveProbed: false,
       runnable: false,
     },
+    textProbe: {
+      available: directModeSelected,
+      liveBackend: true,
+      runnable: false,
+      manualOnly: true,
+      toolsEnabled: false,
+      continuationEnabled: false,
+      rawBackendFramesExposed: false,
+    },
     threads: {
       canStart: false,
       canRead: false,
