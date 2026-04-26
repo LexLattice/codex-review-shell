@@ -18,9 +18,11 @@
     "dev": "node ./scripts/run-electron.mjs .",
     "dev:wsl": "./scripts/run-wsl-dev.sh",
     "smoke": "env CODEX_REVIEW_SHELL_SMOKE_EXIT_MS=1500 xvfb-run -a node ./scripts/run-electron.mjs .",
-    "check:syntax": "node --check src/main.js && node --check src/preload.js && node --check src/preload-codex-surface.js && node --check src/main/codex-app-server.js && node --check src/main/codex-app-server-protocol.js && node --check src/main/codex-surface-session.js && node --check src/main/local-surface-server.js && node --check src/main/thread-analytics-store.js && node --check src/main/workspace-backend.js && node --check src/backend/wsl-agent.js && node --check src/renderer/app.js && node --check src/renderer/codex-surface.js && node --check scripts/run-electron.mjs && node --check scripts/smoke-agent.mjs && node --check scripts/smoke-config-migration.mjs",
+    "check:syntax": "node --check src/main.js && node --check src/preload.js && node --check src/preload-codex-surface.js && node --check src/main/codex-app-server.js && node --check src/main/codex-app-server-protocol.js && node --check src/main/codex-surface-session.js && node --check src/main/direct/fixtures/fixture-loader.js && node --check src/main/direct/fixtures/redaction.js && node --check src/main/direct/import/codex-jsonl-import.js && node --check src/main/direct/normalizer/codex-event-normalizer.js && node --check src/main/direct/odeu-profile/profile-delta-builder.js && node --check src/main/direct/odeu-profile/profile-loader.js && node --check src/main/direct/odeu-profile/profile-report.js && node --check src/main/local-surface-server.js && node --check src/main/thread-analytics-store.js && node --check src/main/workspace-backend.js && node --check src/backend/wsl-agent.js && node --check src/renderer/app.js && node --check src/renderer/codex-surface.js && node --check scripts/direct-codex-profile-report.mjs && node --check scripts/direct-codex-smoke.mjs && node --check scripts/run-electron.mjs && node --check scripts/smoke-agent.mjs && node --check scripts/smoke-config-migration.mjs",
     "agent:smoke": "node ./scripts/smoke-agent.mjs",
-    "validate": "npm run check:syntax && npm run migration:smoke && npm run agent:smoke",
+    "direct:report": "node ./scripts/direct-codex-profile-report.mjs",
+    "direct:smoke": "node ./scripts/direct-codex-smoke.mjs",
+    "validate": "npm run check:syntax && npm run migration:smoke && npm run agent:smoke && npm run direct:smoke",
     "migration:smoke": "node ./scripts/smoke-config-migration.mjs"
   },
   "dependencies": {
