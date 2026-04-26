@@ -7,6 +7,8 @@ const DEFAULT_TOKEN_ENDPOINT = "https://auth.openai.com/oauth/token";
 const DEFAULT_REDIRECT_URI = "http://localhost:1455/auth/callback";
 const DEFAULT_SCOPE = "openid profile email offline_access";
 const DEFAULT_CODE_CHALLENGE_METHOD = "S256";
+const CHATGPT_ACCOUNT_CLAIM_PATH = "https://api.openai.com/auth";
+const REDACTED_ACCOUNT_ID = "[REDACTED:account-id]";
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -25,6 +27,16 @@ function base64UrlEncode(buffer) {
     .replace(/[+]/g, "-")
     .replace(/\//g, "_")
     .replace(/=+$/g, "");
+}
+
+function base64UrlDecodeText(value) {
+  const text = requireString(value, "base64url value");
+  if (!/^[A-Za-z0-9_-]+$/.test(text) || text.length % 4 === 1) {
+    throw new Error("base64url value is malformed");
+  }
+  const normalized = text.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+  return Buffer.from(padded, "base64").toString("utf8");
 }
 
 function generatePkceVerifier(bytes = 32) {
@@ -121,6 +133,102 @@ function parseManualCodePaste(input, options = {}) {
   };
 }
 
+function buildTokenExchangeRequestShape(options = {}) {
+  const clientId = requireString(options.clientId, "clientId");
+  const authorizationCode = requireString(options.authorizationCode || options.code, "authorizationCode");
+  const pkceVerifier = requireString(options.pkceVerifier || options.codeVerifier, "pkceVerifier");
+  const redirectUri = options.redirectUri || DEFAULT_REDIRECT_URI;
+  const url = new URL(options.tokenEndpoint || DEFAULT_TOKEN_ENDPOINT).toString();
+  return {
+    url,
+    method: "POST",
+    contentType: "application/x-www-form-urlencoded",
+    grantType: "authorization_code",
+    clientId,
+    redirectUri,
+    hasAuthorizationCode: Boolean(authorizationCode),
+    hasPkceVerifier: Boolean(pkceVerifier),
+    bodyFieldOrder: ["grant_type", "client_id", "code", "code_verifier", "redirect_uri"],
+  };
+}
+
+function buildTokenRefreshRequestShape(options = {}) {
+  const clientId = requireString(options.clientId, "clientId");
+  const refreshToken = requireString(options.refreshToken || options.refresh, "refreshToken");
+  const url = new URL(options.tokenEndpoint || DEFAULT_TOKEN_ENDPOINT).toString();
+  return {
+    url,
+    method: "POST",
+    contentType: "application/x-www-form-urlencoded",
+    grantType: "refresh_token",
+    clientId,
+    hasRefreshToken: Boolean(refreshToken),
+    bodyFieldOrder: ["grant_type", "refresh_token", "client_id"],
+  };
+}
+
+function decodeJwtPayload(jwt) {
+  const text = requireString(jwt, "JWT");
+  const parts = text.split(".");
+  if (parts.length !== 3) {
+    return {
+      status: "invalid_jwt",
+      payload: null,
+      reason: "JWT must have three segments.",
+    };
+  }
+  try {
+    const payload = JSON.parse(base64UrlDecodeText(parts[1]));
+    if (!isPlainObject(payload)) throw new Error("payload is not an object");
+    return {
+      status: "ok",
+      payload,
+      reason: "",
+    };
+  } catch {
+    return {
+      status: "invalid_jwt",
+      payload: null,
+      reason: "JWT payload is not valid base64url JSON.",
+    };
+  }
+}
+
+function redactAccountId(accountId) {
+  const text = String(accountId || "").trim();
+  if (!text) return "";
+  if (text === REDACTED_ACCOUNT_ID) return text;
+  return REDACTED_ACCOUNT_ID;
+}
+
+function extractChatgptAccountIdFromJwt(jwt, options = {}) {
+  const claimPath = options.claimPath || CHATGPT_ACCOUNT_CLAIM_PATH;
+  const decoded = decodeJwtPayload(jwt);
+  if (decoded.status !== "ok") {
+    return {
+      status: decoded.status,
+      accountId: "",
+      claimPath,
+      reason: decoded.reason,
+    };
+  }
+  const authClaim = decoded.payload[claimPath];
+  const accountId = isPlainObject(authClaim) ? authClaim.chatgpt_account_id : "";
+  const redactedAccountId = redactAccountId(accountId);
+  if (!redactedAccountId) {
+    return {
+      status: "missing_account_id",
+      accountId: "",
+      claimPath,
+    };
+  }
+  return {
+    status: "ok",
+    accountId: redactedAccountId,
+    claimPath,
+  };
+}
+
 function normalizeTokenResponse(response = {}) {
   if (!isPlainObject(response)) throw new Error("Token response must be a JSON object.");
   if (response.error) {
@@ -142,17 +250,64 @@ function normalizeTokenResponse(response = {}) {
   };
 }
 
+function projectCredentialStatus(credentials = {}, options = {}) {
+  if (!isPlainObject(credentials)) throw new Error("Credentials must be a JSON object.");
+  const nowMs = Number(options.nowMs ?? credentials.nowMs ?? Date.now()) || 0;
+  const expiresAt = Number(credentials.expiresAt ?? credentials.expires ?? 0) || 0;
+  const hasAccessToken = Boolean(credentials.accessToken || credentials.access || credentials.hasAccessToken);
+  const hasRefreshToken = Boolean(credentials.refreshToken || credentials.refresh || credentials.hasRefreshToken);
+  const accountId = redactAccountId(credentials.accountId || credentials.chatgptAccountId || "");
+  const expiresInMs = expiresAt > 0 && nowMs > 0 ? Math.max(0, expiresAt - nowMs) : 0;
+  let status = "unauthenticated";
+  if (hasAccessToken || hasRefreshToken) {
+    status = expiresAt > 0 && nowMs > 0 && expiresAt <= nowMs ? "expired" : "authenticated";
+  }
+  return {
+    status,
+    accountId,
+    expiresAt,
+    expiresInMs,
+    hasAccessToken,
+    hasRefreshToken,
+    rawTokensExposed: false,
+  };
+}
+
+function projectRefreshFailureState(input = {}) {
+  if (!isPlainObject(input)) throw new Error("Refresh failure input must be a JSON object.");
+  const previousStatus = projectCredentialStatus(input.previous || {}, { nowMs: input.nowMs });
+  const error = isPlainObject(input.error) ? input.error : {};
+  return {
+    ...previousStatus,
+    status: "refresh_failed",
+    error: String(error.error || error.code || "refresh_failed"),
+    errorDescription: String(error.errorDescription || error.error_description || ""),
+    retryable: Boolean(error.retryable),
+    preservesRefreshToken: previousStatus.hasRefreshToken,
+    rawTokensExposed: false,
+  };
+}
+
 module.exports = {
+  CHATGPT_ACCOUNT_CLAIM_PATH,
   DEFAULT_AUTHORIZATION_ENDPOINT,
   DEFAULT_CODE_CHALLENGE_METHOD,
   DEFAULT_REDIRECT_URI,
   DEFAULT_SCOPE,
   DEFAULT_TOKEN_ENDPOINT,
+  REDACTED_ACCOUNT_ID,
   base64UrlEncode,
+  base64UrlDecodeText,
+  buildTokenExchangeRequestShape,
+  buildTokenRefreshRequestShape,
   buildAuthorizationUrl,
+  decodeJwtPayload,
+  extractChatgptAccountIdFromJwt,
   generatePkceVerifier,
   normalizeTokenResponse,
   parseCallbackUrl,
   parseManualCodePaste,
   pkceChallengeFromVerifier,
+  projectCredentialStatus,
+  projectRefreshFailureState,
 };

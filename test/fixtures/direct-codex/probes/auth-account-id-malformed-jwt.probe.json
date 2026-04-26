@@ -1,0 +1,24 @@
+{
+  "schema": "direct_codex_probe_manifest@1",
+  "id": "probe.auth.account_id_malformed_jwt",
+  "name": "OAuth Account Id Malformed JWT Shape",
+  "hypothesis": "A malformed synthetic JWT is rejected as an account claim source before any auth status is accepted.",
+  "fixture": {
+    "source": "auth-shape-fixture",
+    "authFixtureId": "auth/account-id-malformed-jwt"
+  },
+  "authShape": {
+    "operation": "jwt_account_id_extraction"
+  },
+  "acceptance": {
+    "expectedState": "candidate",
+    "requiredOutputs": [
+      "status",
+      "reason"
+    ]
+  },
+  "blockedLiveGates": [
+    "No live access token.",
+    "No token storage."
+  ]
+}

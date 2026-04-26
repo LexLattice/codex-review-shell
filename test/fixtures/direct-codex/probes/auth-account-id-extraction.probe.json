@@ -1,0 +1,25 @@
+{
+  "schema": "direct_codex_probe_manifest@1",
+  "id": "probe.auth.account_id_extraction",
+  "name": "OAuth Account Id Extraction Shape",
+  "hypothesis": "A synthetic JWT payload containing the ChatGPT account claim projects to a redacted account id without exposing token material.",
+  "fixture": {
+    "source": "auth-shape-fixture",
+    "authFixtureId": "auth/account-id-extraction"
+  },
+  "authShape": {
+    "operation": "jwt_account_id_extraction"
+  },
+  "acceptance": {
+    "expectedState": "candidate",
+    "requiredOutputs": [
+      "status",
+      "accountId",
+      "claimPath"
+    ]
+  },
+  "blockedLiveGates": [
+    "No live access token.",
+    "No raw account id exposure."
+  ]
+}

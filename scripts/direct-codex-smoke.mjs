@@ -206,7 +206,7 @@ assert(importCandidate.unresolvedObligations.length === 1, "Expected unpaired to
 const committedFixtureCount = validateCommittedFixtureCorpus();
 assert(committedFixtureCount >= 4, "Expected committed direct Codex fixture corpus coverage.");
 const probeResults = runProbeManifestDir(DEFAULT_PROBE_MANIFEST_DIR, { fixtureRoot: DEFAULT_FIXTURE_ROOT });
-assert(probeResults.length >= 12, "Expected committed direct Codex stream and auth probe manifests.");
+assert(probeResults.length >= 22, "Expected committed direct Codex stream and auth probe manifests.");
 const failedProbes = probeResults.filter((probe) => probe.status !== "passed");
 assert(
   failedProbes.length === 0,
@@ -219,11 +219,25 @@ assert(
   "Expected stream fixture-backed probes to record blocked live gates.",
 );
 const authProbeResults = probeResults.filter((probe) => probe.source === "auth-shape-fixture");
-assert(authProbeResults.length >= 8, "Expected committed direct Codex auth-shape probes.");
+assert(authProbeResults.length >= 18, "Expected committed direct Codex auth-shape probes.");
 assert(
   authProbeResults.every((probe) => probe.authOperation && probe.blockedLiveGates.length > 0),
   "Expected auth-shape probes to record operations and blocked live gates.",
 );
+const authProbeOperations = new Set(authProbeResults.map((probe) => probe.authOperation));
+for (const operation of [
+  "authorization_url",
+  "callback_parse",
+  "credential_status_projection",
+  "jwt_account_id_extraction",
+  "manual_code_paste",
+  "refresh_failure_projection",
+  "token_exchange_request_shape",
+  "token_refresh_request_shape",
+  "token_response_normalization",
+]) {
+  assert(authProbeOperations.has(operation), `Expected auth-shape probe operation ${operation}.`);
+}
 const intentionallyFailedProbe = runFixtureBackedProbe({
   schema: "direct_codex_probe_manifest@1",
   id: "probe.fixture.intentional_failure",

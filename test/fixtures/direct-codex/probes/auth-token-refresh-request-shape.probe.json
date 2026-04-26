@@ -1,0 +1,26 @@
+{
+  "schema": "direct_codex_probe_manifest@1",
+  "id": "probe.auth.token_refresh_request_shape",
+  "name": "OAuth Token Refresh Request Shape",
+  "hypothesis": "A redacted refresh token projects to the expected refresh-token form request without network I/O or raw credential exposure.",
+  "fixture": {
+    "source": "auth-shape-fixture",
+    "authFixtureId": "auth/token-refresh-request-shape"
+  },
+  "authShape": {
+    "operation": "token_refresh_request_shape"
+  },
+  "acceptance": {
+    "expectedState": "candidate",
+    "requiredOutputs": [
+      "grantType",
+      "hasRefreshToken",
+      "bodyFieldOrder"
+    ]
+  },
+  "blockedLiveGates": [
+    "No refresh token request.",
+    "No token storage.",
+    "No raw refresh token exposure."
+  ]
+}
