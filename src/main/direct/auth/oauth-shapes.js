@@ -56,7 +56,7 @@ function buildAuthorizationUrl(options = {}) {
   for (const [key, value] of params) {
     url.searchParams.set(key, String(value));
   }
-  for (const [key, value] of Object.entries(options.extraParams || {})) {
+  for (const [key, value] of Object.entries(isPlainObject(options.extraParams) ? options.extraParams : {})) {
     if (value !== undefined && value !== null && value !== "") {
       url.searchParams.set(key, String(value));
     }
@@ -87,17 +87,30 @@ function parseCallbackUrl(callbackUrl, options = {}) {
       errorDescription: parsed.searchParams.get("error_description") || "",
     };
   }
+  const code = parsed.searchParams.get("code") || "";
+  if (!code) {
+    return {
+      status: "missing_code",
+      state,
+    };
+  }
   return {
     status: "code",
-    code: parsed.searchParams.get("code") || "",
+    code,
     state,
   };
+}
+
+function looksLikeOAuthQueryText(text) {
+  const queryText = text.replace(/^[?#]/, "");
+  const params = new URLSearchParams(queryText);
+  return params.has("code") || params.has("error") || params.has("state");
 }
 
 function parseManualCodePaste(input, options = {}) {
   const text = requireString(input, "manual code paste");
   if (/^https?:\/\//i.test(text)) return parseCallbackUrl(text, options);
-  const queryText = text.startsWith("?") || text.includes("=") ? text.replace(/^[?#]/, "") : "";
+  const queryText = text.startsWith("?") || looksLikeOAuthQueryText(text) ? text.replace(/^[?#]/, "") : "";
   if (queryText) {
     return parseCallbackUrl(`${DEFAULT_REDIRECT_URI}?${queryText}`, options);
   }
