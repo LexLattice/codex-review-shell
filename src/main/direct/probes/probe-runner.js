@@ -7,6 +7,13 @@ const {
   DEFAULT_FIXTURE_ROOT,
   loadFixtureFile,
 } = require("../fixtures/fixture-loader");
+const {
+  buildAuthorizationUrl,
+  normalizeTokenResponse,
+  parseCallbackUrl,
+  parseManualCodePaste,
+  pkceChallengeFromVerifier,
+} = require("../auth/oauth-shapes");
 const { normalizeDirectCodexEvents } = require("../normalizer/codex-event-normalizer");
 const { buildFixtureProfileDelta } = require("../odeu-profile/profile-delta-builder");
 
@@ -15,6 +22,13 @@ const PROBE_RESULT_SCHEMA = "direct_codex_probe_result@1";
 const DEFAULT_PROBE_MANIFEST_DIR = path.join(DEFAULT_FIXTURE_ROOT, "probes");
 const PROBE_STAGES = Object.freeze(["hypothesis", "fixture", "normalization", "profile_delta", "acceptance"]);
 const PROBE_ACCEPTANCE_STATES = new Set(["candidate", "accepted", "needs-review", "unstable", "rejected"]);
+const PROBE_FIXTURE_SOURCES = new Set(["committed-fixture", "auth-shape-fixture"]);
+const AUTH_SHAPE_OPERATIONS = new Set([
+  "authorization_url",
+  "callback_parse",
+  "manual_code_paste",
+  "token_response_normalization",
+]);
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -27,10 +41,10 @@ function stripGeneratedAt(value) {
 }
 
 function fixtureNameFromId(fixtureId) {
-  return String(fixtureId || "").replace(/^(raw|normalized|profile-deltas)\//, "");
+  return String(fixtureId || "").replace(/^(auth|raw|normalized|profile-deltas)\//, "");
 }
 
-function validateProbeManifest(manifest) {
+function validateCommonProbeManifest(manifest) {
   if (!isPlainObject(manifest)) throw new Error("Probe manifest must be a JSON object.");
   if (manifest.schema !== PROBE_MANIFEST_SCHEMA) {
     throw new Error(`Expected probe manifest schema ${PROBE_MANIFEST_SCHEMA}, got ${manifest.schema || "missing"}.`);
@@ -41,9 +55,17 @@ function validateProbeManifest(manifest) {
     throw new Error(`${manifest.id} requires hypothesis.`);
   }
   if (!isPlainObject(manifest.fixture)) throw new Error(`${manifest.id} requires fixture.`);
-  if (manifest.fixture.source !== "committed-fixture") {
-    throw new Error(`${manifest.id} must be fixture-backed; live probes are not admitted in v0.`);
+  if (!PROBE_FIXTURE_SOURCES.has(manifest.fixture.source)) {
+    throw new Error(`${manifest.id} must use an admitted fixture source; live probes are not admitted in v0.`);
   }
+  if (!isPlainObject(manifest.acceptance)) throw new Error(`${manifest.id} requires acceptance.`);
+  if (!PROBE_ACCEPTANCE_STATES.has(manifest.acceptance.expectedState)) {
+    throw new Error(`${manifest.id} has invalid acceptance.expectedState.`);
+  }
+}
+
+function validateStreamFixtureProbeManifest(manifest) {
+  if (manifest.fixture.source !== "committed-fixture") return false;
   if (typeof manifest.fixture.rawFixtureId !== "string" || !manifest.fixture.rawFixtureId.startsWith("raw/")) {
     throw new Error(`${manifest.id} requires fixture.rawFixtureId starting with raw/.`);
   }
@@ -55,14 +77,75 @@ function validateProbeManifest(manifest) {
   if (manifest.profileDelta.expectedFixtureId !== `profile-deltas/${fixtureNameFromId(manifest.fixture.rawFixtureId)}`) {
     throw new Error(`${manifest.id} profile delta fixture must match its raw fixture name.`);
   }
-  if (!isPlainObject(manifest.acceptance)) throw new Error(`${manifest.id} requires acceptance.`);
-  if (!PROBE_ACCEPTANCE_STATES.has(manifest.acceptance.expectedState)) {
-    throw new Error(`${manifest.id} has invalid acceptance.expectedState.`);
-  }
   if (!Array.isArray(manifest.acceptance.requiredEventTypes) || manifest.acceptance.requiredEventTypes.length === 0) {
     throw new Error(`${manifest.id} requires acceptance.requiredEventTypes.`);
   }
   return true;
+}
+
+function validateAuthShapeProbeManifest(manifest) {
+  if (manifest.fixture.source !== "auth-shape-fixture") return false;
+  if (typeof manifest.fixture.authFixtureId !== "string" || !manifest.fixture.authFixtureId.startsWith("auth/")) {
+    throw new Error(`${manifest.id} requires fixture.authFixtureId starting with auth/.`);
+  }
+  if (!isPlainObject(manifest.authShape)) throw new Error(`${manifest.id} requires authShape.`);
+  if (!AUTH_SHAPE_OPERATIONS.has(manifest.authShape.operation)) {
+    throw new Error(`${manifest.id} has invalid authShape.operation.`);
+  }
+  if (!Array.isArray(manifest.acceptance.requiredOutputs) || manifest.acceptance.requiredOutputs.length === 0) {
+    throw new Error(`${manifest.id} requires acceptance.requiredOutputs.`);
+  }
+  return true;
+}
+
+function validateProbeManifest(manifest) {
+  validateCommonProbeManifest(manifest);
+  if (validateStreamFixtureProbeManifest(manifest)) return true;
+  if (validateAuthShapeProbeManifest(manifest)) return true;
+  throw new Error(`${manifest.id} uses an unsupported probe fixture source.`);
+}
+
+function outputValueAtPath(output, dottedPath) {
+  const parts = String(dottedPath || "").split(".").filter(Boolean);
+  let current = output;
+  for (const part of parts) {
+    if (!isPlainObject(current) && !Array.isArray(current)) return undefined;
+    current = current[part];
+  }
+  return current;
+}
+
+function assertRequiredOutputs(manifest, output) {
+  for (const outputPath of manifest.acceptance.requiredOutputs) {
+    assert.notEqual(
+      outputValueAtPath(output, outputPath),
+      undefined,
+      `${manifest.id} expected auth output ${outputPath}.`,
+    );
+  }
+}
+
+function executeAuthShapeOperation(operation, input = {}) {
+  if (operation === "authorization_url") {
+    const codeChallenge = pkceChallengeFromVerifier(input.pkceVerifier);
+    return {
+      pkceChallenge: codeChallenge,
+      url: buildAuthorizationUrl({
+        ...input,
+        codeChallenge,
+      }),
+    };
+  }
+  if (operation === "callback_parse") {
+    return parseCallbackUrl(input.callbackUrl, { expectedState: input.expectedState || "" });
+  }
+  if (operation === "manual_code_paste") {
+    return parseManualCodePaste(input.text, { expectedState: input.expectedState || "" });
+  }
+  if (operation === "token_response_normalization") {
+    return normalizeTokenResponse(input.response);
+  }
+  throw new Error(`Unsupported auth shape operation: ${operation}`);
 }
 
 function loadProbeManifestFile(filePath) {
@@ -122,17 +205,19 @@ function failedProbeResult(manifest, error) {
       raw: safeManifest.fixture?.rawFixtureId || "",
       normalized: safeManifest.normalization?.expectedFixtureId || "",
       profileDelta: safeManifest.profileDelta?.expectedFixtureId || "",
+      auth: safeManifest.fixture?.authFixtureId || "",
     },
     normalizedEventCounts: {},
     rawEventTypes: [],
     unknownRawTypes: [],
+    authOperation: safeManifest.authShape?.operation || "",
     acceptance: safeManifest.acceptance?.expectedState || "needs-review",
     blockedLiveGates: Array.isArray(safeManifest.blockedLiveGates) ? safeManifest.blockedLiveGates : [],
     errorMessage: error && error.message ? error.message : String(error || "Unknown probe failure."),
   };
 }
 
-function executeFixtureBackedProbe(manifest, options = {}) {
+function executeStreamFixtureBackedProbe(manifest, options = {}) {
   validateProbeManifest(manifest);
   const fixtureRoot = path.resolve(options.fixtureRoot || DEFAULT_FIXTURE_ROOT);
   const rawFixture = loadFixtureById(fixtureDirectory(fixtureRoot, "raw"), manifest.fixture.rawFixtureId, fixtureRoot);
@@ -181,13 +266,62 @@ function executeFixtureBackedProbe(manifest, options = {}) {
       raw: rawFixture.id,
       normalized: expectedNormalized.id,
       profileDelta: expectedDelta.id,
+      auth: "",
     },
     normalizedEventCounts: actualDelta.normalizedEventCounts,
     rawEventTypes: actualDelta.rawEventTypes,
     unknownRawTypes: actualDelta.unknownRawTypes,
+    authOperation: "",
     acceptance: actualDelta.acceptance,
     blockedLiveGates: Array.isArray(manifest.blockedLiveGates) ? manifest.blockedLiveGates : [],
   };
+}
+
+function executeAuthShapeFixtureProbe(manifest, options = {}) {
+  validateProbeManifest(manifest);
+  const fixtureRoot = path.resolve(options.fixtureRoot || DEFAULT_FIXTURE_ROOT);
+  const fixture = loadFixtureById(fixtureDirectory(fixtureRoot, "auth"), manifest.fixture.authFixtureId, fixtureRoot);
+  assert.ok(fixture.records.length > 0, `${manifest.id} expected auth fixture to contain one record.`);
+  const record = fixture.records[0];
+  assert.equal(record.operation, manifest.authShape.operation, `${manifest.id} auth operation mismatch.`);
+  const actual = executeAuthShapeOperation(record.operation, record.input || {});
+  assert.deepStrictEqual(actual, record.expected, `${manifest.id} auth shape output does not match ${fixture.id}.`);
+  assertRequiredOutputs(manifest, actual);
+  return {
+    schema: PROBE_RESULT_SCHEMA,
+    id: manifest.id,
+    name: manifest.name,
+    source: manifest.fixture.source,
+    status: "passed",
+    stages: {
+      hypothesis: "passed",
+      fixture: "passed",
+      normalization: "passed",
+      profile_delta: "skipped",
+      acceptance: "passed",
+    },
+    fixtureIds: {
+      raw: "",
+      normalized: "",
+      profileDelta: "",
+      auth: fixture.id,
+    },
+    normalizedEventCounts: {},
+    rawEventTypes: [],
+    unknownRawTypes: [],
+    authOperation: record.operation,
+    authOutput: actual,
+    acceptance: manifest.acceptance.expectedState,
+    blockedLiveGates: Array.isArray(manifest.blockedLiveGates) ? manifest.blockedLiveGates : [],
+  };
+}
+
+function executeFixtureBackedProbe(manifest, options = {}) {
+  validateProbeManifest(manifest);
+  if (manifest.fixture.source === "auth-shape-fixture") {
+    return executeAuthShapeFixtureProbe(manifest, options);
+  }
+  return executeStreamFixtureBackedProbe(manifest, options);
 }
 
 function runFixtureBackedProbe(manifest, options = {}) {

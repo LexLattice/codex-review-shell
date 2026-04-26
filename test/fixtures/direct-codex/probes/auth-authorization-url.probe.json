@@ -1,0 +1,25 @@
+{
+  "schema": "direct_codex_probe_manifest@1",
+  "id": "probe.auth.authorization_url",
+  "name": "OAuth Authorization URL Shape",
+  "hypothesis": "A synthetic PKCE verifier and state build the expected ChatGPT/Codex OAuth authorization URL without launching a browser or performing network I/O.",
+  "fixture": {
+    "source": "auth-shape-fixture",
+    "authFixtureId": "auth/authorization-url"
+  },
+  "authShape": {
+    "operation": "authorization_url"
+  },
+  "acceptance": {
+    "expectedState": "candidate",
+    "requiredOutputs": [
+      "pkceChallenge",
+      "url"
+    ]
+  },
+  "blockedLiveGates": [
+    "No browser launch.",
+    "No localhost callback server.",
+    "No live OAuth authorization request."
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "operation": "token_response_normalization",
+  "input": {
+    "response": {
+      "error": "invalid_grant",
+      "error_description": "Synthetic expired authorization code.",
+      "retryable": false
+    }
+  },
+  "expected": {
+    "status": "error",
+    "error": "invalid_grant",
+    "errorDescription": "Synthetic expired authorization code.",
+    "retryable": false
+  }
+}
