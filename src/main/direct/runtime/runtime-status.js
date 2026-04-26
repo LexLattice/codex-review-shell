@@ -92,8 +92,10 @@ function buildDirectRuntimeStatus(options = {}) {
   const profileDoc = isPlainObject(options.profileDoc) ? options.profileDoc : {};
   const legacySession = isPlainObject(options.legacySession) ? options.legacySession : null;
   const sessionStore = isPlainObject(options.sessionStore) ? options.sessionStore : null;
+  const fixtureRuntime = isPlainObject(options.fixtureRuntime) ? options.fixtureRuntime : null;
   const modelEntries = modelEntriesFromProfile(profileDoc);
   const directModeSelected = binding.runtimeMode !== "legacy-app-server";
+  const fixtureRuntimeAvailable = directModeSelected && Boolean(fixtureRuntime?.available);
   const directTurnBlockedReason =
     binding.runtimeMode === "direct"
       ? "direct_runtime_validation_gates_not_passed"
@@ -125,9 +127,16 @@ function buildDirectRuntimeStatus(options = {}) {
       selected: directModeSelected,
       status: directModeSelected ? "not_runnable" : "not_selected",
       ready: false,
-      panelAttachStatus: directModeSelected ? "fixture_status_only" : "legacy_app_server_bridge",
+      panelAttachStatus: fixtureRuntimeAvailable ? "fixture_controller" : directModeSelected ? "fixture_status_only" : "legacy_app_server_bridge",
       turnRunnable: false,
       reason: directModeSelected ? directTurnBlockedReason : "legacy_app_server_mode_active",
+    },
+    fixtureRuntime: {
+      available: fixtureRuntimeAvailable,
+      turnRunnable: fixtureRuntimeAvailable,
+      source: "normalized-fixture",
+      liveBackend: false,
+      rawBackendFramesExposed: false,
     },
     transport: {
       kind: "sse",

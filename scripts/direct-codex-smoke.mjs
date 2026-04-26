@@ -38,6 +38,12 @@ const {
 } = require("../src/main/direct/runtime/runtime-status");
 const { DirectSessionStore } = require("../src/main/direct/session/session-store");
 const {
+  DIRECT_FIXTURE_SURFACE_TRANSPORT,
+  DirectFixtureController,
+  DirectFixtureSurfaceSession,
+  buildDirectFixtureCapabilities,
+} = require("../src/main/direct/controller/fixture-controller");
+const {
   DEFAULT_PROBE_MANIFEST_DIR,
   runFixtureBackedProbe,
   runProbeManifestDir,
@@ -199,6 +205,16 @@ assert(directRuntimeStatus.models.ids.length > 0, "Expected ODEU baseline model 
 assert(directRuntimeStatus.auth.rawTokensExposed === false, "Direct runtime status must not expose raw tokens.");
 assert(directRuntimeStatus.auth.capability.storage === "plain-file-dev-only", "Expected file auth storage to be labeled dev-file only.");
 assert(directRuntimeStatus.diagnostics.rawBackendFramesExposed === false, "Direct runtime status must not expose raw backend frames.");
+const directRuntimeStatusWithFixture = buildDirectRuntimeStatus({
+  project: { surfaceBinding: { codex: { runtimeMode: "direct-experimental" } } },
+  authStatus: { status: "authenticated", storageMode: "file" },
+  authSettings: { storageMode: "file" },
+  profileDoc,
+  fixtureRuntime: { available: true, capabilities: buildDirectFixtureCapabilities() },
+});
+assert(directRuntimeStatusWithFixture.directRuntime.turnRunnable === false, "Fixture path must not imply live direct turns are runnable.");
+assert(directRuntimeStatusWithFixture.fixtureRuntime.turnRunnable === true, "Expected fixture-only turn path to be separately exposed.");
+assert(directRuntimeStatusWithFixture.fixtureRuntime.liveBackend === false, "Fixture runtime must be labeled as non-live.");
 const memoryDirectRuntimeStatus = buildDirectRuntimeStatus({
   project: { surfaceBinding: { codex: { runtimeMode: "direct-experimental" } } },
   authStatus: { status: "unauthenticated", storageMode: "memory" },
@@ -254,6 +270,108 @@ try {
   assert(recovered.recovery.recoveredSessionCount === 1, "Expected session index recovery from session files.");
 } finally {
   fs.rmSync(sessionStoreParent, { recursive: true, force: true });
+}
+
+const fixtureControllerParent = fs.mkdtempSync(path.join(os.tmpdir(), "direct-codex-fixture-controller-"));
+try {
+  const sessionStore = new DirectSessionStore({ rootDir: path.join(fixtureControllerParent, "direct-sessions") });
+  const controller = new DirectFixtureController({ sessionStore, profileDoc });
+  const sentEvents = [];
+  const fakeWebContents = {
+    isDestroyed: () => false,
+    send: (_channel, payload) => sentEvents.push(payload),
+  };
+  const surfaceSession = new DirectFixtureSurfaceSession(fakeWebContents, {
+    controller,
+    project: {
+      id: "project_fixture_controller",
+      name: "Fixture Controller Project",
+      workspace: { kind: "local", localPath: "[REDACTED:private-path]" },
+      surfaceBinding: { codex: { runtimeMode: "direct-experimental", model: "gpt-5.4" } },
+    },
+  });
+  const connected = await surfaceSession.connect({
+    transport: DIRECT_FIXTURE_SURFACE_TRANSPORT,
+    runtime: DIRECT_FIXTURE_SURFACE_TRANSPORT,
+    capabilities: buildDirectFixtureCapabilities(),
+  });
+  assert(connected.connected === true, "Expected fixture surface session to connect.");
+  const initialized = await surfaceSession.request("initialize", {});
+  assert(initialized.runtime === DIRECT_FIXTURE_SURFACE_TRANSPORT, "Expected direct fixture initialize result.");
+  const account = await surfaceSession.request("account/read", {});
+  assert(account.account.type === "chatgpt", "Expected fixture account to mimic ChatGPT auth state.");
+  const started = await surfaceSession.request("thread/start", { model: "gpt-5.4" });
+  assert(started.thread.id, "Expected fixture thread start to create a direct session.");
+  const turnResult = await surfaceSession.request("turn/start", {
+    threadId: started.thread.id,
+    input: [{ type: "text", text: "fixture prompt", text_elements: [] }],
+    model: "gpt-5.4",
+  });
+  assert(turnResult.turn.status === "completed", "Expected fixture turn to complete.");
+  const persisted = sessionStore.readSession(started.thread.id);
+  assert(persisted?.messages?.[0]?.items?.some((item) => item.type === "agentMessage"), "Expected fixture transcript to persist assistant output.");
+  const fixtureStatus = sessionStore.status();
+  assert(fixtureStatus.sessionCount === 1, "Expected fixture controller to persist one session.");
+  assert(fixtureStatus.turnCount === 1, "Expected fixture controller to persist one turn.");
+  assert(fixtureStatus.eventCount > 0, "Expected fixture controller to persist normalized events.");
+  assert(sentEvents.some((event) => event.type === "rpc-notification" && event.method === "item/agentMessage/delta"), "Expected fixture controller to stream renderer notifications.");
+  assert(sentEvents.some((event) => event.type === "rpc-notification" && event.method === "turn/completed"), "Expected fixture controller to emit turn completion.");
+
+  const reasoningFixturePath = path.join(fixtureControllerParent, "reasoning-multi.json");
+  fs.writeFileSync(reasoningFixturePath, JSON.stringify({
+    events: [
+      { type: "reasoning_delta", itemId: "reasoning_fixture", text: "first " },
+      { type: "reasoning_delta", itemId: "reasoning_fixture", text: "second" },
+      { type: "response_completed", responseId: "resp_reasoning_fixture", stopReason: "completed" },
+    ],
+  }), "utf8");
+  const reasoningStore = new DirectSessionStore({ rootDir: path.join(fixtureControllerParent, "reasoning-direct-sessions") });
+  const reasoningEvents = [];
+  const reasoningSurface = new DirectFixtureSurfaceSession({
+    isDestroyed: () => false,
+    send: (_channel, payload) => reasoningEvents.push(payload),
+  }, {
+    controller: new DirectFixtureController({ sessionStore: reasoningStore, profileDoc, fixturePath: reasoningFixturePath }),
+    project: { id: "project_reasoning_fixture", name: "Reasoning Fixture", surfaceBinding: { codex: { runtimeMode: "direct-experimental" } } },
+  });
+  await reasoningSurface.connect({ transport: DIRECT_FIXTURE_SURFACE_TRANSPORT });
+  const reasoningThread = await reasoningSurface.request("thread/start", {});
+  await reasoningSurface.request("turn/start", {
+    threadId: reasoningThread.thread.id,
+    input: [{ type: "text", text: "reasoning prompt", text_elements: [] }],
+  });
+  const reasoningPersisted = reasoningStore.readSession(reasoningThread.thread.id);
+  const reasoningItem = reasoningPersisted.messages[0].items.find((item) => item.id === "reasoning_fixture");
+  assert(reasoningItem?.text === "first second", "Expected reasoning deltas to be accumulated and persisted.");
+  const reasoningStarts = reasoningEvents.filter((event) => event.type === "rpc-notification" && event.method === "item/started" && event.params?.item?.id === "reasoning_fixture");
+  const reasoningDeltas = reasoningEvents.filter((event) => event.type === "rpc-notification" && event.method === "item/agentMessage/delta" && event.params?.itemId === "reasoning_fixture");
+  assert(reasoningStarts.length === 1, "Expected reasoning item to start once.");
+  assert(reasoningDeltas.length === 2, "Expected reasoning deltas to stream as deltas.");
+
+  const failureStore = new DirectSessionStore({ rootDir: path.join(fixtureControllerParent, "failure-direct-sessions") });
+  const failureSurface = new DirectFixtureSurfaceSession({
+    isDestroyed: () => false,
+    send: () => {},
+  }, {
+    controller: new DirectFixtureController({
+      sessionStore: failureStore,
+      profileDoc,
+      fixturePath: path.join(NORMALIZED_FIXTURE_DIR, "failure-cases.json"),
+    }),
+    project: { id: "project_failure_fixture", name: "Failure Fixture", surfaceBinding: { codex: { runtimeMode: "direct-experimental" } } },
+  });
+  await failureSurface.connect({ transport: DIRECT_FIXTURE_SURFACE_TRANSPORT });
+  const failureThread = await failureSurface.request("thread/start", {});
+  const failureTurn = await failureSurface.request("turn/start", {
+    threadId: failureThread.thread.id,
+    input: [{ type: "text", text: "failure prompt", text_elements: [] }],
+  });
+  assert(failureTurn.turn.status === "failed", "Expected failure fixture turn to fail.");
+  const failurePersisted = failureStore.readSession(failureThread.thread.id);
+  assert(failurePersisted.messages[0].status === "failed", "Expected failed fixture turn transcript to be persisted.");
+  assert(failurePersisted.messages[0].items.some((item) => item.type === "userMessage"), "Expected failed fixture transcript to retain the user prompt.");
+} finally {
+  fs.rmSync(fixtureControllerParent, { recursive: true, force: true });
 }
 
 const secretFixture = {
