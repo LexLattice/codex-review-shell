@@ -125,7 +125,17 @@ async function defaultTokenClient(request) {
     headers: { "content-type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams(request.body),
   });
-  const payload = await response.json();
+  let payload = {};
+  try {
+    const parsedPayload = await response.json();
+    payload = isPlainObject(parsedPayload) ? parsedPayload : {};
+  } catch {}
+  if (!response.ok && !payload.error) {
+    payload = {
+      ...payload,
+      error: `http_${response.status}`,
+    };
+  }
   return {
     httpStatus: response.status,
     ...payload,
@@ -151,17 +161,26 @@ function credentialsFromTokenResponse(response, options = {}) {
   const idToken = normalizeString(response.id_token || response.idToken, "");
   const accountFromAccess = accessToken ? extractChatgptAccountIdFromJwt(accessToken) : null;
   const accountFromId = !accountFromAccess?.accountId && idToken ? extractChatgptAccountIdFromJwt(idToken) : null;
-  return {
+  const credentials = {
     accessToken,
     refreshToken: normalizeString(response.refresh_token || response.refreshToken, ""),
     idToken,
     accountId: accountFromAccess?.accountId || accountFromId?.accountId || "",
     expiresIn: Number(response.expires_in ?? response.expiresIn ?? 0) || 0,
-    expiresAt: response.expires_at || response.expiresAt || 0,
     tokenType: normalizeString(response.token_type || response.tokenType, "Bearer"),
     scope: normalizeString(response.scope, ""),
     updatedAtMs: nowMs,
   };
+  if (response.expires_at !== undefined || response.expiresAt !== undefined) {
+    credentials.expiresAt = Number(response.expires_at ?? response.expiresAt ?? 0) || 0;
+  }
+  return credentials;
+}
+
+function normalizeCallbackPort(value, fallback = DEFAULT_CALLBACK_PORT) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const port = Number(value);
+  return Number.isFinite(port) && port >= 0 ? port : fallback;
 }
 
 class DirectAuthLoginCoordinator {
@@ -171,7 +190,7 @@ class DirectAuthLoginCoordinator {
     this.tokenEndpoint = normalizeString(options.tokenEndpoint, DEFAULT_TOKEN_ENDPOINT);
     this.scope = normalizeString(options.scope, DEFAULT_SCOPE);
     this.callbackHost = normalizeString(options.callbackHost, DEFAULT_CALLBACK_HOST);
-    this.callbackPort = Number(options.callbackPort ?? DEFAULT_CALLBACK_PORT) || DEFAULT_CALLBACK_PORT;
+    this.callbackPort = normalizeCallbackPort(options.callbackPort, DEFAULT_CALLBACK_PORT);
     this.callbackPath = normalizeString(options.callbackPath, DEFAULT_CALLBACK_PATH);
     this.callbackTimeoutMs = Number(options.callbackTimeoutMs || DEFAULT_CALLBACK_TIMEOUT_MS) || DEFAULT_CALLBACK_TIMEOUT_MS;
     this.extraParams = isPlainObject(options.extraParams) ? options.extraParams : {};
@@ -202,12 +221,13 @@ class DirectAuthLoginCoordinator {
       return safeLoginFailure(normalized.error || "token_exchange_failed", "token_exchange_failed");
     }
     const credentials = credentialsFromTokenResponse(tokenResponse, options);
-    controller.writeCredentials(credentials, options);
+    const authStatus = controller.writeCredentials(credentials, options);
+    const ok = authStatus.status === "authenticated";
     return {
       schema: DIRECT_AUTH_LOGIN_FLOW_SCHEMA,
-      ok: true,
-      status: "authenticated",
-      reason: "",
+      ok,
+      status: authStatus.status,
+      reason: ok ? "" : "token_exchange_incomplete",
       rawTokensExposed: false,
     };
   }
@@ -228,7 +248,7 @@ class DirectAuthLoginCoordinator {
     this.currentFlow = flow;
 
     try {
-      await listen(server, this.callbackHost, Number(options.callbackPort ?? this.callbackPort));
+      await listen(server, this.callbackHost, normalizeCallbackPort(options.callbackPort, this.callbackPort));
       flow.redirectUri = redirectUriFromServer(server, {
         callbackHost: this.callbackHost,
         callbackPath: this.callbackPath,

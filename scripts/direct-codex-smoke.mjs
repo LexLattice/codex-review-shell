@@ -1,6 +1,7 @@
 import nodeAssert from "node:assert/strict";
 import { createRequire } from "node:module";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -67,6 +68,26 @@ async function waitForCondition(callback, message, timeoutMs = 1_000) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error(message);
+}
+
+function listenHttp(server, host = "127.0.0.1", port = 0) {
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, host, () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+}
+
+function closeHttp(server) {
+  return new Promise((resolve) => {
+    if (!server.listening) {
+      resolve();
+      return;
+    }
+    server.close(() => resolve());
+  });
 }
 
 function canReadBackMode(filePath, expectedMode) {
@@ -350,6 +371,7 @@ try {
       };
     },
   });
+  nodeAssert.equal(loginCoordinator.callbackPort, 0);
   const liveLogin = loginCoordinator.beginLogin({ nowMs }, loginController);
   await waitForCondition(() => openedAuthUrl, "Expected auth coordinator to open an authorization URL.");
   const authorizationUrl = new URL(openedAuthUrl);
@@ -374,8 +396,53 @@ try {
   const loginCredentials = loginController.activeStore().readCredentials();
   nodeAssert.equal(loginCredentials.refreshToken, "fixture-login-refresh-token-secret");
   nodeAssert.equal(loginCredentials.accountId, "[REDACTED:account-id]");
+  nodeAssert.equal(loginCredentials.expiresAt, nowMs + 3_600_000);
   assert(!JSON.stringify(liveLoginResult).includes("fixture-login-code-secret"), "Login result must not expose auth code.");
   assert(!JSON.stringify(liveLoginResult).includes("fixture-login-refresh-token-secret"), "Login result must not expose refresh token.");
+
+  const incompleteController = createDirectAuthIpcController({ rootDir: path.join(authStoreParent, "auth-login-incomplete") });
+  const incompleteCoordinator = createDirectAuthLoginCoordinator({
+    clientId: "codex-desktop-fixture-client",
+    tokenClient: async () => ({ token_type: "Bearer" }),
+  });
+  const incompleteFlow = incompleteCoordinator.buildFlow({
+    redirectUri: "http://localhost:0/auth/callback",
+    pkceVerifier: "fixture-pkce-verifier-for-incomplete-token-response",
+    state: "fixture-state",
+  });
+  incompleteFlow.authorizationCode = "fixture-incomplete-code";
+  const incompleteResult = await incompleteCoordinator.exchangeAndStore(incompleteFlow, incompleteController, { nowMs });
+  nodeAssert.equal(incompleteResult.ok, false);
+  nodeAssert.equal(incompleteResult.status, "unauthenticated");
+  nodeAssert.equal(incompleteResult.reason, "token_exchange_incomplete");
+  assertFixtureRedacted(incompleteResult);
+
+  const nonJsonTokenServer = http.createServer((_request, response) => {
+    response.writeHead(500, { "content-type": "text/html; charset=utf-8" });
+    response.end("<!doctype html><title>proxy error</title>");
+  });
+  await listenHttp(nonJsonTokenServer);
+  try {
+    const nonJsonAddress = nonJsonTokenServer.address();
+    const nonJsonController = createDirectAuthIpcController({ rootDir: path.join(authStoreParent, "auth-login-non-json") });
+    const nonJsonCoordinator = createDirectAuthLoginCoordinator({
+      clientId: "codex-desktop-fixture-client",
+      tokenEndpoint: `http://127.0.0.1:${nonJsonAddress.port}/token`,
+    });
+    const nonJsonFlow = nonJsonCoordinator.buildFlow({
+      redirectUri: "http://localhost:0/auth/callback",
+      pkceVerifier: "fixture-pkce-verifier-for-non-json-token-response",
+      state: "fixture-state",
+    });
+    nonJsonFlow.authorizationCode = "fixture-non-json-code";
+    const nonJsonResult = await nonJsonCoordinator.exchangeAndStore(nonJsonFlow, nonJsonController, { nowMs });
+    nodeAssert.equal(nonJsonResult.ok, false);
+    nodeAssert.equal(nonJsonResult.status, "token_exchange_failed");
+    nodeAssert.equal(nonJsonResult.reason, "http_500");
+    assertFixtureRedacted(nonJsonResult);
+  } finally {
+    await closeHttp(nonJsonTokenServer);
+  }
 
   const authEvents = [];
   const ipcHandlers = new Map();
