@@ -1,5 +1,10 @@
+import argparse
 import json
-from datetime import datetime, timezone
+import sys
+from pathlib import Path
+
+PROFILE_FILENAME = "chatgpt_codex_subscription_oai_server_odeu_profile.2026-04-25.json"
+SCHEMA_FILENAME = "direct_codex_odeu_profile.v1.schema.json"
 
 observed_at = "2026-04-25T22:45:00Z"
 
@@ -346,6 +351,76 @@ profile = {
     }
 }
 
-with open('/mnt/data/chatgpt_codex_odeu_profile/chatgpt_codex_subscription_oai_server_odeu_profile.2026-04-25.json', 'w', encoding='utf-8') as f:
-    json.dump(profile, f, indent=2)
-    f.write('\n')
+def render_profile():
+    return json.dumps(profile, indent=2) + "\n"
+
+
+def validate_profile(schema_path):
+    try:
+        import jsonschema
+    except ImportError as exc:
+        raise RuntimeError("jsonschema is required for --validate-schema") from exc
+
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    jsonschema.validate(profile, schema)
+
+
+def main():
+    script_dir = Path(__file__).resolve().parent
+    default_output = script_dir / PROFILE_FILENAME
+    default_schema = script_dir / SCHEMA_FILENAME
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Generate the imported ChatGPT/Codex ODEU conceptual baseline profile. "
+            "This does not run live OAuth or backend probes."
+        )
+    )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=default_output,
+        help="Profile output path. Defaults to the committed profile artifact next to this script.",
+    )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="Exit non-zero if the output file does not match the generated profile.",
+    )
+    parser.add_argument(
+        "--validate-schema",
+        action="store_true",
+        help="Validate the generated profile against the local JSON Schema using jsonschema.",
+    )
+    parser.add_argument(
+        "--schema",
+        type=Path,
+        default=default_schema,
+        help="Schema path for --validate-schema.",
+    )
+    args = parser.parse_args()
+
+    rendered = render_profile()
+
+    if args.validate_schema:
+        validate_profile(args.schema)
+
+    if args.check:
+        if not args.output.exists():
+            print(f"{args.output} does not exist", file=sys.stderr)
+            return 1
+        actual = args.output.read_text(encoding="utf-8")
+        if actual != rendered:
+            print(f"{args.output} is not up to date", file=sys.stderr)
+            return 1
+        print(f"{args.output} is up to date")
+        return 0
+
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(rendered, encoding="utf-8")
+    print(f"Wrote {args.output}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
