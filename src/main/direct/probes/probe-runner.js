@@ -5,10 +5,6 @@ const path = require("node:path");
 const assert = require("node:assert/strict");
 const {
   DEFAULT_FIXTURE_ROOT,
-  NORMALIZED_FIXTURE_DIR,
-  PROFILE_DELTAS_FIXTURE_DIR,
-  RAW_FIXTURE_DIR,
-  listFixtureFiles,
   loadFixtureFile,
 } = require("../fixtures/fixture-loader");
 const { normalizeDirectCodexEvents } = require("../normalizer/codex-event-normalizer");
@@ -32,10 +28,6 @@ function stripGeneratedAt(value) {
 
 function fixtureNameFromId(fixtureId) {
   return String(fixtureId || "").replace(/^(raw|normalized|profile-deltas)\//, "");
-}
-
-function expectedFixturePath(directory, rawFixtureId) {
-  return path.join(directory, `${fixtureNameFromId(rawFixtureId)}.json`);
 }
 
 function validateProbeManifest(manifest) {
@@ -104,6 +96,10 @@ function loadFixtureById(directory, fixtureId, fixtureRoot) {
   );
 }
 
+function fixtureDirectory(fixtureRoot, kind) {
+  return path.join(fixtureRoot, kind);
+}
+
 function assertRequiredEvents(manifest, eventCounts) {
   for (const eventType of manifest.acceptance.requiredEventTypes) {
     assert.ok(
@@ -113,14 +109,41 @@ function assertRequiredEvents(manifest, eventCounts) {
   }
 }
 
-function runFixtureBackedProbe(manifest, options = {}) {
+function failedProbeResult(manifest, error) {
+  const safeManifest = isPlainObject(manifest) ? manifest : {};
+  return {
+    schema: PROBE_RESULT_SCHEMA,
+    id: safeManifest.id || "unknown-probe",
+    name: safeManifest.name || safeManifest.id || "Unknown probe",
+    source: safeManifest.fixture?.source || "unknown",
+    status: "failed",
+    stages: Object.fromEntries(PROBE_STAGES.map((stage) => [stage, "failed"])),
+    fixtureIds: {
+      raw: safeManifest.fixture?.rawFixtureId || "",
+      normalized: safeManifest.normalization?.expectedFixtureId || "",
+      profileDelta: safeManifest.profileDelta?.expectedFixtureId || "",
+    },
+    normalizedEventCounts: {},
+    rawEventTypes: [],
+    unknownRawTypes: [],
+    acceptance: safeManifest.acceptance?.expectedState || "needs-review",
+    blockedLiveGates: Array.isArray(safeManifest.blockedLiveGates) ? safeManifest.blockedLiveGates : [],
+    errorMessage: error && error.message ? error.message : String(error || "Unknown probe failure."),
+  };
+}
+
+function executeFixtureBackedProbe(manifest, options = {}) {
   validateProbeManifest(manifest);
   const fixtureRoot = path.resolve(options.fixtureRoot || DEFAULT_FIXTURE_ROOT);
-  const rawFixture = loadFixtureById(RAW_FIXTURE_DIR, manifest.fixture.rawFixtureId, fixtureRoot);
+  const rawFixture = loadFixtureById(fixtureDirectory(fixtureRoot, "raw"), manifest.fixture.rawFixtureId, fixtureRoot);
   const normalizedResult = normalizeDirectCodexEvents(rawFixture.records, {
     failOnUnknown: manifest.normalization.failOnUnknown !== false,
   });
-  const expectedNormalized = loadFixtureById(NORMALIZED_FIXTURE_DIR, manifest.normalization.expectedFixtureId, fixtureRoot);
+  const expectedNormalized = loadFixtureById(
+    fixtureDirectory(fixtureRoot, "normalized"),
+    manifest.normalization.expectedFixtureId,
+    fixtureRoot,
+  );
   assert.deepStrictEqual(
     normalizedResult.normalized,
     expectedNormalized.records,
@@ -132,7 +155,11 @@ function runFixtureBackedProbe(manifest, options = {}) {
     normalizedEvents: normalizedResult.normalized,
     unknownRawTypes: normalizedResult.unknown.map((event) => event.rawType),
   });
-  const expectedDelta = loadFixtureById(PROFILE_DELTAS_FIXTURE_DIR, manifest.profileDelta.expectedFixtureId, fixtureRoot);
+  const expectedDelta = loadFixtureById(
+    fixtureDirectory(fixtureRoot, "profile-deltas"),
+    manifest.profileDelta.expectedFixtureId,
+    fixtureRoot,
+  );
   assert.ok(expectedDelta.records.length > 0, `${manifest.id} expected profile delta fixture is empty.`);
   assert.deepStrictEqual(
     stripGeneratedAt(actualDelta),
@@ -161,6 +188,15 @@ function runFixtureBackedProbe(manifest, options = {}) {
     acceptance: actualDelta.acceptance,
     blockedLiveGates: Array.isArray(manifest.blockedLiveGates) ? manifest.blockedLiveGates : [],
   };
+}
+
+function runFixtureBackedProbe(manifest, options = {}) {
+  try {
+    return executeFixtureBackedProbe(manifest, options);
+  } catch (error) {
+    if (options.throwOnFailure) throw error;
+    return failedProbeResult(manifest, error);
+  }
 }
 
 function runProbeManifests(manifestDocs, options = {}) {

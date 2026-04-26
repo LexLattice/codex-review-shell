@@ -87,6 +87,9 @@ function buildDirectCodexProfileReport(input = {}) {
       if (probe.fixtureIds) {
         lines.push(`  fixtures: ${probe.fixtureIds.raw}, ${probe.fixtureIds.normalized}, ${probe.fixtureIds.profileDelta}`);
       }
+      if (probe.status === "failed" && probe.errorMessage) {
+        lines.push(`  error: ${probe.errorMessage}`);
+      }
     }
   }
 
