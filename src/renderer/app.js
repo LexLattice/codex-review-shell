@@ -64,6 +64,9 @@ const state = {
   directAuthStatus: null,
   directAuthLoading: false,
   directAuthError: "",
+  directRuntimeStatus: null,
+  directRuntimeLoading: false,
+  directRuntimeError: "",
   selectedCodexThreadId: "",
   openedCodexProjectId: "",
   openedCodexThreadId: "",
@@ -131,6 +134,9 @@ const els = {
   directAuthLoginButton: document.getElementById("directAuthLoginButton"),
   directAuthLogoutButton: document.getElementById("directAuthLogoutButton"),
   directAuthEvidence: document.getElementById("directAuthEvidence"),
+  directRuntimeModeBadge: document.getElementById("directRuntimeModeBadge"),
+  directRuntimeStatusBadge: document.getElementById("directRuntimeStatusBadge"),
+  directModelSourceBadge: document.getElementById("directModelSourceBadge"),
   promptRoleLabel: document.getElementById("promptRoleLabel"),
   activePromptPreview: document.getElementById("activePromptPreview"),
   handoffTargetThreadSelect: document.getElementById("handoffTargetThreadSelect"),
@@ -196,7 +202,9 @@ const els = {
   codexModeInput: document.getElementById("codexModeInput"),
   codexLabelInput: document.getElementById("codexLabelInput"),
   codexRuntimeInput: document.getElementById("codexRuntimeInput"),
+  codexRuntimeModeInput: document.getElementById("codexRuntimeModeInput"),
   codexBinaryPathInput: document.getElementById("codexBinaryPathInput"),
+  codexProfileIdInput: document.getElementById("codexProfileIdInput"),
   codexModelInput: document.getElementById("codexModelInput"),
   codexReasoningEffortInput: document.getElementById("codexReasoningEffortInput"),
   codexTargetInput: document.getElementById("codexTargetInput"),
@@ -1087,6 +1095,32 @@ function directAuthModeSignature(modes) {
   return modes.map((mode) => String(mode || "")).join("|");
 }
 
+function directRuntimeStatusLabel(status) {
+  const runtime = status?.directRuntime || {};
+  if (runtime.turnRunnable) return "turns runnable";
+  if (runtime.status === "not_selected") return "legacy bridge active";
+  if (runtime.status === "not_runnable") return "turns not runnable";
+  return runtime.status || status?.status || "unknown";
+}
+
+function directRuntimeModeLabel(status) {
+  return status?.runtimeModeLabel || status?.runtimeMode || "legacy app-server";
+}
+
+function renderDirectRuntimeStatus() {
+  if (!els.directRuntimeModeBadge) return;
+  const status = state.directRuntimeStatus || {};
+  const runtime = status.directRuntime || {};
+  const modelSource = status.models?.source || "unknown";
+  const profileId = status.diagnostics?.profileId || "";
+  els.directRuntimeModeBadge.textContent = directRuntimeModeLabel(status);
+  els.directRuntimeModeBadge.title = status.currentCodexLane || directRuntimeModeLabel(status);
+  els.directRuntimeStatusBadge.textContent = state.directRuntimeLoading ? "loading runtime" : directRuntimeStatusLabel(status);
+  els.directRuntimeStatusBadge.title = state.directRuntimeError || runtime.reason || directRuntimeStatusLabel(status);
+  els.directModelSourceBadge.textContent = `models: ${modelSource}`;
+  els.directModelSourceBadge.title = profileId ? `Profile: ${profileId}` : "Model source is not available.";
+}
+
 function renderDirectAuthControls() {
   if (!els.directAuthState) return;
   const settings = state.directAuthSettings || {};
@@ -1130,10 +1164,11 @@ function renderDirectAuthControls() {
   els.directAuthLoginButton.title = settings.liveOAuthAvailable ? "Start direct auth login." : "Live OAuth is not implemented yet.";
   els.directAuthLogoutButton.disabled = loading || (!status?.hasAccessToken && !status?.hasRefreshToken && status?.status !== "refresh_failed");
   const codex = activeProject()?.surfaceBinding?.codex || {};
-  const codexLane = codex.mode === "managed" ? "legacy app-server bridge" : codex.mode || "unbound";
+  const codexLane = state.directRuntimeStatus?.currentCodexLane || (codex.mode === "managed" ? "legacy app-server bridge" : codex.mode || "unbound");
   els.directAuthEvidence.textContent = state.directAuthError
     ? "Direct auth status unavailable. No raw tokens or paths exposed to renderer."
     : `Codex lane: ${codexLane} · renderer sees redacted auth only · tokens exposed: ${status?.rawTokensExposed ? "yes" : "no"} · paths exposed: ${settings.storagePathExposed ? "yes" : "no"}`;
+  renderDirectRuntimeStatus();
 }
 
 function renderMiddleTabs() {
@@ -2118,6 +2153,7 @@ async function refreshDirectAuthStatus() {
     if (state.directAuthSettings) {
       state.directAuthSettings = { ...state.directAuthSettings, authStatus: state.directAuthStatus };
     }
+    await refreshDirectRuntimeStatus();
     setLastEvent(`Direct auth ${directAuthStatusLabel(state.directAuthStatus)}.`);
   } catch (error) {
     state.directAuthError = sanitizedDirectAuthError("Direct auth status failed.");
@@ -2125,6 +2161,21 @@ async function refreshDirectAuthStatus() {
   } finally {
     state.directAuthLoading = false;
     renderDirectAuthControls();
+  }
+}
+
+async function refreshDirectRuntimeStatus(projectId = activeProject()?.id || "") {
+  if (!bridge.getDirectRuntimeStatus || !projectId) return;
+  state.directRuntimeLoading = true;
+  state.directRuntimeError = "";
+  renderDirectRuntimeStatus();
+  try {
+    state.directRuntimeStatus = await bridge.getDirectRuntimeStatus(projectId);
+  } catch (error) {
+    state.directRuntimeError = error.message || "Direct runtime status failed.";
+  } finally {
+    state.directRuntimeLoading = false;
+    renderDirectRuntimeStatus();
   }
 }
 
@@ -2258,6 +2309,7 @@ async function selectProject(projectId) {
   render();
   const project = activeProject();
   if (!project || project.id !== projectId || isRequestStale("project", projectVersion)) return;
+  await refreshDirectRuntimeStatus(project.id);
   if (project?.lastActiveBindingId) {
     const binding = laneBindingById(project, project.lastActiveBindingId);
     if (binding) populateBindingEditor(binding);
@@ -2431,7 +2483,10 @@ function openDrawer(mode) {
     surfaceBinding: {
       codex: {
         mode: "managed",
+        provider: "codex-compatible",
+        runtimeMode: "legacy-app-server",
         runtime: state.defaultCodexRuntime || "auto",
+        profileId: "",
         binaryPath: "codex",
         target: "",
         model: "",
@@ -2483,7 +2538,9 @@ function openDrawer(mode) {
   updateWorkspaceFieldVisibility();
   els.codexModeInput.value = draft.surfaceBinding.codex.mode;
   els.codexLabelInput.value = draft.surfaceBinding.codex.label;
+  els.codexRuntimeModeInput.value = draft.surfaceBinding.codex.runtimeMode || "legacy-app-server";
   els.codexRuntimeInput.value = draft.surfaceBinding.codex.runtime || "auto";
+  els.codexProfileIdInput.value = draft.surfaceBinding.codex.profileId || "";
   els.codexBinaryPathInput.value = draft.surfaceBinding.codex.binaryPath || "codex";
   els.codexModelInput.value = draft.surfaceBinding.codex.model || "";
   els.codexReasoningEffortInput.value = draft.surfaceBinding.codex.reasoningEffort || "";
@@ -2567,7 +2624,10 @@ function projectFromForm() {
     surfaceBinding: {
       codex: {
         mode: els.codexModeInput.value,
+        provider: els.codexRuntimeModeInput.value === "legacy-app-server" ? "codex-compatible" : "direct-chatgpt-codex",
+        runtimeMode: els.codexRuntimeModeInput.value,
         runtime: els.codexRuntimeInput.value,
+        profileId: els.codexProfileIdInput.value.trim(),
         binaryPath: els.codexBinaryPathInput.value.trim() || "codex",
         target: els.codexTargetInput.value.trim(),
         model: els.codexModelInput.value.trim(),
@@ -3430,6 +3490,11 @@ function bindEvents() {
     if (event.type === "direct-auth-bridge-status") {
       setLastEvent(`Direct auth bridge ${event.status || "unknown"}: ${event.reason || "no details"}`);
     }
+    if (event.type === "direct-runtime-status") {
+      state.directRuntimeStatus = event.status || state.directRuntimeStatus;
+      renderDirectAuthControls();
+      setLastEvent(`Direct runtime ${directRuntimeModeLabel(state.directRuntimeStatus)}: ${directRuntimeStatusLabel(state.directRuntimeStatus)}.`);
+    }
     if (event.type === "codex-request-updated" && event.request?.key) {
       const request = event.request;
       if (["resolved", "declined", "canceled", "connection-closed"].includes(request.status)) {
@@ -3458,6 +3523,7 @@ async function init() {
   state.platform = result.platform || "";
   state.defaultWorkspace = result.defaultWorkspace || null;
   state.defaultCodexRuntime = result.defaultCodexRuntime || "auto";
+  state.directRuntimeStatus = result.directRuntimeStatus || null;
   state.allowNonChatgptUrls = Boolean(result.allowNonChatgptUrls);
   render();
   await loadDirectAuthSettings();

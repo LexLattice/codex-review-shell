@@ -32,6 +32,11 @@ const { buildFixtureProfileDelta } = require("../src/main/direct/odeu-profile/pr
 const { loadDirectCodexProfile } = require("../src/main/direct/odeu-profile/profile-loader");
 const { buildDirectCodexProfileReport } = require("../src/main/direct/odeu-profile/profile-report");
 const {
+  DIRECT_RUNTIME_STATUS_SCHEMA,
+  buildDirectRuntimeStatus,
+  normalizeCodexRuntimeMode,
+} = require("../src/main/direct/runtime/runtime-status");
+const {
   DEFAULT_PROBE_MANIFEST_DIR,
   runFixtureBackedProbe,
   runProbeManifestDir,
@@ -158,6 +163,48 @@ const profileDoc = loadDirectCodexProfile();
 assert(profileDoc.profile.source === "imported-baseline", "Expected imported conceptual baseline profile.");
 assert(profileDoc.capabilityIndex.get("direct_backend_endpoint")?.status === "observed", "Expected direct endpoint to remain observed.");
 assert(profileDoc.capabilityIndex.get("consumer_chatgpt_thread_programmatic_control")?.status === "rejected", "Expected consumer web-thread automation to be rejected.");
+assert(normalizeCodexRuntimeMode("experimental-direct") === "direct-experimental", "Expected direct runtime mode alias normalization.");
+const directRuntimeStatus = buildDirectRuntimeStatus({
+  project: {
+    surfaceBinding: {
+      codex: {
+        mode: "managed",
+        provider: "direct-chatgpt-codex",
+        runtimeMode: "direct-experimental",
+        profileId: profileDoc.profile.profileId,
+      },
+    },
+  },
+  authStatus: {
+    status: "authenticated",
+    accountId: "[REDACTED:account-id]",
+    hasAccessToken: true,
+    hasRefreshToken: true,
+    rawTokensExposed: false,
+    storageMode: "file",
+  },
+  authSettings: {
+    storageMode: "file",
+    storagePathExposed: false,
+  },
+  profileDoc,
+});
+assert(directRuntimeStatus.schema === DIRECT_RUNTIME_STATUS_SCHEMA, "Expected direct runtime status schema.");
+assert(directRuntimeStatus.runtimeMode === "direct-experimental", "Expected direct experimental runtime mode.");
+assert(directRuntimeStatus.directRuntime.turnRunnable === false, "Phase 0 direct runtime must not claim turns are runnable.");
+assert(directRuntimeStatus.models.source === "static-baseline", "Expected direct model source to be visible as static baseline.");
+assert(directRuntimeStatus.models.selectorEnabled === false, "Model selector must remain disabled until direct gates pass.");
+assert(directRuntimeStatus.models.ids.length > 0, "Expected ODEU baseline model ids in runtime status.");
+assert(directRuntimeStatus.auth.rawTokensExposed === false, "Direct runtime status must not expose raw tokens.");
+assert(directRuntimeStatus.auth.capability.storage === "plain-file-dev-only", "Expected file auth storage to be labeled dev-file only.");
+assert(directRuntimeStatus.diagnostics.rawBackendFramesExposed === false, "Direct runtime status must not expose raw backend frames.");
+const memoryDirectRuntimeStatus = buildDirectRuntimeStatus({
+  project: { surfaceBinding: { codex: { runtimeMode: "direct-experimental" } } },
+  authStatus: { status: "unauthenticated", storageMode: "memory" },
+  authSettings: { storageMode: "memory" },
+  profileDoc,
+});
+assert(memoryDirectRuntimeStatus.auth.capability.storage === "ephemeral-memory", "Expected memory auth storage to be labeled separately.");
 
 const secretFixture = {
   headers: {

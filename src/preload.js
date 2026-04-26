@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld("workspaceShell", {
   beginDirectAuthLogin: () => ipcRenderer.invoke("direct-auth:login"),
   completeDirectAuthLogin: (loginId, input) => ipcRenderer.invoke("direct-auth:complete-manual-login", { loginId, input }),
   logoutDirectAuth: () => ipcRenderer.invoke("direct-auth:logout"),
+  getDirectRuntimeStatus: (projectId) => ipcRenderer.invoke("direct-runtime:status", { projectId }),
   openChatgptSettings: () => ipcRenderer.invoke("chatgpt:open-settings"),
   forceChatgptDark: () => ipcRenderer.invoke("chatgpt:force-dark"),
   onSurfaceEvent: (callback) => {

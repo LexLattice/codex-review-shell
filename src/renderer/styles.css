@@ -434,6 +434,10 @@ button:active {
   flex-wrap: wrap;
 }
 
+.direct-runtime-status {
+  align-items: flex-start;
+}
+
 .direct-auth-actions {
   justify-content: flex-end;
 }
