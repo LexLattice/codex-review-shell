@@ -1130,7 +1130,7 @@ function renderDirectAuthControls() {
   els.directAuthLoginButton.title = settings.liveOAuthAvailable ? "Start direct auth login." : "Live OAuth is not implemented yet.";
   els.directAuthLogoutButton.disabled = loading || (!status?.hasAccessToken && !status?.hasRefreshToken && status?.status !== "refresh_failed");
   els.directAuthEvidence.textContent = state.directAuthError
-    ? `Direct auth status unavailable: ${state.directAuthError}`
+    ? "Direct auth status unavailable. No raw tokens or paths exposed to renderer."
     : `Renderer sees redacted status only · tokens exposed: ${status?.rawTokensExposed ? "yes" : "no"} · paths exposed: ${settings.storagePathExposed ? "yes" : "no"}`;
 }
 
