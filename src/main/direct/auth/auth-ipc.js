@@ -29,6 +29,7 @@ class DirectAuthIpcController {
     this.rootDir = path.resolve(String(options.rootDir || DEFAULT_DIRECT_AUTH_DIR));
     this.filePath = options.filePath ? path.resolve(String(options.filePath)) : "";
     this.loginStarter = typeof options.loginStarter === "function" ? options.loginStarter : null;
+    this.manualLoginCompleter = typeof options.manualLoginCompleter === "function" ? options.manualLoginCompleter : null;
     this.stores = new Map();
   }
 
@@ -64,11 +65,13 @@ class DirectAuthIpcController {
       storagePathExposed: false,
       rawTokensExposed: false,
       liveOAuthAvailable: Boolean(this.loginStarter),
+      manualOAuthAvailable: Boolean(this.manualLoginCompleter),
       capabilities: {
         persistentFileStore: true,
         memoryStore: true,
         logout: true,
         liveOAuth: Boolean(this.loginStarter),
+        manualOAuth: Boolean(this.manualLoginCompleter),
       },
       authStatus: this.readStatus(options),
     };
@@ -104,6 +107,34 @@ class DirectAuthIpcController {
       ok: Boolean(result?.ok),
       status: String(result?.status || (result?.ok ? "started" : "failed")),
       reason: String(result?.reason || ""),
+      loginId: String(result?.loginId || ""),
+      authorizationUrl: String(result?.authorizationUrl || ""),
+      manualCodeRequired: Boolean(result?.manualCodeRequired),
+      rawTokensExposed: false,
+      authStatus: this.readStatus(options),
+    };
+  }
+
+  async completeManualLogin(options = {}) {
+    if (!this.manualLoginCompleter) {
+      return {
+        schema: DIRECT_AUTH_LOGIN_RESULT_SCHEMA,
+        ok: false,
+        status: "not_implemented",
+        reason: "manual_oauth_not_implemented",
+        rawTokensExposed: false,
+        authStatus: this.readStatus(options),
+      };
+    }
+    const result = await this.manualLoginCompleter(safePayload(options), this);
+    return {
+      schema: DIRECT_AUTH_LOGIN_RESULT_SCHEMA,
+      ok: Boolean(result?.ok),
+      status: String(result?.status || (result?.ok ? "authenticated" : "failed")),
+      reason: String(result?.reason || ""),
+      loginId: String(result?.loginId || ""),
+      authorizationUrl: String(result?.authorizationUrl || ""),
+      manualCodeRequired: Boolean(result?.manualCodeRequired),
       rawTokensExposed: false,
       authStatus: this.readStatus(options),
     };
@@ -169,6 +200,11 @@ function registerDirectAuthIpcHandlers(ipcMain, controllerRef, options = {}) {
   ipcMain.handle("direct-auth:login", async (_event, payload) => {
     const result = await resolveController(controllerRef).beginLogin(safePayload(payload));
     emitStatusChange(onStatusChange, "login", result);
+    return result;
+  });
+  ipcMain.handle("direct-auth:complete-manual-login", async (_event, payload) => {
+    const result = await resolveController(controllerRef).completeManualLogin(safePayload(payload));
+    emitStatusChange(onStatusChange, "complete-manual-login", result);
     return result;
   });
   ipcMain.handle("direct-auth:logout", async (_event, payload) => {

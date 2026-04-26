@@ -26,7 +26,7 @@ const {
   registerDirectAuthIpcHandlers,
 } = require("../src/main/direct/auth/auth-ipc");
 const { createDirectAuthLoginCoordinator } = require("../src/main/direct/auth/auth-login");
-const { buildWslArgs } = require("../src/main/direct/auth/wsl-callback-listener");
+const { codexAuthTokensFromCredentials } = require("../src/main/direct/auth/app-server-auth-bridge");
 const { normalizeDirectCodexEvents, parseSseFixtureText } = require("../src/main/direct/normalizer/codex-event-normalizer");
 const { buildFixtureProfileDelta } = require("../src/main/direct/odeu-profile/profile-delta-builder");
 const { loadDirectCodexProfile } = require("../src/main/direct/odeu-profile/profile-loader");
@@ -396,8 +396,13 @@ try {
   assertFixtureRedacted(loginStatus);
   const loginCredentials = loginController.activeStore().readCredentials();
   nodeAssert.equal(loginCredentials.refreshToken, "fixture-login-refresh-token-secret");
-  nodeAssert.equal(loginCredentials.accountId, "[REDACTED:account-id]");
+  nodeAssert.equal(loginCredentials.accountId, "acct_login_fixture_secret");
   nodeAssert.equal(loginCredentials.expiresAt, nowMs + 3_600_000);
+  const appServerLoginTokens = codexAuthTokensFromCredentials(loginCredentials);
+  nodeAssert.equal(appServerLoginTokens.ok, true);
+  nodeAssert.equal(appServerLoginTokens.tokens.type, "chatgptAuthTokens");
+  nodeAssert.equal(appServerLoginTokens.tokens.chatgptAccountId, "acct_login_fixture_secret");
+  assert(!JSON.stringify(appServerLoginTokens).includes("fixture-login-refresh-token-secret"), "App-server auth bridge must not expose refresh token.");
   assert(!JSON.stringify(liveLoginResult).includes("fixture-login-code-secret"), "Login result must not expose auth code.");
   assert(!JSON.stringify(liveLoginResult).includes("fixture-login-refresh-token-secret"), "Login result must not expose refresh token.");
 
@@ -408,96 +413,49 @@ try {
   await listenHttp(occupiedCallbackServer);
   try {
     const occupiedAddress = occupiedCallbackServer.address();
-    const unavailableRoot = path.join(authStoreParent, "auth-login-callback-unavailable");
-    const unavailableController = createDirectAuthIpcController({ rootDir: unavailableRoot });
-    let unavailableAuthUrl = "";
-    const unavailableCoordinator = createDirectAuthLoginCoordinator({
+    const manualRoot = path.join(authStoreParent, "auth-login-manual-fallback");
+    const manualController = createDirectAuthIpcController({ rootDir: manualRoot });
+    let manualAuthUrl = "";
+    let manualTokenRequest = null;
+    const manualCoordinator = createDirectAuthLoginCoordinator({
       clientId: "codex-desktop-fixture-client",
       callbackPort: occupiedAddress.port,
       callbackTimeoutMs: 5_000,
       openExternal: async (url) => {
-        unavailableAuthUrl = url;
-      },
-      tokenClient: async () => {
-        throw new Error("token client should not be called when callback port is unavailable");
-      },
-    });
-    const unavailableResult = await unavailableCoordinator.beginLogin({ nowMs }, unavailableController);
-    nodeAssert.equal(unavailableResult.ok, false);
-    nodeAssert.equal(unavailableResult.status, "port_unavailable");
-    nodeAssert.equal(unavailableResult.reason, "callback_port_unavailable");
-    nodeAssert.equal(unavailableAuthUrl, "");
-    assertFixtureRedacted(unavailableResult);
-  } finally {
-    await closeHttp(occupiedCallbackServer);
-  }
-
-  await listenHttp(occupiedCallbackServer);
-  try {
-    const occupiedAddress = occupiedCallbackServer.address();
-    const fallbackRoot = path.join(authStoreParent, "auth-login-callback-wsl-fallback");
-    const fallbackController = createDirectAuthIpcController({ rootDir: fallbackRoot });
-    let fallbackOptions = null;
-    let fallbackClosed = false;
-    let fallbackAuthUrl = "";
-    let fallbackTokenRequest = null;
-    const fallbackCoordinator = createDirectAuthLoginCoordinator({
-      clientId: "codex-desktop-fixture-client",
-      callbackPort: occupiedAddress.port,
-      callbackTimeoutMs: 5_000,
-      callbackListenerFactory: async (listenerOptions) => {
-        fallbackOptions = listenerOptions;
-        return {
-          redirectUri: `http://localhost:${listenerOptions.callbackPort}/auth/callback`,
-          wait: async () => ({
-            status: "code",
-            code: "fixture-fallback-code-secret",
-            state: listenerOptions.state,
-          }),
-          close: async () => {
-            fallbackClosed = true;
-          },
-        };
-      },
-      openExternal: async (url) => {
-        fallbackAuthUrl = url;
+        manualAuthUrl = url;
       },
       tokenClient: async (request) => {
-        fallbackTokenRequest = request;
+        manualTokenRequest = request;
         return {
-          access_token: "fixture-fallback-access-token-secret",
-          refresh_token: "fixture-fallback-refresh-token-secret",
+          access_token: syntheticJwt({
+            "https://api.openai.com/auth": { chatgpt_account_id: "acct_manual_fixture_secret" },
+          }),
+          refresh_token: "fixture-manual-refresh-token-secret",
           token_type: "Bearer",
           expires_in: 3_600,
         };
       },
     });
-    const fallbackResult = await fallbackCoordinator.beginLogin({ nowMs }, fallbackController);
-    nodeAssert.equal(fallbackResult.ok, true);
-    nodeAssert.equal(fallbackResult.status, "authenticated");
-    nodeAssert.equal(fallbackOptions.callbackPort, occupiedAddress.port);
-    nodeAssert.equal(fallbackClosed, true);
-    assert(fallbackAuthUrl.includes("redirect_uri="), "Expected WSL fallback auth URL to include redirect_uri.");
-    nodeAssert.equal(fallbackTokenRequest.body.code, "fixture-fallback-code-secret");
-    nodeAssert.equal(fallbackTokenRequest.body.redirect_uri, `http://localhost:${occupiedAddress.port}/auth/callback`);
-    assertFixtureRedacted(fallbackResult);
+    const manualStartResult = await manualCoordinator.beginLogin({ nowMs }, manualController);
+    nodeAssert.equal(manualStartResult.ok, false);
+    nodeAssert.equal(manualStartResult.status, "manual_code_required");
+    nodeAssert.equal(manualStartResult.reason, "callback_port_unavailable");
+    assert(manualStartResult.loginId, "Expected manual fallback to return a login id.");
+    assert(manualAuthUrl.includes("redirect_uri="), "Expected manual fallback to open an authorization URL.");
+    const manualState = new URL(manualAuthUrl).searchParams.get("state");
+    const manualCompleteResult = await manualCoordinator.completeManualLogin({
+      loginId: manualStartResult.loginId,
+      input: `?code=fixture-manual-code-secret&state=${encodeURIComponent(manualState)}`,
+      nowMs,
+    }, manualController);
+    nodeAssert.equal(manualCompleteResult.ok, true);
+    nodeAssert.equal(manualCompleteResult.status, "authenticated");
+    nodeAssert.equal(manualTokenRequest.body.code, "fixture-manual-code-secret");
+    nodeAssert.equal(manualTokenRequest.body.redirect_uri, "http://localhost:1455/auth/callback");
+    assertFixtureRedacted(manualCompleteResult);
   } finally {
     await closeHttp(occupiedCallbackServer);
   }
-
-  const wslArgs = buildWslArgs({
-    distro: "Ubuntu",
-    linuxPath: "/home/rose/work/LexLattice/codex-review-shell-direct",
-    callbackPort: 1455,
-    callbackPath: "auth/callback",
-    state: "fixture-state",
-    probeToken: "fixture-probe-token",
-    callbackTimeoutMs: 5_000,
-  });
-  nodeAssert.equal(wslArgs.command, "wsl.exe");
-  assert(wslArgs.args.includes("-d") && wslArgs.args.includes("Ubuntu"), "Expected WSL listener args to preserve distro.");
-  assert(wslArgs.args.join(" ").includes("direct-auth-callback-listener.mjs"), "Expected WSL listener args to call helper script.");
-  assert(wslArgs.args.join(" ").includes("fixture-probe-token"), "Expected WSL listener args to include probe token.");
 
   const incompleteController = createDirectAuthIpcController({ rootDir: path.join(authStoreParent, "auth-login-incomplete") });
   const incompleteCoordinator = createDirectAuthLoginCoordinator({

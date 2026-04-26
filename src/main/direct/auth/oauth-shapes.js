@@ -209,6 +209,7 @@ function redactAccountId(accountId) {
 
 function extractChatgptAccountIdFromJwt(jwt, options = {}) {
   const claimPath = options.claimPath || CHATGPT_ACCOUNT_CLAIM_PATH;
+  const redact = options.redact !== false;
   const decoded = decodeJwtPayload(jwt);
   if (decoded.status !== "ok") {
     return {
@@ -220,8 +221,8 @@ function extractChatgptAccountIdFromJwt(jwt, options = {}) {
   }
   const authClaim = decoded.payload[claimPath];
   const accountId = isPlainObject(authClaim) ? authClaim.chatgpt_account_id : "";
-  const redactedAccountId = redactAccountId(accountId);
-  if (!redactedAccountId) {
+  const projectedAccountId = redact ? redactAccountId(accountId) : String(accountId || "");
+  if (!projectedAccountId) {
     return {
       status: "missing_account_id",
       accountId: "",
@@ -230,7 +231,7 @@ function extractChatgptAccountIdFromJwt(jwt, options = {}) {
   }
   return {
     status: "ok",
-    accountId: redactedAccountId,
+    accountId: projectedAccountId,
     claimPath,
   };
 }

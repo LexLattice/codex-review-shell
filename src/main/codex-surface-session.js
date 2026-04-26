@@ -240,6 +240,7 @@ class CodexSurfaceSession extends EventEmitter {
     this.requestTimeoutMs = Number.isFinite(Number(process.env.CODEX_SURFACE_RPC_TIMEOUT_MS))
       ? Math.max(5_000, Math.min(Number(process.env.CODEX_SURFACE_RPC_TIMEOUT_MS), 5 * 60_000))
       : DEFAULT_RPC_REQUEST_TIMEOUT_MS;
+    this.chatgptAuthTokensProvider = null;
   }
 
   sendEvent(payload) {
@@ -334,13 +335,18 @@ class CodexSurfaceSession extends EventEmitter {
     await this.dispose({ silent: true });
 
     const auth = await resolveBearerAuth(connection);
+    const chatgptAuthTokensProvider = typeof connection?.chatgptAuthTokensProvider === "function"
+      ? connection.chatgptAuthTokensProvider
+      : null;
+    const { chatgptAuthTokensProvider: _chatgptAuthTokensProvider, ...publicConnection } = connection || {};
     this.connectionId = crypto.randomUUID();
     this.connection = {
-      ...connection,
+      ...publicConnection,
       transport: "websocket",
       connectionId: this.connectionId,
       remoteAuth: auth.metadata,
     };
+    this.chatgptAuthTokensProvider = chatgptAuthTokensProvider;
     this.disposing = false;
     this.emitStatus("connecting");
 
@@ -446,6 +452,15 @@ class CodexSurfaceSession extends EventEmitter {
     };
     this.serverRequests.set(key, record);
     this.emitRequestEvent(record, "rpc-request");
+
+    if (method === "account/chatgptAuthTokens/refresh" && this.chatgptAuthTokensProvider) {
+      queueMicrotask(() => {
+        this.chatgptAuthTokensProvider(params)
+          .then((tokens) => this.respondServerRequest(key, tokens, { status: "responding" }))
+          .catch((error) => this.sendServerRequestError(key, makeJsonRpcError(-32000, toErrorMessage(error, "ChatGPT auth token refresh failed."))));
+      });
+      return;
+    }
 
     if (AUTO_UNSUPPORTED_SERVER_REQUEST_METHODS.has(method)) {
       const reason = method === "account/chatgptAuthTokens/refresh"

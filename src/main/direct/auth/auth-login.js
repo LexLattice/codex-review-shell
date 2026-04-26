@@ -14,6 +14,7 @@ const {
   generatePkceVerifier,
   normalizeTokenResponse,
   parseCallbackUrl,
+  parseManualCodePaste,
   pkceChallengeFromVerifier,
 } = require("./oauth-shapes");
 
@@ -50,6 +51,19 @@ function safeLoginFailure(reason, status = "failed") {
     ok: false,
     status,
     reason,
+    rawTokensExposed: false,
+  };
+}
+
+function safeManualCodeRequired(reason, flow) {
+  return {
+    schema: DIRECT_AUTH_LOGIN_FLOW_SCHEMA,
+    ok: false,
+    status: "manual_code_required",
+    reason,
+    loginId: flow.manualLoginId || "",
+    authorizationUrl: flow.authorizationUrl || "",
+    manualCodeRequired: true,
     rawTokensExposed: false,
   };
 }
@@ -166,12 +180,23 @@ function tokenExchangeRequest(flow, options = {}) {
   };
 }
 
+function tokenRefreshRequest(credentials, options = {}) {
+  return {
+    url: normalizeString(options.tokenEndpoint, DEFAULT_TOKEN_ENDPOINT),
+    body: {
+      grant_type: "refresh_token",
+      refresh_token: normalizeString(credentials.refreshToken || credentials.refresh || credentials.refresh_token, ""),
+      client_id: normalizeString(options.clientId, DEFAULT_CLIENT_ID),
+    },
+  };
+}
+
 function credentialsFromTokenResponse(response, options = {}) {
   const nowMs = Number(options.nowMs ?? Date.now()) || Date.now();
   const accessToken = normalizeString(response.access_token || response.accessToken, "");
   const idToken = normalizeString(response.id_token || response.idToken, "");
-  const accountFromAccess = accessToken ? extractChatgptAccountIdFromJwt(accessToken) : null;
-  const accountFromId = !accountFromAccess?.accountId && idToken ? extractChatgptAccountIdFromJwt(idToken) : null;
+  const accountFromAccess = accessToken ? extractChatgptAccountIdFromJwt(accessToken, { redact: false }) : null;
+  const accountFromId = !accountFromAccess?.accountId && idToken ? extractChatgptAccountIdFromJwt(idToken, { redact: false }) : null;
   const credentials = {
     accessToken,
     refreshToken: normalizeString(response.refresh_token || response.refreshToken, ""),
@@ -213,10 +238,8 @@ class DirectAuthLoginCoordinator {
     };
     this.openExternal = typeof options.openExternal === "function" ? options.openExternal : null;
     this.tokenClient = typeof options.tokenClient === "function" ? options.tokenClient : defaultTokenClient;
-    this.callbackListenerFactory = typeof options.callbackListenerFactory === "function"
-      ? options.callbackListenerFactory
-      : null;
     this.currentFlow = null;
+    this.pendingManualFlow = null;
   }
 
   buildFlow(options = {}) {
@@ -232,6 +255,19 @@ class DirectAuthLoginCoordinator {
       startedAt: nowIso(),
       rawTokensExposed: false,
     };
+  }
+
+  buildAuthorizationUrlForFlow(flow) {
+    const codeChallenge = pkceChallengeFromVerifier(flow.pkceVerifier);
+    return buildAuthorizationUrl({
+      authorizationEndpoint: this.authorizationEndpoint,
+      clientId: this.clientId,
+      redirectUri: flow.redirectUri,
+      scope: this.scope,
+      state: flow.state,
+      codeChallenge,
+      extraParams: this.extraParams,
+    });
   }
 
   async exchangeAndStore(flow, controller, options = {}) {
@@ -250,6 +286,75 @@ class DirectAuthLoginCoordinator {
       reason: ok ? "" : "token_exchange_incomplete",
       rawTokensExposed: false,
     };
+  }
+
+  async refreshCredentials(controller, options = {}) {
+    if (!controller || typeof controller.activeStore !== "function") {
+      return safeLoginFailure("auth_controller_unavailable");
+    }
+    const store = controller.activeStore();
+    const credentials = store.readCredentials();
+    if (!credentials?.refreshToken) {
+      return safeLoginFailure("missing_refresh_token", "unauthenticated");
+    }
+    return store.runWithRefreshLock(async () => {
+      const tokenResponse = await this.tokenClient(tokenRefreshRequest(credentials, {
+        tokenEndpoint: this.tokenEndpoint,
+        clientId: this.clientId,
+      }));
+      const normalized = normalizeTokenResponse(tokenResponse);
+      if (normalized.status !== "ok") {
+        const status = store.markRefreshFailed(normalized, options);
+        return {
+          schema: DIRECT_AUTH_LOGIN_FLOW_SCHEMA,
+          ok: false,
+          status: status.status,
+          reason: normalized.error || "token_refresh_failed",
+          rawTokensExposed: false,
+        };
+      }
+      const nextCredentials = credentialsFromTokenResponse(tokenResponse, options);
+      const authStatus = store.writeCredentials(nextCredentials, options);
+      return {
+        schema: DIRECT_AUTH_LOGIN_FLOW_SCHEMA,
+        ok: authStatus.status === "authenticated",
+        status: authStatus.status,
+        reason: authStatus.status === "authenticated" ? "" : "token_refresh_incomplete",
+        rawTokensExposed: false,
+      };
+    });
+  }
+
+  async startManualFallback(flow, reason) {
+    flow.redirectUri = DEFAULT_REDIRECT_URI;
+    flow.manualLoginId = randomUrlToken("manual_login");
+    flow.authorizationUrl = this.buildAuthorizationUrlForFlow(flow);
+    this.pendingManualFlow = flow;
+    if (this.openExternal) await this.openExternal(flow.authorizationUrl);
+    return safeManualCodeRequired(reason, flow);
+  }
+
+  async completeManualLogin(options = {}, controller) {
+    if (!controller || typeof controller.writeCredentials !== "function") {
+      return safeLoginFailure("auth_controller_unavailable");
+    }
+    const flow = this.pendingManualFlow;
+    if (!flow) return safeLoginFailure("manual_login_not_pending", "not_found");
+    if (normalizeString(options.loginId, "") !== flow.manualLoginId) {
+      return safeLoginFailure("manual_login_id_mismatch", "state_mismatch");
+    }
+    const input = normalizeString(options.input || options.code || options.callbackUrl || options.redirectUrl, "");
+    if (!input) return safeLoginFailure("manual_code_missing", "missing_code");
+    const parsed = parseManualCodePaste(input, { expectedState: flow.state });
+    if (parsed.status !== "code") {
+      return safeLoginFailure(parsed.error || parsed.status, parsed.status);
+    }
+    flow.authorizationCode = parsed.code;
+    try {
+      return await this.exchangeAndStore(flow, controller, options);
+    } finally {
+      this.pendingManualFlow = null;
+    }
   }
 
   async beginLogin(options = {}, controller) {
@@ -277,16 +382,7 @@ class DirectAuthLoginCoordinator {
         state: flow.state,
       });
       flow.redirectUri = callbackListener.redirectUri;
-      const codeChallenge = pkceChallengeFromVerifier(flow.pkceVerifier);
-      const authorizationUrl = buildAuthorizationUrl({
-        authorizationEndpoint: this.authorizationEndpoint,
-        clientId: this.clientId,
-        redirectUri: flow.redirectUri,
-        scope: this.scope,
-        state: flow.state,
-        codeChallenge,
-        extraParams: this.extraParams,
-      });
+      const authorizationUrl = this.buildAuthorizationUrlForFlow(flow);
       if (this.openExternal) await this.openExternal(authorizationUrl);
 
       const callbackResult = await callbackListener.wait();
@@ -297,7 +393,7 @@ class DirectAuthLoginCoordinator {
       return await this.exchangeAndStore(flow, controller, options);
     } catch (error) {
       if (isCallbackPortUnavailableError(error)) {
-        return safeLoginFailure("callback_port_unavailable", "port_unavailable");
+        return await this.startManualFallback(flow, "callback_port_unavailable");
       }
       return safeLoginFailure(error?.code ? `login_${error.code}` : "login_failed");
     } finally {
@@ -309,16 +405,7 @@ class DirectAuthLoginCoordinator {
   }
 
   async createCallbackListener(options = {}) {
-    try {
-      return await createLocalCallbackListener(options);
-    } catch (error) {
-      if (error?.code !== "EADDRINUSE" || !this.callbackListenerFactory) throw error;
-      return this.callbackListenerFactory({
-        ...options,
-        redirectHost: DEFAULT_CALLBACK_HOST,
-        redirectUri: `${DEFAULT_REDIRECT_URI}`,
-      });
-    }
+    return await createLocalCallbackListener(options);
   }
 }
 
@@ -354,4 +441,5 @@ module.exports = {
   createDirectAuthLoginCoordinator,
   credentialsFromTokenResponse,
   tokenExchangeRequest,
+  tokenRefreshRequest,
 };

@@ -2151,7 +2151,13 @@ async function beginDirectAuthLogin() {
   state.directAuthError = "";
   renderDirectAuthControls();
   try {
-    const result = await bridge.beginDirectAuthLogin();
+    let result = await bridge.beginDirectAuthLogin();
+    if (result?.manualCodeRequired && result.loginId && bridge.completeDirectAuthLogin) {
+      const pasted = window.prompt("Paste the authorization code or full localhost redirect URL.");
+      if (pasted && pasted.trim()) {
+        result = await bridge.completeDirectAuthLogin(result.loginId, pasted.trim());
+      }
+    }
     state.directAuthStatus = result.authStatus || state.directAuthStatus;
     setLastEvent(result.ok ? "Direct auth login completed." : `Direct auth login unavailable: ${result.reason || result.status}.`);
   } catch (error) {

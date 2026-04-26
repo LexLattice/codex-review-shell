@@ -22,7 +22,7 @@ const {
   registerDirectAuthIpcHandlers,
 } = require("./main/direct/auth/auth-ipc");
 const { createDirectAuthLoginCoordinator } = require("./main/direct/auth/auth-login");
-const { createWslCallbackListenerFactory } = require("./main/direct/auth/wsl-callback-listener");
+const { codexAuthTokensFromCredentials } = require("./main/direct/auth/app-server-auth-bridge");
 
 const APP_TITLE = "Codex Review Shell";
 const CONFIG_FILE_NAME = "workspace-config.json";
@@ -1103,6 +1103,7 @@ function ensureDirectAuthController() {
   directAuthController = createDirectAuthIpcController({
     rootDir: directAuthRootDir(),
     loginStarter: (payload, controller) => ensureDirectAuthLoginCoordinator().beginLogin(payload, controller),
+    manualLoginCompleter: (payload, controller) => ensureDirectAuthLoginCoordinator().completeManualLogin(payload, controller),
   });
   return directAuthController;
 }
@@ -1111,21 +1112,8 @@ function ensureDirectAuthLoginCoordinator() {
   if (directAuthLoginCoordinator) return directAuthLoginCoordinator;
   directAuthLoginCoordinator = createDirectAuthLoginCoordinator({
     openExternal: (url) => shell.openExternal(url),
-    callbackListenerFactory: createDirectAuthCallbackListenerFactory(),
   });
   return directAuthLoginCoordinator;
-}
-
-function createDirectAuthCallbackListenerFactory() {
-  if (process.platform !== "win32") return null;
-  const configuredLinuxPath = earlyNormalizeString(process.env.CODEX_REVIEW_SHELL_DEFAULT_WSL_PATH, "");
-  if (!configuredLinuxPath) return null;
-  const linuxPath = normalizeLinuxPathValue(configuredLinuxPath, "/home");
-  if (!linuxPath) return null;
-  return createWslCallbackListenerFactory({
-    distro: earlyNormalizeString(process.env.CODEX_REVIEW_SHELL_DEFAULT_WSL_DISTRO, ""),
-    linuxPath,
-  });
 }
 
 function ensureCodexAppServerManager() {
@@ -1197,6 +1185,35 @@ function codexSurfaceSessionFor(sender) {
     sessions.delete(sender.id);
   });
   return session;
+}
+
+async function directAuthTokensForCodexAppServer(options = {}) {
+  const controller = ensureDirectAuthController();
+  const store = controller.activeStore();
+  let credentials = store.readCredentials();
+  if (!credentials) return null;
+
+  const status = store.readStatus();
+  if (options.refresh || status.status === "expired" || status.status === "refresh_failed") {
+    const refreshResult = await ensureDirectAuthLoginCoordinator().refreshCredentials(controller);
+    if (!refreshResult.ok) {
+      throw new Error(refreshResult.reason || refreshResult.status || "direct_auth_refresh_failed");
+    }
+    credentials = store.readCredentials();
+  }
+
+  const projected = codexAuthTokensFromCredentials(credentials || {}, {
+    includeType: options.includeType !== false,
+  });
+  if (!projected.ok) throw new Error(projected.reason || "direct_auth_tokens_unavailable");
+  return projected.tokens;
+}
+
+async function attachDirectAuthToCodexSession(session) {
+  const loginTokens = await directAuthTokensForCodexAppServer({ includeType: true });
+  if (!loginTokens) return { attached: false, reason: "direct_auth_unavailable" };
+  await session.request("account/login/start", loginTokens);
+  return { attached: true };
 }
 
 function findCodexSurfaceSessionForRequest(requestKey) {
@@ -2885,7 +2902,19 @@ ipcMain.handle("codex-surface:connect", async (event, payload) => {
     String(activeCodexSurfaceConnection.wsUrl || "") === String(requestedConnection.wsUrl || "")
       ? { ...requestedConnection, remoteAuth: activeCodexSurfaceConnection.remoteAuth || { mode: "none" } }
       : requestedConnection;
-  return session.connect(connection);
+  const connected = await session.connect({
+    ...connection,
+    chatgptAuthTokensProvider: async () => directAuthTokensForCodexAppServer({
+      refresh: true,
+      includeType: false,
+    }),
+  });
+  try {
+    const attached = await attachDirectAuthToCodexSession(session);
+    return { ...connected, directAuth: attached };
+  } catch (error) {
+    throw new Error(`Direct auth is present but could not attach to Codex app-server: ${error.message}`);
+  }
 });
 
 ipcMain.handle("codex-surface:disconnect", async (event) => {
