@@ -1,0 +1,15 @@
+{
+  "operation": "callback_parse",
+  "input": {
+    "callbackUrl": "http://localhost:1455/auth/callback?code=fixcode123&state=wrong_state",
+    "expectedState": "state_fixture_123"
+  },
+  "expected": {
+    "status": "state_mismatch",
+    "state": "wrong_state",
+    "expectedState": "state_fixture_123",
+    "hasCode": true,
+    "error": "",
+    "errorDescription": ""
+  }
+}

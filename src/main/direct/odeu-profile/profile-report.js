@@ -83,9 +83,16 @@ function buildDirectCodexProfileReport(input = {}) {
   } else {
     for (const probe of probeResults) {
       const eventTypes = Object.keys(probe.normalizedEventCounts || {}).sort().join(", ") || "none";
-      lines.push(`- ${probe.id}: ${probe.status}; acceptance=${probe.acceptance}; events=${eventTypes}`);
+      const operation = probe.authOperation ? `; operation=${probe.authOperation}` : "";
+      lines.push(`- ${probe.id}: ${probe.status}; acceptance=${probe.acceptance}; events=${eventTypes}${operation}`);
       if (probe.fixtureIds) {
-        lines.push(`  fixtures: ${probe.fixtureIds.raw}, ${probe.fixtureIds.normalized}, ${probe.fixtureIds.profileDelta}`);
+        const fixtureIds = [
+          probe.fixtureIds.raw,
+          probe.fixtureIds.normalized,
+          probe.fixtureIds.profileDelta,
+          probe.fixtureIds.auth,
+        ].filter(Boolean);
+        lines.push(`  fixtures: ${fixtureIds.join(", ")}`);
       }
       if (probe.status === "failed" && probe.errorMessage) {
         lines.push(`  error: ${probe.errorMessage}`);

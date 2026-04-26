@@ -1,0 +1,16 @@
+{
+  "operation": "authorization_url",
+  "input": {
+    "clientId": "codex-desktop-fixture",
+    "redirectUri": "http://localhost:1455/auth/callback",
+    "state": "state_fixture_123",
+    "pkceVerifier": "fixture-pkce-verifier-not-secret",
+    "extraParams": {
+      "provider": "openai-codex"
+    }
+  },
+  "expected": {
+    "pkceChallenge": "itWXfr6P3Dnh-6AMnraL1ku-xkdUMAdPBQdU92FTG8U",
+    "url": "https://auth.openai.com/oauth/authorize?response_type=code&client_id=codex-desktop-fixture&redirect_uri=http%3A%2F%2Flocalhost%3A1455%2Fauth%2Fcallback&scope=openid+profile+email+offline_access&state=state_fixture_123&code_challenge=itWXfr6P3Dnh-6AMnraL1ku-xkdUMAdPBQdU92FTG8U&code_challenge_method=S256&provider=openai-codex"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "schema": "direct_codex_probe_manifest@1",
+  "id": "probe.auth.callback_state_mismatch",
+  "name": "OAuth Callback State Mismatch Shape",
+  "hypothesis": "A synthetic callback URL with mismatched state fails closed before any authorization code exchange.",
+  "fixture": {
+    "source": "auth-shape-fixture",
+    "authFixtureId": "auth/callback-state-mismatch"
+  },
+  "authShape": {
+    "operation": "callback_parse"
+  },
+  "acceptance": {
+    "expectedState": "candidate",
+    "requiredOutputs": [
+      "status",
+      "state",
+      "expectedState",
+      "hasCode"
+    ]
+  },
+  "blockedLiveGates": [
+    "No localhost callback server.",
+    "No authorization code exchange.",
+    "No token storage."
+  ]
+}

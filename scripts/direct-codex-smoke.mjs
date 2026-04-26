@@ -206,15 +206,23 @@ assert(importCandidate.unresolvedObligations.length === 1, "Expected unpaired to
 const committedFixtureCount = validateCommittedFixtureCorpus();
 assert(committedFixtureCount >= 4, "Expected committed direct Codex fixture corpus coverage.");
 const probeResults = runProbeManifestDir(DEFAULT_PROBE_MANIFEST_DIR, { fixtureRoot: DEFAULT_FIXTURE_ROOT });
-assert(probeResults.length >= 4, "Expected committed direct Codex probe manifests.");
+assert(probeResults.length >= 12, "Expected committed direct Codex stream and auth probe manifests.");
 const failedProbes = probeResults.filter((probe) => probe.status !== "passed");
 assert(
   failedProbes.length === 0,
   `Expected all fixture-backed probes to pass: ${failedProbes.map((probe) => `${probe.id}: ${probe.errorMessage || probe.status}`).join("; ")}`,
 );
 assert(
-  probeResults.every((probe) => probe.source === "committed-fixture" && probe.blockedLiveGates.length > 0),
-  "Expected fixture-backed probes to record blocked live gates.",
+  probeResults
+    .filter((probe) => probe.source === "committed-fixture")
+    .every((probe) => probe.blockedLiveGates.length > 0),
+  "Expected stream fixture-backed probes to record blocked live gates.",
+);
+const authProbeResults = probeResults.filter((probe) => probe.source === "auth-shape-fixture");
+assert(authProbeResults.length >= 8, "Expected committed direct Codex auth-shape probes.");
+assert(
+  authProbeResults.every((probe) => probe.authOperation && probe.blockedLiveGates.length > 0),
+  "Expected auth-shape probes to record operations and blocked live gates.",
 );
 const intentionallyFailedProbe = runFixtureBackedProbe({
   schema: "direct_codex_probe_manifest@1",

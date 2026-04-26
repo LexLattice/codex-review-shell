@@ -1,0 +1,28 @@
+{
+  "schema": "direct_codex_probe_manifest@1",
+  "id": "probe.auth.token_success",
+  "name": "OAuth Token Response Shape",
+  "hypothesis": "A redacted synthetic token response normalizes to token presence flags without exposing token values.",
+  "fixture": {
+    "source": "auth-shape-fixture",
+    "authFixtureId": "auth/token-success"
+  },
+  "authShape": {
+    "operation": "token_response_normalization"
+  },
+  "acceptance": {
+    "expectedState": "candidate",
+    "requiredOutputs": [
+      "status",
+      "tokenType",
+      "expiresIn",
+      "hasAccessToken",
+      "hasRefreshToken"
+    ]
+  },
+  "blockedLiveGates": [
+    "No token endpoint request.",
+    "No raw token exposure.",
+    "No credential persistence."
+  ]
+}

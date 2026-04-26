@@ -1,0 +1,12 @@
+{
+  "operation": "manual_code_paste",
+  "input": {
+    "text": "code=manual123&state=state_fixture_123",
+    "expectedState": "state_fixture_123"
+  },
+  "expected": {
+    "status": "code",
+    "code": "manual123",
+    "state": "state_fixture_123"
+  }
+}

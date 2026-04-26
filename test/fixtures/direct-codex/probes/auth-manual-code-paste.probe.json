@@ -1,0 +1,26 @@
+{
+  "schema": "direct_codex_probe_manifest@1",
+  "id": "probe.auth.manual_code_paste",
+  "name": "OAuth Manual Code Paste Shape",
+  "hypothesis": "A synthetic pasted code query parses through the same state validation path as a callback URL.",
+  "fixture": {
+    "source": "auth-shape-fixture",
+    "authFixtureId": "auth/manual-code-paste"
+  },
+  "authShape": {
+    "operation": "manual_code_paste"
+  },
+  "acceptance": {
+    "expectedState": "candidate",
+    "requiredOutputs": [
+      "status",
+      "code",
+      "state"
+    ]
+  },
+  "blockedLiveGates": [
+    "No browser launch.",
+    "No authorization code exchange.",
+    "No token storage."
+  ]
+}

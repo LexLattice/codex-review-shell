@@ -1,0 +1,11 @@
+{
+  "operation": "callback_parse",
+  "input": {
+    "callbackUrl": "http://localhost:1455/auth/callback?state=state_fixture_123",
+    "expectedState": "state_fixture_123"
+  },
+  "expected": {
+    "status": "missing_code",
+    "state": "state_fixture_123"
+  }
+}
