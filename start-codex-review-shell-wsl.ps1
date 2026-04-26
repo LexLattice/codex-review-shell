@@ -6,7 +6,7 @@ if ([string]::IsNullOrWhiteSpace($wslDistro)) {
 
 $wslPath = $env:CODEX_REVIEW_SHELL_DEFAULT_WSL_PATH
 if ([string]::IsNullOrWhiteSpace($wslPath)) {
-  $wslPath = "/home/rose/work/LexLattice/codex-review-shell"
+  $wslPath = "/home/rose/work/LexLattice/codex-review-shell-direct"
 }
 
 $stdoutPath = Join-Path $repoRoot "launcher-wsl-stdout.log"

@@ -8,7 +8,7 @@ set "WSL_DISTRO=%CODEX_REVIEW_SHELL_DEFAULT_WSL_DISTRO%"
 if not defined WSL_DISTRO set "WSL_DISTRO=Ubuntu"
 
 set "WSL_PATH=%CODEX_REVIEW_SHELL_DEFAULT_WSL_PATH%"
-if not defined WSL_PATH set "WSL_PATH=/home/rose/work/LexLattice/codex-review-shell"
+if not defined WSL_PATH set "WSL_PATH=/home/rose/work/LexLattice/codex-review-shell-direct"
 
 set "WSL_WIN_PATH=%WSL_PATH:/=\%"
 set "WSL_ROOT=\\wsl.localhost\%WSL_DISTRO%%WSL_WIN_PATH%"
@@ -44,7 +44,7 @@ exit /b 0
 :mirror_repo
 robocopy "%WSL_ROOT%" "%SYNC_ROOT%" /MIR /R:1 /W:1 /NFL /NDL /NJH /NJS /NP ^
   /XD ".git" "node_modules" ".cache" ^
-  /XF ".wsl-sync-head.txt" "launcher-stdout.log" "launcher-stderr.log" "launcher-wsl-stdout.log" "launcher-wsl-stderr.log" "start-debug.log" >nul
+  /XF ".git" ".wsl-sync-head.txt" "launcher-stdout.log" "launcher-stderr.log" "launcher-wsl-stdout.log" "launcher-wsl-stderr.log" "start-debug.log" >nul
 set "RC=%ERRORLEVEL%"
 if %RC% GEQ 8 (
   >&2 echo robocopy failed for repo mirror
