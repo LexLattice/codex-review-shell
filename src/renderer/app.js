@@ -1079,6 +1079,14 @@ function directAuthExpiryLabel(status) {
   return `expires in ${formatDurationMs(status.expiresInMs)}`;
 }
 
+function sanitizedDirectAuthError(fallback) {
+  return fallback || "Direct auth request failed.";
+}
+
+function directAuthModeSignature(modes) {
+  return modes.map((mode) => String(mode || "")).join("|");
+}
+
 function renderDirectAuthControls() {
   if (!els.directAuthState) return;
   const settings = state.directAuthSettings || {};
@@ -1098,14 +1106,20 @@ function renderDirectAuthControls() {
     : ["file", "memory"];
   const currentMode = settings.storageMode || status?.storageMode || "file";
   if (els.directAuthStorageModeSelect) {
-    els.directAuthStorageModeSelect.innerHTML = "";
-    for (const mode of availableModes) {
-      const option = document.createElement("option");
-      option.value = mode;
-      option.textContent = mode === "file" ? "Persistent file" : "Memory only";
-      els.directAuthStorageModeSelect.appendChild(option);
+    const signature = directAuthModeSignature(availableModes);
+    if (els.directAuthStorageModeSelect.dataset.modeSignature !== signature) {
+      els.directAuthStorageModeSelect.innerHTML = "";
+      for (const mode of availableModes) {
+        const option = document.createElement("option");
+        option.value = mode;
+        option.textContent = mode === "file" ? "Persistent file" : "Memory only";
+        els.directAuthStorageModeSelect.appendChild(option);
+      }
+      els.directAuthStorageModeSelect.dataset.modeSignature = signature;
     }
-    els.directAuthStorageModeSelect.value = currentMode;
+    if (document.activeElement !== els.directAuthStorageModeSelect) {
+      els.directAuthStorageModeSelect.value = currentMode;
+    }
     els.directAuthStorageModeSelect.disabled = loading;
   }
 
@@ -2085,7 +2099,7 @@ async function loadDirectAuthSettings() {
     state.directAuthSettings = settings;
     state.directAuthStatus = settings?.authStatus || null;
   } catch (error) {
-    state.directAuthError = error.message || "Direct auth settings failed.";
+    state.directAuthError = sanitizedDirectAuthError("Direct auth settings failed.");
   } finally {
     state.directAuthLoading = false;
     renderDirectAuthControls();
@@ -2104,7 +2118,7 @@ async function refreshDirectAuthStatus() {
     }
     setLastEvent(`Direct auth ${directAuthStatusLabel(state.directAuthStatus)}.`);
   } catch (error) {
-    state.directAuthError = error.message || "Direct auth status failed.";
+    state.directAuthError = sanitizedDirectAuthError("Direct auth status failed.");
     setLastEvent(`Direct auth status failed: ${state.directAuthError}`);
   } finally {
     state.directAuthLoading = false;
@@ -2123,7 +2137,7 @@ async function setDirectAuthStorageMode(mode) {
     state.directAuthStatus = result.authStatus || result.settings?.authStatus || state.directAuthStatus;
     setLastEvent(`Direct auth storage: ${state.directAuthSettings?.storageMode || mode}.`);
   } catch (error) {
-    state.directAuthError = error.message || "Direct auth storage switch failed.";
+    state.directAuthError = sanitizedDirectAuthError("Direct auth storage switch failed.");
     setLastEvent(`Direct auth storage failed: ${state.directAuthError}`);
   } finally {
     state.directAuthLoading = false;
@@ -2141,7 +2155,7 @@ async function beginDirectAuthLogin() {
     state.directAuthStatus = result.authStatus || state.directAuthStatus;
     setLastEvent(result.ok ? "Direct auth login started." : `Direct auth login unavailable: ${result.reason || result.status}.`);
   } catch (error) {
-    state.directAuthError = error.message || "Direct auth login failed.";
+    state.directAuthError = sanitizedDirectAuthError("Direct auth login failed.");
     setLastEvent(`Direct auth login failed: ${state.directAuthError}`);
   } finally {
     state.directAuthLoading = false;
@@ -2160,7 +2174,7 @@ async function logoutDirectAuth() {
     state.directAuthStatus = result.authStatus || result.settings?.authStatus || state.directAuthStatus;
     setLastEvent("Direct auth credentials cleared.");
   } catch (error) {
-    state.directAuthError = error.message || "Direct auth logout failed.";
+    state.directAuthError = sanitizedDirectAuthError("Direct auth logout failed.");
     setLastEvent(`Direct auth logout failed: ${state.directAuthError}`);
   } finally {
     state.directAuthLoading = false;
