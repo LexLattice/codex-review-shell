@@ -80,21 +80,6 @@ function listen(server, host, port) {
   });
 }
 
-async function listenWithPortFallback(server, host, port, options = {}) {
-  try {
-    await listen(server, host, port);
-    return server;
-  } catch (error) {
-    if (error?.code !== "EADDRINUSE" || port === 0 || options.allowFallback === false) {
-      throw error;
-    }
-    await closeServer(server);
-    const fallbackServer = http.createServer();
-    await listen(fallbackServer, host, 0);
-    return fallbackServer;
-  }
-}
-
 function closeServer(server) {
   return new Promise((resolve) => {
     if (!server.listening) {
@@ -270,17 +255,12 @@ class DirectAuthLoginCoordinator {
       return safeLoginFailure("login_already_in_progress", "already_in_progress");
     }
 
-    let server = http.createServer();
+    const server = http.createServer();
     const flow = this.buildFlow(options);
     this.currentFlow = flow;
 
     try {
-      server = await listenWithPortFallback(
-        server,
-        this.callbackHost,
-        normalizeCallbackPort(options.callbackPort, this.callbackPort),
-        { allowFallback: options.allowCallbackPortFallback !== false },
-      );
+      await listen(server, this.callbackHost, normalizeCallbackPort(options.callbackPort, this.callbackPort));
       flow.redirectUri = redirectUriFromServer(server, {
         callbackHost: this.callbackHost,
         callbackPath: this.callbackPath,
@@ -307,6 +287,9 @@ class DirectAuthLoginCoordinator {
       flow.authorizationCode = callbackResult.code;
       return await this.exchangeAndStore(flow, controller, options);
     } catch (error) {
+      if (error?.code === "EADDRINUSE") {
+        return safeLoginFailure("callback_port_unavailable", "port_unavailable");
+      }
       return safeLoginFailure(error?.code ? `login_${error.code}` : "login_failed");
     } finally {
       this.currentFlow = null;

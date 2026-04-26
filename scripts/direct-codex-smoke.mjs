@@ -407,43 +407,26 @@ try {
   await listenHttp(occupiedCallbackServer);
   try {
     const occupiedAddress = occupiedCallbackServer.address();
-    const fallbackRoot = path.join(authStoreParent, "auth-login-callback-fallback");
-    const fallbackController = createDirectAuthIpcController({ rootDir: fallbackRoot });
-    let fallbackAuthUrl = "";
-    let fallbackTokenRequest = null;
-    const fallbackCoordinator = createDirectAuthLoginCoordinator({
+    const unavailableRoot = path.join(authStoreParent, "auth-login-callback-unavailable");
+    const unavailableController = createDirectAuthIpcController({ rootDir: unavailableRoot });
+    let unavailableAuthUrl = "";
+    const unavailableCoordinator = createDirectAuthLoginCoordinator({
       clientId: "codex-desktop-fixture-client",
       callbackPort: occupiedAddress.port,
       callbackTimeoutMs: 5_000,
       openExternal: async (url) => {
-        fallbackAuthUrl = url;
+        unavailableAuthUrl = url;
       },
-      tokenClient: async (request) => {
-        fallbackTokenRequest = request;
-        return {
-          access_token: syntheticJwt({
-            "https://api.openai.com/auth": { chatgpt_account_id: "acct_callback_fallback_secret" },
-          }),
-          refresh_token: "fixture-fallback-refresh-token-secret",
-          token_type: "Bearer",
-          expires_in: 60,
-        };
+      tokenClient: async () => {
+        throw new Error("token client should not be called when callback port is unavailable");
       },
     });
-    const fallbackLogin = fallbackCoordinator.beginLogin({ nowMs }, fallbackController);
-    await waitForCondition(() => fallbackAuthUrl, "Expected fallback login to open an authorization URL.");
-    const fallbackUrl = new URL(fallbackAuthUrl);
-    const fallbackRedirectUri = fallbackUrl.searchParams.get("redirect_uri");
-    const fallbackRedirect = new URL(fallbackRedirectUri);
-    nodeAssert.notEqual(Number(fallbackRedirect.port), Number(occupiedAddress.port));
-    const fallbackState = fallbackUrl.searchParams.get("state");
-    const fallbackCallbackResponse = await fetch(`${fallbackRedirectUri}?code=fixture-fallback-code-secret&state=${encodeURIComponent(fallbackState)}`);
-    nodeAssert.equal(fallbackCallbackResponse.status, 200);
-    const fallbackResult = await fallbackLogin;
-    nodeAssert.equal(fallbackResult.status, "authenticated");
-    nodeAssert.equal(fallbackTokenRequest.body.code, "fixture-fallback-code-secret");
-    nodeAssert.equal(fallbackTokenRequest.body.redirect_uri, fallbackRedirectUri);
-    assertFixtureRedacted(fallbackResult);
+    const unavailableResult = await unavailableCoordinator.beginLogin({ nowMs }, unavailableController);
+    nodeAssert.equal(unavailableResult.ok, false);
+    nodeAssert.equal(unavailableResult.status, "port_unavailable");
+    nodeAssert.equal(unavailableResult.reason, "callback_port_unavailable");
+    nodeAssert.equal(unavailableAuthUrl, "");
+    assertFixtureRedacted(unavailableResult);
   } finally {
     await closeHttp(occupiedCallbackServer);
   }
