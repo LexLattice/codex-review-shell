@@ -1,5 +1,7 @@
 import nodeAssert from "node:assert/strict";
 import { createRequire } from "node:module";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -17,6 +19,7 @@ const {
   loadFixtureFile,
 } = require("../src/main/direct/fixtures/fixture-loader");
 const { redactFixture, assertFixtureRedacted, scanFixtureForSecrets } = require("../src/main/direct/fixtures/redaction");
+const { createDirectAuthStore, DEFAULT_DIRECT_AUTH_FILE_NAME } = require("../src/main/direct/auth/auth-store");
 const { normalizeDirectCodexEvents, parseSseFixtureText } = require("../src/main/direct/normalizer/codex-event-normalizer");
 const { buildFixtureProfileDelta } = require("../src/main/direct/odeu-profile/profile-delta-builder");
 const { loadDirectCodexProfile } = require("../src/main/direct/odeu-profile/profile-loader");
@@ -38,6 +41,19 @@ function assertThrows(callback, message) {
     return;
   }
   throw new Error(message);
+}
+
+function canReadBackMode(filePath, expectedMode) {
+  if (process.platform === "win32") return false;
+  try {
+    const originalMode = fs.statSync(filePath).mode & 0o777;
+    fs.chmodSync(filePath, expectedMode);
+    const observedMode = fs.statSync(filePath).mode & 0o777;
+    fs.chmodSync(filePath, originalMode);
+    return observedMode === expectedMode;
+  } catch {
+    return false;
+  }
 }
 
 function stripGeneratedAt(value) {
@@ -114,6 +130,82 @@ const secretFindings = scanFixtureForSecrets(keyScopedSecrets);
 assert(secretFindings.some((finding) => finding.includes("access_token")), "Expected access_token key finding.");
 assert(secretFindings.some((finding) => finding.includes("headers.cookie")), "Expected headers.cookie key finding.");
 assertThrows(() => assertFixtureRedacted(keyScopedSecrets), "Expected key-scoped secrets to fail redaction checks.");
+
+const authStoreParent = fs.mkdtempSync(path.join(os.tmpdir(), "direct-codex-auth-store-"));
+const authStoreRoot = path.join(authStoreParent, "direct-auth");
+try {
+  const nowMs = 1_700_000_000_000;
+  const expiresAt = nowMs + 3_600_000;
+  const credentials = {
+    accessToken: "fixture-access-token-secret",
+    refreshToken: "fixture-refresh-token-secret",
+    idToken: "fixture-id-token-secret",
+    accountId: "acct_fixture_secret",
+    expiresAt,
+    tokenType: "Bearer",
+    scope: "openid profile email offline_access",
+  };
+  const fileStore = createDirectAuthStore({ mode: "file", rootDir: authStoreRoot });
+  const status = fileStore.writeCredentials(credentials, { nowMs });
+  assert(status.status === "authenticated", "Expected file auth store to project authenticated status.");
+  assert(status.accountId === "[REDACTED:account-id]", "Expected file auth status to redact account id.");
+  assert(status.hasAccessToken && status.hasRefreshToken && status.hasIdToken, "Expected auth status token presence flags.");
+  assert(status.rawTokensExposed === false, "Expected auth status to deny raw token exposure.");
+  assertFixtureRedacted(status);
+  assert(!JSON.stringify(status).includes("fixture-access-token-secret"), "Auth status must not expose access token.");
+  assert(!JSON.stringify(status).includes(authStoreRoot), "Auth status must not expose private store paths.");
+
+  const authFilePath = path.join(authStoreRoot, DEFAULT_DIRECT_AUTH_FILE_NAME);
+  const rawAuthFile = fs.readFileSync(authFilePath, "utf8");
+  assert(rawAuthFile.includes("fixture-refresh-token-secret"), "Private auth file should persist refresh token.");
+  if (process.platform !== "win32") {
+    const directoryMode = fs.statSync(authStoreRoot).mode & 0o777;
+    const fileMode = fs.statSync(authFilePath).mode & 0o777;
+    if (canReadBackMode(authStoreRoot, 0o700)) {
+      nodeAssert.equal(directoryMode, 0o700, "Auth store directory must be user-only.");
+    }
+    if (canReadBackMode(authFilePath, 0o600)) {
+      nodeAssert.equal(fileMode, 0o600, "Auth store file must be user-only.");
+    }
+  }
+
+  const reloadedStore = createDirectAuthStore({ mode: "file", rootDir: authStoreRoot });
+  nodeAssert.equal(reloadedStore.readCredentials().accessToken, "fixture-access-token-secret");
+  nodeAssert.equal(reloadedStore.readStatus({ nowMs: expiresAt + 1 }).status, "expired");
+  const refreshFailed = reloadedStore.markRefreshFailed({
+    error: "server_error",
+    errorDescription: "Synthetic transient refresh failure.",
+    retryable: true,
+  }, { nowMs: expiresAt + 1 });
+  assert(refreshFailed.status === "refresh_failed", "Expected refresh failure status.");
+  assert(refreshFailed.hasRefreshToken && refreshFailed.preservesRefreshToken, "Expected refresh failure to preserve refresh token.");
+  assertFixtureRedacted(refreshFailed);
+
+  const memoryStore = createDirectAuthStore({ mode: "memory" });
+  memoryStore.writeCredentials(credentials, { nowMs });
+  assert(memoryStore.readStatus({ nowMs }).status === "authenticated", "Expected memory auth store to project status.");
+  let refreshCalls = 0;
+  const refreshOne = memoryStore.runWithRefreshLock(async () => {
+    refreshCalls += 1;
+    assert(memoryStore.readStatus({ nowMs }).refreshLockActive === true, "Expected refresh lock to project active status.");
+    await Promise.resolve();
+    return "refresh-result";
+  });
+  const refreshTwo = memoryStore.runWithRefreshLock(async () => {
+    refreshCalls += 1;
+    return "unexpected-second-refresh";
+  });
+  nodeAssert.equal(await refreshOne, "refresh-result");
+  nodeAssert.equal(await refreshTwo, "refresh-result");
+  nodeAssert.equal(refreshCalls, 1, "Expected concurrent refresh attempts to share one lock.");
+  assert(memoryStore.readStatus({ nowMs }).refreshLockActive === false, "Expected refresh lock to clear after refresh.");
+  assert(memoryStore.logout({ nowMs }).removed === true, "Expected memory logout to remove credentials.");
+  assert(memoryStore.readStatus({ nowMs }).status === "unauthenticated", "Expected memory logout status.");
+  assert(reloadedStore.logout({ nowMs }).removed === true, "Expected file logout to delete credentials.");
+  assert(!fs.existsSync(authFilePath), "Expected file auth logout to delete auth file.");
+} finally {
+  fs.rmSync(authStoreParent, { recursive: true, force: true });
+}
 
 const sampleEvents = [
   { event: "response.created", data: { response: { id: "resp_1", model: "gpt-5.4" } } },

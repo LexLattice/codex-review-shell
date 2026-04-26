@@ -241,17 +241,23 @@ Flow:
    tokens.
 7. Main process extracts account identity from the access token claims when
    present.
-8. Main process persists credentials in a private auth file.
+8. Main process persists credentials in the configured direct auth store.
 9. Renderer receives only redacted auth status.
 
 Storage requirements:
 
-- Store credentials outside project config.
-- Use user-only file permissions where the host supports them.
+- Default to persistent local storage outside project config.
+- Support an in-memory-only store for development or high-caution runs.
+- Use user-only file and directory permissions where the host supports them.
 - Never store credentials in project export/import bundles.
 - Never expose access or refresh tokens to renderer IPC.
 - Refresh expired access tokens under a process-level lock.
 - Preserve the refresh token across transient request failures.
+- Keep the first persistent store as an app-owned private file, not
+  `~/.codex/auth.json`; a later diagnostic may import/reuse Codex CLI auth only
+  when explicitly selected.
+- Prefer an OS keychain backend later when the app has a stable packaging and
+  entitlement story.
 
 ## Request Construction
 
