@@ -26,6 +26,7 @@ const {
   registerDirectAuthIpcHandlers,
 } = require("../src/main/direct/auth/auth-ipc");
 const { createDirectAuthLoginCoordinator } = require("../src/main/direct/auth/auth-login");
+const { buildWslArgs } = require("../src/main/direct/auth/wsl-callback-listener");
 const { normalizeDirectCodexEvents, parseSseFixtureText } = require("../src/main/direct/normalizer/codex-event-normalizer");
 const { buildFixtureProfileDelta } = require("../src/main/direct/odeu-profile/profile-delta-builder");
 const { loadDirectCodexProfile } = require("../src/main/direct/odeu-profile/profile-loader");
@@ -430,6 +431,73 @@ try {
   } finally {
     await closeHttp(occupiedCallbackServer);
   }
+
+  await listenHttp(occupiedCallbackServer);
+  try {
+    const occupiedAddress = occupiedCallbackServer.address();
+    const fallbackRoot = path.join(authStoreParent, "auth-login-callback-wsl-fallback");
+    const fallbackController = createDirectAuthIpcController({ rootDir: fallbackRoot });
+    let fallbackOptions = null;
+    let fallbackClosed = false;
+    let fallbackAuthUrl = "";
+    let fallbackTokenRequest = null;
+    const fallbackCoordinator = createDirectAuthLoginCoordinator({
+      clientId: "codex-desktop-fixture-client",
+      callbackPort: occupiedAddress.port,
+      callbackTimeoutMs: 5_000,
+      callbackListenerFactory: async (listenerOptions) => {
+        fallbackOptions = listenerOptions;
+        return {
+          redirectUri: `http://localhost:${listenerOptions.callbackPort}/auth/callback`,
+          wait: async () => ({
+            status: "code",
+            code: "fixture-fallback-code-secret",
+            state: listenerOptions.state,
+          }),
+          close: async () => {
+            fallbackClosed = true;
+          },
+        };
+      },
+      openExternal: async (url) => {
+        fallbackAuthUrl = url;
+      },
+      tokenClient: async (request) => {
+        fallbackTokenRequest = request;
+        return {
+          access_token: "fixture-fallback-access-token-secret",
+          refresh_token: "fixture-fallback-refresh-token-secret",
+          token_type: "Bearer",
+          expires_in: 3_600,
+        };
+      },
+    });
+    const fallbackResult = await fallbackCoordinator.beginLogin({ nowMs }, fallbackController);
+    nodeAssert.equal(fallbackResult.ok, true);
+    nodeAssert.equal(fallbackResult.status, "authenticated");
+    nodeAssert.equal(fallbackOptions.callbackPort, occupiedAddress.port);
+    nodeAssert.equal(fallbackClosed, true);
+    assert(fallbackAuthUrl.includes("redirect_uri="), "Expected WSL fallback auth URL to include redirect_uri.");
+    nodeAssert.equal(fallbackTokenRequest.body.code, "fixture-fallback-code-secret");
+    nodeAssert.equal(fallbackTokenRequest.body.redirect_uri, `http://localhost:${occupiedAddress.port}/auth/callback`);
+    assertFixtureRedacted(fallbackResult);
+  } finally {
+    await closeHttp(occupiedCallbackServer);
+  }
+
+  const wslArgs = buildWslArgs({
+    distro: "Ubuntu",
+    linuxPath: "/home/rose/work/LexLattice/codex-review-shell-direct",
+    callbackPort: 1455,
+    callbackPath: "auth/callback",
+    state: "fixture-state",
+    probeToken: "fixture-probe-token",
+    callbackTimeoutMs: 5_000,
+  });
+  nodeAssert.equal(wslArgs.command, "wsl.exe");
+  assert(wslArgs.args.includes("-d") && wslArgs.args.includes("Ubuntu"), "Expected WSL listener args to preserve distro.");
+  assert(wslArgs.args.join(" ").includes("direct-auth-callback-listener.mjs"), "Expected WSL listener args to call helper script.");
+  assert(wslArgs.args.join(" ").includes("fixture-probe-token"), "Expected WSL listener args to include probe token.");
 
   const incompleteController = createDirectAuthIpcController({ rootDir: path.join(authStoreParent, "auth-login-incomplete") });
   const incompleteCoordinator = createDirectAuthLoginCoordinator({

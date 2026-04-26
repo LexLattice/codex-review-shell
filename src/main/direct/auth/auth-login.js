@@ -54,6 +54,11 @@ function safeLoginFailure(reason, status = "failed") {
   };
 }
 
+function isCallbackPortUnavailableError(error) {
+  const code = typeof error?.code === "string" ? error.code : "";
+  return code === "EADDRINUSE" || code.startsWith("WSL_CALLBACK_");
+}
+
 function callbackResponseHtml(status) {
   const title = status === "ok" ? "Codex auth complete" : "Codex auth failed";
   const body = status === "ok"
@@ -208,6 +213,9 @@ class DirectAuthLoginCoordinator {
     };
     this.openExternal = typeof options.openExternal === "function" ? options.openExternal : null;
     this.tokenClient = typeof options.tokenClient === "function" ? options.tokenClient : defaultTokenClient;
+    this.callbackListenerFactory = typeof options.callbackListenerFactory === "function"
+      ? options.callbackListenerFactory
+      : null;
     this.currentFlow = null;
   }
 
@@ -255,17 +263,20 @@ class DirectAuthLoginCoordinator {
       return safeLoginFailure("login_already_in_progress", "already_in_progress");
     }
 
-    const server = http.createServer();
     const flow = this.buildFlow(options);
     this.currentFlow = flow;
+    let callbackListener = null;
 
     try {
-      await listen(server, this.callbackHost, normalizeCallbackPort(options.callbackPort, this.callbackPort));
-      flow.redirectUri = redirectUriFromServer(server, {
+      const callbackPort = normalizeCallbackPort(options.callbackPort, this.callbackPort);
+      callbackListener = await this.createCallbackListener({
         callbackHost: this.callbackHost,
         callbackPath: this.callbackPath,
-        callbackPort: this.callbackPort,
+        callbackPort,
+        callbackTimeoutMs: options.callbackTimeoutMs || this.callbackTimeoutMs,
+        state: flow.state,
       });
+      flow.redirectUri = callbackListener.redirectUri;
       const codeChallenge = pkceChallengeFromVerifier(flow.pkceVerifier);
       const authorizationUrl = buildAuthorizationUrl({
         authorizationEndpoint: this.authorizationEndpoint,
@@ -278,22 +289,35 @@ class DirectAuthLoginCoordinator {
       });
       if (this.openExternal) await this.openExternal(authorizationUrl);
 
-      const callbackResult = await waitForCallback(server, flow, {
-        callbackTimeoutMs: options.callbackTimeoutMs || this.callbackTimeoutMs,
-      });
+      const callbackResult = await callbackListener.wait();
       if (callbackResult.status !== "code") {
         return safeLoginFailure(callbackResult.reason || callbackResult.status, callbackResult.status);
       }
       flow.authorizationCode = callbackResult.code;
       return await this.exchangeAndStore(flow, controller, options);
     } catch (error) {
-      if (error?.code === "EADDRINUSE") {
+      if (isCallbackPortUnavailableError(error)) {
         return safeLoginFailure("callback_port_unavailable", "port_unavailable");
       }
       return safeLoginFailure(error?.code ? `login_${error.code}` : "login_failed");
     } finally {
       this.currentFlow = null;
-      await closeServer(server);
+      if (callbackListener && typeof callbackListener.close === "function") {
+        await callbackListener.close();
+      }
+    }
+  }
+
+  async createCallbackListener(options = {}) {
+    try {
+      return await createLocalCallbackListener(options);
+    } catch (error) {
+      if (error?.code !== "EADDRINUSE" || !this.callbackListenerFactory) throw error;
+      return this.callbackListenerFactory({
+        ...options,
+        redirectHost: DEFAULT_CALLBACK_HOST,
+        redirectUri: `${DEFAULT_REDIRECT_URI}`,
+      });
     }
   }
 }
@@ -302,9 +326,31 @@ function createDirectAuthLoginCoordinator(options = {}) {
   return new DirectAuthLoginCoordinator(options);
 }
 
+async function createLocalCallbackListener(options = {}) {
+  const server = http.createServer();
+  const callbackPort = normalizeCallbackPort(options.callbackPort, DEFAULT_CALLBACK_PORT);
+  const callbackHost = normalizeString(options.callbackHost, DEFAULT_CALLBACK_HOST);
+  const callbackPath = normalizeString(options.callbackPath, DEFAULT_CALLBACK_PATH);
+  await listen(server, callbackHost, callbackPort);
+  const redirectUri = redirectUriFromServer(server, {
+    callbackHost: DEFAULT_CALLBACK_HOST,
+    callbackPath,
+    callbackPort,
+  });
+  return {
+    kind: "local",
+    redirectUri,
+    wait: () => waitForCallback(server, { redirectUri, state: normalizeString(options.state, "") }, {
+      callbackTimeoutMs: options.callbackTimeoutMs || DEFAULT_CALLBACK_TIMEOUT_MS,
+    }),
+    close: () => closeServer(server),
+  };
+}
+
 module.exports = {
   DIRECT_AUTH_LOGIN_FLOW_SCHEMA,
   DirectAuthLoginCoordinator,
+  createLocalCallbackListener,
   createDirectAuthLoginCoordinator,
   credentialsFromTokenResponse,
   tokenExchangeRequest,

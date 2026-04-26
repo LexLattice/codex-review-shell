@@ -22,6 +22,7 @@ const {
   registerDirectAuthIpcHandlers,
 } = require("./main/direct/auth/auth-ipc");
 const { createDirectAuthLoginCoordinator } = require("./main/direct/auth/auth-login");
+const { createWslCallbackListenerFactory } = require("./main/direct/auth/wsl-callback-listener");
 
 const APP_TITLE = "Codex Review Shell";
 const CONFIG_FILE_NAME = "workspace-config.json";
@@ -1110,8 +1111,21 @@ function ensureDirectAuthLoginCoordinator() {
   if (directAuthLoginCoordinator) return directAuthLoginCoordinator;
   directAuthLoginCoordinator = createDirectAuthLoginCoordinator({
     openExternal: (url) => shell.openExternal(url),
+    callbackListenerFactory: createDirectAuthCallbackListenerFactory(),
   });
   return directAuthLoginCoordinator;
+}
+
+function createDirectAuthCallbackListenerFactory() {
+  if (process.platform !== "win32") return null;
+  const configuredLinuxPath = earlyNormalizeString(process.env.CODEX_REVIEW_SHELL_DEFAULT_WSL_PATH, "");
+  if (!configuredLinuxPath) return null;
+  const linuxPath = normalizeLinuxPathValue(configuredLinuxPath, "/home");
+  if (!linuxPath) return null;
+  return createWslCallbackListenerFactory({
+    distro: earlyNormalizeString(process.env.CODEX_REVIEW_SHELL_DEFAULT_WSL_DISTRO, ""),
+    linuxPath,
+  });
 }
 
 function ensureCodexAppServerManager() {
