@@ -1,0 +1,248 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lexlattice.local/schema/direct_codex_odeu_profile.v1.json",
+  "title": "DirectCodexOdeuProfile",
+  "description": "ADEU/ODEU profile schema for the ChatGPT-subscription Codex server/backend path. Closed-root, evidence-backed, and organized along ontology, deontics, epistemics, and utility axes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "profileId",
+    "profileVersion",
+    "backendContractVersion",
+    "observedAt",
+    "source",
+    "subject",
+    "scope",
+    "ontology",
+    "deontics",
+    "epistemics",
+    "utility",
+    "uxExposurePolicy"
+  ],
+  "properties": {
+    "schema": { "const": "direct_codex_odeu_profile@1" },
+    "profileId": { "type": "string" },
+    "profileVersion": { "type": "integer", "minimum": 1 },
+    "backendContractVersion": { "type": "string" },
+    "observedAt": { "type": "string", "format": "date-time" },
+    "source": {
+      "enum": ["fixture", "live-probe", "imported-baseline", "mixed-baseline"]
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "provider", "compatibilityTier", "description"],
+      "properties": {
+        "name": { "type": "string" },
+        "provider": { "type": "string" },
+        "compatibilityTier": { "enum": ["native", "certified", "experimental", "unsupported"] },
+        "description": { "type": "string" }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inScope", "outOfScope", "authorityLayerNotes"],
+      "properties": {
+        "inScope": { "type": "array", "items": { "type": "string" } },
+        "outOfScope": { "type": "array", "items": { "type": "string" } },
+        "authorityLayerNotes": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "ontology": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "transports",
+        "authSurfaces",
+        "models",
+        "requestFields",
+        "inputItems",
+        "responseEventTypes",
+        "reasoningShapes",
+        "toolCallShapes",
+        "continuationShapes",
+        "serverManagedSurfaces",
+        "appServerClientSurfaces",
+        "importSourceShapes"
+      ],
+      "properties": {
+        "transports": { "type": "array", "items": { "$ref": "#/$defs/capability" } },
+        "authSurfaces": { "type": "array", "items": { "$ref": "#/$defs/capability" } },
+        "models": { "type": "array", "items": { "$ref": "#/$defs/modelCapability" } },
+        "requestFields": { "type": "array", "items": { "$ref": "#/$defs/fieldEvidence" } },
+        "inputItems": { "type": "array", "items": { "$ref": "#/$defs/fieldEvidence" } },
+        "responseEventTypes": { "type": "array", "items": { "$ref": "#/$defs/fieldEvidence" } },
+        "reasoningShapes": { "type": "array", "items": { "$ref": "#/$defs/fieldEvidence" } },
+        "toolCallShapes": { "type": "array", "items": { "$ref": "#/$defs/fieldEvidence" } },
+        "continuationShapes": { "type": "array", "items": { "$ref": "#/$defs/fieldEvidence" } },
+        "serverManagedSurfaces": { "type": "array", "items": { "$ref": "#/$defs/capability" } },
+        "appServerClientSurfaces": { "type": "array", "items": { "$ref": "#/$defs/capability" } },
+        "importSourceShapes": { "type": "array", "items": { "$ref": "#/$defs/fieldEvidence" } }
+      }
+    },
+    "deontics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authRequirements",
+        "tokenStorageRules",
+        "workspaceAuthorityRules",
+        "approvalRequiredFor",
+        "blockedBehaviors",
+        "dataHandlingRules",
+        "clientHarnessDuties"
+      ],
+      "properties": {
+        "authRequirements": { "type": "array", "items": { "$ref": "#/$defs/fieldEvidence" } },
+        "tokenStorageRules": { "type": "array", "items": { "type": "string" } },
+        "workspaceAuthorityRules": { "type": "array", "items": { "type": "string" } },
+        "approvalRequiredFor": { "type": "array", "items": { "$ref": "#/$defs/fieldEvidence" } },
+        "blockedBehaviors": { "type": "array", "items": { "type": "string" } },
+        "dataHandlingRules": { "type": "array", "items": { "$ref": "#/$defs/fieldEvidence" } },
+        "clientHarnessDuties": { "type": "array", "items": { "$ref": "#/$defs/fieldEvidence" } }
+      }
+    },
+    "epistemics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evidenceSources",
+        "confidenceByCapability",
+        "acceptanceRules",
+        "unknowns",
+        "driftWatch"
+      ],
+      "properties": {
+        "evidenceSources": { "type": "array", "items": { "$ref": "#/$defs/evidenceSource" } },
+        "confidenceByCapability": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/acceptanceState" }
+        },
+        "acceptanceRules": { "type": "array", "items": { "type": "string" } },
+        "unknowns": { "type": "array", "items": { "type": "string" } },
+        "driftWatch": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "utility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["latency", "usageFields", "retryBehavior", "degradationModes", "recommendedUxAffordances", "blockedUxAffordances"],
+      "properties": {
+        "latency": { "type": "array", "items": { "$ref": "#/$defs/metricEvidence" } },
+        "usageFields": { "type": "array", "items": { "$ref": "#/$defs/fieldEvidence" } },
+        "retryBehavior": { "type": "array", "items": { "$ref": "#/$defs/fieldEvidence" } },
+        "degradationModes": { "type": "array", "items": { "type": "string" } },
+        "recommendedUxAffordances": { "type": "array", "items": { "type": "string" } },
+        "blockedUxAffordances": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "uxExposurePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["normalControls", "diagnosticControls", "labControls", "rejectedControls"],
+      "properties": {
+        "normalControls": { "type": "array", "items": { "type": "string" } },
+        "diagnosticControls": { "type": "array", "items": { "type": "string" } },
+        "labControls": { "type": "array", "items": { "type": "string" } },
+        "rejectedControls": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  },
+  "$defs": {
+    "acceptanceState": {
+      "enum": ["observed", "probed", "accepted", "unstable", "rejected", "unknown"]
+    },
+    "evidenceGrade": {
+      "enum": ["official-doc", "official-engineering-note", "specimen-observation", "local-spec", "fixture", "live-probe", "inference", "unknown"]
+    },
+    "authorityLayer": {
+      "enum": ["oai-server", "chatgpt-subscription-backend", "codex-app-server", "local-harness", "workspace-backend", "renderer", "unknown"]
+    },
+    "evidenceRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceId", "grade", "summary"],
+      "properties": {
+        "sourceId": { "type": "string" },
+        "grade": { "$ref": "#/$defs/evidenceGrade" },
+        "summary": { "type": "string" },
+        "locator": { "type": "string" }
+      }
+    },
+    "evidenceSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "title", "summary", "reliability"],
+      "properties": {
+        "id": { "type": "string" },
+        "kind": { "enum": ["official-doc", "official-blog", "repo-spec", "specimen", "probe", "fixture", "inference"] },
+        "title": { "type": "string" },
+        "summary": { "type": "string" },
+        "urlOrPath": { "type": "string" },
+        "reliability": { "enum": ["high", "medium", "low", "unknown"] }
+      }
+    },
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "status", "authorityLayer", "summary", "evidence"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "status": { "$ref": "#/$defs/acceptanceState" },
+        "authorityLayer": { "$ref": "#/$defs/authorityLayer" },
+        "summary": { "type": "string" },
+        "notes": { "type": "array", "items": { "type": "string" } },
+        "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidenceRef" } }
+      }
+    },
+    "fieldEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "field", "status", "authorityLayer", "shape", "summary", "evidence"],
+      "properties": {
+        "id": { "type": "string" },
+        "field": { "type": "string" },
+        "status": { "$ref": "#/$defs/acceptanceState" },
+        "authorityLayer": { "$ref": "#/$defs/authorityLayer" },
+        "shape": { "type": "string" },
+        "summary": { "type": "string" },
+        "notes": { "type": "array", "items": { "type": "string" } },
+        "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidenceRef" } }
+      }
+    },
+    "metricEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "metric", "status", "unit", "summary", "evidence"],
+      "properties": {
+        "id": { "type": "string" },
+        "metric": { "type": "string" },
+        "status": { "$ref": "#/$defs/acceptanceState" },
+        "unit": { "type": "string" },
+        "summary": { "type": "string" },
+        "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidenceRef" } }
+      }
+    },
+    "modelCapability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "displayName", "status", "availability", "supportsReasoning", "supportsTools", "supportsImages", "evidence"],
+      "properties": {
+        "id": { "type": "string" },
+        "displayName": { "type": "string" },
+        "status": { "$ref": "#/$defs/acceptanceState" },
+        "availability": { "type": "string" },
+        "contextWindow": { "type": ["integer", "null"], "minimum": 1 },
+        "supportsReasoning": { "type": ["boolean", "null"] },
+        "supportedReasoningEfforts": { "type": "array", "items": { "type": "string" } },
+        "supportsTools": { "type": ["boolean", "null"] },
+        "supportsImages": { "type": ["boolean", "null"] },
+        "notes": { "type": "array", "items": { "type": "string" } },
+        "evidence": { "type": "array", "items": { "$ref": "#/$defs/evidenceRef" } }
+      }
+    }
+  }
+}
