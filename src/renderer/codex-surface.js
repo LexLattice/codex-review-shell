@@ -39,6 +39,7 @@ const TOOL_LIKE_THOUGHT_TYPES = new Set([
   "webSearch",
   "collabAgentToolCall",
 ]);
+const DIRECT_FIXTURE_TRANSPORT = "direct-fixture";
 const THOUGHT_ASSISTANT_PHASES = new Set([
   // Canonical Codex phase for interim assistant preamble/progress text.
   "commentary",
@@ -1252,12 +1253,15 @@ function bindThread(thread, modelName = "", options = {}) {
   state.threadId = thread?.id || "";
   state.liveAttached = options.liveAttached !== false;
   const title = thread?.title || thread?.name || thread?.preview || state.threadTitle || payload.initialThreadTitle || state.threadId;
+  const isDirectFixture = connection?.transport === DIRECT_FIXTURE_TRANSPORT;
   updateSurfaceHeader(title, workspaceText());
   setBadge(els.modelBadge, modelName || project?.codex?.model || "default model", "subtle");
   setComposerEnabled(state.liveAttached, state.liveAttached ? "" : "Read-only mode");
   setNotice(
-    "Codex session ready",
-    thread?.preview ? `Resumed thread: ${thread.preview}` : "Managed local Codex app-server is connected.",
+    isDirectFixture ? "Direct fixture session ready" : "Codex session ready",
+    isDirectFixture
+      ? "Fixture-only direct controller is connected."
+      : thread?.preview ? `Resumed thread: ${thread.preview}` : "Managed local Codex app-server is connected.",
     { success: true, showNewThread: true },
   );
 }
@@ -1946,7 +1950,7 @@ async function connect() {
   state.removeBridgeListener = bridge.onEvent(handleBridgeEvent);
   updateSurfaceHeader(payload.initialThreadTitle || project.name, workspaceText());
 
-  if (!connection?.wsUrl) {
+  if (!connection?.wsUrl && connection?.transport !== DIRECT_FIXTURE_TRANSPORT) {
     setBadge(els.connectionBadge, "fallback", "warning");
     addSystemMessage(payload.error || "Codex fallback surface loaded. The managed app-server is not connected.");
     setComposerEnabled(false, "Read-only transcript mode (Codex app-server unavailable).");
@@ -1965,7 +1969,8 @@ async function connect() {
     return;
   }
 
-  setComposerEnabled(false, "Connecting Codex app-server…");
+  const isDirectFixture = connection?.transport === DIRECT_FIXTURE_TRANSPORT;
+  setComposerEnabled(false, isDirectFixture ? "Connecting direct fixture controller…" : "Connecting Codex app-server…");
   setBadge(els.connectionBadge, "connecting", "warning");
   await bridge.connect(connection);
   state.connected = true;

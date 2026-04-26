@@ -26,6 +26,12 @@ const { codexAuthTokensFromCredentials } = require("./main/direct/auth/app-serve
 const { loadDirectCodexProfile } = require("./main/direct/odeu-profile/profile-loader");
 const { DirectSessionStore } = require("./main/direct/session/session-store");
 const {
+  DIRECT_FIXTURE_SURFACE_TRANSPORT,
+  DirectFixtureController,
+  DirectFixtureSurfaceSession,
+  buildDirectFixtureCapabilities,
+} = require("./main/direct/controller/fixture-controller");
+const {
   buildDirectRuntimeStatus,
   directRuntimeLaneLabel,
   normalizeCodexBindingProvider,
@@ -113,6 +119,7 @@ let directAuthController = null;
 let directAuthLoginCoordinator = null;
 let directCodexProfileDoc = null;
 let directSessionStore = null;
+let directFixtureController = null;
 let surfaceActivationEpoch = 0;
 
 function nowIso() {
@@ -1153,6 +1160,15 @@ function ensureDirectSessionStore() {
   return directSessionStore;
 }
 
+function ensureDirectFixtureController() {
+  if (directFixtureController) return directFixtureController;
+  directFixtureController = new DirectFixtureController({
+    sessionStore: ensureDirectSessionStore(),
+    profileDoc: ensureDirectCodexProfileDoc(),
+  });
+  return directFixtureController;
+}
+
 function currentLegacyAppServerSnapshot() {
   return codexAppServer?.snapshot?.() || null;
 }
@@ -1167,6 +1183,7 @@ function buildDirectRuntimeStatusForProject(project, options = {}) {
     authStatus: authSettings.authStatus,
     profileDoc,
     sessionStore: ensureDirectSessionStore().status(),
+    fixtureRuntime: { available: true, capabilities: buildDirectFixtureCapabilities() },
     legacySession: currentLegacyAppServerSnapshot(),
   });
 }
@@ -1229,11 +1246,36 @@ function isCodexSurfaceSender(sender) {
   return Boolean(codexView?.webContents && !codexView.webContents.isDestroyed() && sender.id === codexView.webContents.id);
 }
 
-function codexSurfaceSessionFor(sender) {
+function codexSurfaceSessionKindForConnection(connection = {}) {
+  return normalizeString(connection?.transport, "") === DIRECT_FIXTURE_SURFACE_TRANSPORT
+    ? DIRECT_FIXTURE_SURFACE_TRANSPORT
+    : "codex-app-server";
+}
+
+function createCodexSurfaceSession(sender, connection = {}) {
+  if (codexSurfaceSessionKindForConnection(connection) === DIRECT_FIXTURE_SURFACE_TRANSPORT) {
+    return new DirectFixtureSurfaceSession(sender, {
+      controller: ensureDirectFixtureController(),
+      project: currentProject,
+    });
+  }
+  const session = new CodexSurfaceSession(sender);
+  session.transportKind = "codex-app-server";
+  return session;
+}
+
+function codexSurfaceSessionFor(sender, options = {}) {
   if (!isCodexSurfaceSender(sender)) throw new Error("Codex surface bridge is not available from this renderer.");
   const sessions = ensureCodexSurfaceSessions();
-  if (sessions.has(sender.id)) return sessions.get(sender.id);
-  const session = new CodexSurfaceSession(sender);
+  const requestedKind = options.connection ? codexSurfaceSessionKindForConnection(options.connection) : "";
+  const existing = sessions.get(sender.id);
+  if (existing && (!requestedKind || existing.transportKind === requestedKind)) return existing;
+  if (existing) {
+    sessions.delete(sender.id);
+    if (existing.destroyedListener) sender.removeListener("destroyed", existing.destroyedListener);
+    existing.dispose({ silent: true, reason: "Codex surface runtime changed." }).catch(() => {});
+  }
+  const session = createCodexSurfaceSession(sender, options.connection || {});
   session.on("event", (payload) => {
     if (payload?.type === "rpc-request" || payload?.type === "rpc-request-updated") {
       emitShellEvent({
@@ -1253,10 +1295,12 @@ function codexSurfaceSessionFor(sender) {
     }
   });
   sessions.set(sender.id, session);
-  sender.once("destroyed", () => {
+  session.destroyedListener = () => {
+    if (sessions.get(sender.id) !== session) return;
     session.dispose({ silent: true, reason: "Codex surface renderer destroyed." }).catch(() => {});
     sessions.delete(sender.id);
-  });
+  };
+  sender.once("destroyed", session.destroyedListener);
   return session;
 }
 
@@ -1449,13 +1493,26 @@ async function loadCodexSurface(project, options = {}) {
   const runtimeMode = normalizeDirectRuntimeModeForStatus(codex.runtimeMode);
   if (runtimeMode !== "legacy-app-server") {
     await disposeCodexAppServerManager();
-    activeCodexSurfaceConnection = null;
     const runtimeStatus = buildDirectRuntimeStatusForProject(project);
+    const directConnection = {
+      projectId: project.id,
+      transport: DIRECT_FIXTURE_SURFACE_TRANSPORT,
+      runtime: DIRECT_FIXTURE_SURFACE_TRANSPORT,
+      workspaceRoot: workspaceRoot(project),
+      capabilities: buildDirectFixtureCapabilities(),
+      activationEpoch: Number(options.activationEpoch) || 0,
+      fixture: {
+        id: "plain-text-turn",
+        source: "normalized-fixture",
+      },
+    };
+    activeCodexSurfaceConnection = directConnection;
     const localUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, {
+      codexConnection: directConnection,
       activationEpoch: Number(options.activationEpoch) || 0,
       error: [
         `Direct runtime selected: ${runtimeStatus.runtimeModeLabel}.`,
-        "Direct turn execution is not runnable yet; current slice exposes status truth only.",
+        "Fixture-only direct controller is enabled; live direct backend turns are not runnable yet.",
         `Model source: ${runtimeStatus.models.source}.`,
       ].join(" "),
     });
@@ -2923,6 +2980,7 @@ async function createWindow() {
     localSurfaceServer = null;
     threadAnalyticsStore?.close();
     threadAnalyticsStore = null;
+    directFixtureController = null;
     directSessionStore = null;
     closeView(codexView);
     closeView(chatgptView);
@@ -3021,21 +3079,30 @@ ipcMain.handle("surface:reload", async (_event, surfaceName) => {
 });
 
 ipcMain.handle("codex-surface:connect", async (event, payload) => {
-  const session = codexSurfaceSessionFor(event.sender);
   const requestedConnection = payload?.connection || null;
   const connection =
     activeCodexSurfaceConnection &&
     requestedConnection &&
-    String(activeCodexSurfaceConnection.wsUrl || "") === String(requestedConnection.wsUrl || "")
+    (
+      String(activeCodexSurfaceConnection.wsUrl || "") === String(requestedConnection.wsUrl || "") ||
+      (
+        normalizeString(activeCodexSurfaceConnection.transport, "") === DIRECT_FIXTURE_SURFACE_TRANSPORT &&
+        normalizeString(requestedConnection.transport, "") === DIRECT_FIXTURE_SURFACE_TRANSPORT
+      )
+    )
       ? { ...requestedConnection, remoteAuth: activeCodexSurfaceConnection.remoteAuth || { mode: "none" } }
       : requestedConnection;
-  const connected = await session.connect({
-    ...connection,
-    chatgptAuthTokensProvider: async () => directAuthTokensForCodexAppServer({
-      refresh: true,
-      includeType: false,
-    }),
-  });
+  const session = codexSurfaceSessionFor(event.sender, { connection });
+  const connectionWithProviders = session.transportKind === DIRECT_FIXTURE_SURFACE_TRANSPORT
+    ? connection
+    : {
+        ...connection,
+        chatgptAuthTokensProvider: async () => directAuthTokensForCodexAppServer({
+          refresh: true,
+          includeType: false,
+        }),
+      };
+  const connected = await session.connect(connectionWithProviders);
   return { ...connected, directAuth: { attached: false, reason: "pending_initialize" } };
 });
 
@@ -3049,7 +3116,7 @@ ipcMain.handle("codex-surface:request", async (event, payload) => {
   const session = codexSurfaceSessionFor(event.sender);
   const method = payload?.method;
   const result = await session.request(method, payload?.params || {});
-  if (method === "initialize") {
+  if (method === "initialize" && session.transportKind !== DIRECT_FIXTURE_SURFACE_TRANSPORT) {
     return attachDirectAuthAfterInitialize(session, result);
   }
   return result;
@@ -3274,6 +3341,7 @@ app.on("before-quit", () => {
   threadAnalyticsStore?.close();
   threadAnalyticsStore = null;
   directAuthLoginCoordinator = null;
+  directFixtureController = null;
   directSessionStore = null;
 });
 

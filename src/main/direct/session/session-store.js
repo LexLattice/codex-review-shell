@@ -362,16 +362,20 @@ class DirectSessionStore {
   }
 
   appendNormalizedEvent(sessionId, turnId, event, options = {}) {
+    return this.appendNormalizedEvents(sessionId, turnId, [event], options);
+  }
+
+  appendNormalizedEvents(sessionId, turnId, events, options = {}) {
     const turn = this.readTurn(sessionId, turnId);
     if (!turn) throw new Error(`Direct turn not found: ${turnId}`);
-    const eventRecord = {
-      at: nowIso(options.nowMs),
-      event,
-    };
+    const normalizedEvents = Array.isArray(events) ? events : [];
+    if (!normalizedEvents.length) return turn;
+    const at = nowIso(options.nowMs);
+    const lines = normalizedEvents.map((event) => JSON.stringify({ at, event })).join("\n");
     ensureDirectory(path.dirname(this.eventPath(sessionId, turnId)));
-    fs.appendFileSync(this.eventPath(sessionId, turnId), `${JSON.stringify(eventRecord)}\n`, "utf8");
+    fs.appendFileSync(this.eventPath(sessionId, turnId), `${lines}\n`, "utf8");
     return this.updateTurnState(sessionId, turnId, turn.state, {
-      normalizedEventCount: turn.normalizedEventCount + 1,
+      normalizedEventCount: turn.normalizedEventCount + normalizedEvents.length,
     }, options);
   }
 
