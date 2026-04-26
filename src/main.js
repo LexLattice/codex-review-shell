@@ -1216,6 +1216,17 @@ async function attachDirectAuthToCodexSession(session) {
   return { attached: true };
 }
 
+async function attachDirectAuthAfterInitialize(session, initializeResult) {
+  try {
+    return {
+      result: initializeResult,
+      directAuth: await attachDirectAuthToCodexSession(session),
+    };
+  } catch (error) {
+    throw new Error(`Codex initialized, but direct auth could not attach to Codex app-server: ${error.message}`);
+  }
+}
+
 function findCodexSurfaceSessionForRequest(requestKey) {
   const key = String(requestKey || "");
   if (!key || !codexSurfaceSessions) return null;
@@ -2909,12 +2920,7 @@ ipcMain.handle("codex-surface:connect", async (event, payload) => {
       includeType: false,
     }),
   });
-  try {
-    const attached = await attachDirectAuthToCodexSession(session);
-    return { ...connected, directAuth: attached };
-  } catch (error) {
-    throw new Error(`Direct auth is present but could not attach to Codex app-server: ${error.message}`);
-  }
+  return { ...connected, directAuth: { attached: false, reason: "pending_initialize" } };
 });
 
 ipcMain.handle("codex-surface:disconnect", async (event) => {
@@ -2925,7 +2931,12 @@ ipcMain.handle("codex-surface:disconnect", async (event) => {
 
 ipcMain.handle("codex-surface:request", async (event, payload) => {
   const session = codexSurfaceSessionFor(event.sender);
-  return session.request(payload?.method, payload?.params || {});
+  const method = payload?.method;
+  const result = await session.request(method, payload?.params || {});
+  if (method === "initialize") {
+    return attachDirectAuthAfterInitialize(session, result);
+  }
+  return result;
 });
 
 ipcMain.handle("codex-surface:notify", async (event, payload) => {
