@@ -9,10 +9,15 @@ const {
 } = require("../fixtures/fixture-loader");
 const {
   buildAuthorizationUrl,
+  buildTokenExchangeRequestShape,
+  buildTokenRefreshRequestShape,
+  extractChatgptAccountIdFromJwt,
   normalizeTokenResponse,
   parseCallbackUrl,
   parseManualCodePaste,
   pkceChallengeFromVerifier,
+  projectCredentialStatus,
+  projectRefreshFailureState,
 } = require("../auth/oauth-shapes");
 const { normalizeDirectCodexEvents } = require("../normalizer/codex-event-normalizer");
 const { buildFixtureProfileDelta } = require("../odeu-profile/profile-delta-builder");
@@ -26,7 +31,12 @@ const PROBE_FIXTURE_SOURCES = new Set(["committed-fixture", "auth-shape-fixture"
 const AUTH_SHAPE_OPERATIONS = new Set([
   "authorization_url",
   "callback_parse",
+  "credential_status_projection",
+  "jwt_account_id_extraction",
   "manual_code_paste",
+  "refresh_failure_projection",
+  "token_exchange_request_shape",
+  "token_refresh_request_shape",
   "token_response_normalization",
 ]);
 
@@ -144,6 +154,21 @@ function executeAuthShapeOperation(operation, input = {}) {
   }
   if (operation === "token_response_normalization") {
     return normalizeTokenResponse(input.response);
+  }
+  if (operation === "token_exchange_request_shape") {
+    return buildTokenExchangeRequestShape(input);
+  }
+  if (operation === "token_refresh_request_shape") {
+    return buildTokenRefreshRequestShape(input);
+  }
+  if (operation === "jwt_account_id_extraction") {
+    return extractChatgptAccountIdFromJwt(input.syntheticJwt, { claimPath: input.claimPath });
+  }
+  if (operation === "credential_status_projection") {
+    return projectCredentialStatus(input.credentials || {}, { nowMs: input.nowMs });
+  }
+  if (operation === "refresh_failure_projection") {
+    return projectRefreshFailureState(input);
   }
   throw new Error(`Unsupported auth shape operation: ${operation}`);
 }

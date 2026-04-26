@@ -1,0 +1,26 @@
+{
+  "operation": "token_exchange_request_shape",
+  "input": {
+    "clientId": "codex-desktop-fixture",
+    "redirectUri": "http://localhost:1455/auth/callback",
+    "authorizationCode": "[REDACTED:authorization-code]",
+    "pkceVerifier": "[REDACTED:authorization-code]"
+  },
+  "expected": {
+    "url": "https://auth.openai.com/oauth/token",
+    "method": "POST",
+    "contentType": "application/x-www-form-urlencoded",
+    "grantType": "authorization_code",
+    "clientId": "codex-desktop-fixture",
+    "redirectUri": "http://localhost:1455/auth/callback",
+    "hasAuthorizationCode": true,
+    "hasPkceVerifier": true,
+    "bodyFieldOrder": [
+      "grant_type",
+      "client_id",
+      "code",
+      "code_verifier",
+      "redirect_uri"
+    ]
+  }
+}
