@@ -228,7 +228,8 @@ OpenAI/ChatGPT stream events.
 
 ## OAuth Flow
 
-The first implementation should support browser callback and manual paste.
+The first implementation supports browser callback. Manual paste remains a
+shape-level parser until there is a renderer affordance for it.
 
 Flow:
 
@@ -243,6 +244,11 @@ Flow:
    present.
 8. Main process persists credentials in the configured direct auth store.
 9. Renderer receives only redacted auth status.
+
+Current implementation note:
+
+- `CODEX_REVIEW_SHELL_DIRECT_AUTH_CLIENT_ID` provides the OAuth client id for
+  the main-process login coordinator.
 
 Storage requirements:
 
@@ -268,8 +274,12 @@ Renderer IPC contract:
   memory-only storage without exposing store paths.
 - `direct-auth:logout` clears app-owned direct auth stores and returns redacted
   post-logout status.
-- `direct-auth:login` is reserved for the live OAuth login path; until that path
-  is implemented it returns a redacted `live_oauth_not_implemented` result.
+- `direct-auth:login` starts the main-process OAuth login coordinator when a
+  direct auth client id is configured. The coordinator opens the system browser,
+  listens only on the local callback endpoint, exchanges the authorization code
+  with PKCE, stores credentials through the active private store, and returns a
+  redacted auth status projection. Missing configuration returns redacted
+  `not_configured` / `missing_client_id`.
 
 ## Request Construction
 
@@ -589,7 +599,7 @@ The migration should be staged.
 
 ### Phase 1: Direct Auth
 
-- Implement OAuth login in main process.
+- Validate main-process OAuth login against a real subscribed account.
 - Store credentials privately.
 - Show redacted auth status in settings.
 - Add token refresh and logout.
