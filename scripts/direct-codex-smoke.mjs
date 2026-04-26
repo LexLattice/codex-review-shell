@@ -44,6 +44,13 @@ const {
   buildDirectFixtureCapabilities,
 } = require("../src/main/direct/controller/fixture-controller");
 const {
+  DEFAULT_CODEX_RESPONSES_ENDPOINT,
+  DIRECT_TEXT_PROBE_RESULT_SCHEMA,
+  buildTextOnlyProbeRequest,
+  runPersistedTextOnlyDirectProbe,
+  runTextOnlyDirectProbe,
+} = require("../src/main/direct/transport/codex-responses-transport");
+const {
   DEFAULT_PROBE_MANIFEST_DIR,
   runFixtureBackedProbe,
   runProbeManifestDir,
@@ -205,6 +212,9 @@ assert(directRuntimeStatus.models.ids.length > 0, "Expected ODEU baseline model 
 assert(directRuntimeStatus.auth.rawTokensExposed === false, "Direct runtime status must not expose raw tokens.");
 assert(directRuntimeStatus.auth.capability.storage === "plain-file-dev-only", "Expected file auth storage to be labeled dev-file only.");
 assert(directRuntimeStatus.diagnostics.rawBackendFramesExposed === false, "Direct runtime status must not expose raw backend frames.");
+assert(directRuntimeStatus.textProbe.available === true, "Expected direct text probe to be advertised in direct mode.");
+assert(directRuntimeStatus.textProbe.runnable === false, "Text probe availability must not make normal direct turns runnable.");
+assert(directRuntimeStatus.textProbe.manualOnly === true, "Live text probe must remain manual-only.");
 const directRuntimeStatusWithFixture = buildDirectRuntimeStatus({
   project: { surfaceBinding: { codex: { runtimeMode: "direct-experimental" } } },
   authStatus: { status: "authenticated", storageMode: "file" },
@@ -813,6 +823,165 @@ const failedResponse = normalizeDirectCodexEvents([
   { event: "response.failed", data: { response: { id: "resp_failed", error: { code: "server_error", message: "failed" } } } },
 ]);
 assert(failedResponse.normalized[0].type === "response_failed", "Expected response.failed to normalize as response_failed.");
+
+function textResponse(text, status = 200, headers = {}) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: status >= 200 && status < 300 ? "OK" : "Error",
+    headers: {
+      get: (name) => headers[String(name || "").toLowerCase()] || "",
+    },
+    text: async () => text,
+  };
+}
+
+function asyncIteratorTextResponse(text, splitAt, status = 200, headers = {}) {
+  const bytes = new TextEncoder().encode(text);
+  const chunks = Number.isInteger(splitAt) && splitAt > 0 && splitAt < bytes.length
+    ? [bytes.slice(0, splitAt), bytes.slice(splitAt)]
+    : [bytes];
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: status >= 200 && status < 300 ? "OK" : "Error",
+    headers: {
+      get: (name) => headers[String(name || "").toLowerCase()] || "",
+    },
+    body: {
+      async *[Symbol.asyncIterator]() {
+        for (const chunk of chunks) yield chunk;
+      },
+    },
+  };
+}
+
+const textProbeRequest = buildTextOnlyProbeRequest({
+  profileDoc,
+  prompt: "probe prompt",
+  model: "gpt-5.4",
+});
+assert(textProbeRequest.stream === true, "Expected direct text probe request to stream.");
+assert(textProbeRequest.store === false, "Expected direct text probe request to disable backend storage.");
+assert(!textProbeRequest.tools, "Text-only probe must not include tools.");
+
+let capturedProbeRequest = null;
+const probeSse = [
+  "event: response.created",
+  "data: {\"response\":{\"id\":\"resp_probe\",\"model\":\"gpt-5.4\"}}",
+  "",
+  "event: response.output_text.delta",
+  "data: {\"item_id\":\"msg_probe\",\"delta\":\"direct text probe ok\"}",
+  "",
+  "event: response.completed",
+  "data: {\"response\":{\"id\":\"resp_probe\",\"status\":\"completed\",\"usage\":{\"input_tokens\":4,\"output_tokens\":4,\"total_tokens\":8}}}",
+  "",
+  "data: [DONE]",
+  "",
+].join("\n");
+const directTextProbe = await runTextOnlyDirectProbe({
+  endpoint: DEFAULT_CODEX_RESPONSES_ENDPOINT,
+  credentials: { accessToken: "probe_access_token_secret_1234567890" },
+  profileDoc,
+  model: "gpt-5.4",
+  prompt: "probe prompt",
+  fetchImpl: async (url, init) => {
+    capturedProbeRequest = { url, init, body: JSON.parse(init.body) };
+    return textResponse(probeSse, 200, { "content-type": "text/event-stream" });
+  },
+});
+assert(directTextProbe.schema === DIRECT_TEXT_PROBE_RESULT_SCHEMA, "Expected direct text probe result schema.");
+assert(directTextProbe.ok === true, "Expected mocked direct text probe to complete.");
+assert(capturedProbeRequest.url === DEFAULT_CODEX_RESPONSES_ENDPOINT, "Expected direct text probe endpoint.");
+assert(capturedProbeRequest.init.headers.Authorization.startsWith("Bearer "), "Expected direct text probe auth header.");
+assert(capturedProbeRequest.body.stream === true && capturedProbeRequest.body.store === false, "Expected direct text probe body shape.");
+assert(directTextProbe.normalizedEvents.some((event) => event.type === "message_delta"), "Expected text probe to normalize message deltas.");
+assert(directTextProbe.rawAuthHeadersExposed === false, "Direct text probe must not expose raw auth headers.");
+assertFixtureRedacted(directTextProbe.diagnostic);
+
+const utf8ProbeSse = [
+  "event: response.output_text.delta",
+  `data: ${JSON.stringify({ item_id: "msg_utf8_probe", delta: "héllo direct" })}`,
+  "",
+  "event: response.completed",
+  `data: ${JSON.stringify({ response: { id: "resp_utf8_probe", status: "completed" } })}`,
+  "",
+].join("\n");
+const utf8ProbeBytes = new TextEncoder().encode(utf8ProbeSse);
+const utf8SplitAt = utf8ProbeBytes.indexOf(0xc3) + 1;
+assert(utf8SplitAt > 0, "Expected UTF-8 probe fixture to contain a multibyte split point.");
+const utf8Probe = await runTextOnlyDirectProbe({
+  endpoint: DEFAULT_CODEX_RESPONSES_ENDPOINT,
+  credentials: { accessToken: "utf8_probe_access_token_secret_1234567890" },
+  profileDoc,
+  model: "gpt-5.4",
+  prompt: "utf8 probe prompt",
+  fetchImpl: async () => asyncIteratorTextResponse(utf8ProbeSse, utf8SplitAt, 200, { "content-type": "text/event-stream" }),
+});
+const utf8ProbeText = utf8Probe.normalizedEvents
+  .filter((event) => event.type === "message_delta")
+  .map((event) => event.text || "")
+  .join("");
+assert(utf8ProbeText === "héllo direct", "Expected async iterator response decoding to preserve split UTF-8 characters.");
+
+const textProbeParent = fs.mkdtempSync(path.join(os.tmpdir(), "direct-codex-text-probe-"));
+try {
+  const probeSessionStore = new DirectSessionStore({ rootDir: path.join(textProbeParent, "direct-sessions") });
+  const persistedProbe = await runPersistedTextOnlyDirectProbe({
+    endpoint: "https://chatgpt.com/backend-api/codex/responses",
+    credentials: { accessToken: "persisted_probe_access_token_secret_1234567890" },
+    profileDoc,
+    model: "gpt-5.4",
+    prompt: "persisted probe prompt",
+    sessionStore: probeSessionStore,
+    project: { id: "project_direct_text_probe", workspace: { kind: "local", localPath: "[REDACTED:private-path]" } },
+    fetchImpl: async () => textResponse(probeSse, 200, { "content-type": "text/event-stream" }),
+  });
+  assert(persistedProbe.ok === true, "Expected persisted direct text probe to complete.");
+  const persistedStatus = probeSessionStore.status();
+  assert(persistedStatus.sessionCount === 1, "Expected direct text probe to persist a session.");
+  assert(persistedStatus.turnCount === 1, "Expected direct text probe to persist a turn.");
+  assert(persistedStatus.eventCount >= 3, "Expected direct text probe to persist normalized events.");
+  const persistedSession = probeSessionStore.readSession(persistedProbe.sessionId);
+  assert(persistedSession.messages[0].items.some((item) => item.type === "agentMessage"), "Expected direct text probe transcript to persist assistant output.");
+
+  const failedProbe = await runPersistedTextOnlyDirectProbe({
+    endpoint: "https://chatgpt.com/backend-api/codex/responses",
+    credentials: { accessToken: "failed_probe_access_token_secret_1234567890" },
+    profileDoc,
+    model: "gpt-5.4",
+    prompt: "failed probe prompt",
+    sessionStore: probeSessionStore,
+    project: { id: "project_direct_text_probe", workspace: { kind: "local", localPath: "[REDACTED:private-path]" } },
+    fetchImpl: async () => textResponse("{\"error\":\"unauthorized\"}", 401, { "content-type": "application/json" }),
+  });
+  assert(failedProbe.ok === false, "Expected failed direct text probe to remain failed.");
+  assert(failedProbe.turnState === "failed", "Expected failed direct text probe to persist terminal failed state.");
+  assert(failedProbe.normalizedEvents.some((event) => event.type === "auth_error"), "Expected 401 probe failure to normalize as auth_error.");
+  assertFixtureRedacted(failedProbe.diagnostic);
+
+  const abortController = new AbortController();
+  abortController.abort();
+  const abortedProbe = await runPersistedTextOnlyDirectProbe({
+    endpoint: "https://chatgpt.com/backend-api/codex/responses",
+    credentials: { accessToken: "aborted_probe_access_token_secret_1234567890" },
+    profileDoc,
+    model: "gpt-5.4",
+    prompt: "aborted probe prompt",
+    sessionStore: probeSessionStore,
+    project: { id: "project_direct_text_probe", workspace: { kind: "local", localPath: "[REDACTED:private-path]" } },
+    signal: abortController.signal,
+    fetchImpl: async () => {
+      throw Object.assign(new Error("probe aborted"), { name: "AbortError" });
+    },
+  });
+  assert(abortedProbe.ok === false, "Expected aborted direct text probe to remain non-ok.");
+  assert(abortedProbe.turnState === "aborted", "Expected aborted direct text probe to persist terminal aborted state.");
+  assert(abortedProbe.normalizedEvents.some((event) => event.type === "aborted"), "Expected aborted probe failure to normalize as aborted.");
+  assertFixtureRedacted(abortedProbe.diagnostic);
+} finally {
+  fs.rmSync(textProbeParent, { recursive: true, force: true });
+}
 
 const delta = buildFixtureProfileDelta({
   fixtureId: "inline/plain-tool-turn",
