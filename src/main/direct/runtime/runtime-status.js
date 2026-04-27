@@ -160,6 +160,14 @@ function buildDirectRuntimeStatus(options = {}) {
       continuationEnabled: false,
       rawBackendFramesExposed: false,
     },
+    toolDetection: {
+      available: directModeSelected,
+      status: "detect_only",
+      detectedObligationCount: Number(sessionStore?.unresolvedObligationCount || 0),
+      executionEnabled: false,
+      continuationEnabled: false,
+      workspaceSideEffectsAllowed: false,
+    },
     threads: {
       canStart: false,
       canRead: false,
@@ -195,6 +203,7 @@ function buildDirectRuntimeStatus(options = {}) {
       turnCount: Number(sessionStore?.turnCount || 0),
       eventCount: Number(sessionStore?.eventCount || 0),
       activeTurnCount: Number(sessionStore?.activeTurnCount || 0),
+      unresolvedObligationCount: Number(sessionStore?.unresolvedObligationCount || 0),
       lastTurnState: normalizeString(sessionStore?.lastTurnState, ""),
       lastSessionUpdatedAt: normalizeString(sessionStore?.lastSessionUpdatedAt, ""),
       recovery: isPlainObject(sessionStore?.recovery) ? sessionStore.recovery : {},
