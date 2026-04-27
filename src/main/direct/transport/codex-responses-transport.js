@@ -9,11 +9,14 @@ const {
   buildToolObligationsFromEvents,
   toolTranscriptItemFromObligation,
 } = require("../session/session-store");
+const { recordReadOnlyToolContinuationRequest } = require("../tools/read-only-authority");
 
 const DIRECT_TEXT_PROBE_RESULT_SCHEMA = "direct_codex_text_probe_result@1";
+const DIRECT_TOOL_CONTINUATION_RESULT_SCHEMA = "direct_codex_tool_continuation_result@1";
 const DEFAULT_CODEX_RESPONSES_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
 const DEFAULT_TEXT_PROBE_PROMPT = "Reply with exactly: direct text probe ok";
 const DEFAULT_TEXT_PROBE_INSTRUCTIONS = "You are Codex running a text-only direct transport probe. Do not request tools.";
+const DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS = "You are Codex continuing after a local read-only workspace tool result. Use the tool result as evidence and do not request another tool.";
 const DEFAULT_PRE_STREAM_REFRESH_MS = 120_000;
 const DEFAULT_PRE_STREAM_RETRIES = 1;
 
@@ -121,17 +124,59 @@ function buildTextOnlyProbeRequest(options = {}) {
   };
 }
 
+function buildReadOnlyToolContinuationProbeRequest(options = {}) {
+  const continuationRequest = isPlainObject(options.continuationRequest) ? options.continuationRequest : {};
+  const toolResult = isPlainObject(continuationRequest.toolResult) ? continuationRequest.toolResult : {};
+  const metadata = isPlainObject(toolResult.metadata) ? toolResult.metadata : {};
+  const outputText = Array.isArray(toolResult.content)
+    ? toolResult.content.map((item) => normalizeString(item?.text, "")).filter(Boolean).join("\n")
+    : "";
+  const callId = normalizeString(toolResult.callId || toolResult.toolCallId, "");
+  if (!callId) throw new Error("Read-only tool continuation requires a tool call id.");
+  const requestBody = {
+    model: normalizeString(options.model, modelFromProfile(options.profileDoc)),
+    stream: true,
+    store: false,
+    instructions: normalizeString(options.instructions, DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS),
+    input: [
+      {
+        type: "function_call_output",
+        call_id: callId,
+        output: outputText,
+      },
+    ],
+  };
+  const previousResponseId = normalizeString(
+    options.previousResponseId ||
+    continuationRequest.source?.previousResponseId ||
+    continuationRequest.source?.responseId,
+    "",
+  );
+  if (previousResponseId) requestBody.previous_response_id = previousResponseId;
+  if (metadata.resultId) {
+    requestBody.metadata = {
+      direct_tool_result_id: normalizeString(metadata.resultId, ""),
+      direct_tool_obligation_id: normalizeString(continuationRequest.obligationId, ""),
+    };
+  }
+  return requestBody;
+}
+
 function requestShapeForDiagnostic(requestBody = {}) {
   return {
     model: normalizeString(requestBody.model, ""),
     stream: requestBody.stream === true,
     store: requestBody.store === true,
+    hasPreviousResponseId: Boolean(requestBody.previous_response_id),
     hasInstructions: Boolean(requestBody.instructions),
     inputMessageCount: Array.isArray(requestBody.input) ? requestBody.input.length : 0,
     textInputCount: Array.isArray(requestBody.input)
       ? requestBody.input.reduce((count, item) => count + (Array.isArray(item?.content)
         ? item.content.filter((content) => content?.type === "input_text").length
         : 0), 0)
+      : 0,
+    functionCallOutputCount: Array.isArray(requestBody.input)
+      ? requestBody.input.filter((item) => item?.type === "function_call_output").length
       : 0,
     toolCount: Array.isArray(requestBody.tools) ? requestBody.tools.length : 0,
   };
@@ -201,6 +246,15 @@ function diagnosticFromResult(result = {}) {
     toolObligationCount: Number(result.toolDetection?.obligationCount || 0),
     error: result.error || null,
   });
+}
+
+function responseIdFromNormalizedEvents(normalizedEvents = []) {
+  for (let index = normalizedEvents.length - 1; index >= 0; index -= 1) {
+    const event = normalizedEvents[index];
+    const responseId = normalizeString(event?.responseId, "");
+    if (responseId) return responseId;
+  }
+  return "";
 }
 
 function notifyLifecycle(callback, phase, details = {}) {
@@ -290,11 +344,10 @@ function terminalStateFromNormalizedEvents(normalizedEvents = []) {
   };
 }
 
-async function runTextOnlyDirectProbe(options = {}) {
+async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, resultOptions = {}) {
   const fetchImpl = options.fetchImpl || globalThis.fetch;
-  if (typeof fetchImpl !== "function") throw new Error("Direct text probe requires fetch.");
+  if (typeof fetchImpl !== "function") throw new Error("Direct Codex streaming request requires fetch.");
   const endpoint = normalizeString(options.endpoint, DEFAULT_CODEX_RESPONSES_ENDPOINT);
-  const requestBody = buildTextOnlyProbeRequest(options);
   notifyLifecycle(options.onLifecycle, "request_built", {
     requestShape: requestShapeForDiagnostic(requestBody),
   });
@@ -394,7 +447,8 @@ async function runTextOnlyDirectProbe(options = {}) {
   const terminal = terminalStateFromNormalizedEvents(normalizedEvents);
   const toolObligations = buildToolObligationsFromEvents("probe_unpersisted", "turn_unpersisted", normalizedEvents);
   const result = {
-    schema: DIRECT_TEXT_PROBE_RESULT_SCHEMA,
+    schema: normalizeString(resultOptions.schema, DIRECT_TEXT_PROBE_RESULT_SCHEMA),
+    kind: normalizeString(resultOptions.kind, "text_probe"),
     ok: terminal.state === "completed",
     startedAt,
     completedAt: nowIso(),
@@ -411,6 +465,8 @@ async function runTextOnlyDirectProbe(options = {}) {
     unknownRawTypes,
     terminal,
     error,
+    responseId: responseIdFromNormalizedEvents(normalizedEvents),
+    continuation: isPlainObject(resultOptions.continuation) ? resultOptions.continuation : null,
     toolDetection: {
       detected: toolObligations.length > 0,
       obligationCount: toolObligations.length,
@@ -434,11 +490,71 @@ async function runTextOnlyDirectProbe(options = {}) {
   return result;
 }
 
+async function runTextOnlyDirectProbe(options = {}) {
+  return runDirectCodexStreamingRequest(options, buildTextOnlyProbeRequest(options), {
+    schema: DIRECT_TEXT_PROBE_RESULT_SCHEMA,
+    kind: "text_probe",
+  });
+}
+
+async function runReadOnlyToolContinuationProbe(options = {}) {
+  const continuationRequest = isPlainObject(options.continuationRequest) ? options.continuationRequest : null;
+  if (!continuationRequest) throw new Error("Read-only tool continuation probe requires continuationRequest.");
+  const requestBody = buildReadOnlyToolContinuationProbeRequest(options);
+  return runDirectCodexStreamingRequest(options, requestBody, {
+    schema: DIRECT_TOOL_CONTINUATION_RESULT_SCHEMA,
+    kind: "read_only_tool_continuation",
+    continuation: {
+      continuationId: normalizeString(continuationRequest.continuationId, ""),
+      obligationId: normalizeString(continuationRequest.obligationId, ""),
+      previousResponseId: normalizeString(requestBody.previous_response_id, ""),
+      originalRequestRetried: false,
+    },
+  });
+}
+
 function assistantTextFromEvents(normalizedEvents = []) {
   return normalizedEvents
     .filter((event) => event.type === "message_delta")
     .map((event) => event.text || "")
     .join("");
+}
+
+function appendAssistantContinuationMessage(sessionStore, sessionId, turnId, result, options = {}) {
+  const session = sessionStore.readSession(sessionId);
+  if (!session) return null;
+  const text = assistantTextFromEvents(result.normalizedEvents);
+  const continuationId = normalizeString(result.continuation?.continuationId, "continuation");
+  const nextMessages = Array.isArray(session.messages)
+    ? session.messages.map((message) => {
+        if (message.id !== turnId) return message;
+        const existingItems = Array.isArray(message.items) ? message.items : [];
+        const nextItems = text
+          ? [
+              ...existingItems.filter((item) => item?.id !== `${turnId}_${continuationId}_assistant`),
+              {
+                id: `${turnId}_${continuationId}_assistant`,
+                type: "agentMessage",
+                turnId,
+                text,
+              },
+            ]
+          : existingItems;
+        return {
+          ...message,
+          status: result.terminal?.state || message.status,
+          items: nextItems,
+        };
+      })
+    : [];
+  const nextSession = {
+    ...session,
+    status: result.terminal?.state || session.status,
+    updatedAt: nowIso(options.nowMs),
+    messages: nextMessages,
+  };
+  sessionStore.writeSession(nextSession);
+  return nextSession;
 }
 
 async function runPersistedTextOnlyDirectProbe(options = {}) {
@@ -486,7 +602,10 @@ async function runPersistedTextOnlyDirectProbe(options = {}) {
     session.sessionId,
     turn.turnId,
     terminal.state,
-    terminal.error ? { error: terminal.error } : {},
+    {
+      ...(terminal.error ? { error: terminal.error } : {}),
+      responseId: result.responseId || responseIdFromNormalizedEvents(result.normalizedEvents),
+    },
     options,
   );
   const nextSession = sessionStore.readSession(session.sessionId);
@@ -528,15 +647,109 @@ async function runPersistedTextOnlyDirectProbe(options = {}) {
   };
 }
 
+async function runPersistedReadOnlyToolContinuation(options = {}) {
+  const sessionStore = options.sessionStore;
+  if (!sessionStore) throw new Error("Persisted read-only tool continuation requires a session store.");
+  const existingTurn = sessionStore.readTurn(options.sessionId, options.turnId);
+  if (!existingTurn) throw new Error(`Direct turn not found: ${options.turnId}`);
+  const recorded = recordReadOnlyToolContinuationRequest({
+    ...options,
+    continuationRequest: options.continuationRequest,
+    continuationLiveSendEnabled: true,
+  });
+  const continuationRequest = {
+    ...recorded.continuationRequest,
+    source: {
+      ...(recorded.continuationRequest.source || {}),
+      previousResponseId: normalizeString(options.previousResponseId || existingTurn.responseId, ""),
+    },
+    safety: {
+      ...(recorded.continuationRequest.safety || {}),
+      continuationLiveSendEnabled: true,
+    },
+  };
+  const requestBody = buildReadOnlyToolContinuationProbeRequest({
+    ...options,
+    continuationRequest,
+  });
+  sessionStore.updateTurnState(options.sessionId, options.turnId, "request_built", {
+    continuationRequestBuiltAt: nowIso(),
+    continuationRequestShape: requestShapeForDiagnostic(requestBody),
+    continuationStreamStartedAt: "",
+  }, options);
+  const callerLifecycle = options.onLifecycle;
+  const result = await runReadOnlyToolContinuationProbe({
+    ...options,
+    continuationRequest,
+    onLifecycle: (event) => {
+      if (event.phase === "streaming") {
+        sessionStore.updateTurnState(options.sessionId, options.turnId, "streaming", {
+          continuationStreamStartedAt: event.at,
+          continuationResponseStatus: event.status,
+          continuationResponseContentType: event.contentType,
+        }, options);
+      }
+      if (typeof callerLifecycle === "function") callerLifecycle(event);
+    },
+  });
+  sessionStore.writeDiagnostic(options.sessionId, "direct_readonly_tool_continuation", result.diagnostic, options);
+  if (result.normalizedEvents.length) {
+    sessionStore.appendNormalizedEvents(options.sessionId, options.turnId, result.normalizedEvents, options);
+  }
+  const terminal = result.terminal || terminalStateFromNormalizedEvents(result.normalizedEvents);
+  const completedTurn = sessionStore.updateTurnState(
+    options.sessionId,
+    options.turnId,
+    terminal.state,
+    {
+      ...(terminal.error ? { error: terminal.error } : {}),
+      continuationResponseId: result.responseId || responseIdFromNormalizedEvents(result.normalizedEvents),
+    },
+    options,
+  );
+  const updatedObligation = sessionStore.updateToolObligation(options.sessionId, options.turnId, options.obligationId, {
+    status: "continuation_sent",
+    authorityState: "continuation_sent",
+    executionAllowed: false,
+    continuationAllowed: false,
+    continuationRequest,
+    continuationSentAt: result.completedAt,
+    continuationResult: {
+      schema: result.schema,
+      ok: result.ok,
+      terminal: result.terminal,
+      responseId: result.responseId,
+      normalizedEventCount: result.normalizedEvents.length,
+      originalRequestRetried: false,
+    },
+  }, {
+    ...options,
+    nextTurnState: completedTurn.state,
+  });
+  appendAssistantContinuationMessage(sessionStore, options.sessionId, options.turnId, result, options);
+  return {
+    ...result,
+    sessionId: options.sessionId,
+    turnId: options.turnId,
+    turnState: completedTurn.state,
+    obligation: updatedObligation.obligation,
+  };
+}
+
 module.exports = {
   DEFAULT_CODEX_RESPONSES_ENDPOINT,
   DEFAULT_TEXT_PROBE_INSTRUCTIONS,
   DEFAULT_TEXT_PROBE_PROMPT,
+  DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS,
+  DIRECT_TOOL_CONTINUATION_RESULT_SCHEMA,
   DIRECT_TEXT_PROBE_RESULT_SCHEMA,
+  buildReadOnlyToolContinuationProbeRequest,
   buildTextOnlyProbeRequest,
   diagnosticFromResult,
   requestShapeForDiagnostic,
+  runPersistedReadOnlyToolContinuation,
   runPersistedTextOnlyDirectProbe,
+  runReadOnlyToolContinuationProbe,
   runTextOnlyDirectProbe,
   terminalStateFromNormalizedEvents,
 };
