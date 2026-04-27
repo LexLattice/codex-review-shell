@@ -10,7 +10,10 @@ const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(__dirname, "..");
 
-const { buildImportCandidate } = require("../src/main/direct/import/codex-jsonl-import");
+const {
+  buildDirectCheckpointCandidate,
+  buildImportCandidate,
+} = require("../src/main/direct/import/codex-jsonl-import");
 const {
   DEFAULT_FIXTURE_ROOT,
   NORMALIZED_FIXTURE_DIR,
@@ -1603,9 +1606,24 @@ assert(delta.normalizedEventCounts.message_delta === 1, "Expected message delta 
 const importCandidate = buildImportCandidate([
   { timestamp: "2026-04-25T10:00:00Z", thread_id: "thread_1", message: { role: "user", content: "Inspect this." } },
   { timestamp: "2026-04-25T10:00:02Z", type: "tool_call_started", item: { type: "function_call" } },
-]);
+], {
+  sourcePath: "/tmp/codex/history/thread_1.jsonl",
+  codexHome: "/tmp/codex",
+});
 assert(importCandidate.target.runnable === false, "Imported Codex JSONL must remain non-runnable.");
 assert(importCandidate.unresolvedObligations.length === 1, "Expected unpaired tool obligation.");
+assert(importCandidate.source.codexHome.endsWith("/tmp/codex"), "Expected import candidate to preserve source CODEX_HOME.");
+const importCheckpoint = buildDirectCheckpointCandidate(importCandidate, { nowMs: 1_700_000_040_000 });
+assert(importCheckpoint.schema === "direct_codex_import_checkpoint_candidate@1", "Expected direct import checkpoint candidate schema.");
+assert(importCheckpoint.state === "checkpoint-candidate", "Expected import checkpoint candidate state.");
+assert(importCheckpoint.runnable === false, "Import checkpoint candidate must not be runnable.");
+assert(importCheckpoint.target.eligibleForContinuation === false, "Import checkpoint candidate must not allow continuation yet.");
+assert(importCheckpoint.source.filePath.endsWith("/tmp/codex/history/thread_1.jsonl"), "Expected import checkpoint to preserve source file path.");
+assert(importCheckpoint.source.codexHome.endsWith("/tmp/codex"), "Expected import checkpoint to preserve source CODEX_HOME.");
+assert(importCheckpoint.checkpoint.messages.length === 1, "Expected import checkpoint to preserve user-visible messages.");
+assert(importCheckpoint.checkpoint.unresolvedObligations.length === 1, "Expected import checkpoint to carry unresolved obligations.");
+assert(importCheckpoint.checkpoint.unresolvedObligations[0].autoReplayable === false, "Imported tool calls must not be auto-replayable.");
+assert(importCheckpoint.validation.importedApprovalsCarryAuthority === false, "Imported approvals must not carry future authority.");
 
 const committedFixtureCount = validateCommittedFixtureCorpus();
 assert(committedFixtureCount >= 4, "Expected committed direct Codex fixture corpus coverage.");

@@ -2,6 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const { parseJsonl } = require("../fixtures/fixture-loader");
 
 function normalizeTimestamp(value) {
@@ -15,6 +16,14 @@ function firstString(...values) {
     if (typeof value === "string" && value.trim()) return value.trim();
   }
   return "";
+}
+
+function nowIso(nowMs = Date.now()) {
+  return new Date(Number(nowMs) || Date.now()).toISOString();
+}
+
+function stableDigest(value) {
+  return crypto.createHash("sha256").update(String(value || "")).digest("hex").slice(0, 20);
 }
 
 function roleFromRecord(record) {
@@ -110,6 +119,7 @@ function buildImportCandidate(records, options = {}) {
     source: {
       harness: "codex-cli-or-app-server-jsonl",
       filePath: sourcePath,
+      codexHome: options.codexHome ? path.resolve(options.codexHome) : "",
       threadId: [...threadIds][0] || options.threadId || "",
       timestampStart: timestamps[0] || "",
       timestampEnd: timestamps[timestamps.length - 1] || "",
@@ -136,6 +146,87 @@ function buildImportCandidate(records, options = {}) {
   };
 }
 
+function checkpointMessagesFromCandidate(candidate = {}) {
+  return (Array.isArray(candidate.nodes) ? candidate.nodes : [])
+    .filter((node) => node?.factKind === "message" && node.role && node.text)
+    .map((node) => ({
+      seq: node.seq,
+      role: node.role,
+      text: node.text,
+      timestamp: node.timestamp || "",
+      sourceType: node.sourceType || "unknown",
+    }));
+}
+
+function buildDirectCheckpointCandidate(importCandidate, options = {}) {
+  if (!importCandidate || importCandidate.schema !== "direct_codex_import_candidate@1") {
+    throw new Error("Direct import checkpoint requires a direct_codex_import_candidate@1 candidate.");
+  }
+  const source = importCandidate.source || {};
+  const messages = checkpointMessagesFromCandidate(importCandidate);
+  const unresolvedObligations = Array.isArray(importCandidate.unresolvedObligations)
+    ? importCandidate.unresolvedObligations.map((obligation) => ({
+        ...obligation,
+        autoReplayable: false,
+        requiresFreshAuthority: true,
+      }))
+    : [];
+  const checkpointSeed = JSON.stringify({
+    source,
+    messages,
+    unresolvedObligations,
+  });
+  const createdAt = nowIso(options.nowMs);
+  return {
+    schema: "direct_codex_import_checkpoint_candidate@1",
+    checkpointId: `import_checkpoint_${stableDigest(checkpointSeed)}`,
+    createdAt,
+    state: "checkpoint-candidate",
+    runnable: false,
+    checkpointedRunnable: false,
+    source: {
+      harness: source.harness || "codex-cli-or-app-server-jsonl",
+      filePath: source.filePath || "",
+      codexHome: source.codexHome || "",
+      threadId: source.threadId || "",
+      timestampStart: source.timestampStart || "",
+      timestampEnd: source.timestampEnd || "",
+      recordCount: Number(source.recordCount || 0),
+    },
+    target: {
+      harness: "direct-chatgpt-codex",
+      state: "checkpoint-candidate",
+      runnable: false,
+      requiresValidationBeforeRun: true,
+      eligibleForContinuation: false,
+    },
+    checkpoint: {
+      title: options.title || `Imported Codex session ${source.threadId || source.filePath || "unknown"}`,
+      messages,
+      unresolvedObligations,
+      evidenceNodeCount: Array.isArray(importCandidate.nodes) ? importCandidate.nodes.length : 0,
+      sourceTimestampRange: {
+        start: source.timestampStart || "",
+        end: source.timestampEnd || "",
+      },
+    },
+    validation: {
+      state: messages.length && importCandidate.validation?.sourceTimestampsRetained ? "checkpoint-candidate" : "imported-validation-failed",
+      roleBoundariesPreserved: Boolean(importCandidate.validation?.roleBoundariesPreserved),
+      userVisibleTextPreserved: Boolean(importCandidate.validation?.userVisibleTextPreserved),
+      sourceTimestampsRetained: Boolean(importCandidate.validation?.sourceTimestampsRetained),
+      importedToolCallsAutoReplayable: false,
+      importedApprovalsCarryAuthority: false,
+      unresolvedObligationCount: unresolvedObligations.length,
+      notes: [
+        "Checkpoint candidate is derived from imported evidence only.",
+        "It is not runnable until direct checkpoint validation creates checkpointed-runnable state.",
+        "Imported tool calls and approvals do not carry execution authority.",
+      ],
+    },
+  };
+}
+
 function loadCodexJsonlImportCandidate(filePath, options = {}) {
   const resolvedPath = path.resolve(filePath);
   const text = fs.readFileSync(resolvedPath, "utf8");
@@ -143,6 +234,7 @@ function loadCodexJsonlImportCandidate(filePath, options = {}) {
 }
 
 module.exports = {
+  buildDirectCheckpointCandidate,
   buildImportCandidate,
   loadCodexJsonlImportCandidate,
 };
