@@ -356,31 +356,37 @@ function materializeDirectImportSession(checkpointCandidate, options = {}) {
       }))
     : [];
   const transcriptItems = messages.map((message) => transcriptItemFromCheckpointMessage(message, turnId));
-  const session = sessionStore.createSession({
+  const existingSession = typeof sessionStore.readSession === "function" ? sessionStore.readSession(sessionId) : null;
+  const session = existingSession || sessionStore.createSession({
     sessionId,
     projectId: firstString(options.projectId, source.threadId, "imported-codex-session"),
     title: checkpoint.title || `Imported Codex session ${source.threadId || source.filePath || "unknown"}`,
     createdAt: checkpointCandidate.createdAt || now,
     model: firstString(options.model, ""),
-    messages: [{
+  }, options);
+  const existingCheckpointById = new Map((Array.isArray(session.compactionCheckpoints) ? session.compactionCheckpoints : [])
+    .map((entry) => [entry.checkpointId, entry]));
+  existingCheckpointById.set(checkpointCandidate.checkpointId, {
+    checkpointId: checkpointCandidate.checkpointId,
+    state: checkpointState,
+    runnable: checkpointedRunnable,
+    source,
+    validation: checkpointCandidate.validation || {},
+  });
+  const nextMessages = [
+    ...(Array.isArray(session.messages) ? session.messages.filter((message) => message?.id !== turnId) : []),
+    {
       id: turnId,
       status: checkpointState,
       imported: true,
       items: transcriptItems,
-    }],
-    unresolvedObligations,
-    compactionCheckpoints: [{
-      checkpointId: checkpointCandidate.checkpointId,
-      state: checkpointState,
-      runnable: checkpointedRunnable,
-      source,
-      validation: checkpointCandidate.validation || {},
-    }],
-  }, options);
+    },
+  ];
   const materializedSession = sessionStore.writeSession({
     ...session,
     status: checkpointState,
     updatedAt: now,
+    messages: nextMessages,
     sourceClass: "legacy-codex-jsonl-import",
     runtimeMode: checkpointedRunnable ? "imported-checkpointed" : "imported-readonly",
     importState: checkpointState,
@@ -389,6 +395,7 @@ function materializeDirectImportSession(checkpointCandidate, options = {}) {
     importSource: source,
     directImportCheckpoint: checkpointCandidate,
     unresolvedObligations,
+    compactionCheckpoints: [...existingCheckpointById.values()],
   });
   return {
     schema: "direct_codex_materialized_import_session@1",

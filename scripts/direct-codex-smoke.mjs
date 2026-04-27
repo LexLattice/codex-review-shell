@@ -1715,6 +1715,16 @@ try {
   assert(materializedReadonlySession.messages[0].items.length === 1, "Expected materialized import session to preserve transcript items.");
   assert(materializedReadonlySession.unresolvedObligations[0].autoReplayable === false, "Expected materialized import obligations not to auto-replay.");
   assert(materializedReadonlySession.compactionCheckpoints[0].runnable === false, "Expected unresolved import checkpoint to remain non-runnable.");
+  const rematerializedReadonly = materializeDirectImportSession(unresolvedImportValidation, {
+    sessionStore: importSessionStore,
+    sessionId: materializedReadonly.sessionId,
+    nowMs: 1_700_000_044_500,
+  });
+  assert(rematerializedReadonly.sessionId === materializedReadonly.sessionId, "Expected rematerialized import to reuse the same session id.");
+  const rematerializedReadonlySession = importSessionStore.readSession(materializedReadonly.sessionId);
+  assert(rematerializedReadonlySession.messages.length === 1, "Expected rematerialized import not to duplicate transcript groups.");
+  assert(rematerializedReadonlySession.compactionCheckpoints.length === 1, "Expected rematerialized import not to duplicate checkpoints.");
+  assert(rematerializedReadonlySession.unresolvedObligations[0].autoReplayable === false, "Expected rematerialized import obligation to remain non-replayable.");
 
   const materializedRunnable = materializeDirectImportSession(cleanValidation, {
     sessionStore: importSessionStore,
@@ -1729,6 +1739,17 @@ try {
   assert(materializedRunnableSession.continuationEligible === true, "Expected clean import session continuation eligibility.");
   assert(materializedRunnableSession.messages[0].items.length === 2, "Expected clean import session transcript items.");
   assert(materializedRunnableSession.directImportCheckpoint.validation.importedApprovalsCarryAuthority === false, "Expected materialized import checkpoint not to inherit approval authority.");
+  const reloadedImportStore = new DirectSessionStore({ rootDir: path.join(importStoreParent, "direct-sessions") });
+  const recoveredImportIndex = reloadedImportStore.recoverIndex({ write: true });
+  assert(recoveredImportIndex.sessions.length === 2, "Expected import session index recovery to find materialized sessions.");
+  const recoveredReadonlySession = reloadedImportStore.readSession(materializedReadonly.sessionId);
+  assert(recoveredReadonlySession.sourceClass === "legacy-codex-jsonl-import", "Expected recovered import session source class.");
+  assert(recoveredReadonlySession.runtimeMode === "imported-readonly", "Expected recovered readonly import runtime mode.");
+  assert(recoveredReadonlySession.continuationEligible === false, "Expected recovered readonly import not to allow continuation.");
+  assert(recoveredReadonlySession.compactionCheckpoints[0].source.codexHome.endsWith("/tmp/codex"), "Expected recovered import checkpoint to preserve CODEX_HOME.");
+  const recoveredRunnableSession = reloadedImportStore.readSession(materializedRunnable.sessionId);
+  assert(recoveredRunnableSession.runtimeMode === "imported-checkpointed", "Expected recovered runnable import runtime mode.");
+  assert(recoveredRunnableSession.continuationEligible === true, "Expected recovered runnable import continuation eligibility.");
 } finally {
   fs.rmSync(importStoreParent, { recursive: true, force: true });
 }
