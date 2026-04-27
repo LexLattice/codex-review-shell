@@ -583,7 +583,7 @@ class DirectSessionStore {
                   : item)
               : message.items,
           }))
-        : [];
+        : session.messages;
       this.writeSession({
         ...session,
         status: nextState,

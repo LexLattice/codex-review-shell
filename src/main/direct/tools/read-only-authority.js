@@ -92,7 +92,7 @@ function projectReadResult(raw = {}, obligation = {}, approvedAt = "", nowMs) {
 }
 
 function assertRecordedReadOnlyResult(obligation = {}) {
-  if (!["result_recorded", "continuation_built"].includes(normalizeString(obligation.status, ""))) {
+  if (!["result_recorded", "continuation_built", "continuation_sent"].includes(normalizeString(obligation.status, ""))) {
     const error = new Error("Read-only tool continuation requires a recorded tool result.");
     error.code = "tool_result_not_recorded";
     throw error;
@@ -115,7 +115,7 @@ function approveReadOnlyToolObligation(options = {}) {
   if (!sessionStore) throw new Error("Read-only tool approval requires a direct session store.");
   const { turn, obligation } = sessionStore.findToolObligation(options.sessionId, options.turnId, options.obligationId);
   const parsed = assertReadFileObligation(obligation);
-  if (["approved", "result_recorded", "continuation_built"].includes(normalizeString(obligation.status, ""))) {
+  if (["approved", "result_recorded", "continuation_built", "continuation_sent"].includes(normalizeString(obligation.status, ""))) {
     return { turn, obligation };
   }
   const approvedAt = nowIso(options.nowMs);
@@ -228,7 +228,7 @@ function buildReadOnlyToolContinuationRequest(options = {}) {
       originalRequestRetried: false,
       sideEffectExecuted: false,
       workspaceBackendOnly: true,
-      continuationLiveSendEnabled: false,
+      continuationLiveSendEnabled: options.continuationLiveSendEnabled === true,
     },
     rawAuthHeadersExposed: false,
     rawBackendRequestsExposed: false,
