@@ -2,9 +2,18 @@
 
 const crypto = require("node:crypto");
 
+const DIRECT_READONLY_TOOL_AUTHORITY_DECISION_SCHEMA = "direct_codex_readonly_tool_authority_decision@1";
 const DIRECT_READONLY_TOOL_CONTINUATION_REQUEST_SCHEMA = "direct_codex_readonly_tool_continuation_request@1";
 const DIRECT_READONLY_TOOL_RESULT_SCHEMA = "direct_codex_readonly_tool_result@1";
 const READ_FILE_TOOL_NAMES = new Set(["read_file", "readFile"]);
+const READONLY_TERMINAL_STATUSES = new Set([
+  "approved",
+  "declined",
+  "canceled",
+  "result_recorded",
+  "continuation_built",
+  "continuation_sent",
+]);
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -55,12 +64,16 @@ function normalizeRelativePath(value) {
   return text.replace(/^\.\/+/, "");
 }
 
-function assertReadFileObligation(obligation = {}) {
+function assertReadFileToolName(obligation = {}) {
   if (!READ_FILE_TOOL_NAMES.has(normalizeString(obligation.name, ""))) {
     const error = new Error(`Unsupported direct read-only tool: ${obligation.name || "unknown"}`);
     error.code = "unsupported_readonly_tool";
     throw error;
   }
+}
+
+function assertReadFileObligation(obligation = {}) {
+  assertReadFileToolName(obligation);
   const args = parseArgumentsJson(obligation);
   return {
     relPath: normalizeRelativePath(args.path || args.relPath || args.relativePath),
@@ -110,12 +123,29 @@ function assertRecordedReadOnlyResult(obligation = {}) {
   return obligation.result;
 }
 
+function projectReadOnlyAuthorityDecision(obligation = {}, decision = "declined", options = {}) {
+  const decidedAt = nowIso(options.nowMs);
+  const normalizedDecision = decision === "canceled" ? "canceled" : "declined";
+  return {
+    schema: DIRECT_READONLY_TOOL_AUTHORITY_DECISION_SCHEMA,
+    decision: normalizedDecision,
+    obligationId: obligation.obligationId,
+    tool: normalizeString(obligation.name, "read_file"),
+    decidedAt,
+    decidedBy: normalizeString(options.decidedBy || options.approvedBy, "local-user"),
+    reason: normalizeString(options.reason, normalizedDecision === "canceled" ? "User canceled read-only tool execution." : "User declined read-only tool execution."),
+    executionAllowed: false,
+    continuationAllowed: false,
+    sideEffectExecuted: false,
+  };
+}
+
 function approveReadOnlyToolObligation(options = {}) {
   const sessionStore = options.sessionStore;
   if (!sessionStore) throw new Error("Read-only tool approval requires a direct session store.");
   const { turn, obligation } = sessionStore.findToolObligation(options.sessionId, options.turnId, options.obligationId);
   const parsed = assertReadFileObligation(obligation);
-  if (["approved", "result_recorded", "continuation_built", "continuation_sent"].includes(normalizeString(obligation.status, ""))) {
+  if (READONLY_TERMINAL_STATUSES.has(normalizeString(obligation.status, ""))) {
     return { turn, obligation };
   }
   const approvedAt = nowIso(options.nowMs);
@@ -133,6 +163,53 @@ function approveReadOnlyToolObligation(options = {}) {
   }, {
     ...options,
     nextTurnState: "authority_waiting",
+  });
+}
+
+function decideReadOnlyToolObligation(options = {}) {
+  const sessionStore = options.sessionStore;
+  if (!sessionStore) throw new Error("Read-only tool decision requires a direct session store.");
+  const { turn, obligation } = sessionStore.findToolObligation(options.sessionId, options.turnId, options.obligationId);
+  assertReadFileToolName(obligation);
+  const existingStatus = normalizeString(obligation.status, "");
+  if (READONLY_TERMINAL_STATUSES.has(existingStatus) && existingStatus !== "approved") {
+    return { turn, obligation };
+  }
+  const decision = options.decision === "canceled" ? "canceled" : "declined";
+  const authorityDecision = projectReadOnlyAuthorityDecision(obligation, decision, options);
+  return sessionStore.updateToolObligation(options.sessionId, options.turnId, obligation.obligationId, {
+    status: decision,
+    authorityState: decision,
+    executionAllowed: false,
+    continuationAllowed: false,
+    sideEffectExecuted: false,
+    authorityDecision,
+    [`${decision}At`]: authorityDecision.decidedAt,
+  }, {
+    ...options,
+    nextTurnState: decision === "canceled" ? "aborted" : "failed",
+    turnPatch: {
+      error: decision === "canceled"
+        ? null
+        : {
+            code: "tool_obligation_declined",
+            message: authorityDecision.reason,
+          },
+    },
+  });
+}
+
+function declineReadOnlyToolObligation(options = {}) {
+  return decideReadOnlyToolObligation({
+    ...options,
+    decision: "declined",
+  });
+}
+
+function cancelReadOnlyToolObligation(options = {}) {
+  return decideReadOnlyToolObligation({
+    ...options,
+    decision: "canceled",
   });
 }
 
@@ -284,11 +361,15 @@ function recordReadOnlyToolContinuationRequest(options = {}) {
 }
 
 module.exports = {
+  DIRECT_READONLY_TOOL_AUTHORITY_DECISION_SCHEMA,
   DIRECT_READONLY_TOOL_CONTINUATION_REQUEST_SCHEMA,
   DIRECT_READONLY_TOOL_RESULT_SCHEMA,
   approveReadOnlyToolObligation,
   buildReadOnlyToolContinuationRequest,
+  cancelReadOnlyToolObligation,
+  declineReadOnlyToolObligation,
   executeApprovedReadOnlyToolObligation,
   projectReadResult,
+  projectReadOnlyAuthorityDecision,
   recordReadOnlyToolContinuationRequest,
 };
