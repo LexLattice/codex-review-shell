@@ -278,6 +278,69 @@ try {
   assert(statusAfterMissingIndex.sessionCount === 1, "Expected status to recover a missing session index from session files.");
   const recovered = sessionStore.recoverIndex({ write: true });
   assert(recovered.recovery.recoveredSessionCount === 1, "Expected session index recovery from session files.");
+
+  const interruptedSession = sessionStore.createSession({
+    sessionId: "session_interrupted",
+    projectId: "project_fixture",
+    workspace: { kind: "local", localPath: "[REDACTED:private-path]" },
+    title: "Interrupted direct session",
+    model: "gpt-5.4",
+    profileSnapshotId: profileDoc.profile.profileId,
+  }, { nowMs: 1_700_000_005_000 });
+  const interruptedTurn = sessionStore.createTurn(interruptedSession.sessionId, {
+    turnId: "turn_streaming_interrupted",
+    input: [{ role: "user", text: "stream then restart" }],
+  }, { nowMs: 1_700_000_006_000 });
+  sessionStore.updateTurnState(interruptedSession.sessionId, interruptedTurn.turnId, "request_built", {}, { nowMs: 1_700_000_007_000 });
+  sessionStore.updateTurnState(interruptedSession.sessionId, interruptedTurn.turnId, "streaming", {}, { nowMs: 1_700_000_008_000 });
+  const staleSummarySession = sessionStore.createSession({
+    sessionId: "session_stale_summary",
+    projectId: "project_fixture",
+    workspace: { kind: "local", localPath: "[REDACTED:private-path]" },
+    title: "Stale summary direct session",
+    model: "gpt-5.4",
+    profileSnapshotId: profileDoc.profile.profileId,
+  }, { nowMs: 1_700_000_010_000 });
+  const staleSummaryTurn = sessionStore.createTurn(staleSummarySession.sessionId, {
+    turnId: "turn_stale_summary",
+    input: [{ role: "user", text: "crash between turn and session writes" }],
+  }, { nowMs: 1_700_000_011_000 });
+  sessionStore.writeTurn({
+    ...staleSummaryTurn,
+    state: "streaming",
+    updatedAt: "2023-11-14T22:13:32.000Z",
+    streamStartedAt: "2023-11-14T22:13:32.000Z",
+  });
+  const activeSession = sessionStore.createSession({
+    sessionId: "session_multiple_active",
+    projectId: "project_fixture",
+    workspace: { kind: "local", localPath: "[REDACTED:private-path]" },
+    title: "Multiple active direct session",
+    model: "gpt-5.4",
+    profileSnapshotId: profileDoc.profile.profileId,
+  }, { nowMs: 1_700_000_012_000 });
+  sessionStore.createTurn(activeSession.sessionId, {
+    turnId: "turn_active_one",
+    state: "request_built",
+    input: [{ role: "user", text: "active one" }],
+  }, { nowMs: 1_700_000_013_000 });
+  sessionStore.createTurn(activeSession.sessionId, {
+    turnId: "turn_active_two",
+    state: "streaming",
+    input: [{ role: "user", text: "active two" }],
+  }, { nowMs: 1_700_000_014_000 });
+  const activeStatus = sessionStore.status();
+  assert(activeStatus.activeTurnCount === 3, "Expected status to count active turns across all session turns.");
+  const reloadedSessionStore = new DirectSessionStore({ rootDir: path.join(sessionStoreParent, "direct-sessions") });
+  const interruptedRecovery = reloadedSessionStore.recoverInterruptedTurns({ nowMs: 1_700_000_015_000 });
+  assert(interruptedRecovery.recoveredTurnCount === 4, "Expected interrupted active turns to recover on explicit reload maintenance.");
+  const recoveredTurn = reloadedSessionStore.readTurn(interruptedSession.sessionId, interruptedTurn.turnId);
+  assert(recoveredTurn.state === "failed", "Expected interrupted streaming turn to reload as failed.");
+  assert(recoveredTurn.error.code === "restart_interrupted_turn", "Expected interrupted turn recovery error code.");
+  const recoveredStaleSummaryTurn = reloadedSessionStore.readTurn(staleSummarySession.sessionId, staleSummaryTurn.turnId);
+  assert(recoveredStaleSummaryTurn.state === "failed", "Expected stale-summary active turn file to recover as failed.");
+  const postRecoveryStatus = reloadedSessionStore.status();
+  assert(postRecoveryStatus.activeTurnCount === 0, "Expected status to remain read-only and report no active turns after explicit recovery.");
 } finally {
   fs.rmSync(sessionStoreParent, { recursive: true, force: true });
 }
@@ -924,6 +987,102 @@ const utf8ProbeText = utf8Probe.normalizedEvents
   .join("");
 assert(utf8ProbeText === "héllo direct", "Expected async iterator response decoding to preserve split UTF-8 characters.");
 
+const expiringAuthStore = createDirectAuthStore({ mode: "memory" });
+expiringAuthStore.writeCredentials({
+  accessToken: "expiring_probe_access_token_secret_1234567890",
+  refreshToken: "expiring_probe_refresh_token_secret_1234567890",
+  expiresAt: 1_700_000_030_000,
+}, { nowMs: 1_700_000_000_000 });
+let refreshBeforeProbeCalls = 0;
+let refreshedAuthorization = "";
+const refreshedProbe = await runTextOnlyDirectProbe({
+  endpoint: DEFAULT_CODEX_RESPONSES_ENDPOINT,
+  authStore: expiringAuthStore,
+  nowMs: 1_700_000_000_000,
+  refreshBeforeMs: 60_000,
+  profileDoc,
+  model: "gpt-5.4",
+  prompt: "refresh probe prompt",
+  refreshCredentials: async ({ authStore }) => {
+    refreshBeforeProbeCalls += 1;
+    authStore.writeCredentials({
+      accessToken: "refreshed_probe_access_token_secret_1234567890",
+      expiresIn: 3_600,
+    }, { nowMs: 1_700_000_000_000 });
+    return { ok: true, status: "authenticated" };
+  },
+  fetchImpl: async (_url, init) => {
+    refreshedAuthorization = init.headers.Authorization;
+    return textResponse(probeSse, 200, { "content-type": "text/event-stream" });
+  },
+});
+assert(refreshedProbe.ok === true, "Expected pre-stream credential refresh probe to complete.");
+assert(refreshBeforeProbeCalls === 1, "Expected expiring probe credentials to refresh exactly once before request.");
+assert(refreshedAuthorization.includes("refreshed_probe_access_token_secret"), "Expected direct probe request to use refreshed access token.");
+assert(refreshedProbe.lifecycle.credentialRefresh.attempted === true, "Expected lifecycle to record pre-stream credential refresh.");
+
+let retryFetchCalls = 0;
+const retriedProbe = await runTextOnlyDirectProbe({
+  endpoint: DEFAULT_CODEX_RESPONSES_ENDPOINT,
+  credentials: { accessToken: "retry_probe_access_token_secret_1234567890" },
+  profileDoc,
+  model: "gpt-5.4",
+  prompt: "retry probe prompt",
+  maxPreStreamRetries: 1,
+  fetchImpl: async () => {
+    retryFetchCalls += 1;
+    if (retryFetchCalls === 1) throw Object.assign(new Error("synthetic pre-stream reset"), { code: "ECONNRESET" });
+    return textResponse(probeSse, 200, { "content-type": "text/event-stream" });
+  },
+});
+assert(retriedProbe.ok === true, "Expected pre-stream transient failure to retry and complete.");
+assert(retryFetchCalls === 2, "Expected one pre-stream retry.");
+assert(retriedProbe.lifecycle.attempts.length === 2, "Expected lifecycle to record both retry attempts.");
+assert(retriedProbe.lifecycle.attempts[0].retry === true, "Expected first pre-stream attempt to be marked retryable.");
+
+let genericFailureFetchCalls = 0;
+const genericFailureProbe = await runTextOnlyDirectProbe({
+  endpoint: DEFAULT_CODEX_RESPONSES_ENDPOINT,
+  credentials: { accessToken: "generic_failure_access_token_secret_1234567890" },
+  profileDoc,
+  model: "gpt-5.4",
+  prompt: "generic failure probe prompt",
+  maxPreStreamRetries: 1,
+  fetchImpl: async () => {
+    genericFailureFetchCalls += 1;
+    throw new Error("synthetic generic pre-stream failure");
+  },
+});
+assert(genericFailureProbe.ok === false, "Expected generic pre-stream failure to fail the probe.");
+assert(genericFailureFetchCalls === 1, "Expected generic pre-stream errors without known transient codes not to retry.");
+assert(genericFailureProbe.lifecycle.attempts[0].retry === false, "Expected generic pre-stream failure to be marked non-retryable.");
+
+let streamFailureFetchCalls = 0;
+const streamFailedProbe = await runTextOnlyDirectProbe({
+  endpoint: DEFAULT_CODEX_RESPONSES_ENDPOINT,
+  credentials: { accessToken: "stream_failure_access_token_secret_1234567890" },
+  profileDoc,
+  model: "gpt-5.4",
+  prompt: "stream failure probe prompt",
+  maxPreStreamRetries: 1,
+  fetchImpl: async () => {
+    streamFailureFetchCalls += 1;
+    return {
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: { get: () => "text/event-stream" },
+      text: async () => {
+        throw Object.assign(new Error("synthetic stream read failure"), { code: "ECONNRESET" });
+      },
+    };
+  },
+});
+assert(streamFailedProbe.ok === false, "Expected stream read failure to fail the probe.");
+assert(streamFailureFetchCalls === 1, "Expected no retry after stream start.");
+assert(streamFailedProbe.error.code === "stream_failed", "Expected stream read failure to be classified separately from fetch failure.");
+assert(streamFailedProbe.lifecycle.streamStarted === true, "Expected lifecycle to record that stream had started.");
+
 const textProbeParent = fs.mkdtempSync(path.join(os.tmpdir(), "direct-codex-text-probe-"));
 try {
   const probeSessionStore = new DirectSessionStore({ rootDir: path.join(textProbeParent, "direct-sessions") });
@@ -944,6 +1103,10 @@ try {
   assert(persistedStatus.eventCount >= 3, "Expected direct text probe to persist normalized events.");
   const persistedSession = probeSessionStore.readSession(persistedProbe.sessionId);
   assert(persistedSession.messages[0].items.some((item) => item.type === "agentMessage"), "Expected direct text probe transcript to persist assistant output.");
+  const persistedTurn = probeSessionStore.readTurn(persistedProbe.sessionId, persistedProbe.turnId);
+  assert(persistedTurn.requestBuiltAt, "Expected persisted direct text probe to record request_built phase.");
+  assert(persistedTurn.streamStartedAt, "Expected persisted direct text probe to record streaming phase.");
+  assert(persistedTurn.requestShape.stream === true, "Expected persisted direct text probe to persist request shape.");
 
   const failedProbe = await runPersistedTextOnlyDirectProbe({
     endpoint: "https://chatgpt.com/backend-api/codex/responses",
