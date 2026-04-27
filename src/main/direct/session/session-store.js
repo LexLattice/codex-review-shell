@@ -22,6 +22,7 @@ const DIRECT_TURN_STATES = new Set([
   "aborted",
   "checkpoint_required",
 ]);
+const DIRECT_RECOVERABLE_ACTIVE_TURN_STATES = new Set(["request_built", "streaming"]);
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -106,6 +107,8 @@ function indexEntryFromSession(session) {
     turnCount: turns.length,
     unresolvedObligationCount: Array.isArray(session.unresolvedObligations) ? session.unresolvedObligations.length : 0,
     eventCount: turns.reduce((count, turn) => count + Number(turn.normalizedEventCount || 0), 0),
+    activeTurnCount: turns.filter((turn) => DIRECT_RECOVERABLE_ACTIVE_TURN_STATES.has(turn.state)).length,
+    lastTurnState: turns[turns.length - 1]?.state || "",
   };
 }
 
@@ -194,6 +197,19 @@ class DirectSessionStore {
       return fs.readdirSync(sessionsDir, { withFileTypes: true })
         .filter((entry) => entry.isDirectory())
         .map((entry) => entry.name)
+        .filter(isSafeId);
+    } catch (error) {
+      if (error && error.code === "ENOENT") return [];
+      throw error;
+    }
+  }
+
+  listTurnIdsFromDisk(sessionId) {
+    const turnsDir = path.join(this.rootDir, "turns", requireSafeId(sessionId, "session"));
+    try {
+      return fs.readdirSync(turnsDir, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+        .map((entry) => entry.name.slice(0, -".json".length))
         .filter(isSafeId);
     } catch (error) {
       if (error && error.code === "ENOENT") return [];
@@ -298,9 +314,13 @@ class DirectSessionStore {
       model: normalizeString(input.model, session.model),
       profileSnapshotId: normalizeString(input.profileSnapshotId, session.profileSnapshotId),
       requestBuiltAt: "",
+      streamStartedAt: "",
       completedAt: "",
       failedAt: "",
       abortedAt: "",
+      requestShape: isPlainObject(input.requestShape) ? input.requestShape : {},
+      responseStatus: 0,
+      responseContentType: "",
       input: Array.isArray(input.input) ? input.input : [],
       normalizedEventCount: 0,
       unresolvedObligations: Array.isArray(input.unresolvedObligations) ? input.unresolvedObligations : [],
@@ -333,6 +353,7 @@ class DirectSessionStore {
     const now = nowIso(options.nowMs);
     const state = normalizeTurnState(nextState, turn.state);
     const terminalPatch = {};
+    if (state === "request_built" && !turn.requestBuiltAt) terminalPatch.requestBuiltAt = now;
     if (state === "completed") terminalPatch.completedAt = now;
     if (state === "failed") terminalPatch.failedAt = now;
     if (state === "aborted") terminalPatch.abortedAt = now;
@@ -359,6 +380,74 @@ class DirectSessionStore {
       this.writeSession(nextSession);
     }
     return nextTurn;
+  }
+
+  recoverInterruptedTurns(options = {}) {
+    const recoveredAt = nowIso(options.nowMs);
+    let recoveredTurnCount = 0;
+    for (const sessionId of this.listSessionIdsFromDisk()) {
+      const session = this.readSession(sessionId);
+      if (!session || !Array.isArray(session.turns)) continue;
+      const turnIds = new Set([
+        ...session.turns.map((summary) => summary?.turnId).filter(isSafeId),
+        ...this.listTurnIdsFromDisk(session.sessionId),
+      ]);
+      const recoveredByTurnId = new Map();
+      for (const turnId of turnIds) {
+        const turn = this.readTurn(session.sessionId, turnId);
+        if (!turn || !DIRECT_RECOVERABLE_ACTIVE_TURN_STATES.has(turn.state)) continue;
+        const nextTurn = {
+          ...turn,
+          state: "failed",
+          updatedAt: recoveredAt,
+          failedAt: recoveredAt,
+          error: {
+            code: "restart_interrupted_turn",
+            message: "Direct text probe turn was interrupted before a terminal event and needs explicit user resume.",
+            previousState: turn.state,
+            recoveredAt,
+          },
+        };
+        this.writeTurn(nextTurn);
+        recoveredByTurnId.set(nextTurn.turnId, nextTurn);
+        recoveredTurnCount += 1;
+      }
+      if (!recoveredByTurnId.size) continue;
+      const existingTurnIds = new Set(session.turns.map((summary) => summary.turnId));
+      const recoveredSummaries = [...recoveredByTurnId.values()]
+        .filter((turn) => !existingTurnIds.has(turn.turnId))
+        .map((turn) => ({
+          turnId: turn.turnId,
+          state: turn.state,
+          createdAt: turn.createdAt,
+          updatedAt: turn.updatedAt,
+          model: turn.model,
+          normalizedEventCount: turn.normalizedEventCount,
+        }));
+      this.writeSession({
+        ...session,
+        updatedAt: recoveredAt,
+        status: "failed",
+        turns: [
+          ...session.turns.map((summary) => {
+            const recovered = recoveredByTurnId.get(summary.turnId);
+            return recovered
+              ? {
+                  ...summary,
+                  state: recovered.state,
+                  updatedAt: recovered.updatedAt,
+                  normalizedEventCount: recovered.normalizedEventCount,
+                }
+              : summary;
+          }),
+          ...recoveredSummaries,
+        ],
+      });
+    }
+    return {
+      recoveredAt,
+      recoveredTurnCount,
+    };
   }
 
   appendNormalizedEvent(sessionId, turnId, event, options = {}) {
@@ -398,6 +487,7 @@ class DirectSessionStore {
     const sessionCount = index.sessions.length;
     const turnCount = index.sessions.reduce((count, session) => count + Number(session.turnCount || 0), 0);
     const eventCount = index.sessions.reduce((count, session) => count + Number(session.eventCount || 0), 0);
+    const activeTurnCount = index.sessions.reduce((count, session) => count + Number(session.activeTurnCount || 0), 0);
     return {
       schema: "direct_codex_session_store_status@1",
       available: true,
@@ -405,6 +495,8 @@ class DirectSessionStore {
       sessionCount,
       turnCount,
       eventCount,
+      activeTurnCount,
+      lastTurnState: index.sessions[0]?.lastTurnState || "",
       lastSessionUpdatedAt: index.sessions[0]?.updatedAt || "",
       recovery: index.recovery || {},
     };
@@ -413,6 +505,7 @@ class DirectSessionStore {
 
 module.exports = {
   DIRECT_DIAGNOSTIC_SCHEMA,
+  DIRECT_RECOVERABLE_ACTIVE_TURN_STATES,
   DIRECT_SESSION_INDEX_SCHEMA,
   DIRECT_SESSION_SCHEMA,
   DIRECT_TURN_SCHEMA,

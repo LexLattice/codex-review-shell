@@ -82,6 +82,11 @@ function modelEntriesFromProfile(profileDoc = {}) {
     }));
 }
 
+function terminalTurnState(value) {
+  const state = normalizeString(value, "");
+  return ["completed", "failed", "aborted"].includes(state) ? state : "";
+}
+
 function buildDirectRuntimeStatus(options = {}) {
   const generatedAt = normalizeString(options.generatedAt, "") || new Date().toISOString();
   const project = isPlainObject(options.project) ? options.project : {};
@@ -149,6 +154,8 @@ function buildDirectRuntimeStatus(options = {}) {
       liveBackend: true,
       runnable: false,
       manualOnly: true,
+      lastTerminalState: terminalTurnState(sessionStore?.lastTurnState),
+      activeTurnCount: Number(sessionStore?.activeTurnCount || 0),
       toolsEnabled: false,
       continuationEnabled: false,
       rawBackendFramesExposed: false,
@@ -187,6 +194,8 @@ function buildDirectRuntimeStatus(options = {}) {
       sessionCount: Number(sessionStore?.sessionCount || 0),
       turnCount: Number(sessionStore?.turnCount || 0),
       eventCount: Number(sessionStore?.eventCount || 0),
+      activeTurnCount: Number(sessionStore?.activeTurnCount || 0),
+      lastTurnState: normalizeString(sessionStore?.lastTurnState, ""),
       lastSessionUpdatedAt: normalizeString(sessionStore?.lastSessionUpdatedAt, ""),
       recovery: isPlainObject(sessionStore?.recovery) ? sessionStore.recovery : {},
     },
