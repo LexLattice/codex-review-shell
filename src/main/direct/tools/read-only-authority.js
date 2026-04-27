@@ -67,7 +67,7 @@ function assertReadFileObligation(obligation = {}) {
   };
 }
 
-function projectReadResult(raw = {}, obligation = {}, approvedAt = "") {
+function projectReadResult(raw = {}, obligation = {}, approvedAt = "", nowMs) {
   const result = isPlainObject(raw) ? raw : {};
   const text = normalizeString(result.text, "");
   const textPreview = text.length > 8000 ? `${text.slice(0, 8000)}...` : text;
@@ -85,7 +85,7 @@ function projectReadResult(raw = {}, obligation = {}, approvedAt = "") {
     summary: `${normalizeString(result.relPath, "file")} · ${Number(result.size || 0)} bytes${result.truncated ? " · truncated" : ""}`,
     source: normalizeString(result.source, ""),
     approvedAt,
-    recordedAt: nowIso(),
+    recordedAt: nowIso(nowMs),
     sideEffectExecuted: false,
     rawWorkspacePathExposed: false,
   };
@@ -113,8 +113,11 @@ function assertRecordedReadOnlyResult(obligation = {}) {
 function approveReadOnlyToolObligation(options = {}) {
   const sessionStore = options.sessionStore;
   if (!sessionStore) throw new Error("Read-only tool approval requires a direct session store.");
-  const { obligation } = sessionStore.findToolObligation(options.sessionId, options.turnId, options.obligationId);
+  const { turn, obligation } = sessionStore.findToolObligation(options.sessionId, options.turnId, options.obligationId);
   const parsed = assertReadFileObligation(obligation);
+  if (["approved", "result_recorded", "continuation_built"].includes(normalizeString(obligation.status, ""))) {
+    return { turn, obligation };
+  }
   const approvedAt = nowIso(options.nowMs);
   return sessionStore.updateToolObligation(options.sessionId, options.turnId, obligation.obligationId, {
     status: "approved",
@@ -152,7 +155,7 @@ async function executeApprovedReadOnlyToolObligation(options = {}) {
   }
   const parsed = assertReadFileObligation(obligation);
   const workspaceResult = await options.workspaceRequest("readFile", { relPath: parsed.relPath });
-  const result = projectReadResult(workspaceResult, obligation, obligation.approvedAt || "");
+  const result = projectReadResult(workspaceResult, obligation, obligation.approvedAt || "", options.nowMs);
   const updated = sessionStore.updateToolObligation(options.sessionId, options.turnId, obligation.obligationId, {
     status: "result_recorded",
     authorityState: "result_recorded",

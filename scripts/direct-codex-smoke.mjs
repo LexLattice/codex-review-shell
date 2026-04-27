@@ -1286,6 +1286,7 @@ try {
     nowMs: 1_700_000_021_000,
   });
   assert(executedTool.result.textPreview === "fixture read result", "Expected read-only tool result preview to persist.");
+  assert(executedTool.result.recordedAt === new Date(1_700_000_021_000).toISOString(), "Expected read-only tool result timestamp to use execution time.");
   assert(executedTool.result.rawWorkspacePathExposed === false, "Expected read-only tool result to avoid raw workspace path exposure.");
   assert(executedTool.obligation.status === "result_recorded", "Expected read-only tool obligation to persist result_recorded status.");
   assert(executedTool.obligation.sideEffectExecuted === false, "Read-only tool execution must not mark side effects.");
@@ -1343,6 +1344,16 @@ try {
   assert(reusedContinuation.reused === true, "Expected recorded continuation request to be reused idempotently.");
   const finalContinuationTurn = probeSessionStore.readTurn(persistedToolProbe.sessionId, persistedToolProbe.turnId);
   assert(finalContinuationTurn.continuationRequests.length === 1, "Expected idempotent continuation recording to avoid duplicates.");
+  const repeatedApproval = approveReadOnlyToolObligation({
+    sessionStore: probeSessionStore,
+    sessionId: persistedToolProbe.sessionId,
+    turnId: persistedToolProbe.turnId,
+    obligationId: persistedToolProbe.toolObligations[0].obligationId,
+    approvedBy: "smoke-test",
+  });
+  assert(repeatedApproval.obligation.status === "continuation_built", "Expected duplicate approval to preserve completed continuation state.");
+  assert(repeatedApproval.obligation.executionAllowed === false, "Expected duplicate approval not to re-enable execution after result recording.");
+  assert(repeatedApproval.obligation.continuationRequest.continuationId === continuationRequest.continuationId, "Expected duplicate approval not to drop continuation evidence.");
 
   const failedProbe = await runPersistedTextOnlyDirectProbe({
     endpoint: "https://chatgpt.com/backend-api/codex/responses",
