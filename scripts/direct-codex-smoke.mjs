@@ -13,6 +13,7 @@ const appRoot = path.resolve(__dirname, "..");
 const {
   buildDirectCheckpointCandidate,
   buildImportCandidate,
+  materializeDirectImportSession,
   validateDirectCheckpointCandidate,
 } = require("../src/main/direct/import/codex-jsonl-import");
 const {
@@ -1696,6 +1697,41 @@ assert(cleanValidation.validation.gates.sourceFilePathPreserved === true, "Expec
 assert(cleanValidation.validation.gates.sourceCodexHomePreserved === true, "Expected clean import validation to require source CODEX_HOME.");
 assert(cleanValidation.validation.gates.sourceThreadIdPreserved === true, "Expected clean import validation to require source thread id.");
 assert(cleanValidation.validation.importedApprovalsCarryAuthority === false, "Validated imported checkpoints must not inherit approval authority.");
+const importStoreParent = fs.mkdtempSync(path.join(os.tmpdir(), "direct-codex-import-store-"));
+try {
+  const importSessionStore = new DirectSessionStore({ rootDir: path.join(importStoreParent, "direct-sessions") });
+  const materializedReadonly = materializeDirectImportSession(unresolvedImportValidation, {
+    sessionStore: importSessionStore,
+    nowMs: 1_700_000_044_000,
+  });
+  assert(materializedReadonly.schema === "direct_codex_materialized_import_session@1", "Expected materialized import session schema.");
+  assert(materializedReadonly.importState === "checkpoint-candidate", "Expected unresolved import materialization to preserve checkpoint-candidate state.");
+  assert(materializedReadonly.readOnlyImported === true, "Expected unresolved import materialization to remain read-only.");
+  assert(materializedReadonly.continuationEligible === false, "Expected unresolved import materialization not to allow continuation.");
+  const materializedReadonlySession = importSessionStore.readSession(materializedReadonly.sessionId);
+  assert(materializedReadonlySession.runtimeMode === "imported-readonly", "Expected unresolved import session runtime mode.");
+  assert(materializedReadonlySession.importSource.filePath.endsWith("/tmp/codex/history/thread_1.jsonl"), "Expected materialized import session to preserve source path.");
+  assert(materializedReadonlySession.importSource.codexHome.endsWith("/tmp/codex"), "Expected materialized import session to preserve CODEX_HOME.");
+  assert(materializedReadonlySession.messages[0].items.length === 1, "Expected materialized import session to preserve transcript items.");
+  assert(materializedReadonlySession.unresolvedObligations[0].autoReplayable === false, "Expected materialized import obligations not to auto-replay.");
+  assert(materializedReadonlySession.compactionCheckpoints[0].runnable === false, "Expected unresolved import checkpoint to remain non-runnable.");
+
+  const materializedRunnable = materializeDirectImportSession(cleanValidation, {
+    sessionStore: importSessionStore,
+    sessionId: "import_session_clean",
+    nowMs: 1_700_000_045_000,
+  });
+  assert(materializedRunnable.importState === "checkpointed-runnable", "Expected clean import materialization to preserve checkpointed-runnable state.");
+  assert(materializedRunnable.readOnlyImported === false, "Expected clean import materialization not to remain read-only.");
+  assert(materializedRunnable.continuationEligible === true, "Expected clean import materialization to allow continuation eligibility.");
+  const materializedRunnableSession = importSessionStore.readSession(materializedRunnable.sessionId);
+  assert(materializedRunnableSession.runtimeMode === "imported-checkpointed", "Expected clean import session runtime mode.");
+  assert(materializedRunnableSession.continuationEligible === true, "Expected clean import session continuation eligibility.");
+  assert(materializedRunnableSession.messages[0].items.length === 2, "Expected clean import session transcript items.");
+  assert(materializedRunnableSession.directImportCheckpoint.validation.importedApprovalsCarryAuthority === false, "Expected materialized import checkpoint not to inherit approval authority.");
+} finally {
+  fs.rmSync(importStoreParent, { recursive: true, force: true });
+}
 
 const committedFixtureCount = validateCommittedFixtureCorpus();
 assert(committedFixtureCount >= 4, "Expected committed direct Codex fixture corpus coverage.");
