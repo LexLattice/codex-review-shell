@@ -27,8 +27,16 @@ function stableDigest(value) {
 }
 
 function safeIdPart(value, fallback = "import") {
-  const text = firstString(String(value || ""), fallback).replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "");
-  return text || fallback;
+  const cleanFallback = firstString(String(fallback || ""), "import")
+    .replace(/[^A-Za-z0-9_-]+/g, "_")
+    .replace(/^[-_]+|[-_]+$/g, "")
+    .slice(0, 121);
+  const text = firstString(String(value || ""), cleanFallback || "import")
+    .replace(/[^A-Za-z0-9_-]+/g, "_")
+    .replace(/^[-_]+|[-_]+$/g, "")
+    .slice(0, 121)
+    .replace(/[-_]+$/g, "");
+  return text || cleanFallback || "import";
 }
 
 function roleFromRecord(record) {
@@ -382,11 +390,27 @@ function materializeDirectImportSession(checkpointCandidate, options = {}) {
       items: transcriptItems,
     },
   ];
+  const importedTurnState = checkpointedRunnable ? "completed" : "checkpoint_required";
+  const nextTurns = [
+    ...(Array.isArray(session.turns) ? session.turns.filter((turn) => turn?.turnId !== turnId) : []),
+    {
+      turnId,
+      state: importedTurnState,
+      createdAt: checkpointCandidate.createdAt || now,
+      updatedAt: now,
+      model: firstString(options.model, session.model, ""),
+      normalizedEventCount: 0,
+      imported: true,
+      importState: checkpointState,
+      checkpointId: checkpointCandidate.checkpointId,
+    },
+  ];
   const materializedSession = sessionStore.writeSession({
     ...session,
     status: checkpointState,
     updatedAt: now,
     messages: nextMessages,
+    turns: nextTurns,
     sourceClass: "legacy-codex-jsonl-import",
     runtimeMode: checkpointedRunnable ? "imported-checkpointed" : "imported-readonly",
     importState: checkpointState,
