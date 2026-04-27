@@ -155,7 +155,9 @@ function toolTranscriptItemFromObligation(obligation = {}) {
     tool: normalizeString(obligation.name, "tool_call"),
     status: normalizeString(obligation.status, "waiting"),
     contentItems: normalizeString(obligation.argumentsText, ""),
-    result: isPlainObject(obligation.result) ? obligation.result.summary || obligation.result.textPreview || obligation.result.status : "",
+    result: isPlainObject(obligation.result)
+      ? obligation.result.summary || obligation.result.textPreview || obligation.result.status
+      : (isPlainObject(obligation.authorityDecision) ? obligation.authorityDecision.reason : ""),
     executionAllowed: false,
     continuationAllowed: false,
   };
@@ -549,8 +551,10 @@ class DirectSessionStore {
     const nextObligations = (Array.isArray(turn.unresolvedObligations) ? turn.unresolvedObligations : [])
       .map((entry) => entry?.obligationId === obligation.obligationId ? nextObligation : entry);
     const nextState = normalizeTurnState(options.nextTurnState, turn.state);
+    const turnPatch = isPlainObject(options.turnPatch) ? options.turnPatch : {};
     const nextTurn = {
       ...turn,
+      ...turnPatch,
       state: nextState,
       updatedAt: now,
       unresolvedObligations: nextObligations,

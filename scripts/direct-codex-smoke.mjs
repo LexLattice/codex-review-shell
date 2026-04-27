@@ -58,10 +58,13 @@ const {
   runProbeManifestDir,
 } = require("../src/main/direct/probes/probe-runner");
 const {
+  DIRECT_READONLY_TOOL_AUTHORITY_DECISION_SCHEMA,
   DIRECT_READONLY_TOOL_CONTINUATION_REQUEST_SCHEMA,
   DIRECT_READONLY_TOOL_RESULT_SCHEMA,
   approveReadOnlyToolObligation,
   buildReadOnlyToolContinuationRequest,
+  cancelReadOnlyToolObligation,
+  declineReadOnlyToolObligation,
   executeApprovedReadOnlyToolObligation,
   recordReadOnlyToolContinuationRequest,
 } = require("../src/main/direct/tools/read-only-authority");
@@ -1244,6 +1247,81 @@ try {
   assert(persistedToolSession.messages[0].items.some((item) => item.type === "dynamicToolCall"), "Expected persisted direct tool transcript item.");
   const persistedToolTurn = probeSessionStore.readTurn(persistedToolProbe.sessionId, persistedToolProbe.turnId);
   assert(persistedToolTurn.unresolvedObligations[0].continuationAllowed === false, "Tool detection phase must deny continuation.");
+
+  const declinedToolProbe = await runPersistedTextOnlyDirectProbe({
+    endpoint: "https://chatgpt.com/backend-api/codex/responses",
+    credentials: { accessToken: "declined_tool_probe_access_token_secret_1234567890" },
+    profileDoc,
+    model: "gpt-5.4",
+    prompt: "declined tool probe prompt",
+    sessionStore: probeSessionStore,
+    project: { id: "project_direct_text_probe", workspace: { kind: "local", localPath: "[REDACTED:private-path]" } },
+    fetchImpl: async () => textResponse(toolProbeSse, 200, { "content-type": "text/event-stream" }),
+  });
+  const declinedTool = declineReadOnlyToolObligation({
+    sessionStore: probeSessionStore,
+    sessionId: declinedToolProbe.sessionId,
+    turnId: declinedToolProbe.turnId,
+    obligationId: declinedToolProbe.toolObligations[0].obligationId,
+    decidedBy: "smoke-test",
+    reason: "Smoke test declined read-only access.",
+    nowMs: 1_700_000_018_000,
+  });
+  assert(declinedTool.obligation.status === "declined", "Expected declined read-only tool to persist declined status.");
+  assert(declinedTool.obligation.authorityDecision.schema === DIRECT_READONLY_TOOL_AUTHORITY_DECISION_SCHEMA, "Expected declined read-only tool to persist decision schema.");
+  assert(declinedTool.obligation.executionAllowed === false, "Expected declined read-only tool not to allow execution.");
+  assert(declinedTool.obligation.continuationAllowed === false, "Expected declined read-only tool not to allow continuation.");
+  assert(declinedTool.obligation.sideEffectExecuted === false, "Expected declined read-only tool not to mark side effects.");
+  const declinedTurn = probeSessionStore.readTurn(declinedToolProbe.sessionId, declinedToolProbe.turnId);
+  assert(declinedTurn.state === "failed", "Expected declined read-only tool to put the turn in failed state.");
+  assert(declinedTurn.error.code === "tool_obligation_declined", "Expected declined read-only tool to persist terminal error.");
+  const declinedSession = probeSessionStore.readSession(declinedToolProbe.sessionId);
+  const declinedToolItem = declinedSession.messages[0].items.find((item) => item.id === declinedToolProbe.toolObligations[0].obligationId);
+  assert(declinedToolItem.status === "declined", "Expected declined tool transcript item status.");
+  assert(declinedToolItem.result === "Smoke test declined read-only access.", "Expected declined tool transcript item to show decision reason.");
+  await assertRejects(
+    () => executeApprovedReadOnlyToolObligation({
+      sessionStore: probeSessionStore,
+      sessionId: declinedToolProbe.sessionId,
+      turnId: declinedToolProbe.turnId,
+      obligationId: declinedToolProbe.toolObligations[0].obligationId,
+      workspaceRequest: async () => {
+        throw new Error("unexpected declined read.");
+      },
+    }),
+    "Expected declined read-only tool execution to be rejected.",
+  );
+
+  const canceledToolProbe = await runPersistedTextOnlyDirectProbe({
+    endpoint: "https://chatgpt.com/backend-api/codex/responses",
+    credentials: { accessToken: "canceled_tool_probe_access_token_secret_1234567890" },
+    profileDoc,
+    model: "gpt-5.4",
+    prompt: "canceled tool probe prompt",
+    sessionStore: probeSessionStore,
+    project: { id: "project_direct_text_probe", workspace: { kind: "local", localPath: "[REDACTED:private-path]" } },
+    fetchImpl: async () => textResponse(toolProbeSse, 200, { "content-type": "text/event-stream" }),
+  });
+  const canceledTool = cancelReadOnlyToolObligation({
+    sessionStore: probeSessionStore,
+    sessionId: canceledToolProbe.sessionId,
+    turnId: canceledToolProbe.turnId,
+    obligationId: canceledToolProbe.toolObligations[0].obligationId,
+    decidedBy: "smoke-test",
+    reason: "Smoke test canceled read-only access.",
+    nowMs: 1_700_000_019_000,
+  });
+  assert(canceledTool.obligation.status === "canceled", "Expected canceled read-only tool to persist canceled status.");
+  assert(canceledTool.obligation.authorityDecision.decision === "canceled", "Expected canceled read-only tool to persist canceled decision.");
+  assert(canceledTool.obligation.executionAllowed === false, "Expected canceled read-only tool not to allow execution.");
+  assert(canceledTool.obligation.continuationAllowed === false, "Expected canceled read-only tool not to allow continuation.");
+  assert(canceledTool.obligation.sideEffectExecuted === false, "Expected canceled read-only tool not to mark side effects.");
+  const canceledTurn = probeSessionStore.readTurn(canceledToolProbe.sessionId, canceledToolProbe.turnId);
+  assert(canceledTurn.state === "aborted", "Expected canceled read-only tool to put the turn in aborted state.");
+  const canceledSession = probeSessionStore.readSession(canceledToolProbe.sessionId);
+  const canceledToolItem = canceledSession.messages[0].items.find((item) => item.id === canceledToolProbe.toolObligations[0].obligationId);
+  assert(canceledToolItem.status === "canceled", "Expected canceled tool transcript item status.");
+
   await assertRejects(
     () => executeApprovedReadOnlyToolObligation({
       sessionStore: probeSessionStore,
