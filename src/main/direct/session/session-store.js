@@ -153,8 +153,9 @@ function toolTranscriptItemFromObligation(obligation = {}) {
     type: "dynamicToolCall",
     turnId: obligation.turnId,
     tool: normalizeString(obligation.name, "tool_call"),
-    status: "waiting",
+    status: normalizeString(obligation.status, "waiting"),
     contentItems: normalizeString(obligation.argumentsText, ""),
+    result: isPlainObject(obligation.result) ? obligation.result.summary || obligation.result.textPreview || obligation.result.status : "",
     executionAllowed: false,
     continuationAllowed: false,
   };
@@ -423,6 +424,8 @@ class DirectSessionStore {
       input: Array.isArray(input.input) ? input.input : [],
       normalizedEventCount: 0,
       unresolvedObligations: Array.isArray(input.unresolvedObligations) ? input.unresolvedObligations : [],
+      toolResults: Array.isArray(input.toolResults) ? input.toolResults : [],
+      continuationRequests: Array.isArray(input.continuationRequests) ? input.continuationRequests : [],
       error: isPlainObject(input.error) ? input.error : null,
     };
     this.writeTurn(turn);
@@ -523,6 +526,78 @@ class DirectSessionStore {
       });
     }
     return { turn: nextTurn, obligations: obligations.map((obligation) => existingTurnObligations.get(obligation.obligationId)) };
+  }
+
+  findToolObligation(sessionId, turnId, obligationId) {
+    const turn = this.readTurn(sessionId, turnId);
+    if (!turn) throw new Error(`Direct turn not found: ${turnId}`);
+    const obligationKey = normalizeString(obligationId, "");
+    const obligation = (Array.isArray(turn.unresolvedObligations) ? turn.unresolvedObligations : [])
+      .find((entry) => entry?.obligationId === obligationKey);
+    if (!obligation) throw new Error(`Direct tool obligation not found: ${obligationKey}`);
+    return { turn, obligation };
+  }
+
+  updateToolObligation(sessionId, turnId, obligationId, patch = {}, options = {}) {
+    const { turn, obligation } = this.findToolObligation(sessionId, turnId, obligationId);
+    const now = nowIso(options.nowMs);
+    const nextObligation = {
+      ...obligation,
+      ...patch,
+      updatedAt: now,
+    };
+    const nextObligations = (Array.isArray(turn.unresolvedObligations) ? turn.unresolvedObligations : [])
+      .map((entry) => entry?.obligationId === obligation.obligationId ? nextObligation : entry);
+    const nextState = normalizeTurnState(options.nextTurnState, turn.state);
+    const nextTurn = {
+      ...turn,
+      state: nextState,
+      updatedAt: now,
+      unresolvedObligations: nextObligations,
+      toolResults: Array.isArray(turn.toolResults) ? turn.toolResults : [],
+      continuationRequests: Array.isArray(turn.continuationRequests) ? turn.continuationRequests : [],
+    };
+    if (isPlainObject(patch.result)) {
+      const existingResults = new Map((Array.isArray(turn.toolResults) ? turn.toolResults : [])
+        .map((result) => [result.obligationId, result]));
+      existingResults.set(obligation.obligationId, patch.result);
+      nextTurn.toolResults = [...existingResults.values()];
+    }
+    if (isPlainObject(patch.continuationRequest)) {
+      const existingContinuations = new Map((Array.isArray(turn.continuationRequests) ? turn.continuationRequests : [])
+        .map((request) => [request.continuationId, request]));
+      existingContinuations.set(patch.continuationRequest.continuationId, patch.continuationRequest);
+      nextTurn.continuationRequests = [...existingContinuations.values()];
+    }
+    this.writeTurn(nextTurn);
+    const session = this.readSession(sessionId);
+    if (session) {
+      const sessionObligations = (Array.isArray(session.unresolvedObligations) ? session.unresolvedObligations : [])
+        .map((entry) => entry?.obligationId === obligation.obligationId ? nextObligation : entry);
+      const nextMessages = Array.isArray(session.messages)
+        ? session.messages.map((message) => ({
+            ...message,
+            items: Array.isArray(message.items)
+              ? message.items.map((item) => item?.id === obligation.obligationId
+                  ? toolTranscriptItemFromObligation(nextObligation)
+                  : item)
+              : message.items,
+          }))
+        : [];
+      this.writeSession({
+        ...session,
+        status: nextState,
+        updatedAt: now,
+        unresolvedObligations: sessionObligations,
+        messages: nextMessages,
+        turns: session.turns.map((summary) =>
+          summary.turnId === turnId
+            ? { ...summary, state: nextState, updatedAt: now, normalizedEventCount: nextTurn.normalizedEventCount }
+            : summary,
+        ),
+      });
+    }
+    return { turn: nextTurn, obligation: nextObligation };
   }
 
   recoverInterruptedTurns(options = {}) {
