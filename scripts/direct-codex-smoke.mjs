@@ -55,6 +55,10 @@ const {
   runFixtureBackedProbe,
   runProbeManifestDir,
 } = require("../src/main/direct/probes/probe-runner");
+const {
+  approveReadOnlyToolObligation,
+  executeApprovedReadOnlyToolObligation,
+} = require("../src/main/direct/tools/read-only-authority");
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -67,6 +71,15 @@ function isPlainObject(value) {
 function assertThrows(callback, message) {
   try {
     callback();
+  } catch {
+    return;
+  }
+  throw new Error(message);
+}
+
+async function assertRejects(callback, message) {
+  try {
+    await callback();
   } catch {
     return;
   }
@@ -1225,6 +1238,72 @@ try {
   assert(persistedToolSession.messages[0].items.some((item) => item.type === "dynamicToolCall"), "Expected persisted direct tool transcript item.");
   const persistedToolTurn = probeSessionStore.readTurn(persistedToolProbe.sessionId, persistedToolProbe.turnId);
   assert(persistedToolTurn.unresolvedObligations[0].continuationAllowed === false, "Tool detection phase must deny continuation.");
+  await assertRejects(
+    () => executeApprovedReadOnlyToolObligation({
+      sessionStore: probeSessionStore,
+      sessionId: persistedToolProbe.sessionId,
+      turnId: persistedToolProbe.turnId,
+      obligationId: persistedToolProbe.toolObligations[0].obligationId,
+      workspaceRequest: async () => {
+        throw new Error("unexpected pre-approval read.");
+      },
+    }),
+    "Expected read-only tool execution to require explicit approval.",
+  );
+  const approvedTool = approveReadOnlyToolObligation({
+    sessionStore: probeSessionStore,
+    sessionId: persistedToolProbe.sessionId,
+    turnId: persistedToolProbe.turnId,
+    obligationId: persistedToolProbe.toolObligations[0].obligationId,
+    approvedBy: "smoke-test",
+    nowMs: 1_700_000_020_000,
+  });
+  assert(approvedTool.obligation.status === "approved", "Expected read-only tool approval to persist approved status.");
+  assert(approvedTool.obligation.executionAllowed === true, "Expected approved read-only tool to allow one backend execution.");
+  let workspaceReadCalls = 0;
+  const executedTool = await executeApprovedReadOnlyToolObligation({
+    sessionStore: probeSessionStore,
+    sessionId: persistedToolProbe.sessionId,
+    turnId: persistedToolProbe.turnId,
+    obligationId: persistedToolProbe.toolObligations[0].obligationId,
+    workspaceRequest: async (method, params) => {
+      workspaceReadCalls += 1;
+      assert(method === "readFile", "Expected read-only authority to use workspace backend readFile.");
+      assert(params.relPath === "README.md", "Expected read-only authority to request the model-selected relative path.");
+      return {
+        relPath: params.relPath,
+        size: 19,
+        truncated: false,
+        binary: false,
+        text: "fixture read result",
+        source: "local",
+        absolutePath: "/private/path/README.md",
+      };
+    },
+    nowMs: 1_700_000_021_000,
+  });
+  assert(executedTool.result.textPreview === "fixture read result", "Expected read-only tool result preview to persist.");
+  assert(executedTool.result.rawWorkspacePathExposed === false, "Expected read-only tool result to avoid raw workspace path exposure.");
+  assert(executedTool.obligation.status === "result_recorded", "Expected read-only tool obligation to persist result_recorded status.");
+  assert(executedTool.obligation.sideEffectExecuted === false, "Read-only tool execution must not mark side effects.");
+  const reusedTool = await executeApprovedReadOnlyToolObligation({
+    sessionStore: probeSessionStore,
+    sessionId: persistedToolProbe.sessionId,
+    turnId: persistedToolProbe.turnId,
+    obligationId: persistedToolProbe.toolObligations[0].obligationId,
+    workspaceRequest: async () => {
+      workspaceReadCalls += 1;
+      throw new Error("unexpected duplicate read.");
+    },
+  });
+  assert(reusedTool.reused === true, "Expected recorded read-only result to be reused idempotently.");
+  assert(workspaceReadCalls === 1, "Expected read-only tool result persistence to prevent duplicate backend reads.");
+  const resultRecordedTurn = probeSessionStore.readTurn(persistedToolProbe.sessionId, persistedToolProbe.turnId);
+  assert(resultRecordedTurn.state === "continuation_ready", "Expected read-only result persistence to leave turn ready for later continuation.");
+  assert(resultRecordedTurn.toolResults.length === 1, "Expected read-only result to pair to exactly one obligation.");
+  const resultRecordedSession = probeSessionStore.readSession(persistedToolProbe.sessionId);
+  const recordedToolItem = resultRecordedSession.messages[0].items.find((item) => item.id === persistedToolProbe.toolObligations[0].obligationId);
+  assert(recordedToolItem.status === "result_recorded", "Expected transcript tool item to reflect recorded result.");
 
   const failedProbe = await runPersistedTextOnlyDirectProbe({
     endpoint: "https://chatgpt.com/backend-api/codex/responses",
