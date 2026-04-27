@@ -26,6 +26,19 @@ function stableDigest(value) {
   return crypto.createHash("sha256").update(String(value || "")).digest("hex").slice(0, 20);
 }
 
+function safeIdPart(value, fallback = "import") {
+  const cleanFallback = firstString(String(fallback || ""), "import")
+    .replace(/[^A-Za-z0-9_-]+/g, "_")
+    .replace(/^[-_]+|[-_]+$/g, "")
+    .slice(0, 121);
+  const text = firstString(String(value || ""), cleanFallback || "import")
+    .replace(/[^A-Za-z0-9_-]+/g, "_")
+    .replace(/^[-_]+|[-_]+$/g, "")
+    .slice(0, 121)
+    .replace(/[-_]+$/g, "");
+  return text || cleanFallback || "import";
+}
+
 function roleFromRecord(record) {
   return firstString(
     record.message?.role,
@@ -227,6 +240,198 @@ function buildDirectCheckpointCandidate(importCandidate, options = {}) {
   };
 }
 
+function validateDirectCheckpointCandidate(checkpointCandidate, options = {}) {
+  if (!checkpointCandidate || checkpointCandidate.schema !== "direct_codex_import_checkpoint_candidate@1") {
+    throw new Error("Direct import checkpoint validation requires a direct_codex_import_checkpoint_candidate@1 candidate.");
+  }
+  const source = checkpointCandidate.source || {};
+  const checkpoint = checkpointCandidate.checkpoint || {};
+  const messages = Array.isArray(checkpoint.messages) ? checkpoint.messages : [];
+  const unresolvedObligations = Array.isArray(checkpoint.unresolvedObligations) ? checkpoint.unresolvedObligations : [];
+  const gates = {
+    sourceFilePathPreserved: Boolean(source.filePath),
+    sourceCodexHomePreserved: Boolean(source.codexHome),
+    sourceThreadIdPreserved: Boolean(source.threadId),
+    sourceTimestampsRetained: Boolean(source.timestampStart && source.timestampEnd),
+    roleBoundariesPreserved: messages.length > 0 && messages.every((message) => Boolean(message.role)),
+    userVisibleTextPreserved: messages.some((message) => Boolean(message.text)),
+    unresolvedImportedToolCallsClear: unresolvedObligations.length === 0,
+    importedToolCallsAutoReplayable: false,
+    importedApprovalsCarryAuthority: false,
+  };
+  const sourceValid = gates.sourceFilePathPreserved &&
+    gates.sourceCodexHomePreserved &&
+    gates.sourceThreadIdPreserved &&
+    gates.sourceTimestampsRetained;
+  const evidenceValid = gates.roleBoundariesPreserved && gates.userVisibleTextPreserved;
+  const runnable = sourceValid && evidenceValid && gates.unresolvedImportedToolCallsClear;
+  const validationState = runnable
+    ? "checkpointed-runnable"
+    : (sourceValid && gates.roleBoundariesPreserved ? "checkpoint-candidate" : "imported-validation-failed");
+  const validatedAt = nowIso(options.nowMs);
+  return {
+    ...checkpointCandidate,
+    state: validationState,
+    runnable,
+    checkpointedRunnable: runnable,
+    validatedAt,
+    target: {
+      ...(checkpointCandidate.target || {}),
+      state: validationState,
+      runnable,
+      requiresValidationBeforeRun: !runnable,
+      eligibleForContinuation: runnable,
+    },
+    validation: {
+      ...(checkpointCandidate.validation || {}),
+      state: validationState,
+      validatedAt,
+      gates,
+      roleBoundariesPreserved: gates.roleBoundariesPreserved,
+      userVisibleTextPreserved: gates.userVisibleTextPreserved,
+      sourceTimestampsRetained: gates.sourceTimestampsRetained,
+      importedToolCallsAutoReplayable: false,
+      importedApprovalsCarryAuthority: false,
+      unresolvedObligationCount: unresolvedObligations.length,
+      notes: [
+        ...(Array.isArray(checkpointCandidate.validation?.notes) ? checkpointCandidate.validation.notes : []),
+        runnable
+          ? "Checkpoint passed direct validation and is eligible for continuation."
+          : "Checkpoint remains non-runnable until all validation gates pass.",
+      ],
+    },
+  };
+}
+
+function transcriptItemFromCheckpointMessage(message = {}, turnId = "imported_checkpoint") {
+  const role = firstString(message.role, "unknown");
+  const id = `${turnId}_message_${Number(message.seq ?? 0)}`;
+  if (role === "user") {
+    return {
+      id,
+      type: "userMessage",
+      turnId,
+      content: [{ type: "text", text: firstString(message.text, ""), text_elements: [] }],
+      imported: true,
+      sourceSeq: Number(message.seq ?? 0),
+      sourceTimestamp: message.timestamp || "",
+    };
+  }
+  if (role === "assistant") {
+    return {
+      id,
+      type: "agentMessage",
+      turnId,
+      text: firstString(message.text, ""),
+      imported: true,
+      sourceSeq: Number(message.seq ?? 0),
+      sourceTimestamp: message.timestamp || "",
+    };
+  }
+  return {
+    id,
+    type: "importedMessage",
+    role,
+    turnId,
+    text: firstString(message.text, ""),
+    imported: true,
+    sourceSeq: Number(message.seq ?? 0),
+    sourceTimestamp: message.timestamp || "",
+  };
+}
+
+function materializeDirectImportSession(checkpointCandidate, options = {}) {
+  const sessionStore = options.sessionStore;
+  if (!sessionStore || typeof sessionStore.createSession !== "function" || typeof sessionStore.writeSession !== "function") {
+    throw new Error("Direct import materialization requires a direct session store.");
+  }
+  if (!checkpointCandidate || checkpointCandidate.schema !== "direct_codex_import_checkpoint_candidate@1") {
+    throw new Error("Direct import materialization requires a direct_codex_import_checkpoint_candidate@1 candidate.");
+  }
+  const checkpoint = checkpointCandidate.checkpoint || {};
+  const source = checkpointCandidate.source || {};
+  const checkpointState = firstString(checkpointCandidate.state, checkpointCandidate.validation?.state, "checkpoint-candidate");
+  const checkpointedRunnable = checkpointState === "checkpointed-runnable" && checkpointCandidate.runnable === true;
+  const sessionId = safeIdPart(options.sessionId || `import_session_${stableDigest(checkpointCandidate.checkpointId || JSON.stringify(source))}`, "import_session");
+  const turnId = safeIdPart(options.turnId || `import_turn_${stableDigest(checkpointCandidate.checkpointId || sessionId)}`, "import_turn");
+  const now = nowIso(options.nowMs);
+  const messages = Array.isArray(checkpoint.messages) ? checkpoint.messages : [];
+  const unresolvedObligations = Array.isArray(checkpoint.unresolvedObligations)
+    ? checkpoint.unresolvedObligations.map((obligation) => ({
+        ...obligation,
+        autoReplayable: false,
+        requiresFreshAuthority: true,
+      }))
+    : [];
+  const transcriptItems = messages.map((message) => transcriptItemFromCheckpointMessage(message, turnId));
+  const existingSession = typeof sessionStore.readSession === "function" ? sessionStore.readSession(sessionId) : null;
+  const session = existingSession || sessionStore.createSession({
+    sessionId,
+    projectId: firstString(options.projectId, source.threadId, "imported-codex-session"),
+    title: checkpoint.title || `Imported Codex session ${source.threadId || source.filePath || "unknown"}`,
+    createdAt: checkpointCandidate.createdAt || now,
+    model: firstString(options.model, ""),
+  }, options);
+  const existingCheckpointById = new Map((Array.isArray(session.compactionCheckpoints) ? session.compactionCheckpoints : [])
+    .map((entry) => [entry.checkpointId, entry]));
+  existingCheckpointById.set(checkpointCandidate.checkpointId, {
+    checkpointId: checkpointCandidate.checkpointId,
+    state: checkpointState,
+    runnable: checkpointedRunnable,
+    source,
+    validation: checkpointCandidate.validation || {},
+  });
+  const nextMessages = [
+    ...(Array.isArray(session.messages) ? session.messages.filter((message) => message?.id !== turnId) : []),
+    {
+      id: turnId,
+      status: checkpointState,
+      imported: true,
+      items: transcriptItems,
+    },
+  ];
+  const importedTurnState = checkpointedRunnable ? "completed" : "checkpoint_required";
+  const nextTurns = [
+    ...(Array.isArray(session.turns) ? session.turns.filter((turn) => turn?.turnId !== turnId) : []),
+    {
+      turnId,
+      state: importedTurnState,
+      createdAt: checkpointCandidate.createdAt || now,
+      updatedAt: now,
+      model: firstString(options.model, session.model, ""),
+      normalizedEventCount: 0,
+      imported: true,
+      importState: checkpointState,
+      checkpointId: checkpointCandidate.checkpointId,
+    },
+  ];
+  const materializedSession = sessionStore.writeSession({
+    ...session,
+    status: checkpointState,
+    updatedAt: now,
+    messages: nextMessages,
+    turns: nextTurns,
+    sourceClass: "legacy-codex-jsonl-import",
+    runtimeMode: checkpointedRunnable ? "imported-checkpointed" : "imported-readonly",
+    importState: checkpointState,
+    readOnlyImported: !checkpointedRunnable,
+    continuationEligible: checkpointedRunnable,
+    importSource: source,
+    directImportCheckpoint: checkpointCandidate,
+    unresolvedObligations,
+    compactionCheckpoints: [...existingCheckpointById.values()],
+  });
+  return {
+    schema: "direct_codex_materialized_import_session@1",
+    materializedAt: now,
+    sessionId: materializedSession.sessionId,
+    importState: checkpointState,
+    readOnlyImported: !checkpointedRunnable,
+    continuationEligible: checkpointedRunnable,
+    session: materializedSession,
+  };
+}
+
 function loadCodexJsonlImportCandidate(filePath, options = {}) {
   const resolvedPath = path.resolve(filePath);
   const text = fs.readFileSync(resolvedPath, "utf8");
@@ -237,4 +442,6 @@ module.exports = {
   buildDirectCheckpointCandidate,
   buildImportCandidate,
   loadCodexJsonlImportCandidate,
+  materializeDirectImportSession,
+  validateDirectCheckpointCandidate,
 };
