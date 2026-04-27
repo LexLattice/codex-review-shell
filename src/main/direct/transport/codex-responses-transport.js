@@ -28,8 +28,8 @@ function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
-function nowIso() {
-  return new Date().toISOString();
+function nowIso(nowMs = Date.now()) {
+  return new Date(Number(nowMs) || Date.now()).toISOString();
 }
 
 function redactTextForDiagnostic(value, maxLength = 4000) {
@@ -523,30 +523,29 @@ function assistantTextFromEvents(normalizedEvents = []) {
 function appendAssistantContinuationMessage(sessionStore, sessionId, turnId, result, options = {}) {
   const session = sessionStore.readSession(sessionId);
   if (!session) return null;
+  if (!Array.isArray(session.messages)) return session;
   const text = assistantTextFromEvents(result.normalizedEvents);
   const continuationId = normalizeString(result.continuation?.continuationId, "continuation");
-  const nextMessages = Array.isArray(session.messages)
-    ? session.messages.map((message) => {
-        if (message.id !== turnId) return message;
-        const existingItems = Array.isArray(message.items) ? message.items : [];
-        const nextItems = text
-          ? [
-              ...existingItems.filter((item) => item?.id !== `${turnId}_${continuationId}_assistant`),
-              {
-                id: `${turnId}_${continuationId}_assistant`,
-                type: "agentMessage",
-                turnId,
-                text,
-              },
-            ]
-          : existingItems;
-        return {
-          ...message,
-          status: result.terminal?.state || message.status,
-          items: nextItems,
-        };
-      })
-    : [];
+  const nextMessages = session.messages.map((message) => {
+    if (message.id !== turnId) return message;
+    const existingItems = Array.isArray(message.items) ? message.items : [];
+    const nextItems = text
+      ? [
+          ...existingItems.filter((item) => item?.id !== `${turnId}_${continuationId}_assistant`),
+          {
+            id: `${turnId}_${continuationId}_assistant`,
+            type: "agentMessage",
+            turnId,
+            text,
+          },
+        ]
+      : existingItems;
+    return {
+      ...message,
+      status: result.terminal?.state || message.status,
+      items: nextItems,
+    };
+  });
   const nextSession = {
     ...session,
     status: result.terminal?.state || session.status,
@@ -661,7 +660,13 @@ async function runPersistedReadOnlyToolContinuation(options = {}) {
     ...recorded.continuationRequest,
     source: {
       ...(recorded.continuationRequest.source || {}),
-      previousResponseId: normalizeString(options.previousResponseId || existingTurn.responseId, ""),
+      previousResponseId: normalizeString(
+        options.previousResponseId ||
+        existingTurn.responseId ||
+        recorded.continuationRequest.source?.previousResponseId ||
+        recorded.continuationRequest.source?.responseId,
+        "",
+      ),
     },
     safety: {
       ...(recorded.continuationRequest.safety || {}),
@@ -673,7 +678,7 @@ async function runPersistedReadOnlyToolContinuation(options = {}) {
     continuationRequest,
   });
   sessionStore.updateTurnState(options.sessionId, options.turnId, "request_built", {
-    continuationRequestBuiltAt: nowIso(),
+    continuationRequestBuiltAt: nowIso(options.nowMs),
     continuationRequestShape: requestShapeForDiagnostic(requestBody),
     continuationStreamStartedAt: "",
   }, options);
@@ -707,13 +712,14 @@ async function runPersistedReadOnlyToolContinuation(options = {}) {
     },
     options,
   );
+  const nextObligationStatus = result.ok ? "continuation_sent" : recorded.obligation.status;
   const updatedObligation = sessionStore.updateToolObligation(options.sessionId, options.turnId, options.obligationId, {
-    status: "continuation_sent",
-    authorityState: "continuation_sent",
+    status: nextObligationStatus,
+    authorityState: result.ok ? "continuation_sent" : recorded.obligation.authorityState,
     executionAllowed: false,
     continuationAllowed: false,
     continuationRequest,
-    continuationSentAt: result.completedAt,
+    continuationSentAt: result.ok ? result.completedAt : "",
     continuationResult: {
       schema: result.schema,
       ok: result.ok,

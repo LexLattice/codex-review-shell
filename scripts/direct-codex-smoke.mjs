@@ -59,6 +59,7 @@ const {
 } = require("../src/main/direct/probes/probe-runner");
 const {
   DIRECT_READONLY_TOOL_CONTINUATION_REQUEST_SCHEMA,
+  DIRECT_READONLY_TOOL_RESULT_SCHEMA,
   approveReadOnlyToolObligation,
   buildReadOnlyToolContinuationRequest,
   executeApprovedReadOnlyToolObligation,
@@ -1367,6 +1368,7 @@ try {
   assert(sentContinuation.obligation.continuationRequest.safety.continuationLiveSendEnabled === true, "Expected sent continuation evidence to record explicit live send.");
   const continuationTurn = probeSessionStore.readTurn(persistedToolProbe.sessionId, persistedToolProbe.turnId);
   assert(continuationTurn.state === "completed", "Expected continuation send persistence to complete the turn.");
+  assert(continuationTurn.continuationRequestBuiltAt === new Date(1_700_000_023_000).toISOString(), "Expected continuation request built timestamp to use caller time.");
   assert(continuationTurn.continuationRequests.length === 1, "Expected continuation request to persist once on the turn.");
   const reusedContinuation = recordReadOnlyToolContinuationRequest({
     sessionStore: probeSessionStore,
@@ -1390,6 +1392,89 @@ try {
   assert(repeatedApproval.obligation.status === "continuation_sent", "Expected duplicate approval to preserve completed continuation state.");
   assert(repeatedApproval.obligation.executionAllowed === false, "Expected duplicate approval not to re-enable execution after result recording.");
   assert(repeatedApproval.obligation.continuationRequest.continuationId === continuationRequest.continuationId, "Expected duplicate approval not to drop continuation evidence.");
+
+  const failedContinuationSession = probeSessionStore.createSession({
+    projectId: "project_failed_continuation",
+    title: "Failed continuation probe",
+    model: "gpt-5.4",
+  });
+  probeSessionStore.writeSession({
+    ...failedContinuationSession,
+    messages: "unexpected-malformed-messages",
+  });
+  const failedContinuationObligation = {
+    obligationId: "tool_obligation_failed_continuation",
+    sessionId: failedContinuationSession.sessionId,
+    turnId: "turn_failed_continuation",
+    status: "result_recorded",
+    authorityState: "result_recorded",
+    executionAllowed: false,
+    continuationAllowed: false,
+    sourceItemId: "tool_failed_continuation",
+    callId: "call_failed_continuation",
+    name: "read_file",
+    argumentsText: "{\"path\":\"README.md\"}",
+    result: {
+      schema: DIRECT_READONLY_TOOL_RESULT_SCHEMA,
+      resultId: "tool_result_failed_continuation",
+      obligationId: "tool_obligation_failed_continuation",
+      tool: "read_file",
+      status: "completed",
+      relPath: "README.md",
+      size: 19,
+      truncated: false,
+      binary: false,
+      textPreview: "failed continuation fixture",
+      summary: "README.md · 19 bytes",
+      source: "local",
+      approvedAt: new Date(1_700_000_024_000).toISOString(),
+      recordedAt: new Date(1_700_000_025_000).toISOString(),
+      sideEffectExecuted: false,
+      rawWorkspacePathExposed: false,
+    },
+  };
+  probeSessionStore.createTurn(failedContinuationSession.sessionId, {
+    turnId: "turn_failed_continuation",
+    state: "continuation_ready",
+    model: "gpt-5.4",
+    unresolvedObligations: [failedContinuationObligation],
+    toolResults: [failedContinuationObligation.result],
+  });
+  const failedContinuationRequest = {
+    ...buildReadOnlyToolContinuationRequest({
+      sessionStore: probeSessionStore,
+      sessionId: failedContinuationSession.sessionId,
+      turnId: "turn_failed_continuation",
+      obligationId: failedContinuationObligation.obligationId,
+      nowMs: 1_700_000_026_000,
+    }),
+    source: {
+      previousResponseId: "resp_preserved_from_continuation_source",
+    },
+  };
+  let capturedFailedContinuationRequest = null;
+  const failedContinuation = await runPersistedReadOnlyToolContinuation({
+    sessionStore: probeSessionStore,
+    sessionId: failedContinuationSession.sessionId,
+    turnId: "turn_failed_continuation",
+    obligationId: failedContinuationObligation.obligationId,
+    continuationRequest: failedContinuationRequest,
+    endpoint: "https://chatgpt.com/backend-api/codex/responses",
+    credentials: { accessToken: "failed_continuation_probe_access_token_secret_1234567890" },
+    profileDoc,
+    model: "gpt-5.4",
+    fetchImpl: async (_url, init) => {
+      capturedFailedContinuationRequest = { body: JSON.parse(init.body) };
+      return textResponse("{\"error\":\"temporary failure\"}", 500, { "content-type": "application/json" });
+    },
+    nowMs: 1_700_000_027_000,
+  });
+  assert(failedContinuation.ok === false, "Expected failed read-only continuation to report failure.");
+  assert(capturedFailedContinuationRequest.body.previous_response_id === "resp_preserved_from_continuation_source", "Expected read-only continuation to preserve existing previous response id.");
+  assert(failedContinuation.obligation.status === "continuation_built", "Expected failed read-only continuation to remain retryable.");
+  assert(failedContinuation.obligation.continuationSentAt === "", "Expected failed read-only continuation not to record sent timestamp.");
+  const failedContinuationSessionAfter = probeSessionStore.readSession(failedContinuationSession.sessionId);
+  assert(failedContinuationSessionAfter.messages === "unexpected-malformed-messages", "Expected malformed session messages to be preserved.");
 
   const failedProbe = await runPersistedTextOnlyDirectProbe({
     endpoint: "https://chatgpt.com/backend-api/codex/responses",
