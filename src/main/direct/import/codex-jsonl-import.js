@@ -227,6 +227,69 @@ function buildDirectCheckpointCandidate(importCandidate, options = {}) {
   };
 }
 
+function validateDirectCheckpointCandidate(checkpointCandidate, options = {}) {
+  if (!checkpointCandidate || checkpointCandidate.schema !== "direct_codex_import_checkpoint_candidate@1") {
+    throw new Error("Direct import checkpoint validation requires a direct_codex_import_checkpoint_candidate@1 candidate.");
+  }
+  const source = checkpointCandidate.source || {};
+  const checkpoint = checkpointCandidate.checkpoint || {};
+  const messages = Array.isArray(checkpoint.messages) ? checkpoint.messages : [];
+  const unresolvedObligations = Array.isArray(checkpoint.unresolvedObligations) ? checkpoint.unresolvedObligations : [];
+  const gates = {
+    sourceFilePathPreserved: Boolean(source.filePath),
+    sourceCodexHomePreserved: Boolean(source.codexHome),
+    sourceThreadIdPreserved: Boolean(source.threadId),
+    sourceTimestampsRetained: Boolean(source.timestampStart && source.timestampEnd),
+    roleBoundariesPreserved: messages.length > 0 && messages.every((message) => Boolean(message.role)),
+    userVisibleTextPreserved: messages.some((message) => Boolean(message.text)),
+    unresolvedImportedToolCallsClear: unresolvedObligations.length === 0,
+    importedToolCallsAutoReplayable: false,
+    importedApprovalsCarryAuthority: false,
+  };
+  const sourceValid = gates.sourceFilePathPreserved &&
+    gates.sourceCodexHomePreserved &&
+    gates.sourceThreadIdPreserved &&
+    gates.sourceTimestampsRetained;
+  const evidenceValid = gates.roleBoundariesPreserved && gates.userVisibleTextPreserved;
+  const runnable = sourceValid && evidenceValid && gates.unresolvedImportedToolCallsClear;
+  const validationState = runnable
+    ? "checkpointed-runnable"
+    : (sourceValid && gates.roleBoundariesPreserved ? "checkpoint-candidate" : "imported-validation-failed");
+  const validatedAt = nowIso(options.nowMs);
+  return {
+    ...checkpointCandidate,
+    state: validationState,
+    runnable,
+    checkpointedRunnable: runnable,
+    validatedAt,
+    target: {
+      ...(checkpointCandidate.target || {}),
+      state: validationState,
+      runnable,
+      requiresValidationBeforeRun: !runnable,
+      eligibleForContinuation: runnable,
+    },
+    validation: {
+      ...(checkpointCandidate.validation || {}),
+      state: validationState,
+      validatedAt,
+      gates,
+      roleBoundariesPreserved: gates.roleBoundariesPreserved,
+      userVisibleTextPreserved: gates.userVisibleTextPreserved,
+      sourceTimestampsRetained: gates.sourceTimestampsRetained,
+      importedToolCallsAutoReplayable: false,
+      importedApprovalsCarryAuthority: false,
+      unresolvedObligationCount: unresolvedObligations.length,
+      notes: [
+        ...(Array.isArray(checkpointCandidate.validation?.notes) ? checkpointCandidate.validation.notes : []),
+        runnable
+          ? "Checkpoint passed direct validation and is eligible for continuation."
+          : "Checkpoint remains non-runnable until all validation gates pass.",
+      ],
+    },
+  };
+}
+
 function loadCodexJsonlImportCandidate(filePath, options = {}) {
   const resolvedPath = path.resolve(filePath);
   const text = fs.readFileSync(resolvedPath, "utf8");
@@ -237,4 +300,5 @@ module.exports = {
   buildDirectCheckpointCandidate,
   buildImportCandidate,
   loadCodexJsonlImportCandidate,
+  validateDirectCheckpointCandidate,
 };

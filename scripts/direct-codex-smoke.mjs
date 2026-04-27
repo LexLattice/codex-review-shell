@@ -13,6 +13,7 @@ const appRoot = path.resolve(__dirname, "..");
 const {
   buildDirectCheckpointCandidate,
   buildImportCandidate,
+  validateDirectCheckpointCandidate,
 } = require("../src/main/direct/import/codex-jsonl-import");
 const {
   DEFAULT_FIXTURE_ROOT,
@@ -1661,15 +1662,40 @@ assert(importCheckpoint.checkpoint.messages.length === 1, "Expected import check
 assert(importCheckpoint.checkpoint.unresolvedObligations.length === 1, "Expected import checkpoint to carry unresolved obligations.");
 assert(importCheckpoint.checkpoint.unresolvedObligations[0].autoReplayable === false, "Imported tool calls must not be auto-replayable.");
 assert(importCheckpoint.validation.importedApprovalsCarryAuthority === false, "Imported approvals must not carry future authority.");
+const unresolvedImportValidation = validateDirectCheckpointCandidate(importCheckpoint, { nowMs: 1_700_000_040_500 });
+assert(unresolvedImportValidation.state === "checkpoint-candidate", "Expected unresolved import checkpoint to remain a checkpoint candidate.");
+assert(unresolvedImportValidation.runnable === false, "Expected unresolved import checkpoint to remain non-runnable.");
+assert(unresolvedImportValidation.target.eligibleForContinuation === false, "Expected unresolved import checkpoint not to allow continuation.");
+assert(unresolvedImportValidation.validation.gates.unresolvedImportedToolCallsClear === false, "Expected unresolved import checkpoint validation to block on tool obligations.");
 const roleOnlyImportCandidate = buildImportCandidate([
   { timestamp: "2026-04-25T10:00:03Z", thread_id: "thread_role_only", message: { role: "assistant", content: "" } },
 ], {
   sourcePath: "/tmp/codex/history/thread_role_only.jsonl",
+  codexHome: "/tmp/codex",
 });
 const roleOnlyCheckpoint = buildDirectCheckpointCandidate(roleOnlyImportCandidate, { nowMs: 1_700_000_041_000 });
 assert(roleOnlyCheckpoint.validation.state === "checkpoint-candidate", "Expected role-only imported messages to remain checkpoint candidates.");
 assert(roleOnlyCheckpoint.checkpoint.messages.length === 1, "Expected role-only imported messages to be preserved.");
 assert(roleOnlyCheckpoint.checkpoint.messages[0].role === "assistant", "Expected role-only assistant boundary to be preserved.");
+const roleOnlyValidation = validateDirectCheckpointCandidate(roleOnlyCheckpoint, { nowMs: 1_700_000_041_500 });
+assert(roleOnlyValidation.state === "checkpoint-candidate", "Expected role-only import checkpoint to validate as non-runnable candidate.");
+assert(roleOnlyValidation.validation.gates.userVisibleTextPreserved === false, "Expected role-only import validation to require user-visible text before runnable state.");
+const cleanImportCandidate = buildImportCandidate([
+  { timestamp: "2026-04-25T10:00:04Z", thread_id: "thread_clean", message: { role: "user", content: "Inspect this file." } },
+  { timestamp: "2026-04-25T10:00:05Z", thread_id: "thread_clean", message: { role: "assistant", content: "Inspection complete." } },
+], {
+  sourcePath: "/tmp/codex/history/thread_clean.jsonl",
+  codexHome: "/tmp/codex",
+});
+const cleanCheckpoint = buildDirectCheckpointCandidate(cleanImportCandidate, { nowMs: 1_700_000_042_000 });
+const cleanValidation = validateDirectCheckpointCandidate(cleanCheckpoint, { nowMs: 1_700_000_043_000 });
+assert(cleanValidation.state === "checkpointed-runnable", "Expected clean import checkpoint to validate as checkpointed-runnable.");
+assert(cleanValidation.runnable === true, "Expected clean import checkpoint to become runnable after validation.");
+assert(cleanValidation.target.eligibleForContinuation === true, "Expected clean import checkpoint to become eligible for continuation.");
+assert(cleanValidation.validation.gates.sourceFilePathPreserved === true, "Expected clean import validation to require source file path.");
+assert(cleanValidation.validation.gates.sourceCodexHomePreserved === true, "Expected clean import validation to require source CODEX_HOME.");
+assert(cleanValidation.validation.gates.sourceThreadIdPreserved === true, "Expected clean import validation to require source thread id.");
+assert(cleanValidation.validation.importedApprovalsCarryAuthority === false, "Validated imported checkpoints must not inherit approval authority.");
 
 const committedFixtureCount = validateCommittedFixtureCorpus();
 assert(committedFixtureCount >= 4, "Expected committed direct Codex fixture corpus coverage.");
