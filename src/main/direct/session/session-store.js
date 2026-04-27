@@ -9,6 +9,7 @@ const DIRECT_SESSION_INDEX_SCHEMA = "direct_codex_session_index@1";
 const DIRECT_SESSION_SCHEMA = "direct_codex_session@1";
 const DIRECT_TURN_SCHEMA = "direct_codex_turn@1";
 const DIRECT_DIAGNOSTIC_SCHEMA = "direct_codex_diagnostic@1";
+const DIRECT_TOOL_OBLIGATION_SCHEMA = "direct_codex_tool_obligation@1";
 const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,120}$/;
 const DIRECT_TURN_STATES = new Set([
   "created",
@@ -59,6 +60,104 @@ function requireSafeId(value, label) {
 function normalizeTurnState(value, fallback = "created") {
   const state = normalizeString(value, fallback);
   return DIRECT_TURN_STATES.has(state) ? state : fallback;
+}
+
+function toolObligationKey(event = {}) {
+  return normalizeString(event.callId || event.itemId || event.name || `sequence_${event.sequence}`, "unknown_tool_call");
+}
+
+function toolObligationId(sessionId, turnId, key) {
+  const digest = crypto
+    .createHash("sha256")
+    .update(`${normalizeString(sessionId, "")}:${normalizeString(turnId, "")}:${normalizeString(key, "")}`)
+    .digest("hex")
+    .slice(0, 20);
+  return `tool_obligation_${digest}`;
+}
+
+function buildToolObligationsFromEvents(sessionId, turnId, events = []) {
+  const obligations = new Map();
+  for (const event of Array.isArray(events) ? events : []) {
+    if (!["tool_call_started", "tool_call_delta", "tool_call_completed"].includes(event?.type)) continue;
+    const key = toolObligationKey(event);
+    const existing = obligations.get(key) || {
+      schema: DIRECT_TOOL_OBLIGATION_SCHEMA,
+      obligationId: toolObligationId(sessionId, turnId, key),
+      sessionId: normalizeString(sessionId, ""),
+      turnId: normalizeString(turnId, ""),
+      status: "detected",
+      authorityState: "execution_disabled",
+      executionAllowed: false,
+      sideEffectExecuted: false,
+      continuationAllowed: false,
+      sourceItemId: normalizeString(event.itemId, ""),
+      callId: normalizeString(event.callId, ""),
+      name: normalizeString(event.name, "tool_call"),
+      toolType: normalizeString(event.toolType, "unknown"),
+      argumentsText: "",
+      detectedAtSequence: Number(event.sequence ?? 0),
+      completedAtSequence: null,
+    };
+    const next = {
+      ...existing,
+      sourceItemId: normalizeString(existing.sourceItemId || event.itemId, ""),
+      callId: normalizeString(existing.callId || event.callId, ""),
+      name: normalizeString(event.name, existing.name),
+      toolType: normalizeString(event.toolType, existing.toolType),
+    };
+    if (event.type === "tool_call_delta") {
+      next.argumentsText = `${next.argumentsText || ""}${event.argumentsDelta || ""}`;
+    }
+    if (event.type === "tool_call_completed") {
+      next.status = "waiting";
+      next.argumentsText = normalizeString(event.argumentsJson, next.argumentsText);
+      next.completedAtSequence = Number(event.sequence ?? next.completedAtSequence ?? 0);
+    }
+    obligations.set(key, next);
+  }
+  return [...obligations.values()];
+}
+
+function mergeToolArgumentsText(existing = "", incoming = "", incomingIsComplete = false) {
+  const previous = normalizeString(existing, "");
+  const next = normalizeString(incoming, "");
+  if (!previous || incomingIsComplete) return next || previous;
+  if (!next || previous === next || previous.endsWith(next)) return previous;
+  if (next.startsWith(previous)) return next;
+  return `${previous}${next}`;
+}
+
+function mergeToolObligation(existing = {}, incoming = {}) {
+  if (!isPlainObject(existing) || !existing.obligationId) return incoming;
+  return {
+    ...existing,
+    ...incoming,
+    status: incoming.status === "waiting" || existing.status === "waiting" ? "waiting" : normalizeString(incoming.status, existing.status),
+    authorityState: "execution_disabled",
+    executionAllowed: false,
+    sideEffectExecuted: Boolean(existing.sideEffectExecuted || incoming.sideEffectExecuted),
+    continuationAllowed: false,
+    sourceItemId: normalizeString(existing.sourceItemId || incoming.sourceItemId, ""),
+    callId: normalizeString(existing.callId || incoming.callId, ""),
+    name: normalizeString(incoming.name, existing.name),
+    toolType: normalizeString(incoming.toolType, existing.toolType),
+    argumentsText: mergeToolArgumentsText(existing.argumentsText, incoming.argumentsText, incoming.completedAtSequence !== null),
+    detectedAtSequence: Number(existing.detectedAtSequence ?? incoming.detectedAtSequence ?? 0),
+    completedAtSequence: incoming.completedAtSequence ?? existing.completedAtSequence ?? null,
+  };
+}
+
+function toolTranscriptItemFromObligation(obligation = {}) {
+  return {
+    id: obligation.obligationId,
+    type: "dynamicToolCall",
+    turnId: obligation.turnId,
+    tool: normalizeString(obligation.name, "tool_call"),
+    status: "waiting",
+    contentItems: normalizeString(obligation.argumentsText, ""),
+    executionAllowed: false,
+    continuationAllowed: false,
+  };
 }
 
 function ensureDirectory(directory) {
@@ -382,6 +481,50 @@ class DirectSessionStore {
     return nextTurn;
   }
 
+  addToolObligations(sessionId, turnId, normalizedEvents = [], options = {}) {
+    const turn = this.readTurn(sessionId, turnId);
+    if (!turn) throw new Error(`Direct turn not found: ${turnId}`);
+    const obligations = buildToolObligationsFromEvents(sessionId, turnId, normalizedEvents);
+    if (!obligations.length) return { turn, obligations: [] };
+    const now = nowIso(options.nowMs);
+    const existingTurnObligations = new Map((Array.isArray(turn.unresolvedObligations) ? turn.unresolvedObligations : [])
+      .map((obligation) => [obligation.obligationId, obligation]));
+    for (const obligation of obligations) {
+      existingTurnObligations.set(obligation.obligationId, mergeToolObligation(existingTurnObligations.get(obligation.obligationId), obligation));
+    }
+    const nextTurn = {
+      ...turn,
+      state: "tool_waiting",
+      updatedAt: now,
+      unresolvedObligations: [...existingTurnObligations.values()],
+      error: null,
+    };
+    this.writeTurn(nextTurn);
+    const session = this.readSession(sessionId);
+    if (session) {
+      const existingSessionObligations = new Map((Array.isArray(session.unresolvedObligations) ? session.unresolvedObligations : [])
+        .map((obligation) => [obligation.obligationId, obligation]));
+      for (const obligation of obligations) {
+        existingSessionObligations.set(
+          obligation.obligationId,
+          mergeToolObligation(existingSessionObligations.get(obligation.obligationId), existingTurnObligations.get(obligation.obligationId)),
+        );
+      }
+      this.writeSession({
+        ...session,
+        status: "tool_waiting",
+        updatedAt: now,
+        unresolvedObligations: [...existingSessionObligations.values()],
+        turns: session.turns.map((summary) =>
+          summary.turnId === turnId
+            ? { ...summary, state: "tool_waiting", updatedAt: now, normalizedEventCount: nextTurn.normalizedEventCount }
+            : summary,
+        ),
+      });
+    }
+    return { turn: nextTurn, obligations: obligations.map((obligation) => existingTurnObligations.get(obligation.obligationId)) };
+  }
+
   recoverInterruptedTurns(options = {}) {
     const recoveredAt = nowIso(options.nowMs);
     let recoveredTurnCount = 0;
@@ -488,6 +631,7 @@ class DirectSessionStore {
     const turnCount = index.sessions.reduce((count, session) => count + Number(session.turnCount || 0), 0);
     const eventCount = index.sessions.reduce((count, session) => count + Number(session.eventCount || 0), 0);
     const activeTurnCount = index.sessions.reduce((count, session) => count + Number(session.activeTurnCount || 0), 0);
+    const unresolvedObligationCount = index.sessions.reduce((count, session) => count + Number(session.unresolvedObligationCount || 0), 0);
     return {
       schema: "direct_codex_session_store_status@1",
       available: true,
@@ -496,6 +640,7 @@ class DirectSessionStore {
       turnCount,
       eventCount,
       activeTurnCount,
+      unresolvedObligationCount,
       lastTurnState: index.sessions[0]?.lastTurnState || "",
       lastSessionUpdatedAt: index.sessions[0]?.updatedAt || "",
       recovery: index.recovery || {},
@@ -508,9 +653,12 @@ module.exports = {
   DIRECT_RECOVERABLE_ACTIVE_TURN_STATES,
   DIRECT_SESSION_INDEX_SCHEMA,
   DIRECT_SESSION_SCHEMA,
+  DIRECT_TOOL_OBLIGATION_SCHEMA,
   DIRECT_TURN_SCHEMA,
   DIRECT_TURN_STATES,
   DirectSessionStore,
+  buildToolObligationsFromEvents,
   normalizeTurnState,
+  toolTranscriptItemFromObligation,
   writeJsonAtomic,
 };

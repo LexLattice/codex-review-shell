@@ -341,6 +341,29 @@ try {
   assert(recoveredStaleSummaryTurn.state === "failed", "Expected stale-summary active turn file to recover as failed.");
   const postRecoveryStatus = reloadedSessionStore.status();
   assert(postRecoveryStatus.activeTurnCount === 0, "Expected status to remain read-only and report no active turns after explicit recovery.");
+
+  const incrementalSession = sessionStore.createSession({
+    sessionId: "session_incremental_tool",
+    projectId: "project_fixture",
+    workspace: { kind: "local", localPath: "[REDACTED:private-path]" },
+    title: "Incremental tool obligation session",
+    model: "gpt-5.4",
+    profileSnapshotId: profileDoc.profile.profileId,
+  }, { nowMs: 1_700_000_016_000 });
+  const incrementalTurn = sessionStore.createTurn(incrementalSession.sessionId, {
+    turnId: "turn_incremental_tool",
+    input: [{ role: "user", text: "incremental tool" }],
+  }, { nowMs: 1_700_000_017_000 });
+  sessionStore.addToolObligations(incrementalSession.sessionId, incrementalTurn.turnId, [
+    { type: "tool_call_started", sequence: 0, itemId: "tool_incremental", callId: "call_incremental", name: "read_file", toolType: "function_call" },
+    { type: "tool_call_delta", sequence: 1, itemId: "tool_incremental", callId: "call_incremental", argumentsDelta: "{\"path\"" },
+  ], { nowMs: 1_700_000_018_000 });
+  const incrementalResult = sessionStore.addToolObligations(incrementalSession.sessionId, incrementalTurn.turnId, [
+    { type: "tool_call_delta", sequence: 2, itemId: "tool_incremental", callId: "call_incremental", argumentsDelta: ":\"README.md\"}" },
+  ], { nowMs: 1_700_000_019_000 });
+  assert(incrementalResult.obligations[0].argumentsText === "{\"path\":\"README.md\"}", "Expected incremental tool obligation updates to merge argument deltas.");
+  const incrementalPersisted = sessionStore.readTurn(incrementalSession.sessionId, incrementalTurn.turnId);
+  assert(incrementalPersisted.unresolvedObligations.length === 1, "Expected incremental tool obligation updates to preserve one stable obligation.");
 } finally {
   fs.rmSync(sessionStoreParent, { recursive: true, force: true });
 }
@@ -389,6 +412,47 @@ try {
   assert(fixtureStatus.eventCount > 0, "Expected fixture controller to persist normalized events.");
   assert(sentEvents.some((event) => event.type === "rpc-notification" && event.method === "item/agentMessage/delta"), "Expected fixture controller to stream renderer notifications.");
   assert(sentEvents.some((event) => event.type === "rpc-notification" && event.method === "turn/completed"), "Expected fixture controller to emit turn completion.");
+
+  const toolStore = new DirectSessionStore({ rootDir: path.join(fixtureControllerParent, "tool-direct-sessions") });
+  const toolEvents = [];
+  const toolSurface = new DirectFixtureSurfaceSession({
+    isDestroyed: () => false,
+    send: (_channel, payload) => toolEvents.push(payload),
+  }, {
+    controller: new DirectFixtureController({
+      sessionStore: toolStore,
+      profileDoc,
+      fixturePath: path.join(NORMALIZED_FIXTURE_DIR, "tool-call-turn.json"),
+    }),
+    project: { id: "project_tool_fixture", name: "Tool Fixture", surfaceBinding: { codex: { runtimeMode: "direct-experimental" } } },
+  });
+  await toolSurface.connect({ transport: DIRECT_FIXTURE_SURFACE_TRANSPORT });
+  const toolThread = await toolSurface.request("thread/start", {});
+  const toolTurn = await toolSurface.request("turn/start", {
+    threadId: toolThread.thread.id,
+    input: [{ type: "text", text: "tool prompt", text_elements: [] }],
+  });
+  assert(toolTurn.turn.status === "tool_waiting", "Expected fixture tool calls to pause without execution.");
+  assert(toolTurn.turn.toolObligationCount === 1, "Expected fixture tool call to create one local obligation.");
+  assert(toolSurface.hasServerRequest() === false, "Fixture tool detection must not create executable server requests.");
+  const toolPersisted = toolStore.readSession(toolThread.thread.id);
+  assert(toolPersisted.unresolvedObligations.length === 1, "Expected tool obligation to persist on the direct session.");
+  assert(toolPersisted.unresolvedObligations[0].sideEffectExecuted === false, "Tool detection must not execute side effects.");
+  assert(toolPersisted.messages[0].items.some((item) => item.type === "dynamicToolCall" && item.status === "waiting"), "Expected transcript to retain detected tool call.");
+  const toolPersistedTurn = toolStore.readTurn(toolThread.thread.id, toolTurn.turn.id);
+  assert(toolPersistedTurn.state === "tool_waiting", "Expected fixture tool turn to persist tool_waiting state.");
+  assert(toolPersistedTurn.unresolvedObligations[0].executionAllowed === false, "Tool obligation must deny execution in detection-only phase.");
+  assert(toolEvents.some((event) => event.type === "rpc-notification" && event.method === "warning"), "Expected fixture tool detection to emit a warning.");
+  const toolStoreStatus = toolStore.status();
+  assert(toolStoreStatus.unresolvedObligationCount === 1, "Expected session store status to count unresolved tool obligations.");
+  const toolRuntimeStatus = buildDirectRuntimeStatus({
+    project: { surfaceBinding: { codex: { runtimeMode: "direct-experimental" } } },
+    profileDoc,
+    sessionStore: toolStoreStatus,
+  });
+  assert(toolRuntimeStatus.toolDetection.status === "detect_only", "Expected runtime status to label tool detection as detect-only.");
+  assert(toolRuntimeStatus.toolDetection.detectedObligationCount === 1, "Expected runtime status to project detected tool obligations.");
+  assert(toolRuntimeStatus.toolDetection.executionEnabled === false, "Expected runtime status to keep tool execution disabled.");
 
   const reasoningFixturePath = path.join(fixtureControllerParent, "reasoning-multi.json");
   fs.writeFileSync(reasoningFixturePath, JSON.stringify({
@@ -962,6 +1026,40 @@ assert(directTextProbe.normalizedEvents.some((event) => event.type === "message_
 assert(directTextProbe.rawAuthHeadersExposed === false, "Direct text probe must not expose raw auth headers.");
 assertFixtureRedacted(directTextProbe.diagnostic);
 
+const toolProbeSse = [
+  "event: response.created",
+  "data: {\"response\":{\"id\":\"resp_tool_probe\",\"model\":\"gpt-5.4\"}}",
+  "",
+  "event: response.output_item.added",
+  "data: {\"item\":{\"id\":\"tool_probe\",\"type\":\"function_call\",\"call_id\":\"call_probe_read\",\"name\":\"read_file\"}}",
+  "",
+  "event: response.function_call_arguments.delta",
+  "data: {\"item_id\":\"tool_probe\",\"call_id\":\"call_probe_read\",\"delta\":\"{\\\"path\\\"\"}",
+  "",
+  "event: response.function_call_arguments.delta",
+  "data: {\"item_id\":\"tool_probe\",\"call_id\":\"call_probe_read\",\"delta\":\":\\\"README.md\\\"}\"}",
+  "",
+  "event: response.output_item.done",
+  "data: {\"item\":{\"id\":\"tool_probe\",\"type\":\"function_call\",\"call_id\":\"call_probe_read\",\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"README.md\\\"}\"}}",
+  "",
+  "event: response.completed",
+  "data: {\"response\":{\"id\":\"resp_tool_probe\",\"status\":\"completed\"}}",
+  "",
+].join("\n");
+const directToolProbe = await runTextOnlyDirectProbe({
+  endpoint: DEFAULT_CODEX_RESPONSES_ENDPOINT,
+  credentials: { accessToken: "tool_probe_access_token_secret_1234567890" },
+  profileDoc,
+  model: "gpt-5.4",
+  prompt: "tool probe prompt",
+  fetchImpl: async () => textResponse(toolProbeSse, 200, { "content-type": "text/event-stream" }),
+});
+assert(directToolProbe.ok === false, "Expected direct text probe to pause rather than succeed when a tool call appears.");
+assert(directToolProbe.terminal.state === "tool_waiting", "Expected direct text probe tool call to enter tool_waiting.");
+assert(directToolProbe.toolDetection.detected === true, "Expected direct text probe to report tool detection.");
+assert(directToolProbe.toolDetection.executionAllowed === false, "Expected direct text probe to deny tool execution.");
+assertFixtureRedacted(directToolProbe.diagnostic);
+
 const utf8ProbeSse = [
   "event: response.output_text.delta",
   `data: ${JSON.stringify({ item_id: "msg_utf8_probe", delta: "héllo direct" })}`,
@@ -1107,6 +1205,26 @@ try {
   assert(persistedTurn.requestBuiltAt, "Expected persisted direct text probe to record request_built phase.");
   assert(persistedTurn.streamStartedAt, "Expected persisted direct text probe to record streaming phase.");
   assert(persistedTurn.requestShape.stream === true, "Expected persisted direct text probe to persist request shape.");
+
+  const persistedToolProbe = await runPersistedTextOnlyDirectProbe({
+    endpoint: "https://chatgpt.com/backend-api/codex/responses",
+    credentials: { accessToken: "persisted_tool_probe_access_token_secret_1234567890" },
+    profileDoc,
+    model: "gpt-5.4",
+    prompt: "persisted tool probe prompt",
+    sessionStore: probeSessionStore,
+    project: { id: "project_direct_text_probe", workspace: { kind: "local", localPath: "[REDACTED:private-path]" } },
+    fetchImpl: async () => textResponse(toolProbeSse, 200, { "content-type": "text/event-stream" }),
+  });
+  assert(persistedToolProbe.ok === false, "Expected persisted direct tool probe to pause without succeeding.");
+  assert(persistedToolProbe.turnState === "tool_waiting", "Expected persisted direct tool probe to persist tool_waiting state.");
+  assert(persistedToolProbe.toolObligations.length === 1, "Expected persisted direct tool probe to return one tool obligation.");
+  assert(persistedToolProbe.toolObligations[0].sideEffectExecuted === false, "Persisted direct tool probe must not execute side effects.");
+  const persistedToolSession = probeSessionStore.readSession(persistedToolProbe.sessionId);
+  assert(persistedToolSession.unresolvedObligations.length === 1, "Expected persisted direct tool obligation on session.");
+  assert(persistedToolSession.messages[0].items.some((item) => item.type === "dynamicToolCall"), "Expected persisted direct tool transcript item.");
+  const persistedToolTurn = probeSessionStore.readTurn(persistedToolProbe.sessionId, persistedToolProbe.turnId);
+  assert(persistedToolTurn.unresolvedObligations[0].continuationAllowed === false, "Tool detection phase must deny continuation.");
 
   const failedProbe = await runPersistedTextOnlyDirectProbe({
     endpoint: "https://chatgpt.com/backend-api/codex/responses",

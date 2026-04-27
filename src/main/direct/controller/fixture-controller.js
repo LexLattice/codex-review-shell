@@ -4,6 +4,7 @@ const crypto = require("node:crypto");
 const path = require("node:path");
 const { EventEmitter } = require("node:events");
 const { loadFixtureFile, NORMALIZED_FIXTURE_DIR } = require("../fixtures/fixture-loader");
+const { toolTranscriptItemFromObligation } = require("../session/session-store");
 
 const DIRECT_FIXTURE_SURFACE_TRANSPORT = "direct-fixture";
 
@@ -95,6 +96,12 @@ function threadSnapshotFromSession(session, model = "") {
 
 function assistantItemId(turnId, event) {
   return normalizeString(event.itemId, "") || `${turnId}_assistant`;
+}
+
+function isToolCallEvent(event) {
+  return event?.type === "tool_call_started" ||
+    event?.type === "tool_call_delta" ||
+    event?.type === "tool_call_completed";
 }
 
 function cloneJson(value) {
@@ -189,7 +196,7 @@ class DirectFixtureController {
   completedItemsForTurn(userItem, assistantItems) {
     return [
       userItem,
-      ...Array.from(assistantItems.values()).filter((item) => item?.type === "agentMessage"),
+      ...Array.from(assistantItems.values()).filter(Boolean),
     ];
   }
 
@@ -299,6 +306,43 @@ class DirectFixtureController {
     }
 
     this.sessionStore.appendNormalizedEvents(session.sessionId, turnId, eventsToPersist);
+    if (eventsToPersist.some(isToolCallEvent)) {
+      const obligationResult = this.sessionStore.addToolObligations(session.sessionId, turnId, eventsToPersist);
+      const toolItems = obligationResult.obligations.map(toolTranscriptItemFromObligation);
+      for (const item of toolItems) {
+        assistantItems.set(item.id, item);
+        this.emitNotification(surfaceSession, "item/started", {
+          threadId: session.sessionId,
+          turnId,
+          item,
+        });
+        this.emitNotification(surfaceSession, "item/completed", {
+          threadId: session.sessionId,
+          turnId,
+          item,
+        });
+      }
+      const nextSession = this.sessionStore.readSession(session.sessionId);
+      this.appendSessionTurn(
+        nextSession || session,
+        turnId,
+        this.completedItemsForTurn(userItem, assistantItems),
+        model,
+        "tool_waiting",
+      );
+      this.emitNotification(surfaceSession, "warning", {
+        threadId: session.sessionId,
+        turnId,
+        message: "Direct fixture detected a model tool call. Execution and continuation are disabled in this phase.",
+      });
+      return {
+        turn: {
+          id: turnId,
+          status: "tool_waiting",
+          toolObligationCount: obligationResult.obligations.length,
+        },
+      };
+    }
     for (const item of assistantItems.values()) {
       if (item.type === "agentMessage") {
         this.emitNotification(surfaceSession, "item/completed", {

@@ -5,6 +5,10 @@ const {
   parseSseFixtureText,
 } = require("../normalizer/codex-event-normalizer");
 const { redactFixture } = require("../fixtures/redaction");
+const {
+  buildToolObligationsFromEvents,
+  toolTranscriptItemFromObligation,
+} = require("../session/session-store");
 
 const DIRECT_TEXT_PROBE_RESULT_SCHEMA = "direct_codex_text_probe_result@1";
 const DEFAULT_CODEX_RESPONSES_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
@@ -193,6 +197,8 @@ function diagnosticFromResult(result = {}) {
     response: result.response || {},
     normalizedEventTypes: Array.isArray(result.normalizedEvents) ? result.normalizedEvents.map((event) => event.type) : [],
     unknownRawTypes: Array.isArray(result.unknownRawTypes) ? result.unknownRawTypes : [],
+    toolCallDetected: Boolean(result.toolDetection?.detected),
+    toolObligationCount: Number(result.toolDetection?.obligationCount || 0),
     error: result.error || null,
   });
 }
@@ -256,9 +262,6 @@ function terminalStateFromNormalizedEvents(normalizedEvents = []) {
       },
     };
   }
-  if (normalizedEvents.some((event) => event.type === "response_completed")) {
-    return { state: "completed", error: null };
-  }
   if (normalizedEvents.some((event) => event.type === "response_incomplete")) {
     return {
       state: "failed",
@@ -267,6 +270,16 @@ function terminalStateFromNormalizedEvents(normalizedEvents = []) {
         message: "Direct text probe response was incomplete.",
       },
     };
+  }
+  const toolEvent = normalizedEvents.find((event) =>
+    event.type === "tool_call_started" ||
+    event.type === "tool_call_delta" ||
+    event.type === "tool_call_completed");
+  if (toolEvent) {
+    return { state: "tool_waiting", error: null };
+  }
+  if (normalizedEvents.some((event) => event.type === "response_completed")) {
+    return { state: "completed", error: null };
   }
   return {
     state: "failed",
@@ -379,6 +392,7 @@ async function runTextOnlyDirectProbe(options = {}) {
   normalizedEvents = normalizedResult.normalized;
   unknownRawTypes = normalizedResult.unknown.map((event) => event.rawType);
   const terminal = terminalStateFromNormalizedEvents(normalizedEvents);
+  const toolObligations = buildToolObligationsFromEvents("probe_unpersisted", "turn_unpersisted", normalizedEvents);
   const result = {
     schema: DIRECT_TEXT_PROBE_RESULT_SCHEMA,
     ok: terminal.state === "completed",
@@ -397,6 +411,12 @@ async function runTextOnlyDirectProbe(options = {}) {
     unknownRawTypes,
     terminal,
     error,
+    toolDetection: {
+      detected: toolObligations.length > 0,
+      obligationCount: toolObligations.length,
+      executionAllowed: false,
+      continuationAllowed: false,
+    },
     lifecycle: {
       streamStarted,
       attempts,
@@ -460,6 +480,7 @@ async function runPersistedTextOnlyDirectProbe(options = {}) {
   if (result.normalizedEvents.length) {
     sessionStore.appendNormalizedEvents(session.sessionId, turn.turnId, result.normalizedEvents, options);
   }
+  const obligationResult = sessionStore.addToolObligations(session.sessionId, turn.turnId, result.normalizedEvents, options);
   const terminal = result.terminal || terminalStateFromNormalizedEvents(result.normalizedEvents);
   const completedTurn = sessionStore.updateTurnState(
     session.sessionId,
@@ -493,6 +514,7 @@ async function runPersistedTextOnlyDirectProbe(options = {}) {
                 text: assistantTextFromEvents(result.normalizedEvents),
               }]
             : []),
+          ...obligationResult.obligations.map(toolTranscriptItemFromObligation),
         ],
       },
     ],
@@ -502,6 +524,7 @@ async function runPersistedTextOnlyDirectProbe(options = {}) {
     sessionId: session.sessionId,
     turnId: turn.turnId,
     turnState: completedTurn.state,
+    toolObligations: obligationResult.obligations,
   };
 }
 
