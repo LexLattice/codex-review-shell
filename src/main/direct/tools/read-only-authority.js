@@ -2,6 +2,7 @@
 
 const crypto = require("node:crypto");
 
+const DIRECT_READONLY_TOOL_CONTINUATION_REQUEST_SCHEMA = "direct_codex_readonly_tool_continuation_request@1";
 const DIRECT_READONLY_TOOL_RESULT_SCHEMA = "direct_codex_readonly_tool_result@1";
 const READ_FILE_TOOL_NAMES = new Set(["read_file", "readFile"]);
 
@@ -20,6 +21,15 @@ function nowIso(nowMs = Date.now()) {
 function resultIdForObligation(obligationId) {
   const digest = crypto.createHash("sha256").update(normalizeString(obligationId, "")).digest("hex").slice(0, 20);
   return `tool_result_${digest}`;
+}
+
+function continuationIdForResult(obligationId, resultId) {
+  const digest = crypto
+    .createHash("sha256")
+    .update(`${normalizeString(obligationId, "")}:${normalizeString(resultId, "")}`)
+    .digest("hex")
+    .slice(0, 20);
+  return `tool_continuation_${digest}`;
 }
 
 function parseArgumentsJson(obligation = {}) {
@@ -79,6 +89,25 @@ function projectReadResult(raw = {}, obligation = {}, approvedAt = "") {
     sideEffectExecuted: false,
     rawWorkspacePathExposed: false,
   };
+}
+
+function assertRecordedReadOnlyResult(obligation = {}) {
+  if (!["result_recorded", "continuation_built"].includes(normalizeString(obligation.status, ""))) {
+    const error = new Error("Read-only tool continuation requires a recorded tool result.");
+    error.code = "tool_result_not_recorded";
+    throw error;
+  }
+  if (!isPlainObject(obligation.result)) {
+    const error = new Error("Read-only tool continuation requires stored tool evidence.");
+    error.code = "tool_result_missing";
+    throw error;
+  }
+  if (obligation.result.schema !== DIRECT_READONLY_TOOL_RESULT_SCHEMA) {
+    const error = new Error("Read-only tool continuation requires a direct read-only result record.");
+    error.code = "invalid_tool_result_schema";
+    throw error;
+  }
+  return obligation.result;
 }
 
 function approveReadOnlyToolObligation(options = {}) {
@@ -143,9 +172,120 @@ async function executeApprovedReadOnlyToolObligation(options = {}) {
   };
 }
 
+function buildReadOnlyToolContinuationRequest(options = {}) {
+  const sessionStore = options.sessionStore;
+  if (!sessionStore) throw new Error("Read-only tool continuation requires a direct session store.");
+  const { obligation } = sessionStore.findToolObligation(options.sessionId, options.turnId, options.obligationId);
+  const result = assertRecordedReadOnlyResult(obligation);
+  const toolCallId = normalizeString(obligation.callId || obligation.sourceItemId || obligation.obligationId, obligation.obligationId);
+  return {
+    schema: DIRECT_READONLY_TOOL_CONTINUATION_REQUEST_SCHEMA,
+    continuationId: continuationIdForResult(obligation.obligationId, result.resultId),
+    sessionId: normalizeString(options.sessionId, obligation.sessionId),
+    turnId: normalizeString(options.turnId, obligation.turnId),
+    obligationId: obligation.obligationId,
+    createdAt: nowIso(options.nowMs),
+    source: {
+      fromRecordedResult: true,
+      recordedResultId: result.resultId,
+      recordedAt: normalizeString(result.recordedAt, ""),
+      approvedAt: normalizeString(result.approvedAt || obligation.approvedAt, ""),
+    },
+    toolResult: {
+      obligationId: obligation.obligationId,
+      callId: normalizeString(obligation.callId, ""),
+      itemId: normalizeString(obligation.sourceItemId, ""),
+      toolCallId,
+      name: normalizeString(obligation.name, "read_file"),
+      content: [
+        {
+          type: "output_text",
+          text: normalizeString(result.textPreview, ""),
+        },
+      ],
+      metadata: {
+        resultId: result.resultId,
+        relPath: normalizeString(result.relPath, ""),
+        size: Number(result.size || 0),
+        truncated: Boolean(result.truncated),
+        binary: Boolean(result.binary),
+        status: normalizeString(result.status, "completed"),
+      },
+    },
+    localTranscript: [
+      {
+        type: "tool_result",
+        toolCallId,
+        name: normalizeString(obligation.name, "read_file"),
+        content: normalizeString(result.textPreview, ""),
+      },
+    ],
+    safety: {
+      fromRecordedResult: true,
+      originalRequestRetried: false,
+      sideEffectExecuted: false,
+      workspaceBackendOnly: true,
+      continuationLiveSendEnabled: false,
+    },
+    rawAuthHeadersExposed: false,
+    rawBackendRequestsExposed: false,
+    rawBackendFramesExposed: false,
+  };
+}
+
+function assertContinuationRequestForObligation(request = {}, obligation = {}) {
+  const result = assertRecordedReadOnlyResult(obligation);
+  if (request.schema !== DIRECT_READONLY_TOOL_CONTINUATION_REQUEST_SCHEMA) {
+    const error = new Error("Read-only tool continuation request has an invalid schema.");
+    error.code = "invalid_continuation_request_schema";
+    throw error;
+  }
+  if (request.obligationId !== obligation.obligationId || request.toolResult?.metadata?.resultId !== result.resultId) {
+    const error = new Error("Read-only tool continuation request does not match recorded tool evidence.");
+    error.code = "continuation_evidence_mismatch";
+    throw error;
+  }
+}
+
+function recordReadOnlyToolContinuationRequest(options = {}) {
+  const sessionStore = options.sessionStore;
+  if (!sessionStore) throw new Error("Read-only tool continuation requires a direct session store.");
+  const { obligation } = sessionStore.findToolObligation(options.sessionId, options.turnId, options.obligationId);
+  if (isPlainObject(obligation.continuationRequest)) {
+    return {
+      reused: true,
+      obligation,
+      continuationRequest: obligation.continuationRequest,
+    };
+  }
+  const continuationRequest = isPlainObject(options.continuationRequest)
+    ? options.continuationRequest
+    : buildReadOnlyToolContinuationRequest(options);
+  assertContinuationRequestForObligation(continuationRequest, obligation);
+  const updated = sessionStore.updateToolObligation(options.sessionId, options.turnId, obligation.obligationId, {
+    status: "continuation_built",
+    authorityState: "continuation_built",
+    executionAllowed: false,
+    continuationAllowed: false,
+    continuationRequest,
+    continuationBuiltAt: continuationRequest.createdAt,
+  }, {
+    ...options,
+    nextTurnState: "continuation_ready",
+  });
+  return {
+    reused: false,
+    obligation: updated.obligation,
+    continuationRequest,
+  };
+}
+
 module.exports = {
+  DIRECT_READONLY_TOOL_CONTINUATION_REQUEST_SCHEMA,
   DIRECT_READONLY_TOOL_RESULT_SCHEMA,
   approveReadOnlyToolObligation,
+  buildReadOnlyToolContinuationRequest,
   executeApprovedReadOnlyToolObligation,
   projectReadResult,
+  recordReadOnlyToolContinuationRequest,
 };

@@ -425,6 +425,7 @@ class DirectSessionStore {
       normalizedEventCount: 0,
       unresolvedObligations: Array.isArray(input.unresolvedObligations) ? input.unresolvedObligations : [],
       toolResults: Array.isArray(input.toolResults) ? input.toolResults : [],
+      continuationRequests: Array.isArray(input.continuationRequests) ? input.continuationRequests : [],
       error: isPlainObject(input.error) ? input.error : null,
     };
     this.writeTurn(turn);
@@ -554,12 +555,19 @@ class DirectSessionStore {
       updatedAt: now,
       unresolvedObligations: nextObligations,
       toolResults: Array.isArray(turn.toolResults) ? turn.toolResults : [],
+      continuationRequests: Array.isArray(turn.continuationRequests) ? turn.continuationRequests : [],
     };
     if (isPlainObject(patch.result)) {
       const existingResults = new Map((Array.isArray(turn.toolResults) ? turn.toolResults : [])
         .map((result) => [result.obligationId, result]));
       existingResults.set(obligation.obligationId, patch.result);
       nextTurn.toolResults = [...existingResults.values()];
+    }
+    if (isPlainObject(patch.continuationRequest)) {
+      const existingContinuations = new Map((Array.isArray(turn.continuationRequests) ? turn.continuationRequests : [])
+        .map((request) => [request.continuationId, request]));
+      existingContinuations.set(patch.continuationRequest.continuationId, patch.continuationRequest);
+      nextTurn.continuationRequests = [...existingContinuations.values()];
     }
     this.writeTurn(nextTurn);
     const session = this.readSession(sessionId);

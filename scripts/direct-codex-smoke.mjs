@@ -56,8 +56,11 @@ const {
   runProbeManifestDir,
 } = require("../src/main/direct/probes/probe-runner");
 const {
+  DIRECT_READONLY_TOOL_CONTINUATION_REQUEST_SCHEMA,
   approveReadOnlyToolObligation,
+  buildReadOnlyToolContinuationRequest,
   executeApprovedReadOnlyToolObligation,
+  recordReadOnlyToolContinuationRequest,
 } = require("../src/main/direct/tools/read-only-authority");
 
 function assert(condition, message) {
@@ -1304,6 +1307,42 @@ try {
   const resultRecordedSession = probeSessionStore.readSession(persistedToolProbe.sessionId);
   const recordedToolItem = resultRecordedSession.messages[0].items.find((item) => item.id === persistedToolProbe.toolObligations[0].obligationId);
   assert(recordedToolItem.status === "result_recorded", "Expected transcript tool item to reflect recorded result.");
+  const continuationRequest = buildReadOnlyToolContinuationRequest({
+    sessionStore: probeSessionStore,
+    sessionId: persistedToolProbe.sessionId,
+    turnId: persistedToolProbe.turnId,
+    obligationId: persistedToolProbe.toolObligations[0].obligationId,
+    nowMs: 1_700_000_022_000,
+  });
+  assert(continuationRequest.schema === DIRECT_READONLY_TOOL_CONTINUATION_REQUEST_SCHEMA, "Expected read-only continuation schema.");
+  assert(continuationRequest.safety.fromRecordedResult === true, "Expected read-only continuation to cite recorded evidence.");
+  assert(continuationRequest.safety.originalRequestRetried === false, "Read-only continuation must not retry the original request.");
+  assert(continuationRequest.safety.continuationLiveSendEnabled === false, "Read-only continuation must remain fixture/local only.");
+  assert(continuationRequest.toolResult.metadata.resultId === executedTool.result.resultId, "Expected continuation to pair to recorded tool result.");
+  assert(continuationRequest.toolResult.content[0].text === "fixture read result", "Expected continuation to include recorded tool output.");
+  assert(!JSON.stringify(continuationRequest).includes("/private/path"), "Read-only continuation must not expose raw workspace paths.");
+  const recordedContinuation = recordReadOnlyToolContinuationRequest({
+    sessionStore: probeSessionStore,
+    sessionId: persistedToolProbe.sessionId,
+    turnId: persistedToolProbe.turnId,
+    obligationId: persistedToolProbe.toolObligations[0].obligationId,
+    continuationRequest,
+  });
+  assert(recordedContinuation.obligation.status === "continuation_built", "Expected read-only continuation to persist built status.");
+  assert(recordedContinuation.obligation.continuationAllowed === false, "Read-only continuation must not enable live continuation yet.");
+  assert(recordedContinuation.obligation.continuationRequest.continuationId === continuationRequest.continuationId, "Expected continuation request to persist on obligation.");
+  const continuationTurn = probeSessionStore.readTurn(persistedToolProbe.sessionId, persistedToolProbe.turnId);
+  assert(continuationTurn.state === "continuation_ready", "Expected continuation persistence to keep turn continuation-ready.");
+  assert(continuationTurn.continuationRequests.length === 1, "Expected continuation request to persist once on the turn.");
+  const reusedContinuation = recordReadOnlyToolContinuationRequest({
+    sessionStore: probeSessionStore,
+    sessionId: persistedToolProbe.sessionId,
+    turnId: persistedToolProbe.turnId,
+    obligationId: persistedToolProbe.toolObligations[0].obligationId,
+  });
+  assert(reusedContinuation.reused === true, "Expected recorded continuation request to be reused idempotently.");
+  const finalContinuationTurn = probeSessionStore.readTurn(persistedToolProbe.sessionId, persistedToolProbe.turnId);
+  assert(finalContinuationTurn.continuationRequests.length === 1, "Expected idempotent continuation recording to avoid duplicates.");
 
   const failedProbe = await runPersistedTextOnlyDirectProbe({
     endpoint: "https://chatgpt.com/backend-api/codex/responses",
