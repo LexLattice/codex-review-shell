@@ -148,7 +148,7 @@ function buildImportCandidate(records, options = {}) {
 
 function checkpointMessagesFromCandidate(candidate = {}) {
   return (Array.isArray(candidate.nodes) ? candidate.nodes : [])
-    .filter((node) => node?.factKind === "message" && node.role && node.text)
+    .filter((node) => node?.factKind === "message" && node.role)
     .map((node) => ({
       seq: node.seq,
       role: node.role,

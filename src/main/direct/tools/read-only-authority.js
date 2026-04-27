@@ -64,12 +64,16 @@ function normalizeRelativePath(value) {
   return text.replace(/^\.\/+/, "");
 }
 
-function assertReadFileObligation(obligation = {}) {
+function assertReadFileToolName(obligation = {}) {
   if (!READ_FILE_TOOL_NAMES.has(normalizeString(obligation.name, ""))) {
     const error = new Error(`Unsupported direct read-only tool: ${obligation.name || "unknown"}`);
     error.code = "unsupported_readonly_tool";
     throw error;
   }
+}
+
+function assertReadFileObligation(obligation = {}) {
+  assertReadFileToolName(obligation);
   const args = parseArgumentsJson(obligation);
   return {
     relPath: normalizeRelativePath(args.path || args.relPath || args.relativePath),
@@ -166,7 +170,7 @@ function decideReadOnlyToolObligation(options = {}) {
   const sessionStore = options.sessionStore;
   if (!sessionStore) throw new Error("Read-only tool decision requires a direct session store.");
   const { turn, obligation } = sessionStore.findToolObligation(options.sessionId, options.turnId, options.obligationId);
-  assertReadFileObligation(obligation);
+  assertReadFileToolName(obligation);
   const existingStatus = normalizeString(obligation.status, "");
   if (READONLY_TERMINAL_STATUSES.has(existingStatus) && existingStatus !== "approved") {
     return { turn, obligation };

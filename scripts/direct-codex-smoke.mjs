@@ -1325,6 +1325,43 @@ try {
   const canceledToolItem = canceledSession.messages[0].items.find((item) => item.id === canceledToolProbe.toolObligations[0].obligationId);
   assert(canceledToolItem.status === "canceled", "Expected canceled tool transcript item status.");
 
+  const malformedToolProbeSse = [
+    "event: response.created",
+    "data: {\"response\":{\"id\":\"resp_malformed_tool_probe\",\"model\":\"gpt-5.4\"}}",
+    "",
+    "event: response.output_item.added",
+    "data: {\"item\":{\"id\":\"tool_malformed_probe\",\"type\":\"function_call\",\"call_id\":\"call_malformed_read\",\"name\":\"read_file\"}}",
+    "",
+    "event: response.output_item.done",
+    "data: {\"item\":{\"id\":\"tool_malformed_probe\",\"type\":\"function_call\",\"call_id\":\"call_malformed_read\",\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"/etc/passwd\\\"}\"}}",
+    "",
+    "event: response.completed",
+    "data: {\"response\":{\"id\":\"resp_malformed_tool_probe\",\"status\":\"completed\"}}",
+    "",
+  ].join("\n");
+  const malformedToolProbe = await runPersistedTextOnlyDirectProbe({
+    endpoint: "https://chatgpt.com/backend-api/codex/responses",
+    credentials: { accessToken: "malformed_tool_probe_access_token_secret_1234567890" },
+    profileDoc,
+    model: "gpt-5.4",
+    prompt: "malformed tool probe prompt",
+    sessionStore: probeSessionStore,
+    project: { id: "project_direct_text_probe", workspace: { kind: "local", localPath: "[REDACTED:private-path]" } },
+    fetchImpl: async () => textResponse(malformedToolProbeSse, 200, { "content-type": "text/event-stream" }),
+  });
+  const declinedMalformedTool = declineReadOnlyToolObligation({
+    sessionStore: probeSessionStore,
+    sessionId: malformedToolProbe.sessionId,
+    turnId: malformedToolProbe.turnId,
+    obligationId: malformedToolProbe.toolObligations[0].obligationId,
+    decidedBy: "smoke-test",
+    reason: "Smoke test declined malformed read-only access.",
+    nowMs: 1_700_000_019_500,
+  });
+  assert(declinedMalformedTool.obligation.status === "declined", "Expected malformed read-only tool to be declinable.");
+  const declinedMalformedTurn = probeSessionStore.readTurn(malformedToolProbe.sessionId, malformedToolProbe.turnId);
+  assert(declinedMalformedTurn.state === "failed", "Expected malformed declined read-only tool to terminate the turn.");
+
   await assertRejects(
     () => executeApprovedReadOnlyToolObligation({
       sessionStore: probeSessionStore,
@@ -1624,6 +1661,15 @@ assert(importCheckpoint.checkpoint.messages.length === 1, "Expected import check
 assert(importCheckpoint.checkpoint.unresolvedObligations.length === 1, "Expected import checkpoint to carry unresolved obligations.");
 assert(importCheckpoint.checkpoint.unresolvedObligations[0].autoReplayable === false, "Imported tool calls must not be auto-replayable.");
 assert(importCheckpoint.validation.importedApprovalsCarryAuthority === false, "Imported approvals must not carry future authority.");
+const roleOnlyImportCandidate = buildImportCandidate([
+  { timestamp: "2026-04-25T10:00:03Z", thread_id: "thread_role_only", message: { role: "assistant", content: "" } },
+], {
+  sourcePath: "/tmp/codex/history/thread_role_only.jsonl",
+});
+const roleOnlyCheckpoint = buildDirectCheckpointCandidate(roleOnlyImportCandidate, { nowMs: 1_700_000_041_000 });
+assert(roleOnlyCheckpoint.validation.state === "checkpoint-candidate", "Expected role-only imported messages to remain checkpoint candidates.");
+assert(roleOnlyCheckpoint.checkpoint.messages.length === 1, "Expected role-only imported messages to be preserved.");
+assert(roleOnlyCheckpoint.checkpoint.messages[0].role === "assistant", "Expected role-only assistant boundary to be preserved.");
 
 const committedFixtureCount = validateCommittedFixtureCorpus();
 assert(committedFixtureCount >= 4, "Expected committed direct Codex fixture corpus coverage.");
