@@ -7,3 +7,6 @@
 - [Codex Surface Project And Rendering Spec](./CODEX_SURFACE_PROJECT_RENDERING_SPEC.md)
 - [Workflow Transition Graph Spec](./WORKFLOW_TRANSITION_GRAPH_SPEC.md)
 - [Codex Internal Knobs ODEU Map](./CODEX_INTERNAL_KNOBS_ODEU_MAP.md)
+- [Codex Runtime Provider Profile Spec](./CODEX_RUNTIME_PROVIDER_PROFILE_SPEC.md)
+- [Codex Runtime Header And Drawer Spec](./CODEX_RUNTIME_HEADER_DRAWER_SPEC.md)
+- [Composer Runtime Band ODEU Debug Note](./COMPOSER_RUNTIME_BAND_ODEU_DEBUG.md)
