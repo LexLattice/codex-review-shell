@@ -29,6 +29,9 @@ const CODEX_THREAD_LIMIT = 120;
 const CODEX_TRANSCRIPT_ENTRY_LIMIT = 800;
 const CODEX_ANALYTICS_GAP_MS = 2 * 60 * 1000;
 const CODEX_ANALYTICS_TAIL_HASH_LINE_LIMIT = 24;
+const CODEX_SANDBOX_ARTIFACT_NAME = ".codex";
+const CODEX_SANDBOX_ARTIFACT_EXCLUDE_COMMENT =
+  "# codex-review-shell: Codex Linux sandbox may leak a zero-byte bwrap placeholder here.";
 
 const SKIPPED_DIR_NAMES = new Set([
   ".git",
@@ -391,6 +394,102 @@ async function runCommand(params = {}) {
       });
     });
   });
+}
+
+function captureProcess(command, args, options = {}) {
+  const timeoutMs = Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : DEFAULT_COMMAND_TIMEOUT_MS;
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd || root,
+      env: { ...process.env, ...(options.env && typeof options.env === "object" ? options.env : {}) },
+      shell: false,
+      windowsHide: true,
+    });
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      child.kill("SIGTERM");
+      setTimeout(() => {
+        if (!settled) child.kill("SIGKILL");
+      }, 1200);
+    }, timeoutMs);
+    child.stdout.on("data", (chunk) => stdoutChunks.push(Buffer.from(chunk)));
+    child.stderr.on("data", (chunk) => stderrChunks.push(Buffer.from(chunk)));
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      settled = true;
+      reject(error);
+    });
+    child.on("close", (exitCode, signal) => {
+      clearTimeout(timer);
+      settled = true;
+      resolve({
+        exitCode,
+        signal,
+        stdout: Buffer.concat(stdoutChunks).toString("utf8"),
+        stderr: Buffer.concat(stderrChunks).toString("utf8"),
+      });
+    });
+  });
+}
+
+function toGitExcludePatternPath(value) {
+  return String(value || "").split(path.sep).join("/").replace(/^\/+|\/+$/g, "");
+}
+
+async function ensureCodexSandboxArtifactIgnored() {
+  const git = await captureProcess("git", ["rev-parse", "--show-toplevel", "--git-path", "info/exclude"], {
+    cwd: root,
+    timeoutMs: 5000,
+  }).catch((error) => ({ exitCode: 1, stderr: error.message }));
+  if (git.exitCode !== 0) {
+    return {
+      available: false,
+      changed: false,
+      reason: "workspace-is-not-a-git-worktree",
+      error: String(git.stderr || "").trim(),
+    };
+  }
+
+  const lines = String(git.stdout || "").split(/\r?\n/).filter(Boolean);
+  const topLevel = path.resolve(lines[0] || root);
+  const rawExcludePath = lines[1] || ".git/info/exclude";
+  const excludePath = path.isAbsolute(rawExcludePath) ? rawExcludePath : path.resolve(root, rawExcludePath);
+  const relRoot = path.relative(topLevel, root);
+  const relPattern = toGitExcludePatternPath(relRoot);
+  const pattern = relPattern ? `/${relPattern}/${CODEX_SANDBOX_ARTIFACT_NAME}` : `/${CODEX_SANDBOX_ARTIFACT_NAME}`;
+
+  let existing = "";
+  try {
+    existing = await fs.readFile(excludePath, "utf8");
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+
+  const existingLines = existing.split(/\r?\n/).map((line) => line.trim());
+  if (existingLines.includes(pattern)) {
+    return {
+      available: true,
+      changed: false,
+      pattern,
+      excludePath,
+      reason: "already-ignored",
+    };
+  }
+
+  const separator = existing && !existing.endsWith("\n") ? "\n" : "";
+  const addition = `${separator}${existing ? "\n" : ""}${CODEX_SANDBOX_ARTIFACT_EXCLUDE_COMMENT}\n${pattern}\n`;
+  await fs.mkdir(path.dirname(excludePath), { recursive: true });
+  await fs.appendFile(excludePath, addition, "utf8");
+  return {
+    available: true,
+    changed: true,
+    pattern,
+    excludePath,
+    reason: "added-local-git-exclude",
+  };
 }
 
 async function watchStatus() {
@@ -1310,6 +1409,7 @@ async function handleRequest(method, params = {}) {
         listTree: true,
         readFilePreview: true,
         runCommand: true,
+        ensureCodexSandboxArtifactIgnored: true,
         listMatchingFiles: true,
         resolvePath: true,
         watchScaffold: true,
@@ -1324,6 +1424,7 @@ async function handleRequest(method, params = {}) {
   if (method === "listMatchingFiles") return listMatchingFiles(params);
   if (method === "resolvePath") return resolvePathPreview(params);
   if (method === "runCommand") return runCommand(params);
+  if (method === "ensureCodexSandboxArtifactIgnored") return ensureCodexSandboxArtifactIgnored(params);
   if (method === "watchStatus") return watchStatus(params);
   if (method === "listCodexThreads") return listCodexThreads(params);
   if (method === "readCodexThreadTranscript") return readCodexThreadTranscript(params);

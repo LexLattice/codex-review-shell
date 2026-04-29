@@ -1038,6 +1038,19 @@ function ensureWorkspaceBackendManager() {
   });
   workspaceBackends.on("status", (payload) => {
     emitShellEvent({ type: "backend-status", ...payload });
+    const projectId = payload?.session?.projectId || "";
+    if (
+      projectId &&
+      currentProject?.id === projectId &&
+      codexView?.webContents &&
+      !codexView.webContents.isDestroyed()
+    ) {
+      codexView.webContents.send("codex-surface:event", {
+        type: "workspace-status",
+        session: payload.session,
+        at: payload.at || nowIso(),
+      });
+    }
   });
   workspaceBackends.on("agent-event", (payload) => {
     emitShellEvent({ type: "backend-agent-event", ...payload });
@@ -1232,6 +1245,7 @@ function encodeCodexSurfacePayload(project, extra = {}) {
       doctrine: "Codex plane is a work chat. ADEU control plane owns the binding. ChatGPT plane remains the review/world-model thread.",
     },
     codexConnection: extra.codexConnection || null,
+    workspaceStatus: extra.workspaceStatus || null,
     activationEpoch: Number(extra.activationEpoch) || 0,
     initialThreadId: normalizeString(extra.initialThreadId, ""),
     initialThreadSourceHome: normalizeString(extra.initialThreadSourceHome, ""),
@@ -1283,9 +1297,11 @@ async function loadCodexSurface(project, options = {}) {
           workspaceRoot: session.workspaceRoot,
           binaryPath: session.binaryPath,
           codexHome: session.codexHome || "",
+          provider: session.provider || null,
           capabilities: session.capabilities || null,
           activationEpoch: Number(options.activationEpoch) || 0,
         },
+        workspaceStatus: workspaceBackends?.statusForProject(project) || null,
         activationEpoch: Number(options.activationEpoch) || 0,
         initialThreadId: normalizeString(options.initialThreadId, ""),
         initialThreadSourceHome: normalizeString(options.initialThreadSourceHome, ""),
@@ -1297,6 +1313,7 @@ async function loadCodexSurface(project, options = {}) {
         wsUrl: session.wsUrl,
         runtime: session.runtime,
         codexHome: session.codexHome || "",
+        provider: session.provider || null,
         capabilities: session.capabilities || null,
         activationEpoch: Number(options.activationEpoch) || 0,
         remoteAuth: project.surfaceBinding?.codex?.remoteAuth || { mode: "none" },
