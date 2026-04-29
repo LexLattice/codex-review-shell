@@ -413,6 +413,24 @@
 
         <div class="form-grid">
           <label>
+            Codex provider
+            <select id="codexProviderKindInput">
+              <option value="codex_executable">Codex executable</option>
+              <option value="direct_oai" disabled>Direct OpenAI harness (planned)</option>
+            </select>
+          </label>
+          <label>
+            Executable profile
+            <select id="codexProviderFlavorInput">
+              <option value="vanilla">Vanilla Codex</option>
+              <option value="lex_fork">Lex fork</option>
+              <option value="unknown_custom">Custom / unknown</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="form-grid">
+          <label>
             Codex runtime
             <select id="codexRuntimeInput">
               <option value="auto">Auto</option>

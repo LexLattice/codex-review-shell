@@ -183,6 +183,8 @@ const els = {
   wslLinuxPathInput: document.getElementById("wslLinuxPathInput"),
   codexModeInput: document.getElementById("codexModeInput"),
   codexLabelInput: document.getElementById("codexLabelInput"),
+  codexProviderKindInput: document.getElementById("codexProviderKindInput"),
+  codexProviderFlavorInput: document.getElementById("codexProviderFlavorInput"),
   codexRuntimeInput: document.getElementById("codexRuntimeInput"),
   codexBinaryPathInput: document.getElementById("codexBinaryPathInput"),
   codexModelInput: document.getElementById("codexModelInput"),
@@ -2248,6 +2250,10 @@ function openDrawer(mode) {
     surfaceBinding: {
       codex: {
         mode: "managed",
+        provider: {
+          kind: "codex_executable",
+          flavor: "vanilla",
+        },
         runtime: state.defaultCodexRuntime || "auto",
         binaryPath: "codex",
         target: "",
@@ -2300,6 +2306,8 @@ function openDrawer(mode) {
   updateWorkspaceFieldVisibility();
   els.codexModeInput.value = draft.surfaceBinding.codex.mode;
   els.codexLabelInput.value = draft.surfaceBinding.codex.label;
+  els.codexProviderKindInput.value = draft.surfaceBinding.codex.provider?.kind || draft.surfaceBinding.codex.providerKind || "codex_executable";
+  els.codexProviderFlavorInput.value = draft.surfaceBinding.codex.provider?.flavor || draft.surfaceBinding.codex.providerFlavor || "vanilla";
   els.codexRuntimeInput.value = draft.surfaceBinding.codex.runtime || "auto";
   els.codexBinaryPathInput.value = draft.surfaceBinding.codex.binaryPath || "codex";
   els.codexModelInput.value = draft.surfaceBinding.codex.model || "";
@@ -2384,6 +2392,10 @@ function projectFromForm() {
     surfaceBinding: {
       codex: {
         mode: els.codexModeInput.value,
+        provider: {
+          kind: els.codexProviderKindInput.value || "codex_executable",
+          flavor: els.codexProviderFlavorInput.value || "vanilla",
+        },
         runtime: els.codexRuntimeInput.value,
         binaryPath: els.codexBinaryPathInput.value.trim() || "codex",
         target: els.codexTargetInput.value.trim(),
