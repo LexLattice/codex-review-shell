@@ -246,7 +246,24 @@ function buildDescriptor(project, codex, port, options = {}) {
   const workspace = project?.workspace || { kind: "local", localPath: project?.repoPath || process.cwd() };
   const provider = normalizeRuntimeProviderConfig(codex);
   if (provider.kind === "direct_oai") {
-    throw new Error("Direct OpenAI harness provider is not implemented in this shell workspace yet.");
+    return {
+      key: `provider-unavailable:${project?.id || "project"}:direct_oai`,
+      runtime: "direct_oai",
+      wsUrl: "",
+      readyUrl: "",
+      command: "",
+      args: [],
+      cwd: undefined,
+      binaryPath: "",
+      workspaceRoot: workspace.kind === "wsl"
+        ? normalizeString(workspace.linuxPath, project?.repoPath || "")
+        : normalizeString(workspace.localPath, project?.repoPath || process.cwd()),
+      codexHome,
+      provider,
+      envExtras: {},
+      unavailable: true,
+      error: "Direct OpenAI harness provider is not implemented in this shell workspace yet.",
+    };
   }
 
   if (runtime === "wsl") {
@@ -362,6 +379,22 @@ class CodexAppServerManager extends EventEmitter {
   async ensureForProject(project, options = {}) {
     const codex = project?.surfaceBinding?.codex || {};
     const probeDescriptor = buildDescriptor(project, codex, 1, options);
+    if (probeDescriptor.unavailable) {
+      await this.dispose();
+      this.session = {
+        ...probeDescriptor,
+        child: null,
+        status: "unavailable",
+        error: probeDescriptor.error || "Codex runtime provider is unavailable.",
+        logs: [{
+          kind: "status",
+          line: probeDescriptor.error || "Codex runtime provider is unavailable.",
+          at: new Date().toISOString(),
+        }],
+      };
+      this.emitStatus();
+      return this.snapshot();
+    }
     if (this.session && this.session.key === probeDescriptor.key && this.session.status === "ready") {
       return this.snapshot();
     }

@@ -175,6 +175,10 @@ function defaultConfig() {
             model: "",
             reasoningEffort: "",
             label: "Managed Codex lane",
+            provider: {
+              kind: "codex_executable",
+              flavor: "vanilla",
+            },
             remoteAuth: {
               mode: "none",
               tokenFilePath: "",
@@ -256,6 +260,27 @@ function normalizeRemoteAuthConfig(value) {
 function normalizeReasoningEffort(value) {
   const candidate = normalizeString(value, "").toLowerCase();
   return ["low", "medium", "high", "xhigh"].includes(candidate) ? candidate : "";
+}
+
+function normalizeCodexProviderConfig(value) {
+  const raw = isPlainObject(value) ? value : {};
+  const kindCandidate = normalizeString(raw.kind || raw.providerKind || raw.connectionPath, "codex_executable");
+  const kind = ["codex_executable", "direct_oai"].includes(kindCandidate) ? kindCandidate : "codex_executable";
+  const flavorCandidate = normalizeString(
+    isPlainObject(raw.flavor) ? raw.flavor.configuredFlavor : raw.flavor || raw.configuredFlavor || raw.providerFlavor,
+    kind === "codex_executable" ? "vanilla" : "",
+  );
+  const flavor = ["vanilla", "lex_fork", "unknown_custom"].includes(flavorCandidate)
+    ? flavorCandidate
+    : kind === "codex_executable"
+      ? "vanilla"
+      : "";
+  return {
+    kind,
+    flavor,
+    selectedBy: normalizeString(raw.selectedBy, "project_config"),
+    configuredAt: normalizeString(raw.configuredAt, ""),
+  };
 }
 
 function safeRecentThreadLimit(limit = 40) {
@@ -861,6 +886,12 @@ function normalizeProject(input, index = 0) {
         model: normalizeString(rawCodex.model, ""),
         reasoningEffort: normalizeReasoningEffort(rawCodex.reasoningEffort),
         label: normalizeString(rawCodex.label, codexMode === "managed" ? "Managed Codex lane" : "Codex target"),
+        provider: normalizeCodexProviderConfig(rawCodex.provider || {
+          kind: rawCodex.providerKind,
+          flavor: rawCodex.providerFlavor,
+          configuredFlavor: rawCodex.configuredFlavor,
+          connectionPath: rawCodex.connectionPath,
+        }),
         remoteAuth: normalizeRemoteAuthConfig(rawCodex.remoteAuth),
       },
       chatgpt: {

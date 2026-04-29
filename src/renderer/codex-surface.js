@@ -26,6 +26,8 @@ const DEFAULT_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "
 const APPROVAL_POLICY_OPTIONS = ["", "untrusted", "on-failure", "on-request", "never"];
 const SANDBOX_MODE_OPTIONS = ["", "read-only", "workspace-write", "danger-full-access"];
 const SERVICE_TIER_OPTIONS = ["", "fast", "flex"];
+const MODEL_LIST_PAGE_LIMIT = 100;
+const MODEL_LIST_PAGE_SIZE = 100;
 const THOUGHT_ITEM_TYPES = new Set([
   "reasoning",
   "commandExecution",
@@ -1838,15 +1840,25 @@ async function refreshModelList(showErrors = false) {
   try {
     const models = [];
     let cursor = null;
-    for (let page = 0; page < 5; page += 1) {
-      const response = await rpc("model/list", { cursor, limit: 100, includeHidden: false });
+    const seenCursors = new Set();
+    let truncated = false;
+    for (let page = 0; page < MODEL_LIST_PAGE_LIMIT; page += 1) {
+      if (cursor) {
+        if (seenCursors.has(cursor)) throw new Error(`model/list returned a repeated cursor after ${page} page(s).`);
+        seenCursors.add(cursor);
+      }
+      const response = await rpc("model/list", { cursor, limit: MODEL_LIST_PAGE_SIZE, includeHidden: false });
       models.push(...(Array.isArray(response?.data) ? response.data : []));
       cursor = response?.nextCursor || null;
       if (!cursor) break;
+      if (page === MODEL_LIST_PAGE_LIMIT - 1) truncated = true;
     }
     state.models = models;
-    state.modelListStatus = "ready";
-    state.modelListError = "";
+    state.modelListStatus = truncated ? "partial" : "ready";
+    state.modelListError = truncated
+      ? `Model list stopped after ${MODEL_LIST_PAGE_LIMIT} page(s); additional models may be available.`
+      : "";
+    if (truncated && showErrors) addSystemMessage(state.modelListError);
   } catch (error) {
     state.modelListStatus = "failed";
     state.modelListError = error.message;
