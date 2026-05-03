@@ -60,6 +60,9 @@ let localSurfaceServer = null;
 let codexSurfaceSessions = null;
 let threadAnalyticsStore = null;
 let surfaceActivationEpoch = 0;
+const lastSuccessfulCodexThreadByProject = new Map();
+const latestCodexOpenTargetByProject = new Map();
+const latestCodexThreadFailureByProject = new Map();
 
 function nowIso() {
   return new Date().toISOString();
@@ -1061,6 +1064,115 @@ function isStaleSurfaceActivationEpoch(epoch) {
   return Number.isFinite(Number(epoch)) && Number(epoch) > 0 && Number(epoch) !== surfaceActivationEpoch;
 }
 
+const CODEX_THREAD_RESTORE_SUCCESS_STATUSES = new Set(["rendered_stored", "attached_live"]);
+const CODEX_THREAD_RESTORE_IN_FLIGHT_STATUSES = new Set(["requested", "dispatched", "hint", "binding"]);
+
+function codexRestoreTargetTime(target) {
+  const parsed = Date.parse(target?.observedAt || target?.at || "");
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normalizeCodexThreadRestoreTarget(payload = {}, fallback = {}) {
+  const status = normalizeString(payload.status || fallback.status, "hint");
+  const projectId = normalizeString(payload.projectId || fallback.projectId, "");
+  const threadId = normalizeString(payload.threadId || fallback.threadId, "");
+  const sourceHome = normalizeString(payload.sourceHome ?? fallback.sourceHome, "");
+  const sessionFilePath = normalizeString(payload.sessionFilePath ?? fallback.sessionFilePath, "");
+  const title = normalizeString(payload.title || fallback.title || threadId, "");
+  const observedAt = normalizeString(payload.observedAt || payload.at || fallback.observedAt || fallback.at, nowIso());
+  const usableForRestore = Boolean(
+    projectId &&
+    threadId &&
+    (CODEX_THREAD_RESTORE_SUCCESS_STATUSES.has(status) || CODEX_THREAD_RESTORE_IN_FLIGHT_STATUSES.has(status)),
+  );
+  return {
+    projectId,
+    threadId,
+    sourceHome,
+    sessionFilePath,
+    title,
+    status,
+    evidence: normalizeString(payload.evidence || fallback.evidence, ""),
+    errorDescription: normalizeString(payload.errorDescription || payload.error || fallback.errorDescription, ""),
+    activationEpoch: Number(payload.activationEpoch || fallback.activationEpoch) || 0,
+    observedAt,
+    usableForRestore,
+  };
+}
+
+function rememberCodexThreadRestoreTarget(payload = {}) {
+  const target = normalizeCodexThreadRestoreTarget(payload);
+  if (!target.projectId || !target.threadId) return null;
+  if (CODEX_THREAD_RESTORE_SUCCESS_STATUSES.has(target.status) && target.usableForRestore) {
+    lastSuccessfulCodexThreadByProject.set(target.projectId, target);
+    latestCodexOpenTargetByProject.set(target.projectId, target);
+    return target;
+  }
+  if (CODEX_THREAD_RESTORE_IN_FLIGHT_STATUSES.has(target.status) && target.usableForRestore) {
+    latestCodexOpenTargetByProject.set(target.projectId, target);
+    return target;
+  }
+  if (target.status === "failed") {
+    latestCodexThreadFailureByProject.set(target.projectId, target);
+    const latestOpen = latestCodexOpenTargetByProject.get(target.projectId);
+    if (
+      latestOpen?.threadId === target.threadId &&
+      (!target.activationEpoch || !latestOpen.activationEpoch || target.activationEpoch >= latestOpen.activationEpoch)
+    ) {
+      latestCodexOpenTargetByProject.delete(target.projectId);
+    }
+  }
+  return target;
+}
+
+function codexRestoreTargetFromBinding(project) {
+  const binding = projectActivationBinding(project);
+  const ref = binding?.codexThreadRef || {};
+  const threadId = normalizeString(ref.threadId, "");
+  if (!project?.id || !threadId) return null;
+  return normalizeCodexThreadRestoreTarget({
+    projectId: project.id,
+    threadId,
+    sourceHome: ref.sourceHome,
+    sessionFilePath: ref.sessionFilePath,
+    title: ref.titleSnapshot,
+    status: "binding",
+    evidence: "project-lane-binding",
+  });
+}
+
+function codexRestoreTargetFromHint(project, hint = {}) {
+  if (!project?.id || !isPlainObject(hint)) return null;
+  const target = normalizeCodexThreadRestoreTarget({
+    projectId: hint.projectId || project.id,
+    threadId: hint.threadId,
+    sourceHome: hint.sourceHome,
+    sessionFilePath: hint.sessionFilePath,
+    title: hint.title,
+    status: "hint",
+    evidence: "renderer-restore-hint",
+  });
+  return target.usableForRestore ? target : null;
+}
+
+function chooseCodexThreadRestoreTarget(project, hint = {}) {
+  const projectId = normalizeString(project?.id, "");
+  if (!projectId) return null;
+  const lastSuccess = lastSuccessfulCodexThreadByProject.get(projectId) || null;
+  const latestOpen = latestCodexOpenTargetByProject.get(projectId) || null;
+  if (
+    latestOpen?.usableForRestore &&
+    CODEX_THREAD_RESTORE_IN_FLIGHT_STATUSES.has(latestOpen.status) &&
+    (!lastSuccess || codexRestoreTargetTime(latestOpen) > codexRestoreTargetTime(lastSuccess))
+  ) {
+    return latestOpen;
+  }
+  if (lastSuccess?.usableForRestore) return lastSuccess;
+  const hinted = codexRestoreTargetFromHint(project, hint);
+  if (hinted) return hinted;
+  return codexRestoreTargetFromBinding(project);
+}
+
 function ensureWorkspaceBackendManager() {
   if (workspaceBackends) return workspaceBackends;
   workspaceBackends = new WorkspaceBackendManager({
@@ -1175,12 +1287,12 @@ function findCodexSurfaceSessionForRequest(requestKey) {
   return null;
 }
 
-async function disposeCodexSurfaceSession() {
+async function disposeCodexSurfaceSession(reason = "Codex surface reloaded.") {
   if (!codexSurfaceSessions || !codexView?.webContents) return;
   const session = codexSurfaceSessions.get(codexView.webContents.id);
   if (!session) return;
   codexSurfaceSessions.delete(codexView.webContents.id);
-  await session.dispose({ silent: true, reason: "Codex surface reloaded." });
+  await session.dispose({ silent: true, reason });
 }
 
 async function attachProjectWorkspace(project, options = {}) {
@@ -1438,12 +1550,24 @@ async function requestCodexThreadOpen(projectId, threadId, sourceHome = "", sess
     projectId: project.id,
     at: nowIso(),
   };
+  rememberCodexThreadRestoreTarget({
+    ...openEventPayload,
+    status: "requested",
+    activationEpoch: Number(activeCodexSurfaceConnection?.activationEpoch) || 0,
+    evidence: "codex-select-thread",
+  });
 
   if (needsSurfaceReload) {
     if (project.surfaceBinding?.codex?.mode !== "managed") {
       return { ok: false, error: "Codex surface is not in managed mode." };
     }
     const activationEpoch = nextSurfaceActivationEpoch();
+    rememberCodexThreadRestoreTarget({
+      ...openEventPayload,
+      status: "requested",
+      activationEpoch,
+      evidence: "codex-select-thread-surface-reload",
+    });
     const targetContents = codexView.webContents;
     const dispatchAfterLoad = new Promise((resolve) => {
       let settled = false;
@@ -1503,6 +1627,62 @@ async function requestCodexThreadOpen(projectId, threadId, sourceHome = "", sess
     threadId: nextThreadId,
     sourceHome: requestedHome || session?.codexHome || "",
     warning: sessionStartupError,
+  };
+}
+
+async function reloadCodexRuntime(options = {}) {
+  const requestedProjectId = normalizeString(options?.projectId || currentProject?.id, "");
+  const project = await getProjectById(requestedProjectId);
+  currentProject = project;
+  const restoreTarget = chooseCodexThreadRestoreTarget(project, options?.restoreTarget || options) || null;
+  const activationEpoch = nextSurfaceActivationEpoch();
+  const mode = normalizeString(project?.surfaceBinding?.codex?.mode, "fallback");
+
+  emitShellEvent({
+    type: "codex-runtime-reload-started",
+    projectId: project.id,
+    threadId: restoreTarget?.threadId || "",
+    at: nowIso(),
+  });
+
+  await disposeCodexSurfaceSession("Codex runtime restarted.");
+  activeCodexSurfaceConnection = null;
+
+  if (mode !== "managed") {
+    await loadCodexSurface(project, {
+      activationEpoch,
+      initialThreadId: restoreTarget?.threadId || "",
+      initialThreadSourceHome: restoreTarget?.sourceHome || "",
+      initialThreadSessionFilePath: restoreTarget?.sessionFilePath || "",
+      initialThreadTitle: restoreTarget?.title || "",
+    });
+    return {
+      ok: true,
+      restarted: false,
+      reason: `Codex mode ${mode || "fallback"} does not manage a local executable.`,
+      threadId: restoreTarget?.threadId || "",
+      activationEpoch,
+    };
+  }
+
+  if (codexAppServer) await codexAppServer.dispose();
+  await loadCodexSurface(project, {
+    activationEpoch,
+    codexHome: restoreTarget?.sourceHome || "",
+    initialThreadId: restoreTarget?.threadId || "",
+    initialThreadSourceHome: restoreTarget?.sourceHome || "",
+    initialThreadSessionFilePath: restoreTarget?.sessionFilePath || "",
+    initialThreadTitle: restoreTarget?.title || "",
+  });
+
+  return {
+    ok: true,
+    restarted: true,
+    threadId: restoreTarget?.threadId || "",
+    sourceHome: restoreTarget?.sourceHome || "",
+    sessionFilePath: restoreTarget?.sessionFilePath || "",
+    title: restoreTarget?.title || "",
+    activationEpoch,
   };
 }
 
@@ -2826,14 +3006,14 @@ ipcMain.handle("surface:set-visible", async (_event, visible) => {
 });
 
 ipcMain.handle("surface:reload", async (_event, surfaceName) => {
-  if (surfaceName === "codex" && currentProject) {
-    await loadCodexSurface(currentProject);
-    return true;
-  }
   const view = surfaceName === "chatgpt" ? chatgptView : codexView;
   if (!view || view.webContents.isDestroyed()) return false;
   view.webContents.reload();
   return true;
+});
+
+ipcMain.handle("codex:reload-runtime", async (_event, options) => {
+  return reloadCodexRuntime(options || {});
 });
 
 ipcMain.handle("codex-surface:connect", async (event, payload) => {
@@ -2870,8 +3050,8 @@ ipcMain.handle("codex-surface:respond", async (event, payload) => {
 });
 
 ipcMain.handle("codex-surface:thread-state", async (event, payload) => {
-  const session = codexSurfaceSessionFor(event.sender);
   if (isStaleSurfaceActivationEpoch(payload?.activationEpoch)) return { ok: false, stale: true };
+  const session = codexSurfaceSessionFor(event.sender);
   const state = {
     surface: "codex",
     type: "thread-state",
@@ -2887,6 +3067,7 @@ ipcMain.handle("codex-surface:thread-state", async (event, payload) => {
     connectionId: session.connectionId || "",
     at: nowIso(),
   };
+  rememberCodexThreadRestoreTarget(state);
   emitToShell("surface:event", state);
   return { ok: true };
 });

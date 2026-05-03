@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld("workspaceShell", {
   setSurfaceLayout: (bounds) => ipcRenderer.invoke("surface:set-layout", bounds),
   setSurfaceVisible: (visible) => ipcRenderer.invoke("surface:set-visible", visible),
   reloadSurface: (surfaceName) => ipcRenderer.invoke("surface:reload", surfaceName),
+  reloadCodexRuntime: (options = {}) => ipcRenderer.invoke("codex:reload-runtime", options),
   openSurfaceExternal: (surfaceName) => ipcRenderer.invoke("surface:open-external", surfaceName),
   copyText: (text) => ipcRenderer.invoke("clipboard:write-text", text),
   listWorkTree: (projectId, relPath) => ipcRenderer.invoke("worktree:list", { projectId, relPath }),

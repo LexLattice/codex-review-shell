@@ -104,6 +104,12 @@ const state = {
   historyKey: "",
   historyData: null,
   loadedUserMessagePages: 1,
+  historyWindow: {
+    logicalThreadKey: "",
+    mode: "tail",
+    loadedUserMessagePages: 1,
+    renderRevision: 0,
+  },
   isBulkRendering: false,
   removeBridgeListener: null,
 };
@@ -1659,6 +1665,242 @@ function renderTypedContent(container, text) {
   }
 }
 
+function appendTypedText(parent, text) {
+  if (!text) return;
+  const span = document.createElement("span");
+  renderTypedContent(span, text);
+  parent.appendChild(span);
+}
+
+function safeMarkdownHref(rawHref) {
+  try {
+    const parsed = new URL(String(rawHref || ""));
+    return ["http:", "https:"].includes(parsed.protocol) ? parsed.toString() : "";
+  } catch {
+    return "";
+  }
+}
+
+function appendInlineMarkdown(parent, text) {
+  const source = String(text || "");
+  const pattern = /(\[[^\]\n]{1,240}\]\([^) \n]{1,1000}\)|`([^`\n]+)`|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|(->|=>))/g;
+  let cursor = 0;
+  for (const match of source.matchAll(pattern)) {
+    if (match.index > cursor) appendTypedText(parent, source.slice(cursor, match.index));
+    const token = match[0];
+    const linkMatch = token.match(/^\[([^\]\n]+)\]\(([^) \n]+)\)$/);
+    if (linkMatch) {
+      const href = safeMarkdownHref(linkMatch[2]);
+      if (href) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "typed-token typed-token-url assistant-md-link";
+        button.textContent = linkMatch[1];
+        button.title = `Open ${href}`;
+        button.addEventListener("click", () => openTypedUrl(href));
+        parent.appendChild(button);
+      } else {
+        const span = document.createElement("span");
+        span.className = "assistant-md-link-blocked";
+        span.textContent = linkMatch[1];
+        span.title = "Unsupported link protocol";
+        parent.appendChild(span);
+      }
+    } else if (token.startsWith("`")) {
+      const code = document.createElement("code");
+      code.className = "assistant-md-inline-code";
+      code.textContent = token.slice(1, -1);
+      parent.appendChild(code);
+    } else if (token.startsWith("**")) {
+      const strong = document.createElement("strong");
+      strong.className = "assistant-md-strong";
+      appendTypedText(strong, token.slice(2, -2));
+      parent.appendChild(strong);
+    } else if (token.startsWith("*")) {
+      const em = document.createElement("em");
+      em.className = "assistant-md-emphasis";
+      appendTypedText(em, token.slice(1, -1));
+      parent.appendChild(em);
+    } else {
+      const arrow = document.createElement("span");
+      arrow.className = "assistant-md-arrow";
+      arrow.textContent = token;
+      parent.appendChild(arrow);
+    }
+    cursor = match.index + token.length;
+  }
+  if (cursor < source.length) appendTypedText(parent, source.slice(cursor));
+}
+
+function createMarkdownLineBlock(tagName, className, text) {
+  const block = document.createElement(tagName);
+  block.className = className;
+  appendInlineMarkdown(block, text);
+  return block;
+}
+
+function isMarkdownBlockStart(line) {
+  const trimmed = String(line || "").trim();
+  return Boolean(
+    !trimmed ||
+    /^```/.test(trimmed) ||
+    /^#{1,4}\s+/.test(trimmed) ||
+    /^>\s?/.test(trimmed) ||
+    /^---+$/.test(trimmed) ||
+    /^[-*]\s+/.test(trimmed) ||
+    /^\d+\.\s+/.test(trimmed) ||
+    /^(->|=>)\s+/.test(trimmed)
+  );
+}
+
+function appendMarkdownList(container, lines, ordered) {
+  const list = document.createElement(ordered ? "ol" : "ul");
+  list.className = "assistant-md-list";
+  for (const line of lines) {
+    const raw = ordered
+      ? String(line || "").replace(/^\s*\d+\.\s+/, "")
+      : String(line || "").replace(/^\s*[-*]\s+/, "");
+    const taskMatch = raw.match(/^\[(x|X| )\]\s+([\s\S]*)$/);
+    const item = document.createElement("li");
+    const appendListText = (target, value) => {
+      const fragments = String(value || "").split("\n");
+      fragments.forEach((fragment, index) => {
+        if (index) target.appendChild(document.createElement("br"));
+        appendInlineMarkdown(target, fragment);
+      });
+    };
+    if (taskMatch) {
+      const marker = document.createElement("span");
+      marker.className = `assistant-md-task-marker${taskMatch[1].trim() ? " done" : ""}`;
+      marker.textContent = taskMatch[1].trim() ? "✓" : "□";
+      item.appendChild(marker);
+      appendListText(item, taskMatch[2]);
+    } else {
+      appendListText(item, raw);
+    }
+    list.appendChild(item);
+  }
+  container.appendChild(list);
+}
+
+function renderFinalAssistantContent(container, text) {
+  container.textContent = "";
+  container.classList.add("assistant-markdown");
+  const source = String(text || "").replace(/\r\n/g, "\n");
+  if (!source.trim()) return;
+  const lines = source.split("\n");
+  for (let index = 0; index < lines.length;) {
+    const line = lines[index];
+    const trimmed = line.trim();
+    if (!trimmed) {
+      index += 1;
+      continue;
+    }
+
+    const fence = trimmed.match(/^```([A-Za-z0-9_-]+)?\s*$/);
+    if (fence) {
+      const language = fence[1] || "";
+      const codeLines = [];
+      index += 1;
+      while (index < lines.length && !lines[index].trim().startsWith("```")) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+      if (index < lines.length) index += 1;
+      const block = document.createElement("figure");
+      block.className = "assistant-md-codeblock";
+      if (language) {
+        const caption = document.createElement("figcaption");
+        caption.textContent = language;
+        block.appendChild(caption);
+      }
+      const pre = document.createElement("pre");
+      pre.textContent = codeLines.join("\n");
+      block.appendChild(pre);
+      container.appendChild(block);
+      continue;
+    }
+
+    const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      const level = Math.min(4, heading[1].length);
+      container.appendChild(createMarkdownLineBlock(`h${level}`, `assistant-md-heading level-${level}`, heading[2]));
+      index += 1;
+      continue;
+    }
+
+    if (/^---+$/.test(trimmed)) {
+      const divider = document.createElement("hr");
+      divider.className = "assistant-md-divider";
+      container.appendChild(divider);
+      index += 1;
+      continue;
+    }
+
+    if (/^>\s?/.test(trimmed)) {
+      const quoteLines = [];
+      while (index < lines.length && /^>\s?/.test(lines[index].trim())) {
+        quoteLines.push(lines[index].trim().replace(/^>\s?/, ""));
+        index += 1;
+      }
+      container.appendChild(createMarkdownLineBlock("blockquote", "assistant-md-quote", quoteLines.join("\n")));
+      continue;
+    }
+
+    if (/^\d+\.\s+/.test(trimmed) || /^[-*]\s+/.test(trimmed)) {
+      const ordered = /^\d+\.\s+/.test(trimmed);
+      const listLines = [];
+      while (index < lines.length) {
+        const nextLine = lines[index];
+        const nextTrimmed = lines[index].trim();
+        const isNextItem = ordered ? /^\d+\.\s+/.test(nextTrimmed) : /^[-*]\s+/.test(nextTrimmed);
+        if (isNextItem) {
+          listLines.push(nextLine);
+          index += 1;
+          continue;
+        }
+        if (listLines.length && /^\s{2,}\S/.test(nextLine)) {
+          listLines[listLines.length - 1] = `${listLines[listLines.length - 1]}\n${nextLine.trim()}`;
+          index += 1;
+          continue;
+        }
+        if (!nextTrimmed) {
+          index += 1;
+          break;
+        }
+        break;
+      }
+      if (!listLines.length) {
+        index += 1;
+      }
+      appendMarkdownList(container, listLines, ordered);
+      continue;
+    }
+
+    const chain = trimmed.match(/^(->|=>)\s*(.*)$/);
+    if (chain) {
+      const block = document.createElement("p");
+      block.className = "assistant-md-chain";
+      const arrow = document.createElement("span");
+      arrow.className = "assistant-md-arrow";
+      arrow.textContent = chain[1];
+      block.append(arrow, document.createTextNode(" "));
+      appendInlineMarkdown(block, chain[2]);
+      container.appendChild(block);
+      index += 1;
+      continue;
+    }
+
+    const paragraphLines = [line];
+    index += 1;
+    while (index < lines.length && !isMarkdownBlockStart(lines[index])) {
+      paragraphLines.push(lines[index]);
+      index += 1;
+    }
+    container.appendChild(createMarkdownLineBlock("p", "assistant-md-paragraph", paragraphLines.join("\n")));
+  }
+}
+
 function ensureMessage(id, role, title = "") {
   if (state.itemMap.has(id)) return state.itemMap.get(id);
   const article = document.createElement("article");
@@ -1677,7 +1919,12 @@ function setMessageText(id, role, text, title = "") {
   bubble.dataset.rawText = text || "";
   bubble.dataset.typedRendered = "true";
   bubble.dataset.streamingPlain = "false";
-  renderTypedContent(bubble, text || "");
+  if (role === "assistant") {
+    renderFinalAssistantContent(bubble, text || "");
+  } else {
+    bubble.classList.remove("assistant-markdown");
+    renderTypedContent(bubble, text || "");
+  }
   configureUserMessagePreview(node, role);
   maybeAutoScrollBottom();
 }
@@ -1691,6 +1938,7 @@ function appendMessageText(id, role, delta, title = "") {
   bubble.dataset.rawText = next;
   bubble.dataset.typedRendered = "false";
   if (bubble.dataset.streamingPlain !== "true") {
+    bubble.classList.remove("assistant-markdown");
     bubble.textContent = previous;
     bubble.dataset.streamingPlain = "true";
   }
@@ -1707,15 +1955,21 @@ function finalizeMessageTypedContent(id) {
   bubble.dataset.rawText = text;
   bubble.dataset.typedRendered = "true";
   bubble.dataset.streamingPlain = "false";
-  renderTypedContent(bubble, text);
-  configureUserMessagePreview(node, node.classList.contains("user") ? "user" : node.classList.contains("assistant") ? "assistant" : "system");
+  const role = node.classList.contains("user") ? "user" : node.classList.contains("assistant") ? "assistant" : "system";
+  if (role === "assistant") {
+    renderFinalAssistantContent(bubble, text);
+  } else {
+    bubble.classList.remove("assistant-markdown");
+    renderTypedContent(bubble, text);
+  }
+  configureUserMessagePreview(node, role);
 }
 
 function addSystemMessage(text) {
   setMessageText(`system_${Date.now()}_${Math.random().toString(16).slice(2)}`, "system", text, "System");
 }
 
-function clearRenderedThreadState() {
+function clearRenderedDomState() {
   els.transcript.innerHTML = "";
   state.itemMap.clear();
   state.codexItemMap.clear();
@@ -1726,10 +1980,18 @@ function clearRenderedThreadState() {
   }
   state.pendingThoughtRenderMap.clear();
   state.finalMessageByTurnKey.clear();
+}
+
+function resetThreadSessionState() {
   state.turnActivityMap.clear();
   state.turnPromptMap.clear();
   state.turnRetryCountMap.clear();
   state.emptyTurnRetrying.clear();
+}
+
+function clearRenderedThreadState(options = {}) {
+  clearRenderedDomState();
+  if (options.resetSession !== false) resetThreadSessionState();
 }
 
 function openThreadFromEvent(event) {
@@ -2020,6 +2282,76 @@ function rerenderCurrentHistory(options = {}) {
   }
 }
 
+function logicalHistoryKey(threadId = "") {
+  return `thread:${String(threadId || state.threadId || "").trim()}`;
+}
+
+function ensureHistoryWindow(logicalThreadKey, options = {}) {
+  const key = String(logicalThreadKey || "").trim();
+  if (!key) return state.historyWindow;
+  if (state.historyWindow.logicalThreadKey !== key) {
+    state.historyWindow = {
+      logicalThreadKey: key,
+      mode: "tail",
+      loadedUserMessagePages: 1,
+      renderRevision: state.historyWindow.renderRevision + 1,
+    };
+    state.loadedUserMessagePages = 1;
+    return state.historyWindow;
+  }
+  if (!options.keepPagination && options.resetWindow) {
+    state.historyWindow.mode = "tail";
+    state.historyWindow.loadedUserMessagePages = 1;
+    state.historyWindow.renderRevision += 1;
+  }
+  state.loadedUserMessagePages = state.historyWindow.loadedUserMessagePages;
+  return state.historyWindow;
+}
+
+function visibleUserMessageCount(totalUserMessages) {
+  const total = Math.max(0, Number(totalUserMessages) || 0);
+  if (!total) return 0;
+  if (state.historyWindow.mode === "all") return total;
+  return Math.min(total, Math.max(1, state.historyWindow.loadedUserMessagePages) * USER_MESSAGE_PAGE_SIZE);
+}
+
+async function refreshCurrentHistorySource() {
+  const currentThreadId = String(state.threadId || "").trim();
+  if (!currentThreadId) return;
+  if (state.connected && (hasCapability("threads", "canRead") || hasCapability("threads", "canResume"))) {
+    const result = await readThreadById(currentThreadId);
+    if (String(state.threadId || "") !== currentThreadId || !result?.thread) return;
+    state.historyKind = "thread";
+    state.historyKey = logicalHistoryKey(currentThreadId);
+    state.historyData = result.thread;
+    return;
+  }
+  if (state.historyKind === "stored" && state.historyData?.snapshot && bridge?.readStoredThreadTranscript) {
+    const snapshot = await readStoredThreadTranscript(currentThreadId, state.sourceHome, state.sessionFilePath);
+    if (String(state.threadId || "") !== currentThreadId || !snapshot?.entries) return;
+    state.historyData = { snapshot, threadId: currentThreadId };
+  }
+}
+
+async function expandHistoryWindow(mode = "expanded") {
+  if (mode === "all") {
+    state.historyWindow.mode = "all";
+  } else {
+    state.historyWindow.mode = "expanded";
+    state.historyWindow.loadedUserMessagePages += 1;
+  }
+  state.loadedUserMessagePages = state.historyWindow.loadedUserMessagePages;
+  state.historyWindow.renderRevision += 1;
+  let refreshError = "";
+  try {
+    await refreshCurrentHistorySource();
+  } catch (error) {
+    refreshError = error.message;
+  }
+  rerenderCurrentHistory({ preserveViewport: true, resetSession: false });
+  if (refreshError) addSystemMessage(`History refresh before expansion failed; showing newest local transcript: ${refreshError}`);
+}
+
 function renderLoadMoreControl(hiddenUserMessageCount) {
   if (!Number.isFinite(hiddenUserMessageCount) || hiddenUserMessageCount <= 0) return;
   const loadCount = Math.min(USER_MESSAGE_PAGE_SIZE, hiddenUserMessageCount);
@@ -2032,11 +2364,16 @@ function renderLoadMoreControl(hiddenUserMessageCount) {
   button.type = "button";
   button.className = "secondary transcript-load-more-button";
   button.textContent = `Load ${loadCount} more`;
-  button.addEventListener("click", () => {
-    state.loadedUserMessagePages += 1;
-    rerenderCurrentHistory({ preserveViewport: true });
-  });
-  wrapper.append(label, button);
+  button.addEventListener("click", () => expandHistoryWindow("expanded"));
+  const loadAllButton = document.createElement("button");
+  loadAllButton.type = "button";
+  loadAllButton.className = "secondary transcript-load-more-button";
+  loadAllButton.textContent = "Load all";
+  loadAllButton.addEventListener("click", () => expandHistoryWindow("all"));
+  const actions = document.createElement("span");
+  actions.className = "transcript-load-more-actions";
+  actions.append(button, loadAllButton);
+  wrapper.append(label, actions);
   els.transcript.appendChild(wrapper);
 }
 
@@ -2362,10 +2699,8 @@ async function readStoredThreadTranscript(threadId, sourceHome = "", sessionFile
 }
 
 function renderStoredTranscript(snapshot, threadId, options = {}) {
-  const historyKey = `stored:${threadId}`;
-  if (!options.keepPagination && state.historyKey !== historyKey) {
-    state.loadedUserMessagePages = 1;
-  }
+  const historyKey = logicalHistoryKey(threadId);
+  ensureHistoryWindow(historyKey, options);
   state.historyKind = "stored";
   state.historyKey = historyKey;
   state.historyData = { snapshot, threadId };
@@ -2374,7 +2709,7 @@ function renderStoredTranscript(snapshot, threadId, options = {}) {
   const previousScrollHeight = options.preserveViewport ? els.transcript.scrollHeight : 0;
 
   state.isBulkRendering = true;
-  clearRenderedThreadState();
+  clearRenderedThreadState({ resetSession: options.resetSession !== false });
   state.threadId = threadId;
   state.liveAttached = false;
   const title = String(snapshot?.title || "Stored transcript");
@@ -2385,9 +2720,7 @@ function renderStoredTranscript(snapshot, threadId, options = {}) {
     if (allEntries[index]?.role === "user") userEntryIndices.push(index);
   }
   const totalUserMessages = userEntryIndices.length;
-  const visibleUserMessages = totalUserMessages
-    ? Math.min(totalUserMessages, Math.max(1, state.loadedUserMessagePages) * USER_MESSAGE_PAGE_SIZE)
-    : 0;
+  const visibleUserMessages = visibleUserMessageCount(totalUserMessages);
   const hiddenUserMessages = Math.max(0, totalUserMessages - visibleUserMessages);
   const startEntryIndex = totalUserMessages && hiddenUserMessages > 0
     ? userEntryIndices[Math.max(0, totalUserMessages - visibleUserMessages)] ?? 0
@@ -2571,6 +2904,19 @@ async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "",
     if (openRequestId !== state.openRequestId) return;
     const message = String(error?.message || "");
     if (message.toLowerCase().includes("not connected yet")) {
+      if (renderedStored) {
+        addSystemMessage(`Stored transcript rendered. Live attach unavailable: ${message}`);
+        await reportThreadState("failed", {
+          threadId: requestedThreadId,
+          sourceHome: state.sourceHome,
+          sessionFilePath: state.sessionFilePath,
+          title: state.threadTitle || titleHint || payloadTitle || requestedThreadId,
+          evidence: "stored-render-live-unavailable",
+          errorDescription: message,
+        });
+        setComposerEnabled(false, "Stored transcript rendered. Live Codex attach is unavailable.");
+        return;
+      }
       setComposerEnabled(false, "Connecting live Codex session for this thread…");
       return;
     }
@@ -2725,9 +3071,45 @@ function positionThoughtProcessNode(turnKey, node) {
   }
 }
 
+function normalizeThoughtItemBody(item) {
+  return String(thoughtItemBody(item) || "").trim();
+}
+
+function isEmptyThoughtSentinel(text) {
+  const normalized = String(text || "").trim().toLowerCase();
+  return !normalized || normalized === "no reasoning text.";
+}
+
+function shouldRenderThoughtItem(item) {
+  if (!item) return false;
+  if (isToolLikeThoughtItem(item)) return true;
+  const body = normalizeThoughtItemBody(item);
+  if (item.type === "reasoning" || isThoughtAssistantMessageItem(item)) return !isEmptyThoughtSentinel(body);
+  return !isEmptyThoughtSentinel(body);
+}
+
+function projectThoughtItemsForRender(thoughtItems) {
+  const visible = Array.isArray(thoughtItems) ? thoughtItems.filter(shouldRenderThoughtItem) : [];
+  return {
+    reasoningItems: visible.filter((item) => item?.type === "reasoning" || isThoughtAssistantMessageItem(item)),
+    toolItems: visible.filter(isToolLikeThoughtItem),
+    otherItems: visible.filter((item) =>
+      item?.type !== "reasoning" && !isThoughtAssistantMessageItem(item) && !isToolLikeThoughtItem(item)),
+    visibleCount: visible.length,
+  };
+}
+
 function renderThoughtProcess(turnKey, thoughtItems, options = {}) {
-  if (!Array.isArray(thoughtItems) || !thoughtItems.length) return;
   const messageId = thoughtMessageId(turnKey);
+  const projection = projectThoughtItemsForRender(thoughtItems);
+  if (!projection.visibleCount) {
+    const existing = state.itemMap.get(messageId);
+    if (existing) {
+      existing.remove();
+      state.itemMap.delete(messageId);
+    }
+    return;
+  }
   const node = ensureMessage(messageId, "system", "Thought process");
   positionThoughtProcessNode(turnKey, node);
   const bubble = node.querySelector(".bubble");
@@ -2737,40 +3119,35 @@ function renderThoughtProcess(turnKey, thoughtItems, options = {}) {
   root.className = "thought-process";
   if (options.open) root.open = true;
   const summary = document.createElement("summary");
-  summary.textContent = `Thought process (${thoughtItems.length})`;
+  summary.textContent = `Thought process (${projection.visibleCount})`;
   root.appendChild(summary);
 
   const body = document.createElement("div");
   body.className = "thought-body";
 
-  const reasoningItems = thoughtItems.filter((item) => item?.type === "reasoning" || isThoughtAssistantMessageItem(item));
-  const toolItems = thoughtItems.filter(isToolLikeThoughtItem);
-  const otherItems = thoughtItems.filter((item) =>
-    item?.type !== "reasoning" && !isThoughtAssistantMessageItem(item) && !isToolLikeThoughtItem(item));
-
-  for (const item of reasoningItems) {
+  for (const item of projection.reasoningItems) {
     const block = document.createElement("div");
     block.className = "thought-reasoning";
-    renderTypedContent(block, thoughtItemBody(item) || "No reasoning text.");
+    renderTypedContent(block, normalizeThoughtItemBody(item));
     body.appendChild(block);
   }
 
-  if (toolItems.length) {
+  if (projection.toolItems.length) {
     const toolsRoot = document.createElement("details");
     toolsRoot.className = "thought-tools";
     const toolsSummary = document.createElement("summary");
-    toolsSummary.textContent = `Shell / tool calls (${toolItems.length})`;
+    toolsSummary.textContent = `Shell / tool calls (${projection.toolItems.length})`;
     toolsRoot.appendChild(toolsSummary);
     const toolsList = document.createElement("div");
     toolsList.className = "thought-tools-list";
-    for (const item of toolItems) {
+    for (const item of projection.toolItems) {
       const toolDetail = document.createElement("details");
       toolDetail.className = "thought-tool";
       const toolSummary = document.createElement("summary");
       toolSummary.textContent = thoughtItemLabel(item);
       const toolBody = document.createElement("pre");
       toolBody.className = "thought-content";
-      renderTypedContent(toolBody, thoughtItemBody(item) || "No details.");
+      renderTypedContent(toolBody, normalizeThoughtItemBody(item) || "No details.");
       toolDetail.append(toolSummary, toolBody);
       toolsList.appendChild(toolDetail);
     }
@@ -2778,14 +3155,14 @@ function renderThoughtProcess(turnKey, thoughtItems, options = {}) {
     body.appendChild(toolsRoot);
   }
 
-  for (const item of otherItems) {
+  for (const item of projection.otherItems) {
     const detail = document.createElement("details");
     detail.className = "thought-tool";
     const title = document.createElement("summary");
     title.textContent = thoughtItemLabel(item);
     const content = document.createElement("pre");
     content.className = "thought-content";
-    renderTypedContent(content, thoughtItemBody(item) || "No details.");
+    renderTypedContent(content, normalizeThoughtItemBody(item) || "No details.");
     detail.append(title, content);
     body.appendChild(detail);
   }
@@ -2968,10 +3345,8 @@ function renderItem(item) {
 }
 
 function renderThreadHistory(thread, options = {}) {
-  const historyKey = `thread:${thread?.id || state.threadId || ""}`;
-  if (!options.keepPagination && state.historyKey !== historyKey) {
-    state.loadedUserMessagePages = 1;
-  }
+  const historyKey = logicalHistoryKey(thread?.id || state.threadId || "");
+  ensureHistoryWindow(historyKey, options);
   state.historyKind = "thread";
   state.historyKey = historyKey;
   state.historyData = thread;
@@ -2980,7 +3355,7 @@ function renderThreadHistory(thread, options = {}) {
   const previousScrollHeight = options.preserveViewport ? els.transcript.scrollHeight : 0;
 
   state.isBulkRendering = true;
-  clearRenderedThreadState();
+  clearRenderedThreadState({ resetSession: options.resetSession !== false });
   const allTurns = Array.isArray(thread?.turns) ? thread.turns : [];
   const userMessageTurnIndices = [];
   for (let index = 0; index < allTurns.length; index += 1) {
@@ -2989,9 +3364,7 @@ function renderThreadHistory(thread, options = {}) {
     }
   }
   const totalUserMessages = userMessageTurnIndices.length;
-  const visibleUserMessages = totalUserMessages
-    ? Math.min(totalUserMessages, Math.max(1, state.loadedUserMessagePages) * USER_MESSAGE_PAGE_SIZE)
-    : 0;
+  const visibleUserMessages = visibleUserMessageCount(totalUserMessages);
   const hiddenUserMessages = Math.max(0, totalUserMessages - visibleUserMessages);
   const startTurnIndex = totalUserMessages && hiddenUserMessages > 0
     ? userMessageTurnIndices[Math.max(0, totalUserMessages - visibleUserMessages)] ?? 0
