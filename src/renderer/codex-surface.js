@@ -1760,16 +1760,23 @@ function appendMarkdownList(container, lines, ordered) {
     const raw = ordered
       ? String(line || "").replace(/^\s*\d+\.\s+/, "")
       : String(line || "").replace(/^\s*[-*]\s+/, "");
-    const taskMatch = raw.match(/^\[(x|X| )\]\s+(.*)$/);
+    const taskMatch = raw.match(/^\[(x|X| )\]\s+([\s\S]*)$/);
     const item = document.createElement("li");
+    const appendListText = (target, value) => {
+      const fragments = String(value || "").split("\n");
+      fragments.forEach((fragment, index) => {
+        if (index) target.appendChild(document.createElement("br"));
+        appendInlineMarkdown(target, fragment);
+      });
+    };
     if (taskMatch) {
       const marker = document.createElement("span");
       marker.className = `assistant-md-task-marker${taskMatch[1].trim() ? " done" : ""}`;
       marker.textContent = taskMatch[1].trim() ? "✓" : "□";
       item.appendChild(marker);
-      appendInlineMarkdown(item, taskMatch[2]);
+      appendListText(item, taskMatch[2]);
     } else {
-      appendInlineMarkdown(item, raw);
+      appendListText(item, raw);
     }
     list.appendChild(item);
   }
@@ -1816,8 +1823,8 @@ function renderFinalAssistantContent(container, text) {
 
     const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
     if (heading) {
-      const level = Math.min(4, heading[1].length + 1);
-      container.appendChild(createMarkdownLineBlock(`h${level}`, `assistant-md-heading level-${heading[1].length}`, heading[2]));
+      const level = Math.min(4, heading[1].length);
+      container.appendChild(createMarkdownLineBlock(`h${level}`, `assistant-md-heading level-${level}`, heading[2]));
       index += 1;
       continue;
     }
@@ -1844,9 +1851,26 @@ function renderFinalAssistantContent(container, text) {
       const ordered = /^\d+\.\s+/.test(trimmed);
       const listLines = [];
       while (index < lines.length) {
+        const nextLine = lines[index];
         const nextTrimmed = lines[index].trim();
-        if (ordered ? !/^\d+\.\s+/.test(nextTrimmed) : !/^[-*]\s+/.test(nextTrimmed)) break;
-        listLines.push(lines[index]);
+        const isNextItem = ordered ? /^\d+\.\s+/.test(nextTrimmed) : /^[-*]\s+/.test(nextTrimmed);
+        if (isNextItem) {
+          listLines.push(nextLine);
+          index += 1;
+          continue;
+        }
+        if (listLines.length && /^\s{2,}\S/.test(nextLine)) {
+          listLines[listLines.length - 1] = `${listLines[listLines.length - 1]}\n${nextLine.trim()}`;
+          index += 1;
+          continue;
+        }
+        if (!nextTrimmed) {
+          index += 1;
+          break;
+        }
+        break;
+      }
+      if (!listLines.length) {
         index += 1;
       }
       appendMarkdownList(container, listLines, ordered);

@@ -1114,6 +1114,13 @@ function rememberCodexThreadRestoreTarget(payload = {}) {
   }
   if (target.status === "failed") {
     latestCodexThreadFailureByProject.set(target.projectId, target);
+    const latestOpen = latestCodexOpenTargetByProject.get(target.projectId);
+    if (
+      latestOpen?.threadId === target.threadId &&
+      (!target.activationEpoch || !latestOpen.activationEpoch || target.activationEpoch >= latestOpen.activationEpoch)
+    ) {
+      latestCodexOpenTargetByProject.delete(target.projectId);
+    }
   }
   return target;
 }
