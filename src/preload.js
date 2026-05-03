@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld("workspaceShell", {
   selectChatThread: (projectId, threadId) => ipcRenderer.invoke("chatgpt:select-thread", { projectId, threadId }),
   respondCodexRequest: (key, result) => ipcRenderer.invoke("codex:respond-request", { key, result }),
   focusCodexRequest: (key) => ipcRenderer.invoke("codex:focus-request", { key }),
+  dismissCodexComposerOverlay: (reason = "shell") => ipcRenderer.invoke("codex:dismiss-composer-overlay", { reason }),
   openChatgptSettings: () => ipcRenderer.invoke("chatgpt:open-settings"),
   forceChatgptDark: () => ipcRenderer.invoke("chatgpt:force-dark"),
   onSurfaceEvent: (callback) => {

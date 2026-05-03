@@ -2079,6 +2079,14 @@ function configureGuestSurface(surfaceName, view) {
   contents.on("dom-ready", () => {
     if (surfaceName === "chatgpt") scheduleChatgptPolish();
   });
+  contents.on("focus", () => {
+    if (surfaceName !== "codex" && codexView?.webContents && !codexView.webContents.isDestroyed()) {
+      codexView.webContents.send("codex-surface:event", {
+        type: "dismiss-composer-overlay",
+        reason: `${surfaceName}-focus`,
+      });
+    }
+  });
   contents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
     if (!isMainFrame) return;
     emitToShell("surface:event", {
@@ -2896,6 +2904,15 @@ ipcMain.handle("codex:focus-request", async (_event, payload) => {
   codexView.webContents.send("codex-surface:event", {
     type: "focus-server-request",
     key: requestKey,
+  });
+  return true;
+});
+
+ipcMain.handle("codex:dismiss-composer-overlay", async (_event, payload) => {
+  if (!codexView?.webContents || codexView.webContents.isDestroyed()) return false;
+  codexView.webContents.send("codex-surface:event", {
+    type: "dismiss-composer-overlay",
+    reason: normalizeString(payload?.reason, "shell"),
   });
   return true;
 });

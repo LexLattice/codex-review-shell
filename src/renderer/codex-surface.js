@@ -78,6 +78,7 @@ const state = {
   runtimeDrawerOpen: false,
   runtimeDrawerTab: "runtime",
   composerMenu: "",
+  composerGeometryObserver: null,
   activeTurnId: "",
   turnPending: false,
   turnStopping: false,
@@ -880,6 +881,7 @@ function createRuntimeChip(chip) {
 }
 
 function openRuntimeDrawer(tab = "runtime") {
+  dismissComposerOverlay("runtime-drawer-open");
   state.runtimeDrawerOpen = true;
   state.runtimeDrawerTab = RUNTIME_DRAWER_TABS.some(([id]) => id === tab) ? tab : "runtime";
   renderRuntimeConstitution();
@@ -1000,30 +1002,49 @@ function composerMenuSection(title, options, selectedValue, onSelect) {
   for (const option of options) {
     const value = typeof option === "object" ? option.value : option;
     const label = typeof option === "object" ? option.label : option;
+    const selected = String(value || "") === String(selectedValue || "");
     const button = document.createElement("button");
     button.type = "button";
-    button.className = `composer-menu-item${String(value || "") === String(selectedValue || "") ? " selected" : ""}`;
-    button.setAttribute("aria-pressed", String(value || "") === String(selectedValue || "") ? "true" : "false");
+    button.className = `composer-menu-item${selected ? " selected" : ""}`;
+    button.dataset.value = String(value || "");
+    button.setAttribute("aria-pressed", selected ? "true" : "false");
     button.textContent = label || "Runtime default";
+    button.title = `${title}: ${label || "Runtime default"}`;
     button.addEventListener("click", () => {
-      onSelect(value || "");
+      const nextValue = String(value || "");
+      for (const item of section.querySelectorAll(".composer-menu-item")) {
+        const isSelected = item.dataset.value === nextValue;
+        item.classList.toggle("selected", isSelected);
+        item.setAttribute("aria-pressed", isSelected ? "true" : "false");
+      }
+      onSelect(nextValue);
     });
     section.appendChild(button);
   }
   return section;
 }
 
-function closeComposerMenus() {
+function dismissComposerOverlay(reason = "unknown") {
+  const hadMenu = Boolean(state.composerMenu);
   state.composerMenu = "";
   if (els.composerAccessMenu) els.composerAccessMenu.hidden = true;
   if (els.composerModelMenu) els.composerModelMenu.hidden = true;
   els.composerAccessButton?.setAttribute("aria-expanded", "false");
   els.composerModelButton?.setAttribute("aria-expanded", "false");
+  if (hadMenu) {
+    els.composerForm?.dataset && (els.composerForm.dataset.lastComposerDismiss = reason);
+  }
+  return hadMenu;
+}
+
+function closeComposerMenus() {
+  dismissComposerOverlay("legacy-close");
 }
 
 function toggleComposerMenu(menu) {
   state.composerMenu = state.composerMenu === menu ? "" : menu;
   renderComposerRuntimeBand();
+  updateComposerGeometry();
 }
 
 function eventPathContains(event, selector) {
@@ -1032,6 +1053,68 @@ function eventPathContains(event, selector) {
     return path.some((node) => node?.matches?.(selector) || node?.closest?.(selector));
   }
   return Boolean(event.target?.closest?.(selector));
+}
+
+function eventTargetsElement(event, element) {
+  if (!element) return false;
+  const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+  if (path.includes(element)) return true;
+  const target = event.target;
+  return Boolean(target && element.contains?.(target));
+}
+
+function eventInsideComposerOverlay(event) {
+  return (
+    eventTargetsElement(event, els.composerAccessMenu) ||
+    eventTargetsElement(event, els.composerModelMenu) ||
+    eventTargetsElement(event, els.composerAccessButton) ||
+    eventTargetsElement(event, els.composerModelButton)
+  );
+}
+
+function maybeDismissComposerOverlay(event, reason) {
+  if (!state.composerMenu) return;
+  if (eventInsideComposerOverlay(event)) return;
+  dismissComposerOverlay(reason);
+}
+
+function clampNumber(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function updateComposerGeometry() {
+  if (!els.composerForm) return;
+  const shellRect = els.composerForm.getBoundingClientRect();
+  const shellWidth = Math.max(0, shellRect.width || window.innerWidth || 0);
+  const safeWidth = Math.max(180, shellWidth - 24);
+  const menuWidth = Math.round(clampNumber(safeWidth * 0.46, 190, 280));
+  const modelMenuWidth = Math.round(clampNumber(safeWidth * 0.68, 240, 460));
+  const witnessWidth = Math.round(clampNumber(safeWidth * 0.18, 82, 220));
+  const modelPillWidth = Math.round(clampNumber(safeWidth * 0.28, 120, 280));
+  const activeTrigger = state.composerMenu === "model"
+    ? els.composerModelButton
+    : state.composerMenu === "access"
+      ? els.composerAccessButton
+      : null;
+  const triggerRect = activeTrigger?.getBoundingClientRect?.();
+  const topSpace = triggerRect ? Math.max(140, triggerRect.top - 16) : Math.max(160, window.innerHeight * 0.42);
+  const maxHeight = Math.round(clampNumber(topSpace, 140, 360));
+  els.composerForm.style.setProperty("--composer-popover-max-width", `${Math.round(safeWidth)}px`);
+  els.composerForm.style.setProperty("--composer-menu-width", `${menuWidth}px`);
+  els.composerForm.style.setProperty("--composer-model-menu-width", `${modelMenuWidth}px`);
+  els.composerForm.style.setProperty("--composer-popover-max-height", `${maxHeight}px`);
+  els.composerForm.style.setProperty("--composer-witness-max-width", `${witnessWidth}px`);
+  els.composerForm.style.setProperty("--composer-model-pill-max-width", `${modelPillWidth}px`);
+  els.composerForm.dataset.composerSize = safeWidth < 470 ? "narrow" : safeWidth < 760 ? "medium" : "wide";
+}
+
+function installComposerGeometryObserver() {
+  updateComposerGeometry();
+  if (typeof ResizeObserver === "function" && els.composerForm && !state.composerGeometryObserver) {
+    state.composerGeometryObserver = new ResizeObserver(() => updateComposerGeometry());
+    state.composerGeometryObserver.observe(els.composerForm);
+    if (els.composerForm.parentElement) state.composerGeometryObserver.observe(els.composerForm.parentElement);
+  }
 }
 
 function renderComposerAccessMenu() {
@@ -1051,7 +1134,7 @@ function renderComposerModelMenu() {
   const body = document.createElement("div");
   body.className = "composer-cascade-grid";
   body.appendChild(composerMenuSection("Intelligence", reasoningOptions(), state.runtimeOverrides.reasoningEffort, (value) => setRuntimeOverride("reasoningEffort", value)));
-  body.appendChild(composerMenuSection("Model", modelOptions().slice(0, 12), activeModelId(), (value) => setRuntimeOverride("model", value)));
+  body.appendChild(composerMenuSection("Model", modelOptions().slice(0, 12), state.runtimeOverrides.model, (value) => setRuntimeOverride("model", value)));
   body.appendChild(composerMenuSection("Speed", serviceTierOptions(), state.runtimeOverrides.serviceTier, (value) => setRuntimeOverride("serviceTier", value)));
   els.composerModelMenu.appendChild(body);
 }
@@ -1059,14 +1142,30 @@ function renderComposerModelMenu() {
 function renderComposerRuntimeBand() {
   if (!els.composerAccessButton || !els.composerModelButton || !els.sendButton) return;
   const active = turnIsActive();
-  els.composerAccessButton.textContent = state.runtimeOverrides.sandboxMode === "danger-full-access"
+  const accessText = state.runtimeOverrides.sandboxMode === "danger-full-access"
     ? "Full access"
     : state.runtimeOverrides.sandboxMode || state.runtimeOverrides.approvalPolicy || "Access";
-  els.composerModelButton.textContent = `${compactModelLabel()} · ${reasoningLabel()}${state.runtimeOverrides.serviceTier ? ` · ${state.runtimeOverrides.serviceTier}` : ""}`;
-  els.composerQuotaChip.textContent = composerQuotaLabel();
-  els.composerContextChip.textContent = contextUsageLabel();
+  const modelText = `${compactModelLabel()} · ${reasoningLabel()}${state.runtimeOverrides.serviceTier ? ` · ${state.runtimeOverrides.serviceTier}` : ""}`;
+  const quotaText = composerQuotaLabel();
+  const contextText = contextUsageLabel();
+
+  els.composerAccessButton.textContent = accessText;
+  els.composerAccessButton.classList.toggle("danger", state.runtimeOverrides.sandboxMode === "danger-full-access");
+  els.composerAccessButton.title = `Next-turn access override. Approval: ${approvalPolicyLabel()}. Sandbox: ${sandboxModeLabel()}.`;
+  els.composerAccessButton.setAttribute("aria-label", `Access override: approval ${approvalPolicyLabel()}, sandbox ${sandboxModeLabel()}`);
+
+  els.composerModelButton.textContent = modelText;
+  els.composerModelButton.title = `Next-turn model settings. Model: ${compactModelLabel()}. Reasoning: ${reasoningLabel()}. Speed: ${serviceTierLabel()}.`;
+  els.composerModelButton.setAttribute("aria-label", `Model override: ${modelText}`);
+
+  els.composerQuotaChip.textContent = quotaText;
+  els.composerQuotaChip.title = `Provider quota: ${quotaText}. Shown only when exposed by runtime/account evidence.`;
+  els.composerContextChip.textContent = contextText;
+  els.composerContextChip.title = `Context pressure: ${contextText}.`;
+
   els.sendButton.textContent = state.turnStopping ? "Stopping" : active ? "Stop" : "Send";
   els.sendButton.classList.toggle("stop", active);
+  els.sendButton.title = active ? "Stop the current Codex turn." : "Send this prompt to Codex.";
   els.sendButton.setAttribute("aria-label", active ? "Stop current Codex turn" : "Send prompt to Codex");
   els.sendButton.disabled = state.turnStopping || (!active && els.composerInput.disabled);
   els.composerAccessMenu.hidden = state.composerMenu !== "access";
@@ -1075,6 +1174,7 @@ function renderComposerRuntimeBand() {
   els.composerModelButton.setAttribute("aria-expanded", state.composerMenu === "model" ? "true" : "false");
   if (state.composerMenu === "access") renderComposerAccessMenu();
   if (state.composerMenu === "model") renderComposerModelMenu();
+  updateComposerGeometry();
 }
 
 function refreshButton(label, onClick) {
@@ -3235,7 +3335,12 @@ function handleBridgeEvent(event) {
     return;
   }
   if (event.type === "focus-server-request") {
+    dismissComposerOverlay("focus-server-request");
     focusServerRequest(event.key);
+    return;
+  }
+  if (event.type === "dismiss-composer-overlay") {
+    dismissComposerOverlay(event.reason || "shell-event");
     return;
   }
   if (event.type === "rpc-notification") {
@@ -3352,6 +3457,7 @@ async function connect() {
 
 els.composerForm.addEventListener("submit", (event) => {
   event.preventDefault();
+  dismissComposerOverlay("composer-submit");
   if (turnIsActive()) {
     stopCurrentTurn().catch((error) => addSystemMessage(`Stop failed: ${error.message}`));
     return;
@@ -3364,14 +3470,22 @@ els.composerForm.addEventListener("submit", (event) => {
 els.composerAccessButton?.addEventListener("click", () => toggleComposerMenu("access"));
 els.composerModelButton?.addEventListener("click", () => toggleComposerMenu("model"));
 
-document.addEventListener("pointerdown", (event) => {
-  if (!state.composerMenu) return;
-  const inComposerMenu = eventPathContains(event, "#composerAccessMenu, #composerModelMenu");
-  const onComposerTrigger = eventPathContains(event, "#composerAccessButton, #composerModelButton");
-  if (!inComposerMenu && !onComposerTrigger) closeComposerMenus();
+for (const eventType of ["pointerdown", "mousedown", "touchstart", "click"]) {
+  document.addEventListener(eventType, (event) => {
+    maybeDismissComposerOverlay(event, eventType);
+  }, true);
+}
+
+document.addEventListener("focusin", (event) => {
+  maybeDismissComposerOverlay(event, "focusin");
 }, true);
 
-window.addEventListener("blur", () => closeComposerMenus());
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") dismissComposerOverlay("escape");
+});
+
+window.addEventListener("blur", () => dismissComposerOverlay("window-blur"));
+window.addEventListener("resize", () => updateComposerGeometry());
 
 document.addEventListener("click", (event) => {
   const target = event.target?.closest?.("[data-runtime-tab]");
@@ -3381,6 +3495,8 @@ document.addEventListener("click", (event) => {
 });
 
 els.runtimeDrawerClose?.addEventListener("click", () => closeRuntimeDrawer());
+
+installComposerGeometryObserver();
 
 connect().catch((error) => {
   addSystemMessage(`Codex setup failed: ${error.message}`);

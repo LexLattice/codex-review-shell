@@ -3208,7 +3208,16 @@ function bindEvents() {
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && els.threadDrawer.classList.contains("open")) closeThreadDrawer();
     else if (event.key === "Escape" && els.drawer.classList.contains("open")) closeDrawer();
+    if (event.key === "Escape") bridge.dismissCodexComposerOverlay?.("shell-escape").catch(() => {});
   });
+
+  document.addEventListener("pointerdown", () => {
+    bridge.dismissCodexComposerOverlay?.("shell-pointerdown").catch(() => {});
+  }, true);
+
+  document.addEventListener("focusin", () => {
+    bridge.dismissCodexComposerOverlay?.("shell-focusin").catch(() => {});
+  }, true);
 
   const resizeObserver = new ResizeObserver(scheduleResizeBurst);
   resizeObserver.observe(els.appShell);

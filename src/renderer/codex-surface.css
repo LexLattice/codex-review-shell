@@ -19,6 +19,10 @@
   box-sizing: border-box;
 }
 
+:where([hidden]) {
+  display: none !important;
+}
+
 html,
 body {
   margin: 0;
@@ -728,21 +732,29 @@ button.typed-token {
 .composer-shell {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
   grid-template-areas:
-    "input input"
-    "band send";
+    "input send"
+    "band band";
   column-gap: 10px;
   row-gap: 9px;
-  align-items: end;
+  align-items: stretch;
   padding: 12px;
   border-top: 1px solid var(--border);
   background:
     radial-gradient(circle at 82% 100%, rgba(121, 184, 255, 0.12), transparent 36%),
     rgba(11, 15, 22, 0.98);
+  --composer-menu-width: 240px;
+  --composer-model-menu-width: 380px;
+  --composer-popover-max-width: calc(100vw - 24px);
+  --composer-popover-max-height: 320px;
+  --composer-witness-max-width: 190px;
+  --composer-model-pill-max-width: 260px;
 }
 
 #composerInput {
   grid-area: input;
+  min-width: 0;
 }
 
 textarea {
@@ -757,15 +769,16 @@ textarea {
   background: var(--panel-2);
   color: var(--text);
   outline: none;
+  overflow-x: hidden;
 }
 
 .composer-runtime-band {
   grid-area: band;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: space-between;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
   overflow: visible;
 }
@@ -779,10 +792,15 @@ textarea {
   min-width: 0;
 }
 
+.composer-quick-controls {
+  flex: 0 0 auto;
+}
+
 .composer-runtime-witnesses {
   flex: 1 1 auto;
   justify-content: flex-end;
   margin-left: auto;
+  min-width: 0;
 }
 
 .composer-menu-anchor {
@@ -792,6 +810,10 @@ textarea {
 
 .composer-pill,
 .composer-witness {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   min-height: 30px;
   padding: 0 10px;
   border-radius: 999px;
@@ -803,13 +825,29 @@ textarea {
   border-color: rgba(255, 255, 255, 0.12);
   background: rgba(255, 255, 255, 0.055);
   color: var(--text);
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.composer-pill::before,
+.composer-witness::before {
+  flex: 0 0 auto;
+  color: currentColor;
+  opacity: 0.86;
+  font-size: 11px;
+  line-height: 1;
 }
 
 .composer-pill::after {
   content: "▾";
-  margin-left: 6px;
+  flex: 0 0 auto;
   color: var(--muted);
   font-size: 10px;
+}
+
+.composer-pill.access::before {
+  content: "◈";
 }
 
 .composer-pill.access {
@@ -818,14 +856,24 @@ textarea {
   background: rgba(255, 176, 106, 0.08);
 }
 
+.composer-pill.access.danger::before {
+  content: "⚠";
+  color: var(--danger);
+}
+
 .composer-pill.model {
   color: #dfeaff;
+  max-width: var(--composer-model-pill-max-width);
+}
+
+.composer-pill.model::before {
+  content: "✦";
 }
 
 .composer-witness {
-  display: inline-flex;
-  align-items: center;
-  max-width: min(32vw, 220px);
+  flex: 0 1 auto;
+  max-width: var(--composer-witness-max-width);
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--muted);
@@ -833,13 +881,25 @@ textarea {
   background: rgba(255, 255, 255, 0.035);
 }
 
+#composerQuotaChip::before {
+  content: "↯";
+  color: #9fd2ff;
+}
+
+#composerContextChip::before {
+  content: "▤";
+  color: #b9c7dc;
+}
+
 .composer-popover {
   position: absolute;
   bottom: calc(100% + 8px);
   left: 0;
   z-index: 8;
-  width: clamp(190px, 34vw, 280px);
-  max-width: calc(100vw - 24px);
+  width: var(--composer-menu-width);
+  max-width: min(var(--composer-popover-max-width), calc(100vw - 24px));
+  max-height: var(--composer-popover-max-height);
+  overflow: auto;
   display: grid;
   gap: 8px;
   padding: 8px;
@@ -852,8 +912,8 @@ textarea {
 .composer-popover-wide {
   left: auto;
   right: 0;
-  width: clamp(280px, 58vw, 460px);
-  max-width: calc(100vw - 24px);
+  width: var(--composer-model-menu-width);
+  max-width: min(var(--composer-popover-max-width), calc(100vw - 24px));
 }
 
 .composer-cascade-grid {
@@ -890,6 +950,8 @@ textarea {
   color: var(--text);
   text-align: left;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .composer-menu-item:hover,
@@ -922,16 +984,42 @@ button {
 
 #sendButton {
   grid-area: send;
-  min-width: 76px;
-  min-height: 34px;
-  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 78px;
+  min-height: 40px;
+  align-self: end;
   justify-self: end;
   background: linear-gradient(135deg, #21497f, #295d94);
+}
+
+#sendButton::before {
+  content: "➤";
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  line-height: 1;
 }
 
 #sendButton.stop {
   border-color: rgba(255, 124, 143, 0.38);
   background: linear-gradient(135deg, #7d2636, #b43b4f);
+}
+
+#sendButton.stop::before {
+  content: "■";
+  font-size: 10px;
+}
+
+.composer-shell[data-composer-size="medium"] .composer-cascade-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.composer-shell[data-composer-size="narrow"] .composer-cascade-grid {
+  grid-template-columns: 1fr;
 }
 
 button.secondary {
@@ -964,8 +1052,8 @@ button.typed-token {
   .composer-shell {
     grid-template-columns: minmax(0, 1fr) auto;
     grid-template-areas:
-      "input input"
-      "band send";
+      "input send"
+      "band band";
   }
 
   .title-block h1 {
@@ -982,28 +1070,18 @@ button.typed-token {
     max-width: 100%;
   }
 
-  .composer-runtime-band,
-  .composer-runtime-witnesses {
-    justify-content: flex-start;
+  .composer-runtime-band {
+    justify-content: space-between;
   }
 
   .composer-runtime-witnesses {
-    margin-left: 0;
-  }
-
-  .composer-witness {
-    max-width: 44vw;
+    justify-content: flex-end;
+    margin-left: auto;
   }
 
   .composer-popover,
   .composer-popover-wide {
-    left: 0;
-    right: auto;
-    width: min(calc(100vw - 24px), 340px);
-  }
-
-  .composer-cascade-grid {
-    grid-template-columns: 1fr;
+    max-width: min(var(--composer-popover-max-width), calc(100vw - 24px));
   }
 
   #sendButton {
@@ -1013,14 +1091,14 @@ button.typed-token {
 
 @media (max-width: 420px) {
   .composer-shell {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr) auto;
     grid-template-areas:
-      "input"
-      "band"
-      "send";
+      "input send"
+      "band band";
   }
 
   #sendButton {
-    justify-self: stretch;
+    min-width: 48px;
+    padding: 0 10px;
   }
 }
