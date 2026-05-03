@@ -64,6 +64,8 @@ const state = {
   openedCodexProjectId: "",
   openedCodexThreadId: "",
   openedCodexThreadTitle: "",
+  openedCodexSourceHome: "",
+  openedCodexSessionFilePath: "",
   selectedProjectChatThreadId: "",
   selectedRecentChatgptThreadId: "",
   selectedBindingId: "",
@@ -2060,6 +2062,8 @@ async function selectProject(projectId) {
     state.openedCodexProjectId = "";
     state.openedCodexThreadId = "";
     state.openedCodexThreadTitle = "";
+    state.openedCodexSourceHome = "";
+    state.openedCodexSessionFilePath = "";
   }
   state.selectedFileRelPath = "";
   state.selectedFilePreview = null;
@@ -2191,6 +2195,47 @@ async function selectCodexThread(threadId, sourceHome = "", sessionFilePath = ""
   renderSelectedProject();
 }
 
+async function reloadActiveCodexRuntime() {
+  const project = activeProject();
+  if (!project) return;
+  const openedForProject = state.openedCodexProjectId === project.id;
+  const selectedThread = codexThreadById(state.selectedCodexThreadId);
+  const threadId = openedForProject
+    ? state.openedCodexThreadId
+    : state.selectedCodexThreadId || selectedThread?.threadId || "";
+  const restoreTarget = threadId
+    ? {
+      projectId: project.id,
+      threadId,
+      sourceHome: openedForProject ? state.openedCodexSourceHome : selectedThread?.sourceHome || "",
+      sessionFilePath: openedForProject ? state.openedCodexSessionFilePath : selectedThread?.sessionFilePath || "",
+      title: openedForProject ? state.openedCodexThreadTitle : selectedThread?.title || threadId,
+    }
+    : null;
+  state.surfaceEvents.codex = { type: "loading", title: "Reloading Codex runtime" };
+  renderStatus();
+  try {
+    const result = bridge.reloadCodexRuntime
+      ? await bridge.reloadCodexRuntime({ projectId: project.id, restoreTarget })
+      : { ok: await bridge.reloadSurface("codex"), restarted: false };
+    if (!result?.ok) {
+      setLastEvent(`Codex runtime reload failed: ${result?.error || "unknown error"}`);
+      return;
+    }
+    if (result.restarted === false && result.reason) {
+      setLastEvent(`Reloaded Codex surface: ${result.reason}`);
+      return;
+    }
+    setLastEvent(
+      result.threadId
+        ? `Reloaded Codex runtime and requested thread restore: ${restoreTarget?.title || result.threadId}.`
+        : "Reloaded Codex runtime.",
+    );
+  } catch (error) {
+    setLastEvent(`Codex runtime reload failed: ${error.message}`);
+  }
+}
+
 function handleCodexThreadState(event) {
   const project = activeProject();
   const projectId = String(event.projectId || project?.id || "");
@@ -2204,6 +2249,8 @@ function handleCodexThreadState(event) {
     state.openedCodexProjectId = project.id;
     state.openedCodexThreadId = threadId;
     state.openedCodexThreadTitle = title;
+    state.openedCodexSourceHome = String(event.sourceHome || "");
+    state.openedCodexSessionFilePath = String(event.sessionFilePath || "");
     renderSelectedProject();
     renderThreadsWorkbench();
     setLastEvent(
@@ -3183,7 +3230,7 @@ function bindEvents() {
   els.stageTextReviewButton.addEventListener("click", () => stageQuestion("text-review"));
   els.stageArchitectureQuestionButton.addEventListener("click", () => stageQuestion("architecture-question"));
   els.stageResearchQuestionButton.addEventListener("click", () => stageQuestion("research-question"));
-  els.reloadCodexButton.addEventListener("click", () => bridge.reloadSurface("codex"));
+  els.reloadCodexButton.addEventListener("click", reloadActiveCodexRuntime);
   els.reloadChatButton.addEventListener("click", () => bridge.reloadSurface("chatgpt"));
   els.externalChatButton.addEventListener("click", () => bridge.openSurfaceExternal("chatgpt"));
   els.forceDarkButton.addEventListener("click", async () => {
