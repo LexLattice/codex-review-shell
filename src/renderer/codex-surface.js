@@ -28,6 +28,7 @@ const SANDBOX_MODE_OPTIONS = ["", "read-only", "workspace-write", "danger-full-a
 const SERVICE_TIER_OPTIONS = ["", "fast", "flex"];
 const MODEL_LIST_PAGE_LIMIT = 100;
 const MODEL_LIST_PAGE_SIZE = 100;
+const RATE_LIMIT_STALE_MS = 5 * 60 * 1000;
 const THOUGHT_ITEM_TYPES = new Set([
   "reasoning",
   "commandExecution",
@@ -62,6 +63,7 @@ const state = {
   rateLimits: null,
   rateLimitsStatus: "idle",
   rateLimitsError: "",
+  rateLimitsObservedAt: 0,
   configRequirements: null,
   configRequirementsStatus: "idle",
   configRequirementsError: "",
@@ -359,7 +361,7 @@ function sandboxModeLabel() {
 }
 
 function serviceTierLabel() {
-  return state.runtimeOverrides.serviceTier || "speed default";
+  return state.runtimeOverrides.serviceTier || "runtime default";
 }
 
 function camelOrSnake(value, camelKey, snakeKey) {
@@ -434,15 +436,50 @@ function rateLimitWindowLabel(window, fallbackLabel = "window") {
 
 function rateLimitAvailablePercent(window) {
   if (!window || typeof window !== "object") return null;
-  const used = Number(window.usedPercent);
+  const used = Number(window.usedPercent ?? window.used_percent);
   if (!Number.isFinite(used)) return null;
   return Math.max(0, Math.min(100, 100 - Math.round(used)));
 }
 
+function resetTimestampMs(window) {
+  const raw = Number(window?.resetsAt ?? window?.resets_at ?? window?.resetAt ?? window?.reset_at ?? 0);
+  if (!Number.isFinite(raw) || raw <= 0) return 0;
+  return raw > 1_000_000_000_000 ? raw : raw * 1000;
+}
+
+function resetLabel(window, compact = false) {
+  const timestamp = resetTimestampMs(window);
+  if (!timestamp) return compact ? "reset not exposed" : "unknown";
+  const date = new Date(timestamp);
+  const label = rateLimitWindowLabel(window, "");
+  const options = label === "weekly"
+    ? { weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false }
+    : { hour: "2-digit", minute: "2-digit", hour12: false };
+  return new Intl.DateTimeFormat(undefined, options).format(date);
+}
+
 function formatResetTime(window) {
-  const resetsAt = Number(window?.resetsAt || 0);
-  if (!resetsAt) return "unknown";
-  return new Date(resetsAt * 1000).toLocaleString();
+  return resetLabel(window, false);
+}
+
+function quotaWindowShortLabel(window, fallbackLabel = "window") {
+  const label = rateLimitWindowLabel(window, fallbackLabel);
+  if (label === "weekly") return "W";
+  return label;
+}
+
+function quotaWindows(snapshot) {
+  return [snapshot?.primary, snapshot?.secondary].filter(Boolean).map((window, index) => ({
+    window,
+    label: quotaWindowShortLabel(window, index === 0 ? "primary" : "secondary"),
+    available: rateLimitAvailablePercent(window),
+    reset: resetLabel(window, true),
+  })).filter((entry) => entry.available != null);
+}
+
+function quotaEvidenceStale() {
+  if (!state.rateLimitsObservedAt) return false;
+  return Date.now() - state.rateLimitsObservedAt > RATE_LIMIT_STALE_MS;
 }
 
 function selectRateLimitSnapshot() {
@@ -454,21 +491,18 @@ function selectRateLimitSnapshot() {
 function formatQuotaHeader() {
   const snapshot = selectRateLimitSnapshot();
   if (!snapshot) return "quota: not exposed";
-  const windows = [snapshot.primary, snapshot.secondary].filter(Boolean);
-  const parts = windows
-    .map((window, index) => {
-      const available = rateLimitAvailablePercent(window);
-      if (available == null) return "";
-      return `${rateLimitWindowLabel(window, index === 0 ? "primary" : "secondary")} ${available}%`;
-    })
-    .filter(Boolean);
+  const parts = quotaWindows(snapshot).map((entry) => `${entry.label} ${entry.available}%`);
   return parts.length ? `quota left: ${parts.join(" · ")}` : "quota: available";
 }
 
 function composerQuotaLabel() {
   const snapshot = selectRateLimitSnapshot();
   if (!snapshot) return state.rateLimitsStatus === "failed" ? "quota unavailable" : "quota unknown";
-  return formatQuotaHeader().replace(/^quota left:\s*/, "");
+  const windows = quotaWindows(snapshot).sort((a, b) => a.available - b.available);
+  if (!windows.length) return quotaEvidenceStale() ? "quota stale" : "quota available";
+  const visible = windows.slice(0, 2).map((entry) => `${entry.label} ${entry.available}% · resets ${entry.reset}`);
+  const label = visible.join(" · ");
+  return quotaEvidenceStale() ? `${label} · stale` : label;
 }
 
 function contextUsageLabel() {
@@ -1209,7 +1243,7 @@ function modelOptions() {
 
 function reasoningOptions() {
   return [
-    { value: "", label: "Model default" },
+    { value: "", label: "Runtime default" },
     ...supportedReasoningOptions().map((effort) => ({ value: effort, label: effort })),
   ];
 }
@@ -1227,7 +1261,12 @@ function sandboxModeOptions() {
 }
 
 function serviceTierOptions() {
-  return SERVICE_TIER_OPTIONS.map((value) => ({ value, label: value || "Runtime default" }));
+  const settingsProjection = providerSettingsProjection();
+  const configured = settingsProjection.serviceTier?.availableTiers || settingsProjection.speed?.availableTiers || null;
+  const values = Array.isArray(configured) && configured.length
+    ? configured.map((value) => String(value || "").trim()).filter(Boolean)
+    : SERVICE_TIER_OPTIONS.filter(Boolean);
+  return ["", ...values].map((value) => ({ value, label: value || "Runtime default" }));
 }
 
 function compactModelLabel() {
@@ -1280,7 +1319,8 @@ function quotaWindowRows(snapshot) {
     const label = rateLimitWindowLabel(window, fallback);
     const available = rateLimitAvailablePercent(window);
     rows.push([`${label} available`, available == null ? "unknown" : `${available}%`]);
-    rows.push([`${label} used`, Number.isFinite(Number(window.usedPercent)) ? `${window.usedPercent}%` : "unknown"]);
+    const usedPercent = window.usedPercent ?? window.used_percent;
+    rows.push([`${label} used`, Number.isFinite(Number(usedPercent)) ? `${usedPercent}%` : "unknown"]);
     rows.push([`${label} resets`, formatResetTime(window)]);
   }
   if (snapshot.credits) {
@@ -1681,6 +1721,75 @@ function safeMarkdownHref(rawHref) {
   }
 }
 
+function markdownLocalHref(rawHref) {
+  const original = String(rawHref || "").trim();
+  if (!original || original.startsWith("#") || /^[A-Za-z][A-Za-z0-9+.-]*:/i.test(original)) return null;
+  const lineHash = original.match(/^(.*)#L(\d+)$/i);
+  const withoutHash = lineHash ? lineHash[1] : original.replace(/#.*$/, "");
+  const lineRef = splitLineRef(lineHash ? `${withoutHash}:${lineHash[2]}` : withoutHash);
+  const relPath = relativePathWithinRoot(lineRef.path);
+  if (!relPath) return null;
+  return { path: relPath, line: lineRef.line, column: lineRef.column };
+}
+
+function appendFileToken(parent, label, fileRef) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `typed-token ${fileRef.line ? "typed-token-line-ref" : "typed-token-file"} assistant-md-link`;
+  button.textContent = label || fileRef.path;
+  button.title = fileRef.line ? `Reveal ${fileRef.path}:${fileRef.line}` : `Reveal ${fileRef.path}`;
+  button.addEventListener("click", () => revealTypedFile(fileRef.path));
+  parent.appendChild(button);
+}
+
+function appendUrlToken(parent, label, href) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "typed-token typed-token-url assistant-md-link";
+  button.textContent = label || href;
+  button.title = `Open ${href}`;
+  button.addEventListener("click", () => openTypedUrl(href));
+  parent.appendChild(button);
+}
+
+function appendUnsupportedMarkdownLink(parent, label, reason) {
+  const span = document.createElement("span");
+  span.className = "assistant-md-link-blocked";
+  span.textContent = label;
+  span.title = reason || "Unsupported or unsafe link";
+  parent.appendChild(span);
+}
+
+function appendInlineCode(parent, raw) {
+  const code = document.createElement("code");
+  code.className = "assistant-md-inline-code";
+  const source = String(raw || "");
+  const fileRef = markdownLocalHref(source) || (() => {
+    const lineRef = splitLineRef(source);
+    const relPath = relativePathWithinRoot(lineRef.path);
+    return relPath ? { path: relPath, line: lineRef.line, column: lineRef.column } : null;
+  })();
+  if (fileRef) {
+    appendFileToken(code, source, fileRef);
+  } else {
+    const href = safeMarkdownHref(source);
+    if (href) appendUrlToken(code, source, href);
+    else {
+      const span = document.createElement("span");
+      const trimmed = source.trim();
+      const tokenType = /^[a-f0-9]{7,40}$/i.test(trimmed)
+        ? "commit"
+        : /\s|^(npm|pnpm|yarn|node|git|gh|cargo|python|pytest|uv|make|bash|sh)\b/.test(trimmed)
+          ? "command"
+          : "symbol";
+      span.className = `typed-token typed-token-${tokenType}`;
+      span.textContent = source;
+      code.appendChild(span);
+    }
+  }
+  parent.appendChild(code);
+}
+
 function appendInlineMarkdown(parent, text) {
   const source = String(text || "");
   const pattern = /(\[[^\]\n]{1,240}\]\([^) \n]{1,1000}\)|`([^`\n]+)`|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|(->|=>))/g;
@@ -1691,26 +1800,12 @@ function appendInlineMarkdown(parent, text) {
     const linkMatch = token.match(/^\[([^\]\n]+)\]\(([^) \n]+)\)$/);
     if (linkMatch) {
       const href = safeMarkdownHref(linkMatch[2]);
-      if (href) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "typed-token typed-token-url assistant-md-link";
-        button.textContent = linkMatch[1];
-        button.title = `Open ${href}`;
-        button.addEventListener("click", () => openTypedUrl(href));
-        parent.appendChild(button);
-      } else {
-        const span = document.createElement("span");
-        span.className = "assistant-md-link-blocked";
-        span.textContent = linkMatch[1];
-        span.title = "Unsupported link protocol";
-        parent.appendChild(span);
-      }
+      const fileRef = markdownLocalHref(linkMatch[2]);
+      if (href) appendUrlToken(parent, linkMatch[1], href);
+      else if (fileRef) appendFileToken(parent, linkMatch[1], fileRef);
+      else appendUnsupportedMarkdownLink(parent, linkMatch[1], "Unsupported, unsafe, or unresolved link target");
     } else if (token.startsWith("`")) {
-      const code = document.createElement("code");
-      code.className = "assistant-md-inline-code";
-      code.textContent = token.slice(1, -1);
-      parent.appendChild(code);
+      appendInlineCode(parent, token.slice(1, -1));
     } else if (token.startsWith("**")) {
       const strong = document.createElement("strong");
       strong.className = "assistant-md-strong";
@@ -1901,12 +1996,54 @@ function renderFinalAssistantContent(container, text) {
   }
 }
 
+function messageCopyText(node) {
+  const bubble = node?.querySelector?.(".bubble");
+  if (!bubble) return "";
+  return String(bubble.dataset.rawText || bubble.textContent || "");
+}
+
+async function copyMessageText(node, button) {
+  const text = messageCopyText(node);
+  if (!text) return;
+  const previous = button.textContent;
+  try {
+    if (bridge?.copyText) await bridge.copyText(text);
+    else await navigator.clipboard.writeText(text);
+    button.textContent = "Copied";
+    button.classList.add("copied");
+  } catch {
+    button.textContent = "Copy failed";
+    button.classList.add("failed");
+  } finally {
+    setTimeout(() => {
+      button.textContent = previous || "Copy";
+      button.classList.remove("copied", "failed");
+    }, 1000);
+  }
+}
+
 function ensureMessage(id, role, title = "") {
   if (state.itemMap.has(id)) return state.itemMap.get(id);
   const article = document.createElement("article");
   article.className = `message ${role}`;
-  article.innerHTML = `<div class="role"></div><div class="bubble"></div>`;
-  article.querySelector(".role").textContent = title || (role === "assistant" ? "Codex" : role === "user" ? "You" : "System");
+  const roleNode = document.createElement("div");
+  roleNode.className = "role";
+  roleNode.textContent = title || (role === "assistant" ? "Codex" : role === "user" ? "You" : "System");
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  article.append(roleNode, bubble);
+  if (role === "assistant" || role === "user") {
+    const actions = document.createElement("div");
+    actions.className = "message-actions";
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "message-copy-button";
+    copy.textContent = "Copy";
+    copy.title = "Copy raw message text";
+    copy.addEventListener("click", () => copyMessageText(article, copy));
+    actions.appendChild(copy);
+    article.appendChild(actions);
+  }
   els.transcript.appendChild(article);
   maybeAutoScrollBottom();
   state.itemMap.set(id, article);
@@ -2242,6 +2379,7 @@ async function refreshRateLimits(showErrors = false) {
     state.rateLimits = await rpc("account/rateLimits/read", {});
     state.rateLimitsStatus = "ready";
     state.rateLimitsError = "";
+    state.rateLimitsObservedAt = Date.now();
   } catch (error) {
     state.rateLimitsStatus = "failed";
     state.rateLimitsError = error.message;
@@ -2693,9 +2831,82 @@ function focusServerRequest(key) {
   setTimeout(() => node.classList.remove("request-focus-pulse"), 900);
 }
 
-async function readStoredThreadTranscript(threadId, sourceHome = "", sessionFilePath = "") {
+function storedTranscriptReadLimit() {
+  if (state.historyWindow.mode === "all") return 2000;
+  if (state.historyWindow.mode === "expanded") {
+    return Math.min(2000, Math.max(800, state.historyWindow.loadedUserMessagePages * 800));
+  }
+  return 800;
+}
+
+async function readStoredThreadTranscript(threadId, sourceHome = "", sessionFilePath = "", limit = storedTranscriptReadLimit()) {
   if (!bridge?.readStoredThreadTranscript || !project?.id || !threadId) return null;
-  return bridge.readStoredThreadTranscript(project.id, threadId, sourceHome, sessionFilePath);
+  return bridge.readStoredThreadTranscript(project.id, threadId, sourceHome, sessionFilePath, limit);
+}
+
+function storedMessageText(message) {
+  return String(message?.text || message?.message || "").trim();
+}
+
+function storedTurnUserMessageCount(turn) {
+  return Array.isArray(turn?.userMessages) ? turn.userMessages.length : 0;
+}
+
+function storedStartTurnIndex(turns, hiddenUserMessages) {
+  if (!hiddenUserMessages) return 0;
+  let seen = 0;
+  for (let index = 0; index < turns.length; index += 1) {
+    const count = storedTurnUserMessageCount(turns[index]);
+    if (seen + count > hiddenUserMessages) return index;
+    seen += count;
+  }
+  return 0;
+}
+
+function renderStoredPresentationModel(model) {
+  const turns = Array.isArray(model?.turns) ? model.turns : [];
+  if (!turns.length) return false;
+  const totalUserMessages = turns.reduce((sum, turn) => sum + storedTurnUserMessageCount(turn), 0);
+  const visibleUserMessages = visibleUserMessageCount(totalUserMessages);
+  const hiddenUserMessages = Math.max(0, totalUserMessages - visibleUserMessages);
+  const startTurnIndex = storedStartTurnIndex(turns, hiddenUserMessages);
+  const visibleTurns = turns.slice(startTurnIndex);
+
+  renderLoadMoreControl(hiddenUserMessages);
+
+  for (let index = 0; index < visibleTurns.length; index += 1) {
+    const turn = visibleTurns[index];
+    const turnKey = String(turn.turnKey || turn.turnId || `stored_turn_${startTurnIndex + index + 1}`);
+    for (let messageIndex = 0; messageIndex < (turn.userMessages || []).length; messageIndex += 1) {
+      const message = turn.userMessages[messageIndex];
+      const id = String(message.id || `stored_user_${turnKey}_${messageIndex}`);
+      setMessageText(id, "user", storedMessageText(message), "You");
+    }
+    for (let messageIndex = 0; messageIndex < (turn.systemMessages || []).length; messageIndex += 1) {
+      const message = turn.systemMessages[messageIndex];
+      const id = String(message.id || `stored_system_${turnKey}_${messageIndex}`);
+      setMessageText(id, "system", storedMessageText(message), "System");
+    }
+    const thoughtItems = Array.isArray(turn.thoughtItems) ? turn.thoughtItems : [];
+    if (thoughtItems.length) {
+      upsertThoughtProcess(turnKey, thoughtItems.map((item, itemIndex) => ({
+        ...item,
+        id: String(item.id || `stored_thought_${turnKey}_${itemIndex}`),
+        turnId: turn.turnId || turnKey,
+      })), { merge: false });
+    }
+    for (let messageIndex = 0; messageIndex < (turn.assistantFinalMessages || []).length; messageIndex += 1) {
+      const message = turn.assistantFinalMessages[messageIndex];
+      const id = String(message.id || `stored_assistant_${turnKey}_${messageIndex}`);
+      setMessageText(id, "assistant", storedMessageText(message), "Codex");
+    }
+  }
+
+  const visibleOrphans = (model.orphanItems || []).filter(Boolean);
+  if (visibleOrphans.length) {
+    upsertThoughtProcess("stored_orphans", visibleOrphans, { merge: false });
+  }
+  return true;
 }
 
 function renderStoredTranscript(snapshot, threadId, options = {}) {
@@ -2714,6 +2925,19 @@ function renderStoredTranscript(snapshot, threadId, options = {}) {
   state.liveAttached = false;
   const title = String(snapshot?.title || "Stored transcript");
   addSystemMessage(`Loaded ${title} from local Codex session logs. Live attach is running in background.`);
+  if (renderStoredPresentationModel(snapshot?.presentationModel)) {
+    setComposerEnabled(false, "Read-only transcript while connecting this thread to live Codex…");
+    state.isBulkRendering = false;
+    if (options.preserveViewport) {
+      const nextScrollHeight = els.transcript.scrollHeight;
+      const delta = Math.max(0, nextScrollHeight - previousScrollHeight);
+      els.transcript.scrollTop = Math.max(0, previousScrollTop + delta);
+    } else {
+      els.transcript.scrollTop = els.transcript.scrollHeight;
+    }
+    renderRuntimeConstitution();
+    return;
+  }
   const allEntries = Array.isArray(snapshot?.entries) ? snapshot.entries : [];
   const userEntryIndices = [];
   for (let index = 0; index < allEntries.length; index += 1) {
@@ -3009,14 +3233,16 @@ function thoughtItemBody(item) {
   }
   if (item.type === "fileChange") {
     const changes = Array.isArray(item.changes) ? item.changes : [];
-    if (!changes.length) return `${item.status || "completed"} · no file changes listed`;
+    const header = `${item.patchStatus || item.status || "completed"}`;
+    if (!changes.length) return `${header} · no file changes listed`;
     const lines = changes.slice(0, 40).map((change) => {
       const kind = String(change?.kind || change?.type || "change");
       const relPath = String(change?.path || change?.relativePath || change?.file || "").trim();
       return `- ${kind}${relPath ? ` ${relPath}` : ""}`;
     });
     if (changes.length > lines.length) lines.push(`… ${changes.length - lines.length} more change entries`);
-    return lines.join("\n");
+    const output = [item.stdout, item.stderr].filter(Boolean).join("\n").trim();
+    return [header, lines.join("\n"), output].filter(Boolean).join("\n");
   }
   if (item.type === "mcpToolCall") {
     const header = `${item.server || "mcp"} · ${item.tool || "tool"} · ${item.status || "unknown"}`;
@@ -3093,8 +3319,12 @@ function projectThoughtItemsForRender(thoughtItems) {
   return {
     reasoningItems: visible.filter((item) => item?.type === "reasoning" || isThoughtAssistantMessageItem(item)),
     toolItems: visible.filter(isToolLikeThoughtItem),
+    patchItems: visible.filter((item) => item?.type === "fileChange"),
     otherItems: visible.filter((item) =>
-      item?.type !== "reasoning" && !isThoughtAssistantMessageItem(item) && !isToolLikeThoughtItem(item)),
+      item?.type !== "reasoning" &&
+      item?.type !== "fileChange" &&
+      !isThoughtAssistantMessageItem(item) &&
+      !isToolLikeThoughtItem(item)),
     visibleCount: visible.length,
   };
 }
@@ -3119,7 +3349,9 @@ function renderThoughtProcess(turnKey, thoughtItems, options = {}) {
   root.className = "thought-process";
   if (options.open) root.open = true;
   const summary = document.createElement("summary");
-  summary.textContent = `Thought process (${projection.visibleCount})`;
+  summary.textContent = projection.reasoningItems.length
+    ? `Thought process (${projection.visibleCount})`
+    : `Process evidence (${projection.visibleCount})`;
   root.appendChild(summary);
 
   const body = document.createElement("div");
@@ -3153,6 +3385,29 @@ function renderThoughtProcess(turnKey, thoughtItems, options = {}) {
     }
     toolsRoot.appendChild(toolsList);
     body.appendChild(toolsRoot);
+  }
+
+  if (projection.patchItems.length) {
+    const patchesRoot = document.createElement("details");
+    patchesRoot.className = "thought-tools thought-patches";
+    const patchesSummary = document.createElement("summary");
+    patchesSummary.textContent = `Patches (${projection.patchItems.length})`;
+    patchesRoot.appendChild(patchesSummary);
+    const patchesList = document.createElement("div");
+    patchesList.className = "thought-tools-list";
+    for (const item of projection.patchItems) {
+      const patchDetail = document.createElement("details");
+      patchDetail.className = "thought-tool thought-patch";
+      const patchSummary = document.createElement("summary");
+      patchSummary.textContent = thoughtItemLabel(item);
+      const patchBody = document.createElement("pre");
+      patchBody.className = "thought-content";
+      renderTypedContent(patchBody, normalizeThoughtItemBody(item) || "No details.");
+      patchDetail.append(patchSummary, patchBody);
+      patchesList.appendChild(patchDetail);
+    }
+    patchesRoot.appendChild(patchesList);
+    body.appendChild(patchesRoot);
   }
 
   for (const item of projection.otherItems) {
@@ -3587,6 +3842,7 @@ function handleNotification(method, params) {
     state.rateLimits = { rateLimits: params?.rateLimits || params?.rate_limits || params || null };
     state.rateLimitsStatus = "ready";
     state.rateLimitsError = "";
+    state.rateLimitsObservedAt = Date.now();
     renderRuntimeConstitution();
     return;
   }

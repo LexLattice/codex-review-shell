@@ -27,6 +27,7 @@ const MATCH_SCAN_LIMIT = 240;
 const MATCH_WALK_LIMIT = 8000;
 const CODEX_THREAD_LIMIT = 120;
 const CODEX_TRANSCRIPT_ENTRY_LIMIT = 800;
+const CODEX_STORED_PROCESS_TEXT_LIMIT = 1400;
 const CODEX_ANALYTICS_GAP_MS = 2 * 60 * 1000;
 const CODEX_ANALYTICS_TAIL_HASH_LINE_LIMIT = 24;
 const CODEX_SANDBOX_ARTIFACT_NAME = ".codex";
@@ -765,6 +766,458 @@ function extractContentText(content = []) {
   return chunks.join("\n\n").trim();
 }
 
+function compactStoredText(value, maxLength = CODEX_STORED_PROCESS_TEXT_LIMIT) {
+  const text = typeof value === "string" ? value : value == null ? "" : JSON.stringify(value, null, 2);
+  const normalized = String(text || "").trim();
+  if (!normalized) return "";
+  const limit = Math.max(80, Number(maxLength) || CODEX_STORED_PROCESS_TEXT_LIMIT);
+  return normalized.length > limit
+    ? `${normalized.slice(0, limit)}\n... [${normalized.length - limit} chars omitted]`
+    : normalized;
+}
+
+function parseJsonObject(value) {
+  if (!value) return null;
+  if (typeof value === "object") return value;
+  try {
+    const parsed = JSON.parse(String(value));
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function durationMillis(duration) {
+  if (!duration || typeof duration !== "object") return null;
+  const secs = Number(duration.secs ?? duration.seconds ?? 0);
+  const nanos = Number(duration.nanos ?? duration.nanoseconds ?? 0);
+  const millis = secs * 1000 + nanos / 1_000_000;
+  return Number.isFinite(millis) && millis >= 0 ? Math.round(millis) : null;
+}
+
+function sourceRowRef(rowIndex, payload, kind) {
+  return {
+    rowIndex,
+    eventId: String(payload.event_id || payload.eventId || payload.id || ""),
+    itemId: String(payload.item_id || payload.itemId || ""),
+    callId: String(payload.call_id || payload.callId || ""),
+    kind,
+  };
+}
+
+function createTranscriptTurn(turnId, rowIndex, kind) {
+  const stableId = String(turnId || "").trim();
+  return {
+    turnKey: stableId || `stored_orphan_turn_${rowIndex}`,
+    turnId: stableId,
+    sourceRows: [{ rowIndex, kind }],
+    userMessages: [],
+    systemMessages: [],
+    assistantFinalMessages: [],
+    thoughtItems: [],
+    status: "unknown",
+  };
+}
+
+function createStoredPresentationBuilder(threadId, sourceFile) {
+  const turns = [];
+  const turnById = new Map();
+  const orphanItems = [];
+  const warnings = [];
+  const callItems = new Map();
+  let currentTurnId = "";
+
+  function ensureTurn(turnId, rowIndex, kind = "unknown") {
+    const id = String(turnId || "").trim() || currentTurnId;
+    if (!id) return null;
+    let turn = turnById.get(id);
+    if (!turn) {
+      turn = createTranscriptTurn(id, rowIndex, kind);
+      turnById.set(id, turn);
+      turns.push(turn);
+    } else {
+      turn.sourceRows.push({ rowIndex, kind });
+    }
+    return turn;
+  }
+
+  function rowTurnId(payload = {}) {
+    return String(payload.turn_id || payload.turnId || payload.turn?.id || "").trim() || currentTurnId;
+  }
+
+  function updateCurrentTurn(row, rowIndex) {
+    const payload = row.payload || {};
+    const found = String(payload.turn_id || payload.turnId || payload.id || payload.turn?.id || "").trim();
+    if (row.type === "turn_context" && found) currentTurnId = found;
+    if (row.type === "event_msg" && payload.type === "task_started" && found) {
+      currentTurnId = found;
+      const turn = ensureTurn(found, rowIndex, "task_started");
+      if (turn) turn.status = "partial";
+    }
+    if (row.type === "event_msg" && payload.type === "task_complete") {
+      const turn = ensureTurn(found || currentTurnId, rowIndex, "task_complete");
+      if (turn) turn.status = payload.last_agent_message ? "complete" : "unknown";
+    }
+  }
+
+  function addMessage(turn, target, message) {
+    if (!turn || !message?.text) return;
+    const list = target === "user"
+      ? turn.userMessages
+      : target === "system"
+        ? turn.systemMessages
+        : turn.assistantFinalMessages;
+    const previous = list[list.length - 1];
+    if (
+      previous &&
+      previous.role === message.role &&
+      previous.phase === message.phase &&
+      previous.text === message.text &&
+      Math.abs(Number(previous.sourceOrderEnd || 0) - Number(message.sourceOrderStart || 0)) <= 2
+    ) {
+      previous.sourceRows.push(...message.sourceRows);
+      previous.sourceOrderEnd = message.sourceOrderEnd;
+      return;
+    }
+    list.push(message);
+  }
+
+  function addThoughtItem(turn, item) {
+    if (!item) return;
+    if (!turn) {
+      orphanItems.push(item);
+      warnings.push({
+        kind: "orphan_process_item",
+        message: `Stored process item ${item.id || item.type || "unknown"} could not be attached to a turn with confidence.`,
+        sourceRows: item.sourceRows || [],
+      });
+      return;
+    }
+    const previous = turn.thoughtItems[turn.thoughtItems.length - 1];
+    if (
+      previous &&
+      item.type === "agentMessage" &&
+      previous.type === item.type &&
+      previous.phase === item.phase &&
+      item.text &&
+      previous.text === item.text &&
+      Math.abs(Number(previous.sourceOrderEnd || 0) - Number(item.sourceOrderStart || 0)) <= 2
+    ) {
+      previous.sourceRows.push(...(item.sourceRows || []));
+      previous.sourceOrderEnd = item.sourceOrderEnd;
+      return;
+    }
+    turn.thoughtItems.push(item);
+  }
+
+  function callKey(turn, callId, fallback) {
+    return `${turn?.turnKey || "orphan"}:${String(callId || fallback || "").trim()}`;
+  }
+
+  function existingCallItem(turn, callId, fallbackId) {
+    return callItems.get(callKey(turn, callId, fallbackId));
+  }
+
+  function mergeCallItem(turn, callId, fallbackId, patch) {
+    const key = callKey(turn, callId, fallbackId);
+    const existing = callItems.get(key);
+    if (existing) {
+      const sourceRows = [...(existing.sourceRows || []), ...(patch.sourceRows || [])];
+      const sourceOrderStart = Math.min(
+        Number(existing.sourceOrderStart || patch.sourceOrderStart || 0),
+        Number(patch.sourceOrderStart || existing.sourceOrderStart || 0),
+      );
+      const sourceOrderEnd = Math.max(
+        Number(existing.sourceOrderEnd || patch.sourceOrderEnd || 0),
+        Number(patch.sourceOrderEnd || existing.sourceOrderEnd || 0),
+      );
+      Object.assign(existing, patch, { sourceRows, sourceOrderStart, sourceOrderEnd });
+      return existing;
+    }
+    callItems.set(key, patch);
+    addThoughtItem(turn, patch);
+    return patch;
+  }
+
+  function commandFromArgs(args, payload) {
+    if (Array.isArray(payload.command)) return payload.command.join(" ");
+    if (typeof args?.cmd === "string") return args.cmd;
+    if (Array.isArray(args?.cmd)) return args.cmd.join(" ");
+    if (typeof args?.command === "string") return args.command;
+    return "";
+  }
+
+  function changesFromPatchPayload(payload) {
+    const changes = payload.changes && typeof payload.changes === "object" ? payload.changes : {};
+    return Object.entries(changes).map(([filePath, change]) => ({
+      path: filePath,
+      kind: String(change?.type || change?.kind || "change"),
+      type: String(change?.type || change?.kind || "change"),
+      summary: compactStoredText(change?.unified_diff || change?.content || change, 600),
+    }));
+  }
+
+  function ingest(row, rowIndex) {
+    if (!row || typeof row !== "object") return;
+    const payload = row.payload || {};
+    const payloadType = String(payload.type || "").trim();
+    updateCurrentTurn(row, rowIndex);
+    const at = String(row.timestamp || payload.timestamp || "");
+    const turn = ensureTurn(rowTurnId(payload), rowIndex, payloadType || row.type);
+    const sourceRows = [sourceRowRef(rowIndex, payload, payloadType || row.type)];
+    const base = {
+      at,
+      sourceRows,
+      sourceFile,
+      sourceOrderStart: rowIndex,
+      sourceOrderEnd: rowIndex,
+    };
+
+    if (row.type === "response_item" && payloadType === "message") {
+      const role = String(payload.role || "").toLowerCase();
+      if (!role || role === "developer") return;
+      const text = extractContentText(payload.content || []);
+      if (!text) return;
+      const phase = String(payload.phase || "");
+      const message = {
+        ...base,
+        id: `stored_msg_${rowIndex}`,
+        role: role === "assistant" || role === "user" ? role : "system",
+        text,
+        phase,
+        sourceType: "response_item.message",
+      };
+      if (message.role === "user") addMessage(turn, "user", message);
+      else if (message.role === "assistant" && String(phase).toLowerCase() === "commentary") {
+        addThoughtItem(turn, { ...base, id: `stored_agent_${rowIndex}`, type: "agentMessage", phase: "commentary", text });
+      } else if (message.role === "assistant") addMessage(turn, "assistant", message);
+      else addMessage(turn, "system", message);
+      return;
+    }
+
+    if (row.type === "event_msg" && payloadType === "user_message") {
+      const text = String(payload.message || "").trim();
+      if (!text) return;
+      addMessage(turn, "user", {
+        ...base,
+        id: `stored_user_${rowIndex}`,
+        role: "user",
+        text,
+        phase: "",
+        sourceType: "event_msg.user_message",
+      });
+      return;
+    }
+
+    if (row.type === "event_msg" && payloadType === "agent_message") {
+      const text = String(payload.message || "").trim();
+      if (!text) return;
+      const phase = String(payload.phase || "");
+      if (phase.toLowerCase() === "commentary") {
+        addThoughtItem(turn, { ...base, id: `stored_agent_${rowIndex}`, type: "agentMessage", phase: "commentary", text });
+      } else {
+        addMessage(turn, "assistant", {
+          ...base,
+          id: `stored_agent_final_${rowIndex}`,
+          role: "assistant",
+          text,
+          phase,
+          sourceType: "event_msg.agent_message",
+        });
+      }
+      return;
+    }
+
+    if (row.type === "response_item" && payloadType === "reasoning") {
+      const summary = Array.isArray(payload.summary) ? payload.summary.filter(Boolean).map(String) : [];
+      const content = Array.isArray(payload.content) ? payload.content.filter(Boolean).map(String) : [];
+      if (!summary.length && !content.length) return;
+      addThoughtItem(turn, { ...base, id: `stored_reasoning_${rowIndex}`, type: "reasoning", summary, content });
+      return;
+    }
+
+    if (row.type === "response_item" && payloadType === "function_call") {
+      const callId = String(payload.call_id || "");
+      const name = String(payload.name || "tool");
+      const args = parseJsonObject(payload.arguments) || {};
+      if (name === "exec_command") {
+        mergeCallItem(turn, callId, rowIndex, {
+          ...base,
+          id: `stored_command_${callId || rowIndex}`,
+          type: "commandExecution",
+          status: "started",
+          command: commandFromArgs(args, payload),
+          cwd: String(args.cwd || args.workdir || ""),
+          callId,
+        });
+      } else {
+        mergeCallItem(turn, callId, rowIndex, {
+          ...base,
+          id: `stored_tool_${callId || rowIndex}`,
+          type: "dynamicToolCall",
+          status: "started",
+          tool: name,
+          callId,
+          contentItems: compactStoredText(args, 900),
+        });
+      }
+      return;
+    }
+
+    if (row.type === "event_msg" && payloadType === "exec_command_end") {
+      const callId = String(payload.call_id || "");
+      const output = payload.aggregated_output || [payload.stdout, payload.stderr].filter(Boolean).join("\n");
+      mergeCallItem(turn, callId, rowIndex, {
+        ...base,
+        id: `stored_command_${callId || rowIndex}`,
+        type: "commandExecution",
+        status: Number(payload.exit_code) === 0 ? "completed" : "failed",
+        command: commandFromArgs({}, payload),
+        cwd: String(payload.cwd || ""),
+        exitCode: Number.isFinite(Number(payload.exit_code)) ? Number(payload.exit_code) : null,
+        durationMs: durationMillis(payload.duration),
+        aggregatedOutput: compactStoredText(output),
+        callId,
+      });
+      return;
+    }
+
+    if (row.type === "response_item" && payloadType === "function_call_output") {
+      const callId = String(payload.call_id || "");
+      const existing = existingCallItem(turn, callId, rowIndex);
+      if (existing?.type === "dynamicToolCall") {
+        mergeCallItem(turn, callId, rowIndex, {
+          ...base,
+          id: existing.id || `stored_tool_${callId || rowIndex}`,
+          type: "dynamicToolCall",
+          status: "completed",
+          tool: existing.tool || String(payload.name || payload.tool_name || "tool"),
+          contentItems: compactStoredText(payload.output || payload.result || payload, 1200),
+          callId,
+        });
+        return;
+      }
+      mergeCallItem(turn, callId, rowIndex, {
+        ...base,
+        id: `stored_command_${callId || rowIndex}`,
+        type: "commandExecution",
+        status: "completed",
+        aggregatedOutput: compactStoredText(payload.output),
+        callId,
+      });
+      return;
+    }
+
+    if (row.type === "response_item" && payloadType === "custom_tool_call") {
+      const callId = String(payload.call_id || "");
+      mergeCallItem(turn, callId, rowIndex, {
+        ...base,
+        id: `stored_tool_${callId || rowIndex}`,
+        type: "dynamicToolCall",
+        status: "started",
+        tool: String(payload.name || payload.tool_name || "custom_tool"),
+        callId,
+        contentItems: compactStoredText(payload.input || payload.arguments || payload, 900),
+      });
+      return;
+    }
+
+    if (row.type === "response_item" && payloadType === "custom_tool_call_output") {
+      const callId = String(payload.call_id || "");
+      mergeCallItem(turn, callId, rowIndex, {
+        ...base,
+        id: `stored_tool_${callId || rowIndex}`,
+        type: "dynamicToolCall",
+        status: "completed",
+        tool: String(payload.name || payload.tool_name || "custom_tool"),
+        callId,
+        contentItems: compactStoredText(payload.output || payload.result || payload, 1200),
+      });
+      return;
+    }
+
+    if (row.type === "event_msg" && payloadType === "patch_apply_end") {
+      const callId = String(payload.call_id || "");
+      addThoughtItem(turn, {
+        ...base,
+        id: `stored_patch_${callId || rowIndex}`,
+        type: "fileChange",
+        status: payload.success === false ? "failed" : "completed",
+        patchStatus: payload.success === false ? "failed" : "applied",
+        callId,
+        changes: changesFromPatchPayload(payload),
+        stdout: compactStoredText(payload.stdout, 900),
+        stderr: compactStoredText(payload.stderr, 900),
+      });
+    }
+  }
+
+  function finalize() {
+    return {
+      schemaVersion: 1,
+      threadId,
+      source: "stored_jsonl",
+      sourceFile,
+      turns,
+      orphanItems,
+      warnings,
+    };
+  }
+
+  return { ingest, finalize };
+}
+
+function primaryProjectionCount(turn) {
+  const thoughtMessages = Array.isArray(turn?.thoughtItems)
+    ? turn.thoughtItems.filter((item) => item?.type === "agentMessage").length
+    : 0;
+  return (turn?.userMessages?.length || 0) +
+    (turn?.systemMessages?.length || 0) +
+    (turn?.assistantFinalMessages?.length || 0) +
+    thoughtMessages;
+}
+
+function trimPresentationModel(model, limit) {
+  const maxPrimary = Math.max(50, Number(limit) || CODEX_TRANSCRIPT_ENTRY_LIMIT);
+  const turns = Array.isArray(model?.turns) ? model.turns : [];
+  let total = 0;
+  let start = turns.length;
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    total += Math.max(1, primaryProjectionCount(turns[index]));
+    start = index;
+    if (total >= maxPrimary) break;
+  }
+  const visibleTurns = turns.slice(start);
+  const firstOrder = visibleTurns[0]?.sourceOrderStart || visibleTurns[0]?.sourceRows?.[0]?.rowIndex || 0;
+  return {
+    ...model,
+    turns: visibleTurns,
+    orphanItems: (model.orphanItems || []).filter((item) => Number(item.sourceOrderStart || 0) >= firstOrder),
+    truncated: start > 0,
+    totalTurns: turns.length,
+  };
+}
+
+function legacyEntriesFromPresentationModel(model) {
+  const entries = [];
+  for (const turn of model?.turns || []) {
+    for (const message of turn.userMessages || []) entries.push(message);
+    for (const message of turn.systemMessages || []) entries.push(message);
+    for (const item of turn.thoughtItems || []) {
+      if (item?.type !== "agentMessage") continue;
+      entries.push({
+        ...item,
+        role: "assistant",
+        text: item.text || "",
+        phase: item.phase || "commentary",
+        sourceType: "presentation.agentMessage",
+      });
+    }
+    for (const message of turn.assistantFinalMessages || []) entries.push(message);
+  }
+  return entries;
+}
+
 function extractTranscriptEntry(row) {
   if (!row || typeof row !== "object") return null;
   const payload = row.payload || {};
@@ -935,6 +1388,7 @@ async function readCodexThreadTranscript(params = {}) {
   const stream = fsSync.createReadStream(session.sessionFilePath, { encoding: "utf8" });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
   const entries = [];
+  const presentationBuilder = createStoredPresentationBuilder(threadId, session.sessionFilePath);
   let lineCount = 0;
   for await (const line of rl) {
     if (!line.trim()) continue;
@@ -945,11 +1399,14 @@ async function readCodexThreadTranscript(params = {}) {
     } catch {
       continue;
     }
+    presentationBuilder.ingest(row, lineCount);
     const entry = extractTranscriptEntry(row);
     if (!entry) continue;
     entries.push(entry);
   }
-  const deduped = dedupeTranscriptEntries(entries);
+  const presentationModel = trimPresentationModel(presentationBuilder.finalize(), limit);
+  const presentationEntries = legacyEntriesFromPresentationModel(presentationModel);
+  const deduped = dedupeTranscriptEntries(presentationEntries.length ? presentationEntries : entries);
   const truncated = deduped.length > limit;
   const tail = truncated ? deduped.slice(-limit) : deduped;
   const normalized = tail.map((entry, index) => ({
@@ -973,9 +1430,10 @@ async function readCodexThreadTranscript(params = {}) {
     originator: session.originator,
     sessionFilePath: session.sessionFilePath,
     entries: normalized,
+    presentationModel,
     count: normalized.length,
     totalCount: deduped.length,
-    truncated,
+    truncated: truncated || Boolean(presentationModel.truncated),
     lineCount,
     limit,
   };

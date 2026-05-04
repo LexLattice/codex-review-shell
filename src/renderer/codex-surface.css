@@ -837,8 +837,11 @@ button.typed-token {
 }
 
 .assistant-md-link-blocked {
+  padding: 0 2px;
+  border-radius: 4px;
   color: var(--muted);
-  text-decoration: line-through;
+  background: rgba(255, 255, 255, 0.04);
+  text-decoration: none;
 }
 
 .message.user .bubble {
@@ -864,6 +867,38 @@ button.typed-token {
   border-radius: 999px;
   font-size: 11px;
   letter-spacing: 0.01em;
+}
+
+.message-actions {
+  display: flex;
+  justify-content: flex-end;
+  min-height: 24px;
+  margin-top: 4px;
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+
+.message:hover .message-actions,
+.message:focus-within .message-actions {
+  opacity: 1;
+}
+
+.message-copy-button {
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.message-copy-button.copied {
+  color: #9de5b2;
+}
+
+.message-copy-button.failed {
+  color: var(--danger);
 }
 
 .message.system .bubble {
