@@ -2542,7 +2542,6 @@ async function refreshCurrentHistorySource() {
   if (
     state.historyKind === "stored" &&
     storedSnapshot?.presentationModel &&
-    presentationProcessEvidenceSummary(storedSnapshot.presentationModel).total > 0 &&
     bridge?.readStoredThreadTranscript
   ) {
     const snapshot = await readStoredThreadTranscript(currentThreadId, state.sourceHome, state.sessionFilePath);
@@ -2959,45 +2958,6 @@ function storedStartTurnIndex(turns, hiddenUserMessages) {
   return 0;
 }
 
-function emptyProcessEvidenceSummary() {
-  return { total: 0, reasoning: 0, tools: 0, patches: 0, other: 0 };
-}
-
-function addProcessEvidenceItem(summary, item) {
-  if (!shouldRenderThoughtItem(item)) return summary;
-  summary.total += 1;
-  if (item?.type === "fileChange") summary.patches += 1;
-  else if (isToolLikeThoughtItem(item)) summary.tools += 1;
-  else if (item?.type === "reasoning" || isThoughtAssistantMessageItem(item)) summary.reasoning += 1;
-  else summary.other += 1;
-  return summary;
-}
-
-function presentationProcessEvidenceSummary(model) {
-  const summary = emptyProcessEvidenceSummary();
-  for (const turn of Array.isArray(model?.turns) ? model.turns : []) {
-    for (const item of Array.isArray(turn?.thoughtItems) ? turn.thoughtItems : []) {
-      addProcessEvidenceItem(summary, item);
-    }
-  }
-  for (const item of Array.isArray(model?.orphanItems) ? model.orphanItems : []) {
-    addProcessEvidenceItem(summary, item);
-  }
-  return summary;
-}
-
-function liveThreadProcessEvidenceSummary(thread) {
-  const summary = emptyProcessEvidenceSummary();
-  for (const turn of Array.isArray(thread?.turns) ? thread.turns : []) {
-    for (const item of Array.isArray(turn?.items) ? turn.items : []) {
-      if (isThoughtItem(item) || isThoughtAssistantMessageItem(item)) {
-        addProcessEvidenceItem(summary, item);
-      }
-    }
-  }
-  return summary;
-}
-
 function renderedStoredSnapshotForThread(threadId) {
   const id = String(threadId || state.threadId || "").trim();
   if (!id) return null;
@@ -3009,10 +2969,7 @@ function renderedStoredSnapshotForThread(threadId) {
 
 function shouldPreserveStoredTranscriptOnLiveAttach(thread) {
   const snapshot = renderedStoredSnapshotForThread(thread?.id || state.threadId);
-  const stored = presentationProcessEvidenceSummary(snapshot?.presentationModel);
-  if (!stored.total) return false;
-  const live = liveThreadProcessEvidenceSummary(thread);
-  return live.total < stored.total || live.tools < stored.tools || live.patches < stored.patches;
+  return Boolean(snapshot?.presentationModel);
 }
 
 function renderStoredPresentationModel(model) {
@@ -3461,7 +3418,11 @@ function normalizeThoughtItemBody(item) {
 
 function isEmptyThoughtSentinel(text) {
   const normalized = String(text || "").trim().toLowerCase();
-  return !normalized || normalized === "no reasoning text.";
+  return !normalized ||
+    normalized === "no reasoning text." ||
+    normalized === "reasoning not available" ||
+    normalized === "reasoning unavailable" ||
+    normalized === "no reasoning available";
 }
 
 function shouldRenderThoughtItem(item) {
