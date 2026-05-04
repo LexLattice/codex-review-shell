@@ -25,6 +25,8 @@ const HANDOFF_KINDS = {
 };
 const ACTIVE_HANDOFF_STATUSES = new Set(["staged", "copied", "opened-thread", "submitted-manually", "response-pending", "response-captured"]);
 const CHATGPT_ALLOWED_HOSTS = new Set(["chatgpt.com", "www.chatgpt.com", "chat.openai.com", "www.chat.openai.com"]);
+const PLANE_ZOOM_MIN = 0.67;
+const PLANE_ZOOM_MAX = 1.8;
 
 const state = {
   config: null,
@@ -48,6 +50,9 @@ const state = {
     securityPosture: "unknown",
   },
   middleWebLayoutRevision: 0,
+  planeZooms: {
+    middle: 1,
+  },
   analyticsThreads: [],
   analyticsStatus: "idle",
   analyticsDashboard: null,
@@ -99,6 +104,7 @@ const state = {
 const els = {
   appShell: document.getElementById("appShell"),
   controlPlane: document.querySelector(".control-plane"),
+  selectedProjectPill: document.getElementById("selectedProjectPill"),
   selectedProjectName: document.getElementById("selectedProjectName"),
   repoPath: document.getElementById("repoPath"),
   workspacePath: document.getElementById("workspacePath"),
@@ -1024,6 +1030,47 @@ function setLastEvent(message) {
   els.lastEvent.title = message;
 }
 
+function clampPlaneZoom(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 1;
+  return Math.min(PLANE_ZOOM_MAX, Math.max(PLANE_ZOOM_MIN, number));
+}
+
+function applyMiddlePlaneZoom(value) {
+  const zoomFactor = clampPlaneZoom(value);
+  state.planeZooms.middle = zoomFactor;
+  document.documentElement.style.setProperty("--middle-plane-zoom", zoomFactor.toFixed(2));
+  scheduleResizeBurst();
+}
+
+function planeFromWheelTarget(target) {
+  const element = target instanceof Element ? target : target?.parentElement;
+  if (!element) return "";
+  if (els.controlPlane?.contains(element)) return "middle";
+  if (els.codexSlot?.contains(element) || element.closest?.(".codex-plane")) return "codex";
+  if (els.chatgptSlot?.contains(element) || element.closest?.(".chatgpt-plane")) return "chatgpt";
+  return "";
+}
+
+function directionFromWheel(event) {
+  return event.deltaY < 0 ? "in" : "out";
+}
+
+function handlePlaneZoomWheel(event) {
+  if (!event.ctrlKey) return;
+  const plane = planeFromWheelTarget(event.target);
+  if (!plane) return;
+  event.preventDefault();
+  const direction = directionFromWheel(event);
+  if (plane === "middle") {
+    const next = clampPlaneZoom(state.planeZooms.middle + (direction === "in" ? 0.1 : -0.1));
+    applyMiddlePlaneZoom(next);
+    bridge.adjustPlaneZoom?.("middle", direction).catch(() => {});
+    return;
+  }
+  bridge.adjustPlaneZoom?.(plane, direction).catch(() => {});
+}
+
 function formatBytes(bytes) {
   const number = Number(bytes) || 0;
   if (number < 1024) return `${number} B`;
@@ -1169,6 +1216,8 @@ function renderSelectedProject() {
   const nonArchivedThreads = chatThreads(project).filter((thread) => !thread.archived);
 
   els.selectedProjectName.textContent = project.name;
+  els.selectedProjectPill.textContent = project.name;
+  els.selectedProjectPill.title = workspaceText;
   els.repoPath.textContent = project.repoPath;
   els.repoPath.title = project.repoPath;
   els.workspacePath.textContent = workspaceText;
@@ -3359,6 +3408,7 @@ function bindEvents() {
   els.rightSplitter.addEventListener("pointerdown", (event) => beginDrag("right", event));
 
   window.addEventListener("resize", scheduleResizeBurst);
+  document.addEventListener("wheel", handlePlaneZoomWheel, { passive: false, capture: true });
   if (window.visualViewport) window.visualViewport.addEventListener("resize", scheduleResizeBurst);
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) scheduleResizeBurst();
@@ -3413,6 +3463,9 @@ function bindEvents() {
       scheduleResizeBurst();
       if (event.webEventType === "navigation-blocked") setLastEvent(event.lastError || "Middle Web navigation blocked.");
       else if (event.webEventType === "load-failed") setLastEvent(`Middle Web load failed: ${event.lastError || event.errorDescription || "unknown error"}`);
+    }
+    if (event.type === "plane-zoom-state" && event.plane === "middle") {
+      applyMiddlePlaneZoom(event.zoomFactor);
     }
     if (event.type === "backend-status" && event.session?.projectId) {
       state.workspaceStatuses[event.session.projectId] = event.session;

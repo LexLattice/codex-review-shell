@@ -19,6 +19,8 @@ contextBridge.exposeInMainWorld("workspaceShell", {
   middleWebOpenExternal: () => ipcRenderer.invoke("middle-web:open-external"),
   middleWebCopyUrl: () => ipcRenderer.invoke("middle-web:copy-url"),
   middleWebSnapshot: () => ipcRenderer.invoke("middle-web:snapshot"),
+  adjustPlaneZoom: (plane, direction) => ipcRenderer.invoke("plane-zoom:adjust", { plane, direction }),
+  setPlaneZoom: (plane, zoomFactor) => ipcRenderer.invoke("plane-zoom:set", { plane, zoomFactor }),
   copyText: (text) => ipcRenderer.invoke("clipboard:write-text", text),
   listWorkTree: (projectId, relPath) => ipcRenderer.invoke("worktree:list", { projectId, relPath }),
   readProjectFile: (projectId, relPath) => ipcRenderer.invoke("worktree:read-file", { projectId, relPath }),

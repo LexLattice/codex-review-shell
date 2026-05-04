@@ -15,7 +15,7 @@ const crypto = require("node:crypto");
 const { CodexAppServerManager } = require("./main/codex-app-server");
 const { LocalSurfaceServer } = require("./main/local-surface-server");
 const { CodexSurfaceSession } = require("./main/codex-surface-session");
-const { MiddleWebHost } = require("./main/middle-web-host");
+const { MiddleWebHost, clampZoomFactor, zoomDeltaForDirection } = require("./main/middle-web-host");
 const { WorkspaceBackendManager, workspaceLabel, workspaceRoot } = require("./main/workspace-backend");
 const { ThreadAnalyticsStore, buildThreadKey } = require("./main/thread-analytics-store");
 
@@ -62,6 +62,10 @@ let localSurfaceServer = null;
 let codexSurfaceSessions = null;
 let threadAnalyticsStore = null;
 let surfaceActivationEpoch = 0;
+const nativePlaneZoomFactors = {
+  codex: 1,
+  chatgpt: 1,
+};
 const lastSuccessfulCodexThreadByProject = new Map();
 const latestCodexOpenTargetByProject = new Map();
 const latestCodexThreadFailureByProject = new Map();
@@ -1062,6 +1066,36 @@ function emitShellEvent(payload) {
 function ensureMiddleWebHost() {
   if (!middleWebHost) middleWebHost = new MiddleWebHost({ emitShellEvent });
   return middleWebHost;
+}
+
+function viewForZoomPlane(plane) {
+  if (plane === "codex") return codexView;
+  if (plane === "chatgpt") return chatgptView;
+  return null;
+}
+
+function setNativePlaneZoom(plane, factor) {
+  const normalizedPlane = plane === "chatgpt" ? "chatgpt" : "codex";
+  const zoomFactor = clampZoomFactor(factor);
+  nativePlaneZoomFactors[normalizedPlane] = zoomFactor;
+  const view = viewForZoomPlane(normalizedPlane);
+  if (view?.webContents && !view.webContents.isDestroyed()) view.webContents.setZoomFactor(zoomFactor);
+  emitShellEvent({
+    type: "plane-zoom-state",
+    plane: normalizedPlane,
+    zoomFactor,
+    at: nowIso(),
+  });
+  return { ok: true, plane: normalizedPlane, zoomFactor };
+}
+
+function adjustPlaneZoom(plane, direction) {
+  if (plane === "middle") return ensureMiddleWebHost().adjustZoom(direction);
+  const normalizedPlane = plane === "chatgpt" ? "chatgpt" : "codex";
+  return setNativePlaneZoom(
+    normalizedPlane,
+    nativePlaneZoomFactors[normalizedPlane] + zoomDeltaForDirection(direction),
+  );
 }
 
 function nextSurfaceActivationEpoch() {
@@ -2225,6 +2259,12 @@ function isPermittedNavigationUrl(rawUrl, surfaceName) {
 
 function configureGuestSurface(surfaceName, view) {
   const contents = view.webContents;
+  const zoomPlane = surfaceName === "chatgpt" ? "chatgpt" : "codex";
+  contents.setZoomFactor(nativePlaneZoomFactors[zoomPlane]);
+  contents.on("zoom-changed", (event, direction) => {
+    event.preventDefault();
+    adjustPlaneZoom(zoomPlane, direction);
+  });
   contents.setWindowOpenHandler(({ url }) => {
     if (surfaceName === "chatgpt" && isLikelyChatAuthOrAppUrl(url)) {
       setImmediate(() => {
@@ -3153,6 +3193,16 @@ ipcMain.handle("middle-web:open-external", async () => ensureMiddleWebHost().ope
 ipcMain.handle("middle-web:copy-url", async () => ensureMiddleWebHost().copyUrl());
 
 ipcMain.handle("middle-web:snapshot", async () => ensureMiddleWebHost().snapshot());
+
+ipcMain.handle("plane-zoom:adjust", async (_event, payload) => {
+  return adjustPlaneZoom(normalizeString(payload?.plane, "middle"), payload?.direction);
+});
+
+ipcMain.handle("plane-zoom:set", async (_event, payload) => {
+  const plane = normalizeString(payload?.plane, "middle");
+  if (plane === "middle") return ensureMiddleWebHost().setZoomFactor(payload?.zoomFactor);
+  return setNativePlaneZoom(plane, payload?.zoomFactor);
+});
 
 ipcMain.handle("external:open-url", async (_event, payload) => {
   const rawUrl = normalizeString(payload?.url, "");
