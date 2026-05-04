@@ -198,6 +198,10 @@ function buildRuntimeCapabilityProfile(session) {
       canSetProjectDefault: false,
       canLiveUpdate: false,
     },
+    serviceTier: {
+      canSetNextTurn: ready,
+      availableTiers: ["fast", "flex"],
+    },
     authority: {
       commandApproval: ready,
       fileChangeApproval: ready,

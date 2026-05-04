@@ -89,6 +89,7 @@ function buildSettingsProjection(capabilities, evidenceRefs = []) {
   const caps = capabilities || {};
   const modelNextTurn = caps.model?.canSetNextTurn === true;
   const reasoningNextTurn = caps.reasoning?.canSetNextTurn === true;
+  const serviceTierNextTurn = caps.serviceTier?.canSetNextTurn === true;
   const approvalNextTurn = caps.authority?.canSetNextTurnApprovalPolicy === true;
   const sandboxNextTurn = caps.authority?.canSetNextTurnSandbox === true;
   const canReadRateLimits = caps.usage?.canReadRateLimits === true;
@@ -108,6 +109,14 @@ function buildSettingsProjection(capabilities, evidenceRefs = []) {
       configuredDefault: "",
       availableEfforts: [],
       scopes: scopeSupport(reasoningNextTurn, evidenceRefs, "Provider does not expose next-turn reasoning override."),
+      evidenceRefs,
+    },
+    serviceTier: {
+      source: "runtime_probe",
+      activeLabel: "",
+      configuredDefault: "",
+      availableTiers: Array.isArray(caps.serviceTier?.availableTiers) ? caps.serviceTier.availableTiers : [],
+      scopes: scopeSupport(serviceTierNextTurn, evidenceRefs, "Provider does not expose next-turn speed override."),
       evidenceRefs,
     },
     access: {
@@ -190,6 +199,7 @@ function buildRuntimeProviderProfile(session, capabilities) {
       settingsProjection: {
         model: { source: "served_by_provider", activeLabel: "", configuredDefault: "", canList: false, availableModels: [], scopes: scopeSupport(false, [directEvidence], "Direct provider backend is not implemented."), evidenceRefs: [directEvidence] },
         reasoning: { source: "served_by_provider", activeLabel: "", configuredDefault: "", availableEfforts: [], scopes: scopeSupport(false, [directEvidence], "Direct provider backend is not implemented."), evidenceRefs: [directEvidence] },
+        serviceTier: { source: "served_by_provider", activeLabel: "", configuredDefault: "", availableTiers: [], scopes: scopeSupport(false, [directEvidence], "Direct provider backend is not implemented."), evidenceRefs: [directEvidence] },
         access: {
           source: "served_by_provider",
           approvalPolicies: [],

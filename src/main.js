@@ -2403,13 +2403,13 @@ async function discoverCodexThreadsForAnalytics(project) {
   }
 }
 
-async function readCodexThreadTranscript(projectId, threadId, sourceHome = "", sessionFilePath = "") {
+async function readCodexThreadTranscript(projectId, threadId, sourceHome = "", sessionFilePath = "", limit = 800) {
   const project = await getProjectById(projectId);
   const result = await requestWorkspace(project, "readCodexThreadTranscript", {
     threadId,
     sourceHome: normalizeString(sourceHome, ""),
     sessionFilePath: normalizeString(sessionFilePath, ""),
-    limit: 800,
+    limit: Number.isFinite(Number(limit)) ? Number(limit) : 800,
   }, 45_000);
   return {
     ...result,
@@ -3149,6 +3149,7 @@ ipcMain.handle("codex-thread:transcript", async (_event, payload) => {
     payload?.threadId,
     payload?.sourceHome,
     payload?.sessionFilePath,
+    payload?.limit,
   );
 });
 

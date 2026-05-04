@@ -10,8 +10,8 @@ contextBridge.exposeInMainWorld("codexSurfaceBridge", {
   reportThreadState: (state) => ipcRenderer.invoke("codex-surface:thread-state", state),
   openExternalUrl: (url) => ipcRenderer.invoke("external:open-url", { url }),
   revealProjectFile: (projectId, relPath) => ipcRenderer.invoke("worktree:reveal-file", { projectId, relPath }),
-  readStoredThreadTranscript: (projectId, threadId, sourceHome = "", sessionFilePath = "") =>
-    ipcRenderer.invoke("codex-thread:transcript", { projectId, threadId, sourceHome, sessionFilePath }),
+  readStoredThreadTranscript: (projectId, threadId, sourceHome = "", sessionFilePath = "", limit = 800) =>
+    ipcRenderer.invoke("codex-thread:transcript", { projectId, threadId, sourceHome, sessionFilePath, limit }),
   onEvent: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on("codex-surface:event", listener);
