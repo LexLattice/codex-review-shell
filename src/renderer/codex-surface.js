@@ -2542,7 +2542,6 @@ async function refreshCurrentHistorySource() {
   if (
     state.historyKind === "stored" &&
     storedSnapshot?.presentationModel &&
-    presentationProcessEvidenceCount(storedSnapshot.presentationModel) > 0 &&
     bridge?.readStoredThreadTranscript
   ) {
     const snapshot = await readStoredThreadTranscript(currentThreadId, state.sourceHome, state.sessionFilePath);
@@ -2959,23 +2958,6 @@ function storedStartTurnIndex(turns, hiddenUserMessages) {
   return 0;
 }
 
-function presentationProcessEvidenceCount(model) {
-  const turns = Array.isArray(model?.turns) ? model.turns : [];
-  const turnCount = turns.reduce((sum, turn) =>
-    sum + (Array.isArray(turn?.thoughtItems) ? turn.thoughtItems.filter(shouldRenderThoughtItem).length : 0), 0);
-  const orphanCount = Array.isArray(model?.orphanItems) ? model.orphanItems.filter(shouldRenderThoughtItem).length : 0;
-  return turnCount + orphanCount;
-}
-
-function liveThreadProcessEvidenceCount(thread) {
-  const turns = Array.isArray(thread?.turns) ? thread.turns : [];
-  return turns.reduce((sum, turn) => {
-    const items = Array.isArray(turn?.items) ? turn.items : [];
-    return sum + items.filter((item) =>
-      (isThoughtItem(item) || isThoughtAssistantMessageItem(item)) && shouldRenderThoughtItem(item)).length;
-  }, 0);
-}
-
 function renderedStoredSnapshotForThread(threadId) {
   const id = String(threadId || state.threadId || "").trim();
   if (!id) return null;
@@ -2987,10 +2969,7 @@ function renderedStoredSnapshotForThread(threadId) {
 
 function shouldPreserveStoredTranscriptOnLiveAttach(thread) {
   const snapshot = renderedStoredSnapshotForThread(thread?.id || state.threadId);
-  const storedCount = presentationProcessEvidenceCount(snapshot?.presentationModel);
-  if (!storedCount) return false;
-  const liveCount = liveThreadProcessEvidenceCount(thread);
-  return liveCount < storedCount;
+  return Boolean(snapshot?.presentationModel);
 }
 
 function renderStoredPresentationModel(model) {
@@ -3439,7 +3418,11 @@ function normalizeThoughtItemBody(item) {
 
 function isEmptyThoughtSentinel(text) {
   const normalized = String(text || "").trim().toLowerCase();
-  return !normalized || normalized === "no reasoning text.";
+  return !normalized ||
+    normalized === "no reasoning text." ||
+    normalized === "reasoning not available" ||
+    normalized === "reasoning unavailable" ||
+    normalized === "no reasoning available";
 }
 
 function shouldRenderThoughtItem(item) {
