@@ -1,4 +1,12 @@
 const { WebContentsView, clipboard, session, shell } = require("electron");
+const {
+  PLANE_ZOOM_DEFAULT,
+  PLANE_ZOOM_MAX,
+  PLANE_ZOOM_MIN,
+  PLANE_ZOOM_STEP,
+  clampZoomFactor,
+  zoomDeltaForDirection,
+} = require("../shared/plane-zoom");
 
 const MIDDLE_WEB_PARTITION = "persist:middle-web";
 
@@ -134,6 +142,7 @@ class MiddleWebHost {
     this.state = blankState();
     this.layout = { visible: false, bounds: offscreenBounds(), layoutRevision: 0 };
     this.nativeSurfacesVisible = true;
+    this.zoomFactor = PLANE_ZOOM_DEFAULT;
     this.webSession = session.fromPartition(MIDDLE_WEB_PARTITION);
     this.downloadHandler = null;
     this.configureSession();
@@ -166,6 +175,11 @@ class MiddleWebHost {
 
   configureView(view) {
     const contents = view.webContents;
+    contents.setZoomFactor(this.zoomFactor);
+    contents.on("zoom-changed", (event, direction) => {
+      event.preventDefault();
+      this.adjustZoom(direction);
+    });
     contents.setWindowOpenHandler(({ url }) => {
       const decision = navigationDecision(url);
       if (decision.action === "allow") {
@@ -431,6 +445,24 @@ class MiddleWebHost {
     return { ok: true, displayUrl: decision.displayUrl };
   }
 
+  setZoomFactor(factor) {
+    this.zoomFactor = clampZoomFactor(factor);
+    if (this.view?.webContents && !this.view.webContents.isDestroyed()) {
+      this.view.webContents.setZoomFactor(this.zoomFactor);
+    }
+    this.emitShellEvent({
+      type: "plane-zoom-state",
+      plane: "middle",
+      zoomFactor: this.zoomFactor,
+      at: nowIso(),
+    });
+    return { ok: true, plane: "middle", zoomFactor: this.zoomFactor };
+  }
+
+  adjustZoom(direction) {
+    return this.setZoomFactor(this.zoomFactor + zoomDeltaForDirection(direction));
+  }
+
   snapshot() {
     this.updateFromContents();
     return { ...this.state };
@@ -440,5 +472,11 @@ class MiddleWebHost {
 module.exports = {
   MiddleWebHost,
   MIDDLE_WEB_PARTITION,
+  PLANE_ZOOM_MAX,
+  PLANE_ZOOM_MIN,
+  PLANE_ZOOM_STEP,
+  PLANE_ZOOM_DEFAULT,
+  clampZoomFactor,
   navigationDecision,
+  zoomDeltaForDirection,
 };

@@ -41,11 +41,12 @@
           </div>
           <div class="control-status">
             <span class="pill">dual-partner binding</span>
+            <span id="selectedProjectPill" class="pill subtle truncate">Loading project…</span>
             <span id="lastEvent" class="muted truncate">Ready.</span>
           </div>
         </header>
 
-        <section class="selected-card">
+        <section class="selected-card" hidden aria-hidden="true">
           <p class="eyebrow">Selected project</p>
           <h2 id="selectedProjectName">Loading…</h2>
           <p id="repoPath" class="mono muted truncate">—</p>

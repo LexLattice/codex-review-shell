@@ -25,6 +25,18 @@ const HANDOFF_KINDS = {
 };
 const ACTIVE_HANDOFF_STATUSES = new Set(["staged", "copied", "opened-thread", "submitted-manually", "response-pending", "response-captured"]);
 const CHATGPT_ALLOWED_HOSTS = new Set(["chatgpt.com", "www.chatgpt.com", "chat.openai.com", "www.chat.openai.com"]);
+const ZOOM_POLICY = bridge?.zoomConstants || {};
+// Fallbacks are only used when preload is absent; normal runtime gets these
+// values from the shared zoom policy exposed through the bridge.
+const NORMAL_ZOOM_FALLBACK = 1;
+const NO_ZOOM_DELTA = 0;
+
+function zoomPolicyValue(name, fallback = NORMAL_ZOOM_FALLBACK) {
+  const value = Number(ZOOM_POLICY?.[name]);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+const PLANE_ZOOM_DEFAULT = zoomPolicyValue("PLANE_ZOOM_DEFAULT");
 
 const state = {
   config: null,
@@ -48,6 +60,9 @@ const state = {
     securityPosture: "unknown",
   },
   middleWebLayoutRevision: 0,
+  planeZooms: {
+    middle: PLANE_ZOOM_DEFAULT,
+  },
   analyticsThreads: [],
   analyticsStatus: "idle",
   analyticsDashboard: null,
@@ -99,6 +114,7 @@ const state = {
 const els = {
   appShell: document.getElementById("appShell"),
   controlPlane: document.querySelector(".control-plane"),
+  selectedProjectPill: document.getElementById("selectedProjectPill"),
   selectedProjectName: document.getElementById("selectedProjectName"),
   repoPath: document.getElementById("repoPath"),
   workspacePath: document.getElementById("workspacePath"),
@@ -1024,6 +1040,49 @@ function setLastEvent(message) {
   els.lastEvent.title = message;
 }
 
+function clampPlaneZoom(value) {
+  return typeof bridge?.clampPlaneZoom === "function" ? bridge.clampPlaneZoom(value) : PLANE_ZOOM_DEFAULT;
+}
+
+function zoomDeltaForDirection(direction) {
+  return typeof bridge?.zoomDeltaForDirection === "function" ? bridge.zoomDeltaForDirection(direction) : NO_ZOOM_DELTA;
+}
+
+function applyMiddlePlaneZoom(value) {
+  const zoomFactor = clampPlaneZoom(value);
+  state.planeZooms.middle = zoomFactor;
+  document.documentElement.style.setProperty("--middle-plane-zoom", zoomFactor.toFixed(2));
+  scheduleResizeBurst();
+}
+
+function planeFromWheelTarget(target) {
+  const element = target instanceof Element ? target : target?.parentElement;
+  if (!element) return "";
+  if (els.controlPlane?.contains(element)) return "middle";
+  if (els.codexSlot?.contains(element) || element.closest?.(".codex-plane")) return "codex";
+  if (els.chatgptSlot?.contains(element) || element.closest?.(".chatgpt-plane")) return "chatgpt";
+  return "";
+}
+
+function directionFromWheel(event) {
+  return event.deltaY < 0 ? "in" : "out";
+}
+
+function handlePlaneZoomWheel(event) {
+  if (!event.ctrlKey) return;
+  const plane = planeFromWheelTarget(event.target);
+  if (!plane) return;
+  event.preventDefault();
+  const direction = directionFromWheel(event);
+  if (plane === "middle") {
+    const next = clampPlaneZoom(state.planeZooms.middle + zoomDeltaForDirection(direction));
+    applyMiddlePlaneZoom(next);
+    bridge.adjustPlaneZoom?.("middle", direction).catch(() => {});
+    return;
+  }
+  bridge.adjustPlaneZoom?.(plane, direction).catch(() => {});
+}
+
 function formatBytes(bytes) {
   const number = Number(bytes) || 0;
   if (number < 1024) return `${number} B`;
@@ -1169,6 +1228,8 @@ function renderSelectedProject() {
   const nonArchivedThreads = chatThreads(project).filter((thread) => !thread.archived);
 
   els.selectedProjectName.textContent = project.name;
+  els.selectedProjectPill.textContent = project.name;
+  els.selectedProjectPill.title = workspaceText;
   els.repoPath.textContent = project.repoPath;
   els.repoPath.title = project.repoPath;
   els.workspacePath.textContent = workspaceText;
@@ -3359,6 +3420,7 @@ function bindEvents() {
   els.rightSplitter.addEventListener("pointerdown", (event) => beginDrag("right", event));
 
   window.addEventListener("resize", scheduleResizeBurst);
+  document.addEventListener("wheel", handlePlaneZoomWheel, { passive: false, capture: true });
   if (window.visualViewport) window.visualViewport.addEventListener("resize", scheduleResizeBurst);
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) scheduleResizeBurst();
@@ -3414,6 +3476,9 @@ function bindEvents() {
       if (event.webEventType === "navigation-blocked") setLastEvent(event.lastError || "Middle Web navigation blocked.");
       else if (event.webEventType === "load-failed") setLastEvent(`Middle Web load failed: ${event.lastError || event.errorDescription || "unknown error"}`);
     }
+    if (event.type === "plane-zoom-state" && event.plane === "middle") {
+      applyMiddlePlaneZoom(event.zoomFactor);
+    }
     if (event.type === "backend-status" && event.session?.projectId) {
       state.workspaceStatuses[event.session.projectId] = event.session;
       renderSelectedProject();
@@ -3450,6 +3515,7 @@ async function init() {
     document.body.innerHTML = "<main style='padding:24px;color:white'>Electron preload bridge is unavailable.</main>";
     return;
   }
+  applyMiddlePlaneZoom(PLANE_ZOOM_DEFAULT);
   bindEvents();
   const result = await bridge.loadConfig();
   state.config = result.config;
