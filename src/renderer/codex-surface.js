@@ -2877,9 +2877,15 @@ function renderStoredPresentationModel(model) {
   for (let index = 0; index < visibleTurns.length; index += 1) {
     const turn = visibleTurns[index];
     const turnKey = String(turn.turnKey || turn.turnId || `stored_turn_${startTurnIndex + index + 1}`);
-    for (const message of turn.userMessages || []) {
-      const id = String(message.id || `stored_user_${turnKey}_${index}`);
+    for (let messageIndex = 0; messageIndex < (turn.userMessages || []).length; messageIndex += 1) {
+      const message = turn.userMessages[messageIndex];
+      const id = String(message.id || `stored_user_${turnKey}_${messageIndex}`);
       setMessageText(id, "user", storedMessageText(message), "You");
+    }
+    for (let messageIndex = 0; messageIndex < (turn.systemMessages || []).length; messageIndex += 1) {
+      const message = turn.systemMessages[messageIndex];
+      const id = String(message.id || `stored_system_${turnKey}_${messageIndex}`);
+      setMessageText(id, "system", storedMessageText(message), "System");
     }
     const thoughtItems = Array.isArray(turn.thoughtItems) ? turn.thoughtItems : [];
     if (thoughtItems.length) {
@@ -2889,8 +2895,9 @@ function renderStoredPresentationModel(model) {
         turnId: turn.turnId || turnKey,
       })), { merge: false });
     }
-    for (const message of turn.assistantFinalMessages || []) {
-      const id = String(message.id || `stored_assistant_${turnKey}_${index}`);
+    for (let messageIndex = 0; messageIndex < (turn.assistantFinalMessages || []).length; messageIndex += 1) {
+      const message = turn.assistantFinalMessages[messageIndex];
+      const id = String(message.id || `stored_assistant_${turnKey}_${messageIndex}`);
       setMessageText(id, "assistant", storedMessageText(message), "Codex");
     }
   }

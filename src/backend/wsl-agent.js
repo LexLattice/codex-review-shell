@@ -767,7 +767,7 @@ function extractContentText(content = []) {
 }
 
 function compactStoredText(value, maxLength = CODEX_STORED_PROCESS_TEXT_LIMIT) {
-  const text = typeof value === "string" ? value : JSON.stringify(value ?? "", null, 2);
+  const text = typeof value === "string" ? value : value == null ? "" : JSON.stringify(value, null, 2);
   const normalized = String(text || "").trim();
   if (!normalized) return "";
   const limit = Math.max(80, Number(maxLength) || CODEX_STORED_PROCESS_TEXT_LIMIT);
@@ -812,6 +812,7 @@ function createTranscriptTurn(turnId, rowIndex, kind) {
     turnId: stableId,
     sourceRows: [{ rowIndex, kind }],
     userMessages: [],
+    systemMessages: [],
     assistantFinalMessages: [],
     thoughtItems: [],
     status: "unknown",
@@ -861,7 +862,11 @@ function createStoredPresentationBuilder(threadId, sourceFile) {
 
   function addMessage(turn, target, message) {
     if (!turn || !message?.text) return;
-    const list = target === "user" ? turn.userMessages : turn.assistantFinalMessages;
+    const list = target === "user"
+      ? turn.userMessages
+      : target === "system"
+        ? turn.systemMessages
+        : turn.assistantFinalMessages;
     const previous = list[list.length - 1];
     if (
       previous &&
@@ -907,6 +912,10 @@ function createStoredPresentationBuilder(threadId, sourceFile) {
 
   function callKey(turn, callId, fallback) {
     return `${turn?.turnKey || "orphan"}:${String(callId || fallback || "").trim()}`;
+  }
+
+  function existingCallItem(turn, callId, fallbackId) {
+    return callItems.get(callKey(turn, callId, fallbackId));
   }
 
   function mergeCallItem(turn, callId, fallbackId, patch) {
@@ -982,6 +991,7 @@ function createStoredPresentationBuilder(threadId, sourceFile) {
       else if (message.role === "assistant" && String(phase).toLowerCase() === "commentary") {
         addThoughtItem(turn, { ...base, id: `stored_agent_${rowIndex}`, type: "agentMessage", phase: "commentary", text });
       } else if (message.role === "assistant") addMessage(turn, "assistant", message);
+      else addMessage(turn, "system", message);
       return;
     }
 
@@ -1074,6 +1084,19 @@ function createStoredPresentationBuilder(threadId, sourceFile) {
 
     if (row.type === "response_item" && payloadType === "function_call_output") {
       const callId = String(payload.call_id || "");
+      const existing = existingCallItem(turn, callId, rowIndex);
+      if (existing?.type === "dynamicToolCall") {
+        mergeCallItem(turn, callId, rowIndex, {
+          ...base,
+          id: existing.id || `stored_tool_${callId || rowIndex}`,
+          type: "dynamicToolCall",
+          status: "completed",
+          tool: existing.tool || String(payload.name || payload.tool_name || "tool"),
+          contentItems: compactStoredText(payload.output || payload.result || payload, 1200),
+          callId,
+        });
+        return;
+      }
       mergeCallItem(turn, callId, rowIndex, {
         ...base,
         id: `stored_command_${callId || rowIndex}`,
@@ -1148,7 +1171,10 @@ function primaryProjectionCount(turn) {
   const thoughtMessages = Array.isArray(turn?.thoughtItems)
     ? turn.thoughtItems.filter((item) => item?.type === "agentMessage").length
     : 0;
-  return (turn?.userMessages?.length || 0) + (turn?.assistantFinalMessages?.length || 0) + thoughtMessages;
+  return (turn?.userMessages?.length || 0) +
+    (turn?.systemMessages?.length || 0) +
+    (turn?.assistantFinalMessages?.length || 0) +
+    thoughtMessages;
 }
 
 function trimPresentationModel(model, limit) {
@@ -1176,6 +1202,7 @@ function legacyEntriesFromPresentationModel(model) {
   const entries = [];
   for (const turn of model?.turns || []) {
     for (const message of turn.userMessages || []) entries.push(message);
+    for (const message of turn.systemMessages || []) entries.push(message);
     for (const item of turn.thoughtItems || []) {
       if (item?.type !== "agentMessage") continue;
       entries.push({
