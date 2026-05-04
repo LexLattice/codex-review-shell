@@ -1058,6 +1058,14 @@ textarea {
   background: rgba(255, 255, 255, 0.035);
 }
 
+#composerQuotaChip {
+  flex: 1 1 var(--composer-quota-max-width, 320px);
+  max-width: var(--composer-quota-max-width, 320px);
+  min-width: min(250px, var(--composer-quota-max-width, 320px));
+  justify-content: flex-start;
+  font-size: 11.5px;
+}
+
 #composerQuotaChip::before {
   content: "↯";
   color: #9fd2ff;
@@ -1090,13 +1098,24 @@ textarea {
   left: auto;
   right: 0;
   width: var(--composer-model-menu-width);
+  height: var(--composer-model-menu-height, 360px);
   max-width: min(var(--composer-popover-max-width), calc(100vw - 24px));
 }
 
 .composer-cascade-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(132px, 0.7fr) minmax(170px, 1.3fr);
   gap: 8px;
+  min-height: 0;
+  height: 100%;
+}
+
+.composer-axis-column {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
 }
 
 .composer-menu-section {
@@ -1109,7 +1128,7 @@ textarea {
   margin: 0 0 4px;
   padding: 0 2px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: max(9px, calc(var(--composer-menu-font-size, 12px) - 2px));
   font-weight: 700;
 }
 
@@ -1118,13 +1137,14 @@ textarea {
   align-items: center;
   gap: 8px;
   justify-content: flex-start;
-  min-height: 30px;
+  min-height: var(--composer-menu-row-height, 28px);
   width: 100%;
   padding: 0 8px;
   border: 0;
   border-radius: 9px;
   background: transparent;
   color: var(--text);
+  font-size: var(--composer-menu-font-size, 12px);
   text-align: left;
   white-space: nowrap;
   overflow: hidden;
@@ -1145,7 +1165,7 @@ textarea {
 .composer-menu-note {
   margin: 4px 2px 0;
   color: var(--muted);
-  font-size: 11px;
+  font-size: max(9px, calc(var(--composer-menu-font-size, 12px) - 2px));
   line-height: 1.35;
 }
 
@@ -1192,7 +1212,7 @@ button {
 }
 
 .composer-shell[data-composer-size="medium"] .composer-cascade-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(120px, 0.74fr) minmax(155px, 1.26fr);
 }
 
 .composer-shell[data-composer-size="narrow"] .composer-cascade-grid {
