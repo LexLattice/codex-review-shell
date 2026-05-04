@@ -93,6 +93,7 @@ function buildSettingsProjection(capabilities, evidenceRefs = []) {
   const approvalNextTurn = caps.authority?.canSetNextTurnApprovalPolicy === true;
   const sandboxNextTurn = caps.authority?.canSetNextTurnSandbox === true;
   const canReadRateLimits = caps.usage?.canReadRateLimits === true;
+  const canReadContextUsage = caps.usage?.canReadContextUsage === true || caps.usage?.contextPressure?.canRead === true;
   return {
     model: {
       source: "runtime_probe",
@@ -142,9 +143,10 @@ function buildSettingsProjection(capabilities, evidenceRefs = []) {
       canReadRateLimits,
       rateLimitMethod: canReadRateLimits ? "account/rateLimits/read" : "",
       contextPressure: {
-        canRead: false,
-        source: "",
-        evidenceRefs: [],
+        canRead: canReadContextUsage,
+        source: canReadContextUsage ? "thread/tokenUsage/updated" : "",
+        eventSource: canReadContextUsage ? "thread/tokenUsage/updated" : "",
+        evidenceRefs,
       },
       evidenceRefs,
     },

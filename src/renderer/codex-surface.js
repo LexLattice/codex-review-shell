@@ -28,6 +28,7 @@ const SANDBOX_MODE_OPTIONS = ["", "read-only", "workspace-write", "danger-full-a
 const MODEL_LIST_PAGE_LIMIT = 100;
 const MODEL_LIST_PAGE_SIZE = 100;
 const RATE_LIMIT_STALE_MS = 5 * 60 * 1000;
+const CONTEXT_BASELINE_TOKENS = 12000;
 const THOUGHT_ITEM_TYPES = new Set([
   "reasoning",
   "commandExecution",
@@ -63,6 +64,9 @@ const state = {
   rateLimitsStatus: "idle",
   rateLimitsError: "",
   rateLimitsObservedAt: 0,
+  tokenUsage: null,
+  tokenUsageStatus: "idle",
+  tokenUsageObservedAt: 0,
   configRequirements: null,
   configRequirementsStatus: "idle",
   configRequirementsError: "",
@@ -541,8 +545,109 @@ function composerQuotaLabel() {
   return quotaEvidenceStale() ? `${label} · stale` : label;
 }
 
-function contextUsageLabel() {
-  return "context: not exposed";
+function numericField(source, ...keys) {
+  for (const key of keys) {
+    const value = Number(source?.[key]);
+    if (Number.isFinite(value)) return value;
+  }
+  return null;
+}
+
+function formatCompactTokens(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount < 0) return "";
+  if (amount === 0) return "0";
+  if (amount >= 1_000_000) return `${(amount / 1_000_000).toFixed(amount >= 10_000_000 ? 0 : 1)}M`;
+  if (amount >= 1000) return `${(amount / 1000).toFixed(amount >= 10_000 ? 0 : 1)}k`;
+  return String(Math.round(amount));
+}
+
+function normalizeTokenUsageBreakdown(raw) {
+  const value = raw && typeof raw === "object" ? raw : {};
+  return {
+    totalTokens: numericField(value, "totalTokens", "total_tokens") ?? 0,
+    inputTokens: numericField(value, "inputTokens", "input_tokens") ?? 0,
+    cachedInputTokens: numericField(value, "cachedInputTokens", "cached_input_tokens") ?? 0,
+    outputTokens: numericField(value, "outputTokens", "output_tokens") ?? 0,
+    reasoningOutputTokens: numericField(value, "reasoningOutputTokens", "reasoning_output_tokens") ?? 0,
+  };
+}
+
+function normalizeThreadTokenUsageUpdate(params) {
+  const raw = params?.tokenUsage || params?.token_usage || params || {};
+  return {
+    threadId: String(params?.threadId || params?.thread_id || ""),
+    turnId: String(params?.turnId || params?.turn_id || ""),
+    total: normalizeTokenUsageBreakdown(raw.total || raw.total_token_usage),
+    last: normalizeTokenUsageBreakdown(raw.last || raw.last_token_usage),
+    modelContextWindow: numericField(raw, "modelContextWindow", "model_context_window"),
+  };
+}
+
+function remainingContextPercent(tokensInWindow, contextWindow) {
+  const window = Number(contextWindow);
+  const tokens = Number(tokensInWindow);
+  if (!Number.isFinite(window) || !Number.isFinite(tokens) || window <= CONTEXT_BASELINE_TOKENS) return null;
+  const effectiveWindow = window - CONTEXT_BASELINE_TOKENS;
+  const used = Math.max(0, tokens - CONTEXT_BASELINE_TOKENS);
+  const remaining = Math.max(0, effectiveWindow - used);
+  return Math.round(Math.max(0, Math.min(100, (remaining / effectiveWindow) * 100)));
+}
+
+function contextUsageProjection() {
+  const usage = state.tokenUsage;
+  if (!usage) {
+    const status = state.tokenUsageStatus === "failed" ? "failed" : "not_exposed";
+    return {
+      label: status === "failed" ? "context unavailable" : "context: not exposed",
+      compactLabel: status === "failed" ? "context unavailable" : "context unknown",
+      status,
+      evidenceRefs: [evidenceRef("app_server_probe", "No thread/tokenUsage/updated event has been observed for this Codex thread", {
+        status: "unavailable",
+        confidence: "unknown",
+      })],
+    };
+  }
+
+  const window = Number(usage.modelContextWindow || 0);
+  const lastTokens = Number(usage.last?.totalTokens || 0);
+  const totalTokens = Number(usage.total?.totalTokens || 0);
+  const remaining = remainingContextPercent(lastTokens, window);
+  const usedPercent = remaining == null ? null : Math.max(0, Math.min(100, 100 - remaining));
+  const tokenLabel = formatCompactTokens(remaining == null ? totalTokens : lastTokens);
+  const windowLabel = formatCompactTokens(window);
+  const compactLabel = usedPercent == null
+    ? tokenLabel ? `context ${tokenLabel}` : "context available"
+    : `context ${usedPercent}%`;
+  const detail = usedPercent == null
+    ? tokenLabel ? `context: ${tokenLabel} tokens used` : "context: available"
+    : `context: ${usedPercent}% used`;
+  const label = windowLabel ? `${detail} · ${tokenLabel || "0"} / ${windowLabel} window` : detail;
+  return {
+    label,
+    compactLabel,
+    status: "available",
+    percentUsed: usedPercent,
+    percentRemaining: remaining,
+    tokensInContext: remaining == null ? totalTokens : lastTokens,
+    totalTokens,
+    modelContextWindow: window || null,
+    observedAt: state.tokenUsageObservedAt ? new Date(state.tokenUsageObservedAt).toISOString() : "",
+    tokenUsage: usage,
+    evidenceRefs: [evidenceRef("app_server_probe", "thread/tokenUsage/updated provided token usage and model context window", {
+      confidence: "proven",
+    })],
+  };
+}
+
+function applyThreadTokenUsageUpdate(params) {
+  const usage = normalizeThreadTokenUsageUpdate(params);
+  if (usage.threadId && state.threadId && String(usage.threadId) !== String(state.threadId)) return false;
+  state.tokenUsage = usage;
+  state.tokenUsageStatus = "ready";
+  state.tokenUsageObservedAt = Date.now();
+  renderRuntimeConstitution();
+  return true;
 }
 
 function turnIsActive() {
@@ -663,14 +768,21 @@ function buildRuntimeConstitution() {
     error: state.rateLimitsError,
     evidenceRefs: [evidenceRef("provider_quota", state.rateLimitsError || "OpenAI account quota percentage is not exposed to this surface yet", { status: "unavailable", confidence: "unknown" })],
   };
+  const projectedContextUsage = contextUsageProjection();
   const contextPressure = {
-    label: "context: not exposed",
-    status: "not_exposed",
-    evidenceRefs: [evidenceRef("app_server_probe", "Context pressure is not exposed by current runtime events", { status: "unavailable", confidence: "unknown" })],
+    canRead: settingsProjection.usage?.contextPressure?.canRead === true ||
+      hasCapabilityForMutation("usage", "canReadContextUsage"),
+    eventName: settingsProjection.usage?.contextPressure?.eventSource ||
+      settingsProjection.usage?.contextPressure?.source ||
+      capabilityArea("usage").contextUsageEvent ||
+      "thread/tokenUsage/updated",
+    ...projectedContextUsage,
   };
   const usageLabel = providerQuota.status === "available"
     ? providerQuota.label
-    : turnCount || commandCount || approvalCount || toolCallCount
+    : contextPressure.status === "available"
+      ? contextPressure.label
+      : turnCount || commandCount || approvalCount || toolCallCount
       ? `activity: ${turnCount} turn${turnCount === 1 ? "" : "s"}`
       : "usage: unknown";
 
@@ -770,7 +882,7 @@ function buildRuntimeConstitution() {
     },
     usage: {
       label: usageLabel,
-      status: providerQuota.status === "available" || turnCount || commandCount || approvalCount || toolCallCount ? "available" : "unknown",
+      status: providerQuota.status === "available" || contextPressure.status === "available" || turnCount || commandCount || approvalCount || toolCallCount ? "available" : "unknown",
       providerQuota,
       contextPressure,
       activity: {
@@ -873,8 +985,8 @@ function runtimeHeaderChips(constitution) {
       label: constitution.usage.label,
       tab: "usage",
       role: "diagnostic",
-      truth: constitution.usage.providerQuota.status === "available" ? "runtime_proven" : "unknown",
-      status: constitution.usage.providerQuota.status === "available" ? "ready" : constitution.usage.status === "available" ? "warning" : "unavailable",
+      truth: constitution.usage.providerQuota.status === "available" || constitution.usage.contextPressure.status === "available" ? "runtime_proven" : "unknown",
+      status: constitution.usage.providerQuota.status === "available" || constitution.usage.contextPressure.status === "available" ? "ready" : constitution.usage.status === "available" ? "warning" : "unavailable",
       evidenceRefs: [
         ...constitution.usage.providerQuota.evidenceRefs,
         ...constitution.usage.contextPressure.evidenceRefs,
@@ -1245,7 +1357,8 @@ function renderComposerRuntimeBand() {
     : state.runtimeOverrides.sandboxMode || state.runtimeOverrides.approvalPolicy || "Access";
   const modelText = `${compactModelLabel()} · ${reasoningLabel()}${state.runtimeOverrides.serviceTier ? ` · ${state.runtimeOverrides.serviceTier}` : ""}`;
   const quotaText = composerQuotaLabel();
-  const contextText = contextUsageLabel();
+  const contextProjection = contextUsageProjection();
+  const contextText = contextProjection.compactLabel;
 
   els.composerAccessButton.textContent = accessText;
   els.composerAccessButton.classList.toggle("danger", state.runtimeOverrides.sandboxMode === "danger-full-access");
@@ -1259,7 +1372,7 @@ function renderComposerRuntimeBand() {
   els.composerQuotaChip.textContent = quotaText;
   els.composerQuotaChip.title = `Provider quota: ${quotaText}. Shown only when exposed by runtime/account evidence.`;
   els.composerContextChip.textContent = contextText;
-  els.composerContextChip.title = `Context pressure: ${contextText}.`;
+  els.composerContextChip.title = `Context pressure: ${contextProjection.label}.`;
 
   els.sendButton.textContent = state.turnStopping ? "Stopping" : active ? "Stop" : "Send";
   els.sendButton.classList.toggle("stop", active);
@@ -1483,6 +1596,12 @@ function runtimeDrawerSections(c, tab) {
       drawerSection("Context Pressure", [
         ["status", c.usage.contextPressure.status],
         ["label", c.usage.contextPressure.label],
+        ["used", c.usage.contextPressure.percentUsed != null ? `${c.usage.contextPressure.percentUsed}%` : "unknown"],
+        ["remaining", c.usage.contextPressure.percentRemaining != null ? `${c.usage.contextPressure.percentRemaining}%` : "unknown"],
+        ["tokens", c.usage.contextPressure.tokensInContext != null ? formatCompactTokens(c.usage.contextPressure.tokensInContext) : "unknown"],
+        ["window", c.usage.contextPressure.modelContextWindow ? formatCompactTokens(c.usage.contextPressure.modelContextWindow) : "unknown"],
+        ["event", c.usage.contextPressure.eventName || "thread/tokenUsage/updated"],
+        ["observed", c.usage.contextPressure.observedAt || "not observed"],
       ], c.usage.contextPressure.evidenceRefs),
       drawerSection("Local Activity", [
         ["turns", c.usage.activity.turnCount],
@@ -1522,6 +1641,7 @@ function runtimeDrawerSections(c, tab) {
         ["access approval override", settingScopeEnabled(caps.provider?.settingsProjection?.access?.scopes?.approvalPolicy) || caps.provider?.settingsProjection?.access?.scopes?.nextTurnApprovalPolicy ? "yes" : "no"],
         ["access sandbox override", settingScopeEnabled(caps.provider?.settingsProjection?.access?.scopes?.sandbox) || caps.provider?.settingsProjection?.access?.scopes?.nextTurnSandbox ? "yes" : "no"],
         ["quota read", caps.provider?.settingsProjection?.usage?.providerQuota?.canRead || caps.provider?.settingsProjection?.usage?.canReadRateLimits ? "yes" : "no"],
+        ["context usage event", caps.provider?.settingsProjection?.usage?.contextPressure?.canRead || caps.usage?.canReadContextUsage ? "yes" : "no"],
         ["requirements", state.configRequirementsStatus || "unknown"],
       ]),
       drawerSection("Requests", [
@@ -3209,6 +3329,9 @@ async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "",
   state.sourceHome = String(sourceHome || "");
   state.sessionFilePath = String(sessionFilePath || "");
   state.liveAttached = false;
+  state.tokenUsage = null;
+  state.tokenUsageStatus = "loading";
+  state.tokenUsageObservedAt = 0;
   clearRenderedThreadState();
   const payloadTitle = requestedThreadId === String(payload.initialThreadId || "") ? payload.initialThreadTitle : "";
   updateSurfaceHeader(titleHint || payloadTitle || requestedThreadId, workspaceText());
@@ -3977,6 +4100,10 @@ function handleNotification(method, params) {
     state.rateLimitsError = "";
     state.rateLimitsObservedAt = Date.now();
     renderRuntimeConstitution();
+    return;
+  }
+  if (method === "thread/tokenUsage/updated") {
+    applyThreadTokenUsageUpdate(params);
     return;
   }
   if (method === "account/login/completed") {
