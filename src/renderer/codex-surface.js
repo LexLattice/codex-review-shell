@@ -25,7 +25,6 @@ const EMPTY_TURN_AUTO_RETRY_LIMIT = 1;
 const DEFAULT_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"];
 const APPROVAL_POLICY_OPTIONS = ["", "untrusted", "on-failure", "on-request", "never"];
 const SANDBOX_MODE_OPTIONS = ["", "read-only", "workspace-write", "danger-full-access"];
-const SERVICE_TIER_OPTIONS = ["", "fast", "flex"];
 const MODEL_LIST_PAGE_LIMIT = 100;
 const MODEL_LIST_PAGE_SIZE = 100;
 const RATE_LIMIT_STALE_MS = 5 * 60 * 1000;
@@ -105,6 +104,7 @@ const state = {
   historyKind: "",
   historyKey: "",
   historyData: null,
+  storedTranscriptSnapshots: new Map(),
   loadedUserMessagePages: 1,
   historyWindow: {
     logicalThreadKey: "",
@@ -364,6 +364,28 @@ function serviceTierLabel() {
   return state.runtimeOverrides.serviceTier || "runtime default";
 }
 
+function defaultReasoningEffort() {
+  return selectedModel()?.defaultReasoningEffort || "";
+}
+
+function defaultServiceTier() {
+  const settingsProjection = providerSettingsProjection();
+  return String(
+    settingsProjection.serviceTier?.defaultTier ||
+    settingsProjection.serviceTier?.defaultServiceTier ||
+    settingsProjection.serviceTier?.defaultValue ||
+    settingsProjection.speed?.defaultTier ||
+    settingsProjection.speed?.defaultServiceTier ||
+    settingsProjection.speed?.defaultValue ||
+    "",
+  ).trim();
+}
+
+function defaultOptionLabel(value, fallback = "Runtime default") {
+  const text = String(value || "").trim();
+  return text ? `${text} · default` : fallback;
+}
+
 function camelOrSnake(value, camelKey, snakeKey) {
   if (!value || typeof value !== "object") return undefined;
   return value[camelKey] ?? value[snakeKey];
@@ -449,7 +471,7 @@ function resetTimestampMs(window) {
 
 function resetLabel(window, compact = false) {
   const timestamp = resetTimestampMs(window);
-  if (!timestamp) return compact ? "reset not exposed" : "unknown";
+  if (!timestamp) return compact ? "--:--" : "unknown";
   const date = new Date(timestamp);
   const label = rateLimitWindowLabel(window, "");
   const options = label === "weekly"
@@ -466,6 +488,12 @@ function quotaWindowShortLabel(window, fallbackLabel = "window") {
   const label = rateLimitWindowLabel(window, fallbackLabel);
   if (label === "weekly") return "W";
   return label;
+}
+
+function quotaWindowPriority(label) {
+  if (label === "5h") return 1;
+  if (label === "W") return 2;
+  return 10;
 }
 
 function quotaWindows(snapshot) {
@@ -498,10 +526,11 @@ function formatQuotaHeader() {
 function composerQuotaLabel() {
   const snapshot = selectRateLimitSnapshot();
   if (!snapshot) return state.rateLimitsStatus === "failed" ? "quota unavailable" : "quota unknown";
-  const windows = quotaWindows(snapshot).sort((a, b) => a.available - b.available);
+  const windows = quotaWindows(snapshot).sort((a, b) =>
+    quotaWindowPriority(a.label) - quotaWindowPriority(b.label) || a.available - b.available);
   if (!windows.length) return quotaEvidenceStale() ? "quota stale" : "quota available";
-  const visible = windows.slice(0, 2).map((entry) => `${entry.label} ${entry.available}% · resets ${entry.reset}`);
-  const label = visible.join(" · ");
+  const visible = windows.slice(0, 2).map((entry) => `${entry.label} ${entry.available}% ${entry.reset}`);
+  const label = visible.join(" / ");
   return quotaEvidenceStale() ? `${label} · stale` : label;
 }
 
@@ -1125,11 +1154,13 @@ function clampNumber(value, min, max) {
 function updateComposerGeometry() {
   if (!els.composerForm) return;
   const shellRect = els.composerForm.getBoundingClientRect();
+  const panelHeight = Math.max(360, document.documentElement.clientHeight || window.innerHeight || 0);
   const shellWidth = Math.max(0, shellRect.width || window.innerWidth || 0);
   const safeWidth = Math.max(180, shellWidth - 24);
   const menuWidth = Math.round(clampNumber(safeWidth * 0.46, 190, 280));
-  const modelMenuWidth = Math.round(clampNumber(safeWidth * 0.68, 240, 460));
-  const witnessWidth = Math.round(clampNumber(safeWidth * 0.18, 82, 220));
+  const modelMenuWidth = Math.round(clampNumber(safeWidth * 0.86, 340, 620));
+  const quotaWidth = Math.round(clampNumber(safeWidth * 0.42, 220, 380));
+  const witnessWidth = Math.round(clampNumber(safeWidth * 0.14, 76, 150));
   const modelPillWidth = Math.round(clampNumber(safeWidth * 0.28, 120, 280));
   const activeTrigger = state.composerMenu === "model"
     ? els.composerModelButton
@@ -1138,14 +1169,23 @@ function updateComposerGeometry() {
       : null;
   const triggerRect = activeTrigger?.getBoundingClientRect?.();
   const topSpace = triggerRect ? Math.max(140, triggerRect.top - 16) : Math.max(160, window.innerHeight * 0.42);
-  const maxHeight = Math.round(clampNumber(topSpace, 140, 360));
+  const modelMenuHeight = Math.round(clampNumber(Math.min(topSpace, panelHeight * 0.54), 240, 430));
+  const maxHeight = state.composerMenu === "model"
+    ? modelMenuHeight
+    : Math.round(clampNumber(topSpace, 140, 360));
+  const menuFont = clampNumber(Math.min(safeWidth / 43, modelMenuHeight / 23), 10.5, 14);
+  const menuRow = Math.round(clampNumber(menuFont * 2.05, 22, 30));
   els.composerForm.style.setProperty("--composer-popover-max-width", `${Math.round(safeWidth)}px`);
   els.composerForm.style.setProperty("--composer-menu-width", `${menuWidth}px`);
   els.composerForm.style.setProperty("--composer-model-menu-width", `${modelMenuWidth}px`);
+  els.composerForm.style.setProperty("--composer-model-menu-height", `${modelMenuHeight}px`);
   els.composerForm.style.setProperty("--composer-popover-max-height", `${maxHeight}px`);
+  els.composerForm.style.setProperty("--composer-menu-font-size", `${menuFont.toFixed(1)}px`);
+  els.composerForm.style.setProperty("--composer-menu-row-height", `${menuRow}px`);
   els.composerForm.style.setProperty("--composer-witness-max-width", `${witnessWidth}px`);
+  els.composerForm.style.setProperty("--composer-quota-max-width", `${quotaWidth}px`);
   els.composerForm.style.setProperty("--composer-model-pill-max-width", `${modelPillWidth}px`);
-  els.composerForm.dataset.composerSize = safeWidth < 470 ? "narrow" : safeWidth < 760 ? "medium" : "wide";
+  els.composerForm.dataset.composerSize = safeWidth < 390 ? "narrow" : safeWidth < 760 ? "medium" : "wide";
 }
 
 function installComposerGeometryObserver() {
@@ -1168,14 +1208,25 @@ function renderComposerAccessMenu() {
   els.composerAccessMenu.appendChild(note);
 }
 
+function composerSelectedOverride(name) {
+  const value = String(state.runtimeOverrides[name] || "");
+  if (name === "model" && value === defaultModelId()) return "";
+  if (name === "reasoningEffort" && value === defaultReasoningEffort()) return "";
+  if (name === "serviceTier" && value === defaultServiceTier()) return "";
+  return value;
+}
+
 function renderComposerModelMenu() {
   if (!els.composerModelMenu) return;
   els.composerModelMenu.innerHTML = "";
   const body = document.createElement("div");
   body.className = "composer-cascade-grid";
-  body.appendChild(composerMenuSection("Intelligence", reasoningOptions(), state.runtimeOverrides.reasoningEffort, (value) => setRuntimeOverride("reasoningEffort", value)));
-  body.appendChild(composerMenuSection("Model", modelOptions().slice(0, 12), state.runtimeOverrides.model, (value) => setRuntimeOverride("model", value)));
-  body.appendChild(composerMenuSection("Speed", serviceTierOptions(), state.runtimeOverrides.serviceTier, (value) => setRuntimeOverride("serviceTier", value)));
+  const leftColumn = document.createElement("div");
+  leftColumn.className = "composer-axis-column";
+  leftColumn.appendChild(composerMenuSection("Intelligence", reasoningOptions(), composerSelectedOverride("reasoningEffort"), (value) => setRuntimeOverride("reasoningEffort", value)));
+  leftColumn.appendChild(composerMenuSection("Speed", serviceTierOptions(), composerSelectedOverride("serviceTier"), (value) => setRuntimeOverride("serviceTier", value)));
+  body.appendChild(leftColumn);
+  body.appendChild(composerMenuSection("Model", composerModelOptions(), composerSelectedOverride("model"), (value) => setRuntimeOverride("model", value)));
   els.composerModelMenu.appendChild(body);
 }
 
@@ -1229,21 +1280,33 @@ function refreshButton(label, onClick) {
 function modelOptions() {
   const visible = state.models.filter((model) => !model?.hidden);
   const rows = visible.length ? visible : state.models;
-  const options = rows.map((model) => ({
-    value: model.model || model.id,
-    label: `${model.displayName || model.model || model.id}${model.isDefault ? " · default" : ""}`,
-  }));
+  const defaultId = defaultModelId();
+  const options = rows
+    .filter((model) => String(model.model || model.id || "") !== String(defaultId || ""))
+    .map((model) => ({
+      value: model.model || model.id,
+      label: model.displayName || model.model || model.id,
+    }));
   const current = activeModelId();
-  if (current && !options.some((option) => option.value === current)) {
+  if (current && current !== defaultId && !options.some((option) => option.value === current)) {
     options.unshift({ value: current, label: current });
   }
-  options.unshift({ value: "", label: "Runtime default" });
+  options.unshift({
+    value: "",
+    label: defaultOptionLabel(modelById(defaultId)?.displayName || defaultId),
+  });
   return options;
+}
+
+function composerModelOptions() {
+  const size = els.composerForm?.dataset?.composerSize || "wide";
+  const limit = size === "narrow" ? 5 : size === "medium" ? 7 : 9;
+  return modelOptions().slice(0, limit);
 }
 
 function reasoningOptions() {
   return [
-    { value: "", label: "Runtime default" },
+    { value: "", label: defaultOptionLabel(defaultReasoningEffort()) },
     ...supportedReasoningOptions().map((effort) => ({ value: effort, label: effort })),
   ];
 }
@@ -1265,8 +1328,8 @@ function serviceTierOptions() {
   const configured = settingsProjection.serviceTier?.availableTiers || settingsProjection.speed?.availableTiers || null;
   const values = Array.isArray(configured) && configured.length
     ? configured.map((value) => String(value || "").trim()).filter(Boolean)
-    : SERVICE_TIER_OPTIONS.filter(Boolean);
-  return ["", ...values].map((value) => ({ value, label: value || "Runtime default" }));
+    : [];
+  return ["", ...values].map((value) => ({ value, label: value || defaultOptionLabel(defaultServiceTier()) }));
 }
 
 function compactModelLabel() {
@@ -1276,7 +1339,11 @@ function compactModelLabel() {
 }
 
 function setRuntimeOverride(name, value) {
-  state.runtimeOverrides[name] = String(value || "");
+  let nextValue = String(value || "");
+  if (name === "model" && nextValue && nextValue === defaultModelId()) nextValue = "";
+  if (name === "reasoningEffort" && nextValue && nextValue === defaultReasoningEffort()) nextValue = "";
+  if (name === "serviceTier" && nextValue && nextValue === defaultServiceTier()) nextValue = "";
+  state.runtimeOverrides[name] = nextValue;
   if (name === "model") {
     const supported = supportedReasoningOptions();
     if (state.runtimeOverrides.reasoningEffort && !supported.includes(state.runtimeOverrides.reasoningEffort)) {
@@ -2456,6 +2523,21 @@ function visibleUserMessageCount(totalUserMessages) {
 async function refreshCurrentHistorySource() {
   const currentThreadId = String(state.threadId || "").trim();
   if (!currentThreadId) return;
+  const storedSnapshot = storedSnapshotForThread(currentThreadId);
+  if (
+    state.historyKind === "stored" &&
+    storedSnapshot?.presentationModel &&
+    presentationProcessEvidenceCount(storedSnapshot.presentationModel) > 0 &&
+    bridge?.readStoredThreadTranscript
+  ) {
+    const snapshot = await readStoredThreadTranscript(currentThreadId, state.sourceHome, state.sessionFilePath);
+    if (String(state.threadId || "") !== currentThreadId || !snapshot?.entries) return;
+    state.historyKind = "stored";
+    state.historyKey = logicalHistoryKey(currentThreadId);
+    state.historyData = { snapshot, threadId: currentThreadId };
+    if (snapshot.presentationModel) state.storedTranscriptSnapshots.set(currentThreadId, snapshot);
+    return;
+  }
   if (state.connected && (hasCapability("threads", "canRead") || hasCapability("threads", "canResume"))) {
     const result = await readThreadById(currentThreadId);
     if (String(state.threadId || "") !== currentThreadId || !result?.thread) return;
@@ -2863,6 +2945,40 @@ function storedStartTurnIndex(turns, hiddenUserMessages) {
   return 0;
 }
 
+function presentationProcessEvidenceCount(model) {
+  const turns = Array.isArray(model?.turns) ? model.turns : [];
+  const turnCount = turns.reduce((sum, turn) =>
+    sum + (Array.isArray(turn?.thoughtItems) ? turn.thoughtItems.filter(shouldRenderThoughtItem).length : 0), 0);
+  const orphanCount = Array.isArray(model?.orphanItems) ? model.orphanItems.filter(shouldRenderThoughtItem).length : 0;
+  return turnCount + orphanCount;
+}
+
+function liveThreadProcessEvidenceCount(thread) {
+  const turns = Array.isArray(thread?.turns) ? thread.turns : [];
+  return turns.reduce((sum, turn) => {
+    const items = Array.isArray(turn?.items) ? turn.items : [];
+    return sum + items.filter((item) =>
+      (isThoughtItem(item) || isThoughtAssistantMessageItem(item)) && shouldRenderThoughtItem(item)).length;
+  }, 0);
+}
+
+function storedSnapshotForThread(threadId) {
+  const id = String(threadId || state.threadId || "").trim();
+  if (!id) return null;
+  if (state.historyKind === "stored" && String(state.historyData?.threadId || "") === id) {
+    return state.historyData.snapshot || null;
+  }
+  return state.storedTranscriptSnapshots.get(id) || null;
+}
+
+function shouldPreserveStoredTranscriptOnLiveAttach(thread) {
+  const snapshot = storedSnapshotForThread(thread?.id || state.threadId);
+  const storedCount = presentationProcessEvidenceCount(snapshot?.presentationModel);
+  if (!storedCount) return false;
+  const liveCount = liveThreadProcessEvidenceCount(thread);
+  return liveCount < storedCount;
+}
+
 function renderStoredPresentationModel(model) {
   const turns = Array.isArray(model?.turns) ? model.turns : [];
   if (!turns.length) return false;
@@ -2915,6 +3031,7 @@ function renderStoredTranscript(snapshot, threadId, options = {}) {
   state.historyKind = "stored";
   state.historyKey = historyKey;
   state.historyData = { snapshot, threadId };
+  if (snapshot?.presentationModel) state.storedTranscriptSnapshots.set(String(threadId || ""), snapshot);
 
   const previousScrollTop = options.preserveViewport ? els.transcript.scrollTop : 0;
   const previousScrollHeight = options.preserveViewport ? els.transcript.scrollHeight : 0;
@@ -3067,6 +3184,12 @@ async function attachLiveThread(threadId) {
 
 function applyLiveThreadResult(result) {
   if (!result?.thread) return;
+  if (shouldPreserveStoredTranscriptOnLiveAttach(result.thread)) {
+    bindThread(result.thread, result.model, { liveAttached: true });
+    state.historyKind = "stored";
+    renderRuntimeConstitution();
+    return;
+  }
   renderThreadHistory(result.thread);
   bindThread(result.thread, result.model, { liveAttached: true });
 }
