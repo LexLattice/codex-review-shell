@@ -2542,7 +2542,7 @@ async function refreshCurrentHistorySource() {
   if (
     state.historyKind === "stored" &&
     storedSnapshot?.presentationModel &&
-    presentationProcessEvidenceCount(storedSnapshot.presentationModel) > 0 &&
+    presentationProcessEvidenceSummary(storedSnapshot.presentationModel).total > 0 &&
     bridge?.readStoredThreadTranscript
   ) {
     const snapshot = await readStoredThreadTranscript(currentThreadId, state.sourceHome, state.sessionFilePath);
@@ -2959,21 +2959,43 @@ function storedStartTurnIndex(turns, hiddenUserMessages) {
   return 0;
 }
 
-function presentationProcessEvidenceCount(model) {
-  const turns = Array.isArray(model?.turns) ? model.turns : [];
-  const turnCount = turns.reduce((sum, turn) =>
-    sum + (Array.isArray(turn?.thoughtItems) ? turn.thoughtItems.filter(shouldRenderThoughtItem).length : 0), 0);
-  const orphanCount = Array.isArray(model?.orphanItems) ? model.orphanItems.filter(shouldRenderThoughtItem).length : 0;
-  return turnCount + orphanCount;
+function emptyProcessEvidenceSummary() {
+  return { total: 0, reasoning: 0, tools: 0, patches: 0, other: 0 };
 }
 
-function liveThreadProcessEvidenceCount(thread) {
-  const turns = Array.isArray(thread?.turns) ? thread.turns : [];
-  return turns.reduce((sum, turn) => {
-    const items = Array.isArray(turn?.items) ? turn.items : [];
-    return sum + items.filter((item) =>
-      (isThoughtItem(item) || isThoughtAssistantMessageItem(item)) && shouldRenderThoughtItem(item)).length;
-  }, 0);
+function addProcessEvidenceItem(summary, item) {
+  if (!shouldRenderThoughtItem(item)) return summary;
+  summary.total += 1;
+  if (item?.type === "fileChange") summary.patches += 1;
+  else if (isToolLikeThoughtItem(item)) summary.tools += 1;
+  else if (item?.type === "reasoning" || isThoughtAssistantMessageItem(item)) summary.reasoning += 1;
+  else summary.other += 1;
+  return summary;
+}
+
+function presentationProcessEvidenceSummary(model) {
+  const summary = emptyProcessEvidenceSummary();
+  for (const turn of Array.isArray(model?.turns) ? model.turns : []) {
+    for (const item of Array.isArray(turn?.thoughtItems) ? turn.thoughtItems : []) {
+      addProcessEvidenceItem(summary, item);
+    }
+  }
+  for (const item of Array.isArray(model?.orphanItems) ? model.orphanItems : []) {
+    addProcessEvidenceItem(summary, item);
+  }
+  return summary;
+}
+
+function liveThreadProcessEvidenceSummary(thread) {
+  const summary = emptyProcessEvidenceSummary();
+  for (const turn of Array.isArray(thread?.turns) ? thread.turns : []) {
+    for (const item of Array.isArray(turn?.items) ? turn.items : []) {
+      if (isThoughtItem(item) || isThoughtAssistantMessageItem(item)) {
+        addProcessEvidenceItem(summary, item);
+      }
+    }
+  }
+  return summary;
 }
 
 function renderedStoredSnapshotForThread(threadId) {
@@ -2987,10 +3009,10 @@ function renderedStoredSnapshotForThread(threadId) {
 
 function shouldPreserveStoredTranscriptOnLiveAttach(thread) {
   const snapshot = renderedStoredSnapshotForThread(thread?.id || state.threadId);
-  const storedCount = presentationProcessEvidenceCount(snapshot?.presentationModel);
-  if (!storedCount) return false;
-  const liveCount = liveThreadProcessEvidenceCount(thread);
-  return liveCount < storedCount;
+  const stored = presentationProcessEvidenceSummary(snapshot?.presentationModel);
+  if (!stored.total) return false;
+  const live = liveThreadProcessEvidenceSummary(thread);
+  return live.total < stored.total || live.tools < stored.tools || live.patches < stored.patches;
 }
 
 function renderStoredPresentationModel(model) {
