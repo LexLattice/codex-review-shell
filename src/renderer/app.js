@@ -25,8 +25,18 @@ const HANDOFF_KINDS = {
 };
 const ACTIVE_HANDOFF_STATUSES = new Set(["staged", "copied", "opened-thread", "submitted-manually", "response-pending", "response-captured"]);
 const CHATGPT_ALLOWED_HOSTS = new Set(["chatgpt.com", "www.chatgpt.com", "chat.openai.com", "www.chat.openai.com"]);
-const PLANE_ZOOM_MIN = 0.67;
-const PLANE_ZOOM_MAX = 1.8;
+const ZOOM_POLICY = bridge?.zoomConstants || {};
+// Fallbacks are only used when preload is absent; normal runtime gets these
+// values from the shared zoom policy exposed through the bridge.
+const NORMAL_ZOOM_FALLBACK = 1;
+const NO_ZOOM_DELTA = 0;
+
+function zoomPolicyValue(name, fallback = NORMAL_ZOOM_FALLBACK) {
+  const value = Number(ZOOM_POLICY?.[name]);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+const PLANE_ZOOM_DEFAULT = zoomPolicyValue("PLANE_ZOOM_DEFAULT");
 
 const state = {
   config: null,
@@ -51,7 +61,7 @@ const state = {
   },
   middleWebLayoutRevision: 0,
   planeZooms: {
-    middle: 1,
+    middle: PLANE_ZOOM_DEFAULT,
   },
   analyticsThreads: [],
   analyticsStatus: "idle",
@@ -1031,9 +1041,11 @@ function setLastEvent(message) {
 }
 
 function clampPlaneZoom(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return 1;
-  return Math.min(PLANE_ZOOM_MAX, Math.max(PLANE_ZOOM_MIN, number));
+  return typeof bridge?.clampPlaneZoom === "function" ? bridge.clampPlaneZoom(value) : PLANE_ZOOM_DEFAULT;
+}
+
+function zoomDeltaForDirection(direction) {
+  return typeof bridge?.zoomDeltaForDirection === "function" ? bridge.zoomDeltaForDirection(direction) : NO_ZOOM_DELTA;
 }
 
 function applyMiddlePlaneZoom(value) {
@@ -1063,7 +1075,7 @@ function handlePlaneZoomWheel(event) {
   event.preventDefault();
   const direction = directionFromWheel(event);
   if (plane === "middle") {
-    const next = clampPlaneZoom(state.planeZooms.middle + (direction === "in" ? 0.1 : -0.1));
+    const next = clampPlaneZoom(state.planeZooms.middle + zoomDeltaForDirection(direction));
     applyMiddlePlaneZoom(next);
     bridge.adjustPlaneZoom?.("middle", direction).catch(() => {});
     return;
@@ -3503,6 +3515,7 @@ async function init() {
     document.body.innerHTML = "<main style='padding:24px;color:white'>Electron preload bridge is unavailable.</main>";
     return;
   }
+  applyMiddlePlaneZoom(PLANE_ZOOM_DEFAULT);
   bindEvents();
   const result = await bridge.loadConfig();
   state.config = result.config;

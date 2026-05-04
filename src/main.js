@@ -15,9 +15,10 @@ const crypto = require("node:crypto");
 const { CodexAppServerManager } = require("./main/codex-app-server");
 const { LocalSurfaceServer } = require("./main/local-surface-server");
 const { CodexSurfaceSession } = require("./main/codex-surface-session");
-const { MiddleWebHost, clampZoomFactor, zoomDeltaForDirection } = require("./main/middle-web-host");
+const { MiddleWebHost } = require("./main/middle-web-host");
 const { WorkspaceBackendManager, workspaceLabel, workspaceRoot } = require("./main/workspace-backend");
 const { ThreadAnalyticsStore, buildThreadKey } = require("./main/thread-analytics-store");
+const { PLANE_ZOOM_DEFAULT, clampZoomFactor, zoomDeltaForDirection } = require("./shared/plane-zoom");
 
 const APP_TITLE = "Codex Review Shell";
 const CONFIG_FILE_NAME = "workspace-config.json";
@@ -63,8 +64,8 @@ let codexSurfaceSessions = null;
 let threadAnalyticsStore = null;
 let surfaceActivationEpoch = 0;
 const nativePlaneZoomFactors = {
-  codex: 1,
-  chatgpt: 1,
+  codex: PLANE_ZOOM_DEFAULT,
+  chatgpt: PLANE_ZOOM_DEFAULT,
 };
 const lastSuccessfulCodexThreadByProject = new Map();
 const latestCodexOpenTargetByProject = new Map();

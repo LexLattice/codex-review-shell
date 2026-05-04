@@ -1,4 +1,5 @@
 const { contextBridge, ipcRenderer } = require("electron");
+const { PLANE_ZOOM_POLICY, clampZoomFactor, zoomDeltaForDirection } = require("./shared/plane-zoom");
 
 contextBridge.exposeInMainWorld("workspaceShell", {
   loadConfig: () => ipcRenderer.invoke("config:load"),
@@ -21,6 +22,9 @@ contextBridge.exposeInMainWorld("workspaceShell", {
   middleWebSnapshot: () => ipcRenderer.invoke("middle-web:snapshot"),
   adjustPlaneZoom: (plane, direction) => ipcRenderer.invoke("plane-zoom:adjust", { plane, direction }),
   setPlaneZoom: (plane, zoomFactor) => ipcRenderer.invoke("plane-zoom:set", { plane, zoomFactor }),
+  zoomConstants: PLANE_ZOOM_POLICY,
+  clampPlaneZoom: (zoomFactor) => clampZoomFactor(zoomFactor),
+  zoomDeltaForDirection: (direction) => zoomDeltaForDirection(direction),
   copyText: (text) => ipcRenderer.invoke("clipboard:write-text", text),
   listWorkTree: (projectId, relPath) => ipcRenderer.invoke("worktree:list", { projectId, relPath }),
   readProjectFile: (projectId, relPath) => ipcRenderer.invoke("worktree:read-file", { projectId, relPath }),

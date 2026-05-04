@@ -1,9 +1,14 @@
 const { WebContentsView, clipboard, session, shell } = require("electron");
+const {
+  PLANE_ZOOM_DEFAULT,
+  PLANE_ZOOM_MAX,
+  PLANE_ZOOM_MIN,
+  PLANE_ZOOM_STEP,
+  clampZoomFactor,
+  zoomDeltaForDirection,
+} = require("../shared/plane-zoom");
 
 const MIDDLE_WEB_PARTITION = "persist:middle-web";
-const PLANE_ZOOM_MIN = 0.67;
-const PLANE_ZOOM_MAX = 1.8;
-const PLANE_ZOOM_STEP = 0.1;
 
 function nowIso() {
   return new Date().toISOString();
@@ -11,18 +16,6 @@ function nowIso() {
 
 function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
-}
-
-function clampZoomFactor(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return 1;
-  return Math.min(PLANE_ZOOM_MAX, Math.max(PLANE_ZOOM_MIN, number));
-}
-
-function zoomDeltaForDirection(direction) {
-  if (direction === "in" || Number(direction) > 0) return PLANE_ZOOM_STEP;
-  if (direction === "out" || Number(direction) < 0) return -PLANE_ZOOM_STEP;
-  return 0;
 }
 
 function offscreenBounds() {
@@ -149,7 +142,7 @@ class MiddleWebHost {
     this.state = blankState();
     this.layout = { visible: false, bounds: offscreenBounds(), layoutRevision: 0 };
     this.nativeSurfacesVisible = true;
-    this.zoomFactor = 1;
+    this.zoomFactor = PLANE_ZOOM_DEFAULT;
     this.webSession = session.fromPartition(MIDDLE_WEB_PARTITION);
     this.downloadHandler = null;
     this.configureSession();
@@ -482,6 +475,7 @@ module.exports = {
   PLANE_ZOOM_MAX,
   PLANE_ZOOM_MIN,
   PLANE_ZOOM_STEP,
+  PLANE_ZOOM_DEFAULT,
   clampZoomFactor,
   navigationDecision,
   zoomDeltaForDirection,
