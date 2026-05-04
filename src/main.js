@@ -15,6 +15,7 @@ const crypto = require("node:crypto");
 const { CodexAppServerManager } = require("./main/codex-app-server");
 const { LocalSurfaceServer } = require("./main/local-surface-server");
 const { CodexSurfaceSession } = require("./main/codex-surface-session");
+const { MiddleWebHost } = require("./main/middle-web-host");
 const { WorkspaceBackendManager, workspaceLabel, workspaceRoot } = require("./main/workspace-backend");
 const { ThreadAnalyticsStore, buildThreadKey } = require("./main/thread-analytics-store");
 
@@ -46,6 +47,7 @@ let mainWindow = null;
 let shellView = null;
 let codexView = null;
 let chatgptView = null;
+let middleWebHost = null;
 let lastSurfaceBounds = null;
 let surfacesVisible = true;
 let configCache = null;
@@ -1040,10 +1042,12 @@ function applySurfaceBounds() {
   if (!surfacesVisible || !lastSurfaceBounds) {
     codexView.setBounds(offscreenBounds());
     chatgptView.setBounds(offscreenBounds());
+    middleWebHost?.setNativeSurfacesVisible(false);
     return;
   }
   codexView.setBounds(sanitizeBounds(lastSurfaceBounds.codex));
   chatgptView.setBounds(sanitizeBounds(lastSurfaceBounds.chatgpt));
+  middleWebHost?.setNativeSurfacesVisible(true);
 }
 
 function emitToShell(channel, payload) {
@@ -1053,6 +1057,11 @@ function emitToShell(channel, payload) {
 
 function emitShellEvent(payload) {
   emitToShell("shell:event", payload);
+}
+
+function ensureMiddleWebHost() {
+  if (!middleWebHost) middleWebHost = new MiddleWebHost({ emitShellEvent });
+  return middleWebHost;
 }
 
 function nextSurfaceActivationEpoch() {
@@ -2223,7 +2232,20 @@ function configureGuestSurface(surfaceName, view) {
       });
       return { action: "deny" };
     }
-    if (url.startsWith("http://") || url.startsWith("https://")) shell.openExternal(url).catch(() => {});
+    if (url.startsWith("http://") || url.startsWith("https://")) {
+      ensureMiddleWebHost().openLink({
+        url,
+        source: { surface: surfaceName === "chatgpt" ? "chatgpt" : "codex" },
+        userGesture: true,
+      }).catch((error) => {
+        emitShellEvent({
+          type: "middle-web-state",
+          webEventType: "load-failed",
+          lastError: error.message || "Unable to open workspace link.",
+          at: nowIso(),
+        });
+      });
+    }
     return { action: "deny" };
   });
   contents.on("will-navigate", (event, url) => {
@@ -2895,6 +2917,7 @@ async function createWindow() {
   mainWindow.contentView.addChildView(shellView);
   mainWindow.contentView.addChildView(codexView);
   mainWindow.contentView.addChildView(chatgptView);
+  ensureMiddleWebHost().attachTo(mainWindow.contentView);
   syncWindowGeometry("initial-attach");
   startGeometrySyncLoop();
 
@@ -2927,6 +2950,8 @@ async function createWindow() {
     localSurfaceServer = null;
     threadAnalyticsStore?.close();
     threadAnalyticsStore = null;
+    middleWebHost?.dispose();
+    middleWebHost = null;
     closeView(codexView);
     closeView(chatgptView);
     closeView(shellView);
@@ -3107,12 +3132,37 @@ ipcMain.handle("surface:open-external", async (_event, surfaceName) => {
   return true;
 });
 
+ipcMain.handle("link:open", async (_event, payload) => {
+  return ensureMiddleWebHost().openLink(payload || {});
+});
+
+ipcMain.handle("middle-web:set-layout", async (_event, payload) => {
+  return ensureMiddleWebHost().setLayout(payload || {});
+});
+
+ipcMain.handle("middle-web:go-back", async () => ensureMiddleWebHost().goBack());
+
+ipcMain.handle("middle-web:go-forward", async () => ensureMiddleWebHost().goForward());
+
+ipcMain.handle("middle-web:reload", async () => ensureMiddleWebHost().reload());
+
+ipcMain.handle("middle-web:stop", async () => ensureMiddleWebHost().stop());
+
+ipcMain.handle("middle-web:open-external", async () => ensureMiddleWebHost().openExternal());
+
+ipcMain.handle("middle-web:copy-url", async () => ensureMiddleWebHost().copyUrl());
+
+ipcMain.handle("middle-web:snapshot", async () => ensureMiddleWebHost().snapshot());
+
 ipcMain.handle("external:open-url", async (_event, payload) => {
   const rawUrl = normalizeString(payload?.url, "");
   try {
     const parsed = new URL(rawUrl);
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       return { ok: false, error: "Only http and https URLs can be opened externally." };
+    }
+    if (parsed.username || parsed.password) {
+      return { ok: false, error: "URLs with embedded credentials cannot be opened externally." };
     }
     await shell.openExternal(parsed.toString());
     return { ok: true, url: parsed.toString() };

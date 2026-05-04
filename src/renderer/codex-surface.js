@@ -1731,8 +1731,22 @@ function tokenizeTypedContent(text) {
 }
 
 async function openTypedUrl(url) {
+  if (bridge?.openWorkspaceLink) {
+    const result = await bridge.openWorkspaceLink(url, {
+      disposition: "middle-web",
+      source: {
+        surface: "codex",
+        projectId: project?.id || "",
+        threadId: state.threadId || "",
+        threadTitle: state.threadTitle || "",
+      },
+      userGesture: true,
+    });
+    if (!result?.ok) addSystemMessage(`URL open blocked: ${result?.error || "unknown error"}`);
+    return;
+  }
   if (!bridge?.openExternalUrl) {
-    addSystemMessage("External URL opening is unavailable in this Codex surface.");
+    addSystemMessage("Workspace URL opening is unavailable in this Codex surface.");
     return;
   }
   const result = await bridge.openExternalUrl(url);
