@@ -104,6 +104,12 @@ function blockedMessage(reason) {
   return labels[reason] || labels.policy_denied;
 }
 
+function isLoadUrlAbort(error) {
+  const code = String(error?.code || "");
+  const message = String(error?.message || "");
+  return code === "ERR_ABORTED" || message.includes("ERR_ABORTED") || message.includes("ERR_ABORTED (-3)");
+}
+
 function blankState() {
   return {
     active: false,
@@ -253,16 +259,18 @@ class MiddleWebHost {
     if (!contents || contents.isDestroyed()) return;
     const url = contents.getURL();
     const decision = navigationDecision(url);
+    const hasValidPage = decision.action === "allow";
+    const loading = typeof options.loading === "boolean" ? options.loading : contents.isLoading();
     const patch = {
-      loading: typeof options.loading === "boolean" ? options.loading : contents.isLoading(),
+      loading,
       canGoBack: contents.canGoBack(),
       canGoForward: contents.canGoForward(),
       title: normalizeString(contents.getTitle(), this.state.title),
+      hasPage: hasValidPage || Boolean(loading && this.state.hasPage),
     };
-    if (decision.action === "allow") {
+    if (hasValidPage) {
       this.rawUrl = decision.normalizedUrl;
       Object.assign(patch, {
-        hasPage: true,
         displayUrl: decision.displayUrl,
         origin: decision.origin,
         securityPosture: decision.securityPosture,
@@ -270,6 +278,7 @@ class MiddleWebHost {
     }
     if (options.clearError) patch.lastError = "";
     this.state = { ...this.state, ...patch };
+    this.applyBounds();
   }
 
   blockNavigation(reason) {
@@ -367,6 +376,9 @@ class MiddleWebHost {
     try {
       await this.view.webContents.loadURL(decision.normalizedUrl);
     } catch (error) {
+      if (isLoadUrlAbort(error)) {
+        return { ok: false, target: "middle-web", error: "aborted" };
+      }
       this.state = {
         ...this.state,
         loading: false,
