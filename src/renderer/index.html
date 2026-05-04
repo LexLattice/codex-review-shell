@@ -61,6 +61,7 @@
           <button class="middle-tab active" id="overviewTabButton" data-tab="overview" type="button">Overview</button>
           <button class="middle-tab" id="threadsTabButton" data-tab="threads" type="button">Threads</button>
           <button class="middle-tab" id="analyticsTabButton" data-tab="analytics" type="button">Analytics</button>
+          <button class="middle-tab" id="webTabButton" data-tab="web" type="button">Web</button>
         </nav>
 
         <section class="middle-tab-panel active" id="overviewTabPanel" data-tab-panel="overview">
@@ -323,6 +324,35 @@
               <div class="thread-browser-list analytics-thread-list" id="analyticsThreadList"></div>
               <div class="analytics-dashboard" id="analyticsDashboard"></div>
             </section>
+          </section>
+        </section>
+
+        <section class="middle-tab-panel web-tab-panel" id="webTabPanel" data-tab-panel="web" hidden>
+          <section class="control-card web-card">
+            <div class="web-toolbar" aria-label="Middle Web navigation controls">
+              <div class="web-nav-actions">
+                <button class="ghost small icon" id="webBackButton" type="button" title="Back" disabled>←</button>
+                <button class="ghost small icon" id="webForwardButton" type="button" title="Forward" disabled>→</button>
+                <button class="ghost small" id="webReloadButton" type="button" title="Reload or stop loading">Reload</button>
+              </div>
+              <div class="web-origin-witness">
+                <p class="eyebrow">Web</p>
+                <strong id="webTitle" class="truncate">No page open</strong>
+                <span id="webOrigin" class="mono muted truncate">Links clicked from Codex or ChatGPT will open here.</span>
+                <span id="webSource" class="muted truncate"></span>
+              </div>
+              <div class="web-nav-actions">
+                <button class="ghost small" id="webCopyUrlButton" type="button" disabled>Copy URL</button>
+                <button class="ghost small" id="webOpenExternalButton" type="button" disabled>Open external</button>
+              </div>
+            </div>
+            <div class="middle-web-slot" id="middleWebSlot" aria-live="polite">
+              <div class="web-empty-state" id="webEmptyState">
+                <p class="eyebrow">Utility browser viewport</p>
+                <strong>No page open yet.</strong>
+                <span>Links clicked from Codex or ChatGPT will open here.</span>
+              </div>
+            </div>
           </section>
         </section>
       </main>

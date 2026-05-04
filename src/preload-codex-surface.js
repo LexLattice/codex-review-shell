@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld("codexSurfaceBridge", {
   respond: (id, result) => ipcRenderer.invoke("codex-surface:respond", { id, result }),
   respondRequest: (key, result) => ipcRenderer.invoke("codex-surface:respond", { key, result }),
   reportThreadState: (state) => ipcRenderer.invoke("codex-surface:thread-state", state),
+  openWorkspaceLink: (url, options = {}) => ipcRenderer.invoke("link:open", { ...options, url }),
   openExternalUrl: (url) => ipcRenderer.invoke("external:open-url", { url }),
   revealProjectFile: (projectId, relPath) => ipcRenderer.invoke("worktree:reveal-file", { projectId, relPath }),
   readStoredThreadTranscript: (projectId, threadId, sourceHome = "", sessionFilePath = "", limit = 800) =>

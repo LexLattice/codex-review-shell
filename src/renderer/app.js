@@ -35,6 +35,19 @@ const state = {
   defaultCodexRuntime: "auto",
   allowNonChatgptUrls: false,
   activeMiddleTab: "overview",
+  middleWeb: {
+    hasPage: false,
+    displayUrl: "",
+    title: "",
+    origin: "",
+    loading: false,
+    canGoBack: false,
+    canGoForward: false,
+    lastError: "",
+    lastSource: null,
+    securityPosture: "unknown",
+  },
+  middleWebLayoutRevision: 0,
   analyticsThreads: [],
   analyticsStatus: "idle",
   analyticsDashboard: null,
@@ -85,6 +98,7 @@ const state = {
 
 const els = {
   appShell: document.getElementById("appShell"),
+  controlPlane: document.querySelector(".control-plane"),
   selectedProjectName: document.getElementById("selectedProjectName"),
   repoPath: document.getElementById("repoPath"),
   workspacePath: document.getElementById("workspacePath"),
@@ -94,9 +108,11 @@ const els = {
   overviewTabButton: document.getElementById("overviewTabButton"),
   threadsTabButton: document.getElementById("threadsTabButton"),
   analyticsTabButton: document.getElementById("analyticsTabButton"),
+  webTabButton: document.getElementById("webTabButton"),
   overviewTabPanel: document.getElementById("overviewTabPanel"),
   threadsTabPanel: document.getElementById("threadsTabPanel"),
   analyticsTabPanel: document.getElementById("analyticsTabPanel"),
+  webTabPanel: document.getElementById("webTabPanel"),
   projectList: document.getElementById("projectList"),
   projectCount: document.getElementById("projectCount"),
   threadDeck: document.getElementById("threadDeck"),
@@ -164,6 +180,16 @@ const els = {
   analyticsHint: document.getElementById("analyticsHint"),
   analyticsThreadList: document.getElementById("analyticsThreadList"),
   analyticsDashboard: document.getElementById("analyticsDashboard"),
+  middleWebSlot: document.getElementById("middleWebSlot"),
+  webEmptyState: document.getElementById("webEmptyState"),
+  webBackButton: document.getElementById("webBackButton"),
+  webForwardButton: document.getElementById("webForwardButton"),
+  webReloadButton: document.getElementById("webReloadButton"),
+  webCopyUrlButton: document.getElementById("webCopyUrlButton"),
+  webOpenExternalButton: document.getElementById("webOpenExternalButton"),
+  webTitle: document.getElementById("webTitle"),
+  webOrigin: document.getElementById("webOrigin"),
+  webSource: document.getElementById("webSource"),
   refreshWorkTreeButton: document.getElementById("refreshWorkTreeButton"),
   workTree: document.getElementById("workTree"),
   previewPath: document.getElementById("previewPath"),
@@ -1062,6 +1088,7 @@ function renderMiddleTabs() {
     [els.overviewTabButton, els.overviewTabPanel, "overview"],
     [els.threadsTabButton, els.threadsTabPanel, "threads"],
     [els.analyticsTabButton, els.analyticsTabPanel, "analytics"],
+    [els.webTabButton, els.webTabPanel, "web"],
   ];
   for (const [button, panel, tab] of tabs) {
     const active = state.activeMiddleTab === tab;
@@ -1069,6 +1096,44 @@ function renderMiddleTabs() {
     panel.classList.toggle("active", active);
     panel.hidden = !active;
   }
+  renderMiddleWebTab();
+}
+
+function middleWebSourceLabel(source) {
+  if (!source?.surface) return "";
+  const labels = { codex: "Codex", chatgpt: "ChatGPT", shell: "Shell" };
+  const surface = labels[source.surface] || source.surface;
+  const thread = source.threadTitle || source.threadId || "";
+  return thread ? `Opened from: ${surface} · ${thread}` : `Opened from: ${surface}`;
+}
+
+function renderMiddleWebTab() {
+  const web = state.middleWeb || {};
+  const hasPage = Boolean(web.hasPage || web.displayUrl || web.origin);
+  const blocked = Boolean(web.lastError);
+  els.webTitle.textContent = blocked
+    ? web.lastError
+    : web.title || (hasPage ? "Loading web page…" : "No page open");
+  els.webTitle.title = els.webTitle.textContent;
+  els.webOrigin.textContent = web.origin || web.displayUrl || "Links clicked from Codex or ChatGPT will open here.";
+  els.webOrigin.title = web.displayUrl || web.origin || "";
+  els.webSource.textContent = middleWebSourceLabel(web.lastSource);
+  els.webSource.title = els.webSource.textContent;
+  els.webEmptyState.hidden = hasPage;
+  els.webEmptyState.classList.toggle("web-error-state", blocked);
+  if (blocked) {
+    els.webEmptyState.querySelector("strong").textContent = web.lastError;
+    els.webEmptyState.querySelector("span").textContent = web.displayUrl || web.origin || "Navigation was blocked by the workspace Web policy.";
+  } else {
+    els.webEmptyState.querySelector("strong").textContent = "No page open yet.";
+    els.webEmptyState.querySelector("span").textContent = "Links clicked from Codex or ChatGPT will open here.";
+  }
+  els.webBackButton.disabled = !web.canGoBack;
+  els.webForwardButton.disabled = !web.canGoForward;
+  els.webReloadButton.textContent = web.loading ? "Stop" : "Reload";
+  els.webReloadButton.disabled = !hasPage;
+  els.webCopyUrlButton.disabled = !hasPage;
+  els.webOpenExternalButton.disabled = !hasPage;
 }
 
 function renderProjectList() {
@@ -1859,12 +1924,29 @@ function sendSurfaceLayout() {
   if (!bridge || !els.codexSlot || !els.chatgptSlot) return;
   const codex = rectToBounds(els.codexSlot.getBoundingClientRect());
   const chatgpt = rectToBounds(els.chatgptSlot.getBoundingClientRect());
-  const signature = `${codex.x},${codex.y},${codex.width},${codex.height}|${chatgpt.x},${chatgpt.y},${chatgpt.width},${chatgpt.height}`;
+  const web = els.middleWebSlot ? rectToBounds(els.middleWebSlot.getBoundingClientRect()) : { x: 0, y: 0, width: 1, height: 1 };
+  const webVisible = state.activeMiddleTab === "web" && Boolean(state.middleWeb?.hasPage || state.middleWeb?.displayUrl);
+  const signature = [
+    `${codex.x},${codex.y},${codex.width},${codex.height}`,
+    `${chatgpt.x},${chatgpt.y},${chatgpt.width},${chatgpt.height}`,
+    `${web.x},${web.y},${web.width},${web.height},${webVisible ? 1 : 0},${state.activeMiddleTab}`,
+  ].join("|");
   if (signature === state.lastLayoutSignature) return;
   state.lastLayoutSignature = signature;
   bridge.setSurfaceLayout({ codex, chatgpt }).catch((error) => {
     console.error("Unable to set surface layout", error);
   });
+  if (bridge.setMiddleWebLayout) {
+    state.middleWebLayoutRevision += 1;
+    bridge.setMiddleWebLayout({
+      visible: webVisible,
+      bounds: web,
+      tab: state.activeMiddleTab,
+      layoutRevision: state.middleWebLayoutRevision,
+    }).catch((error) => {
+      console.error("Unable to set middle Web layout", error);
+    });
+  }
 }
 
 function performLayout() {
@@ -2650,7 +2732,9 @@ async function deleteThreadFromDrawer() {
 function setMiddleTab(tab) {
   if (tab === "threads") state.activeMiddleTab = "threads";
   else if (tab === "analytics") state.activeMiddleTab = "analytics";
+  else if (tab === "web") state.activeMiddleTab = "web";
   else state.activeMiddleTab = "overview";
+  if (state.activeMiddleTab === "web" && els.controlPlane) els.controlPlane.scrollTop = 0;
   renderMiddleTabs();
   if (state.activeMiddleTab === "analytics" && state.analyticsStatus === "idle") {
     loadAnalyticsThreads({ refresh: false }).catch((error) => {
@@ -3178,6 +3262,7 @@ function bindEvents() {
   els.overviewTabButton.addEventListener("click", () => setMiddleTab("overview"));
   els.threadsTabButton.addEventListener("click", () => setMiddleTab("threads"));
   els.analyticsTabButton.addEventListener("click", () => setMiddleTab("analytics"));
+  els.webTabButton.addEventListener("click", () => setMiddleTab("web"));
   els.addProjectButton.addEventListener("click", () => openDrawer("new"));
   els.editProjectButton.addEventListener("click", () => openDrawer("edit"));
   els.closeDrawerButton.addEventListener("click", closeDrawer);
@@ -3243,6 +3328,32 @@ function bindEvents() {
   });
   els.refreshWorkTreeButton.addEventListener("click", loadWorkTreeRoot);
   els.refreshWatchedButton.addEventListener("click", loadWatchedArtifacts);
+  els.webBackButton.addEventListener("click", () => {
+    if (bridge.middleWebGoBack) bridge.middleWebGoBack().catch((error) => setLastEvent(`Web back failed: ${error.message}`));
+  });
+  els.webForwardButton.addEventListener("click", () => {
+    if (bridge.middleWebGoForward) bridge.middleWebGoForward().catch((error) => setLastEvent(`Web forward failed: ${error.message}`));
+  });
+  els.webReloadButton.addEventListener("click", () => {
+    const action = state.middleWeb?.loading ? bridge.middleWebStop : bridge.middleWebReload;
+    if (action) action().catch((error) => setLastEvent(`Web ${state.middleWeb?.loading ? "stop" : "reload"} failed: ${error.message}`));
+  });
+  els.webCopyUrlButton.addEventListener("click", async () => {
+    try {
+      const result = await bridge.middleWebCopyUrl?.();
+      setLastEvent(result?.ok ? "Copied Web tab URL." : `Copy URL blocked: ${result?.error || "unknown error"}`);
+    } catch (error) {
+      setLastEvent(`Copy URL failed: ${error.message}`);
+    }
+  });
+  els.webOpenExternalButton.addEventListener("click", async () => {
+    try {
+      const result = await bridge.middleWebOpenExternal?.();
+      setLastEvent(result?.ok ? "Opened Web tab externally." : `Open external blocked: ${result?.error || "unknown error"}`);
+    } catch (error) {
+      setLastEvent(`Open external failed: ${error.message}`);
+    }
+  });
 
   els.leftSplitter.addEventListener("pointerdown", (event) => beginDrag("left", event));
   els.rightSplitter.addEventListener("pointerdown", (event) => beginDrag("right", event));
@@ -3270,6 +3381,8 @@ function bindEvents() {
   resizeObserver.observe(els.appShell);
   resizeObserver.observe(els.codexSlot);
   resizeObserver.observe(els.chatgptSlot);
+  if (els.middleWebSlot) resizeObserver.observe(els.middleWebSlot);
+  if (els.controlPlane) els.controlPlane.addEventListener("scroll", scheduleResizeBurst, { passive: true });
 
   bridge.onSurfaceEvent((event) => {
     if (event.surface === "codex" || event.surface === "chatgpt") {
@@ -3286,6 +3399,21 @@ function bindEvents() {
 
   bridge.onShellEvent((event) => {
     if (event.type === "layout-request") scheduleResizeBurst();
+    if (event.type === "middle-web-open-requested") {
+      setMiddleTab("web");
+    }
+    if (event.type === "middle-web-state") {
+      state.middleWeb = {
+        ...state.middleWeb,
+        ...event,
+      };
+      delete state.middleWeb.type;
+      delete state.middleWeb.webEventType;
+      renderMiddleWebTab();
+      scheduleResizeBurst();
+      if (event.webEventType === "navigation-blocked") setLastEvent(event.lastError || "Middle Web navigation blocked.");
+      else if (event.webEventType === "load-failed") setLastEvent(`Middle Web load failed: ${event.lastError || event.errorDescription || "unknown error"}`);
+    }
     if (event.type === "backend-status" && event.session?.projectId) {
       state.workspaceStatuses[event.session.projectId] = event.session;
       renderSelectedProject();
