@@ -214,6 +214,8 @@ function buildRuntimeCapabilityProfile(session) {
     usage: {
       canReadRateLimits: ready,
       rateLimitMethod: "account/rateLimits/read",
+      canReadContextUsage: ready,
+      contextUsageEvent: "thread/tokenUsage/updated",
     },
     requests: {
       supportedServerMethods: SUPPORTED_SERVER_REQUEST_METHODS,
