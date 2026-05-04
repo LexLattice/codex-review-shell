@@ -104,7 +104,6 @@ const state = {
   historyKind: "",
   historyKey: "",
   historyData: null,
-  storedTranscriptSnapshots: new Map(),
   loadedUserMessagePages: 1,
   historyWindow: {
     logicalThreadKey: "",
@@ -366,6 +365,14 @@ function serviceTierLabel() {
 
 function defaultReasoningEffort() {
   return selectedModel()?.defaultReasoningEffort || "";
+}
+
+function clearedModelId() {
+  return state.activeModel || project?.codex?.model || defaultModelId();
+}
+
+function clearedReasoningEffort() {
+  return project?.codex?.reasoningEffort || defaultReasoningEffort();
 }
 
 function defaultServiceTier() {
@@ -1210,8 +1217,8 @@ function renderComposerAccessMenu() {
 
 function composerSelectedOverride(name) {
   const value = String(state.runtimeOverrides[name] || "");
-  if (name === "model" && value === defaultModelId()) return "";
-  if (name === "reasoningEffort" && value === defaultReasoningEffort()) return "";
+  if (name === "model" && value === clearedModelId()) return "";
+  if (name === "reasoningEffort" && value === clearedReasoningEffort()) return "";
   if (name === "serviceTier" && value === defaultServiceTier()) return "";
   return value;
 }
@@ -1280,20 +1287,25 @@ function refreshButton(label, onClick) {
 function modelOptions() {
   const visible = state.models.filter((model) => !model?.hidden);
   const rows = visible.length ? visible : state.models;
-  const defaultId = defaultModelId();
+  const providerDefaultId = defaultModelId();
+  const clearDefaultId = clearedModelId();
   const options = rows
-    .filter((model) => String(model.model || model.id || "") !== String(defaultId || ""))
-    .map((model) => ({
-      value: model.model || model.id,
-      label: model.displayName || model.model || model.id,
-    }));
+    .filter((model) => String(model.model || model.id || "") !== String(clearDefaultId || ""))
+    .map((model) => {
+      const value = model.model || model.id;
+      const label = model.displayName || model.model || model.id;
+      return {
+        value,
+        label: `${label}${value === providerDefaultId ? " · provider default" : ""}`,
+      };
+    });
   const current = activeModelId();
-  if (current && current !== defaultId && !options.some((option) => option.value === current)) {
+  if (current && current !== clearDefaultId && !options.some((option) => option.value === current)) {
     options.unshift({ value: current, label: current });
   }
   options.unshift({
     value: "",
-    label: defaultOptionLabel(modelById(defaultId)?.displayName || defaultId),
+    label: defaultOptionLabel(modelById(clearDefaultId)?.displayName || clearDefaultId),
   });
   return options;
 }
@@ -1305,9 +1317,16 @@ function composerModelOptions() {
 }
 
 function reasoningOptions() {
+  const clearDefault = clearedReasoningEffort();
+  const modelDefault = defaultReasoningEffort();
   return [
-    { value: "", label: defaultOptionLabel(defaultReasoningEffort()) },
-    ...supportedReasoningOptions().map((effort) => ({ value: effort, label: effort })),
+    { value: "", label: defaultOptionLabel(clearDefault) },
+    ...supportedReasoningOptions()
+      .filter((effort) => effort !== clearDefault)
+      .map((effort) => ({
+        value: effort,
+        label: `${effort}${effort === modelDefault ? " · model default" : ""}`,
+      })),
   ];
 }
 
@@ -1339,11 +1358,7 @@ function compactModelLabel() {
 }
 
 function setRuntimeOverride(name, value) {
-  let nextValue = String(value || "");
-  if (name === "model" && nextValue && nextValue === defaultModelId()) nextValue = "";
-  if (name === "reasoningEffort" && nextValue && nextValue === defaultReasoningEffort()) nextValue = "";
-  if (name === "serviceTier" && nextValue && nextValue === defaultServiceTier()) nextValue = "";
-  state.runtimeOverrides[name] = nextValue;
+  state.runtimeOverrides[name] = String(value || "");
   if (name === "model") {
     const supported = supportedReasoningOptions();
     if (state.runtimeOverrides.reasoningEffort && !supported.includes(state.runtimeOverrides.reasoningEffort)) {
@@ -2523,7 +2538,7 @@ function visibleUserMessageCount(totalUserMessages) {
 async function refreshCurrentHistorySource() {
   const currentThreadId = String(state.threadId || "").trim();
   if (!currentThreadId) return;
-  const storedSnapshot = storedSnapshotForThread(currentThreadId);
+  const storedSnapshot = renderedStoredSnapshotForThread(currentThreadId);
   if (
     state.historyKind === "stored" &&
     storedSnapshot?.presentationModel &&
@@ -2535,7 +2550,6 @@ async function refreshCurrentHistorySource() {
     state.historyKind = "stored";
     state.historyKey = logicalHistoryKey(currentThreadId);
     state.historyData = { snapshot, threadId: currentThreadId };
-    if (snapshot.presentationModel) state.storedTranscriptSnapshots.set(currentThreadId, snapshot);
     return;
   }
   if (state.connected && (hasCapability("threads", "canRead") || hasCapability("threads", "canResume"))) {
@@ -2962,17 +2976,17 @@ function liveThreadProcessEvidenceCount(thread) {
   }, 0);
 }
 
-function storedSnapshotForThread(threadId) {
+function renderedStoredSnapshotForThread(threadId) {
   const id = String(threadId || state.threadId || "").trim();
   if (!id) return null;
   if (state.historyKind === "stored" && String(state.historyData?.threadId || "") === id) {
     return state.historyData.snapshot || null;
   }
-  return state.storedTranscriptSnapshots.get(id) || null;
+  return null;
 }
 
 function shouldPreserveStoredTranscriptOnLiveAttach(thread) {
-  const snapshot = storedSnapshotForThread(thread?.id || state.threadId);
+  const snapshot = renderedStoredSnapshotForThread(thread?.id || state.threadId);
   const storedCount = presentationProcessEvidenceCount(snapshot?.presentationModel);
   if (!storedCount) return false;
   const liveCount = liveThreadProcessEvidenceCount(thread);
@@ -3031,7 +3045,6 @@ function renderStoredTranscript(snapshot, threadId, options = {}) {
   state.historyKind = "stored";
   state.historyKey = historyKey;
   state.historyData = { snapshot, threadId };
-  if (snapshot?.presentationModel) state.storedTranscriptSnapshots.set(String(threadId || ""), snapshot);
 
   const previousScrollTop = options.preserveViewport ? els.transcript.scrollTop : 0;
   const previousScrollHeight = options.preserveViewport ? els.transcript.scrollHeight : 0;

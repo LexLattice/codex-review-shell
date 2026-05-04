@@ -1084,7 +1084,7 @@ textarea {
   width: var(--composer-menu-width);
   max-width: min(var(--composer-popover-max-width), calc(100vw - 24px));
   max-height: var(--composer-popover-max-height);
-  overflow: hidden;
+  overflow: auto;
   display: grid;
   gap: 8px;
   padding: 8px;
@@ -1216,7 +1216,7 @@ button {
 }
 
 .composer-shell[data-composer-size="narrow"] .composer-cascade-grid {
-  grid-template-columns: minmax(112px, 0.78fr) minmax(142px, 1.22fr);
+  grid-template-columns: 1fr;
 }
 
 button.secondary {
