@@ -13,3 +13,4 @@
 - [Middle Pane Web Tab Spec](./MIDDLE_PANE_WEB_TAB_SPEC.md)
 - [Codex Surface Reload, History, Thought, And Markdown Spec](./CODEX_SURFACE_RELOAD_HISTORY_MARKDOWN_SPEC.md)
 - [Codex Transcript Presentation And Composer Projection Spec](./CODEX_TRANSCRIPT_PRESENTATION_AND_COMPOSER_PROJECTION_SPEC.md)
+- [Sub-Agent Transcript Projection Spec](./SUB_AGENT_TRANSCRIPT_PROJECTION_SPEC.md)
