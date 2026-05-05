@@ -3304,8 +3304,10 @@ function renderStoredPresentationModel(model, snapshot = {}) {
       const collabItems = normalizedThoughtItems.filter((item) => item?.type === "collabAgentToolCall");
       const processItems = normalizedThoughtItems.filter((item) => item?.type !== "collabAgentToolCall");
       for (const item of collabItems) {
-        if (!authorContext.isSubagent && item?.type === "collabAgentToolCall") updateAgentFromCollabItem(item);
-        if (!authorContext.isSubagent) renderCollabActivityTag(turnKey, item);
+        if (!authorContext.isSubagent) {
+          updateAgentFromCollabItem(item);
+          renderCollabActivityTag(turnKey, item);
+        }
       }
       if (processItems.length) {
         upsertThoughtProcess(turnKey, processItems, { merge: false });
@@ -4369,8 +4371,10 @@ function renderItem(item, authorContext = currentAuthorContext()) {
     return;
   }
   if (item.type === "collabAgentToolCall") {
-    if (!authorContext.isSubagent) updateAgentFromCollabItem(item);
-    if (!authorContext.isSubagent) renderCollabActivityTag(item.turnId || state.turnId || "live", item);
+    if (!authorContext.isSubagent) {
+      updateAgentFromCollabItem(item);
+      renderCollabActivityTag(item.turnId || state.turnId || "live", item);
+    }
     return;
   }
   if (item.type === "plan") {

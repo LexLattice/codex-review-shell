@@ -1165,15 +1165,24 @@ function shortSubAgentId(threadId) {
   return id.length <= 8 ? id : id.slice(0, 8);
 }
 
-function subAgentTabLabel(agent = {}, allAgents = []) {
+function subAgentBaseTabLabel(agent = {}) {
   const id = subAgentThreadId(agent);
-  const base = String(agent.nickname || agent.label || agent.role || "").trim() || `Agent ${shortSubAgentId(id)}`;
-  const collisions = allAgents.filter((candidate) => {
-    const candidateBase = String(candidate.nickname || candidate.label || candidate.role || "").trim() ||
-      `Agent ${shortSubAgentId(subAgentThreadId(candidate))}`;
-    return candidateBase === base;
-  });
-  if (collisions.length > 1 && id) return `${base} · ${shortSubAgentId(id)}`;
+  return String(agent.nickname || agent.label || agent.role || "").trim() || `Agent ${shortSubAgentId(id)}`;
+}
+
+function subAgentLabelCounts(agents = []) {
+  const counts = new Map();
+  for (const agent of agents) {
+    const base = subAgentBaseTabLabel(agent);
+    counts.set(base, (counts.get(base) || 0) + 1);
+  }
+  return counts;
+}
+
+function subAgentTabLabel(agent = {}, labelCounts = new Map()) {
+  const id = subAgentThreadId(agent);
+  const base = subAgentBaseTabLabel(agent);
+  if ((labelCounts.get(base) || 0) > 1 && id) return `${base} · ${shortSubAgentId(id)}`;
   return base || "Unknown agent";
 }
 
@@ -1194,7 +1203,8 @@ function reconcileSelectedSubAgent(agents = [], preferredThreadId = "") {
     state.selectedSubAgentThreadId = preferred;
     return preferred;
   }
-  if (state.selectedSubAgentThreadId && ids.has(state.selectedSubAgentThreadId)) {
+  const selectedWasOperatorPinned = ["operator", "agent_chip", "restore"].includes(state.selectedSubAgentSelectedBy);
+  if (selectedWasOperatorPinned && state.selectedSubAgentThreadId && ids.has(state.selectedSubAgentThreadId)) {
     return state.selectedSubAgentThreadId;
   }
   state.selectedSubAgentThreadId = preferredSubAgentThreadId(agents);
@@ -1232,6 +1242,7 @@ function renderSubAgentsPanel() {
 
   const selectedId = reconcileSelectedSubAgent(agents);
   const selectedAgent = agents.find((agent) => subAgentThreadId(agent) === selectedId) || agents[0];
+  const labelCounts = subAgentLabelCounts(agents);
   const panel = document.createElement("div");
   panel.className = "sub-agent-panel";
 
@@ -1248,12 +1259,13 @@ function renderSubAgentsPanel() {
     button.setAttribute("role", "tab");
     button.setAttribute("aria-selected", selected ? "true" : "false");
     button.dataset.agentThreadId = id;
-    button.title = id ? `${subAgentTabLabel(agent, agents)} · ${id}` : subAgentTabLabel(agent, agents);
+    const labelText = subAgentTabLabel(agent, labelCounts);
+    button.title = id ? `${labelText} · ${id}` : labelText;
     button.addEventListener("click", () => selectSubAgentTab(id, "operator"));
 
     const label = document.createElement("span");
     label.className = "sub-agent-tab-label";
-    label.textContent = subAgentTabLabel(agent, agents);
+    label.textContent = labelText;
     const status = document.createElement("span");
     status.className = `sub-agent-tab-status${subAgentIsActive(agent) ? " active" : ""}`;
     status.textContent = agentStatusLabel(agent);
@@ -1273,7 +1285,7 @@ function renderSubAgentsPanel() {
   eyebrow.className = "eyebrow";
   eyebrow.textContent = "Selected sub-agent";
   const heading = document.createElement("h3");
-  heading.textContent = subAgentTabLabel(selectedAgent, agents);
+  heading.textContent = subAgentTabLabel(selectedAgent, labelCounts);
   const thread = document.createElement("span");
   thread.className = "muted mono";
   thread.textContent = subAgentThreadId(selectedAgent) || "unknown thread";
