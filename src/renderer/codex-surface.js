@@ -37,14 +37,12 @@ const THOUGHT_ITEM_TYPES = new Set([
   "dynamicToolCall",
   "webSearch",
   "imageGeneration",
-  "collabAgentToolCall",
 ]);
 const TOOL_LIKE_THOUGHT_TYPES = new Set([
   "commandExecution",
   "mcpToolCall",
   "dynamicToolCall",
   "webSearch",
-  "collabAgentToolCall",
 ]);
 const THOUGHT_ASSISTANT_PHASES = new Set([
   // Canonical Codex phase for interim assistant preamble/progress text.
@@ -3303,10 +3301,15 @@ function renderStoredPresentationModel(model, snapshot = {}) {
         id: String(item.id || `stored_thought_${turnKey}_${itemIndex}`),
         turnId: turn.turnId || turnKey,
       }));
-      for (const item of normalizedThoughtItems) {
+      const collabItems = normalizedThoughtItems.filter((item) => item?.type === "collabAgentToolCall");
+      const processItems = normalizedThoughtItems.filter((item) => item?.type !== "collabAgentToolCall");
+      for (const item of collabItems) {
         if (!authorContext.isSubagent && item?.type === "collabAgentToolCall") updateAgentFromCollabItem(item);
+        if (!authorContext.isSubagent) renderCollabActivityTag(turnKey, item);
       }
-      upsertThoughtProcess(turnKey, normalizedThoughtItems, { merge: false });
+      if (processItems.length) {
+        upsertThoughtProcess(turnKey, processItems, { merge: false });
+      }
     }
     for (let messageIndex = 0; messageIndex < (turn.assistantFinalMessages || []).length; messageIndex += 1) {
       const message = turn.assistantFinalMessages[messageIndex];
@@ -3317,7 +3320,15 @@ function renderStoredPresentationModel(model, snapshot = {}) {
 
   const visibleOrphans = (model.orphanItems || []).filter(Boolean);
   if (visibleOrphans.length) {
-    upsertThoughtProcess("stored_orphans", visibleOrphans, { merge: false });
+    const collabOrphans = visibleOrphans.filter((item) => item?.type === "collabAgentToolCall");
+    const processOrphans = visibleOrphans.filter((item) => item?.type !== "collabAgentToolCall");
+    for (const item of collabOrphans) {
+      if (!authorContext.isSubagent) {
+        updateAgentFromCollabItem(item);
+        renderCollabActivityTag("stored_orphans", item);
+      }
+    }
+    if (processOrphans.length) upsertThoughtProcess("stored_orphans", processOrphans, { merge: false });
   }
   return true;
 }
@@ -3741,6 +3752,150 @@ function collabPromptPreview(prompt) {
   return compactValue(String(prompt || ""), 220);
 }
 
+function normalizeCollabToolKey(tool) {
+  const raw = String(tool || "").trim();
+  const aliases = {
+    spawn_agent: "spawnAgent",
+    send_input: "sendInput",
+    send_message: "sendInput",
+    resume_agent: "resumeAgent",
+    wait_agent: "wait",
+    close_agent: "closeAgent",
+  };
+  return aliases[raw] || raw;
+}
+
+function collabActivityVerb(collab) {
+  const tool = normalizeCollabToolKey(collab.tool);
+  const status = String(collab.status || "unknown");
+  if (status === "failed") {
+    if (tool === "spawnAgent") return "Failed to create";
+    if (tool === "sendInput") return "Failed to send input to";
+    if (tool === "resumeAgent") return "Failed to resume";
+    if (tool === "wait") return "Wait failed for";
+    if (tool === "closeAgent") return "Failed to close";
+    return "Sub-agent action failed for";
+  }
+  if (tool === "spawnAgent") return status === "inProgress" ? "Creating" : "Created";
+  if (tool === "sendInput") return "Sent input to";
+  if (tool === "resumeAgent") return "Resumed";
+  if (tool === "wait") return status === "inProgress" ? "Waiting for" : "Wait completed for";
+  if (tool === "closeAgent") return "Closed";
+  return collabToolDisplayName(tool);
+}
+
+function collabActivityMessageId(turnKey, item) {
+  const collab = normalizeCollabAgentItem(item);
+  const stable = collab.id || item?.id || `${collab.tool}:${collab.receiverThreadIds.join(",")}:${collab.senderThreadId}`;
+  return `collab_${String(turnKey || "live")}_${String(stable || Date.now())}`;
+}
+
+function collabAgentProjection(threadId, statePatch = {}) {
+  const id = String(threadId || "").trim();
+  const agent = id ? state.agentGraph?.agents?.get(id) : null;
+  const meta = {
+    threadId: id,
+    nickname: statePatch.nickname || agent?.nickname || "",
+    role: statePatch.role || agent?.role || "",
+  };
+  return {
+    threadId: id,
+    displayLabel: agentDisplayLabel(meta),
+    nickname: meta.nickname,
+    role: meta.role,
+    lifecycleStatus: statePatch.status || agent?.status || "",
+    activityStatus: agent?.activityStatus || "",
+    clickable: Boolean(id),
+  };
+}
+
+function projectCollabActivityTag(item) {
+  const collab = normalizeCollabAgentItem(item);
+  const stateByThreadId = new Map(collab.agentsStates.map((agent) => [agent.threadId, agent]));
+  const receiverIds = Array.from(new Set([
+    ...collab.receiverThreadIds,
+    ...collab.agentsStates.map((agent) => agent.threadId),
+  ].filter(Boolean)));
+  const agents = receiverIds.map((id) => collabAgentProjection(id, stateByThreadId.get(id) || {}));
+  const verb = collabActivityVerb(collab);
+  const label = agents.length
+    ? `${verb} ${agents.map((agent) => agent.displayLabel).join(", ")}`
+    : verb === "Creating" ? "Creating sub-agent..." : `${verb} sub-agent`;
+  return {
+    id: collab.id || item?.id || "",
+    tool: collab.tool,
+    status: collab.status,
+    senderThreadId: collab.senderThreadId,
+    receiverThreadIds: receiverIds,
+    label,
+    verb,
+    promptPreview: collabPromptPreview(collab.prompt),
+    model: collab.model,
+    reasoningEffort: collab.reasoningEffort,
+    agents,
+  };
+}
+
+function focusSubAgentFromChip(agent) {
+  const receiverThreadId = String(agent?.threadId || "").trim();
+  if (!receiverThreadId || !bridge?.focusSubAgent) return;
+  bridge.focusSubAgent({
+    projectId: project?.id || payload.codexConnection?.projectId || "",
+    primaryThreadId: state.threadId,
+    receiverThreadId,
+    graphRevision: state.agentGraphRevision,
+    activationEpoch: Number(payload.activationEpoch) || 0,
+    label: agent.displayLabel || receiverThreadId,
+  }).catch(() => {});
+}
+
+function renderCollabActivityTag(turnKey, item) {
+  const projection = projectCollabActivityTag(item);
+  const node = ensureMessage(collabActivityMessageId(turnKey, item), "system", "Sub-agent activity");
+  node.classList.add("collab-meta-message");
+  const bubble = node.querySelector(".bubble");
+  bubble.innerHTML = "";
+  bubble.dataset.rawText = projection.label;
+  bubble.dataset.typedRendered = "true";
+  bubble.dataset.streamingPlain = "false";
+
+  const root = document.createElement("div");
+  root.className = `collab-activity-tag ${String(projection.status || "unknown")}`;
+  const action = document.createElement("span");
+  action.className = "collab-activity-verb";
+  action.textContent = projection.agents.length ? `${projection.verb} ` : projection.label;
+  root.appendChild(action);
+
+  if (projection.agents.length) {
+    const chipList = document.createElement("span");
+    chipList.className = "collab-agent-chip-list";
+    for (const agent of projection.agents) {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "collab-agent-chip";
+      chip.textContent = agent.displayLabel;
+      chip.title = agent.clickable ? `Open ${agent.displayLabel} in the Sub-agents panel` : "Sub-agent thread unavailable";
+      chip.disabled = !agent.clickable;
+      chip.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        focusSubAgentFromChip(agent);
+      });
+      chipList.appendChild(chip);
+    }
+    root.appendChild(chipList);
+  }
+
+  if (projection.status === "failed") {
+    const status = document.createElement("span");
+    status.className = "collab-activity-status";
+    status.textContent = "failed";
+    root.appendChild(status);
+  }
+  bubble.appendChild(root);
+  maybeAutoScrollBottom();
+}
+
 function updateAgentFromCollabItem(item) {
   const collab = normalizeCollabAgentItem(item);
   if (!collab.receiverThreadIds.length && !collab.agentsStates.length) return;
@@ -3970,6 +4125,7 @@ function isEmptyThoughtSentinel(text) {
 
 function shouldRenderThoughtItem(item) {
   if (!item) return false;
+  if (item.type === "collabAgentToolCall") return false;
   if (isToolLikeThoughtItem(item)) return true;
   const body = normalizeThoughtItemBody(item);
   if (item.type === "reasoning" || isThoughtAssistantMessageItem(item)) return !isEmptyThoughtSentinel(body);
@@ -3980,13 +4136,11 @@ function projectThoughtItemsForRender(thoughtItems) {
   const visible = Array.isArray(thoughtItems) ? thoughtItems.filter(shouldRenderThoughtItem) : [];
   return {
     reasoningItems: visible.filter((item) => item?.type === "reasoning" || isThoughtAssistantMessageItem(item)),
-    subAgentItems: visible.filter((item) => item?.type === "collabAgentToolCall"),
-    toolItems: visible.filter((item) => isToolLikeThoughtItem(item) && item?.type !== "collabAgentToolCall"),
+    toolItems: visible.filter((item) => isToolLikeThoughtItem(item)),
     patchItems: visible.filter((item) => item?.type === "fileChange"),
     otherItems: visible.filter((item) =>
       item?.type !== "reasoning" &&
       item?.type !== "fileChange" &&
-      item?.type !== "collabAgentToolCall" &&
       !isThoughtAssistantMessageItem(item) &&
       !isToolLikeThoughtItem(item)),
     visibleCount: visible.length,
@@ -4072,29 +4226,6 @@ function renderThoughtProcess(turnKey, thoughtItems, options = {}) {
     }
     patchesRoot.appendChild(patchesList);
     body.appendChild(patchesRoot);
-  }
-
-  if (projection.subAgentItems.length) {
-    const agentsRoot = document.createElement("details");
-    agentsRoot.className = "thought-tools thought-subagents";
-    const agentsSummary = document.createElement("summary");
-    agentsSummary.textContent = `Sub-agent activity (${projection.subAgentItems.length})`;
-    agentsRoot.appendChild(agentsSummary);
-    const agentsList = document.createElement("div");
-    agentsList.className = "thought-tools-list";
-    for (const item of projection.subAgentItems) {
-      const agentDetail = document.createElement("details");
-      agentDetail.className = "thought-tool thought-subagent";
-      const agentSummary = document.createElement("summary");
-      agentSummary.textContent = thoughtItemLabel(item);
-      const agentBody = document.createElement("pre");
-      agentBody.className = "thought-content";
-      renderTypedContent(agentBody, normalizeThoughtItemBody(item) || "No details.");
-      agentDetail.append(agentSummary, agentBody);
-      agentsList.appendChild(agentDetail);
-    }
-    agentsRoot.appendChild(agentsList);
-    body.appendChild(agentsRoot);
   }
 
   for (const item of projection.otherItems) {
@@ -4239,7 +4370,7 @@ function renderItem(item, authorContext = currentAuthorContext()) {
   }
   if (item.type === "collabAgentToolCall") {
     if (!authorContext.isSubagent) updateAgentFromCollabItem(item);
-    setMessageText(item.id, "system", thoughtItemBody(item) || "Sub-agent activity", "Sub-agent activity");
+    if (!authorContext.isSubagent) renderCollabActivityTag(item.turnId || state.turnId || "live", item);
     return;
   }
   if (item.type === "plan") {
@@ -4331,16 +4462,17 @@ function renderThreadHistory(thread, options = {}) {
     const regularItems = [];
     const thoughtItems = [];
     for (const item of turn.items || []) {
-      if (item?.id) rememberCodexItem({ threadId: thread?.id || state.threadId, turnId: turnKey, itemId: item.id }, item);
-      if (isThoughtItem(item) || isThoughtAssistantMessageItem(item)) thoughtItems.push(item);
-      else if (item?.type === "userMessage") userItems.push(item);
-      else regularItems.push(item);
+      if (!item) continue;
+      const normalizedItem = item.turnId ? item : { ...item, turnId: turnKey };
+      if (normalizedItem?.id) rememberCodexItem({ threadId: thread?.id || state.threadId, turnId: turnKey, itemId: normalizedItem.id }, normalizedItem);
+      if (isThoughtItem(normalizedItem) || isThoughtAssistantMessageItem(normalizedItem)) thoughtItems.push(normalizedItem);
+      else if (normalizedItem?.type === "userMessage") userItems.push(normalizedItem);
+      else regularItems.push(normalizedItem);
     }
     for (const item of userItems) renderItem(item, authorContext);
     if (thoughtItems.length) {
       for (const item of thoughtItems) {
         if (isThoughtAssistantMessageItem(item)) rememberThoughtAssistantItem(item, turnKey);
-        if (!authorContext.isSubagent && item?.type === "collabAgentToolCall") updateAgentFromCollabItem(item);
       }
       upsertThoughtProcess(turnKey, thoughtItems, { merge: false });
     }
@@ -4523,7 +4655,6 @@ function handleNotification(method, params) {
     if (isThoughtItem(params?.item) || isThoughtAssistantMessageItem(params?.item)) {
       const turnKey = String(params?.turnId || params?.item?.turnId || state.turnId || `live_${Date.now()}`);
       if (isThoughtAssistantMessageItem(params?.item)) rememberThoughtAssistantItem(params.item, turnKey);
-      if (params?.item?.type === "collabAgentToolCall" && !currentAuthorContext().isSubagent) updateAgentFromCollabItem(params.item);
       upsertThoughtProcess(turnKey, [params.item], { merge: true, open: true });
     } else {
       renderItem(params?.item, currentAuthorContext());
