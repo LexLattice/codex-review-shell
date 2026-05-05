@@ -204,6 +204,12 @@ function shortAgentThreadId(threadId) {
   return id.length <= 8 ? id : id.slice(0, 8);
 }
 
+function nullableFiniteNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
 function extractSubagentSourceMeta(source = {}) {
   const spawn = source?.subagent?.thread_spawn ||
     source?.subAgent?.threadSpawn ||
@@ -216,7 +222,7 @@ function extractSubagentSourceMeta(source = {}) {
     agentNickname: String(spawn.agent_nickname || spawn.agentNickname || ""),
     agentRole: String(spawn.agent_role || spawn.agentRole || ""),
     agentPath: String(spawn.agent_path || spawn.agentPath || ""),
-    depth: Number.isFinite(Number(spawn.depth)) ? Number(spawn.depth) : null,
+    depth: nullableFiniteNumber(spawn.depth),
   };
 }
 
@@ -255,7 +261,7 @@ function threadAgentMeta(input = {}) {
     agentNickname,
     agentRole,
     agentPath,
-    depth: Number.isFinite(Number(depthValue)) ? Number(depthValue) : null,
+    depth: nullableFiniteNumber(depthValue),
   };
 }
 
@@ -296,9 +302,11 @@ function currentAuthorContext(meta = state.threadMeta) {
 
 function resetAgentGraph(threadId = state.threadId) {
   state.agentGraphRevision += 1;
+  const primaryThreadId = String(threadId || "");
   state.agentGraph = {
     schemaVersion: 1,
-    primaryThreadId: String(threadId || ""),
+    graphId: `${primaryThreadId || "thread"}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`,
+    primaryThreadId,
     agents: new Map(),
     updatedAt: new Date().toISOString(),
   };
@@ -3736,7 +3744,7 @@ function collabPromptPreview(prompt) {
 function updateAgentFromCollabItem(item) {
   const collab = normalizeCollabAgentItem(item);
   if (!collab.receiverThreadIds.length && !collab.agentsStates.length) return;
-  ensureAgentGraph(state.threadId);
+  const graph = ensureAgentGraph(state.threadId);
   const statusById = new Map(collab.agentsStates.map((agent) => [agent.threadId, agent]));
   const receiverIds = new Set([...collab.receiverThreadIds, ...collab.agentsStates.map((agent) => agent.threadId)].filter(Boolean));
   for (const receiverId of receiverIds) {
@@ -3760,7 +3768,7 @@ function updateAgentFromCollabItem(item) {
         observedAt: new Date().toISOString(),
       }],
     });
-    if (agent) hydrateAgentThread(receiverId, state.agentGraphRevision);
+    if (agent) hydrateAgentThread(receiverId, graph.graphId, graph.primaryThreadId);
   }
   state.agentGraphRevision += 1;
   reportAgentGraph();
@@ -3809,10 +3817,17 @@ function subAgentTranscriptFromSnapshot(snapshot, agent) {
   return messages.slice(-12);
 }
 
-async function hydrateAgentThread(threadId, graphRevision) {
+async function hydrateAgentThread(threadId, graphId, primaryThreadId) {
   const id = String(threadId || "").trim();
-  if (!id || state.agentHydrationRequests.has(id)) return;
-  state.agentHydrationRequests.set(id, graphRevision);
+  const originGraphId = String(graphId || state.agentGraph?.graphId || "");
+  const originPrimaryThreadId = String(primaryThreadId || state.agentGraph?.primaryThreadId || state.threadId || "");
+  const requestKey = `${originGraphId}:${id}`;
+  if (!id || !originGraphId || !originPrimaryThreadId || state.agentHydrationRequests.has(requestKey)) return;
+  state.agentHydrationRequests.set(requestKey, { graphId: originGraphId, primaryThreadId: originPrimaryThreadId });
+  const isCurrentHydrationTarget = () =>
+    String(state.threadId || "") === originPrimaryThreadId &&
+    String(state.agentGraph?.primaryThreadId || "") === originPrimaryThreadId &&
+    String(state.agentGraph?.graphId || "") === originGraphId;
   try {
     const snapshot = await bridge.readStoredThreadTranscript?.(
       project?.id || "",
@@ -3821,8 +3836,7 @@ async function hydrateAgentThread(threadId, graphRevision) {
       "",
       160,
     );
-    if (String(state.agentGraph?.primaryThreadId || "") !== String(state.threadId || "")) return;
-    if (Number(graphRevision) > Number(state.agentGraphRevision)) return;
+    if (!isCurrentHydrationTarget()) return;
     const agent = ensureGraphAgent(id, {
       parentThreadId: snapshot?.parentThreadId || state.threadId,
       nickname: snapshot?.agentNickname || undefined,
@@ -3836,13 +3850,14 @@ async function hydrateAgentThread(threadId, graphRevision) {
       reportAgentGraph();
     }
   } catch {
+    if (!isCurrentHydrationTarget()) return;
     const agent = ensureGraphAgent(id, { hydrationStatus: "failed" });
     if (agent) {
       state.agentGraphRevision += 1;
       reportAgentGraph();
     }
   } finally {
-    state.agentHydrationRequests.delete(id);
+    state.agentHydrationRequests.delete(requestKey);
   }
 }
 

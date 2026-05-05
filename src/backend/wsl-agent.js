@@ -558,6 +558,12 @@ function sortCodexThreadEntries(entries) {
   });
 }
 
+function nullableFiniteNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
 function extractSubagentSessionMeta(payload = {}) {
   const source = payload?.source || {};
   const spawn = source?.subagent?.thread_spawn ||
@@ -570,7 +576,7 @@ function extractSubagentSessionMeta(payload = {}) {
     agentRole: String(payload.agent_role || payload.agentRole || spawn?.agent_role || spawn?.agentRole || ""),
     agentNickname: String(payload.agent_nickname || payload.agentNickname || spawn?.agent_nickname || spawn?.agentNickname || ""),
     agentPath: String(spawn?.agent_path || spawn?.agentPath || ""),
-    depth: Number.isFinite(Number(spawn?.depth)) ? Number(spawn.depth) : null,
+    depth: nullableFiniteNumber(spawn?.depth),
     isSubagent: Boolean(spawn),
     source,
   };
@@ -684,7 +690,7 @@ async function listCodexThreadsFromHome(codexHome, options = {}) {
       agentRole: String(meta.agentRole || ""),
       agentNickname: String(meta.agentNickname || ""),
       agentPath: String(meta.agentPath || ""),
-      depth: Number.isFinite(Number(meta.depth)) ? Number(meta.depth) : null,
+      depth: meta.depth ?? null,
       isSubagent: Boolean(meta.isSubagent),
       sessionFileMtimeMs: Number.isFinite(Number(meta.sessionFileMtimeMs)) ? Number(meta.sessionFileMtimeMs) : 0,
       sessionFileSizeBytes: Number.isFinite(Number(meta.sessionFileSizeBytes)) ? Number(meta.sessionFileSizeBytes) : 0,
@@ -1322,7 +1328,7 @@ function createStoredPresentationBuilder(threadId, sourceFile, threadMeta = {}) 
         agentRole: String(threadMeta.agentRole || ""),
         agentNickname: String(threadMeta.agentNickname || ""),
         agentPath: String(threadMeta.agentPath || ""),
-        depth: Number.isFinite(Number(threadMeta.depth)) ? Number(threadMeta.depth) : null,
+        depth: threadMeta.depth ?? null,
       },
       source: "stored_jsonl",
       sourceFile,
@@ -1622,7 +1628,7 @@ async function readCodexThreadTranscript(params = {}) {
     agentRole: String(session.agentRole || ""),
     agentNickname: String(session.agentNickname || ""),
     agentPath: String(session.agentPath || ""),
-    depth: Number.isFinite(Number(session.depth)) ? Number(session.depth) : null,
+    depth: session.depth ?? null,
     isSubagent: Boolean(session.isSubagent),
     sessionFilePath: session.sessionFilePath,
     entries: normalized,
