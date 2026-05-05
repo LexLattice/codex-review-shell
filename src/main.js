@@ -3138,6 +3138,29 @@ ipcMain.handle("codex-surface:thread-state", async (event, payload) => {
   return { ok: true };
 });
 
+ipcMain.handle("codex-surface:agent-graph", async (event, payload) => {
+  if (isStaleSurfaceActivationEpoch(payload?.activationEpoch)) return { ok: false, stale: true };
+  const session = codexSurfaceSessionFor(event.sender);
+  const state = {
+    surface: "codex",
+    type: "agent-graph",
+    projectId: normalizeString(payload?.projectId, ""),
+    primaryThreadId: normalizeString(payload?.primaryThreadId || payload?.threadId, ""),
+    sourceHome: normalizeString(payload?.sourceHome, ""),
+    sessionFilePath: normalizeString(payload?.sessionFilePath, ""),
+    graphRevision: Number(payload?.graphRevision) || 0,
+    activationEpoch: Number(payload?.activationEpoch) || 0,
+    agents: Array.isArray(payload?.agents) ? payload.agents : [],
+    activeCount: Number(payload?.activeCount) || 0,
+    completedCount: Number(payload?.completedCount) || 0,
+    erroredCount: Number(payload?.erroredCount) || 0,
+    connectionId: session.connectionId || "",
+    at: nowIso(),
+  };
+  emitToShell("surface:event", state);
+  return { ok: true };
+});
+
 ipcMain.handle("codex:respond-request", async (_event, payload) => {
   const requestKey = payload?.key || payload?.id || "";
   const session = findCodexSurfaceSessionForRequest(requestKey);

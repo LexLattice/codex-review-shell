@@ -101,6 +101,10 @@ const state = {
   connected: false,
   readyForThreadOpen: false,
   pendingOpenThreadEvent: null,
+  threadMeta: null,
+  agentGraph: null,
+  agentGraphRevision: 0,
+  agentHydrationRequests: new Map(),
   liveAttached: false,
   sourceHome: "",
   sessionFilePath: "",
@@ -156,6 +160,150 @@ async function reportThreadState(status, details = {}) {
   } catch {
     // Thread-state reporting must never block transcript rendering.
   }
+}
+
+async function reportAgentGraph() {
+  if (!bridge?.reportAgentGraph) return;
+  const graph = state.agentGraph;
+  if (!graph || String(graph.primaryThreadId || "") !== String(state.threadId || "")) return;
+  const agents = Array.from(graph.agents.values()).map((agent) => ({
+    threadId: agent.threadId,
+    parentThreadId: agent.parentThreadId,
+    label: agent.label,
+    nickname: agent.nickname,
+    role: agent.role,
+    status: agent.status,
+    activityStatus: agent.activityStatus,
+    hydrationStatus: agent.hydrationStatus,
+    lastAction: agent.lastAction || null,
+    promptPreview: agent.promptPreview || "",
+    transcript: Array.isArray(agent.transcript) ? agent.transcript.slice(-12) : [],
+    evidenceRefs: Array.isArray(agent.evidenceRefs) ? agent.evidenceRefs : [],
+  }));
+  try {
+    await bridge.reportAgentGraph({
+      projectId: project?.id || payload.codexConnection?.projectId || "",
+      primaryThreadId: state.threadId,
+      sourceHome: state.sourceHome,
+      sessionFilePath: state.sessionFilePath,
+      graphRevision: state.agentGraphRevision,
+      activationEpoch: Number(payload.activationEpoch) || 0,
+      agents,
+      activeCount: agents.filter((agent) => ["running", "pending", "inProgress"].includes(String(agent.status || ""))).length,
+      completedCount: agents.filter((agent) => String(agent.status || "") === "completed").length,
+      erroredCount: agents.filter((agent) => ["failed", "errored"].includes(String(agent.status || ""))).length,
+    });
+  } catch {
+    // Agent graph reporting is advisory and must not block transcript rendering.
+  }
+}
+
+function shortAgentThreadId(threadId) {
+  const id = String(threadId || "").trim();
+  if (!id) return "";
+  return id.length <= 8 ? id : id.slice(0, 8);
+}
+
+function extractSubagentSourceMeta(source = {}) {
+  const spawn = source?.subagent?.thread_spawn ||
+    source?.subAgent?.threadSpawn ||
+    source?.subagent?.threadSpawn ||
+    source?.subAgent?.thread_spawn ||
+    null;
+  if (!spawn) return null;
+  return {
+    parentThreadId: String(spawn.parent_thread_id || spawn.parentThreadId || ""),
+    agentNickname: String(spawn.agent_nickname || spawn.agentNickname || ""),
+    agentRole: String(spawn.agent_role || spawn.agentRole || ""),
+    agentPath: String(spawn.agent_path || spawn.agentPath || ""),
+    depth: Number.isFinite(Number(spawn.depth)) ? Number(spawn.depth) : null,
+  };
+}
+
+function threadAgentMeta(input = {}) {
+  const sourceMeta = extractSubagentSourceMeta(input.source || input.threadMeta?.source || {});
+  const threadMeta = input.threadMeta || input;
+  const parentThreadId = String(
+    threadMeta.parentThreadId ||
+    threadMeta.parent_thread_id ||
+    sourceMeta?.parentThreadId ||
+    "",
+  );
+  const agentNickname = String(
+    threadMeta.agentNickname ||
+    threadMeta.agent_nickname ||
+    sourceMeta?.agentNickname ||
+    "",
+  );
+  const agentRole = String(
+    threadMeta.agentRole ||
+    threadMeta.agent_role ||
+    sourceMeta?.agentRole ||
+    "",
+  );
+  const agentPath = String(
+    threadMeta.agentPath ||
+    threadMeta.agent_path ||
+    sourceMeta?.agentPath ||
+    "",
+  );
+  const depthValue = threadMeta.depth ?? sourceMeta?.depth;
+  return {
+    threadId: String(threadMeta.threadId || threadMeta.id || state.threadId || ""),
+    isSubagent: Boolean(threadMeta.isSubagent || threadMeta.is_subagent || sourceMeta || parentThreadId),
+    parentThreadId,
+    agentNickname,
+    agentRole,
+    agentPath,
+    depth: Number.isFinite(Number(depthValue)) ? Number(depthValue) : null,
+  };
+}
+
+function agentDisplayLabel(meta = {}) {
+  const nickname = String(meta.agentNickname || meta.nickname || "").trim();
+  const role = String(meta.agentRole || meta.role || "").trim();
+  const id = shortAgentThreadId(meta.threadId || "");
+  if (nickname && role) return `${nickname} [${role}]`;
+  if (nickname) return nickname;
+  if (role && id) return `Agent ${id} [${role}]`;
+  if (id) return `Agent ${id}`;
+  return "Unknown agent";
+}
+
+function parentAgentLabel(meta = {}) {
+  const parentId = String(meta.parentThreadId || "").trim();
+  if (parentId && parentId === String(state.threadId || "")) return "Primary Codex";
+  if (parentId) return `Parent agent ${shortAgentThreadId(parentId)}`;
+  return "Parent agent";
+}
+
+function setActiveThreadMeta(meta = {}) {
+  state.threadMeta = threadAgentMeta(meta);
+}
+
+function currentAuthorContext(meta = state.threadMeta) {
+  const normalized = threadAgentMeta(meta || {});
+  const agentLabel = agentDisplayLabel(normalized);
+  return {
+    ...normalized,
+    agentLabel,
+    parentLabel: parentAgentLabel(normalized),
+    userRole: normalized.isSubagent ? "system" : "user",
+    userTitle: normalized.isSubagent ? `${parentAgentLabel(normalized)} -> ${agentLabel}` : "You",
+    assistantTitle: normalized.isSubagent ? agentLabel : "Codex",
+  };
+}
+
+function resetAgentGraph(threadId = state.threadId) {
+  state.agentGraphRevision += 1;
+  state.agentGraph = {
+    schemaVersion: 1,
+    primaryThreadId: String(threadId || ""),
+    agents: new Map(),
+    updatedAt: new Date().toISOString(),
+  };
+  state.agentHydrationRequests.clear();
+  reportAgentGraph();
 }
 
 const els = {
@@ -3106,9 +3254,19 @@ function shouldPreserveStoredTranscriptOnLiveAttach(thread) {
   return Boolean(snapshot?.presentationModel);
 }
 
-function renderStoredPresentationModel(model) {
+function renderStoredPresentationModel(model, snapshot = {}) {
   const turns = Array.isArray(model?.turns) ? model.turns : [];
   if (!turns.length) return false;
+  const authorContext = currentAuthorContext({
+    ...(model?.threadMeta || {}),
+    threadId: model?.threadId || snapshot?.threadId || state.threadId,
+    isSubagent: Boolean(model?.threadMeta?.isSubagent || snapshot?.isSubagent),
+    parentThreadId: model?.threadMeta?.parentThreadId || snapshot?.parentThreadId || "",
+    agentNickname: model?.threadMeta?.agentNickname || snapshot?.agentNickname || "",
+    agentRole: model?.threadMeta?.agentRole || snapshot?.agentRole || "",
+  });
+  setActiveThreadMeta(authorContext);
+  if (!authorContext.isSubagent) ensureAgentGraph(model?.threadId || snapshot?.threadId || state.threadId);
   const totalUserMessages = turns.reduce((sum, turn) => sum + storedTurnUserMessageCount(turn), 0);
   const visibleUserMessages = visibleUserMessageCount(totalUserMessages);
   const hiddenUserMessages = Math.max(0, totalUserMessages - visibleUserMessages);
@@ -3123,7 +3281,7 @@ function renderStoredPresentationModel(model) {
     for (let messageIndex = 0; messageIndex < (turn.userMessages || []).length; messageIndex += 1) {
       const message = turn.userMessages[messageIndex];
       const id = String(message.id || `stored_user_${turnKey}_${messageIndex}`);
-      setMessageText(id, "user", storedMessageText(message), "You");
+      setMessageText(id, authorContext.userRole, storedMessageText(message), authorContext.userTitle);
     }
     for (let messageIndex = 0; messageIndex < (turn.systemMessages || []).length; messageIndex += 1) {
       const message = turn.systemMessages[messageIndex];
@@ -3132,16 +3290,20 @@ function renderStoredPresentationModel(model) {
     }
     const thoughtItems = Array.isArray(turn.thoughtItems) ? turn.thoughtItems : [];
     if (thoughtItems.length) {
-      upsertThoughtProcess(turnKey, thoughtItems.map((item, itemIndex) => ({
+      const normalizedThoughtItems = thoughtItems.map((item, itemIndex) => ({
         ...item,
         id: String(item.id || `stored_thought_${turnKey}_${itemIndex}`),
         turnId: turn.turnId || turnKey,
-      })), { merge: false });
+      }));
+      for (const item of normalizedThoughtItems) {
+        if (!authorContext.isSubagent && item?.type === "collabAgentToolCall") updateAgentFromCollabItem(item);
+      }
+      upsertThoughtProcess(turnKey, normalizedThoughtItems, { merge: false });
     }
     for (let messageIndex = 0; messageIndex < (turn.assistantFinalMessages || []).length; messageIndex += 1) {
       const message = turn.assistantFinalMessages[messageIndex];
       const id = String(message.id || `stored_assistant_${turnKey}_${messageIndex}`);
-      setMessageText(id, "assistant", storedMessageText(message), "Codex");
+      setMessageText(id, "assistant", storedMessageText(message), authorContext.assistantTitle);
     }
   }
 
@@ -3168,7 +3330,15 @@ function renderStoredTranscript(snapshot, threadId, options = {}) {
   state.liveAttached = false;
   const title = String(snapshot?.title || "Stored transcript");
   addSystemMessage(`Loaded ${title} from local Codex session logs. Live attach is running in background.`);
-  if (renderStoredPresentationModel(snapshot?.presentationModel)) {
+  setActiveThreadMeta({
+    threadId,
+    isSubagent: Boolean(snapshot?.isSubagent),
+    parentThreadId: snapshot?.parentThreadId || "",
+    agentNickname: snapshot?.agentNickname || "",
+    agentRole: snapshot?.agentRole || "",
+  });
+  if (!state.threadMeta?.isSubagent) resetAgentGraph(threadId);
+  if (renderStoredPresentationModel(snapshot?.presentationModel, snapshot)) {
     setComposerEnabled(false, "Read-only transcript while connecting this thread to live Codex…");
     state.isBulkRendering = false;
     if (options.preserveViewport) {
@@ -3217,8 +3387,17 @@ function renderStoredTranscript(snapshot, threadId, options = {}) {
       continue;
     }
     flushThoughtBuffer();
-    const role = entry.role === "assistant" || entry.role === "user" ? entry.role : "system";
-    const roleTitle = role === "assistant" ? "Codex" : role === "user" ? "You" : "System";
+    const authorContext = currentAuthorContext();
+    const role = entry.role === "assistant"
+      ? "assistant"
+      : entry.role === "user"
+        ? authorContext.userRole
+        : "system";
+    const roleTitle = role === "assistant"
+      ? authorContext.assistantTitle
+      : entry.role === "user"
+        ? authorContext.userTitle
+        : "System";
     setMessageText(String(entry.id || `stored_${absoluteIndex + 1}`), role, entry.text || "", roleTitle);
   }
   flushThoughtBuffer();
@@ -3422,6 +3601,8 @@ async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "",
 
 function bindThread(thread, modelName = "", options = {}) {
   state.threadId = thread?.id || "";
+  setActiveThreadMeta(threadAgentMeta(thread || {}));
+  if (!state.threadMeta?.isSubagent && options.resetAgentGraph !== false) ensureAgentGraph(state.threadId);
   state.liveAttached = options.liveAttached !== false;
   state.activeModel = String(modelName || state.activeModel || project?.codex?.model || "");
   const title = thread?.title || thread?.name || thread?.preview || state.threadTitle || payload.initialThreadTitle || state.threadId;
@@ -3455,6 +3636,216 @@ function formatCommandExecutionText(item) {
   return [String(item?.command || ""), status, preview].filter(Boolean).join("\n");
 }
 
+function collabToolDisplayName(tool) {
+  const normalized = String(tool || "").trim();
+  const labels = {
+    spawnAgent: "Spawn agent",
+    spawn_agent: "Spawn agent",
+    sendInput: "Send input",
+    send_input: "Send input",
+    send_message: "Send input",
+    resumeAgent: "Resume agent",
+    resume_agent: "Resume agent",
+    wait: "Wait",
+    wait_agent: "Wait",
+    closeAgent: "Close agent",
+    close_agent: "Close agent",
+  };
+  return labels[normalized] || normalized || "Sub-agent action";
+}
+
+function normalizeCollabAgentItem(item = {}) {
+  const receiverThreadIds = Array.isArray(item.receiverThreadIds)
+    ? item.receiverThreadIds
+    : Array.isArray(item.receiver_thread_ids)
+      ? item.receiver_thread_ids
+      : [];
+  const agentsStates = Array.isArray(item.agentsStates)
+    ? item.agentsStates
+    : Array.isArray(item.agents_states)
+      ? item.agents_states
+      : [];
+  return {
+    id: String(item.id || item.callId || item.call_id || ""),
+    tool: String(item.tool || "call"),
+    status: String(item.status || "unknown"),
+    senderThreadId: String(item.senderThreadId || item.sender_thread_id || state.threadId || ""),
+    receiverThreadIds: receiverThreadIds.map((id) => String(id || "")).filter(Boolean),
+    prompt: String(item.prompt || ""),
+    model: String(item.model || ""),
+    reasoningEffort: String(item.reasoningEffort || item.reasoning_effort || ""),
+    agentsStates: agentsStates.map((agent) => ({
+      threadId: String(agent?.threadId || agent?.thread_id || ""),
+      status: String(agent?.status || "unknown"),
+      nickname: String(agent?.nickname || agent?.agentNickname || agent?.agent_nickname || ""),
+      role: String(agent?.role || agent?.agentRole || agent?.agent_role || ""),
+    })).filter((agent) => agent.threadId || agent.status),
+  };
+}
+
+function ensureAgentGraph(threadId = state.threadId) {
+  const primaryThreadId = String(threadId || state.threadId || "");
+  if (!state.agentGraph || String(state.agentGraph.primaryThreadId || "") !== primaryThreadId) {
+    resetAgentGraph(primaryThreadId);
+  }
+  return state.agentGraph;
+}
+
+function graphAgentLabel(agent) {
+  return agentDisplayLabel({
+    threadId: agent.threadId,
+    agentNickname: agent.nickname,
+    agentRole: agent.role,
+  });
+}
+
+function ensureGraphAgent(threadId, patch = {}) {
+  const id = String(threadId || "").trim();
+  if (!id) return null;
+  const graph = ensureAgentGraph();
+  const existing = graph.agents.get(id) || {
+    threadId: id,
+    parentThreadId: String(patch.parentThreadId || state.threadId || ""),
+    nickname: "",
+    role: "",
+    label: `Agent ${shortAgentThreadId(id)}`,
+    status: "discovered",
+    activityStatus: "unknown",
+    hydrationStatus: "not_requested",
+    transcript: [],
+    evidenceRefs: [],
+  };
+  const next = {
+    ...existing,
+    ...patch,
+    threadId: id,
+    parentThreadId: String(patch.parentThreadId || existing.parentThreadId || state.threadId || ""),
+    nickname: String(patch.nickname ?? existing.nickname ?? ""),
+    role: String(patch.role ?? existing.role ?? ""),
+  };
+  next.label = graphAgentLabel(next);
+  graph.agents.set(id, next);
+  graph.updatedAt = new Date().toISOString();
+  return next;
+}
+
+function collabPromptPreview(prompt) {
+  return compactValue(String(prompt || ""), 220);
+}
+
+function updateAgentFromCollabItem(item) {
+  const collab = normalizeCollabAgentItem(item);
+  if (!collab.receiverThreadIds.length && !collab.agentsStates.length) return;
+  ensureAgentGraph(state.threadId);
+  const statusById = new Map(collab.agentsStates.map((agent) => [agent.threadId, agent]));
+  const receiverIds = new Set([...collab.receiverThreadIds, ...collab.agentsStates.map((agent) => agent.threadId)].filter(Boolean));
+  for (const receiverId of receiverIds) {
+    const agentState = statusById.get(receiverId) || {};
+    const agent = ensureGraphAgent(receiverId, {
+      parentThreadId: collab.senderThreadId || state.threadId,
+      nickname: agentState.nickname || undefined,
+      role: agentState.role || undefined,
+      status: agentState.status || collab.status || "unknown",
+      activityStatus: collab.status === "inProgress" ? "active" : "last_seen_completed",
+      hydrationStatus: "metadata_pending",
+      lastAction: {
+        tool: collab.tool,
+        status: collab.status,
+        callId: collab.id,
+      },
+      promptPreview: collabPromptPreview(collab.prompt),
+      evidenceRefs: [{
+        kind: "collab_tool_call",
+        label: `${collabToolDisplayName(collab.tool)} · ${collab.status}`,
+        observedAt: new Date().toISOString(),
+      }],
+    });
+    if (agent) hydrateAgentThread(receiverId, state.agentGraphRevision);
+  }
+  state.agentGraphRevision += 1;
+  reportAgentGraph();
+}
+
+function subAgentTranscriptFromSnapshot(snapshot, agent) {
+  const context = currentAuthorContext({
+    threadId: snapshot?.threadId || agent.threadId,
+    isSubagent: true,
+    parentThreadId: snapshot?.parentThreadId || agent.parentThreadId || state.threadId,
+    agentNickname: snapshot?.agentNickname || agent.nickname || "",
+    agentRole: snapshot?.agentRole || agent.role || "",
+  });
+  const messages = [];
+  const model = snapshot?.presentationModel;
+  if (Array.isArray(model?.turns)) {
+    for (const turn of model.turns) {
+      for (const message of turn.userMessages || []) {
+        messages.push({
+          id: String(message.id || `sub_user_${messages.length}`),
+          role: "parent",
+          title: context.userTitle,
+          text: compactValue(storedMessageText(message), 1400),
+        });
+      }
+      for (const message of turn.assistantFinalMessages || []) {
+        messages.push({
+          id: String(message.id || `sub_agent_${messages.length}`),
+          role: "child",
+          title: context.assistantTitle,
+          text: compactValue(storedMessageText(message), 1400),
+        });
+      }
+    }
+    return messages.slice(-12);
+  }
+  for (const entry of snapshot?.entries || []) {
+    const role = entry.role === "assistant" ? "child" : entry.role === "user" ? "parent" : "system";
+    messages.push({
+      id: String(entry.id || `sub_entry_${messages.length}`),
+      role,
+      title: role === "child" ? context.assistantTitle : role === "parent" ? context.userTitle : "System",
+      text: compactValue(entry.text || "", 1400),
+    });
+  }
+  return messages.slice(-12);
+}
+
+async function hydrateAgentThread(threadId, graphRevision) {
+  const id = String(threadId || "").trim();
+  if (!id || state.agentHydrationRequests.has(id)) return;
+  state.agentHydrationRequests.set(id, graphRevision);
+  try {
+    const snapshot = await bridge.readStoredThreadTranscript?.(
+      project?.id || "",
+      id,
+      state.sourceHome || "",
+      "",
+      160,
+    );
+    if (String(state.agentGraph?.primaryThreadId || "") !== String(state.threadId || "")) return;
+    if (Number(graphRevision) > Number(state.agentGraphRevision)) return;
+    const agent = ensureGraphAgent(id, {
+      parentThreadId: snapshot?.parentThreadId || state.threadId,
+      nickname: snapshot?.agentNickname || undefined,
+      role: snapshot?.agentRole || undefined,
+      status: "available",
+      hydrationStatus: "turns_ready",
+    });
+    if (agent) {
+      agent.transcript = subAgentTranscriptFromSnapshot(snapshot, agent);
+      state.agentGraphRevision += 1;
+      reportAgentGraph();
+    }
+  } catch {
+    const agent = ensureGraphAgent(id, { hydrationStatus: "failed" });
+    if (agent) {
+      state.agentGraphRevision += 1;
+      reportAgentGraph();
+    }
+  } finally {
+    state.agentHydrationRequests.delete(id);
+  }
+}
+
 function thoughtItemLabel(item) {
   if (!item) return "Thought";
   if (item.type === "reasoning") return "Reasoning";
@@ -3468,7 +3859,7 @@ function thoughtItemLabel(item) {
     return `Patch · ${changes} file change${changes === 1 ? "" : "s"}`;
   }
   if (item.type === "imageGeneration") return "Image generation";
-  if (item.type === "collabAgentToolCall") return `Sub-agent tool · ${item.tool || "call"}`;
+  if (item.type === "collabAgentToolCall") return `Sub-agent · ${collabToolDisplayName(item.tool)}`;
   return String(item.type || "Thought");
 }
 
@@ -3574,11 +3965,13 @@ function projectThoughtItemsForRender(thoughtItems) {
   const visible = Array.isArray(thoughtItems) ? thoughtItems.filter(shouldRenderThoughtItem) : [];
   return {
     reasoningItems: visible.filter((item) => item?.type === "reasoning" || isThoughtAssistantMessageItem(item)),
-    toolItems: visible.filter(isToolLikeThoughtItem),
+    subAgentItems: visible.filter((item) => item?.type === "collabAgentToolCall"),
+    toolItems: visible.filter((item) => isToolLikeThoughtItem(item) && item?.type !== "collabAgentToolCall"),
     patchItems: visible.filter((item) => item?.type === "fileChange"),
     otherItems: visible.filter((item) =>
       item?.type !== "reasoning" &&
       item?.type !== "fileChange" &&
+      item?.type !== "collabAgentToolCall" &&
       !isThoughtAssistantMessageItem(item) &&
       !isToolLikeThoughtItem(item)),
     visibleCount: visible.length,
@@ -3664,6 +4057,29 @@ function renderThoughtProcess(turnKey, thoughtItems, options = {}) {
     }
     patchesRoot.appendChild(patchesList);
     body.appendChild(patchesRoot);
+  }
+
+  if (projection.subAgentItems.length) {
+    const agentsRoot = document.createElement("details");
+    agentsRoot.className = "thought-tools thought-subagents";
+    const agentsSummary = document.createElement("summary");
+    agentsSummary.textContent = `Sub-agent activity (${projection.subAgentItems.length})`;
+    agentsRoot.appendChild(agentsSummary);
+    const agentsList = document.createElement("div");
+    agentsList.className = "thought-tools-list";
+    for (const item of projection.subAgentItems) {
+      const agentDetail = document.createElement("details");
+      agentDetail.className = "thought-tool thought-subagent";
+      const agentSummary = document.createElement("summary");
+      agentSummary.textContent = thoughtItemLabel(item);
+      const agentBody = document.createElement("pre");
+      agentBody.className = "thought-content";
+      renderTypedContent(agentBody, normalizeThoughtItemBody(item) || "No details.");
+      agentDetail.append(agentSummary, agentBody);
+      agentsList.appendChild(agentDetail);
+    }
+    agentsRoot.appendChild(agentsList);
+    body.appendChild(agentsRoot);
   }
 
   for (const item of projection.otherItems) {
@@ -3787,12 +4203,12 @@ function appendThoughtAssistantDelta(itemId, delta, phaseHint = "") {
   return true;
 }
 
-function renderItem(item) {
+function renderItem(item, authorContext = currentAuthorContext()) {
   if (!item || !item.id) return;
   rememberCodexItem({ threadId: state.threadId, turnId: item.turnId || state.turnId, itemId: item.id }, item);
   if (item.type === "userMessage") {
     const text = (item.content || []).map(userInputToText).filter(Boolean).join("\n\n");
-    setMessageText(item.id, "user", text, "You");
+    setMessageText(item.id, authorContext.userRole, text, authorContext.userTitle);
     return;
   }
   if (item.type === "agentMessage") {
@@ -3803,7 +4219,12 @@ function renderItem(item) {
       return;
     }
     rememberFinalMessageItem(item.id, item.turnId || state.turnId || "");
-    setMessageText(item.id, "assistant", item.text || "", "Codex");
+    setMessageText(item.id, "assistant", item.text || "", authorContext.assistantTitle);
+    return;
+  }
+  if (item.type === "collabAgentToolCall") {
+    if (!authorContext.isSubagent) updateAgentFromCollabItem(item);
+    setMessageText(item.id, "system", thoughtItemBody(item) || "Sub-agent activity", "Sub-agent activity");
     return;
   }
   if (item.type === "plan") {
@@ -3867,6 +4288,9 @@ function renderThreadHistory(thread, options = {}) {
 
   state.isBulkRendering = true;
   clearRenderedThreadState({ resetSession: options.resetSession !== false });
+  setActiveThreadMeta(threadAgentMeta(thread || {}));
+  const authorContext = currentAuthorContext();
+  if (!authorContext.isSubagent) resetAgentGraph(thread?.id || state.threadId || "");
   const allTurns = Array.isArray(thread?.turns) ? thread.turns : [];
   const userMessageTurnIndices = [];
   for (let index = 0; index < allTurns.length; index += 1) {
@@ -3897,14 +4321,15 @@ function renderThreadHistory(thread, options = {}) {
       else if (item?.type === "userMessage") userItems.push(item);
       else regularItems.push(item);
     }
-    for (const item of userItems) renderItem(item);
+    for (const item of userItems) renderItem(item, authorContext);
     if (thoughtItems.length) {
       for (const item of thoughtItems) {
         if (isThoughtAssistantMessageItem(item)) rememberThoughtAssistantItem(item, turnKey);
+        if (!authorContext.isSubagent && item?.type === "collabAgentToolCall") updateAgentFromCollabItem(item);
       }
       upsertThoughtProcess(turnKey, thoughtItems, { merge: false });
     }
-    for (const item of regularItems) renderItem(item);
+    for (const item of regularItems) renderItem(item, authorContext);
   }
   state.isBulkRendering = false;
   if (options.preserveViewport) {
@@ -4067,7 +4492,7 @@ function handleNotification(method, params) {
     markTurnCodexOutput(turnKey);
     if (appendThoughtAssistantDelta(params?.itemId, params?.delta || "", params?.phase || "")) return;
     rememberFinalMessageItem(params?.itemId, turnKey);
-    appendMessageText(params?.itemId, "assistant", params?.delta || "", "Codex");
+    appendMessageText(params?.itemId, "assistant", params?.delta || "", currentAuthorContext().assistantTitle);
     return;
   }
   if (method === "item/started" || method === "item/completed") {
@@ -4083,9 +4508,10 @@ function handleNotification(method, params) {
     if (isThoughtItem(params?.item) || isThoughtAssistantMessageItem(params?.item)) {
       const turnKey = String(params?.turnId || params?.item?.turnId || state.turnId || `live_${Date.now()}`);
       if (isThoughtAssistantMessageItem(params?.item)) rememberThoughtAssistantItem(params.item, turnKey);
+      if (params?.item?.type === "collabAgentToolCall" && !currentAuthorContext().isSubagent) updateAgentFromCollabItem(params.item);
       upsertThoughtProcess(turnKey, [params.item], { merge: true, open: true });
     } else {
-      renderItem(params?.item);
+      renderItem(params?.item, currentAuthorContext());
     }
     return;
   }
