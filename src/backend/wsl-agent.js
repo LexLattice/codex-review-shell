@@ -558,6 +558,30 @@ function sortCodexThreadEntries(entries) {
   });
 }
 
+function nullableFiniteNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function extractSubagentSessionMeta(payload = {}) {
+  const source = payload?.source || {};
+  const spawn = source?.subagent?.thread_spawn ||
+    source?.subAgent?.threadSpawn ||
+    source?.subagent?.threadSpawn ||
+    source?.subAgent?.thread_spawn ||
+    null;
+  return {
+    parentThreadId: String(spawn?.parent_thread_id || spawn?.parentThreadId || ""),
+    agentRole: String(payload.agent_role || payload.agentRole || spawn?.agent_role || spawn?.agentRole || ""),
+    agentNickname: String(payload.agent_nickname || payload.agentNickname || spawn?.agent_nickname || spawn?.agentNickname || ""),
+    agentPath: String(spawn?.agent_path || spawn?.agentPath || ""),
+    depth: nullableFiniteNumber(spawn?.depth),
+    isSubagent: Boolean(spawn),
+    source,
+  };
+}
+
 async function listCodexThreadsFromHome(codexHome, options = {}) {
   const { originators, includeSubagents, perHomeScanLimit, fastMode } = options;
   const sessionIndexPath = path.join(codexHome, "session_index.jsonl");
@@ -627,17 +651,19 @@ async function listCodexThreadsFromHome(codexHome, options = {}) {
     try {
       stat = await fs.lstat(fullPath);
     } catch {}
-    const subagentSpawn = payload?.source?.subagent?.thread_spawn;
+    const subagentMeta = extractSubagentSessionMeta(payload);
     metadataById.set(sessionId, {
       sessionId,
       cwd: String(payload.cwd || ""),
       originator: String(payload.originator || "unknown"),
       filePath: fullPath,
       createdAt: String(payload.timestamp || entry.timestamp || ""),
-      parentThreadId: String(subagentSpawn?.parent_thread_id || ""),
-      agentRole: String(payload.agent_role || ""),
-      agentNickname: String(payload.agent_nickname || ""),
-      isSubagent: Boolean(subagentSpawn),
+      parentThreadId: subagentMeta.parentThreadId,
+      agentRole: subagentMeta.agentRole,
+      agentNickname: subagentMeta.agentNickname,
+      agentPath: subagentMeta.agentPath,
+      depth: subagentMeta.depth,
+      isSubagent: subagentMeta.isSubagent,
       sessionFileMtimeMs: Number.isFinite(Number(stat?.mtimeMs)) ? Math.round(Number(stat.mtimeMs)) : 0,
       sessionFileSizeBytes: Number.isFinite(Number(stat?.size)) ? Math.round(Number(stat.size)) : 0,
     });
@@ -663,6 +689,8 @@ async function listCodexThreadsFromHome(codexHome, options = {}) {
       parentThreadId: String(meta.parentThreadId || ""),
       agentRole: String(meta.agentRole || ""),
       agentNickname: String(meta.agentNickname || ""),
+      agentPath: String(meta.agentPath || ""),
+      depth: meta.depth ?? null,
       isSubagent: Boolean(meta.isSubagent),
       sessionFileMtimeMs: Number.isFinite(Number(meta.sessionFileMtimeMs)) ? Number(meta.sessionFileMtimeMs) : 0,
       sessionFileSizeBytes: Number.isFinite(Number(meta.sessionFileSizeBytes)) ? Number(meta.sessionFileSizeBytes) : 0,
@@ -819,7 +847,7 @@ function createTranscriptTurn(turnId, rowIndex, kind) {
   };
 }
 
-function createStoredPresentationBuilder(threadId, sourceFile) {
+function createStoredPresentationBuilder(threadId, sourceFile, threadMeta = {}) {
   const turns = [];
   const turnById = new Map();
   const orphanItems = [];
@@ -947,6 +975,49 @@ function createStoredPresentationBuilder(threadId, sourceFile) {
     return "";
   }
 
+  function collabToolFromFunctionName(name) {
+    const normalized = String(name || "").trim();
+    const map = {
+      spawn_agent: "spawnAgent",
+      send_input: "sendInput",
+      send_message: "sendInput",
+      resume_agent: "resumeAgent",
+      wait_agent: "wait",
+      close_agent: "closeAgent",
+    };
+    return map[normalized] || "";
+  }
+
+  function receiverThreadIdsFromCollabArgs(args = {}) {
+    const candidates = [
+      args.id,
+      args.agent_id,
+      args.agentId,
+      args.target,
+      args.thread_id,
+      args.threadId,
+      args.ids,
+      args.agent_ids,
+      args.agentIds,
+    ];
+    const ids = [];
+    for (const candidate of candidates) {
+      if (Array.isArray(candidate)) {
+        for (const item of candidate) ids.push(String(item || ""));
+      } else if (candidate) {
+        ids.push(String(candidate));
+      }
+    }
+    return Array.from(new Set(ids.map((id) => id.trim()).filter(Boolean)));
+  }
+
+  function collabPromptFromArgs(args = {}) {
+    if (typeof args.message === "string") return args.message;
+    if (typeof args.prompt === "string") return args.prompt;
+    if (Array.isArray(args.items)) return compactStoredText(args.items, 1200);
+    return "";
+  }
+
   function changesFromPatchPayload(payload) {
     const changes = payload.changes && typeof payload.changes === "object" ? payload.changes : {};
     return Object.entries(changes).map(([filePath, change]) => ({
@@ -955,6 +1026,34 @@ function createStoredPresentationBuilder(threadId, sourceFile) {
       type: String(change?.type || change?.kind || "change"),
       summary: compactStoredText(change?.unified_diff || change?.content || change, 600),
     }));
+  }
+
+  function normalizeCollabToolPayload(payload) {
+    const receiverThreadIds = Array.isArray(payload.receiver_thread_ids)
+      ? payload.receiver_thread_ids
+      : Array.isArray(payload.receiverThreadIds)
+        ? payload.receiverThreadIds
+        : [];
+    const agentsStates = Array.isArray(payload.agents_states)
+      ? payload.agents_states
+      : Array.isArray(payload.agentsStates)
+        ? payload.agentsStates
+        : [];
+    return {
+      tool: String(payload.tool || "call"),
+      status: String(payload.status || "unknown"),
+      senderThreadId: String(payload.sender_thread_id || payload.senderThreadId || ""),
+      receiverThreadIds: receiverThreadIds.map((id) => String(id || "")).filter(Boolean),
+      prompt: String(payload.prompt || ""),
+      model: String(payload.model || ""),
+      reasoningEffort: String(payload.reasoning_effort || payload.reasoningEffort || ""),
+      agentsStates: agentsStates.map((agent) => ({
+        threadId: String(agent?.thread_id || agent?.threadId || ""),
+        status: String(agent?.status || "unknown"),
+        nickname: String(agent?.nickname || agent?.agent_nickname || agent?.agentNickname || ""),
+        role: String(agent?.role || agent?.agent_role || agent?.agentRole || ""),
+      })).filter((agent) => agent.threadId || agent.status),
+    };
   }
 
   function ingest(row, rowIndex) {
@@ -1040,6 +1139,24 @@ function createStoredPresentationBuilder(threadId, sourceFile) {
       const callId = String(payload.call_id || "");
       const name = String(payload.name || "tool");
       const args = parseJsonObject(payload.arguments) || {};
+      const collabTool = collabToolFromFunctionName(name);
+      if (collabTool) {
+        mergeCallItem(turn, callId, rowIndex, {
+          ...base,
+          id: `stored_collab_${callId || rowIndex}`,
+          type: "collabAgentToolCall",
+          status: "started",
+          tool: collabTool,
+          senderThreadId: threadId,
+          receiverThreadIds: receiverThreadIdsFromCollabArgs(args),
+          prompt: collabPromptFromArgs(args),
+          model: String(args.model || ""),
+          reasoningEffort: String(args.reasoning_effort || args.reasoningEffort || ""),
+          agentsStates: [],
+          callId,
+        });
+        return;
+      }
       if (name === "exec_command") {
         mergeCallItem(turn, callId, rowIndex, {
           ...base,
@@ -1085,6 +1202,34 @@ function createStoredPresentationBuilder(threadId, sourceFile) {
     if (row.type === "response_item" && payloadType === "function_call_output") {
       const callId = String(payload.call_id || "");
       const existing = existingCallItem(turn, callId, rowIndex);
+      if (existing?.type === "collabAgentToolCall") {
+        const output = parseJsonObject(payload.output) || parseJsonObject(payload.result) || {};
+        const resultAgentId = String(output.agent_id || output.agentId || output.id || "");
+        const receiverThreadIds = Array.from(new Set([
+          ...(Array.isArray(existing.receiverThreadIds) ? existing.receiverThreadIds : []),
+          resultAgentId,
+        ].map((id) => String(id || "").trim()).filter(Boolean)));
+        mergeCallItem(turn, callId, rowIndex, {
+          ...base,
+          id: existing.id || `stored_collab_${callId || rowIndex}`,
+          type: "collabAgentToolCall",
+          status: payload.success === false ? "failed" : "completed",
+          tool: existing.tool || "call",
+          senderThreadId: existing.senderThreadId || threadId,
+          receiverThreadIds,
+          prompt: existing.prompt || "",
+          model: existing.model || "",
+          reasoningEffort: existing.reasoningEffort || "",
+          agentsStates: receiverThreadIds.map((id) => ({
+            threadId: id,
+            status: payload.success === false ? "errored" : "completed",
+            nickname: String(output.nickname || ""),
+            role: String(output.role || output.agent_role || output.agentRole || ""),
+          })),
+          callId,
+        });
+        return;
+      }
       if (existing?.type === "dynamicToolCall") {
         mergeCallItem(turn, callId, rowIndex, {
           ...base,
@@ -1149,6 +1294,26 @@ function createStoredPresentationBuilder(threadId, sourceFile) {
         stdout: compactStoredText(payload.stdout, 900),
         stderr: compactStoredText(payload.stderr, 900),
       });
+      return;
+    }
+
+    if (payloadType === "collab_agent_tool_call" || payloadType === "collabAgentToolCall") {
+      const callId = String(payload.call_id || payload.callId || payload.id || "");
+      const collab = normalizeCollabToolPayload(payload);
+      mergeCallItem(turn, callId, rowIndex, {
+        ...base,
+        id: `stored_collab_${callId || rowIndex}`,
+        type: "collabAgentToolCall",
+        status: collab.status,
+        tool: collab.tool,
+        senderThreadId: collab.senderThreadId,
+        receiverThreadIds: collab.receiverThreadIds,
+        prompt: collab.prompt,
+        model: collab.model,
+        reasoningEffort: collab.reasoningEffort,
+        agentsStates: collab.agentsStates,
+        callId,
+      });
     }
   }
 
@@ -1156,6 +1321,15 @@ function createStoredPresentationBuilder(threadId, sourceFile) {
     return {
       schemaVersion: 1,
       threadId,
+      threadMeta: {
+        threadId,
+        isSubagent: Boolean(threadMeta.isSubagent),
+        parentThreadId: String(threadMeta.parentThreadId || ""),
+        agentRole: String(threadMeta.agentRole || ""),
+        agentNickname: String(threadMeta.agentNickname || ""),
+        agentPath: String(threadMeta.agentPath || ""),
+        depth: threadMeta.depth ?? null,
+      },
       source: "stored_jsonl",
       sourceFile,
       turns,
@@ -1320,11 +1494,19 @@ async function readSessionMetaFromFile(fullPath, threadId = "") {
   const payload = entry?.payload || {};
   const foundId = String(payload.id || "");
   if (threadId && foundId !== threadId) return null;
+  const subagentMeta = extractSubagentSessionMeta(payload);
   return {
     threadId: foundId,
     createdAt: String(payload.timestamp || entry.timestamp || ""),
     cwd: String(payload.cwd || ""),
     originator: String(payload.originator || "unknown"),
+    parentThreadId: subagentMeta.parentThreadId,
+    agentRole: subagentMeta.agentRole,
+    agentNickname: subagentMeta.agentNickname,
+    agentPath: subagentMeta.agentPath,
+    depth: subagentMeta.depth,
+    isSubagent: subagentMeta.isSubagent,
+    source: subagentMeta.source,
   };
 }
 
@@ -1345,6 +1527,13 @@ async function findCodexThreadSession(codexHome, threadId, preferredSessionFileP
         createdAt: meta.createdAt,
         cwd: meta.cwd,
         originator: meta.originator,
+        parentThreadId: meta.parentThreadId,
+        agentRole: meta.agentRole,
+        agentNickname: meta.agentNickname,
+        agentPath: meta.agentPath,
+        depth: meta.depth,
+        isSubagent: meta.isSubagent,
+        source: meta.source,
       };
     }
   }
@@ -1362,6 +1551,13 @@ async function findCodexThreadSession(codexHome, threadId, preferredSessionFileP
       createdAt: meta.createdAt,
       cwd: meta.cwd,
       originator: meta.originator,
+      parentThreadId: meta.parentThreadId,
+      agentRole: meta.agentRole,
+      agentNickname: meta.agentNickname,
+      agentPath: meta.agentPath,
+      depth: meta.depth,
+      isSubagent: meta.isSubagent,
+      source: meta.source,
     };
     return true;
   });
@@ -1388,7 +1584,7 @@ async function readCodexThreadTranscript(params = {}) {
   const stream = fsSync.createReadStream(session.sessionFilePath, { encoding: "utf8" });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
   const entries = [];
-  const presentationBuilder = createStoredPresentationBuilder(threadId, session.sessionFilePath);
+  const presentationBuilder = createStoredPresentationBuilder(threadId, session.sessionFilePath, session);
   let lineCount = 0;
   for await (const line of rl) {
     if (!line.trim()) continue;
@@ -1428,6 +1624,12 @@ async function readCodexThreadTranscript(params = {}) {
     createdAt: session.createdAt,
     cwd: session.cwd,
     originator: session.originator,
+    parentThreadId: String(session.parentThreadId || ""),
+    agentRole: String(session.agentRole || ""),
+    agentNickname: String(session.agentNickname || ""),
+    agentPath: String(session.agentPath || ""),
+    depth: session.depth ?? null,
+    isSubagent: Boolean(session.isSubagent),
     sessionFilePath: session.sessionFilePath,
     entries: normalized,
     presentationModel,

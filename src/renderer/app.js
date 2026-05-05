@@ -72,6 +72,9 @@ const state = {
     codex: { type: "idle" },
     chatgpt: { type: "idle" },
   },
+  activeRightTab: "chatgpt",
+  rightPlanePinnedTab: "",
+  subAgentGraph: null,
   drawerMode: "edit",
   threadDrawerMode: "edit",
   currentWidths: { left: 0, middle: 0, right: 0 },
@@ -137,6 +140,10 @@ const els = {
   configPath: document.getElementById("configPath"),
   codexSlot: document.getElementById("codexSlot"),
   chatgptSlot: document.getElementById("chatgptSlot"),
+  subAgentsSlot: document.getElementById("subAgentsSlot"),
+  rightChatgptTabButton: document.getElementById("rightChatgptTabButton"),
+  rightSubAgentsTabButton: document.getElementById("rightSubAgentsTabButton"),
+  subAgentCountBadge: document.getElementById("subAgentCountBadge"),
   codexSurfaceTitle: document.getElementById("codexSurfaceTitle"),
   chatgptSurfaceTitle: document.getElementById("chatgptSurfaceTitle"),
   leftSplitter: document.getElementById("leftSplitter"),
@@ -1060,7 +1067,7 @@ function planeFromWheelTarget(target) {
   if (!element) return "";
   if (els.controlPlane?.contains(element)) return "middle";
   if (els.codexSlot?.contains(element) || element.closest?.(".codex-plane")) return "codex";
-  if (els.chatgptSlot?.contains(element) || element.closest?.(".chatgpt-plane")) return "chatgpt";
+  if (els.chatgptSlot?.contains(element) || els.subAgentsSlot?.contains(element) || element.closest?.(".chatgpt-plane")) return "chatgpt";
   return "";
 }
 
@@ -1139,6 +1146,132 @@ function renderStatus() {
     if (event.type === "navigation-blocked") element.classList.add("blocked");
     if (event.type === "settings-opened") element.classList.add("settings-opened");
     if (event.type === "settings-open-failed") element.classList.add("settings-open-failed");
+  }
+}
+
+function agentStatusLabel(agent = {}) {
+  const status = String(agent.status || agent.activityStatus || agent.hydrationStatus || "unknown");
+  return status.replace(/_/g, " ");
+}
+
+function renderSubAgentsPanel() {
+  if (!els.subAgentsSlot) return;
+  const graph = state.subAgentGraph;
+  const agents = Array.isArray(graph?.agents) ? graph.agents : [];
+  if (els.subAgentCountBadge) els.subAgentCountBadge.textContent = String(agents.length);
+  els.subAgentsSlot.innerHTML = "";
+  if (!agents.length) {
+    const empty = document.createElement("div");
+    empty.className = "sub-agents-empty";
+    empty.innerHTML = `
+      <p class="eyebrow">Sub-agent workstreams</p>
+      <strong>No active sub-agents for this Codex thread.</strong>
+      <span>When Codex spawns or messages a sub-agent, its read-only transcript appears here.</span>
+    `;
+    els.subAgentsSlot.appendChild(empty);
+    return;
+  }
+
+  const deck = document.createElement("div");
+  deck.className = "sub-agent-deck";
+  for (const agent of agents) {
+    const card = document.createElement("article");
+    card.className = "sub-agent-card";
+    card.dataset.agentThreadId = String(agent.threadId || "");
+
+    const header = document.createElement("header");
+    header.className = "sub-agent-card-header";
+    const title = document.createElement("div");
+    title.innerHTML = `
+      <p class="eyebrow">Sub-agent</p>
+      <h3></h3>
+      <span class="muted mono"></span>
+    `;
+    title.querySelector("h3").textContent = agent.label || `Agent ${String(agent.threadId || "").slice(0, 8)}`;
+    title.querySelector("span").textContent = agent.threadId || "unknown thread";
+    const status = document.createElement("span");
+    status.className = "status-dot loaded";
+    status.textContent = agentStatusLabel(agent);
+    header.append(title, status);
+
+    const action = document.createElement("p");
+    action.className = "sub-agent-action";
+    const lastAction = agent.lastAction?.tool ? `${agent.lastAction.tool} · ${agent.lastAction.status || "unknown"}` : "discovered";
+    action.textContent = agent.promptPreview ? `${lastAction}: ${agent.promptPreview}` : lastAction;
+
+    const transcript = document.createElement("div");
+    transcript.className = "sub-agent-transcript";
+    const messages = Array.isArray(agent.transcript) ? agent.transcript : [];
+    if (!messages.length) {
+      const pending = document.createElement("div");
+      pending.className = "sub-agent-message system";
+      pending.textContent = agent.hydrationStatus === "failed"
+        ? "Sub-agent transcript unavailable."
+        : "Transcript hydration pending.";
+      transcript.appendChild(pending);
+    } else {
+      for (const message of messages) {
+        const item = document.createElement("section");
+        item.className = `sub-agent-message ${message.role || "system"}`;
+        const label = document.createElement("p");
+        label.className = "eyebrow";
+        label.textContent = message.title || message.role || "Message";
+        const body = document.createElement("pre");
+        body.textContent = message.text || "";
+        item.append(label, body);
+        transcript.appendChild(item);
+      }
+    }
+
+    card.append(header, action, transcript);
+    deck.appendChild(card);
+  }
+  els.subAgentsSlot.appendChild(deck);
+}
+
+function renderRightPlaneTabs() {
+  const active = state.activeRightTab === "subagents" ? "subagents" : "chatgpt";
+  for (const [button, slot, tab] of [
+    [els.rightChatgptTabButton, els.chatgptSlot, "chatgpt"],
+    [els.rightSubAgentsTabButton, els.subAgentsSlot, "subagents"],
+  ]) {
+    if (!button || !slot) continue;
+    const selected = active === tab;
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-selected", selected ? "true" : "false");
+    slot.classList.toggle("active", selected);
+    slot.hidden = !selected;
+  }
+  renderSubAgentsPanel();
+}
+
+function setRightPlaneTab(tab, options = {}) {
+  const next = tab === "subagents" ? "subagents" : "chatgpt";
+  if (!options.auto) state.rightPlanePinnedTab = next;
+  if (state.activeRightTab === next) {
+    renderRightPlaneTabs();
+    scheduleResizeBurst();
+    return;
+  }
+  state.activeRightTab = next;
+  renderRightPlaneTabs();
+  scheduleResizeBurst();
+}
+
+function handleCodexAgentGraph(event) {
+  const project = activeProject();
+  if (!project || String(event.projectId || project.id) !== project.id) return;
+  state.subAgentGraph = {
+    ...event,
+    agents: Array.isArray(event.agents) ? event.agents : [],
+  };
+  renderRightPlaneTabs();
+  const hasActiveAgents = state.subAgentGraph.agents.some((agent) =>
+    ["running", "pending", "inProgress", "available"].includes(String(agent.status || "")) ||
+    ["active", "responding", "waiting"].includes(String(agent.activityStatus || "")),
+  );
+  if (hasActiveAgents && !state.rightPlanePinnedTab && state.activeRightTab === "chatgpt") {
+    setRightPlaneTab("subagents", { auto: true });
   }
 }
 
@@ -1919,6 +2052,7 @@ function render() {
   renderCodexRequests();
   renderWatchedArtifacts();
   renderStatus();
+  renderRightPlaneTabs();
   scheduleResizeBurst();
 }
 
@@ -1984,12 +2118,15 @@ function rectToBounds(rect) {
 function sendSurfaceLayout() {
   if (!bridge || !els.codexSlot || !els.chatgptSlot) return;
   const codex = rectToBounds(els.codexSlot.getBoundingClientRect());
-  const chatgpt = rectToBounds(els.chatgptSlot.getBoundingClientRect());
+  const hiddenNativeBounds = { x: -12000, y: -12000, width: 1, height: 1 };
+  const chatgpt = state.activeRightTab === "chatgpt"
+    ? rectToBounds(els.chatgptSlot.getBoundingClientRect())
+    : hiddenNativeBounds;
   const web = els.middleWebSlot ? rectToBounds(els.middleWebSlot.getBoundingClientRect()) : { x: 0, y: 0, width: 1, height: 1 };
   const webVisible = state.activeMiddleTab === "web" && Boolean(state.middleWeb?.hasPage || state.middleWeb?.displayUrl);
   const signature = [
     `${codex.x},${codex.y},${codex.width},${codex.height}`,
-    `${chatgpt.x},${chatgpt.y},${chatgpt.width},${chatgpt.height}`,
+    `${chatgpt.x},${chatgpt.y},${chatgpt.width},${chatgpt.height},${state.activeRightTab}`,
     `${web.x},${web.y},${web.width},${web.height},${webVisible ? 1 : 0},${state.activeMiddleTab}`,
   ].join("|");
   if (signature === state.lastLayoutSignature) return;
@@ -2221,6 +2358,8 @@ async function selectProject(projectId) {
   state.analyticsDashboard = null;
   state.analyticsDashboardStatus = "idle";
   state.activeChatgptThreadBrowserTab = "project";
+  state.subAgentGraph = null;
+  state.rightPlanePinnedTab = "";
   render();
   const project = activeProject();
   if (!project || project.id !== projectId || isRequestStale("project", projectVersion)) return;
@@ -2394,6 +2533,11 @@ function handleCodexThreadState(event) {
     state.openedCodexThreadTitle = title;
     state.openedCodexSourceHome = String(event.sourceHome || "");
     state.openedCodexSessionFilePath = String(event.sessionFilePath || "");
+    if (state.subAgentGraph?.primaryThreadId && String(state.subAgentGraph.primaryThreadId) !== threadId) {
+      state.subAgentGraph = null;
+      if (state.activeRightTab === "subagents" && !state.rightPlanePinnedTab) state.activeRightTab = "chatgpt";
+      renderRightPlaneTabs();
+    }
     renderSelectedProject();
     renderThreadsWorkbench();
     setLastEvent(
@@ -3320,6 +3464,8 @@ async function previewFile(relPath, row) {
 }
 
 function bindEvents() {
+  els.rightChatgptTabButton?.addEventListener("click", () => setRightPlaneTab("chatgpt"));
+  els.rightSubAgentsTabButton?.addEventListener("click", () => setRightPlaneTab("subagents"));
   els.overviewTabButton.addEventListener("click", () => setMiddleTab("overview"));
   els.threadsTabButton.addEventListener("click", () => setMiddleTab("threads"));
   els.analyticsTabButton.addEventListener("click", () => setMiddleTab("analytics"));
@@ -3443,6 +3589,7 @@ function bindEvents() {
   resizeObserver.observe(els.appShell);
   resizeObserver.observe(els.codexSlot);
   resizeObserver.observe(els.chatgptSlot);
+  if (els.subAgentsSlot) resizeObserver.observe(els.subAgentsSlot);
   if (els.middleWebSlot) resizeObserver.observe(els.middleWebSlot);
   if (els.controlPlane) els.controlPlane.addEventListener("scroll", scheduleResizeBurst, { passive: true });
 
@@ -3456,6 +3603,7 @@ function bindEvents() {
       if (event.type === "settings-opened") setLastEvent(`ChatGPT settings requested via ${event.method}.`);
       if (event.type === "settings-open-failed") setLastEvent(`ChatGPT settings request failed via ${event.method}.`);
       if (event.surface === "codex" && event.type === "thread-state") handleCodexThreadState(event);
+      if (event.surface === "codex" && event.type === "agent-graph") handleCodexAgentGraph(event);
     }
   });
 

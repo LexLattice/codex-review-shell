@@ -366,12 +366,23 @@
             <p class="eyebrow">Right plane</p>
             <h2 id="chatgptSurfaceTitle">ChatGPT review/world-model</h2>
           </div>
-          <span id="chatgptStatus" class="status-dot">idle</span>
+          <div class="right-plane-controls" role="tablist" aria-label="Right plane tabs">
+            <button class="right-plane-tab active" id="rightChatgptTabButton" type="button" role="tab" aria-selected="true">ChatGPT</button>
+            <button class="right-plane-tab" id="rightSubAgentsTabButton" type="button" role="tab" aria-selected="false">Sub-agents <span id="subAgentCountBadge" class="mini-count">0</span></button>
+            <span id="chatgptStatus" class="status-dot">idle</span>
+          </div>
         </div>
-        <div class="surface-slot" id="chatgptSlot">
+        <div class="surface-slot right-plane-slot active" id="chatgptSlot" role="tabpanel" aria-labelledby="rightChatgptTabButton">
           <div class="slot-placeholder">
             <p class="eyebrow">Surface slot</p>
             <strong>ChatGPT thread loading…</strong>
+          </div>
+        </div>
+        <div class="surface-slot right-plane-slot sub-agents-slot" id="subAgentsSlot" role="tabpanel" aria-labelledby="rightSubAgentsTabButton" hidden>
+          <div class="sub-agents-empty">
+            <p class="eyebrow">Sub-agent workstreams</p>
+            <strong>No active sub-agents for this Codex thread.</strong>
+            <span>When Codex spawns or messages a sub-agent, its read-only transcript appears here.</span>
           </div>
         </div>
       </section>

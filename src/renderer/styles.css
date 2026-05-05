@@ -113,12 +113,134 @@ dd {
   letter-spacing: -0.01em;
 }
 
+.right-plane-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.right-plane-tab {
+  height: 26px;
+  border: 1px solid rgba(126, 160, 225, 0.24);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--muted);
+  padding: 0 9px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.right-plane-tab.active {
+  color: var(--text);
+  border-color: rgba(108, 163, 255, 0.55);
+  background: rgba(45, 97, 170, 0.34);
+}
+
+.mini-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 17px;
+  height: 17px;
+  margin-left: 4px;
+  border-radius: 999px;
+  background: rgba(141, 180, 255, 0.16);
+  color: var(--text);
+  font-size: 10px;
+}
+
 .surface-slot {
   position: relative;
   flex: 1;
   min-height: 0;
   background: var(--slot);
   overflow: hidden;
+}
+
+.right-plane-slot[hidden] {
+  display: none !important;
+}
+
+.sub-agents-slot {
+  padding: 10px;
+  overflow: auto;
+}
+
+.sub-agents-empty,
+.sub-agent-deck {
+  min-height: 100%;
+}
+
+.sub-agents-empty {
+  display: grid;
+  place-content: center;
+  gap: 8px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.sub-agent-deck {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+
+.sub-agent-card {
+  border: 1px solid rgba(126, 160, 225, 0.2);
+  border-radius: 16px;
+  background:
+    linear-gradient(160deg, rgba(18, 26, 39, 0.96), rgba(8, 11, 17, 0.96));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+  padding: 10px;
+}
+
+.sub-agent-card-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: start;
+}
+
+.sub-agent-card h3 {
+  font-size: 14px;
+  margin: 2px 0;
+}
+
+.sub-agent-action {
+  margin: 8px 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.sub-agent-transcript {
+  display: grid;
+  gap: 8px;
+}
+
+.sub-agent-message {
+  border: 1px solid rgba(126, 160, 225, 0.15);
+  border-radius: 12px;
+  background: rgba(4, 7, 12, 0.58);
+  padding: 8px;
+}
+
+.sub-agent-message.parent {
+  border-color: rgba(255, 212, 122, 0.28);
+}
+
+.sub-agent-message.child {
+  border-color: rgba(114, 228, 167, 0.24);
+}
+
+.sub-agent-message pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font: 12px/1.5 var(--mono);
 }
 
 .slot-placeholder {
