@@ -75,6 +75,8 @@ const state = {
   activeRightTab: "chatgpt",
   rightPlanePinnedTab: "",
   subAgentGraph: null,
+  selectedSubAgentThreadId: "",
+  selectedSubAgentSelectedBy: "",
   drawerMode: "edit",
   threadDrawerMode: "edit",
   currentWidths: { left: 0, middle: 0, right: 0 },
@@ -1154,6 +1156,72 @@ function agentStatusLabel(agent = {}) {
   return status.replace(/_/g, " ");
 }
 
+function subAgentThreadId(agent = {}) {
+  return String(agent.threadId || agent.key?.threadId || "").trim();
+}
+
+function shortSubAgentId(threadId) {
+  const id = String(threadId || "").trim();
+  return id.length <= 8 ? id : id.slice(0, 8);
+}
+
+function subAgentBaseTabLabel(agent = {}) {
+  const id = subAgentThreadId(agent);
+  return String(agent.nickname || agent.label || agent.role || "").trim() || `Agent ${shortSubAgentId(id)}`;
+}
+
+function subAgentLabelCounts(agents = []) {
+  const counts = new Map();
+  for (const agent of agents) {
+    const base = subAgentBaseTabLabel(agent);
+    counts.set(base, (counts.get(base) || 0) + 1);
+  }
+  return counts;
+}
+
+function subAgentTabLabel(agent = {}, labelCounts = new Map()) {
+  const id = subAgentThreadId(agent);
+  const base = subAgentBaseTabLabel(agent);
+  if ((labelCounts.get(base) || 0) > 1 && id) return `${base} · ${shortSubAgentId(id)}`;
+  return base || "Unknown agent";
+}
+
+function subAgentIsActive(agent = {}) {
+  return ["running", "pending", "inProgress"].includes(String(agent.status || "")) ||
+    ["active", "responding", "waiting"].includes(String(agent.activityStatus || ""));
+}
+
+function preferredSubAgentThreadId(agents = []) {
+  const active = agents.find(subAgentIsActive);
+  return subAgentThreadId(active || agents[0] || "");
+}
+
+function reconcileSelectedSubAgent(agents = [], preferredThreadId = "") {
+  const ids = new Set(agents.map(subAgentThreadId).filter(Boolean));
+  const preferred = String(preferredThreadId || "").trim();
+  if (preferred && ids.has(preferred)) {
+    state.selectedSubAgentThreadId = preferred;
+    return preferred;
+  }
+  const selectedWasOperatorPinned = ["operator", "agent_chip", "restore"].includes(state.selectedSubAgentSelectedBy);
+  if (selectedWasOperatorPinned && state.selectedSubAgentThreadId && ids.has(state.selectedSubAgentThreadId)) {
+    return state.selectedSubAgentThreadId;
+  }
+  state.selectedSubAgentThreadId = preferredSubAgentThreadId(agents);
+  if (state.selectedSubAgentThreadId && !state.selectedSubAgentSelectedBy) {
+    state.selectedSubAgentSelectedBy = "auto_first_active";
+  }
+  return state.selectedSubAgentThreadId;
+}
+
+function selectSubAgentTab(threadId, selectedBy = "operator") {
+  const id = String(threadId || "").trim();
+  if (!id) return;
+  state.selectedSubAgentThreadId = id;
+  state.selectedSubAgentSelectedBy = selectedBy;
+  renderSubAgentsPanel();
+}
+
 function renderSubAgentsPanel() {
   if (!els.subAgentsSlot) return;
   const graph = state.subAgentGraph;
@@ -1172,61 +1240,95 @@ function renderSubAgentsPanel() {
     return;
   }
 
-  const deck = document.createElement("div");
-  deck.className = "sub-agent-deck";
+  const selectedId = reconcileSelectedSubAgent(agents);
+  const selectedAgent = agents.find((agent) => subAgentThreadId(agent) === selectedId) || agents[0];
+  const labelCounts = subAgentLabelCounts(agents);
+  const panel = document.createElement("div");
+  panel.className = "sub-agent-panel";
+
+  const tabStrip = document.createElement("div");
+  tabStrip.className = "sub-agent-tabstrip";
+  tabStrip.setAttribute("role", "tablist");
+  tabStrip.setAttribute("aria-label", "Sub-agent conversations");
   for (const agent of agents) {
-    const card = document.createElement("article");
-    card.className = "sub-agent-card";
-    card.dataset.agentThreadId = String(agent.threadId || "");
+    const id = subAgentThreadId(agent);
+    const selected = id && id === selectedId;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `sub-agent-tab${selected ? " active" : ""}`;
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-selected", selected ? "true" : "false");
+    button.dataset.agentThreadId = id;
+    const labelText = subAgentTabLabel(agent, labelCounts);
+    button.title = id ? `${labelText} · ${id}` : labelText;
+    button.addEventListener("click", () => selectSubAgentTab(id, "operator"));
 
-    const header = document.createElement("header");
-    header.className = "sub-agent-card-header";
-    const title = document.createElement("div");
-    title.innerHTML = `
-      <p class="eyebrow">Sub-agent</p>
-      <h3></h3>
-      <span class="muted mono"></span>
-    `;
-    title.querySelector("h3").textContent = agent.label || `Agent ${String(agent.threadId || "").slice(0, 8)}`;
-    title.querySelector("span").textContent = agent.threadId || "unknown thread";
+    const label = document.createElement("span");
+    label.className = "sub-agent-tab-label";
+    label.textContent = labelText;
     const status = document.createElement("span");
-    status.className = "status-dot loaded";
+    status.className = `sub-agent-tab-status${subAgentIsActive(agent) ? " active" : ""}`;
     status.textContent = agentStatusLabel(agent);
-    header.append(title, status);
-
-    const action = document.createElement("p");
-    action.className = "sub-agent-action";
-    const lastAction = agent.lastAction?.tool ? `${agent.lastAction.tool} · ${agent.lastAction.status || "unknown"}` : "discovered";
-    action.textContent = agent.promptPreview ? `${lastAction}: ${agent.promptPreview}` : lastAction;
-
-    const transcript = document.createElement("div");
-    transcript.className = "sub-agent-transcript";
-    const messages = Array.isArray(agent.transcript) ? agent.transcript : [];
-    if (!messages.length) {
-      const pending = document.createElement("div");
-      pending.className = "sub-agent-message system";
-      pending.textContent = agent.hydrationStatus === "failed"
-        ? "Sub-agent transcript unavailable."
-        : "Transcript hydration pending.";
-      transcript.appendChild(pending);
-    } else {
-      for (const message of messages) {
-        const item = document.createElement("section");
-        item.className = `sub-agent-message ${message.role || "system"}`;
-        const label = document.createElement("p");
-        label.className = "eyebrow";
-        label.textContent = message.title || message.role || "Message";
-        const body = document.createElement("pre");
-        body.textContent = message.text || "";
-        item.append(label, body);
-        transcript.appendChild(item);
-      }
-    }
-
-    card.append(header, action, transcript);
-    deck.appendChild(card);
+    button.append(label, status);
+    tabStrip.appendChild(button);
   }
-  els.subAgentsSlot.appendChild(deck);
+  panel.appendChild(tabStrip);
+
+  const card = document.createElement("article");
+  card.className = "sub-agent-card selected";
+  card.dataset.agentThreadId = subAgentThreadId(selectedAgent);
+
+  const header = document.createElement("header");
+  header.className = "sub-agent-card-header";
+  const title = document.createElement("div");
+  const eyebrow = document.createElement("p");
+  eyebrow.className = "eyebrow";
+  eyebrow.textContent = "Selected sub-agent";
+  const heading = document.createElement("h3");
+  heading.textContent = subAgentTabLabel(selectedAgent, labelCounts);
+  const thread = document.createElement("span");
+  thread.className = "muted mono";
+  thread.textContent = subAgentThreadId(selectedAgent) || "unknown thread";
+  title.append(eyebrow, heading, thread);
+  const status = document.createElement("span");
+  status.className = `status-dot ${String(selectedAgent?.status || "") === "failed" ? "failed" : "loaded"}`;
+  status.textContent = agentStatusLabel(selectedAgent);
+  header.append(title, status);
+
+  const action = document.createElement("p");
+  action.className = "sub-agent-action";
+  const lastAction = selectedAgent?.lastAction?.tool
+    ? `${selectedAgent.lastAction.tool} · ${selectedAgent.lastAction.status || "unknown"}`
+    : "discovered";
+  action.textContent = selectedAgent?.promptPreview ? `${lastAction}: ${selectedAgent.promptPreview}` : lastAction;
+
+  const transcript = document.createElement("div");
+  transcript.className = "sub-agent-transcript";
+  const messages = Array.isArray(selectedAgent?.transcript) ? selectedAgent.transcript : [];
+  if (!messages.length) {
+    const pending = document.createElement("div");
+    pending.className = "sub-agent-message system";
+    pending.textContent = selectedAgent?.hydrationStatus === "failed"
+      ? "Sub-agent transcript unavailable."
+      : "Transcript hydration pending.";
+    transcript.appendChild(pending);
+  } else {
+    for (const message of messages) {
+      const item = document.createElement("section");
+      item.className = `sub-agent-message ${message.role || "system"}`;
+      const label = document.createElement("p");
+      label.className = "eyebrow";
+      label.textContent = message.title || message.role || "Message";
+      const body = document.createElement("pre");
+      body.textContent = message.text || "";
+      item.append(label, body);
+      transcript.appendChild(item);
+    }
+  }
+
+  card.append(header, action, transcript);
+  panel.appendChild(card);
+  els.subAgentsSlot.appendChild(panel);
 }
 
 function renderRightPlaneTabs() {
@@ -1265,14 +1367,26 @@ function handleCodexAgentGraph(event) {
     ...event,
     agents: Array.isArray(event.agents) ? event.agents : [],
   };
+  reconcileSelectedSubAgent(state.subAgentGraph.agents);
   renderRightPlaneTabs();
-  const hasActiveAgents = state.subAgentGraph.agents.some((agent) =>
-    ["running", "pending", "inProgress", "available"].includes(String(agent.status || "")) ||
-    ["active", "responding", "waiting"].includes(String(agent.activityStatus || "")),
-  );
+  const hasActiveAgents = state.subAgentGraph.agents.some(subAgentIsActive);
   if (hasActiveAgents && !state.rightPlanePinnedTab && state.activeRightTab === "chatgpt") {
     setRightPlaneTab("subagents", { auto: true });
   }
+}
+
+function handleCodexFocusSubAgent(event) {
+  const project = activeProject();
+  if (!project || String(event.projectId || project.id) !== project.id) return;
+  const receiverThreadId = String(event.receiverThreadId || "").trim();
+  if (!receiverThreadId) return;
+  const primaryThreadId = String(event.primaryThreadId || "");
+  if (state.subAgentGraph?.primaryThreadId && primaryThreadId && String(state.subAgentGraph.primaryThreadId) !== primaryThreadId) return;
+  state.selectedSubAgentThreadId = receiverThreadId;
+  state.selectedSubAgentSelectedBy = "agent_chip";
+  setRightPlaneTab("subagents");
+  renderSubAgentsPanel();
+  setLastEvent(`Opened sub-agent: ${event.label || receiverThreadId}.`);
 }
 
 function renderMiddleTabs() {
@@ -2359,6 +2473,8 @@ async function selectProject(projectId) {
   state.analyticsDashboardStatus = "idle";
   state.activeChatgptThreadBrowserTab = "project";
   state.subAgentGraph = null;
+  state.selectedSubAgentThreadId = "";
+  state.selectedSubAgentSelectedBy = "";
   state.rightPlanePinnedTab = "";
   render();
   const project = activeProject();
@@ -2535,6 +2651,8 @@ function handleCodexThreadState(event) {
     state.openedCodexSessionFilePath = String(event.sessionFilePath || "");
     if (state.subAgentGraph?.primaryThreadId && String(state.subAgentGraph.primaryThreadId) !== threadId) {
       state.subAgentGraph = null;
+      state.selectedSubAgentThreadId = "";
+      state.selectedSubAgentSelectedBy = "";
       if (state.activeRightTab === "subagents" && !state.rightPlanePinnedTab) state.activeRightTab = "chatgpt";
       renderRightPlaneTabs();
     }
@@ -3594,6 +3712,10 @@ function bindEvents() {
   if (els.controlPlane) els.controlPlane.addEventListener("scroll", scheduleResizeBurst, { passive: true });
 
   bridge.onSurfaceEvent((event) => {
+    if (event.surface === "codex" && event.type === "focus-sub-agent") {
+      handleCodexFocusSubAgent(event);
+      return;
+    }
     if (event.surface === "codex" || event.surface === "chatgpt") {
       state.surfaceEvents[event.surface] = event;
       renderStatus();

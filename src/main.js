@@ -3161,6 +3161,24 @@ ipcMain.handle("codex-surface:agent-graph", async (event, payload) => {
   return { ok: true };
 });
 
+ipcMain.handle("codex-surface:focus-sub-agent", async (_event, payload) => {
+  if (isStaleSurfaceActivationEpoch(payload?.activationEpoch)) return { ok: false, stale: true };
+  const state = {
+    surface: "codex",
+    type: "focus-sub-agent",
+    projectId: normalizeString(payload?.projectId, ""),
+    primaryThreadId: normalizeString(payload?.primaryThreadId || payload?.threadId, ""),
+    receiverThreadId: normalizeString(payload?.receiverThreadId, ""),
+    graphRevision: Number(payload?.graphRevision) || 0,
+    activationEpoch: Number(payload?.activationEpoch) || 0,
+    label: normalizeString(payload?.label, ""),
+    at: nowIso(),
+  };
+  if (!state.receiverThreadId) return { ok: false, error: "missing_receiver_thread_id" };
+  emitToShell("surface:event", state);
+  return { ok: true };
+});
+
 ipcMain.handle("codex:respond-request", async (_event, payload) => {
   const requestKey = payload?.key || payload?.id || "";
   const session = findCodexSurfaceSessionForRequest(requestKey);
