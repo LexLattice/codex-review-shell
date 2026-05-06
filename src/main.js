@@ -1066,7 +1066,9 @@ async function saveConfig(nextConfig) {
 }
 
 function codexRuntimePreferenceLookup(config, payload = {}) {
-  const normalizedConfig = normalizeConfig(config || {});
+  const normalizedConfig = config || {};
+  const runtimeDefaults = normalizeRuntimeDefaults(normalizedConfig.runtimeDefaults);
+  const threadDefaults = normalizeCodexThreadRuntimeDefaults(normalizedConfig.codexThreadRuntimeDefaults);
   const parts = {
     projectId: normalizeString(payload.projectId, ""),
     threadId: normalizeString(payload.threadId, ""),
@@ -1075,8 +1077,8 @@ function codexRuntimePreferenceLookup(config, payload = {}) {
   };
   const threadKey = codexThreadRuntimePreferenceKey(parts);
   return {
-    globalDefaults: normalizedConfig.runtimeDefaults.codex,
-    threadDefaults: threadKey ? normalizedConfig.codexThreadRuntimeDefaults[threadKey] || null : null,
+    globalDefaults: runtimeDefaults.codex,
+    threadDefaults: threadKey ? threadDefaults[threadKey] || null : null,
     threadKey,
   };
 }

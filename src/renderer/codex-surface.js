@@ -1660,7 +1660,7 @@ async function loadRuntimePreferences(options = {}) {
   state.runtimePreferencesError = "";
   try {
     const response = await bridge.getRuntimePreferences(runtimePreferencesRequest(options.threadId || state.threadId));
-    if (response?.ok !== false) {
+    if (response && response.ok !== false) {
       if (applyGlobal) applyGlobalRuntimePreferences(response.globalDefaults || {});
       const stillCurrentThread =
         !guardThreadId ||
@@ -4845,6 +4845,8 @@ async function startNewThread() {
   if (state.runtimeOverrides.serviceTier) params.serviceTier = state.runtimeOverrides.serviceTier;
   const result = await rpc("thread/start", params);
   clearRenderedThreadState();
+  state.sourceHome = "";
+  state.sessionFilePath = "";
   bindThread(result.thread, result.model);
   await persistRuntimePreferences("thread-model");
 }
