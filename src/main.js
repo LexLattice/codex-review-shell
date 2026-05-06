@@ -34,6 +34,7 @@ const CODEX_PARTITION = "persist:codex-review-shell-codex";
 const CHATGPT_PARTITION = "persist:codex-review-shell-chatgpt";
 const PREVIEW_LIMIT_BYTES = 384 * 1024;
 const DIRECTORY_ENTRY_LIMIT = 500;
+const CODEX_THREAD_RUNTIME_PREF_MAX_ENTRIES = 500;
 
 const appRoot = path.resolve(__dirname, "..");
 const repoRoot = appRoot;
@@ -164,12 +165,19 @@ function defaultConfig() {
   const defaultWorkspace = defaultProjectWorkspaceConfig();
   const defaultRepoPath = defaultProjectRepoPath(defaultWorkspace);
   return {
-    version: 4,
+    version: 5,
     selectedProjectId: defaultProjectId,
     ui: {
       leftRatio: 0.34,
       middleRatio: 0.3,
     },
+    runtimeDefaults: {
+      codex: {
+        approvalPolicy: "",
+        sandboxMode: "",
+      },
+    },
+    codexThreadRuntimeDefaults: {},
     projects: [
       {
         id: defaultProjectId,
@@ -269,7 +277,73 @@ function normalizeRemoteAuthConfig(value) {
 
 function normalizeReasoningEffort(value) {
   const candidate = normalizeString(value, "").toLowerCase();
-  return ["low", "medium", "high", "xhigh"].includes(candidate) ? candidate : "";
+  return ["none", "minimal", "low", "medium", "high", "xhigh"].includes(candidate) ? candidate : "";
+}
+
+function normalizeApprovalPolicy(value) {
+  const candidate = normalizeString(value, "").toLowerCase();
+  return ["untrusted", "on-failure", "on-request", "never"].includes(candidate) ? candidate : "";
+}
+
+function normalizeSandboxMode(value) {
+  const candidate = normalizeString(value, "").toLowerCase();
+  return ["read-only", "workspace-write", "danger-full-access"].includes(candidate) ? candidate : "";
+}
+
+function normalizeRuntimeDefaults(value) {
+  const raw = isPlainObject(value) ? value : {};
+  const rawCodex = isPlainObject(raw.codex) ? raw.codex : {};
+  return {
+    codex: {
+      approvalPolicy: normalizeApprovalPolicy(rawCodex.approvalPolicy),
+      sandboxMode: normalizeSandboxMode(rawCodex.sandboxMode),
+    },
+  };
+}
+
+function codexThreadRuntimePreferenceKey(parts = {}) {
+  const values = [
+    normalizeString(parts.projectId, ""),
+    normalizeString(parts.threadId, ""),
+    normalizeString(parts.sourceHome, ""),
+    normalizeString(parts.sessionFilePath, ""),
+  ];
+  if (!values[0] || !values[1]) return "";
+  return values.map((value) => Buffer.from(value, "utf8").toString("base64url")).join(".");
+}
+
+function normalizeCodexThreadRuntimeDefaults(value) {
+  if (!isPlainObject(value)) return {};
+  const entries = [];
+  for (const rawEntry of Object.values(value)) {
+    const entry = isPlainObject(rawEntry) ? rawEntry : {};
+    const projectId = normalizeString(entry.projectId, "");
+    const threadId = normalizeString(entry.threadId, "");
+    if (!projectId || !threadId) continue;
+    const sourceHome = normalizeString(entry.sourceHome, "");
+    const sessionFilePath = normalizeString(entry.sessionFilePath, "");
+    const key = codexThreadRuntimePreferenceKey({ projectId, threadId, sourceHome, sessionFilePath });
+    if (!key) continue;
+    const model = normalizeString(entry.model, "");
+    const reasoningEffort = normalizeReasoningEffort(entry.reasoningEffort);
+    if (!model && !reasoningEffort) continue;
+    entries.push({
+      key,
+      value: {
+        projectId,
+        threadId,
+        sourceHome,
+        sessionFilePath,
+        model,
+        reasoningEffort,
+        updatedAt: normalizeString(entry.updatedAt, nowIso()),
+      },
+    });
+  }
+  entries.sort((left, right) => String(right.value.updatedAt || "").localeCompare(String(left.value.updatedAt || "")));
+  const normalized = {};
+  for (const entry of entries.slice(0, CODEX_THREAD_RUNTIME_PREF_MAX_ENTRIES)) normalized[entry.key] = entry.value;
+  return normalized;
 }
 
 function normalizeCodexProviderConfig(value) {
@@ -951,9 +1025,11 @@ function normalizeConfig(input) {
     : dedupedProjects[0].id;
 
   return {
-    version: 4,
+    version: 5,
     selectedProjectId,
     ui: migrateUi(raw.ui),
+    runtimeDefaults: normalizeRuntimeDefaults(raw.runtimeDefaults),
+    codexThreadRuntimeDefaults: normalizeCodexThreadRuntimeDefaults(raw.codexThreadRuntimeDefaults),
     projects: dedupedProjects,
   };
 }
@@ -987,6 +1063,73 @@ async function saveConfig(nextConfig) {
   configCache = normalized;
   await writeTextAtomic(configPath(), `${JSON.stringify(normalized, null, 2)}\n`);
   return normalized;
+}
+
+function codexRuntimePreferenceLookup(config, payload = {}) {
+  const normalizedConfig = config || {};
+  const runtimeDefaults = normalizeRuntimeDefaults(normalizedConfig.runtimeDefaults);
+  const threadDefaults = normalizeCodexThreadRuntimeDefaults(normalizedConfig.codexThreadRuntimeDefaults);
+  const parts = {
+    projectId: normalizeString(payload.projectId, ""),
+    threadId: normalizeString(payload.threadId, ""),
+    sourceHome: normalizeString(payload.sourceHome, ""),
+    sessionFilePath: normalizeString(payload.sessionFilePath, ""),
+  };
+  const threadKey = codexThreadRuntimePreferenceKey(parts);
+  return {
+    globalDefaults: runtimeDefaults.codex,
+    threadDefaults: threadKey ? threadDefaults[threadKey] || null : null,
+    threadKey,
+  };
+}
+
+async function updateCodexRuntimePreferences(payload = {}) {
+  const scope = normalizeString(payload.scope, "");
+  const config = await loadConfig();
+  const runtimeDefaults = normalizeRuntimeDefaults(config.runtimeDefaults);
+  const codexThreadRuntimeDefaults = normalizeCodexThreadRuntimeDefaults(config.codexThreadRuntimeDefaults);
+
+  if (scope === "global-access") {
+    runtimeDefaults.codex = {
+      approvalPolicy: normalizeApprovalPolicy(payload.approvalPolicy),
+      sandboxMode: normalizeSandboxMode(payload.sandboxMode),
+    };
+  } else if (scope === "thread-model") {
+    const projectId = normalizeString(payload.projectId, "");
+    const threadId = normalizeString(payload.threadId, "");
+    const sourceHome = normalizeString(payload.sourceHome, "");
+    const sessionFilePath = normalizeString(payload.sessionFilePath, "");
+    const threadKey = codexThreadRuntimePreferenceKey({ projectId, threadId, sourceHome, sessionFilePath });
+    if (!threadKey) throw new Error("Missing project/thread identity for Codex runtime preferences.");
+    const model = normalizeString(payload.model, "");
+    const reasoningEffort = normalizeReasoningEffort(payload.reasoningEffort);
+    if (model || reasoningEffort) {
+      codexThreadRuntimeDefaults[threadKey] = {
+        projectId,
+        threadId,
+        sourceHome,
+        sessionFilePath,
+        model,
+        reasoningEffort,
+        updatedAt: nowIso(),
+      };
+    } else {
+      delete codexThreadRuntimeDefaults[threadKey];
+    }
+  } else {
+    throw new Error(`Unsupported Codex runtime preference scope: ${scope || "missing"}.`);
+  }
+
+  const saved = await saveConfig({
+    ...config,
+    runtimeDefaults,
+    codexThreadRuntimeDefaults,
+  });
+  emitShellEvent({ type: "config-updated", reason: "codex-runtime-preferences", config: saved, at: nowIso() });
+  return {
+    ok: true,
+    preferences: codexRuntimePreferenceLookup(saved, payload),
+  };
 }
 
 async function loadChatgptThreadCache() {
@@ -3177,6 +3320,15 @@ ipcMain.handle("codex-surface:focus-sub-agent", async (_event, payload) => {
   if (!state.receiverThreadId) return { ok: false, error: "missing_receiver_thread_id" };
   emitToShell("surface:event", state);
   return { ok: true };
+});
+
+ipcMain.handle("codex-runtime-preferences:get", async (_event, payload) => {
+  const config = await loadConfig();
+  return { ok: true, ...codexRuntimePreferenceLookup(config, payload || {}) };
+});
+
+ipcMain.handle("codex-runtime-preferences:update", async (_event, payload) => {
+  return updateCodexRuntimePreferences(payload || {});
 });
 
 ipcMain.handle("codex:respond-request", async (_event, payload) => {

@@ -3730,6 +3730,10 @@ function bindEvents() {
   });
 
   bridge.onShellEvent((event) => {
+    if (event.type === "config-updated" && event.config) {
+      state.config = event.config;
+      render();
+    }
     if (event.type === "layout-request") scheduleResizeBurst();
     if (event.type === "middle-web-open-requested") {
       setMiddleTab("web");

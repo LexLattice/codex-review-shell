@@ -10,6 +10,8 @@ contextBridge.exposeInMainWorld("codexSurfaceBridge", {
   reportThreadState: (state) => ipcRenderer.invoke("codex-surface:thread-state", state),
   reportAgentGraph: (graph) => ipcRenderer.invoke("codex-surface:agent-graph", graph),
   focusSubAgent: (request) => ipcRenderer.invoke("codex-surface:focus-sub-agent", request),
+  getRuntimePreferences: (request) => ipcRenderer.invoke("codex-runtime-preferences:get", request || {}),
+  updateRuntimePreferences: (request) => ipcRenderer.invoke("codex-runtime-preferences:update", request || {}),
   openWorkspaceLink: (url, options = {}) => ipcRenderer.invoke("link:open", { ...options, url }),
   openExternalUrl: (url) => ipcRenderer.invoke("external:open-url", { url }),
   revealProjectFile: (projectId, relPath) => ipcRenderer.invoke("worktree:reveal-file", { projectId, relPath }),
