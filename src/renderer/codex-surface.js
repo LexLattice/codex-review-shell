@@ -167,6 +167,7 @@ async function reportAgentGraph() {
   const agents = Array.from(graph.agents.values()).map((agent) => ({
     threadId: agent.threadId,
     parentThreadId: agent.parentThreadId,
+    agentPath: agent.agentPath || "",
     label: agent.label,
     nickname: agent.nickname,
     role: agent.role,
@@ -3231,8 +3232,87 @@ function storedMessageText(message) {
   return String(message?.text || message?.message || "").trim();
 }
 
+function subagentNotificationFromText(text) {
+  const raw = String(text || "");
+  const match = raw.match(/^\s*<subagent_notification>\s*([\s\S]*?)\s*<\/subagent_notification>\s*$/i);
+  if (!match) return null;
+  let body = null;
+  try {
+    body = JSON.parse(match[1].trim());
+  } catch {
+    return null;
+  }
+  const status = body?.status;
+  let statusKey = "";
+  let statusDetail = "";
+  if (typeof status === "string") {
+    statusKey = status;
+  } else if (status && typeof status === "object") {
+    const [key, value] = Object.entries(status)[0] || [];
+    statusKey = String(key || "");
+    if (typeof value === "string") statusDetail = value;
+  }
+  const agentPath = String(body?.agent_path || body?.agentPath || body?.agent_id || body?.agentId || "").trim();
+  if (!agentPath && !statusKey) return null;
+  return {
+    agentPath,
+    statusKey: statusKey || "unknown",
+    statusDetail,
+    observedAt: notificationPayloadTimestamp(body),
+  };
+}
+
+function normalizedNotificationTimestamp(value) {
+  if (value === null || value === undefined || value === "") return "";
+  const text = String(value).trim();
+  const numeric = typeof value === "number" || /^\d+(\.\d+)?$/.test(text) ? Number(value) : Number.NaN;
+  const timestamp = Number.isFinite(numeric)
+    ? numeric > 1_000_000_000_000 ? numeric : numeric * 1000
+    : Date.parse(text);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : "";
+}
+
+function notificationPayloadTimestamp(body) {
+  if (!body || typeof body !== "object") return "";
+  return normalizedNotificationTimestamp(
+    body.observedAt ||
+    body.observed_at ||
+    body.createdAt ||
+    body.created_at ||
+    body.updatedAt ||
+    body.updated_at ||
+    body.completedAt ||
+    body.completed_at ||
+    body.timestamp ||
+    body.at ||
+    "",
+  );
+}
+
+function notificationMessageTimestamp(message, notification = {}) {
+  return notification.observedAt ||
+    normalizedNotificationTimestamp(
+      message?.observedAt ||
+      message?.observed_at ||
+      message?.createdAt ||
+      message?.created_at ||
+      message?.updatedAt ||
+      message?.updated_at ||
+      message?.completedAt ||
+      message?.completed_at ||
+      message?.timestamp ||
+      message?.at ||
+      "",
+    );
+}
+
+function storedMessageIsSubagentNotification(message) {
+  return Boolean(subagentNotificationFromText(storedMessageText(message)));
+}
+
 function storedTurnUserMessageCount(turn) {
-  return Array.isArray(turn?.userMessages) ? turn.userMessages.length : 0;
+  if (!Array.isArray(turn?.userMessages)) return 0;
+  return turn.userMessages.filter((message) => !storedMessageIsSubagentNotification(message)).length;
 }
 
 function storedStartTurnIndex(turns, hiddenUserMessages) {
@@ -3263,6 +3343,9 @@ function shouldPreserveStoredTranscriptOnLiveAttach(thread) {
 function renderStoredPresentationModel(model, snapshot = {}) {
   const turns = Array.isArray(model?.turns) ? model.turns : [];
   if (!turns.length) return false;
+  const previousBulkRendering = state.isBulkRendering;
+  state.isBulkRendering = true;
+  try {
   const authorContext = currentAuthorContext({
     ...(model?.threadMeta || {}),
     threadId: model?.threadId || snapshot?.threadId || state.threadId,
@@ -3286,6 +3369,11 @@ function renderStoredPresentationModel(model, snapshot = {}) {
     const turnKey = String(turn.turnKey || turn.turnId || `stored_turn_${startTurnIndex + index + 1}`);
     for (let messageIndex = 0; messageIndex < (turn.userMessages || []).length; messageIndex += 1) {
       const message = turn.userMessages[messageIndex];
+      const notification = subagentNotificationFromText(storedMessageText(message));
+      if (notification) {
+        renderSubagentNotificationTag(turnKey, { ...notification, observedAt: notificationMessageTimestamp(message, notification) });
+        continue;
+      }
       const id = String(message.id || `stored_user_${turnKey}_${messageIndex}`);
       setMessageText(id, authorContext.userRole, storedMessageText(message), authorContext.userTitle);
     }
@@ -3333,6 +3421,9 @@ function renderStoredPresentationModel(model, snapshot = {}) {
     if (processOrphans.length) upsertThoughtProcess("stored_orphans", processOrphans, { merge: false });
   }
   return true;
+  } finally {
+    state.isBulkRendering = previousBulkRendering;
+  }
 }
 
 function renderStoredTranscript(snapshot, threadId, options = {}) {
@@ -3375,7 +3466,9 @@ function renderStoredTranscript(snapshot, threadId, options = {}) {
   const allEntries = Array.isArray(snapshot?.entries) ? snapshot.entries : [];
   const userEntryIndices = [];
   for (let index = 0; index < allEntries.length; index += 1) {
-    if (allEntries[index]?.role === "user") userEntryIndices.push(index);
+    if (allEntries[index]?.role === "user" && !subagentNotificationFromText(allEntries[index]?.text || "")) {
+      userEntryIndices.push(index);
+    }
   }
   const totalUserMessages = userEntryIndices.length;
   const visibleUserMessages = visibleUserMessageCount(totalUserMessages);
@@ -3408,6 +3501,11 @@ function renderStoredTranscript(snapshot, threadId, options = {}) {
       continue;
     }
     flushThoughtBuffer();
+    const notification = entry.role === "user" ? subagentNotificationFromText(entry.text || "") : null;
+    if (notification) {
+      renderSubagentNotificationTag(`stored_notification_${absoluteIndex + 1}`, { ...notification, observedAt: notificationMessageTimestamp(entry, notification) });
+      continue;
+    }
     const authorContext = currentAuthorContext();
     const role = entry.role === "assistant"
       ? "assistant"
@@ -3754,6 +3852,123 @@ function collabPromptPreview(prompt) {
   return compactValue(String(prompt || ""), 220);
 }
 
+function normalizeSubagentNotificationStatus(statusKey) {
+  const key = String(statusKey || "unknown").trim();
+  const labels = {
+    pending_init: "pending",
+    running: "running",
+    interrupted: "interrupted",
+    completed: "completed",
+    errored: "failed",
+    shutdown: "shutdown",
+    not_found: "not found",
+    unknown: "unknown",
+  };
+  return {
+    key,
+    label: labels[key] || key.replace(/_/g, " "),
+    graphStatus: key === "errored" ? "failed" : key === "pending_init" ? "pending" : key,
+    activityStatus: key === "running"
+      ? "active"
+      : key === "interrupted"
+        ? "waiting"
+        : ["completed", "shutdown", "not_found", "errored"].includes(key)
+          ? "last_seen_completed"
+          : "unknown",
+  };
+}
+
+function findAgentForSubagentNotification(agentPath) {
+  const ref = String(agentPath || "").trim();
+  if (!ref || !state.agentGraph?.agents) return null;
+  if (state.agentGraph.agents.has(ref)) return state.agentGraph.agents.get(ref);
+  const refLeaf = pathLeaf(ref);
+  for (const agent of state.agentGraph.agents.values()) {
+    const agentPathRef = String(agent.agentPath || "");
+    const threadIdRef = String(agent.threadId || "");
+    if (agentPathRef === ref) return agent;
+    if (threadIdRef === ref || threadIdRef === refLeaf) return agent;
+    if (pathLeaf(agentPathRef) === refLeaf) return agent;
+  }
+  return null;
+}
+
+function pathLeaf(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const index = text.lastIndexOf("/");
+  return index >= 0 ? text.slice(index + 1) || text : text;
+}
+
+function applySubagentNotification(notification) {
+  if (!notification || currentAuthorContext().isSubagent) return null;
+  const status = normalizeSubagentNotificationStatus(notification.statusKey);
+  const existing = findAgentForSubagentNotification(notification.agentPath);
+  const fallbackThreadId = String(notification.agentPath || "").includes("/") ? "" : String(notification.agentPath || "");
+  const targetThreadId = existing?.threadId || fallbackThreadId;
+  if (!targetThreadId) return null;
+  const agent = ensureGraphAgent(targetThreadId, {
+    agentPath: notification.agentPath || existing?.agentPath || "",
+    status: status.graphStatus,
+    activityStatus: status.activityStatus,
+    lastAction: {
+      tool: "subagentNotification",
+      status: status.graphStatus,
+      callId: `notification:${notification.agentPath}:${notification.statusKey}`,
+    },
+    promptPreview: notification.statusDetail || existing?.promptPreview || "",
+    evidenceRefs: [{
+      kind: "subagent_notification",
+      label: `Sub-agent ${status.label}`,
+      observedAt: notification.observedAt || new Date().toISOString(),
+    }],
+  });
+  if (agent) {
+    state.agentGraphRevision += 1;
+    reportAgentGraph();
+  }
+  return agent;
+}
+
+function renderSubagentNotificationTag(turnKey, notification) {
+  const status = normalizeSubagentNotificationStatus(notification?.statusKey);
+  const agent = applySubagentNotification(notification);
+  const displayLabel = agent?.label || agentDisplayLabel({ threadId: notification?.agentPath || "" });
+  const node = ensureMessage(
+    `subagent_notification_${String(turnKey || "live")}_${String(notification?.agentPath || "agent")}_${status.key}`,
+    "system",
+    "Sub-agent activity",
+  );
+  node.classList.add("collab-meta-message");
+  const bubble = node.querySelector(".bubble");
+  bubble.innerHTML = "";
+  bubble.dataset.rawText = `Sub-agent ${status.label} ${displayLabel}`;
+  bubble.dataset.typedRendered = "true";
+  bubble.dataset.streamingPlain = "false";
+
+  const root = document.createElement("div");
+  root.className = `collab-activity-tag ${status.graphStatus}`;
+  const action = document.createElement("span");
+  action.className = "collab-activity-verb";
+  action.textContent = `Sub-agent ${status.label} `;
+  root.appendChild(action);
+
+  const chip = document.createElement("button");
+  chip.type = "button";
+  chip.className = "collab-agent-chip";
+  chip.textContent = displayLabel;
+  chip.disabled = !agent?.threadId;
+  chip.title = agent?.threadId ? `Open ${displayLabel} in the Sub-agents panel` : "Sub-agent thread unavailable";
+  chip.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (agent?.threadId) focusSubAgentFromChip({ threadId: agent.threadId, displayLabel });
+  });
+  root.appendChild(chip);
+  bubble.appendChild(root);
+  maybeAutoScrollBottom();
+}
+
 function normalizeCollabToolKey(tool) {
   const raw = String(tool || "").trim();
   const aliases = {
@@ -3998,6 +4213,7 @@ async function hydrateAgentThread(threadId, graphId, primaryThreadId) {
       parentThreadId: snapshot?.parentThreadId || state.threadId,
       nickname: snapshot?.agentNickname || undefined,
       role: snapshot?.agentRole || undefined,
+      agentPath: snapshot?.agentPath || undefined,
       status: "available",
       hydrationStatus: "turns_ready",
     });
@@ -4356,6 +4572,11 @@ function renderItem(item, authorContext = currentAuthorContext()) {
   rememberCodexItem({ threadId: state.threadId, turnId: item.turnId || state.turnId, itemId: item.id }, item);
   if (item.type === "userMessage") {
     const text = (item.content || []).map(userInputToText).filter(Boolean).join("\n\n");
+    const notification = subagentNotificationFromText(text);
+    if (notification) {
+      if (!authorContext.isSubagent) renderSubagentNotificationTag(item.turnId || state.turnId || "live", notification);
+      return;
+    }
     setMessageText(item.id, authorContext.userRole, text, authorContext.userTitle);
     return;
   }
@@ -4445,7 +4666,10 @@ function renderThreadHistory(thread, options = {}) {
   const userMessageTurnIndices = [];
   for (let index = 0; index < allTurns.length; index += 1) {
     for (const item of allTurns[index]?.items || []) {
-      if (item?.type === "userMessage") userMessageTurnIndices.push(index);
+      if (item?.type === "userMessage") {
+        const text = (item.content || []).map(userInputToText).filter(Boolean).join("\n\n");
+        if (!subagentNotificationFromText(text)) userMessageTurnIndices.push(index);
+      }
     }
   }
   const totalUserMessages = userMessageTurnIndices.length;
