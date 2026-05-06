@@ -23,7 +23,14 @@ const sandbox = {
   CODEX_THREAD_RUNTIME_PREF_MAX_ENTRIES: 500,
 };
 vm.createContext(sandbox);
-vm.runInContext(`${source.slice(start, end)}\nthis.normalizeConfig = normalizeConfig;`, sandbox, { filename: "main-config-slice.js" });
+vm.runInContext(
+  `${source.slice(start, end)}
+this.normalizeConfig = normalizeConfig;
+this.codexThreadRuntimePreferenceKey = codexThreadRuntimePreferenceKey;
+this.findCodexThreadRuntimePreference = findCodexThreadRuntimePreference;`,
+  sandbox,
+  { filename: "main-config-slice.js" },
+);
 
 const legacyConfig = {
   version: 3,
@@ -73,6 +80,15 @@ const runtimePref = Object.values(migrated.codexThreadRuntimeDefaults || {})[0];
 if (runtimePref?.threadId !== "thread_abc") throw new Error("Codex thread runtime preference was not preserved.");
 if (runtimePref?.model !== "gpt-5.5" || runtimePref?.reasoningEffort !== "xhigh") {
   throw new Error("Codex thread model/reasoning preference was not preserved.");
+}
+const fallbackRuntimePref = sandbox.findCodexThreadRuntimePreference(migrated.codexThreadRuntimeDefaults, {
+  projectId: "project_legacy",
+  threadId: "thread_abc",
+  sourceHome: "/different/home",
+  sessionFilePath: "/different/session.jsonl",
+});
+if (fallbackRuntimePref.match !== "thread" || fallbackRuntimePref.value?.model !== "gpt-5.5") {
+  throw new Error("Codex thread runtime preference did not fall back by project/thread identity.");
 }
 if (!Array.isArray(project.chatThreads) || project.chatThreads.length !== 1) throw new Error("Expected one migrated ChatGPT thread.");
 const thread = project.chatThreads[0];

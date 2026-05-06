@@ -9,6 +9,7 @@ const {
   clipboard,
   nativeTheme,
 } = require("electron");
+const fsSync = require("node:fs");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const crypto = require("node:crypto");
@@ -44,6 +45,45 @@ const shellHtmlPath = path.join(rendererRoot, "index.html");
 const codexSurfacePreloadPath = path.join(__dirname, "preload-codex-surface.js");
 const smokeExitMs = Number.parseInt(process.env.CODEX_REVIEW_SHELL_SMOKE_EXIT_MS ?? "", 10);
 const workspaceAgentPath = path.join(__dirname, "backend", "wsl-agent.js");
+
+function existingFileMtimeMs(targetPath) {
+  try {
+    return fsSync.statSync(targetPath).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+function uniquePaths(values) {
+  const seen = new Set();
+  return values.filter((value) => {
+    const normalized = path.resolve(value);
+    const key = process.platform === "win32" ? normalized.toLowerCase() : normalized;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function configureAppIdentity() {
+  app.setName(APP_TITLE);
+  const appDataPath = app.getPath("appData");
+  const canonicalUserDataPath = path.join(appDataPath, APP_TITLE);
+  const legacyUserDataPath = path.join(appDataPath, "codex-review-shell");
+  const candidates = uniquePaths([canonicalUserDataPath, legacyUserDataPath, app.getPath("userData")]);
+  let selectedPath = canonicalUserDataPath;
+  let selectedMtime = 0;
+  for (const candidate of candidates) {
+    const mtime = existingFileMtimeMs(path.join(candidate, CONFIG_FILE_NAME));
+    if (mtime > selectedMtime) {
+      selectedPath = candidate;
+      selectedMtime = mtime;
+    }
+  }
+  app.setPath("userData", selectedPath);
+}
+
+configureAppIdentity();
 
 let mainWindow = null;
 let shellView = null;
@@ -310,6 +350,52 @@ function codexThreadRuntimePreferenceKey(parts = {}) {
   ];
   if (!values[0] || !values[1]) return "";
   return values.map((value) => Buffer.from(value, "utf8").toString("base64url")).join(".");
+}
+
+function codexThreadRuntimePreferenceMatchScore(entry = {}, parts = {}) {
+  let score = 0;
+  const requestedSourceHome = normalizeString(parts.sourceHome, "");
+  const requestedSessionFilePath = normalizeString(parts.sessionFilePath, "");
+  if (requestedSourceHome && normalizeString(entry.sourceHome, "") === requestedSourceHome) score += 2;
+  if (requestedSessionFilePath && normalizeString(entry.sessionFilePath, "") === requestedSessionFilePath) score += 2;
+  if (!requestedSourceHome && !normalizeString(entry.sourceHome, "")) score += 1;
+  if (!requestedSessionFilePath && !normalizeString(entry.sessionFilePath, "")) score += 1;
+  return score;
+}
+
+function findCodexThreadRuntimePreference(threadDefaults, parts = {}) {
+  const defaults = isPlainObject(threadDefaults) ? threadDefaults : {};
+  const threadKey = codexThreadRuntimePreferenceKey(parts);
+  if (threadKey && defaults[threadKey]) {
+    return { key: threadKey, value: defaults[threadKey], match: "exact" };
+  }
+
+  const projectId = normalizeString(parts.projectId, "");
+  const threadId = normalizeString(parts.threadId, "");
+  if (!projectId || !threadId) return { key: threadKey, value: null, match: "none" };
+
+  const matches = Object.entries(defaults)
+    .filter(([, entry]) => {
+      return (
+        normalizeString(entry?.projectId, "") === projectId &&
+        normalizeString(entry?.threadId, "") === threadId
+      );
+    })
+    .map(([key, entry]) => ({
+      key,
+      entry,
+      score: codexThreadRuntimePreferenceMatchScore(entry, parts),
+      updatedAt: normalizeString(entry?.updatedAt, ""),
+    }))
+    .sort((left, right) => {
+      if (right.score !== left.score) return right.score - left.score;
+      return String(right.updatedAt || "").localeCompare(String(left.updatedAt || ""));
+    });
+
+  const match = matches[0];
+  return match
+    ? { key: match.key, value: match.entry, match: "thread" }
+    : { key: threadKey, value: null, match: "none" };
 }
 
 function normalizeCodexThreadRuntimeDefaults(value) {
@@ -1076,10 +1162,13 @@ function codexRuntimePreferenceLookup(config, payload = {}) {
     sessionFilePath: normalizeString(payload.sessionFilePath, ""),
   };
   const threadKey = codexThreadRuntimePreferenceKey(parts);
+  const threadMatch = findCodexThreadRuntimePreference(threadDefaults, parts);
   return {
     globalDefaults: runtimeDefaults.codex,
-    threadDefaults: threadKey ? threadDefaults[threadKey] || null : null,
+    threadDefaults: threadMatch.value,
     threadKey,
+    resolvedThreadKey: threadMatch.key || "",
+    threadMatch: threadMatch.match,
   };
 }
 
