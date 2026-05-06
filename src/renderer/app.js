@@ -1049,6 +1049,508 @@ function setLastEvent(message) {
   els.lastEvent.title = message;
 }
 
+function normalizeSlashes(value) {
+  return String(value || "").replace(/\\/g, "/");
+}
+
+function stripTokenPunctuation(value) {
+  return String(value || "").replace(/[),.;!?]+$/g, "");
+}
+
+function currentWorkspaceRoots() {
+  const project = activeProject();
+  const roots = [
+    project?.workspace?.linuxPath,
+    project?.workspace?.localPath,
+    project?.repoPath,
+  ];
+  const repoText = String(project?.repoPath || "");
+  const wslMatch = repoText.match(/^wsl:[^:]+:(\/.*)$/i);
+  if (wslMatch) roots.push(wslMatch[1]);
+  return Array.from(new Set(roots.map((root) => normalizeSlashes(root).replace(/\/+$/, "")).filter(Boolean)));
+}
+
+function relativePathWithinRoot(filePath) {
+  const raw = stripTokenPunctuation(filePath).trim();
+  if (!raw || raw.includes("\0")) return "";
+  const normalized = normalizeSlashes(raw);
+  if (normalized.startsWith("../") || normalized.includes("/../") || normalized === "..") return "";
+  if (/\s/.test(normalized)) return "";
+
+  for (const root of currentWorkspaceRoots()) {
+    const normalizedRoot = normalizeSlashes(root).replace(/\/+$/, "");
+    if (!normalizedRoot) continue;
+    const lowerPath = normalized.toLowerCase();
+    const lowerRoot = normalizedRoot.toLowerCase();
+    if (lowerPath === lowerRoot) return "";
+    if (lowerPath.startsWith(`${lowerRoot}/`)) return normalized.slice(normalizedRoot.length + 1);
+  }
+
+  const isAbsolute = normalized.startsWith("/") || /^[A-Za-z]:\//.test(normalized);
+  if (isAbsolute) return "";
+  if (!normalized.includes("/") && !/\.[A-Za-z0-9]{1,12}$/.test(normalized)) return "";
+  return normalized.replace(/^\.\/+/, "");
+}
+
+function splitLineRef(value) {
+  const text = stripTokenPunctuation(value).trim();
+  const match = text.match(/^(.*?)(?::(\d+)(?::(\d+))?)$/);
+  if (!match) return { path: text, line: null, column: null };
+  if (/^[A-Za-z]$/.test(match[1])) return { path: text, line: null, column: null };
+  return {
+    path: match[1],
+    line: Number(match[2]),
+    column: match[3] ? Number(match[3]) : null,
+  };
+}
+
+function addTokenCandidate(candidates, start, end, token) {
+  if (start < 0 || end <= start) return;
+  candidates.push({ start, end, token });
+}
+
+function chooseTokenCandidates(candidates) {
+  const sorted = candidates
+    .filter((candidate) => candidate?.token?.text)
+    .sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start));
+  const result = [];
+  let cursor = 0;
+  for (const candidate of sorted) {
+    if (candidate.start < cursor) continue;
+    result.push(candidate);
+    cursor = candidate.end;
+  }
+  return result;
+}
+
+function tokenizeTypedContent(text) {
+  const source = String(text || "");
+  if (!source) return [{ type: "text", text: "" }];
+  const candidates = [];
+
+  const urlPattern = /https?:\/\/[^\s<>"'`)\]]+/g;
+  for (const match of source.matchAll(urlPattern)) {
+    const raw = stripTokenPunctuation(match[0]);
+    addTokenCandidate(candidates, match.index, match.index + raw.length, { type: "url", text: raw, href: raw });
+  }
+
+  const backtickPattern = /`([^`\n]{1,240})`/g;
+  for (const match of source.matchAll(backtickPattern)) {
+    const raw = match[1] || "";
+    const lineRef = splitLineRef(raw);
+    const relPath = relativePathWithinRoot(lineRef.path);
+    if (relPath) {
+      addTokenCandidate(candidates, match.index, match.index + match[0].length, {
+        type: lineRef.line ? "line_ref" : "file_path",
+        text: match[0],
+        path: relPath,
+        line: lineRef.line,
+        column: lineRef.column,
+      });
+      continue;
+    }
+    const type = /\s|^(npm|pnpm|yarn|node|git|gh|cargo|python|pytest|uv|make|bash|sh)\b/.test(raw.trim())
+      ? "command"
+      : "symbol";
+    addTokenCandidate(candidates, match.index, match.index + match[0].length, { type, text: match[0], value: raw });
+  }
+
+  const filePattern = /(?:[A-Za-z]:[\\/]|\/|\.{1,2}\/)?[A-Za-z0-9._@+-][A-Za-z0-9._@+:/\\-]*\.[A-Za-z0-9]{1,12}(?::\d+(?::\d+)?)?/g;
+  for (const match of source.matchAll(filePattern)) {
+    const raw = stripTokenPunctuation(match[0]);
+    if (!raw || /^https?:\/\//i.test(raw)) continue;
+    const lineRef = splitLineRef(raw);
+    const relPath = relativePathWithinRoot(lineRef.path);
+    if (!relPath) continue;
+    addTokenCandidate(candidates, match.index, match.index + raw.length, {
+      type: lineRef.line ? "line_ref" : "file_path",
+      text: raw,
+      path: relPath,
+      line: lineRef.line,
+      column: lineRef.column,
+    });
+  }
+
+  const chosen = chooseTokenCandidates(candidates);
+  const tokens = [];
+  let cursor = 0;
+  for (const candidate of chosen) {
+    if (candidate.start > cursor) tokens.push({ type: "text", text: source.slice(cursor, candidate.start) });
+    tokens.push(candidate.token);
+    cursor = candidate.end;
+  }
+  if (cursor < source.length) tokens.push({ type: "text", text: source.slice(cursor) });
+  return tokens.length ? tokens : [{ type: "text", text: source }];
+}
+
+async function openSubAgentTypedUrl(url, context = {}) {
+  if (!bridge?.openWorkspaceLink) {
+    setLastEvent("Workspace link opening is unavailable.");
+    return;
+  }
+  const project = activeProject();
+  const result = await bridge.openWorkspaceLink(url, {
+    disposition: "middle-web",
+    source: {
+      surface: "shell",
+      projectId: project?.id || "",
+      threadId: context.threadId || state.subAgentGraph?.primaryThreadId || state.openedCodexThreadId || "",
+      threadTitle: context.threadTitle || "Sub-agent transcript",
+    },
+    userGesture: true,
+  });
+  if (!result?.ok) setLastEvent(`URL open blocked: ${result?.error || "unknown error"}`);
+}
+
+async function revealSubAgentTypedFile(relPath) {
+  const project = activeProject();
+  if (!bridge?.revealProjectFile || !project?.id) {
+    setLastEvent("Project file reveal is unavailable.");
+    return;
+  }
+  try {
+    const result = await bridge.revealProjectFile(project.id, relPath);
+    if (!result?.opened && result?.method) setLastEvent(`File path copied: ${result.absolutePath || relPath}`);
+  } catch (error) {
+    setLastEvent(`File reveal failed: ${error.message}`);
+  }
+}
+
+function renderTypedContent(container, text, context = {}) {
+  container.textContent = "";
+  const tokens = tokenizeTypedContent(text);
+  for (const token of tokens) {
+    if (!token || token.type === "text") {
+      container.appendChild(document.createTextNode(token?.text || ""));
+      continue;
+    }
+    if (token.type === "url") {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "typed-token typed-token-url";
+      button.textContent = token.text;
+      button.title = "Open link in workspace web panel";
+      button.addEventListener("click", () => openSubAgentTypedUrl(token.href, context));
+      container.appendChild(button);
+      continue;
+    }
+    if (token.type === "file_path" || token.type === "line_ref") {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `typed-token ${token.type === "line_ref" ? "typed-token-line-ref" : "typed-token-file"}`;
+      button.textContent = token.text;
+      button.title = token.line ? `Reveal ${token.path}:${token.line}` : `Reveal ${token.path}`;
+      button.addEventListener("click", () => revealSubAgentTypedFile(token.path));
+      container.appendChild(button);
+      continue;
+    }
+    const span = document.createElement("span");
+    span.className = `typed-token typed-token-${token.type.replace(/_/g, "-")}`;
+    span.textContent = token.text;
+    container.appendChild(span);
+  }
+}
+
+function appendTypedText(parent, text, context = {}) {
+  if (!text) return;
+  const span = document.createElement("span");
+  renderTypedContent(span, text, context);
+  parent.appendChild(span);
+}
+
+function safeMarkdownHref(rawHref) {
+  try {
+    const parsed = new URL(String(rawHref || ""));
+    return ["http:", "https:"].includes(parsed.protocol) ? parsed.toString() : "";
+  } catch {
+    return "";
+  }
+}
+
+function markdownLocalHref(rawHref) {
+  const original = String(rawHref || "").trim();
+  if (!original || original.startsWith("#") || /^[A-Za-z][A-Za-z0-9+.-]*:/i.test(original)) return null;
+  const lineHash = original.match(/^(.*)#L(\d+)$/i);
+  const withoutHash = lineHash ? lineHash[1] : original.replace(/#.*$/, "");
+  const lineRef = splitLineRef(lineHash ? `${withoutHash}:${lineHash[2]}` : withoutHash);
+  const relPath = relativePathWithinRoot(lineRef.path);
+  if (!relPath) return null;
+  return { path: relPath, line: lineRef.line, column: lineRef.column };
+}
+
+function appendFileToken(parent, label, fileRef) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `typed-token ${fileRef.line ? "typed-token-line-ref" : "typed-token-file"} assistant-md-link`;
+  button.textContent = label || fileRef.path;
+  button.title = fileRef.line ? `Reveal ${fileRef.path}:${fileRef.line}` : `Reveal ${fileRef.path}`;
+  button.addEventListener("click", () => revealSubAgentTypedFile(fileRef.path));
+  parent.appendChild(button);
+}
+
+function appendUrlToken(parent, label, href, context = {}) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "typed-token typed-token-url assistant-md-link";
+  button.textContent = label || href;
+  button.title = `Open ${href}`;
+  button.addEventListener("click", () => openSubAgentTypedUrl(href, context));
+  parent.appendChild(button);
+}
+
+function appendUnsupportedMarkdownLink(parent, label, reason) {
+  const span = document.createElement("span");
+  span.className = "assistant-md-link-blocked";
+  span.textContent = label;
+  span.title = reason || "Unsupported or unsafe link";
+  parent.appendChild(span);
+}
+
+function appendInlineCode(parent, raw, context = {}) {
+  const code = document.createElement("code");
+  code.className = "assistant-md-inline-code";
+  const source = String(raw || "");
+  const fileRef = markdownLocalHref(source) || (() => {
+    const lineRef = splitLineRef(source);
+    const relPath = relativePathWithinRoot(lineRef.path);
+    return relPath ? { path: relPath, line: lineRef.line, column: lineRef.column } : null;
+  })();
+  if (fileRef) {
+    appendFileToken(code, source, fileRef);
+  } else {
+    const href = safeMarkdownHref(source);
+    if (href) appendUrlToken(code, source, href, context);
+    else {
+      const span = document.createElement("span");
+      const trimmed = source.trim();
+      const tokenType = /^[a-f0-9]{7,40}$/i.test(trimmed)
+        ? "commit"
+        : /\s|^(npm|pnpm|yarn|node|git|gh|cargo|python|pytest|uv|make|bash|sh)\b/.test(trimmed)
+          ? "command"
+          : "symbol";
+      span.className = `typed-token typed-token-${tokenType}`;
+      span.textContent = source;
+      code.appendChild(span);
+    }
+  }
+  parent.appendChild(code);
+}
+
+function appendInlineMarkdown(parent, text, context = {}) {
+  const source = String(text || "");
+  const pattern = /(\[[^\]\n]{1,240}\]\([^) \n]{1,1000}\)|`([^`\n]+)`|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|(->|=>))/g;
+  let cursor = 0;
+  for (const match of source.matchAll(pattern)) {
+    if (match.index > cursor) appendTypedText(parent, source.slice(cursor, match.index), context);
+    const token = match[0];
+    const linkMatch = token.match(/^\[([^\]\n]+)\]\(([^) \n]+)\)$/);
+    if (linkMatch) {
+      const href = safeMarkdownHref(linkMatch[2]);
+      const fileRef = markdownLocalHref(linkMatch[2]);
+      if (href) appendUrlToken(parent, linkMatch[1], href, context);
+      else if (fileRef) appendFileToken(parent, linkMatch[1], fileRef);
+      else appendUnsupportedMarkdownLink(parent, linkMatch[1], "Unsupported, unsafe, or unresolved link target");
+    } else if (token.startsWith("`")) {
+      appendInlineCode(parent, token.slice(1, -1), context);
+    } else if (token.startsWith("**")) {
+      const strong = document.createElement("strong");
+      strong.className = "assistant-md-strong";
+      appendTypedText(strong, token.slice(2, -2), context);
+      parent.appendChild(strong);
+    } else if (token.startsWith("*")) {
+      const em = document.createElement("em");
+      em.className = "assistant-md-emphasis";
+      appendTypedText(em, token.slice(1, -1), context);
+      parent.appendChild(em);
+    } else {
+      const arrow = document.createElement("span");
+      arrow.className = "assistant-md-arrow";
+      arrow.textContent = token;
+      parent.appendChild(arrow);
+    }
+    cursor = match.index + token.length;
+  }
+  if (cursor < source.length) appendTypedText(parent, source.slice(cursor), context);
+}
+
+function createMarkdownLineBlock(tagName, className, text, context = {}) {
+  const block = document.createElement(tagName);
+  block.className = className;
+  appendInlineMarkdown(block, text, context);
+  return block;
+}
+
+function isMarkdownBlockStart(line) {
+  const trimmed = String(line || "").trim();
+  return Boolean(
+    !trimmed ||
+    /^```/.test(trimmed) ||
+    /^#{1,4}\s+/.test(trimmed) ||
+    /^>\s?/.test(trimmed) ||
+    /^---+$/.test(trimmed) ||
+    /^[-*]\s+/.test(trimmed) ||
+    /^\d+\.\s+/.test(trimmed) ||
+    /^(->|=>)\s+/.test(trimmed)
+  );
+}
+
+function appendMarkdownList(container, lines, ordered, context = {}) {
+  const list = document.createElement(ordered ? "ol" : "ul");
+  list.className = "assistant-md-list";
+  for (const line of lines) {
+    const raw = ordered
+      ? String(line || "").replace(/^\s*\d+\.\s+/, "")
+      : String(line || "").replace(/^\s*[-*]\s+/, "");
+    const taskMatch = raw.match(/^\[(x|X| )\]\s+([\s\S]*)$/);
+    const item = document.createElement("li");
+    const appendListText = (target, value) => {
+      const fragments = String(value || "").split("\n");
+      fragments.forEach((fragment, index) => {
+        if (index) target.appendChild(document.createElement("br"));
+        appendInlineMarkdown(target, fragment, context);
+      });
+    };
+    if (taskMatch) {
+      const marker = document.createElement("span");
+      marker.className = `assistant-md-task-marker${taskMatch[1].trim() ? " done" : ""}`;
+      marker.textContent = taskMatch[1].trim() ? "✓" : "□";
+      item.appendChild(marker);
+      appendListText(item, taskMatch[2]);
+    } else {
+      appendListText(item, raw);
+    }
+    list.appendChild(item);
+  }
+  container.appendChild(list);
+}
+
+function renderSubAgentAssistantMarkdown(container, text, context = {}) {
+  container.textContent = "";
+  container.classList.add("assistant-markdown");
+  const source = String(text || "").replace(/\r\n/g, "\n");
+  if (!source.trim()) return;
+  const lines = source.split("\n");
+  for (let index = 0; index < lines.length;) {
+    const line = lines[index];
+    const trimmed = line.trim();
+    if (!trimmed) {
+      index += 1;
+      continue;
+    }
+
+    const fence = trimmed.match(/^```([A-Za-z0-9_-]+)?\s*$/);
+    if (fence) {
+      const language = fence[1] || "";
+      const codeLines = [];
+      index += 1;
+      while (index < lines.length && !lines[index].trim().startsWith("```")) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+      if (index < lines.length) index += 1;
+      const block = document.createElement("figure");
+      block.className = "assistant-md-codeblock";
+      if (language) {
+        const caption = document.createElement("figcaption");
+        caption.textContent = language;
+        block.appendChild(caption);
+      }
+      const pre = document.createElement("pre");
+      pre.textContent = codeLines.join("\n");
+      block.appendChild(pre);
+      container.appendChild(block);
+      continue;
+    }
+
+    const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      const level = Math.min(4, heading[1].length);
+      container.appendChild(createMarkdownLineBlock(`h${level}`, `assistant-md-heading level-${level}`, heading[2], context));
+      index += 1;
+      continue;
+    }
+
+    if (/^---+$/.test(trimmed)) {
+      const divider = document.createElement("hr");
+      divider.className = "assistant-md-divider";
+      container.appendChild(divider);
+      index += 1;
+      continue;
+    }
+
+    if (/^>\s?/.test(trimmed)) {
+      const quoteLines = [];
+      while (index < lines.length && /^>\s?/.test(lines[index].trim())) {
+        quoteLines.push(lines[index].trim().replace(/^>\s?/, ""));
+        index += 1;
+      }
+      container.appendChild(createMarkdownLineBlock("blockquote", "assistant-md-quote", quoteLines.join("\n"), context));
+      continue;
+    }
+
+    if (/^\d+\.\s+/.test(trimmed) || /^[-*]\s+/.test(trimmed)) {
+      const ordered = /^\d+\.\s+/.test(trimmed);
+      const listLines = [];
+      while (index < lines.length) {
+        const nextLine = lines[index];
+        const nextTrimmed = lines[index].trim();
+        const isNextItem = ordered ? /^\d+\.\s+/.test(nextTrimmed) : /^[-*]\s+/.test(nextTrimmed);
+        if (isNextItem) {
+          listLines.push(nextLine);
+          index += 1;
+          continue;
+        }
+        if (listLines.length && /^\s{2,}\S/.test(nextLine)) {
+          listLines[listLines.length - 1] = `${listLines[listLines.length - 1]}\n${nextLine.trim()}`;
+          index += 1;
+          continue;
+        }
+        if (!nextTrimmed) {
+          index += 1;
+          break;
+        }
+        break;
+      }
+      if (!listLines.length) index += 1;
+      appendMarkdownList(container, listLines, ordered, context);
+      continue;
+    }
+
+    const chain = trimmed.match(/^(->|=>)\s*(.*)$/);
+    if (chain) {
+      const block = document.createElement("p");
+      block.className = "assistant-md-chain";
+      const arrow = document.createElement("span");
+      arrow.className = "assistant-md-arrow";
+      arrow.textContent = chain[1];
+      block.append(arrow, document.createTextNode(" "));
+      appendInlineMarkdown(block, chain[2], context);
+      container.appendChild(block);
+      index += 1;
+      continue;
+    }
+
+    const paragraphLines = [line];
+    index += 1;
+    while (index < lines.length && !isMarkdownBlockStart(lines[index])) {
+      paragraphLines.push(lines[index]);
+      index += 1;
+    }
+    container.appendChild(createMarkdownLineBlock("p", "assistant-md-paragraph", paragraphLines.join("\n"), context));
+  }
+}
+
+function renderSubAgentMessageBody(container, message, context = {}) {
+  const text = String(message?.text || "");
+  container.dataset.rawText = text;
+  container.classList.toggle("assistant-markdown", message?.role === "child");
+  if (message?.role === "child") renderSubAgentAssistantMarkdown(container, text, context);
+  else {
+    container.classList.remove("assistant-markdown");
+    renderTypedContent(container, text, context);
+  }
+}
+
 function clampPlaneZoom(value) {
   return typeof bridge?.clampPlaneZoom === "function" ? bridge.clampPlaneZoom(value) : PLANE_ZOOM_DEFAULT;
 }
@@ -1319,8 +1821,12 @@ function renderSubAgentsPanel() {
       const label = document.createElement("p");
       label.className = "eyebrow";
       label.textContent = message.title || message.role || "Message";
-      const body = document.createElement("pre");
-      body.textContent = message.text || "";
+      const body = document.createElement("div");
+      body.className = "sub-agent-message-body";
+      renderSubAgentMessageBody(body, message, {
+        threadId: subAgentThreadId(selectedAgent),
+        threadTitle: subAgentTabLabel(selectedAgent, labelCounts),
+      });
       item.append(label, body);
       transcript.appendChild(item);
     }
