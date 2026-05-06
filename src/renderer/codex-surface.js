@@ -3234,7 +3234,7 @@ function storedMessageText(message) {
 
 function subagentNotificationFromText(text) {
   const raw = String(text || "");
-  const match = raw.match(/<subagent_notification>\s*([\s\S]*?)\s*<\/subagent_notification>/i);
+  const match = raw.match(/^\s*<subagent_notification>\s*([\s\S]*?)\s*<\/subagent_notification>\s*$/i);
   if (!match) return null;
   let body = null;
   try {
@@ -3258,7 +3258,52 @@ function subagentNotificationFromText(text) {
     agentPath,
     statusKey: statusKey || "unknown",
     statusDetail,
+    observedAt: notificationPayloadTimestamp(body),
   };
+}
+
+function normalizedNotificationTimestamp(value) {
+  if (value === null || value === undefined || value === "") return "";
+  const text = String(value).trim();
+  const numeric = typeof value === "number" || /^\d+(\.\d+)?$/.test(text) ? Number(value) : Number.NaN;
+  const timestamp = Number.isFinite(numeric)
+    ? numeric > 1_000_000_000_000 ? numeric : numeric * 1000
+    : Date.parse(text);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : "";
+}
+
+function notificationPayloadTimestamp(body) {
+  if (!body || typeof body !== "object") return "";
+  return normalizedNotificationTimestamp(
+    body.observedAt ||
+    body.observed_at ||
+    body.createdAt ||
+    body.created_at ||
+    body.updatedAt ||
+    body.updated_at ||
+    body.completedAt ||
+    body.completed_at ||
+    body.timestamp ||
+    body.at ||
+    "",
+  );
+}
+
+function notificationMessageTimestamp(message, notification = {}) {
+  return notification.observedAt ||
+    normalizedNotificationTimestamp(
+      message?.observedAt ||
+      message?.observed_at ||
+      message?.createdAt ||
+      message?.created_at ||
+      message?.updatedAt ||
+      message?.updated_at ||
+      message?.completedAt ||
+      message?.completed_at ||
+      message?.timestamp ||
+      message?.at ||
+      "",
+    );
 }
 
 function storedMessageIsSubagentNotification(message) {
@@ -3298,6 +3343,9 @@ function shouldPreserveStoredTranscriptOnLiveAttach(thread) {
 function renderStoredPresentationModel(model, snapshot = {}) {
   const turns = Array.isArray(model?.turns) ? model.turns : [];
   if (!turns.length) return false;
+  const previousBulkRendering = state.isBulkRendering;
+  state.isBulkRendering = true;
+  try {
   const authorContext = currentAuthorContext({
     ...(model?.threadMeta || {}),
     threadId: model?.threadId || snapshot?.threadId || state.threadId,
@@ -3323,7 +3371,7 @@ function renderStoredPresentationModel(model, snapshot = {}) {
       const message = turn.userMessages[messageIndex];
       const notification = subagentNotificationFromText(storedMessageText(message));
       if (notification) {
-        renderSubagentNotificationTag(turnKey, notification);
+        renderSubagentNotificationTag(turnKey, { ...notification, observedAt: notificationMessageTimestamp(message, notification) });
         continue;
       }
       const id = String(message.id || `stored_user_${turnKey}_${messageIndex}`);
@@ -3373,6 +3421,9 @@ function renderStoredPresentationModel(model, snapshot = {}) {
     if (processOrphans.length) upsertThoughtProcess("stored_orphans", processOrphans, { merge: false });
   }
   return true;
+  } finally {
+    state.isBulkRendering = previousBulkRendering;
+  }
 }
 
 function renderStoredTranscript(snapshot, threadId, options = {}) {
@@ -3452,7 +3503,7 @@ function renderStoredTranscript(snapshot, threadId, options = {}) {
     flushThoughtBuffer();
     const notification = entry.role === "user" ? subagentNotificationFromText(entry.text || "") : null;
     if (notification) {
-      renderSubagentNotificationTag(`stored_notification_${absoluteIndex + 1}`, notification);
+      renderSubagentNotificationTag(`stored_notification_${absoluteIndex + 1}`, { ...notification, observedAt: notificationMessageTimestamp(entry, notification) });
       continue;
     }
     const authorContext = currentAuthorContext();
@@ -3831,13 +3882,22 @@ function findAgentForSubagentNotification(agentPath) {
   const ref = String(agentPath || "").trim();
   if (!ref || !state.agentGraph?.agents) return null;
   if (state.agentGraph.agents.has(ref)) return state.agentGraph.agents.get(ref);
-  const refLeaf = ref.split("/").filter(Boolean).pop() || ref;
+  const refLeaf = pathLeaf(ref);
   for (const agent of state.agentGraph.agents.values()) {
-    if (String(agent.agentPath || "") === ref) return agent;
-    if (String(agent.threadId || "") === refLeaf) return agent;
-    if (String(agent.agentPath || "").split("/").filter(Boolean).pop() === refLeaf) return agent;
+    const agentPathRef = String(agent.agentPath || "");
+    const threadIdRef = String(agent.threadId || "");
+    if (agentPathRef === ref) return agent;
+    if (threadIdRef === ref || threadIdRef === refLeaf) return agent;
+    if (pathLeaf(agentPathRef) === refLeaf) return agent;
   }
   return null;
+}
+
+function pathLeaf(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const index = text.lastIndexOf("/");
+  return index >= 0 ? text.slice(index + 1) || text : text;
 }
 
 function applySubagentNotification(notification) {
@@ -3860,7 +3920,7 @@ function applySubagentNotification(notification) {
     evidenceRefs: [{
       kind: "subagent_notification",
       label: `Sub-agent ${status.label}`,
-      observedAt: new Date().toISOString(),
+      observedAt: notification.observedAt || new Date().toISOString(),
     }],
   });
   if (agent) {
@@ -3882,7 +3942,7 @@ function renderSubagentNotificationTag(turnKey, notification) {
   node.classList.add("collab-meta-message");
   const bubble = node.querySelector(".bubble");
   bubble.innerHTML = "";
-  bubble.dataset.rawText = `Sub-agent ${displayLabel} ${status.label}`;
+  bubble.dataset.rawText = `Sub-agent ${status.label} ${displayLabel}`;
   bubble.dataset.typedRendered = "true";
   bubble.dataset.streamingPlain = "false";
 
