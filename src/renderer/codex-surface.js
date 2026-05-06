@@ -68,6 +68,8 @@ const state = {
   configRequirements: null,
   configRequirementsStatus: "idle",
   configRequirementsError: "",
+  runtimePreferencesStatus: "idle",
+  runtimePreferencesError: "",
   runtimeOverrides: {
     model: project?.codex?.model || "",
     reasoningEffort: project?.codex?.reasoningEffort || "",
@@ -1610,6 +1612,97 @@ function sandboxModeOptions() {
   return ["", ...values].map((value) => ({ value, label: value || "Runtime default" }));
 }
 
+function normalizeRuntimeOverrideValue(name, value) {
+  const candidate = String(value || "").trim();
+  if (!candidate) return "";
+  if (name === "approvalPolicy") return APPROVAL_POLICY_OPTIONS.includes(candidate) ? candidate : "";
+  if (name === "sandboxMode") return SANDBOX_MODE_OPTIONS.includes(candidate) ? candidate : "";
+  if (name === "reasoningEffort") return DEFAULT_REASONING_EFFORTS.includes(candidate) ? candidate : "";
+  if (name === "model") return candidate;
+  return candidate;
+}
+
+function runtimePreferencesRequest(threadId = state.threadId) {
+  return {
+    projectId: project?.id || payload.codexConnection?.projectId || "",
+    threadId: String(threadId || ""),
+    sourceHome: String(state.sourceHome || ""),
+    sessionFilePath: String(state.sessionFilePath || ""),
+    activationEpoch: Number(payload.activationEpoch) || 0,
+  };
+}
+
+function applyGlobalRuntimePreferences(defaults = {}) {
+  state.runtimeOverrides.approvalPolicy = normalizeRuntimeOverrideValue("approvalPolicy", defaults.approvalPolicy);
+  state.runtimeOverrides.sandboxMode = normalizeRuntimeOverrideValue("sandboxMode", defaults.sandboxMode);
+  reconcileAccessOverridesWithRequirements();
+}
+
+function applyThreadRuntimePreferences(defaults = {}) {
+  state.runtimeOverrides.model = normalizeRuntimeOverrideValue("model", defaults.model);
+  state.runtimeOverrides.reasoningEffort = normalizeRuntimeOverrideValue("reasoningEffort", defaults.reasoningEffort);
+  if (state.runtimeOverrides.reasoningEffort) {
+    const supported = supportedReasoningOptions();
+    if (supported.length && !supported.includes(state.runtimeOverrides.reasoningEffort)) {
+      state.runtimeOverrides.reasoningEffort = selectedModel()?.defaultReasoningEffort || "";
+    }
+  }
+}
+
+async function loadRuntimePreferences(options = {}) {
+  if (!bridge?.getRuntimePreferences) return null;
+  const applyGlobal = options.applyGlobal !== false;
+  const applyThread = options.applyThread !== false && Boolean(state.threadId);
+  const guardThreadId = String(options.guardThreadId || options.threadId || "");
+  const guardSourceHome = String(options.guardSourceHome ?? "");
+  const guardSessionFilePath = String(options.guardSessionFilePath ?? "");
+  state.runtimePreferencesStatus = "loading";
+  state.runtimePreferencesError = "";
+  try {
+    const response = await bridge.getRuntimePreferences(runtimePreferencesRequest(options.threadId || state.threadId));
+    if (response?.ok !== false) {
+      if (applyGlobal) applyGlobalRuntimePreferences(response.globalDefaults || {});
+      const stillCurrentThread =
+        !guardThreadId ||
+        (state.threadId === guardThreadId &&
+          (!guardSourceHome || state.sourceHome === guardSourceHome) &&
+          (!guardSessionFilePath || state.sessionFilePath === guardSessionFilePath));
+      if (applyThread && stillCurrentThread) applyThreadRuntimePreferences(response.threadDefaults || {});
+    }
+    state.runtimePreferencesStatus = "ready";
+    renderRuntimeConstitution();
+    return response;
+  } catch (error) {
+    state.runtimePreferencesStatus = "failed";
+    state.runtimePreferencesError = String(error?.message || error || "Runtime preference load failed.");
+    console.warn("Unable to load Codex runtime preferences", error);
+    renderRuntimeConstitution();
+    return null;
+  }
+}
+
+async function persistRuntimePreferences(scope) {
+  if (!bridge?.updateRuntimePreferences) return null;
+  const request = runtimePreferencesRequest();
+  if (scope === "global-access") {
+    return bridge.updateRuntimePreferences({
+      scope,
+      approvalPolicy: state.runtimeOverrides.approvalPolicy,
+      sandboxMode: state.runtimeOverrides.sandboxMode,
+    });
+  }
+  if (scope === "thread-model") {
+    if (!request.projectId || !request.threadId) return null;
+    return bridge.updateRuntimePreferences({
+      scope,
+      ...request,
+      model: state.runtimeOverrides.model,
+      reasoningEffort: state.runtimeOverrides.reasoningEffort,
+    });
+  }
+  return null;
+}
+
 function serviceTierOptions() {
   const settingsProjection = providerSettingsProjection();
   const configured = settingsProjection.serviceTier?.availableTiers || settingsProjection.speed?.availableTiers || null;
@@ -1626,7 +1719,7 @@ function compactModelLabel() {
 }
 
 function setRuntimeOverride(name, value) {
-  state.runtimeOverrides[name] = String(value || "");
+  state.runtimeOverrides[name] = normalizeRuntimeOverrideValue(name, value);
   if (name === "model") {
     const supported = supportedReasoningOptions();
     if (state.runtimeOverrides.reasoningEffort && !supported.includes(state.runtimeOverrides.reasoningEffort)) {
@@ -1634,6 +1727,16 @@ function setRuntimeOverride(name, value) {
     }
   }
   renderRuntimeConstitution();
+  const scope = name === "approvalPolicy" || name === "sandboxMode"
+    ? "global-access"
+    : name === "model" || name === "reasoningEffort"
+      ? "thread-model"
+      : "";
+  if (scope) {
+    persistRuntimePreferences(scope).catch((error) => {
+      console.warn("Unable to persist Codex runtime preference", error);
+    });
+  }
 }
 
 function reconcileAccessOverridesWithRequirements() {
@@ -3626,6 +3729,15 @@ async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "",
   state.threadId = requestedThreadId;
   state.sourceHome = String(sourceHome || "");
   state.sessionFilePath = String(sessionFilePath || "");
+  state.activeModel = "";
+  await loadRuntimePreferences({
+    applyThread: true,
+    threadId: requestedThreadId,
+    guardThreadId: requestedThreadId,
+    guardSourceHome: state.sourceHome,
+    guardSessionFilePath: state.sessionFilePath,
+  });
+  if (openRequestId !== state.openRequestId) return;
   state.liveAttached = false;
   state.tokenUsage = null;
   state.tokenUsageStatus = "loading";
@@ -4734,6 +4846,7 @@ async function startNewThread() {
   const result = await rpc("thread/start", params);
   clearRenderedThreadState();
   bindThread(result.thread, result.model);
+  await persistRuntimePreferences("thread-model");
 }
 
 async function startCodexTurn(text, options = {}) {
@@ -5088,6 +5201,7 @@ async function connect() {
   }
   state.removeBridgeListener?.();
   state.removeBridgeListener = bridge.onEvent(handleBridgeEvent);
+  await loadRuntimePreferences({ applyThread: false });
   updateSurfaceHeader(payload.initialThreadTitle || project.name, workspaceText());
 
   if (!connection?.wsUrl) {
