@@ -34,6 +34,12 @@ const {
   buildDirectFixtureCapabilities,
 } = require("./main/direct/controller/fixture-controller");
 const {
+  DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
+  DirectLiveTextController,
+  DirectLiveTextSurfaceSession,
+  buildDirectLiveTextCapabilities,
+} = require("./main/direct/controller/live-text-controller");
+const {
   buildDirectRuntimeStatus,
   directRuntimeLaneLabel,
   normalizeCodexBindingProvider,
@@ -158,6 +164,7 @@ let directAuthLoginCoordinator = null;
 let directCodexProfileDoc = null;
 let directSessionStore = null;
 let directFixtureController = null;
+let directLiveTextController = null;
 let surfaceActivationEpoch = 0;
 const nativePlaneZoomFactors = {
   codex: PLANE_ZOOM_DEFAULT,
@@ -292,6 +299,7 @@ function defaultConfig() {
             mode: "managed",
             bindingProvider: "codex-compatible",
             runtimeMode: "legacy-app-server",
+            directTransport: "fixture",
             runtime: defaultCodexRuntimeForWorkspace(defaultWorkspace),
             profileId: "",
             target: "",
@@ -363,6 +371,11 @@ function normalizeCodexMode(value) {
 function normalizeCodexRuntime(value) {
   const candidate = normalizeString(value, "auto").toLowerCase();
   return ["auto", "host", "wsl"].includes(candidate) ? candidate : "auto";
+}
+
+function normalizeDirectExperimentalTransport(value) {
+  const candidate = normalizeString(value, "fixture").toLowerCase();
+  return ["fixture", "live-text"].includes(candidate) ? candidate : "fixture";
 }
 
 function normalizeRemoteAuthConfig(value) {
@@ -1079,6 +1092,7 @@ function normalizeProject(input, index = 0) {
   const rawFlow = isPlainObject(raw.flowProfile) ? raw.flowProfile : {};
   const codexMode = normalizeCodexMode(rawCodex.mode);
   const codexRuntimeMode = normalizeDirectRuntimeModeForStatus(rawCodex.runtimeMode);
+  const directTransport = normalizeDirectExperimentalTransport(rawCodex.directTransport);
   const patterns = Array.isArray(rawFlow.watchedFilePatterns)
     ? rawFlow.watchedFilePatterns.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim())
     : fallback.flowProfile.watchedFilePatterns;
@@ -1122,6 +1136,7 @@ function normalizeProject(input, index = 0) {
           codexRuntimeMode === "legacy-app-server" ? "codex-compatible" : "direct-chatgpt-codex",
         ),
         runtimeMode: codexRuntimeMode,
+        directTransport,
         runtime: normalizeCodexRuntime(normalizeString(rawCodex.runtime, defaultCodexRuntimeForWorkspace(workspace))),
         profileId: normalizeString(rawCodex.profileId, ""),
         target: normalizeString(rawCodex.target, codexMode === "url" ? "http://127.0.0.1:3000" : ""),
@@ -1595,6 +1610,17 @@ function ensureDirectFixtureController() {
   return directFixtureController;
 }
 
+function ensureDirectLiveTextController() {
+  if (directLiveTextController) return directLiveTextController;
+  directLiveTextController = new DirectLiveTextController({
+    sessionStore: ensureDirectSessionStore(),
+    profileDoc: ensureDirectCodexProfileDoc(),
+    authStore: ensureDirectAuthController().activeStore(),
+    refreshCredentials: () => ensureDirectAuthLoginCoordinator().refreshCredentials(ensureDirectAuthController()),
+  });
+  return directLiveTextController;
+}
+
 function currentLegacyAppServerSnapshot() {
   return codexAppServer?.snapshot?.() || null;
 }
@@ -1610,6 +1636,7 @@ function buildDirectRuntimeStatusForProject(project, options = {}) {
     profileDoc,
     sessionStore: ensureDirectSessionStore().status(),
     fixtureRuntime: { available: true, capabilities: buildDirectFixtureCapabilities() },
+    liveTextRuntime: { available: true, status: ensureDirectLiveTextController().statusForProject(project), capabilities: buildDirectLiveTextCapabilities() },
     legacySession: currentLegacyAppServerSnapshot(),
   });
 }
@@ -1673,15 +1700,23 @@ function isCodexSurfaceSender(sender) {
 }
 
 function codexSurfaceSessionKindForConnection(connection = {}) {
-  return normalizeString(connection?.transport, "") === DIRECT_FIXTURE_SURFACE_TRANSPORT
-    ? DIRECT_FIXTURE_SURFACE_TRANSPORT
-    : "codex-app-server";
+  const transport = normalizeString(connection?.transport, "");
+  if (transport === DIRECT_FIXTURE_SURFACE_TRANSPORT) return DIRECT_FIXTURE_SURFACE_TRANSPORT;
+  if (transport === DIRECT_LIVE_TEXT_SURFACE_TRANSPORT) return DIRECT_LIVE_TEXT_SURFACE_TRANSPORT;
+  return "codex-app-server";
 }
 
 function createCodexSurfaceSession(sender, connection = {}) {
-  if (codexSurfaceSessionKindForConnection(connection) === DIRECT_FIXTURE_SURFACE_TRANSPORT) {
+  const kind = codexSurfaceSessionKindForConnection(connection);
+  if (kind === DIRECT_FIXTURE_SURFACE_TRANSPORT) {
     return new DirectFixtureSurfaceSession(sender, {
       controller: ensureDirectFixtureController(),
+      project: currentProject,
+    });
+  }
+  if (kind === DIRECT_LIVE_TEXT_SURFACE_TRANSPORT) {
+    return new DirectLiveTextSurfaceSession(sender, {
+      controller: ensureDirectLiveTextController(),
       project: currentProject,
     });
   }
@@ -1921,14 +1956,22 @@ async function loadCodexSurface(project, options = {}) {
   if (runtimeMode !== "legacy-app-server") {
     await disposeCodexAppServerManager();
     const runtimeStatus = buildDirectRuntimeStatusForProject(project);
+    const directTransport = normalizeDirectExperimentalTransport(codex.directTransport);
+    const isLiveText = directTransport === "live-text";
+    const liveTextStatus = isLiveText ? ensureDirectLiveTextController().statusForProject(project) : null;
+    const transport = isLiveText ? DIRECT_LIVE_TEXT_SURFACE_TRANSPORT : DIRECT_FIXTURE_SURFACE_TRANSPORT;
+    const capabilities = isLiveText
+      ? buildDirectLiveTextCapabilities(liveTextStatus)
+      : buildDirectFixtureCapabilities();
     const directConnection = {
       projectId: project.id,
-      transport: DIRECT_FIXTURE_SURFACE_TRANSPORT,
-      runtime: DIRECT_FIXTURE_SURFACE_TRANSPORT,
+      transport,
+      runtime: transport,
       workspaceRoot: workspaceRoot(project),
-      capabilities: buildDirectFixtureCapabilities(),
+      capabilities,
       activationEpoch: Number(options.activationEpoch) || 0,
-      fixture: {
+      directLiveText: liveTextStatus || null,
+      fixture: isLiveText ? null : {
         id: "plain-text-turn",
         source: "normalized-fixture",
       },
@@ -1939,7 +1982,9 @@ async function loadCodexSurface(project, options = {}) {
       activationEpoch: Number(options.activationEpoch) || 0,
       error: [
         `Direct runtime selected: ${runtimeStatus.runtimeModeLabel}.`,
-        "Fixture-only direct controller is enabled; live direct backend turns are not runnable yet.",
+        isLiveText
+          ? `Live text direct controller selected: ${liveTextStatus?.status || "unknown"}.`
+          : "Fixture-only direct controller is enabled; live direct backend turns are not runnable yet.",
         `Model source: ${runtimeStatus.models.source}.`,
       ].join(" "),
     });
@@ -3507,6 +3552,7 @@ async function createWindow() {
     threadAnalyticsStore?.close();
     threadAnalyticsStore = null;
     directFixtureController = null;
+    directLiveTextController = null;
     directSessionStore = null;
     middleWebHost?.dispose();
     middleWebHost = null;
@@ -3614,14 +3660,14 @@ ipcMain.handle("codex-surface:connect", async (event, payload) => {
     (
       String(activeCodexSurfaceConnection.wsUrl || "") === String(requestedConnection.wsUrl || "") ||
       (
-        normalizeString(activeCodexSurfaceConnection.transport, "") === DIRECT_FIXTURE_SURFACE_TRANSPORT &&
-        normalizeString(requestedConnection.transport, "") === DIRECT_FIXTURE_SURFACE_TRANSPORT
+        [DIRECT_FIXTURE_SURFACE_TRANSPORT, DIRECT_LIVE_TEXT_SURFACE_TRANSPORT].includes(normalizeString(activeCodexSurfaceConnection.transport, "")) &&
+        normalizeString(activeCodexSurfaceConnection.transport, "") === normalizeString(requestedConnection.transport, "")
       )
     )
       ? { ...requestedConnection, remoteAuth: activeCodexSurfaceConnection.remoteAuth || { mode: "none" } }
       : requestedConnection;
   const session = codexSurfaceSessionFor(event.sender, { connection });
-  const connectionWithProviders = session.transportKind === DIRECT_FIXTURE_SURFACE_TRANSPORT
+  const connectionWithProviders = [DIRECT_FIXTURE_SURFACE_TRANSPORT, DIRECT_LIVE_TEXT_SURFACE_TRANSPORT].includes(session.transportKind)
     ? connection
     : {
         ...connection,
@@ -3966,6 +4012,7 @@ app.on("before-quit", () => {
   threadAnalyticsStore = null;
   directAuthLoginCoordinator = null;
   directFixtureController = null;
+  directLiveTextController = null;
   directSessionStore = null;
 });
 

@@ -29,9 +29,11 @@ function normalizeCodexBinding(raw = {}) {
   const runtimeMode = normalizeCodexRuntimeMode(binding.runtimeMode);
   const defaultProvider = runtimeMode === "legacy-app-server" ? "codex-compatible" : "direct-chatgpt-codex";
   const rawProvider = binding.bindingProvider || (typeof binding.provider === "string" ? binding.provider : "");
+  const directTransport = normalizeString(binding.directTransport, "fixture").toLowerCase() === "live-text" ? "live-text" : "fixture";
   return {
     provider: normalizeCodexBindingProvider(rawProvider, defaultProvider),
     runtimeMode,
+    directTransport,
     target: normalizeString(binding.target, ""),
     profileId: normalizeString(binding.profileId, ""),
   };
@@ -46,6 +48,7 @@ function directRuntimeModeLabel(runtimeMode) {
 function directRuntimeLaneLabel(codex = {}) {
   const binding = normalizeCodexBinding(codex);
   if (binding.runtimeMode === "direct") return "direct runtime";
+  if (binding.runtimeMode === "direct-experimental" && binding.directTransport === "live-text") return "direct live text experimental";
   if (binding.runtimeMode === "direct-experimental") return "direct experimental scaffold";
   return codex.mode === "managed" ? "legacy app-server bridge" : codex.mode || "legacy app-server";
 }
@@ -99,13 +102,19 @@ function buildDirectRuntimeStatus(options = {}) {
   const legacySession = isPlainObject(options.legacySession) ? options.legacySession : null;
   const sessionStore = isPlainObject(options.sessionStore) ? options.sessionStore : null;
   const fixtureRuntime = isPlainObject(options.fixtureRuntime) ? options.fixtureRuntime : null;
+  const liveTextRuntime = isPlainObject(options.liveTextRuntime) ? options.liveTextRuntime : null;
   const modelEntries = modelEntriesFromProfile(profileDoc);
   const directModeSelected = binding.runtimeMode !== "legacy-app-server";
-  const fixtureRuntimeAvailable = directModeSelected && Boolean(fixtureRuntime?.available);
+  const liveTextSelected = directModeSelected && binding.directTransport === "live-text";
+  const fixtureRuntimeAvailable = directModeSelected && !liveTextSelected && Boolean(fixtureRuntime?.available);
+  const liveTextRuntimeAvailable = liveTextSelected && Boolean(liveTextRuntime?.available);
+  const liveTextStatus = isPlainObject(liveTextRuntime?.status) ? liveTextRuntime.status : {};
   const directTurnBlockedReason =
     binding.runtimeMode === "direct"
       ? "direct_runtime_validation_gates_not_passed"
-      : "direct_session_engine_not_implemented";
+      : liveTextSelected
+        ? normalizeString(liveTextStatus.reason, "direct_live_text_not_ready")
+        : "direct_session_engine_not_implemented";
 
   return {
     schema: DIRECT_RUNTIME_STATUS_SCHEMA,
@@ -114,8 +123,9 @@ function buildDirectRuntimeStatus(options = {}) {
     runtimeMode: binding.runtimeMode,
     runtimeModeLabel: directRuntimeModeLabel(binding.runtimeMode),
     provider: binding.provider,
+    directTransport: binding.directTransport,
     currentCodexLane: directRuntimeLaneLabel(codex),
-    status: directModeSelected ? "degraded" : "legacy-app-server",
+    status: liveTextRuntimeAvailable && liveTextStatus.status === "ready" ? "ready" : directModeSelected ? "degraded" : "legacy-app-server",
     generatedAt,
     auth: {
       source: "direct-auth-store",
@@ -131,10 +141,10 @@ function buildDirectRuntimeStatus(options = {}) {
     },
     directRuntime: {
       selected: directModeSelected,
-      status: directModeSelected ? "not_runnable" : "not_selected",
-      ready: false,
-      panelAttachStatus: fixtureRuntimeAvailable ? "fixture_controller" : directModeSelected ? "fixture_status_only" : "legacy_app_server_bridge",
-      turnRunnable: false,
+      status: liveTextRuntimeAvailable ? normalizeString(liveTextStatus.status, "unavailable") : directModeSelected ? "not_runnable" : "not_selected",
+      ready: liveTextRuntimeAvailable && liveTextStatus.status === "ready",
+      panelAttachStatus: liveTextRuntimeAvailable ? "live_text_controller" : fixtureRuntimeAvailable ? "fixture_controller" : directModeSelected ? "fixture_status_only" : "legacy_app_server_bridge",
+      turnRunnable: liveTextRuntimeAvailable && liveTextStatus.turnRunnable === true,
       reason: directModeSelected ? directTurnBlockedReason : "legacy_app_server_mode_active",
     },
     fixtureRuntime: {
@@ -144,16 +154,28 @@ function buildDirectRuntimeStatus(options = {}) {
       liveBackend: false,
       rawBackendFramesExposed: false,
     },
+    liveTextRuntime: {
+      available: liveTextRuntimeAvailable,
+      status: normalizeString(liveTextStatus.status, "unavailable"),
+      turnRunnable: liveTextRuntimeAvailable && liveTextStatus.turnRunnable === true,
+      modelSource: normalizeString(liveTextStatus.modelSource, "static-baseline"),
+      modelEvidenceState: normalizeString(liveTextStatus.modelEvidenceState, "unknown"),
+      transport: "direct-live-text",
+      appServerRequired: false,
+      toolsEnabled: false,
+      reason: normalizeString(liveTextStatus.reason, ""),
+      rawBackendFramesExposed: false,
+    },
     transport: {
       kind: "sse",
       endpoint: "chatgpt-codex-responses",
       liveProbed: false,
-      runnable: false,
+      runnable: liveTextRuntimeAvailable && liveTextStatus.turnRunnable === true,
     },
     textProbe: {
       available: directModeSelected,
       liveBackend: true,
-      runnable: false,
+      runnable: liveTextRuntimeAvailable && liveTextStatus.turnRunnable === true,
       manualOnly: true,
       lastTerminalState: terminalTurnState(sessionStore?.lastTurnState),
       activeTurnCount: Number(sessionStore?.activeTurnCount || 0),

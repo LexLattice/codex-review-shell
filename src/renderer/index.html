@@ -523,13 +523,24 @@
 
         <div class="form-grid">
           <label>
-            Codex binary / command
-            <input id="codexBinaryPathInput" autocomplete="off" placeholder="codex" />
+            Direct transport
+            <select id="codexDirectTransportInput">
+              <option value="fixture">Fixture</option>
+              <option value="live-text">Live text</option>
+            </select>
           </label>
           <label>
             Direct profile <span class="muted">optional</span>
             <input id="codexProfileIdInput" autocomplete="off" placeholder="accepted ODEU profile id" />
           </label>
+        </div>
+
+        <div class="form-grid">
+          <label>
+            Codex binary / command
+            <input id="codexBinaryPathInput" autocomplete="off" placeholder="codex" />
+          </label>
+          <span></span>
         </div>
 
         <div class="form-grid">

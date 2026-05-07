@@ -258,6 +258,7 @@ const els = {
   codexProviderFlavorInput: document.getElementById("codexProviderFlavorInput"),
   codexRuntimeInput: document.getElementById("codexRuntimeInput"),
   codexRuntimeModeInput: document.getElementById("codexRuntimeModeInput"),
+  codexDirectTransportInput: document.getElementById("codexDirectTransportInput"),
   codexBinaryPathInput: document.getElementById("codexBinaryPathInput"),
   codexProfileIdInput: document.getElementById("codexProfileIdInput"),
   codexModelInput: document.getElementById("codexModelInput"),
@@ -3445,6 +3446,7 @@ function openDrawer(mode) {
         mode: "managed",
         bindingProvider: "codex-compatible",
         runtimeMode: "legacy-app-server",
+        directTransport: "fixture",
         provider: {
           kind: "codex_executable",
           flavor: "vanilla",
@@ -3503,6 +3505,7 @@ function openDrawer(mode) {
   els.codexModeInput.value = draft.surfaceBinding.codex.mode;
   els.codexLabelInput.value = draft.surfaceBinding.codex.label;
   els.codexRuntimeModeInput.value = draft.surfaceBinding.codex.runtimeMode || "legacy-app-server";
+  els.codexDirectTransportInput.value = draft.surfaceBinding.codex.directTransport || "fixture";
   els.codexProviderKindInput.value = draft.surfaceBinding.codex.provider?.kind || draft.surfaceBinding.codex.providerKind || "codex_executable";
   els.codexProviderFlavorInput.value = draft.surfaceBinding.codex.provider?.flavor || draft.surfaceBinding.codex.providerFlavor || "vanilla";
   els.codexRuntimeInput.value = draft.surfaceBinding.codex.runtime || "auto";
@@ -3592,6 +3595,7 @@ function projectFromForm() {
         mode: els.codexModeInput.value,
         bindingProvider: els.codexRuntimeModeInput.value === "legacy-app-server" ? "codex-compatible" : "direct-chatgpt-codex",
         runtimeMode: els.codexRuntimeModeInput.value,
+        directTransport: els.codexDirectTransportInput.value || "fixture",
         provider: {
           kind: els.codexProviderKindInput.value || "codex_executable",
           flavor: els.codexProviderFlavorInput.value || "vanilla",
