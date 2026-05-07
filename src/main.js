@@ -9,12 +9,14 @@ const {
   clipboard,
   nativeTheme,
 } = require("electron");
+const fsSync = require("node:fs");
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { CodexAppServerManager } = require("./main/codex-app-server");
 const { LocalSurfaceServer } = require("./main/local-surface-server");
 const { CodexSurfaceSession } = require("./main/codex-surface-session");
+const { MiddleWebHost } = require("./main/middle-web-host");
 const { WorkspaceBackendManager, workspaceLabel, workspaceRoot } = require("./main/workspace-backend");
 const { ThreadAnalyticsStore, buildThreadKey } = require("./main/thread-analytics-store");
 const {
@@ -37,6 +39,7 @@ const {
   normalizeCodexBindingProvider,
   normalizeCodexRuntimeMode: normalizeDirectRuntimeModeForStatus,
 } = require("./main/direct/runtime/runtime-status");
+const { PLANE_ZOOM_DEFAULT, clampZoomFactor, zoomDeltaForDirection } = require("./shared/plane-zoom");
 
 const APP_TITLE = "Codex Review Shell";
 const CONFIG_FILE_NAME = "workspace-config.json";
@@ -53,6 +56,7 @@ const CODEX_PARTITION = "persist:codex-review-shell-codex";
 const CHATGPT_PARTITION = "persist:codex-review-shell-chatgpt";
 const PREVIEW_LIMIT_BYTES = 384 * 1024;
 const DIRECTORY_ENTRY_LIMIT = 500;
+const CODEX_THREAD_RUNTIME_PREF_MAX_ENTRIES = 500;
 const PROFILE_ENV_VAR = "CODEX_REVIEW_SHELL_PROFILE";
 const USER_DATA_ROOT_ENV_VAR = "CODEX_REVIEW_SHELL_USER_DATA_ROOT";
 
@@ -69,6 +73,25 @@ function earlyNormalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
+function existingFileMtimeMs(targetPath) {
+  try {
+    return fsSync.statSync(targetPath).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+function uniquePaths(values) {
+  const seen = new Set();
+  return values.filter((value) => {
+    const normalized = path.resolve(value);
+    const key = process.platform === "win32" ? normalized.toLowerCase() : normalized;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function normalizeProfileName(value) {
   const text = earlyNormalizeString(value, "");
   if (!text || text === "default") return "";
@@ -79,10 +102,24 @@ function configureAppProfile() {
   app.setName(APP_TITLE);
   const profileName = normalizeProfileName(process.env[PROFILE_ENV_VAR]);
   if (!profileName) {
+    const appDataPath = app.getPath("appData");
+    const canonicalUserDataPath = path.join(appDataPath, APP_TITLE);
+    const legacyUserDataPath = path.join(appDataPath, "codex-review-shell");
+    const candidates = uniquePaths([canonicalUserDataPath, legacyUserDataPath, app.getPath("userData")]);
+    let selectedPath = canonicalUserDataPath;
+    let selectedMtime = 0;
+    for (const candidate of candidates) {
+      const mtime = existingFileMtimeMs(path.join(candidate, CONFIG_FILE_NAME));
+      if (mtime > selectedMtime) {
+        selectedPath = candidate;
+        selectedMtime = mtime;
+      }
+    }
+    app.setPath("userData", selectedPath);
     return {
       profileName: "default",
       isolated: false,
-      userData: app.getPath("userData"),
+      userData: selectedPath,
     };
   }
   const configuredRoot = earlyNormalizeString(process.env[USER_DATA_ROOT_ENV_VAR], "");
@@ -102,6 +139,7 @@ let mainWindow = null;
 let shellView = null;
 let codexView = null;
 let chatgptView = null;
+let middleWebHost = null;
 let lastSurfaceBounds = null;
 let surfacesVisible = true;
 let configCache = null;
@@ -121,6 +159,13 @@ let directCodexProfileDoc = null;
 let directSessionStore = null;
 let directFixtureController = null;
 let surfaceActivationEpoch = 0;
+const nativePlaneZoomFactors = {
+  codex: PLANE_ZOOM_DEFAULT,
+  chatgpt: PLANE_ZOOM_DEFAULT,
+};
+const lastSuccessfulCodexThreadByProject = new Map();
+const latestCodexOpenTargetByProject = new Map();
+const latestCodexThreadFailureByProject = new Map();
 
 function nowIso() {
   return new Date().toISOString();
@@ -229,6 +274,13 @@ function defaultConfig() {
       leftRatio: 0.34,
       middleRatio: 0.3,
     },
+    runtimeDefaults: {
+      codex: {
+        approvalPolicy: "",
+        sandboxMode: "",
+      },
+    },
+    codexThreadRuntimeDefaults: {},
     projects: [
       {
         id: defaultProjectId,
@@ -238,7 +290,7 @@ function defaultConfig() {
         surfaceBinding: {
           codex: {
             mode: "managed",
-            provider: "codex-compatible",
+            bindingProvider: "codex-compatible",
             runtimeMode: "legacy-app-server",
             runtime: defaultCodexRuntimeForWorkspace(defaultWorkspace),
             profileId: "",
@@ -247,6 +299,10 @@ function defaultConfig() {
             model: "",
             reasoningEffort: "",
             label: "Managed Codex lane",
+            provider: {
+              kind: "codex_executable",
+              flavor: "vanilla",
+            },
             remoteAuth: {
               mode: "none",
               tokenFilePath: "",
@@ -327,7 +383,140 @@ function normalizeRemoteAuthConfig(value) {
 
 function normalizeReasoningEffort(value) {
   const candidate = normalizeString(value, "").toLowerCase();
-  return ["low", "medium", "high", "xhigh"].includes(candidate) ? candidate : "";
+  return ["none", "minimal", "low", "medium", "high", "xhigh"].includes(candidate) ? candidate : "";
+}
+
+function normalizeApprovalPolicy(value) {
+  const candidate = normalizeString(value, "").toLowerCase();
+  return ["untrusted", "on-failure", "on-request", "never"].includes(candidate) ? candidate : "";
+}
+
+function normalizeSandboxMode(value) {
+  const candidate = normalizeString(value, "").toLowerCase();
+  return ["read-only", "workspace-write", "danger-full-access"].includes(candidate) ? candidate : "";
+}
+
+function normalizeRuntimeDefaults(value) {
+  const raw = isPlainObject(value) ? value : {};
+  const rawCodex = isPlainObject(raw.codex) ? raw.codex : {};
+  return {
+    codex: {
+      approvalPolicy: normalizeApprovalPolicy(rawCodex.approvalPolicy),
+      sandboxMode: normalizeSandboxMode(rawCodex.sandboxMode),
+    },
+  };
+}
+
+function codexThreadRuntimePreferenceKey(parts = {}) {
+  const values = [
+    normalizeString(parts.projectId, ""),
+    normalizeString(parts.threadId, ""),
+    normalizeString(parts.sourceHome, ""),
+    normalizeString(parts.sessionFilePath, ""),
+  ];
+  if (!values[0] || !values[1]) return "";
+  return values.map((value) => Buffer.from(value, "utf8").toString("base64url")).join(".");
+}
+
+function codexThreadRuntimePreferenceMatchScore(entry = {}, parts = {}) {
+  let score = 0;
+  const requestedSourceHome = normalizeString(parts.sourceHome, "");
+  const requestedSessionFilePath = normalizeString(parts.sessionFilePath, "");
+  if (requestedSourceHome && normalizeString(entry.sourceHome, "") === requestedSourceHome) score += 2;
+  if (requestedSessionFilePath && normalizeString(entry.sessionFilePath, "") === requestedSessionFilePath) score += 2;
+  if (!requestedSourceHome && !normalizeString(entry.sourceHome, "")) score += 1;
+  if (!requestedSessionFilePath && !normalizeString(entry.sessionFilePath, "")) score += 1;
+  return score;
+}
+
+function findCodexThreadRuntimePreference(threadDefaults, parts = {}) {
+  const defaults = isPlainObject(threadDefaults) ? threadDefaults : {};
+  const threadKey = codexThreadRuntimePreferenceKey(parts);
+  if (threadKey && defaults[threadKey]) {
+    return { key: threadKey, value: defaults[threadKey], match: "exact" };
+  }
+
+  const projectId = normalizeString(parts.projectId, "");
+  const threadId = normalizeString(parts.threadId, "");
+  if (!projectId || !threadId) return { key: threadKey, value: null, match: "none" };
+
+  const matches = Object.entries(defaults)
+    .filter(([, entry]) => {
+      return (
+        normalizeString(entry?.projectId, "") === projectId &&
+        normalizeString(entry?.threadId, "") === threadId
+      );
+    })
+    .map(([key, entry]) => ({
+      key,
+      entry,
+      score: codexThreadRuntimePreferenceMatchScore(entry, parts),
+      updatedAt: normalizeString(entry?.updatedAt, ""),
+    }))
+    .sort((left, right) => {
+      if (right.score !== left.score) return right.score - left.score;
+      return String(right.updatedAt || "").localeCompare(String(left.updatedAt || ""));
+    });
+
+  const match = matches[0];
+  return match
+    ? { key: match.key, value: match.entry, match: "thread" }
+    : { key: threadKey, value: null, match: "none" };
+}
+
+function normalizeCodexThreadRuntimeDefaults(value) {
+  if (!isPlainObject(value)) return {};
+  const entries = [];
+  for (const rawEntry of Object.values(value)) {
+    const entry = isPlainObject(rawEntry) ? rawEntry : {};
+    const projectId = normalizeString(entry.projectId, "");
+    const threadId = normalizeString(entry.threadId, "");
+    if (!projectId || !threadId) continue;
+    const sourceHome = normalizeString(entry.sourceHome, "");
+    const sessionFilePath = normalizeString(entry.sessionFilePath, "");
+    const key = codexThreadRuntimePreferenceKey({ projectId, threadId, sourceHome, sessionFilePath });
+    if (!key) continue;
+    const model = normalizeString(entry.model, "");
+    const reasoningEffort = normalizeReasoningEffort(entry.reasoningEffort);
+    if (!model && !reasoningEffort) continue;
+    entries.push({
+      key,
+      value: {
+        projectId,
+        threadId,
+        sourceHome,
+        sessionFilePath,
+        model,
+        reasoningEffort,
+        updatedAt: normalizeString(entry.updatedAt, nowIso()),
+      },
+    });
+  }
+  entries.sort((left, right) => String(right.value.updatedAt || "").localeCompare(String(left.value.updatedAt || "")));
+  const normalized = {};
+  for (const entry of entries.slice(0, CODEX_THREAD_RUNTIME_PREF_MAX_ENTRIES)) normalized[entry.key] = entry.value;
+  return normalized;
+}
+
+function normalizeCodexProviderConfig(value) {
+  const raw = isPlainObject(value) ? value : {};
+  const kindCandidate = normalizeString(raw.kind || raw.providerKind || raw.connectionPath, "codex_executable");
+  const kind = ["codex_executable", "direct_oai"].includes(kindCandidate) ? kindCandidate : "codex_executable";
+  const flavorCandidate = normalizeString(
+    isPlainObject(raw.flavor) ? raw.flavor.configuredFlavor : raw.flavor || raw.configuredFlavor || raw.providerFlavor,
+    kind === "codex_executable" ? "vanilla" : "",
+  );
+  const flavor = ["vanilla", "lex_fork", "unknown_custom"].includes(flavorCandidate)
+    ? flavorCandidate
+    : kind === "codex_executable"
+      ? "vanilla"
+      : "";
+  return {
+    kind,
+    flavor,
+    selectedBy: normalizeString(raw.selectedBy, "project_config"),
+    configuredAt: normalizeString(raw.configuredAt, ""),
+  };
 }
 
 function safeRecentThreadLimit(limit = 40) {
@@ -928,8 +1117,8 @@ function normalizeProject(input, index = 0) {
     surfaceBinding: {
       codex: {
         mode: codexMode,
-        provider: normalizeCodexBindingProvider(
-          rawCodex.provider,
+        bindingProvider: normalizeCodexBindingProvider(
+          rawCodex.bindingProvider || (typeof rawCodex.provider === "string" ? rawCodex.provider : ""),
           codexRuntimeMode === "legacy-app-server" ? "codex-compatible" : "direct-chatgpt-codex",
         ),
         runtimeMode: codexRuntimeMode,
@@ -940,6 +1129,12 @@ function normalizeProject(input, index = 0) {
         model: normalizeString(rawCodex.model, ""),
         reasoningEffort: normalizeReasoningEffort(rawCodex.reasoningEffort),
         label: normalizeString(rawCodex.label, codexMode === "managed" ? "Managed Codex lane" : "Codex target"),
+        provider: normalizeCodexProviderConfig((isPlainObject(rawCodex.provider) ? rawCodex.provider : null) || {
+          kind: rawCodex.providerKind,
+          flavor: rawCodex.providerFlavor,
+          configuredFlavor: rawCodex.configuredFlavor,
+          connectionPath: rawCodex.connectionPath,
+        }),
         remoteAuth: normalizeRemoteAuthConfig(rawCodex.remoteAuth),
       },
       chatgpt: {
@@ -992,6 +1187,8 @@ function normalizeConfig(input) {
     version: 5,
     selectedProjectId,
     ui: migrateUi(raw.ui),
+    runtimeDefaults: normalizeRuntimeDefaults(raw.runtimeDefaults),
+    codexThreadRuntimeDefaults: normalizeCodexThreadRuntimeDefaults(raw.codexThreadRuntimeDefaults),
     projects: dedupedProjects,
   };
 }
@@ -1025,6 +1222,76 @@ async function saveConfig(nextConfig) {
   configCache = normalized;
   await writeTextAtomic(configPath(), `${JSON.stringify(normalized, null, 2)}\n`);
   return normalized;
+}
+
+function codexRuntimePreferenceLookup(config, payload = {}) {
+  const normalizedConfig = config || {};
+  const runtimeDefaults = normalizeRuntimeDefaults(normalizedConfig.runtimeDefaults);
+  const threadDefaults = normalizeCodexThreadRuntimeDefaults(normalizedConfig.codexThreadRuntimeDefaults);
+  const parts = {
+    projectId: normalizeString(payload.projectId, ""),
+    threadId: normalizeString(payload.threadId, ""),
+    sourceHome: normalizeString(payload.sourceHome, ""),
+    sessionFilePath: normalizeString(payload.sessionFilePath, ""),
+  };
+  const threadKey = codexThreadRuntimePreferenceKey(parts);
+  const threadMatch = findCodexThreadRuntimePreference(threadDefaults, parts);
+  return {
+    globalDefaults: runtimeDefaults.codex,
+    threadDefaults: threadMatch.value,
+    threadKey,
+    resolvedThreadKey: threadMatch.key || "",
+    threadMatch: threadMatch.match,
+  };
+}
+
+async function updateCodexRuntimePreferences(payload = {}) {
+  const scope = normalizeString(payload.scope, "");
+  const config = await loadConfig();
+  const runtimeDefaults = normalizeRuntimeDefaults(config.runtimeDefaults);
+  const codexThreadRuntimeDefaults = normalizeCodexThreadRuntimeDefaults(config.codexThreadRuntimeDefaults);
+
+  if (scope === "global-access") {
+    runtimeDefaults.codex = {
+      approvalPolicy: normalizeApprovalPolicy(payload.approvalPolicy),
+      sandboxMode: normalizeSandboxMode(payload.sandboxMode),
+    };
+  } else if (scope === "thread-model") {
+    const projectId = normalizeString(payload.projectId, "");
+    const threadId = normalizeString(payload.threadId, "");
+    const sourceHome = normalizeString(payload.sourceHome, "");
+    const sessionFilePath = normalizeString(payload.sessionFilePath, "");
+    const threadKey = codexThreadRuntimePreferenceKey({ projectId, threadId, sourceHome, sessionFilePath });
+    if (!threadKey) throw new Error("Missing project/thread identity for Codex runtime preferences.");
+    const model = normalizeString(payload.model, "");
+    const reasoningEffort = normalizeReasoningEffort(payload.reasoningEffort);
+    if (model || reasoningEffort) {
+      codexThreadRuntimeDefaults[threadKey] = {
+        projectId,
+        threadId,
+        sourceHome,
+        sessionFilePath,
+        model,
+        reasoningEffort,
+        updatedAt: nowIso(),
+      };
+    } else {
+      delete codexThreadRuntimeDefaults[threadKey];
+    }
+  } else {
+    throw new Error(`Unsupported Codex runtime preference scope: ${scope || "missing"}.`);
+  }
+
+  const saved = await saveConfig({
+    ...config,
+    runtimeDefaults,
+    codexThreadRuntimeDefaults,
+  });
+  emitShellEvent({ type: "config-updated", reason: "codex-runtime-preferences", config: saved, at: nowIso() });
+  return {
+    ok: true,
+    preferences: codexRuntimePreferenceLookup(saved, payload),
+  };
 }
 
 async function loadChatgptThreadCache() {
@@ -1085,10 +1352,12 @@ function applySurfaceBounds() {
   if (!surfacesVisible || !lastSurfaceBounds) {
     codexView.setBounds(offscreenBounds());
     chatgptView.setBounds(offscreenBounds());
+    middleWebHost?.setNativeSurfacesVisible(false);
     return;
   }
   codexView.setBounds(sanitizeBounds(lastSurfaceBounds.codex));
   chatgptView.setBounds(sanitizeBounds(lastSurfaceBounds.chatgpt));
+  middleWebHost?.setNativeSurfacesVisible(true);
 }
 
 function emitToShell(channel, payload) {
@@ -1100,6 +1369,41 @@ function emitShellEvent(payload) {
   emitToShell("shell:event", payload);
 }
 
+function ensureMiddleWebHost() {
+  if (!middleWebHost) middleWebHost = new MiddleWebHost({ emitShellEvent });
+  return middleWebHost;
+}
+
+function viewForZoomPlane(plane) {
+  if (plane === "codex") return codexView;
+  if (plane === "chatgpt") return chatgptView;
+  return null;
+}
+
+function setNativePlaneZoom(plane, factor) {
+  const normalizedPlane = plane === "chatgpt" ? "chatgpt" : "codex";
+  const zoomFactor = clampZoomFactor(factor);
+  nativePlaneZoomFactors[normalizedPlane] = zoomFactor;
+  const view = viewForZoomPlane(normalizedPlane);
+  if (view?.webContents && !view.webContents.isDestroyed()) view.webContents.setZoomFactor(zoomFactor);
+  emitShellEvent({
+    type: "plane-zoom-state",
+    plane: normalizedPlane,
+    zoomFactor,
+    at: nowIso(),
+  });
+  return { ok: true, plane: normalizedPlane, zoomFactor };
+}
+
+function adjustPlaneZoom(plane, direction) {
+  if (plane === "middle") return ensureMiddleWebHost().adjustZoom(direction);
+  const normalizedPlane = plane === "chatgpt" ? "chatgpt" : "codex";
+  return setNativePlaneZoom(
+    normalizedPlane,
+    nativePlaneZoomFactors[normalizedPlane] + zoomDeltaForDirection(direction),
+  );
+}
+
 function nextSurfaceActivationEpoch() {
   surfaceActivationEpoch += 1;
   return surfaceActivationEpoch;
@@ -1107,6 +1411,115 @@ function nextSurfaceActivationEpoch() {
 
 function isStaleSurfaceActivationEpoch(epoch) {
   return Number.isFinite(Number(epoch)) && Number(epoch) > 0 && Number(epoch) !== surfaceActivationEpoch;
+}
+
+const CODEX_THREAD_RESTORE_SUCCESS_STATUSES = new Set(["rendered_stored", "attached_live"]);
+const CODEX_THREAD_RESTORE_IN_FLIGHT_STATUSES = new Set(["requested", "dispatched", "hint", "binding"]);
+
+function codexRestoreTargetTime(target) {
+  const parsed = Date.parse(target?.observedAt || target?.at || "");
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normalizeCodexThreadRestoreTarget(payload = {}, fallback = {}) {
+  const status = normalizeString(payload.status || fallback.status, "hint");
+  const projectId = normalizeString(payload.projectId || fallback.projectId, "");
+  const threadId = normalizeString(payload.threadId || fallback.threadId, "");
+  const sourceHome = normalizeString(payload.sourceHome ?? fallback.sourceHome, "");
+  const sessionFilePath = normalizeString(payload.sessionFilePath ?? fallback.sessionFilePath, "");
+  const title = normalizeString(payload.title || fallback.title || threadId, "");
+  const observedAt = normalizeString(payload.observedAt || payload.at || fallback.observedAt || fallback.at, nowIso());
+  const usableForRestore = Boolean(
+    projectId &&
+    threadId &&
+    (CODEX_THREAD_RESTORE_SUCCESS_STATUSES.has(status) || CODEX_THREAD_RESTORE_IN_FLIGHT_STATUSES.has(status)),
+  );
+  return {
+    projectId,
+    threadId,
+    sourceHome,
+    sessionFilePath,
+    title,
+    status,
+    evidence: normalizeString(payload.evidence || fallback.evidence, ""),
+    errorDescription: normalizeString(payload.errorDescription || payload.error || fallback.errorDescription, ""),
+    activationEpoch: Number(payload.activationEpoch || fallback.activationEpoch) || 0,
+    observedAt,
+    usableForRestore,
+  };
+}
+
+function rememberCodexThreadRestoreTarget(payload = {}) {
+  const target = normalizeCodexThreadRestoreTarget(payload);
+  if (!target.projectId || !target.threadId) return null;
+  if (CODEX_THREAD_RESTORE_SUCCESS_STATUSES.has(target.status) && target.usableForRestore) {
+    lastSuccessfulCodexThreadByProject.set(target.projectId, target);
+    latestCodexOpenTargetByProject.set(target.projectId, target);
+    return target;
+  }
+  if (CODEX_THREAD_RESTORE_IN_FLIGHT_STATUSES.has(target.status) && target.usableForRestore) {
+    latestCodexOpenTargetByProject.set(target.projectId, target);
+    return target;
+  }
+  if (target.status === "failed") {
+    latestCodexThreadFailureByProject.set(target.projectId, target);
+    const latestOpen = latestCodexOpenTargetByProject.get(target.projectId);
+    if (
+      latestOpen?.threadId === target.threadId &&
+      (!target.activationEpoch || !latestOpen.activationEpoch || target.activationEpoch >= latestOpen.activationEpoch)
+    ) {
+      latestCodexOpenTargetByProject.delete(target.projectId);
+    }
+  }
+  return target;
+}
+
+function codexRestoreTargetFromBinding(project) {
+  const binding = projectActivationBinding(project);
+  const ref = binding?.codexThreadRef || {};
+  const threadId = normalizeString(ref.threadId, "");
+  if (!project?.id || !threadId) return null;
+  return normalizeCodexThreadRestoreTarget({
+    projectId: project.id,
+    threadId,
+    sourceHome: ref.sourceHome,
+    sessionFilePath: ref.sessionFilePath,
+    title: ref.titleSnapshot,
+    status: "binding",
+    evidence: "project-lane-binding",
+  });
+}
+
+function codexRestoreTargetFromHint(project, hint = {}) {
+  if (!project?.id || !isPlainObject(hint)) return null;
+  const target = normalizeCodexThreadRestoreTarget({
+    projectId: hint.projectId || project.id,
+    threadId: hint.threadId,
+    sourceHome: hint.sourceHome,
+    sessionFilePath: hint.sessionFilePath,
+    title: hint.title,
+    status: "hint",
+    evidence: "renderer-restore-hint",
+  });
+  return target.usableForRestore ? target : null;
+}
+
+function chooseCodexThreadRestoreTarget(project, hint = {}) {
+  const projectId = normalizeString(project?.id, "");
+  if (!projectId) return null;
+  const lastSuccess = lastSuccessfulCodexThreadByProject.get(projectId) || null;
+  const latestOpen = latestCodexOpenTargetByProject.get(projectId) || null;
+  if (
+    latestOpen?.usableForRestore &&
+    CODEX_THREAD_RESTORE_IN_FLIGHT_STATUSES.has(latestOpen.status) &&
+    (!lastSuccess || codexRestoreTargetTime(latestOpen) > codexRestoreTargetTime(lastSuccess))
+  ) {
+    return latestOpen;
+  }
+  if (lastSuccess?.usableForRestore) return lastSuccess;
+  const hinted = codexRestoreTargetFromHint(project, hint);
+  if (hinted) return hinted;
+  return codexRestoreTargetFromBinding(project);
 }
 
 function ensureWorkspaceBackendManager() {
@@ -1117,6 +1530,19 @@ function ensureWorkspaceBackendManager() {
   });
   workspaceBackends.on("status", (payload) => {
     emitShellEvent({ type: "backend-status", ...payload });
+    const projectId = payload?.session?.projectId || "";
+    if (
+      projectId &&
+      currentProject?.id === projectId &&
+      codexView?.webContents &&
+      !codexView.webContents.isDestroyed()
+    ) {
+      codexView.webContents.send("codex-surface:event", {
+        type: "workspace-status",
+        session: payload.session,
+        at: payload.at || nowIso(),
+      });
+    }
   });
   workspaceBackends.on("agent-event", (payload) => {
     emitShellEvent({ type: "backend-agent-event", ...payload });
@@ -1367,12 +1793,12 @@ function findCodexSurfaceSessionForRequest(requestKey) {
   return null;
 }
 
-async function disposeCodexSurfaceSession() {
+async function disposeCodexSurfaceSession(reason = "Codex surface reloaded.") {
   if (!codexSurfaceSessions || !codexView?.webContents) return;
   const session = codexSurfaceSessions.get(codexView.webContents.id);
   if (!session) return;
   codexSurfaceSessions.delete(codexView.webContents.id);
-  await session.dispose({ silent: true, reason: "Codex surface reloaded." });
+  await session.dispose({ silent: true, reason });
 }
 
 async function attachProjectWorkspace(project, options = {}) {
@@ -1468,6 +1894,7 @@ function encodeCodexSurfacePayload(project, extra = {}) {
       doctrine: "Codex plane is a work chat. ADEU control plane owns the binding. ChatGPT plane remains the review/world-model thread.",
     },
     codexConnection: extra.codexConnection || null,
+    workspaceStatus: extra.workspaceStatus || null,
     activationEpoch: Number(extra.activationEpoch) || 0,
     initialThreadId: normalizeString(extra.initialThreadId, ""),
     initialThreadSourceHome: normalizeString(extra.initialThreadSourceHome, ""),
@@ -1557,9 +1984,11 @@ async function loadCodexSurface(project, options = {}) {
           workspaceRoot: session.workspaceRoot,
           binaryPath: session.binaryPath,
           codexHome: session.codexHome || "",
+          provider: session.provider || null,
           capabilities: session.capabilities || null,
           activationEpoch: Number(options.activationEpoch) || 0,
         },
+        workspaceStatus: workspaceBackends?.statusForProject(project) || null,
         activationEpoch: Number(options.activationEpoch) || 0,
         initialThreadId: normalizeString(options.initialThreadId, ""),
         initialThreadSourceHome: normalizeString(options.initialThreadSourceHome, ""),
@@ -1571,6 +2000,7 @@ async function loadCodexSurface(project, options = {}) {
         wsUrl: session.wsUrl,
         runtime: session.runtime,
         codexHome: session.codexHome || "",
+        provider: session.provider || null,
         capabilities: session.capabilities || null,
         activationEpoch: Number(options.activationEpoch) || 0,
         remoteAuth: project.surfaceBinding?.codex?.remoteAuth || { mode: "none" },
@@ -1664,12 +2094,24 @@ async function requestCodexThreadOpen(projectId, threadId, sourceHome = "", sess
     projectId: project.id,
     at: nowIso(),
   };
+  rememberCodexThreadRestoreTarget({
+    ...openEventPayload,
+    status: "requested",
+    activationEpoch: Number(activeCodexSurfaceConnection?.activationEpoch) || 0,
+    evidence: "codex-select-thread",
+  });
 
   if (needsSurfaceReload) {
     if (project.surfaceBinding?.codex?.mode !== "managed") {
       return { ok: false, error: "Codex surface is not in managed mode." };
     }
     const activationEpoch = nextSurfaceActivationEpoch();
+    rememberCodexThreadRestoreTarget({
+      ...openEventPayload,
+      status: "requested",
+      activationEpoch,
+      evidence: "codex-select-thread-surface-reload",
+    });
     const targetContents = codexView.webContents;
     const dispatchAfterLoad = new Promise((resolve) => {
       let settled = false;
@@ -1729,6 +2171,62 @@ async function requestCodexThreadOpen(projectId, threadId, sourceHome = "", sess
     threadId: nextThreadId,
     sourceHome: requestedHome || session?.codexHome || "",
     warning: sessionStartupError,
+  };
+}
+
+async function reloadCodexRuntime(options = {}) {
+  const requestedProjectId = normalizeString(options?.projectId || currentProject?.id, "");
+  const project = await getProjectById(requestedProjectId);
+  currentProject = project;
+  const restoreTarget = chooseCodexThreadRestoreTarget(project, options?.restoreTarget || options) || null;
+  const activationEpoch = nextSurfaceActivationEpoch();
+  const mode = normalizeString(project?.surfaceBinding?.codex?.mode, "fallback");
+
+  emitShellEvent({
+    type: "codex-runtime-reload-started",
+    projectId: project.id,
+    threadId: restoreTarget?.threadId || "",
+    at: nowIso(),
+  });
+
+  await disposeCodexSurfaceSession("Codex runtime restarted.");
+  activeCodexSurfaceConnection = null;
+
+  if (mode !== "managed") {
+    await loadCodexSurface(project, {
+      activationEpoch,
+      initialThreadId: restoreTarget?.threadId || "",
+      initialThreadSourceHome: restoreTarget?.sourceHome || "",
+      initialThreadSessionFilePath: restoreTarget?.sessionFilePath || "",
+      initialThreadTitle: restoreTarget?.title || "",
+    });
+    return {
+      ok: true,
+      restarted: false,
+      reason: `Codex mode ${mode || "fallback"} does not manage a local executable.`,
+      threadId: restoreTarget?.threadId || "",
+      activationEpoch,
+    };
+  }
+
+  if (codexAppServer) await codexAppServer.dispose();
+  await loadCodexSurface(project, {
+    activationEpoch,
+    codexHome: restoreTarget?.sourceHome || "",
+    initialThreadId: restoreTarget?.threadId || "",
+    initialThreadSourceHome: restoreTarget?.sourceHome || "",
+    initialThreadSessionFilePath: restoreTarget?.sessionFilePath || "",
+    initialThreadTitle: restoreTarget?.title || "",
+  });
+
+  return {
+    ok: true,
+    restarted: true,
+    threadId: restoreTarget?.threadId || "",
+    sourceHome: restoreTarget?.sourceHome || "",
+    sessionFilePath: restoreTarget?.sessionFilePath || "",
+    title: restoreTarget?.title || "",
+    activationEpoch,
   };
 }
 
@@ -2277,6 +2775,12 @@ function isPermittedNavigationUrl(rawUrl, surfaceName) {
 
 function configureGuestSurface(surfaceName, view) {
   const contents = view.webContents;
+  const zoomPlane = surfaceName === "chatgpt" ? "chatgpt" : "codex";
+  contents.setZoomFactor(nativePlaneZoomFactors[zoomPlane]);
+  contents.on("zoom-changed", (event, direction) => {
+    event.preventDefault();
+    adjustPlaneZoom(zoomPlane, direction);
+  });
   contents.setWindowOpenHandler(({ url }) => {
     if (surfaceName === "chatgpt" && isLikelyChatAuthOrAppUrl(url)) {
       setImmediate(() => {
@@ -2284,7 +2788,20 @@ function configureGuestSurface(surfaceName, view) {
       });
       return { action: "deny" };
     }
-    if (url.startsWith("http://") || url.startsWith("https://")) shell.openExternal(url).catch(() => {});
+    if (url.startsWith("http://") || url.startsWith("https://")) {
+      ensureMiddleWebHost().openLink({
+        url,
+        source: { surface: surfaceName === "chatgpt" ? "chatgpt" : "codex" },
+        userGesture: true,
+      }).catch((error) => {
+        emitShellEvent({
+          type: "middle-web-state",
+          webEventType: "load-failed",
+          lastError: error.message || "Unable to open workspace link.",
+          at: nowIso(),
+        });
+      });
+    }
     return { action: "deny" };
   });
   contents.on("will-navigate", (event, url) => {
@@ -2319,6 +2836,14 @@ function configureGuestSurface(surfaceName, view) {
   });
   contents.on("dom-ready", () => {
     if (surfaceName === "chatgpt") scheduleChatgptPolish();
+  });
+  contents.on("focus", () => {
+    if (surfaceName !== "codex" && codexView?.webContents && !codexView.webContents.isDestroyed()) {
+      codexView.webContents.send("codex-surface:event", {
+        type: "dismiss-composer-overlay",
+        reason: `${surfaceName}-focus`,
+      });
+    }
   });
   contents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
     if (!isMainFrame) return;
@@ -2456,13 +2981,13 @@ async function discoverCodexThreadsForAnalytics(project) {
   }
 }
 
-async function readCodexThreadTranscript(projectId, threadId, sourceHome = "", sessionFilePath = "") {
+async function readCodexThreadTranscript(projectId, threadId, sourceHome = "", sessionFilePath = "", limit = 800) {
   const project = await getProjectById(projectId);
   const result = await requestWorkspace(project, "readCodexThreadTranscript", {
     threadId,
     sourceHome: normalizeString(sourceHome, ""),
     sessionFilePath: normalizeString(sessionFilePath, ""),
-    limit: 800,
+    limit: Number.isFinite(Number(limit)) ? Number(limit) : 800,
   }, 45_000);
   return {
     ...result,
@@ -2948,6 +3473,7 @@ async function createWindow() {
   mainWindow.contentView.addChildView(shellView);
   mainWindow.contentView.addChildView(codexView);
   mainWindow.contentView.addChildView(chatgptView);
+  ensureMiddleWebHost().attachTo(mainWindow.contentView);
   syncWindowGeometry("initial-attach");
   startGeometrySyncLoop();
 
@@ -2982,6 +3508,8 @@ async function createWindow() {
     threadAnalyticsStore = null;
     directFixtureController = null;
     directSessionStore = null;
+    middleWebHost?.dispose();
+    middleWebHost = null;
     closeView(codexView);
     closeView(chatgptView);
     closeView(shellView);
@@ -3068,14 +3596,14 @@ ipcMain.handle("surface:set-visible", async (_event, visible) => {
 });
 
 ipcMain.handle("surface:reload", async (_event, surfaceName) => {
-  if (surfaceName === "codex" && currentProject) {
-    await loadCodexSurface(currentProject);
-    return true;
-  }
   const view = surfaceName === "chatgpt" ? chatgptView : codexView;
   if (!view || view.webContents.isDestroyed()) return false;
   view.webContents.reload();
   return true;
+});
+
+ipcMain.handle("codex:reload-runtime", async (_event, options) => {
+  return reloadCodexRuntime(options || {});
 });
 
 ipcMain.handle("codex-surface:connect", async (event, payload) => {
@@ -3133,8 +3661,8 @@ ipcMain.handle("codex-surface:respond", async (event, payload) => {
 });
 
 ipcMain.handle("codex-surface:thread-state", async (event, payload) => {
-  const session = codexSurfaceSessionFor(event.sender);
   if (isStaleSurfaceActivationEpoch(payload?.activationEpoch)) return { ok: false, stale: true };
+  const session = codexSurfaceSessionFor(event.sender);
   const state = {
     surface: "codex",
     type: "thread-state",
@@ -3150,8 +3678,59 @@ ipcMain.handle("codex-surface:thread-state", async (event, payload) => {
     connectionId: session.connectionId || "",
     at: nowIso(),
   };
+  rememberCodexThreadRestoreTarget(state);
   emitToShell("surface:event", state);
   return { ok: true };
+});
+
+ipcMain.handle("codex-surface:agent-graph", async (event, payload) => {
+  if (isStaleSurfaceActivationEpoch(payload?.activationEpoch)) return { ok: false, stale: true };
+  const session = codexSurfaceSessionFor(event.sender);
+  const state = {
+    surface: "codex",
+    type: "agent-graph",
+    projectId: normalizeString(payload?.projectId, ""),
+    primaryThreadId: normalizeString(payload?.primaryThreadId || payload?.threadId, ""),
+    sourceHome: normalizeString(payload?.sourceHome, ""),
+    sessionFilePath: normalizeString(payload?.sessionFilePath, ""),
+    graphRevision: Number(payload?.graphRevision) || 0,
+    activationEpoch: Number(payload?.activationEpoch) || 0,
+    agents: Array.isArray(payload?.agents) ? payload.agents : [],
+    activeCount: Number(payload?.activeCount) || 0,
+    completedCount: Number(payload?.completedCount) || 0,
+    erroredCount: Number(payload?.erroredCount) || 0,
+    connectionId: session.connectionId || "",
+    at: nowIso(),
+  };
+  emitToShell("surface:event", state);
+  return { ok: true };
+});
+
+ipcMain.handle("codex-surface:focus-sub-agent", async (_event, payload) => {
+  if (isStaleSurfaceActivationEpoch(payload?.activationEpoch)) return { ok: false, stale: true };
+  const state = {
+    surface: "codex",
+    type: "focus-sub-agent",
+    projectId: normalizeString(payload?.projectId, ""),
+    primaryThreadId: normalizeString(payload?.primaryThreadId || payload?.threadId, ""),
+    receiverThreadId: normalizeString(payload?.receiverThreadId, ""),
+    graphRevision: Number(payload?.graphRevision) || 0,
+    activationEpoch: Number(payload?.activationEpoch) || 0,
+    label: normalizeString(payload?.label, ""),
+    at: nowIso(),
+  };
+  if (!state.receiverThreadId) return { ok: false, error: "missing_receiver_thread_id" };
+  emitToShell("surface:event", state);
+  return { ok: true };
+});
+
+ipcMain.handle("codex-runtime-preferences:get", async (_event, payload) => {
+  const config = await loadConfig();
+  return { ok: true, ...codexRuntimePreferenceLookup(config, payload || {}) };
+});
+
+ipcMain.handle("codex-runtime-preferences:update", async (_event, payload) => {
+  return updateCodexRuntimePreferences(payload || {});
 });
 
 ipcMain.handle("codex:respond-request", async (_event, payload) => {
@@ -3171,6 +3750,15 @@ ipcMain.handle("codex:focus-request", async (_event, payload) => {
   return true;
 });
 
+ipcMain.handle("codex:dismiss-composer-overlay", async (_event, payload) => {
+  if (!codexView?.webContents || codexView.webContents.isDestroyed()) return false;
+  codexView.webContents.send("codex-surface:event", {
+    type: "dismiss-composer-overlay",
+    reason: normalizeString(payload?.reason, "shell"),
+  });
+  return true;
+});
+
 ipcMain.handle("surface:open-external", async (_event, surfaceName) => {
   const view = surfaceName === "chatgpt" ? chatgptView : codexView;
   if (!view || view.webContents.isDestroyed()) return false;
@@ -3180,12 +3768,47 @@ ipcMain.handle("surface:open-external", async (_event, surfaceName) => {
   return true;
 });
 
+ipcMain.handle("link:open", async (_event, payload) => {
+  return ensureMiddleWebHost().openLink(payload || {});
+});
+
+ipcMain.handle("middle-web:set-layout", async (_event, payload) => {
+  return ensureMiddleWebHost().setLayout(payload || {});
+});
+
+ipcMain.handle("middle-web:go-back", async () => ensureMiddleWebHost().goBack());
+
+ipcMain.handle("middle-web:go-forward", async () => ensureMiddleWebHost().goForward());
+
+ipcMain.handle("middle-web:reload", async () => ensureMiddleWebHost().reload());
+
+ipcMain.handle("middle-web:stop", async () => ensureMiddleWebHost().stop());
+
+ipcMain.handle("middle-web:open-external", async () => ensureMiddleWebHost().openExternal());
+
+ipcMain.handle("middle-web:copy-url", async () => ensureMiddleWebHost().copyUrl());
+
+ipcMain.handle("middle-web:snapshot", async () => ensureMiddleWebHost().snapshot());
+
+ipcMain.handle("plane-zoom:adjust", async (_event, payload) => {
+  return adjustPlaneZoom(normalizeString(payload?.plane, "middle"), payload?.direction);
+});
+
+ipcMain.handle("plane-zoom:set", async (_event, payload) => {
+  const plane = normalizeString(payload?.plane, "middle");
+  if (plane === "middle") return ensureMiddleWebHost().setZoomFactor(payload?.zoomFactor);
+  return setNativePlaneZoom(plane, payload?.zoomFactor);
+});
+
 ipcMain.handle("external:open-url", async (_event, payload) => {
   const rawUrl = normalizeString(payload?.url, "");
   try {
     const parsed = new URL(rawUrl);
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       return { ok: false, error: "Only http and https URLs can be opened externally." };
+    }
+    if (parsed.username || parsed.password) {
+      return { ok: false, error: "URLs with embedded credentials cannot be opened externally." };
     }
     await shell.openExternal(parsed.toString());
     return { ok: true, url: parsed.toString() };
@@ -3222,6 +3845,7 @@ ipcMain.handle("codex-thread:transcript", async (_event, payload) => {
     payload?.threadId,
     payload?.sourceHome,
     payload?.sessionFilePath,
+    payload?.limit,
   );
 });
 

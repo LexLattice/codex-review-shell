@@ -41,11 +41,12 @@
           </div>
           <div class="control-status">
             <span class="pill">dual-partner binding</span>
+            <span id="selectedProjectPill" class="pill subtle truncate">Loading project…</span>
             <span id="lastEvent" class="muted truncate">Ready.</span>
           </div>
         </header>
 
-        <section class="selected-card">
+        <section class="selected-card" hidden aria-hidden="true">
           <p class="eyebrow">Selected project</p>
           <h2 id="selectedProjectName">Loading…</h2>
           <p id="repoPath" class="mono muted truncate">—</p>
@@ -61,6 +62,7 @@
           <button class="middle-tab active" id="overviewTabButton" data-tab="overview" type="button">Overview</button>
           <button class="middle-tab" id="threadsTabButton" data-tab="threads" type="button">Threads</button>
           <button class="middle-tab" id="analyticsTabButton" data-tab="analytics" type="button">Analytics</button>
+          <button class="middle-tab" id="webTabButton" data-tab="web" type="button">Web</button>
         </nav>
 
         <section class="middle-tab-panel active" id="overviewTabPanel" data-tab-panel="overview">
@@ -356,6 +358,35 @@
             </section>
           </section>
         </section>
+
+        <section class="middle-tab-panel web-tab-panel" id="webTabPanel" data-tab-panel="web" hidden>
+          <section class="control-card web-card">
+            <div class="web-toolbar" aria-label="Middle Web navigation controls">
+              <div class="web-nav-actions">
+                <button class="ghost small icon" id="webBackButton" type="button" title="Back" disabled>←</button>
+                <button class="ghost small icon" id="webForwardButton" type="button" title="Forward" disabled>→</button>
+                <button class="ghost small" id="webReloadButton" type="button" title="Reload or stop loading">Reload</button>
+              </div>
+              <div class="web-origin-witness">
+                <p class="eyebrow">Web</p>
+                <strong id="webTitle" class="truncate">No page open</strong>
+                <span id="webOrigin" class="mono muted truncate">Links clicked from Codex or ChatGPT will open here.</span>
+                <span id="webSource" class="muted truncate"></span>
+              </div>
+              <div class="web-nav-actions">
+                <button class="ghost small" id="webCopyUrlButton" type="button" disabled>Copy URL</button>
+                <button class="ghost small" id="webOpenExternalButton" type="button" disabled>Open external</button>
+              </div>
+            </div>
+            <div class="middle-web-slot" id="middleWebSlot" aria-live="polite">
+              <div class="web-empty-state" id="webEmptyState">
+                <p class="eyebrow">Utility browser viewport</p>
+                <strong>No page open yet.</strong>
+                <span>Links clicked from Codex or ChatGPT will open here.</span>
+              </div>
+            </div>
+          </section>
+        </section>
       </main>
 
       <div class="splitter right-splitter" id="rightSplitter" title="Drag to resize control/ChatGPT planes"></div>
@@ -366,12 +397,23 @@
             <p class="eyebrow">Right plane</p>
             <h2 id="chatgptSurfaceTitle">ChatGPT review/world-model</h2>
           </div>
-          <span id="chatgptStatus" class="status-dot">idle</span>
+          <div class="right-plane-controls" role="tablist" aria-label="Right plane tabs">
+            <button class="right-plane-tab active" id="rightChatgptTabButton" type="button" role="tab" aria-selected="true">ChatGPT</button>
+            <button class="right-plane-tab" id="rightSubAgentsTabButton" type="button" role="tab" aria-selected="false">Sub-agents <span id="subAgentCountBadge" class="mini-count">0</span></button>
+            <span id="chatgptStatus" class="status-dot">idle</span>
+          </div>
         </div>
-        <div class="surface-slot" id="chatgptSlot">
+        <div class="surface-slot right-plane-slot active" id="chatgptSlot" role="tabpanel" aria-labelledby="rightChatgptTabButton">
           <div class="slot-placeholder">
             <p class="eyebrow">Surface slot</p>
             <strong>ChatGPT thread loading…</strong>
+          </div>
+        </div>
+        <div class="surface-slot right-plane-slot sub-agents-slot" id="subAgentsSlot" role="tabpanel" aria-labelledby="rightSubAgentsTabButton" hidden>
+          <div class="sub-agents-empty">
+            <p class="eyebrow">Sub-agent workstreams</p>
+            <strong>No active sub-agents for this Codex thread.</strong>
+            <span>When Codex spawns or messages a sub-agent, its read-only transcript appears here.</span>
           </div>
         </div>
       </section>
@@ -439,6 +481,24 @@
           <label>
             Codex label
             <input id="codexLabelInput" autocomplete="off" />
+          </label>
+        </div>
+
+        <div class="form-grid">
+          <label>
+            Codex provider
+            <select id="codexProviderKindInput">
+              <option value="codex_executable">Codex executable</option>
+              <option value="direct_oai" disabled>Direct OpenAI harness (planned)</option>
+            </select>
+          </label>
+          <label>
+            Executable profile
+            <select id="codexProviderFlavorInput">
+              <option value="vanilla">Vanilla Codex</option>
+              <option value="lex_fork">Lex fork</option>
+              <option value="unknown_custom">Custom / unknown</option>
+            </select>
           </label>
         </div>
 

@@ -138,7 +138,7 @@ type CodexRuntimeMode =
   | "direct";
 
 type CodexBinding = {
-  provider: "codex-compatible" | "custom-codex-fork" | "direct-chatgpt-codex";
+  bindingProvider: "codex-compatible" | "custom-codex-fork" | "direct-chatgpt-codex";
   runtimeMode: CodexRuntimeMode;
   target?: string;
   profileId?: string;

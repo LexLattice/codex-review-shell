@@ -27,8 +27,12 @@ const MATCH_SCAN_LIMIT = 240;
 const MATCH_WALK_LIMIT = 8000;
 const CODEX_THREAD_LIMIT = 120;
 const CODEX_TRANSCRIPT_ENTRY_LIMIT = 800;
+const CODEX_STORED_PROCESS_TEXT_LIMIT = 1400;
 const CODEX_ANALYTICS_GAP_MS = 2 * 60 * 1000;
 const CODEX_ANALYTICS_TAIL_HASH_LINE_LIMIT = 24;
+const CODEX_SANDBOX_ARTIFACT_NAME = ".codex";
+const CODEX_SANDBOX_ARTIFACT_EXCLUDE_COMMENT =
+  "# codex-review-shell: Codex Linux sandbox may leak a zero-byte bwrap placeholder here.";
 
 const SKIPPED_DIR_NAMES = new Set([
   ".git",
@@ -393,6 +397,102 @@ async function runCommand(params = {}) {
   });
 }
 
+function captureProcess(command, args, options = {}) {
+  const timeoutMs = Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : DEFAULT_COMMAND_TIMEOUT_MS;
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd || root,
+      env: { ...process.env, ...(options.env && typeof options.env === "object" ? options.env : {}) },
+      shell: false,
+      windowsHide: true,
+    });
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      child.kill("SIGTERM");
+      setTimeout(() => {
+        if (!settled) child.kill("SIGKILL");
+      }, 1200);
+    }, timeoutMs);
+    child.stdout.on("data", (chunk) => stdoutChunks.push(Buffer.from(chunk)));
+    child.stderr.on("data", (chunk) => stderrChunks.push(Buffer.from(chunk)));
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      settled = true;
+      reject(error);
+    });
+    child.on("close", (exitCode, signal) => {
+      clearTimeout(timer);
+      settled = true;
+      resolve({
+        exitCode,
+        signal,
+        stdout: Buffer.concat(stdoutChunks).toString("utf8"),
+        stderr: Buffer.concat(stderrChunks).toString("utf8"),
+      });
+    });
+  });
+}
+
+function toGitExcludePatternPath(value) {
+  return String(value || "").split(path.sep).join("/").replace(/^\/+|\/+$/g, "");
+}
+
+async function ensureCodexSandboxArtifactIgnored() {
+  const git = await captureProcess("git", ["rev-parse", "--show-toplevel", "--git-path", "info/exclude"], {
+    cwd: root,
+    timeoutMs: 5000,
+  }).catch((error) => ({ exitCode: 1, stderr: error.message }));
+  if (git.exitCode !== 0) {
+    return {
+      available: false,
+      changed: false,
+      reason: "workspace-is-not-a-git-worktree",
+      error: String(git.stderr || "").trim(),
+    };
+  }
+
+  const lines = String(git.stdout || "").split(/\r?\n/).filter(Boolean);
+  const topLevel = path.resolve(lines[0] || root);
+  const rawExcludePath = lines[1] || ".git/info/exclude";
+  const excludePath = path.isAbsolute(rawExcludePath) ? rawExcludePath : path.resolve(root, rawExcludePath);
+  const relRoot = path.relative(topLevel, root);
+  const relPattern = toGitExcludePatternPath(relRoot);
+  const pattern = relPattern ? `/${relPattern}/${CODEX_SANDBOX_ARTIFACT_NAME}` : `/${CODEX_SANDBOX_ARTIFACT_NAME}`;
+
+  let existing = "";
+  try {
+    existing = await fs.readFile(excludePath, "utf8");
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+
+  const existingLines = existing.split(/\r?\n/).map((line) => line.trim());
+  if (existingLines.includes(pattern)) {
+    return {
+      available: true,
+      changed: false,
+      pattern,
+      excludePath,
+      reason: "already-ignored",
+    };
+  }
+
+  const separator = existing && !existing.endsWith("\n") ? "\n" : "";
+  const addition = `${separator}${existing ? "\n" : ""}${CODEX_SANDBOX_ARTIFACT_EXCLUDE_COMMENT}\n${pattern}\n`;
+  await fs.mkdir(path.dirname(excludePath), { recursive: true });
+  await fs.appendFile(excludePath, addition, "utf8");
+  return {
+    available: true,
+    changed: true,
+    pattern,
+    excludePath,
+    reason: "added-local-git-exclude",
+  };
+}
+
 async function watchStatus() {
   return {
     available: typeof fsSync.watch === "function",
@@ -456,6 +556,30 @@ function sortCodexThreadEntries(entries) {
     if (createdDelta !== 0) return createdDelta;
     return String(a.title || "").localeCompare(String(b.title || ""));
   });
+}
+
+function nullableFiniteNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function extractSubagentSessionMeta(payload = {}) {
+  const source = payload?.source || {};
+  const spawn = source?.subagent?.thread_spawn ||
+    source?.subAgent?.threadSpawn ||
+    source?.subagent?.threadSpawn ||
+    source?.subAgent?.thread_spawn ||
+    null;
+  return {
+    parentThreadId: String(spawn?.parent_thread_id || spawn?.parentThreadId || ""),
+    agentRole: String(payload.agent_role || payload.agentRole || spawn?.agent_role || spawn?.agentRole || ""),
+    agentNickname: String(payload.agent_nickname || payload.agentNickname || spawn?.agent_nickname || spawn?.agentNickname || ""),
+    agentPath: String(spawn?.agent_path || spawn?.agentPath || ""),
+    depth: nullableFiniteNumber(spawn?.depth),
+    isSubagent: Boolean(spawn),
+    source,
+  };
 }
 
 async function listCodexThreadsFromHome(codexHome, options = {}) {
@@ -527,17 +651,19 @@ async function listCodexThreadsFromHome(codexHome, options = {}) {
     try {
       stat = await fs.lstat(fullPath);
     } catch {}
-    const subagentSpawn = payload?.source?.subagent?.thread_spawn;
+    const subagentMeta = extractSubagentSessionMeta(payload);
     metadataById.set(sessionId, {
       sessionId,
       cwd: String(payload.cwd || ""),
       originator: String(payload.originator || "unknown"),
       filePath: fullPath,
       createdAt: String(payload.timestamp || entry.timestamp || ""),
-      parentThreadId: String(subagentSpawn?.parent_thread_id || ""),
-      agentRole: String(payload.agent_role || ""),
-      agentNickname: String(payload.agent_nickname || ""),
-      isSubagent: Boolean(subagentSpawn),
+      parentThreadId: subagentMeta.parentThreadId,
+      agentRole: subagentMeta.agentRole,
+      agentNickname: subagentMeta.agentNickname,
+      agentPath: subagentMeta.agentPath,
+      depth: subagentMeta.depth,
+      isSubagent: subagentMeta.isSubagent,
       sessionFileMtimeMs: Number.isFinite(Number(stat?.mtimeMs)) ? Math.round(Number(stat.mtimeMs)) : 0,
       sessionFileSizeBytes: Number.isFinite(Number(stat?.size)) ? Math.round(Number(stat.size)) : 0,
     });
@@ -563,6 +689,8 @@ async function listCodexThreadsFromHome(codexHome, options = {}) {
       parentThreadId: String(meta.parentThreadId || ""),
       agentRole: String(meta.agentRole || ""),
       agentNickname: String(meta.agentNickname || ""),
+      agentPath: String(meta.agentPath || ""),
+      depth: meta.depth ?? null,
       isSubagent: Boolean(meta.isSubagent),
       sessionFileMtimeMs: Number.isFinite(Number(meta.sessionFileMtimeMs)) ? Number(meta.sessionFileMtimeMs) : 0,
       sessionFileSizeBytes: Number.isFinite(Number(meta.sessionFileSizeBytes)) ? Number(meta.sessionFileSizeBytes) : 0,
@@ -664,6 +792,604 @@ function extractContentText(content = []) {
     }
   }
   return chunks.join("\n\n").trim();
+}
+
+function compactStoredText(value, maxLength = CODEX_STORED_PROCESS_TEXT_LIMIT) {
+  const text = typeof value === "string" ? value : value == null ? "" : JSON.stringify(value, null, 2);
+  const normalized = String(text || "").trim();
+  if (!normalized) return "";
+  const limit = Math.max(80, Number(maxLength) || CODEX_STORED_PROCESS_TEXT_LIMIT);
+  return normalized.length > limit
+    ? `${normalized.slice(0, limit)}\n... [${normalized.length - limit} chars omitted]`
+    : normalized;
+}
+
+function parseJsonObject(value) {
+  if (!value) return null;
+  if (typeof value === "object") return value;
+  try {
+    const parsed = JSON.parse(String(value));
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function durationMillis(duration) {
+  if (!duration || typeof duration !== "object") return null;
+  const secs = Number(duration.secs ?? duration.seconds ?? 0);
+  const nanos = Number(duration.nanos ?? duration.nanoseconds ?? 0);
+  const millis = secs * 1000 + nanos / 1_000_000;
+  return Number.isFinite(millis) && millis >= 0 ? Math.round(millis) : null;
+}
+
+function sourceRowRef(rowIndex, payload, kind) {
+  return {
+    rowIndex,
+    eventId: String(payload.event_id || payload.eventId || payload.id || ""),
+    itemId: String(payload.item_id || payload.itemId || ""),
+    callId: String(payload.call_id || payload.callId || ""),
+    kind,
+  };
+}
+
+function createTranscriptTurn(turnId, rowIndex, kind) {
+  const stableId = String(turnId || "").trim();
+  return {
+    turnKey: stableId || `stored_orphan_turn_${rowIndex}`,
+    turnId: stableId,
+    sourceRows: [{ rowIndex, kind }],
+    userMessages: [],
+    systemMessages: [],
+    assistantFinalMessages: [],
+    thoughtItems: [],
+    status: "unknown",
+  };
+}
+
+function createStoredPresentationBuilder(threadId, sourceFile, threadMeta = {}) {
+  const turns = [];
+  const turnById = new Map();
+  const orphanItems = [];
+  const warnings = [];
+  const callItems = new Map();
+  let currentTurnId = "";
+
+  function ensureTurn(turnId, rowIndex, kind = "unknown") {
+    const id = String(turnId || "").trim() || currentTurnId;
+    if (!id) return null;
+    let turn = turnById.get(id);
+    if (!turn) {
+      turn = createTranscriptTurn(id, rowIndex, kind);
+      turnById.set(id, turn);
+      turns.push(turn);
+    } else {
+      turn.sourceRows.push({ rowIndex, kind });
+    }
+    return turn;
+  }
+
+  function rowTurnId(payload = {}) {
+    return String(payload.turn_id || payload.turnId || payload.turn?.id || "").trim() || currentTurnId;
+  }
+
+  function updateCurrentTurn(row, rowIndex) {
+    const payload = row.payload || {};
+    const found = String(payload.turn_id || payload.turnId || payload.id || payload.turn?.id || "").trim();
+    if (row.type === "turn_context" && found) currentTurnId = found;
+    if (row.type === "event_msg" && payload.type === "task_started" && found) {
+      currentTurnId = found;
+      const turn = ensureTurn(found, rowIndex, "task_started");
+      if (turn) turn.status = "partial";
+    }
+    if (row.type === "event_msg" && payload.type === "task_complete") {
+      const turn = ensureTurn(found || currentTurnId, rowIndex, "task_complete");
+      if (turn) turn.status = payload.last_agent_message ? "complete" : "unknown";
+    }
+  }
+
+  function addMessage(turn, target, message) {
+    if (!turn || !message?.text) return;
+    const list = target === "user"
+      ? turn.userMessages
+      : target === "system"
+        ? turn.systemMessages
+        : turn.assistantFinalMessages;
+    const previous = list[list.length - 1];
+    if (
+      previous &&
+      previous.role === message.role &&
+      previous.phase === message.phase &&
+      previous.text === message.text &&
+      Math.abs(Number(previous.sourceOrderEnd || 0) - Number(message.sourceOrderStart || 0)) <= 2
+    ) {
+      previous.sourceRows.push(...message.sourceRows);
+      previous.sourceOrderEnd = message.sourceOrderEnd;
+      return;
+    }
+    list.push(message);
+  }
+
+  function addThoughtItem(turn, item) {
+    if (!item) return;
+    if (!turn) {
+      orphanItems.push(item);
+      warnings.push({
+        kind: "orphan_process_item",
+        message: `Stored process item ${item.id || item.type || "unknown"} could not be attached to a turn with confidence.`,
+        sourceRows: item.sourceRows || [],
+      });
+      return;
+    }
+    const previous = turn.thoughtItems[turn.thoughtItems.length - 1];
+    if (
+      previous &&
+      item.type === "agentMessage" &&
+      previous.type === item.type &&
+      previous.phase === item.phase &&
+      item.text &&
+      previous.text === item.text &&
+      Math.abs(Number(previous.sourceOrderEnd || 0) - Number(item.sourceOrderStart || 0)) <= 2
+    ) {
+      previous.sourceRows.push(...(item.sourceRows || []));
+      previous.sourceOrderEnd = item.sourceOrderEnd;
+      return;
+    }
+    turn.thoughtItems.push(item);
+  }
+
+  function callKey(turn, callId, fallback) {
+    return `${turn?.turnKey || "orphan"}:${String(callId || fallback || "").trim()}`;
+  }
+
+  function existingCallItem(turn, callId, fallbackId) {
+    return callItems.get(callKey(turn, callId, fallbackId));
+  }
+
+  function mergeCallItem(turn, callId, fallbackId, patch) {
+    const key = callKey(turn, callId, fallbackId);
+    const existing = callItems.get(key);
+    if (existing) {
+      const sourceRows = [...(existing.sourceRows || []), ...(patch.sourceRows || [])];
+      const sourceOrderStart = Math.min(
+        Number(existing.sourceOrderStart || patch.sourceOrderStart || 0),
+        Number(patch.sourceOrderStart || existing.sourceOrderStart || 0),
+      );
+      const sourceOrderEnd = Math.max(
+        Number(existing.sourceOrderEnd || patch.sourceOrderEnd || 0),
+        Number(patch.sourceOrderEnd || existing.sourceOrderEnd || 0),
+      );
+      Object.assign(existing, patch, { sourceRows, sourceOrderStart, sourceOrderEnd });
+      return existing;
+    }
+    callItems.set(key, patch);
+    addThoughtItem(turn, patch);
+    return patch;
+  }
+
+  function commandFromArgs(args, payload) {
+    if (Array.isArray(payload.command)) return payload.command.join(" ");
+    if (typeof args?.cmd === "string") return args.cmd;
+    if (Array.isArray(args?.cmd)) return args.cmd.join(" ");
+    if (typeof args?.command === "string") return args.command;
+    return "";
+  }
+
+  function collabToolFromFunctionName(name) {
+    const normalized = String(name || "").trim();
+    const map = {
+      spawn_agent: "spawnAgent",
+      send_input: "sendInput",
+      send_message: "sendInput",
+      resume_agent: "resumeAgent",
+      wait_agent: "wait",
+      close_agent: "closeAgent",
+    };
+    return map[normalized] || "";
+  }
+
+  function receiverThreadIdsFromCollabArgs(args = {}) {
+    const candidates = [
+      args.id,
+      args.agent_id,
+      args.agentId,
+      args.target,
+      args.thread_id,
+      args.threadId,
+      args.ids,
+      args.agent_ids,
+      args.agentIds,
+    ];
+    const ids = [];
+    for (const candidate of candidates) {
+      if (Array.isArray(candidate)) {
+        for (const item of candidate) ids.push(String(item || ""));
+      } else if (candidate) {
+        ids.push(String(candidate));
+      }
+    }
+    return Array.from(new Set(ids.map((id) => id.trim()).filter(Boolean)));
+  }
+
+  function collabPromptFromArgs(args = {}) {
+    if (typeof args.message === "string") return args.message;
+    if (typeof args.prompt === "string") return args.prompt;
+    if (Array.isArray(args.items)) return compactStoredText(args.items, 1200);
+    return "";
+  }
+
+  function changesFromPatchPayload(payload) {
+    const changes = payload.changes && typeof payload.changes === "object" ? payload.changes : {};
+    return Object.entries(changes).map(([filePath, change]) => ({
+      path: filePath,
+      kind: String(change?.type || change?.kind || "change"),
+      type: String(change?.type || change?.kind || "change"),
+      summary: compactStoredText(change?.unified_diff || change?.content || change, 600),
+    }));
+  }
+
+  function normalizeCollabToolPayload(payload) {
+    const receiverThreadIds = Array.isArray(payload.receiver_thread_ids)
+      ? payload.receiver_thread_ids
+      : Array.isArray(payload.receiverThreadIds)
+        ? payload.receiverThreadIds
+        : [];
+    const agentsStates = Array.isArray(payload.agents_states)
+      ? payload.agents_states
+      : Array.isArray(payload.agentsStates)
+        ? payload.agentsStates
+        : [];
+    return {
+      tool: String(payload.tool || "call"),
+      status: String(payload.status || "unknown"),
+      senderThreadId: String(payload.sender_thread_id || payload.senderThreadId || ""),
+      receiverThreadIds: receiverThreadIds.map((id) => String(id || "")).filter(Boolean),
+      prompt: String(payload.prompt || ""),
+      model: String(payload.model || ""),
+      reasoningEffort: String(payload.reasoning_effort || payload.reasoningEffort || ""),
+      agentsStates: agentsStates.map((agent) => ({
+        threadId: String(agent?.thread_id || agent?.threadId || ""),
+        status: String(agent?.status || "unknown"),
+        nickname: String(agent?.nickname || agent?.agent_nickname || agent?.agentNickname || ""),
+        role: String(agent?.role || agent?.agent_role || agent?.agentRole || ""),
+      })).filter((agent) => agent.threadId || agent.status),
+    };
+  }
+
+  function ingest(row, rowIndex) {
+    if (!row || typeof row !== "object") return;
+    const payload = row.payload || {};
+    const payloadType = String(payload.type || "").trim();
+    updateCurrentTurn(row, rowIndex);
+    const at = String(row.timestamp || payload.timestamp || "");
+    const turn = ensureTurn(rowTurnId(payload), rowIndex, payloadType || row.type);
+    const sourceRows = [sourceRowRef(rowIndex, payload, payloadType || row.type)];
+    const base = {
+      at,
+      sourceRows,
+      sourceFile,
+      sourceOrderStart: rowIndex,
+      sourceOrderEnd: rowIndex,
+    };
+
+    if (row.type === "response_item" && payloadType === "message") {
+      const role = String(payload.role || "").toLowerCase();
+      if (!role || role === "developer") return;
+      const text = extractContentText(payload.content || []);
+      if (!text) return;
+      const phase = String(payload.phase || "");
+      const message = {
+        ...base,
+        id: `stored_msg_${rowIndex}`,
+        role: role === "assistant" || role === "user" ? role : "system",
+        text,
+        phase,
+        sourceType: "response_item.message",
+      };
+      if (message.role === "user") addMessage(turn, "user", message);
+      else if (message.role === "assistant" && String(phase).toLowerCase() === "commentary") {
+        addThoughtItem(turn, { ...base, id: `stored_agent_${rowIndex}`, type: "agentMessage", phase: "commentary", text });
+      } else if (message.role === "assistant") addMessage(turn, "assistant", message);
+      else addMessage(turn, "system", message);
+      return;
+    }
+
+    if (row.type === "event_msg" && payloadType === "user_message") {
+      const text = String(payload.message || "").trim();
+      if (!text) return;
+      addMessage(turn, "user", {
+        ...base,
+        id: `stored_user_${rowIndex}`,
+        role: "user",
+        text,
+        phase: "",
+        sourceType: "event_msg.user_message",
+      });
+      return;
+    }
+
+    if (row.type === "event_msg" && payloadType === "agent_message") {
+      const text = String(payload.message || "").trim();
+      if (!text) return;
+      const phase = String(payload.phase || "");
+      if (phase.toLowerCase() === "commentary") {
+        addThoughtItem(turn, { ...base, id: `stored_agent_${rowIndex}`, type: "agentMessage", phase: "commentary", text });
+      } else {
+        addMessage(turn, "assistant", {
+          ...base,
+          id: `stored_agent_final_${rowIndex}`,
+          role: "assistant",
+          text,
+          phase,
+          sourceType: "event_msg.agent_message",
+        });
+      }
+      return;
+    }
+
+    if (row.type === "response_item" && payloadType === "reasoning") {
+      const summary = Array.isArray(payload.summary) ? payload.summary.filter(Boolean).map(String) : [];
+      const content = Array.isArray(payload.content) ? payload.content.filter(Boolean).map(String) : [];
+      if (!summary.length && !content.length) return;
+      addThoughtItem(turn, { ...base, id: `stored_reasoning_${rowIndex}`, type: "reasoning", summary, content });
+      return;
+    }
+
+    if (row.type === "response_item" && payloadType === "function_call") {
+      const callId = String(payload.call_id || "");
+      const name = String(payload.name || "tool");
+      const args = parseJsonObject(payload.arguments) || {};
+      const collabTool = collabToolFromFunctionName(name);
+      if (collabTool) {
+        mergeCallItem(turn, callId, rowIndex, {
+          ...base,
+          id: `stored_collab_${callId || rowIndex}`,
+          type: "collabAgentToolCall",
+          status: "started",
+          tool: collabTool,
+          senderThreadId: threadId,
+          receiverThreadIds: receiverThreadIdsFromCollabArgs(args),
+          prompt: collabPromptFromArgs(args),
+          model: String(args.model || ""),
+          reasoningEffort: String(args.reasoning_effort || args.reasoningEffort || ""),
+          agentsStates: [],
+          callId,
+        });
+        return;
+      }
+      if (name === "exec_command") {
+        mergeCallItem(turn, callId, rowIndex, {
+          ...base,
+          id: `stored_command_${callId || rowIndex}`,
+          type: "commandExecution",
+          status: "started",
+          command: commandFromArgs(args, payload),
+          cwd: String(args.cwd || args.workdir || ""),
+          callId,
+        });
+      } else {
+        mergeCallItem(turn, callId, rowIndex, {
+          ...base,
+          id: `stored_tool_${callId || rowIndex}`,
+          type: "dynamicToolCall",
+          status: "started",
+          tool: name,
+          callId,
+          contentItems: compactStoredText(args, 900),
+        });
+      }
+      return;
+    }
+
+    if (row.type === "event_msg" && payloadType === "exec_command_end") {
+      const callId = String(payload.call_id || "");
+      const output = payload.aggregated_output || [payload.stdout, payload.stderr].filter(Boolean).join("\n");
+      mergeCallItem(turn, callId, rowIndex, {
+        ...base,
+        id: `stored_command_${callId || rowIndex}`,
+        type: "commandExecution",
+        status: Number(payload.exit_code) === 0 ? "completed" : "failed",
+        command: commandFromArgs({}, payload),
+        cwd: String(payload.cwd || ""),
+        exitCode: Number.isFinite(Number(payload.exit_code)) ? Number(payload.exit_code) : null,
+        durationMs: durationMillis(payload.duration),
+        aggregatedOutput: compactStoredText(output),
+        callId,
+      });
+      return;
+    }
+
+    if (row.type === "response_item" && payloadType === "function_call_output") {
+      const callId = String(payload.call_id || "");
+      const existing = existingCallItem(turn, callId, rowIndex);
+      if (existing?.type === "collabAgentToolCall") {
+        const output = parseJsonObject(payload.output) || parseJsonObject(payload.result) || {};
+        const resultAgentId = String(output.agent_id || output.agentId || output.id || "");
+        const receiverThreadIds = Array.from(new Set([
+          ...(Array.isArray(existing.receiverThreadIds) ? existing.receiverThreadIds : []),
+          resultAgentId,
+        ].map((id) => String(id || "").trim()).filter(Boolean)));
+        mergeCallItem(turn, callId, rowIndex, {
+          ...base,
+          id: existing.id || `stored_collab_${callId || rowIndex}`,
+          type: "collabAgentToolCall",
+          status: payload.success === false ? "failed" : "completed",
+          tool: existing.tool || "call",
+          senderThreadId: existing.senderThreadId || threadId,
+          receiverThreadIds,
+          prompt: existing.prompt || "",
+          model: existing.model || "",
+          reasoningEffort: existing.reasoningEffort || "",
+          agentsStates: receiverThreadIds.map((id) => ({
+            threadId: id,
+            status: payload.success === false ? "errored" : "completed",
+            nickname: String(output.nickname || ""),
+            role: String(output.role || output.agent_role || output.agentRole || ""),
+          })),
+          callId,
+        });
+        return;
+      }
+      if (existing?.type === "dynamicToolCall") {
+        mergeCallItem(turn, callId, rowIndex, {
+          ...base,
+          id: existing.id || `stored_tool_${callId || rowIndex}`,
+          type: "dynamicToolCall",
+          status: "completed",
+          tool: existing.tool || String(payload.name || payload.tool_name || "tool"),
+          contentItems: compactStoredText(payload.output || payload.result || payload, 1200),
+          callId,
+        });
+        return;
+      }
+      mergeCallItem(turn, callId, rowIndex, {
+        ...base,
+        id: `stored_command_${callId || rowIndex}`,
+        type: "commandExecution",
+        status: "completed",
+        aggregatedOutput: compactStoredText(payload.output),
+        callId,
+      });
+      return;
+    }
+
+    if (row.type === "response_item" && payloadType === "custom_tool_call") {
+      const callId = String(payload.call_id || "");
+      mergeCallItem(turn, callId, rowIndex, {
+        ...base,
+        id: `stored_tool_${callId || rowIndex}`,
+        type: "dynamicToolCall",
+        status: "started",
+        tool: String(payload.name || payload.tool_name || "custom_tool"),
+        callId,
+        contentItems: compactStoredText(payload.input || payload.arguments || payload, 900),
+      });
+      return;
+    }
+
+    if (row.type === "response_item" && payloadType === "custom_tool_call_output") {
+      const callId = String(payload.call_id || "");
+      mergeCallItem(turn, callId, rowIndex, {
+        ...base,
+        id: `stored_tool_${callId || rowIndex}`,
+        type: "dynamicToolCall",
+        status: "completed",
+        tool: String(payload.name || payload.tool_name || "custom_tool"),
+        callId,
+        contentItems: compactStoredText(payload.output || payload.result || payload, 1200),
+      });
+      return;
+    }
+
+    if (row.type === "event_msg" && payloadType === "patch_apply_end") {
+      const callId = String(payload.call_id || "");
+      addThoughtItem(turn, {
+        ...base,
+        id: `stored_patch_${callId || rowIndex}`,
+        type: "fileChange",
+        status: payload.success === false ? "failed" : "completed",
+        patchStatus: payload.success === false ? "failed" : "applied",
+        callId,
+        changes: changesFromPatchPayload(payload),
+        stdout: compactStoredText(payload.stdout, 900),
+        stderr: compactStoredText(payload.stderr, 900),
+      });
+      return;
+    }
+
+    if (payloadType === "collab_agent_tool_call" || payloadType === "collabAgentToolCall") {
+      const callId = String(payload.call_id || payload.callId || payload.id || "");
+      const collab = normalizeCollabToolPayload(payload);
+      mergeCallItem(turn, callId, rowIndex, {
+        ...base,
+        id: `stored_collab_${callId || rowIndex}`,
+        type: "collabAgentToolCall",
+        status: collab.status,
+        tool: collab.tool,
+        senderThreadId: collab.senderThreadId,
+        receiverThreadIds: collab.receiverThreadIds,
+        prompt: collab.prompt,
+        model: collab.model,
+        reasoningEffort: collab.reasoningEffort,
+        agentsStates: collab.agentsStates,
+        callId,
+      });
+    }
+  }
+
+  function finalize() {
+    return {
+      schemaVersion: 1,
+      threadId,
+      threadMeta: {
+        threadId,
+        isSubagent: Boolean(threadMeta.isSubagent),
+        parentThreadId: String(threadMeta.parentThreadId || ""),
+        agentRole: String(threadMeta.agentRole || ""),
+        agentNickname: String(threadMeta.agentNickname || ""),
+        agentPath: String(threadMeta.agentPath || ""),
+        depth: threadMeta.depth ?? null,
+      },
+      source: "stored_jsonl",
+      sourceFile,
+      turns,
+      orphanItems,
+      warnings,
+    };
+  }
+
+  return { ingest, finalize };
+}
+
+function primaryProjectionCount(turn) {
+  const thoughtMessages = Array.isArray(turn?.thoughtItems)
+    ? turn.thoughtItems.filter((item) => item?.type === "agentMessage").length
+    : 0;
+  return (turn?.userMessages?.length || 0) +
+    (turn?.systemMessages?.length || 0) +
+    (turn?.assistantFinalMessages?.length || 0) +
+    thoughtMessages;
+}
+
+function trimPresentationModel(model, limit) {
+  const maxPrimary = Math.max(50, Number(limit) || CODEX_TRANSCRIPT_ENTRY_LIMIT);
+  const turns = Array.isArray(model?.turns) ? model.turns : [];
+  let total = 0;
+  let start = turns.length;
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    total += Math.max(1, primaryProjectionCount(turns[index]));
+    start = index;
+    if (total >= maxPrimary) break;
+  }
+  const visibleTurns = turns.slice(start);
+  const firstOrder = visibleTurns[0]?.sourceOrderStart || visibleTurns[0]?.sourceRows?.[0]?.rowIndex || 0;
+  return {
+    ...model,
+    turns: visibleTurns,
+    orphanItems: (model.orphanItems || []).filter((item) => Number(item.sourceOrderStart || 0) >= firstOrder),
+    truncated: start > 0,
+    totalTurns: turns.length,
+  };
+}
+
+function legacyEntriesFromPresentationModel(model) {
+  const entries = [];
+  for (const turn of model?.turns || []) {
+    for (const message of turn.userMessages || []) entries.push(message);
+    for (const message of turn.systemMessages || []) entries.push(message);
+    for (const item of turn.thoughtItems || []) {
+      if (item?.type !== "agentMessage") continue;
+      entries.push({
+        ...item,
+        role: "assistant",
+        text: item.text || "",
+        phase: item.phase || "commentary",
+        sourceType: "presentation.agentMessage",
+      });
+    }
+    for (const message of turn.assistantFinalMessages || []) entries.push(message);
+  }
+  return entries;
 }
 
 function extractTranscriptEntry(row) {
@@ -768,11 +1494,19 @@ async function readSessionMetaFromFile(fullPath, threadId = "") {
   const payload = entry?.payload || {};
   const foundId = String(payload.id || "");
   if (threadId && foundId !== threadId) return null;
+  const subagentMeta = extractSubagentSessionMeta(payload);
   return {
     threadId: foundId,
     createdAt: String(payload.timestamp || entry.timestamp || ""),
     cwd: String(payload.cwd || ""),
     originator: String(payload.originator || "unknown"),
+    parentThreadId: subagentMeta.parentThreadId,
+    agentRole: subagentMeta.agentRole,
+    agentNickname: subagentMeta.agentNickname,
+    agentPath: subagentMeta.agentPath,
+    depth: subagentMeta.depth,
+    isSubagent: subagentMeta.isSubagent,
+    source: subagentMeta.source,
   };
 }
 
@@ -793,6 +1527,13 @@ async function findCodexThreadSession(codexHome, threadId, preferredSessionFileP
         createdAt: meta.createdAt,
         cwd: meta.cwd,
         originator: meta.originator,
+        parentThreadId: meta.parentThreadId,
+        agentRole: meta.agentRole,
+        agentNickname: meta.agentNickname,
+        agentPath: meta.agentPath,
+        depth: meta.depth,
+        isSubagent: meta.isSubagent,
+        source: meta.source,
       };
     }
   }
@@ -810,6 +1551,13 @@ async function findCodexThreadSession(codexHome, threadId, preferredSessionFileP
       createdAt: meta.createdAt,
       cwd: meta.cwd,
       originator: meta.originator,
+      parentThreadId: meta.parentThreadId,
+      agentRole: meta.agentRole,
+      agentNickname: meta.agentNickname,
+      agentPath: meta.agentPath,
+      depth: meta.depth,
+      isSubagent: meta.isSubagent,
+      source: meta.source,
     };
     return true;
   });
@@ -836,6 +1584,7 @@ async function readCodexThreadTranscript(params = {}) {
   const stream = fsSync.createReadStream(session.sessionFilePath, { encoding: "utf8" });
   const rl = readline.createInterface({ input: stream, crlfDelay: Infinity });
   const entries = [];
+  const presentationBuilder = createStoredPresentationBuilder(threadId, session.sessionFilePath, session);
   let lineCount = 0;
   for await (const line of rl) {
     if (!line.trim()) continue;
@@ -846,11 +1595,14 @@ async function readCodexThreadTranscript(params = {}) {
     } catch {
       continue;
     }
+    presentationBuilder.ingest(row, lineCount);
     const entry = extractTranscriptEntry(row);
     if (!entry) continue;
     entries.push(entry);
   }
-  const deduped = dedupeTranscriptEntries(entries);
+  const presentationModel = trimPresentationModel(presentationBuilder.finalize(), limit);
+  const presentationEntries = legacyEntriesFromPresentationModel(presentationModel);
+  const deduped = dedupeTranscriptEntries(presentationEntries.length ? presentationEntries : entries);
   const truncated = deduped.length > limit;
   const tail = truncated ? deduped.slice(-limit) : deduped;
   const normalized = tail.map((entry, index) => ({
@@ -872,11 +1624,18 @@ async function readCodexThreadTranscript(params = {}) {
     createdAt: session.createdAt,
     cwd: session.cwd,
     originator: session.originator,
+    parentThreadId: String(session.parentThreadId || ""),
+    agentRole: String(session.agentRole || ""),
+    agentNickname: String(session.agentNickname || ""),
+    agentPath: String(session.agentPath || ""),
+    depth: session.depth ?? null,
+    isSubagent: Boolean(session.isSubagent),
     sessionFilePath: session.sessionFilePath,
     entries: normalized,
+    presentationModel,
     count: normalized.length,
     totalCount: deduped.length,
-    truncated,
+    truncated: truncated || Boolean(presentationModel.truncated),
     lineCount,
     limit,
   };
@@ -1310,6 +2069,7 @@ async function handleRequest(method, params = {}) {
         listTree: true,
         readFilePreview: true,
         runCommand: true,
+        ensureCodexSandboxArtifactIgnored: true,
         listMatchingFiles: true,
         resolvePath: true,
         watchScaffold: true,
@@ -1324,6 +2084,7 @@ async function handleRequest(method, params = {}) {
   if (method === "listMatchingFiles") return listMatchingFiles(params);
   if (method === "resolvePath") return resolvePathPreview(params);
   if (method === "runCommand") return runCommand(params);
+  if (method === "ensureCodexSandboxArtifactIgnored") return ensureCodexSandboxArtifactIgnored(params);
   if (method === "watchStatus") return watchStatus(params);
   if (method === "listCodexThreads") return listCodexThreads(params);
   if (method === "readCodexThreadTranscript") return readCodexThreadTranscript(params);

@@ -1,4 +1,5 @@
 const { contextBridge, ipcRenderer } = require("electron");
+const { PLANE_ZOOM_POLICY, clampZoomFactor, zoomDeltaForDirection } = require("./shared/plane-zoom");
 
 contextBridge.exposeInMainWorld("workspaceShell", {
   loadConfig: () => ipcRenderer.invoke("config:load"),
@@ -8,7 +9,22 @@ contextBridge.exposeInMainWorld("workspaceShell", {
   setSurfaceLayout: (bounds) => ipcRenderer.invoke("surface:set-layout", bounds),
   setSurfaceVisible: (visible) => ipcRenderer.invoke("surface:set-visible", visible),
   reloadSurface: (surfaceName) => ipcRenderer.invoke("surface:reload", surfaceName),
+  reloadCodexRuntime: (options = {}) => ipcRenderer.invoke("codex:reload-runtime", options),
   openSurfaceExternal: (surfaceName) => ipcRenderer.invoke("surface:open-external", surfaceName),
+  openWorkspaceLink: (url, options = {}) => ipcRenderer.invoke("link:open", { ...options, url }),
+  setMiddleWebLayout: (layout) => ipcRenderer.invoke("middle-web:set-layout", layout),
+  middleWebGoBack: () => ipcRenderer.invoke("middle-web:go-back"),
+  middleWebGoForward: () => ipcRenderer.invoke("middle-web:go-forward"),
+  middleWebReload: () => ipcRenderer.invoke("middle-web:reload"),
+  middleWebStop: () => ipcRenderer.invoke("middle-web:stop"),
+  middleWebOpenExternal: () => ipcRenderer.invoke("middle-web:open-external"),
+  middleWebCopyUrl: () => ipcRenderer.invoke("middle-web:copy-url"),
+  middleWebSnapshot: () => ipcRenderer.invoke("middle-web:snapshot"),
+  adjustPlaneZoom: (plane, direction) => ipcRenderer.invoke("plane-zoom:adjust", { plane, direction }),
+  setPlaneZoom: (plane, zoomFactor) => ipcRenderer.invoke("plane-zoom:set", { plane, zoomFactor }),
+  zoomConstants: PLANE_ZOOM_POLICY,
+  clampPlaneZoom: (zoomFactor) => clampZoomFactor(zoomFactor),
+  zoomDeltaForDirection: (direction) => zoomDeltaForDirection(direction),
   copyText: (text) => ipcRenderer.invoke("clipboard:write-text", text),
   listWorkTree: (projectId, relPath) => ipcRenderer.invoke("worktree:list", { projectId, relPath }),
   readProjectFile: (projectId, relPath) => ipcRenderer.invoke("worktree:read-file", { projectId, relPath }),
@@ -40,6 +56,7 @@ contextBridge.exposeInMainWorld("workspaceShell", {
   completeDirectAuthLogin: (loginId, input) => ipcRenderer.invoke("direct-auth:complete-manual-login", { loginId, input }),
   logoutDirectAuth: () => ipcRenderer.invoke("direct-auth:logout"),
   getDirectRuntimeStatus: (projectId) => ipcRenderer.invoke("direct-runtime:status", { projectId }),
+  dismissCodexComposerOverlay: (reason = "shell") => ipcRenderer.invoke("codex:dismiss-composer-overlay", { reason }),
   openChatgptSettings: () => ipcRenderer.invoke("chatgpt:open-settings"),
   forceChatgptDark: () => ipcRenderer.invoke("chatgpt:force-dark"),
   onSurfaceEvent: (callback) => {

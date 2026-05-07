@@ -28,8 +28,9 @@ function normalizeCodexBinding(raw = {}) {
   const binding = isPlainObject(raw) ? raw : {};
   const runtimeMode = normalizeCodexRuntimeMode(binding.runtimeMode);
   const defaultProvider = runtimeMode === "legacy-app-server" ? "codex-compatible" : "direct-chatgpt-codex";
+  const rawProvider = binding.bindingProvider || (typeof binding.provider === "string" ? binding.provider : "");
   return {
-    provider: normalizeCodexBindingProvider(binding.provider, defaultProvider),
+    provider: normalizeCodexBindingProvider(rawProvider, defaultProvider),
     runtimeMode,
     target: normalizeString(binding.target, ""),
     profileId: normalizeString(binding.profileId, ""),

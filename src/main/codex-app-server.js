@@ -8,6 +8,10 @@ const {
   SUPPORTED_SERVER_REQUEST_METHODS,
   AUTO_UNSUPPORTED_SERVER_REQUEST_METHODS,
 } = require("./codex-app-server-protocol");
+const {
+  buildRuntimeProviderProfile,
+  normalizeRuntimeProviderConfig,
+} = require("./runtime-provider-profile");
 
 const DEFAULT_READY_TIMEOUT_MS = 35_000;
 const DEFAULT_STARTUP_ATTEMPTS = 2;
@@ -173,7 +177,7 @@ function resolveRuntime(project, codex) {
 function buildRuntimeCapabilityProfile(session) {
   const status = normalizeString(session?.status, "unknown");
   const ready = status === "ready";
-  return {
+  const profile = {
     version: 1,
     status,
     generatedAt: new Date().toISOString(),
@@ -196,16 +200,41 @@ function buildRuntimeCapabilityProfile(session) {
       canStart: ready,
       canSteer: ready,
       canInterrupt: ready,
-      canOverrideModel: true,
-      canOverrideReasoning: true,
+      canOverrideModel: ready,
+      canOverrideReasoning: ready,
       canUseOutputSchema: false,
+    },
+    model: {
+      canList: ready,
+      canSetNextTurn: ready,
+      canSetSessionDefault: false,
+      canSetProjectDefault: false,
+      canLiveUpdate: false,
+    },
+    reasoning: {
+      canSetNextTurn: ready,
+      canSetSessionDefault: false,
+      canSetProjectDefault: false,
+      canLiveUpdate: false,
+    },
+    serviceTier: {
+      canSetNextTurn: ready,
+      availableTiers: ["fast", "flex"],
     },
     authority: {
       commandApproval: ready,
       fileChangeApproval: ready,
       permissionsApproval: ready,
-      approvalPolicies: [],
-      sandboxModes: [],
+      approvalPolicies: ["untrusted", "on-failure", "on-request", "never"],
+      sandboxModes: ["read-only", "workspace-write", "danger-full-access"],
+      canSetNextTurnApprovalPolicy: ready,
+      canSetNextTurnSandbox: ready,
+    },
+    usage: {
+      canReadRateLimits: ready,
+      rateLimitMethod: "account/rateLimits/read",
+      canReadContextUsage: ready,
+      contextUsageEvent: "thread/tokenUsage/updated",
     },
     requests: {
       supportedServerMethods: SUPPORTED_SERVER_REQUEST_METHODS,
@@ -229,6 +258,8 @@ function buildRuntimeCapabilityProfile(session) {
       source: "runtime-manager",
     },
   };
+  profile.provider = buildRuntimeProviderProfile(session, profile);
+  return profile;
 }
 
 function buildDescriptor(project, codex, port, options = {}) {
@@ -238,6 +269,27 @@ function buildDescriptor(project, codex, port, options = {}) {
   const binaryPath = normalizeBinaryCommand(codex.binaryPath, runtime);
   const codexHome = normalizeString(options.codexHome, "") || defaultCodexHomeForRuntime(runtime);
   const workspace = project?.workspace || { kind: "local", localPath: project?.repoPath || process.cwd() };
+  const provider = normalizeRuntimeProviderConfig(codex);
+  if (provider.kind === "direct_oai") {
+    return {
+      key: `provider-unavailable:${project?.id || "project"}:direct_oai`,
+      runtime: "direct_oai",
+      wsUrl: "",
+      readyUrl: "",
+      command: "",
+      args: [],
+      cwd: undefined,
+      binaryPath: "",
+      workspaceRoot: workspace.kind === "wsl"
+        ? normalizeString(workspace.linuxPath, project?.repoPath || "")
+        : normalizeString(workspace.localPath, project?.repoPath || process.cwd()),
+      codexHome,
+      provider,
+      envExtras: {},
+      unavailable: true,
+      error: "Direct OpenAI harness provider is not implemented in this shell workspace yet.",
+    };
+  }
 
   if (runtime === "wsl") {
     const linuxPath = normalizeString(workspace.linuxPath, "/home");
@@ -265,6 +317,7 @@ function buildDescriptor(project, codex, port, options = {}) {
         binaryPath,
         workspaceRoot: linuxPath,
         codexHome,
+        provider,
         envExtras: {},
       };
     }
@@ -279,6 +332,7 @@ function buildDescriptor(project, codex, port, options = {}) {
       binaryPath,
       workspaceRoot: linuxPath,
       codexHome,
+      provider,
       envExtras: codexHome ? { CODEX_HOME: codexHome } : {},
     };
   }
@@ -299,6 +353,7 @@ function buildDescriptor(project, codex, port, options = {}) {
     binaryPath,
     workspaceRoot: localPath,
     codexHome,
+    provider,
     envExtras: codexHome ? { CODEX_HOME: codexHome } : {},
   };
 }
@@ -311,7 +366,7 @@ class CodexAppServerManager extends EventEmitter {
 
   snapshot() {
     if (!this.session) return null;
-    const { key, status, runtime, wsUrl, readyUrl, binaryPath, workspaceRoot, codexHome, error, logs } = this.session;
+    const { key, status, runtime, wsUrl, readyUrl, binaryPath, workspaceRoot, codexHome, provider, error, logs } = this.session;
     return {
       key,
       status,
@@ -321,6 +376,7 @@ class CodexAppServerManager extends EventEmitter {
       binaryPath,
       workspaceRoot,
       codexHome,
+      provider,
       error,
       capabilities: buildRuntimeCapabilityProfile(this.session),
       logs: logs.slice(-20),
@@ -349,6 +405,22 @@ class CodexAppServerManager extends EventEmitter {
   async ensureForProject(project, options = {}) {
     const codex = project?.surfaceBinding?.codex || {};
     const probeDescriptor = buildDescriptor(project, codex, 1, options);
+    if (probeDescriptor.unavailable) {
+      await this.dispose();
+      this.session = {
+        ...probeDescriptor,
+        child: null,
+        status: "unavailable",
+        error: probeDescriptor.error || "Codex runtime provider is unavailable.",
+        logs: [{
+          kind: "status",
+          line: probeDescriptor.error || "Codex runtime provider is unavailable.",
+          at: new Date().toISOString(),
+        }],
+      };
+      this.emitStatus();
+      return this.snapshot();
+    }
     if (this.session && this.session.key === probeDescriptor.key && this.session.status === "ready") {
       return this.snapshot();
     }

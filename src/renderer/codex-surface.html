@@ -12,18 +12,42 @@
   </head>
   <body>
     <main class="codex-shell">
-      <header class="topbar">
-        <div class="title-block">
-          <p class="eyebrow">Codex plane</p>
-          <h1 id="projectName">Codex session</h1>
-          <p id="repoPath" class="subline mono">—</p>
+      <header class="runtime-header" aria-label="Codex runtime constitution" data-morphic-region="runtime-header">
+        <div class="runtime-identity-row">
+          <div class="title-block">
+            <p class="eyebrow">Codex plane</p>
+            <h1 id="projectName">Codex session</h1>
+            <p id="repoPath" class="subline mono">—</p>
+          </div>
+          <div class="runtime-chip-cluster" id="identityChipCluster">
+            <button id="connectionBadge" class="runtime-chip witness unavailable" type="button" data-runtime-tab="runtime" data-runtime-chip="runtime" data-chip-role="read-only-witness">offline</button>
+            <button id="accountBadge" class="runtime-chip witness unknown" type="button" data-runtime-tab="runtime" data-runtime-chip="account" data-chip-role="read-only-witness">account unknown</button>
+            <button id="modelBadge" class="runtime-chip witness unknown" type="button" data-runtime-tab="model" data-runtime-chip="model" data-chip-role="read-only-witness">default model</button>
+          </div>
         </div>
-        <div class="meta">
-          <span id="connectionBadge" class="badge">offline</span>
-          <span id="accountBadge" class="badge subtle">account unknown</span>
-          <span id="modelBadge" class="badge subtle">default model</span>
+        <div class="runtime-state-row">
+          <div id="environmentChipCluster" class="runtime-chip-cluster environment-chips" aria-label="Runtime environment"></div>
+          <div id="controlChipCluster" class="runtime-chip-cluster control-chips" aria-label="Runtime controls">
+            <button id="reasoningBadge" class="runtime-chip diagnostic unknown" type="button" data-runtime-tab="model" data-runtime-chip="reasoning" data-chip-role="diagnostic">reasoning: unknown</button>
+            <button id="accessBadge" class="runtime-chip diagnostic unknown" type="button" data-runtime-tab="access" data-runtime-chip="access" data-chip-role="diagnostic">access: policy unknown</button>
+            <button id="usageBadge" class="runtime-chip diagnostic unknown" type="button" data-runtime-tab="usage" data-runtime-chip="usage" data-chip-role="diagnostic">usage: unknown</button>
+            <button id="runtimeDrawerButton" class="runtime-chip mutable" type="button" data-runtime-tab="runtime" data-runtime-chip="runtime-drawer" data-chip-role="mutable-control" aria-expanded="false">Runtime</button>
+          </div>
         </div>
       </header>
+
+      <aside id="runtimeDrawer" class="runtime-drawer" hidden aria-label="Runtime inspector" data-morphic-region="runtime-inspector-drawer">
+        <div class="runtime-drawer-header">
+          <div>
+            <p class="eyebrow">Runtime inspector</p>
+            <h2 id="runtimeDrawerTitle">Runtime</h2>
+            <p id="runtimeDrawerUpdated" class="subline mono">—</p>
+          </div>
+          <button id="runtimeDrawerClose" class="drawer-close" type="button" aria-label="Close runtime inspector">×</button>
+        </div>
+        <nav id="runtimeDrawerTabs" class="runtime-drawer-tabs" aria-label="Runtime inspector tabs"></nav>
+        <section id="runtimeDrawerBody" class="runtime-drawer-body"></section>
+      </aside>
 
       <section class="transcript" id="transcript" aria-label="Codex transcript"></section>
 
@@ -33,7 +57,23 @@
           rows="4"
           placeholder="Ask Codex to inspect, change, or explain the project…"
         ></textarea>
-        <button id="sendButton" type="submit">Send</button>
+        <div class="composer-runtime-band" data-morphic-region="composer-runtime-band">
+          <div class="composer-quick-controls">
+            <div class="composer-menu-anchor">
+              <button id="composerAccessButton" class="composer-pill access" type="button" aria-expanded="false">Access</button>
+              <div id="composerAccessMenu" class="composer-popover" hidden></div>
+            </div>
+          </div>
+          <div class="composer-runtime-witnesses" aria-label="Runtime usage and quick settings">
+            <span id="composerQuotaChip" class="composer-witness">quota: unknown</span>
+            <span id="composerContextChip" class="composer-witness">context: unknown</span>
+            <div class="composer-menu-anchor">
+              <button id="composerModelButton" class="composer-pill model" type="button" aria-expanded="false">Model</button>
+              <div id="composerModelMenu" class="composer-popover composer-popover-wide" hidden></div>
+            </div>
+          </div>
+        </div>
+        <button id="sendButton" class="send-button" type="submit" data-morphic-region="composer-send">Send</button>
       </form>
     </main>
     <script src="./codex-surface.js"></script>

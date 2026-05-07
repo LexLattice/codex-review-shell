@@ -25,6 +25,18 @@ const HANDOFF_KINDS = {
 };
 const ACTIVE_HANDOFF_STATUSES = new Set(["staged", "copied", "opened-thread", "submitted-manually", "response-pending", "response-captured"]);
 const CHATGPT_ALLOWED_HOSTS = new Set(["chatgpt.com", "www.chatgpt.com", "chat.openai.com", "www.chat.openai.com"]);
+const ZOOM_POLICY = bridge?.zoomConstants || {};
+// Fallbacks are only used when preload is absent; normal runtime gets these
+// values from the shared zoom policy exposed through the bridge.
+const NORMAL_ZOOM_FALLBACK = 1;
+const NO_ZOOM_DELTA = 0;
+
+function zoomPolicyValue(name, fallback = NORMAL_ZOOM_FALLBACK) {
+  const value = Number(ZOOM_POLICY?.[name]);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+const PLANE_ZOOM_DEFAULT = zoomPolicyValue("PLANE_ZOOM_DEFAULT");
 
 const state = {
   config: null,
@@ -35,6 +47,22 @@ const state = {
   defaultCodexRuntime: "auto",
   allowNonChatgptUrls: false,
   activeMiddleTab: "overview",
+  middleWeb: {
+    hasPage: false,
+    displayUrl: "",
+    title: "",
+    origin: "",
+    loading: false,
+    canGoBack: false,
+    canGoForward: false,
+    lastError: "",
+    lastSource: null,
+    securityPosture: "unknown",
+  },
+  middleWebLayoutRevision: 0,
+  planeZooms: {
+    middle: PLANE_ZOOM_DEFAULT,
+  },
   analyticsThreads: [],
   analyticsStatus: "idle",
   analyticsDashboard: null,
@@ -44,6 +72,11 @@ const state = {
     codex: { type: "idle" },
     chatgpt: { type: "idle" },
   },
+  activeRightTab: "chatgpt",
+  rightPlanePinnedTab: "",
+  subAgentGraph: null,
+  selectedSubAgentThreadId: "",
+  selectedSubAgentSelectedBy: "",
   drawerMode: "edit",
   threadDrawerMode: "edit",
   currentWidths: { left: 0, middle: 0, right: 0 },
@@ -71,6 +104,8 @@ const state = {
   openedCodexProjectId: "",
   openedCodexThreadId: "",
   openedCodexThreadTitle: "",
+  openedCodexSourceHome: "",
+  openedCodexSessionFilePath: "",
   selectedProjectChatThreadId: "",
   selectedRecentChatgptThreadId: "",
   selectedBindingId: "",
@@ -90,6 +125,8 @@ const state = {
 
 const els = {
   appShell: document.getElementById("appShell"),
+  controlPlane: document.querySelector(".control-plane"),
+  selectedProjectPill: document.getElementById("selectedProjectPill"),
   selectedProjectName: document.getElementById("selectedProjectName"),
   repoPath: document.getElementById("repoPath"),
   workspacePath: document.getElementById("workspacePath"),
@@ -99,9 +136,11 @@ const els = {
   overviewTabButton: document.getElementById("overviewTabButton"),
   threadsTabButton: document.getElementById("threadsTabButton"),
   analyticsTabButton: document.getElementById("analyticsTabButton"),
+  webTabButton: document.getElementById("webTabButton"),
   overviewTabPanel: document.getElementById("overviewTabPanel"),
   threadsTabPanel: document.getElementById("threadsTabPanel"),
   analyticsTabPanel: document.getElementById("analyticsTabPanel"),
+  webTabPanel: document.getElementById("webTabPanel"),
   projectList: document.getElementById("projectList"),
   projectCount: document.getElementById("projectCount"),
   threadDeck: document.getElementById("threadDeck"),
@@ -110,6 +149,10 @@ const els = {
   configPath: document.getElementById("configPath"),
   codexSlot: document.getElementById("codexSlot"),
   chatgptSlot: document.getElementById("chatgptSlot"),
+  subAgentsSlot: document.getElementById("subAgentsSlot"),
+  rightChatgptTabButton: document.getElementById("rightChatgptTabButton"),
+  rightSubAgentsTabButton: document.getElementById("rightSubAgentsTabButton"),
+  subAgentCountBadge: document.getElementById("subAgentCountBadge"),
   codexSurfaceTitle: document.getElementById("codexSurfaceTitle"),
   chatgptSurfaceTitle: document.getElementById("chatgptSurfaceTitle"),
   leftSplitter: document.getElementById("leftSplitter"),
@@ -180,6 +223,16 @@ const els = {
   analyticsHint: document.getElementById("analyticsHint"),
   analyticsThreadList: document.getElementById("analyticsThreadList"),
   analyticsDashboard: document.getElementById("analyticsDashboard"),
+  middleWebSlot: document.getElementById("middleWebSlot"),
+  webEmptyState: document.getElementById("webEmptyState"),
+  webBackButton: document.getElementById("webBackButton"),
+  webForwardButton: document.getElementById("webForwardButton"),
+  webReloadButton: document.getElementById("webReloadButton"),
+  webCopyUrlButton: document.getElementById("webCopyUrlButton"),
+  webOpenExternalButton: document.getElementById("webOpenExternalButton"),
+  webTitle: document.getElementById("webTitle"),
+  webOrigin: document.getElementById("webOrigin"),
+  webSource: document.getElementById("webSource"),
   refreshWorkTreeButton: document.getElementById("refreshWorkTreeButton"),
   workTree: document.getElementById("workTree"),
   previewPath: document.getElementById("previewPath"),
@@ -201,6 +254,8 @@ const els = {
   wslLinuxPathInput: document.getElementById("wslLinuxPathInput"),
   codexModeInput: document.getElementById("codexModeInput"),
   codexLabelInput: document.getElementById("codexLabelInput"),
+  codexProviderKindInput: document.getElementById("codexProviderKindInput"),
+  codexProviderFlavorInput: document.getElementById("codexProviderFlavorInput"),
   codexRuntimeInput: document.getElementById("codexRuntimeInput"),
   codexRuntimeModeInput: document.getElementById("codexRuntimeModeInput"),
   codexBinaryPathInput: document.getElementById("codexBinaryPathInput"),
@@ -1014,6 +1069,551 @@ function setLastEvent(message) {
   els.lastEvent.title = message;
 }
 
+function normalizeSlashes(value) {
+  return String(value || "").replace(/\\/g, "/");
+}
+
+function stripTokenPunctuation(value) {
+  return String(value || "").replace(/[),.;!?]+$/g, "");
+}
+
+function currentWorkspaceRoots() {
+  const project = activeProject();
+  const roots = [
+    project?.workspace?.linuxPath,
+    project?.workspace?.localPath,
+    project?.repoPath,
+  ];
+  const repoText = String(project?.repoPath || "");
+  const wslMatch = repoText.match(/^wsl:[^:]+:(\/.*)$/i);
+  if (wslMatch) roots.push(wslMatch[1]);
+  return Array.from(new Set(roots.map((root) => normalizeSlashes(root).replace(/\/+$/, "")).filter(Boolean)));
+}
+
+function relativePathWithinRoot(filePath) {
+  const raw = stripTokenPunctuation(filePath).trim();
+  if (!raw || raw.includes("\0")) return "";
+  const normalized = normalizeSlashes(raw);
+  if (normalized.startsWith("../") || normalized.includes("/../") || normalized === "..") return "";
+  if (/\s/.test(normalized)) return "";
+
+  for (const root of currentWorkspaceRoots()) {
+    const normalizedRoot = normalizeSlashes(root).replace(/\/+$/, "");
+    if (!normalizedRoot) continue;
+    const lowerPath = normalized.toLowerCase();
+    const lowerRoot = normalizedRoot.toLowerCase();
+    if (lowerPath === lowerRoot) return "";
+    if (lowerPath.startsWith(`${lowerRoot}/`)) return normalized.slice(normalizedRoot.length + 1);
+  }
+
+  const isAbsolute = normalized.startsWith("/") || /^[A-Za-z]:\//.test(normalized);
+  if (isAbsolute) return "";
+  if (!normalized.includes("/") && !/\.[A-Za-z0-9]{1,12}$/.test(normalized)) return "";
+  return normalized.replace(/^\.\/+/, "");
+}
+
+function splitLineRef(value) {
+  const text = stripTokenPunctuation(value).trim();
+  const match = text.match(/^(.*?)(?::(\d+)(?::(\d+))?)$/);
+  if (!match) return { path: text, line: null, column: null };
+  if (/^[A-Za-z]$/.test(match[1])) return { path: text, line: null, column: null };
+  return {
+    path: match[1],
+    line: Number(match[2]),
+    column: match[3] ? Number(match[3]) : null,
+  };
+}
+
+function addTokenCandidate(candidates, start, end, token) {
+  if (start < 0 || end <= start) return;
+  candidates.push({ start, end, token });
+}
+
+function chooseTokenCandidates(candidates) {
+  const sorted = candidates
+    .filter((candidate) => candidate?.token?.text)
+    .sort((a, b) => a.start - b.start || (b.end - b.start) - (a.end - a.start));
+  const result = [];
+  let cursor = 0;
+  for (const candidate of sorted) {
+    if (candidate.start < cursor) continue;
+    result.push(candidate);
+    cursor = candidate.end;
+  }
+  return result;
+}
+
+function tokenizeTypedContent(text) {
+  const source = String(text || "");
+  if (!source) return [{ type: "text", text: "" }];
+  const candidates = [];
+
+  const urlPattern = /https?:\/\/[^\s<>"'`)\]]+/g;
+  for (const match of source.matchAll(urlPattern)) {
+    const raw = stripTokenPunctuation(match[0]);
+    addTokenCandidate(candidates, match.index, match.index + raw.length, { type: "url", text: raw, href: raw });
+  }
+
+  const backtickPattern = /`([^`\n]{1,240})`/g;
+  for (const match of source.matchAll(backtickPattern)) {
+    const raw = match[1] || "";
+    const lineRef = splitLineRef(raw);
+    const relPath = relativePathWithinRoot(lineRef.path);
+    if (relPath) {
+      addTokenCandidate(candidates, match.index, match.index + match[0].length, {
+        type: lineRef.line ? "line_ref" : "file_path",
+        text: match[0],
+        path: relPath,
+        line: lineRef.line,
+        column: lineRef.column,
+      });
+      continue;
+    }
+    const type = /\s|^(npm|pnpm|yarn|node|git|gh|cargo|python|pytest|uv|make|bash|sh)\b/.test(raw.trim())
+      ? "command"
+      : "symbol";
+    addTokenCandidate(candidates, match.index, match.index + match[0].length, { type, text: match[0], value: raw });
+  }
+
+  const filePattern = /(?:[A-Za-z]:[\\/]|\/|\.{1,2}\/)?[A-Za-z0-9._@+-][A-Za-z0-9._@+:/\\-]*\.[A-Za-z0-9]{1,12}(?::\d+(?::\d+)?)?/g;
+  for (const match of source.matchAll(filePattern)) {
+    const raw = stripTokenPunctuation(match[0]);
+    if (!raw || /^https?:\/\//i.test(raw)) continue;
+    const lineRef = splitLineRef(raw);
+    const relPath = relativePathWithinRoot(lineRef.path);
+    if (!relPath) continue;
+    addTokenCandidate(candidates, match.index, match.index + raw.length, {
+      type: lineRef.line ? "line_ref" : "file_path",
+      text: raw,
+      path: relPath,
+      line: lineRef.line,
+      column: lineRef.column,
+    });
+  }
+
+  const chosen = chooseTokenCandidates(candidates);
+  const tokens = [];
+  let cursor = 0;
+  for (const candidate of chosen) {
+    if (candidate.start > cursor) tokens.push({ type: "text", text: source.slice(cursor, candidate.start) });
+    tokens.push(candidate.token);
+    cursor = candidate.end;
+  }
+  if (cursor < source.length) tokens.push({ type: "text", text: source.slice(cursor) });
+  return tokens.length ? tokens : [{ type: "text", text: source }];
+}
+
+async function openSubAgentTypedUrl(url, context = {}) {
+  if (!bridge?.openWorkspaceLink) {
+    setLastEvent("Workspace link opening is unavailable.");
+    return;
+  }
+  const project = activeProject();
+  const result = await bridge.openWorkspaceLink(url, {
+    disposition: "middle-web",
+    source: {
+      surface: "shell",
+      projectId: project?.id || "",
+      threadId: context.threadId || state.subAgentGraph?.primaryThreadId || state.openedCodexThreadId || "",
+      threadTitle: context.threadTitle || "Sub-agent transcript",
+    },
+    userGesture: true,
+  });
+  if (!result?.ok) setLastEvent(`URL open blocked: ${result?.error || "unknown error"}`);
+}
+
+async function revealSubAgentTypedFile(relPath) {
+  const project = activeProject();
+  if (!bridge?.revealProjectFile || !project?.id) {
+    setLastEvent("Project file reveal is unavailable.");
+    return;
+  }
+  try {
+    const result = await bridge.revealProjectFile(project.id, relPath);
+    if (!result?.opened && result?.method) setLastEvent(`File path copied: ${result.absolutePath || relPath}`);
+  } catch (error) {
+    setLastEvent(`File reveal failed: ${error.message}`);
+  }
+}
+
+function renderTypedContent(container, text, context = {}) {
+  container.textContent = "";
+  const tokens = tokenizeTypedContent(text);
+  for (const token of tokens) {
+    if (!token || token.type === "text") {
+      container.appendChild(document.createTextNode(token?.text || ""));
+      continue;
+    }
+    if (token.type === "url") {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "typed-token typed-token-url";
+      button.textContent = token.text;
+      button.title = "Open link in workspace web panel";
+      button.addEventListener("click", () => openSubAgentTypedUrl(token.href, context));
+      container.appendChild(button);
+      continue;
+    }
+    if (token.type === "file_path" || token.type === "line_ref") {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `typed-token ${token.type === "line_ref" ? "typed-token-line-ref" : "typed-token-file"}`;
+      button.textContent = token.text;
+      button.title = token.line ? `Reveal ${token.path}:${token.line}` : `Reveal ${token.path}`;
+      button.addEventListener("click", () => revealSubAgentTypedFile(token.path));
+      container.appendChild(button);
+      continue;
+    }
+    const span = document.createElement("span");
+    span.className = `typed-token typed-token-${token.type.replace(/_/g, "-")}`;
+    span.textContent = token.text;
+    container.appendChild(span);
+  }
+}
+
+function appendTypedText(parent, text, context = {}) {
+  if (!text) return;
+  const span = document.createElement("span");
+  renderTypedContent(span, text, context);
+  parent.appendChild(span);
+}
+
+function safeMarkdownHref(rawHref) {
+  try {
+    const parsed = new URL(String(rawHref || ""));
+    return ["http:", "https:"].includes(parsed.protocol) ? parsed.toString() : "";
+  } catch {
+    return "";
+  }
+}
+
+function markdownLocalHref(rawHref) {
+  const original = String(rawHref || "").trim();
+  if (!original || original.startsWith("#") || /^[A-Za-z][A-Za-z0-9+.-]*:/i.test(original)) return null;
+  const lineHash = original.match(/^(.*)#L(\d+)$/i);
+  const withoutHash = lineHash ? lineHash[1] : original.replace(/#.*$/, "");
+  const lineRef = splitLineRef(lineHash ? `${withoutHash}:${lineHash[2]}` : withoutHash);
+  const relPath = relativePathWithinRoot(lineRef.path);
+  if (!relPath) return null;
+  return { path: relPath, line: lineRef.line, column: lineRef.column };
+}
+
+function appendFileToken(parent, label, fileRef) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `typed-token ${fileRef.line ? "typed-token-line-ref" : "typed-token-file"} assistant-md-link`;
+  button.textContent = label || fileRef.path;
+  button.title = fileRef.line ? `Reveal ${fileRef.path}:${fileRef.line}` : `Reveal ${fileRef.path}`;
+  button.addEventListener("click", () => revealSubAgentTypedFile(fileRef.path));
+  parent.appendChild(button);
+}
+
+function appendUrlToken(parent, label, href, context = {}) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "typed-token typed-token-url assistant-md-link";
+  button.textContent = label || href;
+  button.title = `Open ${href}`;
+  button.addEventListener("click", () => openSubAgentTypedUrl(href, context));
+  parent.appendChild(button);
+}
+
+function appendUnsupportedMarkdownLink(parent, label, reason) {
+  const span = document.createElement("span");
+  span.className = "assistant-md-link-blocked";
+  span.textContent = label;
+  span.title = reason || "Unsupported or unsafe link";
+  parent.appendChild(span);
+}
+
+function appendInlineCode(parent, raw, context = {}) {
+  const code = document.createElement("code");
+  code.className = "assistant-md-inline-code";
+  const source = String(raw || "");
+  const fileRef = markdownLocalHref(source) || (() => {
+    const lineRef = splitLineRef(source);
+    const relPath = relativePathWithinRoot(lineRef.path);
+    return relPath ? { path: relPath, line: lineRef.line, column: lineRef.column } : null;
+  })();
+  if (fileRef) {
+    appendFileToken(code, source, fileRef);
+  } else {
+    const href = safeMarkdownHref(source);
+    if (href) appendUrlToken(code, source, href, context);
+    else {
+      const span = document.createElement("span");
+      const trimmed = source.trim();
+      const tokenType = /^[a-f0-9]{7,40}$/i.test(trimmed)
+        ? "commit"
+        : /\s|^(npm|pnpm|yarn|node|git|gh|cargo|python|pytest|uv|make|bash|sh)\b/.test(trimmed)
+          ? "command"
+          : "symbol";
+      span.className = `typed-token typed-token-${tokenType}`;
+      span.textContent = source;
+      code.appendChild(span);
+    }
+  }
+  parent.appendChild(code);
+}
+
+function appendInlineMarkdown(parent, text, context = {}) {
+  const source = String(text || "");
+  const pattern = /(\[[^\]\n]{1,240}\]\([^) \n]{1,1000}\)|`([^`\n]+)`|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|(->|=>))/g;
+  let cursor = 0;
+  for (const match of source.matchAll(pattern)) {
+    if (match.index > cursor) appendTypedText(parent, source.slice(cursor, match.index), context);
+    const token = match[0];
+    const linkMatch = token.match(/^\[([^\]\n]+)\]\(([^) \n]+)\)$/);
+    if (linkMatch) {
+      const href = safeMarkdownHref(linkMatch[2]);
+      const fileRef = markdownLocalHref(linkMatch[2]);
+      if (href) appendUrlToken(parent, linkMatch[1], href, context);
+      else if (fileRef) appendFileToken(parent, linkMatch[1], fileRef);
+      else appendUnsupportedMarkdownLink(parent, linkMatch[1], "Unsupported, unsafe, or unresolved link target");
+    } else if (token.startsWith("`")) {
+      appendInlineCode(parent, token.slice(1, -1), context);
+    } else if (token.startsWith("**")) {
+      const strong = document.createElement("strong");
+      strong.className = "assistant-md-strong";
+      appendTypedText(strong, token.slice(2, -2), context);
+      parent.appendChild(strong);
+    } else if (token.startsWith("*")) {
+      const em = document.createElement("em");
+      em.className = "assistant-md-emphasis";
+      appendTypedText(em, token.slice(1, -1), context);
+      parent.appendChild(em);
+    } else {
+      const arrow = document.createElement("span");
+      arrow.className = "assistant-md-arrow";
+      arrow.textContent = token;
+      parent.appendChild(arrow);
+    }
+    cursor = match.index + token.length;
+  }
+  if (cursor < source.length) appendTypedText(parent, source.slice(cursor), context);
+}
+
+function createMarkdownLineBlock(tagName, className, text, context = {}) {
+  const block = document.createElement(tagName);
+  block.className = className;
+  appendInlineMarkdown(block, text, context);
+  return block;
+}
+
+function isMarkdownBlockStart(line) {
+  const trimmed = String(line || "").trim();
+  return Boolean(
+    !trimmed ||
+    /^```/.test(trimmed) ||
+    /^#{1,4}\s+/.test(trimmed) ||
+    /^>\s?/.test(trimmed) ||
+    /^---+$/.test(trimmed) ||
+    /^[-*]\s+/.test(trimmed) ||
+    /^\d+\.\s+/.test(trimmed) ||
+    /^(->|=>)\s+/.test(trimmed)
+  );
+}
+
+function appendMarkdownList(container, lines, ordered, context = {}) {
+  const list = document.createElement(ordered ? "ol" : "ul");
+  list.className = "assistant-md-list";
+  for (const line of lines) {
+    const raw = ordered
+      ? String(line || "").replace(/^\s*\d+\.\s+/, "")
+      : String(line || "").replace(/^\s*[-*]\s+/, "");
+    const taskMatch = raw.match(/^\[(x|X| )\]\s+([\s\S]*)$/);
+    const item = document.createElement("li");
+    const appendListText = (target, value) => {
+      const fragments = String(value || "").split("\n");
+      fragments.forEach((fragment, index) => {
+        if (index) target.appendChild(document.createElement("br"));
+        appendInlineMarkdown(target, fragment, context);
+      });
+    };
+    if (taskMatch) {
+      const marker = document.createElement("span");
+      marker.className = `assistant-md-task-marker${taskMatch[1].trim() ? " done" : ""}`;
+      marker.textContent = taskMatch[1].trim() ? "✓" : "□";
+      item.appendChild(marker);
+      appendListText(item, taskMatch[2]);
+    } else {
+      appendListText(item, raw);
+    }
+    list.appendChild(item);
+  }
+  container.appendChild(list);
+}
+
+function renderSubAgentAssistantMarkdown(container, text, context = {}) {
+  container.textContent = "";
+  container.classList.add("assistant-markdown");
+  const source = String(text || "").replace(/\r\n/g, "\n");
+  if (!source.trim()) return;
+  const lines = source.split("\n");
+  for (let index = 0; index < lines.length;) {
+    const line = lines[index];
+    const trimmed = line.trim();
+    if (!trimmed) {
+      index += 1;
+      continue;
+    }
+
+    const fence = trimmed.match(/^```([A-Za-z0-9_-]+)?\s*$/);
+    if (fence) {
+      const language = fence[1] || "";
+      const codeLines = [];
+      index += 1;
+      while (index < lines.length && !lines[index].trim().startsWith("```")) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+      if (index < lines.length) index += 1;
+      const block = document.createElement("figure");
+      block.className = "assistant-md-codeblock";
+      if (language) {
+        const caption = document.createElement("figcaption");
+        caption.textContent = language;
+        block.appendChild(caption);
+      }
+      const pre = document.createElement("pre");
+      pre.textContent = codeLines.join("\n");
+      block.appendChild(pre);
+      container.appendChild(block);
+      continue;
+    }
+
+    const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      const level = Math.min(4, heading[1].length);
+      container.appendChild(createMarkdownLineBlock(`h${level}`, `assistant-md-heading level-${level}`, heading[2], context));
+      index += 1;
+      continue;
+    }
+
+    if (/^---+$/.test(trimmed)) {
+      const divider = document.createElement("hr");
+      divider.className = "assistant-md-divider";
+      container.appendChild(divider);
+      index += 1;
+      continue;
+    }
+
+    if (/^>\s?/.test(trimmed)) {
+      const quoteLines = [];
+      while (index < lines.length && /^>\s?/.test(lines[index].trim())) {
+        quoteLines.push(lines[index].trim().replace(/^>\s?/, ""));
+        index += 1;
+      }
+      container.appendChild(createMarkdownLineBlock("blockquote", "assistant-md-quote", quoteLines.join("\n"), context));
+      continue;
+    }
+
+    if (/^\d+\.\s+/.test(trimmed) || /^[-*]\s+/.test(trimmed)) {
+      const ordered = /^\d+\.\s+/.test(trimmed);
+      const listLines = [];
+      while (index < lines.length) {
+        const nextLine = lines[index];
+        const nextTrimmed = lines[index].trim();
+        const isNextItem = ordered ? /^\d+\.\s+/.test(nextTrimmed) : /^[-*]\s+/.test(nextTrimmed);
+        if (isNextItem) {
+          listLines.push(nextLine);
+          index += 1;
+          continue;
+        }
+        if (listLines.length && /^\s{2,}\S/.test(nextLine)) {
+          listLines[listLines.length - 1] = `${listLines[listLines.length - 1]}\n${nextLine.trim()}`;
+          index += 1;
+          continue;
+        }
+        if (!nextTrimmed) {
+          index += 1;
+          break;
+        }
+        break;
+      }
+      if (!listLines.length) index += 1;
+      appendMarkdownList(container, listLines, ordered, context);
+      continue;
+    }
+
+    const chain = trimmed.match(/^(->|=>)\s*(.*)$/);
+    if (chain) {
+      const block = document.createElement("p");
+      block.className = "assistant-md-chain";
+      const arrow = document.createElement("span");
+      arrow.className = "assistant-md-arrow";
+      arrow.textContent = chain[1];
+      block.append(arrow, document.createTextNode(" "));
+      appendInlineMarkdown(block, chain[2], context);
+      container.appendChild(block);
+      index += 1;
+      continue;
+    }
+
+    const paragraphLines = [line];
+    index += 1;
+    while (index < lines.length && !isMarkdownBlockStart(lines[index])) {
+      paragraphLines.push(lines[index]);
+      index += 1;
+    }
+    container.appendChild(createMarkdownLineBlock("p", "assistant-md-paragraph", paragraphLines.join("\n"), context));
+  }
+}
+
+function renderSubAgentMessageBody(container, message, context = {}) {
+  const text = String(message?.text || "");
+  container.dataset.rawText = text;
+  container.classList.toggle("assistant-markdown", message?.role === "child");
+  if (message?.role === "child") renderSubAgentAssistantMarkdown(container, text, context);
+  else {
+    container.classList.remove("assistant-markdown");
+    renderTypedContent(container, text, context);
+  }
+}
+
+function clampPlaneZoom(value) {
+  return typeof bridge?.clampPlaneZoom === "function" ? bridge.clampPlaneZoom(value) : PLANE_ZOOM_DEFAULT;
+}
+
+function zoomDeltaForDirection(direction) {
+  return typeof bridge?.zoomDeltaForDirection === "function" ? bridge.zoomDeltaForDirection(direction) : NO_ZOOM_DELTA;
+}
+
+function applyMiddlePlaneZoom(value) {
+  const zoomFactor = clampPlaneZoom(value);
+  state.planeZooms.middle = zoomFactor;
+  document.documentElement.style.setProperty("--middle-plane-zoom", zoomFactor.toFixed(2));
+  scheduleResizeBurst();
+}
+
+function planeFromWheelTarget(target) {
+  const element = target instanceof Element ? target : target?.parentElement;
+  if (!element) return "";
+  if (els.controlPlane?.contains(element)) return "middle";
+  if (els.codexSlot?.contains(element) || element.closest?.(".codex-plane")) return "codex";
+  if (els.chatgptSlot?.contains(element) || els.subAgentsSlot?.contains(element) || element.closest?.(".chatgpt-plane")) return "chatgpt";
+  return "";
+}
+
+function directionFromWheel(event) {
+  return event.deltaY < 0 ? "in" : "out";
+}
+
+function handlePlaneZoomWheel(event) {
+  if (!event.ctrlKey) return;
+  const plane = planeFromWheelTarget(event.target);
+  if (!plane) return;
+  event.preventDefault();
+  const direction = directionFromWheel(event);
+  if (plane === "middle") {
+    const next = clampPlaneZoom(state.planeZooms.middle + zoomDeltaForDirection(direction));
+    applyMiddlePlaneZoom(next);
+    bridge.adjustPlaneZoom?.("middle", direction).catch(() => {});
+    return;
+  }
+  bridge.adjustPlaneZoom?.(plane, direction).catch(() => {});
+}
+
 function formatBytes(bytes) {
   const number = Number(bytes) || 0;
   if (number < 1024) return `${number} B`;
@@ -1171,11 +1771,254 @@ function renderDirectAuthControls() {
   renderDirectRuntimeStatus();
 }
 
+function agentStatusLabel(agent = {}) {
+  const status = String(agent.status || agent.activityStatus || agent.hydrationStatus || "unknown");
+  return status.replace(/_/g, " ");
+}
+
+function subAgentThreadId(agent = {}) {
+  return String(agent.threadId || agent.key?.threadId || "").trim();
+}
+
+function shortSubAgentId(threadId) {
+  const id = String(threadId || "").trim();
+  return id.length <= 8 ? id : id.slice(0, 8);
+}
+
+function subAgentBaseTabLabel(agent = {}) {
+  const id = subAgentThreadId(agent);
+  return String(agent.nickname || agent.label || agent.role || "").trim() || `Agent ${shortSubAgentId(id)}`;
+}
+
+function subAgentLabelCounts(agents = []) {
+  const counts = new Map();
+  for (const agent of agents) {
+    const base = subAgentBaseTabLabel(agent);
+    counts.set(base, (counts.get(base) || 0) + 1);
+  }
+  return counts;
+}
+
+function subAgentTabLabel(agent = {}, labelCounts = new Map()) {
+  const id = subAgentThreadId(agent);
+  const base = subAgentBaseTabLabel(agent);
+  if ((labelCounts.get(base) || 0) > 1 && id) return `${base} · ${shortSubAgentId(id)}`;
+  return base || "Unknown agent";
+}
+
+function subAgentIsActive(agent = {}) {
+  return ["running", "pending", "inProgress"].includes(String(agent.status || "")) ||
+    ["active", "responding", "waiting"].includes(String(agent.activityStatus || ""));
+}
+
+function preferredSubAgentThreadId(agents = []) {
+  const active = agents.find(subAgentIsActive);
+  return subAgentThreadId(active || agents[0] || "");
+}
+
+function reconcileSelectedSubAgent(agents = [], preferredThreadId = "") {
+  const ids = new Set(agents.map(subAgentThreadId).filter(Boolean));
+  const preferred = String(preferredThreadId || "").trim();
+  if (preferred && ids.has(preferred)) {
+    state.selectedSubAgentThreadId = preferred;
+    return preferred;
+  }
+  const selectedWasOperatorPinned = ["operator", "agent_chip", "restore"].includes(state.selectedSubAgentSelectedBy);
+  if (selectedWasOperatorPinned && state.selectedSubAgentThreadId && ids.has(state.selectedSubAgentThreadId)) {
+    return state.selectedSubAgentThreadId;
+  }
+  state.selectedSubAgentThreadId = preferredSubAgentThreadId(agents);
+  if (state.selectedSubAgentThreadId && !state.selectedSubAgentSelectedBy) {
+    state.selectedSubAgentSelectedBy = "auto_first_active";
+  }
+  return state.selectedSubAgentThreadId;
+}
+
+function selectSubAgentTab(threadId, selectedBy = "operator") {
+  const id = String(threadId || "").trim();
+  if (!id) return;
+  state.selectedSubAgentThreadId = id;
+  state.selectedSubAgentSelectedBy = selectedBy;
+  renderSubAgentsPanel();
+}
+
+function renderSubAgentsPanel() {
+  if (!els.subAgentsSlot) return;
+  const graph = state.subAgentGraph;
+  const agents = Array.isArray(graph?.agents) ? graph.agents : [];
+  if (els.subAgentCountBadge) els.subAgentCountBadge.textContent = String(agents.length);
+  els.subAgentsSlot.innerHTML = "";
+  if (!agents.length) {
+    const empty = document.createElement("div");
+    empty.className = "sub-agents-empty";
+    empty.innerHTML = `
+      <p class="eyebrow">Sub-agent workstreams</p>
+      <strong>No active sub-agents for this Codex thread.</strong>
+      <span>When Codex spawns or messages a sub-agent, its read-only transcript appears here.</span>
+    `;
+    els.subAgentsSlot.appendChild(empty);
+    return;
+  }
+
+  const selectedId = reconcileSelectedSubAgent(agents);
+  const selectedAgent = agents.find((agent) => subAgentThreadId(agent) === selectedId) || agents[0];
+  const labelCounts = subAgentLabelCounts(agents);
+  const panel = document.createElement("div");
+  panel.className = "sub-agent-panel";
+
+  const tabStrip = document.createElement("div");
+  tabStrip.className = "sub-agent-tabstrip";
+  tabStrip.setAttribute("role", "tablist");
+  tabStrip.setAttribute("aria-label", "Sub-agent conversations");
+  for (const agent of agents) {
+    const id = subAgentThreadId(agent);
+    const selected = id && id === selectedId;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `sub-agent-tab${selected ? " active" : ""}`;
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-selected", selected ? "true" : "false");
+    button.dataset.agentThreadId = id;
+    const labelText = subAgentTabLabel(agent, labelCounts);
+    button.title = id ? `${labelText} · ${id}` : labelText;
+    button.addEventListener("click", () => selectSubAgentTab(id, "operator"));
+
+    const label = document.createElement("span");
+    label.className = "sub-agent-tab-label";
+    label.textContent = labelText;
+    const status = document.createElement("span");
+    status.className = `sub-agent-tab-status${subAgentIsActive(agent) ? " active" : ""}`;
+    status.textContent = agentStatusLabel(agent);
+    button.append(label, status);
+    tabStrip.appendChild(button);
+  }
+  panel.appendChild(tabStrip);
+
+  const card = document.createElement("article");
+  card.className = "sub-agent-card selected";
+  card.dataset.agentThreadId = subAgentThreadId(selectedAgent);
+
+  const header = document.createElement("header");
+  header.className = "sub-agent-card-header";
+  const title = document.createElement("div");
+  const eyebrow = document.createElement("p");
+  eyebrow.className = "eyebrow";
+  eyebrow.textContent = "Selected sub-agent";
+  const heading = document.createElement("h3");
+  heading.textContent = subAgentTabLabel(selectedAgent, labelCounts);
+  const thread = document.createElement("span");
+  thread.className = "muted mono";
+  thread.textContent = subAgentThreadId(selectedAgent) || "unknown thread";
+  title.append(eyebrow, heading, thread);
+  const status = document.createElement("span");
+  status.className = `status-dot ${String(selectedAgent?.status || "") === "failed" ? "failed" : "loaded"}`;
+  status.textContent = agentStatusLabel(selectedAgent);
+  header.append(title, status);
+
+  const action = document.createElement("p");
+  action.className = "sub-agent-action";
+  const lastAction = selectedAgent?.lastAction?.tool
+    ? `${selectedAgent.lastAction.tool} · ${selectedAgent.lastAction.status || "unknown"}`
+    : "discovered";
+  action.textContent = selectedAgent?.promptPreview ? `${lastAction}: ${selectedAgent.promptPreview}` : lastAction;
+
+  const transcript = document.createElement("div");
+  transcript.className = "sub-agent-transcript";
+  const messages = Array.isArray(selectedAgent?.transcript) ? selectedAgent.transcript : [];
+  if (!messages.length) {
+    const pending = document.createElement("div");
+    pending.className = "sub-agent-message system";
+    pending.textContent = selectedAgent?.hydrationStatus === "failed"
+      ? "Sub-agent transcript unavailable."
+      : "Transcript hydration pending.";
+    transcript.appendChild(pending);
+  } else {
+    for (const message of messages) {
+      const item = document.createElement("section");
+      item.className = `sub-agent-message ${message.role || "system"}`;
+      const label = document.createElement("p");
+      label.className = "eyebrow";
+      label.textContent = message.title || message.role || "Message";
+      const body = document.createElement("div");
+      body.className = "sub-agent-message-body";
+      renderSubAgentMessageBody(body, message, {
+        threadId: subAgentThreadId(selectedAgent),
+        threadTitle: subAgentTabLabel(selectedAgent, labelCounts),
+      });
+      item.append(label, body);
+      transcript.appendChild(item);
+    }
+  }
+
+  card.append(header, action, transcript);
+  panel.appendChild(card);
+  els.subAgentsSlot.appendChild(panel);
+}
+
+function renderRightPlaneTabs() {
+  const active = state.activeRightTab === "subagents" ? "subagents" : "chatgpt";
+  for (const [button, slot, tab] of [
+    [els.rightChatgptTabButton, els.chatgptSlot, "chatgpt"],
+    [els.rightSubAgentsTabButton, els.subAgentsSlot, "subagents"],
+  ]) {
+    if (!button || !slot) continue;
+    const selected = active === tab;
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-selected", selected ? "true" : "false");
+    slot.classList.toggle("active", selected);
+    slot.hidden = !selected;
+  }
+  renderSubAgentsPanel();
+}
+
+function setRightPlaneTab(tab, options = {}) {
+  const next = tab === "subagents" ? "subagents" : "chatgpt";
+  if (!options.auto) state.rightPlanePinnedTab = next;
+  if (state.activeRightTab === next) {
+    renderRightPlaneTabs();
+    scheduleResizeBurst();
+    return;
+  }
+  state.activeRightTab = next;
+  renderRightPlaneTabs();
+  scheduleResizeBurst();
+}
+
+function handleCodexAgentGraph(event) {
+  const project = activeProject();
+  if (!project || String(event.projectId || project.id) !== project.id) return;
+  state.subAgentGraph = {
+    ...event,
+    agents: Array.isArray(event.agents) ? event.agents : [],
+  };
+  reconcileSelectedSubAgent(state.subAgentGraph.agents);
+  renderRightPlaneTabs();
+  const hasActiveAgents = state.subAgentGraph.agents.some(subAgentIsActive);
+  if (hasActiveAgents && !state.rightPlanePinnedTab && state.activeRightTab === "chatgpt") {
+    setRightPlaneTab("subagents", { auto: true });
+  }
+}
+
+function handleCodexFocusSubAgent(event) {
+  const project = activeProject();
+  if (!project || String(event.projectId || project.id) !== project.id) return;
+  const receiverThreadId = String(event.receiverThreadId || "").trim();
+  if (!receiverThreadId) return;
+  const primaryThreadId = String(event.primaryThreadId || "");
+  if (state.subAgentGraph?.primaryThreadId && primaryThreadId && String(state.subAgentGraph.primaryThreadId) !== primaryThreadId) return;
+  state.selectedSubAgentThreadId = receiverThreadId;
+  state.selectedSubAgentSelectedBy = "agent_chip";
+  setRightPlaneTab("subagents");
+  renderSubAgentsPanel();
+  setLastEvent(`Opened sub-agent: ${event.label || receiverThreadId}.`);
+}
+
 function renderMiddleTabs() {
   const tabs = [
     [els.overviewTabButton, els.overviewTabPanel, "overview"],
     [els.threadsTabButton, els.threadsTabPanel, "threads"],
     [els.analyticsTabButton, els.analyticsTabPanel, "analytics"],
+    [els.webTabButton, els.webTabPanel, "web"],
   ];
   for (const [button, panel, tab] of tabs) {
     const active = state.activeMiddleTab === tab;
@@ -1183,6 +2026,44 @@ function renderMiddleTabs() {
     panel.classList.toggle("active", active);
     panel.hidden = !active;
   }
+  renderMiddleWebTab();
+}
+
+function middleWebSourceLabel(source) {
+  if (!source?.surface) return "";
+  const labels = { codex: "Codex", chatgpt: "ChatGPT", shell: "Shell" };
+  const surface = labels[source.surface] || source.surface;
+  const thread = source.threadTitle || source.threadId || "";
+  return thread ? `Opened from: ${surface} · ${thread}` : `Opened from: ${surface}`;
+}
+
+function renderMiddleWebTab() {
+  const web = state.middleWeb || {};
+  const hasPage = Boolean(web.hasPage || web.displayUrl || web.origin);
+  const blocked = Boolean(web.lastError);
+  els.webTitle.textContent = blocked
+    ? web.lastError
+    : web.title || (hasPage ? "Loading web page…" : "No page open");
+  els.webTitle.title = els.webTitle.textContent;
+  els.webOrigin.textContent = web.origin || web.displayUrl || "Links clicked from Codex or ChatGPT will open here.";
+  els.webOrigin.title = web.displayUrl || web.origin || "";
+  els.webSource.textContent = middleWebSourceLabel(web.lastSource);
+  els.webSource.title = els.webSource.textContent;
+  els.webEmptyState.hidden = hasPage;
+  els.webEmptyState.classList.toggle("web-error-state", blocked);
+  if (blocked) {
+    els.webEmptyState.querySelector("strong").textContent = web.lastError;
+    els.webEmptyState.querySelector("span").textContent = web.displayUrl || web.origin || "Navigation was blocked by the workspace Web policy.";
+  } else {
+    els.webEmptyState.querySelector("strong").textContent = "No page open yet.";
+    els.webEmptyState.querySelector("span").textContent = "Links clicked from Codex or ChatGPT will open here.";
+  }
+  els.webBackButton.disabled = !web.canGoBack;
+  els.webForwardButton.disabled = !web.canGoForward;
+  els.webReloadButton.textContent = web.loading ? "Stop" : "Reload";
+  els.webReloadButton.disabled = !hasPage;
+  els.webCopyUrlButton.disabled = !hasPage;
+  els.webOpenExternalButton.disabled = !hasPage;
 }
 
 function renderProjectList() {
@@ -1218,6 +2099,8 @@ function renderSelectedProject() {
   const nonArchivedThreads = chatThreads(project).filter((thread) => !thread.archived);
 
   els.selectedProjectName.textContent = project.name;
+  els.selectedProjectPill.textContent = project.name;
+  els.selectedProjectPill.title = workspaceText;
   els.repoPath.textContent = project.repoPath;
   els.repoPath.title = project.repoPath;
   els.workspacePath.textContent = workspaceText;
@@ -1908,6 +2791,7 @@ function render() {
   renderWatchedArtifacts();
   renderDirectAuthControls();
   renderStatus();
+  renderRightPlaneTabs();
   scheduleResizeBurst();
 }
 
@@ -1973,13 +2857,33 @@ function rectToBounds(rect) {
 function sendSurfaceLayout() {
   if (!bridge || !els.codexSlot || !els.chatgptSlot) return;
   const codex = rectToBounds(els.codexSlot.getBoundingClientRect());
-  const chatgpt = rectToBounds(els.chatgptSlot.getBoundingClientRect());
-  const signature = `${codex.x},${codex.y},${codex.width},${codex.height}|${chatgpt.x},${chatgpt.y},${chatgpt.width},${chatgpt.height}`;
+  const hiddenNativeBounds = { x: -12000, y: -12000, width: 1, height: 1 };
+  const chatgpt = state.activeRightTab === "chatgpt"
+    ? rectToBounds(els.chatgptSlot.getBoundingClientRect())
+    : hiddenNativeBounds;
+  const web = els.middleWebSlot ? rectToBounds(els.middleWebSlot.getBoundingClientRect()) : { x: 0, y: 0, width: 1, height: 1 };
+  const webVisible = state.activeMiddleTab === "web" && Boolean(state.middleWeb?.hasPage || state.middleWeb?.displayUrl);
+  const signature = [
+    `${codex.x},${codex.y},${codex.width},${codex.height}`,
+    `${chatgpt.x},${chatgpt.y},${chatgpt.width},${chatgpt.height},${state.activeRightTab}`,
+    `${web.x},${web.y},${web.width},${web.height},${webVisible ? 1 : 0},${state.activeMiddleTab}`,
+  ].join("|");
   if (signature === state.lastLayoutSignature) return;
   state.lastLayoutSignature = signature;
   bridge.setSurfaceLayout({ codex, chatgpt }).catch((error) => {
     console.error("Unable to set surface layout", error);
   });
+  if (bridge.setMiddleWebLayout) {
+    state.middleWebLayoutRevision += 1;
+    bridge.setMiddleWebLayout({
+      visible: webVisible,
+      bounds: web,
+      tab: state.activeMiddleTab,
+      layoutRevision: state.middleWebLayoutRevision,
+    }).catch((error) => {
+      console.error("Unable to set middle Web layout", error);
+    });
+  }
 }
 
 function performLayout() {
@@ -2292,6 +3196,8 @@ async function selectProject(projectId) {
     state.openedCodexProjectId = "";
     state.openedCodexThreadId = "";
     state.openedCodexThreadTitle = "";
+    state.openedCodexSourceHome = "";
+    state.openedCodexSessionFilePath = "";
   }
   state.selectedFileRelPath = "";
   state.selectedFilePreview = null;
@@ -2306,6 +3212,10 @@ async function selectProject(projectId) {
   state.analyticsDashboard = null;
   state.analyticsDashboardStatus = "idle";
   state.activeChatgptThreadBrowserTab = "project";
+  state.subAgentGraph = null;
+  state.selectedSubAgentThreadId = "";
+  state.selectedSubAgentSelectedBy = "";
+  state.rightPlanePinnedTab = "";
   render();
   const project = activeProject();
   if (!project || project.id !== projectId || isRequestStale("project", projectVersion)) return;
@@ -2424,6 +3334,47 @@ async function selectCodexThread(threadId, sourceHome = "", sessionFilePath = ""
   renderSelectedProject();
 }
 
+async function reloadActiveCodexRuntime() {
+  const project = activeProject();
+  if (!project) return;
+  const openedForProject = state.openedCodexProjectId === project.id;
+  const selectedThread = codexThreadById(state.selectedCodexThreadId);
+  const threadId = openedForProject
+    ? state.openedCodexThreadId
+    : state.selectedCodexThreadId || selectedThread?.threadId || "";
+  const restoreTarget = threadId
+    ? {
+      projectId: project.id,
+      threadId,
+      sourceHome: openedForProject ? state.openedCodexSourceHome : selectedThread?.sourceHome || "",
+      sessionFilePath: openedForProject ? state.openedCodexSessionFilePath : selectedThread?.sessionFilePath || "",
+      title: openedForProject ? state.openedCodexThreadTitle : selectedThread?.title || threadId,
+    }
+    : null;
+  state.surfaceEvents.codex = { type: "loading", title: "Reloading Codex runtime" };
+  renderStatus();
+  try {
+    const result = bridge.reloadCodexRuntime
+      ? await bridge.reloadCodexRuntime({ projectId: project.id, restoreTarget })
+      : { ok: await bridge.reloadSurface("codex"), restarted: false };
+    if (!result?.ok) {
+      setLastEvent(`Codex runtime reload failed: ${result?.error || "unknown error"}`);
+      return;
+    }
+    if (result.restarted === false && result.reason) {
+      setLastEvent(`Reloaded Codex surface: ${result.reason}`);
+      return;
+    }
+    setLastEvent(
+      result.threadId
+        ? `Reloaded Codex runtime and requested thread restore: ${restoreTarget?.title || result.threadId}.`
+        : "Reloaded Codex runtime.",
+    );
+  } catch (error) {
+    setLastEvent(`Codex runtime reload failed: ${error.message}`);
+  }
+}
+
 function handleCodexThreadState(event) {
   const project = activeProject();
   const projectId = String(event.projectId || project?.id || "");
@@ -2437,6 +3388,15 @@ function handleCodexThreadState(event) {
     state.openedCodexProjectId = project.id;
     state.openedCodexThreadId = threadId;
     state.openedCodexThreadTitle = title;
+    state.openedCodexSourceHome = String(event.sourceHome || "");
+    state.openedCodexSessionFilePath = String(event.sessionFilePath || "");
+    if (state.subAgentGraph?.primaryThreadId && String(state.subAgentGraph.primaryThreadId) !== threadId) {
+      state.subAgentGraph = null;
+      state.selectedSubAgentThreadId = "";
+      state.selectedSubAgentSelectedBy = "";
+      if (state.activeRightTab === "subagents" && !state.rightPlanePinnedTab) state.activeRightTab = "chatgpt";
+      renderRightPlaneTabs();
+    }
     renderSelectedProject();
     renderThreadsWorkbench();
     setLastEvent(
@@ -2483,8 +3443,12 @@ function openDrawer(mode) {
     surfaceBinding: {
       codex: {
         mode: "managed",
-        provider: "codex-compatible",
+        bindingProvider: "codex-compatible",
         runtimeMode: "legacy-app-server",
+        provider: {
+          kind: "codex_executable",
+          flavor: "vanilla",
+        },
         runtime: state.defaultCodexRuntime || "auto",
         profileId: "",
         binaryPath: "codex",
@@ -2539,6 +3503,8 @@ function openDrawer(mode) {
   els.codexModeInput.value = draft.surfaceBinding.codex.mode;
   els.codexLabelInput.value = draft.surfaceBinding.codex.label;
   els.codexRuntimeModeInput.value = draft.surfaceBinding.codex.runtimeMode || "legacy-app-server";
+  els.codexProviderKindInput.value = draft.surfaceBinding.codex.provider?.kind || draft.surfaceBinding.codex.providerKind || "codex_executable";
+  els.codexProviderFlavorInput.value = draft.surfaceBinding.codex.provider?.flavor || draft.surfaceBinding.codex.providerFlavor || "vanilla";
   els.codexRuntimeInput.value = draft.surfaceBinding.codex.runtime || "auto";
   els.codexProfileIdInput.value = draft.surfaceBinding.codex.profileId || "";
   els.codexBinaryPathInput.value = draft.surfaceBinding.codex.binaryPath || "codex";
@@ -2624,8 +3590,12 @@ function projectFromForm() {
     surfaceBinding: {
       codex: {
         mode: els.codexModeInput.value,
-        provider: els.codexRuntimeModeInput.value === "legacy-app-server" ? "codex-compatible" : "direct-chatgpt-codex",
+        bindingProvider: els.codexRuntimeModeInput.value === "legacy-app-server" ? "codex-compatible" : "direct-chatgpt-codex",
         runtimeMode: els.codexRuntimeModeInput.value,
+        provider: {
+          kind: els.codexProviderKindInput.value || "codex_executable",
+          flavor: els.codexProviderFlavorInput.value || "vanilla",
+        },
         runtime: els.codexRuntimeInput.value,
         profileId: els.codexProfileIdInput.value.trim(),
         binaryPath: els.codexBinaryPathInput.value.trim() || "codex",
@@ -2834,7 +3804,9 @@ async function deleteThreadFromDrawer() {
 function setMiddleTab(tab) {
   if (tab === "threads") state.activeMiddleTab = "threads";
   else if (tab === "analytics") state.activeMiddleTab = "analytics";
+  else if (tab === "web") state.activeMiddleTab = "web";
   else state.activeMiddleTab = "overview";
+  if (state.activeMiddleTab === "web" && els.controlPlane) els.controlPlane.scrollTop = 0;
   renderMiddleTabs();
   if (state.activeMiddleTab === "analytics" && state.analyticsStatus === "idle") {
     loadAnalyticsThreads({ refresh: false }).catch((error) => {
@@ -3359,9 +4331,12 @@ async function previewFile(relPath, row) {
 }
 
 function bindEvents() {
+  els.rightChatgptTabButton?.addEventListener("click", () => setRightPlaneTab("chatgpt"));
+  els.rightSubAgentsTabButton?.addEventListener("click", () => setRightPlaneTab("subagents"));
   els.overviewTabButton.addEventListener("click", () => setMiddleTab("overview"));
   els.threadsTabButton.addEventListener("click", () => setMiddleTab("threads"));
   els.analyticsTabButton.addEventListener("click", () => setMiddleTab("analytics"));
+  els.webTabButton.addEventListener("click", () => setMiddleTab("web"));
   els.addProjectButton.addEventListener("click", () => openDrawer("new"));
   els.editProjectButton.addEventListener("click", () => openDrawer("edit"));
   els.closeDrawerButton.addEventListener("click", closeDrawer);
@@ -3414,7 +4389,7 @@ function bindEvents() {
   els.stageTextReviewButton.addEventListener("click", () => stageQuestion("text-review"));
   els.stageArchitectureQuestionButton.addEventListener("click", () => stageQuestion("architecture-question"));
   els.stageResearchQuestionButton.addEventListener("click", () => stageQuestion("research-question"));
-  els.reloadCodexButton.addEventListener("click", () => bridge.reloadSurface("codex"));
+  els.reloadCodexButton.addEventListener("click", reloadActiveCodexRuntime);
   els.reloadChatButton.addEventListener("click", () => bridge.reloadSurface("chatgpt"));
   els.externalChatButton.addEventListener("click", () => bridge.openSurfaceExternal("chatgpt"));
   els.forceDarkButton.addEventListener("click", async () => {
@@ -3431,11 +4406,38 @@ function bindEvents() {
   els.directAuthLogoutButton.addEventListener("click", logoutDirectAuth);
   els.refreshWorkTreeButton.addEventListener("click", loadWorkTreeRoot);
   els.refreshWatchedButton.addEventListener("click", loadWatchedArtifacts);
+  els.webBackButton.addEventListener("click", () => {
+    if (bridge.middleWebGoBack) bridge.middleWebGoBack().catch((error) => setLastEvent(`Web back failed: ${error.message}`));
+  });
+  els.webForwardButton.addEventListener("click", () => {
+    if (bridge.middleWebGoForward) bridge.middleWebGoForward().catch((error) => setLastEvent(`Web forward failed: ${error.message}`));
+  });
+  els.webReloadButton.addEventListener("click", () => {
+    const action = state.middleWeb?.loading ? bridge.middleWebStop : bridge.middleWebReload;
+    if (action) action().catch((error) => setLastEvent(`Web ${state.middleWeb?.loading ? "stop" : "reload"} failed: ${error.message}`));
+  });
+  els.webCopyUrlButton.addEventListener("click", async () => {
+    try {
+      const result = await bridge.middleWebCopyUrl?.();
+      setLastEvent(result?.ok ? "Copied Web tab URL." : `Copy URL blocked: ${result?.error || "unknown error"}`);
+    } catch (error) {
+      setLastEvent(`Copy URL failed: ${error.message}`);
+    }
+  });
+  els.webOpenExternalButton.addEventListener("click", async () => {
+    try {
+      const result = await bridge.middleWebOpenExternal?.();
+      setLastEvent(result?.ok ? "Opened Web tab externally." : `Open external blocked: ${result?.error || "unknown error"}`);
+    } catch (error) {
+      setLastEvent(`Open external failed: ${error.message}`);
+    }
+  });
 
   els.leftSplitter.addEventListener("pointerdown", (event) => beginDrag("left", event));
   els.rightSplitter.addEventListener("pointerdown", (event) => beginDrag("right", event));
 
   window.addEventListener("resize", scheduleResizeBurst);
+  document.addEventListener("wheel", handlePlaneZoomWheel, { passive: false, capture: true });
   if (window.visualViewport) window.visualViewport.addEventListener("resize", scheduleResizeBurst);
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) scheduleResizeBurst();
@@ -3443,14 +4445,30 @@ function bindEvents() {
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && els.threadDrawer.classList.contains("open")) closeThreadDrawer();
     else if (event.key === "Escape" && els.drawer.classList.contains("open")) closeDrawer();
+    if (event.key === "Escape") bridge.dismissCodexComposerOverlay?.("shell-escape").catch(() => {});
   });
+
+  document.addEventListener("pointerdown", () => {
+    bridge.dismissCodexComposerOverlay?.("shell-pointerdown").catch(() => {});
+  }, true);
+
+  document.addEventListener("focusin", () => {
+    bridge.dismissCodexComposerOverlay?.("shell-focusin").catch(() => {});
+  }, true);
 
   const resizeObserver = new ResizeObserver(scheduleResizeBurst);
   resizeObserver.observe(els.appShell);
   resizeObserver.observe(els.codexSlot);
   resizeObserver.observe(els.chatgptSlot);
+  if (els.subAgentsSlot) resizeObserver.observe(els.subAgentsSlot);
+  if (els.middleWebSlot) resizeObserver.observe(els.middleWebSlot);
+  if (els.controlPlane) els.controlPlane.addEventListener("scroll", scheduleResizeBurst, { passive: true });
 
   bridge.onSurfaceEvent((event) => {
+    if (event.surface === "codex" && event.type === "focus-sub-agent") {
+      handleCodexFocusSubAgent(event);
+      return;
+    }
     if (event.surface === "codex" || event.surface === "chatgpt") {
       state.surfaceEvents[event.surface] = event;
       renderStatus();
@@ -3460,11 +4478,34 @@ function bindEvents() {
       if (event.type === "settings-opened") setLastEvent(`ChatGPT settings requested via ${event.method}.`);
       if (event.type === "settings-open-failed") setLastEvent(`ChatGPT settings request failed via ${event.method}.`);
       if (event.surface === "codex" && event.type === "thread-state") handleCodexThreadState(event);
+      if (event.surface === "codex" && event.type === "agent-graph") handleCodexAgentGraph(event);
     }
   });
 
   bridge.onShellEvent((event) => {
+    if (event.type === "config-updated" && event.config) {
+      state.config = event.config;
+      render();
+    }
     if (event.type === "layout-request") scheduleResizeBurst();
+    if (event.type === "middle-web-open-requested") {
+      setMiddleTab("web");
+    }
+    if (event.type === "middle-web-state") {
+      state.middleWeb = {
+        ...state.middleWeb,
+        ...event,
+      };
+      delete state.middleWeb.type;
+      delete state.middleWeb.webEventType;
+      renderMiddleWebTab();
+      scheduleResizeBurst();
+      if (event.webEventType === "navigation-blocked") setLastEvent(event.lastError || "Middle Web navigation blocked.");
+      else if (event.webEventType === "load-failed") setLastEvent(`Middle Web load failed: ${event.lastError || event.errorDescription || "unknown error"}`);
+    }
+    if (event.type === "plane-zoom-state" && event.plane === "middle") {
+      applyMiddlePlaneZoom(event.zoomFactor);
+    }
     if (event.type === "backend-status" && event.session?.projectId) {
       state.workspaceStatuses[event.session.projectId] = event.session;
       renderSelectedProject();
@@ -3515,6 +4556,7 @@ async function init() {
     document.body.innerHTML = "<main style='padding:24px;color:white'>Electron preload bridge is unavailable.</main>";
     return;
   }
+  applyMiddlePlaneZoom(PLANE_ZOOM_DEFAULT);
   bindEvents();
   const result = await bridge.loadConfig();
   state.config = result.config;

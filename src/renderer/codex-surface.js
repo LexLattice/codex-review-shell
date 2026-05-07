@@ -22,6 +22,13 @@ const USER_MESSAGE_PAGE_SIZE = 10;
 const USER_MESSAGE_PREVIEW_LINES = 10;
 const MAX_COMMAND_OUTPUT_CHARS = 1200;
 const EMPTY_TURN_AUTO_RETRY_LIMIT = 1;
+const DEFAULT_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"];
+const APPROVAL_POLICY_OPTIONS = ["", "untrusted", "on-failure", "on-request", "never"];
+const SANDBOX_MODE_OPTIONS = ["", "read-only", "workspace-write", "danger-full-access"];
+const MODEL_LIST_PAGE_LIMIT = 100;
+const MODEL_LIST_PAGE_SIZE = 100;
+const RATE_LIMIT_STALE_MS = 5 * 60 * 1000;
+const CONTEXT_BASELINE_TOKENS = 12000;
 const THOUGHT_ITEM_TYPES = new Set([
   "reasoning",
   "commandExecution",
@@ -30,14 +37,12 @@ const THOUGHT_ITEM_TYPES = new Set([
   "dynamicToolCall",
   "webSearch",
   "imageGeneration",
-  "collabAgentToolCall",
 ]);
 const TOOL_LIKE_THOUGHT_TYPES = new Set([
   "commandExecution",
   "mcpToolCall",
   "dynamicToolCall",
   "webSearch",
-  "collabAgentToolCall",
 ]);
 const DIRECT_FIXTURE_TRANSPORT = "direct-fixture";
 const THOUGHT_ASSISTANT_PHASES = new Set([
@@ -49,6 +54,40 @@ const state = {
   threadId: "",
   threadTitle: "",
   turnId: "",
+  activeModel: "",
+  accountState: null,
+  models: [],
+  modelListStatus: "idle",
+  modelListError: "",
+  rateLimits: null,
+  rateLimitsStatus: "idle",
+  rateLimitsError: "",
+  rateLimitsObservedAt: 0,
+  tokenUsage: null,
+  tokenUsageStatus: "idle",
+  tokenUsageObservedAt: 0,
+  configRequirements: null,
+  configRequirementsStatus: "idle",
+  configRequirementsError: "",
+  runtimePreferencesStatus: "idle",
+  runtimePreferencesError: "",
+  runtimeOverrides: {
+    model: project?.codex?.model || "",
+    reasoningEffort: project?.codex?.reasoningEffort || "",
+    approvalPolicy: "",
+    sandboxMode: "",
+    serviceTier: "",
+  },
+  workspaceStatus: payload.workspaceStatus || null,
+  connectionStatus: connection?.wsUrl ? "loading" : "unavailable",
+  runtimeConstitution: null,
+  runtimeDrawerOpen: false,
+  runtimeDrawerTab: "runtime",
+  composerMenu: "",
+  composerGeometryObserver: null,
+  activeTurnId: "",
+  turnPending: false,
+  turnStopping: false,
   itemMap: new Map(),
   codexItemMap: new Map(),
   thoughtItemMap: new Map(),
@@ -63,6 +102,10 @@ const state = {
   connected: false,
   readyForThreadOpen: false,
   pendingOpenThreadEvent: null,
+  threadMeta: null,
+  agentGraph: null,
+  agentGraphRevision: 0,
+  agentHydrationRequests: new Map(),
   liveAttached: false,
   sourceHome: "",
   sessionFilePath: "",
@@ -71,6 +114,12 @@ const state = {
   historyKey: "",
   historyData: null,
   loadedUserMessagePages: 1,
+  historyWindow: {
+    logicalThreadKey: "",
+    mode: "tail",
+    loadedUserMessagePages: 1,
+    renderRevision: 0,
+  },
   isBulkRendering: false,
   removeBridgeListener: null,
 };
@@ -83,6 +132,16 @@ function hasCapability(area, name) {
   const capabilities = capabilityArea(area);
   if (!Object.keys(capabilities).length) return true;
   return capabilities[name] !== false;
+}
+
+function hasCapabilityForMutation(area, name) {
+  return capabilityArea(area)[name] === true;
+}
+
+function hasScopedRuntimeCapability(area, scopedName, legacyArea, legacyName) {
+  const scoped = capabilityArea(area);
+  if (Object.hasOwn(scoped, scopedName)) return scoped[scopedName] === true;
+  return hasCapabilityForMutation(legacyArea, legacyName);
 }
 
 async function reportThreadState(status, details = {}) {
@@ -104,16 +163,187 @@ async function reportThreadState(status, details = {}) {
   }
 }
 
+async function reportAgentGraph() {
+  if (!bridge?.reportAgentGraph) return;
+  const graph = state.agentGraph;
+  if (!graph || String(graph.primaryThreadId || "") !== String(state.threadId || "")) return;
+  const agents = Array.from(graph.agents.values()).map((agent) => ({
+    threadId: agent.threadId,
+    parentThreadId: agent.parentThreadId,
+    agentPath: agent.agentPath || "",
+    label: agent.label,
+    nickname: agent.nickname,
+    role: agent.role,
+    status: agent.status,
+    activityStatus: agent.activityStatus,
+    hydrationStatus: agent.hydrationStatus,
+    lastAction: agent.lastAction || null,
+    promptPreview: agent.promptPreview || "",
+    transcript: Array.isArray(agent.transcript) ? agent.transcript.slice(-12) : [],
+    evidenceRefs: Array.isArray(agent.evidenceRefs) ? agent.evidenceRefs : [],
+  }));
+  try {
+    await bridge.reportAgentGraph({
+      projectId: project?.id || payload.codexConnection?.projectId || "",
+      primaryThreadId: state.threadId,
+      sourceHome: state.sourceHome,
+      sessionFilePath: state.sessionFilePath,
+      graphRevision: state.agentGraphRevision,
+      activationEpoch: Number(payload.activationEpoch) || 0,
+      agents,
+      activeCount: agents.filter((agent) => ["running", "pending", "inProgress"].includes(String(agent.status || ""))).length,
+      completedCount: agents.filter((agent) => String(agent.status || "") === "completed").length,
+      erroredCount: agents.filter((agent) => ["failed", "errored"].includes(String(agent.status || ""))).length,
+    });
+  } catch {
+    // Agent graph reporting is advisory and must not block transcript rendering.
+  }
+}
+
+function shortAgentThreadId(threadId) {
+  const id = String(threadId || "").trim();
+  if (!id) return "";
+  return id.length <= 8 ? id : id.slice(0, 8);
+}
+
+function nullableFiniteNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function extractSubagentSourceMeta(source = {}) {
+  const spawn = source?.subagent?.thread_spawn ||
+    source?.subAgent?.threadSpawn ||
+    source?.subagent?.threadSpawn ||
+    source?.subAgent?.thread_spawn ||
+    null;
+  if (!spawn) return null;
+  return {
+    parentThreadId: String(spawn.parent_thread_id || spawn.parentThreadId || ""),
+    agentNickname: String(spawn.agent_nickname || spawn.agentNickname || ""),
+    agentRole: String(spawn.agent_role || spawn.agentRole || ""),
+    agentPath: String(spawn.agent_path || spawn.agentPath || ""),
+    depth: nullableFiniteNumber(spawn.depth),
+  };
+}
+
+function threadAgentMeta(input = {}) {
+  const sourceMeta = extractSubagentSourceMeta(input.source || input.threadMeta?.source || {});
+  const threadMeta = input.threadMeta || input;
+  const parentThreadId = String(
+    threadMeta.parentThreadId ||
+    threadMeta.parent_thread_id ||
+    sourceMeta?.parentThreadId ||
+    "",
+  );
+  const agentNickname = String(
+    threadMeta.agentNickname ||
+    threadMeta.agent_nickname ||
+    sourceMeta?.agentNickname ||
+    "",
+  );
+  const agentRole = String(
+    threadMeta.agentRole ||
+    threadMeta.agent_role ||
+    sourceMeta?.agentRole ||
+    "",
+  );
+  const agentPath = String(
+    threadMeta.agentPath ||
+    threadMeta.agent_path ||
+    sourceMeta?.agentPath ||
+    "",
+  );
+  const depthValue = threadMeta.depth ?? sourceMeta?.depth;
+  return {
+    threadId: String(threadMeta.threadId || threadMeta.id || state.threadId || ""),
+    isSubagent: Boolean(threadMeta.isSubagent || threadMeta.is_subagent || sourceMeta || parentThreadId),
+    parentThreadId,
+    agentNickname,
+    agentRole,
+    agentPath,
+    depth: nullableFiniteNumber(depthValue),
+  };
+}
+
+function agentDisplayLabel(meta = {}) {
+  const nickname = String(meta.agentNickname || meta.nickname || "").trim();
+  const role = String(meta.agentRole || meta.role || "").trim();
+  const id = shortAgentThreadId(meta.threadId || "");
+  if (nickname && role) return `${nickname} [${role}]`;
+  if (nickname) return nickname;
+  if (role && id) return `Agent ${id} [${role}]`;
+  if (id) return `Agent ${id}`;
+  return "Unknown agent";
+}
+
+function parentAgentLabel(meta = {}) {
+  const parentId = String(meta.parentThreadId || "").trim();
+  if (parentId && parentId === String(state.threadId || "")) return "Primary Codex";
+  if (parentId) return `Parent agent ${shortAgentThreadId(parentId)}`;
+  return "Parent agent";
+}
+
+function setActiveThreadMeta(meta = {}) {
+  state.threadMeta = threadAgentMeta(meta);
+}
+
+function currentAuthorContext(meta = state.threadMeta) {
+  const normalized = threadAgentMeta(meta || {});
+  const agentLabel = agentDisplayLabel(normalized);
+  return {
+    ...normalized,
+    agentLabel,
+    parentLabel: parentAgentLabel(normalized),
+    userRole: normalized.isSubagent ? "system" : "user",
+    userTitle: normalized.isSubagent ? `${parentAgentLabel(normalized)} -> ${agentLabel}` : "You",
+    assistantTitle: normalized.isSubagent ? agentLabel : "Codex",
+  };
+}
+
+function resetAgentGraph(threadId = state.threadId) {
+  state.agentGraphRevision += 1;
+  const primaryThreadId = String(threadId || "");
+  state.agentGraph = {
+    schemaVersion: 1,
+    graphId: `${primaryThreadId || "thread"}:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 8)}`,
+    primaryThreadId,
+    agents: new Map(),
+    updatedAt: new Date().toISOString(),
+  };
+  state.agentHydrationRequests.clear();
+  reportAgentGraph();
+}
+
 const els = {
   projectName: document.getElementById("projectName"),
   repoPath: document.getElementById("repoPath"),
   connectionBadge: document.getElementById("connectionBadge"),
   accountBadge: document.getElementById("accountBadge"),
   modelBadge: document.getElementById("modelBadge"),
+  reasoningBadge: document.getElementById("reasoningBadge"),
+  accessBadge: document.getElementById("accessBadge"),
+  usageBadge: document.getElementById("usageBadge"),
+  runtimeDrawerButton: document.getElementById("runtimeDrawerButton"),
+  environmentChipCluster: document.getElementById("environmentChipCluster"),
+  controlChipCluster: document.getElementById("controlChipCluster"),
+  runtimeDrawer: document.getElementById("runtimeDrawer"),
+  runtimeDrawerTitle: document.getElementById("runtimeDrawerTitle"),
+  runtimeDrawerUpdated: document.getElementById("runtimeDrawerUpdated"),
+  runtimeDrawerClose: document.getElementById("runtimeDrawerClose"),
+  runtimeDrawerTabs: document.getElementById("runtimeDrawerTabs"),
+  runtimeDrawerBody: document.getElementById("runtimeDrawerBody"),
   transcript: document.getElementById("transcript"),
   composerForm: document.getElementById("composerForm"),
   composerInput: document.getElementById("composerInput"),
   sendButton: document.getElementById("sendButton"),
+  composerAccessButton: document.getElementById("composerAccessButton"),
+  composerAccessMenu: document.getElementById("composerAccessMenu"),
+  composerModelButton: document.getElementById("composerModelButton"),
+  composerModelMenu: document.getElementById("composerModelMenu"),
+  composerQuotaChip: document.getElementById("composerQuotaChip"),
+  composerContextChip: document.getElementById("composerContextChip"),
 };
 
 function workspaceText() {
@@ -129,11 +359,14 @@ function updateSurfaceHeader(title = "", detail = "") {
   els.projectName.title = state.threadTitle || project?.name || "";
   els.repoPath.textContent = detail || workspaceText();
   els.repoPath.title = detail || workspaceText();
+  renderRuntimeConstitution();
 }
 
 function setBadge(element, text, className = "") {
+  if (!element) return;
+  const baseClass = element.classList.contains("runtime-chip") ? "runtime-chip" : "badge";
   element.textContent = text;
-  element.className = `badge${className ? ` ${className}` : ""}`;
+  element.className = `${baseClass}${className ? ` ${className}` : ""}`;
 }
 
 function setNotice() {}
@@ -141,12 +374,13 @@ function setNotice() {}
 function setComposerEnabled(enabled, placeholder = "") {
   const nextEnabled = Boolean(enabled);
   els.composerInput.disabled = !nextEnabled;
-  els.sendButton.disabled = !nextEnabled;
+  els.sendButton.disabled = !nextEnabled && !turnIsActive();
   if (nextEnabled) {
     els.composerInput.placeholder = "Ask Codex to inspect, change, or explain the project…";
   } else if (placeholder) {
     els.composerInput.placeholder = placeholder;
   }
+  renderComposerRuntimeBand();
 }
 
 function compactValue(value, maxLength = 240) {
@@ -158,6 +392,1548 @@ function compactValue(value, maxLength = 240) {
   } catch {
     return String(value).slice(0, maxLength);
   }
+}
+
+const RUNTIME_DRAWER_TABS = [
+  ["runtime", "Runtime"],
+  ["model", "Model"],
+  ["access", "Access"],
+  ["usage", "Usage"],
+  ["capabilities", "Capabilities"],
+  ["environment", "Environment"],
+  ["advanced", "Advanced"],
+];
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
+function evidenceRef(kind, label, options = {}) {
+  return {
+    id: `${kind}_${Math.random().toString(16).slice(2, 10)}`,
+    kind,
+    label: String(label || kind),
+    observedAt: options.observedAt || nowIso(),
+    status: options.status || "fresh",
+    confidence: options.confidence || "observed",
+  };
+}
+
+function firstEvidence(refs) {
+  return Array.isArray(refs) && refs.length ? refs[0] : null;
+}
+
+function workspaceRootText() {
+  return connection?.workspaceRoot || project?.workspace?.linuxPath || project?.workspace?.localPath || project?.repoPath || "";
+}
+
+function basenameFromPath(value) {
+  const text = String(value || "").replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!text) return "";
+  return text.split("/").filter(Boolean).pop() || text;
+}
+
+function connectionLabel() {
+  if (!connection?.wsUrl) return "offline";
+  const provider = providerProfile();
+  const providerSuffix = provider?.flavor ? ` · ${provider.flavor}` : "";
+  if (state.connectionStatus === "connected") return `${connection?.runtime || "connected"}${providerSuffix}`;
+  if (state.connectionStatus === "connecting") return "connecting";
+  if (state.connectionStatus === "error") return "error";
+  if (state.connectionStatus === "disconnected") return "offline";
+  return `${connection?.runtime || "configured"}${providerSuffix}`;
+}
+
+function providerProfile() {
+  return connection?.capabilities?.provider || connection?.provider || {
+    kind: project?.codex?.provider?.kind || project?.codex?.providerKind || "codex_executable",
+    flavor: project?.codex?.provider?.flavor || project?.codex?.providerFlavor || "vanilla",
+    label: "Codex executable · vanilla",
+    status: connection?.wsUrl ? "configured" : "unknown",
+    capabilitySource: "project_config",
+  };
+}
+
+function providerSettingsProjection() {
+  return providerProfile()?.settingsProjection || {};
+}
+
+function settingScopeEnabled(scope) {
+  return Boolean(scope?.nextTurn || scope?.sessionDefault || scope?.projectDefault || scope?.liveThread);
+}
+
+function runtimeStateStatusFromConnection(value) {
+  if (value === "connected") return "ready";
+  if (value === "connecting") return "loading";
+  if (value === "error") return "failed";
+  if (value === "disconnected" || value === "unavailable") return "unavailable";
+  return value || "unknown";
+}
+
+function activeModelId() {
+  return state.runtimeOverrides.model || state.activeModel || project?.codex?.model || defaultModelId();
+}
+
+function modelLabel() {
+  const id = activeModelId();
+  const model = modelById(id);
+  return model?.displayName || model?.model || id || "default model";
+}
+
+function selectedModel() {
+  return modelById(activeModelId());
+}
+
+function defaultModelId() {
+  const defaultModel = state.models.find((model) => model?.isDefault) || null;
+  return defaultModel?.model || defaultModel?.id || "";
+}
+
+function modelById(value) {
+  const id = String(value || "").trim();
+  if (!id) return null;
+  return state.models.find((model) => model?.id === id || model?.model === id) || null;
+}
+
+function supportedReasoningOptions() {
+  const model = selectedModel();
+  const options = Array.isArray(model?.supportedReasoningEfforts)
+    ? model.supportedReasoningEfforts
+      .map((item) => String(item?.reasoningEffort || item?.reasoning_effort || "").trim())
+      .filter(Boolean)
+    : [];
+  return options.length ? options : DEFAULT_REASONING_EFFORTS;
+}
+
+function reasoningLabel() {
+  return state.runtimeOverrides.reasoningEffort || project?.codex?.reasoningEffort || selectedModel()?.defaultReasoningEffort || "unknown";
+}
+
+function requestedReasoningEffort() {
+  return state.runtimeOverrides.reasoningEffort || project?.codex?.reasoningEffort || null;
+}
+
+function approvalPolicyLabel() {
+  return state.runtimeOverrides.approvalPolicy || "runtime default";
+}
+
+function sandboxModeLabel() {
+  return state.runtimeOverrides.sandboxMode || "runtime default";
+}
+
+function serviceTierLabel() {
+  return state.runtimeOverrides.serviceTier || "runtime default";
+}
+
+function defaultReasoningEffort() {
+  return selectedModel()?.defaultReasoningEffort || "";
+}
+
+function clearedModelId() {
+  return state.activeModel || project?.codex?.model || defaultModelId();
+}
+
+function clearedReasoningEffort() {
+  return project?.codex?.reasoningEffort || defaultReasoningEffort();
+}
+
+function defaultServiceTier() {
+  const settingsProjection = providerSettingsProjection();
+  return String(
+    settingsProjection.serviceTier?.defaultTier ||
+    settingsProjection.serviceTier?.defaultServiceTier ||
+    settingsProjection.serviceTier?.defaultValue ||
+    settingsProjection.speed?.defaultTier ||
+    settingsProjection.speed?.defaultServiceTier ||
+    settingsProjection.speed?.defaultValue ||
+    "",
+  ).trim();
+}
+
+function defaultOptionLabel(value, fallback = "Runtime default") {
+  const text = String(value || "").trim();
+  return text ? `${text} · default` : fallback;
+}
+
+function camelOrSnake(value, camelKey, snakeKey) {
+  if (!value || typeof value !== "object") return undefined;
+  return value[camelKey] ?? value[snakeKey];
+}
+
+function configRequirementsObject() {
+  return state.configRequirements?.requirements || state.configRequirements || null;
+}
+
+function normalizeRequirementList(values) {
+  if (!Array.isArray(values)) return null;
+  return values
+    .map((value) => {
+      if (typeof value === "string") return value.trim();
+      if (value && typeof value === "object") return String(value.type || value.value || value.name || "").trim();
+      return "";
+    })
+    .filter(Boolean);
+}
+
+function allowedApprovalPoliciesFromRequirements() {
+  const requirements = configRequirementsObject();
+  return normalizeRequirementList(camelOrSnake(requirements, "allowedApprovalPolicies", "allowed_approval_policies"));
+}
+
+function allowedSandboxModesFromRequirements() {
+  const requirements = configRequirementsObject();
+  return normalizeRequirementList(camelOrSnake(requirements, "allowedSandboxModes", "allowed_sandbox_modes"));
+}
+
+function accessRequirementsRows() {
+  const requirements = configRequirementsObject();
+  const allowedApprovals = allowedApprovalPoliciesFromRequirements();
+  const allowedSandbox = allowedSandboxModesFromRequirements();
+  return [
+    ["requirements status", state.configRequirementsStatus || "unknown"],
+    ["requirements source", requirements ? "configRequirements/read" : "none"],
+    ["allowed approvals", allowedApprovals ? allowedApprovals.join(", ") || "none" : "unrestricted"],
+    ["allowed sandbox", allowedSandbox ? allowedSandbox.join(", ") || "none" : "unrestricted"],
+    ...(state.configRequirementsError ? [["requirements error", state.configRequirementsError]] : []),
+  ];
+}
+
+function accessChipLabel() {
+  if (state.runtimeOverrides.approvalPolicy || state.runtimeOverrides.sandboxMode) {
+    return `access: ${approvalPolicyLabel()} · ${sandboxModeLabel()}`;
+  }
+  const authority = capabilityArea("authority");
+  const requestHandlingKnown = Boolean(authority.commandApproval || authority.fileChangeApproval || authority.permissionsApproval);
+  return requestHandlingKnown ? "access: requests gated" : "access: policy unknown";
+}
+
+function sandboxPolicyForMode(mode) {
+  if (mode === "read-only") return { type: "readOnly" };
+  if (mode === "workspace-write") return { type: "workspaceWrite" };
+  if (mode === "danger-full-access") return { type: "dangerFullAccess" };
+  return null;
+}
+
+function rateLimitWindowLabel(window, fallbackLabel = "window") {
+  if (!window || typeof window !== "object") return "";
+  const duration = Number(window.windowDurationMins || 0);
+  if (duration === 300) return "5h";
+  if (duration === 10080) return "weekly";
+  if (duration > 0 && duration < 60) return `${duration}m`;
+  if (duration > 0 && duration % 1440 === 0) return `${duration / 1440}d`;
+  if (duration > 0 && duration % 60 === 0) return `${duration / 60}h`;
+  return fallbackLabel;
+}
+
+function rateLimitAvailablePercent(window) {
+  if (!window || typeof window !== "object") return null;
+  const used = Number(window.usedPercent ?? window.used_percent);
+  if (!Number.isFinite(used)) return null;
+  return Math.max(0, Math.min(100, 100 - Math.round(used)));
+}
+
+function resetTimestampMs(window) {
+  const raw = Number(window?.resetsAt ?? window?.resets_at ?? window?.resetAt ?? window?.reset_at ?? 0);
+  if (!Number.isFinite(raw) || raw <= 0) return 0;
+  return raw > 1_000_000_000_000 ? raw : raw * 1000;
+}
+
+function resetLabel(window, compact = false) {
+  const timestamp = resetTimestampMs(window);
+  if (!timestamp) return compact ? "--:--" : "unknown";
+  const date = new Date(timestamp);
+  const label = rateLimitWindowLabel(window, "");
+  const options = label === "weekly"
+    ? { weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false }
+    : { hour: "2-digit", minute: "2-digit", hour12: false };
+  return new Intl.DateTimeFormat(undefined, options).format(date);
+}
+
+function formatResetTime(window) {
+  return resetLabel(window, false);
+}
+
+function quotaWindowShortLabel(window, fallbackLabel = "window") {
+  const label = rateLimitWindowLabel(window, fallbackLabel);
+  if (label === "weekly") return "W";
+  return label;
+}
+
+function quotaWindowPriority(label) {
+  if (label === "5h") return 1;
+  if (label === "W") return 2;
+  return 10;
+}
+
+function quotaWindows(snapshot) {
+  return [snapshot?.primary, snapshot?.secondary].filter(Boolean).map((window, index) => ({
+    window,
+    label: quotaWindowShortLabel(window, index === 0 ? "primary" : "secondary"),
+    available: rateLimitAvailablePercent(window),
+    reset: resetLabel(window, true),
+  })).filter((entry) => entry.available != null);
+}
+
+function quotaEvidenceStale() {
+  if (!state.rateLimitsObservedAt) return false;
+  return Date.now() - state.rateLimitsObservedAt > RATE_LIMIT_STALE_MS;
+}
+
+function selectRateLimitSnapshot() {
+  const response = state.rateLimits || {};
+  const buckets = response.rateLimitsByLimitId || response.rate_limits_by_limit_id || {};
+  return buckets.codex || buckets.default || response.rateLimits || response.rate_limits || null;
+}
+
+function formatQuotaHeader() {
+  const snapshot = selectRateLimitSnapshot();
+  if (!snapshot) return "quota: not exposed";
+  const parts = quotaWindows(snapshot).map((entry) => `${entry.label} ${entry.available}%`);
+  return parts.length ? `quota left: ${parts.join(" · ")}` : "quota: available";
+}
+
+function composerQuotaLabel() {
+  const snapshot = selectRateLimitSnapshot();
+  if (!snapshot) return state.rateLimitsStatus === "failed" ? "quota unavailable" : "quota unknown";
+  const windows = quotaWindows(snapshot).sort((a, b) =>
+    quotaWindowPriority(a.label) - quotaWindowPriority(b.label) || a.available - b.available);
+  if (!windows.length) return quotaEvidenceStale() ? "quota stale" : "quota available";
+  const visible = windows.slice(0, 2).map((entry) => `${entry.label} ${entry.available}% ${entry.reset}`);
+  const label = visible.join(" / ");
+  return quotaEvidenceStale() ? `${label} · stale` : label;
+}
+
+function numericField(source, ...keys) {
+  for (const key of keys) {
+    const value = Number(source?.[key]);
+    if (Number.isFinite(value)) return value;
+  }
+  return null;
+}
+
+function formatCompactTokens(value) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount) || amount < 0) return "";
+  if (amount === 0) return "0";
+  if (amount >= 1_000_000) return `${(amount / 1_000_000).toFixed(amount >= 10_000_000 ? 0 : 1)}M`;
+  if (amount >= 1000) return `${(amount / 1000).toFixed(amount >= 10_000 ? 0 : 1)}k`;
+  return String(Math.round(amount));
+}
+
+function normalizeTokenUsageBreakdown(raw) {
+  const value = raw && typeof raw === "object" ? raw : {};
+  return {
+    totalTokens: numericField(value, "totalTokens", "total_tokens") ?? 0,
+    inputTokens: numericField(value, "inputTokens", "input_tokens") ?? 0,
+    cachedInputTokens: numericField(value, "cachedInputTokens", "cached_input_tokens") ?? 0,
+    outputTokens: numericField(value, "outputTokens", "output_tokens") ?? 0,
+    reasoningOutputTokens: numericField(value, "reasoningOutputTokens", "reasoning_output_tokens") ?? 0,
+  };
+}
+
+function normalizeThreadTokenUsageUpdate(params) {
+  const raw = params?.tokenUsage || params?.token_usage || params || {};
+  return {
+    threadId: String(params?.threadId || params?.thread_id || ""),
+    turnId: String(params?.turnId || params?.turn_id || ""),
+    total: normalizeTokenUsageBreakdown(raw.total || raw.total_token_usage),
+    last: normalizeTokenUsageBreakdown(raw.last || raw.last_token_usage),
+    modelContextWindow: numericField(raw, "modelContextWindow", "model_context_window"),
+  };
+}
+
+function remainingContextPercent(tokensInWindow, contextWindow) {
+  const window = Number(contextWindow);
+  const tokens = Number(tokensInWindow);
+  if (!Number.isFinite(window) || !Number.isFinite(tokens) || window <= CONTEXT_BASELINE_TOKENS) return null;
+  const effectiveWindow = window - CONTEXT_BASELINE_TOKENS;
+  const used = Math.max(0, tokens - CONTEXT_BASELINE_TOKENS);
+  const remaining = Math.max(0, effectiveWindow - used);
+  return Math.round(Math.max(0, Math.min(100, (remaining / effectiveWindow) * 100)));
+}
+
+function contextUsageProjection() {
+  const usage = state.tokenUsage;
+  if (!usage) {
+    const status = state.tokenUsageStatus === "failed" ? "failed" : "not_exposed";
+    return {
+      label: status === "failed" ? "context unavailable" : "context: not exposed",
+      compactLabel: status === "failed" ? "context unavailable" : "context unknown",
+      status,
+      evidenceRefs: [evidenceRef("app_server_probe", "No thread/tokenUsage/updated event has been observed for this Codex thread", {
+        status: "unavailable",
+        confidence: "unknown",
+      })],
+    };
+  }
+
+  const window = Number(usage.modelContextWindow || 0);
+  const lastTokens = Number(usage.last?.totalTokens || 0);
+  const totalTokens = Number(usage.total?.totalTokens || 0);
+  const remaining = remainingContextPercent(lastTokens, window);
+  const usedPercent = remaining == null ? null : Math.max(0, Math.min(100, 100 - remaining));
+  const tokenLabel = formatCompactTokens(remaining == null ? totalTokens : lastTokens);
+  const windowLabel = formatCompactTokens(window);
+  const compactLabel = usedPercent == null
+    ? tokenLabel ? `context ${tokenLabel}` : "context available"
+    : `context ${usedPercent}%`;
+  const detail = usedPercent == null
+    ? tokenLabel ? `context: ${tokenLabel} tokens used` : "context: available"
+    : `context: ${usedPercent}% used`;
+  const label = windowLabel ? `${detail} · ${tokenLabel || "0"} / ${windowLabel} window` : detail;
+  return {
+    label,
+    compactLabel,
+    status: "available",
+    percentUsed: usedPercent,
+    percentRemaining: remaining,
+    tokensInContext: remaining == null ? totalTokens : lastTokens,
+    totalTokens,
+    modelContextWindow: window || null,
+    observedAt: state.tokenUsageObservedAt ? new Date(state.tokenUsageObservedAt).toISOString() : "",
+    tokenUsage: usage,
+    evidenceRefs: [evidenceRef("app_server_probe", "thread/tokenUsage/updated provided token usage and model context window", {
+      confidence: "proven",
+    })],
+  };
+}
+
+function applyThreadTokenUsageUpdate(params) {
+  const usage = normalizeThreadTokenUsageUpdate(params);
+  if (usage.threadId && state.threadId && String(usage.threadId) !== String(state.threadId)) return false;
+  state.tokenUsage = usage;
+  state.tokenUsageStatus = "ready";
+  state.tokenUsageObservedAt = Date.now();
+  renderRuntimeConstitution();
+  return true;
+}
+
+function turnIsActive() {
+  if (state.turnPending || state.turnStopping) return true;
+  const activeId = String(state.activeTurnId || state.turnId || "");
+  if (!activeId) return false;
+  const activity = state.turnActivityMap.get(activeId);
+  return Boolean(activity && !activity.completedAt && ["inProgress", "running", "pending", "started", "interrupting"].includes(String(activity.status || "").trim()));
+}
+
+function countCodexItems(typeSet) {
+  let count = 0;
+  const seen = new Set();
+  for (const item of state.codexItemMap.values()) {
+    const id = String(item?.id || "");
+    if (id && seen.has(id)) continue;
+    if (id) seen.add(id);
+    if (typeSet.has(item?.type)) count += 1;
+  }
+  return count;
+}
+
+function sessionDurationMs() {
+  let first = 0;
+  let last = 0;
+  for (const activity of state.turnActivityMap.values()) {
+    const started = Number(activity?.startedAt || 0) * 1000;
+    const completed = Number(activity?.completedAt || 0) * 1000;
+    if (started && (!first || started < first)) first = started;
+    if (completed && completed > last) last = completed;
+    else if (started && started > last) last = started;
+  }
+  return first && last && last >= first ? Math.round(last - first) : 0;
+}
+
+function buildRuntimeConstitution() {
+  const generatedAt = nowIso();
+  const rawCapabilities = connection?.capabilities || {};
+  const capabilityEvidence = evidenceRef(
+    rawCapabilities.provider ? "app_server_probe" : "runtime_snapshot",
+    rawCapabilities.provider ? "App-server capability profile includes runtime provider projection" : "Runtime capability projection unavailable or legacy",
+    { confidence: rawCapabilities.provider ? "declared" : "unknown", status: rawCapabilities.provider ? "fresh" : "unavailable" },
+  );
+  const connectionEvidence = evidenceRef(
+    connection?.wsUrl ? "runtime_snapshot" : "project_config",
+    connection?.wsUrl ? "Codex app-server connection payload" : "No managed app-server connection payload",
+    { confidence: connection?.wsUrl ? "declared" : "configured" },
+  );
+  const threadEvidence = evidenceRef(
+    state.liveAttached ? "app_server_probe" : state.threadId ? "renderer_observation" : "project_config",
+    state.liveAttached ? "Codex surface live-attached the thread" : state.threadId ? "Codex surface rendered or requested the thread" : "No active thread evidence yet",
+    { confidence: state.liveAttached ? "proven" : state.threadId ? "observed" : "unknown" },
+  );
+  const account = state.accountState || {
+    label: "account unknown",
+    status: "unknown",
+    truth: "unknown",
+    evidenceRefs: [evidenceRef("account_read", "Account has not been read yet", { status: "unavailable", confidence: "unknown" })],
+  };
+  const settingsProjection = providerSettingsProjection();
+  const canOverrideModel = settingsProjection.model?.scopes?.nextTurn === true ||
+    hasScopedRuntimeCapability("model", "canSetNextTurn", "turns", "canOverrideModel");
+  const canOverrideReasoning = settingsProjection.reasoning?.scopes?.nextTurn === true ||
+    hasScopedRuntimeCapability("reasoning", "canSetNextTurn", "turns", "canOverrideReasoning");
+  const authority = capabilityArea("authority");
+  const canSetApprovalPolicy = settingScopeEnabled(settingsProjection.access?.scopes?.approvalPolicy) ||
+    authority.canSetNextTurnApprovalPolicy === true ||
+    settingsProjection.access?.scopes?.nextTurnApprovalPolicy === true;
+  const canSetSandbox = settingScopeEnabled(settingsProjection.access?.scopes?.sandbox) ||
+    authority.canSetNextTurnSandbox === true ||
+    settingsProjection.access?.scopes?.nextTurnSandbox === true;
+  const canSetAccess = canSetApprovalPolicy || canSetSandbox;
+  const requestHandlingKnown = Boolean(authority.commandApproval || authority.fileChangeApproval || authority.permissionsApproval);
+  const accessLabel = accessChipLabel();
+  const allowedApprovalPolicies = allowedApprovalPoliciesFromRequirements();
+  const allowedSandboxModes = allowedSandboxModesFromRequirements();
+  const requirementsEvidence = evidenceRef(
+    "app_server_probe",
+    state.configRequirementsStatus === "ready"
+      ? "configRequirements/read returned managed requirements."
+      : state.configRequirementsStatus === "none"
+        ? "configRequirements/read returned no managed requirements."
+        : state.configRequirementsStatus === "failed"
+          ? `configRequirements/read failed: ${state.configRequirementsError}`
+          : "Config requirements have not been read yet.",
+    {
+      confidence: state.configRequirementsStatus === "ready" || state.configRequirementsStatus === "none" ? "declared" : "unknown",
+      status: state.configRequirementsStatus === "failed" ? "failed" : state.configRequirementsStatus === "idle" ? "unavailable" : "fresh",
+    },
+  );
+  const cwd = workspaceRootText() || workspaceText();
+  const repoName = basenameFromPath(cwd);
+  const workspaceStatus = state.workspaceStatus || payload.workspaceStatus || {};
+  const hygiene = workspaceStatus?.hygiene || {};
+  const sandboxPlaceholderIgnored = Boolean(
+    hygiene.available && (hygiene.changed || hygiene.reason === "already-ignored" || hygiene.pattern),
+  );
+  const commandCount = countCodexItems(new Set(["commandExecution"]));
+  const toolCallCount = countCodexItems(new Set(["mcpToolCall", "dynamicToolCall", "webSearch", "imageGeneration", "collabAgentToolCall"]));
+  const approvalCount = Array.from(state.serverRequests.values()).filter((request) => String(request?.riskCategory || "") !== "unknown").length;
+  const turnCount = state.turnActivityMap.size;
+  const rateLimitSnapshot = selectRateLimitSnapshot();
+  const providerQuota = rateLimitSnapshot ? {
+    canRead: settingsProjection.usage?.providerQuota?.canRead === true || settingsProjection.usage?.canReadRateLimits === true,
+    readMethod: settingsProjection.usage?.providerQuota?.readSource || settingsProjection.usage?.rateLimitMethod || "account/rateLimits/read",
+    eventName: settingsProjection.usage?.providerQuota?.eventSource || "account/rateLimits/updated",
+    label: formatQuotaHeader(),
+    status: "available",
+    snapshot: rateLimitSnapshot,
+    response: state.rateLimits,
+    evidenceRefs: [evidenceRef("provider_quota", "account/rateLimits/read returned provider quota windows", { confidence: "proven" })],
+  } : {
+    canRead: settingsProjection.usage?.providerQuota?.canRead === true || settingsProjection.usage?.canReadRateLimits === true,
+    readMethod: settingsProjection.usage?.providerQuota?.readSource || settingsProjection.usage?.rateLimitMethod || "",
+    eventName: settingsProjection.usage?.providerQuota?.eventSource || (settingsProjection.usage?.canReadRateLimits === true ? "account/rateLimits/updated" : ""),
+    label: state.rateLimitsStatus === "failed" ? "quota: unavailable" : "quota: not exposed",
+    status: state.rateLimitsStatus === "failed" ? "failed" : "not_exposed",
+    error: state.rateLimitsError,
+    evidenceRefs: [evidenceRef("provider_quota", state.rateLimitsError || "OpenAI account quota percentage is not exposed to this surface yet", { status: "unavailable", confidence: "unknown" })],
+  };
+  const projectedContextUsage = contextUsageProjection();
+  const contextPressure = {
+    canRead: settingsProjection.usage?.contextPressure?.canRead === true ||
+      hasCapabilityForMutation("usage", "canReadContextUsage"),
+    eventName: settingsProjection.usage?.contextPressure?.eventSource ||
+      settingsProjection.usage?.contextPressure?.source ||
+      capabilityArea("usage").contextUsageEvent ||
+      "thread/tokenUsage/updated",
+    ...projectedContextUsage,
+  };
+  const usageLabel = providerQuota.status === "available"
+    ? providerQuota.label
+    : contextPressure.status === "available"
+      ? contextPressure.label
+      : turnCount || commandCount || approvalCount || toolCallCount
+      ? `activity: ${turnCount} turn${turnCount === 1 ? "" : "s"}`
+      : "usage: unknown";
+
+  const constitution = {
+    thread: {
+      threadId: state.threadId,
+      title: state.threadTitle || project?.name || "Codex session",
+      source: state.liveAttached ? "attached_live" : state.threadId ? "rendered_stored" : "unknown",
+      status: state.liveAttached ? "attached_live" : state.threadId ? "rendered_stored" : "unknown",
+      evidenceRefs: [threadEvidence],
+      updatedAt: generatedAt,
+    },
+    runtime: {
+      kind: connection?.runtime || (connection?.wsUrl ? "remote" : "offline"),
+      label: connectionLabel(),
+      truth: connection?.wsUrl ? "runtime_declared" : "unknown",
+      status: state.connectionStatus === "connected" ? "ready" : state.connectionStatus || "unavailable",
+      evidenceRefs: [connectionEvidence],
+    },
+    provider: {
+      ...providerProfile(),
+      evidenceRefs: [
+        evidenceRef("runtime_snapshot", providerProfile()?.evidence?.reason || "Runtime provider profile", {
+          confidence: providerProfile()?.evidence?.confidence || "declared",
+        }),
+      ],
+    },
+    account,
+    model: {
+      label: modelLabel(),
+      source: state.runtimeOverrides.model ? "operator_requested" : state.activeModel ? "runtime_reported" : project?.codex?.model ? "project_config" : defaultModelId() ? "runtime_default" : "unknown",
+      selection: {
+        canList: settingsProjection.model?.canList === true && state.modelListStatus === "ready",
+        canSetNextTurn: canOverrideModel,
+        canSetSessionDefault: false,
+        canSetProjectDefault: false,
+        canLiveUpdate: false,
+        enabledScopes: canOverrideModel ? ["next_turn"] : [],
+        unsupportedReason: canOverrideModel ? "" : "Provider profile does not expose next-turn model override.",
+      },
+      models: state.models,
+      selectedId: activeModelId(),
+      truth: state.runtimeOverrides.model ? "operator_requested" : state.activeModel ? "runtime_declared" : project?.codex?.model ? "project_configured" : defaultModelId() ? "runtime_declared" : "unknown",
+      evidenceRefs: [
+        evidenceRef(state.runtimeOverrides.model ? "operator_action" : state.activeModel || defaultModelId() ? "app_server_probe" : "project_config", state.runtimeOverrides.model ? "Operator selected model for subsequent turns" : state.activeModel ? "Thread/model response" : defaultModelId() ? "model/list default model" : "Project model setting", {
+          confidence: state.runtimeOverrides.model ? "configured" : state.activeModel || defaultModelId() ? "declared" : project?.codex?.model ? "configured" : "unknown",
+        }),
+      ],
+    },
+    reasoning: {
+      label: `reasoning: ${reasoningLabel()}`,
+      selected: reasoningLabel(),
+      supported: supportedReasoningOptions(),
+      selection: {
+        canSetNextTurn: canOverrideReasoning,
+        canSetSessionDefault: false,
+        canSetProjectDefault: false,
+        canLiveUpdate: false,
+        enabledScopes: canOverrideReasoning ? ["next_turn"] : [],
+        unsupportedReason: canOverrideReasoning ? "" : "Provider profile does not expose next-turn reasoning override.",
+      },
+      truth: state.runtimeOverrides.reasoningEffort ? "operator_requested" : project?.codex?.reasoningEffort ? "project_configured" : selectedModel()?.defaultReasoningEffort ? "runtime_declared" : "unknown",
+      evidenceRefs: [
+        evidenceRef(state.runtimeOverrides.reasoningEffort ? "operator_action" : "project_config", state.runtimeOverrides.reasoningEffort ? "Operator selected reasoning effort for subsequent turns" : project?.codex?.reasoningEffort ? "Project reasoning effort setting" : "Model default reasoning effort", {
+          confidence: state.runtimeOverrides.reasoningEffort || project?.codex?.reasoningEffort ? "configured" : selectedModel()?.defaultReasoningEffort ? "declared" : "unknown",
+        }),
+      ],
+    },
+    access: {
+      label: accessLabel,
+      posture: state.runtimeOverrides.sandboxMode === "danger-full-access"
+        ? "danger_full_access"
+        : state.runtimeOverrides.sandboxMode
+          ? "restricted"
+          : state.runtimeOverrides.approvalPolicy
+            ? "approval"
+            : requestHandlingKnown
+              ? "requests_gated"
+              : "policy_unknown",
+      approvalPolicy: state.runtimeOverrides.approvalPolicy || "",
+      sandboxMode: state.runtimeOverrides.sandboxMode || "",
+      policyKnown: Boolean(state.runtimeOverrides.approvalPolicy || state.runtimeOverrides.sandboxMode),
+      requestHandlingKnown,
+      requirementsStatus: state.configRequirementsStatus,
+      allowedApprovalPolicies,
+      allowedSandboxModes,
+      mutableScopes: canSetAccess ? ["next_turn"] : [],
+      unsupportedReason: canSetAccess ? "" : "Provider profile does not expose next-turn access overrides.",
+      truth: state.runtimeOverrides.approvalPolicy || state.runtimeOverrides.sandboxMode ? "operator_requested" : requestHandlingKnown ? "runtime_declared" : "unknown",
+      evidenceRefs: [
+        evidenceRef(state.runtimeOverrides.approvalPolicy || state.runtimeOverrides.sandboxMode ? "operator_action" : "runtime_snapshot", state.runtimeOverrides.approvalPolicy || state.runtimeOverrides.sandboxMode ? "Operator selected access override for subsequent turns" : requestHandlingKnown ? "Shell handles Codex approval request methods" : "Sandbox/access policy not exposed", {
+          confidence: state.runtimeOverrides.approvalPolicy || state.runtimeOverrides.sandboxMode ? "configured" : requestHandlingKnown ? "declared" : "unknown",
+          status: requestHandlingKnown ? "fresh" : "unavailable",
+        }),
+        requirementsEvidence,
+      ],
+    },
+    usage: {
+      label: usageLabel,
+      status: providerQuota.status === "available" || contextPressure.status === "available" || turnCount || commandCount || approvalCount || toolCallCount ? "available" : "unknown",
+      providerQuota,
+      contextPressure,
+      activity: {
+        turnCount,
+        commandCount,
+        approvalCount,
+        toolCallCount,
+        sessionDurationMs: sessionDurationMs(),
+        evidenceRefs: [evidenceRef("renderer_observation", "Renderer-observed thread activity", { confidence: "observed" })],
+      },
+    },
+    environment: {
+      cwd,
+      repo: repoName,
+      workspaceStatus: workspaceStatus.status || "unknown",
+      hygiene: {
+        codexSandboxPlaceholderIgnored: sandboxPlaceholderIgnored,
+        reason: hygiene.reason || "",
+        pattern: hygiene.pattern || "",
+      },
+      evidenceRefs: [
+        evidenceRef("project_config", "Workspace/project path configuration", { confidence: "configured" }),
+        ...(workspaceStatus.status
+          ? [evidenceRef("workspace_backend", `Workspace backend status: ${workspaceStatus.status}`, { confidence: "observed" })]
+          : []),
+      ],
+    },
+    capabilities: {
+      profile: rawCapabilities,
+      status: rawCapabilities.status === "ready" ? "ready" : runtimeStateStatusFromConnection(state.connectionStatus),
+      schemaSource: rawCapabilities.provider?.capabilitySources?.find?.((source) => source.enablesMutation)?.source ||
+        rawCapabilities.provider?.capabilitySource ||
+        rawCapabilities.coreRuntime?.schemaSource ||
+        rawCapabilities.diagnostics?.source ||
+        "unknown",
+      evidenceRefs: [capabilityEvidence],
+      unsupported: [],
+    },
+    settingsProjection,
+    schemaVersion: 1,
+    sourceRevision: `${payload.shell?.generatedAt || "unknown"}:${rawCapabilities.generatedAt || "unknown"}`,
+    projectId: project?.id || "",
+    planeId: "codex",
+    updatedAt: generatedAt,
+  };
+
+  constitution.chips = runtimeHeaderChips(constitution);
+  return constitution;
+}
+
+function runtimeHeaderChips(constitution) {
+  return [
+    {
+      id: "runtime",
+      label: constitution.runtime.label,
+      tab: "runtime",
+      role: "read_only_witness",
+      truth: constitution.runtime.truth,
+      status: constitution.runtime.status,
+      evidenceRefs: constitution.runtime.evidenceRefs,
+    },
+    {
+      id: "account",
+      label: constitution.account.label,
+      tab: "runtime",
+      role: "read_only_witness",
+      truth: constitution.account.truth,
+      status: constitution.account.status === "ready" ? "ready" : constitution.account.status,
+      evidenceRefs: constitution.account.evidenceRefs,
+    },
+    {
+      id: "model",
+      label: constitution.model.label,
+      tab: "model",
+      role: constitution.model.selection.canSetNextTurn ? "mutable_control" : "read_only_witness",
+      truth: constitution.model.truth,
+      status: constitution.model.truth === "unknown" ? "unavailable" : "ready",
+      evidenceRefs: constitution.model.evidenceRefs,
+    },
+    {
+      id: "reasoning",
+      label: constitution.reasoning.label,
+      tab: "model",
+      role: constitution.reasoning.selection.canSetNextTurn ? "mutable_control" : "diagnostic",
+      truth: constitution.reasoning.truth,
+      status: constitution.reasoning.truth === "unknown" ? "unavailable" : "ready",
+      evidenceRefs: constitution.reasoning.evidenceRefs,
+    },
+    {
+      id: "access",
+      label: constitution.access.label,
+      tab: "access",
+      role: constitution.access.mutableScopes.includes("next_turn") ? "mutable_control" : "diagnostic",
+      truth: constitution.access.truth,
+      status: constitution.access.requestHandlingKnown || constitution.access.policyKnown ? "ready" : "unavailable",
+      evidenceRefs: constitution.access.evidenceRefs,
+    },
+    {
+      id: "usage",
+      label: constitution.usage.label,
+      tab: "usage",
+      role: "diagnostic",
+      truth: constitution.usage.providerQuota.status === "available" || constitution.usage.contextPressure.status === "available" ? "runtime_proven" : "unknown",
+      status: constitution.usage.providerQuota.status === "available" || constitution.usage.contextPressure.status === "available" ? "ready" : constitution.usage.status === "available" ? "warning" : "unavailable",
+      evidenceRefs: [
+        ...constitution.usage.providerQuota.evidenceRefs,
+        ...constitution.usage.contextPressure.evidenceRefs,
+        ...constitution.usage.activity.evidenceRefs,
+      ],
+    },
+  ];
+}
+
+function chipClass(chip) {
+  const roleClass = chip.role === "mutable_control" ? "mutable" : chip.role === "diagnostic" ? "diagnostic" : "witness";
+  if (chip.status === "ready") return `${roleClass} ready`;
+  if (chip.status === "loading" || chip.status === "stale" || chip.status === "degraded") return `${roleClass} warning`;
+  if (chip.status === "failed") return `${roleClass} failed`;
+  return `${roleClass} unknown`;
+}
+
+function applyChip(element, chip) {
+  if (!element || !chip) return;
+  element.textContent = chip.label;
+  element.className = `runtime-chip ${chipClass(chip)}`;
+  element.title = firstEvidence(chip.evidenceRefs)?.label || chip.label;
+  element.dataset.runtimeTab = chip.tab;
+  element.dataset.runtimeChip = chip.id;
+  element.dataset.chipRole = chip.role.replace(/_/g, "-");
+}
+
+function renderRuntimeConstitution() {
+  if (!project) return;
+  const constitution = buildRuntimeConstitution();
+  state.runtimeConstitution = constitution;
+  const chipById = new Map(constitution.chips.map((chip) => [chip.id, chip]));
+  applyChip(els.connectionBadge, chipById.get("runtime"));
+  applyChip(els.accountBadge, chipById.get("account"));
+  applyChip(els.modelBadge, chipById.get("model"));
+  applyChip(els.reasoningBadge, chipById.get("reasoning"));
+  applyChip(els.accessBadge, chipById.get("access"));
+  applyChip(els.usageBadge, chipById.get("usage"));
+
+  if (els.environmentChipCluster) {
+    els.environmentChipCluster.innerHTML = "";
+    const repoChip = createRuntimeChip({
+      id: "repo",
+      label: constitution.environment.repo || "repo unknown",
+      tab: "environment",
+      role: "read_only_witness",
+      truth: constitution.environment.repo ? "project_configured" : "unknown",
+      status: constitution.environment.repo ? "ready" : "unavailable",
+      evidenceRefs: constitution.environment.evidenceRefs,
+    });
+    const cwdChip = createRuntimeChip({
+      id: "cwd",
+      label: `cwd: ${constitution.environment.cwd || "unknown"}`,
+      tab: "environment",
+      role: "read_only_witness",
+      truth: constitution.environment.cwd ? "project_configured" : "unknown",
+      status: constitution.environment.cwd ? "ready" : "unavailable",
+      evidenceRefs: constitution.environment.evidenceRefs,
+    });
+    els.environmentChipCluster.append(repoChip, cwdChip);
+  }
+
+  if (els.runtimeDrawerButton) {
+    els.runtimeDrawerButton.setAttribute("aria-expanded", state.runtimeDrawerOpen ? "true" : "false");
+  }
+  renderRuntimeDrawer();
+  renderComposerRuntimeBand();
+}
+
+function createRuntimeChip(chip) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `runtime-chip ${chipClass(chip)}`;
+  button.textContent = chip.label;
+  button.dataset.runtimeTab = chip.tab;
+  button.dataset.runtimeChip = chip.id;
+  button.dataset.chipRole = chip.role.replace(/_/g, "-");
+  button.title = firstEvidence(chip.evidenceRefs)?.label || chip.label;
+  return button;
+}
+
+function openRuntimeDrawer(tab = "runtime") {
+  dismissComposerOverlay("runtime-drawer-open");
+  state.runtimeDrawerOpen = true;
+  state.runtimeDrawerTab = RUNTIME_DRAWER_TABS.some(([id]) => id === tab) ? tab : "runtime";
+  renderRuntimeConstitution();
+}
+
+function closeRuntimeDrawer() {
+  state.runtimeDrawerOpen = false;
+  renderRuntimeDrawer();
+}
+
+function fieldRow(key, value) {
+  const row = document.createElement("div");
+  row.className = "runtime-field";
+  const keyNode = document.createElement("div");
+  keyNode.className = "runtime-field-key";
+  keyNode.textContent = key;
+  const valueNode = document.createElement("div");
+  valueNode.className = "runtime-field-value";
+  valueNode.textContent = value == null || value === "" ? "—" : String(value);
+  row.append(keyNode, valueNode);
+  return row;
+}
+
+function evidenceBlock(refs = []) {
+  const block = document.createElement("div");
+  block.className = "runtime-evidence";
+  for (const ref of refs.slice(0, 5)) {
+    const item = document.createElement("div");
+    item.className = "runtime-evidence-item";
+    item.textContent = `${ref.kind || "evidence"} · ${ref.confidence || "unknown"} · ${ref.status || "unknown"} · ${ref.label || ""}`;
+    block.appendChild(item);
+  }
+  return block;
+}
+
+function drawerSection(title, rows = [], refs = []) {
+  const section = document.createElement("section");
+  section.className = "runtime-section";
+  section.dataset.runtimeDrawerSection = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+  const heading = document.createElement("h3");
+  heading.textContent = title;
+  section.appendChild(heading);
+  for (const [key, value] of rows) section.appendChild(fieldRow(key, value));
+  if (refs.length) section.appendChild(evidenceBlock(refs));
+  return section;
+}
+
+function renderRuntimeDrawer() {
+  if (!els.runtimeDrawer || !els.runtimeDrawerTabs || !els.runtimeDrawerBody) return;
+  const constitution = state.runtimeConstitution || buildRuntimeConstitution();
+  els.runtimeDrawer.hidden = !state.runtimeDrawerOpen;
+  if (!state.runtimeDrawerOpen) return;
+
+  const tabLabel = RUNTIME_DRAWER_TABS.find(([id]) => id === state.runtimeDrawerTab)?.[1] || "Runtime";
+  els.runtimeDrawerTitle.textContent = tabLabel;
+  els.runtimeDrawerUpdated.textContent = `updated ${new Date(constitution.updatedAt).toLocaleTimeString()}`;
+  els.runtimeDrawerTabs.innerHTML = "";
+  for (const [id, label] of RUNTIME_DRAWER_TABS) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `runtime-tab-button${id === state.runtimeDrawerTab ? " active" : ""}`;
+    button.textContent = label;
+    button.dataset.runtimeDrawerTab = id;
+    button.addEventListener("click", () => {
+      state.runtimeDrawerTab = id;
+      renderRuntimeDrawer();
+    });
+    els.runtimeDrawerTabs.appendChild(button);
+  }
+
+  els.runtimeDrawerBody.innerHTML = "";
+  for (const section of runtimeDrawerSections(constitution, state.runtimeDrawerTab)) {
+    els.runtimeDrawerBody.appendChild(section);
+  }
+}
+
+function unsupportedControlNote(text) {
+  const note = document.createElement("div");
+  note.className = "runtime-control-placeholder";
+  note.textContent = text;
+  return note;
+}
+
+function selectField(label, value, options, onChange, config = {}) {
+  const wrapper = document.createElement("label");
+  wrapper.className = "runtime-control";
+  const labelNode = document.createElement("span");
+  labelNode.className = "runtime-control-label";
+  labelNode.textContent = label;
+  const select = document.createElement("select");
+  select.disabled = Boolean(config.disabled);
+  for (const option of options) {
+    const raw = typeof option === "object" ? option.value : option;
+    const optionLabel = typeof option === "object" ? option.label : option || config.emptyLabel || "Runtime default";
+    const node = document.createElement("option");
+    node.value = raw;
+    node.textContent = optionLabel;
+    select.appendChild(node);
+  }
+  select.value = value || "";
+  select.addEventListener("change", () => onChange(select.value));
+  wrapper.append(labelNode, select);
+  if (config.description) {
+    const description = document.createElement("span");
+    description.className = "runtime-control-description";
+    description.textContent = config.description;
+    wrapper.appendChild(description);
+  }
+  return wrapper;
+}
+
+function composerMenuSection(title, options, selectedValue, onSelect) {
+  const section = document.createElement("section");
+  section.className = "composer-menu-section";
+  const heading = document.createElement("h4");
+  heading.textContent = title;
+  section.appendChild(heading);
+  for (const option of options) {
+    const value = typeof option === "object" ? option.value : option;
+    const label = typeof option === "object" ? option.label : option;
+    const selected = String(value || "") === String(selectedValue || "");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `composer-menu-item${selected ? " selected" : ""}`;
+    button.dataset.value = String(value || "");
+    button.setAttribute("aria-pressed", selected ? "true" : "false");
+    button.textContent = label || "Runtime default";
+    button.title = `${title}: ${label || "Runtime default"}`;
+    button.addEventListener("click", () => {
+      const nextValue = String(value || "");
+      for (const item of section.querySelectorAll(".composer-menu-item")) {
+        const isSelected = item.dataset.value === nextValue;
+        item.classList.toggle("selected", isSelected);
+        item.setAttribute("aria-pressed", isSelected ? "true" : "false");
+      }
+      onSelect(nextValue);
+    });
+    section.appendChild(button);
+  }
+  return section;
+}
+
+function dismissComposerOverlay(reason = "unknown") {
+  const hadMenu = Boolean(state.composerMenu);
+  state.composerMenu = "";
+  if (els.composerAccessMenu) els.composerAccessMenu.hidden = true;
+  if (els.composerModelMenu) els.composerModelMenu.hidden = true;
+  els.composerAccessButton?.setAttribute("aria-expanded", "false");
+  els.composerModelButton?.setAttribute("aria-expanded", "false");
+  if (hadMenu) {
+    els.composerForm?.dataset && (els.composerForm.dataset.lastComposerDismiss = reason);
+  }
+  return hadMenu;
+}
+
+function closeComposerMenus() {
+  dismissComposerOverlay("legacy-close");
+}
+
+function toggleComposerMenu(menu) {
+  state.composerMenu = state.composerMenu === menu ? "" : menu;
+  renderComposerRuntimeBand();
+  updateComposerGeometry();
+}
+
+function eventPathContains(event, selector) {
+  const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+  if (path.length) {
+    return path.some((node) => node?.matches?.(selector) || node?.closest?.(selector));
+  }
+  return Boolean(event.target?.closest?.(selector));
+}
+
+function eventTargetsElement(event, element) {
+  if (!element) return false;
+  const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+  if (path.includes(element)) return true;
+  const target = event.target;
+  return Boolean(target && element.contains?.(target));
+}
+
+function eventInsideComposerOverlay(event) {
+  return (
+    eventTargetsElement(event, els.composerAccessMenu) ||
+    eventTargetsElement(event, els.composerModelMenu) ||
+    eventTargetsElement(event, els.composerAccessButton) ||
+    eventTargetsElement(event, els.composerModelButton)
+  );
+}
+
+function maybeDismissComposerOverlay(event, reason) {
+  if (!state.composerMenu) return;
+  if (eventInsideComposerOverlay(event)) return;
+  dismissComposerOverlay(reason);
+}
+
+function clampNumber(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function updateComposerGeometry() {
+  if (!els.composerForm) return;
+  const shellRect = els.composerForm.getBoundingClientRect();
+  const panelHeight = Math.max(360, document.documentElement.clientHeight || window.innerHeight || 0);
+  const shellWidth = Math.max(0, shellRect.width || window.innerWidth || 0);
+  const safeWidth = Math.max(180, shellWidth - 24);
+  const menuWidth = Math.round(clampNumber(safeWidth * 0.46, 190, 280));
+  const modelMenuWidth = Math.round(clampNumber(safeWidth * 0.86, 340, 620));
+  const quotaWidth = Math.round(clampNumber(safeWidth * 0.42, 220, 380));
+  const witnessWidth = Math.round(clampNumber(safeWidth * 0.14, 76, 150));
+  const modelPillWidth = Math.round(clampNumber(safeWidth * 0.28, 120, 280));
+  const activeTrigger = state.composerMenu === "model"
+    ? els.composerModelButton
+    : state.composerMenu === "access"
+      ? els.composerAccessButton
+      : null;
+  const triggerRect = activeTrigger?.getBoundingClientRect?.();
+  const topSpace = triggerRect ? Math.max(140, triggerRect.top - 16) : Math.max(160, window.innerHeight * 0.42);
+  const modelMenuHeight = Math.round(clampNumber(Math.min(topSpace, panelHeight * 0.54), 240, 430));
+  const maxHeight = state.composerMenu === "model"
+    ? modelMenuHeight
+    : Math.round(clampNumber(topSpace, 140, 360));
+  const menuFont = clampNumber(Math.min(safeWidth / 43, modelMenuHeight / 23), 10.5, 14);
+  const menuRow = Math.round(clampNumber(menuFont * 2.05, 22, 30));
+  els.composerForm.style.setProperty("--composer-popover-max-width", `${Math.round(safeWidth)}px`);
+  els.composerForm.style.setProperty("--composer-menu-width", `${menuWidth}px`);
+  els.composerForm.style.setProperty("--composer-model-menu-width", `${modelMenuWidth}px`);
+  els.composerForm.style.setProperty("--composer-model-menu-height", `${modelMenuHeight}px`);
+  els.composerForm.style.setProperty("--composer-popover-max-height", `${maxHeight}px`);
+  els.composerForm.style.setProperty("--composer-menu-font-size", `${menuFont.toFixed(1)}px`);
+  els.composerForm.style.setProperty("--composer-menu-row-height", `${menuRow}px`);
+  els.composerForm.style.setProperty("--composer-witness-max-width", `${witnessWidth}px`);
+  els.composerForm.style.setProperty("--composer-quota-max-width", `${quotaWidth}px`);
+  els.composerForm.style.setProperty("--composer-model-pill-max-width", `${modelPillWidth}px`);
+  els.composerForm.dataset.composerSize = safeWidth < 390 ? "narrow" : safeWidth < 760 ? "medium" : "wide";
+}
+
+function installComposerGeometryObserver() {
+  updateComposerGeometry();
+  if (typeof ResizeObserver === "function" && els.composerForm && !state.composerGeometryObserver) {
+    state.composerGeometryObserver = new ResizeObserver(() => updateComposerGeometry());
+    state.composerGeometryObserver.observe(els.composerForm);
+    if (els.composerForm.parentElement) state.composerGeometryObserver.observe(els.composerForm.parentElement);
+  }
+}
+
+function renderComposerAccessMenu() {
+  if (!els.composerAccessMenu) return;
+  els.composerAccessMenu.innerHTML = "";
+  els.composerAccessMenu.appendChild(composerMenuSection("Approval", approvalPolicyOptions(), state.runtimeOverrides.approvalPolicy, (value) => setRuntimeOverride("approvalPolicy", value)));
+  els.composerAccessMenu.appendChild(composerMenuSection("Sandbox", sandboxModeOptions(), state.runtimeOverrides.sandboxMode, (value) => setRuntimeOverride("sandboxMode", value)));
+  const note = document.createElement("p");
+  note.className = "composer-menu-note";
+  note.textContent = state.configRequirementsStatus === "ready" ? "Restricted by config requirements." : "Runtime defaults apply when unset.";
+  els.composerAccessMenu.appendChild(note);
+}
+
+function composerSelectedOverride(name) {
+  const value = String(state.runtimeOverrides[name] || "");
+  if (name === "model" && value === clearedModelId()) return "";
+  if (name === "reasoningEffort" && value === clearedReasoningEffort()) return "";
+  if (name === "serviceTier" && value === defaultServiceTier()) return "";
+  return value;
+}
+
+function renderComposerModelMenu() {
+  if (!els.composerModelMenu) return;
+  els.composerModelMenu.innerHTML = "";
+  const body = document.createElement("div");
+  body.className = "composer-cascade-grid";
+  const leftColumn = document.createElement("div");
+  leftColumn.className = "composer-axis-column";
+  leftColumn.appendChild(composerMenuSection("Intelligence", reasoningOptions(), composerSelectedOverride("reasoningEffort"), (value) => setRuntimeOverride("reasoningEffort", value)));
+  leftColumn.appendChild(composerMenuSection("Speed", serviceTierOptions(), composerSelectedOverride("serviceTier"), (value) => setRuntimeOverride("serviceTier", value)));
+  body.appendChild(leftColumn);
+  body.appendChild(composerMenuSection("Model", composerModelOptions(), composerSelectedOverride("model"), (value) => setRuntimeOverride("model", value)));
+  els.composerModelMenu.appendChild(body);
+}
+
+function renderComposerRuntimeBand() {
+  if (!els.composerAccessButton || !els.composerModelButton || !els.sendButton) return;
+  const active = turnIsActive();
+  const accessText = state.runtimeOverrides.sandboxMode === "danger-full-access"
+    ? "Full access"
+    : state.runtimeOverrides.sandboxMode || state.runtimeOverrides.approvalPolicy || "Access";
+  const modelText = `${compactModelLabel()} · ${reasoningLabel()}${state.runtimeOverrides.serviceTier ? ` · ${state.runtimeOverrides.serviceTier}` : ""}`;
+  const quotaText = composerQuotaLabel();
+  const contextProjection = contextUsageProjection();
+  const contextText = contextProjection.compactLabel;
+
+  els.composerAccessButton.textContent = accessText;
+  els.composerAccessButton.classList.toggle("danger", state.runtimeOverrides.sandboxMode === "danger-full-access");
+  els.composerAccessButton.title = `Next-turn access override. Approval: ${approvalPolicyLabel()}. Sandbox: ${sandboxModeLabel()}.`;
+  els.composerAccessButton.setAttribute("aria-label", `Access override: approval ${approvalPolicyLabel()}, sandbox ${sandboxModeLabel()}`);
+
+  els.composerModelButton.textContent = modelText;
+  els.composerModelButton.title = `Next-turn model settings. Model: ${compactModelLabel()}. Reasoning: ${reasoningLabel()}. Speed: ${serviceTierLabel()}.`;
+  els.composerModelButton.setAttribute("aria-label", `Model override: ${modelText}`);
+
+  els.composerQuotaChip.textContent = quotaText;
+  els.composerQuotaChip.title = `Provider quota: ${quotaText}. Shown only when exposed by runtime/account evidence.`;
+  els.composerContextChip.textContent = contextText;
+  els.composerContextChip.title = `Context pressure: ${contextProjection.label}.`;
+
+  els.sendButton.textContent = state.turnStopping ? "Stopping" : active ? "Stop" : "Send";
+  els.sendButton.classList.toggle("stop", active);
+  els.sendButton.title = active ? "Stop the current Codex turn." : "Send this prompt to Codex.";
+  els.sendButton.setAttribute("aria-label", active ? "Stop current Codex turn" : "Send prompt to Codex");
+  els.sendButton.disabled = state.turnStopping || (!active && els.composerInput.disabled);
+  els.composerAccessMenu.hidden = state.composerMenu !== "access";
+  els.composerModelMenu.hidden = state.composerMenu !== "model";
+  els.composerAccessButton.setAttribute("aria-expanded", state.composerMenu === "access" ? "true" : "false");
+  els.composerModelButton.setAttribute("aria-expanded", state.composerMenu === "model" ? "true" : "false");
+  if (state.composerMenu === "access") renderComposerAccessMenu();
+  if (state.composerMenu === "model") renderComposerModelMenu();
+  updateComposerGeometry();
+}
+
+function refreshButton(label, onClick) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "runtime-action";
+  button.textContent = label;
+  button.addEventListener("click", () => onClick());
+  return button;
+}
+
+function modelOptions() {
+  const visible = state.models.filter((model) => !model?.hidden);
+  const rows = visible.length ? visible : state.models;
+  const providerDefaultId = defaultModelId();
+  const clearDefaultId = clearedModelId();
+  const options = rows
+    .filter((model) => String(model.model || model.id || "") !== String(clearDefaultId || ""))
+    .map((model) => {
+      const value = model.model || model.id;
+      const label = model.displayName || model.model || model.id;
+      return {
+        value,
+        label: `${label}${value === providerDefaultId ? " · provider default" : ""}`,
+      };
+    });
+  const current = activeModelId();
+  if (current && current !== clearDefaultId && !options.some((option) => option.value === current)) {
+    options.unshift({ value: current, label: current });
+  }
+  options.unshift({
+    value: "",
+    label: defaultOptionLabel(modelById(clearDefaultId)?.displayName || clearDefaultId),
+  });
+  return options;
+}
+
+function composerModelOptions() {
+  const size = els.composerForm?.dataset?.composerSize || "wide";
+  const limit = size === "narrow" ? 5 : size === "medium" ? 7 : 9;
+  return modelOptions().slice(0, limit);
+}
+
+function reasoningOptions() {
+  const clearDefault = clearedReasoningEffort();
+  const modelDefault = defaultReasoningEffort();
+  return [
+    { value: "", label: defaultOptionLabel(clearDefault) },
+    ...supportedReasoningOptions()
+      .filter((effort) => effort !== clearDefault)
+      .map((effort) => ({
+        value: effort,
+        label: `${effort}${effort === modelDefault ? " · model default" : ""}`,
+      })),
+  ];
+}
+
+function approvalPolicyOptions() {
+  const required = allowedApprovalPoliciesFromRequirements();
+  const values = required || APPROVAL_POLICY_OPTIONS.filter(Boolean);
+  return ["", ...values].map((value) => ({ value, label: value || "Runtime default" }));
+}
+
+function sandboxModeOptions() {
+  const required = allowedSandboxModesFromRequirements();
+  const values = required || SANDBOX_MODE_OPTIONS.filter(Boolean);
+  return ["", ...values].map((value) => ({ value, label: value || "Runtime default" }));
+}
+
+function normalizeRuntimeOverrideValue(name, value) {
+  const candidate = String(value || "").trim();
+  if (!candidate) return "";
+  if (name === "approvalPolicy") return APPROVAL_POLICY_OPTIONS.includes(candidate) ? candidate : "";
+  if (name === "sandboxMode") return SANDBOX_MODE_OPTIONS.includes(candidate) ? candidate : "";
+  if (name === "reasoningEffort") return DEFAULT_REASONING_EFFORTS.includes(candidate) ? candidate : "";
+  if (name === "model") return candidate;
+  return candidate;
+}
+
+function runtimePreferencesRequest(threadId = state.threadId) {
+  return {
+    projectId: project?.id || payload.codexConnection?.projectId || "",
+    threadId: String(threadId || ""),
+    sourceHome: String(state.sourceHome || ""),
+    sessionFilePath: String(state.sessionFilePath || ""),
+    activationEpoch: Number(payload.activationEpoch) || 0,
+  };
+}
+
+function applyGlobalRuntimePreferences(defaults = {}) {
+  state.runtimeOverrides.approvalPolicy = normalizeRuntimeOverrideValue("approvalPolicy", defaults.approvalPolicy);
+  state.runtimeOverrides.sandboxMode = normalizeRuntimeOverrideValue("sandboxMode", defaults.sandboxMode);
+  reconcileAccessOverridesWithRequirements();
+}
+
+function applyThreadRuntimePreferences(defaults = {}) {
+  state.runtimeOverrides.model = normalizeRuntimeOverrideValue("model", defaults.model);
+  state.runtimeOverrides.reasoningEffort = normalizeRuntimeOverrideValue("reasoningEffort", defaults.reasoningEffort);
+  if (state.runtimeOverrides.reasoningEffort) {
+    const supported = supportedReasoningOptions();
+    if (supported.length && !supported.includes(state.runtimeOverrides.reasoningEffort)) {
+      state.runtimeOverrides.reasoningEffort = selectedModel()?.defaultReasoningEffort || "";
+    }
+  }
+}
+
+async function loadRuntimePreferences(options = {}) {
+  if (!bridge?.getRuntimePreferences) return null;
+  const applyGlobal = options.applyGlobal !== false;
+  const applyThread = options.applyThread !== false && Boolean(state.threadId);
+  const guardThreadId = String(options.guardThreadId || options.threadId || "");
+  const guardSourceHome = String(options.guardSourceHome ?? "");
+  const guardSessionFilePath = String(options.guardSessionFilePath ?? "");
+  state.runtimePreferencesStatus = "loading";
+  state.runtimePreferencesError = "";
+  try {
+    const response = await bridge.getRuntimePreferences(runtimePreferencesRequest(options.threadId || state.threadId));
+    if (response && response.ok !== false) {
+      if (applyGlobal) applyGlobalRuntimePreferences(response.globalDefaults || {});
+      const stillCurrentThread =
+        !guardThreadId ||
+        (state.threadId === guardThreadId &&
+          (!guardSourceHome || state.sourceHome === guardSourceHome) &&
+          (!guardSessionFilePath || state.sessionFilePath === guardSessionFilePath));
+      if (applyThread && stillCurrentThread) applyThreadRuntimePreferences(response.threadDefaults || {});
+    }
+    state.runtimePreferencesStatus = "ready";
+    renderRuntimeConstitution();
+    return response;
+  } catch (error) {
+    state.runtimePreferencesStatus = "failed";
+    state.runtimePreferencesError = String(error?.message || error || "Runtime preference load failed.");
+    console.warn("Unable to load Codex runtime preferences", error);
+    renderRuntimeConstitution();
+    return null;
+  }
+}
+
+async function persistRuntimePreferences(scope) {
+  if (!bridge?.updateRuntimePreferences) return null;
+  const request = runtimePreferencesRequest();
+  if (scope === "global-access") {
+    return bridge.updateRuntimePreferences({
+      scope,
+      approvalPolicy: state.runtimeOverrides.approvalPolicy,
+      sandboxMode: state.runtimeOverrides.sandboxMode,
+    });
+  }
+  if (scope === "thread-model") {
+    if (!request.projectId || !request.threadId) return null;
+    return bridge.updateRuntimePreferences({
+      scope,
+      ...request,
+      model: state.runtimeOverrides.model,
+      reasoningEffort: state.runtimeOverrides.reasoningEffort,
+    });
+  }
+  return null;
+}
+
+function serviceTierOptions() {
+  const settingsProjection = providerSettingsProjection();
+  const configured = settingsProjection.serviceTier?.availableTiers || settingsProjection.speed?.availableTiers || null;
+  const values = Array.isArray(configured) && configured.length
+    ? configured.map((value) => String(value || "").trim()).filter(Boolean)
+    : [];
+  return ["", ...values].map((value) => ({ value, label: value || defaultOptionLabel(defaultServiceTier()) }));
+}
+
+function compactModelLabel() {
+  const model = selectedModel();
+  const label = model?.displayName || model?.model || activeModelId() || "default";
+  return label.replace(/^GPT-/i, "GPT-");
+}
+
+function setRuntimeOverride(name, value) {
+  state.runtimeOverrides[name] = normalizeRuntimeOverrideValue(name, value);
+  if (name === "model") {
+    const supported = supportedReasoningOptions();
+    if (state.runtimeOverrides.reasoningEffort && !supported.includes(state.runtimeOverrides.reasoningEffort)) {
+      state.runtimeOverrides.reasoningEffort = selectedModel()?.defaultReasoningEffort || "";
+    }
+  }
+  renderRuntimeConstitution();
+  const scope = name === "approvalPolicy" || name === "sandboxMode"
+    ? "global-access"
+    : name === "model" || name === "reasoningEffort"
+      ? "thread-model"
+      : "";
+  if (scope) {
+    persistRuntimePreferences(scope).catch((error) => {
+      console.warn("Unable to persist Codex runtime preference", error);
+    });
+  }
+}
+
+function reconcileAccessOverridesWithRequirements() {
+  const allowedApprovals = allowedApprovalPoliciesFromRequirements();
+  const allowedSandbox = allowedSandboxModesFromRequirements();
+  if (
+    state.runtimeOverrides.approvalPolicy &&
+    allowedApprovals &&
+    !allowedApprovals.includes(state.runtimeOverrides.approvalPolicy)
+  ) {
+    state.runtimeOverrides.approvalPolicy = "";
+  }
+  if (
+    state.runtimeOverrides.sandboxMode &&
+    allowedSandbox &&
+    !allowedSandbox.includes(state.runtimeOverrides.sandboxMode)
+  ) {
+    state.runtimeOverrides.sandboxMode = "";
+  }
+}
+
+function quotaWindowRows(snapshot) {
+  if (!snapshot) return [["status", state.rateLimitsStatus || "unknown"]];
+  const windows = [
+    ["primary", snapshot.primary],
+    ["secondary", snapshot.secondary],
+  ].filter(([, window]) => window);
+  const rows = [
+    ["limit", snapshot.limitName || snapshot.limitId || "codex"],
+    ["status", state.rateLimitsStatus || "ready"],
+  ];
+  for (const [fallback, window] of windows) {
+    const label = rateLimitWindowLabel(window, fallback);
+    const available = rateLimitAvailablePercent(window);
+    rows.push([`${label} available`, available == null ? "unknown" : `${available}%`]);
+    const usedPercent = window.usedPercent ?? window.used_percent;
+    rows.push([`${label} used`, Number.isFinite(Number(usedPercent)) ? `${usedPercent}%` : "unknown"]);
+    rows.push([`${label} resets`, formatResetTime(window)]);
+  }
+  if (snapshot.credits) {
+    rows.push(["credits", snapshot.credits.unlimited ? "unlimited" : snapshot.credits.hasCredits ? snapshot.credits.balance || "available" : "none"]);
+  }
+  if (snapshot.rateLimitReachedType) rows.push(["limit reached", snapshot.rateLimitReachedType]);
+  return rows;
+}
+
+function runtimeDrawerSections(c, tab) {
+  if (tab === "runtime") {
+    return [
+      drawerSection("Runtime", [
+        ["provider", c.provider?.label || c.provider?.kind || "unknown"],
+        ["provider kind", c.provider?.kind || "unknown"],
+        ["configured flavor", c.provider?.executable?.flavor?.configuredFlavor || c.provider?.flavor || "—"],
+        ["proven flavor", c.provider?.executable?.flavor?.provenFlavor || "unknown"],
+        ["compatibility", c.provider?.executable?.flavor?.compatibility || "unknown"],
+        ["capability sources", (c.provider?.capabilitySources || []).map((source) => source.source).join(", ") || c.provider?.capabilitySource || "unknown"],
+        ["kind", c.runtime.kind],
+        ["status", c.runtime.status],
+        ["transport", connection?.transport || connection?.capabilities?.coreRuntime?.transport || "websocket"],
+        ["binary", connection?.binaryPath || "unknown"],
+        ["codex home", connection?.codexHome || "default"],
+        ["ready URL", connection?.readyUrl || "not connected"],
+        ["thread state", c.thread.status],
+      ], [...(c.provider?.evidenceRefs || []), ...c.runtime.evidenceRefs, ...c.thread.evidenceRefs]),
+      drawerSection("Account", [
+        ["status", c.account.status],
+        ["label", c.account.label],
+      ], c.account.evidenceRefs),
+    ];
+  }
+  if (tab === "model") {
+    const section = drawerSection("Model And Reasoning", [
+      ["active model", c.model.label],
+      ["model source", c.model.source],
+      ["model next turn", c.model.selection.canSetNextTurn ? "supported" : "unsupported"],
+      ["reasoning", c.reasoning.label],
+      ["reasoning next turn", c.reasoning.selection.canSetNextTurn ? "supported" : "unsupported"],
+    ], [...c.model.evidenceRefs, ...c.reasoning.evidenceRefs]);
+    section.appendChild(selectField("Model", c.model.selectedId, modelOptions(), (value) => setRuntimeOverride("model", value), {
+      disabled: !c.model.selection.canSetNextTurn,
+      description: "Applies to the next Codex turn and subsequent turns in this thread.",
+    }));
+    section.appendChild(selectField("Reasoning effort", state.runtimeOverrides.reasoningEffort, reasoningOptions(), (value) => setRuntimeOverride("reasoningEffort", value), {
+      disabled: !c.reasoning.selection.canSetNextTurn,
+      description: "Uses the selected model's supported reasoning efforts.",
+    }));
+    section.appendChild(refreshButton("Refresh models", () => refreshModelList(true)));
+    section.appendChild(unsupportedControlNote("Project/session-default persistence is not enabled yet; these controls are runtime turn overrides."));
+    return [section];
+  }
+  if (tab === "access") {
+    const section = drawerSection("Access And Safety", [
+      ["header label", c.access.label],
+      ["policy known", c.access.policyKnown ? "yes" : "no"],
+      ["request handling", c.access.requestHandlingKnown ? "known" : "unknown"],
+      ["mutable scopes", c.access.mutableScopes.join(", ")],
+      ...accessRequirementsRows(),
+    ], c.access.evidenceRefs);
+    section.appendChild(selectField("Approval policy", c.access.approvalPolicy, approvalPolicyOptions(), (value) => setRuntimeOverride("approvalPolicy", value), {
+      disabled: !c.access.mutableScopes.includes("next_turn"),
+      description: "Controls when Codex asks before executing risky actions.",
+    }));
+    section.appendChild(selectField("Sandbox", c.access.sandboxMode, sandboxModeOptions(), (value) => setRuntimeOverride("sandboxMode", value), {
+      disabled: !c.access.mutableScopes.includes("next_turn"),
+      description: "Applies as a turn-scoped sandbox policy override.",
+    }));
+    section.appendChild(unsupportedControlNote("Danger-full-access remains explicit and visible; no access setting is auto-promoted."));
+    return [section];
+  }
+  if (tab === "usage") {
+    const quotaSection = drawerSection("Provider Quota", quotaWindowRows(c.usage.providerQuota.snapshot), c.usage.providerQuota.evidenceRefs);
+    quotaSection.appendChild(refreshButton("Refresh quota", () => refreshRateLimits(true)));
+    return [
+      quotaSection,
+      drawerSection("Context Pressure", [
+        ["status", c.usage.contextPressure.status],
+        ["label", c.usage.contextPressure.label],
+        ["used", c.usage.contextPressure.percentUsed != null ? `${c.usage.contextPressure.percentUsed}%` : "unknown"],
+        ["remaining", c.usage.contextPressure.percentRemaining != null ? `${c.usage.contextPressure.percentRemaining}%` : "unknown"],
+        ["tokens", c.usage.contextPressure.tokensInContext != null ? formatCompactTokens(c.usage.contextPressure.tokensInContext) : "unknown"],
+        ["window", c.usage.contextPressure.modelContextWindow ? formatCompactTokens(c.usage.contextPressure.modelContextWindow) : "unknown"],
+        ["event", c.usage.contextPressure.eventName || "thread/tokenUsage/updated"],
+        ["observed", c.usage.contextPressure.observedAt || "not observed"],
+      ], c.usage.contextPressure.evidenceRefs),
+      drawerSection("Local Activity", [
+        ["turns", c.usage.activity.turnCount],
+        ["commands", c.usage.activity.commandCount],
+        ["tool calls", c.usage.activity.toolCallCount],
+        ["approvals", c.usage.activity.approvalCount],
+        ["duration", c.usage.activity.sessionDurationMs ? `${Math.round(c.usage.activity.sessionDurationMs / 1000)}s` : "—"],
+      ], c.usage.activity.evidenceRefs),
+    ];
+  }
+  if (tab === "capabilities") {
+    const caps = c.capabilities?.profile || {};
+    return [
+      drawerSection("Capability Provenance", [
+        ["status", c.capabilities?.status || "unknown"],
+        ["schema source", c.capabilities?.schemaSource || "unknown"],
+        ["unsupported entries", (c.capabilities?.unsupported || []).length],
+      ], c.capabilities?.evidenceRefs || []),
+      drawerSection("Thread Operations", Object.entries(caps.threads || {}).map(([key, value]) => [key, value ? "yes" : "no"])),
+      drawerSection("Turn Operations", Object.entries(caps.turns || {}).map(([key, value]) => [key, value ? "yes" : "no"])),
+      drawerSection("Model Scope", Object.entries(caps.model || {}).map(([key, value]) => [key, value ? "yes" : "no"])),
+      drawerSection("Reasoning Scope", Object.entries(caps.reasoning || {}).map(([key, value]) => [key, value ? "yes" : "no"])),
+      drawerSection("Authority", Object.entries(caps.authority || {}).map(([key, value]) => [key, Array.isArray(value) ? value.join(", ") || "none" : value ? "yes" : "no"])),
+      drawerSection("Provider Profile", [
+        ["kind", caps.provider?.kind || "unknown"],
+        ["configured flavor", caps.provider?.executable?.flavor?.configuredFlavor || caps.provider?.flavor || "unknown"],
+        ["proven flavor", caps.provider?.executable?.flavor?.provenFlavor || "unknown"],
+        ["compatibility", caps.provider?.executable?.flavor?.compatibility || "unknown"],
+        ["status", caps.provider?.status || "unknown"],
+        ["sources", (caps.provider?.capabilitySources || []).map((source) => `${source.source}${source.enablesMutation ? "*" : ""}`).join(", ") || caps.provider?.capabilitySource || "unknown"],
+        ["main default", caps.provider?.defaultForMainBranch ? "yes" : "no"],
+      ]),
+      drawerSection("Settings Projection", [
+        ["model next turn", caps.provider?.settingsProjection?.model?.scopes?.nextTurn ? "yes" : "no"],
+        ["model list", caps.provider?.settingsProjection?.model?.canList ? "yes" : "no"],
+        ["reasoning next turn", caps.provider?.settingsProjection?.reasoning?.scopes?.nextTurn ? "yes" : "no"],
+        ["access approval override", settingScopeEnabled(caps.provider?.settingsProjection?.access?.scopes?.approvalPolicy) || caps.provider?.settingsProjection?.access?.scopes?.nextTurnApprovalPolicy ? "yes" : "no"],
+        ["access sandbox override", settingScopeEnabled(caps.provider?.settingsProjection?.access?.scopes?.sandbox) || caps.provider?.settingsProjection?.access?.scopes?.nextTurnSandbox ? "yes" : "no"],
+        ["quota read", caps.provider?.settingsProjection?.usage?.providerQuota?.canRead || caps.provider?.settingsProjection?.usage?.canReadRateLimits ? "yes" : "no"],
+        ["context usage event", caps.provider?.settingsProjection?.usage?.contextPressure?.canRead || caps.usage?.canReadContextUsage ? "yes" : "no"],
+        ["requirements", state.configRequirementsStatus || "unknown"],
+      ]),
+      drawerSection("Requests", [
+        ["supported", (caps.requests?.supportedServerMethods || []).length],
+        ["auto unsupported", (caps.requests?.unsupportedButHandledMethods || []).length],
+        ["unknown policy", caps.requests?.unknownRequestPolicy || "unknown"],
+      ]),
+    ];
+  }
+  if (tab === "environment") {
+    return [
+      drawerSection("Workspace", [
+        ["cwd", c.environment.cwd],
+        ["repo", c.environment.repo || "unknown"],
+        ["backend", c.environment.workspaceStatus || "unknown"],
+        ["branch", c.environment.branch || "not exposed"],
+        ["PR", c.environment.pr?.label || "not exposed"],
+        ["Codex .codex hygiene", c.environment.hygiene?.codexSandboxPlaceholderIgnored ? "ignored" : "unknown"],
+        ["hygiene pattern", c.environment.hygiene?.pattern || "not exposed"],
+      ], c.environment.evidenceRefs),
+    ];
+  }
+  return [
+    drawerSection("Diagnostics", [
+      ["connection status", state.connectionStatus],
+      ["connection id", connection?.connectionId || "not connected"],
+      ["schema version", state.runtimeConstitution?.schemaVersion || "unknown"],
+      ["source revision", state.runtimeConstitution?.sourceRevision || "unknown"],
+      ["capability source", state.runtimeConstitution?.capabilities?.schemaSource || connection?.capabilities?.diagnostics?.source || "unknown"],
+      ["schema source", connection?.capabilities?.coreRuntime?.schemaSource || "unknown"],
+      ["activation epoch", payload.activationEpoch || 0],
+    ], [evidenceRef("runtime_snapshot", "Renderer diagnostic snapshot", { confidence: "observed" })]),
+  ];
 }
 
 function userInputToText(entry) {
@@ -334,8 +2110,22 @@ function tokenizeTypedContent(text) {
 }
 
 async function openTypedUrl(url) {
+  if (bridge?.openWorkspaceLink) {
+    const result = await bridge.openWorkspaceLink(url, {
+      disposition: "middle-web",
+      source: {
+        surface: "codex",
+        projectId: project?.id || "",
+        threadId: state.threadId || "",
+        threadTitle: state.threadTitle || "",
+      },
+      userGesture: true,
+    });
+    if (!result?.ok) addSystemMessage(`URL open blocked: ${result?.error || "unknown error"}`);
+    return;
+  }
   if (!bridge?.openExternalUrl) {
-    addSystemMessage("External URL opening is unavailable in this Codex surface.");
+    addSystemMessage("Workspace URL opening is unavailable in this Codex surface.");
     return;
   }
   const result = await bridge.openExternalUrl(url);
@@ -390,12 +2180,345 @@ function renderTypedContent(container, text) {
   }
 }
 
+function appendTypedText(parent, text) {
+  if (!text) return;
+  const span = document.createElement("span");
+  renderTypedContent(span, text);
+  parent.appendChild(span);
+}
+
+function safeMarkdownHref(rawHref) {
+  try {
+    const parsed = new URL(String(rawHref || ""));
+    return ["http:", "https:"].includes(parsed.protocol) ? parsed.toString() : "";
+  } catch {
+    return "";
+  }
+}
+
+function markdownLocalHref(rawHref) {
+  const original = String(rawHref || "").trim();
+  if (!original || original.startsWith("#") || /^[A-Za-z][A-Za-z0-9+.-]*:/i.test(original)) return null;
+  const lineHash = original.match(/^(.*)#L(\d+)$/i);
+  const withoutHash = lineHash ? lineHash[1] : original.replace(/#.*$/, "");
+  const lineRef = splitLineRef(lineHash ? `${withoutHash}:${lineHash[2]}` : withoutHash);
+  const relPath = relativePathWithinRoot(lineRef.path);
+  if (!relPath) return null;
+  return { path: relPath, line: lineRef.line, column: lineRef.column };
+}
+
+function appendFileToken(parent, label, fileRef) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `typed-token ${fileRef.line ? "typed-token-line-ref" : "typed-token-file"} assistant-md-link`;
+  button.textContent = label || fileRef.path;
+  button.title = fileRef.line ? `Reveal ${fileRef.path}:${fileRef.line}` : `Reveal ${fileRef.path}`;
+  button.addEventListener("click", () => revealTypedFile(fileRef.path));
+  parent.appendChild(button);
+}
+
+function appendUrlToken(parent, label, href) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "typed-token typed-token-url assistant-md-link";
+  button.textContent = label || href;
+  button.title = `Open ${href}`;
+  button.addEventListener("click", () => openTypedUrl(href));
+  parent.appendChild(button);
+}
+
+function appendUnsupportedMarkdownLink(parent, label, reason) {
+  const span = document.createElement("span");
+  span.className = "assistant-md-link-blocked";
+  span.textContent = label;
+  span.title = reason || "Unsupported or unsafe link";
+  parent.appendChild(span);
+}
+
+function appendInlineCode(parent, raw) {
+  const code = document.createElement("code");
+  code.className = "assistant-md-inline-code";
+  const source = String(raw || "");
+  const fileRef = markdownLocalHref(source) || (() => {
+    const lineRef = splitLineRef(source);
+    const relPath = relativePathWithinRoot(lineRef.path);
+    return relPath ? { path: relPath, line: lineRef.line, column: lineRef.column } : null;
+  })();
+  if (fileRef) {
+    appendFileToken(code, source, fileRef);
+  } else {
+    const href = safeMarkdownHref(source);
+    if (href) appendUrlToken(code, source, href);
+    else {
+      const span = document.createElement("span");
+      const trimmed = source.trim();
+      const tokenType = /^[a-f0-9]{7,40}$/i.test(trimmed)
+        ? "commit"
+        : /\s|^(npm|pnpm|yarn|node|git|gh|cargo|python|pytest|uv|make|bash|sh)\b/.test(trimmed)
+          ? "command"
+          : "symbol";
+      span.className = `typed-token typed-token-${tokenType}`;
+      span.textContent = source;
+      code.appendChild(span);
+    }
+  }
+  parent.appendChild(code);
+}
+
+function appendInlineMarkdown(parent, text) {
+  const source = String(text || "");
+  const pattern = /(\[[^\]\n]{1,240}\]\([^) \n]{1,1000}\)|`([^`\n]+)`|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|(->|=>))/g;
+  let cursor = 0;
+  for (const match of source.matchAll(pattern)) {
+    if (match.index > cursor) appendTypedText(parent, source.slice(cursor, match.index));
+    const token = match[0];
+    const linkMatch = token.match(/^\[([^\]\n]+)\]\(([^) \n]+)\)$/);
+    if (linkMatch) {
+      const href = safeMarkdownHref(linkMatch[2]);
+      const fileRef = markdownLocalHref(linkMatch[2]);
+      if (href) appendUrlToken(parent, linkMatch[1], href);
+      else if (fileRef) appendFileToken(parent, linkMatch[1], fileRef);
+      else appendUnsupportedMarkdownLink(parent, linkMatch[1], "Unsupported, unsafe, or unresolved link target");
+    } else if (token.startsWith("`")) {
+      appendInlineCode(parent, token.slice(1, -1));
+    } else if (token.startsWith("**")) {
+      const strong = document.createElement("strong");
+      strong.className = "assistant-md-strong";
+      appendTypedText(strong, token.slice(2, -2));
+      parent.appendChild(strong);
+    } else if (token.startsWith("*")) {
+      const em = document.createElement("em");
+      em.className = "assistant-md-emphasis";
+      appendTypedText(em, token.slice(1, -1));
+      parent.appendChild(em);
+    } else {
+      const arrow = document.createElement("span");
+      arrow.className = "assistant-md-arrow";
+      arrow.textContent = token;
+      parent.appendChild(arrow);
+    }
+    cursor = match.index + token.length;
+  }
+  if (cursor < source.length) appendTypedText(parent, source.slice(cursor));
+}
+
+function createMarkdownLineBlock(tagName, className, text) {
+  const block = document.createElement(tagName);
+  block.className = className;
+  appendInlineMarkdown(block, text);
+  return block;
+}
+
+function isMarkdownBlockStart(line) {
+  const trimmed = String(line || "").trim();
+  return Boolean(
+    !trimmed ||
+    /^```/.test(trimmed) ||
+    /^#{1,4}\s+/.test(trimmed) ||
+    /^>\s?/.test(trimmed) ||
+    /^---+$/.test(trimmed) ||
+    /^[-*]\s+/.test(trimmed) ||
+    /^\d+\.\s+/.test(trimmed) ||
+    /^(->|=>)\s+/.test(trimmed)
+  );
+}
+
+function appendMarkdownList(container, lines, ordered) {
+  const list = document.createElement(ordered ? "ol" : "ul");
+  list.className = "assistant-md-list";
+  for (const line of lines) {
+    const raw = ordered
+      ? String(line || "").replace(/^\s*\d+\.\s+/, "")
+      : String(line || "").replace(/^\s*[-*]\s+/, "");
+    const taskMatch = raw.match(/^\[(x|X| )\]\s+([\s\S]*)$/);
+    const item = document.createElement("li");
+    const appendListText = (target, value) => {
+      const fragments = String(value || "").split("\n");
+      fragments.forEach((fragment, index) => {
+        if (index) target.appendChild(document.createElement("br"));
+        appendInlineMarkdown(target, fragment);
+      });
+    };
+    if (taskMatch) {
+      const marker = document.createElement("span");
+      marker.className = `assistant-md-task-marker${taskMatch[1].trim() ? " done" : ""}`;
+      marker.textContent = taskMatch[1].trim() ? "✓" : "□";
+      item.appendChild(marker);
+      appendListText(item, taskMatch[2]);
+    } else {
+      appendListText(item, raw);
+    }
+    list.appendChild(item);
+  }
+  container.appendChild(list);
+}
+
+function renderFinalAssistantContent(container, text) {
+  container.textContent = "";
+  container.classList.add("assistant-markdown");
+  const source = String(text || "").replace(/\r\n/g, "\n");
+  if (!source.trim()) return;
+  const lines = source.split("\n");
+  for (let index = 0; index < lines.length;) {
+    const line = lines[index];
+    const trimmed = line.trim();
+    if (!trimmed) {
+      index += 1;
+      continue;
+    }
+
+    const fence = trimmed.match(/^```([A-Za-z0-9_-]+)?\s*$/);
+    if (fence) {
+      const language = fence[1] || "";
+      const codeLines = [];
+      index += 1;
+      while (index < lines.length && !lines[index].trim().startsWith("```")) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+      if (index < lines.length) index += 1;
+      const block = document.createElement("figure");
+      block.className = "assistant-md-codeblock";
+      if (language) {
+        const caption = document.createElement("figcaption");
+        caption.textContent = language;
+        block.appendChild(caption);
+      }
+      const pre = document.createElement("pre");
+      pre.textContent = codeLines.join("\n");
+      block.appendChild(pre);
+      container.appendChild(block);
+      continue;
+    }
+
+    const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
+    if (heading) {
+      const level = Math.min(4, heading[1].length);
+      container.appendChild(createMarkdownLineBlock(`h${level}`, `assistant-md-heading level-${level}`, heading[2]));
+      index += 1;
+      continue;
+    }
+
+    if (/^---+$/.test(trimmed)) {
+      const divider = document.createElement("hr");
+      divider.className = "assistant-md-divider";
+      container.appendChild(divider);
+      index += 1;
+      continue;
+    }
+
+    if (/^>\s?/.test(trimmed)) {
+      const quoteLines = [];
+      while (index < lines.length && /^>\s?/.test(lines[index].trim())) {
+        quoteLines.push(lines[index].trim().replace(/^>\s?/, ""));
+        index += 1;
+      }
+      container.appendChild(createMarkdownLineBlock("blockquote", "assistant-md-quote", quoteLines.join("\n")));
+      continue;
+    }
+
+    if (/^\d+\.\s+/.test(trimmed) || /^[-*]\s+/.test(trimmed)) {
+      const ordered = /^\d+\.\s+/.test(trimmed);
+      const listLines = [];
+      while (index < lines.length) {
+        const nextLine = lines[index];
+        const nextTrimmed = lines[index].trim();
+        const isNextItem = ordered ? /^\d+\.\s+/.test(nextTrimmed) : /^[-*]\s+/.test(nextTrimmed);
+        if (isNextItem) {
+          listLines.push(nextLine);
+          index += 1;
+          continue;
+        }
+        if (listLines.length && /^\s{2,}\S/.test(nextLine)) {
+          listLines[listLines.length - 1] = `${listLines[listLines.length - 1]}\n${nextLine.trim()}`;
+          index += 1;
+          continue;
+        }
+        if (!nextTrimmed) {
+          index += 1;
+          break;
+        }
+        break;
+      }
+      if (!listLines.length) {
+        index += 1;
+      }
+      appendMarkdownList(container, listLines, ordered);
+      continue;
+    }
+
+    const chain = trimmed.match(/^(->|=>)\s*(.*)$/);
+    if (chain) {
+      const block = document.createElement("p");
+      block.className = "assistant-md-chain";
+      const arrow = document.createElement("span");
+      arrow.className = "assistant-md-arrow";
+      arrow.textContent = chain[1];
+      block.append(arrow, document.createTextNode(" "));
+      appendInlineMarkdown(block, chain[2]);
+      container.appendChild(block);
+      index += 1;
+      continue;
+    }
+
+    const paragraphLines = [line];
+    index += 1;
+    while (index < lines.length && !isMarkdownBlockStart(lines[index])) {
+      paragraphLines.push(lines[index]);
+      index += 1;
+    }
+    container.appendChild(createMarkdownLineBlock("p", "assistant-md-paragraph", paragraphLines.join("\n")));
+  }
+}
+
+function messageCopyText(node) {
+  const bubble = node?.querySelector?.(".bubble");
+  if (!bubble) return "";
+  return String(bubble.dataset.rawText || bubble.textContent || "");
+}
+
+async function copyMessageText(node, button) {
+  const text = messageCopyText(node);
+  if (!text) return;
+  const previous = button.textContent;
+  try {
+    if (bridge?.copyText) await bridge.copyText(text);
+    else await navigator.clipboard.writeText(text);
+    button.textContent = "Copied";
+    button.classList.add("copied");
+  } catch {
+    button.textContent = "Copy failed";
+    button.classList.add("failed");
+  } finally {
+    setTimeout(() => {
+      button.textContent = previous || "Copy";
+      button.classList.remove("copied", "failed");
+    }, 1000);
+  }
+}
+
 function ensureMessage(id, role, title = "") {
   if (state.itemMap.has(id)) return state.itemMap.get(id);
   const article = document.createElement("article");
   article.className = `message ${role}`;
-  article.innerHTML = `<div class="role"></div><div class="bubble"></div>`;
-  article.querySelector(".role").textContent = title || (role === "assistant" ? "Codex" : role === "user" ? "You" : "System");
+  const roleNode = document.createElement("div");
+  roleNode.className = "role";
+  roleNode.textContent = title || (role === "assistant" ? "Codex" : role === "user" ? "You" : "System");
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  article.append(roleNode, bubble);
+  if (role === "assistant" || role === "user") {
+    const actions = document.createElement("div");
+    actions.className = "message-actions";
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "message-copy-button";
+    copy.textContent = "Copy";
+    copy.title = "Copy raw message text";
+    copy.addEventListener("click", () => copyMessageText(article, copy));
+    actions.appendChild(copy);
+    article.appendChild(actions);
+  }
   els.transcript.appendChild(article);
   maybeAutoScrollBottom();
   state.itemMap.set(id, article);
@@ -408,7 +2531,12 @@ function setMessageText(id, role, text, title = "") {
   bubble.dataset.rawText = text || "";
   bubble.dataset.typedRendered = "true";
   bubble.dataset.streamingPlain = "false";
-  renderTypedContent(bubble, text || "");
+  if (role === "assistant") {
+    renderFinalAssistantContent(bubble, text || "");
+  } else {
+    bubble.classList.remove("assistant-markdown");
+    renderTypedContent(bubble, text || "");
+  }
   configureUserMessagePreview(node, role);
   maybeAutoScrollBottom();
 }
@@ -422,6 +2550,7 @@ function appendMessageText(id, role, delta, title = "") {
   bubble.dataset.rawText = next;
   bubble.dataset.typedRendered = "false";
   if (bubble.dataset.streamingPlain !== "true") {
+    bubble.classList.remove("assistant-markdown");
     bubble.textContent = previous;
     bubble.dataset.streamingPlain = "true";
   }
@@ -438,15 +2567,21 @@ function finalizeMessageTypedContent(id) {
   bubble.dataset.rawText = text;
   bubble.dataset.typedRendered = "true";
   bubble.dataset.streamingPlain = "false";
-  renderTypedContent(bubble, text);
-  configureUserMessagePreview(node, node.classList.contains("user") ? "user" : node.classList.contains("assistant") ? "assistant" : "system");
+  const role = node.classList.contains("user") ? "user" : node.classList.contains("assistant") ? "assistant" : "system";
+  if (role === "assistant") {
+    renderFinalAssistantContent(bubble, text);
+  } else {
+    bubble.classList.remove("assistant-markdown");
+    renderTypedContent(bubble, text);
+  }
+  configureUserMessagePreview(node, role);
 }
 
 function addSystemMessage(text) {
   setMessageText(`system_${Date.now()}_${Math.random().toString(16).slice(2)}`, "system", text, "System");
 }
 
-function clearRenderedThreadState() {
+function clearRenderedDomState() {
   els.transcript.innerHTML = "";
   state.itemMap.clear();
   state.codexItemMap.clear();
@@ -457,10 +2592,18 @@ function clearRenderedThreadState() {
   }
   state.pendingThoughtRenderMap.clear();
   state.finalMessageByTurnKey.clear();
+}
+
+function resetThreadSessionState() {
   state.turnActivityMap.clear();
   state.turnPromptMap.clear();
   state.turnRetryCountMap.clear();
   state.emptyTurnRetrying.clear();
+}
+
+function clearRenderedThreadState(options = {}) {
+  clearRenderedDomState();
+  if (options.resetSession !== false) resetThreadSessionState();
 }
 
 function openThreadFromEvent(event) {
@@ -659,6 +2802,84 @@ function rpc(method, params = {}) {
   return bridge.request(method, params);
 }
 
+async function refreshModelList(showErrors = false) {
+  const settingsProjection = providerSettingsProjection();
+  if (settingsProjection.model?.canList !== true && !hasCapabilityForMutation("model", "canList")) {
+    state.modelListStatus = "unavailable";
+    renderRuntimeConstitution();
+    return;
+  }
+  state.modelListStatus = "loading";
+  renderRuntimeConstitution();
+  try {
+    const models = [];
+    let cursor = null;
+    const seenCursors = new Set();
+    let truncated = false;
+    for (let page = 0; page < MODEL_LIST_PAGE_LIMIT; page += 1) {
+      if (cursor) {
+        if (seenCursors.has(cursor)) throw new Error(`model/list returned a repeated cursor after ${page} page(s).`);
+        seenCursors.add(cursor);
+      }
+      const response = await rpc("model/list", { cursor, limit: MODEL_LIST_PAGE_SIZE, includeHidden: false });
+      models.push(...(Array.isArray(response?.data) ? response.data : []));
+      cursor = response?.nextCursor || null;
+      if (!cursor) break;
+      if (page === MODEL_LIST_PAGE_LIMIT - 1) truncated = true;
+    }
+    state.models = models;
+    state.modelListStatus = truncated ? "partial" : "ready";
+    state.modelListError = truncated
+      ? `Model list stopped after ${MODEL_LIST_PAGE_LIMIT} page(s); additional models may be available.`
+      : "";
+    if (truncated && showErrors) addSystemMessage(state.modelListError);
+  } catch (error) {
+    state.modelListStatus = "failed";
+    state.modelListError = error.message;
+    if (showErrors) addSystemMessage(`Model list refresh failed: ${error.message}`);
+  }
+  renderRuntimeConstitution();
+}
+
+async function refreshRateLimits(showErrors = false) {
+  const settingsProjection = providerSettingsProjection();
+  if (settingsProjection.usage?.providerQuota?.canRead !== true && settingsProjection.usage?.canReadRateLimits !== true && !hasCapabilityForMutation("usage", "canReadRateLimits")) {
+    state.rateLimitsStatus = "unavailable";
+    renderRuntimeConstitution();
+    return;
+  }
+  state.rateLimitsStatus = "loading";
+  renderRuntimeConstitution();
+  try {
+    state.rateLimits = await rpc("account/rateLimits/read", {});
+    state.rateLimitsStatus = "ready";
+    state.rateLimitsError = "";
+    state.rateLimitsObservedAt = Date.now();
+  } catch (error) {
+    state.rateLimitsStatus = "failed";
+    state.rateLimitsError = error.message;
+    if (showErrors) addSystemMessage(`Quota refresh failed: ${error.message}`);
+  }
+  renderRuntimeConstitution();
+}
+
+async function refreshConfigRequirements(showErrors = false) {
+  state.configRequirementsStatus = "loading";
+  renderRuntimeConstitution();
+  try {
+    const response = await rpc("configRequirements/read", {});
+    state.configRequirements = response || { requirements: null };
+    state.configRequirementsStatus = response?.requirements ? "ready" : "none";
+    state.configRequirementsError = "";
+    reconcileAccessOverridesWithRequirements();
+  } catch (error) {
+    state.configRequirementsStatus = "failed";
+    state.configRequirementsError = error.message;
+    if (showErrors) addSystemMessage(`Config requirements refresh failed: ${error.message}`);
+  }
+  renderRuntimeConstitution();
+}
+
 function maybeAutoScrollBottom() {
   if (state.isBulkRendering) return;
   els.transcript.scrollTop = els.transcript.scrollHeight;
@@ -674,6 +2895,89 @@ function rerenderCurrentHistory(options = {}) {
   }
 }
 
+function logicalHistoryKey(threadId = "") {
+  return `thread:${String(threadId || state.threadId || "").trim()}`;
+}
+
+function ensureHistoryWindow(logicalThreadKey, options = {}) {
+  const key = String(logicalThreadKey || "").trim();
+  if (!key) return state.historyWindow;
+  if (state.historyWindow.logicalThreadKey !== key) {
+    state.historyWindow = {
+      logicalThreadKey: key,
+      mode: "tail",
+      loadedUserMessagePages: 1,
+      renderRevision: state.historyWindow.renderRevision + 1,
+    };
+    state.loadedUserMessagePages = 1;
+    return state.historyWindow;
+  }
+  if (!options.keepPagination && options.resetWindow) {
+    state.historyWindow.mode = "tail";
+    state.historyWindow.loadedUserMessagePages = 1;
+    state.historyWindow.renderRevision += 1;
+  }
+  state.loadedUserMessagePages = state.historyWindow.loadedUserMessagePages;
+  return state.historyWindow;
+}
+
+function visibleUserMessageCount(totalUserMessages) {
+  const total = Math.max(0, Number(totalUserMessages) || 0);
+  if (!total) return 0;
+  if (state.historyWindow.mode === "all") return total;
+  return Math.min(total, Math.max(1, state.historyWindow.loadedUserMessagePages) * USER_MESSAGE_PAGE_SIZE);
+}
+
+async function refreshCurrentHistorySource() {
+  const currentThreadId = String(state.threadId || "").trim();
+  if (!currentThreadId) return;
+  const storedSnapshot = renderedStoredSnapshotForThread(currentThreadId);
+  if (
+    state.historyKind === "stored" &&
+    storedSnapshot?.presentationModel &&
+    bridge?.readStoredThreadTranscript
+  ) {
+    const snapshot = await readStoredThreadTranscript(currentThreadId, state.sourceHome, state.sessionFilePath);
+    if (String(state.threadId || "") !== currentThreadId || !snapshot?.entries) return;
+    state.historyKind = "stored";
+    state.historyKey = logicalHistoryKey(currentThreadId);
+    state.historyData = { snapshot, threadId: currentThreadId };
+    return;
+  }
+  if (state.connected && (hasCapability("threads", "canRead") || hasCapability("threads", "canResume"))) {
+    const result = await readThreadById(currentThreadId);
+    if (String(state.threadId || "") !== currentThreadId || !result?.thread) return;
+    state.historyKind = "thread";
+    state.historyKey = logicalHistoryKey(currentThreadId);
+    state.historyData = result.thread;
+    return;
+  }
+  if (state.historyKind === "stored" && state.historyData?.snapshot && bridge?.readStoredThreadTranscript) {
+    const snapshot = await readStoredThreadTranscript(currentThreadId, state.sourceHome, state.sessionFilePath);
+    if (String(state.threadId || "") !== currentThreadId || !snapshot?.entries) return;
+    state.historyData = { snapshot, threadId: currentThreadId };
+  }
+}
+
+async function expandHistoryWindow(mode = "expanded") {
+  if (mode === "all") {
+    state.historyWindow.mode = "all";
+  } else {
+    state.historyWindow.mode = "expanded";
+    state.historyWindow.loadedUserMessagePages += 1;
+  }
+  state.loadedUserMessagePages = state.historyWindow.loadedUserMessagePages;
+  state.historyWindow.renderRevision += 1;
+  let refreshError = "";
+  try {
+    await refreshCurrentHistorySource();
+  } catch (error) {
+    refreshError = error.message;
+  }
+  rerenderCurrentHistory({ preserveViewport: true, resetSession: false });
+  if (refreshError) addSystemMessage(`History refresh before expansion failed; showing newest local transcript: ${refreshError}`);
+}
+
 function renderLoadMoreControl(hiddenUserMessageCount) {
   if (!Number.isFinite(hiddenUserMessageCount) || hiddenUserMessageCount <= 0) return;
   const loadCount = Math.min(USER_MESSAGE_PAGE_SIZE, hiddenUserMessageCount);
@@ -686,11 +2990,16 @@ function renderLoadMoreControl(hiddenUserMessageCount) {
   button.type = "button";
   button.className = "secondary transcript-load-more-button";
   button.textContent = `Load ${loadCount} more`;
-  button.addEventListener("click", () => {
-    state.loadedUserMessagePages += 1;
-    rerenderCurrentHistory({ preserveViewport: true });
-  });
-  wrapper.append(label, button);
+  button.addEventListener("click", () => expandHistoryWindow("expanded"));
+  const loadAllButton = document.createElement("button");
+  loadAllButton.type = "button";
+  loadAllButton.className = "secondary transcript-load-more-button";
+  loadAllButton.textContent = "Load all";
+  loadAllButton.addEventListener("click", () => expandHistoryWindow("all"));
+  const actions = document.createElement("span");
+  actions.className = "transcript-load-more-actions";
+  actions.append(button, loadAllButton);
+  wrapper.append(label, actions);
   els.transcript.appendChild(wrapper);
 }
 
@@ -946,6 +3255,7 @@ function renderGenericRequestDetails(request, details) {
 function renderServerRequest(request) {
   if (!request?.key) return;
   state.serverRequests.set(request.key, request);
+  renderRuntimeConstitution();
   const node = ensureMessage(requestMessageId(request), "system", request.title || "Codex request");
   node.dataset.requestKey = request.key;
   const bubble = node.querySelector(".bubble");
@@ -997,6 +3307,7 @@ function updateServerRequest(request) {
   const previous = state.serverRequests.get(request.key) || {};
   const next = { ...previous, ...request };
   state.serverRequests.set(request.key, next);
+  renderRuntimeConstitution();
   renderServerRequest(next);
 }
 
@@ -1008,16 +3319,220 @@ function focusServerRequest(key) {
   setTimeout(() => node.classList.remove("request-focus-pulse"), 900);
 }
 
-async function readStoredThreadTranscript(threadId, sourceHome = "", sessionFilePath = "") {
+function storedTranscriptReadLimit() {
+  if (state.historyWindow.mode === "all") return 2000;
+  if (state.historyWindow.mode === "expanded") {
+    return Math.min(2000, Math.max(800, state.historyWindow.loadedUserMessagePages * 800));
+  }
+  return 800;
+}
+
+async function readStoredThreadTranscript(threadId, sourceHome = "", sessionFilePath = "", limit = storedTranscriptReadLimit()) {
   if (!bridge?.readStoredThreadTranscript || !project?.id || !threadId) return null;
-  return bridge.readStoredThreadTranscript(project.id, threadId, sourceHome, sessionFilePath);
+  return bridge.readStoredThreadTranscript(project.id, threadId, sourceHome, sessionFilePath, limit);
+}
+
+function storedMessageText(message) {
+  return String(message?.text || message?.message || "").trim();
+}
+
+function subagentNotificationFromText(text) {
+  const raw = String(text || "");
+  const match = raw.match(/^\s*<subagent_notification>\s*([\s\S]*?)\s*<\/subagent_notification>\s*$/i);
+  if (!match) return null;
+  let body = null;
+  try {
+    body = JSON.parse(match[1].trim());
+  } catch {
+    return null;
+  }
+  const status = body?.status;
+  let statusKey = "";
+  let statusDetail = "";
+  if (typeof status === "string") {
+    statusKey = status;
+  } else if (status && typeof status === "object") {
+    const [key, value] = Object.entries(status)[0] || [];
+    statusKey = String(key || "");
+    if (typeof value === "string") statusDetail = value;
+  }
+  const agentPath = String(body?.agent_path || body?.agentPath || body?.agent_id || body?.agentId || "").trim();
+  if (!agentPath && !statusKey) return null;
+  return {
+    agentPath,
+    statusKey: statusKey || "unknown",
+    statusDetail,
+    observedAt: notificationPayloadTimestamp(body),
+  };
+}
+
+function normalizedNotificationTimestamp(value) {
+  if (value === null || value === undefined || value === "") return "";
+  const text = String(value).trim();
+  const numeric = typeof value === "number" || /^\d+(\.\d+)?$/.test(text) ? Number(value) : Number.NaN;
+  const timestamp = Number.isFinite(numeric)
+    ? numeric > 1_000_000_000_000 ? numeric : numeric * 1000
+    : Date.parse(text);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : "";
+}
+
+function notificationPayloadTimestamp(body) {
+  if (!body || typeof body !== "object") return "";
+  return normalizedNotificationTimestamp(
+    body.observedAt ||
+    body.observed_at ||
+    body.createdAt ||
+    body.created_at ||
+    body.updatedAt ||
+    body.updated_at ||
+    body.completedAt ||
+    body.completed_at ||
+    body.timestamp ||
+    body.at ||
+    "",
+  );
+}
+
+function notificationMessageTimestamp(message, notification = {}) {
+  return notification.observedAt ||
+    normalizedNotificationTimestamp(
+      message?.observedAt ||
+      message?.observed_at ||
+      message?.createdAt ||
+      message?.created_at ||
+      message?.updatedAt ||
+      message?.updated_at ||
+      message?.completedAt ||
+      message?.completed_at ||
+      message?.timestamp ||
+      message?.at ||
+      "",
+    );
+}
+
+function storedMessageIsSubagentNotification(message) {
+  return Boolean(subagentNotificationFromText(storedMessageText(message)));
+}
+
+function storedTurnUserMessageCount(turn) {
+  if (!Array.isArray(turn?.userMessages)) return 0;
+  return turn.userMessages.filter((message) => !storedMessageIsSubagentNotification(message)).length;
+}
+
+function storedStartTurnIndex(turns, hiddenUserMessages) {
+  if (!hiddenUserMessages) return 0;
+  let seen = 0;
+  for (let index = 0; index < turns.length; index += 1) {
+    const count = storedTurnUserMessageCount(turns[index]);
+    if (seen + count > hiddenUserMessages) return index;
+    seen += count;
+  }
+  return 0;
+}
+
+function renderedStoredSnapshotForThread(threadId) {
+  const id = String(threadId || state.threadId || "").trim();
+  if (!id) return null;
+  if (state.historyKind === "stored" && String(state.historyData?.threadId || "") === id) {
+    return state.historyData.snapshot || null;
+  }
+  return null;
+}
+
+function shouldPreserveStoredTranscriptOnLiveAttach(thread) {
+  const snapshot = renderedStoredSnapshotForThread(thread?.id || state.threadId);
+  return Boolean(snapshot?.presentationModel);
+}
+
+function renderStoredPresentationModel(model, snapshot = {}) {
+  const turns = Array.isArray(model?.turns) ? model.turns : [];
+  if (!turns.length) return false;
+  const previousBulkRendering = state.isBulkRendering;
+  state.isBulkRendering = true;
+  try {
+  const authorContext = currentAuthorContext({
+    ...(model?.threadMeta || {}),
+    threadId: model?.threadId || snapshot?.threadId || state.threadId,
+    isSubagent: Boolean(model?.threadMeta?.isSubagent || snapshot?.isSubagent),
+    parentThreadId: model?.threadMeta?.parentThreadId || snapshot?.parentThreadId || "",
+    agentNickname: model?.threadMeta?.agentNickname || snapshot?.agentNickname || "",
+    agentRole: model?.threadMeta?.agentRole || snapshot?.agentRole || "",
+  });
+  setActiveThreadMeta(authorContext);
+  if (!authorContext.isSubagent) ensureAgentGraph(model?.threadId || snapshot?.threadId || state.threadId);
+  const totalUserMessages = turns.reduce((sum, turn) => sum + storedTurnUserMessageCount(turn), 0);
+  const visibleUserMessages = visibleUserMessageCount(totalUserMessages);
+  const hiddenUserMessages = Math.max(0, totalUserMessages - visibleUserMessages);
+  const startTurnIndex = storedStartTurnIndex(turns, hiddenUserMessages);
+  const visibleTurns = turns.slice(startTurnIndex);
+
+  renderLoadMoreControl(hiddenUserMessages);
+
+  for (let index = 0; index < visibleTurns.length; index += 1) {
+    const turn = visibleTurns[index];
+    const turnKey = String(turn.turnKey || turn.turnId || `stored_turn_${startTurnIndex + index + 1}`);
+    for (let messageIndex = 0; messageIndex < (turn.userMessages || []).length; messageIndex += 1) {
+      const message = turn.userMessages[messageIndex];
+      const notification = subagentNotificationFromText(storedMessageText(message));
+      if (notification) {
+        renderSubagentNotificationTag(turnKey, { ...notification, observedAt: notificationMessageTimestamp(message, notification) });
+        continue;
+      }
+      const id = String(message.id || `stored_user_${turnKey}_${messageIndex}`);
+      setMessageText(id, authorContext.userRole, storedMessageText(message), authorContext.userTitle);
+    }
+    for (let messageIndex = 0; messageIndex < (turn.systemMessages || []).length; messageIndex += 1) {
+      const message = turn.systemMessages[messageIndex];
+      const id = String(message.id || `stored_system_${turnKey}_${messageIndex}`);
+      setMessageText(id, "system", storedMessageText(message), "System");
+    }
+    const thoughtItems = Array.isArray(turn.thoughtItems) ? turn.thoughtItems : [];
+    if (thoughtItems.length) {
+      const normalizedThoughtItems = thoughtItems.map((item, itemIndex) => ({
+        ...item,
+        id: String(item.id || `stored_thought_${turnKey}_${itemIndex}`),
+        turnId: turn.turnId || turnKey,
+      }));
+      const collabItems = normalizedThoughtItems.filter((item) => item?.type === "collabAgentToolCall");
+      const processItems = normalizedThoughtItems.filter((item) => item?.type !== "collabAgentToolCall");
+      for (const item of collabItems) {
+        if (!authorContext.isSubagent) {
+          updateAgentFromCollabItem(item);
+          renderCollabActivityTag(turnKey, item);
+        }
+      }
+      if (processItems.length) {
+        upsertThoughtProcess(turnKey, processItems, { merge: false });
+      }
+    }
+    for (let messageIndex = 0; messageIndex < (turn.assistantFinalMessages || []).length; messageIndex += 1) {
+      const message = turn.assistantFinalMessages[messageIndex];
+      const id = String(message.id || `stored_assistant_${turnKey}_${messageIndex}`);
+      setMessageText(id, "assistant", storedMessageText(message), authorContext.assistantTitle);
+    }
+  }
+
+  const visibleOrphans = (model.orphanItems || []).filter(Boolean);
+  if (visibleOrphans.length) {
+    const collabOrphans = visibleOrphans.filter((item) => item?.type === "collabAgentToolCall");
+    const processOrphans = visibleOrphans.filter((item) => item?.type !== "collabAgentToolCall");
+    for (const item of collabOrphans) {
+      if (!authorContext.isSubagent) {
+        updateAgentFromCollabItem(item);
+        renderCollabActivityTag("stored_orphans", item);
+      }
+    }
+    if (processOrphans.length) upsertThoughtProcess("stored_orphans", processOrphans, { merge: false });
+  }
+  return true;
+  } finally {
+    state.isBulkRendering = previousBulkRendering;
+  }
 }
 
 function renderStoredTranscript(snapshot, threadId, options = {}) {
-  const historyKey = `stored:${threadId}`;
-  if (!options.keepPagination && state.historyKey !== historyKey) {
-    state.loadedUserMessagePages = 1;
-  }
+  const historyKey = logicalHistoryKey(threadId);
+  ensureHistoryWindow(historyKey, options);
   state.historyKind = "stored";
   state.historyKey = historyKey;
   state.historyData = { snapshot, threadId };
@@ -1026,20 +3541,41 @@ function renderStoredTranscript(snapshot, threadId, options = {}) {
   const previousScrollHeight = options.preserveViewport ? els.transcript.scrollHeight : 0;
 
   state.isBulkRendering = true;
-  clearRenderedThreadState();
+  clearRenderedThreadState({ resetSession: options.resetSession !== false });
   state.threadId = threadId;
   state.liveAttached = false;
   const title = String(snapshot?.title || "Stored transcript");
   addSystemMessage(`Loaded ${title} from local Codex session logs. Live attach is running in background.`);
+  setActiveThreadMeta({
+    threadId,
+    isSubagent: Boolean(snapshot?.isSubagent),
+    parentThreadId: snapshot?.parentThreadId || "",
+    agentNickname: snapshot?.agentNickname || "",
+    agentRole: snapshot?.agentRole || "",
+  });
+  if (!state.threadMeta?.isSubagent) resetAgentGraph(threadId);
+  if (renderStoredPresentationModel(snapshot?.presentationModel, snapshot)) {
+    setComposerEnabled(false, "Read-only transcript while connecting this thread to live Codex…");
+    state.isBulkRendering = false;
+    if (options.preserveViewport) {
+      const nextScrollHeight = els.transcript.scrollHeight;
+      const delta = Math.max(0, nextScrollHeight - previousScrollHeight);
+      els.transcript.scrollTop = Math.max(0, previousScrollTop + delta);
+    } else {
+      els.transcript.scrollTop = els.transcript.scrollHeight;
+    }
+    renderRuntimeConstitution();
+    return;
+  }
   const allEntries = Array.isArray(snapshot?.entries) ? snapshot.entries : [];
   const userEntryIndices = [];
   for (let index = 0; index < allEntries.length; index += 1) {
-    if (allEntries[index]?.role === "user") userEntryIndices.push(index);
+    if (allEntries[index]?.role === "user" && !subagentNotificationFromText(allEntries[index]?.text || "")) {
+      userEntryIndices.push(index);
+    }
   }
   const totalUserMessages = userEntryIndices.length;
-  const visibleUserMessages = totalUserMessages
-    ? Math.min(totalUserMessages, Math.max(1, state.loadedUserMessagePages) * USER_MESSAGE_PAGE_SIZE)
-    : 0;
+  const visibleUserMessages = visibleUserMessageCount(totalUserMessages);
   const hiddenUserMessages = Math.max(0, totalUserMessages - visibleUserMessages);
   const startEntryIndex = totalUserMessages && hiddenUserMessages > 0
     ? userEntryIndices[Math.max(0, totalUserMessages - visibleUserMessages)] ?? 0
@@ -1069,8 +3605,22 @@ function renderStoredTranscript(snapshot, threadId, options = {}) {
       continue;
     }
     flushThoughtBuffer();
-    const role = entry.role === "assistant" || entry.role === "user" ? entry.role : "system";
-    const roleTitle = role === "assistant" ? "Codex" : role === "user" ? "You" : "System";
+    const notification = entry.role === "user" ? subagentNotificationFromText(entry.text || "") : null;
+    if (notification) {
+      renderSubagentNotificationTag(`stored_notification_${absoluteIndex + 1}`, { ...notification, observedAt: notificationMessageTimestamp(entry, notification) });
+      continue;
+    }
+    const authorContext = currentAuthorContext();
+    const role = entry.role === "assistant"
+      ? "assistant"
+      : entry.role === "user"
+        ? authorContext.userRole
+        : "system";
+    const roleTitle = role === "assistant"
+      ? authorContext.assistantTitle
+      : entry.role === "user"
+        ? authorContext.userTitle
+        : "System";
     setMessageText(String(entry.id || `stored_${absoluteIndex + 1}`), role, entry.text || "", roleTitle);
   }
   flushThoughtBuffer();
@@ -1083,6 +3633,7 @@ function renderStoredTranscript(snapshot, threadId, options = {}) {
   } else {
     els.transcript.scrollTop = els.transcript.scrollHeight;
   }
+  renderRuntimeConstitution();
 }
 
 async function loadExistingThreadOrStartNew() {
@@ -1161,6 +3712,12 @@ async function attachLiveThread(threadId) {
 
 function applyLiveThreadResult(result) {
   if (!result?.thread) return;
+  if (shouldPreserveStoredTranscriptOnLiveAttach(result.thread)) {
+    bindThread(result.thread, result.model, { liveAttached: true });
+    state.historyKind = "stored";
+    renderRuntimeConstitution();
+    return;
+  }
   renderThreadHistory(result.thread);
   bindThread(result.thread, result.model, { liveAttached: true });
 }
@@ -1173,7 +3730,19 @@ async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "",
   state.threadId = requestedThreadId;
   state.sourceHome = String(sourceHome || "");
   state.sessionFilePath = String(sessionFilePath || "");
+  state.activeModel = "";
+  await loadRuntimePreferences({
+    applyThread: true,
+    threadId: requestedThreadId,
+    guardThreadId: requestedThreadId,
+    guardSourceHome: state.sourceHome,
+    guardSessionFilePath: state.sessionFilePath,
+  });
+  if (openRequestId !== state.openRequestId) return;
   state.liveAttached = false;
+  state.tokenUsage = null;
+  state.tokenUsageStatus = "loading";
+  state.tokenUsageObservedAt = 0;
   clearRenderedThreadState();
   const payloadTitle = requestedThreadId === String(payload.initialThreadId || "") ? payload.initialThreadTitle : "";
   updateSurfaceHeader(titleHint || payloadTitle || requestedThreadId, workspaceText());
@@ -1222,6 +3791,19 @@ async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "",
     if (openRequestId !== state.openRequestId) return;
     const message = String(error?.message || "");
     if (message.toLowerCase().includes("not connected yet")) {
+      if (renderedStored) {
+        addSystemMessage(`Stored transcript rendered. Live attach unavailable: ${message}`);
+        await reportThreadState("failed", {
+          threadId: requestedThreadId,
+          sourceHome: state.sourceHome,
+          sessionFilePath: state.sessionFilePath,
+          title: state.threadTitle || titleHint || payloadTitle || requestedThreadId,
+          evidence: "stored-render-live-unavailable",
+          errorDescription: message,
+        });
+        setComposerEnabled(false, "Stored transcript rendered. Live Codex attach is unavailable.");
+        return;
+      }
       setComposerEnabled(false, "Connecting live Codex session for this thread…");
       return;
     }
@@ -1251,11 +3833,13 @@ async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "",
 
 function bindThread(thread, modelName = "", options = {}) {
   state.threadId = thread?.id || "";
+  setActiveThreadMeta(threadAgentMeta(thread || {}));
+  if (!state.threadMeta?.isSubagent && options.resetAgentGraph !== false) ensureAgentGraph(state.threadId);
   state.liveAttached = options.liveAttached !== false;
+  state.activeModel = String(modelName || state.activeModel || project?.codex?.model || "");
   const title = thread?.title || thread?.name || thread?.preview || state.threadTitle || payload.initialThreadTitle || state.threadId;
   const isDirectFixture = connection?.transport === DIRECT_FIXTURE_TRANSPORT;
   updateSurfaceHeader(title, workspaceText());
-  setBadge(els.modelBadge, modelName || project?.codex?.model || "default model", "subtle");
   setComposerEnabled(state.liveAttached, state.liveAttached ? "" : "Read-only mode");
   setNotice(
     isDirectFixture ? "Direct fixture session ready" : "Codex session ready",
@@ -1287,6 +3871,485 @@ function formatCommandExecutionText(item) {
   return [String(item?.command || ""), status, preview].filter(Boolean).join("\n");
 }
 
+function collabToolDisplayName(tool) {
+  const normalized = String(tool || "").trim();
+  const labels = {
+    spawnAgent: "Spawn agent",
+    spawn_agent: "Spawn agent",
+    sendInput: "Send input",
+    send_input: "Send input",
+    send_message: "Send input",
+    resumeAgent: "Resume agent",
+    resume_agent: "Resume agent",
+    wait: "Wait",
+    wait_agent: "Wait",
+    closeAgent: "Close agent",
+    close_agent: "Close agent",
+  };
+  return labels[normalized] || normalized || "Sub-agent action";
+}
+
+function normalizeCollabAgentItem(item = {}) {
+  const receiverThreadIds = Array.isArray(item.receiverThreadIds)
+    ? item.receiverThreadIds
+    : Array.isArray(item.receiver_thread_ids)
+      ? item.receiver_thread_ids
+      : [];
+  const agentsStates = Array.isArray(item.agentsStates)
+    ? item.agentsStates
+    : Array.isArray(item.agents_states)
+      ? item.agents_states
+      : [];
+  return {
+    id: String(item.id || item.callId || item.call_id || ""),
+    tool: String(item.tool || "call"),
+    status: String(item.status || "unknown"),
+    senderThreadId: String(item.senderThreadId || item.sender_thread_id || state.threadId || ""),
+    receiverThreadIds: receiverThreadIds.map((id) => String(id || "")).filter(Boolean),
+    prompt: String(item.prompt || ""),
+    model: String(item.model || ""),
+    reasoningEffort: String(item.reasoningEffort || item.reasoning_effort || ""),
+    agentsStates: agentsStates.map((agent) => ({
+      threadId: String(agent?.threadId || agent?.thread_id || ""),
+      status: String(agent?.status || "unknown"),
+      nickname: String(agent?.nickname || agent?.agentNickname || agent?.agent_nickname || ""),
+      role: String(agent?.role || agent?.agentRole || agent?.agent_role || ""),
+    })).filter((agent) => agent.threadId || agent.status),
+  };
+}
+
+function ensureAgentGraph(threadId = state.threadId) {
+  const primaryThreadId = String(threadId || state.threadId || "");
+  if (!state.agentGraph || String(state.agentGraph.primaryThreadId || "") !== primaryThreadId) {
+    resetAgentGraph(primaryThreadId);
+  }
+  return state.agentGraph;
+}
+
+function graphAgentLabel(agent) {
+  return agentDisplayLabel({
+    threadId: agent.threadId,
+    agentNickname: agent.nickname,
+    agentRole: agent.role,
+  });
+}
+
+function ensureGraphAgent(threadId, patch = {}) {
+  const id = String(threadId || "").trim();
+  if (!id) return null;
+  const graph = ensureAgentGraph();
+  const existing = graph.agents.get(id) || {
+    threadId: id,
+    parentThreadId: String(patch.parentThreadId || state.threadId || ""),
+    nickname: "",
+    role: "",
+    label: `Agent ${shortAgentThreadId(id)}`,
+    status: "discovered",
+    activityStatus: "unknown",
+    hydrationStatus: "not_requested",
+    transcript: [],
+    evidenceRefs: [],
+  };
+  const next = {
+    ...existing,
+    ...patch,
+    threadId: id,
+    parentThreadId: String(patch.parentThreadId || existing.parentThreadId || state.threadId || ""),
+    nickname: String(patch.nickname ?? existing.nickname ?? ""),
+    role: String(patch.role ?? existing.role ?? ""),
+  };
+  next.label = graphAgentLabel(next);
+  graph.agents.set(id, next);
+  graph.updatedAt = new Date().toISOString();
+  return next;
+}
+
+function collabPromptPreview(prompt) {
+  return compactValue(String(prompt || ""), 220);
+}
+
+function normalizeSubagentNotificationStatus(statusKey) {
+  const key = String(statusKey || "unknown").trim();
+  const labels = {
+    pending_init: "pending",
+    running: "running",
+    interrupted: "interrupted",
+    completed: "completed",
+    errored: "failed",
+    shutdown: "shutdown",
+    not_found: "not found",
+    unknown: "unknown",
+  };
+  return {
+    key,
+    label: labels[key] || key.replace(/_/g, " "),
+    graphStatus: key === "errored" ? "failed" : key === "pending_init" ? "pending" : key,
+    activityStatus: key === "running"
+      ? "active"
+      : key === "interrupted"
+        ? "waiting"
+        : ["completed", "shutdown", "not_found", "errored"].includes(key)
+          ? "last_seen_completed"
+          : "unknown",
+  };
+}
+
+function findAgentForSubagentNotification(agentPath) {
+  const ref = String(agentPath || "").trim();
+  if (!ref || !state.agentGraph?.agents) return null;
+  if (state.agentGraph.agents.has(ref)) return state.agentGraph.agents.get(ref);
+  const refLeaf = pathLeaf(ref);
+  for (const agent of state.agentGraph.agents.values()) {
+    const agentPathRef = String(agent.agentPath || "");
+    const threadIdRef = String(agent.threadId || "");
+    if (agentPathRef === ref) return agent;
+    if (threadIdRef === ref || threadIdRef === refLeaf) return agent;
+    if (pathLeaf(agentPathRef) === refLeaf) return agent;
+  }
+  return null;
+}
+
+function pathLeaf(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  const index = text.lastIndexOf("/");
+  return index >= 0 ? text.slice(index + 1) || text : text;
+}
+
+function applySubagentNotification(notification) {
+  if (!notification || currentAuthorContext().isSubagent) return null;
+  const status = normalizeSubagentNotificationStatus(notification.statusKey);
+  const existing = findAgentForSubagentNotification(notification.agentPath);
+  const fallbackThreadId = String(notification.agentPath || "").includes("/") ? "" : String(notification.agentPath || "");
+  const targetThreadId = existing?.threadId || fallbackThreadId;
+  if (!targetThreadId) return null;
+  const agent = ensureGraphAgent(targetThreadId, {
+    agentPath: notification.agentPath || existing?.agentPath || "",
+    status: status.graphStatus,
+    activityStatus: status.activityStatus,
+    lastAction: {
+      tool: "subagentNotification",
+      status: status.graphStatus,
+      callId: `notification:${notification.agentPath}:${notification.statusKey}`,
+    },
+    promptPreview: notification.statusDetail || existing?.promptPreview || "",
+    evidenceRefs: [{
+      kind: "subagent_notification",
+      label: `Sub-agent ${status.label}`,
+      observedAt: notification.observedAt || new Date().toISOString(),
+    }],
+  });
+  if (agent) {
+    state.agentGraphRevision += 1;
+    reportAgentGraph();
+  }
+  return agent;
+}
+
+function renderSubagentNotificationTag(turnKey, notification) {
+  const status = normalizeSubagentNotificationStatus(notification?.statusKey);
+  const agent = applySubagentNotification(notification);
+  const displayLabel = agent?.label || agentDisplayLabel({ threadId: notification?.agentPath || "" });
+  const node = ensureMessage(
+    `subagent_notification_${String(turnKey || "live")}_${String(notification?.agentPath || "agent")}_${status.key}`,
+    "system",
+    "Sub-agent activity",
+  );
+  node.classList.add("collab-meta-message");
+  const bubble = node.querySelector(".bubble");
+  bubble.innerHTML = "";
+  bubble.dataset.rawText = `Sub-agent ${status.label} ${displayLabel}`;
+  bubble.dataset.typedRendered = "true";
+  bubble.dataset.streamingPlain = "false";
+
+  const root = document.createElement("div");
+  root.className = `collab-activity-tag ${status.graphStatus}`;
+  const action = document.createElement("span");
+  action.className = "collab-activity-verb";
+  action.textContent = `Sub-agent ${status.label} `;
+  root.appendChild(action);
+
+  const chip = document.createElement("button");
+  chip.type = "button";
+  chip.className = "collab-agent-chip";
+  chip.textContent = displayLabel;
+  chip.disabled = !agent?.threadId;
+  chip.title = agent?.threadId ? `Open ${displayLabel} in the Sub-agents panel` : "Sub-agent thread unavailable";
+  chip.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (agent?.threadId) focusSubAgentFromChip({ threadId: agent.threadId, displayLabel });
+  });
+  root.appendChild(chip);
+  bubble.appendChild(root);
+  maybeAutoScrollBottom();
+}
+
+function normalizeCollabToolKey(tool) {
+  const raw = String(tool || "").trim();
+  const aliases = {
+    spawn_agent: "spawnAgent",
+    send_input: "sendInput",
+    send_message: "sendInput",
+    resume_agent: "resumeAgent",
+    wait_agent: "wait",
+    close_agent: "closeAgent",
+  };
+  return aliases[raw] || raw;
+}
+
+function collabActivityVerb(collab) {
+  const tool = normalizeCollabToolKey(collab.tool);
+  const status = String(collab.status || "unknown");
+  if (status === "failed") {
+    if (tool === "spawnAgent") return "Failed to create";
+    if (tool === "sendInput") return "Failed to send input to";
+    if (tool === "resumeAgent") return "Failed to resume";
+    if (tool === "wait") return "Wait failed for";
+    if (tool === "closeAgent") return "Failed to close";
+    return "Sub-agent action failed for";
+  }
+  if (tool === "spawnAgent") return status === "inProgress" ? "Creating" : "Created";
+  if (tool === "sendInput") return "Sent input to";
+  if (tool === "resumeAgent") return "Resumed";
+  if (tool === "wait") return status === "inProgress" ? "Waiting for" : "Wait completed for";
+  if (tool === "closeAgent") return "Closed";
+  return collabToolDisplayName(tool);
+}
+
+function collabActivityMessageId(turnKey, item) {
+  const collab = normalizeCollabAgentItem(item);
+  const stable = collab.id || item?.id || `${collab.tool}:${collab.receiverThreadIds.join(",")}:${collab.senderThreadId}`;
+  return `collab_${String(turnKey || "live")}_${String(stable || Date.now())}`;
+}
+
+function collabAgentProjection(threadId, statePatch = {}) {
+  const id = String(threadId || "").trim();
+  const agent = id ? state.agentGraph?.agents?.get(id) : null;
+  const meta = {
+    threadId: id,
+    nickname: statePatch.nickname || agent?.nickname || "",
+    role: statePatch.role || agent?.role || "",
+  };
+  return {
+    threadId: id,
+    displayLabel: agentDisplayLabel(meta),
+    nickname: meta.nickname,
+    role: meta.role,
+    lifecycleStatus: statePatch.status || agent?.status || "",
+    activityStatus: agent?.activityStatus || "",
+    clickable: Boolean(id),
+  };
+}
+
+function projectCollabActivityTag(item) {
+  const collab = normalizeCollabAgentItem(item);
+  const stateByThreadId = new Map(collab.agentsStates.map((agent) => [agent.threadId, agent]));
+  const receiverIds = Array.from(new Set([
+    ...collab.receiverThreadIds,
+    ...collab.agentsStates.map((agent) => agent.threadId),
+  ].filter(Boolean)));
+  const agents = receiverIds.map((id) => collabAgentProjection(id, stateByThreadId.get(id) || {}));
+  const verb = collabActivityVerb(collab);
+  const label = agents.length
+    ? `${verb} ${agents.map((agent) => agent.displayLabel).join(", ")}`
+    : verb === "Creating" ? "Creating sub-agent..." : `${verb} sub-agent`;
+  return {
+    id: collab.id || item?.id || "",
+    tool: collab.tool,
+    status: collab.status,
+    senderThreadId: collab.senderThreadId,
+    receiverThreadIds: receiverIds,
+    label,
+    verb,
+    promptPreview: collabPromptPreview(collab.prompt),
+    model: collab.model,
+    reasoningEffort: collab.reasoningEffort,
+    agents,
+  };
+}
+
+function focusSubAgentFromChip(agent) {
+  const receiverThreadId = String(agent?.threadId || "").trim();
+  if (!receiverThreadId || !bridge?.focusSubAgent) return;
+  bridge.focusSubAgent({
+    projectId: project?.id || payload.codexConnection?.projectId || "",
+    primaryThreadId: state.threadId,
+    receiverThreadId,
+    graphRevision: state.agentGraphRevision,
+    activationEpoch: Number(payload.activationEpoch) || 0,
+    label: agent.displayLabel || receiverThreadId,
+  }).catch(() => {});
+}
+
+function renderCollabActivityTag(turnKey, item) {
+  const projection = projectCollabActivityTag(item);
+  const node = ensureMessage(collabActivityMessageId(turnKey, item), "system", "Sub-agent activity");
+  node.classList.add("collab-meta-message");
+  const bubble = node.querySelector(".bubble");
+  bubble.innerHTML = "";
+  bubble.dataset.rawText = projection.label;
+  bubble.dataset.typedRendered = "true";
+  bubble.dataset.streamingPlain = "false";
+
+  const root = document.createElement("div");
+  root.className = `collab-activity-tag ${String(projection.status || "unknown")}`;
+  const action = document.createElement("span");
+  action.className = "collab-activity-verb";
+  action.textContent = projection.agents.length ? `${projection.verb} ` : projection.label;
+  root.appendChild(action);
+
+  if (projection.agents.length) {
+    const chipList = document.createElement("span");
+    chipList.className = "collab-agent-chip-list";
+    for (const agent of projection.agents) {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "collab-agent-chip";
+      chip.textContent = agent.displayLabel;
+      chip.title = agent.clickable ? `Open ${agent.displayLabel} in the Sub-agents panel` : "Sub-agent thread unavailable";
+      chip.disabled = !agent.clickable;
+      chip.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        focusSubAgentFromChip(agent);
+      });
+      chipList.appendChild(chip);
+    }
+    root.appendChild(chipList);
+  }
+
+  if (projection.status === "failed") {
+    const status = document.createElement("span");
+    status.className = "collab-activity-status";
+    status.textContent = "failed";
+    root.appendChild(status);
+  }
+  bubble.appendChild(root);
+  maybeAutoScrollBottom();
+}
+
+function updateAgentFromCollabItem(item) {
+  const collab = normalizeCollabAgentItem(item);
+  if (!collab.receiverThreadIds.length && !collab.agentsStates.length) return;
+  const graph = ensureAgentGraph(state.threadId);
+  const statusById = new Map(collab.agentsStates.map((agent) => [agent.threadId, agent]));
+  const receiverIds = new Set([...collab.receiverThreadIds, ...collab.agentsStates.map((agent) => agent.threadId)].filter(Boolean));
+  for (const receiverId of receiverIds) {
+    const agentState = statusById.get(receiverId) || {};
+    const agent = ensureGraphAgent(receiverId, {
+      parentThreadId: collab.senderThreadId || state.threadId,
+      nickname: agentState.nickname || undefined,
+      role: agentState.role || undefined,
+      status: agentState.status || collab.status || "unknown",
+      activityStatus: collab.status === "inProgress" ? "active" : "last_seen_completed",
+      hydrationStatus: "metadata_pending",
+      lastAction: {
+        tool: collab.tool,
+        status: collab.status,
+        callId: collab.id,
+      },
+      promptPreview: collabPromptPreview(collab.prompt),
+      evidenceRefs: [{
+        kind: "collab_tool_call",
+        label: `${collabToolDisplayName(collab.tool)} · ${collab.status}`,
+        observedAt: new Date().toISOString(),
+      }],
+    });
+    if (agent) hydrateAgentThread(receiverId, graph.graphId, graph.primaryThreadId);
+  }
+  state.agentGraphRevision += 1;
+  reportAgentGraph();
+}
+
+function subAgentTranscriptFromSnapshot(snapshot, agent) {
+  const context = currentAuthorContext({
+    threadId: snapshot?.threadId || agent.threadId,
+    isSubagent: true,
+    parentThreadId: snapshot?.parentThreadId || agent.parentThreadId || state.threadId,
+    agentNickname: snapshot?.agentNickname || agent.nickname || "",
+    agentRole: snapshot?.agentRole || agent.role || "",
+  });
+  const messages = [];
+  const model = snapshot?.presentationModel;
+  if (Array.isArray(model?.turns)) {
+    for (const turn of model.turns) {
+      for (const message of turn.userMessages || []) {
+        messages.push({
+          id: String(message.id || `sub_user_${messages.length}`),
+          role: "parent",
+          title: context.userTitle,
+          text: compactValue(storedMessageText(message), 1400),
+        });
+      }
+      for (const message of turn.assistantFinalMessages || []) {
+        messages.push({
+          id: String(message.id || `sub_agent_${messages.length}`),
+          role: "child",
+          title: context.assistantTitle,
+          text: compactValue(storedMessageText(message), 1400),
+        });
+      }
+    }
+    return messages.slice(-12);
+  }
+  for (const entry of snapshot?.entries || []) {
+    const role = entry.role === "assistant" ? "child" : entry.role === "user" ? "parent" : "system";
+    messages.push({
+      id: String(entry.id || `sub_entry_${messages.length}`),
+      role,
+      title: role === "child" ? context.assistantTitle : role === "parent" ? context.userTitle : "System",
+      text: compactValue(entry.text || "", 1400),
+    });
+  }
+  return messages.slice(-12);
+}
+
+async function hydrateAgentThread(threadId, graphId, primaryThreadId) {
+  const id = String(threadId || "").trim();
+  const originGraphId = String(graphId || state.agentGraph?.graphId || "");
+  const originPrimaryThreadId = String(primaryThreadId || state.agentGraph?.primaryThreadId || state.threadId || "");
+  const requestKey = `${originGraphId}:${id}`;
+  if (!id || !originGraphId || !originPrimaryThreadId || state.agentHydrationRequests.has(requestKey)) return;
+  state.agentHydrationRequests.set(requestKey, { graphId: originGraphId, primaryThreadId: originPrimaryThreadId });
+  const isCurrentHydrationTarget = () =>
+    String(state.threadId || "") === originPrimaryThreadId &&
+    String(state.agentGraph?.primaryThreadId || "") === originPrimaryThreadId &&
+    String(state.agentGraph?.graphId || "") === originGraphId;
+  try {
+    const snapshot = await bridge.readStoredThreadTranscript?.(
+      project?.id || "",
+      id,
+      state.sourceHome || "",
+      "",
+      160,
+    );
+    if (!isCurrentHydrationTarget()) return;
+    const agent = ensureGraphAgent(id, {
+      parentThreadId: snapshot?.parentThreadId || state.threadId,
+      nickname: snapshot?.agentNickname || undefined,
+      role: snapshot?.agentRole || undefined,
+      agentPath: snapshot?.agentPath || undefined,
+      status: "available",
+      hydrationStatus: "turns_ready",
+    });
+    if (agent) {
+      agent.transcript = subAgentTranscriptFromSnapshot(snapshot, agent);
+      state.agentGraphRevision += 1;
+      reportAgentGraph();
+    }
+  } catch {
+    if (!isCurrentHydrationTarget()) return;
+    const agent = ensureGraphAgent(id, { hydrationStatus: "failed" });
+    if (agent) {
+      state.agentGraphRevision += 1;
+      reportAgentGraph();
+    }
+  } finally {
+    state.agentHydrationRequests.delete(requestKey);
+  }
+}
+
 function thoughtItemLabel(item) {
   if (!item) return "Thought";
   if (item.type === "reasoning") return "Reasoning";
@@ -1300,7 +4363,7 @@ function thoughtItemLabel(item) {
     return `Patch · ${changes} file change${changes === 1 ? "" : "s"}`;
   }
   if (item.type === "imageGeneration") return "Image generation";
-  if (item.type === "collabAgentToolCall") return `Sub-agent tool · ${item.tool || "call"}`;
+  if (item.type === "collabAgentToolCall") return `Sub-agent · ${collabToolDisplayName(item.tool)}`;
   return String(item.type || "Thought");
 }
 
@@ -1317,14 +4380,16 @@ function thoughtItemBody(item) {
   }
   if (item.type === "fileChange") {
     const changes = Array.isArray(item.changes) ? item.changes : [];
-    if (!changes.length) return `${item.status || "completed"} · no file changes listed`;
+    const header = `${item.patchStatus || item.status || "completed"}`;
+    if (!changes.length) return `${header} · no file changes listed`;
     const lines = changes.slice(0, 40).map((change) => {
       const kind = String(change?.kind || change?.type || "change");
       const relPath = String(change?.path || change?.relativePath || change?.file || "").trim();
       return `- ${kind}${relPath ? ` ${relPath}` : ""}`;
     });
     if (changes.length > lines.length) lines.push(`… ${changes.length - lines.length} more change entries`);
-    return lines.join("\n");
+    const output = [item.stdout, item.stderr].filter(Boolean).join("\n").trim();
+    return [header, lines.join("\n"), output].filter(Boolean).join("\n");
   }
   if (item.type === "mcpToolCall") {
     const header = `${item.server || "mcp"} · ${item.tool || "tool"} · ${item.status || "unknown"}`;
@@ -1379,9 +4444,54 @@ function positionThoughtProcessNode(turnKey, node) {
   }
 }
 
+function normalizeThoughtItemBody(item) {
+  return String(thoughtItemBody(item) || "").trim();
+}
+
+function isEmptyThoughtSentinel(text) {
+  const normalized = String(text || "").trim().toLowerCase();
+  return !normalized ||
+    normalized === "no reasoning text." ||
+    normalized === "reasoning not available" ||
+    normalized === "reasoning unavailable" ||
+    normalized === "no reasoning available";
+}
+
+function shouldRenderThoughtItem(item) {
+  if (!item) return false;
+  if (item.type === "collabAgentToolCall") return false;
+  if (isToolLikeThoughtItem(item)) return true;
+  const body = normalizeThoughtItemBody(item);
+  if (item.type === "reasoning" || isThoughtAssistantMessageItem(item)) return !isEmptyThoughtSentinel(body);
+  return !isEmptyThoughtSentinel(body);
+}
+
+function projectThoughtItemsForRender(thoughtItems) {
+  const visible = Array.isArray(thoughtItems) ? thoughtItems.filter(shouldRenderThoughtItem) : [];
+  return {
+    reasoningItems: visible.filter((item) => item?.type === "reasoning" || isThoughtAssistantMessageItem(item)),
+    toolItems: visible.filter((item) => isToolLikeThoughtItem(item)),
+    patchItems: visible.filter((item) => item?.type === "fileChange"),
+    otherItems: visible.filter((item) =>
+      item?.type !== "reasoning" &&
+      item?.type !== "fileChange" &&
+      !isThoughtAssistantMessageItem(item) &&
+      !isToolLikeThoughtItem(item)),
+    visibleCount: visible.length,
+  };
+}
+
 function renderThoughtProcess(turnKey, thoughtItems, options = {}) {
-  if (!Array.isArray(thoughtItems) || !thoughtItems.length) return;
   const messageId = thoughtMessageId(turnKey);
+  const projection = projectThoughtItemsForRender(thoughtItems);
+  if (!projection.visibleCount) {
+    const existing = state.itemMap.get(messageId);
+    if (existing) {
+      existing.remove();
+      state.itemMap.delete(messageId);
+    }
+    return;
+  }
   const node = ensureMessage(messageId, "system", "Thought process");
   positionThoughtProcessNode(turnKey, node);
   const bubble = node.querySelector(".bubble");
@@ -1391,40 +4501,37 @@ function renderThoughtProcess(turnKey, thoughtItems, options = {}) {
   root.className = "thought-process";
   if (options.open) root.open = true;
   const summary = document.createElement("summary");
-  summary.textContent = `Thought process (${thoughtItems.length})`;
+  summary.textContent = projection.reasoningItems.length
+    ? `Thought process (${projection.visibleCount})`
+    : `Process evidence (${projection.visibleCount})`;
   root.appendChild(summary);
 
   const body = document.createElement("div");
   body.className = "thought-body";
 
-  const reasoningItems = thoughtItems.filter((item) => item?.type === "reasoning" || isThoughtAssistantMessageItem(item));
-  const toolItems = thoughtItems.filter(isToolLikeThoughtItem);
-  const otherItems = thoughtItems.filter((item) =>
-    item?.type !== "reasoning" && !isThoughtAssistantMessageItem(item) && !isToolLikeThoughtItem(item));
-
-  for (const item of reasoningItems) {
+  for (const item of projection.reasoningItems) {
     const block = document.createElement("div");
     block.className = "thought-reasoning";
-    renderTypedContent(block, thoughtItemBody(item) || "No reasoning text.");
+    renderTypedContent(block, normalizeThoughtItemBody(item));
     body.appendChild(block);
   }
 
-  if (toolItems.length) {
+  if (projection.toolItems.length) {
     const toolsRoot = document.createElement("details");
     toolsRoot.className = "thought-tools";
     const toolsSummary = document.createElement("summary");
-    toolsSummary.textContent = `Shell / tool calls (${toolItems.length})`;
+    toolsSummary.textContent = `Shell / tool calls (${projection.toolItems.length})`;
     toolsRoot.appendChild(toolsSummary);
     const toolsList = document.createElement("div");
     toolsList.className = "thought-tools-list";
-    for (const item of toolItems) {
+    for (const item of projection.toolItems) {
       const toolDetail = document.createElement("details");
       toolDetail.className = "thought-tool";
       const toolSummary = document.createElement("summary");
       toolSummary.textContent = thoughtItemLabel(item);
       const toolBody = document.createElement("pre");
       toolBody.className = "thought-content";
-      renderTypedContent(toolBody, thoughtItemBody(item) || "No details.");
+      renderTypedContent(toolBody, normalizeThoughtItemBody(item) || "No details.");
       toolDetail.append(toolSummary, toolBody);
       toolsList.appendChild(toolDetail);
     }
@@ -1432,14 +4539,37 @@ function renderThoughtProcess(turnKey, thoughtItems, options = {}) {
     body.appendChild(toolsRoot);
   }
 
-  for (const item of otherItems) {
+  if (projection.patchItems.length) {
+    const patchesRoot = document.createElement("details");
+    patchesRoot.className = "thought-tools thought-patches";
+    const patchesSummary = document.createElement("summary");
+    patchesSummary.textContent = `Patches (${projection.patchItems.length})`;
+    patchesRoot.appendChild(patchesSummary);
+    const patchesList = document.createElement("div");
+    patchesList.className = "thought-tools-list";
+    for (const item of projection.patchItems) {
+      const patchDetail = document.createElement("details");
+      patchDetail.className = "thought-tool thought-patch";
+      const patchSummary = document.createElement("summary");
+      patchSummary.textContent = thoughtItemLabel(item);
+      const patchBody = document.createElement("pre");
+      patchBody.className = "thought-content";
+      renderTypedContent(patchBody, normalizeThoughtItemBody(item) || "No details.");
+      patchDetail.append(patchSummary, patchBody);
+      patchesList.appendChild(patchDetail);
+    }
+    patchesRoot.appendChild(patchesList);
+    body.appendChild(patchesRoot);
+  }
+
+  for (const item of projection.otherItems) {
     const detail = document.createElement("details");
     detail.className = "thought-tool";
     const title = document.createElement("summary");
     title.textContent = thoughtItemLabel(item);
     const content = document.createElement("pre");
     content.className = "thought-content";
-    renderTypedContent(content, thoughtItemBody(item) || "No details.");
+    renderTypedContent(content, normalizeThoughtItemBody(item) || "No details.");
     detail.append(title, content);
     body.appendChild(detail);
   }
@@ -1553,12 +4683,17 @@ function appendThoughtAssistantDelta(itemId, delta, phaseHint = "") {
   return true;
 }
 
-function renderItem(item) {
+function renderItem(item, authorContext = currentAuthorContext()) {
   if (!item || !item.id) return;
   rememberCodexItem({ threadId: state.threadId, turnId: item.turnId || state.turnId, itemId: item.id }, item);
   if (item.type === "userMessage") {
     const text = (item.content || []).map(userInputToText).filter(Boolean).join("\n\n");
-    setMessageText(item.id, "user", text, "You");
+    const notification = subagentNotificationFromText(text);
+    if (notification) {
+      if (!authorContext.isSubagent) renderSubagentNotificationTag(item.turnId || state.turnId || "live", notification);
+      return;
+    }
+    setMessageText(item.id, authorContext.userRole, text, authorContext.userTitle);
     return;
   }
   if (item.type === "agentMessage") {
@@ -1569,7 +4704,14 @@ function renderItem(item) {
       return;
     }
     rememberFinalMessageItem(item.id, item.turnId || state.turnId || "");
-    setMessageText(item.id, "assistant", item.text || "", "Codex");
+    setMessageText(item.id, "assistant", item.text || "", authorContext.assistantTitle);
+    return;
+  }
+  if (item.type === "collabAgentToolCall") {
+    if (!authorContext.isSubagent) {
+      updateAgentFromCollabItem(item);
+      renderCollabActivityTag(item.turnId || state.turnId || "live", item);
+    }
     return;
   }
   if (item.type === "plan") {
@@ -1622,10 +4764,8 @@ function renderItem(item) {
 }
 
 function renderThreadHistory(thread, options = {}) {
-  const historyKey = `thread:${thread?.id || state.threadId || ""}`;
-  if (!options.keepPagination && state.historyKey !== historyKey) {
-    state.loadedUserMessagePages = 1;
-  }
+  const historyKey = logicalHistoryKey(thread?.id || state.threadId || "");
+  ensureHistoryWindow(historyKey, options);
   state.historyKind = "thread";
   state.historyKey = historyKey;
   state.historyData = thread;
@@ -1634,18 +4774,22 @@ function renderThreadHistory(thread, options = {}) {
   const previousScrollHeight = options.preserveViewport ? els.transcript.scrollHeight : 0;
 
   state.isBulkRendering = true;
-  clearRenderedThreadState();
+  clearRenderedThreadState({ resetSession: options.resetSession !== false });
+  setActiveThreadMeta(threadAgentMeta(thread || {}));
+  const authorContext = currentAuthorContext();
+  if (!authorContext.isSubagent) resetAgentGraph(thread?.id || state.threadId || "");
   const allTurns = Array.isArray(thread?.turns) ? thread.turns : [];
   const userMessageTurnIndices = [];
   for (let index = 0; index < allTurns.length; index += 1) {
     for (const item of allTurns[index]?.items || []) {
-      if (item?.type === "userMessage") userMessageTurnIndices.push(index);
+      if (item?.type === "userMessage") {
+        const text = (item.content || []).map(userInputToText).filter(Boolean).join("\n\n");
+        if (!subagentNotificationFromText(text)) userMessageTurnIndices.push(index);
+      }
     }
   }
   const totalUserMessages = userMessageTurnIndices.length;
-  const visibleUserMessages = totalUserMessages
-    ? Math.min(totalUserMessages, Math.max(1, state.loadedUserMessagePages) * USER_MESSAGE_PAGE_SIZE)
-    : 0;
+  const visibleUserMessages = visibleUserMessageCount(totalUserMessages);
   const hiddenUserMessages = Math.max(0, totalUserMessages - visibleUserMessages);
   const startTurnIndex = totalUserMessages && hiddenUserMessages > 0
     ? userMessageTurnIndices[Math.max(0, totalUserMessages - visibleUserMessages)] ?? 0
@@ -1662,19 +4806,21 @@ function renderThreadHistory(thread, options = {}) {
     const regularItems = [];
     const thoughtItems = [];
     for (const item of turn.items || []) {
-      if (item?.id) rememberCodexItem({ threadId: thread?.id || state.threadId, turnId: turnKey, itemId: item.id }, item);
-      if (isThoughtItem(item) || isThoughtAssistantMessageItem(item)) thoughtItems.push(item);
-      else if (item?.type === "userMessage") userItems.push(item);
-      else regularItems.push(item);
+      if (!item) continue;
+      const normalizedItem = item.turnId ? item : { ...item, turnId: turnKey };
+      if (normalizedItem?.id) rememberCodexItem({ threadId: thread?.id || state.threadId, turnId: turnKey, itemId: normalizedItem.id }, normalizedItem);
+      if (isThoughtItem(normalizedItem) || isThoughtAssistantMessageItem(normalizedItem)) thoughtItems.push(normalizedItem);
+      else if (normalizedItem?.type === "userMessage") userItems.push(normalizedItem);
+      else regularItems.push(normalizedItem);
     }
-    for (const item of userItems) renderItem(item);
+    for (const item of userItems) renderItem(item, authorContext);
     if (thoughtItems.length) {
       for (const item of thoughtItems) {
         if (isThoughtAssistantMessageItem(item)) rememberThoughtAssistantItem(item, turnKey);
       }
       upsertThoughtProcess(turnKey, thoughtItems, { merge: false });
     }
-    for (const item of regularItems) renderItem(item);
+    for (const item of regularItems) renderItem(item, authorContext);
   }
   state.isBulkRendering = false;
   if (options.preserveViewport) {
@@ -1684,6 +4830,7 @@ function renderThreadHistory(thread, options = {}) {
   } else {
     els.transcript.scrollTop = els.transcript.scrollHeight;
   }
+  renderRuntimeConstitution();
 }
 
 async function startNewThread() {
@@ -1693,27 +4840,49 @@ async function startNewThread() {
   const cwd = connection?.workspaceRoot || project?.workspace?.linuxPath || project?.workspace?.localPath || project?.repoPath || "";
   const params = {
     cwd,
-    model: project?.codex?.model || null,
+    model: activeModelId() || null,
     experimentalRawEvents: false,
     persistExtendedHistory: true,
   };
+  if (state.runtimeOverrides.approvalPolicy) params.approvalPolicy = state.runtimeOverrides.approvalPolicy;
+  if (state.runtimeOverrides.sandboxMode) params.sandbox = state.runtimeOverrides.sandboxMode;
+  if (state.runtimeOverrides.serviceTier) params.serviceTier = state.runtimeOverrides.serviceTier;
   const result = await rpc("thread/start", params);
   clearRenderedThreadState();
+  state.sourceHome = "";
+  state.sessionFilePath = "";
   bindThread(result.thread, result.model);
+  await persistRuntimePreferences("thread-model");
 }
 
 async function startCodexTurn(text, options = {}) {
   if (!hasCapability("turns", "canStart")) {
     throw new Error("Active Codex runtime does not expose turn/start capability.");
   }
-  const result = await rpc("turn/start", {
+  const params = {
     threadId: state.threadId,
     input: [{ type: "text", text, text_elements: [] }],
-    model: project?.codex?.model || null,
-    effort: project?.codex?.reasoningEffort || null,
-  });
+    model: activeModelId() || null,
+    effort: requestedReasoningEffort(),
+  };
+  if (state.runtimeOverrides.approvalPolicy) params.approvalPolicy = state.runtimeOverrides.approvalPolicy;
+  if (state.runtimeOverrides.serviceTier) params.serviceTier = state.runtimeOverrides.serviceTier;
+  const sandboxPolicy = sandboxPolicyForMode(state.runtimeOverrides.sandboxMode);
+  if (sandboxPolicy) params.sandboxPolicy = sandboxPolicy;
+  const result = await rpc("turn/start", params);
   const turnId = String(result?.turn?.id || "");
-  if (turnId) rememberPromptTurn(turnId, text, options.retryCount || 0);
+  if (turnId) {
+    state.activeTurnId = turnId;
+    state.turnId = turnId;
+    state.turnPending = false;
+    const activity = ensureTurnActivity(turnId);
+    if (activity) {
+      activity.status = String(result?.turn?.status || "inProgress");
+      activity.startedAt = activity.startedAt || result?.turn?.startedAt || Date.now() / 1000;
+    }
+    rememberPromptTurn(turnId, text, options.retryCount || 0);
+    renderRuntimeConstitution();
+  }
   return result;
 }
 
@@ -1723,12 +4892,40 @@ async function sendPrompt(text) {
     const liveResult = await attachLiveThread(state.threadId);
     applyLiveThreadResult(liveResult);
   }
-  els.sendButton.disabled = true;
+  state.turnPending = true;
+  renderRuntimeConstitution();
   try {
     await startCodexTurn(text);
     els.composerInput.value = "";
+  } catch (error) {
+    state.turnPending = false;
+    state.activeTurnId = "";
+    renderRuntimeConstitution();
+    throw error;
+  }
+}
+
+async function stopCurrentTurn() {
+  const turnId = String(state.activeTurnId || state.turnId || "").trim();
+  if (!state.threadId || !turnId) {
+    addSystemMessage("No active Codex turn is available to stop yet.");
+    return;
+  }
+  state.turnStopping = true;
+  const activity = ensureTurnActivity(turnId);
+  if (activity) activity.status = "interrupting";
+  renderRuntimeConstitution();
+  try {
+    await rpc("turn/interrupt", { threadId: state.threadId, turnId });
+    if (activity) {
+      activity.status = "interrupted";
+      activity.completedAt = activity.completedAt || Date.now() / 1000;
+    }
+    state.activeTurnId = "";
+    state.turnPending = false;
   } finally {
-    els.sendButton.disabled = false;
+    state.turnStopping = false;
+    renderRuntimeConstitution();
   }
 }
 
@@ -1739,6 +4936,7 @@ async function initializeBridgeSession() {
   });
   await bridge.notify("initialized", {});
   await loadAccountState();
+  await Promise.allSettled([refreshModelList(), refreshRateLimits(), refreshConfigRequirements()]);
 }
 
 function handleNotification(method, params) {
@@ -1748,6 +4946,16 @@ function handleNotification(method, params) {
     if (activity) {
       activity.hasCodexOutput = true;
       activity.errorShown = true;
+      if (!params?.willRetry) {
+        activity.status = "error";
+        activity.completedAt = activity.completedAt || Date.now() / 1000;
+      }
+    }
+    if (!params?.willRetry) {
+      state.turnPending = false;
+      state.activeTurnId = "";
+      state.turnStopping = false;
+      renderRuntimeConstitution();
     }
     const error = params?.error || {};
     const message = [
@@ -1778,7 +4986,7 @@ function handleNotification(method, params) {
     markTurnCodexOutput(turnKey);
     if (appendThoughtAssistantDelta(params?.itemId, params?.delta || "", params?.phase || "")) return;
     rememberFinalMessageItem(params?.itemId, turnKey);
-    appendMessageText(params?.itemId, "assistant", params?.delta || "", "Codex");
+    appendMessageText(params?.itemId, "assistant", params?.delta || "", currentAuthorContext().assistantTitle);
     return;
   }
   if (method === "item/started" || method === "item/completed") {
@@ -1796,11 +5004,25 @@ function handleNotification(method, params) {
       if (isThoughtAssistantMessageItem(params?.item)) rememberThoughtAssistantItem(params.item, turnKey);
       upsertThoughtProcess(turnKey, [params.item], { merge: true, open: true });
     } else {
-      renderItem(params?.item);
+      renderItem(params?.item, currentAuthorContext());
     }
     return;
   }
   if (method === "account/updated") {
+    loadAccountState().catch((error) => addSystemMessage(`Failed to refresh account state: ${error.message}`));
+    refreshRateLimits().catch(() => {});
+    return;
+  }
+  if (method === "account/rateLimits/updated") {
+    state.rateLimits = { rateLimits: params?.rateLimits || params?.rate_limits || params || null };
+    state.rateLimitsStatus = "ready";
+    state.rateLimitsError = "";
+    state.rateLimitsObservedAt = Date.now();
+    renderRuntimeConstitution();
+    return;
+  }
+  if (method === "thread/tokenUsage/updated") {
+    applyThreadTokenUsageUpdate(params);
     return;
   }
   if (method === "account/login/completed") {
@@ -1813,15 +5035,18 @@ function handleNotification(method, params) {
     return;
   }
   if (method === "turn/completed") {
-    els.sendButton.disabled = false;
     const completedTurnId = turnIdFromNotification(params);
     if (completedTurnId) {
       state.turnId = completedTurnId;
+      if (String(state.activeTurnId) === String(completedTurnId)) state.activeTurnId = "";
+      state.turnPending = false;
+      state.turnStopping = false;
       const activity = ensureTurnActivity(completedTurnId);
       if (activity) {
         activity.status = String(params?.turn?.status || "completed");
         activity.completedAt = params?.turn?.completedAt || Date.now() / 1000;
       }
+      renderRuntimeConstitution();
       collapseThoughtProcess(completedTurnId);
       finalizeTurnMessages(completedTurnId);
       renderTurnCompletionNotice(completedTurnId, params?.turn || {});
@@ -1832,11 +5057,14 @@ function handleNotification(method, params) {
     const startedTurnId = turnIdFromNotification(params);
     if (startedTurnId) {
       state.turnId = startedTurnId;
+      state.activeTurnId = startedTurnId;
+      state.turnPending = false;
       const activity = ensureTurnActivity(startedTurnId);
       if (activity) {
         activity.status = String(params?.turn?.status || "inProgress");
         activity.startedAt = params?.turn?.startedAt || Date.now() / 1000;
       }
+      renderRuntimeConstitution();
     }
   }
 }
@@ -1848,9 +5076,11 @@ function handleBridgeEvent(event) {
     return;
   }
   if (event.type === "connection-status") {
+    if (event.connection) connection = { ...connection, ...event.connection };
     if (event.status === "connected") {
       state.connected = true;
-      setBadge(els.connectionBadge, connection?.runtime || "connected", "success");
+      state.connectionStatus = "connected";
+      renderRuntimeConstitution();
       if (state.threadId && !state.liveAttached) {
         const expectedThreadId = state.threadId;
         const expectedSourceHome = state.sourceHome;
@@ -1873,28 +5103,36 @@ function handleBridgeEvent(event) {
     }
     if (event.status === "connecting") {
       state.connected = false;
+      state.connectionStatus = "connecting";
       setComposerEnabled(false, "Connecting Codex app-server…");
-      setBadge(els.connectionBadge, "connecting", "warning");
+      renderRuntimeConstitution();
       return;
     }
     if (event.status === "error") {
       state.connected = false;
       state.liveAttached = false;
+      state.connectionStatus = "error";
       setComposerEnabled(false, "Codex connection error.");
-      setBadge(els.connectionBadge, "error", "warning");
+      renderRuntimeConstitution();
       if (event.error) addSystemMessage(`Codex connection failed: ${event.error}`);
       return;
     }
     if (event.status === "disconnected") {
       state.connected = false;
       state.liveAttached = false;
+      state.connectionStatus = "disconnected";
       setComposerEnabled(false, "Codex disconnected.");
-      setBadge(els.connectionBadge, "offline", "warning");
+      renderRuntimeConstitution();
       if (event.error && !String(event.error).toLowerCase().includes("renderer requested disconnect")) {
         addSystemMessage(`Codex disconnected: ${event.error}`);
       }
       return;
     }
+  }
+  if (event.type === "workspace-status") {
+    state.workspaceStatus = event.session || null;
+    renderRuntimeConstitution();
+    return;
   }
   if (event.type === "rpc-request") {
     renderServerRequest(event.request || event);
@@ -1905,7 +5143,12 @@ function handleBridgeEvent(event) {
     return;
   }
   if (event.type === "focus-server-request") {
+    dismissComposerOverlay("focus-server-request");
     focusServerRequest(event.key);
+    return;
+  }
+  if (event.type === "dismiss-composer-overlay") {
+    dismissComposerOverlay(event.reason || "shell-event");
     return;
   }
   if (event.type === "rpc-notification") {
@@ -1920,13 +5163,29 @@ function handleBridgeEvent(event) {
 async function loadAccountState() {
   const account = await rpc("account/read", { refreshToken: false });
   if (account?.account?.type === "chatgpt") {
-    setBadge(els.accountBadge, `${account.account.planType} · ${account.account.email}`, "subtle");
+    state.accountState = {
+      label: `${account.account.planType || "account"} · ${account.account.email || "email unknown"}`,
+      status: "ready",
+      truth: "runtime_proven",
+      evidenceRefs: [evidenceRef("account_read", "account/read returned ChatGPT account details", { confidence: "proven" })],
+    };
   } else if (account?.requiresOpenaiAuth) {
-    setBadge(els.accountBadge, "login required", "warning");
+    state.accountState = {
+      label: "login required",
+      status: "login_required",
+      truth: "runtime_declared",
+      evidenceRefs: [evidenceRef("account_read", "account/read requires OpenAI authentication", { confidence: "declared" })],
+    };
     addSystemMessage("Codex requires login in the control plane.");
   } else {
-    setBadge(els.accountBadge, "account unavailable", "warning");
+    state.accountState = {
+      label: "account unavailable",
+      status: "unavailable",
+      truth: "unknown",
+      evidenceRefs: [evidenceRef("account_read", "account/read did not expose account state", { status: "unavailable", confidence: "unknown" })],
+    };
   }
+  renderRuntimeConstitution();
 }
 
 async function login() {
@@ -1948,10 +5207,13 @@ async function connect() {
   }
   state.removeBridgeListener?.();
   state.removeBridgeListener = bridge.onEvent(handleBridgeEvent);
+  await loadRuntimePreferences({ applyThread: false });
   updateSurfaceHeader(payload.initialThreadTitle || project.name, workspaceText());
 
   if (!connection?.wsUrl && connection?.transport !== DIRECT_FIXTURE_TRANSPORT) {
     setBadge(els.connectionBadge, "fallback", "warning");
+    state.connectionStatus = "unavailable";
+    renderRuntimeConstitution();
     addSystemMessage(payload.error || "Codex fallback surface loaded. The managed app-server is not connected.");
     setComposerEnabled(false, "Read-only transcript mode (Codex app-server unavailable).");
     state.readyForThreadOpen = true;
@@ -1972,8 +5234,13 @@ async function connect() {
   const isDirectFixture = connection?.transport === DIRECT_FIXTURE_TRANSPORT;
   setComposerEnabled(false, isDirectFixture ? "Connecting direct fixture controller…" : "Connecting Codex app-server…");
   setBadge(els.connectionBadge, "connecting", "warning");
-  await bridge.connect(connection);
+  state.connectionStatus = "connecting";
+  renderRuntimeConstitution();
+  const connectedSession = await bridge.connect(connection);
+  if (connectedSession?.connection) connection = { ...connection, ...connectedSession.connection };
   state.connected = true;
+  state.connectionStatus = "connected";
+  renderRuntimeConstitution();
   try {
     await initializeBridgeSession();
     state.readyForThreadOpen = true;
@@ -2002,10 +5269,46 @@ async function connect() {
 
 els.composerForm.addEventListener("submit", (event) => {
   event.preventDefault();
+  dismissComposerOverlay("composer-submit");
+  if (turnIsActive()) {
+    stopCurrentTurn().catch((error) => addSystemMessage(`Stop failed: ${error.message}`));
+    return;
+  }
   const text = els.composerInput.value.trim();
   if (!text) return;
   sendPrompt(text).catch((error) => addSystemMessage(`Turn failed: ${error.message}`));
 });
+
+els.composerAccessButton?.addEventListener("click", () => toggleComposerMenu("access"));
+els.composerModelButton?.addEventListener("click", () => toggleComposerMenu("model"));
+
+for (const eventType of ["pointerdown", "mousedown", "touchstart", "click"]) {
+  document.addEventListener(eventType, (event) => {
+    maybeDismissComposerOverlay(event, eventType);
+  }, true);
+}
+
+document.addEventListener("focusin", (event) => {
+  maybeDismissComposerOverlay(event, "focusin");
+}, true);
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") dismissComposerOverlay("escape");
+});
+
+window.addEventListener("blur", () => dismissComposerOverlay("window-blur"));
+window.addEventListener("resize", () => updateComposerGeometry());
+
+document.addEventListener("click", (event) => {
+  const target = event.target?.closest?.("[data-runtime-tab]");
+  if (!target) return;
+  const tab = target.getAttribute("data-runtime-tab") || "runtime";
+  openRuntimeDrawer(tab);
+});
+
+els.runtimeDrawerClose?.addEventListener("click", () => closeRuntimeDrawer());
+
+installComposerGeometryObserver();
 
 connect().catch((error) => {
   addSystemMessage(`Codex setup failed: ${error.message}`);

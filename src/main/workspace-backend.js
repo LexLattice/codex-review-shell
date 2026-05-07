@@ -244,6 +244,7 @@ class WorkspaceSession extends EventEmitter {
     this.hello = null;
     this.lastError = null;
     this.readySeen = false;
+    this.hygiene = null;
     this.recentDiagnostics = [];
   }
 
@@ -258,6 +259,7 @@ class WorkspaceSession extends EventEmitter {
       hello: this.hello,
       lastError: this.lastError,
       readySeen: this.readySeen,
+      hygiene: this.hygiene,
     };
   }
 
@@ -361,6 +363,15 @@ class WorkspaceSession extends EventEmitter {
     this.status = "attaching";
     try {
       this.hello = await this.transport.request("hello", {}, ATTACH_TIMEOUT_MS);
+      try {
+        this.hygiene = await this.transport.request("ensureCodexSandboxArtifactIgnored", {}, DEFAULT_REQUEST_TIMEOUT_MS);
+        if (this.hygiene?.changed) {
+          this.noteDiagnostic("workspace-hygiene", `Added local Git exclude ${this.hygiene.pattern || ""}`.trim());
+        }
+      } catch (error) {
+        this.hygiene = { available: false, changed: false, error: error.message };
+        this.noteDiagnostic("workspace-hygiene", error.message);
+      }
       this.status = "attached";
       this.emitStatus("backend-attached");
     } catch (error) {
