@@ -183,6 +183,12 @@ type DirectLiveTextStatus = {
     | "failed";
   turnRunnable: boolean;
   modelSource: "odeu-profile" | "static-baseline" | "live-probe";
+  modelEvidenceState:
+    | "candidate"
+    | "accepted"
+    | "runtime_probed"
+    | "rejected"
+    | "unknown";
   transport: "direct-live-text";
   appServerRequired: false;
   toolsEnabled: false;
@@ -200,6 +206,12 @@ turn currently runnable
 tool loop runnable
 direct default eligible
 ```
+
+`static-baseline` may display candidate models in diagnostics, but it may not
+make `turnRunnable` true unless the baseline entry is marked accepted for this
+exact text-only request shape. A successful manual live probe promotes only the
+specific model, request shape, endpoint class, and auth/account class that were
+probed. It does not promote the whole direct runtime.
 
 ## Surface RPC Contract
 
@@ -220,15 +232,84 @@ Allowed responses:
 - `initialize` returns sanitized capabilities and `transport:
   "direct-live-text"`.
 - `account/read` returns redacted account/auth summary, not tokens.
-- `thread/start` creates a direct local session and returns a thread snapshot.
+- `thread/start` creates a new direct local session unless an explicit
+  `sessionId` is provided and valid, then returns a thread snapshot.
 - `thread/read` reads a persisted direct session and returns a transcript
   snapshot.
-- `turn/start` builds one text-only request, streams, persists, and returns a
-  terminal or waiting status.
+- `turn/start` validates idempotency and active-turn gates, creates or reuses a
+  local turn, starts the provider request asynchronously, and returns an ack.
 - unsupported methods return visible direct-runtime errors.
 
 The controller must not pretend to support app-server features that are not
-implemented.
+implemented. Unsupported methods must not be forwarded to app-server, must not
+start app-server, and must be logged as direct diagnostics.
+
+## Turn Start Idempotency
+
+`turn/start` requires a stable client idempotency key:
+
+```ts
+type DirectTurnStartParams = {
+  sessionId?: string;
+  clientTurnRequestId: string;
+  promptText: string;
+  model?: string;
+};
+```
+
+Rules:
+
+- if `clientTurnRequestId` already maps to a local turn, return the existing
+  turn snapshot/status and do not start a second provider request;
+- if the previous turn is streaming, return the running status;
+- if the previous turn is terminal, return the terminal snapshot;
+- if the previous turn is `request_built` but never streamed, recover according
+  to restart policy and do not blindly retry;
+- renderer reload, IPC reconnect, surface reload, and user double-submit must
+  not create duplicate provider requests.
+
+For this bundle, a direct local session may have at most one non-terminal active
+turn:
+
+```text
+created
+request_built
+streaming
+tool_waiting
+authority_waiting
+continuation_ready
+```
+
+If another `turn/start` arrives while one of those states is active, return a
+visible direct error:
+
+```ts
+{
+  error: "active_turn_exists",
+  activeTurnId: "...",
+  status: "streaming" | "tool_waiting" | "..."
+}
+```
+
+## Streaming RPC Contract
+
+Use an ack-plus-notifications contract:
+
+```text
+turn/start
+  -> returns quickly after creating/reusing the local turn
+  -> stream updates arrive through existing Codex surface notifications
+  -> terminal state arrives through exactly one terminal notification
+```
+
+Required behavior:
+
+- `turn/start` returns before stream completion;
+- assistant deltas render via notifications;
+- terminal state notification arrives exactly once;
+- `thread/read` after completion reconstructs the same transcript;
+- main owns the active provider stream, so renderer reload does not cancel or
+  duplicate a live turn unless the user explicitly aborts.
 
 ## Request Construction
 
@@ -278,7 +359,7 @@ Mapping for this bundle:
 | --- | --- | --- |
 | `response_created` | Record provider response id if present. | none or status update |
 | `message_delta` | Append assistant text. | `item/started`, `item/agentMessage/delta`, `item/completed` |
-| `reasoning_delta` | Persist as observed event, optional commentary projection. | commentary item only if already supported safely |
+| `reasoning_delta` | Persist as evidence/diagnostic only. | none in v0 |
 | `usage` | Persist diagnostic/profile evidence. | no required UI in this bundle |
 | `response_completed` | Mark turn `completed`. | `turn/completed` |
 | `response_incomplete` | Mark turn `failed`. | visible error |
@@ -292,6 +373,32 @@ Mapping for this bundle:
 | unknown raw event | Capture redacted diagnostic/profile evidence. | no direct behavior unless semantically safe |
 
 Tool calls are detection-only in this bundle.
+
+Reasoning deltas are not rendered in this bundle. Do not expose raw reasoning
+content to the renderer. Rendering reasoning summaries requires a later accepted
+summary-shaped ODEU capability and a renderer-safe item type.
+
+## Renderer Item Identity
+
+Use stable local transcript item ids:
+
+```ts
+type DirectRendererItemIds = {
+  sessionId: string;
+  turnId: string;
+  assistantMessageItemId: string;
+};
+```
+
+Rules:
+
+- emit `item/started` once per assistant message item;
+- all deltas for that assistant message use the same item id;
+- emit `item/completed` once;
+- do not emit `item/completed` per delta;
+- if the backend emits multiple message items, either support multiple stable
+  local assistant item ids or, for this first bundle, merge assistant text into
+  one local assistant item and record raw multiplicity in diagnostics.
 
 ## Persistence
 
@@ -322,6 +429,23 @@ type DirectTurnState =
   | "checkpoint_required";
 ```
 
+Every direct live session must persist local project/runtime metadata:
+
+```ts
+type DirectLiveSessionMetadata = {
+  projectId: string;
+  workspaceKind: "local" | "wsl" | "unknown";
+  workspaceDisplayPath: string;
+  runtimeMode: "direct-experimental";
+  directTransport: "live-text";
+  model: string;
+  modelSource: "odeu-profile" | "static-baseline" | "live-probe";
+  modelEvidenceState: "accepted" | "runtime_probed";
+};
+```
+
+Recovery must not rely on process-global current project state.
+
 Required write sequence:
 
 1. Create session if no direct session is active.
@@ -342,6 +466,36 @@ Crash/restart behavior:
   `restart_interrupted_turn`, unless already terminal.
 - `thread/read` can reconstruct a read-only transcript from the direct session
   store without `CODEX_HOME`.
+
+## Abort And Retry Semantics
+
+Abort race rules:
+
+- if abort is requested before stream starts, abort fetch if possible and mark
+  the turn `aborted`;
+- if abort is requested after stream starts, abort fetch, persist normalized
+  events received so far, and mark the turn `aborted`;
+- if completion wins the race, terminal `completed` remains final and abort
+  returns `completed_already`;
+- if failure wins the race, terminal `failed` remains final and abort returns
+  `failed_already`;
+- abort never deletes partial normalized events or diagnostics.
+
+Pre-stream retry policy:
+
+```ts
+type DirectPreStreamRetryPolicy = {
+  maxAttempts: 2;
+  retryableStatusCodes: [408, 409, 425, 429, 500, 502, 503, 504];
+  retryableNetworkErrors: string[];
+  baseDelayMs: 250;
+  maxDelayMs: 1000;
+};
+```
+
+`maxAttempts: 2` means the initial attempt plus one retry. Once any provider
+response body byte or normalized event is observed, the original request is
+never retried.
 
 ## Auth And Security
 
@@ -370,6 +524,12 @@ If the backend emits a tool call during live text mode:
 6. Do not send a continuation.
 7. Emit profile evidence for the observed tool-call shape.
 
+In this bundle, `tool_waiting` is terminal for live text UX purposes. The
+composer remains disabled for that direct session until the user starts a new
+direct session, switches runtime, or a future tool-continuation bundle handles
+the obligation. A later manual resolution may mark the turn
+`failed/tool_unhandled`, but this bundle must not execute or continue it.
+
 This preserves the rule:
 
 ```text
@@ -394,11 +554,20 @@ Every live text turn should produce a redacted diagnostic envelope with:
 - retry summary;
 - refresh summary;
 - tool detection summary;
+- idempotency key and duplicate/reused-turn status;
 - confirmation that raw tokens, raw request bodies, and raw frames were not
   exposed to the renderer.
 
 Unknown or malformed stream events become ODEU evidence first. They may not
 enable UI controls or runtime behavior until accepted in the profile.
+
+Content-size guards:
+
+- cap user prompt characters before building the request;
+- cap assistant text buffered in memory before transcript flush;
+- cap diagnostic event count;
+- cap unknown event payload size after redaction;
+- record truncation flags in diagnostics.
 
 ## UI Requirements
 
@@ -444,11 +613,27 @@ Responsibilities:
 - advertise `DIRECT_LIVE_TEXT_SURFACE_TRANSPORT = "direct-live-text"`;
 - implement `initialize`, `account/read`, `thread/start`, `thread/read`, and
   `turn/start`;
+- implement `clientTurnRequestId` idempotency;
+- enforce one active non-terminal turn per direct session;
+- own the active stream in main across renderer reloads;
 - delegate request/stream work to the direct transport helper;
 - delegate session writes to `DirectSessionStore`;
 - emit existing Codex surface notifications.
 
-### Step 2: Main Process Wiring
+### Step 2: Safety Gates Before Live Fetch
+
+Before live fetch is reachable:
+
+- reject missing `clientTurnRequestId`;
+- reuse duplicate `clientTurnRequestId` without starting a second provider
+  request;
+- reject a second active turn with `active_turn_exists`;
+- require accepted/runtime-probed model evidence for the exact text-only request
+  shape;
+- configure the fixed pre-stream retry policy;
+- install app-server spawn sentinel coverage in tests.
+
+### Step 3: Main Process Wiring
 
 Update main process runtime selection:
 
@@ -461,7 +646,7 @@ Update main process runtime selection:
 - `codex-surface:connect/request/notify/respond` route to the correct direct
   surface session.
 
-### Step 3: Renderer Compatibility
+### Step 4: Renderer Compatibility
 
 Keep renderer changes small:
 
@@ -471,7 +656,7 @@ Keep renderer changes small:
 - show tool detection as read-only, not executable;
 - make unsupported direct methods visible as runtime errors.
 
-### Step 4: Tests
+### Step 5: Tests
 
 Extend fixture smoke coverage with fake transport/auth:
 
@@ -485,11 +670,21 @@ Extend fixture smoke coverage with fake transport/auth:
 - unknown raw event is captured in redacted diagnostic;
 - thread read after new store instance reconstructs transcript;
 - raw token/header/body/frame exposure flags stay false.
+- duplicate `turn/start` with the same `clientTurnRequestId` reuses the turn and
+  does not create a second provider request;
+- a second `turn/start` during an active turn returns `active_turn_exists`;
+- renderer reload during streaming does not start a second provider request;
+- app-server launcher/spawn sentinel is not invoked in
+  `direct-experimental/live-text`;
+- reasoning deltas are persisted only and not rendered;
+- abort/completion races resolve to exactly one terminal state;
+- unsupported methods are visible direct errors and never forwarded to
+  app-server.
 
 Do not require a real backend in CI. The existing manual live probe remains
 explicitly gated by environment variables.
 
-### Step 5: Manual Live Probe Path
+### Step 6: Manual Live Probe Path
 
 After fake-fetch smoke passes, run the manual live path only with an already
 authenticated direct store:
@@ -511,10 +706,26 @@ This bundle is complete when:
 - one text-only prompt streams assistant text into the existing transcript UI;
 - the turn persists to `direct-sessions`;
 - a new app/session store instance can read the persisted direct transcript;
+- duplicate `turn/start` with the same `clientTurnRequestId` does not create a
+  second provider request;
+- a second `turn/start` during an active turn is rejected with
+  `active_turn_exists`;
+- renderer reload during streaming does not start a second provider request;
+- app-server launcher/spawn is not invoked in `direct-experimental/live-text`;
 - failed, aborted, malformed, quota, and auth-related turns persist terminal
   state and redacted diagnostics;
+- abort/completion/failure races resolve to exactly one terminal state;
+- pre-stream retry has a fixed max-attempt policy;
+- post-stream transport/auth failure never retries the original request;
+- reasoning deltas are persisted as evidence only and not rendered in v0;
 - a model tool call is detected and persisted as a local obligation without
   execution;
+- `tool_waiting` disables forward UX for that session until a new session,
+  runtime switch, or future continuation bundle;
+- unsupported surface methods are visible errors and never forwarded to
+  app-server;
+- direct session metadata includes project id, workspace identity, runtime mode,
+  transport, model, and model source;
 - renderer exposure checks remain false for raw tokens, headers, request bodies,
   and stream frames;
 - switching the project back to `legacy-app-server` does not delete direct
