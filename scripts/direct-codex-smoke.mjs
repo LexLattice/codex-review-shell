@@ -665,6 +665,24 @@ try {
     () => unauthController.startThread({}, { project: liveProject }),
     "Expected live text thread start to require direct auth.",
   );
+  const dynamicUnauthStore = createDirectAuthStore({ mode: "memory" });
+  const dynamicAuthStore = createDirectAuthStore({ mode: "memory" });
+  dynamicAuthStore.writeCredentials({
+    accessToken: "dynamic_live_text_access_token_secret_1234567890",
+    refreshToken: "dynamic_live_text_refresh_token_secret_1234567890",
+    expiresAt: Date.now() + 3_600_000,
+    accountId: "[REDACTED:account-id]",
+  });
+  let dynamicActiveStore = dynamicUnauthStore;
+  const dynamicStoreController = new DirectLiveTextController({
+    sessionStore: liveSessionStore,
+    profileDoc: liveProfileDoc,
+    authStore: () => dynamicActiveStore,
+    fetchImpl: async () => textResponse(liveSse, 200, { "content-type": "text/event-stream" }),
+  });
+  assert(dynamicStoreController.statusForProject(liveProject).status === "auth_required", "Expected live text auth getter to see the initial unauthenticated store.");
+  dynamicActiveStore = dynamicAuthStore;
+  assert(dynamicStoreController.statusForProject(liveProject).status === "ready", "Expected live text auth getter to follow storage mode changes.");
 
   const liveEvents = [];
   const liveSurface = new DirectLiveTextSurfaceSession({
@@ -744,6 +762,43 @@ try {
     "Expected unsupported live text methods to fail visibly.",
   );
   assert(liveFetchCalls === 1, "Unsupported live text methods must not be forwarded to provider transport.");
+
+  const truncatedStore = new DirectSessionStore({ rootDir: path.join(liveTextControllerParent, "truncated-direct-sessions") });
+  const truncatedController = new DirectLiveTextController({
+    sessionStore: truncatedStore,
+    profileDoc: liveProfileDoc,
+    authStore: liveAuthStore,
+    maxAssistantChars: 6,
+    fetchImpl: async () => textResponse(liveSse, 200, { "content-type": "text/event-stream" }),
+  });
+  const truncatedEvents = [];
+  const truncatedSurface = new DirectLiveTextSurfaceSession({
+    isDestroyed: () => false,
+    send: (_channel, payload) => truncatedEvents.push(payload),
+  }, {
+    controller: truncatedController,
+    project: liveProject,
+  });
+  await truncatedSurface.connect({ transport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT });
+  const truncatedThread = await truncatedSurface.request("thread/start", {});
+  const truncatedAck = await truncatedSurface.request("turn/start", {
+    threadId: truncatedThread.thread.id,
+    promptText: "truncated prompt",
+    clientTurnRequestId: "client_req_truncated_live_text_1",
+    model: "gpt-5.4",
+  });
+  await waitForCondition(
+    () => truncatedEvents.some((event) => event.type === "rpc-notification" && event.method === "turn/completed" && event.params?.turnId === truncatedAck.turn.id),
+    "Expected truncated live text surface to emit terminal notification.",
+  );
+  const truncatedPersisted = truncatedStore.readSession(truncatedThread.thread.id);
+  const truncatedAssistant = truncatedPersisted.messages[0].items.find((item) => item.type === "agentMessage");
+  const truncatedRendererText = truncatedEvents
+    .filter((event) => event.type === "rpc-notification" && event.method === "item/agentMessage/delta")
+    .map((event) => event.params?.delta || "")
+    .join("");
+  assert(truncatedAssistant.text === "direct", "Expected truncated live text transcript to respect maxAssistantChars.");
+  assert(truncatedRendererText === truncatedAssistant.text, "Expected emitted live text deltas to match persisted truncation.");
 
   const slowStore = new DirectSessionStore({ rootDir: path.join(liveTextControllerParent, "slow-direct-sessions") });
   let slowFetchCalls = 0;

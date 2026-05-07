@@ -191,9 +191,15 @@ class DirectLiveTextController {
     this.activeRuns = new Map();
   }
 
+  currentAuthStore() {
+    const store = typeof this.authStore === "function" ? this.authStore() : this.authStore;
+    return store && typeof store.readStatus === "function" ? store : null;
+  }
+
   authStatus() {
-    return this.authStore && typeof this.authStore.readStatus === "function"
-      ? sanitizeStatus(this.authStore.readStatus())
+    const store = this.currentAuthStore();
+    return store
+      ? sanitizeStatus(store.readStatus())
       : sanitizeStatus(null);
   }
 
@@ -484,7 +490,7 @@ class DirectLiveTextController {
     };
     const result = await runTextOnlyDirectProbe({
       endpoint: this.endpoint || undefined,
-      authStore: this.authStore,
+      authStore: this.currentAuthStore(),
       refreshCredentials: this.refreshCredentials,
       profileDoc: this.profileDoc,
       model,
@@ -531,14 +537,16 @@ class DirectLiveTextController {
       emitAssistantStarted();
       if (assistantItem.text.length < this.maxAssistantChars) {
         const room = Math.max(0, this.maxAssistantChars - assistantItem.text.length);
-        assistantItem.text += String(event.text || "").slice(0, room);
+        const truncatedDelta = String(event.text || "").slice(0, room);
+        if (!truncatedDelta) continue;
+        assistantItem.text += truncatedDelta;
+        this.emitNotification(surfaceSession, "item/agentMessage/delta", {
+          threadId: sessionId,
+          turnId,
+          itemId: assistantItem.id,
+          delta: truncatedDelta,
+        });
       }
-      this.emitNotification(surfaceSession, "item/agentMessage/delta", {
-        threadId: sessionId,
-        turnId,
-        itemId: assistantItem.id,
-        delta: String(event.text || ""),
-      });
     }
     if (assistantStarted) {
       emittedItems.push(assistantItem);

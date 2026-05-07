@@ -1615,7 +1615,7 @@ function ensureDirectLiveTextController() {
   directLiveTextController = new DirectLiveTextController({
     sessionStore: ensureDirectSessionStore(),
     profileDoc: ensureDirectCodexProfileDoc(),
-    authStore: ensureDirectAuthController().activeStore(),
+    authStore: () => ensureDirectAuthController().activeStore(),
     refreshCredentials: () => ensureDirectAuthLoginCoordinator().refreshCredentials(ensureDirectAuthController()),
   });
   return directLiveTextController;
