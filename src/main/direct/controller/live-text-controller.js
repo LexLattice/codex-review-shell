@@ -225,6 +225,7 @@ class DirectLiveTextController {
     this.authStore = options.authStore || null;
     this.refreshCredentials = typeof options.refreshCredentials === "function" ? options.refreshCredentials : null;
     this.modelEvidenceResolver = typeof options.modelEvidenceResolver === "function" ? options.modelEvidenceResolver : null;
+    this.activationStatusResolver = typeof options.activationStatusResolver === "function" ? options.activationStatusResolver : null;
     this.fetchImpl = typeof options.fetchImpl === "function" ? options.fetchImpl : null;
     this.workspaceRequest = typeof options.workspaceRequest === "function" ? options.workspaceRequest : null;
     this.endpoint = normalizeString(options.endpoint, "");
@@ -349,6 +350,21 @@ class DirectLiveTextController {
       error.code = status.status;
       error.directLiveTextStatus = status;
       throw error;
+    }
+    if (this.activationStatusResolver) {
+      const activation = this.activationStatusResolver(project) || {};
+      const canStart = activation.state === "enabled" ||
+        (activation.state === "degraded" && activation.degradedCapabilities?.canStartNewTextTurn === true);
+      if (!canStart) {
+        const reason = activation.state === "eligible"
+          ? "direct_experimental_activation_required"
+          : (activation.state === "rollback_required" ? "direct_experimental_rollback_required" : "direct_experimental_not_enabled");
+        const error = new Error(reason);
+        error.code = reason;
+        error.directActivationStatus = activation;
+        error.directLiveTextStatus = status;
+        throw error;
+      }
     }
     return status;
   }

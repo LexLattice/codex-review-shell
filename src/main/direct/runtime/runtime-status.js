@@ -102,6 +102,7 @@ function buildDirectRuntimeStatus(options = {}) {
   const legacySession = isPlainObject(options.legacySession) ? options.legacySession : null;
   const sessionStore = isPlainObject(options.sessionStore) ? options.sessionStore : null;
   const imports = isPlainObject(options.imports) ? options.imports : {};
+  const activation = isPlainObject(options.activation) ? options.activation : {};
   const fixtureRuntime = isPlainObject(options.fixtureRuntime) ? options.fixtureRuntime : null;
   const liveTextRuntime = isPlainObject(options.liveTextRuntime) ? options.liveTextRuntime : null;
   const modelEntries = modelEntriesFromProfile(profileDoc);
@@ -215,6 +216,35 @@ function buildDirectRuntimeStatus(options = {}) {
       endpoint: "chatgpt-codex-responses",
       liveProbed: Boolean(liveProbeEvidence?.usable),
       runnable: liveTextRuntimeAvailable && liveTextStatus.turnRunnable === true,
+    },
+    activation: {
+      state: normalizeString(activation.state, "blocked"),
+      eligible: activation.eligible === true,
+      enabled: activation.enabled === true,
+      degraded: activation.degraded === true,
+      activationTier: normalizeString(activation.activationTier, "implementation-lane"),
+      rollbackAvailable: activation.rollbackAvailable === true,
+      activationId: normalizeString(activation.activationId, ""),
+      gateId: normalizeString(activation.gateId, ""),
+      gateDigest: normalizeString(activation.gateDigest, ""),
+      target: isPlainObject(activation.target)
+        ? activation.target
+        : { runtimeMode: "direct-experimental", directTransport: "live-text" },
+      gateSummary: isPlainObject(activation.gateSummary)
+        ? activation.gateSummary
+        : { requiredCount: 0, passedRequiredCount: 0, blockedReasons: {}, warningsCount: 0 },
+      currentBinding: isPlainObject(activation.currentBinding)
+        ? activation.currentBinding
+        : { runtimeMode: binding.runtimeMode, directTransport: binding.directTransport },
+      labels: isPlainObject(activation.labels)
+        ? activation.labels
+        : { headline: "Direct experimental blocked", detail: "Activation status unavailable." },
+      degradedCapabilities: isPlainObject(activation.degradedCapabilities) ? activation.degradedCapabilities : null,
+      rawAuthExposed: false,
+      rawRequestExposed: false,
+      rawStreamExposed: false,
+      rawImportPathExposed: false,
+      rawWorkspacePathExposed: false,
     },
     textProbe: {
       available: directModeSelected,

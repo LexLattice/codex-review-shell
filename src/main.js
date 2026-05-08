@@ -50,6 +50,12 @@ const {
   normalizeCodexBindingProvider,
   normalizeCodexRuntimeMode: normalizeDirectRuntimeModeForStatus,
 } = require("./main/direct/runtime/runtime-status");
+const {
+  DirectExperimentalActivationStore,
+  activeDirectTurnCountForProject,
+  activationProjectBindingDigest,
+  evaluateDirectExperimentalProjectActivation,
+} = require("./main/direct/runtime/project-activation");
 const { PLANE_ZOOM_DEFAULT, clampZoomFactor, zoomDeltaForDirection } = require("./shared/plane-zoom");
 
 const APP_TITLE = "Codex Review Shell";
@@ -172,6 +178,8 @@ let directImportController = null;
 let directLiveProbeEvidenceStore = null;
 let directFixtureController = null;
 let directLiveTextController = null;
+let directActivationStore = null;
+const directActivationLocks = new Map();
 let surfaceActivationEpoch = 0;
 const nativePlaneZoomFactors = {
   codex: PLANE_ZOOM_DEFAULT,
@@ -1612,6 +1620,12 @@ function ensureDirectSessionStore() {
   return directSessionStore;
 }
 
+function ensureDirectActivationStore() {
+  if (directActivationStore) return directActivationStore;
+  directActivationStore = new DirectExperimentalActivationStore({ rootDir: directSessionRootDir() });
+  return directActivationStore;
+}
+
 function ensureDirectImportController() {
   if (directImportController) return directImportController;
   directImportController = new DirectImportController({
@@ -1653,6 +1667,7 @@ function ensureDirectLiveTextController() {
     authStore: () => ensureDirectAuthController().activeStore(),
     refreshCredentials: () => ensureDirectAuthLoginCoordinator().refreshCredentials(ensureDirectAuthController()),
     modelEvidenceResolver: (context) => ensureDirectLiveProbeEvidenceStore().resolveModelEvidence(context),
+    activationStatusResolver: (project) => directActivationEvaluationForProject(project).status,
     workspaceRequest: (project, method, params, timeoutMs) => requestWorkspace(project, method, params, timeoutMs),
   });
   return directLiveTextController;
@@ -1666,18 +1681,36 @@ function buildDirectRuntimeStatusForProject(project, options = {}) {
   const controller = ensureDirectAuthController();
   const authSettings = controller.readSettings(options);
   const profileDoc = ensureDirectCodexProfileDoc();
+  const sessionStore = ensureDirectSessionStore();
+  const imports = ensureDirectImportController().statusForProject(project);
+  const liveTextStatus = ensureDirectLiveTextController().statusForProject(project);
+  const activationStore = ensureDirectActivationStore();
+  const projectId = normalizeString(project?.id, "");
+  const activationEvaluation = evaluateDirectExperimentalProjectActivation({
+    project,
+    authSettings,
+    authStatus: authSettings.authStatus,
+    profileDoc,
+    sessionStore: sessionStore.status(),
+    sessionStoreObject: sessionStore,
+    imports,
+    liveTextStatus,
+    workspaceStatus: workspaceBackends?.statusForProject(project) || null,
+    activationStoreStatus: projectId ? activationStore.statusForProject(projectId) : {},
+    latestActivation: projectId ? activationStore.latestCommittedActivation(projectId) : null,
+    attachOnFirstTurnAccepted: false,
+    profileHash: normalizeString(profileDoc.summary?.profileHash || profileDoc.profile?.profileHash, ""),
+  });
   return buildDirectRuntimeStatus({
     project,
     authSettings,
     authStatus: authSettings.authStatus,
     profileDoc,
-    sessionStore: ensureDirectSessionStore().status(),
-    imports: ensureDirectImportController().statusForProject(project),
+    sessionStore: sessionStore.status(),
+    imports,
+    activation: activationEvaluation.status,
     fixtureRuntime: { available: true, capabilities: buildDirectFixtureCapabilities() },
-    liveTextRuntime: (() => {
-      const liveStatus = ensureDirectLiveTextController().statusForProject(project);
-      return { available: true, status: liveStatus, capabilities: buildDirectLiveTextCapabilities(liveStatus) };
-    })(),
+    liveTextRuntime: { available: true, status: liveTextStatus, capabilities: buildDirectLiveTextCapabilities(liveTextStatus) },
     legacySession: currentLegacyAppServerSnapshot(),
   });
 }
@@ -1691,6 +1724,193 @@ function emitDirectRuntimeStatus(project = currentProject) {
     at: nowIso(),
   });
   return status;
+}
+
+async function withDirectActivationLock(projectId, action) {
+  const key = normalizeString(projectId, "");
+  if (!key) throw new Error("Direct activation requires a project id.");
+  if (directActivationLocks.has(key)) {
+    const error = new Error("A direct activation or rollback is already running for this project.");
+    error.code = "direct_activation_conflict";
+    throw error;
+  }
+  const run = Promise.resolve()
+    .then(action)
+    .finally(() => {
+      if (directActivationLocks.get(key) === run) directActivationLocks.delete(key);
+    });
+  directActivationLocks.set(key, run);
+  return run;
+}
+
+function directActivationEvaluationForProject(project) {
+  const controller = ensureDirectAuthController();
+  const authSettings = controller.readSettings();
+  const profileDoc = ensureDirectCodexProfileDoc();
+  const sessionStore = ensureDirectSessionStore();
+  const projectId = normalizeString(project?.id, "");
+  return evaluateDirectExperimentalProjectActivation({
+    project,
+    authSettings,
+    authStatus: authSettings.authStatus,
+    profileDoc,
+    sessionStore: sessionStore.status(),
+    imports: ensureDirectImportController().statusForProject(project),
+    liveTextStatus: ensureDirectLiveTextController().statusForProject(project),
+    workspaceStatus: workspaceBackends?.statusForProject(project) || null,
+    activationStoreStatus: projectId ? ensureDirectActivationStore().statusForProject(projectId) : {},
+    latestActivation: projectId ? ensureDirectActivationStore().latestCommittedActivation(projectId) : null,
+    attachOnFirstTurnAccepted: false,
+    profileHash: normalizeString(profileDoc.summary?.profileHash || profileDoc.profile?.profileHash, ""),
+  });
+}
+
+function projectWithCodexBinding(project, codexBinding) {
+  return {
+    ...project,
+    updatedAt: nowIso(),
+    surfaceBinding: {
+      ...project.surfaceBinding,
+      codex: {
+        ...(project.surfaceBinding?.codex || {}),
+        ...(codexBinding || {}),
+      },
+    },
+  };
+}
+
+async function enableDirectExperimentalProject(payload = {}) {
+  const projectId = normalizeString(payload.projectId, "");
+  return withDirectActivationLock(projectId, async () => {
+    const config = await loadConfig();
+    const project = config.projects.find((item) => item.id === projectId);
+    if (!project) throw new Error("Project not found.");
+    const store = ensureDirectActivationStore();
+    const duplicate = store.findActivationByClientId(projectId, payload.clientActivationId);
+    if (duplicate?.transactionState === "committed") {
+      return {
+        ok: true,
+        duplicate: true,
+        activation: duplicate,
+        status: buildDirectRuntimeStatusForProject(project).activation,
+      };
+    }
+    if (duplicate && duplicate.transactionState !== "abandoned") {
+      const error = new Error("Direct activation idempotency key is already in use.");
+      error.code = "direct_activation_id_conflict";
+      throw error;
+    }
+    const evaluation = directActivationEvaluationForProject(project);
+    const gate = evaluation.gate;
+    if (gate.state !== "eligible") {
+      const error = new Error("Direct experimental activation gates are not eligible.");
+      error.code = "direct_activation_not_eligible";
+      error.activation = evaluation.status;
+      throw error;
+    }
+    if (normalizeString(payload.expectedGateId, "") && normalizeString(payload.expectedGateId, "") !== gate.gateId) {
+      const error = new Error("Direct experimental activation gate is stale.");
+      error.code = "gate_stale";
+      error.activation = evaluation.status;
+      throw error;
+    }
+    if (normalizeString(payload.expectedGateDigest, "") && normalizeString(payload.expectedGateDigest, "") !== gate.gateDigest) {
+      const error = new Error("Direct experimental activation digest is stale.");
+      error.code = "gate_stale";
+      error.activation = evaluation.status;
+      throw error;
+    }
+    const pending = store.createPendingActivation(project, gate, payload.clientActivationId || newId("client_activation"));
+    let committed = null;
+    try {
+      const nextProjects = config.projects.map((item) =>
+        item.id === projectId ? projectWithCodexBinding(item, pending.activatedBindingPrivate) : item,
+      );
+      const saved = await saveConfig({ ...config, projects: nextProjects });
+      const savedProject = saved.projects.find((item) => item.id === projectId) || project;
+      const savedDigest = activationProjectBindingDigest(savedProject.surfaceBinding?.codex || {});
+      if (savedDigest !== pending.activatedBindingDigest) {
+        store.markActivationAbandoned(pending, "binding_digest_mismatch");
+        throw new Error("Direct experimental activation binding digest mismatch.");
+      }
+      committed = store.markActivationCommitted(pending);
+      currentProject = savedProject;
+      await loadCodexSurface(savedProject, { activationEpoch: nextSurfaceActivationEpoch("direct-activation") });
+      const status = buildDirectRuntimeStatusForProject(savedProject).activation;
+      emitDirectRuntimeStatus(savedProject);
+      return { ok: true, activation: committed, project: savedProject, config: saved, status };
+    } catch (error) {
+      if (!committed) store.markActivationAbandoned(pending, error.message || "activation_failed");
+      throw error;
+    }
+  });
+}
+
+async function rollbackDirectExperimentalProject(payload = {}) {
+  const projectId = normalizeString(payload.projectId, "");
+  return withDirectActivationLock(projectId, async () => {
+    const config = await loadConfig();
+    const project = config.projects.find((item) => item.id === projectId);
+    if (!project) throw new Error("Project not found.");
+    const activeTurns = activeDirectTurnCountForProject(ensureDirectSessionStore(), projectId);
+    if (activeTurns > 0) {
+      const error = new Error("A direct turn is active. Abort or wait before rollback.");
+      error.code = "active_direct_turn_exists";
+      throw error;
+    }
+    const store = ensureDirectActivationStore();
+    const duplicate = store.findRollbackByClientId(projectId, payload.clientRollbackId);
+    if (duplicate?.transactionState === "committed") {
+      return {
+        ok: true,
+        duplicate: true,
+        rollback: duplicate,
+        status: buildDirectRuntimeStatusForProject(project).activation,
+      };
+    }
+    const activation = normalizeString(payload.activationId, "")
+      ? store.readActivation(projectId, payload.activationId)
+      : store.latestCommittedActivation(projectId);
+    if (!activation) {
+      const fallbackActivation = {
+        activationId: "",
+        previousBindingPrivate: {
+          ...(project.surfaceBinding?.codex || {}),
+          bindingProvider: "codex-compatible",
+          runtimeMode: "legacy-app-server",
+          directTransport: "fixture",
+        },
+      };
+      const pending = store.createPendingRollback(project, fallbackActivation, payload.clientRollbackId || newId("client_rollback"), "schema_incompatible");
+      const nextProjects = config.projects.map((item) =>
+        item.id === projectId ? projectWithCodexBinding(item, pending.restoredBindingPrivate) : item,
+      );
+      const saved = await saveConfig({ ...config, projects: nextProjects });
+      const committed = store.markRollbackCommitted(pending, null);
+      const savedProject = saved.projects.find((item) => item.id === projectId) || project;
+      currentProject = savedProject;
+      await loadCodexSurface(savedProject, { activationEpoch: nextSurfaceActivationEpoch("direct-rollback") });
+      emitDirectRuntimeStatus(savedProject);
+      return { ok: true, rollback: committed, project: savedProject, config: saved, status: buildDirectRuntimeStatusForProject(savedProject).activation };
+    }
+    const pending = store.createPendingRollback(project, activation, payload.clientRollbackId || newId("client_rollback"), payload.reason || "user_requested");
+    const nextProjects = config.projects.map((item) =>
+      item.id === projectId ? projectWithCodexBinding(item, pending.restoredBindingPrivate) : item,
+    );
+    const saved = await saveConfig({ ...config, projects: nextProjects });
+    const savedProject = saved.projects.find((item) => item.id === projectId) || project;
+    const savedDigest = activationProjectBindingDigest(savedProject.surfaceBinding?.codex || {});
+    if (savedDigest !== pending.restoredBindingDigest) {
+      const error = new Error("Direct experimental rollback binding digest mismatch.");
+      error.code = "direct_rollback_digest_mismatch";
+      throw error;
+    }
+    const committed = store.markRollbackCommitted(pending, activation);
+    currentProject = savedProject;
+    await loadCodexSurface(savedProject, { activationEpoch: nextSurfaceActivationEpoch("direct-rollback") });
+    emitDirectRuntimeStatus(savedProject);
+    return { ok: true, rollback: committed, project: savedProject, config: saved, status: buildDirectRuntimeStatusForProject(savedProject).activation };
+  });
 }
 
 function ensureCodexAppServerManager() {
@@ -3595,6 +3815,7 @@ async function createWindow() {
     directFixtureController = null;
     directLiveTextController = null;
     directLiveProbeEvidenceStore = null;
+    directActivationStore = null;
     directSessionStore = null;
     middleWebHost?.dispose();
     middleWebHost = null;
@@ -4017,6 +4238,14 @@ ipcMain.handle("direct-runtime:status", async (_event, payload) => {
   return buildDirectRuntimeStatusForProject(project);
 });
 
+ipcMain.handle("direct-runtime:enable-experimental", async (_event, payload) => {
+  return enableDirectExperimentalProject(payload || {});
+});
+
+ipcMain.handle("direct-runtime:rollback-experimental", async (_event, payload) => {
+  return rollbackDirectExperimentalProject(payload || {});
+});
+
 ipcMain.handle("direct-import:list-sources", async (_event, payload) => {
   const project = await getProjectById(payload?.projectId);
   return ensureDirectImportController().listSources(project, payload || {});
@@ -4161,6 +4390,7 @@ app.on("before-quit", () => {
   directFixtureController = null;
   directLiveTextController = null;
   directLiveProbeEvidenceStore = null;
+  directActivationStore = null;
   directSessionStore = null;
 });
 

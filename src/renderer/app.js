@@ -194,6 +194,8 @@ const els = {
   directAuthRefreshButton: document.getElementById("directAuthRefreshButton"),
   directAuthLoginButton: document.getElementById("directAuthLoginButton"),
   directAuthLogoutButton: document.getElementById("directAuthLogoutButton"),
+  directExperimentalEnableButton: document.getElementById("directExperimentalEnableButton"),
+  directExperimentalRollbackButton: document.getElementById("directExperimentalRollbackButton"),
   directAuthEvidence: document.getElementById("directAuthEvidence"),
   directRuntimeModeBadge: document.getElementById("directRuntimeModeBadge"),
   directRuntimeStatusBadge: document.getElementById("directRuntimeStatusBadge"),
@@ -1726,6 +1728,12 @@ function directAuthModeSignature(modes) {
 }
 
 function directRuntimeStatusLabel(status) {
+  const activation = status?.activation || {};
+  if (activation.state === "enabled") return "direct experimental enabled";
+  if (activation.state === "eligible") return "direct experimental eligible";
+  if (activation.state === "text_only_eligible") return "text-only preview";
+  if (activation.state === "degraded") return "direct experimental degraded";
+  if (activation.state === "rollback_required") return "rollback required";
   const runtime = status?.directRuntime || {};
   if (runtime.turnRunnable) return "turns runnable";
   if (runtime.status === "not_selected") return "legacy bridge active";
@@ -1741,14 +1749,29 @@ function renderDirectRuntimeStatus() {
   if (!els.directRuntimeModeBadge) return;
   const status = state.directRuntimeStatus || {};
   const runtime = status.directRuntime || {};
+  const activation = status.activation || {};
   const modelSource = status.models?.source || "unknown";
   const profileId = status.diagnostics?.profileId || "";
   els.directRuntimeModeBadge.textContent = directRuntimeModeLabel(status);
   els.directRuntimeModeBadge.title = status.currentCodexLane || directRuntimeModeLabel(status);
   els.directRuntimeStatusBadge.textContent = state.directRuntimeLoading ? "loading runtime" : directRuntimeStatusLabel(status);
-  els.directRuntimeStatusBadge.title = state.directRuntimeError || runtime.reason || directRuntimeStatusLabel(status);
+  els.directRuntimeStatusBadge.title = state.directRuntimeError || activation.labels?.detail || runtime.reason || directRuntimeStatusLabel(status);
   els.directModelSourceBadge.textContent = `models: ${modelSource}`;
   els.directModelSourceBadge.title = profileId ? `Profile: ${profileId}` : "Model source is not available.";
+  if (els.directExperimentalEnableButton) {
+    const canEnable = activation.state === "eligible" && !state.directRuntimeLoading;
+    els.directExperimentalEnableButton.disabled = !canEnable;
+    els.directExperimentalEnableButton.title = canEnable
+      ? "Enable direct-experimental/live-text for this project."
+      : (activation.labels?.detail || "Direct experimental implementation-lane gates are not eligible.");
+  }
+  if (els.directExperimentalRollbackButton) {
+    const canRollback = activation.rollbackAvailable === true && !state.directRuntimeLoading;
+    els.directExperimentalRollbackButton.disabled = !canRollback;
+    els.directExperimentalRollbackButton.title = canRollback
+      ? "Rollback this project to its previous Codex binding or legacy app-server."
+      : "Direct experimental rollback is not available.";
+  }
 }
 
 function renderDirectAuthControls() {
@@ -3751,6 +3774,81 @@ async function refreshDirectRuntimeStatus(projectId = activeProject()?.id || "")
   }
 }
 
+function directActivationClientId(prefix) {
+  const random = Math.random().toString(36).slice(2, 10);
+  return `${prefix}_${Date.now().toString(36)}_${random}`;
+}
+
+async function enableDirectExperimentalRuntime() {
+  const project = activeProject();
+  const activation = state.directRuntimeStatus?.activation || {};
+  if (!project || !bridge.enableDirectExperimentalRuntime) return;
+  if (activation.state !== "eligible") {
+    setLastEvent(`Direct experimental activation blocked: ${activation.labels?.detail || "gates are not eligible"}.`);
+    return;
+  }
+  const confirmed = window.confirm("Enable direct experimental live-text for this project? This changes only the left Codex lane and keeps rollback available.");
+  if (!confirmed) return;
+  state.directRuntimeLoading = true;
+  renderDirectRuntimeStatus();
+  try {
+    const result = await bridge.enableDirectExperimentalRuntime(project.id, {
+      clientActivationId: directActivationClientId("client_activation"),
+      expectedGateId: activation.gateId,
+      expectedGateDigest: activation.gateDigest,
+      expectedRuntimeMode: "direct-experimental",
+      expectedDirectTransport: "live-text",
+    });
+    if (result?.config) {
+      state.config = result.config;
+      renderProjects();
+    }
+    state.directRuntimeStatus = result?.status ? { ...state.directRuntimeStatus, activation: result.status } : state.directRuntimeStatus;
+    await refreshDirectRuntimeStatus(project.id);
+    setLastEvent(result?.duplicate ? "Direct experimental already enabled for this project." : "Direct experimental enabled for this project.");
+  } catch (error) {
+    state.directRuntimeError = error.message || "Direct experimental activation failed.";
+    setLastEvent(`Direct experimental activation failed: ${state.directRuntimeError}`);
+  } finally {
+    state.directRuntimeLoading = false;
+    renderDirectRuntimeStatus();
+  }
+}
+
+async function rollbackDirectExperimentalRuntime() {
+  const project = activeProject();
+  const activation = state.directRuntimeStatus?.activation || {};
+  if (!project || !bridge.rollbackDirectExperimentalRuntime) return;
+  if (!activation.rollbackAvailable) {
+    setLastEvent("Direct experimental rollback is not available.");
+    return;
+  }
+  const confirmed = window.confirm("Rollback this project Codex lane to legacy app-server or the previous binding? Direct sessions and imports are preserved.");
+  if (!confirmed) return;
+  state.directRuntimeLoading = true;
+  renderDirectRuntimeStatus();
+  try {
+    const result = await bridge.rollbackDirectExperimentalRuntime(project.id, {
+      clientRollbackId: directActivationClientId("client_rollback"),
+      activationId: activation.activationId,
+      reason: "user_requested",
+    });
+    if (result?.config) {
+      state.config = result.config;
+      renderProjects();
+    }
+    state.directRuntimeStatus = result?.status ? { ...state.directRuntimeStatus, activation: result.status } : state.directRuntimeStatus;
+    await refreshDirectRuntimeStatus(project.id);
+    setLastEvent(result?.duplicate ? "Direct experimental rollback was already applied." : "Rolled back Codex lane from direct experimental.");
+  } catch (error) {
+    state.directRuntimeError = error.message || "Direct experimental rollback failed.";
+    setLastEvent(`Direct experimental rollback failed: ${state.directRuntimeError}`);
+  } finally {
+    state.directRuntimeLoading = false;
+    renderDirectRuntimeStatus();
+  }
+}
+
 async function setDirectAuthStorageMode(mode) {
   if (!bridge?.setDirectAuthStorageMode) return;
   state.directAuthLoading = true;
@@ -5097,6 +5195,8 @@ function bindEvents() {
   els.directAuthStorageModeSelect.addEventListener("change", () => setDirectAuthStorageMode(els.directAuthStorageModeSelect.value));
   els.directAuthLoginButton.addEventListener("click", beginDirectAuthLogin);
   els.directAuthLogoutButton.addEventListener("click", logoutDirectAuth);
+  els.directExperimentalEnableButton?.addEventListener("click", enableDirectExperimentalRuntime);
+  els.directExperimentalRollbackButton?.addEventListener("click", rollbackDirectExperimentalRuntime);
   els.refreshWorkTreeButton.addEventListener("click", loadWorkTreeRoot);
   els.refreshWatchedButton.addEventListener("click", loadWatchedArtifacts);
   els.webBackButton.addEventListener("click", () => {

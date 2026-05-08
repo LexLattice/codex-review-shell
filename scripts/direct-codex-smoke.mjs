@@ -49,6 +49,11 @@ const {
   buildDirectRuntimeStatus,
   normalizeCodexRuntimeMode,
 } = require("../src/main/direct/runtime/runtime-status");
+const {
+  DirectExperimentalActivationStore,
+  activeDirectTurnCountForProject,
+  evaluateDirectExperimentalProjectActivation,
+} = require("../src/main/direct/runtime/project-activation");
 const { DirectSessionStore } = require("../src/main/direct/session/session-store");
 const {
   DIRECT_FIXTURE_SURFACE_TRANSPORT,
@@ -342,6 +347,106 @@ assert(directRuntimeStatusWithLiveText.currentCodexLane === "direct live text ex
 assert(directRuntimeStatusWithLiveText.directRuntime.turnRunnable === true, "Expected accepted live text runtime to enable direct turn status.");
 assert(directRuntimeStatusWithLiveText.liveTextRuntime.turnRunnable === true, "Expected live text runtime status to project turn runnable.");
 assert(directRuntimeStatusWithLiveText.transport.runnable === true, "Expected live text transport status to become runnable only through live runtime evidence.");
+const activationProject = {
+  id: "project_activation_fixture",
+  name: "Activation Fixture",
+  workspace: { kind: "local", localPath: "[REDACTED:private-path]" },
+  surfaceBinding: {
+    codex: {
+      mode: "managed",
+      runtimeMode: "legacy-app-server",
+      directTransport: "fixture",
+      model: "gpt-5.4",
+      profileId: profileDoc.profile.profileId,
+    },
+  },
+};
+const activationAuthStatus = {
+  status: "authenticated",
+  accountId: "account-fixture",
+  hasAccessToken: true,
+  hasRefreshToken: true,
+  storageMode: "file",
+};
+const activationWorkspaceStatus = {
+  status: "attached",
+  key: "local:[REDACTED:private-path]",
+  workspace: { kind: "local" },
+};
+const activationSessionStoreStatus = {
+  available: true,
+  recovery: { missingSessionFileCount: 0 },
+};
+const activationLiveTextOnly = {
+  status: "ready",
+  turnRunnable: true,
+  model: "gpt-5.4",
+  modelSource: "live-probe",
+  modelEvidenceState: "runtime_probed",
+  liveProbeEvidence: {
+    usable: true,
+    status: "runtime_probed",
+    evidenceId: "evidence_text",
+    source: "manual-live-probe",
+  },
+  toolsEnabled: false,
+  readOnlyToolContinuation: { status: "profile_required", evidenceState: "unknown" },
+};
+const textOnlyActivation = evaluateDirectExperimentalProjectActivation({
+  project: activationProject,
+  authStatus: activationAuthStatus,
+  liveTextStatus: activationLiveTextOnly,
+  sessionStore: activationSessionStoreStatus,
+  imports: {},
+  workspaceStatus: activationWorkspaceStatus,
+});
+assert(textOnlyActivation.status.state === "text_only_eligible", "Expected text-only activation to remain informational.");
+assert(textOnlyActivation.status.eligible === false, "Text-only preview must not become implementation-lane activation.");
+const activationLiveWithTool = {
+  ...activationLiveTextOnly,
+  toolsEnabled: true,
+  readOnlyToolContinuation: {
+    status: "ready",
+    evidenceState: "accepted",
+    capabilityId: "continuation.tool_result",
+  },
+};
+const implementationActivation = evaluateDirectExperimentalProjectActivation({
+  project: activationProject,
+  authStatus: activationAuthStatus,
+  liveTextStatus: activationLiveWithTool,
+  sessionStore: activationSessionStoreStatus,
+  imports: {},
+  workspaceStatus: activationWorkspaceStatus,
+});
+assert(implementationActivation.status.state === "eligible", "Expected live text plus read-only tool evidence to be implementation-lane eligible.");
+assert(implementationActivation.status.eligible === true, "Expected implementation-lane activation to be eligible.");
+assert(implementationActivation.status.rawAuthExposed === false, "Activation status must not expose raw auth.");
+assert(implementationActivation.status.rawWorkspacePathExposed === false, "Activation status must not expose raw workspace paths.");
+const activationRuntimeStatus = buildDirectRuntimeStatus({
+  project: activationProject,
+  authStatus: activationAuthStatus,
+  profileDoc: acceptedLiveTextProfile(),
+  liveTextRuntime: { available: true, status: activationLiveWithTool },
+  activation: implementationActivation.status,
+});
+assert(activationRuntimeStatus.activation.state === "eligible", "Expected runtime status to include activation readiness.");
+assert(activationRuntimeStatus.activation.gateSummary.blockedReasons.tool_evidence_missing === undefined, "Eligible activation must not report tool evidence blocker.");
+const activationStoreParent = fs.mkdtempSync(path.join(os.tmpdir(), "direct-codex-activation-store-"));
+try {
+  const activationStore = new DirectExperimentalActivationStore({ rootDir: path.join(activationStoreParent, "direct-sessions") });
+  const pendingActivation = activationStore.createPendingActivation(activationProject, implementationActivation.gate, "client_activation_fixture");
+  assert(pendingActivation.transactionState === "pending", "Expected pending activation transaction.");
+  const committedActivation = activationStore.markActivationCommitted(pendingActivation);
+  assert(committedActivation.transactionState === "committed", "Expected committed activation transaction.");
+  assert(activationStore.latestCommittedActivation(activationProject.id).activationId === committedActivation.activationId, "Expected committed activation to recover from store.");
+  const pendingRollback = activationStore.createPendingRollback(activationProject, committedActivation, "client_rollback_fixture", "user_requested");
+  assert(pendingRollback.transactionState === "pending", "Expected pending rollback transaction.");
+  const committedRollback = activationStore.markRollbackCommitted(pendingRollback, committedActivation);
+  assert(committedRollback.transactionState === "committed", "Expected committed rollback transaction.");
+} finally {
+  fs.rmSync(activationStoreParent, { recursive: true, force: true });
+}
 const memoryDirectRuntimeStatus = buildDirectRuntimeStatus({
   project: { surfaceBinding: { codex: { runtimeMode: "direct-experimental" } } },
   authStatus: { status: "unauthenticated", storageMode: "memory" },
@@ -402,6 +507,8 @@ try {
     workspace: { kind: "local", localPath: "[REDACTED:private-path]" },
     title: "Interrupted direct session",
     model: "gpt-5.4",
+    runtimeMode: "direct-experimental",
+    directTransport: "direct-live-text",
     profileSnapshotId: profileDoc.profile.profileId,
   }, { nowMs: 1_700_000_005_000 });
   const interruptedTurn = sessionStore.createTurn(interruptedSession.sessionId, {
@@ -410,6 +517,7 @@ try {
   }, { nowMs: 1_700_000_006_000 });
   sessionStore.updateTurnState(interruptedSession.sessionId, interruptedTurn.turnId, "request_built", {}, { nowMs: 1_700_000_007_000 });
   sessionStore.updateTurnState(interruptedSession.sessionId, interruptedTurn.turnId, "streaming", {}, { nowMs: 1_700_000_008_000 });
+  assert(activeDirectTurnCountForProject(sessionStore, "project_fixture") === 1, "Expected direct activation rollback guard to find active direct turns.");
   const staleSummarySession = sessionStore.createSession({
     sessionId: "session_stale_summary",
     projectId: "project_fixture",
@@ -689,6 +797,17 @@ try {
   assert(liveStatus.modelEvidenceState === "accepted", "Expected live text status to expose accepted model evidence.");
   assert(liveStatus.appServerRequired === false, "Live text controller must not require app-server.");
   assert(liveStatus.auth.rawTokensExposed === false, "Live text status must not expose raw tokens.");
+  const activationBlockedLiveController = new DirectLiveTextController({
+    sessionStore: liveSessionStore,
+    profileDoc: liveProfileDoc,
+    authStore: liveAuthStore,
+    activationStatusResolver: () => ({ state: "rollback_required", degradedCapabilities: { canStartNewTextTurn: false } }),
+    fetchImpl: async () => textResponse(liveSse, 200, { "content-type": "text/event-stream" }),
+  });
+  await assertRejects(
+    () => activationBlockedLiveController.startThread({}, { project: liveProject }),
+    "Expected direct live text thread start to fail closed when activation requires rollback.",
+  );
 
   const candidateController = new DirectLiveTextController({
     sessionStore: liveSessionStore,
