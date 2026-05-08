@@ -1665,6 +1665,7 @@ function buildDirectRuntimeStatusForProject(project, options = {}) {
     authStatus: authSettings.authStatus,
     profileDoc,
     sessionStore: ensureDirectSessionStore().status(),
+    imports: ensureDirectImportController().statusForProject(project),
     fixtureRuntime: { available: true, capabilities: buildDirectFixtureCapabilities() },
     liveTextRuntime: (() => {
       const liveStatus = ensureDirectLiveTextController().statusForProject(project);
@@ -4014,6 +4015,41 @@ ipcMain.handle("direct-import:list-sources", async (_event, payload) => {
   return ensureDirectImportController().listSources(project, payload || {});
 });
 
+ipcMain.handle("direct-import:choose-source-file", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  if (!mainWindow) return { ok: false, canceled: true, source: null };
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Choose legacy Codex JSONL source",
+    properties: ["openFile"],
+    filters: [
+      { name: "Codex JSONL", extensions: ["jsonl"] },
+      { name: "All files", extensions: ["*"] },
+    ],
+  });
+  if (result.canceled || !result.filePaths.length) return { ok: false, canceled: true, source: null };
+  const sourcePath = result.filePaths[0];
+  const source = ensureDirectImportController().registerSourceHandle(project, {
+    sourcePath,
+    sourceRoot: path.dirname(sourcePath),
+    sourceSelectionMode: "native-file-picker",
+  });
+  return { ok: true, canceled: false, source, defaultCodexHomeScanned: false };
+});
+
+ipcMain.handle("direct-import:choose-source-root", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  if (!mainWindow) return { ok: false, canceled: true, sources: [] };
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: "Choose legacy Codex JSONL source root",
+    properties: ["openDirectory"],
+  });
+  if (result.canceled || !result.filePaths.length) return { ok: false, canceled: true, sources: [] };
+  return ensureDirectImportController().listSources(project, {
+    sourceRoot: result.filePaths[0],
+    sourceSelectionMode: "native-root-picker",
+  });
+});
+
 ipcMain.handle("direct-import:inspect-source", async (_event, payload) => {
   const project = await getProjectById(payload?.projectId);
   return ensureDirectImportController().inspectSource(project, payload || {});
@@ -4037,6 +4073,26 @@ ipcMain.handle("direct-import:materialize", async (_event, payload) => {
 ipcMain.handle("direct-import:read-report", async (_event, payload) => {
   const project = await getProjectById(payload?.projectId);
   return ensureDirectImportController().readReport(project, payload || {});
+});
+
+ipcMain.handle("direct-import:read-session", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectImportController().readImportSession(project, payload || {});
+});
+
+ipcMain.handle("direct-import:list-imports", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectImportController().listImports(project, payload || {});
+});
+
+ipcMain.handle("direct-import:hide", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectImportController().hideImport(project, payload || {});
+});
+
+ipcMain.handle("direct-import:unhide", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectImportController().unhideImport(project, payload || {});
 });
 
 ipcMain.handle("direct-import:cancel", async (_event, payload) => {

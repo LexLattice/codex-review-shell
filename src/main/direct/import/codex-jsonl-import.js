@@ -245,13 +245,19 @@ function workspaceMatched(workspaceMatch = {}) {
 }
 
 function eligibilityForState(state, workspaceMatch = {}) {
-  const checkpointValidated = state === "checkpoint-validated";
+  const checkpointValidated = canonicalImportState(state) === "checkpoint-validated";
   return {
     checkpointValidated,
     directContinuationEligible: checkpointValidated && workspaceMatched(workspaceMatch),
     directContinuationRunnableNow: false,
     runnableScope: checkpointValidated ? "future-checkpoint-continuation-only" : "none",
   };
+}
+
+function canonicalImportState(value) {
+  const state = normalizeString(value, "imported-readonly");
+  if (state === "checkpointed-runnable") return "checkpoint-validated";
+  return state;
 }
 
 function buildImportCandidate(records, options = {}) {
@@ -638,8 +644,9 @@ function transcriptItemFromCheckpointMessage(message = {}, turnId = "imported_ch
 }
 
 function materializationKindForState(state) {
-  if (state === "checkpoint-validated") return "checkpoint-validated";
-  if (state === "checkpoint-candidate") return "checkpoint-candidate";
+  const importState = canonicalImportState(state);
+  if (importState === "checkpoint-validated") return "checkpoint-validated";
+  if (importState === "checkpoint-candidate") return "checkpoint-candidate";
   return "readonly-transcript";
 }
 
@@ -669,7 +676,7 @@ function materializeDirectImportSession(checkpointCandidate, options = {}) {
   }
   const checkpoint = checkpointCandidate.checkpoint || {};
   const source = checkpointCandidate.source || {};
-  const checkpointState = firstString(checkpointCandidate.state, checkpointCandidate.validation?.state, "checkpoint-candidate");
+  const checkpointState = canonicalImportState(firstString(checkpointCandidate.state, checkpointCandidate.validation?.state, "checkpoint-candidate"));
   const workspaceMatch = checkpointCandidate.workspaceMatch || defaultWorkspaceMatch(options);
   const eligibility = checkpointCandidate.eligibility || eligibilityForState(checkpointState, workspaceMatch);
   const lineage = {
@@ -841,6 +848,7 @@ function rendererSafeTranscriptItem(item = {}) {
 function buildRendererSafeImportSession(session = {}) {
   const source = session.importSource || {};
   const report = session.directImportCheckpoint?.validationReport || {};
+  const importState = canonicalImportState(session.importState);
   const groups = Array.isArray(session.messages) ? session.messages : [];
   const transcriptItems = groups
     .flatMap((group) => Array.isArray(group.items) ? group.items : [])
@@ -850,10 +858,11 @@ function buildRendererSafeImportSession(session = {}) {
     sessionId: normalizeString(session.sessionId, ""),
     importId: normalizeString(session.importLineage?.importId, ""),
     title: normalizeString(session.title, "Imported Codex session"),
-    importState: normalizeString(session.importState, "imported-readonly"),
+    importState,
     labels: [
-      session.importState === "checkpoint-validated" ? "Checkpoint validated" : "Imported read-only",
-      "Direct continuation not started",
+      importState === "checkpoint-validated" ? "Checkpoint validated" : "Imported read-only",
+      "Continuation not started",
+      "Composer disabled",
     ],
     source: {
       sourceDisplayName: normalizeString(source.sourceDisplayName, ""),
@@ -876,6 +885,15 @@ function buildRendererSafeImportSession(session = {}) {
         ? "future_checkpoint_continuation_only"
         : "checkpoint_not_validated",
     },
+    composer: {
+      enabled: false,
+      reason: importState === "checkpoint-validated"
+        ? "live-continuation-not-implemented"
+        : "imported-readonly",
+    },
+    rawPathExposed: false,
+    rawRecordsExposed: false,
+    rawSourceSha256Exposed: false,
   };
 }
 
@@ -922,4 +940,5 @@ module.exports = {
   redactFixture,
   stableStringify,
   validateDirectCheckpointCandidate,
+  canonicalImportState,
 };

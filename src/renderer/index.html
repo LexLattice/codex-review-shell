@@ -61,6 +61,7 @@
         <nav class="middle-tabs" aria-label="Middle plane views">
           <button class="middle-tab active" id="overviewTabButton" data-tab="overview" type="button">Overview</button>
           <button class="middle-tab" id="threadsTabButton" data-tab="threads" type="button">Threads</button>
+          <button class="middle-tab" id="importsTabButton" data-tab="imports" type="button">Imports</button>
           <button class="middle-tab" id="analyticsTabButton" data-tab="analytics" type="button">Analytics</button>
           <button class="middle-tab" id="webTabButton" data-tab="web" type="button">Web</button>
         </nav>
@@ -335,6 +336,45 @@
               </div>
               <div class="thread-browser-list project-chat-thread-list" id="projectChatThreadList"></div>
               <div class="thread-browser-list recent-chat-thread-list" id="recentChatThreadList" hidden></div>
+            </section>
+          </section>
+        </section>
+
+        <section class="middle-tab-panel" id="importsTabPanel" data-tab-panel="imports" hidden>
+          <section class="control-card imports-card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Legacy imports</p>
+                <h3>Read-only Codex evidence</h3>
+              </div>
+              <div class="heading-actions">
+                <span id="directImportCount" class="counter">0</span>
+                <button class="ghost small" id="refreshDirectImportsButton" type="button">Refresh</button>
+              </div>
+            </div>
+            <div class="imports-toolbar">
+              <button class="primary small" id="chooseDirectImportFileButton" type="button">Choose JSONL</button>
+              <button class="ghost small" id="chooseDirectImportRootButton" type="button">Choose root</button>
+              <label class="checkbox-row imports-workspace-confirm">
+                <input id="directImportWorkspaceConfirmInput" type="checkbox" />
+                <span>Confirm selected project workspace match</span>
+              </label>
+            </div>
+            <p id="directImportHint" class="muted">Select a legacy Codex JSONL source. Imported sessions are evidence-only and never enable the composer in this bundle.</p>
+            <section class="imports-split" aria-label="Direct import workbench">
+              <div class="imports-list-column">
+                <div class="imports-subheading">
+                  <span class="eyebrow">Selected sources</span>
+                  <span id="directImportSourceCount" class="counter">0</span>
+                </div>
+                <div class="thread-browser-list import-source-list" id="directImportSourceList"></div>
+                <div class="imports-subheading">
+                  <span class="eyebrow">Materialized imports</span>
+                  <span id="directImportVisibleCount" class="counter">0</span>
+                </div>
+                <div class="thread-browser-list import-session-list" id="directImportList"></div>
+              </div>
+              <div class="imports-detail" id="directImportDetail"></div>
             </section>
           </section>
         </section>

@@ -43,6 +43,12 @@ function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
+function canonicalImportState(value) {
+  const state = normalizeString(value, "imported-readonly");
+  if (state === "checkpointed-runnable") return "checkpoint-validated";
+  return state;
+}
+
 function nowIso(nowMs = Date.now()) {
   return new Date(Number(nowMs) || Date.now()).toISOString();
 }
@@ -412,6 +418,29 @@ class DirectSessionStore {
     return readJsonFile(this.importPath(importId, artifactName));
   }
 
+  setImportHidden(importId, hidden = true, options = {}) {
+    const safeImportId = requireSafeId(importId, "import");
+    if (!hidden) {
+      try {
+        fs.unlinkSync(this.importPath(safeImportId, "hidden.json"));
+      } catch (error) {
+        if (!error || error.code !== "ENOENT") throw error;
+      }
+      this.recoverImportIndex({ write: true, nowMs: options.nowMs });
+      return { importId: safeImportId, hidden: false };
+    }
+    const marker = {
+      schema: "direct_codex_import_hidden@1",
+      importId: safeImportId,
+      hidden: true,
+      hiddenAt: nowIso(options.nowMs),
+      reason: normalizeString(options.reason, "operator_hidden"),
+    };
+    writeJsonAtomic(this.importPath(safeImportId, "hidden.json"), marker);
+    this.recoverImportIndex({ write: true, nowMs: options.nowMs });
+    return marker;
+  }
+
   recoverImportIndex(options = {}) {
     const entries = [];
     const recovery = {
@@ -425,6 +454,7 @@ class DirectSessionStore {
       let candidate = null;
       let checkpoint = null;
       let report = null;
+      let hidden = null;
       let artifactReadFailed = false;
       try {
         candidate = this.readImportArtifact(importId, "candidate.json");
@@ -441,6 +471,11 @@ class DirectSessionStore {
       } catch {
         artifactReadFailed = true;
       }
+      try {
+        hidden = this.readImportArtifact(importId, "hidden.json");
+      } catch {
+        artifactReadFailed = true;
+      }
       let recoveryState = "healthy";
       if (artifactReadFailed) recoveryState = "corrupted";
       else if (!candidate && !checkpoint && report) recoveryState = "report-only";
@@ -452,16 +487,29 @@ class DirectSessionStore {
       else if (recoveryState === "partial") recovery.partialCount += 1;
       else if (recoveryState === "report-only") recovery.reportOnlyCount += 1;
       else recovery.corruptedCount += 1;
+      const source = report?.source || checkpoint?.source || candidate?.source || {};
+      const workspaceMatch = report?.workspaceMatch || checkpoint?.workspaceMatch || {};
+      const state = canonicalImportState(report?.state || checkpoint?.state || candidate?.target?.state || "");
       entries.push({
         importId,
         recoveryState,
-        state: normalizeString(report?.state || checkpoint?.state || candidate?.target?.state, ""),
-        sourceDisplayName: normalizeString(report?.source?.sourceDisplayName || checkpoint?.source?.sourceDisplayName || candidate?.source?.sourceDisplayName, ""),
-        sourceFileSha256: normalizeString(report?.source?.sourceFileSha256 || checkpoint?.source?.sourceFileSha256 || candidate?.source?.sourceFileSha256, ""),
-        threadId: normalizeString(report?.source?.threadId || checkpoint?.source?.threadId || candidate?.source?.threadId, ""),
+        state,
+        projectId: normalizeString(workspaceMatch.selectedProjectId, ""),
+        sourceDisplayName: normalizeString(source.sourceDisplayName, ""),
+        sourceRootDisplayName: normalizeString(source.sourceRootDisplayName, ""),
+        sourceFileSha256: normalizeString(source.sourceFileSha256, ""),
+        sourceFileSizeBytes: Number(source.sourceFileSizeBytes || 0),
+        sourceFileMtimeMs: Number(source.sourceFileMtimeMs || 0) || undefined,
+        threadId: normalizeString(source.threadId, ""),
+        timestampStart: normalizeString(source.timestampStart, ""),
+        timestampEnd: normalizeString(source.timestampEnd, ""),
+        recordCount: Number(source.recordCount || 0),
         validationReportId: normalizeString(report?.reportId, ""),
         materializedSessionId: normalizeString(report?.lineage?.materializedSessionId || checkpoint?.lineage?.materializedSessionId, ""),
-        checkpointEligible: report?.state === "checkpoint-validated" && recoveryState === "healthy",
+        checkpointEligible: state === "checkpoint-validated" && recoveryState === "healthy",
+        hidden: hidden?.hidden === true,
+        hiddenAt: normalizeString(hidden?.hiddenAt, ""),
+        updatedAt: normalizeString(report?.generatedAt || checkpoint?.validatedAt || checkpoint?.createdAt || candidate?.source?.importedAt, ""),
       });
     }
     const index = {
