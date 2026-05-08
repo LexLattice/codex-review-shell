@@ -184,6 +184,7 @@ class DirectLiveTextController {
     this.profileDoc = isPlainObject(options.profileDoc) ? options.profileDoc : {};
     this.authStore = options.authStore || null;
     this.refreshCredentials = typeof options.refreshCredentials === "function" ? options.refreshCredentials : null;
+    this.modelEvidenceResolver = typeof options.modelEvidenceResolver === "function" ? options.modelEvidenceResolver : null;
     this.fetchImpl = typeof options.fetchImpl === "function" ? options.fetchImpl : null;
     this.endpoint = normalizeString(options.endpoint, "");
     this.maxPromptChars = Number(options.maxPromptChars || DEFAULT_MAX_PROMPT_CHARS);
@@ -203,9 +204,66 @@ class DirectLiveTextController {
       : sanitizeStatus(null);
   }
 
+  currentAuthCredentials() {
+    const store = this.currentAuthStore();
+    if (!store || typeof store.readCredentials !== "function") return {};
+    try {
+      return store.readCredentials() || {};
+    } catch {
+      return {};
+    }
+  }
+
+  requestedModelForProject(project = {}) {
+    return normalizeString(project.surfaceBinding?.codex?.model || project.codex?.model || "", "");
+  }
+
+  resolveLiveModelEvidence(project = {}, requestedModel = "") {
+    if (!this.modelEvidenceResolver) return null;
+    try {
+      return this.modelEvidenceResolver({
+        project,
+        profileDoc: this.profileDoc,
+        model: requestedModel,
+        endpoint: this.endpoint,
+        authStatus: this.authStatus(),
+        credentials: this.currentAuthCredentials(),
+      }) || null;
+    } catch (error) {
+      return {
+        model: requestedModel,
+        modelSource: "live-probe",
+        modelEvidenceState: "unknown",
+        accepted: false,
+        reason: "live_probe_evidence_unavailable",
+        liveProbeEvidence: {
+          available: false,
+          usable: false,
+          status: "error",
+          reason: error?.message || "live_probe_evidence_unavailable",
+          rawTokensExposed: false,
+          rawBackendFramesExposed: false,
+        },
+      };
+    }
+  }
+
+  modelEvidenceForProject(project = {}) {
+    const requestedModel = this.requestedModelForProject(project);
+    const staticEvidence = modelEvidenceFor(this.profileDoc, requestedModel);
+    const liveEvidence = this.resolveLiveModelEvidence(project, requestedModel || staticEvidence.model);
+    if (liveEvidence?.accepted) return liveEvidence;
+    return {
+      ...staticEvidence,
+      reason: liveEvidence?.reason || (staticEvidence.accepted ? "" : "accepted_text_model_required"),
+      liveProbeEvidence: liveEvidence?.liveProbeEvidence || null,
+      liveProbeEvidenceId: normalizeString(liveEvidence?.evidenceId, ""),
+    };
+  }
+
   statusForProject(project = {}) {
     const auth = this.authStatus();
-    const evidence = modelEvidenceFor(this.profileDoc, project.surfaceBinding?.codex?.model || project.codex?.model || "");
+    const evidence = this.modelEvidenceForProject(project);
     let status = "ready";
     let reason = "";
     if (auth.status !== "authenticated") {
@@ -213,7 +271,7 @@ class DirectLiveTextController {
       reason = "direct_auth_required";
     } else if (!evidence.accepted) {
       status = "profile_required";
-      reason = "accepted_text_model_required";
+      reason = evidence.reason || "accepted_text_model_required";
     }
     return {
       status,
@@ -226,6 +284,8 @@ class DirectLiveTextController {
       toolsEnabled: false,
       reason,
       auth,
+      evidenceId: normalizeString(evidence.evidenceId || evidence.liveProbeEvidenceId, ""),
+      liveProbeEvidence: evidence.liveProbeEvidence || null,
     };
   }
 
@@ -288,6 +348,7 @@ class DirectLiveTextController {
       directTransport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
       modelSource: status.modelSource,
       modelEvidenceState: status.modelEvidenceState,
+      modelEvidenceId: normalizeString(status.evidenceId, ""),
       profileSnapshotId: normalizeString(project.surfaceBinding?.codex?.profileId, ""),
     });
     return {

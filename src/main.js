@@ -28,6 +28,10 @@ const { codexAuthTokensFromCredentials } = require("./main/direct/auth/app-serve
 const { loadDirectCodexProfile } = require("./main/direct/odeu-profile/profile-loader");
 const { DirectSessionStore } = require("./main/direct/session/session-store");
 const {
+  DIRECT_LIVE_PROBE_EVIDENCE_ROOT_NAME,
+  DirectLiveProbeEvidenceStore,
+} = require("./main/direct/probes/live-probe-evidence-store");
+const {
   DIRECT_FIXTURE_SURFACE_TRANSPORT,
   DirectFixtureController,
   DirectFixtureSurfaceSession,
@@ -163,6 +167,7 @@ let directAuthController = null;
 let directAuthLoginCoordinator = null;
 let directCodexProfileDoc = null;
 let directSessionStore = null;
+let directLiveProbeEvidenceStore = null;
 let directFixtureController = null;
 let directLiveTextController = null;
 let surfaceActivationEpoch = 0;
@@ -200,6 +205,10 @@ function directAuthRootDir() {
 
 function directSessionRootDir() {
   return path.join(app.getPath("userData"), DIRECT_SESSION_ROOT_NAME);
+}
+
+function directLiveProbeEvidenceRootDir() {
+  return path.join(app.getPath("userData"), DIRECT_LIVE_PROBE_EVIDENCE_ROOT_NAME);
 }
 
 function tempFilePath(targetPath) {
@@ -1601,6 +1610,14 @@ function ensureDirectSessionStore() {
   return directSessionStore;
 }
 
+function ensureDirectLiveProbeEvidenceStore() {
+  if (directLiveProbeEvidenceStore) return directLiveProbeEvidenceStore;
+  directLiveProbeEvidenceStore = new DirectLiveProbeEvidenceStore({
+    rootDir: directLiveProbeEvidenceRootDir(),
+  });
+  return directLiveProbeEvidenceStore;
+}
+
 function ensureDirectFixtureController() {
   if (directFixtureController) return directFixtureController;
   directFixtureController = new DirectFixtureController({
@@ -1617,6 +1634,7 @@ function ensureDirectLiveTextController() {
     profileDoc: ensureDirectCodexProfileDoc(),
     authStore: () => ensureDirectAuthController().activeStore(),
     refreshCredentials: () => ensureDirectAuthLoginCoordinator().refreshCredentials(ensureDirectAuthController()),
+    modelEvidenceResolver: (context) => ensureDirectLiveProbeEvidenceStore().resolveModelEvidence(context),
   });
   return directLiveTextController;
 }
@@ -3553,6 +3571,7 @@ async function createWindow() {
     threadAnalyticsStore = null;
     directFixtureController = null;
     directLiveTextController = null;
+    directLiveProbeEvidenceStore = null;
     directSessionStore = null;
     middleWebHost?.dispose();
     middleWebHost = null;
@@ -3690,7 +3709,10 @@ ipcMain.handle("codex-surface:request", async (event, payload) => {
   const session = codexSurfaceSessionFor(event.sender);
   const method = payload?.method;
   const result = await session.request(method, payload?.params || {});
-  if (method === "initialize" && session.transportKind !== DIRECT_FIXTURE_SURFACE_TRANSPORT) {
+  if (
+    method === "initialize" &&
+    ![DIRECT_FIXTURE_SURFACE_TRANSPORT, DIRECT_LIVE_TEXT_SURFACE_TRANSPORT].includes(session.transportKind)
+  ) {
     return attachDirectAuthAfterInitialize(session, result);
   }
   return result;
@@ -4013,6 +4035,7 @@ app.on("before-quit", () => {
   directAuthLoginCoordinator = null;
   directFixtureController = null;
   directLiveTextController = null;
+  directLiveProbeEvidenceStore = null;
   directSessionStore = null;
 });
 
