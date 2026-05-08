@@ -14,6 +14,7 @@
 - [Direct Read-Only Tool Continuation Spec](./DIRECT_READONLY_TOOL_CONTINUATION_SPEC.md)
 - [Direct Legacy Import Checkpoint Spec](./DIRECT_LEGACY_IMPORT_CHECKPOINT_SPEC.md)
 - [Direct Import UX And Status Integration Spec](./DIRECT_IMPORT_UX_STATUS_SPEC.md)
+- [Direct Import Checkpoint Continuation Spec](./DIRECT_IMPORT_CHECKPOINT_CONTINUATION_SPEC.md)
 - [OAI Codex Upstream ODEU Profile](./OAI_CODEX_UPSTREAM_ODEU_PROFILE.md)
 - [Meta-Orchestrator Loop ODEU Spec](./META_ORCHESTRATOR_LOOP_ODEU_SPEC.md)
 - [Codex Runtime Provider Profile Spec](./CODEX_RUNTIME_PROVIDER_PROFILE_SPEC.md)
