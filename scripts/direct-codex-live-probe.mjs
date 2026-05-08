@@ -1,8 +1,13 @@
 import { createRequire } from "node:module";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 const require = createRequire(import.meta.url);
+const APP_TITLE = "Codex Review Shell";
+const CONFIG_FILE_NAME = "workspace-config.json";
+const PROFILE_ENV_VAR = "CODEX_REVIEW_SHELL_PROFILE";
+const USER_DATA_ROOT_ENV_VAR = "CODEX_REVIEW_SHELL_USER_DATA_ROOT";
 
 const { createDirectAuthStore } = require("../src/main/direct/auth/auth-store");
 const { loadDirectCodexProfile } = require("../src/main/direct/odeu-profile/profile-loader");
@@ -29,6 +34,62 @@ function envFlag(name) {
   return /^(1|true|yes)$/i.test(String(process.env[name] || "").trim());
 }
 
+function normalizeProfileName(value) {
+  const text = typeof value === "string" && value.trim() ? value.trim() : "";
+  if (!text || text === "default") return "";
+  return text.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
+}
+
+function existingFileMtimeMs(targetPath) {
+  try {
+    return fs.statSync(targetPath).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+function uniquePaths(values) {
+  const seen = new Set();
+  return values.filter((value) => {
+    const normalized = path.resolve(value);
+    const key = process.platform === "win32" ? normalized.toLowerCase() : normalized;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function platformAppDataRoot() {
+  if (process.platform === "win32") {
+    return envString("APPDATA", path.join(os.homedir(), "AppData", "Roaming"));
+  }
+  if (process.platform === "darwin") {
+    return path.join(os.homedir(), "Library", "Application Support");
+  }
+  return envString("XDG_CONFIG_HOME", path.join(os.homedir(), ".config"));
+}
+
+function defaultAppUserDataRoot() {
+  const profileName = normalizeProfileName(process.env[PROFILE_ENV_VAR]);
+  const configuredRoot = envString(USER_DATA_ROOT_ENV_VAR, "");
+  if (profileName) {
+    return path.join(configuredRoot || path.join(platformAppDataRoot(), APP_TITLE), profileName);
+  }
+  const canonicalUserDataPath = path.join(platformAppDataRoot(), APP_TITLE);
+  const legacyUserDataPath = path.join(platformAppDataRoot(), "codex-review-shell");
+  const candidates = uniquePaths([canonicalUserDataPath, legacyUserDataPath]);
+  let selectedPath = canonicalUserDataPath;
+  let selectedMtime = 0;
+  for (const candidate of candidates) {
+    const mtime = existingFileMtimeMs(path.join(candidate, CONFIG_FILE_NAME));
+    if (mtime > selectedMtime) {
+      selectedPath = candidate;
+      selectedMtime = mtime;
+    }
+  }
+  return selectedPath;
+}
+
 if (process.env.CODEX_DIRECT_LIVE_PROBE !== "1") {
   console.error("Refusing to run live direct probe. Set CODEX_DIRECT_LIVE_PROBE=1 to make a real backend call.");
   process.exit(1);
@@ -39,10 +100,11 @@ if (process.env.CI === "true" && process.env.CODEX_DIRECT_LIVE_PROBE_ALLOW_CI !=
   process.exit(1);
 }
 
+const appUserDataRoot = envString("CODEX_DIRECT_APP_USER_DATA_ROOT", defaultAppUserDataRoot());
 const authFile = envString("CODEX_DIRECT_AUTH_FILE", "");
-const authRoot = envString("CODEX_DIRECT_AUTH_ROOT", path.join(os.homedir(), ".codex-review-shell", "direct-auth"));
+const authRoot = envString("CODEX_DIRECT_AUTH_ROOT", path.join(appUserDataRoot, "direct-auth"));
 const sessionRoot = envString("CODEX_DIRECT_SESSION_ROOT", path.join(os.tmpdir(), "codex-review-shell-direct-live-probe-sessions"));
-const evidenceRoot = envString("CODEX_DIRECT_PROBE_EVIDENCE_ROOT", path.join(os.homedir(), ".codex-review-shell", "direct-probe-evidence"));
+const evidenceRoot = envString("CODEX_DIRECT_PROBE_EVIDENCE_ROOT", path.join(appUserDataRoot, "direct-probe-evidence"));
 const endpoint = envString("CODEX_DIRECT_RESPONSES_ENDPOINT", DEFAULT_CODEX_RESPONSES_ENDPOINT);
 const prompt = envString("CODEX_DIRECT_PROBE_PROMPT", DEFAULT_TEXT_PROBE_PROMPT);
 const model = envString("CODEX_DIRECT_PROBE_MODEL", "");

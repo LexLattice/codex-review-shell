@@ -147,7 +147,7 @@ function profileHash(profileDoc = {}) {
 function endpointClass(endpoint = "") {
   const value = normalizeString(endpoint, "");
   if (!value || value.includes("/backend-api/codex/responses")) return ENDPOINT_CLASS;
-  return ENDPOINT_CLASS;
+  return "custom";
 }
 
 function endpointHash(endpoint = "") {
@@ -601,8 +601,11 @@ class DirectLiveProbeEvidenceStore {
         digest: "",
       },
     });
+    const expectedBuffer = Buffer.from(expected, "hex");
+    const digestBuffer = Buffer.from(evidence.integrity.digest, "hex");
+    if (expectedBuffer.length !== digestBuffer.length) return false;
     try {
-      return crypto.timingSafeEqual(Buffer.from(expected, "hex"), Buffer.from(evidence.integrity.digest, "hex"));
+      return crypto.timingSafeEqual(expectedBuffer, digestBuffer);
     } catch {
       return false;
     }
@@ -775,13 +778,13 @@ class DirectLiveProbeEvidenceStore {
   }
 
   findEvidenceForScope(scope = {}, options = {}) {
-    this.ensure();
-    const evidenceList = this.listEvidence()
-      .filter((evidence) => this.verifyIntegrity(evidence))
-      .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+    const index = this.ensure();
     let latestRelated = null;
-    for (const evidence of evidenceList) {
-      if (evidence.source === FAKE_SMOKE_SOURCE && !(this.allowFakeEvidence || options.allowFakeEvidence === true)) continue;
+    for (const entry of index.evidence || []) {
+      if (entry.source === FAKE_SMOKE_SOURCE && !(this.allowFakeEvidence || options.allowFakeEvidence === true)) continue;
+      if (entry.endpointHash !== scope.endpointHash || entry.requestShapeHash !== scope.requestShapeHash) continue;
+      const evidence = this.readEvidence(entry.evidenceId);
+      if (!evidence || !this.verifyIntegrity(evidence)) continue;
       const view = this.viewForEvidence(evidence, { ...options, scope });
       if (!latestRelated) latestRelated = view;
       if (view.usable) return view;
@@ -832,10 +835,14 @@ class DirectLiveProbeEvidenceStore {
 
   status(options = {}) {
     const index = this.ensure();
-    const evidence = this.listEvidence()
-      .filter((record) => this.verifyIntegrity(record))
-      .map((record) => indexEntryFromEvidence(record, options))
-      .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+    const evidence = (index.evidence || []).map((entry) => {
+      const computedStatus = computedEvidenceStatus(entry, options);
+      return {
+        ...entry,
+        computedStatus,
+        usable: computedStatus === "runtime_probed",
+      };
+    });
     return {
       schema: "direct_codex_live_probe_evidence_store_status@1",
       available: true,
@@ -871,6 +878,7 @@ module.exports = {
   canonicalJson,
   computedEvidenceStatus,
   directTextRequestShapeHash,
+  endpointClass,
   endpointHash,
   evaluateProbePromotion,
   evidenceUsable,

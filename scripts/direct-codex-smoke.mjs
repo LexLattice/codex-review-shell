@@ -59,6 +59,7 @@ const {
   DirectLiveProbeEvidenceStore,
   computedEvidenceStatus,
   directTextRequestShapeHash,
+  endpointClass,
 } = require("../src/main/direct/probes/live-probe-evidence-store");
 const {
   DEFAULT_CODEX_RESPONSES_ENDPOINT,
@@ -709,6 +710,8 @@ try {
   assert(recordedLiveProbe.evidence.result.assistantTextObserved === true, "Runtime-probed evidence must require non-empty assistant text.");
   assert(recordedLiveProbe.evidence.result.usageSummary.observed === true, "Expected usage to be recorded as observed when provider emits usage.");
   assert(directTextRequestShapeHash({ model: "gpt-5.4" }) === directTextRequestShapeHash({ model: "gpt-5.5" }), "Request-shape hash must not include model identity.");
+  assert(endpointClass(DEFAULT_CODEX_RESPONSES_ENDPOINT) === "chatgpt-codex-responses", "Expected default direct endpoint class.");
+  assert(endpointClass("https://example.invalid/custom/responses") === "custom", "Expected custom endpoints to use a distinct endpoint class.");
 
   const liveProbeResolved = liveProbeEvidenceStore.resolveModelEvidence(liveProbeContext);
   assert(liveProbeResolved.accepted === true, "Expected matching live probe evidence to resolve as accepted.");
@@ -754,6 +757,7 @@ try {
   });
   assert(expiredRecorded.evidence.status === "runtime_probed", "Expired must remain a stored runtime_probed status.");
   assert(computedEvidenceStatus(expiredRecorded.evidence, { nowMs: 1_700_000_061_000 }) === "expired", "Expected expiry to be computed from expiresAt.");
+  assert(expiredEvidenceStore.status({ nowMs: 1_700_000_061_000 }).latestStatus === "expired", "Expected store status to compute expiry from index entries.");
   const expiredResolved = expiredEvidenceStore.resolveModelEvidence({
     ...liveProbeContext,
     nowMs: 1_700_000_061_000,
