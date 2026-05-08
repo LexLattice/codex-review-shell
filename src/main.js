@@ -1680,12 +1680,14 @@ function currentLegacyAppServerSnapshot() {
 function buildDirectRuntimeStatusForProject(project, options = {}) {
   const controller = ensureDirectAuthController();
   const authSettings = controller.readSettings(options);
+  const credentials = controller.activeStore().readCredentials() || {};
   const profileDoc = ensureDirectCodexProfileDoc();
   const sessionStore = ensureDirectSessionStore();
   const imports = ensureDirectImportController().statusForProject(project);
   const liveTextStatus = ensureDirectLiveTextController().statusForProject(project);
   const activationStore = ensureDirectActivationStore();
   const projectId = normalizeString(project?.id, "");
+  const activationStoreStatus = projectId ? activationStore.statusForProject(projectId) : {};
   const activationEvaluation = evaluateDirectExperimentalProjectActivation({
     project,
     authSettings,
@@ -1696,8 +1698,9 @@ function buildDirectRuntimeStatusForProject(project, options = {}) {
     imports,
     liveTextStatus,
     workspaceStatus: workspaceBackends?.statusForProject(project) || null,
-    activationStoreStatus: projectId ? activationStore.statusForProject(projectId) : {},
-    latestActivation: projectId ? activationStore.latestCommittedActivation(projectId) : null,
+    activationStoreStatus,
+    latestActivation: activationStoreStatus.latestActivation || null,
+    accountEvidenceKey: normalizeString(credentials.accountId || credentials.chatgptAccountId, ""),
     attachOnFirstTurnAccepted: false,
     profileHash: normalizeString(profileDoc.summary?.profileHash || profileDoc.profile?.profileHash, ""),
   });
@@ -1746,9 +1749,11 @@ async function withDirectActivationLock(projectId, action) {
 function directActivationEvaluationForProject(project) {
   const controller = ensureDirectAuthController();
   const authSettings = controller.readSettings();
+  const credentials = controller.activeStore().readCredentials() || {};
   const profileDoc = ensureDirectCodexProfileDoc();
   const sessionStore = ensureDirectSessionStore();
   const projectId = normalizeString(project?.id, "");
+  const activationStoreStatus = projectId ? ensureDirectActivationStore().statusForProject(projectId) : {};
   return evaluateDirectExperimentalProjectActivation({
     project,
     authSettings,
@@ -1758,8 +1763,9 @@ function directActivationEvaluationForProject(project) {
     imports: ensureDirectImportController().statusForProject(project),
     liveTextStatus: ensureDirectLiveTextController().statusForProject(project),
     workspaceStatus: workspaceBackends?.statusForProject(project) || null,
-    activationStoreStatus: projectId ? ensureDirectActivationStore().statusForProject(projectId) : {},
-    latestActivation: projectId ? ensureDirectActivationStore().latestCommittedActivation(projectId) : null,
+    activationStoreStatus,
+    latestActivation: activationStoreStatus.latestActivation || null,
+    accountEvidenceKey: normalizeString(credentials.accountId || credentials.chatgptAccountId, ""),
     attachOnFirstTurnAccepted: false,
     profileHash: normalizeString(profileDoc.summary?.profileHash || profileDoc.profile?.profileHash, ""),
   });
@@ -1823,10 +1829,11 @@ async function enableDirectExperimentalProject(payload = {}) {
     const pending = store.createPendingActivation(project, gate, payload.clientActivationId || newId("client_activation"));
     let committed = null;
     try {
-      const nextProjects = config.projects.map((item) =>
+      const latestConfig = await loadConfig();
+      const nextProjects = latestConfig.projects.map((item) =>
         item.id === projectId ? projectWithCodexBinding(item, pending.activatedBindingPrivate) : item,
       );
-      const saved = await saveConfig({ ...config, projects: nextProjects });
+      const saved = await saveConfig({ ...latestConfig, projects: nextProjects });
       const savedProject = saved.projects.find((item) => item.id === projectId) || project;
       const savedDigest = activationProjectBindingDigest(savedProject.surfaceBinding?.codex || {});
       if (savedDigest !== pending.activatedBindingDigest) {
@@ -1882,10 +1889,11 @@ async function rollbackDirectExperimentalProject(payload = {}) {
         },
       };
       const pending = store.createPendingRollback(project, fallbackActivation, payload.clientRollbackId || newId("client_rollback"), "schema_incompatible");
-      const nextProjects = config.projects.map((item) =>
+      const latestConfig = await loadConfig();
+      const nextProjects = latestConfig.projects.map((item) =>
         item.id === projectId ? projectWithCodexBinding(item, pending.restoredBindingPrivate) : item,
       );
-      const saved = await saveConfig({ ...config, projects: nextProjects });
+      const saved = await saveConfig({ ...latestConfig, projects: nextProjects });
       const committed = store.markRollbackCommitted(pending, null);
       const savedProject = saved.projects.find((item) => item.id === projectId) || project;
       currentProject = savedProject;
@@ -1894,10 +1902,11 @@ async function rollbackDirectExperimentalProject(payload = {}) {
       return { ok: true, rollback: committed, project: savedProject, config: saved, status: buildDirectRuntimeStatusForProject(savedProject).activation };
     }
     const pending = store.createPendingRollback(project, activation, payload.clientRollbackId || newId("client_rollback"), payload.reason || "user_requested");
-    const nextProjects = config.projects.map((item) =>
+    const latestConfig = await loadConfig();
+    const nextProjects = latestConfig.projects.map((item) =>
       item.id === projectId ? projectWithCodexBinding(item, pending.restoredBindingPrivate) : item,
     );
-    const saved = await saveConfig({ ...config, projects: nextProjects });
+    const saved = await saveConfig({ ...latestConfig, projects: nextProjects });
     const savedProject = saved.projects.find((item) => item.id === projectId) || project;
     const savedDigest = activationProjectBindingDigest(savedProject.surfaceBinding?.codex || {});
     if (savedDigest !== pending.restoredBindingDigest) {

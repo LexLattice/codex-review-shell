@@ -414,6 +414,7 @@ const activationLiveWithTool = {
 const implementationActivation = evaluateDirectExperimentalProjectActivation({
   project: activationProject,
   authStatus: activationAuthStatus,
+  accountEvidenceKey: "raw-account-fixture",
   liveTextStatus: activationLiveWithTool,
   sessionStore: activationSessionStoreStatus,
   imports: {},
@@ -432,6 +433,25 @@ const activationRuntimeStatus = buildDirectRuntimeStatus({
 });
 assert(activationRuntimeStatus.activation.state === "eligible", "Expected runtime status to include activation readiness.");
 assert(activationRuntimeStatus.activation.gateSummary.blockedReasons.tool_evidence_missing === undefined, "Eligible activation must not report tool evidence blocker.");
+const redactedAccountActivationA = evaluateDirectExperimentalProjectActivation({
+  project: activationProject,
+  authStatus: { ...activationAuthStatus, accountId: "[REDACTED:account-id]" },
+  accountEvidenceKey: "private-account-a",
+  liveTextStatus: activationLiveWithTool,
+  sessionStore: activationSessionStoreStatus,
+  imports: {},
+  workspaceStatus: activationWorkspaceStatus,
+});
+const redactedAccountActivationB = evaluateDirectExperimentalProjectActivation({
+  project: activationProject,
+  authStatus: { ...activationAuthStatus, accountId: "[REDACTED:account-id]" },
+  accountEvidenceKey: "private-account-b",
+  liveTextStatus: activationLiveWithTool,
+  sessionStore: activationSessionStoreStatus,
+  imports: {},
+  workspaceStatus: activationWorkspaceStatus,
+});
+assert(redactedAccountActivationA.gate.scope.accountEvidenceKey !== redactedAccountActivationB.gate.scope.accountEvidenceKey, "Private account evidence must scope gates even when renderer auth status is redacted.");
 const activationStoreParent = fs.mkdtempSync(path.join(os.tmpdir(), "direct-codex-activation-store-"));
 try {
   const activationStore = new DirectExperimentalActivationStore({ rootDir: path.join(activationStoreParent, "direct-sessions") });
@@ -444,6 +464,15 @@ try {
   assert(pendingRollback.transactionState === "pending", "Expected pending rollback transaction.");
   const committedRollback = activationStore.markRollbackCommitted(pendingRollback, committedActivation);
   assert(committedRollback.transactionState === "committed", "Expected committed rollback transaction.");
+  const dottedProject = { ...activationProject, id: "project.with.dot" };
+  const dottedPending = activationStore.createPendingActivation(dottedProject, implementationActivation.gate, "client_activation_dotted");
+  activationStore.markActivationCommitted(dottedPending);
+  assert(activationStore.statusForProject(dottedProject.id).committedCount === 1, "Expected dotted legacy project ids to be path-safe in activation store.");
+  const corruptProject = { ...activationProject, id: "project_corrupt_activation" };
+  const corruptPending = activationStore.createPendingActivation(corruptProject, implementationActivation.gate, "client_activation_corrupt");
+  const corruptPath = activationStore.activationPath(corruptProject.id, corruptPending.activationId);
+  fs.writeFileSync(corruptPath, "{not-json", "utf8");
+  assert(activationStore.statusForProject(corruptProject.id).corruptedCount === 1, "Expected corrupt activation files to produce corrupt status instead of throwing.");
 } finally {
   fs.rmSync(activationStoreParent, { recursive: true, force: true });
 }

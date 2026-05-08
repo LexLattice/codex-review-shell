@@ -61,6 +61,12 @@ function requireSafeId(value, label) {
   throw new Error(`Invalid ${label} id.`);
 }
 
+function safeProjectDirectoryName(projectId) {
+  const text = normalizeString(projectId, "project");
+  if (isSafeId(text)) return text;
+  return `project_${digest(text).slice(0, 32)}`;
+}
+
 function ensureDirectory(directory) {
   fs.mkdirSync(directory, { recursive: true });
 }
@@ -158,7 +164,7 @@ function activationProjectBindingDigest(binding = {}) {
 }
 
 function safeProjectId(project = {}) {
-  return requireSafeId(project.id || "project", "project");
+  return normalizeString(project.id, "project");
 }
 
 function workspaceKind(project = {}) {
@@ -417,10 +423,10 @@ function evaluateDirectExperimentalProjectActivation(options = {}) {
   const committedActivation = latestActivation?.transactionState === "committed";
   let state = "blocked";
   if (textOnlyPass && !toolOk) state = "text_only_eligible";
-  if (hardPass && toolOk) state = "eligible";
+  if (hardPass) state = "eligible";
   if (enabledBinding) {
     if (!committedActivation) state = "rollback_required";
-    else if (hardPass && toolOk) state = "enabled";
+    else if (hardPass) state = "enabled";
     else state = "degraded";
   }
   if (!projectId) state = "unavailable";
@@ -515,10 +521,11 @@ class DirectExperimentalActivationStore {
     const rootDir = normalizeString(options.rootDir, "");
     if (!rootDir) throw new Error("DirectExperimentalActivationStore requires rootDir.");
     this.rootDir = path.resolve(rootDir);
+    this._statusCache = new Map();
   }
 
   projectDir(projectId) {
-    return path.join(this.rootDir, "activation", requireSafeId(projectId, "project"));
+    return path.join(this.rootDir, "activation", safeProjectDirectoryName(projectId));
   }
 
   activationPath(projectId, activationId) {
@@ -552,6 +559,7 @@ class DirectExperimentalActivationStore {
       throw new Error("Invalid direct experimental activation record.");
     }
     writeJsonAtomic(this.activationPath(record.projectId, record.activationId), record);
+    this._statusCache.delete(normalizeString(record.projectId, ""));
     return record;
   }
 
@@ -565,12 +573,19 @@ class DirectExperimentalActivationStore {
       throw new Error("Invalid direct experimental rollback record.");
     }
     writeJsonAtomic(this.rollbackPath(record.projectId, record.rollbackId), record);
+    this._statusCache.delete(normalizeString(record.projectId, ""));
     return record;
   }
 
   listActivations(projectId) {
     return this.listIds(projectId, "activations")
-      .map((id) => this.readActivation(projectId, id))
+      .map((id) => {
+        try {
+          return this.readActivation(projectId, id);
+        } catch {
+          return null;
+        }
+      })
       .filter(Boolean)
       .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
   }
@@ -596,10 +611,14 @@ class DirectExperimentalActivationStore {
   }
 
   statusForProject(projectId) {
+    const cacheKey = normalizeString(projectId, "");
+    const cached = this._statusCache.get(cacheKey);
+    if (cached) return cached;
     const ids = this.listIds(projectId, "activations");
     let corruptedCount = 0;
     let committedCount = 0;
     let pendingCount = 0;
+    let latestActivation = null;
     for (const id of ids) {
       try {
         const record = this.readActivation(projectId, id);
@@ -609,18 +628,27 @@ class DirectExperimentalActivationStore {
         }
         if (record.transactionState === "committed") committedCount += 1;
         if (record.transactionState === "pending") pendingCount += 1;
+        if (
+          record.transactionState === "committed" &&
+          !record.rolledBackByRollbackId &&
+          (!latestActivation || String(record.createdAt || "").localeCompare(String(latestActivation.createdAt || "")) > 0)
+        ) {
+          latestActivation = record;
+        }
       } catch {
         corruptedCount += 1;
       }
     }
-    return {
+    const status = {
       available: true,
       projectId: normalizeString(projectId, ""),
       committedCount,
       pendingCount,
       corruptedCount,
-      latestActivation: this.latestCommittedActivation(projectId),
+      latestActivation,
     };
+    this._statusCache.set(cacheKey, status);
+    return status;
   }
 
   createPendingActivation(project, gate, clientActivationId) {
