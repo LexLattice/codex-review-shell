@@ -27,6 +27,7 @@ const { createDirectAuthLoginCoordinator } = require("./main/direct/auth/auth-lo
 const { codexAuthTokensFromCredentials } = require("./main/direct/auth/app-server-auth-bridge");
 const { loadDirectCodexProfile } = require("./main/direct/odeu-profile/profile-loader");
 const { DirectSessionStore } = require("./main/direct/session/session-store");
+const { DirectThreadStore } = require("./main/direct/thread/thread-store");
 const { DirectImportController } = require("./main/direct/import/import-controller");
 const {
   DIRECT_LIVE_PROBE_EVIDENCE_ROOT_NAME,
@@ -174,6 +175,7 @@ let directAuthController = null;
 let directAuthLoginCoordinator = null;
 let directCodexProfileDoc = null;
 let directSessionStore = null;
+let directThreadStore = null;
 let directImportController = null;
 let directLiveProbeEvidenceStore = null;
 let directFixtureController = null;
@@ -1620,6 +1622,42 @@ function ensureDirectSessionStore() {
   return directSessionStore;
 }
 
+function ensureDirectThreadStore() {
+  if (directThreadStore) return directThreadStore;
+  directThreadStore = new DirectThreadStore({
+    rootDir: directSessionRootDir(),
+    mode: "index_only",
+  });
+  return directThreadStore;
+}
+
+function directThreadStoreStatus() {
+  try {
+    return ensureDirectThreadStore().status();
+  } catch (error) {
+    return {
+      schema: "direct_thread_store_status@1",
+      available: false,
+      status: "disabled",
+      mode: "disabled",
+      schemaVersion: "",
+      rootExposed: false,
+      dbPathExposed: false,
+      projectionsHealthy: false,
+      contextBuildsAllowed: false,
+      threadCount: 0,
+      rolloutCount: 0,
+      turnCount: 0,
+      operationCount: 0,
+      projectionCount: 0,
+      contextBuildCount: 0,
+      recovery: {
+        error: normalizeString(error?.message, "direct_thread_store_unavailable"),
+      },
+    };
+  }
+}
+
 function ensureDirectActivationStore() {
   if (directActivationStore) return directActivationStore;
   directActivationStore = new DirectExperimentalActivationStore({ rootDir: directSessionRootDir() });
@@ -1710,6 +1748,7 @@ function buildDirectRuntimeStatusForProject(project, options = {}) {
     authStatus: authSettings.authStatus,
     profileDoc,
     sessionStore: sessionStore.status(),
+    directThreadStore: directThreadStoreStatus(),
     imports,
     activation: activationEvaluation.status,
     fixtureRuntime: { available: true, capabilities: buildDirectFixtureCapabilities() },
@@ -3825,6 +3864,8 @@ async function createWindow() {
     directLiveTextController = null;
     directLiveProbeEvidenceStore = null;
     directActivationStore = null;
+    directThreadStore?.close();
+    directThreadStore = null;
     directSessionStore = null;
     middleWebHost?.dispose();
     middleWebHost = null;
@@ -4400,6 +4441,8 @@ app.on("before-quit", () => {
   directLiveTextController = null;
   directLiveProbeEvidenceStore = null;
   directActivationStore = null;
+  directThreadStore?.close();
+  directThreadStore = null;
   directSessionStore = null;
 });
 
