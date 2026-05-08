@@ -917,6 +917,10 @@ button:active {
   justify-content: flex-end;
 }
 
+.direct-activation-actions {
+  justify-content: flex-start;
+}
+
 .direct-auth-evidence {
   min-height: 17px;
   font-size: 11px;
