@@ -109,11 +109,12 @@ function buildDirectRuntimeStatus(options = {}) {
   const fixtureRuntimeAvailable = directModeSelected && !liveTextSelected && Boolean(fixtureRuntime?.available);
   const liveTextRuntimeAvailable = liveTextSelected && Boolean(liveTextRuntime?.available);
   const liveTextStatus = isPlainObject(liveTextRuntime?.status) ? liveTextRuntime.status : {};
+  const liveProbeEvidence = isPlainObject(liveTextStatus.liveProbeEvidence) ? liveTextStatus.liveProbeEvidence : null;
   const directTurnBlockedReason =
     binding.runtimeMode === "direct"
       ? "direct_runtime_validation_gates_not_passed"
       : liveTextSelected
-        ? normalizeString(liveTextStatus.reason, "direct_live_text_not_ready")
+        ? (liveTextStatus.status === "ready" ? "" : normalizeString(liveTextStatus.reason, "direct_live_text_not_ready"))
         : "direct_session_engine_not_implemented";
 
   return {
@@ -145,7 +146,9 @@ function buildDirectRuntimeStatus(options = {}) {
       ready: liveTextRuntimeAvailable && liveTextStatus.status === "ready",
       panelAttachStatus: liveTextRuntimeAvailable ? "live_text_controller" : fixtureRuntimeAvailable ? "fixture_controller" : directModeSelected ? "fixture_status_only" : "legacy_app_server_bridge",
       turnRunnable: liveTextRuntimeAvailable && liveTextStatus.turnRunnable === true,
-      reason: directModeSelected ? directTurnBlockedReason : "legacy_app_server_mode_active",
+      reason: directModeSelected
+        ? directTurnBlockedReason || "direct_runtime_ready"
+        : "legacy_app_server_mode_active",
     },
     fixtureRuntime: {
       available: fixtureRuntimeAvailable,
@@ -160,6 +163,43 @@ function buildDirectRuntimeStatus(options = {}) {
       turnRunnable: liveTextRuntimeAvailable && liveTextStatus.turnRunnable === true,
       modelSource: normalizeString(liveTextStatus.modelSource, "static-baseline"),
       modelEvidenceState: normalizeString(liveTextStatus.modelEvidenceState, "unknown"),
+      modelEvidenceId: normalizeString(liveTextStatus.evidenceId, ""),
+      liveProbeEvidence: {
+        available: Boolean(liveProbeEvidence?.available),
+        usable: Boolean(liveProbeEvidence?.usable),
+        status: normalizeString(liveProbeEvidence?.status, "missing"),
+        storedStatus: normalizeString(liveProbeEvidence?.storedStatus, ""),
+        model: normalizeString(liveProbeEvidence?.model, ""),
+        modelSource: normalizeString(liveProbeEvidence?.modelSource, "live-probe"),
+        modelEvidenceState: normalizeString(liveProbeEvidence?.modelEvidenceState, "unknown"),
+        evidenceId: normalizeString(liveProbeEvidence?.evidenceId, ""),
+        observedAt: normalizeString(liveProbeEvidence?.observedAt, ""),
+        expiresAt: normalizeString(liveProbeEvidence?.expiresAt, ""),
+        source: normalizeString(liveProbeEvidence?.source, ""),
+        failureKind: normalizeString(liveProbeEvidence?.failureKind, ""),
+        reason: normalizeString(liveProbeEvidence?.reason, ""),
+        scope: isPlainObject(liveProbeEvidence?.scope)
+          ? {
+              profileMatches: liveProbeEvidence.scope.profileMatches === true,
+              accountMatches: liveProbeEvidence.scope.accountMatches === true,
+              endpointMatches: liveProbeEvidence.scope.endpointMatches === true,
+              requestShapeMatches: liveProbeEvidence.scope.requestShapeMatches === true,
+              modelMatches: liveProbeEvidence.scope.modelMatches === true,
+              workspaceMatches: liveProbeEvidence.scope.workspaceMatches === true,
+              versionMatches: liveProbeEvidence.scope.versionMatches === true,
+            }
+          : {
+              profileMatches: false,
+              accountMatches: false,
+              endpointMatches: false,
+              requestShapeMatches: false,
+              modelMatches: false,
+              workspaceMatches: false,
+              versionMatches: false,
+            },
+        rawTokensExposed: false,
+        rawBackendFramesExposed: false,
+      },
       transport: "direct-live-text",
       appServerRequired: false,
       toolsEnabled: false,
@@ -169,7 +209,7 @@ function buildDirectRuntimeStatus(options = {}) {
     transport: {
       kind: "sse",
       endpoint: "chatgpt-codex-responses",
-      liveProbed: false,
+      liveProbed: Boolean(liveProbeEvidence?.usable),
       runnable: liveTextRuntimeAvailable && liveTextStatus.turnRunnable === true,
     },
     textProbe: {
@@ -206,7 +246,7 @@ function buildDirectRuntimeStatus(options = {}) {
       canCompact: false,
     },
     models: {
-      source: "static-baseline",
+      source: liveTextRuntimeAvailable ? normalizeString(liveTextStatus.modelSource, "static-baseline") : "static-baseline",
       selectorEnabled: false,
       sourceVisible: true,
       ids: modelEntries.map((model) => model.id),

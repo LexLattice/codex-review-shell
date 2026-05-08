@@ -54,7 +54,16 @@ const {
   DirectLiveTextSurfaceSession,
 } = require("../src/main/direct/controller/live-text-controller");
 const {
+  FAKE_SMOKE_SOURCE,
+  FIXED_LIVE_TEXT_PROBE_PROMPT_CLASS,
+  DirectLiveProbeEvidenceStore,
+  computedEvidenceStatus,
+  directTextRequestShapeHash,
+  endpointClass,
+} = require("../src/main/direct/probes/live-probe-evidence-store");
+const {
   DEFAULT_CODEX_RESPONSES_ENDPOINT,
+  DEFAULT_TEXT_PROBE_PROMPT,
   DIRECT_TOOL_CONTINUATION_RESULT_SCHEMA,
   DIRECT_TEXT_PROBE_RESULT_SCHEMA,
   buildTextOnlyProbeRequest,
@@ -654,6 +663,151 @@ try {
     () => candidateController.startThread({}, { project: liveProject }),
     "Expected live text thread start to require accepted or runtime-probed model evidence.",
   );
+
+  const promotionSse = [
+    "event: response.created",
+    "data: {\"response\":{\"id\":\"resp_live_probe_evidence\",\"model\":\"gpt-5.4\"}}",
+    "",
+    "event: response.output_text.delta",
+    "data: {\"item_id\":\"msg_live_probe_evidence\",\"delta\":\"direct evidence ok\"}",
+    "",
+    "event: response.completed",
+    "data: {\"response\":{\"id\":\"resp_live_probe_evidence\",\"status\":\"completed\",\"usage\":{\"input_tokens\":2,\"output_tokens\":3,\"total_tokens\":5}}}",
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
+  const promotionResult = await runTextOnlyDirectProbe({
+    endpoint: DEFAULT_CODEX_RESPONSES_ENDPOINT,
+    credentials: liveAuthStore.readCredentials(),
+    profileDoc,
+    model: "gpt-5.4",
+    prompt: DEFAULT_TEXT_PROBE_PROMPT,
+    fetchImpl: async () => textResponse(promotionSse, 200, { "content-type": "text/event-stream" }),
+  });
+  const liveProbeEvidenceRoot = path.join(liveTextControllerParent, "direct-probe-evidence");
+  const liveProbeEvidenceStore = new DirectLiveProbeEvidenceStore({
+    rootDir: liveProbeEvidenceRoot,
+    allowFakeEvidence: true,
+  });
+  const liveProbeContext = {
+    source: FAKE_SMOKE_SOURCE,
+    allowFakeEvidence: true,
+    profileDoc,
+    authStatus: liveAuthStore.readStatus(),
+    credentials: liveAuthStore.readCredentials(),
+    endpoint: DEFAULT_CODEX_RESPONSES_ENDPOINT,
+    model: "gpt-5.4",
+    project: liveProject,
+    prompt: DEFAULT_TEXT_PROBE_PROMPT,
+    promptClass: FIXED_LIVE_TEXT_PROBE_PROMPT_CLASS,
+    evidenceId: "live_probe_evidence_runtime_probed",
+    nowMs: Date.now(),
+  };
+  const recordedLiveProbe = liveProbeEvidenceStore.recordProbeResult(promotionResult, liveProbeContext);
+  assert(recordedLiveProbe.evidence.status === "runtime_probed", "Expected exact fake live probe evidence to persist as runtime_probed.");
+  assert(recordedLiveProbe.view.usable === true, "Expected exact fake live probe evidence to be usable in test mode.");
+  assert(recordedLiveProbe.evidence.result.assistantTextObserved === true, "Runtime-probed evidence must require non-empty assistant text.");
+  assert(recordedLiveProbe.evidence.result.usageSummary.observed === true, "Expected usage to be recorded as observed when provider emits usage.");
+  assert(directTextRequestShapeHash({ model: "gpt-5.4" }) === directTextRequestShapeHash({ model: "gpt-5.5" }), "Request-shape hash must not include model identity.");
+  assert(endpointClass(DEFAULT_CODEX_RESPONSES_ENDPOINT) === "chatgpt-codex-responses", "Expected default direct endpoint class.");
+  assert(endpointClass("https://example.invalid/custom/responses") === "custom", "Expected custom endpoints to use a distinct endpoint class.");
+
+  const liveProbeResolved = liveProbeEvidenceStore.resolveModelEvidence(liveProbeContext);
+  assert(liveProbeResolved.accepted === true, "Expected matching live probe evidence to resolve as accepted.");
+  assert(liveProbeResolved.modelSource === "live-probe", "Expected matching live probe evidence source.");
+  assert(liveProbeResolved.liveProbeEvidence.scope.accountMatches === true, "Expected live probe evidence to be account-scoped.");
+  assert(liveProbeResolved.liveProbeEvidence.scope.workspaceMatches === true, "Expected live probe evidence to be workspace-scoped.");
+
+  const evidenceBackedController = new DirectLiveTextController({
+    sessionStore: liveSessionStore,
+    profileDoc,
+    authStore: liveAuthStore,
+    modelEvidenceResolver: (context) => liveProbeEvidenceStore.resolveModelEvidence(context),
+    fetchImpl: async () => textResponse(promotionSse, 200, { "content-type": "text/event-stream" }),
+  });
+  const evidenceBackedStatus = evidenceBackedController.statusForProject(liveProject);
+  assert(evidenceBackedStatus.status === "ready", "Expected live probe evidence to unlock the candidate-profile live text controller.");
+  assert(evidenceBackedStatus.modelSource === "live-probe", "Expected live probe evidence to drive model source.");
+  assert(evidenceBackedStatus.modelEvidenceState === "runtime_probed", "Expected live probe evidence state to be runtime_probed.");
+  assert(evidenceBackedStatus.liveProbeEvidence.usable === true, "Expected controller status to expose renderer-safe live evidence view.");
+
+  const strictEvidenceStore = new DirectLiveProbeEvidenceStore({ rootDir: liveProbeEvidenceRoot });
+  const { allowFakeEvidence: _allowFakeEvidence, source: _fakeSource, evidenceId: _fakeEvidenceId, ...normalResolverContext } = liveProbeContext;
+  const strictResolved = strictEvidenceStore.resolveModelEvidence(normalResolverContext);
+  assert(strictResolved.accepted === false, "Fake-smoke evidence must be ignored by the normal resolver.");
+  assert(strictResolved.liveProbeEvidence.status === "missing", "Normal resolver must hide fake-smoke evidence without explicit test mode.");
+
+  const modelMismatch = liveProbeEvidenceStore.resolveModelEvidence({
+    ...liveProbeContext,
+    model: "gpt-5.5",
+  });
+  assert(modelMismatch.accepted === false, "Live probe evidence must not unlock a different model.");
+  assert(modelMismatch.liveProbeEvidence.status === "scope_mismatch", "Expected model mismatch to be reported as a scope mismatch.");
+
+  const expiredEvidenceStore = new DirectLiveProbeEvidenceStore({
+    rootDir: path.join(liveTextControllerParent, "expired-direct-probe-evidence"),
+    allowFakeEvidence: true,
+  });
+  const expiredRecorded = expiredEvidenceStore.recordProbeResult(promotionResult, {
+    ...liveProbeContext,
+    evidenceId: "live_probe_evidence_expired",
+    nowMs: 1_700_000_060_000,
+    ttlMs: 1,
+  });
+  assert(expiredRecorded.evidence.status === "runtime_probed", "Expired must remain a stored runtime_probed status.");
+  assert(computedEvidenceStatus(expiredRecorded.evidence, { nowMs: 1_700_000_061_000 }) === "expired", "Expected expiry to be computed from expiresAt.");
+  assert(expiredEvidenceStore.status({ nowMs: 1_700_000_061_000 }).latestStatus === "expired", "Expected store status to compute expiry from index entries.");
+  const expiredResolved = expiredEvidenceStore.resolveModelEvidence({
+    ...liveProbeContext,
+    nowMs: 1_700_000_061_000,
+  });
+  assert(expiredResolved.accepted === false, "Expired live probe evidence must not unlock runtime.");
+  assert(expiredResolved.liveProbeEvidence.status === "expired", "Expected expired evidence status to be computed.");
+
+  const nonRunnableEvidenceStore = new DirectLiveProbeEvidenceStore({
+    rootDir: path.join(liveTextControllerParent, "non-runnable-direct-probe-evidence"),
+    allowFakeEvidence: true,
+  });
+  const recordNonRunnableEvidence = (resultPatch, evidenceId) => nonRunnableEvidenceStore.recordProbeResult({
+    ...promotionResult,
+    ...resultPatch,
+  }, {
+    ...liveProbeContext,
+    evidenceId,
+  });
+  const unknownEvidence = recordNonRunnableEvidence({
+    unknownRawTypes: ["response.unexpected"],
+  }, "live_probe_evidence_unknown_event");
+  assert(unknownEvidence.view.usable === false, "Unknown raw events must not produce runnable evidence.");
+  assert(unknownEvidence.evidence.status === "candidate", "Unknown raw events should remain candidate evidence.");
+  const reasoningEvidence = recordNonRunnableEvidence({
+    normalizedEvents: [
+      ...promotionResult.normalizedEvents,
+      { type: "reasoning_delta", itemId: "reasoning_evidence", text: "hidden" },
+    ],
+  }, "live_probe_evidence_reasoning_event");
+  assert(reasoningEvidence.view.usable === false, "Reasoning deltas must not promote live text evidence in this bundle.");
+  assert(reasoningEvidence.evidence.status === "candidate", "Reasoning deltas should remain candidate evidence.");
+  const toolEvidence = recordNonRunnableEvidence({
+    normalizedEvents: [
+      ...promotionResult.normalizedEvents,
+      { type: "tool_call_started", itemId: "tool_evidence", callId: "call_evidence", name: "read_file" },
+    ],
+  }, "live_probe_evidence_tool_call");
+  assert(toolEvidence.view.usable === false, "Tool calls must not produce runnable text-only evidence.");
+  assert(toolEvidence.evidence.result.failureKind === "tool_call_detected", "Expected tool calls to be classified explicitly.");
+  const authFailureEvidence = recordNonRunnableEvidence({
+    ok: false,
+    terminal: { state: "failed", error: { code: "auth_error", message: "unauthorized" } },
+    response: { status: 401, ok: false, contentType: "application/json" },
+    normalizedEvents: [{ type: "auth_error", code: "auth_error", message: "unauthorized" }],
+    unknownRawTypes: [],
+  }, "live_probe_evidence_auth_failure");
+  assert(authFailureEvidence.view.usable === false, "Auth failures must not produce runnable evidence.");
+  assert(authFailureEvidence.evidence.status === "unstable", "Auth failures must not reject the model/request shape globally.");
+  assert(authFailureEvidence.evidence.result.failureKind === "auth", "Expected auth failure taxonomy.");
+
   const unauthController = new DirectLiveTextController({
     sessionStore: liveSessionStore,
     profileDoc: liveProfileDoc,
