@@ -1,5 +1,6 @@
 import nodeAssert from "node:assert/strict";
 import { createRequire } from "node:module";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -128,6 +129,10 @@ function base64UrlJson(value) {
 
 function syntheticJwt(payload) {
   return `${base64UrlJson({ alg: "none", typ: "JWT" })}.${base64UrlJson(payload)}.signature`;
+}
+
+function createHashForSmoke(value) {
+  return crypto.createHash("sha256").update(String(value || "")).digest("hex").slice(0, 20);
 }
 
 async function waitForCondition(callback, message, timeoutMs = 1_000) {
@@ -2599,6 +2604,8 @@ try {
   assert(checkpointSeed.seedShapeHash && checkpointSeed.seedShapeHash !== checkpointSeed.seedTextHash, "Expected seed shape hash to differ from seed text hash.");
   assert(checkpointSeed.requestShapeHash === checkpointContinuationRequestShapeHash(), "Expected checkpoint seed to carry canonical request-shape hash.");
   assert(checkpointSeed.seedText.includes("[IMPORTED TRANSCRIPT EVIDENCE - QUOTED]"), "Expected seed to frame imported transcript as quoted evidence.");
+  assert(checkpointSeed.seedText.includes("[BEGIN IMPORTED_TRANSCRIPT_EVIDENCE_"), "Expected seed to use stable per-message evidence delimiters.");
+  assert(!checkpointSeed.seedText.includes('"""'), "Expected checkpoint seed not to use fragile triple-quote delimiters.");
   assert(checkpointSeed.seedText.includes("[CURRENT USER INTENT]"), "Expected seed to include current intent section.");
   assert(!checkpointSeed.seedText.includes(controllerSourcePath), "Expected checkpoint seed not to include raw source path.");
   assert(checkpointSeed.excluded.importedSystemDeveloperPolicy === true, "Expected checkpoint seed to exclude imported runtime policy.");
@@ -2704,6 +2711,40 @@ try {
     assert(continuationRecord.state === "completed", "Expected continuation record to persist completed state.");
     assert(continuationRecord.previousResponseIdFromImportUsed === false, "Expected continuation record to deny imported continuity handles.");
     assert(continuationRecord.importedToolReplayAttempted === false, "Expected continuation record to deny imported tool replay.");
+
+    const failingContinuationController = new DirectImportController({
+      sessionStore: continuationStore,
+      liveTextController: () => ({
+        statusForProject: () => ({ status: "ready" }),
+        runImportCheckpointContinuation: async () => {
+          const error = new Error("simulated live controller loss");
+          error.code = "live_controller_lost";
+          throw error;
+        },
+      }),
+      checkpointContinuationEvidenceResolver: () => ({ accepted: true, status: "runtime_probed" }),
+      seedIntegritySecret: "smoke_checkpoint_seed_secret",
+    });
+    await assertRejects(
+      () => failingContinuationController.startCheckpointContinuation({ id: "project_clean_import" }, {
+        importId: continuationMaterialized.session.importLineage.importId,
+        clientCheckpointContinuationId: "client_checkpoint_partial",
+      }),
+      "Expected failing checkpoint continuation to reject.",
+    );
+    const partialContinuationId = `checkpoint_continuation_${createHashForSmoke(`${continuationMaterialized.session.importLineage.importId}:client_checkpoint_partial`)}`;
+    const failedPartialRecord = continuationStore.readImportContinuationArtifact(
+      continuationMaterialized.session.importLineage.importId,
+      partialContinuationId,
+      "continuation.json",
+    );
+    assert(failedPartialRecord.state === "failed", "Expected partial checkpoint continuation start to persist failed state.");
+    assert(failedPartialRecord.failure.kind === "live_controller_lost", "Expected partial checkpoint continuation failure kind to persist.");
+    const reusedFailedPartial = await failingContinuationController.startCheckpointContinuation({ id: "project_clean_import" }, {
+      importId: continuationMaterialized.session.importLineage.importId,
+      clientCheckpointContinuationId: "client_checkpoint_partial",
+    });
+    assert(reusedFailedPartial.reused === true && reusedFailedPartial.continuation.state === "failed", "Expected retry of failed partial continuation to return terminal failed snapshot.");
 
     const toolSse = [
       "event: response.created",

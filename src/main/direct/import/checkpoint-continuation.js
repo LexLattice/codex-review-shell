@@ -126,6 +126,18 @@ function truncateText(text, limit) {
   };
 }
 
+function quotedImportedMessageBlock(message = {}, text = "") {
+  const role = normalizeString(message.role, "message").replace(/[^A-Za-z0-9_-]+/g, "_");
+  const seq = Number(message.sourceSeq ?? 0);
+  const digest = sha256Hex(`${role}:${seq}:${text}`).slice(0, 16).toUpperCase();
+  const delimiter = `IMPORTED_TRANSCRIPT_EVIDENCE_${role.toUpperCase()}_${seq}_${digest}`;
+  return [
+    `[BEGIN ${delimiter}]`,
+    text,
+    `[END ${delimiter}]`,
+  ].join("\n");
+}
+
 function builtInContinuationIntent() {
   return [
     "Resume from this imported Codex checkpoint as a fresh direct text-only session.",
@@ -247,7 +259,7 @@ function buildDirectImportCheckpointSeed(input = {}, options = {}) {
     const truncated = truncateText(redactedText, MAX_CHECKPOINT_SEED_ITEM_CHARS);
     if (truncated.truncated) truncatedItemCount += 1;
     textChars += truncated.text.length;
-    lines.push(`[${message.role} seq ${Number(message.sourceSeq ?? 0)}] """\n${truncated.text}\n"""`);
+    lines.push(`[${message.role} seq ${Number(message.sourceSeq ?? 0)}]\n${quotedImportedMessageBlock(message, truncated.text)}`);
   }
   const promptClass = promptClassFor(userPromptText);
   const currentIntent = promptClass === FIXED_IMPORT_CHECKPOINT_PROMPT_CLASS
@@ -336,7 +348,12 @@ function buildDirectImportCheckpointSeed(input = {}, options = {}) {
     rawSourceSha256Exposed: false,
   };
   seed.seedShapeHash = sha256Hex(stableStringify(seedShapeInput(seed, options)));
-  const integritySecret = options.integritySecret || "direct-import-checkpoint-local-dev-secret";
+  const integritySecret = options.integritySecret;
+  if (!integritySecret) {
+    const error = new Error("Direct import checkpoint seed integrity requires a caller-provided secret.");
+    error.code = "checkpoint_seed_integrity_secret_required";
+    throw error;
+  }
   seed.integrity.digest = hmacSha256Hex(integritySecret, stableStringify({
     importId: seed.importId,
     checkpointId: seed.checkpointId,

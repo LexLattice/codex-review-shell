@@ -333,6 +333,29 @@ class DirectImportController {
     return `${normalizeString(projectId, "")}:${normalizeString(importId, "")}`;
   }
 
+  terminalContinuationState(value) {
+    return ["completed", "failed", "aborted", "manual_resume_required"].includes(normalizeString(value, ""));
+  }
+
+  failStaleContinuation(importId, continuationId, previous = {}, failureKind = "restart_interrupted_checkpoint_continuation") {
+    const now = new Date().toISOString();
+    const failed = {
+      ...previous,
+      state: "failed",
+      updatedAt: now,
+      failure: {
+        kind: failureKind,
+        message: "Checkpoint continuation did not reach a terminal state and requires a new explicit attempt.",
+        retryable: false,
+      },
+      terminalStateObserved: false,
+    };
+    if (this.sessionStore.writeImportContinuationArtifact) {
+      this.sessionStore.writeImportContinuationArtifact(importId, continuationId, "continuation.json", failed);
+    }
+    return failed;
+  }
+
   checkpointContinuationEvidence(project = {}, params = {}) {
     if (params.manualProbe === true || process.env.CODEX_DIRECT_IMPORT_CHECKPOINT_PROBE === "1") {
       return {
@@ -836,7 +859,12 @@ class DirectImportController {
     const previous = this.sessionStore.readImportContinuationArtifact
       ? this.sessionStore.readImportContinuationArtifact(importId, continuationId, "continuation.json")
       : null;
-    if (previous) return { ok: previous.state === "completed", reused: true, continuation: previous };
+    if (previous) {
+      const reusable = this.terminalContinuationState(previous.state)
+        ? previous
+        : this.failStaleContinuation(importId, continuationId, previous);
+      return { ok: reusable.state === "completed", reused: true, continuation: reusable };
+    }
     const run = this._startCheckpointContinuation(project, {
       ...params,
       importId,
@@ -912,46 +940,62 @@ class DirectImportController {
       previousResponseIdFromImportUsed: false,
       importedToolReplayAttempted: false,
     });
-    const result = await live.runImportCheckpointContinuation({
-      project,
-      seed,
-      continuationId: params.continuationId,
-      clientCheckpointContinuationId: params.clientCheckpointContinuationId,
-      parentImportLineage: recordBase.parentImportLineage,
-      model: params.model,
-    });
-    const terminalState = result.turnState || result.terminal?.state || "failed";
-    const completedAt = new Date().toISOString();
-    const finalRecord = {
-      ...recordBase,
-      state: terminalState === "completed" ? "completed" : "failed",
-      updatedAt: completedAt,
-      createdSessionId: result.sessionId || "",
-      createdTurnId: result.turnId || "",
-      model: normalizeString(result.model || params.model || seed.source?.model, ""),
-      failure: terminalState === "completed"
-        ? undefined
-        : {
-            kind: normalizeString(result.terminal?.error?.code || result.error?.code, "other"),
-            message: normalizeString(result.terminal?.error?.message || result.error?.message, "Checkpoint continuation failed."),
-            retryable: false,
-          },
-      terminalStateObserved: true,
-    };
-    this.sessionStore.writeImportContinuationArtifact(importId, params.continuationId, "continuation.json", finalRecord);
-    this.sessionStore.recoverImportIndex({ write: true });
-    return {
-      ok: finalRecord.state === "completed",
-      reused: false,
-      continuation: finalRecord,
-      seedPreview: rendererSafeCheckpointSeedPreview(seed, finalRecord.state === "completed" ? "" : finalRecord.failure?.kind || "failed"),
-      sessionId: result.sessionId,
-      turnId: result.turnId,
-      terminal: result.terminal || null,
-      rawPathExposed: false,
-      rawRecordsExposed: false,
-      rawSourceSha256Exposed: false,
-    };
+    try {
+      const result = await live.runImportCheckpointContinuation({
+        project,
+        seed,
+        continuationId: params.continuationId,
+        clientCheckpointContinuationId: params.clientCheckpointContinuationId,
+        parentImportLineage: recordBase.parentImportLineage,
+        model: params.model,
+      });
+      const terminalState = result.turnState || result.terminal?.state || "failed";
+      const completedAt = new Date().toISOString();
+      const finalRecord = {
+        ...recordBase,
+        state: terminalState === "completed" ? "completed" : "failed",
+        updatedAt: completedAt,
+        createdSessionId: result.sessionId || "",
+        createdTurnId: result.turnId || "",
+        model: normalizeString(result.model || params.model || seed.source?.model, ""),
+        failure: terminalState === "completed"
+          ? undefined
+          : {
+              kind: normalizeString(result.terminal?.error?.code || result.error?.code, "other"),
+              message: normalizeString(result.terminal?.error?.message || result.error?.message, "Checkpoint continuation failed."),
+              retryable: false,
+            },
+        terminalStateObserved: true,
+      };
+      this.sessionStore.writeImportContinuationArtifact(importId, params.continuationId, "continuation.json", finalRecord);
+      this.sessionStore.recoverImportIndex({ write: true });
+      return {
+        ok: finalRecord.state === "completed",
+        reused: false,
+        continuation: finalRecord,
+        seedPreview: rendererSafeCheckpointSeedPreview(seed, finalRecord.state === "completed" ? "" : finalRecord.failure?.kind || "failed"),
+        sessionId: result.sessionId,
+        turnId: result.turnId,
+        terminal: result.terminal || null,
+        rawPathExposed: false,
+        rawRecordsExposed: false,
+        rawSourceSha256Exposed: false,
+      };
+    } catch (error) {
+      const failed = {
+        ...recordBase,
+        state: "failed",
+        updatedAt: new Date().toISOString(),
+        failure: {
+          kind: normalizeString(error?.code, "other"),
+          message: normalizeString(error?.message, "Checkpoint continuation failed before terminal state."),
+          retryable: false,
+        },
+        terminalStateObserved: false,
+      };
+      this.sessionStore.writeImportContinuationArtifact(importId, params.continuationId, "continuation.json", failed);
+      throw error;
+    }
   }
 
   async hideImport(projectOrId, params = {}) {
