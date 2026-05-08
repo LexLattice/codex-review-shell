@@ -68,6 +68,19 @@ const state = {
   analyticsDashboard: null,
   analyticsDashboardStatus: "idle",
   selectedAnalyticsThreadKey: "",
+  directImportWorkbench: {
+    projectId: "",
+    requestGeneration: 0,
+    status: "idle",
+    sources: [],
+    imports: [],
+    report: null,
+    selectedHandleId: "",
+    selectedImportId: "",
+    selectedSessionId: "",
+    lastError: "",
+    includeHidden: false,
+  },
   surfaceEvents: {
     codex: { type: "idle" },
     chatgpt: { type: "idle" },
@@ -115,6 +128,8 @@ const state = {
     thread: 0,
     codexThreads: 0,
     recentThreads: 0,
+    directImports: 0,
+    directImportOperation: 0,
     analyticsThreads: 0,
     analyticsDetail: 0,
     workTree: 0,
@@ -135,10 +150,12 @@ const els = {
   activeThreadStatus: document.getElementById("activeThreadStatus"),
   overviewTabButton: document.getElementById("overviewTabButton"),
   threadsTabButton: document.getElementById("threadsTabButton"),
+  importsTabButton: document.getElementById("importsTabButton"),
   analyticsTabButton: document.getElementById("analyticsTabButton"),
   webTabButton: document.getElementById("webTabButton"),
   overviewTabPanel: document.getElementById("overviewTabPanel"),
   threadsTabPanel: document.getElementById("threadsTabPanel"),
+  importsTabPanel: document.getElementById("importsTabPanel"),
   analyticsTabPanel: document.getElementById("analyticsTabPanel"),
   webTabPanel: document.getElementById("webTabPanel"),
   projectList: document.getElementById("projectList"),
@@ -218,6 +235,17 @@ const els = {
   recentChatThreadList: document.getElementById("recentChatThreadList"),
   openThreadAttachButton: document.getElementById("openThreadAttachButton"),
   importRecentChatThreadButton: document.getElementById("importRecentChatThreadButton"),
+  directImportCount: document.getElementById("directImportCount"),
+  refreshDirectImportsButton: document.getElementById("refreshDirectImportsButton"),
+  chooseDirectImportFileButton: document.getElementById("chooseDirectImportFileButton"),
+  chooseDirectImportRootButton: document.getElementById("chooseDirectImportRootButton"),
+  directImportWorkspaceConfirmInput: document.getElementById("directImportWorkspaceConfirmInput"),
+  directImportHint: document.getElementById("directImportHint"),
+  directImportSourceCount: document.getElementById("directImportSourceCount"),
+  directImportSourceList: document.getElementById("directImportSourceList"),
+  directImportVisibleCount: document.getElementById("directImportVisibleCount"),
+  directImportList: document.getElementById("directImportList"),
+  directImportDetail: document.getElementById("directImportDetail"),
   analyticsThreadCount: document.getElementById("analyticsThreadCount"),
   updateAnalyticsButton: document.getElementById("updateAnalyticsButton"),
   analyticsHint: document.getElementById("analyticsHint"),
@@ -2018,6 +2046,7 @@ function renderMiddleTabs() {
   const tabs = [
     [els.overviewTabButton, els.overviewTabPanel, "overview"],
     [els.threadsTabButton, els.threadsTabPanel, "threads"],
+    [els.importsTabButton, els.importsTabPanel, "imports"],
     [els.analyticsTabButton, els.analyticsTabPanel, "analytics"],
     [els.webTabButton, els.webTabPanel, "web"],
   ];
@@ -2385,6 +2414,376 @@ function renderThreadsWorkbench() {
       ? `Link ${codexThread.title} to ${chatThread.title} for the selected lane.`
       : "Select one Codex thread and one ChatGPT project thread, then create or update a lane binding.";
   }
+}
+
+function importStateLabel(stateValue) {
+  const value = String(stateValue || "imported-readonly");
+  if (value === "checkpoint-validated" || value === "checkpointed-runnable") return "Checkpoint validated";
+  if (value === "checkpoint-candidate") return "Checkpoint candidate";
+  if (value === "imported-validation-failed") return "Validation failed";
+  if (value === "import-canceled") return "Canceled";
+  if (value === "imported-unvalidated") return "Unvalidated";
+  return "Imported read-only";
+}
+
+function importComposerReasonLabel(reason) {
+  if (reason === "live-continuation-not-implemented") return "live continuation not implemented";
+  if (reason === "checkpoint-validation-only") return "checkpoint validation only";
+  return "imported read-only";
+}
+
+function resetDirectImportWorkbench(projectId = activeProject()?.id || "") {
+  state.directImportWorkbench = {
+    projectId,
+    requestGeneration: Number(state.directImportWorkbench?.requestGeneration || 0) + 1,
+    status: "idle",
+    sources: [],
+    imports: [],
+    report: null,
+    selectedHandleId: "",
+    selectedImportId: "",
+    selectedSessionId: "",
+    lastError: "",
+    includeHidden: false,
+  };
+}
+
+function selectedDirectImportSource() {
+  const handleId = state.directImportWorkbench.selectedHandleId;
+  return (state.directImportWorkbench.sources || []).find((source) => source.handleId === handleId) || null;
+}
+
+function selectedDirectImportEntry() {
+  const importId = state.directImportWorkbench.selectedImportId;
+  return (state.directImportWorkbench.imports || []).find((entry) => entry.importId === importId) || null;
+}
+
+function updateDirectImportHint() {
+  if (!els.directImportHint) return;
+  const workbench = state.directImportWorkbench;
+  const runtimeImports = state.directRuntimeStatus?.imports || {};
+  if (workbench.status === "loading") {
+    els.directImportHint.textContent = "Loading import evidence from the direct session store.";
+    return;
+  }
+  if (workbench.status === "working") {
+    els.directImportHint.textContent = "Import operation is running in the main process; raw source paths remain private.";
+    return;
+  }
+  if (workbench.lastError) {
+    els.directImportHint.textContent = workbench.lastError;
+    return;
+  }
+  const visibleCount = (workbench.imports || []).length || Number(runtimeImports.importedSessionCount || 0);
+  const eligible = Number(runtimeImports.continuationEligibleCount || 0);
+  els.directImportHint.textContent = `${visibleCount} imported evidence session${visibleCount === 1 ? "" : "s"} · ${eligible} checkpoint validated · composer disabled for all imports.`;
+}
+
+function renderDirectImportSourceList() {
+  const list = els.directImportSourceList;
+  if (!list) return;
+  const sources = state.directImportWorkbench.sources || [];
+  els.directImportSourceCount.textContent = String(sources.length);
+  list.innerHTML = "";
+  if (!sources.length) {
+    list.innerHTML = `<div class="empty-state">No source selected. Choose a JSONL file or an explicit source root.</div>`;
+    return;
+  }
+  for (const source of sources) {
+    const row = document.createElement("article");
+    row.className = `thread-browser-item import-source-item${source.handleId === state.directImportWorkbench.selectedHandleId ? " active" : ""}`;
+    row.innerHTML = `
+      <div class="thread-topline">
+        <span class="role-badge"></span>
+        <strong class="truncate"></strong>
+      </div>
+      <span class="thread-meta truncate"></span>
+      <span class="thread-notes truncate"></span>
+      <div class="thread-actions">
+        <button class="ghost small inspect-import-source" type="button">Inspect</button>
+        <button class="primary small materialize-import-source" type="button">Import</button>
+      </div>
+    `;
+    row.querySelector(".role-badge").textContent = source.duplicateMatched ? "Existing source" : "Selected source";
+    row.querySelector("strong").textContent = source.sourceDisplayName || "Codex JSONL";
+    row.querySelector(".thread-meta").textContent = `${source.sourceRootDisplayName || "explicit root"} · ${formatBytes(source.sourceFileSizeBytes || 0)}`;
+    row.querySelector(".thread-notes").textContent = source.recordCount
+      ? `${source.recordCount} records · ${source.threadId || "thread unknown"}`
+      : source.expiresAt
+        ? `Handle expires ${formatTime(source.expiresAt)}`
+        : "Source handle is main-owned.";
+    row.addEventListener("click", () => {
+      state.directImportWorkbench.selectedHandleId = source.handleId || "";
+      state.directImportWorkbench.selectedImportId = "";
+      state.directImportWorkbench.report = null;
+      renderDirectImportWorkbench();
+    });
+    row.querySelector(".inspect-import-source").addEventListener("click", (event) => {
+      event.stopPropagation();
+      inspectDirectImportSource(source.handleId).catch((error) => setLastEvent(`Import inspect failed: ${error.message}`));
+    });
+    row.querySelector(".materialize-import-source").addEventListener("click", (event) => {
+      event.stopPropagation();
+      materializeSelectedDirectImportSource(source.handleId).catch((error) => setLastEvent(`Import failed: ${error.message}`));
+    });
+    list.appendChild(row);
+  }
+}
+
+function renderDirectImportList() {
+  const list = els.directImportList;
+  if (!list) return;
+  const entries = state.directImportWorkbench.imports || [];
+  els.directImportVisibleCount.textContent = String(entries.length);
+  els.directImportCount.textContent = String(entries.length);
+  list.innerHTML = "";
+  if (state.directImportWorkbench.status === "loading") {
+    list.innerHTML = `<div class="empty-state">Loading imported sessions…</div>`;
+    return;
+  }
+  if (!entries.length) {
+    list.innerHTML = `<div class="empty-state">No materialized imports yet. Importing creates read-only local evidence only.</div>`;
+    return;
+  }
+  for (const entry of entries) {
+    const row = document.createElement("article");
+    row.className = `thread-browser-item import-session-item${entry.importId === state.directImportWorkbench.selectedImportId ? " active" : ""}`;
+    row.innerHTML = `
+      <div class="thread-topline">
+        <span class="role-badge"></span>
+        <strong class="truncate"></strong>
+      </div>
+      <span class="thread-meta truncate"></span>
+      <span class="thread-notes truncate"></span>
+      <div class="thread-actions">
+        <button class="ghost small open-import-report" type="button">Report</button>
+        <button class="danger small hide-import-record" type="button">Hide</button>
+      </div>
+    `;
+    row.querySelector(".role-badge").textContent = importStateLabel(entry.state);
+    row.querySelector("strong").textContent = entry.rendererSafeSession?.title || entry.sourceDisplayName || "Imported Codex session";
+    row.querySelector(".thread-meta").textContent = `${entry.threadId || "thread unknown"} · ${entry.recoveryState || "healthy"}`;
+    const composer = entry.composer || entry.rendererSafeSession?.composer || { enabled: false, reason: "imported-readonly" };
+    row.querySelector(".thread-notes").textContent = `Composer ${composer.enabled ? "enabled" : "disabled"} · ${importComposerReasonLabel(composer.reason)}`;
+    row.addEventListener("click", () => selectDirectImport(entry.importId).catch((error) => setLastEvent(`Import report load failed: ${error.message}`)));
+    row.querySelector(".open-import-report").addEventListener("click", (event) => {
+      event.stopPropagation();
+      selectDirectImport(entry.importId).catch((error) => setLastEvent(`Import report load failed: ${error.message}`));
+    });
+    row.querySelector(".hide-import-record").addEventListener("click", (event) => {
+      event.stopPropagation();
+      hideDirectImport(entry.importId).catch((error) => setLastEvent(`Hide import failed: ${error.message}`));
+    });
+    list.appendChild(row);
+  }
+}
+
+function renderImportGateList(container, gates = {}) {
+  const rows = Object.entries(gates || {});
+  if (!rows.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "No gate data recorded.";
+    container.appendChild(empty);
+    return;
+  }
+  const list = document.createElement("div");
+  list.className = "import-gate-list";
+  for (const [key, value] of rows) {
+    const row = document.createElement("div");
+    row.className = "import-gate-row";
+    const name = document.createElement("span");
+    name.textContent = key.replace(/([A-Z])/g, " $1").toLowerCase();
+    const stateNode = document.createElement("span");
+    stateNode.className = `pill ${value ? "" : "subtle"}`;
+    stateNode.textContent = value ? "pass" : "blocked";
+    row.append(name, stateNode);
+    list.appendChild(row);
+  }
+  container.appendChild(list);
+}
+
+function renderProblemList(container, title, entries = []) {
+  const section = document.createElement("section");
+  section.className = "import-problem-section";
+  const heading = document.createElement("h4");
+  heading.textContent = title;
+  section.appendChild(heading);
+  if (!entries.length) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = "None recorded.";
+    section.appendChild(empty);
+  } else {
+    for (const entry of entries) {
+      const item = document.createElement("div");
+      item.className = "import-problem-item";
+      const code = document.createElement("span");
+      code.className = "role-badge";
+      code.textContent = entry.code || "unknown";
+      const message = document.createElement("span");
+      message.textContent = entry.message || entry.code || "Import issue";
+      item.append(code, message);
+      section.appendChild(item);
+    }
+  }
+  container.appendChild(section);
+}
+
+function rendererTextFromImportItem(item = {}) {
+  if (typeof item.text === "string") return item.text;
+  if (Array.isArray(item.content)) {
+    return item.content
+      .map((entry) => (typeof entry?.text === "string" ? entry.text : ""))
+      .filter(Boolean)
+      .join("\n");
+  }
+  return "";
+}
+
+function renderImportTranscript(container, session = {}) {
+  const items = Array.isArray(session.transcriptItems) ? session.transcriptItems : [];
+  const transcript = document.createElement("div");
+  transcript.className = "import-transcript";
+  if (!items.length) {
+    transcript.innerHTML = `<div class="empty-state">No renderer-safe transcript items were materialized.</div>`;
+    container.appendChild(transcript);
+    return;
+  }
+  for (const item of items) {
+    const row = document.createElement("article");
+    row.className = "import-transcript-item";
+    const role = item.type === "agentMessage" ? "assistant" : item.type === "userMessage" ? "user" : (item.role || "evidence");
+    const heading = document.createElement("div");
+    heading.className = "thread-topline";
+    const badge = document.createElement("span");
+    badge.className = "role-badge";
+    badge.textContent = role;
+    const timestamp = document.createElement("strong");
+    timestamp.className = "truncate";
+    timestamp.textContent = item.sourceTimestamp ? formatTime(item.sourceTimestamp) : `seq ${Number(item.sourceSeq ?? 0)}`;
+    heading.append(badge, timestamp);
+    const body = document.createElement("pre");
+    body.textContent = rendererTextFromImportItem(item) || "[no display text]";
+    row.append(heading, body);
+    transcript.appendChild(row);
+  }
+  container.appendChild(transcript);
+}
+
+function renderDirectImportDetail() {
+  const detail = els.directImportDetail;
+  if (!detail) return;
+  detail.innerHTML = "";
+  const selectedSource = selectedDirectImportSource();
+  const selectedEntry = selectedDirectImportEntry();
+  const report = state.directImportWorkbench.report;
+
+  if (selectedSource && !selectedEntry) {
+    const header = document.createElement("section");
+    header.className = "import-detail-header";
+    header.innerHTML = `
+      <p class="eyebrow">Selected source</p>
+      <h3></h3>
+      <p class="muted"></p>
+      <div class="direct-auth-status">
+        <span class="pill subtle">raw path hidden</span>
+        <span class="pill subtle">raw records hidden</span>
+        <span class="pill subtle">source hash hidden</span>
+      </div>
+    `;
+    header.querySelector("h3").textContent = selectedSource.sourceDisplayName || "Codex JSONL";
+    header.querySelector(".muted").textContent = selectedSource.recordCount
+      ? `${selectedSource.recordCount} records · ${selectedSource.threadId || "thread unknown"}`
+      : `${selectedSource.sourceRootDisplayName || "explicit root"} · inspect before materialization if you need counts.`;
+    const actions = document.createElement("div");
+    actions.className = "heading-actions";
+    const inspectButton = document.createElement("button");
+    inspectButton.className = "ghost small";
+    inspectButton.type = "button";
+    inspectButton.textContent = "Inspect";
+    inspectButton.addEventListener("click", () => inspectDirectImportSource(selectedSource.handleId).catch((error) => setLastEvent(`Import inspect failed: ${error.message}`)));
+    const importButton = document.createElement("button");
+    importButton.className = "primary small";
+    importButton.type = "button";
+    importButton.textContent = "Import read-only";
+    importButton.addEventListener("click", () => materializeSelectedDirectImportSource(selectedSource.handleId).catch((error) => setLastEvent(`Import failed: ${error.message}`)));
+    actions.append(inspectButton, importButton);
+    header.appendChild(actions);
+    detail.appendChild(header);
+    return;
+  }
+
+  if (!selectedEntry) {
+    detail.innerHTML = `<div class="empty-state">Select a source or imported session. This workbench never starts direct continuation requests.</div>`;
+    return;
+  }
+
+  const session = selectedEntry.rendererSafeSession || {};
+  const header = document.createElement("section");
+  header.className = "import-detail-header";
+  const eyebrow = document.createElement("p");
+  eyebrow.className = "eyebrow";
+  eyebrow.textContent = importStateLabel(selectedEntry.state);
+  const title = document.createElement("h3");
+  title.textContent = session.title || selectedEntry.sourceDisplayName || "Imported Codex session";
+  const meta = document.createElement("p");
+  meta.className = "muted";
+  const composer = selectedEntry.composer || session.composer || { enabled: false, reason: "imported-readonly" };
+  meta.textContent = `Composer disabled · ${importComposerReasonLabel(composer.reason)} · continuation runnable now: no`;
+  const badges = document.createElement("div");
+  badges.className = "direct-auth-status";
+  for (const label of session.labels || ["Imported read-only", "Continuation not started", "Composer disabled"]) {
+    const badge = document.createElement("span");
+    badge.className = "pill subtle";
+    badge.textContent = label;
+    badges.appendChild(badge);
+  }
+  header.append(eyebrow, title, meta, badges);
+  detail.appendChild(header);
+
+  if (report) {
+    const summary = document.createElement("section");
+    summary.className = "import-report-summary";
+    const counts = report.counts || {};
+    summary.innerHTML = `
+      <div class="analytics-summary-strip">
+        <div class="analytics-metric-card"><span class="metric-key">Records</span><span class="metric-value"></span><span class="metric-evidence">source evidence</span></div>
+        <div class="analytics-metric-card"><span class="metric-key">Blockers</span><span class="metric-value"></span><span class="metric-evidence">validation report</span></div>
+        <div class="analytics-metric-card"><span class="metric-key">Warnings</span><span class="metric-value"></span><span class="metric-evidence">validation report</span></div>
+      </div>
+    `;
+    const values = summary.querySelectorAll(".metric-value");
+    values[0].textContent = String(counts.records || selectedEntry.recordCount || 0);
+    values[1].textContent = String((report.blockers || []).length);
+    values[2].textContent = String((report.warnings || []).length);
+    detail.appendChild(summary);
+
+    const gates = document.createElement("section");
+    gates.className = "import-report-section";
+    const gatesHeading = document.createElement("h4");
+    gatesHeading.textContent = "Validation gates";
+    gates.appendChild(gatesHeading);
+    renderImportGateList(gates, report.gates || {});
+    detail.appendChild(gates);
+
+    renderProblemList(detail, "Blockers", report.blockers || []);
+    renderProblemList(detail, "Warnings", report.warnings || []);
+  }
+
+  renderImportTranscript(detail, session);
+}
+
+function renderDirectImportWorkbench() {
+  if (!els.directImportDetail) return;
+  updateDirectImportHint();
+  const working = ["loading", "working"].includes(state.directImportWorkbench.status);
+  if (els.refreshDirectImportsButton) els.refreshDirectImportsButton.disabled = working;
+  if (els.chooseDirectImportFileButton) els.chooseDirectImportFileButton.disabled = working;
+  if (els.chooseDirectImportRootButton) els.chooseDirectImportRootButton.disabled = working;
+  renderDirectImportSourceList();
+  renderDirectImportList();
+  renderDirectImportDetail();
 }
 
 function renderHandoffTargetSelect() {
@@ -2784,6 +3183,7 @@ function render() {
   renderSelectedProject();
   renderThreadDeck();
   renderThreadsWorkbench();
+  renderDirectImportWorkbench();
   renderAnalyticsPanel();
   renderHandoffTargetSelect();
   renderPromptPreview();
@@ -3031,6 +3431,212 @@ async function selectAnalyticsThread(threadKey) {
   renderAnalyticsPanel();
 }
 
+async function loadDirectImports(options = {}) {
+  const project = activeProject();
+  if (!project || !bridge.listDirectImports) return;
+  const requestVersion = nextRequestVersion("directImports");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  state.directImportWorkbench.status = options?.refresh || state.directImportWorkbench.status === "idle"
+    ? "loading"
+    : state.directImportWorkbench.status || "loading";
+  state.directImportWorkbench.lastError = "";
+  renderDirectImportWorkbench();
+  try {
+    const result = await bridge.listDirectImports(project.id, { includeHidden: Boolean(state.directImportWorkbench.includeHidden) });
+    if (isRequestStale("directImports", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directImportWorkbench.projectId = project.id;
+    state.directImportWorkbench.imports = Array.isArray(result?.entries) ? result.entries : [];
+    state.directImportWorkbench.status = "loaded";
+    if (state.directImportWorkbench.selectedImportId &&
+      !state.directImportWorkbench.imports.find((entry) => entry.importId === state.directImportWorkbench.selectedImportId)) {
+      state.directImportWorkbench.selectedImportId = "";
+      state.directImportWorkbench.selectedSessionId = "";
+      state.directImportWorkbench.report = null;
+    }
+  } catch (error) {
+    if (isRequestStale("directImports", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directImportWorkbench.status = "error";
+    state.directImportWorkbench.lastError = `Import list failed: ${error.message}`;
+  }
+  if (isRequestStale("directImports", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+  renderDirectImportWorkbench();
+  await refreshDirectRuntimeStatus(project.id);
+}
+
+async function chooseDirectImportFile() {
+  const project = activeProject();
+  if (!project || !bridge.chooseDirectImportSourceFile) return;
+  const requestVersion = nextRequestVersion("directImportOperation");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  state.directImportWorkbench.status = "working";
+  state.directImportWorkbench.lastError = "";
+  renderDirectImportWorkbench();
+  try {
+    const result = await bridge.chooseDirectImportSourceFile(project.id);
+    if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    if (!result?.ok || result.canceled) {
+      state.directImportWorkbench.status = "loaded";
+      renderDirectImportWorkbench();
+      return;
+    }
+    const source = result.source;
+    state.directImportWorkbench.sources = source ? [source, ...state.directImportWorkbench.sources.filter((entry) => entry.handleId !== source.handleId)] : state.directImportWorkbench.sources;
+    state.directImportWorkbench.selectedHandleId = source?.handleId || "";
+    state.directImportWorkbench.selectedImportId = "";
+    state.directImportWorkbench.report = null;
+    state.directImportWorkbench.status = "loaded";
+    setLastEvent(`Selected import source: ${source?.sourceDisplayName || "Codex JSONL"}.`);
+  } catch (error) {
+    if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directImportWorkbench.status = "error";
+    state.directImportWorkbench.lastError = `Choose source failed: ${error.message}`;
+  }
+  renderDirectImportWorkbench();
+}
+
+async function chooseDirectImportRoot() {
+  const project = activeProject();
+  if (!project || !bridge.chooseDirectImportSourceRoot) return;
+  const requestVersion = nextRequestVersion("directImportOperation");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  state.directImportWorkbench.status = "working";
+  state.directImportWorkbench.lastError = "";
+  renderDirectImportWorkbench();
+  try {
+    const result = await bridge.chooseDirectImportSourceRoot(project.id);
+    if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    if (!result?.ok || result.canceled) {
+      state.directImportWorkbench.status = "loaded";
+      renderDirectImportWorkbench();
+      return;
+    }
+    state.directImportWorkbench.sources = Array.isArray(result.sources) ? result.sources : [];
+    state.directImportWorkbench.selectedHandleId = state.directImportWorkbench.sources[0]?.handleId || "";
+    state.directImportWorkbench.selectedImportId = "";
+    state.directImportWorkbench.report = null;
+    state.directImportWorkbench.status = "loaded";
+    setLastEvent(`Import source root loaded: ${state.directImportWorkbench.sources.length} JSONL source(s).`);
+  } catch (error) {
+    if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directImportWorkbench.status = "error";
+    state.directImportWorkbench.lastError = `Choose root failed: ${error.message}`;
+  }
+  renderDirectImportWorkbench();
+}
+
+async function inspectDirectImportSource(handleId) {
+  const project = activeProject();
+  const sourceHandleId = String(handleId || state.directImportWorkbench.selectedHandleId || "").trim();
+  if (!project || !sourceHandleId || !bridge.inspectDirectImportSource) return;
+  const requestVersion = nextRequestVersion("directImportOperation");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  state.directImportWorkbench.status = "working";
+  state.directImportWorkbench.lastError = "";
+  renderDirectImportWorkbench();
+  try {
+    const result = await bridge.inspectDirectImportSource(project.id, { handleId: sourceHandleId });
+    if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    if (result?.source) {
+      state.directImportWorkbench.sources = state.directImportWorkbench.sources.map((source) =>
+        source.handleId === sourceHandleId ? { ...source, ...result.source } : source
+      );
+      state.directImportWorkbench.selectedHandleId = sourceHandleId;
+    }
+    state.directImportWorkbench.status = "loaded";
+    setLastEvent(`Inspected import source: ${result?.source?.recordCount || 0} record(s).`);
+  } catch (error) {
+    if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directImportWorkbench.status = "error";
+    state.directImportWorkbench.lastError = `Inspect failed: ${error.message}`;
+  }
+  renderDirectImportWorkbench();
+}
+
+async function materializeSelectedDirectImportSource(handleId) {
+  const project = activeProject();
+  const sourceHandleId = String(handleId || state.directImportWorkbench.selectedHandleId || "").trim();
+  if (!project || !sourceHandleId || !bridge.materializeDirectImport) return;
+  const requestVersion = nextRequestVersion("directImportOperation");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  state.directImportWorkbench.status = "working";
+  state.directImportWorkbench.lastError = "";
+  renderDirectImportWorkbench();
+  try {
+    const result = await bridge.materializeDirectImport(project.id, {
+      handleId: sourceHandleId,
+      userConfirmedWorkspace: Boolean(els.directImportWorkspaceConfirmInput?.checked),
+    });
+    if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    const safeSession = result?.rendererSafeSession || {};
+    state.directImportWorkbench.selectedImportId = safeSession.importId || result?.session?.importLineage?.importId || "";
+    state.directImportWorkbench.selectedSessionId = safeSession.sessionId || result?.sessionId || "";
+    state.directImportWorkbench.selectedHandleId = "";
+    state.directImportWorkbench.report = null;
+    state.directImportWorkbench.status = "loaded";
+    setLastEvent(`Materialized read-only import: ${safeSession.title || result?.importState || "Codex JSONL"}.`);
+    await loadDirectImports({ refresh: true });
+    if (state.directImportWorkbench.selectedImportId) {
+      await selectDirectImport(state.directImportWorkbench.selectedImportId);
+    }
+  } catch (error) {
+    if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directImportWorkbench.status = "error";
+    state.directImportWorkbench.lastError = `Import failed: ${error.message}`;
+    renderDirectImportWorkbench();
+  }
+}
+
+async function selectDirectImport(importId) {
+  const project = activeProject();
+  const id = String(importId || "").trim();
+  if (!project || !id) return;
+  state.directImportWorkbench.selectedImportId = id;
+  state.directImportWorkbench.selectedHandleId = "";
+  const entry = selectedDirectImportEntry();
+  state.directImportWorkbench.selectedSessionId = entry?.materializedSessionId || entry?.rendererSafeSession?.sessionId || "";
+  state.directImportWorkbench.report = null;
+  renderDirectImportWorkbench();
+  if (!bridge.readDirectImportReport) return;
+  const requestVersion = nextRequestVersion("directImportOperation");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  try {
+    const result = await bridge.readDirectImportReport(project.id, id);
+    if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directImportWorkbench.report = result?.report || null;
+  } catch (error) {
+    if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directImportWorkbench.lastError = `Report load failed: ${error.message}`;
+  }
+  renderDirectImportWorkbench();
+}
+
+async function hideDirectImport(importId) {
+  const project = activeProject();
+  const id = String(importId || "").trim();
+  if (!project || !id || !bridge.hideDirectImport) return;
+  const requestVersion = nextRequestVersion("directImportOperation");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  state.directImportWorkbench.status = "working";
+  renderDirectImportWorkbench();
+  try {
+    await bridge.hideDirectImport(project.id, id);
+    if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    if (state.directImportWorkbench.selectedImportId === id) {
+      state.directImportWorkbench.selectedImportId = "";
+      state.directImportWorkbench.selectedSessionId = "";
+      state.directImportWorkbench.report = null;
+    }
+    state.directImportWorkbench.status = "loaded";
+    await loadDirectImports({ refresh: true });
+    setLastEvent("Import hidden. Source JSONL was not modified.");
+  } catch (error) {
+    if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directImportWorkbench.status = "error";
+    state.directImportWorkbench.lastError = `Hide failed: ${error.message}`;
+    renderDirectImportWorkbench();
+  }
+}
+
 async function loadDirectAuthSettings() {
   if (!bridge?.getDirectAuthSettings) return;
   state.directAuthLoading = true;
@@ -3181,6 +3787,8 @@ async function selectProject(projectId) {
   nextRequestVersion("thread");
   nextRequestVersion("codexThreads");
   nextRequestVersion("recentThreads");
+  nextRequestVersion("directImports");
+  nextRequestVersion("directImportOperation");
   nextRequestVersion("analyticsThreads");
   nextRequestVersion("analyticsDetail");
   nextRequestVersion("workTree");
@@ -3212,6 +3820,7 @@ async function selectProject(projectId) {
   state.analyticsStatus = "idle";
   state.analyticsDashboard = null;
   state.analyticsDashboardStatus = "idle";
+  resetDirectImportWorkbench(projectId);
   state.activeChatgptThreadBrowserTab = "project";
   state.subAgentGraph = null;
   state.selectedSubAgentThreadId = "";
@@ -3221,6 +3830,9 @@ async function selectProject(projectId) {
   const project = activeProject();
   if (!project || project.id !== projectId || isRequestStale("project", projectVersion)) return;
   await refreshDirectRuntimeStatus(project.id);
+  if (state.activeMiddleTab === "imports") {
+    await loadDirectImports({ refresh: false });
+  }
   if (project?.lastActiveBindingId) {
     const binding = laneBindingById(project, project.lastActiveBindingId);
     if (binding) populateBindingEditor(binding);
@@ -3807,6 +4419,7 @@ async function deleteThreadFromDrawer() {
 
 function setMiddleTab(tab) {
   if (tab === "threads") state.activeMiddleTab = "threads";
+  else if (tab === "imports") state.activeMiddleTab = "imports";
   else if (tab === "analytics") state.activeMiddleTab = "analytics";
   else if (tab === "web") state.activeMiddleTab = "web";
   else state.activeMiddleTab = "overview";
@@ -3815,6 +4428,11 @@ function setMiddleTab(tab) {
   if (state.activeMiddleTab === "analytics" && state.analyticsStatus === "idle") {
     loadAnalyticsThreads({ refresh: false }).catch((error) => {
       setLastEvent(`Analytics list load failed: ${error.message}`);
+    });
+  }
+  if (state.activeMiddleTab === "imports" && state.directImportWorkbench.status === "idle") {
+    loadDirectImports({ refresh: false }).catch((error) => {
+      setLastEvent(`Import list load failed: ${error.message}`);
     });
   }
   scheduleResizeBurst();
@@ -4339,6 +4957,7 @@ function bindEvents() {
   els.rightSubAgentsTabButton?.addEventListener("click", () => setRightPlaneTab("subagents"));
   els.overviewTabButton.addEventListener("click", () => setMiddleTab("overview"));
   els.threadsTabButton.addEventListener("click", () => setMiddleTab("threads"));
+  els.importsTabButton.addEventListener("click", () => setMiddleTab("imports"));
   els.analyticsTabButton.addEventListener("click", () => setMiddleTab("analytics"));
   els.webTabButton.addEventListener("click", () => setMiddleTab("web"));
   els.addProjectButton.addEventListener("click", () => openDrawer("new"));
@@ -4350,6 +4969,15 @@ function bindEvents() {
   els.chooseRepoButton.addEventListener("click", async () => {
     const selected = await bridge.chooseDirectory();
     if (selected) els.repoPathInput.value = selected;
+  });
+  els.refreshDirectImportsButton?.addEventListener("click", () => {
+    loadDirectImports({ refresh: true }).catch((error) => setLastEvent(`Import refresh failed: ${error.message}`));
+  });
+  els.chooseDirectImportFileButton?.addEventListener("click", () => {
+    chooseDirectImportFile().catch((error) => setLastEvent(`Choose import source failed: ${error.message}`));
+  });
+  els.chooseDirectImportRootButton?.addEventListener("click", () => {
+    chooseDirectImportRoot().catch((error) => setLastEvent(`Choose import root failed: ${error.message}`));
   });
   els.workspaceKindInput.addEventListener("change", updateWorkspaceFieldVisibility);
   els.projectChatgptThreadSelect.addEventListener("change", syncProjectChatgptUrlFromSelection);

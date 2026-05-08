@@ -101,6 +101,7 @@ function buildDirectRuntimeStatus(options = {}) {
   const profileDoc = isPlainObject(options.profileDoc) ? options.profileDoc : {};
   const legacySession = isPlainObject(options.legacySession) ? options.legacySession : null;
   const sessionStore = isPlainObject(options.sessionStore) ? options.sessionStore : null;
+  const imports = isPlainObject(options.imports) ? options.imports : {};
   const fixtureRuntime = isPlainObject(options.fixtureRuntime) ? options.fixtureRuntime : null;
   const liveTextRuntime = isPlainObject(options.liveTextRuntime) ? options.liveTextRuntime : null;
   const modelEntries = modelEntriesFromProfile(profileDoc);
@@ -240,6 +241,24 @@ function buildDirectRuntimeStatus(options = {}) {
       canResume: false,
       canPersist: Boolean(sessionStore?.available),
       canImportCodexAppServer: true,
+    },
+    imports: {
+      available: imports.available !== false,
+      sourceSelectionAvailable: imports.sourceSelectionAvailable !== false,
+      importedSessionCount: Number(imports.importedSessionCount || 0),
+      checkpointCandidateCount: Number(imports.checkpointCandidateCount || 0),
+      checkpointValidatedCount: Number(imports.checkpointValidatedCount || 0),
+      validationFailedCount: Number(imports.validationFailedCount || 0),
+      canceledCount: Number(imports.canceledCount || 0),
+      corruptedCount: Number(imports.corruptedCount || 0),
+      hiddenCount: Number(imports.hiddenCount || 0),
+      continuationEligibleCount: Number(imports.continuationEligibleCount || 0),
+      continuationRunnableNowCount: 0,
+      lastImportUpdatedAt: normalizeString(imports.lastImportUpdatedAt, ""),
+      rawPathsExposed: false,
+      rawRecordsExposed: false,
+      rawSourceSha256Exposed: false,
+      recovery: isPlainObject(imports.recovery) ? imports.recovery : {},
     },
     turns: {
       canStart: false,

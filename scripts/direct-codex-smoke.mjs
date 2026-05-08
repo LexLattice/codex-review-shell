@@ -301,6 +301,8 @@ assert(directRuntimeStatus.diagnostics.rawBackendFramesExposed === false, "Direc
 assert(directRuntimeStatus.textProbe.available === true, "Expected direct text probe to be advertised in direct mode.");
 assert(directRuntimeStatus.textProbe.runnable === false, "Text probe availability must not make normal direct turns runnable.");
 assert(directRuntimeStatus.textProbe.manualOnly === true, "Live text probe must remain manual-only.");
+assert(directRuntimeStatus.imports.continuationRunnableNowCount === 0, "Import status must never make continuation runnable now.");
+assert(directRuntimeStatus.imports.rawPathsExposed === false, "Import status must not expose raw source paths.");
 const directRuntimeStatusWithFixture = buildDirectRuntimeStatus({
   project: { surfaceBinding: { codex: { runtimeMode: "direct-experimental" } } },
   authStatus: { status: "authenticated", storageMode: "file" },
@@ -2508,6 +2510,8 @@ try {
   assert(materializedValidatedTurn.importState === "checkpoint-validated", "Expected validated import turn JSON to preserve import state.");
   const rendererSafeImport = buildRendererSafeImportSession(materializedValidatedSession);
   assert(rendererSafeImport.continuation.runnableNow === false, "Expected renderer-safe import projection not to mark runnable now.");
+  assert(rendererSafeImport.composer.enabled === false, "Expected renderer-safe import projection to disable composer.");
+  assert(rendererSafeImport.rawSourceSha256Exposed === false, "Expected renderer-safe import projection not to expose raw source digests.");
   assert(!JSON.stringify(rendererSafeImport).includes("/tmp/codex/history/thread_clean.jsonl"), "Expected renderer-safe import projection to omit raw source paths.");
   const recoveredImportArtifactIndex = importSessionStore.recoverImportIndex({ write: true });
   assert(recoveredImportArtifactIndex.imports.some((entry) => entry.importId === cleanValidation.lineage.importId), "Expected import artifact recovery to find clean import.");
@@ -2545,15 +2549,33 @@ try {
   const listedSources = await importController.listSources({ id: "project_controller", workspace: { kind: "local", localPath: "/tmp/workspace" } }, { sourceRoot: controllerSourceRoot });
   assert(listedSources.ok === true && listedSources.sources.length === 1, "Expected explicit source listing to find controller JSONL.");
   assert(listedSources.sources[0].sourcePath === "", "Expected renderer-safe source listing to omit private paths.");
-  const inspectedSource = await importController.inspectSource({ id: "project_controller" }, { sourcePath: controllerSourcePath });
-  assert(inspectedSource.source.sourceFileSha256.length === 64, "Expected controller inspect to compute source digest.");
+  assert(listedSources.sources[0].handleId, "Expected renderer-safe source listing to include an opaque source handle.");
+  assert(listedSources.sources[0].rawSourceSha256Exposed === false, "Expected renderer-safe source listing not to expose raw source digest.");
+  const inspectedSource = await importController.inspectSource({ id: "project_controller" }, { handleId: listedSources.sources[0].handleId });
+  assert(inspectedSource.source.sourceEvidenceKey.startsWith("source_"), "Expected controller inspect to expose only a local source evidence key.");
+  assert(inspectedSource.source.rawSourceSha256Exposed === false, "Expected controller inspect not to expose raw source digest.");
   const controllerMaterialized = await importController.materialize({ id: "project_controller", workspace: { kind: "local", localPath: "/tmp/workspace" } }, {
-    sourcePath: controllerSourcePath,
+    handleId: listedSources.sources[0].handleId,
     userConfirmedWorkspace: true,
   });
   assert(controllerMaterialized.importState === "checkpoint-validated", "Expected controller materialization to validate user-confirmed workspace import.");
   assert(controllerMaterialized.rendererSafeSession.continuation.runnableNow === false, "Expected controller renderer projection to remain non-runnable.");
   assert(controllerMaterialized.rendererSafeSession.source.sourceDisplayName === "thread_controller.jsonl", "Expected controller renderer projection source display name.");
+  assert(controllerMaterialized.rendererSafeSession.composer.enabled === false, "Expected controller renderer projection composer to stay disabled.");
+  const controllerImports = await importController.listImports({ id: "project_controller" });
+  assert(controllerImports.entries.some((entry) => entry.importId === controllerMaterialized.rendererSafeSession.importId), "Expected controller import list to include materialized import.");
+  assert(controllerImports.rawPathExposed === false && controllerImports.rawSourceSha256Exposed === false, "Expected controller import list to stay renderer-safe.");
+  const controllerReport = await importController.readReport({ id: "project_controller" }, { importId: controllerMaterialized.rendererSafeSession.importId });
+  assert(controllerReport.report.rawPathExposed === false, "Expected renderer-safe import report to omit raw paths.");
+  assert(!JSON.stringify(controllerReport.report).includes(controllerSourcePath), "Expected renderer-safe import report not to include the raw source path.");
+  const importStatus = importController.statusForProject({ id: "project_controller" });
+  assert(importStatus.importedSessionCount >= 1, "Expected import status to count materialized imports.");
+  assert(importStatus.continuationRunnableNowCount === 0, "Expected import status to keep continuation non-runnable now.");
+  const hiddenImport = await importController.hideImport({ id: "project_controller" }, { importId: controllerMaterialized.rendererSafeSession.importId });
+  assert(hiddenImport.hidden === true, "Expected controller hide to mark import hidden.");
+  const importsAfterHide = await importController.listImports({ id: "project_controller" });
+  assert(!importsAfterHide.entries.some((entry) => entry.importId === controllerMaterialized.rendererSafeSession.importId), "Expected hidden import to be omitted by default.");
+  await importController.unhideImport({ id: "project_controller" }, { importId: controllerMaterialized.rendererSafeSession.importId });
   const canceledImport = await importController.cancelImport({ id: "project_controller" }, { importId: "import_canceled_smoke" });
   assert(canceledImport.state === "import-canceled", "Expected controller cancel to write canceled import report.");
   const corruptImportDir = path.join(importStoreParent, "direct-sessions", "imports", "import_corrupt_smoke");

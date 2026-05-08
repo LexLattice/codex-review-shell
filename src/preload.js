@@ -56,6 +56,10 @@ contextBridge.exposeInMainWorld("workspaceShell", {
   completeDirectAuthLogin: (loginId, input) => ipcRenderer.invoke("direct-auth:complete-manual-login", { loginId, input }),
   logoutDirectAuth: () => ipcRenderer.invoke("direct-auth:logout"),
   getDirectRuntimeStatus: (projectId) => ipcRenderer.invoke("direct-runtime:status", { projectId }),
+  chooseDirectImportSourceFile: (projectId) =>
+    ipcRenderer.invoke("direct-import:choose-source-file", { projectId }),
+  chooseDirectImportSourceRoot: (projectId) =>
+    ipcRenderer.invoke("direct-import:choose-source-root", { projectId }),
   listDirectImportSources: (projectId, options = {}) =>
     ipcRenderer.invoke("direct-import:list-sources", { ...options, projectId }),
   inspectDirectImportSource: (projectId, options = {}) =>
@@ -66,8 +70,14 @@ contextBridge.exposeInMainWorld("workspaceShell", {
     ipcRenderer.invoke("direct-import:build-checkpoint", { ...options, projectId }),
   materializeDirectImport: (projectId, options = {}) =>
     ipcRenderer.invoke("direct-import:materialize", { ...options, projectId }),
+  listDirectImports: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-import:list-imports", { ...options, projectId }),
   readDirectImportReport: (projectId, importId) =>
     ipcRenderer.invoke("direct-import:read-report", { projectId, importId }),
+  hideDirectImport: (projectId, importId) =>
+    ipcRenderer.invoke("direct-import:hide", { projectId, importId }),
+  unhideDirectImport: (projectId, importId) =>
+    ipcRenderer.invoke("direct-import:unhide", { projectId, importId }),
   cancelDirectImport: (projectId, importId) =>
     ipcRenderer.invoke("direct-import:cancel", { projectId, importId }),
   dismissCodexComposerOverlay: (reason = "shell") => ipcRenderer.invoke("codex:dismiss-composer-overlay", { reason }),

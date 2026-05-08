@@ -1091,6 +1091,125 @@ button:active {
   min-height: 0;
 }
 
+.imports-card {
+  min-height: 0;
+}
+
+.imports-toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.imports-workspace-confirm {
+  margin-left: auto;
+  min-height: 30px;
+  color: var(--muted);
+}
+
+.imports-split {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.72fr) minmax(0, 1.28fr);
+  gap: 10px;
+  min-height: clamp(360px, 54vh, 740px);
+}
+
+.imports-list-column,
+.imports-detail {
+  min-height: 0;
+}
+
+.imports-list-column {
+  display: grid;
+  grid-template-rows: auto minmax(140px, 0.7fr) auto minmax(160px, 1fr);
+  gap: 8px;
+}
+
+.imports-subheading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.import-source-list,
+.import-session-list {
+  max-height: none;
+  min-height: 0;
+}
+
+.imports-detail {
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: rgba(5, 7, 11, 0.42);
+  padding: 10px;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.import-detail-header,
+.import-report-section,
+.import-problem-section,
+.import-transcript-item {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.import-report-summary {
+  display: grid;
+  gap: 8px;
+}
+
+.import-gate-list {
+  display: grid;
+  gap: 6px;
+}
+
+.import-gate-row,
+.import-problem-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  font-size: 11px;
+}
+
+.import-problem-item {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+}
+
+.import-problem-section h4,
+.import-report-section h4 {
+  margin: 0;
+  font-size: 12px;
+}
+
+.import-transcript {
+  display: grid;
+  gap: 8px;
+}
+
+.import-transcript-item pre {
+  max-height: 220px;
+  overflow: auto;
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .analytics-split {
   display: grid;
   grid-template-columns: minmax(220px, 0.7fr) minmax(0, 1.3fr);
