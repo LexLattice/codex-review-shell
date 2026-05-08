@@ -8,6 +8,11 @@ const {
   runPersistedReadOnlyToolContinuation,
   runTextOnlyDirectProbe,
 } = require("../transport/codex-responses-transport");
+const {
+  DIRECT_IMPORT_CHECKPOINT_REQUEST_SHAPE,
+  assistantTextFromNormalizedEvents,
+  checkpointTerminalFromEvents,
+} = require("../import/checkpoint-continuation");
 const { toolTranscriptItemFromObligation } = require("../session/session-store");
 const {
   approveReadOnlyToolObligation,
@@ -465,6 +470,165 @@ class DirectLiveTextController {
       model: normalizeString(model, session.model),
       messages: nextMessages,
     });
+  }
+
+  async runImportCheckpointContinuation(options = {}) {
+    const project = options.project || {};
+    const status = this.assertReady(project);
+    const seed = isPlainObject(options.seed) ? options.seed : null;
+    if (!seed?.seedText) throw new Error("Direct import checkpoint continuation requires a seed.");
+    const clientCheckpointContinuationId = normalizeString(options.clientCheckpointContinuationId, "");
+    if (!clientCheckpointContinuationId) {
+      const error = new Error("Direct import checkpoint continuation requires clientCheckpointContinuationId.");
+      error.code = "missing_client_checkpoint_continuation_id";
+      throw error;
+    }
+    const model = normalizeString(options.model, "") || status.model;
+    const session = this.sessionStore.createSession({
+      projectId: normalizeString(project.id || seed.projectId, ""),
+      workspace: isPlainObject(project.workspace) ? project.workspace : {},
+      workspaceDisplayPath: workspaceDisplayPath(project),
+      title: `Checkpoint continuation ${normalizeString(seed.source?.sourceDisplayName, seed.importId)}`,
+      model,
+      runtimeMode: "direct-experimental",
+      directTransport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
+      modelSource: status.modelSource,
+      modelEvidenceState: status.modelEvidenceState,
+      modelEvidenceId: normalizeString(status.evidenceId, ""),
+      profileSnapshotId: normalizeString(project.surfaceBinding?.codex?.profileId, ""),
+      sourceClass: "direct-import-checkpoint-continuation",
+      nativeDirectSession: true,
+      parentImportLineage: options.parentImportLineage || null,
+      checkpointContinuationId: normalizeString(options.continuationId, ""),
+      checkpointSeedId: normalizeString(seed.seedId, ""),
+      seedShapeHash: normalizeString(seed.seedShapeHash, ""),
+      requestShapeHash: normalizeString(seed.requestShapeHash, ""),
+      importedSessionId: normalizeString(seed.materializedSessionId, ""),
+      importedSessionReadOnly: true,
+    });
+    const requestBody = buildTextOnlyProbeRequest({
+      profileDoc: this.profileDoc,
+      model,
+      prompt: seed.seedText,
+      instructions: "You are Codex running a fresh direct checkpoint continuation from quoted imported transcript evidence. Do not request tools.",
+    });
+    const requestShape = {
+      ...requestShapeForDiagnostic(requestBody),
+      schema: DIRECT_IMPORT_CHECKPOINT_REQUEST_SHAPE,
+      seedShapeHash: seed.seedShapeHash,
+      requestShapeHash: seed.requestShapeHash,
+      previousResponseIdFromImportUsed: false,
+      importedToolReplayAttempted: false,
+    };
+    const turn = this.sessionStore.createTurn(session.sessionId, {
+      input: [{ role: "harness_checkpoint_seed", text: seed.seedText }],
+      model: requestBody.model,
+      clientTurnRequestId: clientCheckpointContinuationId,
+      requestShape,
+      sourceClass: "direct-import-checkpoint-continuation",
+      nativeDirectSession: true,
+      parentImportLineage: options.parentImportLineage || null,
+      checkpointContinuationId: normalizeString(options.continuationId, ""),
+      checkpointSeedId: normalizeString(seed.seedId, ""),
+      seedShapeHash: normalizeString(seed.seedShapeHash, ""),
+      importedSessionId: normalizeString(seed.materializedSessionId, ""),
+      importedSessionReadOnly: true,
+    });
+    this.sessionStore.updateTurnState(session.sessionId, turn.turnId, "request_built", {
+      requestShape,
+    }, options);
+
+    const callerLifecycle = options.onLifecycle;
+    const result = await runTextOnlyDirectProbe({
+      endpoint: this.endpoint || undefined,
+      authStore: this.currentAuthStore(),
+      refreshCredentials: this.refreshCredentials,
+      profileDoc: this.profileDoc,
+      model: requestBody.model,
+      prompt: seed.seedText,
+      instructions: requestBody.instructions,
+      fetchImpl: this.fetchImpl || undefined,
+      signal: options.signal,
+      onLifecycle: (event) => {
+        if (event.phase === "streaming") {
+          this.sessionStore.updateTurnState(session.sessionId, turn.turnId, "streaming", {
+            streamStartedAt: event.at,
+            responseStatus: event.status,
+            responseContentType: event.contentType,
+          }, options);
+        }
+        if (typeof callerLifecycle === "function") callerLifecycle(event);
+      },
+    });
+    this.sessionStore.writeDiagnostic(session.sessionId, "direct_import_checkpoint_continuation", {
+      ...result.diagnostic,
+      clientCheckpointContinuationId,
+      directTransport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
+      checkpointSeedId: seed.seedId,
+      seedShapeHash: seed.seedShapeHash,
+      rawBackendFramesExposed: false,
+      rawAuthHeadersExposed: false,
+    }, options);
+    if (result.normalizedEvents.length) {
+      this.sessionStore.appendNormalizedEvents(session.sessionId, turn.turnId, result.normalizedEvents, options);
+    }
+    const terminal = checkpointTerminalFromEvents(result.normalizedEvents, result.terminal || { state: result.ok ? "completed" : "failed", error: result.error || null });
+    const completedTurn = this.sessionStore.updateTurnState(session.sessionId, turn.turnId, terminal.state, {
+      ...(terminal.error ? { error: terminal.error } : {}),
+      responseId: result.responseId || "",
+      responseStatus: result.response?.status || 0,
+      responseContentType: result.response?.contentType || "",
+      sourceClass: "direct-import-checkpoint-continuation",
+      checkpointContinuationId: normalizeString(options.continuationId, ""),
+      checkpointSeedId: normalizeString(seed.seedId, ""),
+      seedShapeHash: normalizeString(seed.seedShapeHash, ""),
+    }, options);
+    const assistantText = assistantTextFromNormalizedEvents(result.normalizedEvents);
+    this.appendSessionTurn(
+      session.sessionId,
+      turn.turnId,
+      [
+        {
+          id: `${turn.turnId}_checkpoint_seed`,
+          type: "harnessCheckpointSeed",
+          turnId: turn.turnId,
+          text: seed.seedText.slice(0, 4096),
+          seedId: seed.seedId,
+          seedShapeHash: seed.seedShapeHash,
+          importedSessionId: seed.materializedSessionId,
+        },
+        ...(assistantText
+          ? [{
+              id: `${turn.turnId}_assistant`,
+              type: "agentMessage",
+              turnId: turn.turnId,
+              text: assistantText,
+            }]
+          : []),
+      ],
+      model,
+      completedTurn.state,
+    );
+    const persistedSession = this.sessionStore.readSession(session.sessionId) || session;
+    this.sessionStore.writeSession({
+      ...persistedSession,
+      sourceClass: "direct-import-checkpoint-continuation",
+      nativeDirectSession: true,
+      parentImportLineage: options.parentImportLineage || null,
+      checkpointContinuationId: normalizeString(options.continuationId, ""),
+      checkpointSeedId: normalizeString(seed.seedId, ""),
+      seedShapeHash: normalizeString(seed.seedShapeHash, ""),
+      requestShapeHash: normalizeString(seed.requestShapeHash, ""),
+      importedSessionId: normalizeString(seed.materializedSessionId, ""),
+      importedSessionReadOnly: true,
+    });
+    return {
+      ...result,
+      sessionId: session.sessionId,
+      turnId: turn.turnId,
+      turnState: completedTurn.state,
+      terminal,
+    };
   }
 
   readOnlyToolRequestParams(obligation = {}, turn = {}, project = {}) {

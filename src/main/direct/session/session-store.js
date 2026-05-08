@@ -299,6 +299,17 @@ class DirectSessionStore {
     return path.join(this.rootDir, "imports", requireSafeId(importId, "import"), safeArtifactName(artifactName));
   }
 
+  importContinuationPath(importId, continuationId, artifactName) {
+    return path.join(
+      this.rootDir,
+      "imports",
+      requireSafeId(importId, "import"),
+      "checkpoint-continuations",
+      requireSafeId(continuationId, "checkpoint continuation"),
+      safeArtifactName(artifactName),
+    );
+  }
+
   importIndexPath() {
     return path.join(this.rootDir, "imports", "index.json");
   }
@@ -416,6 +427,34 @@ class DirectSessionStore {
 
   readImportArtifact(importId, artifactName) {
     return readJsonFile(this.importPath(importId, artifactName));
+  }
+
+  writeImportContinuationArtifact(importId, continuationId, artifactName, value) {
+    writeJsonAtomic(this.importContinuationPath(importId, continuationId, artifactName), value);
+    return value;
+  }
+
+  readImportContinuationArtifact(importId, continuationId, artifactName) {
+    return readJsonFile(this.importContinuationPath(importId, continuationId, artifactName));
+  }
+
+  listImportContinuationIds(importId) {
+    const directory = path.join(this.rootDir, "imports", requireSafeId(importId, "import"), "checkpoint-continuations");
+    try {
+      return fs.readdirSync(directory, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .filter(isSafeId);
+    } catch (error) {
+      if (error && error.code === "ENOENT") return [];
+      throw error;
+    }
+  }
+
+  listImportContinuationRecords(importId) {
+    return this.listImportContinuationIds(importId)
+      .map((continuationId) => this.readImportContinuationArtifact(importId, continuationId, "continuation.json"))
+      .filter((record) => isPlainObject(record));
   }
 
   setImportHidden(importId, hidden = true, options = {}) {
@@ -592,6 +631,15 @@ class DirectSessionStore {
       turns: [],
       unresolvedObligations: Array.isArray(input.unresolvedObligations) ? input.unresolvedObligations : [],
       compactionCheckpoints: Array.isArray(input.compactionCheckpoints) ? input.compactionCheckpoints : [],
+      sourceClass: normalizeString(input.sourceClass, ""),
+      nativeDirectSession: input.nativeDirectSession === true,
+      parentImportLineage: isPlainObject(input.parentImportLineage) ? input.parentImportLineage : null,
+      checkpointContinuationId: normalizeString(input.checkpointContinuationId, ""),
+      checkpointSeedId: normalizeString(input.checkpointSeedId, ""),
+      seedShapeHash: normalizeString(input.seedShapeHash, ""),
+      requestShapeHash: normalizeString(input.requestShapeHash, ""),
+      importedSessionId: normalizeString(input.importedSessionId, ""),
+      importedSessionReadOnly: input.importedSessionReadOnly === true,
     };
     this.writeSession(session);
     return session;
@@ -641,6 +689,14 @@ class DirectSessionStore {
       toolResults: Array.isArray(input.toolResults) ? input.toolResults : [],
       continuationRequests: Array.isArray(input.continuationRequests) ? input.continuationRequests : [],
       error: isPlainObject(input.error) ? input.error : null,
+      sourceClass: normalizeString(input.sourceClass, ""),
+      nativeDirectSession: input.nativeDirectSession === true,
+      parentImportLineage: isPlainObject(input.parentImportLineage) ? input.parentImportLineage : null,
+      checkpointContinuationId: normalizeString(input.checkpointContinuationId, ""),
+      checkpointSeedId: normalizeString(input.checkpointSeedId, ""),
+      seedShapeHash: normalizeString(input.seedShapeHash, ""),
+      importedSessionId: normalizeString(input.importedSessionId, ""),
+      importedSessionReadOnly: input.importedSessionReadOnly === true,
     };
     this.writeTurn(turn);
     const nextSession = {
@@ -656,6 +712,10 @@ class DirectSessionStore {
           updatedAt: turn.updatedAt,
           model: turn.model,
           normalizedEventCount: 0,
+          sourceClass: normalizeString(turn.sourceClass, ""),
+          checkpointContinuationId: normalizeString(turn.checkpointContinuationId, ""),
+          checkpointSeedId: normalizeString(turn.checkpointSeedId, ""),
+          seedShapeHash: normalizeString(turn.seedShapeHash, ""),
         },
       ],
     };

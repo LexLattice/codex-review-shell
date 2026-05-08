@@ -14,6 +14,11 @@ const {
   materializeDirectImportSession,
   validateDirectCheckpointCandidate,
 } = require("./codex-jsonl-import");
+const {
+  DIRECT_IMPORT_CHECKPOINT_CONTINUATION_SCHEMA,
+  buildDirectImportCheckpointSeed,
+  rendererSafeCheckpointSeedPreview,
+} = require("./checkpoint-continuation");
 
 const SOURCE_HANDLE_TTL_MS = 30 * 60 * 1000;
 const DEFAULT_SOURCE_LIST_LIMIT = 200;
@@ -275,8 +280,14 @@ class DirectImportController {
     if (!options.sessionStore) throw new Error("DirectImportController requires a sessionStore.");
     this.sessionStore = options.sessionStore;
     this.projectResolver = typeof options.projectResolver === "function" ? options.projectResolver : null;
+    this.liveTextController = typeof options.liveTextController === "function" ? options.liveTextController : null;
+    this.checkpointContinuationEvidenceResolver = typeof options.checkpointContinuationEvidenceResolver === "function"
+      ? options.checkpointContinuationEvidenceResolver
+      : null;
     this.sourceHandles = new Map();
     this.handleSecret = options.handleSecret || crypto.randomBytes(32);
+    this.seedIntegritySecret = options.seedIntegritySecret || this.handleSecret;
+    this.activeCheckpointContinuations = new Map();
   }
 
   async resolveProject(projectOrId) {
@@ -312,6 +323,66 @@ class DirectImportController {
       (!timestampStart || entry.timestampStart === timestampStart) &&
       (!timestampEnd || entry.timestampEnd === timestampEnd)
     );
+  }
+
+  liveController() {
+    return this.liveTextController ? this.liveTextController() : null;
+  }
+
+  activeContinuationKey(projectId, importId) {
+    return `${normalizeString(projectId, "")}:${normalizeString(importId, "")}`;
+  }
+
+  terminalContinuationState(value) {
+    return ["completed", "failed", "aborted", "manual_resume_required"].includes(normalizeString(value, ""));
+  }
+
+  failStaleContinuation(importId, continuationId, previous = {}, failureKind = "restart_interrupted_checkpoint_continuation") {
+    const now = new Date().toISOString();
+    const failed = {
+      ...previous,
+      state: "failed",
+      updatedAt: now,
+      failure: {
+        kind: failureKind,
+        message: "Checkpoint continuation did not reach a terminal state and requires a new explicit attempt.",
+        retryable: false,
+      },
+      terminalStateObserved: false,
+    };
+    if (this.sessionStore.writeImportContinuationArtifact) {
+      this.sessionStore.writeImportContinuationArtifact(importId, continuationId, "continuation.json", failed);
+    }
+    return failed;
+  }
+
+  checkpointContinuationEvidence(project = {}, params = {}) {
+    if (params.manualProbe === true || process.env.CODEX_DIRECT_IMPORT_CHECKPOINT_PROBE === "1") {
+      return {
+        accepted: true,
+        status: "manual_probe",
+        evidenceState: "runtime_probed",
+        reason: "",
+        manualProbe: true,
+      };
+    }
+    if (!this.checkpointContinuationEvidenceResolver) {
+      return {
+        accepted: false,
+        status: "profile_required",
+        evidenceState: "unknown",
+        reason: "checkpoint_request_shape_unaccepted",
+      };
+    }
+    const evidence = this.checkpointContinuationEvidenceResolver({ project, params }) || {};
+    const status = normalizeString(evidence.status, "");
+    const expired = status === "expired" || evidence.expired === true;
+    const accepted = !expired && (evidence.accepted === true || status === "accepted" || status === "runtime_probed");
+    return {
+      ...evidence,
+      accepted,
+      reason: accepted ? "" : normalizeString(evidence.reason, expired ? "checkpoint_continuation_evidence_expired" : "checkpoint_request_shape_unaccepted"),
+    };
   }
 
   registerSourceHandle(projectOrId, params = {}) {
@@ -563,8 +634,9 @@ class DirectImportController {
         checkpointEligible: entry.checkpointEligible === true,
         continuation: {
           eligible: entry.checkpointEligible === true,
-          runnableNow: false,
-          reason: entry.checkpointEligible === true ? "future_checkpoint_continuation_only" : "imported_evidence_only",
+          runnableNow: !this.continuationBlockReason(project, entry, {}),
+          reason: this.continuationBlockReason(project, entry, {}) ||
+            (entry.checkpointEligible === true ? "checkpoint_continuation_ready" : "imported_evidence_only"),
         },
         source: reportSummary?.source || null,
         reportSummary: reportSummary
@@ -576,7 +648,7 @@ class DirectImportController {
           : { warningsCount: 0, blockersCount: 0, gates: {} },
         composer: {
           enabled: false,
-          reason: entry.checkpointEligible ? "live-continuation-not-implemented" : "imported-readonly",
+          reason: entry.checkpointEligible ? "checkpoint-validation-only" : "imported-readonly",
         },
         rawPathExposed: false,
         rawRecordsExposed: false,
@@ -606,6 +678,27 @@ class DirectImportController {
       !entry.projectId || !projectId || entry.projectId === projectId
     );
     const countState = (state) => visible.filter((entry) => canonicalImportState(entry.state) === state).length;
+    const continuationBlockReasons = {};
+    let actionRunnable = 0;
+    let actionAvailable = 0;
+    let running = 0;
+    let completed = 0;
+    let failed = 0;
+    for (const entry of visible) {
+      if (!entry.checkpointEligible) continue;
+      actionAvailable += 1;
+      const reason = this.continuationBlockReason(project, entry, {});
+      if (!reason) actionRunnable += 1;
+      else continuationBlockReasons[reason] = Number(continuationBlockReasons[reason] || 0) + 1;
+      if (this.sessionStore.listImportContinuationRecords) {
+        for (const record of this.sessionStore.listImportContinuationRecords(entry.importId)) {
+          const state = normalizeString(record.state, "");
+          if (["seed_built", "session_created", "request_built", "streaming"].includes(state)) running += 1;
+          else if (state === "completed") completed += 1;
+          else if (state === "failed" || state === "aborted") failed += 1;
+        }
+      }
+    }
     const latestUpdatedAt = all.reduce((latest, entry) => {
       const current = normalizeString(entry.updatedAt || entry.timestampEnd || entry.hiddenAt, "");
       return current > latest ? current : latest;
@@ -622,6 +715,12 @@ class DirectImportController {
       hiddenCount: all.filter((entry) => entry.hidden).length,
       continuationEligibleCount: visible.filter((entry) => entry.checkpointEligible).length,
       continuationRunnableNowCount: 0,
+      checkpointContinuationActionAvailableCount: actionAvailable,
+      checkpointContinuationActionRunnableNowCount: actionRunnable,
+      checkpointContinuationRunningCount: running,
+      checkpointContinuationCompletedCount: completed,
+      checkpointContinuationFailedCount: failed,
+      continuationBlockedReasons: continuationBlockReasons,
       lastImportUpdatedAt: latestUpdatedAt,
       rawPathsExposed: false,
       rawRecordsExposed: false,
@@ -663,6 +762,240 @@ class DirectImportController {
       rawRecordsExposed: false,
       rawSourceSha256Exposed: false,
     };
+  }
+
+  continuationBlockReason(project = {}, entry = {}, params = {}) {
+    if (!entry) return "missing_import";
+    if (canonicalImportState(entry.state) !== "checkpoint-validated") return "import_not_checkpoint_validated";
+    if (entry.hidden) return "import_hidden";
+    if (entry.recoveryState !== "healthy") return entry.recoveryState === "corrupted" ? "import_corrupted" : "import_recovery_not_healthy";
+    if (!entry.materializedSessionId) return "validation_report_missing";
+    const report = this.sessionStore.readImportArtifact
+      ? this.sessionStore.readImportArtifact(entry.importId, "validation-report.json")
+      : null;
+    if (!report) return "validation_report_missing";
+    const session = this.sessionStore.readSession ? this.sessionStore.readSession(entry.materializedSessionId) : null;
+    if (!session) return "import_corrupted";
+    if (session.readOnlyImported !== true || session.nativeDirectSession === true) return "unsupported_import_kind";
+    const workspaceMatch = report.workspaceMatch || {};
+    const workspaceMatched = workspaceMatch.status === "matched" &&
+      (workspaceMatch.confidence === "high" || workspaceMatch.matchMethod === "user-confirmed");
+    if (!workspaceMatched) return "workspace_mismatch";
+    const live = this.liveController();
+    const liveStatus = live?.statusForProject ? live.statusForProject(project) : null;
+    if (!liveStatus || liveStatus.status === "auth_required") return "direct_auth_required";
+    if (liveStatus.status !== "ready") return liveStatus.reason || "live_text_unavailable";
+    const evidence = this.checkpointContinuationEvidence(project, params);
+    if (!evidence.accepted) return evidence.reason || "checkpoint_request_shape_unaccepted";
+    return "";
+  }
+
+  async previewCheckpointContinuation(projectOrId, params = {}) {
+    const project = await this.resolveProject(projectOrId);
+    const importId = normalizeString(params.importId, "");
+    if (!importId) throw new Error("importId is required.");
+    const entry = this.importEntryForProject(project, importId);
+    const blockReason = this.continuationBlockReason(project, entry, params);
+    if (!entry?.materializedSessionId) {
+      return { ok: false, blockReason: blockReason || "missing_import", seedPreview: null };
+    }
+    const session = this.sessionStore.readSession(entry.materializedSessionId);
+    const report = this.sessionStore.readImportArtifact(importId, "validation-report.json");
+    const checkpoint = this.sessionStore.readImportArtifact(importId, "checkpoint.json");
+    const seed = buildDirectImportCheckpointSeed({
+      importId,
+      projectId: this.projectId(project),
+      importSession: session,
+      validationReport: report,
+      checkpoint,
+      userPromptText: params.userPromptText,
+    }, {
+      integritySecret: this.seedIntegritySecret,
+      profileId: normalizeString(project.surfaceBinding?.codex?.profileId, ""),
+      profileHash: normalizeString(params.profileHash, ""),
+    });
+    return {
+      ok: !blockReason,
+      blockReason,
+      seedPreview: rendererSafeCheckpointSeedPreview(seed, blockReason),
+      rawPathExposed: false,
+      rawRecordsExposed: false,
+      rawSourceSha256Exposed: false,
+    };
+  }
+
+  async startCheckpointContinuation(projectOrId, params = {}) {
+    const project = await this.resolveProject(projectOrId);
+    const projectId = this.projectId(project);
+    const importId = normalizeString(params.importId, "");
+    const clientCheckpointContinuationId = normalizeString(params.clientCheckpointContinuationId, "");
+    if (!importId) throw new Error("importId is required.");
+    if (!clientCheckpointContinuationId) {
+      const error = new Error("clientCheckpointContinuationId is required.");
+      error.code = "missing_client_checkpoint_continuation_id";
+      throw error;
+    }
+    const entry = this.importEntryForProject(project, importId);
+    const activeKey = this.activeContinuationKey(projectId, importId);
+    const activeProjectPrefix = `${projectId}:`;
+    for (const [key, active] of this.activeCheckpointContinuations.entries()) {
+      if (active.clientCheckpointContinuationId === clientCheckpointContinuationId && active.importId === importId) {
+        return active.promise;
+      }
+      if (key.startsWith(activeProjectPrefix)) {
+        const error = new Error("Project already has an active checkpoint continuation.");
+        error.code = "active_checkpoint_continuation_exists";
+        error.continuationId = active.continuationId;
+        throw error;
+      }
+    }
+    const blockReason = this.continuationBlockReason(project, entry, params);
+    if (blockReason) {
+      const error = new Error(`Checkpoint continuation blocked: ${blockReason}`);
+      error.code = blockReason;
+      throw error;
+    }
+    const continuationId = `checkpoint_continuation_${crypto.createHash("sha256").update(`${importId}:${clientCheckpointContinuationId}`).digest("hex").slice(0, 20)}`;
+    const previous = this.sessionStore.readImportContinuationArtifact
+      ? this.sessionStore.readImportContinuationArtifact(importId, continuationId, "continuation.json")
+      : null;
+    if (previous) {
+      const reusable = this.terminalContinuationState(previous.state)
+        ? previous
+        : this.failStaleContinuation(importId, continuationId, previous);
+      return { ok: reusable.state === "completed", reused: true, continuation: reusable };
+    }
+    const run = this._startCheckpointContinuation(project, {
+      ...params,
+      importId,
+      continuationId,
+      clientCheckpointContinuationId,
+      entry,
+    }).finally(() => {
+      const active = this.activeCheckpointContinuations.get(activeKey);
+      if (active?.promise === run) this.activeCheckpointContinuations.delete(activeKey);
+    });
+    this.activeCheckpointContinuations.set(activeKey, {
+      importId,
+      continuationId,
+      clientCheckpointContinuationId,
+      promise: run,
+    });
+    return run;
+  }
+
+  async _startCheckpointContinuation(project = {}, params = {}) {
+    const importId = params.importId;
+    const session = this.sessionStore.readSession(params.entry.materializedSessionId);
+    const report = this.sessionStore.readImportArtifact(importId, "validation-report.json");
+    const checkpoint = this.sessionStore.readImportArtifact(importId, "checkpoint.json");
+    const seed = buildDirectImportCheckpointSeed({
+      importId,
+      projectId: this.projectId(project),
+      importSession: session,
+      validationReport: report,
+      checkpoint,
+      userPromptText: params.userPromptText,
+    }, {
+      integritySecret: this.seedIntegritySecret,
+      profileId: normalizeString(project.surfaceBinding?.codex?.profileId, ""),
+      profileHash: normalizeString(params.profileHash, ""),
+    });
+    const now = new Date().toISOString();
+    const recordBase = {
+      schema: DIRECT_IMPORT_CHECKPOINT_CONTINUATION_SCHEMA,
+      continuationId: params.continuationId,
+      clientCheckpointContinuationId: params.clientCheckpointContinuationId,
+      projectId: this.projectId(project),
+      importId,
+      seedId: seed.seedId,
+      state: "seed_built",
+      createdAt: now,
+      updatedAt: now,
+      createdSessionId: "",
+      createdTurnId: "",
+      importedSessionId: seed.materializedSessionId,
+      checkpointSeedId: seed.seedId,
+      seedShapeHash: seed.seedShapeHash,
+      requestShapeHash: seed.requestShapeHash,
+      model: normalizeString(params.model, ""),
+      parentImportLineage: session.importLineage || report.lineage || {},
+      terminalStateObserved: false,
+      appServerRequired: false,
+      previousResponseIdFromImportUsed: false,
+      importedToolReplayAttempted: false,
+      rightPaneModified: false,
+    };
+    this.sessionStore.writeImportContinuationArtifact(importId, params.continuationId, "seed.json", seed);
+    this.sessionStore.writeImportContinuationArtifact(importId, params.continuationId, "continuation.json", recordBase);
+    const live = this.liveController();
+    if (!live?.runImportCheckpointContinuation) {
+      const error = new Error("Direct live text controller is unavailable.");
+      error.code = "live_text_unavailable";
+      throw error;
+    }
+    this.sessionStore.writeImportContinuationArtifact(importId, params.continuationId, "request-shape.json", {
+      requestShapeHash: seed.requestShapeHash,
+      seedShapeHash: seed.seedShapeHash,
+      previousResponseIdFromImportUsed: false,
+      importedToolReplayAttempted: false,
+    });
+    try {
+      const result = await live.runImportCheckpointContinuation({
+        project,
+        seed,
+        continuationId: params.continuationId,
+        clientCheckpointContinuationId: params.clientCheckpointContinuationId,
+        parentImportLineage: recordBase.parentImportLineage,
+        model: params.model,
+      });
+      const terminalState = result.turnState || result.terminal?.state || "failed";
+      const completedAt = new Date().toISOString();
+      const finalRecord = {
+        ...recordBase,
+        state: terminalState === "completed" ? "completed" : "failed",
+        updatedAt: completedAt,
+        createdSessionId: result.sessionId || "",
+        createdTurnId: result.turnId || "",
+        model: normalizeString(result.model || params.model || seed.source?.model, ""),
+        failure: terminalState === "completed"
+          ? undefined
+          : {
+              kind: normalizeString(result.terminal?.error?.code || result.error?.code, "other"),
+              message: normalizeString(result.terminal?.error?.message || result.error?.message, "Checkpoint continuation failed."),
+              retryable: false,
+            },
+        terminalStateObserved: true,
+      };
+      this.sessionStore.writeImportContinuationArtifact(importId, params.continuationId, "continuation.json", finalRecord);
+      this.sessionStore.recoverImportIndex({ write: true });
+      return {
+        ok: finalRecord.state === "completed",
+        reused: false,
+        continuation: finalRecord,
+        seedPreview: rendererSafeCheckpointSeedPreview(seed, finalRecord.state === "completed" ? "" : finalRecord.failure?.kind || "failed"),
+        sessionId: result.sessionId,
+        turnId: result.turnId,
+        terminal: result.terminal || null,
+        rawPathExposed: false,
+        rawRecordsExposed: false,
+        rawSourceSha256Exposed: false,
+      };
+    } catch (error) {
+      const failed = {
+        ...recordBase,
+        state: "failed",
+        updatedAt: new Date().toISOString(),
+        failure: {
+          kind: normalizeString(error?.code, "other"),
+          message: normalizeString(error?.message, "Checkpoint continuation failed before terminal state."),
+          retryable: false,
+        },
+        terminalStateObserved: false,
+      };
+      this.sessionStore.writeImportContinuationArtifact(importId, params.continuationId, "continuation.json", failed);
+      throw error;
+    }
   }
 
   async hideImport(projectOrId, params = {}) {

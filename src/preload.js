@@ -82,6 +82,10 @@ contextBridge.exposeInMainWorld("workspaceShell", {
     ipcRenderer.invoke("direct-import:unhide", { projectId, importId }),
   cancelDirectImport: (projectId, importId) =>
     ipcRenderer.invoke("direct-import:cancel", { projectId, importId }),
+  previewDirectImportCheckpointContinuation: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-import:preview-checkpoint-continuation", { ...options, projectId }),
+  startDirectImportCheckpointContinuation: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-import:start-checkpoint-continuation", { ...options, projectId }),
   dismissCodexComposerOverlay: (reason = "shell") => ipcRenderer.invoke("codex:dismiss-composer-overlay", { reason }),
   openChatgptSettings: () => ipcRenderer.invoke("chatgpt:open-settings"),
   forceChatgptDark: () => ipcRenderer.invoke("chatgpt:force-dark"),
