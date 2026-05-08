@@ -19,6 +19,11 @@ const {
 } = require("../src/main/direct/import/codex-jsonl-import");
 const { DirectImportController } = require("../src/main/direct/import/import-controller");
 const {
+  buildDirectImportCheckpointSeed,
+  checkpointContinuationRequestShapeHash,
+  rendererSafeCheckpointSeedPreview,
+} = require("../src/main/direct/import/checkpoint-continuation");
+const {
   DEFAULT_FIXTURE_ROOT,
   NORMALIZED_FIXTURE_DIR,
   PROFILE_DELTAS_FIXTURE_DIR,
@@ -2575,6 +2580,165 @@ try {
   const importStatus = importController.statusForProject({ id: "project_controller" });
   assert(importStatus.importedSessionCount >= 1, "Expected import status to count materialized imports.");
   assert(importStatus.continuationRunnableNowCount === 0, "Expected import status to keep continuation non-runnable now.");
+  assert(importStatus.checkpointContinuationActionAvailableCount >= 1, "Expected validated imports to expose checkpoint action availability.");
+  assert(importStatus.checkpointContinuationActionRunnableNowCount === 0, "Expected checkpoint action to remain blocked without request-shape evidence.");
+
+  const materializedControllerSession = importSessionStore.readSession(controllerMaterialized.rendererSafeSession.sessionId);
+  const controllerReportForSeed = importSessionStore.readImportArtifact(controllerMaterialized.rendererSafeSession.importId, "validation-report.json");
+  const controllerCheckpointForSeed = importSessionStore.readImportArtifact(controllerMaterialized.rendererSafeSession.importId, "checkpoint.json");
+  const checkpointSeed = buildDirectImportCheckpointSeed({
+    importSession: materializedControllerSession,
+    validationReport: controllerReportForSeed,
+    checkpoint: controllerCheckpointForSeed,
+  }, {
+    integritySecret: "smoke_checkpoint_seed_secret",
+    profileId: "smoke_profile",
+    profileHash: "smoke_profile_hash",
+  });
+  assert(checkpointSeed.schema === "direct_import_checkpoint_seed@1", "Expected checkpoint seed schema.");
+  assert(checkpointSeed.seedShapeHash && checkpointSeed.seedShapeHash !== checkpointSeed.seedTextHash, "Expected seed shape hash to differ from seed text hash.");
+  assert(checkpointSeed.requestShapeHash === checkpointContinuationRequestShapeHash(), "Expected checkpoint seed to carry canonical request-shape hash.");
+  assert(checkpointSeed.seedText.includes("[IMPORTED TRANSCRIPT EVIDENCE - QUOTED]"), "Expected seed to frame imported transcript as quoted evidence.");
+  assert(checkpointSeed.seedText.includes("[CURRENT USER INTENT]"), "Expected seed to include current intent section.");
+  assert(!checkpointSeed.seedText.includes(controllerSourcePath), "Expected checkpoint seed not to include raw source path.");
+  assert(checkpointSeed.excluded.importedSystemDeveloperPolicy === true, "Expected checkpoint seed to exclude imported runtime policy.");
+  assert(checkpointSeed.integrity.digest, "Expected checkpoint seed to carry an integrity digest.");
+  const seedPreview = rendererSafeCheckpointSeedPreview(checkpointSeed);
+  assert(seedPreview.rawPathExposed === false && seedPreview.rawSourceSha256Exposed === false, "Expected seed preview to be renderer-safe.");
+  assert(!JSON.stringify(seedPreview).includes(controllerSourcePath), "Expected seed preview not to expose raw source path.");
+  assertThrows(
+    () => buildDirectImportCheckpointSeed({
+      importSession: materializedControllerSession,
+      validationReport: controllerReportForSeed,
+      checkpoint: controllerCheckpointForSeed,
+      userPromptText: "Authorization: Bearer very_private_followup_token",
+    }),
+    "Expected auth-like user follow-up to be blocked before transport.",
+  );
+
+  const continuationParent = fs.mkdtempSync(path.join(os.tmpdir(), "direct-import-continuation-"));
+  try {
+    const continuationStore = new DirectSessionStore({ rootDir: path.join(continuationParent, "direct-sessions") });
+    const continuationMaterialized = materializeDirectImportSession(cleanValidation, {
+      sessionStore: continuationStore,
+      sessionId: "import_session_continuation_clean",
+      projectId: "project_clean_import",
+    });
+    const continuationSse = [
+      "event: response.created",
+      "data: {\"response\":{\"id\":\"resp_import_checkpoint\",\"model\":\"gpt-5.4\"}}",
+      "",
+      "event: response.output_text.delta",
+      "data: {\"item_id\":\"msg_import_checkpoint\",\"delta\":\"checkpoint continuation ok\"}",
+      "",
+      "event: response.completed",
+      "data: {\"response\":{\"id\":\"resp_import_checkpoint\",\"status\":\"completed\"}}",
+      "",
+    ].join("\n");
+    let checkpointFetchCalls = 0;
+    let checkpointRequestBody = null;
+    const checkpointLiveController = new DirectLiveTextController({
+      sessionStore: continuationStore,
+      profileDoc: acceptedLiveTextProfile(),
+      authStore: {
+        readStatus: () => ({ status: "authenticated", accountId: "acct_checkpoint_smoke", hasAccessToken: true }),
+        readCredentials: () => ({ accessToken: "checkpoint_smoke_access_token" }),
+      },
+      fetchImpl: async (_url, init) => {
+        checkpointFetchCalls += 1;
+        checkpointRequestBody = JSON.parse(init.body);
+        return textResponse(continuationSse, 200, { "content-type": "text/event-stream" });
+      },
+    });
+    const continuationController = new DirectImportController({
+      sessionStore: continuationStore,
+      liveTextController: () => checkpointLiveController,
+      checkpointContinuationEvidenceResolver: () => ({ accepted: true, status: "runtime_probed" }),
+      seedIntegritySecret: "smoke_checkpoint_seed_secret",
+    });
+    const blockedWithoutEvidence = new DirectImportController({
+      sessionStore: continuationStore,
+      liveTextController: () => checkpointLiveController,
+    });
+    await assertRejects(
+      () => blockedWithoutEvidence.startCheckpointContinuation({ id: "project_clean_import" }, {
+        importId: continuationMaterialized.session.importLineage.importId,
+        clientCheckpointContinuationId: "client_checkpoint_blocked",
+      }),
+      "Expected normal checkpoint continuation to require request-shape evidence.",
+    );
+    const continuationResult = await continuationController.startCheckpointContinuation({ id: "project_clean_import" }, {
+      importId: continuationMaterialized.session.importLineage.importId,
+      clientCheckpointContinuationId: "client_checkpoint_1",
+    });
+    assert(continuationResult.ok === true, `Expected checkpoint continuation to complete through fake live transport: ${JSON.stringify(continuationResult.continuation?.failure || {})}`);
+    assert(checkpointFetchCalls === 1, "Expected checkpoint continuation to make one provider request.");
+    assert(checkpointRequestBody.stream === true && checkpointRequestBody.store === false, "Expected checkpoint continuation request to stream without store.");
+    assert(!checkpointRequestBody.previous_response_id, "Checkpoint continuation must not use imported previous_response_id.");
+    assert(!checkpointRequestBody.tools, "Checkpoint continuation must not declare tools in this bundle.");
+    assert(checkpointRequestBody.input[0].content[0].text.includes("[IMPORTED TRANSCRIPT EVIDENCE - QUOTED]"), "Expected provider request to carry quoted checkpoint evidence.");
+    const duplicateContinuation = await continuationController.startCheckpointContinuation({ id: "project_clean_import" }, {
+      importId: continuationMaterialized.session.importLineage.importId,
+      clientCheckpointContinuationId: "client_checkpoint_1",
+    });
+    assert(duplicateContinuation.reused === true, "Expected duplicate checkpoint continuation id to reuse existing record.");
+    assert(checkpointFetchCalls === 1, "Expected duplicate checkpoint continuation not to resend provider request.");
+    const continuationSession = continuationStore.readSession(continuationResult.sessionId);
+    assert(continuationSession.sourceClass === "direct-import-checkpoint-continuation", "Expected new session source class to record checkpoint continuation.");
+    assert(continuationSession.nativeDirectSession === true, "Expected checkpoint continuation to create a native direct session.");
+    assert(continuationSession.importedSessionReadOnly === true, "Expected new session to record imported parent remains read-only.");
+    assert(continuationSession.parentImportLineage.importId === continuationMaterialized.session.importLineage.importId, "Expected new session to retain parent import lineage.");
+    assert(continuationSession.messages[0].items.some((item) => item.type === "harnessCheckpointSeed"), "Expected new transcript to render checkpoint seed as a harness item.");
+    assert(continuationSession.messages[0].items.some((item) => item.type === "agentMessage" && item.text === "checkpoint continuation ok"), "Expected checkpoint assistant output to persist.");
+    const continuationTurn = continuationStore.readTurn(continuationResult.sessionId, continuationResult.turnId);
+    assert(continuationTurn.checkpointSeedId === continuationSession.checkpointSeedId, "Expected turn to persist checkpoint seed id.");
+    assert(continuationTurn.requestShape.previousResponseIdFromImportUsed === false, "Expected turn request shape to deny imported continuity handles.");
+    const importedParentAfterContinuation = continuationStore.readSession(continuationMaterialized.sessionId);
+    assert(importedParentAfterContinuation.readOnlyImported === true, "Expected parent imported session to remain read-only after continuation.");
+    assert(importedParentAfterContinuation.nativeDirectSession === false, "Expected parent imported session not to become native direct.");
+    const continuationRecord = continuationStore.readImportContinuationArtifact(
+      continuationMaterialized.session.importLineage.importId,
+      continuationResult.continuation.continuationId,
+      "continuation.json",
+    );
+    assert(continuationRecord.state === "completed", "Expected continuation record to persist completed state.");
+    assert(continuationRecord.previousResponseIdFromImportUsed === false, "Expected continuation record to deny imported continuity handles.");
+    assert(continuationRecord.importedToolReplayAttempted === false, "Expected continuation record to deny imported tool replay.");
+
+    const toolSse = [
+      "event: response.created",
+      "data: {\"response\":{\"id\":\"resp_import_checkpoint_tool\",\"model\":\"gpt-5.4\"}}",
+      "",
+      "event: response.output_item.added",
+      "data: {\"item\":{\"id\":\"tool_import_checkpoint\",\"type\":\"function_call\",\"call_id\":\"call_import_read\",\"name\":\"read_file\"}}",
+      "",
+      "event: response.completed",
+      "data: {\"response\":{\"id\":\"resp_import_checkpoint_tool\",\"status\":\"completed\"}}",
+      "",
+    ].join("\n");
+    const toolContinuationController = new DirectImportController({
+      sessionStore: continuationStore,
+      liveTextController: () => new DirectLiveTextController({
+        sessionStore: continuationStore,
+        profileDoc: acceptedLiveTextProfile(),
+        authStore: {
+          readStatus: () => ({ status: "authenticated", accountId: "acct_checkpoint_smoke", hasAccessToken: true }),
+          readCredentials: () => ({ accessToken: "checkpoint_smoke_access_token" }),
+        },
+        fetchImpl: async () => textResponse(toolSse, 200, { "content-type": "text/event-stream" }),
+      }),
+      checkpointContinuationEvidenceResolver: () => ({ accepted: true, status: "runtime_probed" }),
+    });
+    const toolResult = await toolContinuationController.startCheckpointContinuation({ id: "project_clean_import" }, {
+      importId: continuationMaterialized.session.importLineage.importId,
+      clientCheckpointContinuationId: "client_checkpoint_tool",
+    });
+    assert(toolResult.ok === false, "Expected checkpoint continuation tool call to fail closed.");
+    assert(toolResult.continuation.failure.kind === "tool_call_unsupported", "Expected tool-call failure kind.");
+  } finally {
+    fs.rmSync(continuationParent, { recursive: true, force: true });
+  }
+
   const hiddenImport = await importController.hideImport({ id: "project_controller" }, { importId: controllerMaterialized.rendererSafeSession.importId });
   assert(hiddenImport.hidden === true, "Expected controller hide to mark import hidden.");
   const importsAfterHide = await importController.listImports({ id: "project_controller" });

@@ -2733,7 +2733,8 @@ function renderDirectImportDetail() {
   const meta = document.createElement("p");
   meta.className = "muted";
   const composer = selectedEntry.composer || session.composer || { enabled: false, reason: "imported-readonly" };
-  meta.textContent = `Composer disabled · ${importComposerReasonLabel(composer.reason)} · continuation runnable now: no`;
+  const continuation = selectedEntry.continuation || session.continuation || {};
+  meta.textContent = `Composer disabled · ${importComposerReasonLabel(composer.reason)} · checkpoint action: ${continuation.runnableNow ? "available" : (continuation.reason || "blocked")}`;
   const badges = document.createElement("div");
   badges.className = "direct-auth-status";
   for (const label of session.labels || ["Imported read-only", "Continuation not started", "Composer disabled"]) {
@@ -2743,6 +2744,21 @@ function renderDirectImportDetail() {
     badges.appendChild(badge);
   }
   header.append(eyebrow, title, meta, badges);
+  const actions = document.createElement("div");
+  actions.className = "heading-actions";
+  const checkpointButton = document.createElement("button");
+  checkpointButton.className = "primary small";
+  checkpointButton.type = "button";
+  checkpointButton.textContent = "Start checkpoint session";
+  checkpointButton.disabled = !continuation.runnableNow || !bridge.startDirectImportCheckpointContinuation;
+  checkpointButton.title = continuation.runnableNow
+    ? "Start a fresh direct-native text session from this checkpoint."
+    : (continuation.reason || "Checkpoint continuation is not runnable yet.");
+  checkpointButton.addEventListener("click", () => startDirectImportCheckpointContinuation(selectedEntry.importId).catch((error) => {
+    setLastEvent(`Checkpoint continuation failed: ${error.message}`);
+  }));
+  actions.appendChild(checkpointButton);
+  header.appendChild(actions);
   detail.appendChild(header);
 
   if (report) {
@@ -3647,6 +3663,37 @@ async function hideDirectImport(importId) {
     if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
     state.directImportWorkbench.status = "error";
     state.directImportWorkbench.lastError = `Hide failed: ${error.message}`;
+    renderDirectImportWorkbench();
+  }
+}
+
+async function startDirectImportCheckpointContinuation(importId) {
+  const project = activeProject();
+  const id = String(importId || state.directImportWorkbench.selectedImportId || "").trim();
+  if (!project || !id || !bridge.startDirectImportCheckpointContinuation) return;
+  const requestVersion = nextRequestVersion("directImportOperation");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  state.directImportWorkbench.status = "working";
+  state.directImportWorkbench.lastError = "";
+  renderDirectImportWorkbench();
+  try {
+    const clientCheckpointContinuationId = `checkpoint_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    const result = await bridge.startDirectImportCheckpointContinuation(project.id, {
+      importId: id,
+      clientCheckpointContinuationId,
+    });
+    if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directImportWorkbench.status = "loaded";
+    await loadDirectImports({ refresh: true });
+    await selectDirectImport(id);
+    await refreshDirectRuntimeStatus(project.id);
+    setLastEvent(result?.ok
+      ? `Started checkpoint continuation session: ${result.sessionId || "direct session"}.`
+      : `Checkpoint continuation finished with ${result?.continuation?.state || "unknown"} state.`);
+  } catch (error) {
+    if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directImportWorkbench.status = "error";
+    state.directImportWorkbench.lastError = `Checkpoint continuation failed: ${error.message}`;
     renderDirectImportWorkbench();
   }
 }

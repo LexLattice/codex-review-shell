@@ -1617,6 +1617,13 @@ function ensureDirectImportController() {
   directImportController = new DirectImportController({
     sessionStore: ensureDirectSessionStore(),
     projectResolver: (projectId) => getProjectById(projectId),
+    liveTextController: () => ensureDirectLiveTextController(),
+    checkpointContinuationEvidenceResolver: () => ({
+      accepted: process.env.CODEX_DIRECT_IMPORT_CHECKPOINT_PROBE === "1",
+      status: process.env.CODEX_DIRECT_IMPORT_CHECKPOINT_PROBE === "1" ? "runtime_probed" : "profile_required",
+      evidenceState: process.env.CODEX_DIRECT_IMPORT_CHECKPOINT_PROBE === "1" ? "runtime_probed" : "unknown",
+      reason: process.env.CODEX_DIRECT_IMPORT_CHECKPOINT_PROBE === "1" ? "" : "checkpoint_request_shape_unaccepted",
+    }),
   });
   return directImportController;
 }
@@ -4098,6 +4105,18 @@ ipcMain.handle("direct-import:unhide", async (_event, payload) => {
 ipcMain.handle("direct-import:cancel", async (_event, payload) => {
   const project = await getProjectById(payload?.projectId);
   return ensureDirectImportController().cancelImport(project, payload || {});
+});
+
+ipcMain.handle("direct-import:preview-checkpoint-continuation", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectImportController().previewCheckpointContinuation(project, payload || {});
+});
+
+ipcMain.handle("direct-import:start-checkpoint-continuation", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  const result = await ensureDirectImportController().startCheckpointContinuation(project, payload || {});
+  emitDirectRuntimeStatus(project);
+  return result;
 });
 
 ipcMain.handle("workspace:run-command", async (_event, payload) => {
