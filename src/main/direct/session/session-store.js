@@ -422,12 +422,29 @@ class DirectSessionStore {
       reportOnlyCount: 0,
     };
     for (const importId of this.listImportIdsFromDisk()) {
-      const candidate = this.readImportArtifact(importId, "candidate.json");
-      const checkpoint = this.readImportArtifact(importId, "checkpoint.json");
-      const report = this.readImportArtifact(importId, "validation-report.json");
+      let candidate = null;
+      let checkpoint = null;
+      let report = null;
+      let artifactReadFailed = false;
+      try {
+        candidate = this.readImportArtifact(importId, "candidate.json");
+      } catch {
+        artifactReadFailed = true;
+      }
+      try {
+        checkpoint = this.readImportArtifact(importId, "checkpoint.json");
+      } catch {
+        artifactReadFailed = true;
+      }
+      try {
+        report = this.readImportArtifact(importId, "validation-report.json");
+      } catch {
+        artifactReadFailed = true;
+      }
       let recoveryState = "healthy";
-      if (!candidate && !checkpoint && report) recoveryState = "report-only";
-      else if (!report || !checkpoint) recoveryState = "partial";
+      if (artifactReadFailed) recoveryState = "corrupted";
+      else if (!candidate && !checkpoint && report) recoveryState = "report-only";
+      else if (!artifactReadFailed && (!report || !checkpoint)) recoveryState = "partial";
       if (report && checkpoint && report.lineage?.importId && checkpoint.lineage?.importId && report.lineage.importId !== checkpoint.lineage.importId) {
         recoveryState = "corrupted";
       }

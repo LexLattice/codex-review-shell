@@ -2357,6 +2357,14 @@ assert(importCandidate.unresolvedObligations.length === 1, "Expected unpaired to
 assert(importCandidate.source.codexHome.endsWith("/tmp/codex"), "Expected import candidate to preserve source CODEX_HOME.");
 assert(importCandidate.source.sourceFileSha256.length === 64, "Expected import candidate to preserve source digest.");
 assert(importCandidate.lineage.importId, "Expected import candidate lineage.");
+const stableRecordCandidateA = buildImportCandidate([
+  { timestamp: "2026-04-25T10:00:00Z", thread_id: "thread_stable", message: { role: "user", content: "Stable." } },
+]);
+const stableRecordCandidateB = buildImportCandidate([
+  { message: { content: "Stable.", role: "user" }, thread_id: "thread_stable", timestamp: "2026-04-25T10:00:00Z" },
+]);
+assert(stableRecordCandidateA.nodes[0].sourceHash === stableRecordCandidateB.nodes[0].sourceHash, "Expected import source hashes to be stable across object key order.");
+assert(stableRecordCandidateA.source.sourceFileSha256 === stableRecordCandidateB.source.sourceFileSha256, "Expected import source digest to be stable across object key order.");
 const importCheckpoint = buildDirectCheckpointCandidate(importCandidate, { nowMs: 1_700_000_040_000 });
 assert(importCheckpoint.schema === "direct_codex_import_checkpoint_candidate@1", "Expected direct import checkpoint candidate schema.");
 assert(importCheckpoint.state === "checkpoint-candidate", "Expected import checkpoint candidate state.");
@@ -2437,6 +2445,13 @@ assert(authLikeValidation.validation.gates.rawAuthMaterialObserved === true, "Ex
 const importStoreParent = fs.mkdtempSync(path.join(os.tmpdir(), "direct-codex-import-store-"));
 try {
   const importSessionStore = new DirectSessionStore({ rootDir: path.join(importStoreParent, "direct-sessions") });
+  assertThrows(
+    () => materializeDirectImportSession(authLikeValidation, {
+      sessionStore: importSessionStore,
+      nowMs: 1_700_000_043_700,
+    }),
+    "Expected auth-like imports to be blocked before materialization writes artifacts.",
+  );
   const materializedReadonly = materializeDirectImportSession(unresolvedImportValidation, {
     sessionStore: importSessionStore,
     nowMs: 1_700_000_044_000,
@@ -2523,6 +2538,9 @@ try {
     JSON.stringify({ timestamp: "2026-04-25T10:00:07Z", thread_id: "thread_controller", message: { role: "user", content: "Controller import." } }),
     JSON.stringify({ timestamp: "2026-04-25T10:00:08Z", thread_id: "thread_controller", message: { role: "assistant", content: "Controller imported." } }),
   ].join("\n"), "utf8");
+  try {
+    fs.symlinkSync(controllerSourceRoot, path.join(controllerSourceRoot, "loop"));
+  } catch {}
   const importController = new DirectImportController({ sessionStore: importSessionStore });
   const listedSources = await importController.listSources({ id: "project_controller", workspace: { kind: "local", localPath: "/tmp/workspace" } }, { sourceRoot: controllerSourceRoot });
   assert(listedSources.ok === true && listedSources.sources.length === 1, "Expected explicit source listing to find controller JSONL.");
@@ -2538,6 +2556,12 @@ try {
   assert(controllerMaterialized.rendererSafeSession.source.sourceDisplayName === "thread_controller.jsonl", "Expected controller renderer projection source display name.");
   const canceledImport = await importController.cancelImport({ id: "project_controller" }, { importId: "import_canceled_smoke" });
   assert(canceledImport.state === "import-canceled", "Expected controller cancel to write canceled import report.");
+  const corruptImportDir = path.join(importStoreParent, "direct-sessions", "imports", "import_corrupt_smoke");
+  fs.mkdirSync(corruptImportDir, { recursive: true });
+  fs.writeFileSync(path.join(corruptImportDir, "candidate.json"), "{", "utf8");
+  const recoveredWithCorruptImport = importSessionStore.recoverImportIndex({ write: true });
+  const corruptEntry = recoveredWithCorruptImport.imports.find((entry) => entry.importId === "import_corrupt_smoke");
+  assert(corruptEntry?.recoveryState === "corrupted", "Expected corrupt import artifact recovery to continue and mark import corrupted.");
 } finally {
   fs.rmSync(importStoreParent, { recursive: true, force: true });
 }

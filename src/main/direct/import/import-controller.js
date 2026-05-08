@@ -5,6 +5,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const { parseJsonl } = require("../fixtures/fixture-loader");
 const {
+  DIRECT_IMPORT_VALIDATION_REPORT_SCHEMA,
   MAX_IMPORT_FILE_BYTES,
   MAX_IMPORT_RECORDS,
   buildDirectCheckpointCandidate,
@@ -69,18 +70,39 @@ function rendererSafeSourceSummary(filePath, sourceRoot = "") {
 
 function listJsonlFiles(sourceRoot, limit = 200) {
   const root = path.resolve(sourceRoot);
-  const stat = fs.statSync(root);
+  const stat = fs.lstatSync(root);
+  if (stat.isSymbolicLink()) throw new Error("Direct import source root cannot be a symbolic link.");
   if (stat.isFile()) return [root];
   if (!stat.isDirectory()) throw new Error("Direct import source root must be a directory or JSONL file.");
   const results = [];
   const stack = [root];
+  const visited = new Set([fs.realpathSync(root)]);
   while (stack.length && results.length < limit) {
     const current = stack.pop();
-    const entries = fs.readdirSync(current, { withFileTypes: true });
+    let entries = [];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
     for (const entry of entries) {
       const fullPath = path.join(current, entry.name);
-      if (entry.isDirectory() && !entry.name.startsWith(".")) stack.push(fullPath);
-      if (entry.isFile() && entry.name.endsWith(".jsonl")) results.push(fullPath);
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory() && !entry.name.startsWith(".")) {
+        try {
+          const real = fs.realpathSync(fullPath);
+          if (!visited.has(real)) {
+            visited.add(real);
+            stack.push(fullPath);
+          }
+        } catch {}
+      }
+      if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+        try {
+          statSource(fullPath);
+          results.push(fullPath);
+        } catch {}
+      }
       if (results.length >= limit) break;
     }
   }
@@ -251,7 +273,7 @@ class DirectImportController {
     const importId = normalizeString(params.importId, "");
     if (!importId) return { ok: false, error: "missing_import_id" };
     const report = {
-      schema: "direct_codex_import_validation_report@1",
+      schema: DIRECT_IMPORT_VALIDATION_REPORT_SCHEMA,
       reportId: `validation_report_${importId}_canceled`,
       lineage: {
         importId,

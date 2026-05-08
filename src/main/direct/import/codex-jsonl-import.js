@@ -51,6 +51,17 @@ function sha256Hex(value) {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
 
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 function stableDigest(value) {
   return sha256Hex(String(value || "")).slice(0, 20);
 }
@@ -162,7 +173,7 @@ function importSourceIdentity(records, options = {}) {
   const sourcePath = options.sourcePath ? path.resolve(options.sourcePath) : "";
   const sourceRoot = options.codexHome || options.sourceRoot || (sourcePath ? path.dirname(sourcePath) : "");
   const stat = sourcePath ? fileStat(sourcePath) : null;
-  const serializedRecords = JSON.stringify(records || []);
+  const serializedRecords = stableStringify(records || []);
   const fallbackSha = sha256Hex(serializedRecords);
   const sourceFileSha256 = normalizeString(options.sourceFileSha256, "") || (sourcePath ? fileSha256(sourcePath) : "") || fallbackSha;
   const sourceFileSizeBytes = Number(options.sourceFileSizeBytes ?? stat?.size ?? Buffer.byteLength(serializedRecords, "utf8"));
@@ -260,8 +271,9 @@ function buildImportCandidate(records, options = {}) {
 
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index] || {};
-    const rawSize = Buffer.byteLength(JSON.stringify(record), "utf8");
-    const sourceHash = stableDigest(JSON.stringify(record));
+    const stableRecord = stableStringify(record);
+    const rawSize = Buffer.byteLength(stableRecord, "utf8");
+    const sourceHash = stableDigest(stableRecord);
     const classification = classifyRecord(record);
     const node = {
       seq: index,
@@ -360,7 +372,7 @@ function buildDirectCheckpointCandidate(importCandidate, options = {}) {
         requiresFreshAuthority: true,
       }))
     : [];
-  const checkpointSeed = JSON.stringify({
+  const checkpointSeed = stableStringify({
     sourceFileSha256: source.sourceFileSha256,
     threadId: source.threadId,
     messages,
@@ -646,6 +658,15 @@ function materializeDirectImportSession(checkpointCandidate, options = {}) {
   if (!checkpointCandidate || checkpointCandidate.schema !== DIRECT_IMPORT_CHECKPOINT_SCHEMA) {
     throw new Error(`Direct import materialization requires a ${DIRECT_IMPORT_CHECKPOINT_SCHEMA} candidate.`);
   }
+  const authBlocked = checkpointCandidate.validation?.gates?.rawAuthMaterialObserved === true ||
+    checkpointCandidate.validationReport?.gates?.rawAuthMaterialObserved === true ||
+    (Array.isArray(checkpointCandidate.validation?.blockers) &&
+      checkpointCandidate.validation.blockers.some((blocker) => blocker?.code === "raw_auth_material_observed")) ||
+    (Array.isArray(checkpointCandidate.validationReport?.blockers) &&
+      checkpointCandidate.validationReport.blockers.some((blocker) => blocker?.code === "raw_auth_material_observed"));
+  if (authBlocked) {
+    throw new Error("Direct import materialization blocked: raw auth-like material was observed and must be redacted first.");
+  }
   const checkpoint = checkpointCandidate.checkpoint || {};
   const source = checkpointCandidate.source || {};
   const checkpointState = firstString(checkpointCandidate.state, checkpointCandidate.validation?.state, "checkpoint-candidate");
@@ -899,5 +920,6 @@ module.exports = {
   loadCodexJsonlImportCandidate,
   materializeDirectImportSession,
   redactFixture,
+  stableStringify,
   validateDirectCheckpointCandidate,
 };
