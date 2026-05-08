@@ -49,6 +49,11 @@ const {
   buildDirectFixtureCapabilities,
 } = require("../src/main/direct/controller/fixture-controller");
 const {
+  DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
+  DirectLiveTextController,
+  DirectLiveTextSurfaceSession,
+} = require("../src/main/direct/controller/live-text-controller");
+const {
   DEFAULT_CODEX_RESPONSES_ENDPOINT,
   DIRECT_TOOL_CONTINUATION_RESULT_SCHEMA,
   DIRECT_TEXT_PROBE_RESULT_SCHEMA,
@@ -204,6 +209,25 @@ const profileDoc = loadDirectCodexProfile();
 assert(profileDoc.profile.source === "imported-baseline", "Expected imported conceptual baseline profile.");
 assert(profileDoc.capabilityIndex.get("direct_backend_endpoint")?.status === "observed", "Expected direct endpoint to remain observed.");
 assert(profileDoc.capabilityIndex.get("consumer_chatgpt_thread_programmatic_control")?.status === "rejected", "Expected consumer web-thread automation to be rejected.");
+
+function acceptedLiveTextProfile() {
+  const doc = JSON.parse(JSON.stringify(profileDoc));
+  const models = Array.isArray(doc.profile?.ontology?.models) ? doc.profile.ontology.models : [];
+  let found = false;
+  for (const model of models) {
+    if (model?.id !== "gpt-5.4") continue;
+    model.status = "accepted";
+    found = true;
+  }
+  if (!found) {
+    doc.profile.ontology.models = [
+      ...models,
+      { id: "gpt-5.4", displayName: "GPT-5.4", status: "accepted", supportsReasoning: null, supportsTools: null },
+    ];
+  }
+  return doc;
+}
+
 assert(normalizeCodexRuntimeMode("experimental-direct") === "direct-experimental", "Expected direct runtime mode alias normalization.");
 const directRuntimeStatus = buildDirectRuntimeStatus({
   project: {
@@ -252,6 +276,25 @@ const directRuntimeStatusWithFixture = buildDirectRuntimeStatus({
 assert(directRuntimeStatusWithFixture.directRuntime.turnRunnable === false, "Fixture path must not imply live direct turns are runnable.");
 assert(directRuntimeStatusWithFixture.fixtureRuntime.turnRunnable === true, "Expected fixture-only turn path to be separately exposed.");
 assert(directRuntimeStatusWithFixture.fixtureRuntime.liveBackend === false, "Fixture runtime must be labeled as non-live.");
+const directRuntimeStatusWithLiveText = buildDirectRuntimeStatus({
+  project: { surfaceBinding: { codex: { runtimeMode: "direct-experimental", directTransport: "live-text", model: "gpt-5.4" } } },
+  authStatus: { status: "authenticated", storageMode: "file" },
+  authSettings: { storageMode: "file" },
+  profileDoc: acceptedLiveTextProfile(),
+  liveTextRuntime: {
+    available: true,
+    status: {
+      status: "ready",
+      turnRunnable: true,
+      modelSource: "odeu-profile",
+      modelEvidenceState: "accepted",
+    },
+  },
+});
+assert(directRuntimeStatusWithLiveText.currentCodexLane === "direct live text experimental", "Expected runtime lane to label live text truthfully.");
+assert(directRuntimeStatusWithLiveText.directRuntime.turnRunnable === true, "Expected accepted live text runtime to enable direct turn status.");
+assert(directRuntimeStatusWithLiveText.liveTextRuntime.turnRunnable === true, "Expected live text runtime status to project turn runnable.");
+assert(directRuntimeStatusWithLiveText.transport.runnable === true, "Expected live text transport status to become runnable only through live runtime evidence.");
 const memoryDirectRuntimeStatus = buildDirectRuntimeStatus({
   project: { surfaceBinding: { codex: { runtimeMode: "direct-experimental" } } },
   authStatus: { status: "unauthenticated", storageMode: "memory" },
@@ -536,6 +579,381 @@ try {
   assert(failurePersisted.messages[0].items.some((item) => item.type === "userMessage"), "Expected failed fixture transcript to retain the user prompt.");
 } finally {
   fs.rmSync(fixtureControllerParent, { recursive: true, force: true });
+}
+
+const liveTextControllerParent = fs.mkdtempSync(path.join(os.tmpdir(), "direct-codex-live-text-controller-"));
+try {
+  const liveProfileDoc = acceptedLiveTextProfile();
+  const liveAuthStore = createDirectAuthStore({ mode: "memory" });
+  liveAuthStore.writeCredentials({
+    accessToken: "live_text_access_token_secret_1234567890",
+    refreshToken: "live_text_refresh_token_secret_1234567890",
+    expiresAt: Date.now() + 3_600_000,
+    accountId: "[REDACTED:account-id]",
+  });
+  const liveProject = {
+    id: "project_live_text",
+    name: "Live Text Project",
+    workspace: { kind: "local", localPath: "[REDACTED:private-path]" },
+    surfaceBinding: {
+      codex: {
+        runtimeMode: "direct-experimental",
+        directTransport: "live-text",
+        model: "gpt-5.4",
+        profileId: liveProfileDoc.profile.profileId,
+      },
+    },
+  };
+  const liveSse = [
+    "event: response.created",
+    "data: {\"response\":{\"id\":\"resp_live_text\",\"model\":\"gpt-5.4\"}}",
+    "",
+    "event: response.reasoning_summary_text.delta",
+    "data: {\"item_id\":\"reason_live_text\",\"delta\":\"hidden reasoning summary\"}",
+    "",
+    "event: response.output_text.delta",
+    "data: {\"item_id\":\"msg_live_text\",\"delta\":\"direct\"}",
+    "",
+    "event: response.output_text.delta",
+    "data: {\"item_id\":\"msg_live_text\",\"delta\":\" ok\"}",
+    "",
+    "event: response.completed",
+    "data: {\"response\":{\"id\":\"resp_live_text\",\"status\":\"completed\",\"usage\":{\"input_tokens\":2,\"output_tokens\":2,\"total_tokens\":4}}}",
+    "",
+    "data: [DONE]",
+    "",
+  ].join("\n");
+
+  const liveSessionStore = new DirectSessionStore({ rootDir: path.join(liveTextControllerParent, "direct-sessions") });
+  let liveFetchCalls = 0;
+  let capturedLiveRequest = null;
+  const liveController = new DirectLiveTextController({
+    sessionStore: liveSessionStore,
+    profileDoc: liveProfileDoc,
+    authStore: liveAuthStore,
+    fetchImpl: async (url, init) => {
+      liveFetchCalls += 1;
+      capturedLiveRequest = { url, init, body: JSON.parse(init.body) };
+      return textResponse(liveSse, 200, { "content-type": "text/event-stream" });
+    },
+  });
+  const liveStatus = liveController.statusForProject(liveProject);
+  assert(liveStatus.status === "ready", "Expected accepted model and auth to make live text controller ready.");
+  assert(liveStatus.modelEvidenceState === "accepted", "Expected live text status to expose accepted model evidence.");
+  assert(liveStatus.appServerRequired === false, "Live text controller must not require app-server.");
+  assert(liveStatus.auth.rawTokensExposed === false, "Live text status must not expose raw tokens.");
+
+  const candidateController = new DirectLiveTextController({
+    sessionStore: liveSessionStore,
+    profileDoc,
+    authStore: liveAuthStore,
+    fetchImpl: async () => textResponse(liveSse, 200, { "content-type": "text/event-stream" }),
+  });
+  assert(candidateController.statusForProject(liveProject).status === "profile_required", "Observed baseline models must not make live turns runnable.");
+  await assertRejects(
+    () => candidateController.startThread({}, { project: liveProject }),
+    "Expected live text thread start to require accepted or runtime-probed model evidence.",
+  );
+  const unauthController = new DirectLiveTextController({
+    sessionStore: liveSessionStore,
+    profileDoc: liveProfileDoc,
+    authStore: createDirectAuthStore({ mode: "memory" }),
+    fetchImpl: async () => textResponse(liveSse, 200, { "content-type": "text/event-stream" }),
+  });
+  assert(unauthController.statusForProject(liveProject).status === "auth_required", "Expected live text controller to fail closed without direct auth.");
+  await assertRejects(
+    () => unauthController.startThread({}, { project: liveProject }),
+    "Expected live text thread start to require direct auth.",
+  );
+  const dynamicUnauthStore = createDirectAuthStore({ mode: "memory" });
+  const dynamicAuthStore = createDirectAuthStore({ mode: "memory" });
+  dynamicAuthStore.writeCredentials({
+    accessToken: "dynamic_live_text_access_token_secret_1234567890",
+    refreshToken: "dynamic_live_text_refresh_token_secret_1234567890",
+    expiresAt: Date.now() + 3_600_000,
+    accountId: "[REDACTED:account-id]",
+  });
+  let dynamicActiveStore = dynamicUnauthStore;
+  const dynamicStoreController = new DirectLiveTextController({
+    sessionStore: liveSessionStore,
+    profileDoc: liveProfileDoc,
+    authStore: () => dynamicActiveStore,
+    fetchImpl: async () => textResponse(liveSse, 200, { "content-type": "text/event-stream" }),
+  });
+  assert(dynamicStoreController.statusForProject(liveProject).status === "auth_required", "Expected live text auth getter to see the initial unauthenticated store.");
+  dynamicActiveStore = dynamicAuthStore;
+  assert(dynamicStoreController.statusForProject(liveProject).status === "ready", "Expected live text auth getter to follow storage mode changes.");
+
+  const liveEvents = [];
+  const liveSurface = new DirectLiveTextSurfaceSession({
+    isDestroyed: () => false,
+    send: (_channel, payload) => liveEvents.push(payload),
+  }, {
+    controller: liveController,
+    project: liveProject,
+  });
+  const liveConnected = await liveSurface.connect({ transport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT });
+  assert(liveConnected.connected === true, "Expected live text surface session to connect.");
+  assert(liveConnected.connection.transport === DIRECT_LIVE_TEXT_SURFACE_TRANSPORT, "Expected live text transport in connection.");
+  assert(liveSurface.hasServerRequest() === false, "Live text surface must not expose app-server pending requests.");
+  const liveInitialized = await liveSurface.request("initialize", {});
+  assert(liveInitialized.runtime === DIRECT_LIVE_TEXT_SURFACE_TRANSPORT, "Expected live text initialize runtime.");
+  assert(liveInitialized.capabilities.threads.canStart === true, "Expected ready live text controller to allow thread start.");
+  assert(liveInitialized.capabilities.diagnostics.appServerRequired === false, "Expected live text capabilities to deny app-server requirement.");
+  const liveAccount = await liveSurface.request("account/read", {});
+  assert(liveAccount.requiresOpenaiAuth === false, "Expected authenticated live text account.");
+  assert(liveAccount.rawTokensExposed === false, "Expected live text account projection to redact tokens.");
+  const liveThread = await liveSurface.request("thread/start", { model: "gpt-5.4" });
+  assert(liveThread.thread.id, "Expected live text thread start to create a direct session.");
+  const liveAck = await liveSurface.request("turn/start", {
+    threadId: liveThread.thread.id,
+    promptText: "live text prompt",
+    clientTurnRequestId: "client_req_live_text_1",
+    model: "gpt-5.4",
+  });
+  assert(liveAck.turn.status === "inProgress", "Expected live text turn/start to return an immediate ack.");
+  await waitForCondition(
+    () => liveEvents.some((event) => event.type === "rpc-notification" && event.method === "turn/completed" && event.params?.turnId === liveAck.turn.id),
+    "Expected live text surface to emit terminal notification.",
+  );
+  assert(liveFetchCalls === 1, "Expected live text turn to make exactly one provider request.");
+  assert(capturedLiveRequest.body.stream === true && capturedLiveRequest.body.store === false, "Expected live text request to use text-only streaming shape.");
+  assert(!capturedLiveRequest.body.tools, "Live text request must not include tools.");
+  assert(!capturedLiveRequest.body.tool_choice, "Live text request must not include tool choice.");
+  assert(!capturedLiveRequest.body.parallel_tool_calls, "Live text request must not include parallel tool calls.");
+  assert(capturedLiveRequest.init.headers.Authorization.startsWith("Bearer "), "Expected live text request to include main-process auth header.");
+  const liveDuplicate = await liveSurface.request("turn/start", {
+    threadId: liveThread.thread.id,
+    promptText: "live text prompt",
+    clientTurnRequestId: "client_req_live_text_1",
+    model: "gpt-5.4",
+  });
+  assert(liveDuplicate.reused === true, "Expected duplicate live text client request id to reuse existing turn.");
+  assert(liveFetchCalls === 1, "Expected duplicate live text turn/start not to create a second provider request.");
+  const livePersisted = liveSessionStore.readSession(liveThread.thread.id);
+  assert(livePersisted.runtimeMode === "direct-experimental", "Expected live text session runtime metadata.");
+  assert(livePersisted.directTransport === DIRECT_LIVE_TEXT_SURFACE_TRANSPORT, "Expected live text session transport metadata.");
+  assert(livePersisted.modelSource === "odeu-profile", "Expected live text session model source metadata.");
+  assert(livePersisted.modelEvidenceState === "accepted", "Expected live text session model evidence metadata.");
+  assert(livePersisted.workspaceDisplayPath === "[REDACTED:private-path]", "Expected live text session workspace display path metadata.");
+  assert(livePersisted.clientTurnRequests.client_req_live_text_1 === liveAck.turn.id, "Expected live text session to persist client turn id mapping.");
+  const liveAssistant = livePersisted.messages[0].items.find((item) => item.type === "agentMessage");
+  assert(liveAssistant.text === "direct ok", "Expected live text transcript to persist assistant text.");
+  assert(!liveAssistant.text.includes("hidden reasoning"), "Reasoning deltas must not render into assistant transcript.");
+  const liveAssistantId = `${liveAck.turn.id}_assistant`;
+  const liveAssistantStarts = liveEvents.filter((event) => event.type === "rpc-notification" && event.method === "item/started" && event.params?.item?.id === liveAssistantId);
+  const liveAssistantDeltas = liveEvents.filter((event) => event.type === "rpc-notification" && event.method === "item/agentMessage/delta" && event.params?.itemId === liveAssistantId);
+  const liveAssistantCompletes = liveEvents.filter((event) => event.type === "rpc-notification" && event.method === "item/completed" && event.params?.item?.id === liveAssistantId);
+  assert(liveAssistantStarts.length === 1, "Expected live text assistant item to start once.");
+  assert(liveAssistantDeltas.length === 2, "Expected live text assistant item to receive stable-id deltas.");
+  assert(liveAssistantCompletes.length === 1, "Expected live text assistant item to complete once.");
+  assert(!liveEvents.some((event) => JSON.stringify(event).includes("hidden reasoning")), "Reasoning deltas must not be exposed to renderer events.");
+  const liveEventLog = fs.readFileSync(liveSessionStore.eventPath(liveThread.thread.id, liveAck.turn.id), "utf8");
+  assert(liveEventLog.includes("reasoning_delta"), "Expected reasoning deltas to persist as normalized evidence.");
+  const liveRead = await liveSurface.request("thread/read", { threadId: liveThread.thread.id });
+  assert(liveRead.thread.turns[0].items.some((item) => item.type === "agentMessage" && item.text === "direct ok"), "Expected thread/read to reconstruct live text transcript.");
+  const liveCompletedInterrupt = await liveSurface.request("turn/interrupt", {
+    threadId: liveThread.thread.id,
+    turnId: liveAck.turn.id,
+  });
+  assert(liveCompletedInterrupt.status === "completed_already", "Expected abort after completion to preserve completed terminal state.");
+  await assertRejects(
+    () => liveSurface.request("thread/resume", { threadId: liveThread.thread.id }),
+    "Expected unsupported live text methods to fail visibly.",
+  );
+  assert(liveFetchCalls === 1, "Unsupported live text methods must not be forwarded to provider transport.");
+
+  const truncatedStore = new DirectSessionStore({ rootDir: path.join(liveTextControllerParent, "truncated-direct-sessions") });
+  const truncatedController = new DirectLiveTextController({
+    sessionStore: truncatedStore,
+    profileDoc: liveProfileDoc,
+    authStore: liveAuthStore,
+    maxAssistantChars: 6,
+    fetchImpl: async () => textResponse(liveSse, 200, { "content-type": "text/event-stream" }),
+  });
+  const truncatedEvents = [];
+  const truncatedSurface = new DirectLiveTextSurfaceSession({
+    isDestroyed: () => false,
+    send: (_channel, payload) => truncatedEvents.push(payload),
+  }, {
+    controller: truncatedController,
+    project: liveProject,
+  });
+  await truncatedSurface.connect({ transport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT });
+  const truncatedThread = await truncatedSurface.request("thread/start", {});
+  const truncatedAck = await truncatedSurface.request("turn/start", {
+    threadId: truncatedThread.thread.id,
+    promptText: "truncated prompt",
+    clientTurnRequestId: "client_req_truncated_live_text_1",
+    model: "gpt-5.4",
+  });
+  await waitForCondition(
+    () => truncatedEvents.some((event) => event.type === "rpc-notification" && event.method === "turn/completed" && event.params?.turnId === truncatedAck.turn.id),
+    "Expected truncated live text surface to emit terminal notification.",
+  );
+  const truncatedPersisted = truncatedStore.readSession(truncatedThread.thread.id);
+  const truncatedAssistant = truncatedPersisted.messages[0].items.find((item) => item.type === "agentMessage");
+  const truncatedRendererText = truncatedEvents
+    .filter((event) => event.type === "rpc-notification" && event.method === "item/agentMessage/delta")
+    .map((event) => event.params?.delta || "")
+    .join("");
+  assert(truncatedAssistant.text === "direct", "Expected truncated live text transcript to respect maxAssistantChars.");
+  assert(truncatedRendererText === truncatedAssistant.text, "Expected emitted live text deltas to match persisted truncation.");
+
+  const slowStore = new DirectSessionStore({ rootDir: path.join(liveTextControllerParent, "slow-direct-sessions") });
+  let slowFetchCalls = 0;
+  let releaseSlowFetch = null;
+  const slowFetchReleased = new Promise((resolve) => { releaseSlowFetch = resolve; });
+  const slowController = new DirectLiveTextController({
+    sessionStore: slowStore,
+    profileDoc: liveProfileDoc,
+    authStore: liveAuthStore,
+    fetchImpl: async (_url, init) => {
+      slowFetchCalls += 1;
+      await slowFetchReleased;
+      if (init.signal?.aborted) throw Object.assign(new Error("slow live text aborted"), { name: "AbortError" });
+      return textResponse(liveSse, 200, { "content-type": "text/event-stream" });
+    },
+  });
+  const slowEvents = [];
+  const slowSurface = new DirectLiveTextSurfaceSession({
+    isDestroyed: () => false,
+    send: (_channel, payload) => slowEvents.push(payload),
+  }, {
+    controller: slowController,
+    project: liveProject,
+  });
+  await slowSurface.connect({ transport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT });
+  const slowThread = await slowSurface.request("thread/start", {});
+  const slowAck = await slowSurface.request("turn/start", {
+    threadId: slowThread.thread.id,
+    promptText: "slow prompt",
+    clientTurnRequestId: "client_req_slow_live_text_1",
+    model: "gpt-5.4",
+  });
+  await waitForCondition(() => slowFetchCalls === 1, "Expected slow live text fetch to start.");
+  const reloadedSlowEvents = [];
+  const reloadedSlowSurface = new DirectLiveTextSurfaceSession({
+    isDestroyed: () => false,
+    send: (_channel, payload) => reloadedSlowEvents.push(payload),
+  }, {
+    controller: slowController,
+    project: liveProject,
+  });
+  await reloadedSlowSurface.connect({ transport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT });
+  const slowRunningRead = await reloadedSlowSurface.request("thread/read", { threadId: slowThread.thread.id });
+  assert(slowRunningRead.thread.id === slowThread.thread.id, "Expected renderer reload to read the main-owned live text session.");
+  const slowDuplicateFromReload = await reloadedSlowSurface.request("turn/start", {
+    threadId: slowThread.thread.id,
+    promptText: "slow prompt",
+    clientTurnRequestId: "client_req_slow_live_text_1",
+    model: "gpt-5.4",
+  });
+  assert(slowDuplicateFromReload.reused === true, "Expected renderer reload duplicate request to reuse active live turn.");
+  assert(slowFetchCalls === 1, "Renderer reload must not start a second live provider request.");
+  await assertRejects(
+    () => reloadedSlowSurface.request("turn/start", {
+      threadId: slowThread.thread.id,
+      promptText: "second slow prompt",
+      clientTurnRequestId: "client_req_slow_live_text_2",
+      model: "gpt-5.4",
+    }),
+    "Expected live text controller to reject a second active turn in the same session.",
+  );
+  const slowAbort = await slowSurface.request("turn/interrupt", {
+    threadId: slowThread.thread.id,
+    turnId: slowAck.turn.id,
+  });
+  assert(slowAbort.status === "abort_requested", "Expected live text abort to request cancellation while stream is active.");
+  releaseSlowFetch();
+  await waitForCondition(
+    () => slowEvents.some((event) => event.type === "rpc-notification" && event.method === "turn/completed" && event.params?.turnId === slowAck.turn.id),
+    "Expected slow live text abort to emit a terminal notification.",
+  );
+  const slowAbortedTurn = slowStore.readTurn(slowThread.thread.id, slowAck.turn.id);
+  assert(slowAbortedTurn.state === "aborted", "Expected aborted live text turn to persist aborted state.");
+  const slowDuplicateAfterAbort = await reloadedSlowSurface.request("turn/start", {
+    threadId: slowThread.thread.id,
+    promptText: "slow prompt",
+    clientTurnRequestId: "client_req_slow_live_text_1",
+    model: "gpt-5.4",
+  });
+  assert(slowDuplicateAfterAbort.reused === true, "Expected duplicate live text request to reuse aborted terminal snapshot.");
+  assert(slowFetchCalls === 1, "Expected aborted duplicate live text request not to retry the original provider request.");
+
+  const toolStore = new DirectSessionStore({ rootDir: path.join(liveTextControllerParent, "tool-direct-sessions") });
+  const liveToolSse = [
+    "event: response.created",
+    "data: {\"response\":{\"id\":\"resp_live_tool\",\"model\":\"gpt-5.4\"}}",
+    "",
+    "event: response.output_item.added",
+    "data: {\"item\":{\"id\":\"tool_live_text\",\"type\":\"function_call\",\"call_id\":\"call_live_read\",\"name\":\"read_file\"}}",
+    "",
+    "event: response.function_call_arguments.delta",
+    "data: {\"item_id\":\"tool_live_text\",\"call_id\":\"call_live_read\",\"delta\":\"{\\\"path\\\"\"}",
+    "",
+    "event: response.function_call_arguments.delta",
+    "data: {\"item_id\":\"tool_live_text\",\"call_id\":\"call_live_read\",\"delta\":\":\\\"README.md\\\"}\"}",
+    "",
+    "event: response.output_item.done",
+    "data: {\"item\":{\"id\":\"tool_live_text\",\"type\":\"function_call\",\"call_id\":\"call_live_read\",\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"README.md\\\"}\"}}",
+    "",
+    "event: response.completed",
+    "data: {\"response\":{\"id\":\"resp_live_tool\",\"status\":\"completed\"}}",
+    "",
+  ].join("\n");
+  const toolController = new DirectLiveTextController({
+    sessionStore: toolStore,
+    profileDoc: liveProfileDoc,
+    authStore: liveAuthStore,
+    fetchImpl: async () => textResponse(liveToolSse, 200, { "content-type": "text/event-stream" }),
+  });
+  const liveToolEvents = [];
+  const liveToolSurface = new DirectLiveTextSurfaceSession({
+    isDestroyed: () => false,
+    send: (_channel, payload) => liveToolEvents.push(payload),
+  }, {
+    controller: toolController,
+    project: liveProject,
+  });
+  await liveToolSurface.connect({ transport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT });
+  const liveToolThread = await liveToolSurface.request("thread/start", {});
+  const liveToolAck = await liveToolSurface.request("turn/start", {
+    threadId: liveToolThread.thread.id,
+    promptText: "tool prompt",
+    clientTurnRequestId: "client_req_live_tool_1",
+    model: "gpt-5.4",
+  });
+  await waitForCondition(
+    () => liveToolEvents.some((event) => event.type === "rpc-notification" && event.method === "turn/completed" && event.params?.turnId === liveToolAck.turn.id),
+    "Expected live text tool detection to emit a terminal notification.",
+  );
+  const liveToolTurn = toolStore.readTurn(liveToolThread.thread.id, liveToolAck.turn.id);
+  const liveToolSession = toolStore.readSession(liveToolThread.thread.id);
+  assert(liveToolTurn.state === "tool_waiting", "Expected live text tool call to pause in tool_waiting.");
+  assert(liveToolTurn.unresolvedObligations.length === 1, "Expected live text tool call to persist one obligation.");
+  assert(liveToolTurn.unresolvedObligations[0].executionAllowed === false, "Live text tool detection must not authorize execution.");
+  assert(liveToolTurn.unresolvedObligations[0].continuationAllowed === false, "Live text tool detection must not authorize continuation.");
+  assert(liveToolTurn.unresolvedObligations[0].sideEffectExecuted === false, "Live text tool detection must not execute side effects.");
+  assert(liveToolSession.messages[0].items.some((item) => item.type === "dynamicToolCall" && item.status === "waiting"), "Expected live text tool call to render as waiting obligation.");
+  assert(liveToolSurface.hasServerRequest() === false, "Live text tool detection must not create app-server request authority.");
+  assert(liveToolEvents.some((event) => event.type === "rpc-notification" && event.method === "warning"), "Expected live text tool detection to warn that execution is disabled.");
+  await assertRejects(
+    () => liveToolSurface.request("turn/start", {
+      threadId: liveToolThread.thread.id,
+      promptText: "blocked after tool",
+      clientTurnRequestId: "client_req_live_tool_2",
+      model: "gpt-5.4",
+    }),
+    "Expected unresolved live text tool obligation to block another turn in the same session.",
+  );
+  const liveToolAbort = await liveToolSurface.request("turn/interrupt", {
+    threadId: liveToolThread.thread.id,
+    turnId: liveToolAck.turn.id,
+  });
+  assert(liveToolAbort.status === "aborted", "Expected live text tool_waiting turn to have a manual abort escape path.");
+} finally {
+  fs.rmSync(liveTextControllerParent, { recursive: true, force: true });
 }
 
 const secretFixture = {

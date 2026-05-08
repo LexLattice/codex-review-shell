@@ -100,6 +100,7 @@ if (fallbackRuntimePref.match !== "thread" || fallbackRuntimePref.value?.model !
 }
 if (!Array.isArray(project.chatThreads) || project.chatThreads.length !== 1) throw new Error("Expected one migrated ChatGPT thread.");
 if (project.surfaceBinding.codex.runtimeMode !== "legacy-app-server") throw new Error("Expected migrated Codex runtime mode to stay legacy app-server.");
+if (project.surfaceBinding.codex.directTransport !== "fixture") throw new Error("Expected migrated direct transport to default to fixture.");
 if (project.surfaceBinding.codex.bindingProvider !== "codex-compatible") throw new Error("Expected migrated Codex binding provider to stay Codex-compatible.");
 if (project.surfaceBinding.codex.provider?.kind !== "codex_executable") throw new Error("Expected migrated runtime provider to stay Codex executable.");
 const thread = project.chatThreads[0];

@@ -13,6 +13,11 @@ function decodePayload() {
   }
 }
 
+function createClientTurnRequestId() {
+  if (window.crypto?.randomUUID) return `client_turn_${window.crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`;
+  return `client_turn_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
 const bridge = window.codexSurfaceBridge;
 const payload = decodePayload() || {};
 const project = payload.project || null;
@@ -45,6 +50,8 @@ const TOOL_LIKE_THOUGHT_TYPES = new Set([
   "webSearch",
 ]);
 const DIRECT_FIXTURE_TRANSPORT = "direct-fixture";
+const DIRECT_LIVE_TEXT_TRANSPORT = "direct-live-text";
+const DIRECT_TRANSPORTS = new Set([DIRECT_FIXTURE_TRANSPORT, DIRECT_LIVE_TEXT_TRANSPORT]);
 const THOUGHT_ASSISTANT_PHASES = new Set([
   // Canonical Codex phase for interim assistant preamble/progress text.
   "commentary",
@@ -3839,12 +3846,15 @@ function bindThread(thread, modelName = "", options = {}) {
   state.activeModel = String(modelName || state.activeModel || project?.codex?.model || "");
   const title = thread?.title || thread?.name || thread?.preview || state.threadTitle || payload.initialThreadTitle || state.threadId;
   const isDirectFixture = connection?.transport === DIRECT_FIXTURE_TRANSPORT;
+  const isDirectLiveText = connection?.transport === DIRECT_LIVE_TEXT_TRANSPORT;
   updateSurfaceHeader(title, workspaceText());
   setComposerEnabled(state.liveAttached, state.liveAttached ? "" : "Read-only mode");
   setNotice(
-    isDirectFixture ? "Direct fixture session ready" : "Codex session ready",
+    isDirectLiveText ? "Direct live text session ready" : isDirectFixture ? "Direct fixture session ready" : "Codex session ready",
     isDirectFixture
       ? "Fixture-only direct controller is connected."
+      : isDirectLiveText
+        ? "Live text direct controller is connected. Tools are detection-only."
       : thread?.preview ? `Resumed thread: ${thread.preview}` : "Managed local Codex app-server is connected.",
     { success: true, showNewThread: true },
   );
@@ -4865,6 +4875,10 @@ async function startCodexTurn(text, options = {}) {
     model: activeModelId() || null,
     effort: requestedReasoningEffort(),
   };
+  if (connection?.transport === DIRECT_LIVE_TEXT_TRANSPORT) {
+    params.clientTurnRequestId = options.clientTurnRequestId || createClientTurnRequestId();
+    params.promptText = text;
+  }
   if (state.runtimeOverrides.approvalPolicy) params.approvalPolicy = state.runtimeOverrides.approvalPolicy;
   if (state.runtimeOverrides.serviceTier) params.serviceTier = state.runtimeOverrides.serviceTier;
   const sandboxPolicy = sandboxPolicyForMode(state.runtimeOverrides.sandboxMode);
@@ -5210,7 +5224,7 @@ async function connect() {
   await loadRuntimePreferences({ applyThread: false });
   updateSurfaceHeader(payload.initialThreadTitle || project.name, workspaceText());
 
-  if (!connection?.wsUrl && connection?.transport !== DIRECT_FIXTURE_TRANSPORT) {
+  if (!connection?.wsUrl && !DIRECT_TRANSPORTS.has(connection?.transport)) {
     setBadge(els.connectionBadge, "fallback", "warning");
     state.connectionStatus = "unavailable";
     renderRuntimeConstitution();
@@ -5232,7 +5246,8 @@ async function connect() {
   }
 
   const isDirectFixture = connection?.transport === DIRECT_FIXTURE_TRANSPORT;
-  setComposerEnabled(false, isDirectFixture ? "Connecting direct fixture controller…" : "Connecting Codex app-server…");
+  const isDirectLiveText = connection?.transport === DIRECT_LIVE_TEXT_TRANSPORT;
+  setComposerEnabled(false, isDirectLiveText ? "Connecting direct live text controller…" : isDirectFixture ? "Connecting direct fixture controller…" : "Connecting Codex app-server…");
   setBadge(els.connectionBadge, "connecting", "warning");
   state.connectionStatus = "connecting";
   renderRuntimeConstitution();
