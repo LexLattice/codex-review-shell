@@ -24,6 +24,15 @@ const DIRECT_TURN_STATES = new Set([
   "checkpoint_required",
 ]);
 const DIRECT_RECOVERABLE_ACTIVE_TURN_STATES = new Set(["request_built", "streaming"]);
+const DIRECT_TOOL_OBLIGATION_TERMINAL_STATUSES = new Set([
+  "approved",
+  "declined",
+  "canceled",
+  "result_recorded",
+  "continuation_built",
+  "continuation_sent",
+  "unsupported",
+]);
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -85,15 +94,19 @@ function buildToolObligationsFromEvents(sessionId, turnId, events = []) {
       obligationId: toolObligationId(sessionId, turnId, key),
       sessionId: normalizeString(sessionId, ""),
       turnId: normalizeString(turnId, ""),
-      status: "detected",
+      status: "collecting_arguments",
       authorityState: "execution_disabled",
+      approvalAvailable: false,
       executionAllowed: false,
       sideEffectExecuted: false,
       continuationAllowed: false,
+      toolCallSource: "provider-native-implicit",
       sourceItemId: normalizeString(event.itemId, ""),
       callId: normalizeString(event.callId, ""),
       name: normalizeString(event.name, "tool_call"),
+      namespace: normalizeString(event.namespace, ""),
       toolType: normalizeString(event.toolType, "unknown"),
+      providerCallType: normalizeString(event.toolType, "unknown"),
       argumentsText: "",
       detectedAtSequence: Number(event.sequence ?? 0),
       completedAtSequence: null,
@@ -103,13 +116,16 @@ function buildToolObligationsFromEvents(sessionId, turnId, events = []) {
       sourceItemId: normalizeString(existing.sourceItemId || event.itemId, ""),
       callId: normalizeString(existing.callId || event.callId, ""),
       name: normalizeString(event.name, existing.name),
+      namespace: normalizeString(event.namespace, existing.namespace),
       toolType: normalizeString(event.toolType, existing.toolType),
+      providerCallType: normalizeString(event.toolType, existing.providerCallType || existing.toolType),
     };
     if (event.type === "tool_call_delta") {
       next.argumentsText = `${next.argumentsText || ""}${event.argumentsDelta || ""}`;
     }
     if (event.type === "tool_call_completed") {
       next.status = "waiting";
+      next.approvalAvailable = false;
       next.argumentsText = normalizeString(event.argumentsJson, next.argumentsText);
       next.completedAtSequence = Number(event.sequence ?? next.completedAtSequence ?? 0);
     }
@@ -129,18 +145,30 @@ function mergeToolArgumentsText(existing = "", incoming = "", incomingIsComplete
 
 function mergeToolObligation(existing = {}, incoming = {}) {
   if (!isPlainObject(existing) || !existing.obligationId) return incoming;
+  if (DIRECT_TOOL_OBLIGATION_TERMINAL_STATUSES.has(normalizeString(existing.status, ""))) {
+    return {
+      ...existing,
+      argumentsText: mergeToolArgumentsText(existing.argumentsText, incoming.argumentsText, incoming.completedAtSequence !== null),
+      completedAtSequence: incoming.completedAtSequence ?? existing.completedAtSequence ?? null,
+      updatedAt: existing.updatedAt || incoming.updatedAt,
+    };
+  }
   return {
     ...existing,
     ...incoming,
     status: incoming.status === "waiting" || existing.status === "waiting" ? "waiting" : normalizeString(incoming.status, existing.status),
     authorityState: "execution_disabled",
+    approvalAvailable: Boolean(existing.approvalAvailable || incoming.approvalAvailable),
     executionAllowed: false,
     sideEffectExecuted: Boolean(existing.sideEffectExecuted || incoming.sideEffectExecuted),
     continuationAllowed: false,
     sourceItemId: normalizeString(existing.sourceItemId || incoming.sourceItemId, ""),
     callId: normalizeString(existing.callId || incoming.callId, ""),
     name: normalizeString(incoming.name, existing.name),
+    namespace: normalizeString(incoming.namespace, existing.namespace),
     toolType: normalizeString(incoming.toolType, existing.toolType),
+    providerCallType: normalizeString(incoming.providerCallType, existing.providerCallType || existing.toolType),
+    toolCallSource: normalizeString(existing.toolCallSource || incoming.toolCallSource, "provider-native-implicit"),
     argumentsText: mergeToolArgumentsText(existing.argumentsText, incoming.argumentsText, incoming.completedAtSequence !== null),
     detectedAtSequence: Number(existing.detectedAtSequence ?? incoming.detectedAtSequence ?? 0),
     completedAtSequence: incoming.completedAtSequence ?? existing.completedAtSequence ?? null,
@@ -148,6 +176,9 @@ function mergeToolObligation(existing = {}, incoming = {}) {
 }
 
 function toolTranscriptItemFromObligation(obligation = {}) {
+  const resultSummary = isPlainObject(obligation.result)
+    ? obligation.result.summary || obligation.result.textPreview || obligation.result.status
+    : (isPlainObject(obligation.authorityDecision) ? obligation.authorityDecision.reason : "");
   return {
     id: obligation.obligationId,
     type: "dynamicToolCall",
@@ -155,11 +186,15 @@ function toolTranscriptItemFromObligation(obligation = {}) {
     tool: normalizeString(obligation.name, "tool_call"),
     status: normalizeString(obligation.status, "waiting"),
     contentItems: normalizeString(obligation.argumentsText, ""),
-    result: isPlainObject(obligation.result)
-      ? obligation.result.summary || obligation.result.textPreview || obligation.result.status
-      : (isPlainObject(obligation.authorityDecision) ? obligation.authorityDecision.reason : ""),
-    executionAllowed: false,
-    continuationAllowed: false,
+    result: resultSummary,
+    approvalAvailable: Boolean(obligation.approvalAvailable),
+    executionAllowed: Boolean(obligation.executionAllowed),
+    continuationAllowed: Boolean(obligation.continuationAllowed),
+    providerCallType: normalizeString(obligation.providerCallType || obligation.toolType, ""),
+    namespace: normalizeString(obligation.namespace, ""),
+    relPath: normalizeString(obligation.approvedRead?.relPath || obligation.result?.relPath, ""),
+    resultClass: normalizeString(obligation.result?.resultClass, ""),
+    toolCallSource: normalizeString(obligation.toolCallSource, "provider-native-implicit"),
   };
 }
 
@@ -430,6 +465,7 @@ class DirectSessionStore {
       clientTurnRequestId: normalizeString(input.clientTurnRequestId, ""),
       requestBuiltAt: "",
       streamStartedAt: "",
+      streamPhase: "",
       completedAt: "",
       failedAt: "",
       abortedAt: "",

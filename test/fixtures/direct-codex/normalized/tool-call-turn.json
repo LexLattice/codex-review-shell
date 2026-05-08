@@ -20,6 +20,7 @@
       "itemId": "tool_fixture",
       "callId": "call_fixture_read",
       "name": "read_file",
+      "namespace": "",
       "toolType": "function_call"
     },
     {
@@ -54,6 +55,7 @@
       "itemId": "tool_fixture",
       "callId": "call_fixture_read",
       "name": "read_file",
+      "namespace": "",
       "argumentsJson": "{\"path\":\"README.md\"}",
       "toolType": "function_call"
     },

@@ -6,6 +6,13 @@ const DIRECT_READONLY_TOOL_AUTHORITY_DECISION_SCHEMA = "direct_codex_readonly_to
 const DIRECT_READONLY_TOOL_CONTINUATION_REQUEST_SCHEMA = "direct_codex_readonly_tool_continuation_request@1";
 const DIRECT_READONLY_TOOL_RESULT_SCHEMA = "direct_codex_readonly_tool_result@1";
 const READ_FILE_TOOL_NAMES = new Set(["read_file", "readFile"]);
+const MAX_READ_FILE_BYTES = 384 * 1024;
+const MAX_PROVIDER_OUTPUT_CHARS = 64 * 1024;
+const MAX_APPROVAL_PREVIEW_CHARS = 4 * 1024;
+const SUPPORTED_READONLY_CONTINUATION_KINDS = new Map([
+  ["function_call", "function_call_output"],
+  ["custom_tool_call", "custom_tool_call_output"],
+]);
 const READONLY_TERMINAL_STATUSES = new Set([
   "approved",
   "declined",
@@ -14,6 +21,18 @@ const READONLY_TERMINAL_STATUSES = new Set([
   "continuation_built",
   "continuation_sent",
 ]);
+const SENSITIVE_READ_FILE_PATTERNS = [
+  /(?:^|\/)\.env(?:\.|$)/i,
+  /(?:^|\/)[^/]+\.pem$/i,
+  /(?:^|\/)[^/]+\.key$/i,
+  /(?:^|\/)[^/]+\.p12$/i,
+  /(?:^|\/)[^/]+\.pfx$/i,
+  /(?:^|\/)id_rsa$/i,
+  /(?:^|\/)id_ed25519$/i,
+  /(?:^|\/)secrets(?:\/|$)/i,
+  /(?:^|\/)\.ssh(?:\/|$)/i,
+  /(?:^|\/)\.git\/config$/i,
+];
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -21,6 +40,15 @@ function isPlainObject(value) {
 
 function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function exactString(value, fallback = "") {
+  return typeof value === "string" ? value : fallback;
+}
+
+function boundedText(value, maxChars) {
+  const text = typeof value === "string" ? value : "";
+  return text.length > maxChars ? text.slice(0, maxChars) : text;
 }
 
 function nowIso(nowMs = Date.now()) {
@@ -55,13 +83,38 @@ function parseArgumentsJson(obligation = {}) {
 }
 
 function normalizeRelativePath(value) {
-  const text = normalizeString(value, "").replace(/\\/g, "/");
-  if (!text || text.startsWith("/") || /^[A-Za-z]:\//.test(text) || text.split("/").includes("..")) {
+  const original = normalizeString(value, "");
+  const text = original.replace(/\\/g, "/");
+  if (
+    !text ||
+    /[\0-\x1f\x7f]/.test(text) ||
+    text.startsWith("/") ||
+    /^[A-Za-z]:\//.test(text) ||
+    text.includes("://") ||
+    text.split("/").includes("..")
+  ) {
     const error = new Error("read_file tool requires a relative workspace path.");
     error.code = "invalid_read_file_path";
     throw error;
   }
+  try {
+    const decoded = decodeURIComponent(text);
+    if (decoded !== text && (decoded.includes("/") || decoded.includes("\\") || decoded.split(/[\\/]/).includes(".."))) {
+      const error = new Error("read_file tool path contains encoded traversal.");
+      error.code = "invalid_read_file_path";
+      throw error;
+    }
+  } catch {
+    const error = new Error("read_file tool path contains malformed encoding.");
+    error.code = "invalid_read_file_path";
+    throw error;
+  }
   return text.replace(/^\.\/+/, "");
+}
+
+function sensitiveReadFileReason(relPath) {
+  const normalized = normalizeRelativePath(relPath);
+  return SENSITIVE_READ_FILE_PATTERNS.some((pattern) => pattern.test(normalized)) ? "sensitive_path" : "";
 }
 
 function assertReadFileToolName(obligation = {}) {
@@ -72,18 +125,88 @@ function assertReadFileToolName(obligation = {}) {
   }
 }
 
+function assertToolCallCompleted(obligation = {}) {
+  const status = normalizeString(obligation.status, "");
+  const hasCompletedSequence = obligation.completedAtSequence !== null && obligation.completedAtSequence !== undefined;
+  if (status === "collecting_arguments" || !hasCompletedSequence) {
+    const error = new Error("Read-only approval requires a completed provider tool call with parseable arguments.");
+    error.code = "tool_call_arguments_incomplete";
+    throw error;
+  }
+}
+
+function supportedContinuationOutputType(obligation = {}) {
+  const providerCallType = normalizeString(obligation.providerCallType || obligation.toolType, "");
+  const outputType = SUPPORTED_READONLY_CONTINUATION_KINDS.get(providerCallType);
+  if (!outputType) {
+    const error = new Error(`Unsupported read-only continuation call type: ${providerCallType || "unknown"}`);
+    error.code = "unsupported_tool_call_type";
+    throw error;
+  }
+  return { providerCallType, outputType };
+}
+
+function assertAcceptedNamespace(obligation = {}) {
+  const namespace = normalizeString(obligation.namespace, "");
+  if (!namespace) return "";
+  const error = new Error(`Unsupported read-only tool namespace: ${namespace}`);
+  error.code = "unsupported_tool_namespace";
+  throw error;
+}
+
+function assertToolCallId(obligation = {}) {
+  const callId = normalizeString(obligation.callId, "");
+  if (callId) return callId;
+  const error = new Error("Read-only continuation requires the original provider call_id.");
+  error.code = "missing_tool_call_id";
+  throw error;
+}
+
 function assertReadFileObligation(obligation = {}) {
+  assertToolCallCompleted(obligation);
   assertReadFileToolName(obligation);
+  assertAcceptedNamespace(obligation);
+  const continuationKind = supportedContinuationOutputType(obligation);
+  const callId = assertToolCallId(obligation);
   const args = parseArgumentsJson(obligation);
+  const relPath = normalizeRelativePath(args.path || args.relPath || args.relativePath);
+  const sensitiveReason = sensitiveReadFileReason(relPath);
+  if (sensitiveReason) {
+    const error = new Error("read_file requested a sensitive path that is denied by default.");
+    error.code = "sensitive_read_file_path";
+    error.sensitiveReason = sensitiveReason;
+    throw error;
+  }
   return {
-    relPath: normalizeRelativePath(args.path || args.relPath || args.relativePath),
+    relPath,
+    callId,
+    providerCallType: continuationKind.providerCallType,
+    outputType: continuationKind.outputType,
   };
 }
 
 function projectReadResult(raw = {}, obligation = {}, approvedAt = "", nowMs) {
   const result = isPlainObject(raw) ? raw : {};
-  const text = normalizeString(result.text, "");
-  const textPreview = text.length > 8000 ? `${text.slice(0, 8000)}...` : text;
+  const text = exactString(result.text, "");
+  const binary = Boolean(result.binary);
+  const truncated = Boolean(result.truncated) || text.length > MAX_PROVIDER_OUTPUT_CHARS;
+  const textPreview = binary ? "" : boundedText(text, MAX_APPROVAL_PREVIEW_CHARS);
+  const providerTextPreview = binary ? "" : boundedText(text, MAX_PROVIDER_OUTPUT_CHARS);
+  const resultClass = binary
+    ? "binary_summary"
+    : (truncated ? "text_preview_truncated" : "text_preview_untruncated");
+  const providerEnvelope = {
+    path: normalizeString(result.relPath, ""),
+    textPreview: providerTextPreview,
+    truncated,
+    bytesRead: Number(result.size || 0),
+    binary,
+    resultClass,
+    note: truncated
+      ? "File content was truncated by the local shell before provider continuation."
+      : "",
+  };
+  const providerOutputText = JSON.stringify(providerEnvelope);
   return {
     schema: DIRECT_READONLY_TOOL_RESULT_SCHEMA,
     resultId: resultIdForObligation(obligation.obligationId),
@@ -92,10 +215,14 @@ function projectReadResult(raw = {}, obligation = {}, approvedAt = "", nowMs) {
     status: "completed",
     relPath: normalizeString(result.relPath, ""),
     size: Number(result.size || 0),
-    truncated: Boolean(result.truncated),
-    binary: Boolean(result.binary),
+    truncated,
+    binary,
+    resultClass,
     textPreview,
-    summary: `${normalizeString(result.relPath, "file")} · ${Number(result.size || 0)} bytes${result.truncated ? " · truncated" : ""}`,
+    providerOutputText,
+    providerOutputChars: providerOutputText.length,
+    approvalPreviewChars: textPreview.length,
+    summary: `${normalizeString(result.relPath, "file")} · ${Number(result.size || 0)} bytes${truncated ? " · truncated" : ""}`,
     source: normalizeString(result.source, ""),
     approvedAt,
     recordedAt: nowIso(nowMs),
@@ -144,21 +271,24 @@ function approveReadOnlyToolObligation(options = {}) {
   const sessionStore = options.sessionStore;
   if (!sessionStore) throw new Error("Read-only tool approval requires a direct session store.");
   const { turn, obligation } = sessionStore.findToolObligation(options.sessionId, options.turnId, options.obligationId);
-  const parsed = assertReadFileObligation(obligation);
   if (READONLY_TERMINAL_STATUSES.has(normalizeString(obligation.status, ""))) {
     return { turn, obligation };
   }
+  const parsed = assertReadFileObligation(obligation);
   const approvedAt = nowIso(options.nowMs);
   return sessionStore.updateToolObligation(options.sessionId, options.turnId, obligation.obligationId, {
     status: "approved",
     authorityState: "approved_readonly",
     executionAllowed: true,
     continuationAllowed: false,
+    approvalAvailable: false,
     approvedAt,
     approvedBy: normalizeString(options.approvedBy, "local-user"),
     approvedRead: {
       tool: normalizeString(obligation.name, "read_file"),
       relPath: parsed.relPath,
+      providerCallType: parsed.providerCallType,
+      outputType: parsed.outputType,
     },
   }, {
     ...options,
@@ -231,13 +361,18 @@ async function executeApprovedReadOnlyToolObligation(options = {}) {
     throw error;
   }
   const parsed = assertReadFileObligation(obligation);
-  const workspaceResult = await options.workspaceRequest("readFile", { relPath: parsed.relPath });
+  const workspaceResult = await options.workspaceRequest("readFile", {
+    relPath: parsed.relPath,
+    maxBytes: MAX_READ_FILE_BYTES,
+    rejectSensitive: true,
+  });
   const result = projectReadResult(workspaceResult, obligation, obligation.approvedAt || "", options.nowMs);
   const updated = sessionStore.updateToolObligation(options.sessionId, options.turnId, obligation.obligationId, {
     status: "result_recorded",
     authorityState: "result_recorded",
     executionAllowed: false,
     continuationAllowed: false,
+    approvalAvailable: false,
     sideEffectExecuted: false,
     result,
     resultRecordedAt: result.recordedAt,
@@ -257,7 +392,10 @@ function buildReadOnlyToolContinuationRequest(options = {}) {
   if (!sessionStore) throw new Error("Read-only tool continuation requires a direct session store.");
   const { obligation } = sessionStore.findToolObligation(options.sessionId, options.turnId, options.obligationId);
   const result = assertRecordedReadOnlyResult(obligation);
-  const toolCallId = normalizeString(obligation.callId || obligation.sourceItemId || obligation.obligationId, obligation.obligationId);
+  const parsed = assertReadFileObligation(obligation);
+  const toolCallId = parsed.callId;
+  const outputType = normalizeString(obligation.approvedRead?.outputType || parsed.outputType, parsed.outputType);
+  const outputText = normalizeString(result.providerOutputText, "") || normalizeString(result.textPreview, "");
   return {
     schema: DIRECT_READONLY_TOOL_CONTINUATION_REQUEST_SCHEMA,
     continuationId: continuationIdForResult(obligation.obligationId, result.resultId),
@@ -273,14 +411,16 @@ function buildReadOnlyToolContinuationRequest(options = {}) {
     },
     toolResult: {
       obligationId: obligation.obligationId,
-      callId: normalizeString(obligation.callId, ""),
+      callId: toolCallId,
       itemId: normalizeString(obligation.sourceItemId, ""),
       toolCallId,
       name: normalizeString(obligation.name, "read_file"),
+      providerCallType: normalizeString(obligation.providerCallType || obligation.toolType, ""),
+      outputType,
       content: [
         {
-          type: "output_text",
-          text: normalizeString(result.textPreview, ""),
+          type: outputType,
+          text: outputText,
         },
       ],
       metadata: {
@@ -289,6 +429,7 @@ function buildReadOnlyToolContinuationRequest(options = {}) {
         size: Number(result.size || 0),
         truncated: Boolean(result.truncated),
         binary: Boolean(result.binary),
+        resultClass: normalizeString(result.resultClass, ""),
         status: normalizeString(result.status, "completed"),
       },
     },
@@ -297,7 +438,7 @@ function buildReadOnlyToolContinuationRequest(options = {}) {
         type: "tool_result",
         toolCallId,
         name: normalizeString(obligation.name, "read_file"),
-        content: normalizeString(result.textPreview, ""),
+        content: outputText,
       },
     ],
     safety: {
@@ -364,6 +505,9 @@ module.exports = {
   DIRECT_READONLY_TOOL_AUTHORITY_DECISION_SCHEMA,
   DIRECT_READONLY_TOOL_CONTINUATION_REQUEST_SCHEMA,
   DIRECT_READONLY_TOOL_RESULT_SCHEMA,
+  MAX_APPROVAL_PREVIEW_CHARS,
+  MAX_PROVIDER_OUTPUT_CHARS,
+  MAX_READ_FILE_BYTES,
   approveReadOnlyToolObligation,
   buildReadOnlyToolContinuationRequest,
   cancelReadOnlyToolObligation,

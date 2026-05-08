@@ -85,6 +85,7 @@ const {
   cancelReadOnlyToolObligation,
   declineReadOnlyToolObligation,
   executeApprovedReadOnlyToolObligation,
+  projectReadResult,
   recordReadOnlyToolContinuationRequest,
 } = require("../src/main/direct/tools/read-only-authority");
 
@@ -232,6 +233,29 @@ function acceptedLiveTextProfile() {
     doc.profile.ontology.models = [
       ...models,
       { id: "gpt-5.4", displayName: "GPT-5.4", status: "accepted", supportsReasoning: null, supportsTools: null },
+    ];
+  }
+  return doc;
+}
+
+function acceptedReadOnlyToolProfile() {
+  const doc = acceptedLiveTextProfile();
+  const shapes = Array.isArray(doc.profile?.ontology?.continuationShapes) ? doc.profile.ontology.continuationShapes : [];
+  let found = false;
+  for (const shape of shapes) {
+    if (shape?.id !== "continuation.tool_result") continue;
+    shape.status = "accepted";
+    found = true;
+  }
+  if (!found) {
+    doc.profile.ontology.continuationShapes = [
+      ...shapes,
+      {
+        id: "continuation.tool_result",
+        field: "tool-result continuation",
+        status: "accepted",
+        summary: "Smoke-accepted read-only tool continuation shape.",
+      },
     ];
   }
   return doc;
@@ -1084,28 +1108,114 @@ try {
   );
   const liveToolTurn = toolStore.readTurn(liveToolThread.thread.id, liveToolAck.turn.id);
   const liveToolSession = toolStore.readSession(liveToolThread.thread.id);
-  assert(liveToolTurn.state === "tool_waiting", "Expected live text tool call to pause in tool_waiting.");
+  assert(liveToolTurn.state === "failed", "Expected live text tool call to fail closed without accepted tool-continuation evidence.");
   assert(liveToolTurn.unresolvedObligations.length === 1, "Expected live text tool call to persist one obligation.");
-  assert(liveToolTurn.unresolvedObligations[0].executionAllowed === false, "Live text tool detection must not authorize execution.");
+  assert(liveToolTurn.unresolvedObligations[0].executionAllowed === false, "Live text tool detection must not authorize execution before approval.");
   assert(liveToolTurn.unresolvedObligations[0].continuationAllowed === false, "Live text tool detection must not authorize continuation.");
   assert(liveToolTurn.unresolvedObligations[0].sideEffectExecuted === false, "Live text tool detection must not execute side effects.");
-  assert(liveToolSession.messages[0].items.some((item) => item.type === "dynamicToolCall" && item.status === "waiting"), "Expected live text tool call to render as waiting obligation.");
-  assert(liveToolSurface.hasServerRequest() === false, "Live text tool detection must not create app-server request authority.");
-  assert(liveToolEvents.some((event) => event.type === "rpc-notification" && event.method === "warning"), "Expected live text tool detection to warn that execution is disabled.");
-  await assertRejects(
-    () => liveToolSurface.request("turn/start", {
-      threadId: liveToolThread.thread.id,
-      promptText: "blocked after tool",
-      clientTurnRequestId: "client_req_live_tool_2",
-      model: "gpt-5.4",
-    }),
-    "Expected unresolved live text tool obligation to block another turn in the same session.",
-  );
+  assert(liveToolTurn.unresolvedObligations[0].status === "unsupported", "Expected text-only evidence alone not to unlock read-only tool continuation.");
+  assert(liveToolTurn.unresolvedObligations[0].failureKind === "tool_continuation_profile_required", "Expected missing tool-continuation profile gate to be explicit.");
+  assert(liveToolSession.messages[0].items.some((item) => item.type === "dynamicToolCall" && item.status === "unsupported"), "Expected unsupported tool call to render in transcript.");
+  assert(liveToolSurface.hasServerRequest() === false, "Text-only runtime evidence alone must not create read-only authority requests.");
+  assert(!liveToolEvents.some((event) => event.type === "rpc-request" && event.request?.method === "direct/tool/readOnly/requestApproval"), "Text-only evidence alone must not expose tool approval.");
+  assert(liveToolEvents.some((event) => event.type === "rpc-notification" && event.method === "warning"), "Expected live text tool detection to warn about local authority state.");
   const liveToolAbort = await liveToolSurface.request("turn/interrupt", {
     threadId: liveToolThread.thread.id,
     turnId: liveToolAck.turn.id,
   });
-  assert(liveToolAbort.status === "aborted", "Expected live text tool_waiting turn to have a manual abort escape path.");
+  assert(liveToolAbort.status === "failed_already", "Expected failed unsupported tool turn to remain terminal.");
+
+  const approvedToolStore = new DirectSessionStore({ rootDir: path.join(liveTextControllerParent, "approved-tool-direct-sessions") });
+  const approvedContinuationSse = [
+    "event: response.created",
+    "data: {\"response\":{\"id\":\"resp_live_tool_continued\",\"model\":\"gpt-5.4\"}}",
+    "",
+    "event: response.output_text.delta",
+    "data: {\"item_id\":\"msg_live_tool_continued\",\"delta\":\"read result accepted\"}",
+    "",
+    "event: response.completed",
+    "data: {\"response\":{\"id\":\"resp_live_tool_continued\",\"status\":\"completed\"}}",
+    "",
+  ].join("\n");
+  let approvedFetchCalls = 0;
+  let approvedWorkspaceReads = 0;
+  const approvedToolController = new DirectLiveTextController({
+    sessionStore: approvedToolStore,
+    profileDoc: acceptedReadOnlyToolProfile(),
+    authStore: liveAuthStore,
+    readOnlyWorkspaceTimeoutMs: 45_000,
+    toolDecisionCacheLimit: 1,
+    workspaceRequest: async (project, method, params, timeoutMs) => {
+      approvedWorkspaceReads += 1;
+      assert(project.id === liveProject.id, "Expected direct read-only controller to preserve project binding.");
+      assert(method === "readFile", "Expected direct read-only controller to route through workspace readFile.");
+      assert(params.relPath === "README.md", "Expected direct read-only controller to request the approved relative path.");
+      assert(params.rejectSensitive === true, "Expected direct read-only controller to enforce sensitive-path policy in workspace backend.");
+      assert(params.maxBytes === 384 * 1024, "Expected direct read-only controller to pass bounded read size.");
+      assert(timeoutMs === 45_000, "Expected direct read-only controller to use configured workspace timeout.");
+      return {
+        relPath: "README.md",
+        size: 23,
+        truncated: false,
+        binary: false,
+        text: "live approved read result",
+        source: "local",
+        absolutePath: "/private/path/README.md",
+      };
+    },
+    fetchImpl: async () => {
+      approvedFetchCalls += 1;
+      return textResponse(approvedFetchCalls === 1 ? liveToolSse : approvedContinuationSse, 200, { "content-type": "text/event-stream" });
+    },
+  });
+  const approvedToolEvents = [];
+  const approvedToolSurface = new DirectLiveTextSurfaceSession({
+    isDestroyed: () => false,
+    send: (_channel, payload) => approvedToolEvents.push(payload),
+  }, {
+    controller: approvedToolController,
+    project: liveProject,
+  });
+  await approvedToolSurface.connect({ transport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT });
+  const approvedThread = await approvedToolSurface.request("thread/start", {});
+  const approvedAck = await approvedToolSurface.request("turn/start", {
+    threadId: approvedThread.thread.id,
+    promptText: "approved tool prompt",
+    clientTurnRequestId: "client_req_live_tool_approved_1",
+    model: "gpt-5.4",
+  });
+  await waitForCondition(
+    () => approvedToolEvents.some((event) => event.type === "rpc-request" && event.request?.method === "direct/tool/readOnly/requestApproval"),
+    "Expected approved live text tool path to request read-only authority.",
+  );
+  const approvalRequest = approvedToolEvents.find((event) => event.type === "rpc-request")?.request;
+  assert(approvalRequest.params.relPath === "README.md", "Expected approval request to show relative path.");
+  assert(approvalRequest.params.approvalAvailable === true, "Expected approval request to be available only after completed parseable arguments.");
+  assert(approvalRequest.params.hasContinuityHandle === true, "Expected approval request to require original response continuity.");
+  const approvalResponse = await approvedToolSurface.respond(approvalRequest.key, {
+    decision: "approve",
+    clientToolDecisionId: "client_tool_decision_approved_1",
+  });
+  assert(approvalResponse.response.continuation.ok === true, "Expected approved direct read-only tool continuation to complete.");
+  assert(approvedFetchCalls === 2, "Expected approved direct tool path to make one initial and one continuation provider request.");
+  assert(approvedWorkspaceReads === 1, "Expected approved direct tool path to read the workspace exactly once.");
+  assert(approvedToolSurface.hasServerRequest() === false, "Expected completed read-only approval request not to remain pending.");
+  const approvedTurn = approvedToolStore.readTurn(approvedThread.thread.id, approvedAck.turn.id);
+  assert(approvedTurn.state === "completed", "Expected approved direct read-only continuation to complete the turn.");
+  assert(approvedTurn.streamPhase === "continuation", "Expected approved continuation to record continuation stream phase.");
+  assert(approvedTurn.continuationRequestShape.hasPreviousResponseId === true, "Expected approved continuation to require previous_response_id.");
+  const approvedObligation = approvedTurn.unresolvedObligations[0];
+  assert(approvedObligation.status === "continuation_sent", "Expected approved obligation to record sent continuation.");
+  assert(JSON.parse(approvedObligation.result.providerOutputText).textPreview === "live approved read result", "Expected approved provider output to be bounded JSON evidence.");
+  const approvedSession = approvedToolStore.readSession(approvedThread.thread.id);
+  assert(approvedSession.messages[0].items.some((item) => item.type === "agentMessage" && item.text === "read result accepted"), "Expected approved continuation assistant output to persist.");
+  await approvedToolSurface.respond(approvalRequest.key, {
+    decision: "approve",
+    clientToolDecisionId: "client_tool_decision_approved_1",
+  });
+  assert(approvedWorkspaceReads === 1, "Expected duplicate completed approval response not to reread workspace.");
+  assert(approvedToolController.toolDecisionClaims.size <= 1, "Expected direct tool decision claim cache to stay bounded.");
+  assert(approvedToolController.toolDecisionResults.size <= 1, "Expected direct tool decision result cache to stay bounded.");
 } finally {
   fs.rmSync(liveTextControllerParent, { recursive: true, force: true });
 }
@@ -1997,6 +2107,19 @@ try {
   });
   assert(reusedTool.reused === true, "Expected recorded read-only result to be reused idempotently.");
   assert(workspaceReadCalls === 1, "Expected read-only tool result persistence to prevent duplicate backend reads.");
+  const whitespaceResult = projectReadResult({
+    relPath: "README.md",
+    size: 7,
+    truncated: false,
+    binary: false,
+    text: "  x  \n",
+    source: "local",
+  }, {
+    obligationId: "tool_obligation_whitespace_result",
+    name: "read_file",
+  }, new Date(1_700_000_021_500).toISOString(), 1_700_000_021_500);
+  assert(whitespaceResult.textPreview === "  x  \n", "Expected read-only result preview to preserve leading and trailing whitespace.");
+  assert(JSON.parse(whitespaceResult.providerOutputText).textPreview === "  x  \n", "Expected provider output envelope to preserve exact file whitespace.");
   const resultRecordedTurn = probeSessionStore.readTurn(persistedToolProbe.sessionId, persistedToolProbe.turnId);
   assert(resultRecordedTurn.state === "continuation_ready", "Expected read-only result persistence to leave turn ready for later continuation.");
   assert(resultRecordedTurn.toolResults.length === 1, "Expected read-only result to pair to exactly one obligation.");
@@ -2015,7 +2138,9 @@ try {
   assert(continuationRequest.safety.originalRequestRetried === false, "Read-only continuation must not retry the original request.");
   assert(continuationRequest.safety.continuationLiveSendEnabled === false, "Read-only continuation must remain fixture/local only.");
   assert(continuationRequest.toolResult.metadata.resultId === executedTool.result.resultId, "Expected continuation to pair to recorded tool result.");
-  assert(continuationRequest.toolResult.content[0].text === "fixture read result", "Expected continuation to include recorded tool output.");
+  const continuationOutputEnvelope = JSON.parse(continuationRequest.toolResult.content[0].text);
+  assert(continuationOutputEnvelope.textPreview === "fixture read result", "Expected continuation to include recorded tool output in a bounded envelope.");
+  assert(continuationOutputEnvelope.truncated === false, "Expected continuation envelope to preserve truncation truth.");
   assert(!JSON.stringify(continuationRequest).includes("/private/path"), "Read-only continuation must not expose raw workspace paths.");
   const continuationSse = [
     "event: response.created",
@@ -2052,7 +2177,7 @@ try {
   assert(capturedContinuationRequest.body.previous_response_id === "resp_tool_probe", "Expected read-only continuation to cite previous response id.");
   assert(capturedContinuationRequest.body.input[0].type === "function_call_output", "Expected read-only continuation to send function call output.");
   assert(capturedContinuationRequest.body.input[0].call_id === "call_probe_read", "Expected read-only continuation to pair to the original tool call id.");
-  assert(capturedContinuationRequest.body.input[0].output === "fixture read result", "Expected read-only continuation to send recorded tool output.");
+  assert(JSON.parse(capturedContinuationRequest.body.input[0].output).textPreview === "fixture read result", "Expected read-only continuation to send recorded tool output envelope.");
   assert(sentContinuation.continuation.originalRequestRetried === false, "Read-only continuation send must not retry the original request.");
   assert(sentContinuation.obligation.status === "continuation_sent", "Expected read-only continuation to persist sent status.");
   assert(sentContinuation.obligation.continuationAllowed === false, "Read-only continuation must not enable automatic further continuation.");
@@ -2105,7 +2230,11 @@ try {
     sourceItemId: "tool_failed_continuation",
     callId: "call_failed_continuation",
     name: "read_file",
+    namespace: "",
+    toolType: "function_call",
+    providerCallType: "function_call",
     argumentsText: "{\"path\":\"README.md\"}",
+    completedAtSequence: 3,
     result: {
       schema: DIRECT_READONLY_TOOL_RESULT_SCHEMA,
       resultId: "tool_result_failed_continuation",

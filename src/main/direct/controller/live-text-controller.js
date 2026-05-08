@@ -5,9 +5,16 @@ const { EventEmitter } = require("node:events");
 const {
   buildTextOnlyProbeRequest,
   requestShapeForDiagnostic,
+  runPersistedReadOnlyToolContinuation,
   runTextOnlyDirectProbe,
 } = require("../transport/codex-responses-transport");
 const { toolTranscriptItemFromObligation } = require("../session/session-store");
+const {
+  approveReadOnlyToolObligation,
+  cancelReadOnlyToolObligation,
+  declineReadOnlyToolObligation,
+  executeApprovedReadOnlyToolObligation,
+} = require("../tools/read-only-authority");
 
 const DIRECT_LIVE_TEXT_SURFACE_TRANSPORT = "direct-live-text";
 const ACTIVE_TURN_STATES = new Set([
@@ -21,6 +28,8 @@ const ACTIVE_TURN_STATES = new Set([
 const TERMINAL_TURN_STATES = new Set(["completed", "failed", "aborted"]);
 const DEFAULT_MAX_PROMPT_CHARS = 64_000;
 const DEFAULT_MAX_ASSISTANT_CHARS = 256_000;
+const DEFAULT_READONLY_WORKSPACE_TIMEOUT_MS = 30_000;
+const DEFAULT_TOOL_DECISION_CACHE_LIMIT = 512;
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -36,6 +45,12 @@ function nowIso(nowMs = Date.now()) {
 
 function nowSeconds() {
   return Date.now() / 1000;
+}
+
+function boundedPositiveInteger(value, fallback, min = 1, max = 10_000) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(number)));
 }
 
 function firstTextInput(input) {
@@ -83,6 +98,24 @@ function modelEvidenceFor(profileDoc = {}, requestedModel = "") {
   };
 }
 
+function readOnlyContinuationEvidenceFor(profileDoc = {}) {
+  const shapes = profileDoc.profile?.ontology?.continuationShapes;
+  const entries = Array.isArray(shapes) ? shapes : [];
+  const entry = entries.find((shape) =>
+    shape?.id === "continuation.tool_result" ||
+    String(shape?.field || "").toLowerCase().includes("tool-result") ||
+    String(shape?.field || "").toLowerCase().includes("tool result"));
+  const state = modelEvidenceState(entry?.status);
+  const accepted = state === "accepted" || state === "runtime_probed";
+  return {
+    accepted,
+    status: accepted ? "ready" : "profile_required",
+    capabilityId: normalizeString(entry?.id, "continuation.tool_result"),
+    evidenceState: state,
+    reason: accepted ? "" : "accepted_readonly_tool_continuation_required",
+  };
+}
+
 function sanitizeStatus(status = {}) {
   return {
     status: normalizeString(status.status, "unauthenticated"),
@@ -98,6 +131,7 @@ function sanitizeStatus(status = {}) {
 
 function buildDirectLiveTextCapabilities(status = {}) {
   const ready = status.status === "ready";
+  const readOnlyToolReady = ready && status.readOnlyToolContinuation?.status === "ready";
   return {
     version: 1,
     status: ready ? "ready" : "blocked",
@@ -129,11 +163,12 @@ function buildDirectLiveTextCapabilities(status = {}) {
       commandApproval: false,
       fileChangeApproval: false,
       permissionsApproval: false,
-      approvalPolicies: [],
+      approvalPolicies: ["explicit-read-only-tool"],
       sandboxModes: [],
+      readOnlyToolApproval: readOnlyToolReady,
     },
     requests: {
-      supportedServerMethods: [],
+      supportedServerMethods: readOnlyToolReady ? ["direct/tool/readOnly/requestApproval"] : [],
       unsupportedButHandledMethods: [],
       unknownRequestPolicy: "error-visible",
     },
@@ -141,7 +176,7 @@ function buildDirectLiveTextCapabilities(status = {}) {
       runtime: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
       source: "direct-live-text-controller",
       appServerRequired: false,
-      toolsEnabled: false,
+      toolsEnabled: readOnlyToolReady,
       rawBackendFramesExposed: false,
     },
   };
@@ -186,10 +221,21 @@ class DirectLiveTextController {
     this.refreshCredentials = typeof options.refreshCredentials === "function" ? options.refreshCredentials : null;
     this.modelEvidenceResolver = typeof options.modelEvidenceResolver === "function" ? options.modelEvidenceResolver : null;
     this.fetchImpl = typeof options.fetchImpl === "function" ? options.fetchImpl : null;
+    this.workspaceRequest = typeof options.workspaceRequest === "function" ? options.workspaceRequest : null;
     this.endpoint = normalizeString(options.endpoint, "");
     this.maxPromptChars = Number(options.maxPromptChars || DEFAULT_MAX_PROMPT_CHARS);
     this.maxAssistantChars = Number(options.maxAssistantChars || DEFAULT_MAX_ASSISTANT_CHARS);
+    this.readOnlyWorkspaceTimeoutMs = boundedPositiveInteger(
+      options.readOnlyWorkspaceTimeoutMs,
+      DEFAULT_READONLY_WORKSPACE_TIMEOUT_MS,
+      1_000,
+      10 * 60_000,
+    );
+    this.toolDecisionCacheLimit = boundedPositiveInteger(options.toolDecisionCacheLimit, DEFAULT_TOOL_DECISION_CACHE_LIMIT, 16, 10_000);
     this.activeRuns = new Map();
+    this.toolDecisionLocks = new Map();
+    this.toolDecisionClaims = new Map();
+    this.toolDecisionResults = new Map();
   }
 
   currentAuthStore() {
@@ -264,6 +310,7 @@ class DirectLiveTextController {
   statusForProject(project = {}) {
     const auth = this.authStatus();
     const evidence = this.modelEvidenceForProject(project);
+    const readOnlyToolContinuation = readOnlyContinuationEvidenceFor(this.profileDoc);
     let status = "ready";
     let reason = "";
     if (auth.status !== "authenticated") {
@@ -281,11 +328,12 @@ class DirectLiveTextController {
       modelEvidenceState: evidence.modelEvidenceState,
       transport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
       appServerRequired: false,
-      toolsEnabled: false,
+      toolsEnabled: status === "ready" && readOnlyToolContinuation.status === "ready",
       reason,
       auth,
       evidenceId: normalizeString(evidence.evidenceId || evidence.liveProbeEvidenceId, ""),
       liveProbeEvidence: evidence.liveProbeEvidence || null,
+      readOnlyToolContinuation,
     };
   }
 
@@ -417,6 +465,312 @@ class DirectLiveTextController {
       model: normalizeString(model, session.model),
       messages: nextMessages,
     });
+  }
+
+  readOnlyToolRequestParams(obligation = {}, turn = {}, project = {}) {
+    let relPath = "";
+    let argumentsError = "";
+    try {
+      const parsed = JSON.parse(normalizeString(obligation.argumentsText, "{}"));
+      if (isPlainObject(parsed)) relPath = normalizeString(parsed.path || parsed.relPath || parsed.relativePath, "");
+    } catch (error) {
+      argumentsError = error?.message || "invalid_tool_arguments";
+    }
+    const hasContinuityHandle = Boolean(normalizeString(turn.responseId, ""));
+    const providerCallType = normalizeString(obligation.providerCallType || obligation.toolType, "");
+    const namespace = normalizeString(obligation.namespace, "");
+    const supportedCallType = providerCallType === "function_call" || providerCallType === "custom_tool_call";
+    const supportedNamespace = !namespace;
+    const continuationEvidence = this.statusForProject(project).readOnlyToolContinuation || readOnlyContinuationEvidenceFor(this.profileDoc);
+    const approvalAvailable = normalizeString(obligation.status, "") === "waiting" &&
+      !argumentsError &&
+      Boolean(normalizeString(obligation.callId, "")) &&
+      hasContinuityHandle &&
+      supportedCallType &&
+      supportedNamespace &&
+      continuationEvidence.status === "ready";
+    return {
+      sessionId: obligation.sessionId,
+      threadId: obligation.sessionId,
+      turnId: obligation.turnId,
+      obligationId: obligation.obligationId,
+      tool: normalizeString(obligation.name, "read_file"),
+      relPath,
+      providerCallType,
+      namespace,
+      toolCallSource: normalizeString(obligation.toolCallSource, "provider-native-implicit"),
+      callIdPresent: Boolean(normalizeString(obligation.callId, "")),
+      hasContinuityHandle,
+      toolContinuationEvidence: continuationEvidence,
+      approvalAvailable,
+      argumentsError,
+      maxReadFileBytes: 384 * 1024,
+      maxProviderOutputChars: 64 * 1024,
+      maxApprovalPreviewChars: 4 * 1024,
+      sensitivePathPolicy: "deny-by-default",
+      rawWorkspacePathExposed: false,
+    };
+  }
+
+  emitToolApprovalRequests(surfaceSession, sessionId, turnId, obligations = [], project = {}) {
+    if (!surfaceSession || typeof surfaceSession.createReadOnlyToolRequest !== "function") return 0;
+    const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
+    if (obligations.length !== 1) {
+      for (const obligation of obligations) {
+        this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
+          status: "unsupported",
+          authorityState: "unsupported",
+          approvalAvailable: false,
+          executionAllowed: false,
+          continuationAllowed: false,
+          failureKind: "multiple_tool_calls_unsupported",
+        }, {
+          nextTurnState: "failed",
+          turnPatch: {
+            error: {
+              code: "multiple_tool_calls_unsupported",
+              message: "Direct read-only continuation supports exactly one tool obligation in this bundle.",
+            },
+          },
+        });
+      }
+      return 0;
+    }
+    let createdCount = 0;
+    for (const obligation of obligations) {
+      const params = this.readOnlyToolRequestParams(obligation, turn, project);
+      if (!params.approvalAvailable) {
+        this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
+          status: "unsupported",
+          authorityState: "unsupported",
+          approvalAvailable: false,
+          executionAllowed: false,
+          continuationAllowed: false,
+          failureKind: params.argumentsError
+            ? "invalid_tool_arguments"
+            : (!params.hasContinuityHandle
+                ? "continuation_missing_context_handle"
+                : (params.toolContinuationEvidence?.status !== "ready" ? "tool_continuation_profile_required" : "unsupported_tool_call_shape")),
+        }, {
+          nextTurnState: "failed",
+          turnPatch: {
+            error: {
+              code: params.argumentsError
+                ? "invalid_tool_arguments"
+                : (!params.hasContinuityHandle
+                    ? "continuation_missing_context_handle"
+                    : (params.toolContinuationEvidence?.status !== "ready" ? "tool_continuation_profile_required" : "unsupported_tool_call_shape")),
+              message: "Direct read-only tool call cannot be approved for continuation in this runtime bundle.",
+            },
+          },
+        });
+        continue;
+      }
+      this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
+        approvalAvailable: true,
+        authorityState: "approval_waiting",
+      }, {
+        nextTurnState: "tool_waiting",
+      });
+      surfaceSession.createReadOnlyToolRequest({
+        params,
+        summary: params.relPath || params.tool,
+      });
+      createdCount += 1;
+    }
+    return createdCount;
+  }
+
+  async withToolDecisionLock(key, action) {
+    const lockKey = normalizeString(key, "");
+    const existing = this.toolDecisionLocks.get(lockKey);
+    if (existing) return existing;
+    const run = Promise.resolve()
+      .then(action)
+      .finally(() => {
+        if (this.toolDecisionLocks.get(lockKey) === run) this.toolDecisionLocks.delete(lockKey);
+      });
+    this.toolDecisionLocks.set(lockKey, run);
+    return run;
+  }
+
+  pruneToolDecisionCache() {
+    const limit = this.toolDecisionCacheLimit;
+    while (this.toolDecisionClaims.size > limit) {
+      const oldestKey = this.toolDecisionClaims.keys().next().value;
+      if (!oldestKey) break;
+      this.toolDecisionClaims.delete(oldestKey);
+      this.toolDecisionResults.delete(oldestKey);
+    }
+    while (this.toolDecisionResults.size > limit) {
+      const oldestKey = this.toolDecisionResults.keys().next().value;
+      if (!oldestKey) break;
+      this.toolDecisionResults.delete(oldestKey);
+      this.toolDecisionClaims.delete(oldestKey);
+    }
+  }
+
+  async handleReadOnlyToolResponse(record = {}, result = {}, context = {}) {
+    const params = record.params || {};
+    const sessionId = normalizeString(params.sessionId || params.threadId, "");
+    const turnId = normalizeString(params.turnId, "");
+    const obligationId = normalizeString(params.obligationId, "");
+    const decision = normalizeString(result.decision || result.action, "decline");
+    const clientToolDecisionId = normalizeString(result.clientToolDecisionId, `${record.key}:${decision}`);
+    const decisionKey = clientToolDecisionId;
+    const existingClaim = this.toolDecisionClaims.get(decisionKey);
+    if (existingClaim && (existingClaim.obligationId !== obligationId || existingClaim.decision !== decision)) {
+      const error = new Error("clientToolDecisionId was reused for a different read-only tool decision.");
+      error.code = "tool_decision_id_conflict";
+      throw error;
+    }
+    this.toolDecisionClaims.set(decisionKey, { obligationId, decision });
+    this.pruneToolDecisionCache();
+    const previousDecision = this.toolDecisionResults.get(decisionKey);
+    if (previousDecision) {
+      if (previousDecision.obligationId !== obligationId || previousDecision.decision !== decision) {
+        const error = new Error("clientToolDecisionId was reused for a different read-only tool decision.");
+        error.code = "tool_decision_id_conflict";
+        throw error;
+      }
+      return previousDecision.response;
+    }
+    const response = await this.withToolDecisionLock(obligationId, async () => {
+      if (decision === "approve" || decision === "approved" || decision === "accept") {
+        return this.approveExecuteAndContinueReadOnlyTool({
+          project: context.project || this.project || {},
+          surfaceSession: context.surfaceSession,
+          sessionId,
+          turnId,
+          obligationId,
+          clientToolDecisionId,
+        });
+      }
+      if (decision === "cancel" || decision === "canceled" || decision === "abort") {
+        const canceled = cancelReadOnlyToolObligation({
+          sessionStore: this.sessionStore,
+          sessionId,
+          turnId,
+          obligationId,
+          decidedBy: "local-user",
+          reason: "User canceled read-only tool execution.",
+        });
+        this.emitNotification(context.surfaceSession, "turn/completed", {
+          threadId: sessionId,
+          turnId,
+          turn: { id: turnId, status: "aborted", completedAt: nowSeconds() },
+        });
+        return { decision: "canceled", turn: turnSnapshot(canceled.turn), obligation: canceled.obligation };
+      }
+      const declined = declineReadOnlyToolObligation({
+        sessionStore: this.sessionStore,
+        sessionId,
+        turnId,
+        obligationId,
+        decidedBy: "local-user",
+        reason: "User declined read-only tool execution.",
+      });
+      this.emitNotification(context.surfaceSession, "turn/completed", {
+        threadId: sessionId,
+        turnId,
+        turn: { id: turnId, status: "failed", completedAt: nowSeconds() },
+      });
+      return { decision: "declined", turn: turnSnapshot(declined.turn), obligation: declined.obligation };
+    });
+    this.toolDecisionResults.set(decisionKey, { obligationId, decision, response });
+    this.pruneToolDecisionCache();
+    return response;
+  }
+
+  emitContinuationAssistant(surfaceSession, sessionId, turnId, continuationId, normalizedEvents = []) {
+    const itemId = `${turnId}_${continuationId}_assistant`;
+    const item = { id: itemId, type: "agentMessage", turnId, text: "" };
+    let started = false;
+    for (const event of normalizedEvents) {
+      if (event.type !== "message_delta") continue;
+      if (!started) {
+        started = true;
+        this.emitNotification(surfaceSession, "item/started", { threadId: sessionId, turnId, item });
+      }
+      const delta = String(event.text || "");
+      item.text += delta;
+      this.emitNotification(surfaceSession, "item/agentMessage/delta", {
+        threadId: sessionId,
+        turnId,
+        itemId,
+        delta,
+      });
+    }
+    if (started) this.emitNotification(surfaceSession, "item/completed", { threadId: sessionId, turnId, item });
+  }
+
+  async approveExecuteAndContinueReadOnlyTool(options = {}) {
+    if (typeof this.workspaceRequest !== "function") {
+      const error = new Error("Direct read-only tool execution requires the workspace backend.");
+      error.code = "workspace_backend_unavailable";
+      throw error;
+    }
+    const { sessionId, turnId, obligationId, project, surfaceSession } = options;
+    const approved = approveReadOnlyToolObligation({
+      sessionStore: this.sessionStore,
+      sessionId,
+      turnId,
+      obligationId,
+      approvedBy: "local-user",
+    });
+    const executed = await executeApprovedReadOnlyToolObligation({
+      sessionStore: this.sessionStore,
+      sessionId,
+      turnId,
+      obligationId,
+      workspaceRequest: (method, params) => this.workspaceRequest(project, method, params, this.readOnlyWorkspaceTimeoutMs),
+    });
+    const turn = this.sessionStore.readTurn(sessionId, turnId);
+    const continuation = await runPersistedReadOnlyToolContinuation({
+      sessionStore: this.sessionStore,
+      sessionId,
+      turnId,
+      obligationId,
+      previousResponseId: normalizeString(turn?.responseId, ""),
+      endpoint: this.endpoint || undefined,
+      authStore: this.currentAuthStore(),
+      refreshCredentials: this.refreshCredentials,
+      profileDoc: this.profileDoc,
+      model: normalizeString(turn?.model, ""),
+      fetchImpl: this.fetchImpl || undefined,
+      onLifecycle: (event) => {
+        if (event.phase === "streaming") {
+          this.emitNotification(surfaceSession, "turn/started", {
+            threadId: sessionId,
+            turnId,
+            turn: { id: turnId, status: "inProgress", startedAt: nowSeconds(), streamPhase: "continuation" },
+          });
+        }
+      },
+    });
+    const continuationId = normalizeString(continuation.continuation?.continuationId || continuation.obligation?.continuationRequest?.continuationId, "continuation");
+    this.emitContinuationAssistant(surfaceSession, sessionId, turnId, continuationId, continuation.normalizedEvents || []);
+    this.emitNotification(surfaceSession, "turn/completed", {
+      threadId: sessionId,
+      turnId,
+      turn: {
+        id: turnId,
+        status: terminalStatusForState(continuation.turnState),
+        completedAt: nowSeconds(),
+        streamPhase: "continuation",
+      },
+    });
+    return {
+      decision: "approved",
+      turn: turnSnapshot(this.sessionStore.readTurn(sessionId, turnId)),
+      obligation: continuation.obligation || approved.obligation,
+      result: executed.result,
+      continuation: {
+        ok: continuation.ok,
+        continuationId,
+        terminal: continuation.terminal || null,
+      },
+    };
   }
 
   textPrompt(params = {}) {
@@ -621,11 +975,6 @@ class DirectLiveTextController {
         this.emitNotification(surfaceSession, "item/started", { threadId: sessionId, turnId, item });
         this.emitNotification(surfaceSession, "item/completed", { threadId: sessionId, turnId, item });
       }
-      this.emitNotification(surfaceSession, "warning", {
-        threadId: sessionId,
-        turnId,
-        message: "Direct live text detected a model tool call. Execution and continuation are disabled in this bundle.",
-      });
     }
 
     const terminalState = obligationResult.obligations.length ? "tool_waiting" : terminal.state;
@@ -636,12 +985,23 @@ class DirectLiveTextController {
       responseContentType: result.response?.contentType || "",
     });
     this.appendSessionTurn(sessionId, turnId, emittedItems, model, terminalState);
+    if (obligationResult.obligations.length) {
+      const createdApprovalRequests = this.emitToolApprovalRequests(surfaceSession, sessionId, turnId, obligationResult.obligations, project);
+      this.emitNotification(surfaceSession, "warning", {
+        threadId: sessionId,
+        turnId,
+        message: createdApprovalRequests
+          ? "Direct live text detected a read-only tool call. Local approval is required before workspace content is sent back to the provider."
+          : "Direct live text detected a tool call, but read-only tool continuation is not enabled by accepted evidence.",
+      });
+    }
 
-    if (terminalState === "failed" || terminalState === "aborted") {
+    const finalTurn = this.sessionStore.readTurn(sessionId, turnId) || completedTurn;
+    if (finalTurn.state === "failed" || finalTurn.state === "aborted") {
       this.emitNotification(surfaceSession, "error", {
         threadId: sessionId,
         turnId,
-        error: completedTurn.error || result.error || { code: terminalState, message: `Direct live text turn ${terminalState}.` },
+        error: finalTurn.error || result.error || { code: finalTurn.state, message: `Direct live text turn ${finalTurn.state}.` },
       });
     }
     if (!terminalSent) {
@@ -651,14 +1011,14 @@ class DirectLiveTextController {
         turnId,
         turn: {
           id: turnId,
-          status: terminalStatusForState(terminalState),
+          status: terminalStatusForState(finalTurn.state),
           completedAt: nowSeconds(),
-          durationMs: Math.max(0, Date.parse(completedTurn.updatedAt) - Date.parse(completedTurn.createdAt)),
+          durationMs: Math.max(0, Date.parse(finalTurn.updatedAt) - Date.parse(finalTurn.createdAt)),
         },
       });
     }
     return {
-      turn: turnSnapshot(completedTurn),
+      turn: turnSnapshot(finalTurn),
       result,
     };
   }
@@ -712,6 +1072,7 @@ class DirectLiveTextSurfaceSession extends EventEmitter {
     this.connection = null;
     this.connectionId = "";
     this.transportKind = DIRECT_LIVE_TEXT_SURFACE_TRANSPORT;
+    this.serverRequests = new Map();
   }
 
   sendEvent(payload) {
@@ -760,12 +1121,95 @@ class DirectLiveTextSurfaceSession extends EventEmitter {
     return true;
   }
 
-  async respond() {
-    throw new Error("Direct live text runtime has no pending server request.");
+  publicServerRequest(record = {}) {
+    return {
+      key: record.key,
+      id: record.id,
+      method: record.method,
+      title: record.title,
+      summary: record.summary,
+      riskCategory: record.riskCategory,
+      status: record.status,
+      params: record.params,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+      responseSummary: record.responseSummary || "",
+      errorSummary: record.errorSummary || "",
+      rawBackendFramesExposed: false,
+      rawAuthHeadersExposed: false,
+    };
   }
 
-  hasServerRequest() {
-    return false;
+  createReadOnlyToolRequest(input = {}) {
+    const params = isPlainObject(input.params) ? input.params : {};
+    const id = normalizeString(input.id, `direct_readonly_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`);
+    const key = `direct:${id}`;
+    const now = nowIso();
+    const record = {
+      id,
+      key,
+      method: "direct/tool/readOnly/requestApproval",
+      title: "Approve read-only file access",
+      summary: normalizeString(input.summary || params.relPath || params.tool, "read_file"),
+      riskCategory: "readOnly",
+      status: "pending",
+      params,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.serverRequests.set(key, record);
+    this.sendEvent({
+      type: "rpc-request",
+      request: this.publicServerRequest(record),
+    });
+    return this.publicServerRequest(record);
+  }
+
+  async respond(key, result = {}) {
+    const requestKey = normalizeString(key, "");
+    const record = this.serverRequests.get(requestKey);
+    if (!record) throw new Error("Direct live text runtime has no pending server request.");
+    if (record.status !== "pending") {
+      return { request: this.publicServerRequest(record), reused: true };
+    }
+    try {
+      const response = await this.controller.handleReadOnlyToolResponse(record, result || {}, {
+        project: this.project,
+        surfaceSession: this,
+        connection: this.connection,
+      });
+      const next = {
+        ...record,
+        status: "completed",
+        updatedAt: nowIso(),
+        response,
+        responseSummary: response?.decision || "completed",
+      };
+      this.serverRequests.set(requestKey, next);
+      this.sendEvent({
+        type: "rpc-request-updated",
+        request: this.publicServerRequest(next),
+      });
+      return { request: this.publicServerRequest(next), response };
+    } catch (error) {
+      const next = {
+        ...record,
+        status: "failed",
+        updatedAt: nowIso(),
+        errorSummary: error?.message || "Direct read-only tool response failed.",
+      };
+      this.serverRequests.set(requestKey, next);
+      this.sendEvent({
+        type: "rpc-request-updated",
+        request: this.publicServerRequest(next),
+      });
+      throw error;
+    }
+  }
+
+  hasServerRequest(key = "") {
+    if (!key) return [...this.serverRequests.values()].some((request) => request.status === "pending");
+    return this.serverRequests.has(key);
   }
 
   async dispose(options = {}) {
