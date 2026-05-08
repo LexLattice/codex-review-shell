@@ -10,6 +10,7 @@
 - [ChatGPT Codex Direct Path Spec](./CHATGPT_CODEX_DIRECT_PATH_SPEC.md)
 - [ChatGPT Codex ODEU Profile Extraction Spec](./CHATGPT_CODEX_ODEU_PROFILE_EXTRACTION_SPEC.md)
 - [Direct Live Text Turn Surface Spec](./DIRECT_LIVE_TEXT_TURN_SURFACE_SPEC.md)
+- [Direct Live Probe Evidence Promotion Spec](./DIRECT_LIVE_PROBE_EVIDENCE_PROMOTION_SPEC.md)
 - [OAI Codex Upstream ODEU Profile](./OAI_CODEX_UPSTREAM_ODEU_PROFILE.md)
 - [Meta-Orchestrator Loop ODEU Spec](./META_ORCHESTRATOR_LOOP_ODEU_SPEC.md)
 - [Codex Runtime Provider Profile Spec](./CODEX_RUNTIME_PROVIDER_PROFILE_SPEC.md)
