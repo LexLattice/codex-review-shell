@@ -42,6 +42,10 @@ function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
+function exactString(value, fallback = "") {
+  return typeof value === "string" ? value : fallback;
+}
+
 function boundedText(value, maxChars) {
   const text = typeof value === "string" ? value : "";
   return text.length > maxChars ? text.slice(0, maxChars) : text;
@@ -183,7 +187,7 @@ function assertReadFileObligation(obligation = {}) {
 
 function projectReadResult(raw = {}, obligation = {}, approvedAt = "", nowMs) {
   const result = isPlainObject(raw) ? raw : {};
-  const text = normalizeString(result.text, "");
+  const text = exactString(result.text, "");
   const binary = Boolean(result.binary);
   const truncated = Boolean(result.truncated) || text.length > MAX_PROVIDER_OUTPUT_CHARS;
   const textPreview = binary ? "" : boundedText(text, MAX_APPROVAL_PREVIEW_CHARS);

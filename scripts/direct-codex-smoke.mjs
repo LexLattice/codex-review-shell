@@ -85,6 +85,7 @@ const {
   cancelReadOnlyToolObligation,
   declineReadOnlyToolObligation,
   executeApprovedReadOnlyToolObligation,
+  projectReadResult,
   recordReadOnlyToolContinuationRequest,
 } = require("../src/main/direct/tools/read-only-authority");
 
@@ -1142,13 +1143,16 @@ try {
     sessionStore: approvedToolStore,
     profileDoc: acceptedReadOnlyToolProfile(),
     authStore: liveAuthStore,
-    workspaceRequest: async (project, method, params) => {
+    readOnlyWorkspaceTimeoutMs: 45_000,
+    toolDecisionCacheLimit: 1,
+    workspaceRequest: async (project, method, params, timeoutMs) => {
       approvedWorkspaceReads += 1;
       assert(project.id === liveProject.id, "Expected direct read-only controller to preserve project binding.");
       assert(method === "readFile", "Expected direct read-only controller to route through workspace readFile.");
       assert(params.relPath === "README.md", "Expected direct read-only controller to request the approved relative path.");
       assert(params.rejectSensitive === true, "Expected direct read-only controller to enforce sensitive-path policy in workspace backend.");
       assert(params.maxBytes === 384 * 1024, "Expected direct read-only controller to pass bounded read size.");
+      assert(timeoutMs === 45_000, "Expected direct read-only controller to use configured workspace timeout.");
       return {
         relPath: "README.md",
         size: 23,
@@ -1210,6 +1214,8 @@ try {
     clientToolDecisionId: "client_tool_decision_approved_1",
   });
   assert(approvedWorkspaceReads === 1, "Expected duplicate completed approval response not to reread workspace.");
+  assert(approvedToolController.toolDecisionClaims.size <= 1, "Expected direct tool decision claim cache to stay bounded.");
+  assert(approvedToolController.toolDecisionResults.size <= 1, "Expected direct tool decision result cache to stay bounded.");
 } finally {
   fs.rmSync(liveTextControllerParent, { recursive: true, force: true });
 }
@@ -2101,6 +2107,19 @@ try {
   });
   assert(reusedTool.reused === true, "Expected recorded read-only result to be reused idempotently.");
   assert(workspaceReadCalls === 1, "Expected read-only tool result persistence to prevent duplicate backend reads.");
+  const whitespaceResult = projectReadResult({
+    relPath: "README.md",
+    size: 7,
+    truncated: false,
+    binary: false,
+    text: "  x  \n",
+    source: "local",
+  }, {
+    obligationId: "tool_obligation_whitespace_result",
+    name: "read_file",
+  }, new Date(1_700_000_021_500).toISOString(), 1_700_000_021_500);
+  assert(whitespaceResult.textPreview === "  x  \n", "Expected read-only result preview to preserve leading and trailing whitespace.");
+  assert(JSON.parse(whitespaceResult.providerOutputText).textPreview === "  x  \n", "Expected provider output envelope to preserve exact file whitespace.");
   const resultRecordedTurn = probeSessionStore.readTurn(persistedToolProbe.sessionId, persistedToolProbe.turnId);
   assert(resultRecordedTurn.state === "continuation_ready", "Expected read-only result persistence to leave turn ready for later continuation.");
   assert(resultRecordedTurn.toolResults.length === 1, "Expected read-only result to pair to exactly one obligation.");

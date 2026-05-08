@@ -28,6 +28,8 @@ const ACTIVE_TURN_STATES = new Set([
 const TERMINAL_TURN_STATES = new Set(["completed", "failed", "aborted"]);
 const DEFAULT_MAX_PROMPT_CHARS = 64_000;
 const DEFAULT_MAX_ASSISTANT_CHARS = 256_000;
+const DEFAULT_READONLY_WORKSPACE_TIMEOUT_MS = 30_000;
+const DEFAULT_TOOL_DECISION_CACHE_LIMIT = 512;
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -43,6 +45,12 @@ function nowIso(nowMs = Date.now()) {
 
 function nowSeconds() {
   return Date.now() / 1000;
+}
+
+function boundedPositiveInteger(value, fallback, min = 1, max = 10_000) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(number)));
 }
 
 function firstTextInput(input) {
@@ -217,6 +225,13 @@ class DirectLiveTextController {
     this.endpoint = normalizeString(options.endpoint, "");
     this.maxPromptChars = Number(options.maxPromptChars || DEFAULT_MAX_PROMPT_CHARS);
     this.maxAssistantChars = Number(options.maxAssistantChars || DEFAULT_MAX_ASSISTANT_CHARS);
+    this.readOnlyWorkspaceTimeoutMs = boundedPositiveInteger(
+      options.readOnlyWorkspaceTimeoutMs,
+      DEFAULT_READONLY_WORKSPACE_TIMEOUT_MS,
+      1_000,
+      10 * 60_000,
+    );
+    this.toolDecisionCacheLimit = boundedPositiveInteger(options.toolDecisionCacheLimit, DEFAULT_TOOL_DECISION_CACHE_LIMIT, 16, 10_000);
     this.activeRuns = new Map();
     this.toolDecisionLocks = new Map();
     this.toolDecisionClaims = new Map();
@@ -579,6 +594,22 @@ class DirectLiveTextController {
     return run;
   }
 
+  pruneToolDecisionCache() {
+    const limit = this.toolDecisionCacheLimit;
+    while (this.toolDecisionClaims.size > limit) {
+      const oldestKey = this.toolDecisionClaims.keys().next().value;
+      if (!oldestKey) break;
+      this.toolDecisionClaims.delete(oldestKey);
+      this.toolDecisionResults.delete(oldestKey);
+    }
+    while (this.toolDecisionResults.size > limit) {
+      const oldestKey = this.toolDecisionResults.keys().next().value;
+      if (!oldestKey) break;
+      this.toolDecisionResults.delete(oldestKey);
+      this.toolDecisionClaims.delete(oldestKey);
+    }
+  }
+
   async handleReadOnlyToolResponse(record = {}, result = {}, context = {}) {
     const params = record.params || {};
     const sessionId = normalizeString(params.sessionId || params.threadId, "");
@@ -594,6 +625,7 @@ class DirectLiveTextController {
       throw error;
     }
     this.toolDecisionClaims.set(decisionKey, { obligationId, decision });
+    this.pruneToolDecisionCache();
     const previousDecision = this.toolDecisionResults.get(decisionKey);
     if (previousDecision) {
       if (previousDecision.obligationId !== obligationId || previousDecision.decision !== decision) {
@@ -646,6 +678,7 @@ class DirectLiveTextController {
       return { decision: "declined", turn: turnSnapshot(declined.turn), obligation: declined.obligation };
     });
     this.toolDecisionResults.set(decisionKey, { obligationId, decision, response });
+    this.pruneToolDecisionCache();
     return response;
   }
 
@@ -690,7 +723,7 @@ class DirectLiveTextController {
       sessionId,
       turnId,
       obligationId,
-      workspaceRequest: (method, params) => this.workspaceRequest(project, method, params, 30_000),
+      workspaceRequest: (method, params) => this.workspaceRequest(project, method, params, this.readOnlyWorkspaceTimeoutMs),
     });
     const turn = this.sessionStore.readTurn(sessionId, turnId);
     const continuation = await runPersistedReadOnlyToolContinuation({
