@@ -27,6 +27,7 @@ const { createDirectAuthLoginCoordinator } = require("./main/direct/auth/auth-lo
 const { codexAuthTokensFromCredentials } = require("./main/direct/auth/app-server-auth-bridge");
 const { loadDirectCodexProfile } = require("./main/direct/odeu-profile/profile-loader");
 const { DirectSessionStore } = require("./main/direct/session/session-store");
+const { DirectImportController } = require("./main/direct/import/import-controller");
 const {
   DIRECT_LIVE_PROBE_EVIDENCE_ROOT_NAME,
   DirectLiveProbeEvidenceStore,
@@ -167,6 +168,7 @@ let directAuthController = null;
 let directAuthLoginCoordinator = null;
 let directCodexProfileDoc = null;
 let directSessionStore = null;
+let directImportController = null;
 let directLiveProbeEvidenceStore = null;
 let directFixtureController = null;
 let directLiveTextController = null;
@@ -1608,6 +1610,15 @@ function ensureDirectSessionStore() {
   if (directSessionStore) return directSessionStore;
   directSessionStore = new DirectSessionStore({ rootDir: directSessionRootDir() });
   return directSessionStore;
+}
+
+function ensureDirectImportController() {
+  if (directImportController) return directImportController;
+  directImportController = new DirectImportController({
+    sessionStore: ensureDirectSessionStore(),
+    projectResolver: (projectId) => getProjectById(projectId),
+  });
+  return directImportController;
 }
 
 function ensureDirectLiveProbeEvidenceStore() {
@@ -3996,6 +4007,41 @@ ipcMain.handle("workspace:status", async (_event, payload) => {
 ipcMain.handle("direct-runtime:status", async (_event, payload) => {
   const project = await getProjectById(payload?.projectId);
   return buildDirectRuntimeStatusForProject(project);
+});
+
+ipcMain.handle("direct-import:list-sources", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectImportController().listSources(project, payload || {});
+});
+
+ipcMain.handle("direct-import:inspect-source", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectImportController().inspectSource(project, payload || {});
+});
+
+ipcMain.handle("direct-import:build-candidate", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectImportController().buildCandidate(project, payload || {});
+});
+
+ipcMain.handle("direct-import:build-checkpoint", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectImportController().buildCheckpoint(project, payload || {});
+});
+
+ipcMain.handle("direct-import:materialize", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectImportController().materialize(project, payload || {});
+});
+
+ipcMain.handle("direct-import:read-report", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectImportController().readReport(project, payload || {});
+});
+
+ipcMain.handle("direct-import:cancel", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectImportController().cancelImport(project, payload || {});
 });
 
 ipcMain.handle("workspace:run-command", async (_event, payload) => {

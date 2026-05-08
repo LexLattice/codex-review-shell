@@ -56,6 +56,20 @@ contextBridge.exposeInMainWorld("workspaceShell", {
   completeDirectAuthLogin: (loginId, input) => ipcRenderer.invoke("direct-auth:complete-manual-login", { loginId, input }),
   logoutDirectAuth: () => ipcRenderer.invoke("direct-auth:logout"),
   getDirectRuntimeStatus: (projectId) => ipcRenderer.invoke("direct-runtime:status", { projectId }),
+  listDirectImportSources: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-import:list-sources", { ...options, projectId }),
+  inspectDirectImportSource: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-import:inspect-source", { ...options, projectId }),
+  buildDirectImportCandidate: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-import:build-candidate", { ...options, projectId }),
+  buildDirectImportCheckpoint: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-import:build-checkpoint", { ...options, projectId }),
+  materializeDirectImport: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-import:materialize", { ...options, projectId }),
+  readDirectImportReport: (projectId, importId) =>
+    ipcRenderer.invoke("direct-import:read-report", { projectId, importId }),
+  cancelDirectImport: (projectId, importId) =>
+    ipcRenderer.invoke("direct-import:cancel", { projectId, importId }),
   dismissCodexComposerOverlay: (reason = "shell") => ipcRenderer.invoke("codex:dismiss-composer-overlay", { reason }),
   openChatgptSettings: () => ipcRenderer.invoke("chatgpt:open-settings"),
   forceChatgptDark: () => ipcRenderer.invoke("chatgpt:force-dark"),
