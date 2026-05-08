@@ -33,6 +33,18 @@ const CODEX_ANALYTICS_TAIL_HASH_LINE_LIMIT = 24;
 const CODEX_SANDBOX_ARTIFACT_NAME = ".codex";
 const CODEX_SANDBOX_ARTIFACT_EXCLUDE_COMMENT =
   "# codex-review-shell: Codex Linux sandbox may leak a zero-byte bwrap placeholder here.";
+const SENSITIVE_READ_FILE_PATTERNS = [
+  /(?:^|\/)\.env(?:\.|$)/i,
+  /(?:^|\/)[^/]+\.pem$/i,
+  /(?:^|\/)[^/]+\.key$/i,
+  /(?:^|\/)[^/]+\.p12$/i,
+  /(?:^|\/)[^/]+\.pfx$/i,
+  /(?:^|\/)id_rsa$/i,
+  /(?:^|\/)id_ed25519$/i,
+  /(?:^|\/)secrets(?:\/|$)/i,
+  /(?:^|\/)\.ssh(?:\/|$)/i,
+  /(?:^|\/)\.git\/config$/i,
+];
 
 const SKIPPED_DIR_NAMES = new Set([
   ".git",
@@ -87,6 +99,10 @@ function sendEvent(type, payload = {}) {
 function normalizeRelPath(relPath) {
   const text = String(relPath ?? "").replace(/\\/g, "/").trim();
   if (!text || text === ".") return "";
+  if (/[\0-\x1f\x7f]/.test(text)) throw new Error("Control characters are not allowed in workspace paths.");
+  if (text.startsWith("/") || /^[A-Za-z]:\//.test(text) || text.includes("://")) {
+    throw new Error("Absolute workspace paths are not allowed.");
+  }
   const parts = text.split("/").filter(Boolean);
   if (parts.some((part) => part === "..")) throw new Error("Parent-path traversal is not allowed.");
   return parts.join(path.sep);
@@ -109,6 +125,43 @@ function resolveWithinRoot(relPath = "") {
     fullPath,
     displayRel: displayRelPath(relative === "." ? "" : relative),
   };
+}
+
+function pathIsUnderRoot(realRoot, realTarget) {
+  const relative = path.relative(realRoot, realTarget);
+  return !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+async function resolveFileWithinRoot(relPath = "") {
+  const resolved = resolveWithinRoot(relPath);
+  const realRoot = await fs.realpath(root);
+  const realTarget = await fs.realpath(resolved.fullPath);
+  if (!pathIsUnderRoot(realRoot, realTarget)) {
+    throw new Error("Requested path resolves outside the workspace root.");
+  }
+  return {
+    ...resolved,
+    realRoot,
+    requestedFullPath: resolved.fullPath,
+    fullPath: realTarget,
+  };
+}
+
+function sensitiveReadFileReason(relPath = "") {
+  const normalized = displayRelPath(normalizeRelPath(relPath));
+  return SENSITIVE_READ_FILE_PATTERNS.some((pattern) => pattern.test(normalized)) ? "sensitive_path" : "";
+}
+
+function assertNoEncodedTraversal(relPath = "") {
+  try {
+    const decoded = decodeURIComponent(String(relPath || ""));
+    if (decoded !== relPath && (decoded.includes("/") || decoded.includes("\\") || decoded.split(/[\\/]/).includes(".."))) {
+      throw new Error("Encoded workspace traversal is not allowed.");
+    }
+  } catch (error) {
+    if (error && error.message === "Encoded workspace traversal is not allowed.") throw error;
+    throw new Error("Malformed workspace path encoding is not allowed.");
+  }
 }
 
 function direntType(dirent) {
@@ -174,12 +227,24 @@ function looksBinary(buffer) {
 }
 
 async function readFilePreview(params = {}) {
-  const { fullPath, displayRel } = resolveWithinRoot(params.relPath || "");
+  const normalizedRel = displayRelPath(normalizeRelPath(params.relPath || ""));
+  if (params.rejectSensitive === true) assertNoEncodedTraversal(String(params.relPath || ""));
+  if (params.rejectSensitive === true && sensitiveReadFileReason(normalizedRel)) {
+    const error = new Error("Sensitive file preview is denied for this request.");
+    error.code = "SENSITIVE_PATH_DENIED";
+    throw error;
+  }
+  const { fullPath, requestedFullPath, displayRel } = await resolveFileWithinRoot(normalizedRel);
+  const requestedStat = await fs.lstat(requestedFullPath);
+  if (requestedStat.isSymbolicLink()) throw new Error("Symlink preview is disabled for this workspace agent.");
   const stat = await fs.lstat(fullPath);
-  if (stat.isSymbolicLink()) throw new Error("Symlink preview is disabled for this workspace agent.");
   if (!stat.isFile()) throw new Error("Selected path is not a file.");
 
-  const bytesToRead = Math.min(stat.size, PREVIEW_LIMIT_BYTES);
+  const requestedLimit = Number(params.maxBytes || params.limit || PREVIEW_LIMIT_BYTES);
+  const limit = Number.isFinite(requestedLimit) && requestedLimit > 0
+    ? Math.min(PREVIEW_LIMIT_BYTES, Math.floor(requestedLimit))
+    : PREVIEW_LIMIT_BYTES;
+  const bytesToRead = Math.min(stat.size, limit);
   const file = await fs.open(fullPath, "r");
   let buffer;
   try {
@@ -194,9 +259,9 @@ async function readFilePreview(params = {}) {
     relPath: displayRel,
     absolutePath: fullPath,
     size: stat.size,
-    truncated: stat.size > PREVIEW_LIMIT_BYTES,
+    truncated: stat.size > limit,
     binary,
-    limit: PREVIEW_LIMIT_BYTES,
+    limit,
     text: binary ? "" : buffer.toString("utf8"),
     source: workspaceKind,
   };

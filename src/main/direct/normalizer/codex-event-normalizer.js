@@ -176,6 +176,7 @@ function normalizeDirectCodexEvent(raw, context) {
           itemId: item.id || data.item_id || "",
           callId: item.call_id || item.callId || "",
           name: item.name || "",
+          namespace: item.namespace || data.namespace || "",
           toolType: item.type,
         }),
       ];
@@ -204,6 +205,7 @@ function normalizeDirectCodexEvent(raw, context) {
           itemId: item.id || data.item_id || "",
           callId: item.call_id || item.callId || "",
           name: item.name || "",
+          namespace: item.namespace || data.namespace || "",
           argumentsJson: String(item.arguments ?? item.input ?? ""),
           toolType: item.type,
         }),

@@ -3253,6 +3253,33 @@ function renderPermissionRequestDetails(request, details, actions) {
   actions.appendChild(createRequestButton("Deny", "secondary", (event) => submitRequestResponse(request, { permissions: {}, scope: "turn" }, event.currentTarget)));
 }
 
+function renderDirectReadOnlyToolRequestDetails(request, details, actions) {
+  const params = request.params || {};
+  appendRequestLine(details, "tool", params.tool || "read_file", { mono: true });
+  appendRequestLine(details, "path", params.relPath || "unknown", { mono: true });
+  appendRequestLine(details, "call type", params.providerCallType || "unknown", { mono: true });
+  if (params.namespace) appendRequestLine(details, "namespace", params.namespace, { mono: true });
+  appendRequestLine(details, "source", params.toolCallSource || "provider-native-implicit");
+  appendRequestLine(details, "limits", `${params.maxReadFileBytes || 0} bytes read · ${params.maxProviderOutputChars || 0} chars provider output`);
+  appendRequestLine(details, "policy", params.sensitivePathPolicy || "deny-by-default");
+  if (params.argumentsError) appendRequestLine(details, "arguments", params.argumentsError);
+  if (!params.hasContinuityHandle) appendRequestLine(details, "continuation", "Missing provider continuity handle.");
+  if (params.approvalAvailable === false) appendRequestLine(details, "approval", "Unavailable for this tool-call shape.");
+  const decisionId = (decision) => `${request.key}:${decision}`;
+  actions.appendChild(createRequestButton("Approve read", "", (event) => submitRequestResponse(request, {
+    decision: "approve",
+    clientToolDecisionId: decisionId("approve"),
+  }, event.currentTarget)));
+  actions.appendChild(createRequestButton("Decline", "secondary", (event) => submitRequestResponse(request, {
+    decision: "decline",
+    clientToolDecisionId: decisionId("decline"),
+  }, event.currentTarget)));
+  actions.appendChild(createRequestButton("Cancel turn", "secondary", (event) => submitRequestResponse(request, {
+    decision: "cancel",
+    clientToolDecisionId: decisionId("cancel"),
+  }, event.currentTarget)));
+}
+
 function renderGenericRequestDetails(request, details) {
   appendRequestLine(details, "method", request.method || "", { mono: true });
   appendRequestLine(details, "params", request.params || "", { mono: true, pre: true });
@@ -3297,6 +3324,7 @@ function renderServerRequest(request) {
   else if (request.method === "item/tool/requestUserInput") renderUserInputRequestDetails(request, details, isPending ? actions : document.createElement("div"));
   else if (request.method === "mcpServer/elicitation/request") renderMcpRequestDetails(request, details, isPending ? actions : document.createElement("div"));
   else if (request.method === "item/permissions/requestApproval") renderPermissionRequestDetails(request, details, isPending ? actions : document.createElement("div"));
+  else if (request.method === "direct/tool/readOnly/requestApproval") renderDirectReadOnlyToolRequestDetails(request, details, isPending ? actions : document.createElement("div"));
   else renderGenericRequestDetails(request, details);
 
   if (!isPending) {

@@ -1635,6 +1635,7 @@ function ensureDirectLiveTextController() {
     authStore: () => ensureDirectAuthController().activeStore(),
     refreshCredentials: () => ensureDirectAuthLoginCoordinator().refreshCredentials(ensureDirectAuthController()),
     modelEvidenceResolver: (context) => ensureDirectLiveProbeEvidenceStore().resolveModelEvidence(context),
+    workspaceRequest: (project, method, params, timeoutMs) => requestWorkspace(project, method, params, timeoutMs),
   });
   return directLiveTextController;
 }
@@ -1654,7 +1655,10 @@ function buildDirectRuntimeStatusForProject(project, options = {}) {
     profileDoc,
     sessionStore: ensureDirectSessionStore().status(),
     fixtureRuntime: { available: true, capabilities: buildDirectFixtureCapabilities() },
-    liveTextRuntime: { available: true, status: ensureDirectLiveTextController().statusForProject(project), capabilities: buildDirectLiveTextCapabilities() },
+    liveTextRuntime: (() => {
+      const liveStatus = ensureDirectLiveTextController().statusForProject(project);
+      return { available: true, status: liveStatus, capabilities: buildDirectLiveTextCapabilities(liveStatus) };
+    })(),
     legacySession: currentLegacyAppServerSnapshot(),
   });
 }

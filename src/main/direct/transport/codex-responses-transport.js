@@ -133,6 +133,23 @@ function buildReadOnlyToolContinuationProbeRequest(options = {}) {
     : "";
   const callId = normalizeString(toolResult.callId || toolResult.toolCallId, "");
   if (!callId) throw new Error("Read-only tool continuation requires a tool call id.");
+  const outputType = normalizeString(toolResult.outputType || toolResult.content?.[0]?.type, "function_call_output");
+  if (!["function_call_output", "custom_tool_call_output"].includes(outputType)) {
+    const error = new Error(`Unsupported read-only tool continuation output type: ${outputType}`);
+    error.code = "unsupported_tool_output_type";
+    throw error;
+  }
+  const previousResponseId = normalizeString(
+    options.previousResponseId ||
+    continuationRequest.source?.previousResponseId ||
+    continuationRequest.source?.responseId,
+    "",
+  );
+  if (!previousResponseId) {
+    const error = new Error("Read-only tool continuation requires previous_response_id or accepted equivalent continuity evidence.");
+    error.code = "continuation_missing_context_handle";
+    throw error;
+  }
   const requestBody = {
     model: normalizeString(options.model, modelFromProfile(options.profileDoc)),
     stream: true,
@@ -140,19 +157,13 @@ function buildReadOnlyToolContinuationProbeRequest(options = {}) {
     instructions: normalizeString(options.instructions, DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS),
     input: [
       {
-        type: "function_call_output",
+        type: outputType,
         call_id: callId,
         output: outputText,
       },
     ],
+    previous_response_id: previousResponseId,
   };
-  const previousResponseId = normalizeString(
-    options.previousResponseId ||
-    continuationRequest.source?.previousResponseId ||
-    continuationRequest.source?.responseId,
-    "",
-  );
-  if (previousResponseId) requestBody.previous_response_id = previousResponseId;
   if (metadata.resultId) {
     requestBody.metadata = {
       direct_tool_result_id: normalizeString(metadata.resultId, ""),
@@ -177,6 +188,9 @@ function requestShapeForDiagnostic(requestBody = {}) {
       : 0,
     functionCallOutputCount: Array.isArray(requestBody.input)
       ? requestBody.input.filter((item) => item?.type === "function_call_output").length
+      : 0,
+    customToolCallOutputCount: Array.isArray(requestBody.input)
+      ? requestBody.input.filter((item) => item?.type === "custom_tool_call_output").length
       : 0,
     toolCount: Array.isArray(requestBody.tools) ? requestBody.tools.length : 0,
   };
@@ -681,6 +695,7 @@ async function runPersistedReadOnlyToolContinuation(options = {}) {
     continuationRequestBuiltAt: nowIso(options.nowMs),
     continuationRequestShape: requestShapeForDiagnostic(requestBody),
     continuationStreamStartedAt: "",
+    streamPhase: "continuation",
   }, options);
   const callerLifecycle = options.onLifecycle;
   const result = await runReadOnlyToolContinuationProbe({
@@ -692,6 +707,7 @@ async function runPersistedReadOnlyToolContinuation(options = {}) {
           continuationStreamStartedAt: event.at,
           continuationResponseStatus: event.status,
           continuationResponseContentType: event.contentType,
+          streamPhase: "continuation",
         }, options);
       }
       if (typeof callerLifecycle === "function") callerLifecycle(event);
@@ -701,7 +717,19 @@ async function runPersistedReadOnlyToolContinuation(options = {}) {
   if (result.normalizedEvents.length) {
     sessionStore.appendNormalizedEvents(options.sessionId, options.turnId, result.normalizedEvents, options);
   }
-  const terminal = result.terminal || terminalStateFromNormalizedEvents(result.normalizedEvents);
+  const nestedToolCall = result.normalizedEvents.some((event) =>
+    event.type === "tool_call_started" ||
+    event.type === "tool_call_delta" ||
+    event.type === "tool_call_completed");
+  const terminal = nestedToolCall
+    ? {
+        state: "failed",
+        error: {
+          code: "nested_tool_call_unsupported",
+          message: "Direct read-only continuation emitted another tool call; nested tool execution is unsupported.",
+        },
+      }
+    : (result.terminal || terminalStateFromNormalizedEvents(result.normalizedEvents));
   const completedTurn = sessionStore.updateTurnState(
     options.sessionId,
     options.turnId,
@@ -712,21 +740,23 @@ async function runPersistedReadOnlyToolContinuation(options = {}) {
     },
     options,
   );
-  const nextObligationStatus = result.ok ? "continuation_sent" : recorded.obligation.status;
+  const continuationOk = result.ok && !nestedToolCall && completedTurn.state === "completed";
+  const nextObligationStatus = continuationOk ? "continuation_sent" : recorded.obligation.status;
   const updatedObligation = sessionStore.updateToolObligation(options.sessionId, options.turnId, options.obligationId, {
     status: nextObligationStatus,
-    authorityState: result.ok ? "continuation_sent" : recorded.obligation.authorityState,
+    authorityState: continuationOk ? "continuation_sent" : recorded.obligation.authorityState,
     executionAllowed: false,
     continuationAllowed: false,
     continuationRequest,
-    continuationSentAt: result.ok ? result.completedAt : "",
+    continuationSentAt: continuationOk ? result.completedAt : "",
     continuationResult: {
       schema: result.schema,
-      ok: result.ok,
-      terminal: result.terminal,
+      ok: continuationOk,
+      terminal,
       responseId: result.responseId,
       normalizedEventCount: result.normalizedEvents.length,
       originalRequestRetried: false,
+      failureKind: nestedToolCall ? "nested_tool_call_unsupported" : "",
     },
   }, {
     ...options,
@@ -735,6 +765,8 @@ async function runPersistedReadOnlyToolContinuation(options = {}) {
   appendAssistantContinuationMessage(sessionStore, options.sessionId, options.turnId, result, options);
   return {
     ...result,
+    ok: continuationOk,
+    terminal,
     sessionId: options.sessionId,
     turnId: options.turnId,
     turnState: completedTurn.state,

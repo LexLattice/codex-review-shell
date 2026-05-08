@@ -202,7 +202,10 @@ function buildDirectRuntimeStatus(options = {}) {
       },
       transport: "direct-live-text",
       appServerRequired: false,
-      toolsEnabled: false,
+      toolsEnabled: Boolean(liveTextStatus.toolsEnabled),
+      readOnlyToolContinuation: isPlainObject(liveTextStatus.readOnlyToolContinuation)
+        ? liveTextStatus.readOnlyToolContinuation
+        : null,
       reason: normalizeString(liveTextStatus.reason, ""),
       rawBackendFramesExposed: false,
     },
@@ -219,16 +222,16 @@ function buildDirectRuntimeStatus(options = {}) {
       manualOnly: true,
       lastTerminalState: terminalTurnState(sessionStore?.lastTurnState),
       activeTurnCount: Number(sessionStore?.activeTurnCount || 0),
-      toolsEnabled: false,
-      continuationEnabled: false,
+      toolsEnabled: Boolean(liveTextStatus.toolsEnabled),
+      continuationEnabled: Boolean(liveTextStatus.toolsEnabled),
       rawBackendFramesExposed: false,
     },
     toolDetection: {
       available: directModeSelected,
-      status: "detect_only",
+      status: liveTextStatus.toolsEnabled ? "read_only_approval" : "detect_only",
       detectedObligationCount: Number(sessionStore?.unresolvedObligationCount || 0),
-      executionEnabled: false,
-      continuationEnabled: false,
+      executionEnabled: Boolean(liveTextStatus.toolsEnabled),
+      continuationEnabled: Boolean(liveTextStatus.toolsEnabled),
       workspaceSideEffectsAllowed: false,
     },
     threads: {
@@ -241,8 +244,8 @@ function buildDirectRuntimeStatus(options = {}) {
     turns: {
       canStart: false,
       canInterrupt: false,
-      canUseTools: false,
-      canContinueAfterTools: false,
+      canUseTools: Boolean(liveTextStatus.toolsEnabled),
+      canContinueAfterTools: Boolean(liveTextStatus.toolsEnabled),
       canCompact: false,
     },
     models: {
@@ -253,7 +256,7 @@ function buildDirectRuntimeStatus(options = {}) {
       entries: modelEntries,
     },
     authority: {
-      workspaceTools: false,
+      workspaceTools: Boolean(liveTextStatus.toolsEnabled),
       commandApproval: false,
       fileChangeApproval: false,
       networkApproval: false,
