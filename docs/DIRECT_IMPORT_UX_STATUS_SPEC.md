@@ -91,6 +91,25 @@ type ImportedSessionState =
   | "checkpoint-validated";
 ```
 
+Canonicalization rule:
+
+```text
+checkpointed-runnable -> checkpoint-validated
+```
+
+Older persisted artifacts may still contain the legacy helper name
+`checkpointed-runnable`. Load paths and renderer projections must map it to
+`checkpoint-validated`. Renderer labels must say:
+
+```text
+Checkpoint validated
+Continuation not started
+Composer disabled
+```
+
+Renderer-facing UI must not use the word `runnable` for imported checkpoint
+state in this bundle.
+
 Missing:
 
 ```text
@@ -101,7 +120,7 @@ report panel
 import artifact/session list
 runtime status import summary
 imported transcript badge/card rendering in middle plane
-hide/delete failed import records
+hide/unhide failed or corrupted import records
 ```
 
 ## UX Placement
@@ -150,6 +169,11 @@ type DirectImportSourceHandle = {
   sourceRoot?: string;         // main-process private
   sourceFileSha256?: string;
   sourceFileSizeBytes?: number;
+  sourceSelectionMode:
+    | "native-file-picker"
+    | "native-root-picker"
+    | "explicit-test-handle"
+    | "explicit-configured-source-root";
 };
 
 type RendererSafeImportSource = {
@@ -159,11 +183,17 @@ type RendererSafeImportSource = {
   sourceClass: "codex-cli-jsonl" | "codex-app-server-jsonl" | "shell-archive-jsonl";
   sourceFileSizeBytes: number;
   sourceFileMtimeMs?: number;
-  sourceFileSha256?: string;
+  sourceEvidenceKey?: string; // local HMAC/evidence key, not raw source sha256
+  duplicateMatched?: boolean;
   threadId?: string;
   timestampStart?: string;
   timestampEnd?: string;
   recordCount?: number;
+  sourceSelectionMode:
+    | "native-file-picker"
+    | "native-root-picker"
+    | "explicit-test-handle"
+    | "explicit-configured-source-root";
   defaultCodexHomeScanned: false;
   rawPathExposed: false;
 };
@@ -171,13 +201,35 @@ type RendererSafeImportSource = {
 
 Rules:
 
+- `handleId` must be cryptographically random and unguessable;
 - source handles are scoped to project id;
 - source handles expire and are cleared on app restart unless already
   materialized as an import artifact;
 - `handleId` is safe for renderer state;
 - raw paths remain in main process only;
+- raw `sourceFileSha256` remains main-process private and is not exposed to the
+  renderer by default;
+- duplicate detection may use private `sourceFileSha256 + threadId + timestamp
+  range`, but renderer state receives only duplicate status or a local
+  HMAC/evidence key;
 - renderer calls import actions with `handleId`, not `sourcePath`;
 - diagnostics may retain source paths only in app-private records.
+
+Handle lifecycle:
+
+```text
+expired handle:
+  Source selection expired. Choose the file again.
+
+wrong project:
+  Source selection belongs to another project.
+
+app restart:
+  handles are cleared; renderer state cannot reconstruct source paths
+
+already materialized:
+  follow-up report/transcript actions use importId/sessionId, not handleId
+```
 
 ## Source Selection
 
@@ -203,6 +255,7 @@ Not allowed:
 
 ```text
 automatic default CODEX_HOME scan
+default-codex-home-auto-scan source selection mode
 right-pane ChatGPT scraping
 browser local storage scraping
 credential import
@@ -216,6 +269,21 @@ Directory listing must keep the existing safety behavior:
 - cap source count;
 - never follow traversal outside the selected root;
 - never expose raw child file paths to renderer state.
+
+Main-process enforcement:
+
+- reject NUL and control characters in selected paths;
+- realpath the selected root before creating a handle;
+- realpath every candidate file before listing or inspecting it;
+- require candidate realpath to remain under the selected root realpath;
+- reject symlink source roots;
+- skip symlink children.
+
+Legacy import source selection is host-side unless WSL-native picking is
+explicitly implemented through the workspace backend. Selecting a legacy JSONL
+source does not imply workspace authority or current WSL workspace equivalence.
+If WSL-native import source picking is added later, route it through the
+workspace backend rather than treating `\\wsl$` browsing as authoritative.
 
 ## Import Workflow
 
@@ -242,8 +310,11 @@ Renderer state should track:
 
 ```ts
 type DirectImportWorkbenchState = {
+  projectId: string;
+  requestGeneration: number;
   status: "idle" | "choosing" | "inspecting" | "validating" | "materializing" | "failed";
   selectedHandleId: string;
+  activeOperationId: string;
   sources: RendererSafeImportSource[];
   imports: RendererSafeImportSessionSummary[];
   selectedImportId: string;
@@ -255,6 +326,30 @@ type DirectImportWorkbenchState = {
 
 All long operations must be represented as pending states in the workbench. The
 user should never have to infer whether import is still running.
+
+Operation state:
+
+```ts
+type DirectImportOperation = {
+  operationId: string;
+  projectId: string;
+  kind: "inspect" | "validate" | "materialize" | "revalidate";
+  status: "pending" | "completed" | "failed" | "canceled";
+  startedAt: string;
+};
+```
+
+Project-generation rules:
+
+- if the selected project changes while choose/inspect/validate/materialize is
+  pending, the renderer discards the stale response;
+- main-process IPC validates `projectId` against every source handle, import
+  id, and materialized session id;
+- operation responses include `operationId` and project id so stale renderer
+  updates can be ignored.
+
+The UI should offer Cancel for inspection, validation, materialization, and
+revalidation when the main controller can cancel the active operation.
 
 ## Renderer-Safe Import List
 
@@ -282,6 +377,13 @@ type RendererSafeImportSessionSummary = {
   blockersCount: number;
   recoveryState?: "healthy" | "partial" | "corrupted" | "missing-source" | "report-only";
   hidden?: boolean;
+  composer: {
+    enabled: false;
+    reason:
+      | "imported-readonly"
+      | "checkpoint-validation-only"
+      | "live-continuation-not-implemented";
+  };
 };
 ```
 
@@ -294,6 +396,10 @@ Rules:
 - no imported system/developer/runtime policy text unless already accepted as
   renderer-safe transcript evidence;
 - no action on imported tool calls besides viewing evidence.
+
+`composer.enabled = false` is a main-process session projection, not a CSS-only
+state. If an imported session is ever opened in the left Codex surface, the
+surface must receive this field and disable input from the session truth.
 
 ## Report Panel
 
@@ -389,6 +495,33 @@ session in the left Codex surface only if that renderer path consumes
 `RendererSafeImportSession` and keeps the composer disabled. If that path is
 not complete, the Imports tab detail is enough for this bundle.
 
+Default for this bundle:
+
+```text
+Imports tab detail only.
+```
+
+`Open in left Codex surface` is deferred unless the implementation also adds
+smoke coverage for:
+
+- composer disabled by main-process imported-session state;
+- no direct turn start;
+- imported tool cards non-executable;
+- renderer-safe projection only;
+- switching back to live direct or app-server does not mutate import records.
+
+Rendering caps:
+
+```ts
+const MAX_RENDERER_IMPORT_ITEMS = 2000;
+const MAX_RENDERER_TEXT_CHARS_PER_ITEM = 16000;
+const MAX_RENDERER_TOTAL_TEXT_CHARS = 1_000_000;
+```
+
+Imported transcript rows should be virtualized or capped. Truncation must be
+visible with a `truncated for display` marker; full source evidence remains only
+in private app-owned import artifacts.
+
 ## Runtime Status Integration
 
 Extend `DirectRuntimeStatus` with an import summary:
@@ -425,7 +558,7 @@ Runtime status rules:
 - import count/recovery state may appear in the Overview runtime status area;
 - raw paths and raw records exposure flags must always be false.
 
-## Hide And Delete
+## Hide And Cleanup
 
 Support import record cleanup without touching the original source file.
 
@@ -435,7 +568,6 @@ Add main-process actions:
 direct-import:list-imports
 direct-import:hide
 direct-import:unhide
-direct-import:delete-record
 ```
 
 Behavior:
@@ -444,20 +576,22 @@ Behavior:
 | --- | --- |
 | hide | Marks import hidden in the app import index. Does not delete artifacts or source. |
 | unhide | Restores hidden import to lists. |
-| delete-record | Deletes app-owned import artifacts and materialized imported session/turn when safe. Does not delete source JSONL. |
 
-Delete constraints:
+Hard deletion is deferred for this UX bundle. Deleting app-owned import
+artifacts, materialized sessions, turn files, diagnostics, and indexes is useful
+but not required to make the import workflow usable.
 
-- require explicit import id;
-- refuse if import id cannot be found;
-- delete only under the direct session store root;
+If a later bundle implements hard deletion, require:
+
+- explicit confirmation;
+- `importId` only, never path;
+- deletion plan preview from main process;
+- every target realpaths under the direct session store root;
+- no deletion if recovery state is corrupted or partial until a safe artifact
+  map can be built;
 - never delete source JSONL;
 - never delete `CODEX_HOME`;
 - rebuild indexes after deletion.
-
-For this bundle, hiding is required; hard deletion may be implemented if the
-path-safety checks are straightforward. If deletion is deferred, the UI should
-show Hide only and the spec remains satisfied.
 
 ## Duplicate Imports
 
@@ -466,7 +600,7 @@ The UI should not create confusing duplicates by default.
 When the selected source matches an existing import by:
 
 ```text
-sourceFileSha256 + threadId + timestamp range
+private sourceFileSha256 + threadId + timestamp range
 ```
 
 show the existing import and offer:
@@ -498,11 +632,26 @@ Examples:
 
 Do not include raw file paths in error messages shown in the renderer.
 
+Auth-material blockers should be non-revealing:
+
+```ts
+type RendererSafeAuthMaterialBlocker = {
+  code: "auth_material_observed";
+  message: "Import contains auth-like material and cannot be materialized.";
+  count?: number;
+  categories?: Array<"token" | "cookie" | "authorization-header" | "session-id" | "unknown">;
+};
+```
+
+Do not render exact source keys, values, headers, cookies, or raw matched text
+outside private redacted diagnostics.
+
 ## Security And Privacy
 
 The renderer never receives:
 
 - raw source absolute path;
+- raw source SHA-256 digest by default;
 - raw source JSONL text;
 - raw source JSONL lines;
 - raw source records;
@@ -520,6 +669,21 @@ The app must not put source paths into:
 
 Native dialog selections are main-process private. Renderer state stores only
 `handleId` and renderer-safe labels.
+
+User-confirmed workspace matches are metadata only. A user confirmation may set:
+
+```text
+workspaceMatch.status = matched
+workspaceMatch.matchMethod = user-confirmed
+```
+
+It must not:
+
+- grant filesystem authority;
+- make imported approvals authoritative;
+- make imported tool calls replayable;
+- make continuation runnable now;
+- bypass current project workspace binding.
 
 ## ODEU Mapping
 
@@ -549,51 +713,68 @@ right-pane thread import accepted
 
 ## Implementation Plan
 
-### Phase 0: Status And Store Projection
+### Phase 0: State And Projection Cleanup
+
+- Canonicalize `checkpoint-validated`.
+- Map old `checkpointed-runnable` artifacts to `checkpoint-validated`.
+- Add `composer.enabled = false` to renderer-safe import sessions.
+- Remove raw `sourceFileSha256` from renderer-safe shapes or replace it with a
+  local HMAC/evidence key.
+
+### Phase 1: Source Handle Registry
+
+- Add cryptographically random source handles.
+- Scope handles by project id.
+- Enforce expiry and restart clearing.
+- Realpath source/root validation.
+- Reject symlink roots and skip symlink children.
+- Add explicit source selection mode.
+- Mark test-only handles as `explicit-test-handle`.
+
+### Phase 2: Renderer-Safe Import Status
 
 - Add import summary to `DirectSessionStore.status()` or a companion method.
 - Add renderer-safe import list projection.
 - Add `directRuntimeStatus.imports`.
 - Keep `continuationRunnableNowCount = 0`.
+- Include recovery-state counts.
 
-### Phase 1: Source Handles
-
-- Add main-owned source handle registry.
-- Add native file/root picker IPC.
-- Return only renderer-safe source handles.
-- Convert existing import IPC to accept `handleId`.
-- Preserve existing test-only/source-path paths for smoke coverage where needed.
-
-### Phase 2: Imports Tab Skeleton
+### Phase 3: Imports Tab Skeleton
 
 - Add `Imports` middle tab.
 - Add source toolbar, import list, detail panel, and loading/error states.
 - Wire refresh/list imports.
 - Avoid nested cards; use workbench panels and compact rows.
+- Add project-generation guards.
 
-### Phase 3: Inspect And Materialize Flow
+### Phase 4: Import Flow
 
 - Wire choose source -> inspect -> validate -> materialize.
 - Show duplicate import choices.
 - Show workspace confirmation only as an explicit gate when needed.
 - Never auto-materialize sources selected from default locations.
+- Add operation ids and cancellation where supported.
 
-### Phase 4: Report And Transcript Detail
+### Phase 5: Report And Transcript Detail
 
 - Render gate table, counts, warnings, blockers, and recovery state.
 - Render imported transcript items with source badges.
 - Render imported tool/approval evidence as non-executable cards.
 - Keep composer disabled for imported sessions.
+- Add virtualization/caps and visible truncation markers.
 
-### Phase 5: Hide/Delete Failed Imports
+### Phase 6: Hide Only
 
 - Implement hide/unhide.
-- Optionally implement delete-record if path-safety checks are complete.
 - Rebuild import indexes after cleanup.
+- Defer hard delete.
 
-### Phase 6: Smokes
+### Phase 7: Smokes
 
 - Source handle does not expose raw path.
+- Source handle does not expose raw source SHA-256.
+- Handle expiry returns safe choose-again error.
+- Cross-project handle rejection.
 - Choose/list/inspect/materialize happy path.
 - Duplicate source shows existing import.
 - Auth-material import blocks materialization and shows safe error.
@@ -601,27 +782,54 @@ right-pane thread import accepted
 - Corrupt import artifact appears as corrupted and can be hidden.
 - Runtime status import summary counts states correctly.
 - Renderer projection contains no raw source paths or raw records.
+- Renderer state, DOM attributes, browser storage, project config, handoff
+  text, and exported reports contain no raw source path or raw JSONL substring.
 - No direct Responses transport call or app-server spawn occurs.
 
 ## Acceptance Criteria
 
+- `checkpointed-runnable` is not used in renderer labels; old artifacts map to
+  `checkpoint-validated`.
 - Imports tab exists and is project-scoped.
 - Source selection is explicit through a main-owned picker or explicit test
   handle; no default Codex home scan occurs.
 - Renderer import actions use `handleId`, not raw file path.
+- Source handles are cryptographically random, project-scoped, expire, and are
+  cleared on restart.
+- Expired handle actions fail with a safe choose-again message.
+- Every import IPC validates project id against handle/import/session
+  ownership.
+- Import async responses are ignored if active project or request generation
+  changed.
+- Source roots and candidate files are realpath-contained; symlink roots are
+  rejected and symlink children skipped.
 - Renderer-safe source summaries contain no raw absolute paths.
+- Renderer-safe source summaries do not expose raw source SHA-256; duplicate
+  matching uses private main-process identity or local HMAC/evidence key.
 - Import list shows state, warnings/blockers count, source display name,
   timestamp range, and recovery state.
 - Import report panel shows gates, counts, warnings, blockers, workspace match,
   and continuation truth.
 - Imported transcript detail renders messages and non-executable tool/approval
   evidence.
+- Renderer-safe import sessions carry `composer.enabled = false` with a
+  concrete reason.
 - No imported session enables the Codex composer.
+- Workspace confirmation does not grant authority, replay tools, or make
+  continuation runnable.
+- Imported transcript detail is virtualized or capped and truncation is
+  labeled.
 - Runtime status includes import summary counts and raw exposure flags.
-- Hide failed/corrupted imports works without deleting the source JSONL.
+- Hide/unhide failed or corrupted imports works without deleting the source
+  JSONL.
+- Hard delete is deferred, or protected by a main-process deletion plan
+  constrained to the direct session store root.
 - Duplicate imports of the same source show existing import by default.
 - Source paths are not stored in renderer state, DOM attributes, browser
   storage, project config, handoff text, or exported reports.
+- Raw JSONL substrings are not stored in renderer state, DOM attributes,
+  browser storage, project config, handoff text, or exported reports.
+- No default `CODEX_HOME` scan can be triggered by the Imports tab.
 - `npm run direct:smoke` covers source handles, renderer-safe projections,
   status counts, materialization flow, and blocked/corrupt import states.
 
@@ -635,6 +843,9 @@ right-pane thread import accepted
 - Write/shell/network authority expansion.
 - Making direct mode default.
 - Raw ODEU/profile browser UI.
+- Hard deletion of import artifacts in the first UX bundle.
+- Opening imported sessions in the left Codex surface unless composer-disabled
+  imported-session rendering has dedicated smoke coverage.
 
 ## Exit State
 
