@@ -13,6 +13,7 @@
 - [Direct Live Probe Evidence Promotion Spec](./DIRECT_LIVE_PROBE_EVIDENCE_PROMOTION_SPEC.md)
 - [Direct Read-Only Tool Continuation Spec](./DIRECT_READONLY_TOOL_CONTINUATION_SPEC.md)
 - [Direct Legacy Import Checkpoint Spec](./DIRECT_LEGACY_IMPORT_CHECKPOINT_SPEC.md)
+- [Direct Import UX And Status Integration Spec](./DIRECT_IMPORT_UX_STATUS_SPEC.md)
 - [OAI Codex Upstream ODEU Profile](./OAI_CODEX_UPSTREAM_ODEU_PROFILE.md)
 - [Meta-Orchestrator Loop ODEU Spec](./META_ORCHESTRATOR_LOOP_ODEU_SPEC.md)
 - [Codex Runtime Provider Profile Spec](./CODEX_RUNTIME_PROVIDER_PROFILE_SPEC.md)
