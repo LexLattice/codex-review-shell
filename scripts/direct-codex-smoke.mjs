@@ -56,6 +56,12 @@ const {
 } = require("../src/main/direct/runtime/project-activation");
 const { DirectSessionStore } = require("../src/main/direct/session/session-store");
 const {
+  DIRECT_THREAD_OPERATION_EVENT_SCHEMA,
+  DIRECT_THREAD_OPERATION_LEDGER_MANIFEST_SCHEMA,
+  DIRECT_THREAD_STORE_STATUS_SCHEMA,
+  DirectThreadStore,
+} = require("../src/main/direct/thread/thread-store");
+const {
   DIRECT_FIXTURE_SURFACE_TRANSPORT,
   DirectFixtureController,
   DirectFixtureSurfaceSession,
@@ -520,10 +526,27 @@ try {
     project: { surfaceBinding: { codex: { runtimeMode: "direct-experimental" } } },
     profileDoc,
     sessionStore: storeStatus,
+    directThreadStore: {
+      schema: DIRECT_THREAD_STORE_STATUS_SCHEMA,
+      available: true,
+      status: "healthy",
+      mode: "index_only",
+      schemaVersion: "1",
+      rootExposed: false,
+      dbPathExposed: false,
+      projectionsHealthy: true,
+      contextBuildsAllowed: false,
+      threadCount: 0,
+      rolloutCount: 0,
+      turnCount: 0,
+      operationCount: 0,
+    },
   });
   assert(runtimeStatusWithStore.threads.canPersist === true, "Expected runtime status to expose direct session persistence.");
   assert(runtimeStatusWithStore.directRuntime.turnRunnable === false, "Session store availability must not imply runnable turns.");
   assert(runtimeStatusWithStore.sessionStore.rootExposed === false, "Runtime status must not expose direct session store paths.");
+  assert(runtimeStatusWithStore.directThreadStore.available === true, "Expected runtime status to expose direct thread store health.");
+  assert(runtimeStatusWithStore.directThreadStore.dbPathExposed === false, "Runtime status must not expose direct thread store DB path.");
   fs.unlinkSync(sessionStore.indexPath());
   const statusAfterMissingIndex = sessionStore.status();
   assert(statusAfterMissingIndex.sessionCount === 1, "Expected status to recover a missing session index from session files.");
@@ -595,6 +618,84 @@ try {
   assert(recoveredStaleSummaryTurn.state === "failed", "Expected stale-summary active turn file to recover as failed.");
   const postRecoveryStatus = reloadedSessionStore.status();
   assert(postRecoveryStatus.activeTurnCount === 0, "Expected status to remain read-only and report no active turns after explicit recovery.");
+
+  const directThreadStore = new DirectThreadStore({
+    rootDir: path.join(sessionStoreParent, "direct-sessions"),
+    mode: "index_only",
+  });
+  try {
+    const threadStoreInitialStatus = directThreadStore.status();
+    assert(threadStoreInitialStatus.schema === DIRECT_THREAD_STORE_STATUS_SCHEMA, "Expected direct thread store status schema.");
+    assert(threadStoreInitialStatus.rootExposed === false, "Direct thread store status must not expose root paths.");
+    assert(threadStoreInitialStatus.dbPathExposed === false, "Direct thread store status must not expose DB paths.");
+    const indexResult = directThreadStore.indexFromSessionStore(reloadedSessionStore, { nowMs: 1_700_000_015_500 });
+    assert(indexResult.indexedSessionCount >= 4, "Expected direct thread store to index existing direct sessions.");
+    assert(indexResult.indexedTurnCount >= 4, "Expected direct thread store to index existing direct turns.");
+    const threadStoreIndexedStatus = directThreadStore.status();
+    assert(threadStoreIndexedStatus.threadCount >= 4, "Expected direct thread store status to count indexed threads.");
+    assert(threadStoreIndexedStatus.rolloutCount >= 4, "Expected direct thread store status to count rollout manifests.");
+    assert(threadStoreIndexedStatus.turnCount >= 4, "Expected direct thread store status to count indexed turns.");
+    const manifestFiles = [];
+    const collectManifestFiles = (directory) => {
+      for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+        const entryPath = path.join(directory, entry.name);
+        if (entry.isDirectory()) collectManifestFiles(entryPath);
+        else if (entry.isFile() && entry.name.endsWith(".manifest.json")) manifestFiles.push(entryPath);
+      }
+    };
+    collectManifestFiles(path.join(sessionStoreParent, "direct-sessions", "rollouts"));
+    assert(manifestFiles.length >= 4, "Expected direct thread store to write rollout manifests.");
+    const plannedOperation = directThreadStore.planOperation({
+      operationType: "hide_thread",
+      projectId: "project_fixture",
+      clientOperationId: "client_hide_fixture",
+      target: { threadIds: [session.sessionId] },
+      parameters: { reason: "smoke" },
+      safety: { requiresConfirmation: false },
+    }, { nowMs: 1_700_000_015_600 });
+    assert(plannedOperation.schema === DIRECT_THREAD_OPERATION_EVENT_SCHEMA, "Expected append-only operation event schema.");
+    assert(plannedOperation.eventType === "operation_planned", "Expected planned operation event.");
+    const committedOperation = directThreadStore.commitOperation(plannedOperation.operationId, {
+      operationType: "hide_thread",
+      projectId: "project_fixture",
+      target: { threadIds: [session.sessionId] },
+      result: {
+        effects: [{
+          effectKind: "thread_hidden",
+          targetKind: "thread",
+          targetId: session.sessionId,
+          beforeDigest: "before",
+          afterDigest: "after",
+        }],
+      },
+      safety: { requiresConfirmation: false },
+    }, { nowMs: 1_700_000_015_700 });
+    assert(committedOperation.eventType === "operation_committed", "Expected committed operation event.");
+    assert(committedOperation.integrity.previousEventDigest === plannedOperation.integrity.eventDigest, "Expected operation ledger hash chaining.");
+    const operationManifest = JSON.parse(fs.readFileSync(directThreadStore.operationLedgerManifestPath(), "utf8"));
+    assert(operationManifest.schema === DIRECT_THREAD_OPERATION_LEDGER_MANIFEST_SCHEMA, "Expected operation ledger manifest schema.");
+    assert(operationManifest.eventCount === 2, "Expected operation ledger manifest to count appended events.");
+    directThreadStore.planOperation({
+      operationType: "archive_thread",
+      projectId: "project_fixture",
+      target: { threadIds: ["session_interrupted"] },
+      safety: { requiresConfirmation: false },
+    }, { nowMs: 1_700_000_015_800 });
+    directThreadStore.planOperation({
+      operationType: "archive_thread",
+      projectId: "project_fixture",
+      target: { threadIds: ["session_stale_summary"] },
+      safety: { requiresConfirmation: false },
+    }, { nowMs: 1_700_000_015_900 });
+    const operationRowsWithNullClientId = directThreadStore.db.prepare(
+      "select count(*) as count from direct_operations where project_id = ? and client_operation_id is null",
+    ).get("project_fixture");
+    assert(operationRowsWithNullClientId.count === 2, "Expected omitted client operation ids to persist as SQL NULL.");
+    const threadStoreOperationStatus = directThreadStore.status();
+    assert(threadStoreOperationStatus.operationCount === 3, "Expected direct thread store to expose operation snapshots.");
+  } finally {
+    directThreadStore.close();
+  }
 
   const incrementalSession = sessionStore.createSession({
     sessionId: "session_incremental_tool",

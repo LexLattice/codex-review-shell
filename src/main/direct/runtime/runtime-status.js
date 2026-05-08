@@ -101,6 +101,7 @@ function buildDirectRuntimeStatus(options = {}) {
   const profileDoc = isPlainObject(options.profileDoc) ? options.profileDoc : {};
   const legacySession = isPlainObject(options.legacySession) ? options.legacySession : null;
   const sessionStore = isPlainObject(options.sessionStore) ? options.sessionStore : null;
+  const directThreadStore = isPlainObject(options.directThreadStore) ? options.directThreadStore : null;
   const imports = isPlainObject(options.imports) ? options.imports : {};
   const activation = isPlainObject(options.activation) ? options.activation : {};
   const fixtureRuntime = isPlainObject(options.fixtureRuntime) ? options.fixtureRuntime : null;
@@ -328,6 +329,23 @@ function buildDirectRuntimeStatus(options = {}) {
       lastTurnState: normalizeString(sessionStore?.lastTurnState, ""),
       lastSessionUpdatedAt: normalizeString(sessionStore?.lastSessionUpdatedAt, ""),
       recovery: isPlainObject(sessionStore?.recovery) ? sessionStore.recovery : {},
+    },
+    directThreadStore: {
+      available: Boolean(directThreadStore?.available),
+      status: normalizeString(directThreadStore?.status, directThreadStore?.available ? "healthy" : "disabled"),
+      mode: normalizeString(directThreadStore?.mode, "disabled"),
+      schemaVersion: normalizeString(directThreadStore?.schemaVersion, ""),
+      rootExposed: false,
+      dbPathExposed: false,
+      projectionsHealthy: directThreadStore?.projectionsHealthy === true,
+      contextBuildsAllowed: directThreadStore?.contextBuildsAllowed === true,
+      threadCount: Number(directThreadStore?.threadCount || 0),
+      rolloutCount: Number(directThreadStore?.rolloutCount || 0),
+      turnCount: Number(directThreadStore?.turnCount || 0),
+      operationCount: Number(directThreadStore?.operationCount || 0),
+      projectionCount: Number(directThreadStore?.projectionCount || 0),
+      contextBuildCount: Number(directThreadStore?.contextBuildCount || 0),
+      recovery: isPlainObject(directThreadStore?.recovery) ? directThreadStore.recovery : {},
     },
     diagnostics: {
       profileId: normalizeString(binding.profileId || profileDoc.profile?.profileId || profileDoc.summary?.profileId, ""),
