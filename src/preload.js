@@ -74,6 +74,8 @@ contextBridge.exposeInMainWorld("workspaceShell", {
     ipcRenderer.invoke("direct-import:list-imports", { ...options, projectId }),
   readDirectImportReport: (projectId, importId) =>
     ipcRenderer.invoke("direct-import:read-report", { projectId, importId }),
+  readDirectImportSession: (projectId, importId) =>
+    ipcRenderer.invoke("direct-import:read-session", { projectId, importId }),
   hideDirectImport: (projectId, importId) =>
     ipcRenderer.invoke("direct-import:hide", { projectId, importId }),
   unhideDirectImport: (projectId, importId) =>

@@ -75,6 +75,7 @@ const state = {
     sources: [],
     imports: [],
     report: null,
+    selectedImportSession: null,
     selectedHandleId: "",
     selectedImportId: "",
     selectedSessionId: "",
@@ -2440,6 +2441,7 @@ function resetDirectImportWorkbench(projectId = activeProject()?.id || "") {
     sources: [],
     imports: [],
     report: null,
+    selectedImportSession: null,
     selectedHandleId: "",
     selectedImportId: "",
     selectedSessionId: "",
@@ -2516,6 +2518,7 @@ function renderDirectImportSourceList() {
       state.directImportWorkbench.selectedHandleId = source.handleId || "";
       state.directImportWorkbench.selectedImportId = "";
       state.directImportWorkbench.report = null;
+      state.directImportWorkbench.selectedImportSession = null;
       renderDirectImportWorkbench();
     });
     row.querySelector(".inspect-import-source").addEventListener("click", (event) => {
@@ -2561,9 +2564,9 @@ function renderDirectImportList() {
       </div>
     `;
     row.querySelector(".role-badge").textContent = importStateLabel(entry.state);
-    row.querySelector("strong").textContent = entry.rendererSafeSession?.title || entry.sourceDisplayName || "Imported Codex session";
+    row.querySelector("strong").textContent = entry.title || entry.sourceDisplayName || entry.source?.sourceDisplayName || "Imported Codex session";
     row.querySelector(".thread-meta").textContent = `${entry.threadId || "thread unknown"} · ${entry.recoveryState || "healthy"}`;
-    const composer = entry.composer || entry.rendererSafeSession?.composer || { enabled: false, reason: "imported-readonly" };
+    const composer = entry.composer || { enabled: false, reason: "imported-readonly" };
     row.querySelector(".thread-notes").textContent = `Composer ${composer.enabled ? "enabled" : "disabled"} · ${importComposerReasonLabel(composer.reason)}`;
     row.addEventListener("click", () => selectDirectImport(entry.importId).catch((error) => setLastEvent(`Import report load failed: ${error.message}`)));
     row.querySelector(".open-import-report").addEventListener("click", (event) => {
@@ -2719,7 +2722,7 @@ function renderDirectImportDetail() {
     return;
   }
 
-  const session = selectedEntry.rendererSafeSession || {};
+  const session = state.directImportWorkbench.selectedImportSession || {};
   const header = document.createElement("section");
   header.className = "import-detail-header";
   const eyebrow = document.createElement("p");
@@ -3452,6 +3455,7 @@ async function loadDirectImports(options = {}) {
       state.directImportWorkbench.selectedImportId = "";
       state.directImportWorkbench.selectedSessionId = "";
       state.directImportWorkbench.report = null;
+      state.directImportWorkbench.selectedImportSession = null;
     }
   } catch (error) {
     if (isRequestStale("directImports", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
@@ -3484,6 +3488,7 @@ async function chooseDirectImportFile() {
     state.directImportWorkbench.selectedHandleId = source?.handleId || "";
     state.directImportWorkbench.selectedImportId = "";
     state.directImportWorkbench.report = null;
+    state.directImportWorkbench.selectedImportSession = null;
     state.directImportWorkbench.status = "loaded";
     setLastEvent(`Selected import source: ${source?.sourceDisplayName || "Codex JSONL"}.`);
   } catch (error) {
@@ -3514,6 +3519,7 @@ async function chooseDirectImportRoot() {
     state.directImportWorkbench.selectedHandleId = state.directImportWorkbench.sources[0]?.handleId || "";
     state.directImportWorkbench.selectedImportId = "";
     state.directImportWorkbench.report = null;
+    state.directImportWorkbench.selectedImportSession = null;
     state.directImportWorkbench.status = "loaded";
     setLastEvent(`Import source root loaded: ${state.directImportWorkbench.sources.length} JSONL source(s).`);
   } catch (error) {
@@ -3572,6 +3578,7 @@ async function materializeSelectedDirectImportSource(handleId) {
     state.directImportWorkbench.selectedSessionId = safeSession.sessionId || result?.sessionId || "";
     state.directImportWorkbench.selectedHandleId = "";
     state.directImportWorkbench.report = null;
+    state.directImportWorkbench.selectedImportSession = safeSession.sessionId ? safeSession : null;
     state.directImportWorkbench.status = "loaded";
     setLastEvent(`Materialized read-only import: ${safeSession.title || result?.importState || "Codex JSONL"}.`);
     await loadDirectImports({ refresh: true });
@@ -3593,16 +3600,22 @@ async function selectDirectImport(importId) {
   state.directImportWorkbench.selectedImportId = id;
   state.directImportWorkbench.selectedHandleId = "";
   const entry = selectedDirectImportEntry();
-  state.directImportWorkbench.selectedSessionId = entry?.materializedSessionId || entry?.rendererSafeSession?.sessionId || "";
+  state.directImportWorkbench.selectedSessionId = entry?.materializedSessionId || "";
   state.directImportWorkbench.report = null;
+  state.directImportWorkbench.selectedImportSession = null;
   renderDirectImportWorkbench();
-  if (!bridge.readDirectImportReport) return;
+  if (!bridge.readDirectImportReport && !bridge.readDirectImportSession) return;
   const requestVersion = nextRequestVersion("directImportOperation");
   const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
   try {
-    const result = await bridge.readDirectImportReport(project.id, id);
+    const [reportResult, sessionResult] = await Promise.all([
+      bridge.readDirectImportReport ? bridge.readDirectImportReport(project.id, id) : Promise.resolve(null),
+      bridge.readDirectImportSession ? bridge.readDirectImportSession(project.id, id) : Promise.resolve(null),
+    ]);
     if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
-    state.directImportWorkbench.report = result?.report || null;
+    state.directImportWorkbench.report = reportResult?.report || null;
+    state.directImportWorkbench.selectedImportSession = sessionResult?.rendererSafeSession || null;
+    state.directImportWorkbench.selectedSessionId = sessionResult?.rendererSafeSession?.sessionId || entry?.materializedSessionId || "";
   } catch (error) {
     if (isRequestStale("directImportOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
     state.directImportWorkbench.lastError = `Report load failed: ${error.message}`;
@@ -3625,6 +3638,7 @@ async function hideDirectImport(importId) {
       state.directImportWorkbench.selectedImportId = "";
       state.directImportWorkbench.selectedSessionId = "";
       state.directImportWorkbench.report = null;
+      state.directImportWorkbench.selectedImportSession = null;
     }
     state.directImportWorkbench.status = "loaded";
     await loadDirectImports({ refresh: true });

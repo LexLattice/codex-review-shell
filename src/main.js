@@ -4075,6 +4075,11 @@ ipcMain.handle("direct-import:read-report", async (_event, payload) => {
   return ensureDirectImportController().readReport(project, payload || {});
 });
 
+ipcMain.handle("direct-import:read-session", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectImportController().readImportSession(project, payload || {});
+});
+
 ipcMain.handle("direct-import:list-imports", async (_event, payload) => {
   const project = await getProjectById(payload?.projectId);
   return ensureDirectImportController().listImports(project, payload || {});

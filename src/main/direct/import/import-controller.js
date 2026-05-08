@@ -48,6 +48,15 @@ function isPathWithinRoot(filePath, rootPath) {
   return relative === "" || (relative && !relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
+function sourceRootRealPath(sourceRoot) {
+  const root = safeSourcePath(sourceRoot);
+  const stat = fs.lstatSync(root);
+  if (stat.isSymbolicLink()) throw new Error("Direct import source root cannot be a symbolic link.");
+  if (stat.isFile()) return fs.realpathSync(path.dirname(root));
+  if (!stat.isDirectory()) throw new Error("Direct import source root must be a directory or JSONL file.");
+  return fs.realpathSync(root);
+}
+
 function safeSourcePath(value) {
   const text = normalizeString(value, "");
   if (!text) throw new Error("Direct import source path is required.");
@@ -171,6 +180,23 @@ function listJsonlFiles(sourceRoot, limit = 200) {
   return results.sort();
 }
 
+function rawSourceSummaryFromReport(report = {}) {
+  const source = isPlainObject(report.source) ? report.source : {};
+  return {
+    warningsCount: Array.isArray(report.warnings) ? report.warnings.length : 0,
+    blockersCount: Array.isArray(report.blockers) ? report.blockers.length : 0,
+    gates: isPlainObject(report.gates) ? report.gates : {},
+    source: {
+      sourceDisplayName: normalizeString(source.sourceDisplayName, ""),
+      sourceRootDisplayName: normalizeString(source.sourceRootDisplayName, ""),
+      sourceClass: normalizeString(source.sourceClass, ""),
+      recordCount: Number(source.recordCount || 0),
+      timestampStart: normalizeString(source.timestampStart, ""),
+      timestampEnd: normalizeString(source.timestampEnd, ""),
+    },
+  };
+}
+
 function canonicalImportState(value) {
   const state = normalizeString(value, "imported-readonly");
   if (state === "checkpointed-runnable") return "checkpoint-validated";
@@ -275,7 +301,7 @@ class DirectImportController {
 
   duplicateMatchedFor(sourceFileSha256, candidate = {}) {
     const index = this.sessionStore.recoverImportIndex
-      ? this.sessionStore.recoverImportIndex({ write: true })
+      ? this.sessionStore.recoverImportIndex({ write: false })
       : { imports: [] };
     const threadId = normalizeString(candidate.source?.threadId, "");
     const timestampStart = normalizeString(candidate.source?.timestampStart, "");
@@ -290,7 +316,12 @@ class DirectImportController {
 
   registerSourceHandle(projectOrId, params = {}) {
     const project = isPlainObject(projectOrId) ? projectOrId : { id: normalizeString(projectOrId, "") };
-    const reference = validateSourceReference(params.sourcePath, params.sourceRoot || path.dirname(params.sourcePath));
+    const reference = params.prevalidated === true
+      ? {
+          sourcePath: safeSourcePath(params.sourcePath),
+          sourceRoot: sourceRootRealPath(params.sourceRoot || path.dirname(params.sourcePath)),
+        }
+      : validateSourceReference(params.sourcePath, params.sourceRoot || path.dirname(params.sourcePath));
     const handleId = crypto.randomBytes(18).toString("base64url");
     const nowMs = Number(params.nowMs || Date.now());
     const stat = statSource(reference.sourcePath);
@@ -332,6 +363,9 @@ class DirectImportController {
         error.code = "source_handle_project_mismatch";
         throw error;
       }
+      const reference = validateSourceReference(handle.sourcePath, handle.sourceRoot);
+      handle.sourcePath = reference.sourcePath;
+      handle.sourceRoot = reference.sourceRoot;
       return handle;
     }
     const sourcePath = safeSourcePath(params.sourcePath);
@@ -374,6 +408,7 @@ class DirectImportController {
       };
     }
     const files = listJsonlFiles(sourceRoot, Number(params.limit || DEFAULT_SOURCE_LIST_LIMIT));
+    const sourceRootReal = sourceRootRealPath(sourceRoot);
     return {
       ok: true,
       sourceRootDisplayName: path.basename(path.resolve(sourceRoot)),
@@ -381,8 +416,9 @@ class DirectImportController {
       sourceSelectionMode: normalizeString(params.sourceSelectionMode, "explicit-configured-source-root"),
       sources: files.map((filePath) => this.registerSourceHandle(project, {
         sourcePath: filePath,
-        sourceRoot,
+        sourceRoot: sourceRootReal,
         sourceSelectionMode: normalizeString(params.sourceSelectionMode, "explicit-configured-source-root"),
+        prevalidated: true,
       })),
     };
   }
@@ -408,7 +444,7 @@ class DirectImportController {
         sourceRootDisplayName: candidate.source.sourceRootDisplayName,
         sourceClass: candidate.source.sourceClass,
         sourceFileSizeBytes: stat.size,
-        sourceEvidenceKey: this.sourceEvidenceKey(sourceFileSha256),
+        sourceEvidenceKey: this.sourceEvidenceKey(`${sourcePath}:${stat.size}:${stat.mtimeMs}`),
         duplicateMatched: this.duplicateMatchedFor(sourceFileSha256, candidate),
         sourceFileMtimeMs: stat.mtimeMs,
         threadId: candidate.source.threadId,
@@ -499,20 +535,17 @@ class DirectImportController {
     const project = await this.resolveProject(projectOrId);
     const projectId = this.projectId(project);
     const index = this.sessionStore.recoverImportIndex
-      ? this.sessionStore.recoverImportIndex({ write: true })
+      ? this.sessionStore.recoverImportIndex({ write: false })
       : { imports: [], recovery: {} };
     const includeHidden = params.includeHidden === true;
     const entries = [];
     for (const entry of Array.isArray(index.imports) ? index.imports : []) {
       if (!includeHidden && entry.hidden) continue;
       if (entry.projectId && projectId && entry.projectId !== projectId) continue;
-      let rendererSafeSession = null;
-      if (entry.materializedSessionId && this.sessionStore.readSession) {
-        rendererSafeSession = buildRendererSafeImportSession(this.sessionStore.readSession(entry.materializedSessionId) || {});
-      }
       const report = this.sessionStore.readImportArtifact
         ? this.sessionStore.readImportArtifact(entry.importId, "validation-report.json")
         : null;
+      const reportSummary = report ? rawSourceSummaryFromReport(report) : null;
       entries.push({
         importId: entry.importId,
         state: canonicalImportState(entry.state),
@@ -533,17 +566,18 @@ class DirectImportController {
           runnableNow: false,
           reason: entry.checkpointEligible === true ? "future_checkpoint_continuation_only" : "imported_evidence_only",
         },
-        source: rendererSafeSession?.source || (report ? rendererSafeValidationReport(report).source : null),
-        reportSummary: rendererSafeSession?.reportSummary || (report ? {
-          warningsCount: Array.isArray(report.warnings) ? report.warnings.length : 0,
-          blockersCount: Array.isArray(report.blockers) ? report.blockers.length : 0,
-          gates: isPlainObject(report.gates) ? report.gates : {},
-        } : { warningsCount: 0, blockersCount: 0, gates: {} }),
+        source: reportSummary?.source || null,
+        reportSummary: reportSummary
+          ? {
+              warningsCount: reportSummary.warningsCount,
+              blockersCount: reportSummary.blockersCount,
+              gates: reportSummary.gates,
+            }
+          : { warningsCount: 0, blockersCount: 0, gates: {} },
         composer: {
           enabled: false,
           reason: entry.checkpointEligible ? "live-continuation-not-implemented" : "imported-readonly",
         },
-        rendererSafeSession,
         rawPathExposed: false,
         rawRecordsExposed: false,
         rawSourceSha256Exposed: false,
@@ -563,7 +597,7 @@ class DirectImportController {
     const project = isPlainObject(projectOrId) ? projectOrId : { id: normalizeString(projectOrId, "") };
     const projectId = this.projectId(project);
     const index = this.sessionStore.recoverImportIndex
-      ? this.sessionStore.recoverImportIndex({ write: true })
+      ? this.sessionStore.recoverImportIndex({ write: false })
       : { imports: [], recovery: {} };
     const visible = (Array.isArray(index.imports) ? index.imports : []).filter((entry) =>
       !entry.hidden && (!entry.projectId || !projectId || entry.projectId === projectId)
@@ -572,11 +606,10 @@ class DirectImportController {
       !entry.projectId || !projectId || entry.projectId === projectId
     );
     const countState = (state) => visible.filter((entry) => canonicalImportState(entry.state) === state).length;
-    const latestUpdatedAt = all
-      .map((entry) => normalizeString(entry.updatedAt || entry.timestampEnd || entry.hiddenAt, ""))
-      .filter(Boolean)
-      .sort()
-      .pop() || "";
+    const latestUpdatedAt = all.reduce((latest, entry) => {
+      const current = normalizeString(entry.updatedAt || entry.timestampEnd || entry.hiddenAt, "");
+      return current > latest ? current : latest;
+    }, "");
     return {
       available: true,
       sourceSelectionAvailable: true,
@@ -599,7 +632,7 @@ class DirectImportController {
 
   importEntryForProject(project = {}, importId = "") {
     const index = this.sessionStore.recoverImportIndex
-      ? this.sessionStore.recoverImportIndex({ write: true })
+      ? this.sessionStore.recoverImportIndex({ write: false })
       : { imports: [] };
     const entry = (Array.isArray(index.imports) ? index.imports : []).find((item) => item.importId === importId);
     const projectId = this.projectId(project);
@@ -609,6 +642,27 @@ class DirectImportController {
       throw error;
     }
     return entry || null;
+  }
+
+  async readImportSession(projectOrId, params = {}) {
+    const project = await this.resolveProject(projectOrId);
+    const importId = normalizeString(params.importId, "");
+    if (!importId) throw new Error("importId is required.");
+    const entry = this.importEntryForProject(project, importId);
+    if (!entry?.materializedSessionId || !this.sessionStore.readSession) {
+      return {
+        ok: false,
+        rendererSafeSession: null,
+      };
+    }
+    const session = this.sessionStore.readSession(entry.materializedSessionId);
+    return {
+      ok: Boolean(session),
+      rendererSafeSession: session ? buildRendererSafeImportSession(session) : null,
+      rawPathExposed: false,
+      rawRecordsExposed: false,
+      rawSourceSha256Exposed: false,
+    };
   }
 
   async hideImport(projectOrId, params = {}) {

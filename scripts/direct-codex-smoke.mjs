@@ -2553,6 +2553,7 @@ try {
   assert(listedSources.sources[0].rawSourceSha256Exposed === false, "Expected renderer-safe source listing not to expose raw source digest.");
   const inspectedSource = await importController.inspectSource({ id: "project_controller" }, { handleId: listedSources.sources[0].handleId });
   assert(inspectedSource.source.sourceEvidenceKey.startsWith("source_"), "Expected controller inspect to expose only a local source evidence key.");
+  assert(inspectedSource.source.sourceEvidenceKey === listedSources.sources[0].sourceEvidenceKey, "Expected source evidence key to stay stable between list and inspect.");
   assert(inspectedSource.source.rawSourceSha256Exposed === false, "Expected controller inspect not to expose raw source digest.");
   const controllerMaterialized = await importController.materialize({ id: "project_controller", workspace: { kind: "local", localPath: "/tmp/workspace" } }, {
     handleId: listedSources.sources[0].handleId,
@@ -2564,7 +2565,10 @@ try {
   assert(controllerMaterialized.rendererSafeSession.composer.enabled === false, "Expected controller renderer projection composer to stay disabled.");
   const controllerImports = await importController.listImports({ id: "project_controller" });
   assert(controllerImports.entries.some((entry) => entry.importId === controllerMaterialized.rendererSafeSession.importId), "Expected controller import list to include materialized import.");
+  assert(controllerImports.entries.every((entry) => !("rendererSafeSession" in entry)), "Expected import list to stay summary-only and omit full transcripts.");
   assert(controllerImports.rawPathExposed === false && controllerImports.rawSourceSha256Exposed === false, "Expected controller import list to stay renderer-safe.");
+  const controllerImportSession = await importController.readImportSession({ id: "project_controller" }, { importId: controllerMaterialized.rendererSafeSession.importId });
+  assert(controllerImportSession.rendererSafeSession.transcriptItems.length === 2, "Expected import transcript to load only on demand.");
   const controllerReport = await importController.readReport({ id: "project_controller" }, { importId: controllerMaterialized.rendererSafeSession.importId });
   assert(controllerReport.report.rawPathExposed === false, "Expected renderer-safe import report to omit raw paths.");
   assert(!JSON.stringify(controllerReport.report).includes(controllerSourcePath), "Expected renderer-safe import report not to include the raw source path.");
@@ -2576,6 +2580,24 @@ try {
   const importsAfterHide = await importController.listImports({ id: "project_controller" });
   assert(!importsAfterHide.entries.some((entry) => entry.importId === controllerMaterialized.rendererSafeSession.importId), "Expected hidden import to be omitted by default.");
   await importController.unhideImport({ id: "project_controller" }, { importId: controllerMaterialized.rendererSafeSession.importId });
+  const replacedSourcePath = path.join(controllerSourceRoot, "thread_replaced.jsonl");
+  fs.writeFileSync(replacedSourcePath, [
+    JSON.stringify({ timestamp: "2026-04-25T10:00:09Z", thread_id: "thread_replaced", message: { role: "user", content: "Replace me." } }),
+  ].join("\n"), "utf8");
+  const replacedHandle = importController.registerSourceHandle({ id: "project_controller" }, {
+    sourcePath: replacedSourcePath,
+    sourceRoot: controllerSourceRoot,
+  });
+  try {
+    fs.unlinkSync(replacedSourcePath);
+    fs.symlinkSync(controllerSourcePath, replacedSourcePath);
+    await assertRejects(
+      () => importController.inspectSource({ id: "project_controller" }, { handleId: replacedHandle.handleId }),
+      "Expected handle resolution to revalidate symlink replacement before reading.",
+    );
+  } catch (error) {
+    if (error?.code !== "EPERM" && error?.code !== "EACCES" && error?.code !== "ENOSYS") throw error;
+  }
   const canceledImport = await importController.cancelImport({ id: "project_controller" }, { importId: "import_canceled_smoke" });
   assert(canceledImport.state === "import-canceled", "Expected controller cancel to write canceled import report.");
   const corruptImportDir = path.join(importStoreParent, "direct-sessions", "imports", "import_corrupt_smoke");
