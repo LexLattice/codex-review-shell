@@ -10,6 +10,7 @@ const DIRECT_SESSION_SCHEMA = "direct_codex_session@1";
 const DIRECT_TURN_SCHEMA = "direct_codex_turn@1";
 const DIRECT_DIAGNOSTIC_SCHEMA = "direct_codex_diagnostic@1";
 const DIRECT_TOOL_OBLIGATION_SCHEMA = "direct_codex_tool_obligation@1";
+const DIRECT_IMPORT_INDEX_SCHEMA = "direct_codex_import_index@1";
 const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,120}$/;
 const DIRECT_TURN_STATES = new Set([
   "created",
@@ -220,6 +221,12 @@ function writeJsonAtomic(targetPath, value) {
   }
 }
 
+function safeArtifactName(value) {
+  const name = normalizeString(value, "");
+  if (/^[a-z0-9][a-z0-9-]{0,80}\.json$/i.test(name)) return name;
+  throw new Error("Invalid direct import artifact name.");
+}
+
 function readJsonFile(filePath) {
   try {
     return JSON.parse(fs.readFileSync(filePath, "utf8"));
@@ -282,14 +289,38 @@ class DirectSessionStore {
     return path.join(this.rootDir, "diagnostics", requireSafeId(sessionId, "session"), `${requireSafeId(fixtureId, "diagnostic")}.redacted.jsonl`);
   }
 
+  importPath(importId, artifactName) {
+    return path.join(this.rootDir, "imports", requireSafeId(importId, "import"), safeArtifactName(artifactName));
+  }
+
+  importIndexPath() {
+    return path.join(this.rootDir, "imports", "index.json");
+  }
+
   ensure() {
-    for (const directory of ["sessions", "turns", "events", "diagnostics"]) {
+    for (const directory of ["sessions", "turns", "events", "diagnostics", "imports"]) {
       ensureDirectory(path.join(this.rootDir, directory));
     }
     if (!fs.existsSync(this.indexPath())) {
       return this.recoverIndex({ write: true });
     }
     return this.readIndex();
+  }
+
+  emptyImportIndex() {
+    return {
+      schema: DIRECT_IMPORT_INDEX_SCHEMA,
+      version: 1,
+      updatedAt: nowIso(),
+      imports: [],
+      recovery: {
+        recoveredAt: "",
+        healthyCount: 0,
+        partialCount: 0,
+        corruptedCount: 0,
+        reportOnlyCount: 0,
+      },
+    };
   }
 
   emptyIndex() {
@@ -357,6 +388,73 @@ class DirectSessionStore {
       if (error && error.code === "ENOENT") return [];
       throw error;
     }
+  }
+
+  listImportIdsFromDisk() {
+    const importsDir = path.join(this.rootDir, "imports");
+    try {
+      return fs.readdirSync(importsDir, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .filter(isSafeId);
+    } catch (error) {
+      if (error && error.code === "ENOENT") return [];
+      throw error;
+    }
+  }
+
+  writeImportArtifact(importId, artifactName, value) {
+    writeJsonAtomic(this.importPath(importId, artifactName), value);
+    return value;
+  }
+
+  readImportArtifact(importId, artifactName) {
+    return readJsonFile(this.importPath(importId, artifactName));
+  }
+
+  recoverImportIndex(options = {}) {
+    const entries = [];
+    const recovery = {
+      recoveredAt: nowIso(options.nowMs),
+      healthyCount: 0,
+      partialCount: 0,
+      corruptedCount: 0,
+      reportOnlyCount: 0,
+    };
+    for (const importId of this.listImportIdsFromDisk()) {
+      const candidate = this.readImportArtifact(importId, "candidate.json");
+      const checkpoint = this.readImportArtifact(importId, "checkpoint.json");
+      const report = this.readImportArtifact(importId, "validation-report.json");
+      let recoveryState = "healthy";
+      if (!candidate && !checkpoint && report) recoveryState = "report-only";
+      else if (!report || !checkpoint) recoveryState = "partial";
+      if (report && checkpoint && report.lineage?.importId && checkpoint.lineage?.importId && report.lineage.importId !== checkpoint.lineage.importId) {
+        recoveryState = "corrupted";
+      }
+      if (recoveryState === "healthy") recovery.healthyCount += 1;
+      else if (recoveryState === "partial") recovery.partialCount += 1;
+      else if (recoveryState === "report-only") recovery.reportOnlyCount += 1;
+      else recovery.corruptedCount += 1;
+      entries.push({
+        importId,
+        recoveryState,
+        state: normalizeString(report?.state || checkpoint?.state || candidate?.target?.state, ""),
+        sourceDisplayName: normalizeString(report?.source?.sourceDisplayName || checkpoint?.source?.sourceDisplayName || candidate?.source?.sourceDisplayName, ""),
+        sourceFileSha256: normalizeString(report?.source?.sourceFileSha256 || checkpoint?.source?.sourceFileSha256 || candidate?.source?.sourceFileSha256, ""),
+        threadId: normalizeString(report?.source?.threadId || checkpoint?.source?.threadId || candidate?.source?.threadId, ""),
+        validationReportId: normalizeString(report?.reportId, ""),
+        materializedSessionId: normalizeString(report?.lineage?.materializedSessionId || checkpoint?.lineage?.materializedSessionId, ""),
+        checkpointEligible: report?.state === "checkpoint-validated" && recoveryState === "healthy",
+      });
+    }
+    const index = {
+      ...this.emptyImportIndex(),
+      updatedAt: nowIso(options.nowMs),
+      imports: entries.sort((a, b) => String(a.importId).localeCompare(String(b.importId))),
+      recovery,
+    };
+    if (options.write) writeJsonAtomic(this.importIndexPath(), index);
+    return index;
   }
 
   recoverIndex(options = {}) {
@@ -778,6 +876,7 @@ class DirectSessionStore {
 
 module.exports = {
   DIRECT_DIAGNOSTIC_SCHEMA,
+  DIRECT_IMPORT_INDEX_SCHEMA,
   DIRECT_RECOVERABLE_ACTIVE_TURN_STATES,
   DIRECT_SESSION_INDEX_SCHEMA,
   DIRECT_SESSION_SCHEMA,

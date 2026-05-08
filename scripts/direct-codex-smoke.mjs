@@ -13,9 +13,11 @@ const appRoot = path.resolve(__dirname, "..");
 const {
   buildDirectCheckpointCandidate,
   buildImportCandidate,
+  buildRendererSafeImportSession,
   materializeDirectImportSession,
   validateDirectCheckpointCandidate,
 } = require("../src/main/direct/import/codex-jsonl-import");
+const { DirectImportController } = require("../src/main/direct/import/import-controller");
 const {
   DEFAULT_FIXTURE_ROOT,
   NORMALIZED_FIXTURE_DIR,
@@ -2353,6 +2355,8 @@ const importCandidate = buildImportCandidate([
 assert(importCandidate.target.runnable === false, "Imported Codex JSONL must remain non-runnable.");
 assert(importCandidate.unresolvedObligations.length === 1, "Expected unpaired tool obligation.");
 assert(importCandidate.source.codexHome.endsWith("/tmp/codex"), "Expected import candidate to preserve source CODEX_HOME.");
+assert(importCandidate.source.sourceFileSha256.length === 64, "Expected import candidate to preserve source digest.");
+assert(importCandidate.lineage.importId, "Expected import candidate lineage.");
 const importCheckpoint = buildDirectCheckpointCandidate(importCandidate, { nowMs: 1_700_000_040_000 });
 assert(importCheckpoint.schema === "direct_codex_import_checkpoint_candidate@1", "Expected direct import checkpoint candidate schema.");
 assert(importCheckpoint.state === "checkpoint-candidate", "Expected import checkpoint candidate state.");
@@ -2369,6 +2373,7 @@ assert(unresolvedImportValidation.state === "checkpoint-candidate", "Expected un
 assert(unresolvedImportValidation.runnable === false, "Expected unresolved import checkpoint to remain non-runnable.");
 assert(unresolvedImportValidation.target.eligibleForContinuation === false, "Expected unresolved import checkpoint not to allow continuation.");
 assert(unresolvedImportValidation.validation.gates.unresolvedImportedToolCallsClear === false, "Expected unresolved import checkpoint validation to block on tool obligations.");
+assert(unresolvedImportValidation.validationReport.blockers.some((blocker) => blocker.code === "unresolved_imported_tool_calls"), "Expected unresolved tool call blocker.");
 const roleOnlyImportCandidate = buildImportCandidate([
   { timestamp: "2026-04-25T10:00:03Z", thread_id: "thread_role_only", message: { role: "assistant", content: "" } },
 ], {
@@ -2381,7 +2386,7 @@ assert(roleOnlyCheckpoint.checkpoint.messages.length === 1, "Expected role-only 
 assert(roleOnlyCheckpoint.checkpoint.messages[0].role === "assistant", "Expected role-only assistant boundary to be preserved.");
 const roleOnlyValidation = validateDirectCheckpointCandidate(roleOnlyCheckpoint, { nowMs: 1_700_000_041_500 });
 assert(roleOnlyValidation.state === "checkpoint-candidate", "Expected role-only import checkpoint to validate as non-runnable candidate.");
-assert(roleOnlyValidation.validation.gates.userVisibleTextPreserved === false, "Expected role-only import validation to require user-visible text before runnable state.");
+assert(roleOnlyValidation.validation.gates.userVisibleTextPreserved === false, "Expected role-only import validation to require user-visible text before checkpoint validation.");
 const cleanImportCandidate = buildImportCandidate([
   { timestamp: "2026-04-25T10:00:04Z", thread_id: "thread_clean", message: { role: "user", content: "Inspect this file." } },
   { timestamp: "2026-04-25T10:00:05Z", thread_id: "thread_clean", message: { role: "assistant", content: "Inspection complete." } },
@@ -2390,14 +2395,45 @@ const cleanImportCandidate = buildImportCandidate([
   codexHome: "/tmp/codex",
 });
 const cleanCheckpoint = buildDirectCheckpointCandidate(cleanImportCandidate, { nowMs: 1_700_000_042_000 });
-const cleanValidation = validateDirectCheckpointCandidate(cleanCheckpoint, { nowMs: 1_700_000_043_000 });
-assert(cleanValidation.state === "checkpointed-runnable", "Expected clean import checkpoint to validate as checkpointed-runnable.");
-assert(cleanValidation.runnable === true, "Expected clean import checkpoint to become runnable after validation.");
+const cleanValidation = validateDirectCheckpointCandidate(cleanCheckpoint, {
+  nowMs: 1_700_000_043_000,
+  workspaceMatch: {
+    status: "matched",
+    selectedProjectId: "project_clean_import",
+    selectedWorkspaceKind: "local",
+    selectedWorkspaceDisplay: "/tmp/workspace",
+    matchMethod: "user-confirmed",
+    confidence: "high",
+  },
+});
+assert(cleanValidation.state === "checkpoint-validated", "Expected clean import checkpoint to validate as checkpoint-validated.");
+assert(cleanValidation.runnable === false, "Validated import checkpoint must still not be runnable in this bundle.");
 assert(cleanValidation.target.eligibleForContinuation === true, "Expected clean import checkpoint to become eligible for continuation.");
+assert(cleanValidation.eligibility.directContinuationRunnableNow === false, "Expected clean import checkpoint not to be runnable now.");
 assert(cleanValidation.validation.gates.sourceFilePathPreserved === true, "Expected clean import validation to require source file path.");
 assert(cleanValidation.validation.gates.sourceCodexHomePreserved === true, "Expected clean import validation to require source CODEX_HOME.");
 assert(cleanValidation.validation.gates.sourceThreadIdPreserved === true, "Expected clean import validation to require source thread id.");
 assert(cleanValidation.validation.importedApprovalsCarryAuthority === false, "Validated imported checkpoints must not inherit approval authority.");
+const authLikeCandidate = buildImportCandidate([
+  { timestamp: "2026-04-25T10:00:06Z", thread_id: "thread_auth", message: { role: "user", content: "secret check" }, headers: { Authorization: "Bearer abcdefghijklmnop" } },
+], {
+  sourcePath: "/tmp/codex/history/thread_auth.jsonl",
+  codexHome: "/tmp/codex",
+});
+const authLikeCheckpoint = buildDirectCheckpointCandidate(authLikeCandidate, { nowMs: 1_700_000_043_500 });
+const authLikeValidation = validateDirectCheckpointCandidate(authLikeCheckpoint, {
+  nowMs: 1_700_000_043_600,
+  workspaceMatch: {
+    status: "matched",
+    selectedProjectId: "project_auth_import",
+    selectedWorkspaceKind: "local",
+    selectedWorkspaceDisplay: "/tmp/workspace",
+    matchMethod: "user-confirmed",
+    confidence: "high",
+  },
+});
+assert(authLikeValidation.state !== "checkpoint-validated", "Expected auth-like imported material to block checkpoint validation.");
+assert(authLikeValidation.validation.gates.rawAuthMaterialObserved === true, "Expected nested auth-like material to be detected.");
 const importStoreParent = fs.mkdtempSync(path.join(os.tmpdir(), "direct-codex-import-store-"));
 try {
   const importSessionStore = new DirectSessionStore({ rootDir: path.join(importStoreParent, "direct-sessions") });
@@ -2409,13 +2445,19 @@ try {
   assert(materializedReadonly.importState === "checkpoint-candidate", "Expected unresolved import materialization to preserve checkpoint-candidate state.");
   assert(materializedReadonly.readOnlyImported === true, "Expected unresolved import materialization to remain read-only.");
   assert(materializedReadonly.continuationEligible === false, "Expected unresolved import materialization not to allow continuation.");
+  assert(materializedReadonly.nativeDirectSession === false, "Expected unresolved import materialization to remain non-native.");
   const materializedReadonlySession = importSessionStore.readSession(materializedReadonly.sessionId);
   assert(materializedReadonlySession.runtimeMode === "imported-readonly", "Expected unresolved import session runtime mode.");
   assert(materializedReadonlySession.importSource.filePath.endsWith("/tmp/codex/history/thread_1.jsonl"), "Expected materialized import session to preserve source path.");
   assert(materializedReadonlySession.importSource.codexHome.endsWith("/tmp/codex"), "Expected materialized import session to preserve CODEX_HOME.");
+  assert(materializedReadonlySession.readOnlyImported === true, "Expected materialized import session to stay read-only.");
+  assert(materializedReadonlySession.nativeDirectSession === false, "Expected materialized import session not to be native direct.");
   assert(materializedReadonlySession.messages[0].items.length === 1, "Expected materialized import session to preserve transcript items.");
   assert(materializedReadonlySession.turns.length === 1, "Expected materialized import session to persist a turn summary.");
   assert(materializedReadonlySession.turns[0].state === "checkpoint_required", "Expected unresolved materialized import turn to require checkpoint.");
+  const materializedReadonlyTurn = importSessionStore.readTurn(materializedReadonly.sessionId, materializedReadonly.turnId);
+  assert(materializedReadonlyTurn.imported === true, "Expected materialized import turn JSON to persist.");
+  assert(materializedReadonlyTurn.importState === "checkpoint-candidate", "Expected materialized import turn state.");
   assert(materializedReadonlySession.unresolvedObligations[0].autoReplayable === false, "Expected materialized import obligations not to auto-replay.");
   assert(materializedReadonlySession.compactionCheckpoints[0].runnable === false, "Expected unresolved import checkpoint to remain non-runnable.");
   const rematerializedReadonly = materializeDirectImportSession(unresolvedImportValidation, {
@@ -2430,21 +2472,30 @@ try {
   assert(rematerializedReadonlySession.compactionCheckpoints.length === 1, "Expected rematerialized import not to duplicate checkpoints.");
   assert(rematerializedReadonlySession.unresolvedObligations[0].autoReplayable === false, "Expected rematerialized import obligation to remain non-replayable.");
 
-  const materializedRunnable = materializeDirectImportSession(cleanValidation, {
+  const materializedValidated = materializeDirectImportSession(cleanValidation, {
     sessionStore: importSessionStore,
     sessionId: "import_session_clean",
     nowMs: 1_700_000_045_000,
   });
-  assert(materializedRunnable.importState === "checkpointed-runnable", "Expected clean import materialization to preserve checkpointed-runnable state.");
-  assert(materializedRunnable.readOnlyImported === false, "Expected clean import materialization not to remain read-only.");
-  assert(materializedRunnable.continuationEligible === true, "Expected clean import materialization to allow continuation eligibility.");
-  const materializedRunnableSession = importSessionStore.readSession(materializedRunnable.sessionId);
-  assert(materializedRunnableSession.runtimeMode === "imported-checkpointed", "Expected clean import session runtime mode.");
-  assert(materializedRunnableSession.continuationEligible === true, "Expected clean import session continuation eligibility.");
-  assert(materializedRunnableSession.messages[0].items.length === 2, "Expected clean import session transcript items.");
-  assert(materializedRunnableSession.turns.length === 1, "Expected clean import session turn summary.");
-  assert(materializedRunnableSession.turns[0].state === "completed", "Expected clean import turn summary to be completed.");
-  assert(materializedRunnableSession.directImportCheckpoint.validation.importedApprovalsCarryAuthority === false, "Expected materialized import checkpoint not to inherit approval authority.");
+  assert(materializedValidated.importState === "checkpoint-validated", "Expected clean import materialization to preserve checkpoint-validated state.");
+  assert(materializedValidated.readOnlyImported === true, "Expected clean import materialization to remain read-only.");
+  assert(materializedValidated.nativeDirectSession === false, "Expected clean import materialization not to be native direct.");
+  assert(materializedValidated.continuationEligible === true, "Expected clean import materialization to allow future continuation eligibility.");
+  assert(materializedValidated.eligibility.directContinuationRunnableNow === false, "Expected validated import not to be runnable now.");
+  const materializedValidatedSession = importSessionStore.readSession(materializedValidated.sessionId);
+  assert(materializedValidatedSession.runtimeMode === "imported-readonly", "Expected clean import session runtime mode.");
+  assert(materializedValidatedSession.continuationEligible === true, "Expected clean import session continuation eligibility.");
+  assert(materializedValidatedSession.messages[0].items.length === 2, "Expected clean import session transcript items.");
+  assert(materializedValidatedSession.turns.length === 1, "Expected clean import session turn summary.");
+  assert(materializedValidatedSession.turns[0].state === "completed", "Expected clean import turn summary to be completed.");
+  assert(materializedValidatedSession.directImportCheckpoint.validation.importedApprovalsCarryAuthority === false, "Expected materialized import checkpoint not to inherit approval authority.");
+  const materializedValidatedTurn = importSessionStore.readTurn(materializedValidated.sessionId, materializedValidated.turnId);
+  assert(materializedValidatedTurn.importState === "checkpoint-validated", "Expected validated import turn JSON to preserve import state.");
+  const rendererSafeImport = buildRendererSafeImportSession(materializedValidatedSession);
+  assert(rendererSafeImport.continuation.runnableNow === false, "Expected renderer-safe import projection not to mark runnable now.");
+  assert(!JSON.stringify(rendererSafeImport).includes("/tmp/codex/history/thread_clean.jsonl"), "Expected renderer-safe import projection to omit raw source paths.");
+  const recoveredImportArtifactIndex = importSessionStore.recoverImportIndex({ write: true });
+  assert(recoveredImportArtifactIndex.imports.some((entry) => entry.importId === cleanValidation.lineage.importId), "Expected import artifact recovery to find clean import.");
   const materializedUnsafeId = materializeDirectImportSession(cleanValidation, {
     sessionStore: importSessionStore,
     sessionId: `-${"x".repeat(180)}_`,
@@ -2460,9 +2511,33 @@ try {
   assert(recoveredReadonlySession.runtimeMode === "imported-readonly", "Expected recovered readonly import runtime mode.");
   assert(recoveredReadonlySession.continuationEligible === false, "Expected recovered readonly import not to allow continuation.");
   assert(recoveredReadonlySession.compactionCheckpoints[0].source.codexHome.endsWith("/tmp/codex"), "Expected recovered import checkpoint to preserve CODEX_HOME.");
-  const recoveredRunnableSession = reloadedImportStore.readSession(materializedRunnable.sessionId);
-  assert(recoveredRunnableSession.runtimeMode === "imported-checkpointed", "Expected recovered runnable import runtime mode.");
-  assert(recoveredRunnableSession.continuationEligible === true, "Expected recovered runnable import continuation eligibility.");
+  const recoveredValidatedSession = reloadedImportStore.readSession(materializedValidated.sessionId);
+  assert(recoveredValidatedSession.runtimeMode === "imported-readonly", "Expected recovered validated import runtime mode.");
+  assert(recoveredValidatedSession.continuationEligible === true, "Expected recovered validated import continuation eligibility.");
+  const recoveredValidatedTurn = reloadedImportStore.readTurn(materializedValidated.sessionId, materializedValidated.turnId);
+  assert(recoveredValidatedTurn.importState === "checkpoint-validated", "Expected recovered validated import turn.");
+  const controllerSourceRoot = path.join(importStoreParent, "legacy-source");
+  fs.mkdirSync(controllerSourceRoot, { recursive: true });
+  const controllerSourcePath = path.join(controllerSourceRoot, "thread_controller.jsonl");
+  fs.writeFileSync(controllerSourcePath, [
+    JSON.stringify({ timestamp: "2026-04-25T10:00:07Z", thread_id: "thread_controller", message: { role: "user", content: "Controller import." } }),
+    JSON.stringify({ timestamp: "2026-04-25T10:00:08Z", thread_id: "thread_controller", message: { role: "assistant", content: "Controller imported." } }),
+  ].join("\n"), "utf8");
+  const importController = new DirectImportController({ sessionStore: importSessionStore });
+  const listedSources = await importController.listSources({ id: "project_controller", workspace: { kind: "local", localPath: "/tmp/workspace" } }, { sourceRoot: controllerSourceRoot });
+  assert(listedSources.ok === true && listedSources.sources.length === 1, "Expected explicit source listing to find controller JSONL.");
+  assert(listedSources.sources[0].sourcePath === "", "Expected renderer-safe source listing to omit private paths.");
+  const inspectedSource = await importController.inspectSource({ id: "project_controller" }, { sourcePath: controllerSourcePath });
+  assert(inspectedSource.source.sourceFileSha256.length === 64, "Expected controller inspect to compute source digest.");
+  const controllerMaterialized = await importController.materialize({ id: "project_controller", workspace: { kind: "local", localPath: "/tmp/workspace" } }, {
+    sourcePath: controllerSourcePath,
+    userConfirmedWorkspace: true,
+  });
+  assert(controllerMaterialized.importState === "checkpoint-validated", "Expected controller materialization to validate user-confirmed workspace import.");
+  assert(controllerMaterialized.rendererSafeSession.continuation.runnableNow === false, "Expected controller renderer projection to remain non-runnable.");
+  assert(controllerMaterialized.rendererSafeSession.source.sourceDisplayName === "thread_controller.jsonl", "Expected controller renderer projection source display name.");
+  const canceledImport = await importController.cancelImport({ id: "project_controller" }, { importId: "import_canceled_smoke" });
+  assert(canceledImport.state === "import-canceled", "Expected controller cancel to write canceled import report.");
 } finally {
   fs.rmSync(importStoreParent, { recursive: true, force: true });
 }
