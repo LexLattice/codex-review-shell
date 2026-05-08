@@ -675,8 +675,24 @@ try {
     const operationManifest = JSON.parse(fs.readFileSync(directThreadStore.operationLedgerManifestPath(), "utf8"));
     assert(operationManifest.schema === DIRECT_THREAD_OPERATION_LEDGER_MANIFEST_SCHEMA, "Expected operation ledger manifest schema.");
     assert(operationManifest.eventCount === 2, "Expected operation ledger manifest to count appended events.");
+    directThreadStore.planOperation({
+      operationType: "archive_thread",
+      projectId: "project_fixture",
+      target: { threadIds: ["session_interrupted"] },
+      safety: { requiresConfirmation: false },
+    }, { nowMs: 1_700_000_015_800 });
+    directThreadStore.planOperation({
+      operationType: "archive_thread",
+      projectId: "project_fixture",
+      target: { threadIds: ["session_stale_summary"] },
+      safety: { requiresConfirmation: false },
+    }, { nowMs: 1_700_000_015_900 });
+    const operationRowsWithNullClientId = directThreadStore.db.prepare(
+      "select count(*) as count from direct_operations where project_id = ? and client_operation_id is null",
+    ).get("project_fixture");
+    assert(operationRowsWithNullClientId.count === 2, "Expected omitted client operation ids to persist as SQL NULL.");
     const threadStoreOperationStatus = directThreadStore.status();
-    assert(threadStoreOperationStatus.operationCount === 1, "Expected direct thread store to expose operation snapshots.");
+    assert(threadStoreOperationStatus.operationCount === 3, "Expected direct thread store to expose operation snapshots.");
   } finally {
     directThreadStore.close();
   }

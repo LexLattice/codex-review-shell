@@ -45,14 +45,26 @@ const DIRECT_THREAD_OPERATION_EVENT_TYPES = new Set([
   "operation_rolled_back",
   "operation_repaired",
 ]);
+const DIRECT_THREAD_COUNT_TABLES = new Set([
+  "direct_context_builds",
+  "direct_operations",
+  "direct_projections",
+  "direct_rollouts",
+  "direct_threads",
+  "direct_turns",
+]);
 const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,160}$/;
 
 function isPlainObject(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+  return Object.prototype.toString.call(value) === "[object Object]";
 }
 
 function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function optionalString(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function normalizeNumber(value, fallback = 0) {
@@ -124,6 +136,7 @@ function ensureDirectory(directory) {
 }
 
 function countRows(db, tableName) {
+  if (!DIRECT_THREAD_COUNT_TABLES.has(tableName)) throw new Error(`Invalid direct thread store table: ${tableName}`);
   const row = db.prepare(`select count(*) as count from ${tableName}`).get();
   return Number(row?.count || 0);
 }
@@ -210,7 +223,8 @@ class DirectThreadStore {
   }
 
   migrate() {
-    this.db.exec(`
+    this.transaction(() => {
+      this.db.exec(`
       create table if not exists direct_store_meta (
         key text primary key,
         value_json text not null,
@@ -493,11 +507,12 @@ class DirectThreadStore {
       create index if not exists idx_direct_context_builds_thread
         on direct_context_builds(project_id, thread_id, built_at desc);
     `);
-    this.writeMeta("schema", {
-      schemaVersion: DIRECT_THREAD_STORE_SCHEMA_VERSION,
-      mode: this.mode,
+      this.writeMeta("schema", {
+        schemaVersion: DIRECT_THREAD_STORE_SCHEMA_VERSION,
+        mode: this.mode,
+      });
+      this.db.exec(`pragma user_version = ${DIRECT_THREAD_STORE_SCHEMA_VERSION};`);
     });
-    this.db.exec(`pragma user_version = ${DIRECT_THREAD_STORE_SCHEMA_VERSION};`);
   }
 
   writeMeta(key, value, nowMs = Date.now()) {
@@ -872,47 +887,48 @@ class DirectThreadStore {
       operation_repaired: "repaired",
     };
     const status = statusByEvent[event.eventType] || "planned";
-    const existing = this.db.prepare("select requested_at from direct_operations where operation_id = ?").get(event.operationId);
-    this.db.prepare(`
-      insert into direct_operations (
-        operation_id,
-        project_id,
-        operation_type,
-        client_operation_id,
+    this.transaction(() => {
+      const existing = this.db.prepare("select requested_at from direct_operations where operation_id = ?").get(event.operationId);
+      this.db.prepare(`
+        insert into direct_operations (
+          operation_id,
+          project_id,
+          operation_type,
+          client_operation_id,
+          status,
+          requested_at,
+          committed_at,
+          operation_digest,
+          ledger_offset,
+          target_json,
+          result_json
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        on conflict(operation_id) do update set
+          status = excluded.status,
+          committed_at = excluded.committed_at,
+          operation_digest = excluded.operation_digest,
+          ledger_offset = excluded.ledger_offset,
+          target_json = excluded.target_json,
+          result_json = excluded.result_json
+      `).run(
+        event.operationId,
+        event.projectId,
+        event.operationType,
+        optionalString(event.clientOperationId),
         status,
-        requested_at,
-        committed_at,
-        operation_digest,
-        ledger_offset,
-        target_json,
-        result_json
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      on conflict(operation_id) do update set
-        status = excluded.status,
-        committed_at = excluded.committed_at,
-        operation_digest = excluded.operation_digest,
-        ledger_offset = excluded.ledger_offset,
-        target_json = excluded.target_json,
-        result_json = excluded.result_json
-    `).run(
-      event.operationId,
-      event.projectId,
-      event.operationType,
-      normalizeString(event.clientOperationId, ""),
-      status,
-      existing?.requested_at || event.at,
-      event.eventType === "operation_committed" ? event.at : "",
-      event.integrity.eventDigest,
-      event.seq,
-      JSON.stringify(event.target || {}),
-      JSON.stringify(event.result || {}),
-    );
+        existing?.requested_at || event.at,
+        event.eventType === "operation_committed" ? event.at : "",
+        event.integrity.eventDigest,
+        event.seq,
+        JSON.stringify(event.target || {}),
+        JSON.stringify(event.result || {}),
+      );
 
-    const effects = Array.isArray(event.result?.effects) ? event.result.effects : [];
-    if (effects.length) {
-      this.db.prepare("delete from direct_operation_effects where operation_id = ?").run(event.operationId);
-      const insertEffect = this.db.prepare(`
-        insert into direct_operation_effects (
+      const effects = Array.isArray(event.result?.effects) ? event.result.effects : [];
+      if (effects.length) {
+        this.db.prepare("delete from direct_operation_effects where operation_id = ?").run(event.operationId);
+        const insertEffect = this.db.prepare(`
+          insert into direct_operation_effects (
           operation_id,
           effect_ordinal,
           effect_kind,
@@ -921,21 +937,22 @@ class DirectThreadStore {
           before_digest,
           after_digest,
           created_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      effects.forEach((effect, index) => {
-        insertEffect.run(
-          event.operationId,
-          index + 1,
-          normalizeString(effect.effectKind, "unknown"),
-          normalizeString(effect.targetKind, "unknown"),
-          normalizeString(effect.targetId, ""),
-          normalizeString(effect.beforeDigest, ""),
-          normalizeString(effect.afterDigest, ""),
-          event.at,
-        );
-      });
-    }
+          ) values (?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+        effects.forEach((effect, index) => {
+          insertEffect.run(
+            event.operationId,
+            index + 1,
+            normalizeString(effect.effectKind, "unknown"),
+            normalizeString(effect.targetKind, "unknown"),
+            normalizeString(effect.targetId, ""),
+            normalizeString(effect.beforeDigest, ""),
+            normalizeString(effect.afterDigest, ""),
+            event.at,
+          );
+        });
+      }
+    });
   }
 
   planOperation(input = {}, options = {}) {
