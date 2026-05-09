@@ -8,6 +8,12 @@ const {
   DIRECT_TURN_SCHEMA,
   writeJsonAtomic,
 } = require("../session/session-store");
+const {
+  COMPACT_TRANSCRIPT_PROJECTION_KIND,
+  RENDERER_TRANSCRIPT_PROJECTION_KIND,
+  buildCompactTranscriptProjection,
+  buildRendererTranscriptProjection,
+} = require("./renderer-transcript-projection");
 
 const DIRECT_THREAD_STORE_STATUS_SCHEMA = "direct_thread_store_status@1";
 const DIRECT_THREAD_OPERATION_EVENT_SCHEMA = "direct_thread_operation_event@1";
@@ -53,6 +59,10 @@ const DIRECT_THREAD_COUNT_TABLES = new Set([
   "direct_threads",
   "direct_turns",
 ]);
+const DIRECT_PROJECTION_KINDS = new Set([
+  RENDERER_TRANSCRIPT_PROJECTION_KIND,
+  COMPACT_TRANSCRIPT_PROJECTION_KIND,
+]);
 const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,160}$/;
 
 function isPlainObject(value) {
@@ -65,6 +75,10 @@ function normalizeString(value, fallback = "") {
 
 function optionalString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function preserveString(value) {
+  return typeof value === "string" ? value : "";
 }
 
 function normalizeNumber(value, fallback = 0) {
@@ -141,6 +155,16 @@ function countRows(db, tableName) {
   return Number(row?.count || 0);
 }
 
+function columnExists(db, tableName, columnName) {
+  return db.prepare(`pragma table_info(${tableName})`).all().some((row) => row.name === columnName);
+}
+
+function addColumnIfMissing(db, tableName, columnDefinition) {
+  const columnName = String(columnDefinition).trim().split(/\s+/)[0];
+  if (columnExists(db, tableName, columnName)) return;
+  db.exec(`alter table ${tableName} add column ${columnDefinition};`);
+}
+
 function sourceClassForSession(session = {}) {
   const sourceClass = normalizeString(session.sourceClass, "");
   if (sourceClass) return sourceClass;
@@ -173,6 +197,7 @@ class DirectThreadStore {
     this.rootDir = rootDir ? path.resolve(rootDir) : path.dirname(path.resolve(dbPath));
     this.dbPath = dbPath ? path.resolve(dbPath) : path.join(this.rootDir, "direct-thread-store.sqlite");
     this.mode = normalizeStoreMode(options.mode);
+    this.projectionBuildLocks = new Set();
     ensureDirectory(this.rootDir);
     this.db = this.openDatabase();
     this.migrate();
@@ -261,6 +286,10 @@ class DirectThreadStore {
         lifecycle_state text not null,
         current_rollout_id text,
         current_projection_id text,
+        current_renderer_projection_id text,
+        current_compact_projection_id text,
+        last_renderer_projection_attempt_id text,
+        last_compact_projection_attempt_id text,
         created_at text not null,
         updated_at text not null,
         archived_at text,
@@ -405,12 +434,33 @@ class DirectThreadStore {
       create table if not exists direct_projection_items (
         projection_id text not null,
         ordinal integer not null,
+        item_id text,
+        stable_source_item_key text,
+        thread_id text,
+        turn_id text,
+        rollout_id text,
+        session_id text,
+        source_artifact_kind text,
+        source_event_start_seq integer,
+        source_event_end_seq integer,
+        source_digest text,
         item_kind text not null,
         source_ref_json text not null,
         text_value text,
         payload_json text,
         content_digest text not null,
         primary key (projection_id, ordinal),
+        foreign key(projection_id) references direct_projections(projection_id)
+      );
+
+      create table if not exists direct_thread_current_projections (
+        thread_id text not null,
+        projection_kind text not null,
+        projection_id text not null,
+        last_attempt_projection_id text,
+        updated_at text not null,
+        primary key (thread_id, projection_kind),
+        foreign key(thread_id) references direct_threads(thread_id),
         foreign key(projection_id) references direct_projections(projection_id)
       );
 
@@ -504,9 +554,27 @@ class DirectThreadStore {
         on direct_external_refs(project_id, ref_kind);
       create index if not exists idx_direct_projections_kind
         on direct_projections(project_id, projection_kind, status);
+      create index if not exists idx_direct_projection_items_source_key
+        on direct_projection_items(projection_id, stable_source_item_key);
       create index if not exists idx_direct_context_builds_thread
         on direct_context_builds(project_id, thread_id, built_at desc);
     `);
+      addColumnIfMissing(this.db, "direct_threads", "current_renderer_projection_id text");
+      addColumnIfMissing(this.db, "direct_threads", "current_compact_projection_id text");
+      addColumnIfMissing(this.db, "direct_threads", "last_renderer_projection_attempt_id text");
+      addColumnIfMissing(this.db, "direct_threads", "last_compact_projection_attempt_id text");
+      addColumnIfMissing(this.db, "direct_projection_items", "item_id text");
+      addColumnIfMissing(this.db, "direct_projection_items", "stable_source_item_key text");
+      addColumnIfMissing(this.db, "direct_projection_items", "thread_id text");
+      addColumnIfMissing(this.db, "direct_projection_items", "turn_id text");
+      addColumnIfMissing(this.db, "direct_projection_items", "rollout_id text");
+      addColumnIfMissing(this.db, "direct_projection_items", "session_id text");
+      addColumnIfMissing(this.db, "direct_projection_items", "source_artifact_kind text");
+      addColumnIfMissing(this.db, "direct_projection_items", "source_event_start_seq integer");
+      addColumnIfMissing(this.db, "direct_projection_items", "source_event_end_seq integer");
+      addColumnIfMissing(this.db, "direct_projection_items", "source_digest text");
+      addColumnIfMissing(this.db, "direct_projection_items", "payload_json text");
+      addColumnIfMissing(this.db, "direct_projection_items", "content_digest text not null default ''");
       this.writeMeta("schema", {
         schemaVersion: DIRECT_THREAD_STORE_SCHEMA_VERSION,
         mode: this.mode,
@@ -808,6 +876,505 @@ class DirectThreadStore {
     });
   }
 
+  projectionPointerColumns(projectionKind) {
+    if (projectionKind === RENDERER_TRANSCRIPT_PROJECTION_KIND) {
+      return {
+        currentColumn: "current_renderer_projection_id",
+        attemptColumn: "last_renderer_projection_attempt_id",
+      };
+    }
+    if (projectionKind === COMPACT_TRANSCRIPT_PROJECTION_KIND) {
+      return {
+        currentColumn: "current_compact_projection_id",
+        attemptColumn: "last_compact_projection_attempt_id",
+      };
+    }
+    throw new Error(`Unsupported direct projection kind: ${projectionKind}`);
+  }
+
+  currentProjectionRow(threadId, projectionKind) {
+    if (!DIRECT_PROJECTION_KINDS.has(projectionKind)) throw new Error(`Unsupported direct projection kind: ${projectionKind}`);
+    const byKind = this.db.prepare(`
+      select p.*
+      from direct_thread_current_projections cp
+      join direct_projections p on p.projection_id = cp.projection_id
+      where cp.thread_id = ? and cp.projection_kind = ?
+    `).get(requireSafeId(threadId, "thread"), projectionKind);
+    if (byKind) return byKind;
+    const { currentColumn } = this.projectionPointerColumns(projectionKind);
+    const thread = this.db.prepare(`select ${currentColumn} as projection_id from direct_threads where thread_id = ?`).get(requireSafeId(threadId, "thread"));
+    if (!thread?.projection_id) return null;
+    return this.db.prepare("select * from direct_projections where projection_id = ? and projection_kind = ?").get(thread.projection_id, projectionKind) || null;
+  }
+
+  readProjectionItems(projectionId) {
+    return this.db.prepare(`
+      select *
+      from direct_projection_items
+      where projection_id = ?
+      order by ordinal asc
+    `).all(requireSafeId(projectionId, "projection")).map((row) => {
+      let payload = {};
+      let sourceRef = {};
+      try {
+        payload = JSON.parse(row.payload_json || "{}");
+      } catch {}
+      try {
+        sourceRef = JSON.parse(row.source_ref_json || "{}");
+      } catch {}
+      return {
+        ...payload,
+        itemId: normalizeString(row.item_id, payload.itemId),
+        stableSourceItemKey: normalizeString(row.stable_source_item_key, payload.stableSourceItemKey),
+        projectionId: row.projection_id,
+        ordinal: Number(row.ordinal || payload.ordinal || 0),
+        itemKind: normalizeString(row.item_kind, payload.itemKind),
+        text: typeof row.text_value === "string" ? row.text_value : normalizeString(payload.text, ""),
+        textDigest: normalizeString(row.content_digest, payload.textDigest),
+        sourceRef: {
+          ...sourceRef,
+          rolloutId: normalizeString(row.rollout_id, sourceRef.rolloutId),
+          sessionId: normalizeString(row.session_id, sourceRef.sessionId),
+          turnId: normalizeString(row.turn_id, sourceRef.turnId),
+          sourceArtifactKind: normalizeString(row.source_artifact_kind, sourceRef.sourceArtifactKind),
+          sourceEventStartSeq: row.source_event_start_seq ?? sourceRef.sourceEventStartSeq,
+          sourceEventEndSeq: row.source_event_end_seq ?? sourceRef.sourceEventEndSeq,
+          sourceDigest: normalizeString(row.source_digest, sourceRef.sourceDigest),
+        },
+      };
+    });
+  }
+
+  projectionFromRow(row) {
+    if (!row) return null;
+    let source = {};
+    try {
+      source = JSON.parse(row.source_json || "{}");
+    } catch {}
+    return {
+      projectionId: row.projection_id,
+      projectId: row.project_id,
+      threadId: row.thread_id,
+      projectionKind: row.projection_kind,
+      projectionVersion: row.projection_version,
+      builderVersion: row.builder_version,
+      policyId: normalizeString(row.policy_id, ""),
+      status: row.status,
+      source,
+      projectionDigest: row.projection_digest,
+      createdAt: row.created_at,
+      supersededByProjectionId: normalizeString(row.superseded_by_projection_id, ""),
+      unsafeForContextBuild: Number(row.unsafe_for_context_build || 0) === 1,
+      unsafeForRenderer: Number(row.unsafe_for_renderer || 0) === 1,
+      staleReason: normalizeString(source.staleReason, ""),
+      securityReason: normalizeString(source.securityReason, ""),
+      safety: isPlainObject(source.safety) ? source.safety : {},
+      caps: isPlainObject(source.caps) ? source.caps : {},
+      continuity: isPlainObject(source.continuity) ? source.continuity : {},
+      lifecycle: isPlainObject(source.lifecycle) ? source.lifecycle : {},
+      integrity: {
+        projectionDigest: row.projection_digest,
+        algorithm: "sha256",
+      },
+    };
+  }
+
+  writeProjectionBuildResult(buildResult = {}, options = {}) {
+    const projection = buildResult.projection;
+    const items = Array.isArray(buildResult.items) ? buildResult.items : [];
+    if (!isPlainObject(projection)) throw new Error("Projection build result requires a projection.");
+    if (!DIRECT_PROJECTION_KINDS.has(projection.projectionKind)) throw new Error(`Unsupported direct projection kind: ${projection.projectionKind}`);
+    const threadId = requireSafeId(projection.threadId, "thread");
+    const projectionId = requireSafeId(projection.projectionId, "projection");
+    const { currentColumn, attemptColumn } = this.projectionPointerColumns(projection.projectionKind);
+    const createdAt = normalizeString(projection.createdAt, nowIso(options.nowMs));
+    const status = normalizeString(projection.status, "failed");
+    const canBecomeCurrent = status === "valid" || (status === "stale" && projection.unsafeForRenderer !== true);
+    return this.transaction(() => {
+      this.db.prepare(`
+        insert into direct_projections (
+          projection_id,
+          project_id,
+          thread_id,
+          projection_kind,
+          projection_version,
+          builder_version,
+          policy_id,
+          status,
+          source_json,
+          projection_digest,
+          created_at,
+          superseded_by_projection_id,
+          unsafe_for_context_build,
+          unsafe_for_renderer
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        on conflict(projection_id) do update set
+          status = excluded.status,
+          source_json = excluded.source_json,
+          projection_digest = excluded.projection_digest,
+          superseded_by_projection_id = excluded.superseded_by_projection_id,
+          unsafe_for_context_build = excluded.unsafe_for_context_build,
+          unsafe_for_renderer = excluded.unsafe_for_renderer
+      `).run(
+        projectionId,
+        projection.projectId,
+        threadId,
+        projection.projectionKind,
+        projection.projectionVersion,
+        projection.builderVersion,
+        normalizeString(projection.policyId, ""),
+        status,
+        JSON.stringify({
+          ...(projection.source || {}),
+          staleReason: normalizeString(projection.staleReason, ""),
+          securityReason: normalizeString(projection.securityReason, ""),
+          safety: projection.safety || {},
+          caps: projection.caps || {},
+          continuity: projection.continuity || {},
+          lifecycle: projection.lifecycle || {},
+        }),
+        projection.integrity?.projectionDigest || projection.projectionDigest,
+        createdAt,
+        normalizeString(projection.supersededByProjectionId, ""),
+        projection.unsafeForContextBuild === true ? 1 : 0,
+        projection.unsafeForRenderer === true ? 1 : 0,
+      );
+      this.db.prepare("delete from direct_projection_items where projection_id = ?").run(projectionId);
+      const insertItem = this.db.prepare(`
+        insert into direct_projection_items (
+          projection_id,
+          ordinal,
+          item_id,
+          stable_source_item_key,
+          thread_id,
+          turn_id,
+          rollout_id,
+          session_id,
+          source_artifact_kind,
+          source_event_start_seq,
+          source_event_end_seq,
+          source_digest,
+          item_kind,
+          source_ref_json,
+          text_value,
+          payload_json,
+          content_digest
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      items.forEach((item, index) => {
+        const sourceRef = isPlainObject(item.sourceRef) ? item.sourceRef : {};
+        insertItem.run(
+          projectionId,
+          Number(item.ordinal || index + 1),
+          normalizeString(item.itemId, `${projectionId}_item_${index + 1}`),
+          normalizeString(item.stableSourceItemKey, ""),
+          threadId,
+          normalizeString(item.turnId, ""),
+          normalizeString(sourceRef.rolloutId, ""),
+          normalizeString(sourceRef.sessionId, ""),
+          normalizeString(sourceRef.sourceArtifactKind, ""),
+          Number(sourceRef.sourceEventStartSeq || 0),
+          Number(sourceRef.sourceEventEndSeq || 0),
+          normalizeString(sourceRef.sourceDigest, ""),
+          normalizeString(item.itemKind, "diagnostic"),
+          JSON.stringify(sourceRef),
+          preserveString(item.text),
+          JSON.stringify(item),
+          normalizeString(item.textDigest, sha256(preserveString(item.text))),
+        );
+      });
+      if (canBecomeCurrent) {
+        const previous = this.currentProjectionRow(threadId, projection.projectionKind);
+        if (previous && previous.projection_id !== projectionId && options.force === true) {
+          this.db.prepare("update direct_projections set status = 'superseded', superseded_by_projection_id = ? where projection_id = ?")
+            .run(projectionId, previous.projection_id);
+        }
+        this.db.prepare(`
+          insert into direct_thread_current_projections (
+            thread_id,
+            projection_kind,
+            projection_id,
+            last_attempt_projection_id,
+            updated_at
+          ) values (?, ?, ?, ?, ?)
+          on conflict(thread_id, projection_kind) do update set
+            projection_id = excluded.projection_id,
+            last_attempt_projection_id = excluded.last_attempt_projection_id,
+            updated_at = excluded.updated_at
+        `).run(threadId, projection.projectionKind, projectionId, projectionId, createdAt);
+        if (projection.projectionKind === RENDERER_TRANSCRIPT_PROJECTION_KIND) {
+          this.db.prepare(`update direct_threads set ${currentColumn} = ?, ${attemptColumn} = ?, current_projection_id = ?, updated_at = ? where thread_id = ?`)
+            .run(projectionId, projectionId, projectionId, createdAt, threadId);
+        } else {
+          this.db.prepare(`update direct_threads set ${currentColumn} = ?, ${attemptColumn} = ?, updated_at = ? where thread_id = ?`)
+            .run(projectionId, projectionId, createdAt, threadId);
+        }
+      } else {
+        this.db.prepare(`update direct_threads set ${attemptColumn} = ?, updated_at = ? where thread_id = ?`).run(projectionId, createdAt, threadId);
+      }
+      return {
+        projectionId,
+        projectionKind: projection.projectionKind,
+        status,
+        becameCurrent: canBecomeCurrent,
+        itemCount: items.length,
+      };
+    });
+  }
+
+  buildRendererTranscriptProjection(threadId, options = {}) {
+    const safeThreadId = requireSafeId(threadId, "thread");
+    const lockKey = `${safeThreadId}:${RENDERER_TRANSCRIPT_PROJECTION_KIND}`;
+    if (this.projectionBuildLocks.has(lockKey)) throw new Error("projection_build_in_progress");
+    this.projectionBuildLocks.add(lockKey);
+    try {
+      const sessionStore = options.sessionStore;
+      if (!sessionStore) throw new Error("Renderer transcript projection requires a session store.");
+      const session = sessionStore.readSession(safeThreadId);
+      if (!session) throw new Error(`Direct session not found for projection: ${safeThreadId}`);
+      const turns = sessionStore.listTurnIdsFromDisk(safeThreadId)
+        .map((turnId) => sessionStore.readTurn(safeThreadId, turnId))
+        .filter(Boolean);
+      const rollout = this.db.prepare("select * from direct_rollouts where thread_id = ? order by updated_at desc limit 1").get(safeThreadId) || {};
+      const operationManifest = this.readOperationManifest();
+      const buildResult = buildRendererTranscriptProjection({
+        sessionStore,
+        session,
+        turns,
+        rollout,
+        operationManifest,
+        nowMs: options.nowMs,
+      });
+      const existing = this.currentProjectionRow(safeThreadId, RENDERER_TRANSCRIPT_PROJECTION_KIND);
+      if (!options.force && existing) {
+        const existingSource = this.projectionFromRow(existing)?.source || {};
+        if (existingSource.sourceDigest && existingSource.sourceDigest === buildResult.sourceDigest && existing.status === "valid") {
+          return {
+            projectionId: existing.projection_id,
+            projectionKind: RENDERER_TRANSCRIPT_PROJECTION_KIND,
+            status: existing.status,
+            reused: true,
+            itemCount: this.readProjectionItems(existing.projection_id).length,
+          };
+        }
+      }
+      return this.writeProjectionBuildResult(buildResult, { ...options, force: options.force === true });
+    } finally {
+      this.projectionBuildLocks.delete(lockKey);
+    }
+  }
+
+  buildCompactTranscriptProjection(threadId, options = {}) {
+    const safeThreadId = requireSafeId(threadId, "thread");
+    const lockKey = `${safeThreadId}:${COMPACT_TRANSCRIPT_PROJECTION_KIND}`;
+    if (this.projectionBuildLocks.has(lockKey)) throw new Error("projection_build_in_progress");
+    this.projectionBuildLocks.add(lockKey);
+    try {
+      const rendererRow = this.currentProjectionRow(safeThreadId, RENDERER_TRANSCRIPT_PROJECTION_KIND);
+      const rendererProjection = this.projectionFromRow(rendererRow);
+      if (!rendererProjection || rendererProjection.status !== "valid" || rendererProjection.unsafeForRenderer === true) {
+        throw new Error("Compact transcript projection requires a valid renderer transcript projection.");
+      }
+      const rendererItems = this.readProjectionItems(rendererProjection.projectionId);
+      const buildResult = buildCompactTranscriptProjection({
+        rendererProjection,
+        rendererItems,
+        nowMs: options.nowMs,
+      });
+      const existing = this.currentProjectionRow(safeThreadId, COMPACT_TRANSCRIPT_PROJECTION_KIND);
+      if (!options.force && existing) {
+        const existingSource = this.projectionFromRow(existing)?.source || {};
+        if (existingSource.sourceDigest && existingSource.sourceDigest === buildResult.sourceDigest && existing.status === "valid") {
+          return {
+            projectionId: existing.projection_id,
+            projectionKind: COMPACT_TRANSCRIPT_PROJECTION_KIND,
+            status: existing.status,
+            reused: true,
+            itemCount: this.readProjectionItems(existing.projection_id).length,
+          };
+        }
+      }
+      return this.writeProjectionBuildResult(buildResult, { ...options, force: options.force === true });
+    } finally {
+      this.projectionBuildLocks.delete(lockKey);
+    }
+  }
+
+  readProjectionByKind(threadId, projectionKind, options = {}) {
+    const safeThreadId = requireSafeId(threadId, "thread");
+    const row = options.projectionId
+      ? this.db.prepare("select * from direct_projections where projection_id = ? and thread_id = ? and projection_kind = ?")
+        .get(requireSafeId(options.projectionId, "projection"), safeThreadId, projectionKind)
+      : this.currentProjectionRow(safeThreadId, projectionKind);
+    const projection = this.projectionFromRow(row);
+    if (!projection) return null;
+    if (projection.status === "blocked" || projection.unsafeForRenderer === true) {
+      return {
+        schema: "renderer_safe_direct_transcript_projection@1",
+        projectionId: projection.projectionId,
+        projectId: projection.projectId,
+        threadId: projection.threadId,
+        title: "",
+        status: projection.status,
+        staleReason: projection.staleReason,
+        securityReason: projection.securityReason,
+        unsafeForRenderer: true,
+        unsafeForContextBuild: true,
+        failureSummary: "Projection is blocked by renderer safety policy.",
+        sourceClass: normalizeString(projection.continuity?.sourceClass, ""),
+        composer: {
+          projectionHint: "non-runnable-projection",
+          enabledByProjection: false,
+          authoritative: false,
+          controlAuthority: "runtime-status",
+        },
+        lifecycle: projection.lifecycle || { state: "active", operationIds: [], rendererListVisible: true },
+        caps: projection.caps || { truncated: false, omittedCounts: {} },
+        items: [],
+        rawExposure: {
+          rawPathExposed: false,
+          rawCredentialsExposed: false,
+          rawBackendFrameExposed: false,
+          rawRequestBodyExposed: false,
+          rawImportedJsonlExposed: false,
+        },
+      };
+    }
+    const allItems = this.readProjectionItems(projection.projectionId);
+    const offset = Math.max(0, Number(options.offset || 0));
+    const limit = Number.isFinite(Number(options.limit)) && Number(options.limit) > 0 ? Number(options.limit) : allItems.length;
+    const items = allItems.slice(offset, offset + limit);
+    const thread = this.db.prepare("select title from direct_threads where thread_id = ?").get(safeThreadId);
+    return {
+      schema: projectionKind === COMPACT_TRANSCRIPT_PROJECTION_KIND
+        ? "renderer_safe_direct_compact_projection@1"
+        : "renderer_safe_direct_transcript_projection@1",
+      projectionId: projection.projectionId,
+      projectId: projection.projectId,
+      threadId: projection.threadId,
+      title: normalizeString(thread?.title, ""),
+      status: projection.status,
+      staleReason: projection.staleReason,
+      securityReason: projection.securityReason,
+      unsafeForRenderer: projection.unsafeForRenderer,
+      unsafeForContextBuild: projection.unsafeForContextBuild,
+      failureSummary: "",
+      sourceClass: normalizeString(projection.continuity?.sourceClass, ""),
+      composer: projection.continuity?.composer || {
+        projectionHint: "runtime-not-attached",
+        enabledByProjection: false,
+        authoritative: false,
+        controlAuthority: "runtime-status",
+      },
+      lifecycle: projection.lifecycle || { state: "active", operationIds: [], rendererListVisible: true },
+      caps: projection.caps || { truncated: false, omittedCounts: {} },
+      items,
+      page: {
+        offset,
+        limit,
+        returned: items.length,
+        total: allItems.length,
+      },
+      rawExposure: {
+        rawPathExposed: false,
+        rawCredentialsExposed: false,
+        rawBackendFrameExposed: false,
+        rawRequestBodyExposed: false,
+        rawImportedJsonlExposed: false,
+      },
+    };
+  }
+
+  readRendererTranscriptProjection(threadId, options = {}) {
+    return this.readProjectionByKind(threadId, RENDERER_TRANSCRIPT_PROJECTION_KIND, options);
+  }
+
+  readCompactTranscriptProjection(threadId, options = {}) {
+    return this.readProjectionByKind(threadId, COMPACT_TRANSCRIPT_PROJECTION_KIND, options);
+  }
+
+  markProjectionStale(projectionId, reason = "manual_rebuild_requested") {
+    const row = this.db.prepare("select * from direct_projections where projection_id = ?").get(requireSafeId(projectionId, "projection"));
+    if (!row) return null;
+    const projection = this.projectionFromRow(row);
+    const staleReason = normalizeString(reason, "manual_rebuild_requested");
+    const staleProjectionSource = (entry) => ({
+      ...(entry.source || {}),
+      staleReason,
+      safety: entry.safety || {},
+      caps: entry.caps || {},
+      continuity: entry.continuity || {},
+      lifecycle: entry.lifecycle || {},
+    });
+    return this.transaction(() => {
+      this.db.prepare("update direct_projections set status = 'stale', source_json = ? where projection_id = ?")
+        .run(JSON.stringify(staleProjectionSource(projection)), projection.projectionId);
+      const invalidatedCompactProjectionIds = [];
+      if (projection.projectionKind === RENDERER_TRANSCRIPT_PROJECTION_KIND) {
+        const compactRows = this.db.prepare(`
+          select *
+          from direct_projections
+          where thread_id = ? and projection_kind = ? and status = 'valid'
+        `).all(projection.threadId, COMPACT_TRANSCRIPT_PROJECTION_KIND);
+        for (const compactRow of compactRows) {
+          const compactProjection = this.projectionFromRow(compactRow);
+          const sourceProjectionIds = Array.isArray(compactProjection.source?.sourceProjectionIds)
+            ? compactProjection.source.sourceProjectionIds
+            : [];
+          if (!sourceProjectionIds.includes(projection.projectionId)) continue;
+          this.db.prepare("update direct_projections set status = 'stale', source_json = ? where projection_id = ?")
+            .run(JSON.stringify(staleProjectionSource(compactProjection)), compactProjection.projectionId);
+          this.db.prepare(`
+            delete from direct_thread_current_projections
+            where thread_id = ? and projection_kind = ? and projection_id = ?
+          `).run(projection.threadId, COMPACT_TRANSCRIPT_PROJECTION_KIND, compactProjection.projectionId);
+          this.db.prepare("update direct_threads set current_compact_projection_id = '', updated_at = ? where thread_id = ? and current_compact_projection_id = ?")
+            .run(nowIso(), projection.threadId, compactProjection.projectionId);
+          invalidatedCompactProjectionIds.push(compactProjection.projectionId);
+        }
+      }
+      return {
+        projectionId: projection.projectionId,
+        status: "stale",
+        staleReason,
+        invalidatedCompactProjectionIds,
+      };
+    });
+  }
+
+  projectionParityReport(threadId, options = {}) {
+    const projection = this.readRendererTranscriptProjection(threadId, { limit: 10_000 });
+    const sessionStore = options.sessionStore;
+    const session = sessionStore?.readSession?.(threadId);
+    const oldReadDigest = sha256(stableStringify({
+      sessionId: session?.sessionId || "",
+      turns: session?.turns || [],
+      messages: session?.messages || [],
+    }));
+    const projectionReadDigest = sha256(stableStringify({
+      projectionId: projection?.projectionId || "",
+      items: (projection?.items || []).map((item) => ({
+        key: item.stableSourceItemKey,
+        kind: item.itemKind,
+        status: item.status,
+        textDigest: item.textDigest,
+      })),
+    }));
+    const differences = [];
+    if (!projection) {
+      differences.push({ kind: "missing_item", severity: "blocking" });
+    } else if (session && Array.isArray(session.turns) && projection.items.length === 0 && session.turns.length > 0) {
+      differences.push({ kind: "missing_item", severity: "warning" });
+    }
+    return {
+      sessionId: normalizeString(session?.sessionId, threadId),
+      threadId,
+      oldReadDigest,
+      projectionReadDigest,
+      differences,
+    };
+  }
+
   readOperationManifest() {
     const manifest = readJsonFile(this.operationLedgerManifestPath());
     if (manifest && manifest.schema === DIRECT_THREAD_OPERATION_LEDGER_MANIFEST_SCHEMA) return manifest;
@@ -969,7 +1536,9 @@ class DirectThreadStore {
 }
 
 module.exports = {
+  COMPACT_TRANSCRIPT_PROJECTION_KIND,
   DIRECT_ROLLOUT_MANIFEST_SCHEMA,
+  DIRECT_PROJECTION_KINDS,
   DIRECT_THREAD_OPERATION_EVENT_SCHEMA,
   DIRECT_THREAD_OPERATION_LEDGER_MANIFEST_SCHEMA,
   DIRECT_THREAD_OPERATION_TYPES,
@@ -977,5 +1546,6 @@ module.exports = {
   DIRECT_THREAD_STORE_SCHEMA_VERSION,
   DIRECT_THREAD_STORE_STATUS_SCHEMA,
   DirectThreadStore,
+  RENDERER_TRANSCRIPT_PROJECTION_KIND,
   normalizeStoreMode,
 };
