@@ -74,6 +74,7 @@ const {
   THREAD_LIFECYCLE_PROJECTION_KIND,
   TOOL_CONTINUATION_CONTEXT_PROJECTION_KIND,
 } = require("../src/main/direct/thread/thread-store");
+const { DirectThreadWorkbenchController } = require("../src/main/direct/thread/thread-workbench-controller");
 const {
   buildContextRecentDialogueProjection: buildContextRecentDialogueProjectionFixture,
 } = require("../src/main/direct/thread/context-pack");
@@ -1068,6 +1069,79 @@ try {
     assert(forkPreview.items[0].seed?.contextPackWritten === false, "Fork preview must not write context packs.");
     const contextCountAfterPreviews = directThreadStore.db.prepare("select count(*) as count from direct_context_builds").get().count;
     assert(contextCountAfterPreviews === contextCountBeforePreviews, "Thread-control previews must not create context packs.");
+
+    const workbenchController = new DirectThreadWorkbenchController({
+      threadStore: directThreadStore,
+      sessionStore: reloadedSessionStore,
+      now: () => 1_700_000_016_240,
+    });
+    const workbenchSnapshot = await workbenchController.getSnapshot({ id: "project_fixture", updatedAt: "2023-11-14T22:13:36.240Z" }, {
+      refresh: true,
+      filters: { includeHidden: true, includeArchived: true, includeSoftDeleted: true },
+      page: { threads: { offset: 0, limit: 20 }, operations: { offset: 0, limit: 10 } },
+    });
+    assert(workbenchSnapshot.schema === "renderer_safe_direct_thread_workbench_snapshot@1", "Expected direct thread workbench snapshot schema.");
+    assert(workbenchSnapshot.workbenchRevision && workbenchSnapshot.operationLedgerHeadDigest !== undefined, "Expected workbench revision and ledger digest.");
+    assert(workbenchSnapshot.rawExposure.rawPathExposed === false, "Workbench snapshot must not expose raw paths.");
+    assert(workbenchSnapshot.threads.some((entry) => entry.threadId === session.sessionId), "Workbench snapshot should include indexed direct thread.");
+    const workbenchThreadRead = await workbenchController.readThreadProjection({ id: "project_fixture" }, session.sessionId, { offset: 0, limit: 2 });
+    assert(workbenchThreadRead.projection.page.returned <= 2, "Workbench thread projection read should be paged.");
+    const currentWorkbenchRendererProjection = workbenchController.currentThreadProjectionSummary(session.sessionId);
+    await assertRejects(
+      () => workbenchController.runLifecycleAction({ id: "project_fixture" }, {
+        threadId: session.sessionId,
+        action: "hide",
+        expectedWorkbenchRevision: "stale_revision",
+        expectedLifecycleState: "active",
+        clientOperationId: "client_workbench_stale_hide",
+      }),
+      "Workbench mutations must reject stale revisions.",
+    );
+    await assertRejects(
+      () => workbenchController.createBridge({ id: "project_fixture" }, {
+        edgeKind: "merge_preview_of",
+        sourceKind: "direct_thread",
+        sourceId: session.sessionId,
+        targetKind: "direct_thread",
+        targetId: staleSummarySession.sessionId,
+        expectedWorkbenchRevision: workbenchSnapshot.workbenchRevision,
+        clientOperationId: "client_workbench_bad_lineage_bridge",
+      }),
+      "Workbench bridge UI must not create lineage-only edge kinds.",
+    );
+    await assertRejects(
+      () => workbenchController.prepareSoftDelete({ id: "project_fixture" }, activeDeleteBlockedSession.sessionId, {
+        expectedWorkbenchRevision: workbenchSnapshot.workbenchRevision,
+        expectedLifecycleState: "active",
+      }),
+      "Workbench soft delete prepare must block non-terminal direct turns.",
+    );
+    const softDeleteConfirmation = await workbenchController.prepareSoftDelete({ id: "project_fixture" }, interruptedSession.sessionId, {
+      expectedWorkbenchRevision: workbenchSnapshot.workbenchRevision,
+      expectedLifecycleState: "active",
+    });
+    assert(softDeleteConfirmation.confirmationId, "Expected workbench soft-delete confirmation nonce.");
+    const workbenchSoftDelete = await workbenchController.runLifecycleAction({ id: "project_fixture" }, {
+      threadId: interruptedSession.sessionId,
+      action: "soft_delete",
+      confirmationId: softDeleteConfirmation.confirmationId,
+      expectedLifecycleState: "active",
+      clientOperationId: "client_workbench_soft_delete",
+    });
+    assert(workbenchSoftDelete.status === "committed", "Expected workbench soft delete to commit with nonce.");
+    assert(workbenchSoftDelete.refreshRequired === true, "Workbench mutations should require refresh in v0.");
+    const workbenchPreview = await workbenchController.createForkPreview({ id: "project_fixture" }, {
+      threadId: session.sessionId,
+      selectedStableSourceItemKeys: [rendererRead.items[0].stableSourceItemKey],
+      expectedWorkbenchRevision: workbenchSoftDelete.nextWorkbenchRevision,
+      expectedLifecycleState: "active",
+      expectedRendererProjectionId: currentWorkbenchRendererProjection.projectionId,
+      expectedRendererProjectionDigest: currentWorkbenchRendererProjection.projectionDigest,
+      clientOperationId: "client_workbench_fork_preview",
+    });
+    assert(workbenchPreview.projectionKind === FORK_PREVIEW_PROJECTION_KIND, "Expected workbench fork preview result.");
+    const workbenchPreviewRead = await workbenchController.readPreviewProjection({ id: "project_fixture" }, workbenchPreview.projectionId, { offset: 0, limit: 1 });
+    assert(workbenchPreviewRead.projection.page.returned === 1, "Workbench preview reads should be paged.");
 
     const staleResult = directThreadStore.markProjectionStale(rendererProjection.projectionId, "manual_rebuild_requested");
     assert(staleResult.staleReason === "manual_rebuild_requested", "Expected projection stale reason to persist.");

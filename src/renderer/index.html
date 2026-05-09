@@ -255,6 +255,48 @@
         </section>
 
         <section class="middle-tab-panel" id="threadsTabPanel" data-tab-panel="threads" hidden>
+          <section class="control-card direct-thread-workbench-card" aria-label="Direct Codex thread controls">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Direct Codex thread controls</p>
+                <h3>Thread workbench</h3>
+              </div>
+              <div class="heading-actions">
+                <span id="directThreadWorkbenchStatus" class="counter">idle</span>
+                <button class="ghost small" id="refreshDirectThreadWorkbenchButton" type="button">Refresh</button>
+              </div>
+            </div>
+            <div class="direct-thread-filters">
+              <label class="checkbox-row">
+                <input id="directThreadIncludeHiddenInput" type="checkbox" />
+                <span>Hidden</span>
+              </label>
+              <label class="checkbox-row">
+                <input id="directThreadIncludeArchivedInput" type="checkbox" />
+                <span>Archived</span>
+              </label>
+              <label class="checkbox-row">
+                <input id="directThreadIncludeSoftDeletedInput" type="checkbox" />
+                <span>Soft-deleted</span>
+              </label>
+              <label>
+                Filter
+                <input id="directThreadTextQueryInput" autocomplete="off" placeholder="Current snapshot only" />
+              </label>
+            </div>
+            <div class="direct-thread-counts">
+              <span class="pill subtle">active <strong id="directThreadActiveCount">0</strong></span>
+              <span class="pill subtle">hidden <strong id="directThreadHiddenCount">0</strong></span>
+              <span class="pill subtle">archived <strong id="directThreadArchivedCount">0</strong></span>
+              <span class="pill subtle">soft-deleted <strong id="directThreadSoftDeletedCount">0</strong></span>
+            </div>
+            <section class="direct-thread-workbench-grid">
+              <div class="thread-browser-list direct-thread-workbench-list" id="directThreadWorkbenchList"></div>
+              <div class="direct-thread-detail" id="directThreadWorkbenchDetail"></div>
+              <aside class="direct-thread-side" id="directThreadWorkbenchSide"></aside>
+            </section>
+          </section>
+
           <section class="control-card threads-workbench-card">
             <div class="section-heading">
               <div>

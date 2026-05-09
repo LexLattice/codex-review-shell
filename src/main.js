@@ -28,6 +28,7 @@ const { codexAuthTokensFromCredentials } = require("./main/direct/auth/app-serve
 const { loadDirectCodexProfile } = require("./main/direct/odeu-profile/profile-loader");
 const { DirectSessionStore } = require("./main/direct/session/session-store");
 const { DirectThreadStore } = require("./main/direct/thread/thread-store");
+const { DirectThreadWorkbenchController } = require("./main/direct/thread/thread-workbench-controller");
 const { DirectImportController } = require("./main/direct/import/import-controller");
 const {
   DIRECT_LIVE_PROBE_EVIDENCE_ROOT_NAME,
@@ -176,6 +177,7 @@ let directAuthLoginCoordinator = null;
 let directCodexProfileDoc = null;
 let directSessionStore = null;
 let directThreadStore = null;
+let directThreadWorkbenchController = null;
 let directImportController = null;
 let directLiveProbeEvidenceStore = null;
 let directFixtureController = null;
@@ -1629,6 +1631,16 @@ function ensureDirectThreadStore() {
     mode: "index_only",
   });
   return directThreadStore;
+}
+
+function ensureDirectThreadWorkbenchController() {
+  if (directThreadWorkbenchController) return directThreadWorkbenchController;
+  directThreadWorkbenchController = new DirectThreadWorkbenchController({
+    threadStore: ensureDirectThreadStore(),
+    sessionStore: ensureDirectSessionStore(),
+    projectResolver: (projectId) => getProjectById(projectId),
+  });
+  return directThreadWorkbenchController;
 }
 
 function directThreadStoreStatus() {
@@ -3872,6 +3884,7 @@ async function createWindow() {
     directLiveTextController = null;
     directLiveProbeEvidenceStore = null;
     directActivationStore = null;
+    directThreadWorkbenchController = null;
     directThreadStore?.close();
     directThreadStore = null;
     directSessionStore = null;
@@ -4406,6 +4419,88 @@ ipcMain.handle("direct-import:start-checkpoint-continuation", async (_event, pay
   return result;
 });
 
+ipcMain.handle("direct-thread-workbench:snapshot", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().getSnapshot(project, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:read-thread-projection", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().readThreadProjection(project, payload?.threadId, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:read-project-projection", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().readProjectProjection(project, payload?.projectionKind, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:read-preview-projection", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().readPreviewProjection(project, payload?.previewId, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:read-operation-history", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().readOperationHistory(project, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:prepare-soft-delete", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().prepareSoftDelete(project, payload?.threadId, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:run-lifecycle-action", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  const result = await ensureDirectThreadWorkbenchController().runLifecycleAction(project, payload || {});
+  emitDirectRuntimeStatus(project);
+  return result;
+});
+
+ipcMain.handle("direct-thread-workbench:create-external-ref", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().createExternalRef(project, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:create-bridge", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().createBridge(project, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:unlink-bridge", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().unlinkBridge(project, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:create-merge-preview", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().createMergePreview(project, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:create-prune-preview", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().createPrunePreview(project, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:create-fork-preview", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().createForkPreview(project, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:rebuild-lifecycle-projection", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().rebuildLifecycleProjection(project, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:rebuild-graph-projection", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().rebuildGraphProjection(project, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:rebuild-renderer-projection", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().rebuildRendererTranscriptProjection(project, payload?.threadId, payload || {});
+});
+
 ipcMain.handle("workspace:run-command", async (_event, payload) => {
   return runWorkspaceCommand(payload?.projectId, payload?.command);
 });
@@ -4449,6 +4544,7 @@ app.on("before-quit", () => {
   directLiveTextController = null;
   directLiveProbeEvidenceStore = null;
   directActivationStore = null;
+  directThreadWorkbenchController = null;
   directThreadStore?.close();
   directThreadStore = null;
   directSessionStore = null;

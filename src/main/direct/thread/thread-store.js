@@ -1081,18 +1081,36 @@ class DirectThreadStore {
           source_event_start_seq = excluded.source_event_start_seq,
           source_event_end_seq = excluded.source_event_end_seq
       `);
+      const existingTurnOrdinalRows = this.db.prepare(`
+        select turn_id, turn_ordinal
+        from direct_turns
+        where thread_id = ?
+      `).all(manifest.threadId);
+      const existingTurnOrdinals = new Map(existingTurnOrdinalRows.map((row) => [row.turn_id, Number(row.turn_ordinal || 0)]));
+      const usedTurnOrdinals = new Set(existingTurnOrdinalRows.map((row) => Number(row.turn_ordinal || 0)).filter((value) => value > 0));
+      let nextTurnOrdinal = 1;
+      const ordinalForTurn = (turnId) => {
+        const existingOrdinal = existingTurnOrdinals.get(turnId);
+        if (existingOrdinal) return existingOrdinal;
+        while (usedTurnOrdinals.has(nextTurnOrdinal)) nextTurnOrdinal += 1;
+        const ordinal = nextTurnOrdinal;
+        usedTurnOrdinals.add(ordinal);
+        nextTurnOrdinal += 1;
+        return ordinal;
+      };
       let nextEventSeq = 1;
-      turns.forEach((turn, index) => {
+      turns.forEach((turn) => {
+        const turnId = requireSafeId(turn.turnId, "turn");
         const eventCount = normalizeNumber(turn.normalizedEventCount, 0);
         const startSeq = eventCount > 0 ? nextEventSeq : 0;
         const endSeq = eventCount > 0 ? nextEventSeq + eventCount - 1 : 0;
         nextEventSeq = endSeq + 1;
         insertTurn.run(
-          requireSafeId(turn.turnId, "turn"),
+          turnId,
           manifest.threadId,
           manifest.projectId,
           manifest.rolloutId,
-          index + 1,
+          ordinalForTurn(turnId),
           normalizeString(turn.state, "created"),
           normalizeString(turn.streamPhase, ""),
           normalizeString(turn.createdAt || turn.requestBuiltAt || turn.streamStartedAt, ""),
