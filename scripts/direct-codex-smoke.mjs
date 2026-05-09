@@ -66,7 +66,12 @@ const {
   DIRECT_TEXT_TURN_EMPTY_CONTEXT_POLICY_ID,
   DIRECT_TEXT_TURN_RECENT_DIALOGUE_POLICY_ID,
   DirectThreadStore,
+  FORK_PREVIEW_PROJECTION_KIND,
+  MERGE_PREVIEW_PROJECTION_KIND,
+  PRUNE_PREVIEW_PROJECTION_KIND,
   RENDERER_TRANSCRIPT_PROJECTION_KIND,
+  THREAD_GRAPH_PROJECTION_KIND,
+  THREAD_LIFECYCLE_PROJECTION_KIND,
   TOOL_CONTINUATION_CONTEXT_PROJECTION_KIND,
 } = require("../src/main/direct/thread/thread-store");
 const {
@@ -863,6 +868,162 @@ try {
     assert(currentPointers.find((row) => row.projection_kind === RENDERER_TRANSCRIPT_PROJECTION_KIND).projection_id !== compactProjection.projectionId, "Compact projection must not become current renderer transcript.");
     const parityReport = directThreadStore.projectionParityReport(session.sessionId, { sessionStore: reloadedSessionStore });
     assert(Array.isArray(parityReport.differences), "Expected projection parity report differences list.");
+    const secondRendererProjection = directThreadStore.buildRendererTranscriptProjection(staleSummarySession.sessionId, {
+      sessionStore: reloadedSessionStore,
+      nowMs: 1_700_000_016_205,
+    });
+    assert(secondRendererProjection.status === "valid", "Expected second source renderer projection for preview smokes.");
+
+    const hiddenLifecycle = directThreadStore.hideThread({
+      projectId: "project_fixture",
+      threadId: interruptedSession.sessionId,
+      clientOperationId: "client_thread_control_hide",
+    }, { nowMs: 1_700_000_016_210 });
+    assert(hiddenLifecycle.status === "committed", "Expected hide thread lifecycle operation to commit.");
+    assert(hiddenLifecycle.result.lifecycle.afterState === "hidden", "Expected hide operation to set hidden state.");
+    const duplicateHiddenLifecycle = directThreadStore.hideThread({
+      projectId: "project_fixture",
+      threadId: interruptedSession.sessionId,
+      clientOperationId: "client_thread_control_hide",
+    }, { nowMs: 1_700_000_016_211 });
+    assert(duplicateHiddenLifecycle.operationId === hiddenLifecycle.operationId, "Expected lifecycle operation idempotency by client operation id.");
+    assert(!directThreadStore.listThreadSummaries("project_fixture").some((entry) => entry.threadId === interruptedSession.sessionId), "Hidden threads should be filtered from default list summaries.");
+    assert(directThreadStore.listThreadSummaries("project_fixture", { includeHidden: true }).some((entry) => entry.threadId === interruptedSession.sessionId), "Explicit hidden list should include hidden thread.");
+    const unhiddenLifecycle = directThreadStore.unhideThread({
+      projectId: "project_fixture",
+      threadId: interruptedSession.sessionId,
+      clientOperationId: "client_thread_control_unhide",
+    }, { nowMs: 1_700_000_016_212 });
+    assert(unhiddenLifecycle.result.lifecycle.afterState === "active", "Expected unhide to restore active lifecycle state.");
+    const archivedLifecycle = directThreadStore.archiveThread({
+      projectId: "project_fixture",
+      threadId: interruptedSession.sessionId,
+      clientOperationId: "client_thread_control_archive",
+    }, { nowMs: 1_700_000_016_213 });
+    assert(archivedLifecycle.result.lifecycle.afterState === "archived", "Expected archive to set archived lifecycle state.");
+    const restoredLifecycle = directThreadStore.restoreThread({
+      projectId: "project_fixture",
+      threadId: interruptedSession.sessionId,
+      clientOperationId: "client_thread_control_restore",
+    }, { nowMs: 1_700_000_016_214 });
+    assert(restoredLifecycle.result.lifecycle.afterState === "active", "Expected restore to return archived thread to active.");
+    const softDeletedLifecycle = directThreadStore.softDeleteThread({
+      projectId: "project_fixture",
+      threadId: interruptedSession.sessionId,
+      clientOperationId: "client_thread_control_soft_delete",
+    }, { nowMs: 1_700_000_016_215 });
+    assert(softDeletedLifecycle.result.lifecycle.afterState === "soft_deleted", "Expected soft delete to set soft_deleted lifecycle state.");
+    const restoredSoftDeletedLifecycle = directThreadStore.restoreSoftDeletedThread({
+      projectId: "project_fixture",
+      threadId: interruptedSession.sessionId,
+      clientOperationId: "client_thread_control_restore_soft_deleted",
+    }, { nowMs: 1_700_000_016_216 });
+    assert(restoredSoftDeletedLifecycle.result.lifecycle.afterState === "active", "Expected explicit restore soft-deleted operation.");
+    const activeDeleteBlockedSession = reloadedSessionStore.createSession({
+      sessionId: "session_thread_control_active_delete_blocked",
+      projectId: "project_fixture",
+      workspace: { kind: "local", localPath: "[REDACTED:private-path]" },
+      title: "Active delete blocked",
+      model: "gpt-5.4",
+    }, { nowMs: 1_700_000_016_217 });
+    const activeDeleteBlockedTurn = reloadedSessionStore.createTurn(activeDeleteBlockedSession.sessionId, {
+      turnId: "turn_thread_control_active_delete_blocked",
+      state: "request_built",
+      input: [{ role: "user", text: "still active" }],
+    }, { nowMs: 1_700_000_016_218 });
+    directThreadStore.indexSessionArtifacts(reloadedSessionStore, reloadedSessionStore.readSession(activeDeleteBlockedSession.sessionId), [
+      reloadedSessionStore.readTurn(activeDeleteBlockedSession.sessionId, activeDeleteBlockedTurn.turnId),
+    ], { nowMs: 1_700_000_016_219 });
+    assertThrows(() => directThreadStore.softDeleteThread({
+      projectId: "project_fixture",
+      threadId: activeDeleteBlockedSession.sessionId,
+      clientOperationId: "client_thread_control_soft_delete_active_blocked",
+    }, { nowMs: 1_700_000_016_220 }), "Soft delete must be blocked while a direct turn is non-terminal.");
+    const lifecycleProjection = directThreadStore.readThreadLifecycleProjection("project_fixture");
+    assert(lifecycleProjection.projectionKind === THREAD_LIFECYCLE_PROJECTION_KIND, "Expected project lifecycle projection kind.");
+    assert(lifecycleProjection.items.some((item) => item.itemKind === "thread_lifecycle_summary"), "Expected lifecycle projection summary rows.");
+
+    const chatGptRef = directThreadStore.createExternalRef({
+      projectId: "project_fixture",
+      refKind: "chatgpt_thread_binding",
+      displayTitle: "Review pane thread",
+      targetId: "chatgpt_binding_fixture",
+      rendererSafeUrlHash: "hmac_chatgpt_binding_fixture",
+      metadata: { role: "review" },
+    }, { nowMs: 1_700_000_016_225 });
+    assert(chatGptRef.urlStoredInDirectStore === false && chatGptRef.transcriptImported === false, "External ChatGPT refs must not store URL/transcript content.");
+    const bridgeOperation = directThreadStore.bridgeThreads({
+      projectId: "project_fixture",
+      sourceKind: "direct_thread",
+      sourceId: session.sessionId,
+      targetKind: "external_ref",
+      targetId: chatGptRef.externalRefId,
+      edgeKind: "chatgpt_reference",
+      clientOperationId: "client_thread_control_bridge_chatgpt",
+      metadata: { role: "review" },
+    }, { nowMs: 1_700_000_016_226 });
+    assert(bridgeOperation.status === "committed", "Expected ChatGPT bridge operation to commit.");
+    const duplicateBridgeOperation = directThreadStore.bridgeThreads({
+      projectId: "project_fixture",
+      sourceKind: "direct_thread",
+      sourceId: session.sessionId,
+      targetKind: "external_ref",
+      targetId: chatGptRef.externalRefId,
+      edgeKind: "chatgpt_reference",
+      clientOperationId: "client_thread_control_bridge_chatgpt_duplicate",
+      metadata: { role: "review" },
+    }, { nowMs: 1_700_000_016_227 });
+    assert(duplicateBridgeOperation.result.effects[0].effectKind === "lifecycle_noop_already_applied", "Duplicate bridge should be a deterministic no-op.");
+    const graphProjection = directThreadStore.readThreadGraphProjection("project_fixture");
+    assert(graphProjection.projectionKind === THREAD_GRAPH_PROJECTION_KIND, "Expected graph projection kind.");
+    assert(graphProjection.items.some((item) => item.itemKind === "graph_external_ref"), "Expected graph projection to include external ref node.");
+    assert(graphProjection.items.some((item) => item.itemKind === "bridge_edge"), "Expected graph projection to include bridge edge.");
+    const unlinkOperation = directThreadStore.unlinkBridge({
+      projectId: "project_fixture",
+      sourceKind: "direct_thread",
+      sourceId: session.sessionId,
+      targetKind: "external_ref",
+      targetId: chatGptRef.externalRefId,
+      edgeKind: "chatgpt_reference",
+      clientOperationId: "client_thread_control_unlink_chatgpt",
+    }, { nowMs: 1_700_000_016_228 });
+    assert(unlinkOperation.result.effects[0].effectKind === "edge_removed", "Expected unlink bridge to mark edge removed.");
+    const graphAfterUnlink = directThreadStore.readThreadGraphProjection("project_fixture");
+    assert(!graphAfterUnlink.items.some((item) => item.itemKind === "bridge_edge" && item.edge?.targetId === chatGptRef.externalRefId), "Unlinked bridge must not appear as an active graph edge.");
+
+    const contextCountBeforePreviews = directThreadStore.db.prepare("select count(*) as count from direct_context_builds").get().count;
+    const mergePreviewOperation = directThreadStore.createMergePreview({
+      projectId: "project_fixture",
+      sourceThreadIds: [session.sessionId, staleSummarySession.sessionId],
+      clientOperationId: "client_thread_control_merge_preview",
+    }, { nowMs: 1_700_000_016_230 });
+    assert(mergePreviewOperation.projectionKind === MERGE_PREVIEW_PROJECTION_KIND, "Expected merge preview projection kind.");
+    const mergePreview = directThreadStore.readProjectProjectionByKind("project_fixture", MERGE_PREVIEW_PROJECTION_KIND);
+    assert(mergePreview.unsafeForContextBuild === true, "Merge preview must not be context-build usable.");
+    assert(mergePreview.continuity.providerContinuityAvailable === false, "Merge preview must not create provider continuity.");
+    assert(mergePreview.items.every((item) => item.stableSourceItemKey || item.stablePreviewItemKey), "Merge preview items need stable identity.");
+    const prunePreviewOperation = directThreadStore.createPrunePreview({
+      projectId: "project_fixture",
+      threadId: session.sessionId,
+      excludedStableSourceItemKeys: [rendererRead.items[0].stableSourceItemKey],
+      clientOperationId: "client_thread_control_prune_preview",
+    }, { nowMs: 1_700_000_016_231 });
+    assert(prunePreviewOperation.projectionKind === PRUNE_PREVIEW_PROJECTION_KIND, "Expected prune preview projection kind.");
+    const prunePreview = directThreadStore.readProjectProjectionByKind("project_fixture", PRUNE_PREVIEW_PROJECTION_KIND);
+    assert(prunePreview.items.some((item) => item.itemKind === "prune_omission_marker" && item.omission?.itemCount === 1), "Prune preview must include structured omission marker.");
+    const forkPreviewOperation = directThreadStore.createForkPreview({
+      projectId: "project_fixture",
+      threadId: session.sessionId,
+      selectedStableSourceItemKeys: [rendererRead.items[0].stableSourceItemKey],
+      clientOperationId: "client_thread_control_fork_preview",
+    }, { nowMs: 1_700_000_016_232 });
+    assert(forkPreviewOperation.projectionKind === FORK_PREVIEW_PROJECTION_KIND, "Expected fork preview projection kind.");
+    const forkPreview = directThreadStore.readProjectProjectionByKind("project_fixture", FORK_PREVIEW_PROJECTION_KIND);
+    assert(forkPreview.items[0].seed?.runnableNow === false, "Fork preview seed metadata must not be runnable.");
+    assert(forkPreview.items[0].seed?.contextPackWritten === false, "Fork preview must not write context packs.");
+    const contextCountAfterPreviews = directThreadStore.db.prepare("select count(*) as count from direct_context_builds").get().count;
+    assert(contextCountAfterPreviews === contextCountBeforePreviews, "Thread-control previews must not create context packs.");
+
     const staleResult = directThreadStore.markProjectionStale(rendererProjection.projectionId, "manual_rebuild_requested");
     assert(staleResult.staleReason === "manual_rebuild_requested", "Expected projection stale reason to persist.");
     assert(staleResult.invalidatedCompactProjectionIds.includes(compactProjection.projectionId), "Expected compact projection to be invalidated with its renderer source.");
