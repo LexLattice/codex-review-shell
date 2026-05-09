@@ -53,6 +53,17 @@ function sha256(value) {
   return crypto.createHash("sha256").update(String(value || "")).digest("hex");
 }
 
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  if (isPlainObject(value)) {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 function nowSeconds() {
   return Date.now() / 1000;
 }
@@ -1021,7 +1032,7 @@ class DirectLiveTextController {
         previousResponseId: normalizeString(turn?.responseId, ""),
         model: normalizeString(turn?.model, ""),
         requestShape: continuationShape,
-        requestShapeHash: sha256(JSON.stringify(continuationShape)),
+        requestShapeHash: sha256(stableStringify(continuationShape)),
         endpointClass: "chatgpt-codex-responses",
         endpointHash: this.endpoint ? sha256(this.endpoint) : "",
         modelEvidenceRef: normalizeString(this.statusForProject(project).evidenceId, ""),

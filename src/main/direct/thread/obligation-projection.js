@@ -315,10 +315,7 @@ function buildToolContinuationContextProjection({
     })),
   }));
   const projectionId = `tool_context_${sha256(`${turn.sessionId}:${turn.turnId}:${obligation.obligationId}:${sourceDigest}`).slice(0, 24)}`;
-  const text = [
-    "[LOCAL READ-ONLY TOOL RESULT EVIDENCE - QUOTED]",
-    normalizeString(result.providerOutputText, result.textPreview || result.summary),
-  ].join("\n");
+  const text = normalizeString(result.providerOutputText, result.textPreview || result.summary);
   const items = [
     {
       itemId: projectionItemId(projectionId, 1),

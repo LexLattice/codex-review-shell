@@ -1653,6 +1653,7 @@ try {
     "",
   ].join("\n");
   let approvedFetchCalls = 0;
+  let approvedContinuationBody = null;
   let approvedWorkspaceReads = 0;
   const approvedToolThreadStore = new DirectThreadStore({
     rootDir: path.join(liveTextControllerParent, "approved-tool-direct-thread-store"),
@@ -1683,8 +1684,9 @@ try {
         absolutePath: "/private/path/README.md",
       };
     },
-    fetchImpl: async () => {
+    fetchImpl: async (_url, init = {}) => {
       approvedFetchCalls += 1;
+      if (approvedFetchCalls === 2 && init.body) approvedContinuationBody = JSON.parse(init.body);
       return textResponse(approvedFetchCalls === 1 ? liveToolSse : approvedContinuationSse, 200, { "content-type": "text/event-stream" });
     },
   });
@@ -1732,6 +1734,7 @@ try {
   assert(approvedToolRequestManifest.enabledFeatures.previousResponseId === true, "Expected approved live tool manifest to record previous_response_id.");
   assert(approvedToolRequestManifest.enabledFeatures.store === false, "Expected approved live tool manifest to record store=false.");
   assert(approvedToolRequestManifest.rawRequestBodyStored === false, "Expected approved live tool manifest not to store raw request body.");
+  assert(approvedContinuationBody.instructions.includes("Do not request or execute another tool"), "Expected approved live tool continuation request to preserve continuation-specific instructions.");
   const approvedObligation = approvedTurn.unresolvedObligations[0];
   assert(approvedObligation.status === "continuation_sent", "Expected approved obligation to record sent continuation.");
   assert(JSON.parse(approvedObligation.result.providerOutputText).textPreview === "live approved read result", "Expected approved provider output to be bounded JSON evidence.");
@@ -2736,6 +2739,13 @@ try {
     assert(toolContext.contextPack.policy.policyId === DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID, "Expected read-only tool continuation context policy.");
     assert(toolContext.contextPack.messages.some((message) => message.authority === "tool-result-evidence"), "Expected tool result evidence in continuation context pack.");
     assert(toolContext.providerInput.instructions.includes("Fresh local authority"), "Expected continuation provider input to resend harness policy.");
+    assert(toolContext.providerInput.instructions.includes("Do not request or execute another tool"), "Expected continuation provider input to include continuation-specific guidance.");
+    assert(!toolContext.toolContinuationItems[0].text.includes("[LOCAL READ-ONLY TOOL RESULT EVIDENCE - QUOTED]"), "Expected tool continuation projection item text not to duplicate context-pack framing.");
+    const continuationIntent = toolContext.contextPack.messages.find((message) => message.text.startsWith("[CONTINUATION INTENT]"));
+    assert(
+      continuationIntent.textHash === crypto.createHash("sha256").update(continuationIntent.text).digest("hex"),
+      "Expected continuation intent hash to match actual message text.",
+    );
     assert(toolContext.requestManifest.enabledFeatures.store === false, "Expected tool continuation manifest to record store=false.");
     assert(toolContext.requestManifest.enabledFeatures.previousResponseId === true, "Expected tool continuation manifest to record previous_response_id usage.");
     assert(toolContext.requestManifest.continuity.importedContinuityHandleUsed === false, "Tool continuation manifest must not use imported continuity.");

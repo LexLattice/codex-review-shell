@@ -33,6 +33,7 @@ const HARNESS_POLICY_TEXT = [
   "Do not assume provider-side conversation state, previous_response_id continuity, file access, command execution, or permission to replay prior actions.",
   "Fresh local authority is required before any file read, file write, shell command, network access, or tool continuation.",
 ].join(" ");
+const TOOL_CONTINUATION_HARNESS_POLICY_TEXT = "For this read-only tool continuation, use the accompanying provider tool-output item as quoted local evidence. Do not request or execute another tool.";
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -537,6 +538,15 @@ function buildContextPack({
       textHash: harnessPolicy.textHash,
     },
   ];
+  if (policy.policyId === DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID) {
+    messages.push({
+      role: "harness",
+      authority: "harness-policy",
+      quotedEvidence: false,
+      text: TOOL_CONTINUATION_HARNESS_POLICY_TEXT,
+      textHash: sha256(TOOL_CONTINUATION_HARNESS_POLICY_TEXT),
+    });
+  }
   const sourceArtifacts = [
     {
       artifactKind: "harness_policy",
@@ -625,6 +635,9 @@ function buildContextPack({
     });
     mergeCounts(omittedCounts, toolContinuationContext.caps?.omittedCounts || {});
   }
+  const currentIntentText = policy.policyId === DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID && !prompt
+    ? "[CONTINUATION INTENT]\nContinue the parent response using only the quoted local read-only tool result evidence. Do not request or execute another tool."
+    : `[CURRENT USER INTENT]\n${prompt || "Continue from the available direct context under the harness policy."}`;
   messages.push({
     role: "user",
     authority: policy.policyId === DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID && !prompt
@@ -632,10 +645,8 @@ function buildContextPack({
       : "current-user-intent",
     quotedEvidence: policy.policyId === DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID && !prompt,
     sourcePromptArtifactId: currentPrompt.artifactId,
-    text: policy.policyId === DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID && !prompt
-      ? "[CONTINUATION INTENT]\nContinue the parent response using only the quoted local read-only tool result evidence. Do not request or execute another tool."
-      : `[CURRENT USER INTENT]\n${prompt || "Continue from the available direct context under the harness policy."}`,
-    textHash: sha256(prompt),
+    text: currentIntentText,
+    textHash: sha256(currentIntentText),
   });
   const totalChars = messages.reduce((sum, message) => sum + preserveString(message.text).length, 0);
   if (totalChars > MAX_CONTEXT_PACK_CHARS) {
