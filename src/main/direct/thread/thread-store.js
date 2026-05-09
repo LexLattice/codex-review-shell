@@ -573,6 +573,8 @@ class DirectThreadStore {
       addColumnIfMissing(this.db, "direct_projection_items", "source_event_start_seq integer");
       addColumnIfMissing(this.db, "direct_projection_items", "source_event_end_seq integer");
       addColumnIfMissing(this.db, "direct_projection_items", "source_digest text");
+      addColumnIfMissing(this.db, "direct_projection_items", "payload_json text");
+      addColumnIfMissing(this.db, "direct_projection_items", "content_digest text not null default ''");
       this.writeMeta("schema", {
         schemaVersion: DIRECT_THREAD_STORE_SCHEMA_VERSION,
         mode: this.mode,
@@ -1081,7 +1083,6 @@ class DirectThreadStore {
           normalizeString(item.textDigest, sha256(preserveString(item.text))),
         );
       });
-      this.db.prepare(`update direct_threads set ${attemptColumn} = ?, updated_at = ? where thread_id = ?`).run(projectionId, createdAt, threadId);
       if (canBecomeCurrent) {
         const previous = this.currentProjectionRow(threadId, projection.projectionKind);
         if (previous && previous.projection_id !== projectionId && options.force === true) {
@@ -1108,6 +1109,8 @@ class DirectThreadStore {
           this.db.prepare(`update direct_threads set ${currentColumn} = ?, ${attemptColumn} = ?, updated_at = ? where thread_id = ?`)
             .run(projectionId, projectionId, createdAt, threadId);
         }
+      } else {
+        this.db.prepare(`update direct_threads set ${attemptColumn} = ?, updated_at = ? where thread_id = ?`).run(projectionId, createdAt, threadId);
       }
       return {
         projectionId,
@@ -1294,17 +1297,49 @@ class DirectThreadStore {
     const row = this.db.prepare("select * from direct_projections where projection_id = ?").get(requireSafeId(projectionId, "projection"));
     if (!row) return null;
     const projection = this.projectionFromRow(row);
-    const source = {
-      ...(projection.source || {}),
-      staleReason: normalizeString(reason, "manual_rebuild_requested"),
-      safety: projection.safety || {},
-      caps: projection.caps || {},
-      continuity: projection.continuity || {},
-      lifecycle: projection.lifecycle || {},
-    };
-    this.db.prepare("update direct_projections set status = 'stale', source_json = ? where projection_id = ?")
-      .run(JSON.stringify(source), projection.projectionId);
-    return { projectionId: projection.projectionId, status: "stale", staleReason: source.staleReason };
+    const staleReason = normalizeString(reason, "manual_rebuild_requested");
+    const staleProjectionSource = (entry) => ({
+      ...(entry.source || {}),
+      staleReason,
+      safety: entry.safety || {},
+      caps: entry.caps || {},
+      continuity: entry.continuity || {},
+      lifecycle: entry.lifecycle || {},
+    });
+    return this.transaction(() => {
+      this.db.prepare("update direct_projections set status = 'stale', source_json = ? where projection_id = ?")
+        .run(JSON.stringify(staleProjectionSource(projection)), projection.projectionId);
+      const invalidatedCompactProjectionIds = [];
+      if (projection.projectionKind === RENDERER_TRANSCRIPT_PROJECTION_KIND) {
+        const compactRows = this.db.prepare(`
+          select *
+          from direct_projections
+          where thread_id = ? and projection_kind = ? and status = 'valid'
+        `).all(projection.threadId, COMPACT_TRANSCRIPT_PROJECTION_KIND);
+        for (const compactRow of compactRows) {
+          const compactProjection = this.projectionFromRow(compactRow);
+          const sourceProjectionIds = Array.isArray(compactProjection.source?.sourceProjectionIds)
+            ? compactProjection.source.sourceProjectionIds
+            : [];
+          if (!sourceProjectionIds.includes(projection.projectionId)) continue;
+          this.db.prepare("update direct_projections set status = 'stale', source_json = ? where projection_id = ?")
+            .run(JSON.stringify(staleProjectionSource(compactProjection)), compactProjection.projectionId);
+          this.db.prepare(`
+            delete from direct_thread_current_projections
+            where thread_id = ? and projection_kind = ? and projection_id = ?
+          `).run(projection.threadId, COMPACT_TRANSCRIPT_PROJECTION_KIND, compactProjection.projectionId);
+          this.db.prepare("update direct_threads set current_compact_projection_id = '', updated_at = ? where thread_id = ? and current_compact_projection_id = ?")
+            .run(nowIso(), projection.threadId, compactProjection.projectionId);
+          invalidatedCompactProjectionIds.push(compactProjection.projectionId);
+        }
+      }
+      return {
+        projectionId: projection.projectionId,
+        status: "stale",
+        staleReason,
+        invalidatedCompactProjectionIds,
+      };
+    });
   }
 
   projectionParityReport(threadId, options = {}) {

@@ -84,16 +84,25 @@ function canonicalSourceDigest(input) {
   }));
 }
 
-function readJsonLines(filePath) {
+function readJsonLinesText(text) {
+  return String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+}
+
+function readNormalizedEventFile(filePath) {
   try {
-    const text = fs.readFileSync(filePath, "utf8");
-    return text
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => JSON.parse(line));
+    const buffer = fs.readFileSync(filePath);
+    const text = buffer.toString("utf8");
+    return {
+      events: readJsonLinesText(text).map(normalizedEventFromLine),
+      digest: crypto.createHash("sha256").update(buffer).digest("hex"),
+      exists: true,
+    };
   } catch (error) {
-    if (error && error.code === "ENOENT") return [];
+    if (error && error.code === "ENOENT") return { events: [], digest: "", exists: false };
     throw error;
   }
 }
@@ -171,11 +180,11 @@ function itemSourceDigest(sourceRef) {
   return sha256(stableStringify(sourceRef));
 }
 
-function buildStableSourceItemKey(sourceRef, itemKind, ordinalHint) {
+function buildStableSourceItemKey(sourceRef, itemKind, stableKeyHint) {
   return sha256(stableStringify({
     sourceRef,
     itemKind,
-    ordinalHint,
+    stableKeyHint,
   })).slice(0, 32);
 }
 
@@ -193,10 +202,15 @@ function createProjectionItem({
   omittedCounts = {},
   maxChars = MAX_RENDERER_ITEM_TEXT_CHARS,
   extraPayload = {},
+  stableKeyHint = "",
 }) {
   const truncated = truncateText(text, maxChars);
   const sourceDigest = normalizeString(sourceRef?.sourceDigest, "") || itemSourceDigest(sourceRef);
-  const stableSourceItemKey = buildStableSourceItemKey({ ...sourceRef, sourceDigest }, itemKind, ordinal);
+  const stableSourceItemKey = buildStableSourceItemKey(
+    { ...sourceRef, sourceDigest },
+    itemKind,
+    normalizeString(stableKeyHint, `${normalizeString(turnId, "")}:${itemKind}`),
+  );
   const payload = {
     itemId: projectionItemId(projectionId, ordinal),
     stableSourceItemKey,
@@ -250,13 +264,22 @@ function messageText(message) {
   if (!isPlainObject(message)) return "";
   if (typeof message.text === "string") return message.text;
   if (typeof message.content === "string") return message.content;
+  if (Array.isArray(message.content)) {
+    return message.content.map((part) => optionalText(part?.text || part?.content)).join("");
+  }
   if (Array.isArray(message.items)) {
     return message.items
-      .filter((item) => item?.type === "text" || item?.type === "output_text" || item?.type === "message")
-      .map((item) => optionalText(item.text || item.contentItems || item.result))
+      .filter((item) => ["text", "output_text", "message", "userMessage", "agentMessage", "importedMessage"].includes(item?.type))
+      .map((item) => messageText(item))
       .join("");
   }
   return "";
+}
+
+function roleForImportedItem(item = {}) {
+  if (item.type === "userMessage") return "user";
+  if (item.type === "agentMessage") return "assistant";
+  return normalizeString(item.role, "assistant");
 }
 
 function groupEventsByType(events) {
@@ -311,10 +334,10 @@ function buildTurnProjectionItems({ projectionId, session, turn, events, sourceR
     sourceArtifactKind: "direct-turn-json",
     sourceDigest: normalizeString(sourceRefs.turnDigests?.get(turnId), ""),
   };
-  for (const input of Array.isArray(turn.input) ? turn.input : []) {
-    if (normalizeString(input?.role, "user") !== "user") continue;
+  (Array.isArray(turn.input) ? turn.input : []).forEach((input, inputIndex) => {
+    if (normalizeString(input?.role, "user") !== "user") return;
     const text = inputText(input);
-    if (!text) continue;
+    if (!text) return;
     items.push(createProjectionItem({
       projectionId,
       ordinal: ordinal++,
@@ -325,8 +348,9 @@ function buildTurnProjectionItems({ projectionId, session, turn, events, sourceR
       phase: "initial",
       text,
       sourceRef: { ...baseRef, sourceArtifactKind: "direct-turn-json" },
+      stableKeyHint: `${turnId}:user:${inputIndex}`,
     }));
-  }
+  });
   const grouped = groupEventsByType(events);
   if (grouped.reasoningSummaryText) {
     items.push(createProjectionItem({
@@ -345,6 +369,7 @@ function buildTurnProjectionItems({ projectionId, session, turn, events, sourceR
         sourceEventEndSeq: events.length,
         sourceDigest: normalizeString(sourceRefs.eventDigests?.get(turnId), ""),
       },
+      stableKeyHint: `${turnId}:reasoning_summary`,
     }));
   }
   if (grouped.reasoningUnsafeCount) capsState.omittedCounts.reasoning_unsafe = (capsState.omittedCounts.reasoning_unsafe || 0) + grouped.reasoningUnsafeCount;
@@ -375,11 +400,12 @@ function buildTurnProjectionItems({ projectionId, session, turn, events, sourceR
           itemId: toolCall.itemId,
         },
       },
+      stableKeyHint: `${turnId}:tool_call:${toolCall.callId || toolCall.itemId || toolCall.name}`,
     }));
   }
   const obligations = Array.isArray(turn.unresolvedObligations) ? turn.unresolvedObligations : [];
   const toolResults = Array.isArray(turn.toolResults) ? turn.toolResults : [];
-  for (const result of toolResults) {
+  toolResults.forEach((result, resultIndex) => {
     const text = normalizeString(result.summary || result.textPreview || result.status, "tool result recorded");
     items.push(createProjectionItem({
       projectionId,
@@ -400,8 +426,9 @@ function buildTurnProjectionItems({ projectionId, session, turn, events, sourceR
           binary: result.binary === true,
         },
       },
+      stableKeyHint: `${turnId}:tool_result:${result.resultId || result.obligationId || result.relPath || resultIndex}`,
     }));
-  }
+  });
   for (const obligation of obligations) {
     if (toolResults.some((result) => result.obligationId === obligation.obligationId)) continue;
     items.push(createProjectionItem({
@@ -415,6 +442,7 @@ function buildTurnProjectionItems({ projectionId, session, turn, events, sourceR
       status: normalizeString(obligation.status, "waiting"),
       text: `${normalizeString(obligation.name, "tool_call")} ${normalizeString(obligation.status, "waiting")}`,
       sourceRef: { ...baseRef, sourceArtifactKind: "direct-turn-json" },
+      stableKeyHint: `${turnId}:approval:${obligation.obligationId || obligation.callId || items.length}`,
     }));
   }
   if (grouped.messageText) {
@@ -434,13 +462,14 @@ function buildTurnProjectionItems({ projectionId, session, turn, events, sourceR
         sourceEventEndSeq: events.length,
         sourceDigest: normalizeString(sourceRefs.eventDigests?.get(turnId), ""),
       },
+      stableKeyHint: `${turnId}:assistant:events`,
     }));
   } else {
     const assistantMessages = (Array.isArray(session.messages) ? session.messages : [])
       .filter((message) => message?.turnId === turnId && normalizeString(message.role, "") === "assistant")
       .map(messageText)
       .filter(Boolean);
-    for (const text of assistantMessages) {
+    assistantMessages.forEach((text, messageIndex) => {
       items.push(createProjectionItem({
         projectionId,
         ordinal: ordinal++,
@@ -451,8 +480,9 @@ function buildTurnProjectionItems({ projectionId, session, turn, events, sourceR
         phase: "final",
         text,
         sourceRef: { ...baseRef, sourceArtifactKind: "direct-session-json", sourceDigest: normalizeString(sourceRefs.sessionDigest, "") },
+        stableKeyHint: `${turnId}:assistant:message:${messageIndex}`,
       }));
-    }
+    });
   }
   if (!grouped.messageText && !grouped.responseCompleted && normalizeString(turn.state, "") !== "completed") {
     const errorMessage = normalizeString(turn.error?.message, "");
@@ -467,6 +497,7 @@ function buildTurnProjectionItems({ projectionId, session, turn, events, sourceR
       status: normalizeString(turn.state, "unknown"),
       text: errorMessage ? `Turn ${turn.state}: ${errorMessage}` : `Turn ${normalizeString(turn.state, "unknown")}`,
       sourceRef: { ...baseRef, sourceArtifactKind: "direct-turn-json" },
+      stableKeyHint: `${turnId}:status:${normalizeString(turn.state, "unknown")}`,
     }));
   }
   return { items, nextOrdinal: ordinal };
@@ -547,10 +578,6 @@ function projectionDigestFor(projection, items) {
   }));
 }
 
-function readTurnEvents(sessionStore, sessionId, turnId) {
-  return readJsonLines(sessionStore.eventPath(sessionId, turnId)).map(normalizedEventFromLine);
-}
-
 function buildRendererTranscriptProjection(input = {}) {
   const { sessionStore, session, turns = [], rollout = {}, operationManifest = {}, nowMs } = input;
   if (!sessionStore) throw new Error("Renderer transcript projection requires a session store.");
@@ -565,8 +592,9 @@ function buildRendererTranscriptProjection(input = {}) {
   const eventDigests = new Map();
   const normalizedEventRangeDigests = [];
   const sourceTurnDigests = [];
+  const sessionTurns = Array.isArray(session.turns) ? session.turns : [];
+  const sessionOrder = new Map(sessionTurns.map((summary, index) => [summary.turnId, index]));
   const orderedTurns = [...turns].sort((a, b) => {
-    const sessionOrder = new Map((Array.isArray(session.turns) ? session.turns : []).map((summary, index) => [summary.turnId, index]));
     return (sessionOrder.get(a.turnId) ?? 9999) - (sessionOrder.get(b.turnId) ?? 9999)
       || String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
   });
@@ -576,13 +604,11 @@ function buildRendererTranscriptProjection(input = {}) {
     const turnDigest = fileSha256(turnPath);
     turnDigests.set(turn.turnId, turnDigest);
     sourceTurnDigests.push(turnDigest);
-    const eventPath = sessionStore.eventPath(session.sessionId, turn.turnId);
-    const events = readTurnEvents(sessionStore, session.sessionId, turn.turnId);
-    eventsByTurn.set(turn.turnId, events);
-    if (fs.existsSync(eventPath)) {
-      const digest = fileSha256(eventPath);
-      eventDigests.set(turn.turnId, digest);
-      normalizedEventRangeDigests.push(digest);
+    const eventFile = readNormalizedEventFile(sessionStore.eventPath(session.sessionId, turn.turnId));
+    eventsByTurn.set(turn.turnId, eventFile.events);
+    if (eventFile.exists) {
+      eventDigests.set(turn.turnId, eventFile.digest);
+      normalizedEventRangeDigests.push(eventFile.digest);
     }
   }
   const sourceManifestDigests = [normalizeString(rollout.manifest_digest || rollout.manifestDigest, "") || sessionDigest].filter(Boolean);
@@ -624,27 +650,33 @@ function buildRendererTranscriptProjection(input = {}) {
     ordinal = built.nextOrdinal;
   }
   if (!items.length && Array.isArray(session.messages)) {
-    for (const message of session.messages) {
-      const text = messageText(message);
-      if (!text) continue;
-      items.push(createProjectionItem({
-        projectionId,
-        ordinal: ordinal++,
-        threadId,
-        turnId: normalizeString(message.turnId, ""),
-        itemKind: normalizeString(message.role, "") === "user" ? "user_message" : "assistant_message",
-        role: normalizeString(message.role, "assistant"),
-        phase: normalizeString(message.role, "") === "user" ? "initial" : "final",
-        text,
-        sourceRef: {
-          rolloutId: normalizeString(rollout.rollout_id || rollout.rolloutId, ""),
-          sessionId: threadId,
-          turnId: normalizeString(message.turnId, ""),
-          sourceArtifactKind: "direct-session-json",
-          sourceDigest: sessionDigest,
-        },
-      }));
-    }
+    session.messages.forEach((message, messageIndex) => {
+      const messageItems = Array.isArray(message.items) ? message.items : [message];
+      messageItems.forEach((messageItem, itemIndex) => {
+        const text = messageText(messageItem);
+        if (!text) return;
+        const role = roleForImportedItem(messageItem);
+        const turnId = normalizeString(messageItem.turnId || message.turnId || message.id, "");
+        items.push(createProjectionItem({
+          projectionId,
+          ordinal: ordinal++,
+          threadId,
+          turnId,
+          itemKind: role === "user" ? "user_message" : "assistant_message",
+          role,
+          phase: role === "user" ? "initial" : "final",
+          text,
+          sourceRef: {
+            rolloutId: normalizeString(rollout.rollout_id || rollout.rolloutId, ""),
+            sessionId: threadId,
+            turnId,
+            sourceArtifactKind: "direct-session-json",
+            sourceDigest: sessionDigest,
+          },
+          stableKeyHint: `${turnId || "session"}:message:${messageItem.id || messageIndex}:${itemIndex}`,
+        }));
+      });
+    });
   }
   items = applyProjectionCaps(items, capsState);
   for (const item of items) mergeOmittedCounts(capsState.omittedCounts, item.omittedCounts);

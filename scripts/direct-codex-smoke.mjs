@@ -740,8 +740,57 @@ try {
     assert(Array.isArray(parityReport.differences), "Expected projection parity report differences list.");
     const staleResult = directThreadStore.markProjectionStale(rendererProjection.projectionId, "manual_rebuild_requested");
     assert(staleResult.staleReason === "manual_rebuild_requested", "Expected projection stale reason to persist.");
+    assert(staleResult.invalidatedCompactProjectionIds.includes(compactProjection.projectionId), "Expected compact projection to be invalidated with its renderer source.");
     const staleRead = directThreadStore.readRendererTranscriptProjection(session.sessionId);
     assert(staleRead.status === "stale", "Expected stale renderer projection to remain readable while renderer-safe.");
+    const invalidatedCompactRead = directThreadStore.readCompactTranscriptProjection(session.sessionId);
+    assert(invalidatedCompactRead === null, "Expected compact current pointer to be cleared when renderer source goes stale.");
+
+    const importedProjectionSession = reloadedSessionStore.createSession({
+      sessionId: "session_projection_imported",
+      projectId: "project_fixture",
+      workspace: { kind: "local", localPath: "[REDACTED:private-path]" },
+      title: "Imported projection session",
+      model: "gpt-5.4",
+      sourceClass: "imported-readonly",
+      importedSessionReadOnly: true,
+    }, { nowMs: 1_700_000_016_250 });
+    reloadedSessionStore.writeSession({
+      ...importedProjectionSession,
+      messages: [{
+        id: "import_turn_projection",
+        status: "checkpoint-validated",
+        imported: true,
+        items: [
+          {
+            id: "import_user_projection",
+            type: "userMessage",
+            turnId: "import_turn_projection",
+            content: [{ type: "text", text: "imported user text", text_elements: [] }],
+            imported: true,
+          },
+          {
+            id: "import_agent_projection",
+            type: "agentMessage",
+            turnId: "import_turn_projection",
+            text: "imported assistant text",
+            imported: true,
+          },
+        ],
+      }],
+    });
+    directThreadStore.indexSessionArtifacts(reloadedSessionStore, reloadedSessionStore.readSession(importedProjectionSession.sessionId), [], {
+      nowMs: 1_700_000_016_260,
+    });
+    const importedProjection = directThreadStore.buildRendererTranscriptProjection(importedProjectionSession.sessionId, {
+      sessionStore: reloadedSessionStore,
+      nowMs: 1_700_000_016_270,
+    });
+    assert(importedProjection.status === "valid", "Expected imported transcript projection to build as valid.");
+    const importedProjectionRead = directThreadStore.readRendererTranscriptProjection(importedProjectionSession.sessionId);
+    assert(importedProjectionRead.items.some((item) => item.itemKind === "user_message" && item.text === "imported user text"), "Expected imported user transcript item to be preserved.");
+    assert(importedProjectionRead.items.some((item) => item.itemKind === "assistant_message" && item.text === "imported assistant text"), "Expected imported assistant transcript item to be preserved.");
+    assert(importedProjectionRead.composer.enabledByProjection === false, "Imported-readonly projection must not enable composer.");
 
     const blockedSession = reloadedSessionStore.createSession({
       sessionId: "session_projection_blocked",
