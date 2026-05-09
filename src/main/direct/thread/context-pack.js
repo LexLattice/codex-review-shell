@@ -64,11 +64,27 @@ function contextProjectionItemId(projectionId, ordinal) {
 function truncateText(text, maxChars) {
   const value = preserveString(text);
   if (value.length <= maxChars) return { text: value, truncated: false, omittedChars: 0 };
+  const end = safeTruncationEnd(value, maxChars);
   return {
-    text: value.slice(0, maxChars),
+    text: value.slice(0, end),
     truncated: true,
-    omittedChars: value.length - maxChars,
+    omittedChars: value.length - end,
   };
+}
+
+function safeTruncationEnd(text, maxChars) {
+  let end = Math.max(0, Math.min(Number(maxChars) || 0, preserveString(text).length));
+  if (end > 0) {
+    const code = preserveString(text).charCodeAt(end - 1);
+    if (code >= 0xd800 && code <= 0xdbff) end -= 1;
+  }
+  return end;
+}
+
+function sliceTextForCap(text, maxChars) {
+  const value = preserveString(text);
+  if (value.length <= maxChars) return value;
+  return value.slice(0, safeTruncationEnd(value, maxChars));
 }
 
 function mergeCounts(target, source) {
@@ -294,7 +310,8 @@ function buildContextRecentDialogueProjection({ rendererProjection = {}, rendere
   const selected = [];
   const omittedCounts = {};
   let totalChars = 0;
-  for (const item of rendererItems) {
+  const newestFirst = [...rendererItems].reverse();
+  for (const item of newestFirst) {
     if (selected.length >= MAX_CONTEXT_MESSAGES) {
       omittedCounts.items = (omittedCounts.items || 0) + 1;
       continue;
@@ -344,11 +361,12 @@ function buildContextRecentDialogueProjection({ rendererProjection = {}, rendere
       omittedCounts.total_text_chars = (omittedCounts.total_text_chars || 0) + text.length;
       continue;
     }
-    const clipped = text.length > remaining ? text.slice(0, remaining) : text;
+    const clipped = sliceTextForCap(text, remaining);
     selected.push({ item, mapping, text: clipped, sourceTruncated: item.textTruncated === true || clipped.length < text.length });
     totalChars += clipped.length;
     if (clipped.length < text.length) omittedCounts.total_text_chars = (omittedCounts.total_text_chars || 0) + (text.length - clipped.length);
   }
+  selected.reverse();
   const sourceDigest = contextSourceDigest({
     rendererProjectionId: rendererProjection.projectionId,
     rendererProjectionDigest: rendererProjection.projectionDigest,

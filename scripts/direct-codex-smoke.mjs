@@ -67,6 +67,9 @@ const {
   RENDERER_TRANSCRIPT_PROJECTION_KIND,
 } = require("../src/main/direct/thread/thread-store");
 const {
+  buildContextRecentDialogueProjection: buildContextRecentDialogueProjectionFixture,
+} = require("../src/main/direct/thread/context-pack");
+const {
   DIRECT_FIXTURE_SURFACE_TRANSPORT,
   DirectFixtureController,
   DirectFixtureSurfaceSession,
@@ -727,6 +730,58 @@ try {
     });
     assert(contextProjection.projectionKind === CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND, "Expected context recent dialogue projection kind.");
     assert(contextProjection.status === "valid", "Expected context recent dialogue projection to build as valid.");
+    const syntheticRendererProjection = {
+      projectionId: "renderer_projection_synthetic",
+      projectId: "project_fixture",
+      threadId: "synthetic_thread",
+      projectionKind: RENDERER_TRANSCRIPT_PROJECTION_KIND,
+      projectionVersion: "renderer_transcript@1",
+      projectionDigest: "renderer_digest_synthetic",
+      status: "valid",
+      unsafeForRenderer: false,
+      unsafeForContextBuild: true,
+      source: {},
+      continuity: {},
+      lifecycle: {},
+    };
+    const syntheticRendererItems = Array.from({ length: 205 }, (_, index) => ({
+      itemId: `renderer_item_${index}`,
+      stableSourceItemKey: `stable_item_${index}`,
+      projectionId: syntheticRendererProjection.projectionId,
+      threadId: syntheticRendererProjection.threadId,
+      turnId: `turn_${index}`,
+      itemKind: "user_message",
+      role: "user",
+      text: `synthetic item ${index}`,
+      textDigest: `digest_${index}`,
+      sourceRef: {},
+    }));
+    const syntheticContext = buildContextRecentDialogueProjectionFixture({
+      rendererProjection: syntheticRendererProjection,
+      rendererItems: syntheticRendererItems,
+      nowMs: 1_700_000_016_151,
+    });
+    assert(syntheticContext.items.some((item) => item.text === "synthetic item 204"), "Context projection must preserve newest renderer items under caps.");
+    assert(!syntheticContext.items.some((item) => item.text === "synthetic item 0"), "Context projection should omit oldest renderer items first under message caps.");
+    const surrogateContext = buildContextRecentDialogueProjectionFixture({
+      rendererProjection: { ...syntheticRendererProjection, projectionId: "renderer_projection_surrogate", projectionDigest: "renderer_digest_surrogate" },
+      rendererItems: [{
+        itemId: "renderer_surrogate_item",
+        stableSourceItemKey: "stable_surrogate_item",
+        projectionId: "renderer_projection_surrogate",
+        threadId: syntheticRendererProjection.threadId,
+        turnId: "turn_surrogate",
+        itemKind: "user_message",
+        role: "user",
+        text: `${"a".repeat(15_999)}😀`,
+        textDigest: "surrogate_digest",
+        sourceRef: {},
+      }],
+      nowMs: 1_700_000_016_152,
+    });
+    const surrogateText = surrogateContext.items[0].text;
+    const lastCodeUnit = surrogateText.charCodeAt(surrogateText.length - 1);
+    assert(!(lastCodeUnit >= 0xd800 && lastCodeUnit <= 0xdbff), "Context truncation must not leave a dangling high surrogate.");
     const contextTurn = reloadedSessionStore.createTurn(session.sessionId, {
       turnId: "turn_context_pack",
       input: [{ role: "user", text: "next step" }],

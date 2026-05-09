@@ -1358,62 +1358,72 @@ class DirectThreadStore {
     const threadId = requireSafeId(contextPack.threadId, "thread");
     const turnId = normalizeString(contextPack.turnId, "");
     const artifactPath = this.contextPackPath(projectId, threadId, contextBuildId);
+    const artifactExisted = fs.existsSync(artifactPath);
     writeJsonAtomic(artifactPath, contextPack);
-    return this.transaction(() => {
-      this.upsertContextPolicy(contextPack.policy || policySnapshot(DIRECT_TEXT_TURN_EMPTY_CONTEXT_POLICY_ID), options);
-      this.db.prepare(`
-        insert into direct_context_builds (
-          context_build_id,
-          project_id,
-          thread_id,
-          turn_id,
-          policy_id,
-          policy_version,
-          purpose,
-          context_pack_path_private,
-          shape_hash,
-          content_hash,
-          source_json,
-          built_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        on conflict(context_build_id) do update set
-          context_pack_path_private = excluded.context_pack_path_private,
-          shape_hash = excluded.shape_hash,
-          content_hash = excluded.content_hash,
-          source_json = excluded.source_json,
-          built_at = excluded.built_at
-      `).run(
-        contextBuildId,
-        projectId,
-        threadId,
-        turnId,
-        normalizeString(contextPack.policy?.policyId, ""),
-        normalizeString(contextPack.policy?.policyVersion, ""),
-        normalizeString(contextPack.purpose, ""),
-        artifactPath,
-        normalizeString(contextPack.contextPackShapeHash, ""),
-        normalizeString(contextPack.contextPackContentHash, ""),
-        JSON.stringify({
-          sourceArtifacts: contextPack.sourceArtifacts || [],
-          sourceProjections: contextPack.sourceProjections || [],
-          policyDigest: normalizeString(contextPack.policy?.policyDigest, ""),
-          roleMappingDigest: normalizeString(contextPack.roleMapping?.mappingDigest, ""),
-          rawExposure: contextPack.rawExposure || {},
-          integrity: contextPack.integrity || {},
-        }),
-        normalizeString(contextPack.builtAt, nowIso(options.nowMs)),
-      );
-      if (turnId) {
-        this.db.prepare("update direct_turns set context_build_id = ? where turn_id = ? and thread_id = ?")
-          .run(contextBuildId, turnId, threadId);
+    try {
+      return this.transaction(() => {
+        this.upsertContextPolicy(contextPack.policy || policySnapshot(DIRECT_TEXT_TURN_EMPTY_CONTEXT_POLICY_ID), options);
+        this.db.prepare(`
+          insert into direct_context_builds (
+            context_build_id,
+            project_id,
+            thread_id,
+            turn_id,
+            policy_id,
+            policy_version,
+            purpose,
+            context_pack_path_private,
+            shape_hash,
+            content_hash,
+            source_json,
+            built_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          on conflict(context_build_id) do update set
+            context_pack_path_private = excluded.context_pack_path_private,
+            shape_hash = excluded.shape_hash,
+            content_hash = excluded.content_hash,
+            source_json = excluded.source_json,
+            built_at = excluded.built_at
+        `).run(
+          contextBuildId,
+          projectId,
+          threadId,
+          turnId,
+          normalizeString(contextPack.policy?.policyId, ""),
+          normalizeString(contextPack.policy?.policyVersion, ""),
+          normalizeString(contextPack.purpose, ""),
+          artifactPath,
+          normalizeString(contextPack.contextPackShapeHash, ""),
+          normalizeString(contextPack.contextPackContentHash, ""),
+          JSON.stringify({
+            sourceArtifacts: contextPack.sourceArtifacts || [],
+            sourceProjections: contextPack.sourceProjections || [],
+            policyDigest: normalizeString(contextPack.policy?.policyDigest, ""),
+            roleMappingDigest: normalizeString(contextPack.roleMapping?.mappingDigest, ""),
+            rawExposure: contextPack.rawExposure || {},
+            integrity: contextPack.integrity || {},
+          }),
+          normalizeString(contextPack.builtAt, nowIso(options.nowMs)),
+        );
+        if (turnId) {
+          this.db.prepare("update direct_turns set context_build_id = ? where turn_id = ? and thread_id = ?")
+            .run(contextBuildId, turnId, threadId);
+        }
+        return {
+          contextBuildId,
+          contextPackPathPrivate: artifactPath,
+          contextPackContentHash: normalizeString(contextPack.contextPackContentHash, ""),
+          contextPackShapeHash: normalizeString(contextPack.contextPackShapeHash, ""),
+        };
+      });
+    } catch (error) {
+      if (!artifactExisted) {
+        try {
+          fs.unlinkSync(artifactPath);
+        } catch {}
       }
-      return {
-        contextBuildId,
-        contextPackPathPrivate: artifactPath,
-        contextPackContentHash: normalizeString(contextPack.contextPackContentHash, ""),
-        contextPackShapeHash: normalizeString(contextPack.contextPackShapeHash, ""),
-      };
-    });
+      throw error;
+    }
   }
 
   readContextPack(contextBuildId) {
@@ -1430,83 +1440,93 @@ class DirectThreadStore {
     const turnId = requireSafeId(requestManifest.turnId, "turn");
     const contextBuildId = requireSafeId(requestManifest.contextBuildId, "context build");
     const artifactPath = this.requestManifestPath(projectId, threadId, requestManifestId);
+    const artifactExisted = fs.existsSync(artifactPath);
     writeJsonAtomic(artifactPath, requestManifest);
-    return this.transaction(() => {
-      this.db.prepare(`
-        insert into direct_request_manifests (
-          request_manifest_id,
-          project_id,
-          thread_id,
-          turn_id,
-          context_build_id,
-          runtime_mode,
-          transport,
-          model,
-          model_evidence_ref,
-          request_shape_hash,
-          request_manifest_path_private,
-          request_shape_evidence_ref,
-          endpoint_evidence_ref,
-          role_mapping_digest,
-          provider_input_shape_hash,
-          provider_input_text_hash,
-          endpoint_class,
-          endpoint_hash,
-          enabled_features_json,
-          continuity_json,
-          capability_evidence_json,
-          request_body_storage_audit_json,
-          raw_auth_exposed,
-          raw_request_body_stored,
-          built_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        on conflict(request_manifest_id) do update set
-          request_manifest_path_private = excluded.request_manifest_path_private,
-          request_shape_hash = excluded.request_shape_hash,
-          enabled_features_json = excluded.enabled_features_json,
-          continuity_json = excluded.continuity_json,
-          capability_evidence_json = excluded.capability_evidence_json,
-          request_body_storage_audit_json = excluded.request_body_storage_audit_json,
-          raw_auth_exposed = excluded.raw_auth_exposed,
-          raw_request_body_stored = excluded.raw_request_body_stored,
-          built_at = excluded.built_at
-      `).run(
-        requestManifestId,
-        projectId,
-        threadId,
-        turnId,
-        contextBuildId,
-        normalizeString(requestManifest.runtimeMode, "direct-experimental"),
-        normalizeString(requestManifest.transport, "live-text"),
-        normalizeString(requestManifest.model, ""),
-        normalizeString(requestManifest.modelEvidenceRef, ""),
-        normalizeString(requestManifest.requestShapeHash, ""),
-        artifactPath,
-        normalizeString(requestManifest.capabilityEvidence?.requestShapeEvidenceRef, ""),
-        normalizeString(requestManifest.capabilityEvidence?.endpointEvidenceRef, ""),
-        normalizeString(requestManifest.roleMappingDigest, ""),
-        normalizeString(requestManifest.providerInputProjection?.providerInputShapeHash, ""),
-        normalizeString(requestManifest.providerInputProjection?.providerInputTextHash, ""),
-        normalizeString(requestManifest.endpointClass, ""),
-        normalizeString(requestManifest.endpointHash, ""),
-        JSON.stringify(requestManifest.enabledFeatures || {}),
-        JSON.stringify(requestManifest.continuity || {}),
-        JSON.stringify(requestManifest.capabilityEvidence || {}),
-        JSON.stringify(requestManifest.requestBodyStorageAudit || {}),
-        requestManifest.rawAuthExposed === true ? 1 : 0,
-        requestManifest.rawRequestBodyStored === true ? 1 : 0,
-        normalizeString(requestManifest.builtAt, nowIso(options.nowMs)),
-      );
-      this.db.prepare("update direct_turns set request_manifest_id = ?, context_build_id = ? where turn_id = ? and thread_id = ?")
-        .run(requestManifestId, contextBuildId, turnId, threadId);
-      return {
-        requestManifestId,
-        requestManifestPathPrivate: artifactPath,
-        requestShapeHash: normalizeString(requestManifest.requestShapeHash, ""),
-        providerInputShapeHash: normalizeString(requestManifest.providerInputProjection?.providerInputShapeHash, ""),
-        providerInputTextHash: normalizeString(requestManifest.providerInputProjection?.providerInputTextHash, ""),
-      };
-    });
+    try {
+      return this.transaction(() => {
+        this.db.prepare(`
+          insert into direct_request_manifests (
+            request_manifest_id,
+            project_id,
+            thread_id,
+            turn_id,
+            context_build_id,
+            runtime_mode,
+            transport,
+            model,
+            model_evidence_ref,
+            request_shape_hash,
+            request_manifest_path_private,
+            request_shape_evidence_ref,
+            endpoint_evidence_ref,
+            role_mapping_digest,
+            provider_input_shape_hash,
+            provider_input_text_hash,
+            endpoint_class,
+            endpoint_hash,
+            enabled_features_json,
+            continuity_json,
+            capability_evidence_json,
+            request_body_storage_audit_json,
+            raw_auth_exposed,
+            raw_request_body_stored,
+            built_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          on conflict(request_manifest_id) do update set
+            request_manifest_path_private = excluded.request_manifest_path_private,
+            request_shape_hash = excluded.request_shape_hash,
+            enabled_features_json = excluded.enabled_features_json,
+            continuity_json = excluded.continuity_json,
+            capability_evidence_json = excluded.capability_evidence_json,
+            request_body_storage_audit_json = excluded.request_body_storage_audit_json,
+            raw_auth_exposed = excluded.raw_auth_exposed,
+            raw_request_body_stored = excluded.raw_request_body_stored,
+            built_at = excluded.built_at
+        `).run(
+          requestManifestId,
+          projectId,
+          threadId,
+          turnId,
+          contextBuildId,
+          normalizeString(requestManifest.runtimeMode, "direct-experimental"),
+          normalizeString(requestManifest.transport, "live-text"),
+          normalizeString(requestManifest.model, ""),
+          normalizeString(requestManifest.modelEvidenceRef, ""),
+          normalizeString(requestManifest.requestShapeHash, ""),
+          artifactPath,
+          normalizeString(requestManifest.capabilityEvidence?.requestShapeEvidenceRef, ""),
+          normalizeString(requestManifest.capabilityEvidence?.endpointEvidenceRef, ""),
+          normalizeString(requestManifest.roleMappingDigest, ""),
+          normalizeString(requestManifest.providerInputProjection?.providerInputShapeHash, ""),
+          normalizeString(requestManifest.providerInputProjection?.providerInputTextHash, ""),
+          normalizeString(requestManifest.endpointClass, ""),
+          normalizeString(requestManifest.endpointHash, ""),
+          JSON.stringify(requestManifest.enabledFeatures || {}),
+          JSON.stringify(requestManifest.continuity || {}),
+          JSON.stringify(requestManifest.capabilityEvidence || {}),
+          JSON.stringify(requestManifest.requestBodyStorageAudit || {}),
+          requestManifest.rawAuthExposed === true ? 1 : 0,
+          requestManifest.rawRequestBodyStored === true ? 1 : 0,
+          normalizeString(requestManifest.builtAt, nowIso(options.nowMs)),
+        );
+        this.db.prepare("update direct_turns set request_manifest_id = ?, context_build_id = ? where turn_id = ? and thread_id = ?")
+          .run(requestManifestId, contextBuildId, turnId, threadId);
+        return {
+          requestManifestId,
+          requestManifestPathPrivate: artifactPath,
+          requestShapeHash: normalizeString(requestManifest.requestShapeHash, ""),
+          providerInputShapeHash: normalizeString(requestManifest.providerInputProjection?.providerInputShapeHash, ""),
+          providerInputTextHash: normalizeString(requestManifest.providerInputProjection?.providerInputTextHash, ""),
+        };
+      });
+    } catch (error) {
+      if (!artifactExisted) {
+        try {
+          fs.unlinkSync(artifactPath);
+        } catch {}
+      }
+      throw error;
+    }
   }
 
   readRequestManifest(requestManifestId) {
