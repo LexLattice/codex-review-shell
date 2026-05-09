@@ -33,6 +33,14 @@ const SENSITIVE_READ_FILE_PATTERNS = [
   /(?:^|\/)\.ssh(?:\/|$)/i,
   /(?:^|\/)\.git\/config$/i,
 ];
+const TOOL_RESULT_SECRET_PATTERNS = [
+  { category: "authorization-header", pattern: /authorization\s*:\s*bearer\s+[A-Za-z0-9._~+/=-]{16,}/i },
+  { category: "cookie", pattern: /(?:cookie|set-cookie)\s*:\s*[^;\n]*?(?:session|token|auth|jwt)[^;\n=]*=[^;\n]{8,}/i },
+  { category: "private-key", pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
+  { category: "env-secret", pattern: /(?:^|\n)\s*[A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|PRIVATE_KEY)[A-Z0-9_]*\s*=\s*['"]?[^'"\s]{8,}/i },
+  { category: "token", pattern: /\b(?:access_token|refresh_token|id_token|api[_-]?key)\b\s*[:=]\s*['"]?[A-Za-z0-9._~+/=-]{16,}/i },
+  { category: "session-id", pattern: /\b(?:session_id|sid|csrf)\b\s*[:=]\s*['"]?[A-Za-z0-9._~+/=-]{16,}/i },
+];
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -117,6 +125,20 @@ function sensitiveReadFileReason(relPath) {
   return SENSITIVE_READ_FILE_PATTERNS.some((pattern) => pattern.test(normalized)) ? "sensitive_path" : "";
 }
 
+function scanToolResultTextForSecrets(text) {
+  const value = exactString(text, "");
+  const categories = [];
+  for (const entry of TOOL_RESULT_SECRET_PATTERNS) {
+    if (entry.pattern.test(value)) categories.push(entry.category);
+  }
+  return {
+    scanned: true,
+    scanVersion: "direct_tool_result_redaction@1",
+    status: categories.length ? "blocked" : "passed",
+    categories: [...new Set(categories)],
+  };
+}
+
 function assertReadFileToolName(obligation = {}) {
   if (!READ_FILE_TOOL_NAMES.has(normalizeString(obligation.name, ""))) {
     const error = new Error(`Unsupported direct read-only tool: ${obligation.name || "unknown"}`);
@@ -192,6 +214,20 @@ function projectReadResult(raw = {}, obligation = {}, approvedAt = "", nowMs) {
   const truncated = Boolean(result.truncated) || text.length > MAX_PROVIDER_OUTPUT_CHARS;
   const textPreview = binary ? "" : boundedText(text, MAX_APPROVAL_PREVIEW_CHARS);
   const providerTextPreview = binary ? "" : boundedText(text, MAX_PROVIDER_OUTPUT_CHARS);
+  const toolResultRedaction = binary
+    ? { scanned: true, scanVersion: "direct_tool_result_redaction@1", status: "passed", categories: [] }
+    : scanToolResultTextForSecrets(providerTextPreview);
+  if (toolResultRedaction.status === "blocked") {
+    const error = new Error("read_file result contains auth-like material and cannot be sent to the provider.");
+    error.code = "tool_result_redaction_failed";
+    error.redaction = {
+      scanned: true,
+      scanVersion: toolResultRedaction.scanVersion,
+      status: "blocked",
+      categoryCount: toolResultRedaction.categories.length,
+    };
+    throw error;
+  }
   const resultClass = binary
     ? "binary_summary"
     : (truncated ? "text_preview_truncated" : "text_preview_untruncated");
@@ -202,6 +238,11 @@ function projectReadResult(raw = {}, obligation = {}, approvedAt = "", nowMs) {
     bytesRead: Number(result.size || 0),
     binary,
     resultClass,
+    redaction: {
+      scanned: true,
+      scanVersion: toolResultRedaction.scanVersion,
+      status: toolResultRedaction.status,
+    },
     note: truncated
       ? "File content was truncated by the local shell before provider continuation."
       : "",
@@ -222,6 +263,7 @@ function projectReadResult(raw = {}, obligation = {}, approvedAt = "", nowMs) {
     providerOutputText,
     providerOutputChars: providerOutputText.length,
     approvalPreviewChars: textPreview.length,
+    toolResultRedaction,
     summary: `${normalizeString(result.relPath, "file")} · ${Number(result.size || 0)} bytes${truncated ? " · truncated" : ""}`,
     source: normalizeString(result.source, ""),
     approvedAt,
@@ -516,4 +558,5 @@ module.exports = {
   projectReadResult,
   projectReadOnlyAuthorityDecision,
   recordReadOnlyToolContinuationRequest,
+  scanToolResultTextForSecrets,
 };

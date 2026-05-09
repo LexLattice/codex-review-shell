@@ -16,6 +16,7 @@ const {
 const { toolTranscriptItemFromObligation } = require("../session/session-store");
 const {
   approveReadOnlyToolObligation,
+  buildReadOnlyToolContinuationRequest,
   cancelReadOnlyToolObligation,
   declineReadOnlyToolObligation,
   executeApprovedReadOnlyToolObligation,
@@ -977,12 +978,81 @@ class DirectLiveTextController {
       workspaceRequest: (method, params) => this.workspaceRequest(project, method, params, this.readOnlyWorkspaceTimeoutMs),
     });
     const turn = this.sessionStore.readTurn(sessionId, turnId);
+    let continuationRequest = null;
+    let continuationContext = null;
+    if (this.directThreadStore && typeof this.directThreadStore.buildAndPersistContextForToolContinuation === "function") {
+      this.indexDirectThreadStoreSession(sessionId);
+      const baseContinuationRequest = buildReadOnlyToolContinuationRequest({
+        sessionStore: this.sessionStore,
+        sessionId,
+        turnId,
+        obligationId,
+        continuationLiveSendEnabled: true,
+      });
+      continuationRequest = {
+        ...baseContinuationRequest,
+        source: {
+          ...(baseContinuationRequest.source || {}),
+          previousResponseId: normalizeString(turn?.responseId, ""),
+          previousResponseIdSource: "initial_stream",
+        },
+      };
+      const outputType = normalizeString(continuationRequest.toolResult?.outputType || continuationRequest.toolResult?.content?.[0]?.type, "");
+      const continuationShape = {
+        kind: "read_only_tool_continuation",
+        stream: true,
+        store: false,
+        tools: false,
+        hasInstructions: true,
+        hasPreviousResponseId: Boolean(normalizeString(turn?.responseId, "")),
+        functionCallOutputCount: outputType === "function_call_output" ? 1 : 0,
+        customToolCallOutputCount: outputType === "custom_tool_call_output" ? 1 : 0,
+        providerCallType: normalizeString(continuationRequest.toolResult?.providerCallType, ""),
+        providerOutputType: outputType,
+      };
+      continuationContext = this.directThreadStore.buildAndPersistContextForToolContinuation({
+        sessionStore: this.sessionStore,
+        session: this.sessionStore.readSession(sessionId),
+        projectId: normalizeString(project?.id || project?.projectId || project?.name, ""),
+        threadId: sessionId,
+        turnId,
+        obligationId,
+        continuationRequest,
+        previousResponseId: normalizeString(turn?.responseId, ""),
+        model: normalizeString(turn?.model, ""),
+        requestShape: continuationShape,
+        requestShapeHash: sha256(JSON.stringify(continuationShape)),
+        endpointClass: "chatgpt-codex-responses",
+        endpointHash: this.endpoint ? sha256(this.endpoint) : "",
+        modelEvidenceRef: normalizeString(this.statusForProject(project).evidenceId, ""),
+        requestShapeEvidenceRef: "continuation.tool_result",
+        endpointEvidenceRef: this.endpoint ? sha256(this.endpoint) : "",
+      }, {
+        sessionStore: this.sessionStore,
+      });
+      continuationRequest = {
+        ...continuationRequest,
+        source: {
+          ...(continuationRequest.source || {}),
+          contextBuildId: continuationContext.contextPack.contextBuildId,
+          requestManifestId: continuationContext.requestManifest.requestManifestId,
+        },
+        safety: {
+          ...(continuationRequest.safety || {}),
+          contextPackBuilt: true,
+          requestManifestBuilt: true,
+          rawRequestBodyStored: false,
+        },
+      };
+    }
     const continuation = await runPersistedReadOnlyToolContinuation({
       sessionStore: this.sessionStore,
       sessionId,
       turnId,
       obligationId,
+      continuationRequest,
       previousResponseId: normalizeString(turn?.responseId, ""),
+      instructions: normalizeString(continuationContext?.providerInput?.instructions, ""),
       endpoint: this.endpoint || undefined,
       authStore: this.currentAuthStore(),
       refreshCredentials: this.refreshCredentials,
@@ -999,6 +1069,9 @@ class DirectLiveTextController {
         }
       },
     });
+    if (this.directThreadStore) {
+      this.indexDirectThreadStoreSession(sessionId);
+    }
     const continuationId = normalizeString(continuation.continuation?.continuationId || continuation.obligation?.continuationRequest?.continuationId, "continuation");
     this.emitContinuationAssistant(surfaceSession, sessionId, turnId, continuationId, continuation.normalizedEvents || []);
     this.emitNotification(surfaceSession, "turn/completed", {

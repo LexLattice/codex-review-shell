@@ -17,6 +17,7 @@ const {
 const {
   CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND,
   DIRECT_IMPORT_CHECKPOINT_CONTINUATION_POLICY_ID,
+  DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID,
   DIRECT_TEXT_TURN_EMPTY_CONTEXT_POLICY_ID,
   DIRECT_TEXT_TURN_RECENT_DIALOGUE_POLICY_ID,
   buildContextPack,
@@ -25,6 +26,13 @@ const {
   policySnapshot,
   rendererSafeContextSummary,
 } = require("./context-pack");
+const {
+  DIRECT_OBLIGATIONS_PROJECTION_KIND,
+  TOOL_CONTINUATION_CONTEXT_PROJECTION_KIND,
+  TOOL_CONTINUATION_CONTEXT_POLICY_ID,
+  buildDirectObligationsProjection,
+  buildToolContinuationContextProjection,
+} = require("./obligation-projection");
 
 const DIRECT_THREAD_STORE_STATUS_SCHEMA = "direct_thread_store_status@1";
 const DIRECT_THREAD_OPERATION_EVENT_SCHEMA = "direct_thread_operation_event@1";
@@ -76,6 +84,8 @@ const DIRECT_PROJECTION_KINDS = new Set([
   RENDERER_TRANSCRIPT_PROJECTION_KIND,
   COMPACT_TRANSCRIPT_PROJECTION_KIND,
   CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND,
+  DIRECT_OBLIGATIONS_PROJECTION_KIND,
+  TOOL_CONTINUATION_CONTEXT_PROJECTION_KIND,
 ]);
 const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,160}$/;
 
@@ -323,9 +333,13 @@ class DirectThreadStore {
         current_renderer_projection_id text,
         current_compact_projection_id text,
         current_context_recent_dialogue_projection_id text,
+        current_direct_obligations_projection_id text,
+        current_tool_continuation_context_projection_id text,
         last_renderer_projection_attempt_id text,
         last_compact_projection_attempt_id text,
         last_context_recent_dialogue_projection_attempt_id text,
+        last_direct_obligations_projection_attempt_id text,
+        last_tool_continuation_context_projection_attempt_id text,
         created_at text not null,
         updated_at text not null,
         archived_at text,
@@ -608,9 +622,13 @@ class DirectThreadStore {
       addColumnIfMissing(this.db, "direct_threads", "current_renderer_projection_id text");
       addColumnIfMissing(this.db, "direct_threads", "current_compact_projection_id text");
       addColumnIfMissing(this.db, "direct_threads", "current_context_recent_dialogue_projection_id text");
+      addColumnIfMissing(this.db, "direct_threads", "current_direct_obligations_projection_id text");
+      addColumnIfMissing(this.db, "direct_threads", "current_tool_continuation_context_projection_id text");
       addColumnIfMissing(this.db, "direct_threads", "last_renderer_projection_attempt_id text");
       addColumnIfMissing(this.db, "direct_threads", "last_compact_projection_attempt_id text");
       addColumnIfMissing(this.db, "direct_threads", "last_context_recent_dialogue_projection_attempt_id text");
+      addColumnIfMissing(this.db, "direct_threads", "last_direct_obligations_projection_attempt_id text");
+      addColumnIfMissing(this.db, "direct_threads", "last_tool_continuation_context_projection_attempt_id text");
       addColumnIfMissing(this.db, "direct_turns", "request_manifest_id text");
       addColumnIfMissing(this.db, "direct_request_manifests", "request_manifest_path_private text");
       addColumnIfMissing(this.db, "direct_request_manifests", "request_shape_evidence_ref text");
@@ -980,6 +998,18 @@ class DirectThreadStore {
         attemptColumn: "last_context_recent_dialogue_projection_attempt_id",
       };
     }
+    if (projectionKind === DIRECT_OBLIGATIONS_PROJECTION_KIND) {
+      return {
+        currentColumn: "current_direct_obligations_projection_id",
+        attemptColumn: "last_direct_obligations_projection_attempt_id",
+      };
+    }
+    if (projectionKind === TOOL_CONTINUATION_CONTEXT_PROJECTION_KIND) {
+      return {
+        currentColumn: "current_tool_continuation_context_projection_id",
+        attemptColumn: "last_tool_continuation_context_projection_attempt_id",
+      };
+    }
     throw new Error(`Unsupported direct projection kind: ${projectionKind}`);
   }
 
@@ -1327,6 +1357,116 @@ class DirectThreadStore {
     }
   }
 
+  buildDirectObligationsProjection(threadId, turnId, options = {}) {
+    const safeThreadId = requireSafeId(threadId, "thread");
+    const safeTurnId = requireSafeId(turnId, "turn");
+    const lockKey = `${safeThreadId}:${safeTurnId}:${DIRECT_OBLIGATIONS_PROJECTION_KIND}`;
+    if (this.projectionBuildLocks.has(lockKey)) throw new Error("projection_build_in_progress");
+    this.projectionBuildLocks.add(lockKey);
+    try {
+      const sessionStore = options.sessionStore;
+      if (!sessionStore) throw new Error("Direct obligations projection requires a session store.");
+      const session = sessionStore.readSession(safeThreadId);
+      const turn = sessionStore.readTurn(safeThreadId, safeTurnId);
+      if (!session || !turn) throw new Error("Direct obligations projection requires session and turn artifacts.");
+      const buildResult = buildDirectObligationsProjection({
+        session,
+        turn,
+        operationManifest: this.readOperationManifest(),
+        nowMs: options.nowMs,
+      });
+      const existing = this.currentProjectionRow(safeThreadId, DIRECT_OBLIGATIONS_PROJECTION_KIND);
+      if (!options.force && existing) {
+        const existingSource = this.projectionFromRow(existing)?.source || {};
+        if (
+          existingSource.sourceDigest &&
+          existingSource.sourceDigest === buildResult.sourceDigest &&
+          existingSource.turnId === safeTurnId &&
+          existing.status === "valid"
+        ) {
+          return {
+            projectionId: existing.projection_id,
+            projectionKind: DIRECT_OBLIGATIONS_PROJECTION_KIND,
+            status: existing.status,
+            reused: true,
+            itemCount: this.readProjectionItems(existing.projection_id).length,
+          };
+        }
+      }
+      return this.writeProjectionBuildResult(buildResult, { ...options, force: options.force === true });
+    } finally {
+      this.projectionBuildLocks.delete(lockKey);
+    }
+  }
+
+  currentDirectObligationsProjection(threadId, turnId) {
+    const projection = this.projectionFromRow(this.currentProjectionRow(threadId, DIRECT_OBLIGATIONS_PROJECTION_KIND));
+    if (!projection || projection.status !== "valid" || projection.source?.turnId !== turnId) return null;
+    return projection;
+  }
+
+  buildToolContinuationContextProjection(input = {}, options = {}) {
+    const sessionStore = options.sessionStore || input.sessionStore;
+    if (!sessionStore) throw new Error("Tool continuation context projection requires a session store.");
+    const safeThreadId = requireSafeId(input.threadId || input.sessionId, "thread");
+    const safeTurnId = requireSafeId(input.turnId, "turn");
+    const obligationId = requireSafeId(input.obligationId, "obligation");
+    const continuationId = requireSafeId(input.continuationRequest?.continuationId || `tool_continuation_${obligationId}`, "continuation");
+    const lockKey = `${safeThreadId}:${safeTurnId}:${obligationId}:${continuationId}:${TOOL_CONTINUATION_CONTEXT_PROJECTION_KIND}`;
+    if (this.projectionBuildLocks.has(lockKey)) throw new Error("projection_build_in_progress");
+    this.projectionBuildLocks.add(lockKey);
+    try {
+      const session = sessionStore.readSession(safeThreadId);
+      const turn = sessionStore.readTurn(safeThreadId, safeTurnId);
+      if (!session || !turn) throw new Error("Tool continuation context requires session and turn artifacts.");
+      const obligationProjectionResult = this.buildDirectObligationsProjection(safeThreadId, safeTurnId, {
+        ...options,
+        sessionStore,
+      });
+      const obligationProjection = this.projectionFromRow(
+        this.db.prepare("select * from direct_projections where projection_id = ?").get(obligationProjectionResult.projectionId),
+      );
+      const obligationItems = this.readProjectionItems(obligationProjection.projectionId);
+      const obligationItem = obligationItems.find((item) => item.obligation?.obligationId === obligationId);
+      if (!obligationItem) throw new Error(`Direct obligation projection item not found: ${obligationId}`);
+      const obligation = (Array.isArray(turn.unresolvedObligations) ? turn.unresolvedObligations : [])
+        .find((entry) => entry?.obligationId === obligationId);
+      if (!obligation) throw new Error(`Direct tool obligation not found: ${obligationId}`);
+      const buildResult = buildToolContinuationContextProjection({
+        session,
+        turn,
+        obligationProjection,
+        obligationItem,
+        obligation,
+        continuationRequest: input.continuationRequest || obligation.continuationRequest || {},
+        previousResponseId: normalizeString(input.previousResponseId || turn.responseId, ""),
+        nowMs: options.nowMs,
+      });
+      const existing = this.currentProjectionRow(safeThreadId, TOOL_CONTINUATION_CONTEXT_PROJECTION_KIND);
+      if (!options.force && existing) {
+        const existingSource = this.projectionFromRow(existing)?.source || {};
+        if (
+          existingSource.sourceDigest &&
+          existingSource.sourceDigest === buildResult.sourceDigest &&
+          existingSource.turnId === safeTurnId &&
+          existingSource.obligationId === obligationId &&
+          existing.status === "valid"
+        ) {
+          return {
+            projectionId: existing.projection_id,
+            projectionKind: TOOL_CONTINUATION_CONTEXT_PROJECTION_KIND,
+            status: existing.status,
+            reused: true,
+            itemCount: this.readProjectionItems(existing.projection_id).length,
+          };
+        }
+      }
+      return this.writeProjectionBuildResult(buildResult, { ...options, force: options.force === true });
+    } finally {
+      this.projectionBuildLocks.delete(lockKey);
+    }
+  }
+
   upsertContextPolicy(policy, options = {}) {
     const snapshot = isPlainObject(policy) ? policy : policySnapshot(DIRECT_TEXT_TURN_EMPTY_CONTEXT_POLICY_ID);
     this.db.prepare(`
@@ -1634,6 +1774,121 @@ class DirectThreadStore {
       requestManifest: request.requestManifest,
       providerInput: request.providerInput,
       rendererSafeSummary: rendererSafeContextSummary(contextPack, request.requestManifest),
+    };
+  }
+
+  buildAndPersistContextForToolContinuation(input = {}, options = {}) {
+    const sessionStore = options.sessionStore || input.sessionStore;
+    if (!sessionStore) throw new Error("Direct tool continuation context build requires a session store.");
+    const session = isPlainObject(input.session) ? input.session : sessionStore.readSession(input.sessionId || input.threadId);
+    if (!session) throw new Error("Direct tool continuation context build requires a session.");
+    const projectId = normalizeString(input.projectId || session.projectId, "");
+    const threadId = requireSafeId(input.threadId || input.sessionId || session.sessionId, "thread");
+    const turnId = requireSafeId(input.turnId, "turn");
+    const obligationId = requireSafeId(input.obligationId, "obligation");
+    const continuationRequest = isPlainObject(input.continuationRequest) ? input.continuationRequest : {};
+    const previousResponseId = normalizeString(input.previousResponseId || continuationRequest.source?.previousResponseId || "", "");
+    const projectionResult = this.buildToolContinuationContextProjection({
+      sessionStore,
+      session,
+      sessionId: threadId,
+      threadId,
+      turnId,
+      obligationId,
+      continuationRequest,
+      previousResponseId,
+    }, options);
+    const toolContinuationContext = this.projectionFromRow(
+      this.db.prepare("select * from direct_projections where projection_id = ?").get(projectionResult.projectionId),
+    );
+    if (!toolContinuationContext || toolContinuationContext.status !== "valid" || toolContinuationContext.unsafeForContextBuild === true) {
+      throw new Error("Tool continuation context projection is not valid for context build.");
+    }
+    const toolContinuationItems = this.readProjectionItems(toolContinuationContext.projectionId);
+    const contextPack = buildContextPack({
+      projectId,
+      threadId,
+      turnId,
+      purpose: "read_only_tool_continuation",
+      policyId: DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID,
+      toolContinuationContext,
+      toolContinuationItems,
+      currentUserPrompt: "",
+      nowMs: options.nowMs,
+    });
+    this.writeContextPack(contextPack, options);
+    const requestShape = isPlainObject(input.requestShape) ? input.requestShape : {
+      kind: "read_only_tool_continuation",
+      stream: true,
+      store: false,
+      tools: false,
+      hasPreviousResponseId: Boolean(previousResponseId),
+      functionCallOutputCount: continuationRequest.toolResult?.outputType === "function_call_output" ? 1 : 0,
+      customToolCallOutputCount: continuationRequest.toolResult?.outputType === "custom_tool_call_output" ? 1 : 0,
+    };
+    const request = buildRequestManifest({
+      contextPack,
+      model: input.model,
+      requestShape,
+      requestShapeHash: input.requestShapeHash || sha256(stableStringify(requestShape)),
+      endpointClass: input.endpointClass,
+      endpointHash: input.endpointHash,
+      modelEvidenceRef: input.modelEvidenceRef,
+      requestShapeEvidenceRef: input.requestShapeEvidenceRef || "continuation.tool_result",
+      endpointEvidenceRef: input.endpointEvidenceRef,
+      nowMs: options.nowMs,
+    });
+    const requestManifest = {
+      ...request.requestManifest,
+      enabledFeatures: {
+        ...(request.requestManifest.enabledFeatures || {}),
+        store: false,
+        tools: false,
+        previousResponseId: true,
+        includes: false,
+      },
+      continuity: {
+        previousResponseIdUsed: true,
+        providerContinuityHandleUsed: true,
+        importedContinuityHandleUsed: false,
+        continuityPolicy: "native_parent_turn_previous_response_id",
+        previousResponseIdSource: "initial_stream",
+        previousResponseIdDigest: sha256(previousResponseId),
+        previousResponseSourceTurnDigest: sha256(stableStringify({
+          threadId,
+          turnId,
+          responseId: previousResponseId,
+        })),
+      },
+      capabilityEvidence: {
+        ...(request.requestManifest.capabilityEvidence || {}),
+        requestShapeEvidenceRef: input.requestShapeEvidenceRef || "continuation.tool_result",
+        contextPolicyEvidenceRef: contextPack.policy?.policyDigest || "",
+        toolCallShapeEvidenceRef: input.toolCallShapeEvidenceRef || "direct_obligations_projection",
+      },
+      toolContinuation: {
+        continuationId: normalizeString(continuationRequest.continuationId, ""),
+        obligationId,
+        parentTurnId: turnId,
+        previousResponseIdSource: "initial_stream",
+        sourceProjectionId: toolContinuationContext.projectionId,
+      },
+    };
+    requestManifest.integrity = {
+      ...(requestManifest.integrity || {}),
+      artifactDigest: sha256(stableStringify({
+        ...requestManifest,
+        integrity: { ...(requestManifest.integrity || {}), artifactDigest: "" },
+      })),
+    };
+    this.writeRequestManifest(requestManifest, options);
+    return {
+      contextPack,
+      requestManifest,
+      providerInput: request.providerInput,
+      toolContinuationContext,
+      toolContinuationItems,
+      rendererSafeSummary: rendererSafeContextSummary(contextPack, requestManifest),
     };
   }
 
@@ -1998,9 +2253,11 @@ class DirectThreadStore {
 module.exports = {
   COMPACT_TRANSCRIPT_PROJECTION_KIND,
   CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND,
+  DIRECT_OBLIGATIONS_PROJECTION_KIND,
   DIRECT_ROLLOUT_MANIFEST_SCHEMA,
   DIRECT_PROJECTION_KINDS,
   DIRECT_IMPORT_CHECKPOINT_CONTINUATION_POLICY_ID,
+  DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID,
   DIRECT_TEXT_TURN_EMPTY_CONTEXT_POLICY_ID,
   DIRECT_TEXT_TURN_RECENT_DIALOGUE_POLICY_ID,
   DIRECT_THREAD_OPERATION_EVENT_SCHEMA,
@@ -2011,5 +2268,7 @@ module.exports = {
   DIRECT_THREAD_STORE_STATUS_SCHEMA,
   DirectThreadStore,
   RENDERER_TRANSCRIPT_PROJECTION_KIND,
+  TOOL_CONTINUATION_CONTEXT_POLICY_ID,
+  TOOL_CONTINUATION_CONTEXT_PROJECTION_KIND,
   normalizeStoreMode,
 };
