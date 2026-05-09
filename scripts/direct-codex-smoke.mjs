@@ -1262,6 +1262,30 @@ try {
       assert(forkedTurn.requestShape.previousResponseIdUsed === false, "Forked first turn must record no provider continuity.");
       const forkStartStatus = await forkWorkbenchController.readForkStartStatus({ id: "project_fork_start" }, forkStartResult.forkStartId);
       assert(forkStartStatus.artifacts.contextPackStored === true && forkStartStatus.artifacts.requestManifestStored === true, "Fork-start status must expose durable context/request artifacts without text.");
+      const failedForkSnapshot = await forkWorkbenchController.getSnapshot({ id: "project_fork_start" }, { refresh: true });
+      const failedForkPreparation = await forkWorkbenchController.prepareForkStart({ id: "project_fork_start" }, {
+        sourcePreviewId: forkStartPreviewOperation.projectionId,
+        expectedSourcePreviewDigest: forkStartPreparation.sourcePreviewDigest,
+        expectedWorkbenchRevision: failedForkSnapshot.workbenchRevision,
+        expectedOperationLedgerHeadDigest: failedForkSnapshot.operationLedgerHeadDigest,
+      });
+      await assertRejects(
+        () => forkWorkbenchController.startForkFromPreview({ id: "project_fork_start" }, {
+          clientForkStartId: "client_fork_start_blocked",
+          clientOperationId: "client_fork_start_operation_blocked",
+          confirmationId: failedForkPreparation.confirmationId,
+          sourcePreviewId: failedForkPreparation.sourcePreviewId,
+          expectedSourcePreviewDigest: failedForkPreparation.sourcePreviewDigest,
+          currentUserPrompt: "Authorization: Bearer fork_start_secret_token",
+          selectedModel: failedForkPreparation.selectedModel,
+        }),
+        "Expected blocked fork-start context build to reject.",
+      );
+      const failedForkOperation = forkStartThreadStore.operationResult(forkStartThreadStore.operationByClient("project_fork_start", "client_fork_start_operation_blocked"));
+      assert(failedForkOperation.status === "failed", "Failed fork-start pre-transport attempt must be recorded as failed operation.");
+      const failedForkTurn = forkStartSessionStore.readTurn(failedForkOperation.result.createdSessionId, failedForkOperation.result.createdTurnId);
+      assert(failedForkTurn.state === "failed", "Failed fork-start pre-transport attempt must not leave a created turn orphaned.");
+      assert(forkStartThreadStore.activeTurnCountForProject("project_fork_start") === 0, "Failed fork-start pre-transport attempt must not leave active project turns.");
     } finally {
       fs.rmSync(forkStartParent, { recursive: true, force: true });
     }

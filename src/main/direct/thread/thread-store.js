@@ -2617,12 +2617,14 @@ class DirectThreadStore {
   }
 
   activeTurnCountForProject(projectId) {
-    const rows = this.db.prepare(`
-      select state
+    const states = Array.from(ACTIVE_DIRECT_TURN_STATES);
+    const placeholders = states.map(() => "?").join(", ");
+    const row = this.db.prepare(`
+      select count(*) as count
       from direct_turns
-      where project_id = ?
-    `).all(normalizeString(projectId, ""));
-    return rows.filter((row) => ACTIVE_DIRECT_TURN_STATES.has(normalizeString(row.state, ""))).length;
+      where project_id = ? and state in (${placeholders})
+    `).get(normalizeString(projectId, ""), ...states);
+    return Number(row?.count || 0);
   }
 
   previewProjectionRecord(projectId, previewId) {
@@ -4246,6 +4248,14 @@ class DirectThreadStore {
       ...input,
       operationId,
       eventType: "operation_committed",
+    }, options);
+  }
+
+  failOperation(operationId, input = {}, options = {}) {
+    return this.appendOperationEvent({
+      ...input,
+      operationId,
+      eventType: "operation_failed",
     }, options);
   }
 }

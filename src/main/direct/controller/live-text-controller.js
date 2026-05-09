@@ -586,6 +586,12 @@ class DirectLiveTextController {
       throw error;
     }
     this.forkStartLocks.set(lockKey, clientForkStartId);
+    let planned = null;
+    let session = null;
+    let turn = null;
+    let forkStartId = "";
+    let operationInputDigest = "";
+    let operationCommitted = false;
     try {
       const existing = store.operationByClient(projectId, clientOperationId);
       if (existing) {
@@ -625,7 +631,7 @@ class DirectLiveTextController {
       const model = normalizeString(options.selectedModel || options.model, "") || status.model;
       const endpointHash = this.endpoint ? sha256(this.endpoint) : "";
       const requestShapeHash = this.forkStartRequestShapeHash({ model, endpointHash });
-      const operationInputDigest = sha256(stableStringify({
+      operationInputDigest = sha256(stableStringify({
         schema: "direct_fork_start_operation_input@1",
         projectId,
         sourcePreviewId,
@@ -634,8 +640,8 @@ class DirectLiveTextController {
         model,
         requestShapeHash,
       }));
-      const forkStartId = `fork_start_${sha256(`${projectId}:${clientForkStartId}:${sourcePreviewId}`).slice(0, 24)}`;
-      const planned = store.planOperation({
+      forkStartId = `fork_start_${sha256(`${projectId}:${clientForkStartId}:${sourcePreviewId}`).slice(0, 24)}`;
+      planned = store.planOperation({
         operationType: "start_fork_turn",
         projectId,
         clientOperationId,
@@ -650,7 +656,7 @@ class DirectLiveTextController {
         error.code = error.message;
         throw error;
       }
-      const session = this.sessionStore.createSession({
+      session = this.sessionStore.createSession({
         projectId,
         workspace: isPlainObject(project.workspace) ? project.workspace : {},
         workspaceDisplayPath: workspaceDisplayPath(project),
@@ -672,7 +678,7 @@ class DirectLiveTextController {
         sourcePreviewDigest: seedPreview.projection.projectionDigest,
         sourcePreviousResponseIdUsed: false,
       }, options);
-      const turn = this.sessionStore.createTurn(session.sessionId, {
+      turn = this.sessionStore.createTurn(session.sessionId, {
         input: [{ role: "current_user_intent", text: currentUserPrompt }],
         model,
         clientTurnRequestId: clientForkStartId,
@@ -796,6 +802,7 @@ class DirectLiveTextController {
           ],
         },
       }, options);
+      operationCommitted = true;
       let requestBody = buildTextOnlyProbeRequest({
         profileDoc: this.profileDoc,
         model,
@@ -903,6 +910,54 @@ class DirectLiveTextController {
         contextTextExposed: false,
         requestBodyExposed: false,
       };
+    } catch (error) {
+      if (!operationCommitted && session?.sessionId && turn?.turnId) {
+        try {
+          this.sessionStore.updateTurnState(session.sessionId, turn.turnId, "failed", {
+            error: {
+              code: error.code || error.message || "fork_start_pre_transport_failed",
+              message: error.message || "Fork start failed before provider transport.",
+            },
+            forkStartStatus: "failed",
+          }, options);
+          const currentSession = this.sessionStore.readSession(session.sessionId);
+          this.sessionStore.writeSession({
+            ...currentSession,
+            composerState: "disabled_failed_pre_transport",
+          });
+          this.indexDirectThreadStoreSession(session.sessionId, options);
+        } catch {}
+      }
+      if (!operationCommitted && planned?.operationId && typeof store.failOperation === "function") {
+        try {
+          store.failOperation(planned.operationId, {
+            operationType: "start_fork_turn",
+            projectId,
+            clientOperationId,
+            target: {
+              previewId: sourcePreviewId,
+              threadIds: session?.sessionId ? [session.sessionId] : [],
+            },
+            result: {
+              status: "failed",
+              operationInputDigest,
+              forkStartId,
+              forkStatus: "failed",
+              blockerCode: error.code || error.message || "fork_start_pre_transport_failed",
+              createdThreadId: session?.sessionId || "",
+              createdSessionId: session?.sessionId || "",
+              createdTurnId: turn?.turnId || "",
+              effects: [{
+                effectKind: "operation_failed_no_effect",
+                targetKind: session?.sessionId ? "direct_thread" : "projection",
+                targetId: session?.sessionId || sourcePreviewId,
+                rendererSafeSummary: error.code || error.message || "fork_start_pre_transport_failed",
+              }],
+            },
+          }, options);
+        } catch {}
+      }
+      throw error;
     } finally {
       this.forkStartLocks.delete(lockKey);
     }

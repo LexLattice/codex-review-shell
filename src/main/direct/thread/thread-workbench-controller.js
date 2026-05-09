@@ -856,6 +856,7 @@ class DirectThreadWorkbenchController {
       from direct_operations
       where project_id = ? and operation_type = 'start_fork_turn'
       order by requested_at desc
+      limit 100
     `).all(projectId).map((row) => this.threadStore.operationResult(row))
       .find((entry) => normalizeString(entry?.result?.forkStartId, "") === safeForkStartId);
     if (!operation) throw makeError("fork_start_not_found");
