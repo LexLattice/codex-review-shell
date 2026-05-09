@@ -58,6 +58,8 @@ const { DirectSessionStore } = require("../src/main/direct/session/session-store
 const {
   COMPACT_TRANSCRIPT_PROJECTION_KIND,
   CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND,
+  DIRECT_OBLIGATIONS_PROJECTION_KIND,
+  DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID,
   DIRECT_THREAD_OPERATION_EVENT_SCHEMA,
   DIRECT_THREAD_OPERATION_LEDGER_MANIFEST_SCHEMA,
   DIRECT_THREAD_STORE_STATUS_SCHEMA,
@@ -65,6 +67,7 @@ const {
   DIRECT_TEXT_TURN_RECENT_DIALOGUE_POLICY_ID,
   DirectThreadStore,
   RENDERER_TRANSCRIPT_PROJECTION_KIND,
+  TOOL_CONTINUATION_CONTEXT_PROJECTION_KIND,
 } = require("../src/main/direct/thread/thread-store");
 const {
   buildContextRecentDialogueProjection: buildContextRecentDialogueProjectionFixture,
@@ -1650,9 +1653,15 @@ try {
     "",
   ].join("\n");
   let approvedFetchCalls = 0;
+  let approvedContinuationBody = null;
   let approvedWorkspaceReads = 0;
+  const approvedToolThreadStore = new DirectThreadStore({
+    rootDir: path.join(liveTextControllerParent, "approved-tool-direct-thread-store"),
+    mode: "index_only",
+  });
   const approvedToolController = new DirectLiveTextController({
     sessionStore: approvedToolStore,
+    directThreadStore: approvedToolThreadStore,
     profileDoc: acceptedReadOnlyToolProfile(),
     authStore: liveAuthStore,
     readOnlyWorkspaceTimeoutMs: 45_000,
@@ -1675,8 +1684,9 @@ try {
         absolutePath: "/private/path/README.md",
       };
     },
-    fetchImpl: async () => {
+    fetchImpl: async (_url, init = {}) => {
       approvedFetchCalls += 1;
+      if (approvedFetchCalls === 2 && init.body) approvedContinuationBody = JSON.parse(init.body);
       return textResponse(approvedFetchCalls === 1 ? liveToolSse : approvedContinuationSse, 200, { "content-type": "text/event-stream" });
     },
   });
@@ -1716,6 +1726,15 @@ try {
   assert(approvedTurn.state === "completed", "Expected approved direct read-only continuation to complete the turn.");
   assert(approvedTurn.streamPhase === "continuation", "Expected approved continuation to record continuation stream phase.");
   assert(approvedTurn.continuationRequestShape.hasPreviousResponseId === true, "Expected approved continuation to require previous_response_id.");
+  assert(approvedTurn.contextBuildId, "Expected approved live tool continuation to persist context build id before transport.");
+  assert(approvedTurn.requestManifestId, "Expected approved live tool continuation to persist request manifest id before transport.");
+  const approvedToolContextPack = approvedToolThreadStore.readContextPack(approvedTurn.contextBuildId);
+  const approvedToolRequestManifest = approvedToolThreadStore.readRequestManifest(approvedTurn.requestManifestId);
+  assert(approvedToolContextPack.policy.policyId === DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID, "Expected approved live tool continuation to use read-only tool context policy.");
+  assert(approvedToolRequestManifest.enabledFeatures.previousResponseId === true, "Expected approved live tool manifest to record previous_response_id.");
+  assert(approvedToolRequestManifest.enabledFeatures.store === false, "Expected approved live tool manifest to record store=false.");
+  assert(approvedToolRequestManifest.rawRequestBodyStored === false, "Expected approved live tool manifest not to store raw request body.");
+  assert(approvedContinuationBody.instructions.includes("Do not request or execute another tool"), "Expected approved live tool continuation request to preserve continuation-specific instructions.");
   const approvedObligation = approvedTurn.unresolvedObligations[0];
   assert(approvedObligation.status === "continuation_sent", "Expected approved obligation to record sent continuation.");
   assert(JSON.parse(approvedObligation.result.providerOutputText).textPreview === "live approved read result", "Expected approved provider output to be bounded JSON evidence.");
@@ -1728,6 +1747,7 @@ try {
   assert(approvedWorkspaceReads === 1, "Expected duplicate completed approval response not to reread workspace.");
   assert(approvedToolController.toolDecisionClaims.size <= 1, "Expected direct tool decision claim cache to stay bounded.");
   assert(approvedToolController.toolDecisionResults.size <= 1, "Expected direct tool decision result cache to stay bounded.");
+  approvedToolThreadStore.close();
 } finally {
   fs.rmSync(liveTextControllerParent, { recursive: true, force: true });
 }
@@ -2654,6 +2674,87 @@ try {
   assert(continuationOutputEnvelope.textPreview === "fixture read result", "Expected continuation to include recorded tool output in a bounded envelope.");
   assert(continuationOutputEnvelope.truncated === false, "Expected continuation envelope to preserve truncation truth.");
   assert(!JSON.stringify(continuationRequest).includes("/private/path"), "Read-only continuation must not expose raw workspace paths.");
+  assertThrows(() => projectReadResult({
+    relPath: "src/config.txt",
+    size: 64,
+    truncated: false,
+    binary: false,
+    text: "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456",
+    source: "local",
+  }, {
+    obligationId: "tool_obligation_secret_result",
+    name: "read_file",
+  }, new Date(1_700_000_022_200).toISOString(), 1_700_000_022_200), "Expected read-only provider output to block auth-like file content.");
+  const probeThreadStore = new DirectThreadStore({
+    rootDir: path.join(textProbeParent, "direct-thread-store"),
+    mode: "index_only",
+  });
+  try {
+    probeThreadStore.indexSessionArtifacts(probeSessionStore, probeSessionStore.readSession(persistedToolProbe.sessionId), [
+      probeSessionStore.readTurn(persistedToolProbe.sessionId, persistedToolProbe.turnId),
+    ], { nowMs: 1_700_000_022_300 });
+    const obligationProjection = probeThreadStore.buildDirectObligationsProjection(persistedToolProbe.sessionId, persistedToolProbe.turnId, {
+      sessionStore: probeSessionStore,
+      nowMs: 1_700_000_022_400,
+    });
+    assert(obligationProjection.projectionKind === DIRECT_OBLIGATIONS_PROJECTION_KIND, "Expected direct obligations projection kind.");
+    assert(obligationProjection.status === "valid", "Expected unsupported-free obligation projection to be valid.");
+    const obligationProjectionRead = probeThreadStore.readProjectionByKind(persistedToolProbe.sessionId, DIRECT_OBLIGATIONS_PROJECTION_KIND);
+    assert(obligationProjectionRead.items[0].actionHints.authoritative === false, "Obligation projection action hints must not be authoritative.");
+    assert(obligationProjectionRead.items[0].itemValidity.usableForContinuation === true, "Expected recorded read_file obligation item to be usable for continuation.");
+    const continuationWithContextSource = {
+      ...continuationRequest,
+      source: {
+        ...(continuationRequest.source || {}),
+        previousResponseId: "resp_tool_probe",
+      },
+    };
+    const toolContext = probeThreadStore.buildAndPersistContextForToolContinuation({
+      sessionStore: probeSessionStore,
+      session: probeSessionStore.readSession(persistedToolProbe.sessionId),
+      projectId: "project_direct_text_probe",
+      threadId: persistedToolProbe.sessionId,
+      turnId: persistedToolProbe.turnId,
+      obligationId: persistedToolProbe.toolObligations[0].obligationId,
+      continuationRequest: continuationWithContextSource,
+      previousResponseId: "resp_tool_probe",
+      model: "gpt-5.4",
+      requestShape: {
+        kind: "read_only_tool_continuation",
+        stream: true,
+        store: false,
+        tools: false,
+        hasPreviousResponseId: true,
+        functionCallOutputCount: 1,
+      },
+      requestShapeEvidenceRef: "continuation.tool_result",
+      modelEvidenceRef: "model_evidence_fixture",
+      endpointEvidenceRef: "endpoint_fixture",
+      endpointHash: "endpoint_hash_fixture",
+    }, {
+      sessionStore: probeSessionStore,
+      nowMs: 1_700_000_022_500,
+    });
+    assert(toolContext.toolContinuationContext.projectionKind === TOOL_CONTINUATION_CONTEXT_PROJECTION_KIND, "Expected tool continuation context projection kind.");
+    assert(toolContext.contextPack.policy.policyId === DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID, "Expected read-only tool continuation context policy.");
+    assert(toolContext.contextPack.messages.some((message) => message.authority === "tool-result-evidence"), "Expected tool result evidence in continuation context pack.");
+    assert(toolContext.providerInput.instructions.includes("Fresh local authority"), "Expected continuation provider input to resend harness policy.");
+    assert(toolContext.providerInput.instructions.includes("Do not request or execute another tool"), "Expected continuation provider input to include continuation-specific guidance.");
+    assert(!toolContext.toolContinuationItems[0].text.includes("[LOCAL READ-ONLY TOOL RESULT EVIDENCE - QUOTED]"), "Expected tool continuation projection item text not to duplicate context-pack framing.");
+    const continuationIntent = toolContext.contextPack.messages.find((message) => message.text.startsWith("[CONTINUATION INTENT]"));
+    assert(
+      continuationIntent.textHash === crypto.createHash("sha256").update(continuationIntent.text).digest("hex"),
+      "Expected continuation intent hash to match actual message text.",
+    );
+    assert(toolContext.requestManifest.enabledFeatures.store === false, "Expected tool continuation manifest to record store=false.");
+    assert(toolContext.requestManifest.enabledFeatures.previousResponseId === true, "Expected tool continuation manifest to record previous_response_id usage.");
+    assert(toolContext.requestManifest.continuity.importedContinuityHandleUsed === false, "Tool continuation manifest must not use imported continuity.");
+    assert(toolContext.requestManifest.rawRequestBodyStored === false, "Tool continuation manifest must not store raw request body.");
+    assert(probeThreadStore.readContextPack(toolContext.contextPack.contextBuildId).schema === "direct_context_pack@1", "Expected persisted tool continuation context pack.");
+    assert(probeThreadStore.readRequestManifest(toolContext.requestManifest.requestManifestId).schema === "direct_request_manifest@1", "Expected persisted tool continuation request manifest.");
+  } finally {
+    probeThreadStore.close();
+  }
   const continuationSse = [
     "event: response.created",
     "data: {\"response\":{\"id\":\"resp_tool_continuation\",\"model\":\"gpt-5.4\"}}",

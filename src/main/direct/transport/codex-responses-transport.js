@@ -693,7 +693,16 @@ async function runPersistedReadOnlyToolContinuation(options = {}) {
   });
   sessionStore.updateTurnState(options.sessionId, options.turnId, "request_built", {
     continuationRequestBuiltAt: nowIso(options.nowMs),
-    continuationRequestShape: requestShapeForDiagnostic(requestBody),
+    continuationRequestShape: {
+      ...requestShapeForDiagnostic(requestBody),
+      contextBuildId: normalizeString(continuationRequest.source?.contextBuildId, ""),
+      requestManifestId: normalizeString(continuationRequest.source?.requestManifestId, ""),
+      store: false,
+      previousResponseIdUsed: Boolean(requestBody.previous_response_id),
+      rawRequestBodyStored: false,
+    },
+    ...(continuationRequest.source?.contextBuildId ? { contextBuildId: continuationRequest.source.contextBuildId } : {}),
+    ...(continuationRequest.source?.requestManifestId ? { requestManifestId: continuationRequest.source.requestManifestId } : {}),
     continuationStreamStartedAt: "",
     streamPhase: "continuation",
   }, options);

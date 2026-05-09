@@ -17,6 +17,7 @@ const DIRECT_PROVIDER_INPUT_PROJECTION_SCHEMA = "direct_provider_input_projectio
 const DIRECT_TEXT_TURN_RECENT_DIALOGUE_POLICY_ID = "direct_text_turn_recent_dialogue@1";
 const DIRECT_TEXT_TURN_EMPTY_CONTEXT_POLICY_ID = "direct_text_turn_empty_context@1";
 const DIRECT_IMPORT_CHECKPOINT_CONTINUATION_POLICY_ID = "direct_import_checkpoint_continuation@1";
+const DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID = "direct_readonly_tool_continuation@1";
 const DIRECT_CONTEXT_ROLE_MAPPING_ID = "direct_context_role_mapping@1";
 const DIRECT_HARNESS_POLICY_ID = "direct_harness_context_policy@1";
 const MAX_CONTEXT_PACK_CHARS = 128 * 1024;
@@ -32,6 +33,7 @@ const HARNESS_POLICY_TEXT = [
   "Do not assume provider-side conversation state, previous_response_id continuity, file access, command execution, or permission to replay prior actions.",
   "Fresh local authority is required before any file read, file write, shell command, network access, or tool continuation.",
 ].join(" ");
+const TOOL_CONTINUATION_HARNESS_POLICY_TEXT = "For this read-only tool continuation, use the accompanying provider tool-output item as quoted local evidence. Do not request or execute another tool.";
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -126,6 +128,17 @@ function policyDefinition(policyId) {
       historicalEvidenceAllowed: true,
     };
   }
+  if (policyId === DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID) {
+    return {
+      ...common,
+      policyVersion: "1",
+      purpose: "read_only_tool_continuation",
+      sourceProjectionKind: "tool_continuation_context",
+      currentUserPromptRequired: false,
+      historicalEvidenceAllowed: true,
+      toolResultEvidenceAllowed: true,
+    };
+  }
   return {
     ...common,
     policyId: DIRECT_TEXT_TURN_EMPTY_CONTEXT_POLICY_ID,
@@ -150,6 +163,7 @@ function policySnapshot(policyId) {
     sourceArtifactKind: definition.sourceArtifactKind || "",
     currentUserPromptRequired: definition.currentUserPromptRequired,
     historicalEvidenceAllowed: definition.historicalEvidenceAllowed,
+    toolResultEvidenceAllowed: definition.toolResultEvidenceAllowed === true,
     rawRequestBodyStored: false,
   };
   return {
@@ -488,7 +502,20 @@ function contextPackIntegrity(input) {
   }));
 }
 
-function buildContextPack({ projectId, threadId, turnId, purpose, policyId, contextProjection = null, contextItems = [], currentUserPrompt = "", checkpointSeed = null, nowMs = Date.now() } = {}) {
+function buildContextPack({
+  projectId,
+  threadId,
+  turnId,
+  purpose,
+  policyId,
+  contextProjection = null,
+  contextItems = [],
+  currentUserPrompt = "",
+  checkpointSeed = null,
+  toolContinuationContext = null,
+  toolContinuationItems = [],
+  nowMs = Date.now(),
+} = {}) {
   const safeProjectId = normalizeString(projectId, "");
   const safeThreadId = normalizeString(threadId, "");
   const safeTurnId = normalizeString(turnId, "");
@@ -511,6 +538,15 @@ function buildContextPack({ projectId, threadId, turnId, purpose, policyId, cont
       textHash: harnessPolicy.textHash,
     },
   ];
+  if (policy.policyId === DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID) {
+    messages.push({
+      role: "harness",
+      authority: "harness-policy",
+      quotedEvidence: false,
+      text: TOOL_CONTINUATION_HARNESS_POLICY_TEXT,
+      textHash: sha256(TOOL_CONTINUATION_HARNESS_POLICY_TEXT),
+    });
+  }
   const sourceArtifacts = [
     {
       artifactKind: "harness_policy",
@@ -572,13 +608,45 @@ function buildContextPack({ projectId, threadId, turnId, purpose, policyId, cont
       appPrivate: true,
     });
   }
+  if (toolContinuationContext?.projectionId && toolContinuationItems.length) {
+    const toolEvidenceText = toolContinuationItems.map((item) => {
+      const label = `${normalizeString(item.role, "tool").toUpperCase()} ${normalizeString(item.itemKind, "tool_result")}`;
+      return `${label}:\n${preserveString(item.text)}`;
+    }).join("\n\n");
+    const findings = blockingRawExposureFindings(toolEvidenceText);
+    if (findings.length) {
+      const error = new Error("Direct tool continuation context failed redaction.");
+      error.code = "tool_result_redaction_failed";
+      throw error;
+    }
+    messages.push({
+      role: "tool",
+      authority: "tool-result-evidence",
+      quotedEvidence: true,
+      sourceProjectionId: toolContinuationContext.projectionId,
+      text: `[LOCAL TOOL RESULT EVIDENCE - QUOTED]\n${toolEvidenceText}`,
+      textHash: sha256(toolEvidenceText),
+    });
+    sourceArtifacts.push({
+      artifactKind: "tool_continuation_context_projection",
+      artifactId: toolContinuationContext.projectionId,
+      artifactDigest: toolContinuationContext.projectionDigest,
+      appPrivate: true,
+    });
+    mergeCounts(omittedCounts, toolContinuationContext.caps?.omittedCounts || {});
+  }
+  const currentIntentText = policy.policyId === DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID && !prompt
+    ? "[CONTINUATION INTENT]\nContinue the parent response using only the quoted local read-only tool result evidence. Do not request or execute another tool."
+    : `[CURRENT USER INTENT]\n${prompt || "Continue from the available direct context under the harness policy."}`;
   messages.push({
     role: "user",
-    authority: "current-user-intent",
-    quotedEvidence: false,
+    authority: policy.policyId === DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID && !prompt
+      ? "status-evidence"
+      : "current-user-intent",
+    quotedEvidence: policy.policyId === DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID && !prompt,
     sourcePromptArtifactId: currentPrompt.artifactId,
-    text: `[CURRENT USER INTENT]\n${prompt || "Continue from the available direct context under the harness policy."}`,
-    textHash: sha256(prompt),
+    text: currentIntentText,
+    textHash: sha256(currentIntentText),
   });
   const totalChars = messages.reduce((sum, message) => sum + preserveString(message.text).length, 0);
   if (totalChars > MAX_CONTEXT_PACK_CHARS) {
@@ -595,6 +663,8 @@ function buildContextPack({ projectId, threadId, turnId, purpose, policyId, cont
     harnessPolicyDigest: harnessPolicy.harnessPolicyDigest,
     sourceProjectionId: contextProjection?.projectionId || "",
     sourceProjectionKind: contextProjection?.projectionKind || "",
+    toolContinuationContextProjectionId: toolContinuationContext?.projectionId || "",
+    toolContinuationContextProjectionKind: toolContinuationContext?.projectionKind || "",
     sourceArtifactKinds: sourceArtifacts.map((artifact) => artifact.artifactKind),
     messageAuthorities: messages.map((message) => message.authority),
     caps: contextCaps(),
@@ -623,11 +693,18 @@ function buildContextPack({ projectId, threadId, turnId, purpose, policyId, cont
     },
     messages,
     sourceArtifacts,
-    sourceProjections: contextProjection?.projectionId ? [{
-      projectionId: contextProjection.projectionId,
-      projectionKind: contextProjection.projectionKind,
-      projectionDigest: contextProjection.projectionDigest,
-    }] : [],
+    sourceProjections: [
+      contextProjection?.projectionId ? {
+        projectionId: contextProjection.projectionId,
+        projectionKind: contextProjection.projectionKind,
+        projectionDigest: contextProjection.projectionDigest,
+      } : null,
+      toolContinuationContext?.projectionId ? {
+        projectionId: toolContinuationContext.projectionId,
+        projectionKind: toolContinuationContext.projectionKind,
+        projectionDigest: toolContinuationContext.projectionDigest,
+      } : null,
+    ].filter(Boolean),
     caps: {
       ...contextCaps(),
       charCount: totalChars,
@@ -673,17 +750,22 @@ function providerInputFromContextPack(contextPack = {}) {
   const instructions = harnessMessages.map((message) => preserveString(message.text)).join("\n\n");
   const prompt = userMessages.map((message) => preserveString(message.text)).join("\n\n");
   const roleMapping = isPlainObject(contextPack.roleMapping) ? contextPack.roleMapping : roleMappingSnapshot();
+  const requestShapeClass = contextPack.policy?.policyId === DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID
+    ? "direct_readonly_tool_continuation_response"
+    : (contextPack.policy?.policyId === DIRECT_IMPORT_CHECKPOINT_CONTINUATION_POLICY_ID
+        ? "direct_import_checkpoint_continuation_response"
+        : "direct_text_only_response");
   const projection = {
     schema: DIRECT_PROVIDER_INPUT_PROJECTION_SCHEMA,
     providerInputProjectionId: `provider_input_${sha256(`${contextPack.contextBuildId}:${roleMapping.mappingDigest}:${prompt}:${instructions}`).slice(0, 24)}`,
     contextBuildId: normalizeString(contextPack.contextBuildId, ""),
     provider: "chatgpt-codex-responses",
-    requestShapeClass: "direct_text_only_response",
+    requestShapeClass,
     roleMappingDigest: normalizeString(roleMapping.mappingDigest, ""),
     providerInputShapeHash: sha256(stableStringify({
       schema: DIRECT_PROVIDER_INPUT_PROJECTION_SCHEMA,
       provider: "chatgpt-codex-responses",
-      requestShapeClass: "direct_text_only_response",
+      requestShapeClass,
       hasInstructions: Boolean(instructions),
       inputMessageCount: prompt ? 1 : 0,
       rawRequestBodyStored: false,
@@ -799,6 +881,7 @@ module.exports = {
   DIRECT_HARNESS_POLICY_ID,
   DIRECT_IMPORT_CHECKPOINT_CONTINUATION_POLICY_ID,
   DIRECT_PROVIDER_INPUT_PROJECTION_SCHEMA,
+  DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID,
   DIRECT_REQUEST_MANIFEST_SCHEMA,
   DIRECT_TEXT_TURN_EMPTY_CONTEXT_POLICY_ID,
   DIRECT_TEXT_TURN_RECENT_DIALOGUE_POLICY_ID,
