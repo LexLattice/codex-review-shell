@@ -26,6 +26,8 @@ const LINEAGE_EDGE_KINDS = new Set([
   "prune_preview_of",
   "fork_preview_of",
   "forked_from_preview",
+  "forked_from_merge_preview",
+  "forked_from_prune_preview",
   "forked_from_thread",
 ]);
 const PREVIEW_KINDS = new Set([
@@ -729,6 +731,20 @@ class DirectThreadWorkbenchController {
     return { ...preview, seedItem, sourceKind };
   }
 
+  derivedPreviewRecord(projectId, previewId, sourcePreviewKind) {
+    const kind = normalizeString(sourcePreviewKind, "");
+    if (kind !== MERGE_PREVIEW_PROJECTION_KIND && kind !== PRUNE_PREVIEW_PROJECTION_KIND) {
+      throw makeError(kind === FORK_PREVIEW_PROJECTION_KIND ? "intermediate_fork_preview_not_supported" : "derived_preview_source_kind_unsupported");
+    }
+    const preview = this.threadStore.previewProjectionRecord(projectId, previewId, kind);
+    const sourcePreviewOperationId = normalizeString(this.threadStore.previewOperationIdForProjection(preview.projection.projectionId), "");
+    const sourceThreadIds = Array.from(new Set(preview.items.flatMap((item) => Array.isArray(item.sourceRefs)
+      ? item.sourceRefs.map((ref) => normalizeString(ref.threadId, "")).filter(Boolean)
+      : [])));
+    const sourceItemCount = preview.items.filter((item) => item.itemKind !== "merge_preview_section").length;
+    return { ...preview, sourcePreviewKind: kind, sourcePreviewOperationId, sourceThreadIds, sourceItemCount };
+  }
+
   async prepareForkStart(projectOrId, input = {}) {
     const project = await this.resolveProject(projectOrId);
     const projectId = this.projectId(project);
@@ -802,6 +818,87 @@ class DirectThreadWorkbenchController {
     };
   }
 
+  async prepareDerivedPreviewForkStart(projectOrId, input = {}) {
+    const project = await this.resolveProject(projectOrId);
+    const projectId = this.projectId(project);
+    if (!projectId) throw makeError("project_missing");
+    this.ensureIndexed();
+    this.assertExpectedRevision(projectId, input);
+    const sourcePreviewId = normalizeString(input.sourcePreviewId, "");
+    const sourcePreviewKind = normalizeString(input.sourcePreviewKind, "");
+    const preview = this.derivedPreviewRecord(projectId, sourcePreviewId, sourcePreviewKind);
+    if (preview.projection.status !== "valid" || preview.projection.unsafeForRenderer === true) throw makeError("source_preview_not_valid");
+    const expectedDigest = normalizeString(input.expectedSourcePreviewDigest, "");
+    if (expectedDigest && expectedDigest !== preview.projection.projectionDigest) throw makeError("source_preview_digest_mismatch");
+    const expectedOperationId = normalizeString(input.expectedSourcePreviewOperationId, "");
+    if (expectedOperationId && expectedOperationId !== preview.sourcePreviewOperationId) throw makeError("source_preview_operation_mismatch");
+    if (!preview.sourcePreviewOperationId) throw makeError("source_preview_operation_missing");
+    const liveText = this.resolveLiveTextController();
+    const status = typeof liveText.assertReady === "function"
+      ? liveText.assertReady(project)
+      : liveText.statusForProject(project);
+    if (status.status !== "ready") throw makeError(status.reason || "direct_runtime_not_enabled");
+    const model = normalizeString(input.selectedModel, status.model);
+    const nowMs = this.now();
+    const confirmationId = `derived_fork_start_${crypto.randomBytes(18).toString("base64url")}`;
+    const revision = this.workbenchRevision(projectId);
+    const confirmation = {
+      confirmationId,
+      projectId,
+      projectGeneration: this.projectGeneration(project),
+      workbenchRevision: revision.workbenchRevision,
+      operationLedgerHeadDigest: revision.operationLedgerHeadDigest,
+      sourcePreviewId,
+      sourcePreviewKind,
+      sourcePreviewDigest: preview.projection.projectionDigest,
+      sourcePreviewOperationId: preview.sourcePreviewOperationId,
+      targetRuntime: "direct-experimental/live-text",
+      selectedModel: model,
+      modelEvidenceRef: normalizeString(status.evidenceId, ""),
+      requestShapeEvidenceRef: "direct_derived_preview_fork_start_live_text@1",
+      endpointEvidenceRef: "",
+      expiresAtMs: nowMs + FORK_START_CONFIRMATION_TTL_MS,
+    };
+    this.pruneConfirmations(nowMs);
+    this.forkStartConfirmations.set(confirmationId, confirmation);
+    return {
+      confirmationId,
+      expiresAt: nowIso(confirmation.expiresAtMs),
+      projectGeneration: confirmation.projectGeneration,
+      workbenchRevision: confirmation.workbenchRevision,
+      operationLedgerHeadDigest: confirmation.operationLedgerHeadDigest,
+      sourcePreviewId,
+      sourcePreviewKind,
+      sourcePreviewDigest: preview.projection.projectionDigest,
+      sourcePreviewOperationId: preview.sourcePreviewOperationId,
+      rendererSafeSourceLabel: sourcePreviewKind === MERGE_PREVIEW_PROJECTION_KIND ? "Merge preview" : "Prune preview",
+      targetRuntime: "direct-experimental/live-text",
+      selectedModel: model,
+      modelEvidenceRef: confirmation.modelEvidenceRef,
+      requestShapeEvidenceRef: confirmation.requestShapeEvidenceRef,
+      endpointEvidenceRef: confirmation.endpointEvidenceRef,
+      sourceSummary: {
+        sourceThreadCount: preview.sourceThreadIds.length,
+        sourceItemCount: preview.sourceItemCount,
+        omittedCounts: preview.projection.caps?.omittedCounts || {},
+        truncated: preview.projection.caps?.truncated === true,
+        seedCaps: { maxItems: 2000, maxTextChars: 128 * 1024 },
+      },
+      warnings: {
+        freshSessionOnly: true,
+        providerContinuityAvailable: false,
+        sourcePreviewIsCanonical: false,
+        toolResultsReplayed: false,
+      },
+      freshSessionOnly: true,
+      previousResponseIdUsed: false,
+      providerContinuityAvailable: false,
+      rawPathExposed: false,
+      rawUrlExposed: false,
+      contextTextExposed: false,
+    };
+  }
+
   requireForkStartConfirmation(projectId, input = {}) {
     const confirmationId = normalizeString(input.confirmationId, "");
     if (!confirmationId) throw makeError("confirmation_required");
@@ -811,6 +908,25 @@ class DirectThreadWorkbenchController {
     if (
       confirmation.projectId !== projectId ||
       confirmation.sourcePreviewId !== normalizeString(input.sourcePreviewId, "") ||
+      confirmation.sourcePreviewDigest !== normalizeString(input.expectedSourcePreviewDigest, "") ||
+      (normalizeString(input.selectedModel, confirmation.selectedModel) !== confirmation.selectedModel)
+    ) {
+      throw makeError("confirmation_scope_mismatch");
+    }
+    this.forkStartConfirmations.delete(confirmationId);
+    return confirmation;
+  }
+
+  requireDerivedForkStartConfirmation(projectId, input = {}) {
+    const confirmationId = normalizeString(input.confirmationId, "");
+    if (!confirmationId) throw makeError("confirmation_required");
+    this.pruneConfirmations();
+    const confirmation = this.forkStartConfirmations.get(confirmationId);
+    if (!confirmation) throw makeError("confirmation_expired");
+    if (
+      confirmation.projectId !== projectId ||
+      confirmation.sourcePreviewId !== normalizeString(input.sourcePreviewId, "") ||
+      confirmation.sourcePreviewKind !== normalizeString(input.sourcePreviewKind, "") ||
       confirmation.sourcePreviewDigest !== normalizeString(input.expectedSourcePreviewDigest, "") ||
       (normalizeString(input.selectedModel, confirmation.selectedModel) !== confirmation.selectedModel)
     ) {
@@ -832,6 +948,36 @@ class DirectThreadWorkbenchController {
       ...input,
       project,
       sourcePreviewId: confirmation.sourcePreviewId,
+      expectedSourcePreviewDigest: confirmation.sourcePreviewDigest,
+      selectedModel: confirmation.selectedModel,
+      modelEvidenceRef: confirmation.modelEvidenceRef,
+      requestShapeEvidenceRef: confirmation.requestShapeEvidenceRef,
+      endpointEvidenceRef: confirmation.endpointEvidenceRef,
+    });
+    const revision = this.workbenchRevision(projectId);
+    return {
+      ...result,
+      openedInLeftCodexSurface: false,
+      nextWorkbenchRevision: revision.workbenchRevision,
+      meta: { projectId, projectGeneration: this.projectGeneration(project), ...revision },
+    };
+  }
+
+  async startForkFromDerivedPreview(projectOrId, input = {}) {
+    const project = await this.resolveProject(projectOrId);
+    const projectId = this.projectId(project);
+    if (!projectId) throw makeError("project_missing");
+    this.ensureIndexed();
+    this.assertExpectedRevision(projectId, input);
+    const confirmation = this.requireDerivedForkStartConfirmation(projectId, input);
+    const liveText = this.resolveLiveTextController();
+    const result = await liveText.startForkFromDerivedPreview({
+      ...input,
+      project,
+      sourcePreviewId: confirmation.sourcePreviewId,
+      sourcePreviewKind: confirmation.sourcePreviewKind,
+      sourcePreviewOperationId: confirmation.sourcePreviewOperationId,
+      expectedSourcePreviewOperationId: confirmation.sourcePreviewOperationId,
       expectedSourcePreviewDigest: confirmation.sourcePreviewDigest,
       selectedModel: confirmation.selectedModel,
       modelEvidenceRef: confirmation.modelEvidenceRef,

@@ -13,9 +13,11 @@ const {
   RENDERER_TRANSCRIPT_PROJECTION_KIND,
   buildCompactTranscriptProjection,
   buildRendererTranscriptProjection,
+  scanTextForRawExposure,
 } = require("./renderer-transcript-projection");
 const {
   CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND,
+  DIRECT_DERIVED_PREVIEW_FORK_START_POLICY_ID,
   DIRECT_FORK_START_POLICY_ID,
   DIRECT_IMPORT_CHECKPOINT_CONTINUATION_POLICY_ID,
   DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID,
@@ -61,6 +63,11 @@ const MAX_FORK_SEED_ITEMS = 2000;
 const MAX_FORK_SEED_TEXT_CHARS = 128 * 1024;
 const MAX_FORK_SEED_TEXT_CHARS_PER_ITEM = 16_000;
 const MAX_FORK_SEED_SOURCE_THREADS = 16;
+const MAX_DERIVED_FORK_SEED_SOURCE_THREADS = 16;
+const MAX_DERIVED_FORK_SEED_ITEMS = 2000;
+const MAX_DERIVED_FORK_SEED_TEXT_CHARS = 128 * 1024;
+const MAX_DERIVED_FORK_SEED_TEXT_CHARS_PER_ITEM = 16_000;
+const MAX_DERIVED_FORK_OMISSION_MARKERS = 1000;
 const ACTIVE_DIRECT_TURN_STATES = new Set([
   "created",
   "request_built",
@@ -74,6 +81,8 @@ const LIFECYCLE_STATES = new Set(["active", "hidden", "archived", "soft_deleted"
 const LINEAGE_EDGE_KINDS = new Set(["derived_from", "merge_preview_of", "prune_preview_of", "fork_preview_of", "supersedes"]);
 LINEAGE_EDGE_KINDS.add("forked_from_preview");
 LINEAGE_EDGE_KINDS.add("forked_from_thread");
+LINEAGE_EDGE_KINDS.add("forked_from_merge_preview");
+LINEAGE_EDGE_KINDS.add("forked_from_prune_preview");
 const PREVIEW_PROJECTION_KINDS = new Set([MERGE_PREVIEW_PROJECTION_KIND, PRUNE_PREVIEW_PROJECTION_KIND, FORK_PREVIEW_PROJECTION_KIND]);
 const GRAPH_EDGE_KINDS = new Set([
   "related",
@@ -84,6 +93,8 @@ const GRAPH_EDGE_KINDS = new Set([
   "prune_preview_of",
   "fork_preview_of",
   "forked_from_preview",
+  "forked_from_merge_preview",
+  "forked_from_prune_preview",
   "forked_from_thread",
   "chatgpt_reference",
   "import_source_reference",
@@ -2340,6 +2351,90 @@ class DirectThreadStore {
     };
   }
 
+  buildAndPersistContextForDerivedPreviewForkStart(input = {}, options = {}) {
+    const session = isPlainObject(input.session) ? input.session : null;
+    if (!session) throw new Error("Direct derived fork context build requires a session.");
+    const projectId = normalizeString(input.projectId || session.projectId, "");
+    const threadId = requireSafeId(input.threadId || session.sessionId, "thread");
+    const turnId = requireSafeId(input.turnId, "turn");
+    const derivedForkSeed = isPlainObject(input.derivedForkSeed) ? input.derivedForkSeed : {};
+    if (!derivedForkSeed.derivedForkSeedId || !derivedForkSeed.seedText) throw new Error("Direct derived fork context build requires a derived fork seed.");
+    const contextPack = buildContextPack({
+      projectId,
+      threadId,
+      turnId,
+      purpose: "derived_preview_fork_start",
+      policyId: DIRECT_DERIVED_PREVIEW_FORK_START_POLICY_ID,
+      currentUserPrompt: preserveString(input.currentUserPrompt),
+      derivedForkSeed,
+      nowMs: options.nowMs,
+    });
+    this.writeContextPack(contextPack, options);
+    const request = buildRequestManifest({
+      contextPack,
+      model: input.model,
+      requestShape: input.requestShape,
+      requestShapeHash: input.requestShapeHash,
+      endpointClass: input.endpointClass,
+      endpointHash: input.endpointHash,
+      modelEvidenceRef: input.modelEvidenceRef,
+      requestShapeEvidenceRef: input.requestShapeEvidenceRef || "direct_derived_preview_fork_start_live_text@1",
+      endpointEvidenceRef: input.endpointEvidenceRef,
+      nowMs: options.nowMs,
+    });
+    const requestManifest = {
+      ...request.requestManifest,
+      requestShapeClass: "direct_derived_preview_fork_start_live_text@1",
+      forkStartId: normalizeString(input.forkStartId, ""),
+      derivedForkSeedId: normalizeString(derivedForkSeed.derivedForkSeedId, ""),
+      sourcePreviewId: normalizeString(derivedForkSeed.sourcePreviewId, ""),
+      sourcePreviewKind: normalizeString(derivedForkSeed.sourcePreviewKind, ""),
+      sourcePreviewDigest: normalizeString(derivedForkSeed.sourcePreviewDigest, ""),
+      sourcePreviewOperationId: normalizeString(derivedForkSeed.sourcePreviewOperationId, ""),
+      enabledFeatures: {
+        ...(request.requestManifest.enabledFeatures || {}),
+        store: false,
+        tools: false,
+        previousResponseId: false,
+        reasoning: false,
+        structuredOutput: false,
+        serviceTier: false,
+        promptCache: false,
+        includes: false,
+      },
+      continuity: {
+        previousResponseIdUsed: false,
+        providerContinuityHandleUsed: false,
+        importedContinuityHandleUsed: false,
+        sourcePreviousResponseIdUsed: false,
+        continuityPolicy: "fresh_request",
+      },
+      capabilityEvidence: {
+        ...(request.requestManifest.capabilityEvidence || {}),
+        modelEvidenceRef: normalizeString(input.modelEvidenceRef, ""),
+        requestShapeEvidenceRef: normalizeString(input.requestShapeEvidenceRef || "direct_derived_preview_fork_start_live_text@1", ""),
+        endpointEvidenceRef: normalizeString(input.endpointEvidenceRef, ""),
+        accountEvidenceRef: normalizeString(input.accountEvidenceRef, ""),
+        contextPolicyEvidenceRef: contextPack.policy?.policyDigest || "",
+        derivedSourceKind: normalizeString(derivedForkSeed.sourcePreviewKind, ""),
+      },
+    };
+    requestManifest.integrity = {
+      ...(requestManifest.integrity || {}),
+      artifactDigest: sha256(stableStringify({
+        ...requestManifest,
+        integrity: { ...(requestManifest.integrity || {}), artifactDigest: "" },
+      })),
+    };
+    this.writeRequestManifest(requestManifest, options);
+    return {
+      contextPack,
+      requestManifest,
+      providerInput: request.providerInput,
+      rendererSafeSummary: rendererSafeContextSummary(contextPack, requestManifest),
+    };
+  }
+
   readProjectionByKind(threadId, projectionKind, options = {}) {
     const safeThreadId = requireSafeId(threadId, "thread");
     const row = options.projectionId
@@ -2627,16 +2722,29 @@ class DirectThreadStore {
     return Number(row?.count || 0);
   }
 
-  previewProjectionRecord(projectId, previewId) {
+  previewProjectionRecord(projectId, previewId, projectionKind = FORK_PREVIEW_PROJECTION_KIND) {
+    const safeProjectionKind = normalizeString(projectionKind, FORK_PREVIEW_PROJECTION_KIND);
+    if (!PREVIEW_PROJECTION_KINDS.has(safeProjectionKind)) throw new Error("unsupported_preview_projection_kind");
     const row = this.db.prepare(`
       select *
       from direct_projections
       where project_id = ? and projection_id = ? and projection_kind = ?
-    `).get(normalizeString(projectId, ""), requireSafeId(previewId, "preview"), FORK_PREVIEW_PROJECTION_KIND);
+    `).get(normalizeString(projectId, ""), requireSafeId(previewId, "preview"), safeProjectionKind);
     const projection = this.projectionFromRow(row);
     if (!projection) throw new Error("source_preview_missing");
     const items = this.readProjectionItems(projection.projectionId);
     return { row, projection, items };
+  }
+
+  previewOperationIdForProjection(projectionId) {
+    const row = this.db.prepare(`
+      select operation_id
+      from direct_preview_attempts
+      where projection_id = ?
+      order by created_at desc
+      limit 1
+    `).get(requireSafeId(projectionId, "projection"));
+    return normalizeString(row?.operation_id, "");
   }
 
   sourceItemsForForkPreview(preview = {}) {
@@ -2813,6 +2921,233 @@ class DirectThreadStore {
     return { forkSeed, preview: preview.projection, previewItems: preview.items };
   }
 
+  buildDerivedForkSeedFromPreview(input = {}, options = {}) {
+    const projectId = normalizeString(input.projectId, "");
+    const sourcePreviewId = requireSafeId(input.sourcePreviewId, "preview");
+    const forkStartId = requireSafeId(input.forkStartId, "fork start");
+    const sourcePreviewKind = normalizeString(input.sourcePreviewKind, "");
+    if (sourcePreviewKind !== MERGE_PREVIEW_PROJECTION_KIND && sourcePreviewKind !== PRUNE_PREVIEW_PROJECTION_KIND) {
+      throw new Error(sourcePreviewKind === FORK_PREVIEW_PROJECTION_KIND ? "intermediate_fork_preview_not_supported" : "derived_preview_source_kind_unsupported");
+    }
+    const preview = this.previewProjectionRecord(projectId, sourcePreviewId, sourcePreviewKind);
+    const expectedDigest = normalizeString(input.expectedSourcePreviewDigest, "");
+    if (expectedDigest && expectedDigest !== preview.projection.projectionDigest) throw new Error("source_preview_digest_mismatch");
+    if (preview.projection.status !== "valid" || preview.projection.unsafeForRenderer === true) throw new Error("source_preview_not_valid");
+    const sourcePreviewOperationId = normalizeString(input.sourcePreviewOperationId || this.previewOperationIdForProjection(sourcePreviewId), "");
+    if (!sourcePreviewOperationId) throw new Error("source_preview_operation_missing");
+    const expectedOperationId = normalizeString(input.expectedSourcePreviewOperationId, "");
+    if (expectedOperationId && expectedOperationId !== sourcePreviewOperationId) throw new Error("source_preview_operation_mismatch");
+
+    const sourceRefs = [];
+    for (const item of preview.items) {
+      if (Array.isArray(item.sourceRefs)) sourceRefs.push(...item.sourceRefs);
+    }
+    const sourceThreadIds = Array.from(new Set(sourceRefs.map((ref) => normalizeString(ref.threadId, "")).filter(Boolean)));
+    if (!sourceThreadIds.length) throw new Error("source_preview_lineage_missing");
+    if (sourceThreadIds.length > MAX_DERIVED_FORK_SEED_SOURCE_THREADS) throw new Error("derived_fork_seed_source_thread_cap_exceeded");
+    const sourceRendererProjectionRefs = [];
+    const projectionIds = Array.from(new Set(sourceRefs.map((ref) => normalizeString(ref.projectionId, "")).filter(Boolean)));
+    const projectionDigestById = new Map();
+    if (projectionIds.length) {
+      const placeholders = projectionIds.map(() => "?").join(", ");
+      for (const row of this.db.prepare(`select * from direct_projections where projection_id in (${placeholders})`).all(...projectionIds)) {
+        const projection = this.projectionFromRow(row);
+        if (projection) projectionDigestById.set(projection.projectionId, normalizeString(projection.projectionDigest, ""));
+      }
+    }
+    const seenProjectionRefs = new Set();
+    for (const ref of sourceRefs) {
+      const projectionId = normalizeString(ref.projectionId, "");
+      const threadId = normalizeString(ref.threadId, "");
+      if (!projectionId || !threadId) continue;
+      const refKey = `${threadId}:${projectionId}`;
+      if (seenProjectionRefs.has(refKey)) continue;
+      seenProjectionRefs.add(refKey);
+      sourceRendererProjectionRefs.push({
+        threadId,
+        projectionId,
+        projectionDigest: normalizeString(projectionDigestById.get(projectionId), ""),
+      });
+    }
+    for (const threadId of sourceThreadIds) {
+      const row = this.requireThreadInProject(projectId, threadId);
+      if (normalizeLifecycleState(row.lifecycle_state) === "soft_deleted") throw new Error("source_thread_soft_deleted");
+      if (this.activeTurnCount(threadId) > 0) throw new Error("source_thread_active_turn_changed");
+    }
+
+    const omittedCounts = { ...(preview.projection.caps?.omittedCounts || {}) };
+    const sourceStableItemKeys = [];
+    const evidence = [];
+    let totalChars = 0;
+    let omittedMarkers = 0;
+    const ordering = sourcePreviewKind === MERGE_PREVIEW_PROJECTION_KIND
+      ? normalizeString(input.ordering, "by-thread-then-turn")
+      : "source-preview-order";
+    const mergeOrdering = {
+      ordering,
+      tieBreak: ordering === "chronological" ? "created-at-then-thread-id-then-turn-order" : "source-thread-order-then-turn-order",
+      sourceThreadOrder: sourceThreadIds,
+    };
+    for (const item of preview.items) {
+      if (evidence.length >= MAX_DERIVED_FORK_SEED_ITEMS) {
+        omittedCounts.items = (Number(omittedCounts.items) || 0) + 1;
+        continue;
+      }
+      const itemKind = normalizeString(item.itemKind, "message");
+      if (itemKind === "tool_result" || itemKind === "tool_call" || itemKind === "diagnostic" || itemKind === "approval_decision") {
+        omittedCounts[`${itemKind}_excluded`] = (Number(omittedCounts[`${itemKind}_excluded`]) || 0) + 1;
+        continue;
+      }
+      if (itemKind === "prune_omission_marker") omittedMarkers += 1;
+      if (omittedMarkers > MAX_DERIVED_FORK_OMISSION_MARKERS) throw new Error("derived_fork_seed_caps_exceeded");
+      const text = preserveString(item.text);
+      if (!text) continue;
+      const remaining = Math.max(0, MAX_DERIVED_FORK_SEED_TEXT_CHARS - totalChars);
+      if (remaining <= 0) {
+        omittedCounts.text_chars = (Number(omittedCounts.text_chars) || 0) + text.length;
+        continue;
+      }
+      const clipped = text.slice(0, Math.min(text.length, MAX_DERIVED_FORK_SEED_TEXT_CHARS_PER_ITEM, remaining));
+      if (clipped.length < text.length) omittedCounts.text_chars = (Number(omittedCounts.text_chars) || 0) + (text.length - clipped.length);
+      if (Array.isArray(item.sourceStableItemKeys)) sourceStableItemKeys.push(...item.sourceStableItemKeys.map(String).filter(Boolean));
+      const marker = itemKind === "prune_omission_marker" ? "OMISSION MARKER" : itemKind.toUpperCase();
+      evidence.push(`${marker} ${normalizeString(item.threadId, "")}\n${clipped}`);
+      totalChars += clipped.length;
+    }
+    const pruneOmittedItemCount = Number(preview.projection.caps?.omittedCounts?.items || preview.projection.caps?.omittedCounts?.item || 0);
+    if (sourcePreviewKind === PRUNE_PREVIEW_PROJECTION_KIND && pruneOmittedItemCount > 0 && omittedMarkers === 0) {
+      throw new Error("derived_fork_seed_caps_exceeded");
+    }
+    const revalidated = this.previewProjectionRecord(projectId, sourcePreviewId, sourcePreviewKind);
+    if (revalidated.projection.projectionDigest !== preview.projection.projectionDigest) throw new Error("source_preview_changed_after_seed");
+    const resumeWarning = /\b(resume|continue exactly|previous_response_id|prior approval|prior approvals|replay)\b/i.test(preserveString(input.currentUserPrompt));
+    const seedText = [
+      "[DERIVED FORK LINEAGE]",
+      `Source preview kind: ${sourcePreviewKind}@1`,
+      `Source preview: ${sourcePreviewId}`,
+      `Source preview operation: ${sourcePreviewOperationId}`,
+      `Source threads: ${sourceThreadIds.join(", ")}`,
+      sourcePreviewKind === MERGE_PREVIEW_PROJECTION_KIND ? `Merge ordering: ${mergeOrdering.ordering}; tie-break: ${mergeOrdering.tieBreak}` : "Prune omissions are represented as visible omission evidence.",
+      resumeWarning ? "Continuity warning: current user wording requests continuity-like behavior; this fork remains fresh-session-only." : "",
+      "",
+      "[DERIVED PREVIEW SOURCE EVIDENCE - QUOTED]",
+      evidence.join("\n\n"),
+    ].filter((line) => line !== "").join("\n");
+    if (scanTextForRawExposure(seedText).some((finding) => finding.severity === "block")) {
+      throw new Error("derived_fork_seed_redaction_failed");
+    }
+    const seedShapeHash = sha256(stableStringify({
+      schema: "direct_derived_fork_seed_shape@1",
+      policyId: DIRECT_DERIVED_PREVIEW_FORK_START_POLICY_ID,
+      sourcePreviewKind,
+      sourcePreviewVersion: preview.projection.projectionVersion,
+      sourcePreviewOperationId,
+      sourceThreadCount: sourceThreadIds.length,
+      includedItemCount: evidence.length,
+      sourceStableItemKeys: Array.from(new Set(sourceStableItemKeys)).sort(),
+      ordering: sourcePreviewKind === MERGE_PREVIEW_PROJECTION_KIND ? mergeOrdering : null,
+      omittedCounts,
+      caps: {
+        maxItems: MAX_DERIVED_FORK_SEED_ITEMS,
+        maxTextChars: MAX_DERIVED_FORK_SEED_TEXT_CHARS,
+        maxTextCharsPerItem: MAX_DERIVED_FORK_SEED_TEXT_CHARS_PER_ITEM,
+        maxSourceThreads: MAX_DERIVED_FORK_SEED_SOURCE_THREADS,
+        maxOmissionMarkers: MAX_DERIVED_FORK_OMISSION_MARKERS,
+      },
+      builderVersion: DIRECT_THREAD_CONTROL_BUILDER_VERSION,
+      redactionVersion: "derived_fork_seed_raw_exposure_scan@1",
+    }));
+    const artifactDigest = sha256(stableStringify({
+      forkStartId,
+      sourcePreviewId,
+      sourcePreviewKind,
+      sourcePreviewOperationId,
+      sourcePreviewDigest: preview.projection.projectionDigest,
+      seedShapeHash,
+      seedTextHash: sha256(seedText),
+    }));
+    const derivedForkSeed = {
+      schema: "direct_derived_fork_seed@1",
+      derivedForkSeedId: `derived_fork_seed_${sha256(`${forkStartId}:${sourcePreviewKind}:${seedShapeHash}`).slice(0, 24)}`,
+      forkStartId,
+      projectId,
+      targetThreadId: normalizeString(input.targetThreadId, ""),
+      targetTurnId: normalizeString(input.targetTurnId, ""),
+      sourcePreviewId,
+      sourcePreviewKind,
+      sourcePreviewDigest: preview.projection.projectionDigest,
+      sourcePreviewOperationId,
+      parentLineage: {
+        sourceKind: sourcePreviewKind,
+        sourcePreviewId,
+        sourcePreviewDigest: preview.projection.projectionDigest,
+        sourcePreviewOperationId,
+        sourceProjectId: projectId,
+        sourceThreadIds,
+        sourceRendererProjectionRefs,
+        sourceStableItemKeys: Array.from(new Set(sourceStableItemKeys)).sort(),
+        sourceOperationLedgerHeadDigest: this.readOperationManifest().hashChainHead,
+        importedContinuityHandleUsed: false,
+        providerContinuityHandleUsed: false,
+      },
+      seedPolicy: {
+        policyId: DIRECT_DERIVED_PREVIEW_FORK_START_POLICY_ID,
+        policyVersion: "1",
+        policyDigest: policySnapshot(DIRECT_DERIVED_PREVIEW_FORK_START_POLICY_ID).policyDigest,
+        policyArtifactDigest: policySnapshot(DIRECT_DERIVED_PREVIEW_FORK_START_POLICY_ID).policyArtifactDigest,
+        sourceToolResultsIncluded: false,
+      },
+      includedEvidence: {
+        itemCount: evidence.length,
+        sourceThreadCount: sourceThreadIds.length,
+        sourceStableItemKeys: Array.from(new Set(sourceStableItemKeys)).sort(),
+        sourceTextDigest: sha256(evidence.join("\n\n")),
+        sourceToolResultSummariesIncluded: false,
+        omissionMarkerCount: omittedMarkers,
+      },
+      omittedCounts,
+      truncation: {
+        truncated: Object.values(omittedCounts).some((count) => Number(count) > 0),
+        itemCountTruncated: Number(omittedCounts.items || 0) > 0,
+        textTruncated: Number(omittedCounts.text_chars || 0) > 0,
+      },
+      budget: {
+        modelContextWindowEstimate: null,
+        estimatedInputTokens: Math.ceil(seedText.length / 4),
+        reservedOutputTokens: 4096,
+        budgetPolicyId: "derived_fork_char_estimate_budget@1",
+        budgetExceeded: false,
+      },
+      currentUserPrompt: {
+        promptTextHash: sha256(preserveString(input.currentUserPrompt)),
+        promptShapeHash: sha256(stableStringify({ charCount: preserveString(input.currentUserPrompt).length, resumeWarning })),
+        charCount: preserveString(input.currentUserPrompt).length,
+        redactionStatus: "passed",
+        continuityWarning: resumeWarning,
+      },
+      seedText,
+      seedTextHash: sha256(seedText),
+      seedShapeHash,
+      integrity: {
+        algorithm: "sha256",
+        artifactDigest,
+      },
+      retention: {
+        class: "app-private-context-evidence",
+        defaultExport: false,
+        redactionRequiredForExport: true,
+        retainedForForkLineage: true,
+      },
+      rawPathExposed: false,
+      rawUrlExposed: false,
+      rawCredentialsExposed: false,
+      rawBackendFrameExposed: false,
+      rawRequestBodyStored: false,
+    };
+    this.writeForkStartArtifact(projectId, forkStartId, "derived-fork-seed.json", derivedForkSeed);
+    return { derivedForkSeed, preview: preview.projection, previewItems: preview.items };
+  }
+
   createForkLineageEdges(input = {}, options = {}) {
     const projectId = normalizeString(input.projectId, "");
     const operationId = requireSafeId(input.operationId, "operation");
@@ -2875,6 +3210,84 @@ class DirectThreadStore {
         operationId,
         now,
         stableStringify({ systemCreated: true, unlinkViaBridgeAllowed: false }),
+        operationId,
+        now,
+      );
+      written.push({ edgeId, ...edge });
+    }
+    this.buildThreadGraphProjection(projectId, { ...options, force: true });
+    return written;
+  }
+
+  createDerivedForkLineageEdges(input = {}, options = {}) {
+    const projectId = normalizeString(input.projectId, "");
+    const operationId = requireSafeId(input.operationId, "operation");
+    const forkThreadId = requireSafeId(input.forkThreadId, "thread");
+    const sourcePreviewId = requireSafeId(input.sourcePreviewId, "preview");
+    const sourcePreviewKind = normalizeString(input.sourcePreviewKind, "");
+    if (sourcePreviewKind !== MERGE_PREVIEW_PROJECTION_KIND && sourcePreviewKind !== PRUNE_PREVIEW_PROJECTION_KIND) {
+      throw new Error("derived_preview_source_kind_unsupported");
+    }
+    const sourceThreadIds = Array.from(new Set((Array.isArray(input.sourceThreadIds) ? input.sourceThreadIds : [])
+      .map((threadId) => normalizeString(threadId, ""))
+      .filter(Boolean)));
+    this.requireThreadInProject(projectId, forkThreadId);
+    for (const sourceThreadId of sourceThreadIds) this.requireThreadInProject(projectId, sourceThreadId);
+    const now = nowIso(options.nowMs);
+    const previewEdgeKind = sourcePreviewKind === MERGE_PREVIEW_PROJECTION_KIND
+      ? "forked_from_merge_preview"
+      : "forked_from_prune_preview";
+    const edges = [
+      {
+        edgeKind: previewEdgeKind,
+        sourceKind: "direct_thread",
+        sourceId: forkThreadId,
+        targetKind: "derived_projection",
+        targetId: sourcePreviewId,
+      },
+      ...sourceThreadIds.map((sourceThreadId) => ({
+        edgeKind: "forked_from_thread",
+        sourceKind: "direct_thread",
+        sourceId: forkThreadId,
+        targetKind: "direct_thread",
+        targetId: sourceThreadId,
+      })),
+    ];
+    const written = [];
+    for (const edge of edges) {
+      const edgeId = `thread_edge_${sha256(stableStringify({ projectId, ...edge })).slice(0, 24)}`;
+      this.db.prepare(`
+        insert into direct_thread_edges (
+          edge_id,
+          project_id,
+          edge_kind,
+          source_kind,
+          source_id,
+          target_kind,
+          target_id,
+          operation_id,
+          status,
+          created_at,
+          metadata_json,
+          edge_state,
+          created_by_operation_id,
+          updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, 'active', ?, ?)
+        on conflict(edge_id) do update set
+          status = 'active',
+          edge_state = 'active',
+          updated_at = excluded.updated_at
+      `).run(
+        edgeId,
+        projectId,
+        edge.edgeKind,
+        edge.sourceKind,
+        edge.sourceId,
+        edge.targetKind,
+        edge.targetId,
+        operationId,
+        now,
+        stableStringify({ systemCreated: true, unlinkViaBridgeAllowed: false, derivedPreviewKind: sourcePreviewKind }),
         operationId,
         now,
       );
@@ -3870,7 +4283,7 @@ class DirectThreadStore {
           sourceDigest,
           createdAt: nowIso(options.nowMs),
           truncated,
-          omittedCounts: truncated ? { item: 1 } : {},
+          omittedCounts: truncated ? { items: 1 } : {},
         }),
         items,
       };
@@ -3952,7 +4365,7 @@ class DirectThreadStore {
           sourceDigest,
           createdAt: nowIso(options.nowMs),
           truncated: false,
-          omittedCounts: { item: omittedItems.length },
+          omittedCounts: { items: omittedItems.length },
         }),
         items: items.slice(0, MAX_PREVIEW_ITEMS),
       };
