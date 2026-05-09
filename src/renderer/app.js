@@ -1779,6 +1779,26 @@ function directRuntimeModeLabel(status) {
   return status?.runtimeModeLabel || status?.runtimeMode || "legacy app-server";
 }
 
+function directActivationBlockers(status = state.directRuntimeStatus) {
+  const blockers = status?.activation?.gateSummary?.blockers;
+  return Array.isArray(blockers) ? blockers : [];
+}
+
+function directActivationBlockedDetail(status = state.directRuntimeStatus) {
+  const activation = status?.activation || {};
+  const blockers = directActivationBlockers(status);
+  if (blockers.length) {
+    return blockers
+      .slice(0, 4)
+      .map((item) => `${item.label || item.id || "gate"}: ${item.reason || item.blockerCode || "blocked"}`)
+      .join("; ");
+  }
+  const reasons = activation.gateSummary?.blockedReasons || {};
+  const codes = Object.keys(reasons);
+  if (codes.length) return codes.slice(0, 4).join(", ");
+  return activation.labels?.detail || "Required activation gates are missing.";
+}
+
 function renderDirectRuntimeStatus() {
   if (!els.directRuntimeModeBadge) return;
   const status = state.directRuntimeStatus || {};
@@ -1789,15 +1809,16 @@ function renderDirectRuntimeStatus() {
   els.directRuntimeModeBadge.textContent = directRuntimeModeLabel(status);
   els.directRuntimeModeBadge.title = status.currentCodexLane || directRuntimeModeLabel(status);
   els.directRuntimeStatusBadge.textContent = state.directRuntimeLoading ? "loading runtime" : directRuntimeStatusLabel(status);
-  els.directRuntimeStatusBadge.title = state.directRuntimeError || activation.labels?.detail || runtime.reason || directRuntimeStatusLabel(status);
+  els.directRuntimeStatusBadge.title = state.directRuntimeError || (activation.state === "blocked" ? directActivationBlockedDetail(status) : activation.labels?.detail) || runtime.reason || directRuntimeStatusLabel(status);
   els.directModelSourceBadge.textContent = `models: ${modelSource}`;
   els.directModelSourceBadge.title = profileId ? `Profile: ${profileId}` : "Model source is not available.";
   if (els.directExperimentalEnableButton) {
-    const canEnable = activation.state === "eligible" && !state.directRuntimeLoading;
-    els.directExperimentalEnableButton.disabled = !canEnable;
+    const canUseEnableAction = Boolean(activeProject()) && Boolean(bridge.enableDirectExperimentalRuntime) && !state.directRuntimeLoading;
+    const canEnable = activation.state === "eligible" && canUseEnableAction;
+    els.directExperimentalEnableButton.disabled = !canUseEnableAction;
     els.directExperimentalEnableButton.title = canEnable
       ? "Enable direct-experimental/live-text for this project."
-      : (activation.labels?.detail || "Direct experimental implementation-lane gates are not eligible.");
+      : `Check direct experimental activation gates: ${directActivationBlockedDetail(status)}`;
   }
   if (els.directExperimentalRollbackButton) {
     const canRollback = activation.rollbackAvailable === true && !state.directRuntimeLoading;
@@ -4352,10 +4373,12 @@ function directActivationClientId(prefix) {
 
 async function enableDirectExperimentalRuntime() {
   const project = activeProject();
-  const activation = state.directRuntimeStatus?.activation || {};
   if (!project || !bridge.enableDirectExperimentalRuntime) return;
+  await refreshDirectAuthStatus();
+  await refreshDirectRuntimeStatus(project.id);
+  const activation = state.directRuntimeStatus?.activation || {};
   if (activation.state !== "eligible") {
-    setLastEvent(`Direct experimental activation blocked: ${activation.labels?.detail || "gates are not eligible"}.`);
+    setLastEvent(`Direct experimental activation blocked: ${directActivationBlockedDetail(state.directRuntimeStatus)}`);
     return;
   }
   const confirmed = window.confirm("Enable direct experimental live-text for this project? This changes only the left Codex lane and keeps rollback available.");

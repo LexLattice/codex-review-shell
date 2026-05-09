@@ -449,6 +449,7 @@ const textOnlyActivation = evaluateDirectExperimentalProjectActivation({
 });
 assert(textOnlyActivation.status.state === "text_only_eligible", "Expected text-only activation to remain informational.");
 assert(textOnlyActivation.status.eligible === false, "Text-only preview must not become implementation-lane activation.");
+assert(textOnlyActivation.status.gateSummary.blockers.some((item) => item.blockerCode === "tool_evidence_missing"), "Expected activation status to expose renderer-safe blocker details.");
 const activationLiveWithTool = {
   ...activationLiveTextOnly,
   toolsEnabled: true,

@@ -300,6 +300,19 @@ function countBlockers(requirements = []) {
   return result;
 }
 
+function rendererSafeBlockers(requirements = []) {
+  return requirements
+    .filter((item) => item.status !== "passed" && item.requirementClass !== "warning_only")
+    .map((item) => ({
+      id: normalizeString(item.id, ""),
+      label: normalizeString(item.label, ""),
+      requirementClass: normalizeString(item.requirementClass, ""),
+      affects: normalizeString(item.affects, ""),
+      blockerCode: normalizeString(item.blockerCode, ""),
+      reason: normalizeString(item.reason, item.blockerCode || ""),
+    }));
+}
+
 function activationLabels(state, target = {}) {
   if (state === "eligible") {
     return {
@@ -340,6 +353,7 @@ function activationLabels(state, target = {}) {
 function rendererSafeActivationStatusFromGate(gate = {}, activationState = {}) {
   const requirements = Array.isArray(gate.requirements) ? gate.requirements : [];
   const blockers = requirements.filter((item) => item.status !== "passed" && item.requirementClass !== "warning_only");
+  const safeBlockers = rendererSafeBlockers(requirements);
   const warningCount = Array.isArray(gate.optionalWarnings) ? gate.optionalWarnings.length : 0;
   const state = normalizeString(gate.state, "blocked");
   const enabled = state === "enabled" || state === "degraded" || state === "rollback_required";
@@ -361,6 +375,7 @@ function rendererSafeActivationStatusFromGate(gate = {}, activationState = {}) {
       requiredCount: requirements.filter((item) => item.requirementClass !== "warning_only").length,
       passedRequiredCount: requirements.filter((item) => item.requirementClass !== "warning_only" && item.status === "passed").length,
       blockedReasons: countBlockers(requirements),
+      blockers: safeBlockers,
       warningsCount: warningCount,
     },
     currentBinding: gate.currentBinding || {},
