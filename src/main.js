@@ -1651,6 +1651,13 @@ function directThreadStoreStatus() {
       operationCount: 0,
       projectionCount: 0,
       contextBuildCount: 0,
+      requestManifestCount: 0,
+      contextPolicyCount: 0,
+      context: {
+        contextBuildsAllowed: false,
+        contextBuildRequiredForNewTurns: false,
+        reasonIfBlocked: "direct_thread_store_unavailable",
+      },
       recovery: {
         error: normalizeString(error?.message, "direct_thread_store_unavailable"),
       },
@@ -1701,6 +1708,7 @@ function ensureDirectLiveTextController() {
   if (directLiveTextController) return directLiveTextController;
   directLiveTextController = new DirectLiveTextController({
     sessionStore: ensureDirectSessionStore(),
+    directThreadStore: ensureDirectThreadStore(),
     profileDoc: ensureDirectCodexProfileDoc(),
     authStore: () => ensureDirectAuthController().activeStore(),
     refreshCredentials: () => ensureDirectAuthLoginCoordinator().refreshCredentials(ensureDirectAuthController()),

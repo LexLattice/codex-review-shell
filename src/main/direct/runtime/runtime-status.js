@@ -345,6 +345,13 @@ function buildDirectRuntimeStatus(options = {}) {
       operationCount: Number(directThreadStore?.operationCount || 0),
       projectionCount: Number(directThreadStore?.projectionCount || 0),
       contextBuildCount: Number(directThreadStore?.contextBuildCount || 0),
+      requestManifestCount: Number(directThreadStore?.requestManifestCount || 0),
+      contextPolicyCount: Number(directThreadStore?.contextPolicyCount || 0),
+      context: isPlainObject(directThreadStore?.context) ? directThreadStore.context : {
+        contextBuildsAllowed: directThreadStore?.contextBuildsAllowed === true,
+        contextBuildRequiredForNewTurns: false,
+        reasonIfBlocked: "",
+      },
       recovery: isPlainObject(directThreadStore?.recovery) ? directThreadStore.recovery : {},
     },
     diagnostics: {

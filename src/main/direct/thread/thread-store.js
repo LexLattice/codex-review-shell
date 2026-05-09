@@ -14,6 +14,17 @@ const {
   buildCompactTranscriptProjection,
   buildRendererTranscriptProjection,
 } = require("./renderer-transcript-projection");
+const {
+  CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND,
+  DIRECT_IMPORT_CHECKPOINT_CONTINUATION_POLICY_ID,
+  DIRECT_TEXT_TURN_EMPTY_CONTEXT_POLICY_ID,
+  DIRECT_TEXT_TURN_RECENT_DIALOGUE_POLICY_ID,
+  buildContextPack,
+  buildContextRecentDialogueProjection,
+  buildRequestManifest,
+  policySnapshot,
+  rendererSafeContextSummary,
+} = require("./context-pack");
 
 const DIRECT_THREAD_STORE_STATUS_SCHEMA = "direct_thread_store_status@1";
 const DIRECT_THREAD_OPERATION_EVENT_SCHEMA = "direct_thread_operation_event@1";
@@ -53,8 +64,10 @@ const DIRECT_THREAD_OPERATION_EVENT_TYPES = new Set([
 ]);
 const DIRECT_THREAD_COUNT_TABLES = new Set([
   "direct_context_builds",
+  "direct_context_policies",
   "direct_operations",
   "direct_projections",
+  "direct_request_manifests",
   "direct_rollouts",
   "direct_threads",
   "direct_turns",
@@ -62,6 +75,7 @@ const DIRECT_THREAD_COUNT_TABLES = new Set([
 const DIRECT_PROJECTION_KINDS = new Set([
   RENDERER_TRANSCRIPT_PROJECTION_KIND,
   COMPACT_TRANSCRIPT_PROJECTION_KIND,
+  CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND,
 ]);
 const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,160}$/;
 
@@ -225,6 +239,26 @@ class DirectThreadStore {
     );
   }
 
+  contextPackPath(projectId, threadId, contextBuildId) {
+    return path.join(
+      this.rootDir,
+      "context-packs",
+      safeStorageKey(projectId, "project"),
+      safeStorageKey(threadId, "thread"),
+      `${requireSafeId(contextBuildId, "context build")}.json`,
+    );
+  }
+
+  requestManifestPath(projectId, threadId, requestManifestId) {
+    return path.join(
+      this.rootDir,
+      "request-manifests",
+      safeStorageKey(projectId, "project"),
+      safeStorageKey(threadId, "thread"),
+      `${requireSafeId(requestManifestId, "request manifest")}.json`,
+    );
+  }
+
   openDatabase() {
     let DatabaseSync = null;
     try {
@@ -288,8 +322,10 @@ class DirectThreadStore {
         current_projection_id text,
         current_renderer_projection_id text,
         current_compact_projection_id text,
+        current_context_recent_dialogue_projection_id text,
         last_renderer_projection_attempt_id text,
         last_compact_projection_attempt_id text,
+        last_context_recent_dialogue_projection_attempt_id text,
         created_at text not null,
         updated_at text not null,
         archived_at text,
@@ -313,6 +349,7 @@ class DirectThreadStore {
         model text,
         request_shape_hash text,
         context_build_id text,
+        request_manifest_id text,
         source_event_start_seq integer,
         source_event_end_seq integer,
         unique(thread_id, turn_ordinal),
@@ -500,9 +537,18 @@ class DirectThreadStore {
         model text not null,
         model_evidence_ref text not null,
         request_shape_hash text not null,
+        request_manifest_path_private text,
+        request_shape_evidence_ref text,
+        endpoint_evidence_ref text,
+        role_mapping_digest text,
+        provider_input_shape_hash text,
+        provider_input_text_hash text,
         endpoint_class text not null,
         endpoint_hash text not null,
         enabled_features_json text not null,
+        continuity_json text,
+        capability_evidence_json text,
+        request_body_storage_audit_json text,
         raw_auth_exposed integer not null default 0,
         raw_request_body_stored integer not null default 0,
         built_at text not null,
@@ -561,8 +607,20 @@ class DirectThreadStore {
     `);
       addColumnIfMissing(this.db, "direct_threads", "current_renderer_projection_id text");
       addColumnIfMissing(this.db, "direct_threads", "current_compact_projection_id text");
+      addColumnIfMissing(this.db, "direct_threads", "current_context_recent_dialogue_projection_id text");
       addColumnIfMissing(this.db, "direct_threads", "last_renderer_projection_attempt_id text");
       addColumnIfMissing(this.db, "direct_threads", "last_compact_projection_attempt_id text");
+      addColumnIfMissing(this.db, "direct_threads", "last_context_recent_dialogue_projection_attempt_id text");
+      addColumnIfMissing(this.db, "direct_turns", "request_manifest_id text");
+      addColumnIfMissing(this.db, "direct_request_manifests", "request_manifest_path_private text");
+      addColumnIfMissing(this.db, "direct_request_manifests", "request_shape_evidence_ref text");
+      addColumnIfMissing(this.db, "direct_request_manifests", "endpoint_evidence_ref text");
+      addColumnIfMissing(this.db, "direct_request_manifests", "role_mapping_digest text");
+      addColumnIfMissing(this.db, "direct_request_manifests", "provider_input_shape_hash text");
+      addColumnIfMissing(this.db, "direct_request_manifests", "provider_input_text_hash text");
+      addColumnIfMissing(this.db, "direct_request_manifests", "continuity_json text");
+      addColumnIfMissing(this.db, "direct_request_manifests", "capability_evidence_json text");
+      addColumnIfMissing(this.db, "direct_request_manifests", "request_body_storage_audit_json text");
       addColumnIfMissing(this.db, "direct_projection_items", "item_id text");
       addColumnIfMissing(this.db, "direct_projection_items", "stable_source_item_key text");
       addColumnIfMissing(this.db, "direct_projection_items", "thread_id text");
@@ -617,13 +675,20 @@ class DirectThreadStore {
       rootExposed: false,
       dbPathExposed: false,
       projectionsHealthy: true,
-      contextBuildsAllowed: this.mode === "context_build_required" || this.mode === "projection_read",
+      contextBuildsAllowed: this.mode !== "disabled",
       threadCount: countRows(this.db, "direct_threads"),
       rolloutCount: countRows(this.db, "direct_rollouts"),
       turnCount: countRows(this.db, "direct_turns"),
       operationCount: countRows(this.db, "direct_operations"),
       projectionCount: countRows(this.db, "direct_projections"),
       contextBuildCount: countRows(this.db, "direct_context_builds"),
+      requestManifestCount: countRows(this.db, "direct_request_manifests"),
+      contextPolicyCount: countRows(this.db, "direct_context_policies"),
+      context: {
+        contextBuildsAllowed: this.mode !== "disabled",
+        contextBuildRequiredForNewTurns: this.mode === "context_build_required",
+        reasonIfBlocked: "",
+      },
       recovery: {
         lastIndexedAt: this.readMeta("last_indexed_at"),
         corruptManifestCount: 0,
@@ -830,7 +895,6 @@ class DirectThreadStore {
         normalizeString(session.updatedAt, nowIso(options.nowMs)),
       );
 
-      this.db.prepare("delete from direct_turns where thread_id = ?").run(manifest.threadId);
       const insertTurn = this.db.prepare(`
         insert into direct_turns (
           turn_id,
@@ -845,9 +909,29 @@ class DirectThreadStore {
           model,
           request_shape_hash,
           context_build_id,
+          request_manifest_id,
           source_event_start_seq,
           source_event_end_seq
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        on conflict(turn_id) do update set
+          rollout_id = excluded.rollout_id,
+          turn_ordinal = excluded.turn_ordinal,
+          state = excluded.state,
+          stream_phase = excluded.stream_phase,
+          started_at = excluded.started_at,
+          completed_at = excluded.completed_at,
+          model = excluded.model,
+          request_shape_hash = excluded.request_shape_hash,
+          context_build_id = case
+            when excluded.context_build_id != '' then excluded.context_build_id
+            else direct_turns.context_build_id
+          end,
+          request_manifest_id = case
+            when excluded.request_manifest_id != '' then excluded.request_manifest_id
+            else direct_turns.request_manifest_id
+          end,
+          source_event_start_seq = excluded.source_event_start_seq,
+          source_event_end_seq = excluded.source_event_end_seq
       `);
       let nextEventSeq = 1;
       turns.forEach((turn, index) => {
@@ -868,6 +952,7 @@ class DirectThreadStore {
           normalizeString(turn.model, session.model),
           normalizeString(turn.requestShapeHash || session.requestShapeHash, ""),
           normalizeString(turn.contextBuildId, ""),
+          normalizeString(turn.requestManifestId, ""),
           startSeq,
           endSeq,
         );
@@ -887,6 +972,12 @@ class DirectThreadStore {
       return {
         currentColumn: "current_compact_projection_id",
         attemptColumn: "last_compact_projection_attempt_id",
+      };
+    }
+    if (projectionKind === CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND) {
+      return {
+        currentColumn: "current_context_recent_dialogue_projection_id",
+        attemptColumn: "last_context_recent_dialogue_projection_attempt_id",
       };
     }
     throw new Error(`Unsupported direct projection kind: ${projectionKind}`);
@@ -1200,6 +1291,352 @@ class DirectThreadStore {
     }
   }
 
+  buildContextRecentDialogueProjection(threadId, options = {}) {
+    const safeThreadId = requireSafeId(threadId, "thread");
+    const lockKey = `${safeThreadId}:${CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND}`;
+    if (this.projectionBuildLocks.has(lockKey)) throw new Error("projection_build_in_progress");
+    this.projectionBuildLocks.add(lockKey);
+    try {
+      const rendererRow = this.currentProjectionRow(safeThreadId, RENDERER_TRANSCRIPT_PROJECTION_KIND);
+      const rendererProjection = this.projectionFromRow(rendererRow);
+      if (!rendererProjection || rendererProjection.status !== "valid" || rendererProjection.unsafeForRenderer === true) {
+        throw new Error("context_recent_dialogue requires a current valid renderer transcript projection.");
+      }
+      const rendererItems = this.readProjectionItems(rendererProjection.projectionId);
+      const buildResult = buildContextRecentDialogueProjection({
+        rendererProjection,
+        rendererItems,
+        nowMs: options.nowMs,
+      });
+      const existing = this.currentProjectionRow(safeThreadId, CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND);
+      if (!options.force && existing) {
+        const existingSource = this.projectionFromRow(existing)?.source || {};
+        if (existingSource.sourceDigest && existingSource.sourceDigest === buildResult.sourceDigest && existing.status === "valid") {
+          return {
+            projectionId: existing.projection_id,
+            projectionKind: CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND,
+            status: existing.status,
+            reused: true,
+            itemCount: this.readProjectionItems(existing.projection_id).length,
+          };
+        }
+      }
+      return this.writeProjectionBuildResult(buildResult, { ...options, force: options.force === true });
+    } finally {
+      this.projectionBuildLocks.delete(lockKey);
+    }
+  }
+
+  upsertContextPolicy(policy, options = {}) {
+    const snapshot = isPlainObject(policy) ? policy : policySnapshot(DIRECT_TEXT_TURN_EMPTY_CONTEXT_POLICY_ID);
+    this.db.prepare(`
+      insert into direct_context_policies (
+        policy_id,
+        policy_version,
+        purpose,
+        status,
+        definition_json,
+        created_at
+      ) values (?, ?, ?, 'active', ?, ?)
+      on conflict(policy_id) do update set
+        policy_version = excluded.policy_version,
+        purpose = excluded.purpose,
+        status = excluded.status,
+        definition_json = excluded.definition_json
+    `).run(
+      normalizeString(snapshot.policyId, ""),
+      normalizeString(snapshot.policyVersion, ""),
+      normalizeString(snapshot.purpose, ""),
+      JSON.stringify(snapshot),
+      nowIso(options.nowMs),
+    );
+  }
+
+  writeContextPack(contextPack = {}, options = {}) {
+    const contextBuildId = requireSafeId(contextPack.contextBuildId, "context build");
+    const projectId = normalizeString(contextPack.projectId, "");
+    const threadId = requireSafeId(contextPack.threadId, "thread");
+    const turnId = normalizeString(contextPack.turnId, "");
+    const artifactPath = this.contextPackPath(projectId, threadId, contextBuildId);
+    const artifactExisted = fs.existsSync(artifactPath);
+    writeJsonAtomic(artifactPath, contextPack);
+    try {
+      return this.transaction(() => {
+        this.upsertContextPolicy(contextPack.policy || policySnapshot(DIRECT_TEXT_TURN_EMPTY_CONTEXT_POLICY_ID), options);
+        this.db.prepare(`
+          insert into direct_context_builds (
+            context_build_id,
+            project_id,
+            thread_id,
+            turn_id,
+            policy_id,
+            policy_version,
+            purpose,
+            context_pack_path_private,
+            shape_hash,
+            content_hash,
+            source_json,
+            built_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          on conflict(context_build_id) do update set
+            context_pack_path_private = excluded.context_pack_path_private,
+            shape_hash = excluded.shape_hash,
+            content_hash = excluded.content_hash,
+            source_json = excluded.source_json,
+            built_at = excluded.built_at
+        `).run(
+          contextBuildId,
+          projectId,
+          threadId,
+          turnId,
+          normalizeString(contextPack.policy?.policyId, ""),
+          normalizeString(contextPack.policy?.policyVersion, ""),
+          normalizeString(contextPack.purpose, ""),
+          artifactPath,
+          normalizeString(contextPack.contextPackShapeHash, ""),
+          normalizeString(contextPack.contextPackContentHash, ""),
+          JSON.stringify({
+            sourceArtifacts: contextPack.sourceArtifacts || [],
+            sourceProjections: contextPack.sourceProjections || [],
+            policyDigest: normalizeString(contextPack.policy?.policyDigest, ""),
+            roleMappingDigest: normalizeString(contextPack.roleMapping?.mappingDigest, ""),
+            rawExposure: contextPack.rawExposure || {},
+            integrity: contextPack.integrity || {},
+          }),
+          normalizeString(contextPack.builtAt, nowIso(options.nowMs)),
+        );
+        if (turnId) {
+          this.db.prepare("update direct_turns set context_build_id = ? where turn_id = ? and thread_id = ?")
+            .run(contextBuildId, turnId, threadId);
+        }
+        return {
+          contextBuildId,
+          contextPackPathPrivate: artifactPath,
+          contextPackContentHash: normalizeString(contextPack.contextPackContentHash, ""),
+          contextPackShapeHash: normalizeString(contextPack.contextPackShapeHash, ""),
+        };
+      });
+    } catch (error) {
+      if (!artifactExisted) {
+        try {
+          fs.unlinkSync(artifactPath);
+        } catch {}
+      }
+      throw error;
+    }
+  }
+
+  readContextPack(contextBuildId) {
+    const row = this.db.prepare("select * from direct_context_builds where context_build_id = ?")
+      .get(requireSafeId(contextBuildId, "context build"));
+    if (!row) return null;
+    return readJsonFile(row.context_pack_path_private);
+  }
+
+  writeRequestManifest(requestManifest = {}, options = {}) {
+    const requestManifestId = requireSafeId(requestManifest.requestManifestId, "request manifest");
+    const projectId = normalizeString(requestManifest.projectId, "");
+    const threadId = requireSafeId(requestManifest.threadId, "thread");
+    const turnId = requireSafeId(requestManifest.turnId, "turn");
+    const contextBuildId = requireSafeId(requestManifest.contextBuildId, "context build");
+    const artifactPath = this.requestManifestPath(projectId, threadId, requestManifestId);
+    const artifactExisted = fs.existsSync(artifactPath);
+    writeJsonAtomic(artifactPath, requestManifest);
+    try {
+      return this.transaction(() => {
+        this.db.prepare(`
+          insert into direct_request_manifests (
+            request_manifest_id,
+            project_id,
+            thread_id,
+            turn_id,
+            context_build_id,
+            runtime_mode,
+            transport,
+            model,
+            model_evidence_ref,
+            request_shape_hash,
+            request_manifest_path_private,
+            request_shape_evidence_ref,
+            endpoint_evidence_ref,
+            role_mapping_digest,
+            provider_input_shape_hash,
+            provider_input_text_hash,
+            endpoint_class,
+            endpoint_hash,
+            enabled_features_json,
+            continuity_json,
+            capability_evidence_json,
+            request_body_storage_audit_json,
+            raw_auth_exposed,
+            raw_request_body_stored,
+            built_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          on conflict(request_manifest_id) do update set
+            request_manifest_path_private = excluded.request_manifest_path_private,
+            request_shape_hash = excluded.request_shape_hash,
+            enabled_features_json = excluded.enabled_features_json,
+            continuity_json = excluded.continuity_json,
+            capability_evidence_json = excluded.capability_evidence_json,
+            request_body_storage_audit_json = excluded.request_body_storage_audit_json,
+            raw_auth_exposed = excluded.raw_auth_exposed,
+            raw_request_body_stored = excluded.raw_request_body_stored,
+            built_at = excluded.built_at
+        `).run(
+          requestManifestId,
+          projectId,
+          threadId,
+          turnId,
+          contextBuildId,
+          normalizeString(requestManifest.runtimeMode, "direct-experimental"),
+          normalizeString(requestManifest.transport, "live-text"),
+          normalizeString(requestManifest.model, ""),
+          normalizeString(requestManifest.modelEvidenceRef, ""),
+          normalizeString(requestManifest.requestShapeHash, ""),
+          artifactPath,
+          normalizeString(requestManifest.capabilityEvidence?.requestShapeEvidenceRef, ""),
+          normalizeString(requestManifest.capabilityEvidence?.endpointEvidenceRef, ""),
+          normalizeString(requestManifest.roleMappingDigest, ""),
+          normalizeString(requestManifest.providerInputProjection?.providerInputShapeHash, ""),
+          normalizeString(requestManifest.providerInputProjection?.providerInputTextHash, ""),
+          normalizeString(requestManifest.endpointClass, ""),
+          normalizeString(requestManifest.endpointHash, ""),
+          JSON.stringify(requestManifest.enabledFeatures || {}),
+          JSON.stringify(requestManifest.continuity || {}),
+          JSON.stringify(requestManifest.capabilityEvidence || {}),
+          JSON.stringify(requestManifest.requestBodyStorageAudit || {}),
+          requestManifest.rawAuthExposed === true ? 1 : 0,
+          requestManifest.rawRequestBodyStored === true ? 1 : 0,
+          normalizeString(requestManifest.builtAt, nowIso(options.nowMs)),
+        );
+        this.db.prepare("update direct_turns set request_manifest_id = ?, context_build_id = ? where turn_id = ? and thread_id = ?")
+          .run(requestManifestId, contextBuildId, turnId, threadId);
+        return {
+          requestManifestId,
+          requestManifestPathPrivate: artifactPath,
+          requestShapeHash: normalizeString(requestManifest.requestShapeHash, ""),
+          providerInputShapeHash: normalizeString(requestManifest.providerInputProjection?.providerInputShapeHash, ""),
+          providerInputTextHash: normalizeString(requestManifest.providerInputProjection?.providerInputTextHash, ""),
+        };
+      });
+    } catch (error) {
+      if (!artifactExisted) {
+        try {
+          fs.unlinkSync(artifactPath);
+        } catch {}
+      }
+      throw error;
+    }
+  }
+
+  readRequestManifest(requestManifestId) {
+    const row = this.db.prepare("select * from direct_request_manifests where request_manifest_id = ?")
+      .get(requireSafeId(requestManifestId, "request manifest"));
+    if (!row) return null;
+    return readJsonFile(row.request_manifest_path_private);
+  }
+
+  currentValidContextProjection(threadId) {
+    const row = this.currentProjectionRow(threadId, CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND);
+    const projection = this.projectionFromRow(row);
+    if (!projection || projection.status !== "valid" || projection.unsafeForContextBuild === true) return null;
+    return projection;
+  }
+
+  buildAndPersistContextForTextTurn(input = {}, options = {}) {
+    const session = isPlainObject(input.session) ? input.session : null;
+    if (!session) throw new Error("Direct context build requires a session.");
+    const projectId = normalizeString(input.projectId || session.projectId, "");
+    const threadId = requireSafeId(input.threadId || session.sessionId, "thread");
+    const turnId = requireSafeId(input.turnId, "turn");
+    let contextProjection = null;
+    let contextItems = [];
+    if (input.useRecentDialogue !== false) {
+      try {
+        const built = this.buildContextRecentDialogueProjection(threadId, options);
+        if (built.status === "valid") {
+          contextProjection = this.projectionFromRow(this.currentProjectionRow(threadId, CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND));
+          contextItems = this.readProjectionItems(contextProjection.projectionId);
+        }
+      } catch (error) {
+        if (input.requireRecentDialogue === true) throw error;
+      }
+    }
+    const policyId = contextProjection
+      ? DIRECT_TEXT_TURN_RECENT_DIALOGUE_POLICY_ID
+      : DIRECT_TEXT_TURN_EMPTY_CONTEXT_POLICY_ID;
+    const contextPack = buildContextPack({
+      projectId,
+      threadId,
+      turnId,
+      purpose: "direct_text_turn",
+      policyId,
+      contextProjection,
+      contextItems,
+      currentUserPrompt: preserveString(input.currentUserPrompt),
+      nowMs: options.nowMs,
+    });
+    this.writeContextPack(contextPack, options);
+    const request = buildRequestManifest({
+      contextPack,
+      model: input.model,
+      requestShape: input.requestShape,
+      requestShapeHash: input.requestShapeHash,
+      endpointClass: input.endpointClass,
+      endpointHash: input.endpointHash,
+      modelEvidenceRef: input.modelEvidenceRef,
+      requestShapeEvidenceRef: input.requestShapeEvidenceRef,
+      endpointEvidenceRef: input.endpointEvidenceRef,
+      nowMs: options.nowMs,
+    });
+    this.writeRequestManifest(request.requestManifest, options);
+    return {
+      contextPack,
+      requestManifest: request.requestManifest,
+      providerInput: request.providerInput,
+      rendererSafeSummary: rendererSafeContextSummary(contextPack, request.requestManifest),
+    };
+  }
+
+  buildAndPersistContextForCheckpointContinuation(input = {}, options = {}) {
+    const session = isPlainObject(input.session) ? input.session : null;
+    if (!session) throw new Error("Direct checkpoint context build requires a session.");
+    const projectId = normalizeString(input.projectId || session.projectId, "");
+    const threadId = requireSafeId(input.threadId || session.sessionId, "thread");
+    const turnId = requireSafeId(input.turnId, "turn");
+    const seed = isPlainObject(input.seed) ? input.seed : {};
+    const contextPack = buildContextPack({
+      projectId,
+      threadId,
+      turnId,
+      purpose: "import_checkpoint_continuation",
+      policyId: DIRECT_IMPORT_CHECKPOINT_CONTINUATION_POLICY_ID,
+      currentUserPrompt: preserveString(input.currentUserPrompt),
+      checkpointSeed: seed,
+      nowMs: options.nowMs,
+    });
+    this.writeContextPack(contextPack, options);
+    const request = buildRequestManifest({
+      contextPack,
+      model: input.model,
+      requestShape: input.requestShape,
+      requestShapeHash: input.requestShapeHash || seed.requestShapeHash,
+      endpointClass: input.endpointClass,
+      endpointHash: input.endpointHash,
+      modelEvidenceRef: input.modelEvidenceRef,
+      requestShapeEvidenceRef: input.requestShapeEvidenceRef,
+      endpointEvidenceRef: input.endpointEvidenceRef,
+      nowMs: options.nowMs,
+    });
+    this.writeRequestManifest(request.requestManifest, options);
+    return {
+      contextPack,
+      requestManifest: request.requestManifest,
+      providerInput: request.providerInput,
+      rendererSafeSummary: rendererSafeContextSummary(contextPack, request.requestManifest),
+    };
+  }
+
   readProjectionByKind(threadId, projectionKind, options = {}) {
     const safeThreadId = requireSafeId(threadId, "thread");
     const row = options.projectionId
@@ -1310,6 +1747,7 @@ class DirectThreadStore {
       this.db.prepare("update direct_projections set status = 'stale', source_json = ? where projection_id = ?")
         .run(JSON.stringify(staleProjectionSource(projection)), projection.projectionId);
       const invalidatedCompactProjectionIds = [];
+      const invalidatedContextProjectionIds = [];
       if (projection.projectionKind === RENDERER_TRANSCRIPT_PROJECTION_KIND) {
         const compactRows = this.db.prepare(`
           select *
@@ -1332,12 +1770,34 @@ class DirectThreadStore {
             .run(nowIso(), projection.threadId, compactProjection.projectionId);
           invalidatedCompactProjectionIds.push(compactProjection.projectionId);
         }
+        const contextRows = this.db.prepare(`
+          select *
+          from direct_projections
+          where thread_id = ? and projection_kind = ? and status = 'valid'
+        `).all(projection.threadId, CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND);
+        for (const contextRow of contextRows) {
+          const contextProjection = this.projectionFromRow(contextRow);
+          const sourceProjectionIds = Array.isArray(contextProjection.source?.sourceProjectionIds)
+            ? contextProjection.source.sourceProjectionIds
+            : [];
+          if (!sourceProjectionIds.includes(projection.projectionId)) continue;
+          this.db.prepare("update direct_projections set status = 'stale', source_json = ? where projection_id = ?")
+            .run(JSON.stringify(staleProjectionSource(contextProjection)), contextProjection.projectionId);
+          this.db.prepare(`
+            delete from direct_thread_current_projections
+            where thread_id = ? and projection_kind = ? and projection_id = ?
+          `).run(projection.threadId, CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND, contextProjection.projectionId);
+          this.db.prepare("update direct_threads set current_context_recent_dialogue_projection_id = '', updated_at = ? where thread_id = ? and current_context_recent_dialogue_projection_id = ?")
+            .run(nowIso(), projection.threadId, contextProjection.projectionId);
+          invalidatedContextProjectionIds.push(contextProjection.projectionId);
+        }
       }
       return {
         projectionId: projection.projectionId,
         status: "stale",
         staleReason,
         invalidatedCompactProjectionIds,
+        invalidatedContextProjectionIds,
       };
     });
   }
@@ -1537,8 +1997,12 @@ class DirectThreadStore {
 
 module.exports = {
   COMPACT_TRANSCRIPT_PROJECTION_KIND,
+  CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND,
   DIRECT_ROLLOUT_MANIFEST_SCHEMA,
   DIRECT_PROJECTION_KINDS,
+  DIRECT_IMPORT_CHECKPOINT_CONTINUATION_POLICY_ID,
+  DIRECT_TEXT_TURN_EMPTY_CONTEXT_POLICY_ID,
+  DIRECT_TEXT_TURN_RECENT_DIALOGUE_POLICY_ID,
   DIRECT_THREAD_OPERATION_EVENT_SCHEMA,
   DIRECT_THREAD_OPERATION_LEDGER_MANIFEST_SCHEMA,
   DIRECT_THREAD_OPERATION_TYPES,
