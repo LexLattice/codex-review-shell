@@ -25,6 +25,7 @@ const HANDOFF_KINDS = {
 };
 const ACTIVE_HANDOFF_STATUSES = new Set(["staged", "copied", "opened-thread", "submitted-manually", "response-pending", "response-captured"]);
 const CHATGPT_ALLOWED_HOSTS = new Set(["chatgpt.com", "www.chatgpt.com", "chat.openai.com", "www.chat.openai.com"]);
+const DIRECT_FORK_PREVIEW_ITEM_CAP = 20;
 const ZOOM_POLICY = bridge?.zoomConstants || {};
 // Fallbacks are only used when preload is absent; normal runtime gets these
 // values from the shared zoom policy exposed through the bridge.
@@ -2597,7 +2598,7 @@ function renderDirectThreadProjectionDetail() {
   previewActions.className = "threads-action-bar direct-preview-actions";
   const hint = document.createElement("p");
   hint.className = "muted";
-  hint.textContent = "Previews are non-runnable information views. They do not create context packs, request manifests, sessions, or provider requests.";
+  hint.textContent = `Previews are non-runnable information views. Fork preview seed metadata uses the first ${DIRECT_FORK_PREVIEW_ITEM_CAP} loaded projection items only.`;
   const buttons = document.createElement("div");
   buttons.className = "heading-actions";
   for (const [kind, label] of [["merge", "Merge preview"], ["prune", "Prune preview"], ["fork", "Fork preview"]]) {
@@ -3951,12 +3952,20 @@ async function createDirectThreadPreview(kind) {
       result = await bridge.createDirectThreadForkPreview(project.id, {
         ...expected,
         selectedStableSourceItemKeys: (state.directThreadWorkbench.selectedProjection?.projection?.items || [])
-          .slice(0, 20)
+          .slice(0, DIRECT_FORK_PREVIEW_ITEM_CAP)
           .map((item) => item.stableSourceItemKey)
           .filter(Boolean),
       });
     }
     if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    if (kind === "fork") {
+      const loadedCount = state.directThreadWorkbench.selectedProjection?.projection?.items?.length || 0;
+      if (loadedCount > DIRECT_FORK_PREVIEW_ITEM_CAP) {
+        setLastEvent(`Fork preview seed metadata used first ${DIRECT_FORK_PREVIEW_ITEM_CAP} loaded projection items out of ${loadedCount}.`);
+      } else {
+        setLastEvent(`Created fork preview (${result?.projectionId || "projection"}).`);
+      }
+    }
     state.directThreadWorkbench.selectedPreviewId = result?.projectionId || "";
     if (state.directThreadWorkbench.selectedPreviewId && bridge.readDirectThreadWorkbenchPreviewProjection) {
       state.directThreadWorkbench.selectedPreview = await bridge.readDirectThreadWorkbenchPreviewProjection(project.id, state.directThreadWorkbench.selectedPreviewId, {
@@ -3966,7 +3975,7 @@ async function createDirectThreadPreview(kind) {
       });
     }
     state.directThreadWorkbench.status = "loaded";
-    setLastEvent(`Created ${kind} preview (${result?.projectionId || "projection"}).`);
+    if (kind !== "fork") setLastEvent(`Created ${kind} preview (${result?.projectionId || "projection"}).`);
     await loadDirectThreadWorkbench({ refresh: true });
   } catch (error) {
     if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;

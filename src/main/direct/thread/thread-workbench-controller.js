@@ -255,19 +255,23 @@ class DirectThreadWorkbenchController {
     this.ensureProjectProjections(projectId, { force: params.refresh === true });
     const threadPage = pageParams(params.page?.threads || params.threads || {}, 80);
     const filters = isPlainObject(params.filters) ? params.filters : {};
-    const allThreads = this.threadStore.listThreadSummaries(projectId, {
+    const textQuery = normalizeString(filters.textQuery, "");
+    const threadQuery = {
       includeHidden: filters.includeHidden === true,
       includeArchived: filters.includeArchived === true,
       includeSoftDeleted: filters.includeSoftDeleted === true,
+      textQuery,
+    };
+    const totalThreads = this.threadStore.countThreadSummaries(projectId, threadQuery);
+    const threads = this.threadStore.listThreadSummaries(projectId, {
+      ...threadQuery,
+      offset: threadPage.offset,
+      limit: threadPage.limit,
     }).map((thread) => ({
       ...thread,
       rendererProjection: this.currentThreadProjectionSummary(thread.threadId),
       activeTurnCount: this.threadStore.activeTurnCount(thread.threadId),
     }));
-    const textQuery = normalizeString(filters.textQuery, "").toLowerCase();
-    const filteredThreads = textQuery
-      ? allThreads.filter((thread) => String(thread.title || "").toLowerCase().includes(textQuery))
-      : allThreads;
     const lifecycleProjection = this.threadStore.readThreadLifecycleProjection(projectId, { offset: 0, limit: 1 });
     const graphProjection = this.threadStore.readThreadGraphProjection(projectId, { offset: 0, limit: 120 });
     const operations = this.readOperationHistorySync(projectId, params.page?.operations || { limit: 20 });
@@ -286,9 +290,9 @@ class DirectThreadWorkbenchController {
         textQuery: normalizeString(filters.textQuery, ""),
       },
       search: {
-        mode: textQuery ? "local_current_snapshot" : "none",
+        mode: textQuery ? "projection_index" : "none",
         queryApplied: Boolean(textQuery),
-        resultMayBePartial: Boolean(textQuery),
+        resultMayBePartial: false,
       },
       lifecycle: {
         projectionId: normalizeString(lifecycleProjection?.projectionId, ""),
@@ -303,12 +307,12 @@ class DirectThreadWorkbenchController {
         itemCount: Number(graphProjection?.page?.total || graphProjection?.items?.length || 0),
         items: Array.isArray(graphProjection?.items) ? graphProjection.items.slice(0, 120) : [],
       },
-      threads: filteredThreads.slice(threadPage.offset, threadPage.offset + threadPage.limit),
+      threads,
       page: {
         threads: {
           ...threadPage,
-          returned: Math.min(threadPage.limit, Math.max(0, filteredThreads.length - threadPage.offset)),
-          total: filteredThreads.length,
+          returned: threads.length,
+          total: totalThreads,
         },
       },
       operationSummary: operations,
@@ -422,15 +426,30 @@ class DirectThreadWorkbenchController {
       from direct_operations
       where ${where.join(" and ")}
     `).get(...values);
+    const operationIds = rows.map((row) => row.operation_id);
+    const effectRows = operationIds.length
+      ? this.threadStore.db.prepare(`
+        select operation_id, effect_kind, target_kind, target_id, renderer_safe_summary, created_at
+        from direct_operation_effects
+        where operation_id in (${operationIds.map(() => "?").join(", ")})
+        order by operation_id asc, effect_ordinal asc
+      `).all(...operationIds)
+      : [];
+    const effectsByOperationId = new Map();
+    for (const effect of effectRows) {
+      if (!effectsByOperationId.has(effect.operation_id)) effectsByOperationId.set(effect.operation_id, []);
+      effectsByOperationId.get(effect.operation_id).push({
+        effectKind: effect.effect_kind,
+        targetKind: effect.target_kind,
+        targetId: effect.target_id,
+        rendererSafeSummary: effect.renderer_safe_summary,
+        createdAt: effect.created_at,
+      });
+    }
     const entries = rows.map((row) => {
       const target = parseJson(row.target_json, {});
       const result = parseJson(row.result_json, {});
-      const effects = this.threadStore.db.prepare(`
-        select effect_kind, target_kind, target_id, renderer_safe_summary, created_at
-        from direct_operation_effects
-        where operation_id = ?
-        order by effect_ordinal asc
-      `).all(row.operation_id);
+      const effects = effectsByOperationId.get(row.operation_id) || [];
       return {
         operationId: row.operation_id,
         operationType: row.operation_type,
