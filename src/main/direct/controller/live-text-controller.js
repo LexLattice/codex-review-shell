@@ -1034,11 +1034,12 @@ class DirectLiveTextController {
     let operationInputDigest = "";
     let operationCommitted = false;
     try {
+      forkStartId = `derived_fork_start_${sha256(`${projectId}:${clientDerivedForkStartId}:${sourcePreviewKind}:${sourcePreviewId}`).slice(0, 24)}`;
       const existing = store.operationByClient(projectId, clientOperationId);
       if (existing) {
         const existingResult = store.operationResult(existing);
         const existingForkStartId = normalizeString(existingResult?.result?.forkStartId, "");
-        if (existingForkStartId && existingForkStartId !== clientDerivedForkStartId) {
+        if (existingForkStartId && existingForkStartId !== forkStartId) {
           const error = new Error("client_operation_id_conflict");
           error.code = "client_operation_id_conflict";
           throw error;
@@ -1083,7 +1084,6 @@ class DirectLiveTextController {
         model,
         requestShapeHash,
       }));
-      forkStartId = `derived_fork_start_${sha256(`${projectId}:${clientDerivedForkStartId}:${sourcePreviewKind}:${sourcePreviewId}`).slice(0, 24)}`;
       const existingByForkStartId = store.db.prepare(`
         select *
         from direct_operations
@@ -1135,7 +1135,10 @@ class DirectLiveTextController {
         continuityState: "fresh_session_only",
         composerState: "disabled_until_first_turn_terminal",
         forkStartId,
+        forkSeedId: derivedForkSeed.derivedForkSeedId,
         derivedForkSeedId: derivedForkSeed.derivedForkSeedId,
+        seedShapeHash: derivedForkSeed.seedShapeHash,
+        parentForkLineage: derivedForkSeed.parentLineage,
         sourcePreviewId,
         sourcePreviewKind,
         sourcePreviewDigest: seedPreview.projection.projectionDigest,
@@ -1170,14 +1173,6 @@ class DirectLiveTextController {
           sourcePreviewDigest: seedPreview.projection.projectionDigest,
         },
       ], options);
-      const patchedSession = this.sessionStore.readSession(session.sessionId);
-      this.sessionStore.writeSession({
-        ...patchedSession,
-        forkSeedId: derivedForkSeed.derivedForkSeedId,
-        derivedForkSeedId: derivedForkSeed.derivedForkSeedId,
-        seedShapeHash: derivedForkSeed.seedShapeHash,
-        parentForkLineage: derivedForkSeed.parentLineage,
-      });
       this.indexDirectThreadStoreSession(session.sessionId, options);
       const contextResult = store.buildAndPersistContextForDerivedPreviewForkStart({
         session: this.sessionStore.readSession(session.sessionId),

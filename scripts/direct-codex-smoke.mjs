@@ -1303,6 +1303,18 @@ try {
       assert(mergeForkSession.sourceClass === "forked-direct-native", "Derived merge fork must create a forked direct-native session.");
       assert(mergeForkSession.providerContinuityAvailable === false, "Derived merge fork must not claim provider continuity.");
       assert(mergeForkSession.composerState === "enabled_after_completed_first_turn", "Derived merge fork composer should enable only after terminal completion.");
+      const mergeRetryFetchCallsBefore = forkStartFetchCalls;
+      const mergeForkRetry = await forkLiveController.startForkFromDerivedPreview({
+        project: { id: "project_fork_start" },
+        sourcePreviewId: mergePreparation.sourcePreviewId,
+        sourcePreviewKind: mergePreparation.sourcePreviewKind,
+        clientDerivedForkStartId: "client_derived_merge_fork_start_1",
+        clientOperationId: "client_derived_merge_fork_operation_1",
+        currentUserPrompt: "Start a fresh implementation fork from this merged evidence.",
+        selectedModel: mergePreparation.selectedModel,
+      });
+      assert(mergeForkRetry.sessionId === mergeForkResult.sessionId, "Derived fork retry with same idempotency keys should return the existing session.");
+      assert(forkStartFetchCalls === mergeRetryFetchCallsBefore, "Derived fork retry must not resend provider transport.");
 
       const postMergeSnapshot = await forkWorkbenchController.getSnapshot({ id: "project_fork_start" }, { refresh: true });
       const prunePreviewOperation = await forkWorkbenchController.createPrunePreview({ id: "project_fork_start" }, {

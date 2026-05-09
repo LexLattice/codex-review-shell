@@ -2946,18 +2946,28 @@ class DirectThreadStore {
     if (!sourceThreadIds.length) throw new Error("source_preview_lineage_missing");
     if (sourceThreadIds.length > MAX_DERIVED_FORK_SEED_SOURCE_THREADS) throw new Error("derived_fork_seed_source_thread_cap_exceeded");
     const sourceRendererProjectionRefs = [];
+    const projectionIds = Array.from(new Set(sourceRefs.map((ref) => normalizeString(ref.projectionId, "")).filter(Boolean)));
+    const projectionDigestById = new Map();
+    if (projectionIds.length) {
+      const placeholders = projectionIds.map(() => "?").join(", ");
+      for (const row of this.db.prepare(`select * from direct_projections where projection_id in (${placeholders})`).all(...projectionIds)) {
+        const projection = this.projectionFromRow(row);
+        if (projection) projectionDigestById.set(projection.projectionId, normalizeString(projection.projectionDigest, ""));
+      }
+    }
+    const seenProjectionRefs = new Set();
     for (const ref of sourceRefs) {
       const projectionId = normalizeString(ref.projectionId, "");
       const threadId = normalizeString(ref.threadId, "");
       if (!projectionId || !threadId) continue;
-      if (!sourceRendererProjectionRefs.some((entry) => entry.projectionId === projectionId && entry.threadId === threadId)) {
-        const projection = this.projectionFromRow(this.db.prepare("select * from direct_projections where projection_id = ?").get(projectionId));
-        sourceRendererProjectionRefs.push({
-          threadId,
-          projectionId,
-          projectionDigest: normalizeString(projection?.projectionDigest, ""),
-        });
-      }
+      const refKey = `${threadId}:${projectionId}`;
+      if (seenProjectionRefs.has(refKey)) continue;
+      seenProjectionRefs.add(refKey);
+      sourceRendererProjectionRefs.push({
+        threadId,
+        projectionId,
+        projectionDigest: normalizeString(projectionDigestById.get(projectionId), ""),
+      });
     }
     for (const threadId of sourceThreadIds) {
       const row = this.requireThreadInProject(projectId, threadId);
@@ -3004,16 +3014,12 @@ class DirectThreadStore {
       evidence.push(`${marker} ${normalizeString(item.threadId, "")}\n${clipped}`);
       totalChars += clipped.length;
     }
-    if (sourcePreviewKind === PRUNE_PREVIEW_PROJECTION_KIND && Number(preview.projection.caps?.omittedCounts?.item || 0) > 0 && omittedMarkers === 0) {
+    const pruneOmittedItemCount = Number(preview.projection.caps?.omittedCounts?.items || preview.projection.caps?.omittedCounts?.item || 0);
+    if (sourcePreviewKind === PRUNE_PREVIEW_PROJECTION_KIND && pruneOmittedItemCount > 0 && omittedMarkers === 0) {
       throw new Error("derived_fork_seed_caps_exceeded");
     }
     const revalidated = this.previewProjectionRecord(projectId, sourcePreviewId, sourcePreviewKind);
     if (revalidated.projection.projectionDigest !== preview.projection.projectionDigest) throw new Error("source_preview_changed_after_seed");
-    for (const threadId of sourceThreadIds) {
-      const row = this.requireThreadInProject(projectId, threadId);
-      if (normalizeLifecycleState(row.lifecycle_state) === "soft_deleted") throw new Error("source_thread_soft_deleted");
-      if (this.activeTurnCount(threadId) > 0) throw new Error("source_thread_active_turn_changed");
-    }
     const resumeWarning = /\b(resume|continue exactly|previous_response_id|prior approval|prior approvals|replay)\b/i.test(preserveString(input.currentUserPrompt));
     const seedText = [
       "[DERIVED FORK LINEAGE]",
@@ -4277,7 +4283,7 @@ class DirectThreadStore {
           sourceDigest,
           createdAt: nowIso(options.nowMs),
           truncated,
-          omittedCounts: truncated ? { item: 1 } : {},
+          omittedCounts: truncated ? { items: 1 } : {},
         }),
         items,
       };
@@ -4359,7 +4365,7 @@ class DirectThreadStore {
           sourceDigest,
           createdAt: nowIso(options.nowMs),
           truncated: false,
-          omittedCounts: { item: omittedItems.length },
+          omittedCounts: { items: omittedItems.length },
         }),
         items: items.slice(0, MAX_PREVIEW_ITEMS),
       };
