@@ -1639,6 +1639,7 @@ function ensureDirectThreadWorkbenchController() {
     threadStore: ensureDirectThreadStore(),
     sessionStore: ensureDirectSessionStore(),
     projectResolver: (projectId) => getProjectById(projectId),
+    liveTextController: () => ensureDirectLiveTextController(),
   });
   return directThreadWorkbenchController;
 }
@@ -4484,6 +4485,23 @@ ipcMain.handle("direct-thread-workbench:create-prune-preview", async (_event, pa
 ipcMain.handle("direct-thread-workbench:create-fork-preview", async (_event, payload) => {
   const project = await getProjectById(payload?.projectId);
   return ensureDirectThreadWorkbenchController().createForkPreview(project, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:prepare-fork-start", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().prepareForkStart(project, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:start-fork-from-preview", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  const result = await ensureDirectThreadWorkbenchController().startForkFromPreview(project, payload || {});
+  emitDirectRuntimeStatus(project);
+  return result;
+});
+
+ipcMain.handle("direct-thread-workbench:read-fork-start-status", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().readForkStartStatus(project, payload?.forkStartId);
 });
 
 ipcMain.handle("direct-thread-workbench:rebuild-lifecycle-projection", async (_event, payload) => {

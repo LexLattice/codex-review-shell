@@ -92,6 +92,7 @@ const state = {
     selectedPreviewId: "",
     selectedProjection: null,
     selectedPreview: null,
+    forkStartPrompt: "",
     lastError: "",
     filters: {
       includeHidden: false,
@@ -2677,6 +2678,30 @@ function renderDirectThreadWorkbenchSide() {
     badge.className = "muted";
     badge.textContent = `${preview.projectionKind} · ${preview.status} · non-runnable`;
     previewBody.appendChild(badge);
+    if (preview.projectionKind === "fork_preview" && preview.status === "valid") {
+      const forkForm = document.createElement("div");
+      forkForm.className = "direct-fork-start-form";
+      const prompt = document.createElement("textarea");
+      prompt.rows = 4;
+      prompt.placeholder = "Current user intent for the fresh fork";
+      prompt.value = state.directThreadWorkbench.forkStartPrompt || "";
+      prompt.addEventListener("input", () => {
+        state.directThreadWorkbench.forkStartPrompt = prompt.value;
+      });
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "primary small";
+      button.textContent = "Start fresh fork";
+      button.disabled = state.directThreadWorkbench.status === "working";
+      button.addEventListener("click", () => {
+        startDirectThreadForkFromSelectedPreview().catch((error) => setLastEvent(`Start fresh fork failed: ${error.message}`));
+      });
+      const note = document.createElement("p");
+      note.className = "muted";
+      note.textContent = "Fresh direct-native session; no provider continuity or source approvals are reused.";
+      forkForm.append(prompt, button, note);
+      previewBody.appendChild(forkForm);
+    }
     for (const item of (preview.items || []).slice(0, 8)) {
       const row = document.createElement("div");
       row.className = "direct-thread-side-row";
@@ -2767,6 +2792,7 @@ function resetDirectThreadWorkbench(projectId = activeProject()?.id || "") {
     selectedPreviewId: "",
     selectedProjection: null,
     selectedPreview: null,
+    forkStartPrompt: "",
     lastError: "",
     filters: {
       includeHidden: Boolean(state.directThreadWorkbench?.filters?.includeHidden),
@@ -3981,6 +4007,57 @@ async function createDirectThreadPreview(kind) {
     if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
     state.directThreadWorkbench.status = "error";
     state.directThreadWorkbench.lastError = `${kind} preview failed: ${error.message}`;
+    setLastEvent(state.directThreadWorkbench.lastError);
+    renderDirectThreadWorkbench();
+  }
+}
+
+async function startDirectThreadForkFromSelectedPreview() {
+  const project = activeProject();
+  const preview = state.directThreadWorkbench.selectedPreview?.projection || null;
+  const currentUserPrompt = String(state.directThreadWorkbench.forkStartPrompt || "").trim();
+  if (!project || !preview || preview.projectionKind !== "fork_preview") return;
+  if (!bridge.prepareDirectThreadForkStart || !bridge.startDirectThreadForkFromPreview) return;
+  if (!currentUserPrompt) {
+    setLastEvent("Start fresh fork needs current user intent.");
+    return;
+  }
+  state.directThreadWorkbench.status = "working";
+  renderDirectThreadWorkbench();
+  const requestVersion = nextRequestVersion("directThreadWorkbenchOperation");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  try {
+    const expected = directThreadWorkbenchExpectedInput({
+      sourcePreviewId: preview.projectionId,
+      expectedSourcePreviewDigest: preview.projectionDigest || "",
+    });
+    const prepared = await bridge.prepareDirectThreadForkStart(project.id, expected);
+    if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    const confirmed = confirm(`Start fresh fork from this preview using ${prepared.selectedModel || "the selected direct model"}? This does not resume provider state.`);
+    if (!confirmed) {
+      state.directThreadWorkbench.status = "loaded";
+      renderDirectThreadWorkbench();
+      return;
+    }
+    const result = await bridge.startDirectThreadForkFromPreview(project.id, directThreadWorkbenchExpectedInput({
+      clientForkStartId: createId("direct_fork_start"),
+      clientOperationId: createId("direct_fork_start_op"),
+      confirmationId: prepared.confirmationId,
+      sourcePreviewId: prepared.sourcePreviewId,
+      expectedSourcePreviewDigest: prepared.sourcePreviewDigest,
+      currentUserPrompt,
+      selectedModel: prepared.selectedModel || "",
+    }));
+    if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directThreadWorkbench.forkStartPrompt = "";
+    state.directThreadWorkbench.selectedThreadId = result?.threadId || state.directThreadWorkbench.selectedThreadId;
+    setLastEvent(`Fresh fork ${result?.status || "started"} (${result?.threadId || "new thread"}).`);
+    await loadDirectThreadWorkbench({ refresh: true });
+    if (result?.threadId) await selectDirectWorkbenchThread(result.threadId);
+  } catch (error) {
+    if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directThreadWorkbench.status = "error";
+    state.directThreadWorkbench.lastError = `Start fresh fork failed: ${error.message}`;
     setLastEvent(state.directThreadWorkbench.lastError);
     renderDirectThreadWorkbench();
   }
