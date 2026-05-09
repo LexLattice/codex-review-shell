@@ -116,6 +116,12 @@ contextBridge.exposeInMainWorld("workspaceShell", {
     ipcRenderer.invoke("direct-thread-workbench:create-prune-preview", { ...options, projectId }),
   createDirectThreadForkPreview: (projectId, options = {}) =>
     ipcRenderer.invoke("direct-thread-workbench:create-fork-preview", { ...options, projectId }),
+  prepareDirectThreadForkStart: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-thread-workbench:prepare-fork-start", { ...options, projectId }),
+  startDirectThreadForkFromPreview: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-thread-workbench:start-fork-from-preview", { ...options, projectId }),
+  readDirectThreadForkStartStatus: (projectId, forkStartId) =>
+    ipcRenderer.invoke("direct-thread-workbench:read-fork-start-status", { projectId, forkStartId }),
   rebuildDirectThreadLifecycleProjection: (projectId, options = {}) =>
     ipcRenderer.invoke("direct-thread-workbench:rebuild-lifecycle-projection", { ...options, projectId }),
   rebuildDirectThreadGraphProjection: (projectId, options = {}) =>

@@ -25,12 +25,15 @@ const LINEAGE_EDGE_KINDS = new Set([
   "merge_preview_of",
   "prune_preview_of",
   "fork_preview_of",
+  "forked_from_preview",
+  "forked_from_thread",
 ]);
 const PREVIEW_KINDS = new Set([
   MERGE_PREVIEW_PROJECTION_KIND,
   PRUNE_PREVIEW_PROJECTION_KIND,
   FORK_PREVIEW_PROJECTION_KIND,
 ]);
+const FORK_START_CONFIRMATION_TTL_MS = 2 * 60 * 1000;
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -114,8 +117,10 @@ class DirectThreadWorkbenchController {
     this.threadStore = options.threadStore;
     this.sessionStore = options.sessionStore || null;
     this.projectResolver = typeof options.projectResolver === "function" ? options.projectResolver : null;
+    this.liveTextController = options.liveTextController || null;
     this.now = typeof options.now === "function" ? options.now : () => Date.now();
     this.softDeleteConfirmations = new Map();
+    this.forkStartConfirmations = new Map();
   }
 
   async resolveProject(projectOrId) {
@@ -136,6 +141,15 @@ class DirectThreadWorkbenchController {
     for (const [confirmationId, confirmation] of this.softDeleteConfirmations.entries()) {
       if (Number(confirmation.expiresAtMs || 0) <= nowMs) this.softDeleteConfirmations.delete(confirmationId);
     }
+    for (const [confirmationId, confirmation] of this.forkStartConfirmations.entries()) {
+      if (Number(confirmation.expiresAtMs || 0) <= nowMs) this.forkStartConfirmations.delete(confirmationId);
+    }
+  }
+
+  resolveLiveTextController() {
+    const controller = typeof this.liveTextController === "function" ? this.liveTextController() : this.liveTextController;
+    if (!controller) throw makeError("direct_runtime_not_enabled");
+    return controller;
   }
 
   ensureIndexed(options = {}) {
@@ -706,6 +720,182 @@ class DirectThreadWorkbenchController {
     });
     const revision = this.workbenchRevision(projectId);
     return { ...safeOperationResult(result), projectionId: result.projectionId, projectionKind: result.projectionKind, nextWorkbenchRevision: revision.workbenchRevision, meta: { projectId, ...revision } };
+  }
+
+  forkPreviewRecord(projectId, previewId) {
+    const preview = this.threadStore.previewProjectionRecord(projectId, previewId);
+    const seedItem = preview.items.find((item) => item.itemKind === "fork_seed_metadata") || preview.items[0] || {};
+    const sourceKind = normalizeString(seedItem.seed?.sourceKind || preview.projection.source?.sourceKind, "direct_thread");
+    return { ...preview, seedItem, sourceKind };
+  }
+
+  async prepareForkStart(projectOrId, input = {}) {
+    const project = await this.resolveProject(projectOrId);
+    const projectId = this.projectId(project);
+    if (!projectId) throw makeError("project_missing");
+    this.ensureIndexed();
+    this.assertExpectedRevision(projectId, input);
+    const sourcePreviewId = normalizeString(input.sourcePreviewId, "");
+    const preview = this.forkPreviewRecord(projectId, sourcePreviewId);
+    if (preview.projection.status !== "valid" || preview.projection.unsafeForRenderer === true) throw makeError("source_preview_not_valid");
+    const expectedDigest = normalizeString(input.expectedSourcePreviewDigest, "");
+    if (expectedDigest && expectedDigest !== preview.projection.projectionDigest) throw makeError("source_preview_digest_mismatch");
+    if (preview.sourceKind !== "direct_thread") {
+      throw makeError(preview.sourceKind === "merge_preview"
+        ? "merge_preview_fork_start_deferred"
+        : (preview.sourceKind === "prune_preview" ? "prune_preview_fork_start_deferred" : "fork_preview_source_kind_unsupported"));
+    }
+    const liveText = this.resolveLiveTextController();
+    const status = typeof liveText.assertReady === "function"
+      ? liveText.assertReady(project)
+      : liveText.statusForProject(project);
+    if (status.status !== "ready") throw makeError(status.reason || "direct_runtime_not_enabled");
+    const model = normalizeString(input.selectedModel, status.model);
+    const nowMs = this.now();
+    const confirmationId = `fork_start_${crypto.randomBytes(18).toString("base64url")}`;
+    const revision = this.workbenchRevision(projectId);
+    const sourceItemCount = Number(preview.seedItem.seed?.selectedItemCount || preview.seedItem.sourceStableItemKeys?.length || 0);
+    const confirmation = {
+      confirmationId,
+      projectId,
+      projectGeneration: this.projectGeneration(project),
+      workbenchRevision: revision.workbenchRevision,
+      operationLedgerHeadDigest: revision.operationLedgerHeadDigest,
+      sourcePreviewId,
+      sourcePreviewDigest: preview.projection.projectionDigest,
+      targetRuntime: "direct-experimental/live-text",
+      selectedModel: model,
+      modelEvidenceRef: normalizeString(status.evidenceId, ""),
+      requestShapeEvidenceRef: "direct_fork_start_live_text@1",
+      endpointEvidenceRef: "",
+      expiresAtMs: nowMs + FORK_START_CONFIRMATION_TTL_MS,
+    };
+    this.pruneConfirmations(nowMs);
+    this.forkStartConfirmations.set(confirmationId, confirmation);
+    return {
+      confirmationId,
+      expiresAt: nowIso(confirmation.expiresAtMs),
+      projectGeneration: confirmation.projectGeneration,
+      workbenchRevision: confirmation.workbenchRevision,
+      operationLedgerHeadDigest: confirmation.operationLedgerHeadDigest,
+      sourcePreviewId,
+      sourcePreviewDigest: preview.projection.projectionDigest,
+      rendererSafeSourceLabel: normalizeString(preview.seedItem.threadId, "Fork preview"),
+      targetRuntime: "direct-experimental/live-text",
+      selectedModel: model,
+      modelEvidenceRef: confirmation.modelEvidenceRef,
+      requestShapeEvidenceRef: confirmation.requestShapeEvidenceRef,
+      endpointEvidenceRef: confirmation.endpointEvidenceRef,
+      sourceSummary: {
+        sourceThreadCount: new Set((preview.seedItem.sourceRefs || []).map((ref) => ref.threadId).filter(Boolean)).size,
+        sourceItemCount,
+        omittedCounts: preview.projection.caps?.omittedCounts || {},
+        truncated: preview.projection.caps?.truncated === true,
+        seedCaps: { maxItems: 2000, maxTextChars: 128 * 1024 },
+      },
+      freshSessionOnly: true,
+      previousResponseIdUsed: false,
+      providerContinuityAvailable: false,
+      rawPathExposed: false,
+      rawUrlExposed: false,
+      contextTextExposed: false,
+    };
+  }
+
+  requireForkStartConfirmation(projectId, input = {}) {
+    const confirmationId = normalizeString(input.confirmationId, "");
+    if (!confirmationId) throw makeError("confirmation_required");
+    this.pruneConfirmations();
+    const confirmation = this.forkStartConfirmations.get(confirmationId);
+    if (!confirmation) throw makeError("confirmation_expired");
+    if (
+      confirmation.projectId !== projectId ||
+      confirmation.sourcePreviewId !== normalizeString(input.sourcePreviewId, "") ||
+      confirmation.sourcePreviewDigest !== normalizeString(input.expectedSourcePreviewDigest, "") ||
+      (normalizeString(input.selectedModel, confirmation.selectedModel) !== confirmation.selectedModel)
+    ) {
+      throw makeError("confirmation_scope_mismatch");
+    }
+    this.forkStartConfirmations.delete(confirmationId);
+    return confirmation;
+  }
+
+  async startForkFromPreview(projectOrId, input = {}) {
+    const project = await this.resolveProject(projectOrId);
+    const projectId = this.projectId(project);
+    if (!projectId) throw makeError("project_missing");
+    this.ensureIndexed();
+    this.assertExpectedRevision(projectId, input);
+    const confirmation = this.requireForkStartConfirmation(projectId, input);
+    const liveText = this.resolveLiveTextController();
+    const result = await liveText.startForkFromPreview({
+      ...input,
+      project,
+      sourcePreviewId: confirmation.sourcePreviewId,
+      expectedSourcePreviewDigest: confirmation.sourcePreviewDigest,
+      selectedModel: confirmation.selectedModel,
+      modelEvidenceRef: confirmation.modelEvidenceRef,
+      requestShapeEvidenceRef: confirmation.requestShapeEvidenceRef,
+      endpointEvidenceRef: confirmation.endpointEvidenceRef,
+    });
+    const revision = this.workbenchRevision(projectId);
+    return {
+      ...result,
+      openedInLeftCodexSurface: false,
+      nextWorkbenchRevision: revision.workbenchRevision,
+      meta: { projectId, projectGeneration: this.projectGeneration(project), ...revision },
+    };
+  }
+
+  async readForkStartStatus(projectOrId, forkStartId) {
+    const project = await this.resolveProject(projectOrId);
+    const projectId = this.projectId(project);
+    const safeForkStartId = normalizeString(forkStartId, "");
+    const operation = this.threadStore.db.prepare(`
+      select *
+      from direct_operations
+      where project_id = ? and operation_type = 'start_fork_turn'
+      order by requested_at desc
+      limit 100
+    `).all(projectId).map((row) => this.threadStore.operationResult(row))
+      .find((entry) => normalizeString(entry?.result?.forkStartId, "") === safeForkStartId);
+    if (!operation) throw makeError("fork_start_not_found");
+    let turnState = "";
+    try {
+      turnState = normalizeString(this.sessionStore?.readTurn?.(
+        normalizeString(operation.result?.createdSessionId, ""),
+        normalizeString(operation.result?.createdTurnId, ""),
+      )?.state, "");
+    } catch {}
+    return {
+      forkStartId: safeForkStartId,
+      operationId: operation.operationId,
+      projectId,
+      threadId: normalizeString(operation.result?.createdThreadId, ""),
+      sessionId: normalizeString(operation.result?.createdSessionId, ""),
+      turnId: normalizeString(operation.result?.createdTurnId, ""),
+      status: turnState || normalizeString(operation.result?.forkStatus, operation.status),
+      rendererSafeMessage: "Fork operation committed; provider turn status is tracked on the created turn.",
+      lineage: {
+        sourcePreviewId: normalizeString(operation.target?.previewId, ""),
+        sourceThreadCount: 0,
+        sourceItemCount: 0,
+        freshSessionOnly: true,
+        previousResponseIdUsed: false,
+        providerContinuityHandleUsed: false,
+      },
+      artifacts: {
+        forkSeedStored: true,
+        contextPackStored: true,
+        requestManifestStored: true,
+        contextTextExposed: false,
+        requestBodyExposed: false,
+      },
+      rawPathExposed: false,
+      rawUrlExposed: false,
+      rawCredentialsExposed: false,
+      rawBackendFrameExposed: false,
+    };
   }
 
   async rebuildLifecycleProjection(projectOrId, input = {}) {

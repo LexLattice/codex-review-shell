@@ -640,6 +640,15 @@ class DirectSessionStore {
       requestShapeHash: normalizeString(input.requestShapeHash, ""),
       importedSessionId: normalizeString(input.importedSessionId, ""),
       importedSessionReadOnly: input.importedSessionReadOnly === true,
+      providerContinuityAvailable: input.providerContinuityAvailable === true,
+      continuityState: normalizeString(input.continuityState, ""),
+      composerState: normalizeString(input.composerState, ""),
+      forkStartId: normalizeString(input.forkStartId, ""),
+      forkSeedId: normalizeString(input.forkSeedId, ""),
+      sourcePreviewId: normalizeString(input.sourcePreviewId, ""),
+      sourcePreviewDigest: normalizeString(input.sourcePreviewDigest, ""),
+      parentForkLineage: isPlainObject(input.parentForkLineage) ? input.parentForkLineage : null,
+      sourcePreviousResponseIdUsed: input.sourcePreviousResponseIdUsed === true,
     };
     this.writeSession(session);
     return session;
@@ -697,6 +706,16 @@ class DirectSessionStore {
       seedShapeHash: normalizeString(input.seedShapeHash, ""),
       importedSessionId: normalizeString(input.importedSessionId, ""),
       importedSessionReadOnly: input.importedSessionReadOnly === true,
+      forkStartId: normalizeString(input.forkStartId, ""),
+      forkSeedId: normalizeString(input.forkSeedId, ""),
+      sourcePreviewId: normalizeString(input.sourcePreviewId, ""),
+      sourcePreviewDigest: normalizeString(input.sourcePreviewDigest, ""),
+      parentForkLineage: isPlainObject(input.parentForkLineage) ? input.parentForkLineage : null,
+      requestManifestId: normalizeString(input.requestManifestId, ""),
+      contextBuildId: normalizeString(input.contextBuildId, ""),
+      providerContinuityHandleUsed: input.providerContinuityHandleUsed === true,
+      previousResponseIdUsed: input.previousResponseIdUsed === true,
+      sourceProviderContinuityHandleUsed: input.sourceProviderContinuityHandleUsed === true,
     };
     this.writeTurn(turn);
     const nextSession = {

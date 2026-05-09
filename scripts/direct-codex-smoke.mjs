@@ -1143,6 +1143,153 @@ try {
     const workbenchPreviewRead = await workbenchController.readPreviewProjection({ id: "project_fixture" }, workbenchPreview.projectionId, { offset: 0, limit: 1 });
     assert(workbenchPreviewRead.projection.page.returned === 1, "Workbench preview reads should be paged.");
 
+    const forkStartParent = fs.mkdtempSync(path.join(os.tmpdir(), "direct-fork-start-"));
+    try {
+      const forkStartSessionStore = new DirectSessionStore({ rootDir: path.join(forkStartParent, "direct-sessions") });
+      const forkStartThreadStore = new DirectThreadStore({ rootDir: path.join(forkStartParent, "direct-sessions") });
+      const forkSourceSession = forkStartSessionStore.createSession({
+        sessionId: "session_fork_start_source",
+        projectId: "project_fork_start",
+        workspace: { kind: "local", localPath: "[REDACTED:private-path]" },
+        title: "Fork start source",
+        model: "gpt-5.4",
+        runtimeMode: "direct-experimental",
+        directTransport: "live-text",
+        profileSnapshotId: acceptedLiveTextProfile().profile.profileId,
+        sourceClass: "direct-native",
+        nativeDirectSession: true,
+      }, { nowMs: 1_700_000_016_300 });
+      forkStartSessionStore.writeSession({
+        ...forkSourceSession,
+        messages: [{
+          id: "fork_source_turn",
+          status: "completed",
+          items: [
+            {
+              id: "fork_source_user",
+              type: "userMessage",
+              turnId: "fork_source_turn",
+              content: [{ type: "text", text: "Build a small parser.", text_elements: [] }],
+            },
+            {
+              id: "fork_source_agent",
+              type: "agentMessage",
+              turnId: "fork_source_turn",
+              text: "Parser implementation plan is ready.",
+            },
+          ],
+        }],
+      });
+      forkStartThreadStore.indexSessionArtifacts(forkStartSessionStore, forkStartSessionStore.readSession(forkSourceSession.sessionId), [], {
+        nowMs: 1_700_000_016_301,
+      });
+      forkStartThreadStore.buildRendererTranscriptProjection(forkSourceSession.sessionId, {
+        sessionStore: forkStartSessionStore,
+        nowMs: 1_700_000_016_302,
+      });
+      const forkSourceProjection = forkStartThreadStore.readRendererTranscriptProjection(forkSourceSession.sessionId, { limit: 50 });
+      const forkStartPreviewOperation = forkStartThreadStore.createForkPreview({
+        projectId: "project_fork_start",
+        threadId: forkSourceSession.sessionId,
+        selectedStableSourceItemKeys: forkSourceProjection.items.map((item) => item.stableSourceItemKey),
+        clientOperationId: "client_fork_start_preview",
+      }, { nowMs: 1_700_000_016_303 });
+      const forkStartSse = [
+        "event: response.created",
+        "data: {\"response\":{\"id\":\"resp_fork_start\",\"model\":\"gpt-5.4\"}}",
+        "",
+        "event: response.output_text.delta",
+        "data: {\"item_id\":\"msg_fork_start\",\"delta\":\"fresh fork ok\"}",
+        "",
+        "event: response.completed",
+        "data: {\"response\":{\"id\":\"resp_fork_start\",\"status\":\"completed\"}}",
+        "",
+      ].join("\n");
+      let forkStartFetchCalls = 0;
+      let forkStartRequestBody = null;
+      const forkLiveController = new DirectLiveTextController({
+        sessionStore: forkStartSessionStore,
+        directThreadStore: forkStartThreadStore,
+        profileDoc: acceptedLiveTextProfile(),
+        authStore: {
+          readStatus: () => ({ status: "authenticated", accountId: "acct_fork_start", hasAccessToken: true }),
+          readCredentials: () => ({ accessToken: "fork_start_access_token_secret" }),
+        },
+        fetchImpl: async (_url, init) => {
+          forkStartFetchCalls += 1;
+          forkStartRequestBody = JSON.parse(init.body);
+          return textResponse(forkStartSse, 200, { "content-type": "text/event-stream" });
+        },
+      });
+      const forkWorkbenchController = new DirectThreadWorkbenchController({
+        threadStore: forkStartThreadStore,
+        sessionStore: forkStartSessionStore,
+        liveTextController: () => forkLiveController,
+        now: () => 1_700_000_016_304,
+      });
+      const forkWorkbenchSnapshot = await forkWorkbenchController.getSnapshot({
+        id: "project_fork_start",
+        updatedAt: "2023-11-14T22:13:36.304Z",
+      }, { refresh: true });
+      const forkStartPreparation = await forkWorkbenchController.prepareForkStart({ id: "project_fork_start" }, {
+        sourcePreviewId: forkStartPreviewOperation.projectionId,
+        expectedSourcePreviewDigest: forkStartThreadStore.readProjectProjectionByKind("project_fork_start", FORK_PREVIEW_PROJECTION_KIND).projectionDigest,
+        expectedWorkbenchRevision: forkWorkbenchSnapshot.workbenchRevision,
+        expectedOperationLedgerHeadDigest: forkWorkbenchSnapshot.operationLedgerHeadDigest,
+      });
+      assert(forkStartPreparation.confirmationId, "Expected fork-start prepare to issue a confirmation id.");
+      assert(forkStartPreparation.previousResponseIdUsed === false, "Fork-start prepare must advertise fresh-session semantics.");
+      const forkStartResult = await forkWorkbenchController.startForkFromPreview({ id: "project_fork_start" }, {
+        clientForkStartId: "client_fork_start_1",
+        clientOperationId: "client_fork_start_operation_1",
+        confirmationId: forkStartPreparation.confirmationId,
+        sourcePreviewId: forkStartPreparation.sourcePreviewId,
+        expectedSourcePreviewDigest: forkStartPreparation.sourcePreviewDigest,
+        currentUserPrompt: "Start from this evidence and implement the parser.",
+        selectedModel: forkStartPreparation.selectedModel,
+      });
+      assert(forkStartResult.status === "completed", "Expected fork start to complete through fake transport.");
+      assert(forkStartFetchCalls === 1, "Expected fork start to send exactly one provider request.");
+      assert(forkStartRequestBody.stream === true && forkStartRequestBody.store === false, "Fork start request must stream without provider storage.");
+      assert(!forkStartRequestBody.previous_response_id, "Fork start must not use previous_response_id.");
+      assert(!forkStartRequestBody.tools, "Fork start must not declare tools.");
+      assert(forkStartRequestBody.input[0].content[0].text.includes("[FORK SOURCE EVIDENCE - QUOTED]"), "Fork start request must carry quoted source evidence.");
+      const forkedSession = forkStartSessionStore.readSession(forkStartResult.sessionId);
+      assert(forkedSession.sourceClass === "forked-direct-native", "Fork start must create a forked direct-native session.");
+      assert(forkedSession.providerContinuityAvailable === false, "Forked session must not claim provider continuity.");
+      assert(forkedSession.composerState === "enabled", "Forked session composer should enable only after terminal completion.");
+      const forkedTurn = forkStartSessionStore.readTurn(forkStartResult.sessionId, forkStartResult.turnId);
+      assert(forkedTurn.requestShape.previousResponseIdUsed === false, "Forked first turn must record no provider continuity.");
+      const forkStartStatus = await forkWorkbenchController.readForkStartStatus({ id: "project_fork_start" }, forkStartResult.forkStartId);
+      assert(forkStartStatus.artifacts.contextPackStored === true && forkStartStatus.artifacts.requestManifestStored === true, "Fork-start status must expose durable context/request artifacts without text.");
+      const failedForkSnapshot = await forkWorkbenchController.getSnapshot({ id: "project_fork_start" }, { refresh: true });
+      const failedForkPreparation = await forkWorkbenchController.prepareForkStart({ id: "project_fork_start" }, {
+        sourcePreviewId: forkStartPreviewOperation.projectionId,
+        expectedSourcePreviewDigest: forkStartPreparation.sourcePreviewDigest,
+        expectedWorkbenchRevision: failedForkSnapshot.workbenchRevision,
+        expectedOperationLedgerHeadDigest: failedForkSnapshot.operationLedgerHeadDigest,
+      });
+      await assertRejects(
+        () => forkWorkbenchController.startForkFromPreview({ id: "project_fork_start" }, {
+          clientForkStartId: "client_fork_start_blocked",
+          clientOperationId: "client_fork_start_operation_blocked",
+          confirmationId: failedForkPreparation.confirmationId,
+          sourcePreviewId: failedForkPreparation.sourcePreviewId,
+          expectedSourcePreviewDigest: failedForkPreparation.sourcePreviewDigest,
+          currentUserPrompt: "Authorization: Bearer fork_start_secret_token",
+          selectedModel: failedForkPreparation.selectedModel,
+        }),
+        "Expected blocked fork-start context build to reject.",
+      );
+      const failedForkOperation = forkStartThreadStore.operationResult(forkStartThreadStore.operationByClient("project_fork_start", "client_fork_start_operation_blocked"));
+      assert(failedForkOperation.status === "failed", "Failed fork-start pre-transport attempt must be recorded as failed operation.");
+      const failedForkTurn = forkStartSessionStore.readTurn(failedForkOperation.result.createdSessionId, failedForkOperation.result.createdTurnId);
+      assert(failedForkTurn.state === "failed", "Failed fork-start pre-transport attempt must not leave a created turn orphaned.");
+      assert(forkStartThreadStore.activeTurnCountForProject("project_fork_start") === 0, "Failed fork-start pre-transport attempt must not leave active project turns.");
+    } finally {
+      fs.rmSync(forkStartParent, { recursive: true, force: true });
+    }
+
     const staleResult = directThreadStore.markProjectionStale(rendererProjection.projectionId, "manual_rebuild_requested");
     assert(staleResult.staleReason === "manual_rebuild_requested", "Expected projection stale reason to persist.");
     assert(staleResult.invalidatedCompactProjectionIds.includes(compactProjection.projectionId), "Expected compact projection to be invalidated with its renderer source.");
