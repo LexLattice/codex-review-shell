@@ -1207,6 +1207,7 @@ try {
       ].join("\n");
       let forkStartFetchCalls = 0;
       let forkStartRequestBody = null;
+      const forkStartRequestBodies = [];
       const forkLiveController = new DirectLiveTextController({
         sessionStore: forkStartSessionStore,
         directThreadStore: forkStartThreadStore,
@@ -1218,6 +1219,7 @@ try {
         fetchImpl: async (_url, init) => {
           forkStartFetchCalls += 1;
           forkStartRequestBody = JSON.parse(init.body);
+          forkStartRequestBodies.push(forkStartRequestBody);
           return textResponse(forkStartSse, 200, { "content-type": "text/event-stream" });
         },
       });
@@ -1262,6 +1264,79 @@ try {
       assert(forkedTurn.requestShape.previousResponseIdUsed === false, "Forked first turn must record no provider continuity.");
       const forkStartStatus = await forkWorkbenchController.readForkStartStatus({ id: "project_fork_start" }, forkStartResult.forkStartId);
       assert(forkStartStatus.artifacts.contextPackStored === true && forkStartStatus.artifacts.requestManifestStored === true, "Fork-start status must expose durable context/request artifacts without text.");
+      const postForkSnapshot = await forkWorkbenchController.getSnapshot({ id: "project_fork_start" }, { refresh: true });
+      const mergePreviewOperation = await forkWorkbenchController.createMergePreview({ id: "project_fork_start" }, {
+        sources: [{
+          threadId: forkSourceSession.sessionId,
+          expectedLifecycleState: "active",
+          expectedRendererProjectionId: forkSourceProjection.projectionId,
+          expectedRendererProjectionDigest: forkSourceProjection.projectionDigest,
+        }],
+        expectedWorkbenchRevision: postForkSnapshot.workbenchRevision,
+        expectedOperationLedgerHeadDigest: postForkSnapshot.operationLedgerHeadDigest,
+        clientOperationId: "client_derived_merge_preview",
+      });
+      const mergeProjection = forkStartThreadStore.readProjectProjectionByKind("project_fork_start", MERGE_PREVIEW_PROJECTION_KIND);
+      const mergePreparation = await forkWorkbenchController.prepareDerivedPreviewForkStart({ id: "project_fork_start" }, {
+        sourcePreviewId: mergePreviewOperation.projectionId,
+        sourcePreviewKind: MERGE_PREVIEW_PROJECTION_KIND,
+        expectedSourcePreviewDigest: mergeProjection.projectionDigest,
+      });
+      assert(mergePreparation.sourcePreviewKind === MERGE_PREVIEW_PROJECTION_KIND, "Expected derived merge fork preparation to bind source kind.");
+      const mergeForkResult = await forkWorkbenchController.startForkFromDerivedPreview({ id: "project_fork_start" }, {
+        clientDerivedForkStartId: "client_derived_merge_fork_start_1",
+        clientOperationId: "client_derived_merge_fork_operation_1",
+        confirmationId: mergePreparation.confirmationId,
+        sourcePreviewId: mergePreparation.sourcePreviewId,
+        sourcePreviewKind: mergePreparation.sourcePreviewKind,
+        expectedSourcePreviewDigest: mergePreparation.sourcePreviewDigest,
+        expectedSourcePreviewOperationId: mergePreparation.sourcePreviewOperationId,
+        currentUserPrompt: "Start a fresh implementation fork from this merged evidence.",
+        selectedModel: mergePreparation.selectedModel,
+      });
+      assert(mergeForkResult.status === "completed", "Expected merge preview fork start to complete through fake transport.");
+      const mergeForkRequestBody = forkStartRequestBodies.at(-1);
+      assert(mergeForkRequestBody.store === false && !mergeForkRequestBody.previous_response_id && !mergeForkRequestBody.tools, "Derived merge fork request must be fresh, unstored, and tool-free.");
+      assert(mergeForkRequestBody.input[0].content[0].text.includes("[DERIVED PREVIEW SOURCE EVIDENCE - QUOTED]"), "Derived merge fork request must use derived preview evidence framing.");
+      assert(mergeForkRequestBody.input[0].content[0].text.includes("Source preview kind: merge_preview@1"), "Derived merge fork seed must cite merge preview kind.");
+      const mergeForkSession = forkStartSessionStore.readSession(mergeForkResult.sessionId);
+      assert(mergeForkSession.sourceClass === "forked-direct-native", "Derived merge fork must create a forked direct-native session.");
+      assert(mergeForkSession.providerContinuityAvailable === false, "Derived merge fork must not claim provider continuity.");
+      assert(mergeForkSession.composerState === "enabled_after_completed_first_turn", "Derived merge fork composer should enable only after terminal completion.");
+
+      const postMergeSnapshot = await forkWorkbenchController.getSnapshot({ id: "project_fork_start" }, { refresh: true });
+      const prunePreviewOperation = await forkWorkbenchController.createPrunePreview({ id: "project_fork_start" }, {
+        threadId: forkSourceSession.sessionId,
+        excludedStableSourceItemKeys: [forkSourceProjection.items[0].stableSourceItemKey],
+        expectedLifecycleState: "active",
+        expectedRendererProjectionId: forkSourceProjection.projectionId,
+        expectedRendererProjectionDigest: forkSourceProjection.projectionDigest,
+        expectedWorkbenchRevision: postMergeSnapshot.workbenchRevision,
+        expectedOperationLedgerHeadDigest: postMergeSnapshot.operationLedgerHeadDigest,
+        clientOperationId: "client_derived_prune_preview",
+      });
+      const pruneProjection = forkStartThreadStore.readProjectProjectionByKind("project_fork_start", PRUNE_PREVIEW_PROJECTION_KIND);
+      const prunePreparation = await forkWorkbenchController.prepareDerivedPreviewForkStart({ id: "project_fork_start" }, {
+        sourcePreviewId: prunePreviewOperation.projectionId,
+        sourcePreviewKind: PRUNE_PREVIEW_PROJECTION_KIND,
+        expectedSourcePreviewDigest: pruneProjection.projectionDigest,
+      });
+      const pruneForkResult = await forkWorkbenchController.startForkFromDerivedPreview({ id: "project_fork_start" }, {
+        clientDerivedForkStartId: "client_derived_prune_fork_start_1",
+        clientOperationId: "client_derived_prune_fork_operation_1",
+        confirmationId: prunePreparation.confirmationId,
+        sourcePreviewId: prunePreparation.sourcePreviewId,
+        sourcePreviewKind: prunePreparation.sourcePreviewKind,
+        expectedSourcePreviewDigest: prunePreparation.sourcePreviewDigest,
+        expectedSourcePreviewOperationId: prunePreparation.sourcePreviewOperationId,
+        currentUserPrompt: "Start a fresh fork from the pruned evidence; do not resume prior state.",
+        selectedModel: prunePreparation.selectedModel,
+      });
+      assert(pruneForkResult.status === "completed", "Expected prune preview fork start to complete through fake transport.");
+      const pruneForkRequestBody = forkStartRequestBodies.at(-1);
+      assert(pruneForkRequestBody.input[0].content[0].text.includes("Source preview kind: prune_preview@1"), "Derived prune fork seed must cite prune preview kind.");
+      assert(pruneForkRequestBody.input[0].content[0].text.includes("OMISSION MARKER"), "Derived prune fork seed must carry visible omission evidence.");
+      assert(forkStartFetchCalls === 3, "Expected direct fork plus merge/prune derived starts to send three provider requests.");
       const failedForkSnapshot = await forkWorkbenchController.getSnapshot({ id: "project_fork_start" }, { refresh: true });
       const failedForkPreparation = await forkWorkbenchController.prepareForkStart({ id: "project_fork_start" }, {
         sourcePreviewId: forkStartPreviewOperation.projectionId,

@@ -550,6 +550,28 @@ class DirectLiveTextController {
     }));
   }
 
+  derivedPreviewForkStartRequestShapeHash(input = {}) {
+    return sha256(stableStringify({
+      schema: "direct_derived_preview_fork_start_live_text@1",
+      sourcePreviewKind: normalizeString(input.sourcePreviewKind, ""),
+      model: normalizeString(input.model, ""),
+      endpointHash: normalizeString(input.endpointHash, ""),
+      store: false,
+      tools: false,
+      previousResponseId: false,
+      contextPolicy: "direct_derived_preview_fork_start@1",
+      roleMapping: "direct_context_role_mapping@1",
+      streamEvents: [
+        "response_created",
+        "message_delta",
+        "usage",
+        "response_completed",
+        "response_failed",
+        "response_incomplete",
+      ],
+    }));
+  }
+
   async startForkFromPreview(options = {}) {
     const project = options.project || {};
     const projectId = normalizeString(project.id, "");
@@ -952,6 +974,464 @@ class DirectLiveTextController {
                 targetKind: session?.sessionId ? "direct_thread" : "projection",
                 targetId: session?.sessionId || sourcePreviewId,
                 rendererSafeSummary: error.code || error.message || "fork_start_pre_transport_failed",
+              }],
+            },
+          }, options);
+        } catch {}
+      }
+      throw error;
+    } finally {
+      this.forkStartLocks.delete(lockKey);
+    }
+  }
+
+  async startForkFromDerivedPreview(options = {}) {
+    const project = options.project || {};
+    const projectId = normalizeString(project.id, "");
+    const status = this.assertReady(project);
+    const store = this.directThreadStore;
+    if (!store) {
+      const error = new Error("context_store_unhealthy");
+      error.code = "context_store_unhealthy";
+      throw error;
+    }
+    const sourcePreviewId = normalizeString(options.sourcePreviewId, "");
+    const sourcePreviewKind = normalizeString(options.sourcePreviewKind, "");
+    const clientDerivedForkStartId = normalizeString(options.clientDerivedForkStartId || options.clientForkStartId, "");
+    const clientOperationId = normalizeString(options.clientOperationId, "");
+    const currentUserPrompt = normalizeString(options.currentUserPrompt, "");
+    if (!clientDerivedForkStartId || !clientOperationId) {
+      const error = new Error("idempotency_key_conflict");
+      error.code = "idempotency_key_conflict";
+      throw error;
+    }
+    if (!sourcePreviewId) {
+      const error = new Error("source_preview_missing");
+      error.code = "source_preview_missing";
+      throw error;
+    }
+    if (sourcePreviewKind !== "merge_preview" && sourcePreviewKind !== "prune_preview") {
+      const error = new Error(sourcePreviewKind === "fork_preview" ? "intermediate_fork_preview_not_supported" : "derived_preview_source_kind_unsupported");
+      error.code = error.message;
+      throw error;
+    }
+    if (!currentUserPrompt) {
+      const error = new Error("current_user_prompt_missing");
+      error.code = "current_user_prompt_missing";
+      throw error;
+    }
+    const lockKey = `${projectId}:derived:${sourcePreviewKind}:${sourcePreviewId}`;
+    if (this.forkStartLocks.has(lockKey) && this.forkStartLocks.get(lockKey) !== clientDerivedForkStartId) {
+      const error = new Error("active_fork_start_exists");
+      error.code = "active_fork_start_exists";
+      throw error;
+    }
+    this.forkStartLocks.set(lockKey, clientDerivedForkStartId);
+    let planned = null;
+    let session = null;
+    let turn = null;
+    let forkStartId = "";
+    let operationInputDigest = "";
+    let operationCommitted = false;
+    try {
+      const existing = store.operationByClient(projectId, clientOperationId);
+      if (existing) {
+        const existingResult = store.operationResult(existing);
+        const existingForkStartId = normalizeString(existingResult?.result?.forkStartId, "");
+        if (existingForkStartId && existingForkStartId !== clientDerivedForkStartId) {
+          const error = new Error("client_operation_id_conflict");
+          error.code = "client_operation_id_conflict";
+          throw error;
+        }
+        let existingTurnState = "";
+        try {
+          existingTurnState = normalizeString(this.sessionStore.readTurn(
+            normalizeString(existingResult?.result?.createdSessionId, ""),
+            normalizeString(existingResult?.result?.createdTurnId, ""),
+          )?.state, "");
+        } catch {}
+        return {
+          forkStartId: existingForkStartId,
+          operationId: existingResult.operationId,
+          threadId: normalizeString(existingResult?.result?.createdThreadId, ""),
+          sessionId: normalizeString(existingResult?.result?.createdSessionId, ""),
+          turnId: normalizeString(existingResult?.result?.createdTurnId, ""),
+          status: existingTurnState || normalizeString(existingResult?.result?.forkStatus, existingResult.status),
+          refreshRequired: true,
+          rawPathExposed: false,
+          rawUrlExposed: false,
+          contextTextExposed: false,
+          requestBodyExposed: false,
+        };
+      }
+      if (store.activeTurnCountForProject(projectId) > 0 && options.allowConcurrentDirectTurns !== true) {
+        const error = new Error("active_direct_turn_exists");
+        error.code = "active_direct_turn_exists";
+        throw error;
+      }
+      const model = normalizeString(options.selectedModel || options.model, "") || status.model;
+      const endpointHash = this.endpoint ? sha256(this.endpoint) : "";
+      const requestShapeHash = this.derivedPreviewForkStartRequestShapeHash({ model, endpointHash, sourcePreviewKind });
+      operationInputDigest = sha256(stableStringify({
+        schema: "direct_derived_preview_fork_start_operation_input@1",
+        projectId,
+        sourcePreviewId,
+        sourcePreviewKind,
+        expectedSourcePreviewDigest: normalizeString(options.expectedSourcePreviewDigest, ""),
+        expectedSourcePreviewOperationId: normalizeString(options.expectedSourcePreviewOperationId, ""),
+        clientDerivedForkStartId,
+        model,
+        requestShapeHash,
+      }));
+      forkStartId = `derived_fork_start_${sha256(`${projectId}:${clientDerivedForkStartId}:${sourcePreviewKind}:${sourcePreviewId}`).slice(0, 24)}`;
+      const existingByForkStartId = store.db.prepare(`
+        select *
+        from direct_operations
+        where project_id = ? and operation_type = 'start_fork_turn'
+        order by requested_at desc
+        limit 200
+      `).all(projectId).map((row) => store.operationResult(row))
+        .find((entry) => normalizeString(entry?.result?.forkStartId, "") === forkStartId);
+      if (existingByForkStartId && normalizeString(existingByForkStartId.clientOperationId, "") !== clientOperationId) {
+        const error = new Error("idempotency_key_conflict");
+        error.code = "idempotency_key_conflict";
+        throw error;
+      }
+      planned = store.planOperation({
+        operationType: "start_fork_turn",
+        projectId,
+        clientOperationId,
+        target: { previewId: sourcePreviewId, previewKind: sourcePreviewKind },
+        parameters: { operationInputDigest, clientDerivedForkStartId, requestShapeHash },
+        safety: { requiresConfirmation: true },
+      }, options);
+      const seedPreview = store.previewProjectionRecord(projectId, sourcePreviewId, sourcePreviewKind);
+      const derivedSeedResult = store.buildDerivedForkSeedFromPreview({
+        projectId,
+        forkStartId,
+        sourcePreviewId,
+        sourcePreviewKind,
+        sourcePreviewOperationId: normalizeString(options.sourcePreviewOperationId || options.expectedSourcePreviewOperationId, ""),
+        expectedSourcePreviewOperationId: normalizeString(options.expectedSourcePreviewOperationId, ""),
+        expectedSourcePreviewDigest: normalizeString(options.expectedSourcePreviewDigest, seedPreview.projection.projectionDigest),
+        currentUserPrompt,
+      }, options);
+      const derivedForkSeed = derivedSeedResult.derivedForkSeed;
+      session = this.sessionStore.createSession({
+        projectId,
+        workspace: isPlainObject(project.workspace) ? project.workspace : {},
+        workspaceDisplayPath: workspaceDisplayPath(project),
+        title: `Fork from ${sourcePreviewKind.replace("_", " ")}`,
+        model,
+        runtimeMode: "direct-experimental",
+        directTransport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
+        modelSource: status.modelSource,
+        modelEvidenceState: status.modelEvidenceState,
+        modelEvidenceId: normalizeString(status.evidenceId, ""),
+        profileSnapshotId: normalizeString(project.surfaceBinding?.codex?.profileId, ""),
+        sourceClass: "forked-direct-native",
+        nativeDirectSession: true,
+        providerContinuityAvailable: false,
+        continuityState: "fresh_session_only",
+        composerState: "disabled_until_first_turn_terminal",
+        forkStartId,
+        derivedForkSeedId: derivedForkSeed.derivedForkSeedId,
+        sourcePreviewId,
+        sourcePreviewKind,
+        sourcePreviewDigest: seedPreview.projection.projectionDigest,
+        sourcePreviewOperationId: derivedForkSeed.sourcePreviewOperationId,
+        sourcePreviousResponseIdUsed: false,
+      }, options);
+      turn = this.sessionStore.createTurn(session.sessionId, {
+        input: [{ role: "current_user_intent", text: currentUserPrompt }],
+        model,
+        clientTurnRequestId: clientDerivedForkStartId,
+        requestShape: { schema: "direct_derived_preview_fork_start_live_text@1", requestShapeHash, sourcePreviewKind },
+        sourceClass: "forked-direct-native",
+        nativeDirectSession: true,
+        forkStartId,
+        derivedForkSeedId: derivedForkSeed.derivedForkSeedId,
+        sourcePreviewId,
+        sourcePreviewKind,
+        sourcePreviewDigest: seedPreview.projection.projectionDigest,
+        previousResponseIdUsed: false,
+        providerContinuityHandleUsed: false,
+        sourceProviderContinuityHandleUsed: false,
+      }, options);
+      this.sessionStore.appendNormalizedEvents(session.sessionId, turn.turnId, [
+        { type: "fork_session_created", forkStartId, sourcePreviewId, sourcePreviewKind },
+        {
+          type: "derived_fork_seed_built",
+          forkStartId,
+          derivedForkSeedId: derivedForkSeed.derivedForkSeedId,
+          seedShapeHash: derivedForkSeed.seedShapeHash,
+          sourcePreviewId,
+          sourcePreviewKind,
+          sourcePreviewDigest: seedPreview.projection.projectionDigest,
+        },
+      ], options);
+      const patchedSession = this.sessionStore.readSession(session.sessionId);
+      this.sessionStore.writeSession({
+        ...patchedSession,
+        forkSeedId: derivedForkSeed.derivedForkSeedId,
+        derivedForkSeedId: derivedForkSeed.derivedForkSeedId,
+        seedShapeHash: derivedForkSeed.seedShapeHash,
+        parentForkLineage: derivedForkSeed.parentLineage,
+      });
+      this.indexDirectThreadStoreSession(session.sessionId, options);
+      const contextResult = store.buildAndPersistContextForDerivedPreviewForkStart({
+        session: this.sessionStore.readSession(session.sessionId),
+        projectId,
+        threadId: session.sessionId,
+        turnId: turn.turnId,
+        forkStartId,
+        derivedForkSeed,
+        currentUserPrompt,
+        model,
+        requestShape: {
+          schema: "direct_derived_preview_fork_start_live_text@1",
+          sourcePreviewKind,
+          model,
+          stream: true,
+          store: false,
+          tools: false,
+          previousResponseId: false,
+        },
+        requestShapeHash,
+        endpointClass: "chatgpt-codex-responses",
+        endpointHash,
+        modelEvidenceRef: normalizeString(status.evidenceId, status.modelEvidenceId || ""),
+        requestShapeEvidenceRef: "direct_derived_preview_fork_start_live_text@1",
+        endpointEvidenceRef: endpointHash,
+        accountEvidenceRef: normalizeString(status.auth?.accountId, ""),
+      }, options);
+      this.sessionStore.appendNormalizedEvents(session.sessionId, turn.turnId, [
+        { type: "context_pack_built", contextBuildId: contextResult.contextPack.contextBuildId, contextPackContentHash: contextResult.contextPack.contextPackContentHash },
+        { type: "request_manifest_built", requestManifestId: contextResult.requestManifest.requestManifestId },
+      ], options);
+      const requestShape = {
+        schema: "direct_derived_preview_fork_start_live_text@1",
+        requestShapeHash,
+        sourcePreviewKind,
+        contextBuildId: contextResult.contextPack.contextBuildId,
+        contextPackContentHash: contextResult.contextPack.contextPackContentHash,
+        contextPackShapeHash: contextResult.contextPack.contextPackShapeHash,
+        requestManifestId: contextResult.requestManifest.requestManifestId,
+        providerInputShapeHash: contextResult.providerInput.projection.providerInputShapeHash,
+        previousResponseIdUsed: false,
+        providerContinuityHandleUsed: false,
+        store: false,
+        tools: false,
+      };
+      this.sessionStore.updateTurnState(session.sessionId, turn.turnId, "request_built", {
+        requestShape,
+        contextBuildId: contextResult.contextPack.contextBuildId,
+        requestManifestId: contextResult.requestManifest.requestManifestId,
+        derivedForkSeedId: derivedForkSeed.derivedForkSeedId,
+        seedShapeHash: derivedForkSeed.seedShapeHash,
+        parentForkLineage: derivedForkSeed.parentLineage,
+        contextSummary: contextResult.rendererSafeSummary,
+      }, options);
+      this.sessionStore.appendNormalizedEvents(session.sessionId, turn.turnId, [
+        {
+          type: "request_built",
+          forkStartId,
+          derivedForkSeedId: derivedForkSeed.derivedForkSeedId,
+          seedShapeHash: derivedForkSeed.seedShapeHash,
+          contextBuildId: contextResult.contextPack.contextBuildId,
+          requestManifestId: contextResult.requestManifest.requestManifestId,
+          requestShapeHash,
+          sourcePreviewKind,
+          previousResponseIdUsed: false,
+          providerContinuityHandleUsed: false,
+        },
+      ], options);
+      this.indexDirectThreadStoreSession(session.sessionId, options);
+      const lineageEdges = store.createDerivedForkLineageEdges({
+        projectId,
+        operationId: planned.operationId,
+        forkThreadId: session.sessionId,
+        sourcePreviewId,
+        sourcePreviewKind,
+        sourceThreadIds: derivedForkSeed.parentLineage.sourceThreadIds,
+      }, options);
+      const committed = store.commitOperation(planned.operationId, {
+        operationType: "start_fork_turn",
+        projectId,
+        clientOperationId,
+        target: { previewId: sourcePreviewId, previewKind: sourcePreviewKind, threadIds: [session.sessionId] },
+        result: {
+          status: "committed",
+          operationInputDigest,
+          forkStartId,
+          derivedForkStartId: forkStartId,
+          sourcePreviewKind,
+          forkStatus: "request_built",
+          createdThreadId: session.sessionId,
+          createdSessionId: session.sessionId,
+          createdTurnId: turn.turnId,
+          effects: [
+            { effectKind: "derived_fork_seed_created", targetKind: "projection", targetId: derivedForkSeed.derivedForkSeedId, rendererSafeSummary: "derived_fork_seed_created" },
+            { effectKind: "fork_thread_created", targetKind: "direct_thread", targetId: session.sessionId, rendererSafeSummary: "fork_thread_created" },
+            { effectKind: "fork_turn_request_built", targetKind: "direct_thread", targetId: turn.turnId, rendererSafeSummary: "provider turn pending" },
+            ...lineageEdges.map((edge) => ({ effectKind: "lineage_edge_created", targetKind: "thread_edge", targetId: edge.edgeId, rendererSafeSummary: edge.edgeKind })),
+          ],
+        },
+      }, options);
+      operationCommitted = true;
+      const requestBody = buildTextOnlyProbeRequest({
+        profileDoc: this.profileDoc,
+        model,
+        prompt: contextResult.providerInput.prompt,
+        instructions: contextResult.providerInput.instructions,
+      });
+      let result;
+      const callerLifecycle = options.onLifecycle;
+      try {
+        result = await runTextOnlyDirectProbe({
+          endpoint: this.endpoint || undefined,
+          authStore: this.currentAuthStore(),
+          refreshCredentials: this.refreshCredentials,
+          profileDoc: this.profileDoc,
+          model: requestBody.model,
+          prompt: requestBody.input?.[0]?.content?.[0]?.text || contextResult.providerInput.prompt,
+          instructions: requestBody.instructions,
+          fetchImpl: this.fetchImpl || undefined,
+          signal: options.signal,
+          onLifecycle: (event) => {
+            if (event.phase === "streaming") {
+              this.sessionStore.updateTurnState(session.sessionId, turn.turnId, "streaming", {
+                streamStartedAt: event.at,
+                responseStatus: event.status,
+                responseContentType: event.contentType,
+              }, options);
+            }
+            if (typeof callerLifecycle === "function") callerLifecycle(event);
+          },
+        });
+      } catch (error) {
+        this.sessionStore.updateTurnState(session.sessionId, turn.turnId, "failed", {
+          error: { code: error.code || "provider_transport_failed", message: error.message || "Provider transport failed." },
+          forkStartStatus: "transport_handoff_unknown",
+        }, options);
+        return {
+          forkStartId,
+          operationId: committed.operationId,
+          threadId: session.sessionId,
+          sessionId: session.sessionId,
+          turnId: turn.turnId,
+          status: "transport_handoff_unknown",
+          refreshRequired: true,
+          rawPathExposed: false,
+          rawUrlExposed: false,
+          contextTextExposed: false,
+          requestBodyExposed: false,
+        };
+      }
+      this.sessionStore.writeDiagnostic(session.sessionId, "direct_derived_preview_fork_start", {
+        ...result.diagnostic,
+        forkStartId,
+        derivedForkSeedId: derivedForkSeed.derivedForkSeedId,
+        rawBackendFramesExposed: false,
+        rawAuthHeadersExposed: false,
+      }, options);
+      if (result.normalizedEvents.length) this.sessionStore.appendNormalizedEvents(session.sessionId, turn.turnId, result.normalizedEvents, options);
+      const assistantText = assistantTextFromNormalizedEvents(result.normalizedEvents);
+      const unsupportedTool = result.normalizedEvents.some((event) => String(event.type || "").startsWith("tool_call_"));
+      const terminal = unsupportedTool
+        ? { state: "failed", error: { code: "tool_call_unsupported", message: "Derived fork start does not support provider tool calls." } }
+        : (!assistantText && result.terminal?.state === "completed"
+            ? { state: "failed", error: { code: "empty_fork_output", message: "Derived fork start completed without assistant text." } }
+            : (result.terminal || { state: result.ok ? "completed" : "failed", error: result.error || null }));
+      const completedTurn = this.sessionStore.updateTurnState(session.sessionId, turn.turnId, terminal.state, {
+        ...(terminal.error ? { error: terminal.error } : {}),
+        responseId: result.responseId || "",
+        responseStatus: result.response?.status || 0,
+        responseContentType: result.response?.contentType || "",
+        forkStartStatus: terminal.state,
+      }, options);
+      const currentSession = this.sessionStore.readSession(session.sessionId);
+      this.sessionStore.writeSession({
+        ...currentSession,
+        composerState: terminal.state === "completed" ? "enabled_after_completed_first_turn" : "disabled_streaming_interrupted",
+      });
+      this.appendSessionTurn(session.sessionId, turn.turnId, [
+        {
+          id: `${turn.turnId}_derived_fork_seed`,
+          type: "harnessForkSeed",
+          turnId: turn.turnId,
+          text: derivedForkSeed.seedText.slice(0, 4096),
+          forkStartId,
+          forkSeedId: derivedForkSeed.derivedForkSeedId,
+          derivedForkSeedId: derivedForkSeed.derivedForkSeedId,
+          seedShapeHash: derivedForkSeed.seedShapeHash,
+        },
+        ...(assistantText ? [{
+          id: `${turn.turnId}_assistant`,
+          type: "agentMessage",
+          turnId: turn.turnId,
+          text: assistantText,
+        }] : []),
+      ], model, terminal.state);
+      this.prepareDirectContextProjection(session.sessionId, options);
+      return {
+        forkStartId,
+        operationId: committed.operationId,
+        threadId: session.sessionId,
+        sessionId: session.sessionId,
+        turnId: turn.turnId,
+        status: completedTurn.state,
+        sourcePreviewKind,
+        refreshRequired: true,
+        rawPathExposed: false,
+        rawUrlExposed: false,
+        contextTextExposed: false,
+        requestBodyExposed: false,
+      };
+    } catch (error) {
+      if (!operationCommitted && session?.sessionId && turn?.turnId) {
+        try {
+          this.sessionStore.updateTurnState(session.sessionId, turn.turnId, "failed", {
+            error: {
+              code: error.code || error.message || "derived_fork_start_pre_transport_failed",
+              message: error.message || "Derived preview fork start failed before provider transport.",
+            },
+            forkStartStatus: "failed",
+          }, options);
+          const currentSession = this.sessionStore.readSession(session.sessionId);
+          this.sessionStore.writeSession({
+            ...currentSession,
+            composerState: "disabled_failed_pre_transport",
+          });
+          this.indexDirectThreadStoreSession(session.sessionId, options);
+        } catch {}
+      }
+      if (!operationCommitted && planned?.operationId && typeof store.failOperation === "function") {
+        try {
+          store.failOperation(planned.operationId, {
+            operationType: "start_fork_turn",
+            projectId,
+            clientOperationId,
+            target: {
+              previewId: sourcePreviewId,
+              previewKind: sourcePreviewKind,
+              threadIds: session?.sessionId ? [session.sessionId] : [],
+            },
+            result: {
+              status: "failed",
+              operationInputDigest,
+              forkStartId,
+              sourcePreviewKind,
+              forkStatus: "failed",
+              blockerCode: error.code || error.message || "derived_fork_start_pre_transport_failed",
+              createdThreadId: session?.sessionId || "",
+              createdSessionId: session?.sessionId || "",
+              createdTurnId: turn?.turnId || "",
+              effects: [{
+                effectKind: "operation_failed_no_effect",
+                targetKind: session?.sessionId ? "direct_thread" : "projection",
+                targetId: session?.sessionId || sourcePreviewId,
+                rendererSafeSummary: error.code || error.message || "derived_fork_start_pre_transport_failed",
               }],
             },
           }, options);

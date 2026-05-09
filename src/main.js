@@ -4499,6 +4499,18 @@ ipcMain.handle("direct-thread-workbench:start-fork-from-preview", async (_event,
   return result;
 });
 
+ipcMain.handle("direct-thread-workbench:prepare-derived-preview-fork-start", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().prepareDerivedPreviewForkStart(project, payload || {});
+});
+
+ipcMain.handle("direct-thread-workbench:start-fork-from-derived-preview", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  const result = await ensureDirectThreadWorkbenchController().startForkFromDerivedPreview(project, payload || {});
+  emitDirectRuntimeStatus(project);
+  return result;
+});
+
 ipcMain.handle("direct-thread-workbench:read-fork-start-status", async (_event, payload) => {
   const project = await getProjectById(payload?.projectId);
   return ensureDirectThreadWorkbenchController().readForkStartStatus(project, payload?.forkStartId);
