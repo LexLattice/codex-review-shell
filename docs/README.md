@@ -20,6 +20,7 @@
 - [Direct Renderer Transcript Projection Spec](./DIRECT_RENDERER_TRANSCRIPT_PROJECTION_SPEC.md)
 - [Direct Context Policy And Pack Spec](./DIRECT_CONTEXT_POLICY_AND_PACK_SPEC.md)
 - [Direct Obligation Projection And Tool Context Spec](./DIRECT_OBLIGATION_PROJECTION_AND_TOOL_CONTEXT_SPEC.md)
+- [Direct Fork Preview Start Spec](./DIRECT_FORK_PREVIEW_START_SPEC.md)
 - [OAI Codex Upstream ODEU Profile](./OAI_CODEX_UPSTREAM_ODEU_PROFILE.md)
 - [Meta-Orchestrator Loop ODEU Spec](./META_ORCHESTRATOR_LOOP_ODEU_SPEC.md)
 - [Codex Runtime Provider Profile Spec](./CODEX_RUNTIME_PROVIDER_PROFILE_SPEC.md)
