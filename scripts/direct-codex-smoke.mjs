@@ -56,10 +56,12 @@ const {
 } = require("../src/main/direct/runtime/project-activation");
 const { DirectSessionStore } = require("../src/main/direct/session/session-store");
 const {
+  COMPACT_TRANSCRIPT_PROJECTION_KIND,
   DIRECT_THREAD_OPERATION_EVENT_SCHEMA,
   DIRECT_THREAD_OPERATION_LEDGER_MANIFEST_SCHEMA,
   DIRECT_THREAD_STORE_STATUS_SCHEMA,
   DirectThreadStore,
+  RENDERER_TRANSCRIPT_PROJECTION_KIND,
 } = require("../src/main/direct/thread/thread-store");
 const {
   DIRECT_FIXTURE_SURFACE_TRANSPORT,
@@ -693,6 +695,81 @@ try {
     assert(operationRowsWithNullClientId.count === 2, "Expected omitted client operation ids to persist as SQL NULL.");
     const threadStoreOperationStatus = directThreadStore.status();
     assert(threadStoreOperationStatus.operationCount === 3, "Expected direct thread store to expose operation snapshots.");
+    const rendererProjection = directThreadStore.buildRendererTranscriptProjection(session.sessionId, {
+      sessionStore: reloadedSessionStore,
+      nowMs: 1_700_000_016_000,
+    });
+    assert(rendererProjection.projectionKind === RENDERER_TRANSCRIPT_PROJECTION_KIND, "Expected renderer transcript projection kind.");
+    assert(rendererProjection.status === "valid", "Expected renderer transcript projection to build as valid.");
+    assert(rendererProjection.itemCount >= 2, "Expected renderer transcript projection to include user and assistant items.");
+    const rendererRead = directThreadStore.readRendererTranscriptProjection(session.sessionId);
+    assert(rendererRead.schema === "renderer_safe_direct_transcript_projection@1", "Expected renderer-safe transcript projection schema.");
+    assert(rendererRead.composer.authoritative === false, "Projection composer state must be advisory.");
+    assert(rendererRead.composer.controlAuthority === "runtime-status", "Projection composer authority must point to runtime status.");
+    assert(rendererRead.rawExposure.rawPathExposed === false, "Renderer transcript projection must not expose raw paths.");
+    assert(rendererRead.items.some((item) => item.itemKind === "user_message" && item.text === "hello"), "Expected projected user message.");
+    assert(rendererRead.items.some((item) => item.itemKind === "assistant_message" && item.text === "ok"), "Expected projected assistant message.");
+    assert(rendererRead.items.every((item) => item.flags?.executable === false), "Projected items must be non-executable.");
+    assert(rendererRead.items.every((item) => item.stableSourceItemKey), "Projected items must include stable source keys.");
+    const rendererPage = directThreadStore.readRendererTranscriptProjection(session.sessionId, { offset: 0, limit: 1 });
+    assert(rendererPage.items.length === 1, "Expected renderer projection read pagination.");
+    assert(rendererPage.page.total === rendererRead.items.length, "Expected renderer projection page to report total item count.");
+    const reusedRendererProjection = directThreadStore.buildRendererTranscriptProjection(session.sessionId, {
+      sessionStore: reloadedSessionStore,
+      nowMs: 1_700_000_016_100,
+    });
+    assert(reusedRendererProjection.reused === true, "Expected unchanged renderer projection rebuild to reuse current projection.");
+    const compactProjection = directThreadStore.buildCompactTranscriptProjection(session.sessionId, {
+      nowMs: 1_700_000_016_200,
+    });
+    assert(compactProjection.projectionKind === COMPACT_TRANSCRIPT_PROJECTION_KIND, "Expected compact transcript projection kind.");
+    const compactRead = directThreadStore.readCompactTranscriptProjection(session.sessionId);
+    assert(compactRead.schema === "renderer_safe_direct_compact_projection@1", "Expected compact transcript projection read schema.");
+    assert(compactRead.unsafeForContextBuild === true, "Compact projection must not be usable for context builds in this bundle.");
+    assert(compactRead.items.every((item) => item.sourceStableItemKeys?.length === 1), "Compact items must cite stable renderer item keys.");
+    const currentPointers = directThreadStore.db.prepare(`
+      select projection_kind, projection_id
+      from direct_thread_current_projections
+      where thread_id = ?
+      order by projection_kind
+    `).all(session.sessionId);
+    assert(currentPointers.some((row) => row.projection_kind === RENDERER_TRANSCRIPT_PROJECTION_KIND && row.projection_id === rendererProjection.projectionId), "Expected renderer current pointer by kind.");
+    assert(currentPointers.some((row) => row.projection_kind === COMPACT_TRANSCRIPT_PROJECTION_KIND && row.projection_id === compactProjection.projectionId), "Expected compact current pointer by kind.");
+    assert(currentPointers.find((row) => row.projection_kind === RENDERER_TRANSCRIPT_PROJECTION_KIND).projection_id !== compactProjection.projectionId, "Compact projection must not become current renderer transcript.");
+    const parityReport = directThreadStore.projectionParityReport(session.sessionId, { sessionStore: reloadedSessionStore });
+    assert(Array.isArray(parityReport.differences), "Expected projection parity report differences list.");
+    const staleResult = directThreadStore.markProjectionStale(rendererProjection.projectionId, "manual_rebuild_requested");
+    assert(staleResult.staleReason === "manual_rebuild_requested", "Expected projection stale reason to persist.");
+    const staleRead = directThreadStore.readRendererTranscriptProjection(session.sessionId);
+    assert(staleRead.status === "stale", "Expected stale renderer projection to remain readable while renderer-safe.");
+
+    const blockedSession = reloadedSessionStore.createSession({
+      sessionId: "session_projection_blocked",
+      projectId: "project_fixture",
+      workspace: { kind: "local", localPath: "[REDACTED:private-path]" },
+      title: "Blocked projection session",
+      model: "gpt-5.4",
+      nativeDirectSession: true,
+    }, { nowMs: 1_700_000_016_300 });
+    reloadedSessionStore.createTurn(blockedSession.sessionId, {
+      turnId: "turn_projection_blocked",
+      input: [{ role: "user", text: "Authorization: Bearer abcdefghijklmnopqrstuvwxyz" }],
+    }, { nowMs: 1_700_000_016_400 });
+    directThreadStore.indexSessionArtifacts(reloadedSessionStore, reloadedSessionStore.readSession(blockedSession.sessionId), [
+      reloadedSessionStore.readTurn(blockedSession.sessionId, "turn_projection_blocked"),
+    ], { nowMs: 1_700_000_016_500 });
+    const blockedProjection = directThreadStore.buildRendererTranscriptProjection(blockedSession.sessionId, {
+      sessionStore: reloadedSessionStore,
+      nowMs: 1_700_000_016_600,
+    });
+    assert(blockedProjection.status === "blocked", "Expected secret-like projection text to block renderer projection.");
+    const blockedCurrentRead = directThreadStore.readRendererTranscriptProjection(blockedSession.sessionId);
+    assert(blockedCurrentRead === null, "Blocked projection must not become the current renderer projection.");
+    const blockedRead = directThreadStore.readRendererTranscriptProjection(blockedSession.sessionId, {
+      projectionId: blockedProjection.projectionId,
+    });
+    assert(blockedRead.items.length === 0, "Blocked projection must not return normal transcript items.");
+    assert(blockedRead.unsafeForRenderer === true, "Blocked projection must be marked unsafe for renderer.");
   } finally {
     directThreadStore.close();
   }
