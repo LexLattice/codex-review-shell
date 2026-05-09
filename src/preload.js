@@ -90,6 +90,38 @@ contextBridge.exposeInMainWorld("workspaceShell", {
     ipcRenderer.invoke("direct-import:preview-checkpoint-continuation", { ...options, projectId }),
   startDirectImportCheckpointContinuation: (projectId, options = {}) =>
     ipcRenderer.invoke("direct-import:start-checkpoint-continuation", { ...options, projectId }),
+  getDirectThreadWorkbenchSnapshot: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-thread-workbench:snapshot", { ...options, projectId }),
+  readDirectThreadWorkbenchThreadProjection: (projectId, threadId, options = {}) =>
+    ipcRenderer.invoke("direct-thread-workbench:read-thread-projection", { ...options, projectId, threadId }),
+  readDirectThreadWorkbenchProjectProjection: (projectId, projectionKind, options = {}) =>
+    ipcRenderer.invoke("direct-thread-workbench:read-project-projection", { ...options, projectId, projectionKind }),
+  readDirectThreadWorkbenchPreviewProjection: (projectId, previewId, options = {}) =>
+    ipcRenderer.invoke("direct-thread-workbench:read-preview-projection", { ...options, projectId, previewId }),
+  readDirectThreadWorkbenchOperationHistory: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-thread-workbench:read-operation-history", { ...options, projectId }),
+  prepareDirectThreadSoftDelete: (projectId, threadId, options = {}) =>
+    ipcRenderer.invoke("direct-thread-workbench:prepare-soft-delete", { ...options, projectId, threadId }),
+  runDirectThreadLifecycleAction: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-thread-workbench:run-lifecycle-action", { ...options, projectId }),
+  createDirectThreadExternalRef: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-thread-workbench:create-external-ref", { ...options, projectId }),
+  createDirectThreadBridge: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-thread-workbench:create-bridge", { ...options, projectId }),
+  unlinkDirectThreadBridge: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-thread-workbench:unlink-bridge", { ...options, projectId }),
+  createDirectThreadMergePreview: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-thread-workbench:create-merge-preview", { ...options, projectId }),
+  createDirectThreadPrunePreview: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-thread-workbench:create-prune-preview", { ...options, projectId }),
+  createDirectThreadForkPreview: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-thread-workbench:create-fork-preview", { ...options, projectId }),
+  rebuildDirectThreadLifecycleProjection: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-thread-workbench:rebuild-lifecycle-projection", { ...options, projectId }),
+  rebuildDirectThreadGraphProjection: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-thread-workbench:rebuild-graph-projection", { ...options, projectId }),
+  rebuildDirectThreadRendererProjection: (projectId, threadId, options = {}) =>
+    ipcRenderer.invoke("direct-thread-workbench:rebuild-renderer-projection", { ...options, projectId, threadId }),
   dismissCodexComposerOverlay: (reason = "shell") => ipcRenderer.invoke("codex:dismiss-composer-overlay", { reason }),
   openChatgptSettings: () => ipcRenderer.invoke("chatgpt:open-settings"),
   forceChatgptDark: () => ipcRenderer.invoke("chatgpt:force-dark"),

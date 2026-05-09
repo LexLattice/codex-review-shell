@@ -234,6 +234,10 @@ function truncatePreviewText(value, maxChars = MAX_PREVIEW_TEXT_CHARS_PER_ITEM) 
   };
 }
 
+function escapedSqlLike(value) {
+  return String(value || "").toLowerCase().replace(/[\\%_]/g, (match) => `\\${match}`);
+}
+
 function threadRowDigest(row = {}) {
   return sha256(stableStringify({
     threadId: normalizeString(row.thread_id || row.threadId, ""),
@@ -1081,18 +1085,36 @@ class DirectThreadStore {
           source_event_start_seq = excluded.source_event_start_seq,
           source_event_end_seq = excluded.source_event_end_seq
       `);
+      const existingTurnOrdinalRows = this.db.prepare(`
+        select turn_id, turn_ordinal
+        from direct_turns
+        where thread_id = ?
+      `).all(manifest.threadId);
+      const existingTurnOrdinals = new Map(existingTurnOrdinalRows.map((row) => [row.turn_id, Number(row.turn_ordinal || 0)]));
+      const usedTurnOrdinals = new Set(existingTurnOrdinalRows.map((row) => Number(row.turn_ordinal || 0)).filter((value) => value > 0));
+      let nextTurnOrdinal = 1;
+      const ordinalForTurn = (turnId) => {
+        const existingOrdinal = existingTurnOrdinals.get(turnId);
+        if (existingOrdinal) return existingOrdinal;
+        while (usedTurnOrdinals.has(nextTurnOrdinal)) nextTurnOrdinal += 1;
+        const ordinal = nextTurnOrdinal;
+        usedTurnOrdinals.add(ordinal);
+        nextTurnOrdinal += 1;
+        return ordinal;
+      };
       let nextEventSeq = 1;
-      turns.forEach((turn, index) => {
+      turns.forEach((turn) => {
+        const turnId = requireSafeId(turn.turnId, "turn");
         const eventCount = normalizeNumber(turn.normalizedEventCount, 0);
         const startSeq = eventCount > 0 ? nextEventSeq : 0;
         const endSeq = eventCount > 0 ? nextEventSeq + eventCount - 1 : 0;
         nextEventSeq = endSeq + 1;
         insertTurn.run(
-          requireSafeId(turn.turnId, "turn"),
+          turnId,
           manifest.threadId,
           manifest.projectId,
           manifest.rolloutId,
-          index + 1,
+          ordinalForTurn(turnId),
           normalizeString(turn.state, "created"),
           normalizeString(turn.streamPhase, ""),
           normalizeString(turn.createdAt || turn.requestBuiltAt || turn.streamStartedAt, ""),
@@ -2841,22 +2863,51 @@ class DirectThreadStore {
     return this.readProjectProjectionByKind(projectId, THREAD_LIFECYCLE_PROJECTION_KIND, options);
   }
 
-  listThreadSummaries(projectId, options = {}) {
+  threadSummaryWhereClause(projectId, options = {}) {
     const includeHidden = options.includeHidden === true;
     const includeArchived = options.includeArchived === true;
     const includeSoftDeleted = options.includeSoftDeleted === true;
+    const values = [normalizeString(projectId, "")];
+    const where = ["project_id = ?"];
+    const hiddenStates = [];
+    if (!includeHidden) hiddenStates.push("hidden");
+    if (!includeArchived) hiddenStates.push("archived");
+    if (!includeSoftDeleted) hiddenStates.push("soft_deleted");
+    if (hiddenStates.length) {
+      where.push(`lifecycle_state not in (${hiddenStates.map(() => "?").join(", ")})`);
+      values.push(...hiddenStates);
+    }
+    const textQuery = normalizeString(options.textQuery, "");
+    if (textQuery) {
+      where.push("lower(title) like ? escape '\\'");
+      values.push(`%${escapedSqlLike(textQuery)}%`);
+    }
+    return { where: where.join(" and "), values };
+  }
+
+  countThreadSummaries(projectId, options = {}) {
+    const clause = this.threadSummaryWhereClause(projectId, options);
+    const row = this.db.prepare(`
+      select count(*) as count
+      from direct_threads
+      where ${clause.where}
+    `).get(...clause.values);
+    return Number(row?.count || 0);
+  }
+
+  listThreadSummaries(projectId, options = {}) {
+    const clause = this.threadSummaryWhereClause(projectId, options);
+    const limit = Number.isFinite(Number(options.limit)) && Number(options.limit) > 0
+      ? Math.max(1, Math.min(1000, Number(options.limit)))
+      : 1000;
+    const offset = Math.max(0, Number(options.offset || 0));
     return this.db.prepare(`
       select thread_id, project_id, title, source_class, lifecycle_state, updated_at
       from direct_threads
-      where project_id = ?
+      where ${clause.where}
       order by updated_at desc, thread_id asc
-    `).all(normalizeString(projectId, "")).filter((row) => {
-      const state = normalizeLifecycleState(row.lifecycle_state);
-      if (state === "hidden" && !includeHidden) return false;
-      if (state === "archived" && !includeArchived) return false;
-      if (state === "soft_deleted" && !includeSoftDeleted) return false;
-      return true;
-    }).map((row) => ({
+      limit ? offset ?
+    `).all(...clause.values, limit, offset).map((row) => ({
       threadId: row.thread_id,
       projectId: row.project_id,
       title: row.title,

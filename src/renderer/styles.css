@@ -1009,8 +1009,126 @@ button:active {
 }
 
 .threads-workbench-card,
-.thread-source-card {
+.thread-source-card,
+.direct-thread-workbench-card {
   min-height: 0;
+}
+
+.direct-thread-filters {
+  display: grid;
+  grid-template-columns: repeat(3, auto) minmax(180px, 1fr);
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 10px;
+}
+
+.direct-thread-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-bottom: 10px;
+}
+
+.direct-thread-counts strong {
+  margin-left: 4px;
+}
+
+.direct-thread-workbench-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.72fr) minmax(0, 1.45fr) minmax(170px, 0.75fr);
+  gap: 10px;
+  min-height: clamp(320px, 48vh, 620px);
+}
+
+.direct-thread-workbench-list,
+.direct-thread-detail,
+.direct-thread-side {
+  min-height: 0;
+  max-height: clamp(320px, 48vh, 620px);
+  overflow: auto;
+}
+
+.direct-thread-detail,
+.direct-thread-side {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: rgba(5, 7, 11, 0.42);
+  padding: 10px;
+}
+
+.direct-thread-detail-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+}
+
+.direct-thread-detail-header h4 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.direct-thread-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.direct-thread-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.direct-thread-meta-grid > div,
+.direct-thread-side-section,
+.direct-thread-empty {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.02);
+  padding: 9px;
+}
+
+.direct-thread-meta-grid span {
+  color: var(--muted-2);
+  font-size: 10px;
+  text-transform: uppercase;
+  font-weight: 800;
+}
+
+.direct-thread-meta-grid strong {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.direct-thread-row-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.direct-thread-transcript {
+  display: grid;
+  gap: 8px;
+}
+
+.direct-preview-actions {
+  align-items: flex-start;
+  margin-bottom: 0;
+}
+
+.direct-thread-side-section {
+  font-size: 11px;
+}
+
+.direct-thread-side-row {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+  line-height: 1.35;
 }
 
 .threads-lane-editor {

@@ -25,6 +25,7 @@ const HANDOFF_KINDS = {
 };
 const ACTIVE_HANDOFF_STATUSES = new Set(["staged", "copied", "opened-thread", "submitted-manually", "response-pending", "response-captured"]);
 const CHATGPT_ALLOWED_HOSTS = new Set(["chatgpt.com", "www.chatgpt.com", "chat.openai.com", "www.chat.openai.com"]);
+const DIRECT_FORK_PREVIEW_ITEM_CAP = 20;
 const ZOOM_POLICY = bridge?.zoomConstants || {};
 // Fallbacks are only used when preload is absent; normal runtime gets these
 // values from the shared zoom policy exposed through the bridge.
@@ -82,6 +83,23 @@ const state = {
     lastError: "",
     includeHidden: false,
   },
+  directThreadWorkbench: {
+    projectId: "",
+    requestGeneration: 0,
+    status: "idle",
+    snapshot: null,
+    selectedThreadId: "",
+    selectedPreviewId: "",
+    selectedProjection: null,
+    selectedPreview: null,
+    lastError: "",
+    filters: {
+      includeHidden: false,
+      includeArchived: false,
+      includeSoftDeleted: false,
+      textQuery: "",
+    },
+  },
   surfaceEvents: {
     codex: { type: "idle" },
     chatgpt: { type: "idle" },
@@ -131,6 +149,8 @@ const state = {
     recentThreads: 0,
     directImports: 0,
     directImportOperation: 0,
+    directThreadWorkbench: 0,
+    directThreadWorkbenchOperation: 0,
     analyticsThreads: 0,
     analyticsDetail: 0,
     workTree: 0,
@@ -218,6 +238,19 @@ const els = {
   watchedRulesPreview: document.getElementById("watchedRulesPreview"),
   returnHeaderPreview: document.getElementById("returnHeaderPreview"),
   refreshCodexThreadsButton: document.getElementById("refreshCodexThreadsButton"),
+  refreshDirectThreadWorkbenchButton: document.getElementById("refreshDirectThreadWorkbenchButton"),
+  directThreadWorkbenchStatus: document.getElementById("directThreadWorkbenchStatus"),
+  directThreadIncludeHiddenInput: document.getElementById("directThreadIncludeHiddenInput"),
+  directThreadIncludeArchivedInput: document.getElementById("directThreadIncludeArchivedInput"),
+  directThreadIncludeSoftDeletedInput: document.getElementById("directThreadIncludeSoftDeletedInput"),
+  directThreadTextQueryInput: document.getElementById("directThreadTextQueryInput"),
+  directThreadActiveCount: document.getElementById("directThreadActiveCount"),
+  directThreadHiddenCount: document.getElementById("directThreadHiddenCount"),
+  directThreadArchivedCount: document.getElementById("directThreadArchivedCount"),
+  directThreadSoftDeletedCount: document.getElementById("directThreadSoftDeletedCount"),
+  directThreadWorkbenchList: document.getElementById("directThreadWorkbenchList"),
+  directThreadWorkbenchDetail: document.getElementById("directThreadWorkbenchDetail"),
+  directThreadWorkbenchSide: document.getElementById("directThreadWorkbenchSide"),
   refreshRecentChatThreadsButton: document.getElementById("refreshRecentChatThreadsButton"),
   bindingLaneInput: document.getElementById("bindingLaneInput"),
   bindingLabelInput: document.getElementById("bindingLabelInput"),
@@ -2423,6 +2456,7 @@ function renderChatgptThreadSource() {
 function renderThreadsWorkbench() {
   const project = activeProject();
   if (!project) return;
+  renderDirectThreadWorkbench();
   renderLaneBindingList();
   renderCodexThreadBrowser();
   renderChatgptThreadSource();
@@ -2438,6 +2472,256 @@ function renderThreadsWorkbench() {
       ? `Link ${codexThread.title} to ${chatThread.title} for the selected lane.`
       : "Select one Codex thread and one ChatGPT project thread, then create or update a lane binding.";
   }
+}
+
+function selectedDirectWorkbenchThread() {
+  const threads = state.directThreadWorkbench.snapshot?.threads || [];
+  return threads.find((thread) => thread.threadId === state.directThreadWorkbench.selectedThreadId) || null;
+}
+
+function directThreadWorkbenchExpectedInput(extra = {}) {
+  const snapshot = state.directThreadWorkbench.snapshot || {};
+  return {
+    expectedWorkbenchRevision: snapshot.workbenchRevision || "",
+    expectedOperationLedgerHeadDigest: snapshot.operationLedgerHeadDigest || "",
+    ...extra,
+  };
+}
+
+function renderDirectThreadWorkbenchList() {
+  if (!els.directThreadWorkbenchList) return;
+  els.directThreadWorkbenchList.textContent = "";
+  const workbench = state.directThreadWorkbench;
+  const threads = workbench.snapshot?.threads || [];
+  if (workbench.status === "loading") {
+    const item = document.createElement("div");
+    item.className = "thread-browser-item";
+    item.textContent = "Loading direct thread controls…";
+    els.directThreadWorkbenchList.appendChild(item);
+    return;
+  }
+  if (!threads.length) {
+    const item = document.createElement("div");
+    item.className = "thread-browser-item";
+    item.textContent = workbench.lastError || "No direct-owned threads indexed for this project.";
+    els.directThreadWorkbenchList.appendChild(item);
+    return;
+  }
+  for (const thread of threads) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = `thread-browser-item direct-thread-row${thread.threadId === workbench.selectedThreadId ? " active" : ""}`;
+    row.dataset.threadId = thread.threadId;
+    const title = document.createElement("strong");
+    title.textContent = thread.title || "Untitled direct thread";
+    const meta = document.createElement("span");
+    meta.className = "binding-meta";
+    const projection = thread.rendererProjection;
+    meta.textContent = `${thread.lifecycle?.state || "active"} · ${thread.sourceClass || "direct"} · projection ${projection?.status || "missing"}`;
+    const chips = document.createElement("span");
+    chips.className = "direct-thread-row-chips";
+    for (const label of [thread.activeTurnCount ? `${thread.activeTurnCount} active turn(s)` : "", projection?.projectionId ? "renderer projection" : "projection missing"].filter(Boolean)) {
+      const chip = document.createElement("span");
+      chip.className = "pill subtle";
+      chip.textContent = label;
+      chips.appendChild(chip);
+    }
+    row.append(title, meta, chips);
+    row.addEventListener("click", () => {
+      selectDirectWorkbenchThread(thread.threadId).catch((error) => setLastEvent(`Direct thread read failed: ${error.message}`));
+    });
+    els.directThreadWorkbenchList.appendChild(row);
+  }
+}
+
+function renderDirectThreadProjectionDetail() {
+  if (!els.directThreadWorkbenchDetail) return;
+  const workbench = state.directThreadWorkbench;
+  const thread = selectedDirectWorkbenchThread();
+  const projection = workbench.selectedProjection?.projection || null;
+  els.directThreadWorkbenchDetail.textContent = "";
+  if (!thread) {
+    const empty = document.createElement("div");
+    empty.className = "direct-thread-empty";
+    empty.textContent = "Select a direct-owned thread to inspect its renderer-safe projection and controls.";
+    els.directThreadWorkbenchDetail.appendChild(empty);
+    return;
+  }
+
+  const header = document.createElement("div");
+  header.className = "direct-thread-detail-header";
+  const title = document.createElement("div");
+  title.innerHTML = `<p class="eyebrow">Selected direct thread</p><h4></h4>`;
+  title.querySelector("h4").textContent = thread.title || thread.threadId;
+  const actions = document.createElement("div");
+  actions.className = "heading-actions direct-thread-actions";
+  const actionSpecs = [
+    ["hide", "Hide"],
+    ["unhide", "Unhide"],
+    ["archive", "Archive"],
+    ["restore", "Restore"],
+    ["restore_soft_deleted", "Restore soft-deleted"],
+    ["soft_delete", "Soft delete"],
+  ];
+  for (const [action, label] of actionSpecs) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `ghost small${action === "soft_delete" ? " danger" : ""}`;
+    button.textContent = label;
+    button.disabled = state.directThreadWorkbench.status === "working";
+    button.addEventListener("click", () => {
+      runDirectThreadLifecycle(action).catch((error) => setLastEvent(`Direct thread ${label.toLowerCase()} failed: ${error.message}`));
+    });
+    actions.appendChild(button);
+  }
+  header.append(title, actions);
+  els.directThreadWorkbenchDetail.appendChild(header);
+
+  const meta = document.createElement("div");
+  meta.className = "direct-thread-meta-grid";
+  const metaEntries = [
+    ["Lifecycle", thread.lifecycle?.state || "active"],
+    ["Source", thread.sourceClass || "direct"],
+    ["Projection", projection?.status || thread.rendererProjection?.status || "missing"],
+    ["Composer", "runtime status is authoritative"],
+  ];
+  for (const [label, value] of metaEntries) {
+    const entry = document.createElement("div");
+    entry.innerHTML = `<span></span><strong></strong>`;
+    entry.querySelector("span").textContent = label;
+    entry.querySelector("strong").textContent = value;
+    meta.appendChild(entry);
+  }
+  els.directThreadWorkbenchDetail.appendChild(meta);
+
+  const previewActions = document.createElement("div");
+  previewActions.className = "threads-action-bar direct-preview-actions";
+  const hint = document.createElement("p");
+  hint.className = "muted";
+  hint.textContent = `Previews are non-runnable information views. Fork preview seed metadata uses the first ${DIRECT_FORK_PREVIEW_ITEM_CAP} loaded projection items only.`;
+  const buttons = document.createElement("div");
+  buttons.className = "heading-actions";
+  for (const [kind, label] of [["merge", "Merge preview"], ["prune", "Prune preview"], ["fork", "Fork preview"]]) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "ghost small";
+    button.textContent = label;
+    button.disabled = state.directThreadWorkbench.status === "working" || !thread.rendererProjection?.projectionId;
+    button.addEventListener("click", () => {
+      createDirectThreadPreview(kind).catch((error) => setLastEvent(`${label} failed: ${error.message}`));
+    });
+    buttons.appendChild(button);
+  }
+  previewActions.append(hint, buttons);
+  els.directThreadWorkbenchDetail.appendChild(previewActions);
+
+  const transcript = document.createElement("div");
+  transcript.className = "direct-thread-transcript";
+  const items = projection?.items || [];
+  if (!items.length) {
+    const item = document.createElement("div");
+    item.className = "import-transcript-item";
+    item.textContent = projection?.failureSummary || "Renderer-safe transcript projection is not loaded yet.";
+    transcript.appendChild(item);
+  } else {
+    for (const entry of items.slice(0, 40)) {
+      const item = document.createElement("div");
+      item.className = "import-transcript-item";
+      const role = document.createElement("strong");
+      role.textContent = `${entry.role || entry.itemKind || "item"} · ${entry.status || "evidence"}`;
+      const pre = document.createElement("pre");
+      pre.textContent = entry.text || "";
+      item.append(role, pre);
+      transcript.appendChild(item);
+    }
+  }
+  els.directThreadWorkbenchDetail.appendChild(transcript);
+}
+
+function renderDirectThreadWorkbenchSide() {
+  if (!els.directThreadWorkbenchSide) return;
+  const snapshot = state.directThreadWorkbench.snapshot;
+  const preview = state.directThreadWorkbench.selectedPreview?.projection || null;
+  els.directThreadWorkbenchSide.textContent = "";
+  const revision = document.createElement("div");
+  revision.className = "direct-thread-side-section";
+  revision.innerHTML = `<p class="eyebrow">Workbench revision</p><p class="mono muted"></p>`;
+  revision.querySelector("p.mono").textContent = snapshot?.workbenchRevision || "not loaded";
+  els.directThreadWorkbenchSide.appendChild(revision);
+
+  const graph = document.createElement("div");
+  graph.className = "direct-thread-side-section";
+  const graphItems = snapshot?.graph?.items || [];
+  graph.innerHTML = `<p class="eyebrow">Graph</p><div></div>`;
+  const graphBody = graph.querySelector("div");
+  if (!graphItems.length) {
+    graphBody.textContent = snapshot?.graph?.status ? `Graph ${snapshot.graph.status}` : "No graph projection.";
+  } else {
+    for (const item of graphItems.slice(0, 12)) {
+      const row = document.createElement("div");
+      row.className = "direct-thread-side-row";
+      row.textContent = item.text || item.itemKind || "graph item";
+      graphBody.appendChild(row);
+    }
+  }
+  els.directThreadWorkbenchSide.appendChild(graph);
+
+  const previewSection = document.createElement("div");
+  previewSection.className = "direct-thread-side-section";
+  previewSection.innerHTML = `<p class="eyebrow">Selected preview</p><div></div>`;
+  const previewBody = previewSection.querySelector("div");
+  if (!preview) {
+    previewBody.textContent = "No preview selected.";
+  } else {
+    const badge = document.createElement("p");
+    badge.className = "muted";
+    badge.textContent = `${preview.projectionKind} · ${preview.status} · non-runnable`;
+    previewBody.appendChild(badge);
+    for (const item of (preview.items || []).slice(0, 8)) {
+      const row = document.createElement("div");
+      row.className = "direct-thread-side-row";
+      row.textContent = item.text || item.itemKind || "preview item";
+      previewBody.appendChild(row);
+    }
+  }
+  els.directThreadWorkbenchSide.appendChild(previewSection);
+
+  const operations = document.createElement("div");
+  operations.className = "direct-thread-side-section";
+  operations.innerHTML = `<p class="eyebrow">Operations</p><div></div>`;
+  const operationBody = operations.querySelector("div");
+  const entries = snapshot?.operationSummary?.entries || [];
+  if (!entries.length) {
+    operationBody.textContent = "No thread-control operations.";
+  } else {
+    for (const operation of entries.slice(0, 10)) {
+      const row = document.createElement("div");
+      row.className = "direct-thread-side-row";
+      row.textContent = `${operation.operationType} · ${operation.status}`;
+      operationBody.appendChild(row);
+    }
+  }
+  els.directThreadWorkbenchSide.appendChild(operations);
+}
+
+function renderDirectThreadWorkbench() {
+  if (!els.directThreadWorkbenchStatus) return;
+  const workbench = state.directThreadWorkbench;
+  const counts = workbench.snapshot?.lifecycle?.counts || {};
+  els.directThreadWorkbenchStatus.textContent = workbench.status || "idle";
+  els.directThreadActiveCount.textContent = String(counts.active || 0);
+  els.directThreadHiddenCount.textContent = String(counts.hidden || 0);
+  els.directThreadArchivedCount.textContent = String(counts.archived || 0);
+  els.directThreadSoftDeletedCount.textContent = String(counts.soft_deleted || 0);
+  if (els.directThreadIncludeHiddenInput) els.directThreadIncludeHiddenInput.checked = Boolean(workbench.filters.includeHidden);
+  if (els.directThreadIncludeArchivedInput) els.directThreadIncludeArchivedInput.checked = Boolean(workbench.filters.includeArchived);
+  if (els.directThreadIncludeSoftDeletedInput) els.directThreadIncludeSoftDeletedInput.checked = Boolean(workbench.filters.includeSoftDeleted);
+  if (els.directThreadTextQueryInput && document.activeElement !== els.directThreadTextQueryInput) {
+    els.directThreadTextQueryInput.value = workbench.filters.textQuery || "";
+  }
+  renderDirectThreadWorkbenchList();
+  renderDirectThreadProjectionDetail();
+  renderDirectThreadWorkbenchSide();
 }
 
 function importStateLabel(stateValue) {
@@ -2470,6 +2754,26 @@ function resetDirectImportWorkbench(projectId = activeProject()?.id || "") {
     selectedSessionId: "",
     lastError: "",
     includeHidden: false,
+  };
+}
+
+function resetDirectThreadWorkbench(projectId = activeProject()?.id || "") {
+  state.directThreadWorkbench = {
+    projectId,
+    requestGeneration: Number(state.directThreadWorkbench?.requestGeneration || 0) + 1,
+    status: "idle",
+    snapshot: null,
+    selectedThreadId: "",
+    selectedPreviewId: "",
+    selectedProjection: null,
+    selectedPreview: null,
+    lastError: "",
+    filters: {
+      includeHidden: Boolean(state.directThreadWorkbench?.filters?.includeHidden),
+      includeArchived: Boolean(state.directThreadWorkbench?.filters?.includeArchived),
+      includeSoftDeleted: Boolean(state.directThreadWorkbench?.filters?.includeSoftDeleted),
+      textQuery: "",
+    },
   };
 }
 
@@ -3506,6 +3810,182 @@ async function loadDirectImports(options = {}) {
   await refreshDirectRuntimeStatus(project.id);
 }
 
+async function loadDirectThreadWorkbench(options = {}) {
+  const project = activeProject();
+  if (!project || !bridge.getDirectThreadWorkbenchSnapshot) return;
+  const requestVersion = nextRequestVersion("directThreadWorkbench");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  state.directThreadWorkbench.status = options?.refresh || state.directThreadWorkbench.status === "idle"
+    ? "loading"
+    : state.directThreadWorkbench.status || "loading";
+  state.directThreadWorkbench.lastError = "";
+  renderDirectThreadWorkbench();
+  try {
+    const result = await bridge.getDirectThreadWorkbenchSnapshot(project.id, {
+      refresh: Boolean(options?.refresh),
+      filters: state.directThreadWorkbench.filters,
+      page: {
+        threads: { offset: 0, limit: 80 },
+        operations: { offset: 0, limit: 20 },
+      },
+    });
+    if (isRequestStale("directThreadWorkbench", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directThreadWorkbench.projectId = project.id;
+    state.directThreadWorkbench.snapshot = result || null;
+    state.directThreadWorkbench.status = "loaded";
+    const threads = result?.threads || [];
+    if (state.directThreadWorkbench.selectedThreadId && !threads.find((thread) => thread.threadId === state.directThreadWorkbench.selectedThreadId)) {
+      state.directThreadWorkbench.selectedThreadId = "";
+      state.directThreadWorkbench.selectedProjection = null;
+    }
+  } catch (error) {
+    if (isRequestStale("directThreadWorkbench", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directThreadWorkbench.status = "error";
+    state.directThreadWorkbench.lastError = `Direct thread workbench failed: ${error.message}`;
+    setLastEvent(state.directThreadWorkbench.lastError);
+  }
+  if (isRequestStale("directThreadWorkbench", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+  renderDirectThreadWorkbench();
+}
+
+async function selectDirectWorkbenchThread(threadId) {
+  const project = activeProject();
+  const id = String(threadId || "").trim();
+  if (!project || !id || !bridge.readDirectThreadWorkbenchThreadProjection) return;
+  state.directThreadWorkbench.selectedThreadId = id;
+  state.directThreadWorkbench.selectedProjection = null;
+  state.directThreadWorkbench.status = "working";
+  renderDirectThreadWorkbench();
+  const requestVersion = nextRequestVersion("directThreadWorkbenchOperation");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  try {
+    const result = await bridge.readDirectThreadWorkbenchThreadProjection(project.id, id, {
+      offset: 0,
+      limit: 80,
+    });
+    if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directThreadWorkbench.selectedProjection = result || null;
+    state.directThreadWorkbench.status = "loaded";
+  } catch (error) {
+    if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directThreadWorkbench.status = "error";
+    state.directThreadWorkbench.lastError = `Direct thread projection failed: ${error.message}`;
+    setLastEvent(state.directThreadWorkbench.lastError);
+  }
+  if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+  renderDirectThreadWorkbench();
+}
+
+async function runDirectThreadLifecycle(action) {
+  const project = activeProject();
+  const thread = selectedDirectWorkbenchThread();
+  if (!project || !thread || !bridge.runDirectThreadLifecycleAction) return;
+  let confirmationId = "";
+  if (action === "soft_delete") {
+    const prepared = await bridge.prepareDirectThreadSoftDelete(project.id, thread.threadId, directThreadWorkbenchExpectedInput({
+      expectedLifecycleState: thread.lifecycle?.state || "active",
+    }));
+    const confirmed = confirm(`Soft delete "${prepared.rendererSafeThreadLabel}"? This is reversible and does not purge artifacts.`);
+    if (!confirmed) return;
+    confirmationId = prepared.confirmationId || "";
+  }
+  state.directThreadWorkbench.status = "working";
+  renderDirectThreadWorkbench();
+  const requestVersion = nextRequestVersion("directThreadWorkbenchOperation");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  try {
+    const result = await bridge.runDirectThreadLifecycleAction(project.id, directThreadWorkbenchExpectedInput({
+      clientOperationId: createId(`direct_${action}`),
+      threadId: thread.threadId,
+      action,
+      confirmationId,
+      expectedLifecycleState: thread.lifecycle?.state || "active",
+      expectedRendererProjectionId: thread.rendererProjection?.projectionId || "",
+      expectedRendererProjectionDigest: thread.rendererProjection?.projectionDigest || "",
+    }));
+    if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    setLastEvent(`Direct thread operation ${result.status}: ${action}.`);
+    await loadDirectThreadWorkbench({ refresh: true });
+  } catch (error) {
+    if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directThreadWorkbench.status = "error";
+    state.directThreadWorkbench.lastError = `Direct thread operation failed: ${error.message}`;
+    setLastEvent(state.directThreadWorkbench.lastError);
+    renderDirectThreadWorkbench();
+  }
+}
+
+async function createDirectThreadPreview(kind) {
+  const project = activeProject();
+  const thread = selectedDirectWorkbenchThread();
+  if (!project || !thread) return;
+  const expected = directThreadWorkbenchExpectedInput({
+    clientOperationId: createId(`direct_${kind}_preview`),
+    threadId: thread.threadId,
+    expectedLifecycleState: thread.lifecycle?.state || "active",
+    expectedRendererProjectionId: thread.rendererProjection?.projectionId || "",
+    expectedRendererProjectionDigest: thread.rendererProjection?.projectionDigest || "",
+  });
+  state.directThreadWorkbench.status = "working";
+  renderDirectThreadWorkbench();
+  const requestVersion = nextRequestVersion("directThreadWorkbenchOperation");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  try {
+    let result = null;
+    if (kind === "merge") {
+      result = await bridge.createDirectThreadMergePreview(project.id, {
+        ...directThreadWorkbenchExpectedInput({ clientOperationId: expected.clientOperationId }),
+        sources: [{
+          threadId: thread.threadId,
+          expectedLifecycleState: thread.lifecycle?.state || "active",
+          expectedRendererProjectionId: thread.rendererProjection?.projectionId || "",
+          expectedRendererProjectionDigest: thread.rendererProjection?.projectionDigest || "",
+        }],
+      });
+    } else if (kind === "prune") {
+      const firstKey = state.directThreadWorkbench.selectedProjection?.projection?.items?.[0]?.stableSourceItemKey;
+      result = await bridge.createDirectThreadPrunePreview(project.id, {
+        ...expected,
+        excludedStableSourceItemKeys: firstKey ? [firstKey] : [],
+      });
+    } else if (kind === "fork") {
+      result = await bridge.createDirectThreadForkPreview(project.id, {
+        ...expected,
+        selectedStableSourceItemKeys: (state.directThreadWorkbench.selectedProjection?.projection?.items || [])
+          .slice(0, DIRECT_FORK_PREVIEW_ITEM_CAP)
+          .map((item) => item.stableSourceItemKey)
+          .filter(Boolean),
+      });
+    }
+    if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    if (kind === "fork") {
+      const loadedCount = state.directThreadWorkbench.selectedProjection?.projection?.items?.length || 0;
+      if (loadedCount > DIRECT_FORK_PREVIEW_ITEM_CAP) {
+        setLastEvent(`Fork preview seed metadata used first ${DIRECT_FORK_PREVIEW_ITEM_CAP} loaded projection items out of ${loadedCount}.`);
+      } else {
+        setLastEvent(`Created fork preview (${result?.projectionId || "projection"}).`);
+      }
+    }
+    state.directThreadWorkbench.selectedPreviewId = result?.projectionId || "";
+    if (state.directThreadWorkbench.selectedPreviewId && bridge.readDirectThreadWorkbenchPreviewProjection) {
+      state.directThreadWorkbench.selectedPreview = await bridge.readDirectThreadWorkbenchPreviewProjection(project.id, state.directThreadWorkbench.selectedPreviewId, {
+        offset: 0,
+        limit: 60,
+        includeSourceRefs: false,
+      });
+    }
+    state.directThreadWorkbench.status = "loaded";
+    if (kind !== "fork") setLastEvent(`Created ${kind} preview (${result?.projectionId || "projection"}).`);
+    await loadDirectThreadWorkbench({ refresh: true });
+  } catch (error) {
+    if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directThreadWorkbench.status = "error";
+    state.directThreadWorkbench.lastError = `${kind} preview failed: ${error.message}`;
+    setLastEvent(state.directThreadWorkbench.lastError);
+    renderDirectThreadWorkbench();
+  }
+}
+
 async function chooseDirectImportFile() {
   const project = activeProject();
   if (!project || !bridge.chooseDirectImportSourceFile) return;
@@ -3948,6 +4428,8 @@ async function selectProject(projectId) {
   nextRequestVersion("recentThreads");
   nextRequestVersion("directImports");
   nextRequestVersion("directImportOperation");
+  nextRequestVersion("directThreadWorkbench");
+  nextRequestVersion("directThreadWorkbenchOperation");
   nextRequestVersion("analyticsThreads");
   nextRequestVersion("analyticsDetail");
   nextRequestVersion("workTree");
@@ -3980,6 +4462,7 @@ async function selectProject(projectId) {
   state.analyticsDashboard = null;
   state.analyticsDashboardStatus = "idle";
   resetDirectImportWorkbench(projectId);
+  resetDirectThreadWorkbench(projectId);
   state.activeChatgptThreadBrowserTab = "project";
   state.subAgentGraph = null;
   state.selectedSubAgentThreadId = "";
@@ -3991,6 +4474,9 @@ async function selectProject(projectId) {
   await refreshDirectRuntimeStatus(project.id);
   if (state.activeMiddleTab === "imports") {
     await loadDirectImports({ refresh: false });
+  }
+  if (state.activeMiddleTab === "threads") {
+    await loadDirectThreadWorkbench({ refresh: false });
   }
   if (project?.lastActiveBindingId) {
     const binding = laneBindingById(project, project.lastActiveBindingId);
@@ -4594,6 +5080,11 @@ function setMiddleTab(tab) {
       setLastEvent(`Import list load failed: ${error.message}`);
     });
   }
+  if (state.activeMiddleTab === "threads" && state.directThreadWorkbench.status === "idle") {
+    loadDirectThreadWorkbench({ refresh: false }).catch((error) => {
+      setLastEvent(`Direct thread workbench load failed: ${error.message}`);
+    });
+  }
   scheduleResizeBurst();
 }
 
@@ -5131,6 +5622,25 @@ function bindEvents() {
   });
   els.refreshDirectImportsButton?.addEventListener("click", () => {
     loadDirectImports({ refresh: true }).catch((error) => setLastEvent(`Import refresh failed: ${error.message}`));
+  });
+  els.refreshDirectThreadWorkbenchButton?.addEventListener("click", () => {
+    loadDirectThreadWorkbench({ refresh: true }).catch((error) => setLastEvent(`Direct thread workbench refresh failed: ${error.message}`));
+  });
+  els.directThreadIncludeHiddenInput?.addEventListener("change", () => {
+    state.directThreadWorkbench.filters.includeHidden = Boolean(els.directThreadIncludeHiddenInput.checked);
+    loadDirectThreadWorkbench({ refresh: true }).catch((error) => setLastEvent(`Direct thread filter failed: ${error.message}`));
+  });
+  els.directThreadIncludeArchivedInput?.addEventListener("change", () => {
+    state.directThreadWorkbench.filters.includeArchived = Boolean(els.directThreadIncludeArchivedInput.checked);
+    loadDirectThreadWorkbench({ refresh: true }).catch((error) => setLastEvent(`Direct thread filter failed: ${error.message}`));
+  });
+  els.directThreadIncludeSoftDeletedInput?.addEventListener("change", () => {
+    state.directThreadWorkbench.filters.includeSoftDeleted = Boolean(els.directThreadIncludeSoftDeletedInput.checked);
+    loadDirectThreadWorkbench({ refresh: true }).catch((error) => setLastEvent(`Direct thread filter failed: ${error.message}`));
+  });
+  els.directThreadTextQueryInput?.addEventListener("input", () => {
+    state.directThreadWorkbench.filters.textQuery = els.directThreadTextQueryInput.value || "";
+    loadDirectThreadWorkbench({ refresh: false }).catch((error) => setLastEvent(`Direct thread search failed: ${error.message}`));
   });
   els.chooseDirectImportFileButton?.addEventListener("click", () => {
     chooseDirectImportFile().catch((error) => setLastEvent(`Choose import source failed: ${error.message}`));
