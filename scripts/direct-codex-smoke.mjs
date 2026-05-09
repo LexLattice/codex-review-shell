@@ -887,6 +887,11 @@ try {
       clientOperationId: "client_thread_control_hide",
     }, { nowMs: 1_700_000_016_211 });
     assert(duplicateHiddenLifecycle.operationId === hiddenLifecycle.operationId, "Expected lifecycle operation idempotency by client operation id.");
+    assertThrows(() => directThreadStore.softDeleteThread({
+      projectId: "project_fixture",
+      threadId: interruptedSession.sessionId,
+      clientOperationId: "client_thread_control_hide",
+    }, { nowMs: 1_700_000_016_211 }), "Reusing a lifecycle client operation id with different input must fail.");
     assert(!directThreadStore.listThreadSummaries("project_fixture").some((entry) => entry.threadId === interruptedSession.sessionId), "Hidden threads should be filtered from default list summaries.");
     assert(directThreadStore.listThreadSummaries("project_fixture", { includeHidden: true }).some((entry) => entry.threadId === interruptedSession.sessionId), "Explicit hidden list should include hidden thread.");
     const unhiddenLifecycle = directThreadStore.unhideThread({
@@ -942,6 +947,13 @@ try {
     const lifecycleProjection = directThreadStore.readThreadLifecycleProjection("project_fixture");
     assert(lifecycleProjection.projectionKind === THREAD_LIFECYCLE_PROJECTION_KIND, "Expected project lifecycle projection kind.");
     assert(lifecycleProjection.items.some((item) => item.itemKind === "thread_lifecycle_summary"), "Expected lifecycle projection summary rows.");
+    directThreadStore.buildThreadLifecycleProjection("project_fixture", {
+      nowMs: 1_700_000_016_221,
+    });
+    const reusedLifecycleProjection = directThreadStore.buildThreadLifecycleProjection("project_fixture", {
+      nowMs: 1_700_000_016_221,
+    });
+    assert(reusedLifecycleProjection.reused === true, "Expected unchanged lifecycle projection rebuild to reuse current projection.");
 
     const chatGptRef = directThreadStore.createExternalRef({
       projectId: "project_fixture",
@@ -974,10 +986,43 @@ try {
       metadata: { role: "review" },
     }, { nowMs: 1_700_000_016_227 });
     assert(duplicateBridgeOperation.result.effects[0].effectKind === "lifecycle_noop_already_applied", "Duplicate bridge should be a deterministic no-op.");
+    const orderedMetadataRef = directThreadStore.createExternalRef({
+      projectId: "project_fixture",
+      refKind: "imported_source",
+      displayTitle: "Ordered metadata source",
+      targetId: "ordered_metadata_source_fixture",
+      rendererSafeUrlHash: "hmac_ordered_metadata_source_fixture",
+    }, { nowMs: 1_700_000_016_227 });
+    const orderedMetadataBridge = directThreadStore.bridgeThreads({
+      projectId: "project_fixture",
+      sourceKind: "direct_thread",
+      sourceId: session.sessionId,
+      targetKind: "external_ref",
+      targetId: orderedMetadataRef.externalRefId,
+      edgeKind: "import_source_reference",
+      clientOperationId: "client_thread_control_bridge_ordered_metadata",
+      metadata: { a: 1, b: 2 },
+    }, { nowMs: 1_700_000_016_227 });
+    assert(orderedMetadataBridge.status === "committed", "Expected ordered metadata bridge to commit.");
+    const reorderedMetadataBridge = directThreadStore.bridgeThreads({
+      projectId: "project_fixture",
+      sourceKind: "direct_thread",
+      sourceId: session.sessionId,
+      targetKind: "external_ref",
+      targetId: orderedMetadataRef.externalRefId,
+      edgeKind: "import_source_reference",
+      clientOperationId: "client_thread_control_bridge_reordered_metadata",
+      metadata: { b: 2, a: 1 },
+    }, { nowMs: 1_700_000_016_227 });
+    assert(reorderedMetadataBridge.result.effects[0].effectKind === "lifecycle_noop_already_applied", "Bridge metadata comparison should be key-order stable.");
     const graphProjection = directThreadStore.readThreadGraphProjection("project_fixture");
     assert(graphProjection.projectionKind === THREAD_GRAPH_PROJECTION_KIND, "Expected graph projection kind.");
     assert(graphProjection.items.some((item) => item.itemKind === "graph_external_ref"), "Expected graph projection to include external ref node.");
     assert(graphProjection.items.some((item) => item.itemKind === "bridge_edge"), "Expected graph projection to include bridge edge.");
+    const reusedGraphProjection = directThreadStore.buildThreadGraphProjection("project_fixture", {
+      nowMs: 1_700_000_016_227,
+    });
+    assert(reusedGraphProjection.reused === true, "Expected unchanged graph projection rebuild to reuse current projection.");
     const unlinkOperation = directThreadStore.unlinkBridge({
       projectId: "project_fixture",
       sourceKind: "direct_thread",

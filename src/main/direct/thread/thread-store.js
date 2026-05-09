@@ -2438,6 +2438,31 @@ class DirectThreadStore {
     };
   }
 
+  returnExistingOperationOrThrowConflict(existing, expected = {}) {
+    if (!existing) return null;
+    const expectedOperationType = normalizeString(expected.operationType, "");
+    if (expectedOperationType && existing.operation_type !== expectedOperationType) {
+      throw new Error("client_operation_id_conflict");
+    }
+    let result = {};
+    let target = {};
+    try {
+      result = JSON.parse(existing.result_json || "{}");
+    } catch {}
+    try {
+      target = JSON.parse(existing.target_json || "{}");
+    } catch {}
+    const expectedInputDigest = normalizeString(expected.operationInputDigest, "");
+    const existingInputDigest = normalizeString(result.operationInputDigest, "");
+    if (expectedInputDigest && existingInputDigest && expectedInputDigest !== existingInputDigest) {
+      throw new Error("client_operation_id_conflict");
+    }
+    if (!existingInputDigest && isPlainObject(expected.target) && stableStringify(target) !== stableStringify(expected.target)) {
+      throw new Error("client_operation_id_conflict");
+    }
+    return this.operationResult(existing);
+  }
+
   threadRow(threadId) {
     return this.db.prepare("select * from direct_threads where thread_id = ?").get(requireSafeId(threadId, "thread")) || null;
   }
@@ -2496,34 +2521,38 @@ class DirectThreadStore {
     const threadId = requireSafeId(input.threadId || input.sessionId, "thread");
     const clientOperationId = normalizeString(input.clientOperationId, "");
     const actor = normalizeString(input.actor, "user");
-    const existing = this.operationByClient(projectId, clientOperationId);
-    if (existing) return this.operationResult(existing);
     const threadBefore = this.requireThreadInProject(projectId, threadId);
     const beforeState = normalizeLifecycleState(threadBefore.lifecycle_state);
-    if (normalizeString(input.expectedCurrentLifecycleState, beforeState) !== beforeState) {
-      throw new Error("lifecycle_state_changed");
-    }
-    if (operationType === "soft_delete_thread" && this.activeTurnCount(threadId) > 0) {
-      throw new Error("active_direct_turn_exists");
-    }
     const transition = this.lifecycleTransition(operationType, beforeState);
+    const requestedExpectedState = normalizeString(input.expectedCurrentLifecycleState, "");
     const digestInput = {
       schema: "direct_thread_lifecycle_operation_input@1",
       operationType,
       projectId,
       threadId,
       expectedProjectGeneration: normalizeString(input.expectedProjectGeneration, ""),
-      expectedCurrentLifecycleState: beforeState,
+      expectedCurrentLifecycleState: requestedExpectedState,
       controllerVersion: DIRECT_THREAD_CONTROL_BUILDER_VERSION,
       safetyPolicyVersion: "direct_thread_control_safety@1",
     };
     const inputDigest = operationInputDigest(digestInput);
+    const target = { threadIds: [threadId] };
+    const existing = this.operationByClient(projectId, clientOperationId);
+    const existingResult = this.returnExistingOperationOrThrowConflict(existing, {
+      operationType,
+      operationInputDigest: inputDigest,
+      target,
+    });
+    if (existingResult) return existingResult;
+    if (requestedExpectedState && requestedExpectedState !== beforeState) {
+      throw new Error("lifecycle_state_changed");
+    }
     const planned = this.planOperation({
       operationType,
       projectId,
       clientOperationId,
       actor,
-      target: { threadIds: [threadId] },
+      target,
       parameters: {
         operationInputDigest: inputDigest,
         expectedCurrentLifecycleState: beforeState,
@@ -2556,25 +2585,56 @@ class DirectThreadStore {
     }
     const now = nowIso(options.nowMs);
     const nextState = transition.nextState;
-    this.transaction(() => {
-      this.db.prepare(`
-        update direct_threads
-        set lifecycle_state = ?,
-            hidden_at = ?,
-            archived_at = ?,
-            deleted_at = ?,
-            updated_at = ?
-        where thread_id = ? and project_id = ?
-      `).run(
-        nextState,
-        nextState === "hidden" ? now : "",
-        nextState === "archived" ? now : "",
-        nextState === "soft_deleted" ? now : "",
-        now,
-        threadId,
-        projectId,
-      );
-    });
+    try {
+      this.transaction(() => {
+        if (operationType === "soft_delete_thread" && this.activeTurnCount(threadId) > 0) {
+          throw new Error("active_direct_turn_exists");
+        }
+        this.db.prepare(`
+          update direct_threads
+          set lifecycle_state = ?,
+              hidden_at = ?,
+              archived_at = ?,
+              deleted_at = ?,
+              updated_at = ?
+          where thread_id = ? and project_id = ?
+        `).run(
+          nextState,
+          nextState === "hidden" ? now : "",
+          nextState === "archived" ? now : "",
+          nextState === "soft_deleted" ? now : "",
+          now,
+          threadId,
+          projectId,
+        );
+      });
+    } catch (error) {
+      if (error && error.message === "active_direct_turn_exists") {
+        this.appendOperationEvent({
+          operationType,
+          operationId: planned.operationId,
+          projectId,
+          clientOperationId,
+          actor,
+          eventType: "operation_failed",
+          target,
+          result: {
+            status: "failed",
+            blockerCode: "active_direct_turn_exists",
+            operationInputDigest: inputDigest,
+            effects: [{
+              effectKind: "operation_failed_no_effect",
+              targetKind: "direct_thread",
+              targetId: threadId,
+              beforeDigest: threadRowDigest(threadBefore),
+              afterDigest: threadRowDigest(threadBefore),
+              rendererSafeSummary: "active_direct_turn_exists",
+            }],
+          },
+        }, options);
+      }
+      throw error;
+    }
     const threadAfter = this.threadRow(threadId);
     const effectKind = transition.noop ? "lifecycle_noop_already_applied" : "lifecycle_state_changed";
     const committed = this.commitOperation(planned.operationId, {
@@ -2651,6 +2711,19 @@ class DirectThreadStore {
         operationLedgerHeadDigest: operationManifest.hashChainHead,
         builderVersion: DIRECT_THREAD_CONTROL_BUILDER_VERSION,
       }));
+      const existing = this.projectCurrentProjectionRow(safeProjectId, THREAD_LIFECYCLE_PROJECTION_KIND);
+      if (!options.force && existing) {
+        const existingSource = this.projectionFromRow(existing)?.source || {};
+        if (existingSource.sourceDigest && existingSource.sourceDigest === sourceDigest && existing.status === "valid") {
+          return {
+            projectionId: existing.projection_id,
+            projectionKind: THREAD_LIFECYCLE_PROJECTION_KIND,
+            status: existing.status,
+            reused: true,
+            itemCount: this.readProjectionItems(existing.projection_id).length,
+          };
+        }
+      }
       const projectionId = `thread_lifecycle_${sha256(`${safeProjectId}:${sourceDigest}`).slice(0, 24)}`;
       const counts = rows.reduce((acc, row) => {
         const state = normalizeLifecycleState(row.lifecycle_state);
@@ -2887,11 +2960,12 @@ class DirectThreadStore {
     const target = `${sourceKind}:${sourceId}`;
     const seen = new Set();
     const stack = [start];
+    const lineageKinds = [...LINEAGE_EDGE_KINDS];
     const rows = this.db.prepare(`
       select source_kind, source_id, target_kind, target_id
       from direct_thread_edges
-      where project_id = ? and edge_kind in ('derived_from', 'merge_preview_of', 'prune_preview_of', 'fork_preview_of', 'supersedes') and status = 'active'
-    `).all(projectId);
+      where project_id = ? and edge_kind in (${lineageKinds.map(() => "?").join(", ")}) and status = 'active'
+    `).all(projectId, ...lineageKinds);
     const outgoing = new Map();
     for (const row of rows) {
       const key = `${row.source_kind}:${row.source_id}`;
@@ -2911,8 +2985,6 @@ class DirectThreadStore {
   bridgeThreads(input = {}, options = {}) {
     const projectId = normalizeString(input.projectId, "");
     const clientOperationId = normalizeString(input.clientOperationId, "");
-    const existing = this.operationByClient(projectId, clientOperationId);
-    if (existing) return this.operationResult(existing);
     const key = this.edgeKey(input);
     if (!GRAPH_EDGE_KINDS.has(key.edgeKind)) throw new Error("unsupported_graph_edge_kind");
     this.validateGraphEndpoint(projectId, key.sourceKind, key.sourceId);
@@ -2930,21 +3002,33 @@ class DirectThreadStore {
       metadataDigest: sha256(stableStringify(metadata)),
       controllerVersion: DIRECT_THREAD_CONTROL_BUILDER_VERSION,
     });
+    const target = { edgeId, ...key };
+    const existing = this.operationByClient(projectId, clientOperationId);
+    const existingResult = this.returnExistingOperationOrThrowConflict(existing, {
+      operationType: "bridge_threads",
+      operationInputDigest: inputDigest,
+      target,
+    });
+    if (existingResult) return existingResult;
     const activeDuplicate = this.db.prepare(`
       select *
       from direct_thread_edges
       where project_id = ? and edge_kind = ? and source_kind = ? and source_id = ? and target_kind = ? and target_id = ? and status = 'active'
     `).get(projectId, key.edgeKind, key.sourceKind, key.sourceId, key.targetKind, key.targetId);
     if (activeDuplicate) {
-      const existingMetadataDigest = sha256(activeDuplicate.metadata_json || "{}");
-      const nextMetadataDigest = sha256(JSON.stringify(metadata));
+      let existingMetadata = {};
+      try {
+        existingMetadata = JSON.parse(activeDuplicate.metadata_json || "{}");
+      } catch {}
+      const existingMetadataDigest = sha256(stableStringify(existingMetadata));
+      const nextMetadataDigest = sha256(stableStringify(metadata));
       if (existingMetadataDigest !== nextMetadataDigest) throw new Error("metadata_conflict");
     }
     const planned = this.planOperation({
       operationType: "bridge_threads",
       projectId,
       clientOperationId,
-      target: { edgeId, ...key },
+      target,
       parameters: { operationInputDigest: inputDigest },
       safety: { requiresConfirmation: false },
     }, options);
@@ -2981,7 +3065,7 @@ class DirectThreadStore {
         key.targetId,
         planned.operationId,
         now,
-        JSON.stringify(metadata),
+        stableStringify(metadata),
         planned.operationId,
         now,
       );
@@ -2991,7 +3075,7 @@ class DirectThreadStore {
       operationType: "bridge_threads",
       projectId,
       clientOperationId,
-      target: { edgeId, ...key },
+      target,
       result: {
         status: "committed",
         operationInputDigest: inputDigest,
@@ -3012,8 +3096,6 @@ class DirectThreadStore {
   unlinkBridge(input = {}, options = {}) {
     const projectId = normalizeString(input.projectId, "");
     const clientOperationId = normalizeString(input.clientOperationId, "");
-    const existing = this.operationByClient(projectId, clientOperationId);
-    if (existing) return this.operationResult(existing);
     const key = this.edgeKey(input);
     const edgeId = normalizeString(input.edgeId, "");
     const row = edgeId
@@ -3024,18 +3106,27 @@ class DirectThreadStore {
         where project_id = ? and edge_kind = ? and source_kind = ? and source_id = ? and target_kind = ? and target_id = ? and status = 'active'
       `).get(projectId, key.edgeKind, key.sourceKind, key.sourceId, key.targetKind, key.targetId);
     const targetEdgeId = normalizeString(edgeId || row?.edge_id, "");
+    const target = { edgeId: targetEdgeId, ...key };
+    const inputDigest = operationInputDigest({
+      schema: "direct_thread_unlink_operation_input@1",
+      projectId,
+      edgeId: targetEdgeId,
+      ...key,
+    });
+    const existing = this.operationByClient(projectId, clientOperationId);
+    const existingResult = this.returnExistingOperationOrThrowConflict(existing, {
+      operationType: "unlink_bridge",
+      operationInputDigest: inputDigest,
+      target,
+    });
+    if (existingResult) return existingResult;
     const planned = this.planOperation({
       operationType: "unlink_bridge",
       projectId,
       clientOperationId,
-      target: { edgeId: targetEdgeId, ...key },
+      target,
       parameters: {
-        operationInputDigest: operationInputDigest({
-          schema: "direct_thread_unlink_operation_input@1",
-          projectId,
-          edgeId: targetEdgeId,
-          ...key,
-        }),
+        operationInputDigest: inputDigest,
       },
       safety: { requiresConfirmation: false },
     }, options);
@@ -3056,9 +3147,10 @@ class DirectThreadStore {
       operationType: "unlink_bridge",
       projectId,
       clientOperationId,
-      target: { edgeId: targetEdgeId, ...key },
+      target,
       result: {
         status: "committed",
+        operationInputDigest: inputDigest,
         effects: [{
           effectKind,
           targetKind: "thread_edge",
@@ -3087,6 +3179,19 @@ class DirectThreadStore {
       operationLedgerHeadDigest: this.readOperationManifest().hashChainHead,
       builderVersion: DIRECT_THREAD_CONTROL_BUILDER_VERSION,
     }));
+    const existing = this.projectCurrentProjectionRow(safeProjectId, THREAD_GRAPH_PROJECTION_KIND);
+    if (!options.force && existing) {
+      const existingSource = this.projectionFromRow(existing)?.source || {};
+      if (existingSource.sourceDigest && existingSource.sourceDigest === sourceDigest && existing.status === "valid") {
+        return {
+          projectionId: existing.projection_id,
+          projectionKind: THREAD_GRAPH_PROJECTION_KIND,
+          status: existing.status,
+          reused: true,
+          itemCount: this.readProjectionItems(existing.projection_id).length,
+        };
+      }
+    }
     const projectionId = `thread_graph_${sha256(`${safeProjectId}:${sourceDigest}`).slice(0, 24)}`;
     const items = [
       ...threads.map((row, index) => ({
@@ -3202,26 +3307,33 @@ class DirectThreadStore {
   writePreviewOperation(input = {}, projectionKind, buildPreview, options = {}) {
     const projectId = normalizeString(input.projectId, "");
     const clientOperationId = normalizeString(input.clientOperationId, "");
-    const existing = this.operationByClient(projectId, clientOperationId);
-    if (existing) return this.operationResult(existing);
     const operationTypeByKind = {
       [MERGE_PREVIEW_PROJECTION_KIND]: "preview_merge_threads",
       [PRUNE_PREVIEW_PROJECTION_KIND]: "preview_prune_thread",
       [FORK_PREVIEW_PROJECTION_KIND]: "preview_fork_thread",
     };
     const operationType = operationTypeByKind[projectionKind];
+    const target = input.target || {};
+    const inputDigest = operationInputDigest({
+      schema: `${projectionKind}_operation_input@1`,
+      projectId,
+      input,
+      controllerVersion: DIRECT_THREAD_CONTROL_BUILDER_VERSION,
+    });
+    const existing = this.operationByClient(projectId, clientOperationId);
+    const existingResult = this.returnExistingOperationOrThrowConflict(existing, {
+      operationType,
+      operationInputDigest: inputDigest,
+      target,
+    });
+    if (existingResult) return existingResult;
     const planned = this.planOperation({
       operationType,
       projectId,
       clientOperationId,
-      target: input.target || {},
+      target,
       parameters: {
-        operationInputDigest: operationInputDigest({
-          schema: `${projectionKind}_operation_input@1`,
-          projectId,
-          input,
-          controllerVersion: DIRECT_THREAD_CONTROL_BUILDER_VERSION,
-        }),
+        operationInputDigest: inputDigest,
       },
       safety: { requiresConfirmation: false },
     }, options);
@@ -3236,9 +3348,10 @@ class DirectThreadStore {
       operationType,
       projectId,
       clientOperationId,
-      target: input.target || {},
+      target,
       result: {
         status: "committed",
+        operationInputDigest: inputDigest,
         effects: [{
           effectKind: "preview_projection_created",
           targetKind: "projection",
