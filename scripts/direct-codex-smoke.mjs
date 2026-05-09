@@ -163,6 +163,30 @@ function createHashForSmoke(value) {
   return crypto.createHash("sha256").update(String(value || "")).digest("hex").slice(0, 20);
 }
 
+function normalizedSmokePath(value) {
+  return String(value || "").replaceAll("\\", "/");
+}
+
+function cleanupSmokeTempDir(directory) {
+  if (!directory) return;
+  try {
+    fs.rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  } catch (error) {
+    if (process.platform !== "win32" || error?.code !== "EPERM") throw error;
+    try {
+      fs.chmodSync(directory, 0o700);
+    } catch {
+      // Best effort for Windows temp cleanup after SQLite/Electron handles release late.
+    }
+    try {
+      fs.rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
+    } catch (retryError) {
+      if (retryError?.code !== "EPERM") throw retryError;
+      console.warn(`Skipping locked Windows smoke temp cleanup: ${directory}`);
+    }
+  }
+}
+
 async function waitForCondition(callback, message, timeoutMs = 1_000) {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
@@ -497,7 +521,7 @@ try {
   fs.writeFileSync(corruptPath, "{not-json", "utf8");
   assert(activationStore.statusForProject(corruptProject.id).corruptedCount === 1, "Expected corrupt activation files to produce corrupt status instead of throwing.");
 } finally {
-  fs.rmSync(activationStoreParent, { recursive: true, force: true });
+  cleanupSmokeTempDir(activationStoreParent);
 }
 const memoryDirectRuntimeStatus = buildDirectRuntimeStatus({
   project: { surfaceBinding: { codex: { runtimeMode: "direct-experimental" } } },
@@ -1374,7 +1398,7 @@ try {
       assert(failedForkTurn.state === "failed", "Failed fork-start pre-transport attempt must not leave a created turn orphaned.");
       assert(forkStartThreadStore.activeTurnCountForProject("project_fork_start") === 0, "Failed fork-start pre-transport attempt must not leave active project turns.");
     } finally {
-      fs.rmSync(forkStartParent, { recursive: true, force: true });
+      cleanupSmokeTempDir(forkStartParent);
     }
 
     const staleResult = directThreadStore.markProjectionStale(rendererProjection.projectionId, "manual_rebuild_requested");
@@ -1486,7 +1510,7 @@ try {
   const incrementalPersisted = sessionStore.readTurn(incrementalSession.sessionId, incrementalTurn.turnId);
   assert(incrementalPersisted.unresolvedObligations.length === 1, "Expected incremental tool obligation updates to preserve one stable obligation.");
 } finally {
-  fs.rmSync(sessionStoreParent, { recursive: true, force: true });
+  cleanupSmokeTempDir(sessionStoreParent);
 }
 
 const fixtureControllerParent = fs.mkdtempSync(path.join(os.tmpdir(), "direct-codex-fixture-controller-"));
@@ -1629,7 +1653,7 @@ try {
   assert(failurePersisted.messages[0].status === "failed", "Expected failed fixture turn transcript to be persisted.");
   assert(failurePersisted.messages[0].items.some((item) => item.type === "userMessage"), "Expected failed fixture transcript to retain the user prompt.");
 } finally {
-  fs.rmSync(fixtureControllerParent, { recursive: true, force: true });
+  cleanupSmokeTempDir(fixtureControllerParent);
 }
 
 const liveTextControllerParent = fs.mkdtempSync(path.join(os.tmpdir(), "direct-codex-live-text-controller-"));
@@ -2263,7 +2287,7 @@ try {
   assert(approvedToolController.toolDecisionResults.size <= 1, "Expected direct tool decision result cache to stay bounded.");
   approvedToolThreadStore.close();
 } finally {
-  fs.rmSync(liveTextControllerParent, { recursive: true, force: true });
+  cleanupSmokeTempDir(liveTextControllerParent);
 }
 
 const secretFixture = {
@@ -2630,7 +2654,7 @@ try {
   assert(authEvents.every((event) => event.status === null || isPlainObject(event.status)), "Expected auth IPC events to carry auth status objects.");
   assert(!fs.existsSync(path.join(authIpcRoot, DEFAULT_DIRECT_AUTH_FILE_NAME)), "Expected direct auth IPC logout to clear file credentials.");
 } finally {
-  fs.rmSync(authStoreParent, { recursive: true, force: true });
+  cleanupSmokeTempDir(authStoreParent);
 }
 
 const sampleEvents = [
@@ -3459,7 +3483,7 @@ try {
   assert(abortedProbe.normalizedEvents.some((event) => event.type === "aborted"), "Expected aborted probe failure to normalize as aborted.");
   assertFixtureRedacted(abortedProbe.diagnostic);
 } finally {
-  fs.rmSync(textProbeParent, { recursive: true, force: true });
+  cleanupSmokeTempDir(textProbeParent);
 }
 
 const delta = buildFixtureProfileDelta({
@@ -3479,7 +3503,7 @@ const importCandidate = buildImportCandidate([
 });
 assert(importCandidate.target.runnable === false, "Imported Codex JSONL must remain non-runnable.");
 assert(importCandidate.unresolvedObligations.length === 1, "Expected unpaired tool obligation.");
-assert(importCandidate.source.codexHome.endsWith("/tmp/codex"), "Expected import candidate to preserve source CODEX_HOME.");
+assert(normalizedSmokePath(importCandidate.source.codexHome).endsWith("/tmp/codex"), "Expected import candidate to preserve source CODEX_HOME.");
 assert(importCandidate.source.sourceFileSha256.length === 64, "Expected import candidate to preserve source digest.");
 assert(importCandidate.lineage.importId, "Expected import candidate lineage.");
 const stableRecordCandidateA = buildImportCandidate([
@@ -3495,8 +3519,8 @@ assert(importCheckpoint.schema === "direct_codex_import_checkpoint_candidate@1",
 assert(importCheckpoint.state === "checkpoint-candidate", "Expected import checkpoint candidate state.");
 assert(importCheckpoint.runnable === false, "Import checkpoint candidate must not be runnable.");
 assert(importCheckpoint.target.eligibleForContinuation === false, "Import checkpoint candidate must not allow continuation yet.");
-assert(importCheckpoint.source.filePath.endsWith("/tmp/codex/history/thread_1.jsonl"), "Expected import checkpoint to preserve source file path.");
-assert(importCheckpoint.source.codexHome.endsWith("/tmp/codex"), "Expected import checkpoint to preserve source CODEX_HOME.");
+assert(normalizedSmokePath(importCheckpoint.source.filePath).endsWith("/tmp/codex/history/thread_1.jsonl"), "Expected import checkpoint to preserve source file path.");
+assert(normalizedSmokePath(importCheckpoint.source.codexHome).endsWith("/tmp/codex"), "Expected import checkpoint to preserve source CODEX_HOME.");
 assert(importCheckpoint.checkpoint.messages.length === 1, "Expected import checkpoint to preserve user-visible messages.");
 assert(importCheckpoint.checkpoint.unresolvedObligations.length === 1, "Expected import checkpoint to carry unresolved obligations.");
 assert(importCheckpoint.checkpoint.unresolvedObligations[0].autoReplayable === false, "Imported tool calls must not be auto-replayable.");
@@ -3588,8 +3612,8 @@ try {
   assert(materializedReadonly.nativeDirectSession === false, "Expected unresolved import materialization to remain non-native.");
   const materializedReadonlySession = importSessionStore.readSession(materializedReadonly.sessionId);
   assert(materializedReadonlySession.runtimeMode === "imported-readonly", "Expected unresolved import session runtime mode.");
-  assert(materializedReadonlySession.importSource.filePath.endsWith("/tmp/codex/history/thread_1.jsonl"), "Expected materialized import session to preserve source path.");
-  assert(materializedReadonlySession.importSource.codexHome.endsWith("/tmp/codex"), "Expected materialized import session to preserve CODEX_HOME.");
+  assert(normalizedSmokePath(materializedReadonlySession.importSource.filePath).endsWith("/tmp/codex/history/thread_1.jsonl"), "Expected materialized import session to preserve source path.");
+  assert(normalizedSmokePath(materializedReadonlySession.importSource.codexHome).endsWith("/tmp/codex"), "Expected materialized import session to preserve CODEX_HOME.");
   assert(materializedReadonlySession.readOnlyImported === true, "Expected materialized import session to stay read-only.");
   assert(materializedReadonlySession.nativeDirectSession === false, "Expected materialized import session not to be native direct.");
   assert(materializedReadonlySession.messages[0].items.length === 1, "Expected materialized import session to preserve transcript items.");
@@ -3652,7 +3676,7 @@ try {
   assert(recoveredReadonlySession.sourceClass === "legacy-codex-jsonl-import", "Expected recovered import session source class.");
   assert(recoveredReadonlySession.runtimeMode === "imported-readonly", "Expected recovered readonly import runtime mode.");
   assert(recoveredReadonlySession.continuationEligible === false, "Expected recovered readonly import not to allow continuation.");
-  assert(recoveredReadonlySession.compactionCheckpoints[0].source.codexHome.endsWith("/tmp/codex"), "Expected recovered import checkpoint to preserve CODEX_HOME.");
+  assert(normalizedSmokePath(recoveredReadonlySession.compactionCheckpoints[0].source.codexHome).endsWith("/tmp/codex"), "Expected recovered import checkpoint to preserve CODEX_HOME.");
   const recoveredValidatedSession = reloadedImportStore.readSession(materializedValidated.sessionId);
   assert(recoveredValidatedSession.runtimeMode === "imported-readonly", "Expected recovered validated import runtime mode.");
   assert(recoveredValidatedSession.continuationEligible === true, "Expected recovered validated import continuation eligibility.");
@@ -3890,7 +3914,7 @@ try {
     assert(toolResult.ok === false, "Expected checkpoint continuation tool call to fail closed.");
     assert(toolResult.continuation.failure.kind === "tool_call_unsupported", "Expected tool-call failure kind.");
   } finally {
-    fs.rmSync(continuationParent, { recursive: true, force: true });
+    cleanupSmokeTempDir(continuationParent);
   }
 
   const hiddenImport = await importController.hideImport({ id: "project_controller" }, { importId: controllerMaterialized.rendererSafeSession.importId });
@@ -3925,7 +3949,7 @@ try {
   const corruptEntry = recoveredWithCorruptImport.imports.find((entry) => entry.importId === "import_corrupt_smoke");
   assert(corruptEntry?.recoveryState === "corrupted", "Expected corrupt import artifact recovery to continue and mark import corrupted.");
 } finally {
-  fs.rmSync(importStoreParent, { recursive: true, force: true });
+  cleanupSmokeTempDir(importStoreParent);
 }
 
 const committedFixtureCount = validateCommittedFixtureCorpus();

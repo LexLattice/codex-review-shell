@@ -354,9 +354,15 @@ class DirectThreadStore {
     this.dbPath = dbPath ? path.resolve(dbPath) : path.join(this.rootDir, "direct-thread-store.sqlite");
     this.mode = normalizeStoreMode(options.mode);
     this.projectionBuildLocks = new Set();
+    this.dbOpenError = null;
     ensureDirectory(this.rootDir);
-    this.db = this.openDatabase();
-    this.migrate();
+    try {
+      this.db = this.openDatabase();
+      this.migrate();
+    } catch (error) {
+      this.db = null;
+      this.dbOpenError = error;
+    }
   }
 
   operationLedgerDir() {
@@ -420,7 +426,15 @@ class DirectThreadStore {
       throw new Error(`Direct thread store requires runtime SQLite support (node:sqlite).${reason}`.trim());
     }
     const db = new DatabaseSync(this.dbPath);
-    db.exec("pragma journal_mode = wal;");
+    try {
+      db.exec("pragma journal_mode = wal;");
+    } catch (error) {
+      try {
+        db.exec("pragma journal_mode = delete;");
+      } catch {
+        throw error;
+      }
+    }
     db.exec("pragma foreign_keys = on;");
     db.exec("pragma busy_timeout = 5000;");
     db.exec("pragma synchronous = normal;");
@@ -433,7 +447,14 @@ class DirectThreadStore {
     this.db = null;
   }
 
+  requireDatabase() {
+    if (this.db) return this.db;
+    const reason = this.dbOpenError?.message ? ` ${this.dbOpenError.message}` : "";
+    throw new Error(`Direct thread store database is unavailable.${reason}`.trim());
+  }
+
   migrate() {
+    this.requireDatabase();
     this.transaction(() => {
       this.db.exec(`
       create table if not exists direct_store_meta (
@@ -842,6 +863,7 @@ class DirectThreadStore {
   }
 
   transaction(callback) {
+    this.requireDatabase();
     this.db.exec("begin immediate;");
     try {
       const result = callback();
@@ -856,6 +878,37 @@ class DirectThreadStore {
   }
 
   status() {
+    if (!this.db) {
+      return {
+        schema: DIRECT_THREAD_STORE_STATUS_SCHEMA,
+        available: false,
+        status: "corrupt",
+        mode: this.mode,
+        schemaVersion: String(DIRECT_THREAD_STORE_SCHEMA_VERSION),
+        rootExposed: false,
+        dbPathExposed: false,
+        projectionsHealthy: false,
+        contextBuildsAllowed: false,
+        threadCount: 0,
+        rolloutCount: 0,
+        turnCount: 0,
+        operationCount: 0,
+        projectionCount: 0,
+        contextBuildCount: 0,
+        requestManifestCount: 0,
+        contextPolicyCount: 0,
+        context: {
+          contextBuildsAllowed: false,
+          contextBuildRequiredForNewTurns: this.mode === "context_build_required",
+          reasonIfBlocked: "database_unavailable",
+        },
+        recovery: {
+          lastIndexedAt: "",
+          corruptManifestCount: 1,
+          missingArtifactCount: 0,
+        },
+      };
+    }
     return {
       schema: DIRECT_THREAD_STORE_STATUS_SCHEMA,
       available: true,
