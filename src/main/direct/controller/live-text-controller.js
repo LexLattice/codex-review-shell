@@ -48,6 +48,10 @@ function nowIso(nowMs = Date.now()) {
   return new Date(Number(nowMs) || Date.now()).toISOString();
 }
 
+function sha256(value) {
+  return crypto.createHash("sha256").update(String(value || "")).digest("hex");
+}
+
 function nowSeconds() {
   return Date.now() / 1000;
 }
@@ -223,6 +227,7 @@ class DirectLiveTextController {
     this.sessionStore = options.sessionStore;
     this.profileDoc = isPlainObject(options.profileDoc) ? options.profileDoc : {};
     this.authStore = options.authStore || null;
+    this.directThreadStore = options.directThreadStore || options.threadStore || null;
     this.refreshCredentials = typeof options.refreshCredentials === "function" ? options.refreshCredentials : null;
     this.modelEvidenceResolver = typeof options.modelEvidenceResolver === "function" ? options.modelEvidenceResolver : null;
     this.activationStatusResolver = typeof options.activationStatusResolver === "function" ? options.activationStatusResolver : null;
@@ -488,6 +493,29 @@ class DirectLiveTextController {
     });
   }
 
+  indexDirectThreadStoreSession(sessionId, options = {}) {
+    const store = this.directThreadStore;
+    if (!store || typeof store.indexSessionArtifacts !== "function") return null;
+    const session = this.sessionStore.readSession(sessionId);
+    if (!session) return null;
+    const turns = this.sessionStore.listTurnIdsFromDisk(sessionId)
+      .map((turnId) => this.sessionStore.readTurn(sessionId, turnId))
+      .filter(Boolean);
+    return store.indexSessionArtifacts(this.sessionStore, session, turns, options);
+  }
+
+  prepareDirectContextProjection(sessionId, options = {}) {
+    const store = this.directThreadStore;
+    if (!store || typeof store.buildRendererTranscriptProjection !== "function") return null;
+    const turnIds = this.sessionStore.listTurnIdsFromDisk(sessionId);
+    if (!turnIds.length) return null;
+    this.indexDirectThreadStoreSession(sessionId, options);
+    return store.buildRendererTranscriptProjection(sessionId, {
+      sessionStore: this.sessionStore,
+      nowMs: options.nowMs,
+    });
+  }
+
   async runImportCheckpointContinuation(options = {}) {
     const project = options.project || {};
     const status = this.assertReady(project);
@@ -522,13 +550,13 @@ class DirectLiveTextController {
       importedSessionId: normalizeString(seed.materializedSessionId, ""),
       importedSessionReadOnly: true,
     });
-    const requestBody = buildTextOnlyProbeRequest({
+    let requestBody = buildTextOnlyProbeRequest({
       profileDoc: this.profileDoc,
       model,
       prompt: seed.seedText,
       instructions: "You are Codex running a fresh direct checkpoint continuation from quoted imported transcript evidence. Do not request tools.",
     });
-    const requestShape = {
+    let requestShape = {
       ...requestShapeForDiagnostic(requestBody),
       schema: DIRECT_IMPORT_CHECKPOINT_REQUEST_SHAPE,
       seedShapeHash: seed.seedShapeHash,
@@ -550,8 +578,51 @@ class DirectLiveTextController {
       importedSessionId: normalizeString(seed.materializedSessionId, ""),
       importedSessionReadOnly: true,
     });
+    let contextResult = null;
+    if (this.directThreadStore && typeof this.directThreadStore.buildAndPersistContextForCheckpointContinuation === "function") {
+      this.indexDirectThreadStoreSession(session.sessionId, options);
+      contextResult = this.directThreadStore.buildAndPersistContextForCheckpointContinuation({
+        session,
+        projectId: session.projectId,
+        threadId: session.sessionId,
+        turnId: turn.turnId,
+        seed,
+        currentUserPrompt: normalizeString(options.userPromptText, ""),
+        model: requestBody.model,
+        requestShape,
+        requestShapeHash: normalizeString(seed.requestShapeHash, ""),
+        endpointClass: "chatgpt-codex-responses",
+        endpointHash: this.endpoint ? sha256(this.endpoint) : "",
+        modelEvidenceRef: normalizeString(status.evidenceId, status.modelEvidenceId || ""),
+        requestShapeEvidenceRef: normalizeString(seed.requestShapeHash, ""),
+        endpointEvidenceRef: this.endpoint ? sha256(this.endpoint) : "",
+      }, options);
+      requestBody = buildTextOnlyProbeRequest({
+        profileDoc: this.profileDoc,
+        model,
+        prompt: contextResult.providerInput.prompt,
+        instructions: contextResult.providerInput.instructions,
+      });
+      requestShape = {
+        ...requestShapeForDiagnostic(requestBody),
+        schema: DIRECT_IMPORT_CHECKPOINT_REQUEST_SHAPE,
+        seedShapeHash: seed.seedShapeHash,
+        requestShapeHash: seed.requestShapeHash,
+        contextBuildId: contextResult.contextPack.contextBuildId,
+        contextPackContentHash: contextResult.contextPack.contextPackContentHash,
+        requestManifestId: contextResult.requestManifest.requestManifestId,
+        providerInputShapeHash: contextResult.providerInput.projection.providerInputShapeHash,
+        previousResponseIdFromImportUsed: false,
+        importedToolReplayAttempted: false,
+      };
+    }
     this.sessionStore.updateTurnState(session.sessionId, turn.turnId, "request_built", {
       requestShape,
+      ...(contextResult ? {
+        contextBuildId: contextResult.contextPack.contextBuildId,
+        requestManifestId: contextResult.requestManifest.requestManifestId,
+        contextSummary: contextResult.rendererSafeSummary,
+      } : {}),
     }, options);
 
     const callerLifecycle = options.onLifecycle;
@@ -561,7 +632,7 @@ class DirectLiveTextController {
       refreshCredentials: this.refreshCredentials,
       profileDoc: this.profileDoc,
       model: requestBody.model,
-      prompt: seed.seedText,
+      prompt: requestBody.input?.[0]?.content?.[0]?.text || seed.seedText,
       instructions: requestBody.instructions,
       fetchImpl: this.fetchImpl || undefined,
       signal: options.signal,
@@ -995,7 +1066,11 @@ class DirectLiveTextController {
     }
     const prompt = this.textPrompt(params);
     const model = normalizeString(params.model, "") || status.model;
-    const requestBody = buildTextOnlyProbeRequest({
+    const existingTurnCount = this.sessionStore.listTurnIdsFromDisk(session.sessionId).length;
+    if (this.directThreadStore) {
+      this.prepareDirectContextProjection(session.sessionId);
+    }
+    let requestBody = buildTextOnlyProbeRequest({
       profileDoc: this.profileDoc,
       model,
       prompt,
@@ -1007,8 +1082,50 @@ class DirectLiveTextController {
       requestShape: requestShapeForDiagnostic(requestBody),
     });
     this.rememberClientTurnRequest(session.sessionId, clientTurnRequestId, turn.turnId);
+    let contextResult = null;
+    if (this.directThreadStore && typeof this.directThreadStore.buildAndPersistContextForTextTurn === "function") {
+      this.indexDirectThreadStoreSession(session.sessionId);
+      contextResult = this.directThreadStore.buildAndPersistContextForTextTurn({
+        session: this.sessionStore.readSession(session.sessionId) || session,
+        projectId: session.projectId,
+        threadId: session.sessionId,
+        turnId: turn.turnId,
+        currentUserPrompt: prompt,
+        useRecentDialogue: existingTurnCount > 0,
+        model: requestBody.model,
+        requestShape: requestShapeForDiagnostic(requestBody),
+        endpointClass: "chatgpt-codex-responses",
+        endpointHash: this.endpoint ? sha256(this.endpoint) : "",
+        modelEvidenceRef: normalizeString(status.evidenceId, status.modelEvidenceId || ""),
+        requestShapeEvidenceRef: "direct_text_only_response",
+        endpointEvidenceRef: this.endpoint ? sha256(this.endpoint) : "",
+      });
+      requestBody = buildTextOnlyProbeRequest({
+        profileDoc: this.profileDoc,
+        model,
+        prompt: contextResult.providerInput.prompt,
+        instructions: contextResult.providerInput.instructions,
+      });
+    }
+    const requestShape = {
+      ...requestShapeForDiagnostic(requestBody),
+      ...(contextResult ? {
+        contextBuildId: contextResult.contextPack.contextBuildId,
+        contextPackContentHash: contextResult.contextPack.contextPackContentHash,
+        contextPackShapeHash: contextResult.contextPack.contextPackShapeHash,
+        requestManifestId: contextResult.requestManifest.requestManifestId,
+        providerInputShapeHash: contextResult.providerInput.projection.providerInputShapeHash,
+        rawRequestBodyStored: false,
+        previousResponseIdUsed: false,
+      } : {}),
+    };
     this.sessionStore.updateTurnState(session.sessionId, turn.turnId, "request_built", {
-      requestShape: requestShapeForDiagnostic(requestBody),
+      requestShape,
+      ...(contextResult ? {
+        contextBuildId: contextResult.contextPack.contextBuildId,
+        requestManifestId: contextResult.requestManifest.requestManifestId,
+        contextSummary: contextResult.rendererSafeSummary,
+      } : {}),
     });
 
     const userItem = {
@@ -1038,7 +1155,8 @@ class DirectLiveTextController {
       sessionId: session.sessionId,
       turnId: turn.turnId,
       clientTurnRequestId,
-      prompt,
+      prompt: requestBody.input?.[0]?.content?.[0]?.text || prompt,
+      instructions: requestBody.instructions,
       model: requestBody.model,
       project,
       surfaceSession,
@@ -1067,6 +1185,7 @@ class DirectLiveTextController {
       turnId,
       clientTurnRequestId,
       prompt,
+      instructions,
       model,
       project,
       surfaceSession,
@@ -1090,6 +1209,7 @@ class DirectLiveTextController {
       profileDoc: this.profileDoc,
       model,
       prompt,
+      instructions,
       fetchImpl: this.fetchImpl || undefined,
       signal: abortController.signal,
       onLifecycle: callerLifecycle,

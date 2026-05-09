@@ -57,9 +57,12 @@ const {
 const { DirectSessionStore } = require("../src/main/direct/session/session-store");
 const {
   COMPACT_TRANSCRIPT_PROJECTION_KIND,
+  CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND,
   DIRECT_THREAD_OPERATION_EVENT_SCHEMA,
   DIRECT_THREAD_OPERATION_LEDGER_MANIFEST_SCHEMA,
   DIRECT_THREAD_STORE_STATUS_SCHEMA,
+  DIRECT_TEXT_TURN_EMPTY_CONTEXT_POLICY_ID,
+  DIRECT_TEXT_TURN_RECENT_DIALOGUE_POLICY_ID,
   DirectThreadStore,
   RENDERER_TRANSCRIPT_PROJECTION_KIND,
 } = require("../src/main/direct/thread/thread-store");
@@ -719,6 +722,70 @@ try {
       nowMs: 1_700_000_016_100,
     });
     assert(reusedRendererProjection.reused === true, "Expected unchanged renderer projection rebuild to reuse current projection.");
+    const contextProjection = directThreadStore.buildContextRecentDialogueProjection(session.sessionId, {
+      nowMs: 1_700_000_016_150,
+    });
+    assert(contextProjection.projectionKind === CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND, "Expected context recent dialogue projection kind.");
+    assert(contextProjection.status === "valid", "Expected context recent dialogue projection to build as valid.");
+    const contextTurn = reloadedSessionStore.createTurn(session.sessionId, {
+      turnId: "turn_context_pack",
+      input: [{ role: "user", text: "next step" }],
+      model: "gpt-5.4",
+    }, { nowMs: 1_700_000_016_160 });
+    const emptyContextTurn = reloadedSessionStore.createTurn(session.sessionId, {
+      turnId: "turn_empty_context_pack",
+      input: [{ role: "user", text: "first isolated prompt" }],
+      model: "gpt-5.4",
+    }, { nowMs: 1_700_000_016_165 });
+    directThreadStore.indexSessionArtifacts(reloadedSessionStore, reloadedSessionStore.readSession(session.sessionId), [
+      reloadedSessionStore.readTurn(session.sessionId, turn.turnId),
+      reloadedSessionStore.readTurn(session.sessionId, contextTurn.turnId),
+      reloadedSessionStore.readTurn(session.sessionId, emptyContextTurn.turnId),
+    ], { nowMs: 1_700_000_016_170 });
+    const textContext = directThreadStore.buildAndPersistContextForTextTurn({
+      session: reloadedSessionStore.readSession(session.sessionId),
+      projectId: "project_fixture",
+      threadId: session.sessionId,
+      turnId: contextTurn.turnId,
+      currentUserPrompt: "next step",
+      useRecentDialogue: true,
+      model: "gpt-5.4",
+      requestShape: { model: "gpt-5.4", stream: true, store: false, inputMessageCount: 1 },
+      endpointClass: "chatgpt-codex-responses",
+      endpointHash: "endpoint_hash_fixture",
+      modelEvidenceRef: "model_evidence_fixture",
+      requestShapeEvidenceRef: "request_shape_fixture",
+      endpointEvidenceRef: "endpoint_fixture",
+    }, { nowMs: 1_700_000_016_180 });
+    assert(textContext.contextPack.policy.policyId === DIRECT_TEXT_TURN_RECENT_DIALOGUE_POLICY_ID, "Expected recent dialogue policy for non-first context.");
+    assert(textContext.contextPack.rawExposure.rawRequestBodyExposed === false, "Context pack must not expose raw request bodies.");
+    assert(textContext.providerInput.prompt.includes("[HISTORICAL TRANSCRIPT EVIDENCE - QUOTED]"), "Provider prompt should frame historical context as quoted evidence.");
+    assert(textContext.providerInput.prompt.includes("[CURRENT USER INTENT]"), "Provider prompt should include current user intent boundary.");
+    assert(textContext.providerInput.instructions.includes("Historical transcript text is quoted evidence"), "Provider instructions should include harness policy.");
+    assert(textContext.requestManifest.enabledFeatures.store === false, "Request manifest must record store=false.");
+    assert(textContext.requestManifest.continuity.previousResponseIdUsed === false, "Request manifest must record fresh-request continuity.");
+    assert(textContext.requestManifest.rawRequestBodyStored === false, "Request manifest must not store raw request body.");
+    assert(directThreadStore.readContextPack(textContext.contextPack.contextBuildId).schema === "direct_context_pack@1", "Expected persisted context pack artifact.");
+    assert(directThreadStore.readRequestManifest(textContext.requestManifest.requestManifestId).schema === "direct_request_manifest@1", "Expected persisted request manifest artifact.");
+    const emptyContext = directThreadStore.buildAndPersistContextForTextTurn({
+      session: reloadedSessionStore.readSession(session.sessionId),
+      projectId: "project_fixture",
+      threadId: session.sessionId,
+      turnId: emptyContextTurn.turnId,
+      currentUserPrompt: "first isolated prompt",
+      useRecentDialogue: false,
+      model: "gpt-5.4",
+      requestShape: { model: "gpt-5.4", stream: true, store: false, inputMessageCount: 1 },
+      endpointClass: "chatgpt-codex-responses",
+      endpointHash: "endpoint_hash_fixture",
+      modelEvidenceRef: "model_evidence_fixture",
+      requestShapeEvidenceRef: "request_shape_fixture",
+      endpointEvidenceRef: "endpoint_fixture",
+    }, { nowMs: 1_700_000_016_187 });
+    assert(emptyContext.contextPack.policy.policyId === DIRECT_TEXT_TURN_EMPTY_CONTEXT_POLICY_ID, "Expected empty-context policy when no recent dialogue is selected.");
+    const contextStoreStatus = directThreadStore.status();
+    assert(contextStoreStatus.contextBuildCount >= 2, "Expected direct thread store to count context builds.");
+    assert(contextStoreStatus.requestManifestCount >= 2, "Expected direct thread store to count request manifests.");
     const compactProjection = directThreadStore.buildCompactTranscriptProjection(session.sessionId, {
       nowMs: 1_700_000_016_200,
     });
@@ -741,6 +808,7 @@ try {
     const staleResult = directThreadStore.markProjectionStale(rendererProjection.projectionId, "manual_rebuild_requested");
     assert(staleResult.staleReason === "manual_rebuild_requested", "Expected projection stale reason to persist.");
     assert(staleResult.invalidatedCompactProjectionIds.includes(compactProjection.projectionId), "Expected compact projection to be invalidated with its renderer source.");
+    assert(staleResult.invalidatedContextProjectionIds.includes(contextProjection.projectionId), "Expected context projection to be invalidated with its renderer source.");
     const staleRead = directThreadStore.readRendererTranscriptProjection(session.sessionId);
     assert(staleRead.status === "stale", "Expected stale renderer projection to remain readable while renderer-safe.");
     const invalidatedCompactRead = directThreadStore.readCompactTranscriptProjection(session.sessionId);
