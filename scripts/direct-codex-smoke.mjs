@@ -1791,13 +1791,27 @@ try {
   assert(endpointClass(DEFAULT_CODEX_RESPONSES_ENDPOINT) === "chatgpt-codex-responses", "Expected default direct endpoint class.");
   assert(endpointClass("https://example.invalid/custom/responses") === "custom", "Expected custom endpoints to use a distinct endpoint class.");
 
-  const liveProbeResolved = liveProbeEvidenceStore.resolveModelEvidence(liveProbeContext);
-  assert(liveProbeResolved.accepted === true, "Expected matching live probe evidence to resolve as accepted.");
-  assert(liveProbeResolved.modelSource === "live-probe", "Expected matching live probe evidence source.");
-  assert(liveProbeResolved.liveProbeEvidence.scope.accountMatches === true, "Expected live probe evidence to be account-scoped.");
-  assert(liveProbeResolved.liveProbeEvidence.scope.workspaceMatches === true, "Expected live probe evidence to be workspace-scoped.");
+	  const liveProbeResolved = liveProbeEvidenceStore.resolveModelEvidence(liveProbeContext);
+	  assert(liveProbeResolved.accepted === true, "Expected matching live probe evidence to resolve as accepted.");
+	  assert(liveProbeResolved.modelSource === "live-probe", "Expected matching live probe evidence source.");
+	  assert(liveProbeResolved.liveProbeEvidence.scope.accountMatches === true, "Expected live probe evidence to be account-scoped.");
+	  assert(liveProbeResolved.liveProbeEvidence.scope.workspaceMatches === true, "Expected live probe evidence to be workspace-scoped.");
+	  const originalLiveProbeIndex = liveProbeEvidenceStore.readIndex();
+	  fs.writeFileSync(liveProbeEvidenceStore.indexPath(), `${JSON.stringify({
+	    ...originalLiveProbeIndex,
+	    evidence: [],
+	    updatedAt: new Date().toISOString(),
+	  }, null, 2)}\n`);
+	  const externalProbeBlocked = liveProbeEvidenceStore.resolveModelEvidence(liveProbeContext);
+	  assert(externalProbeBlocked.accepted === false, "Expected modified evidence index to invalidate cached probe evidence.");
+	  fs.writeFileSync(liveProbeEvidenceStore.indexPath(), `${JSON.stringify({
+	    ...originalLiveProbeIndex,
+	    updatedAt: new Date().toISOString(),
+	  }, null, 2)}\n`);
+	  const externalProbeAccepted = liveProbeEvidenceStore.resolveModelEvidence(liveProbeContext);
+	  assert(externalProbeAccepted.accepted === true, "Expected evidence resolver to reload externally updated probe evidence index.");
 
-  const evidenceBackedController = new DirectLiveTextController({
+	  const evidenceBackedController = new DirectLiveTextController({
     sessionStore: liveSessionStore,
     profileDoc,
     authStore: liveAuthStore,

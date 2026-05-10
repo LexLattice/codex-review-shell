@@ -373,6 +373,7 @@ class DirectLiveProbeEvidenceStore {
     this.allowFakeEvidence = options.allowFakeEvidence === true;
     this.allowAccountOnlyEvidence = options.allowAccountOnlyEvidence === true;
     this._index = null;
+    this._indexMtimeMs = 0;
   }
 
   indexPath() {
@@ -432,12 +433,17 @@ class DirectLiveProbeEvidenceStore {
   }
 
   readIndex() {
-    if (this._index) return this._index;
+    let mtimeMs = 0;
+    try {
+      mtimeMs = fs.statSync(this.indexPath()).mtimeMs;
+    } catch {}
+    if (this._index && mtimeMs > 0 && mtimeMs === this._indexMtimeMs) return this._index;
     const index = readJsonFile(this.indexPath());
     if (!index || index.schema !== DIRECT_LIVE_PROBE_EVIDENCE_INDEX_SCHEMA || !Array.isArray(index.evidence)) {
       return this.recoverIndex({ write: true });
     }
     this._index = index;
+    this._indexMtimeMs = mtimeMs;
     return index;
   }
 
@@ -454,6 +460,11 @@ class DirectLiveProbeEvidenceStore {
     };
     writeJsonAtomic(this.indexPath(), index);
     this._index = index;
+    try {
+      this._indexMtimeMs = fs.statSync(this.indexPath()).mtimeMs;
+    } catch {
+      this._indexMtimeMs = 0;
+    }
     return index;
   }
 
