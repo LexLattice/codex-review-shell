@@ -822,7 +822,7 @@ function parseSubagentNotificationText(value) {
   const bodyText = match ? match[1].trim() : "";
   const body = parseJsonObject(bodyText);
   if (!body) {
-    const agentPath = raw.match(/"agent_path"\s*:\s*"([^"]+)"/)?.[1] || "";
+    const agentPath = raw.match(/"(?:agent_path|agentPath|agent_id|agentId)"\s*:\s*"([^"]+)"/)?.[1] || "";
     return {
       agentPath,
       statusKey: "unknown",

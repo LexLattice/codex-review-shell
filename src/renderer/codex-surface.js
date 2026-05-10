@@ -2678,7 +2678,7 @@ function reconcileCompletedTurnState(turnId, status = "completed", completedAt =
   const activity = ensureTurnActivity(id);
   if (activity) {
     activity.status = String(status || "completed");
-    activity.completedAt = activity.completedAt || completedAt || Date.now() / 1000;
+    activity.completedAt = activity.completedAt || timestampSeconds(completedAt) || Date.now() / 1000;
   }
   if (!state.activeTurnId || String(state.activeTurnId) === id || String(state.turnId) === id) {
     state.activeTurnId = "";
@@ -2687,6 +2687,13 @@ function reconcileCompletedTurnState(turnId, status = "completed", completedAt =
   }
   state.turnId = id;
   return true;
+}
+
+function timestampSeconds(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const parsed = typeof value === "string" ? Date.parse(value) : Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return parsed > 1_000_000_000_000 ? parsed / 1000 : parsed;
 }
 
 function reconcileTurnStateFromStoredPresentationModel(model) {
@@ -3393,7 +3400,7 @@ function subagentNotificationFromText(text) {
   const match = raw.match(/^\s*<subagent_notification>\s*([\s\S]*?)\s*<\/subagent_notification>\s*$/i);
   if (!match) {
     return {
-      agentPath: raw.match(/"agent_path"\s*:\s*"([^"]+)"/)?.[1] || "",
+      agentPath: raw.match(/"(?:agent_path|agentPath|agent_id|agentId)"\s*:\s*"([^"]+)"/)?.[1] || "",
       statusKey: "unknown",
       statusDetail: "",
       observedAt: "",
@@ -4291,11 +4298,13 @@ function recordSubagentTurnEvent(turnKey, agent, event) {
   const activity = ensureSubagentTurnActivity(key);
   const id = String(agent?.threadId || event?.threadId || "").trim();
   if (!id) return;
+  const clickable = event.clickable ?? Boolean(agent?.threadId);
   const existing = activity.agents.get(id) || {
     threadId: id,
     displayLabel: agent?.label || agent?.displayLabel || agentDisplayLabel({ threadId: id }),
     status: "unknown",
     activityStatus: "",
+    clickable,
     events: [],
   };
   const nextStatus = normalizeAgentWorkingStatus(event.status || existing.status);
@@ -4305,6 +4314,7 @@ function recordSubagentTurnEvent(turnKey, agent, event) {
   existing.displayLabel = agent?.label || agent?.displayLabel || existing.displayLabel;
   existing.status = mergedStatus;
   existing.activityStatus = event.activityStatus || existing.activityStatus;
+  existing.clickable = existing.clickable || clickable;
   existing.events.push(event);
   activity.events.push({ ...event, threadId: id, displayLabel: existing.displayLabel });
   activity.agents.set(id, existing);
@@ -4351,10 +4361,14 @@ function renderSubagentTurnActivity(turnKey) {
     chip.type = "button";
     chip.className = `collab-agent-chip status-${String(agent.status || "unknown").replace(/[^a-z0-9_-]/gi, "-")}`;
     chip.textContent = `${agent.displayLabel} · ${String(agent.status || "unknown").replace(/_/g, " ")}`;
-    chip.title = `Open ${agent.displayLabel} turn activity in the Sub-agents panel`;
+    chip.disabled = !agent.clickable;
+    chip.title = agent.clickable
+      ? `Open ${agent.displayLabel} turn activity in the Sub-agents panel`
+      : `${agent.displayLabel} is only available as an unmapped notification`;
     chip.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
+      if (!agent.clickable) return;
       focusSubAgentFromChip(agent, { mode: "turn", turnKey: key });
     });
     chipList.appendChild(chip);
@@ -4398,9 +4412,18 @@ function recordCollabTurnActivity(turnKey, item) {
 function recordNotificationTurnActivity(turnKey, notification) {
   const statusInfo = normalizeSubagentNotificationStatus(notification?.statusKey);
   const agent = applySubagentNotification(notification);
-  if (!agent) return;
-  recordSubagentTurnEvent(turnKey, agent, {
+  const fallbackPath = String(notification?.agentPath || "").trim();
+  const fallbackKey = fallbackPath ? `notification:${fallbackPath}` : "";
+  const fallbackAgent = agent || (fallbackKey ? {
+    threadId: "",
+    label: agentDisplayLabel({ threadId: fallbackPath }),
+    displayLabel: agentDisplayLabel({ threadId: fallbackPath }),
+  } : null);
+  if (!fallbackAgent) return;
+  recordSubagentTurnEvent(turnKey, fallbackAgent, {
     kind: "subagent_notification",
+    threadId: agent?.threadId || fallbackKey,
+    clickable: Boolean(agent?.threadId),
     label: `Sub-agent ${statusInfo.label}`,
     status: normalizeAgentWorkingStatus(statusInfo.graphStatus),
     activityStatus: statusInfo.activityStatus,

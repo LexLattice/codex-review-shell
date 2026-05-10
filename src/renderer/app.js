@@ -1955,8 +1955,12 @@ function setSubAgentScopeMode(mode) {
   renderSubAgentsPanel();
 }
 
+function sortedSubAgentTurnKeys(turnScopes = {}) {
+  return Object.keys(turnScopes).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+}
+
 function firstSubAgentTurnKey(agent = {}) {
-  const keys = Object.keys(agent?.turnScopes || {}).sort();
+  const keys = sortedSubAgentTurnKeys(agent?.turnScopes || {});
   return keys[0] || "";
 }
 
@@ -2054,7 +2058,7 @@ function renderSubAgentsPanel() {
   const turnScopes = selectedAgent?.turnScopes && typeof selectedAgent.turnScopes === "object"
     ? selectedAgent.turnScopes
     : {};
-  const turnKeys = Object.keys(turnScopes).sort();
+  const turnKeys = sortedSubAgentTurnKeys(turnScopes);
   const selectedTurnKey = selectedScope.turnKey && turnScopes[selectedScope.turnKey]
     ? selectedScope.turnKey
     : firstSubAgentTurnKey(selectedAgent);
