@@ -10,6 +10,7 @@ const PROFILE_ENV_VAR = "CODEX_REVIEW_SHELL_PROFILE";
 const USER_DATA_ROOT_ENV_VAR = "CODEX_REVIEW_SHELL_USER_DATA_ROOT";
 
 const { createDirectAuthStore } = require("../src/main/direct/auth/auth-store");
+const { createCodexCliAuthStore, createDirectAuthCompositeStore } = require("../src/main/direct/auth/codex-cli-auth");
 const { loadDirectCodexProfile } = require("../src/main/direct/odeu-profile/profile-loader");
 const {
   DirectLiveProbeEvidenceStore,
@@ -117,7 +118,12 @@ const promptClass = prompt === DEFAULT_TEXT_PROBE_PROMPT
   ? FIXED_LIVE_TEXT_PROBE_PROMPT_CLASS
   : "custom-live-text-probe";
 
-const authStore = createDirectAuthStore(authFile ? { mode: "file", filePath: authFile } : { mode: "file", rootDir: authRoot });
+const authStore = createDirectAuthCompositeStore({
+  primaryStore: createDirectAuthStore(authFile ? { mode: "file", filePath: authFile } : { mode: "file", rootDir: authRoot }),
+  fallbackStore: createCodexCliAuthStore({
+    filePath: envString("CODEX_DIRECT_CODEX_AUTH_FILE", ""),
+  }),
+});
 const credentials = authStore.readCredentials();
 if (!credentials?.accessToken) {
   console.error("No direct auth access token found. Set CODEX_DIRECT_AUTH_FILE or CODEX_DIRECT_AUTH_ROOT to the app direct-auth store.");

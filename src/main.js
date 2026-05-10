@@ -25,6 +25,7 @@ const {
 } = require("./main/direct/auth/auth-ipc");
 const { createDirectAuthLoginCoordinator } = require("./main/direct/auth/auth-login");
 const { codexAuthTokensFromCredentials } = require("./main/direct/auth/app-server-auth-bridge");
+const { createCodexCliAuthStore, createDirectAuthCompositeStore } = require("./main/direct/auth/codex-cli-auth");
 const { loadDirectCodexProfile } = require("./main/direct/odeu-profile/profile-loader");
 const { DirectSessionStore } = require("./main/direct/session/session-store");
 const { DirectThreadStore } = require("./main/direct/thread/thread-store");
@@ -174,6 +175,7 @@ let codexSurfaceSessions = null;
 let threadAnalyticsStore = null;
 let directAuthController = null;
 let directAuthLoginCoordinator = null;
+let directCodexCliAuthStore = null;
 let directCodexProfileDoc = null;
 let directSessionStore = null;
 let directThreadStore = null;
@@ -1598,6 +1600,7 @@ function ensureDirectAuthController() {
   if (directAuthController) return directAuthController;
   directAuthController = createDirectAuthIpcController({
     rootDir: directAuthRootDir(),
+    fallbackStore: () => ensureDirectCodexCliAuthStore(),
     loginStarter: (payload, controller) => ensureDirectAuthLoginCoordinator().beginLogin(payload, controller),
     manualLoginCompleter: (payload, controller) => ensureDirectAuthLoginCoordinator().completeManualLogin(payload, controller),
   });
@@ -1610,6 +1613,19 @@ function ensureDirectAuthLoginCoordinator() {
     openExternal: (url) => shell.openExternal(url),
   });
   return directAuthLoginCoordinator;
+}
+
+function ensureDirectCodexCliAuthStore() {
+  if (directCodexCliAuthStore) return directCodexCliAuthStore;
+  directCodexCliAuthStore = createCodexCliAuthStore();
+  return directCodexCliAuthStore;
+}
+
+function directRuntimeAuthStore() {
+  return createDirectAuthCompositeStore({
+    primaryStore: () => ensureDirectAuthController().activeStore(),
+    fallbackStore: () => ensureDirectCodexCliAuthStore(),
+  });
 }
 
 function ensureDirectCodexProfileDoc() {
@@ -1723,7 +1739,7 @@ function ensureDirectLiveTextController() {
     sessionStore: ensureDirectSessionStore(),
     directThreadStore: ensureDirectThreadStore(),
     profileDoc: ensureDirectCodexProfileDoc(),
-    authStore: () => ensureDirectAuthController().activeStore(),
+    authStore: () => directRuntimeAuthStore(),
     refreshCredentials: () => ensureDirectAuthLoginCoordinator().refreshCredentials(ensureDirectAuthController()),
     modelEvidenceResolver: (context) => ensureDirectLiveProbeEvidenceStore().resolveModelEvidence(context),
     activationStatusResolver: (project) => directActivationEvaluationForProject(project).status,
@@ -1739,7 +1755,10 @@ function currentLegacyAppServerSnapshot() {
 function buildDirectRuntimeStatusForProject(project, options = {}) {
   const controller = ensureDirectAuthController();
   const authSettings = controller.readSettings(options);
-  const credentials = controller.activeStore().readCredentials() || {};
+  const runtimeAuthStore = directRuntimeAuthStore();
+  const runtimeAuthStatus = runtimeAuthStore.readStatus(options);
+  const credentials = runtimeAuthStore.readCredentials() || {};
+  authSettings.authStatus = runtimeAuthStatus;
   const profileDoc = ensureDirectCodexProfileDoc();
   const sessionStore = ensureDirectSessionStore();
   const imports = ensureDirectImportController().statusForProject(project);
@@ -1809,7 +1828,10 @@ async function withDirectActivationLock(projectId, action) {
 function directActivationEvaluationForProject(project) {
   const controller = ensureDirectAuthController();
   const authSettings = controller.readSettings();
-  const credentials = controller.activeStore().readCredentials() || {};
+  const runtimeAuthStore = directRuntimeAuthStore();
+  const runtimeAuthStatus = runtimeAuthStore.readStatus();
+  const credentials = runtimeAuthStore.readCredentials() || {};
+  authSettings.authStatus = runtimeAuthStatus;
   const profileDoc = ensureDirectCodexProfileDoc();
   const sessionStore = ensureDirectSessionStore();
   const projectId = normalizeString(project?.id, "");
@@ -2097,7 +2119,7 @@ function codexSurfaceSessionFor(sender, options = {}) {
 
 async function directAuthTokensForCodexAppServer(options = {}) {
   const controller = ensureDirectAuthController();
-  const store = controller.activeStore();
+  const store = directRuntimeAuthStore();
   let credentials = store.readCredentials();
   if (!credentials) return null;
 
@@ -4570,6 +4592,7 @@ app.on("before-quit", () => {
   threadAnalyticsStore?.close();
   threadAnalyticsStore = null;
   directAuthLoginCoordinator = null;
+  directCodexCliAuthStore = null;
   directFixtureController = null;
   directLiveTextController = null;
   directLiveProbeEvidenceStore = null;

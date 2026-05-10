@@ -293,7 +293,7 @@ type DirectRuntimeCapabilityProfile = {
   generatedAt: string;
 
   auth: {
-    source: "direct-auth-store";
+    source: "direct-auth-store" | "codex-cli-auth";
     status: "authenticated" | "expired" | "refresh_failed" | "unauthenticated";
     rawTokensExposed: false;
   };
@@ -339,6 +339,12 @@ type DirectRuntimeCapabilityProfile = {
   };
 };
 ```
+
+For direct runtime tests and bridge attachment, auth resolution prefers the
+direct app auth store and may fall back to the existing Codex CLI ChatGPT auth
+file when the app-specific store is empty. The fallback is provenance-marked as
+`codex-cli-auth`; raw tokens and raw auth file paths remain app-private and must
+not enter renderer status, headless reports, or diagnostics.
 
 Renderer affordances must be gated from this profile, not from hard-coded
 assumptions about the backend.
