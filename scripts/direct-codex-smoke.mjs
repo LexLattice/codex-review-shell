@@ -2400,6 +2400,24 @@ try {
   nodeAssert.equal(refreshedCredentials.refreshToken, "fixture-refresh-token-secret");
   nodeAssert.equal(refreshedCredentials.accountId, "acct_fixture_secret");
   nodeAssert.equal(refreshedCredentials.expiresAt, expiresAt + 1 + 7_200_000);
+  const refreshCoordinatorController = createDirectAuthIpcController({ rootDir: authStoreRoot });
+  const refreshCoordinator = createDirectAuthLoginCoordinator({
+    clientId: "codex-desktop-fixture-client",
+    tokenClient: async (request) => {
+      nodeAssert.equal(request.body.grant_type, "refresh_token");
+      nodeAssert.equal(request.body.refresh_token, "fixture-refresh-token-secret");
+      return {
+        access_token: "fixture-coordinator-refreshed-access-token-secret",
+        token_type: "Bearer",
+        expires_in: 3_600,
+      };
+    },
+  });
+  const coordinatorRefreshResult = await refreshCoordinator.refreshCredentials(refreshCoordinatorController, { nowMs: expiresAt + 2 });
+  nodeAssert.equal(coordinatorRefreshResult.ok, true);
+  const coordinatorRefreshedCredentials = refreshCoordinatorController.activeStore().readCredentials();
+  nodeAssert.equal(coordinatorRefreshedCredentials.accessToken, "fixture-coordinator-refreshed-access-token-secret");
+  nodeAssert.equal(coordinatorRefreshedCredentials.refreshToken, "fixture-refresh-token-secret");
   const refreshFailed = reloadedStore.markRefreshFailed({
     error: "server_error",
     errorDescription: "Synthetic transient refresh failure.",
@@ -2565,6 +2583,7 @@ try {
     let manualTokenRequest = null;
     const manualCoordinator = createDirectAuthLoginCoordinator({
       clientId: "codex-desktop-fixture-client",
+      callbackHost: "127.0.0.1",
       callbackPort: occupiedAddress.port,
       callbackTimeoutMs: 5_000,
       openExternal: async (url) => {

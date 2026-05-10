@@ -194,12 +194,15 @@ function tokenRefreshRequest(credentials, options = {}) {
 function credentialsFromTokenResponse(response, options = {}) {
   const nowMs = Number(options.nowMs ?? Date.now()) || Date.now();
   const accessToken = normalizeString(response.access_token || response.accessToken, "");
+  const refreshToken = response.refresh_token !== undefined || response.refreshToken !== undefined
+    ? normalizeString(response.refresh_token || response.refreshToken, "")
+    : undefined;
   const idToken = normalizeString(response.id_token || response.idToken, "");
   const accountFromAccess = accessToken ? extractChatgptAccountIdFromJwt(accessToken, { redact: false }) : null;
   const accountFromId = !accountFromAccess?.accountId && idToken ? extractChatgptAccountIdFromJwt(idToken, { redact: false }) : null;
   const credentials = {
     accessToken,
-    refreshToken: normalizeString(response.refresh_token || response.refreshToken, ""),
+    ...(refreshToken === undefined ? {} : { refreshToken }),
     idToken,
     accountId: accountFromAccess?.accountId || accountFromId?.accountId || "",
     expiresIn: Number(response.expires_in ?? response.expiresIn ?? 0) || 0,
