@@ -541,6 +541,10 @@ type HeadlessCodexRunReport = {
       | "appserver-codex-login"
       | "direct-chatgpt-codex"
       | "unknown";
+    authSource:
+      | "direct-auth-store"
+      | "codex-cli-auth"
+      | "unknown";
     status: "authenticated" | "expired" | "refresh_failed" | "unauthenticated";
     refreshAttempted: boolean;
     refreshOk: boolean;
@@ -652,8 +656,21 @@ type HeadlessCodexRunReport = {
     rendererSafeMessage: string;
     providerRequestStarted: boolean;
   };
-};
+  };
 ```
+
+Auth resolution is ordered and renderer-safe:
+
+```text
+1. direct app auth store
+2. existing Codex CLI ChatGPT auth
+3. unauthenticated
+```
+
+The fallback lets headless direct/app-server parity tests reuse the same
+persisted ChatGPT login that Codex app-server already uses, without copying raw
+tokens into reports or renderer state. Reports expose only `authSource`, token
+presence booleans, and account evidence keys.
 
 Report caps:
 

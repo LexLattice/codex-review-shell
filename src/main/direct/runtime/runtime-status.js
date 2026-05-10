@@ -132,7 +132,7 @@ function buildDirectRuntimeStatus(options = {}) {
     status: liveTextRuntimeAvailable && liveTextStatus.status === "ready" ? "ready" : directModeSelected ? "degraded" : "legacy-app-server",
     generatedAt,
     auth: {
-      source: "direct-auth-store",
+      source: normalizeString(authStatus.source, "direct-auth-store"),
       operationalStatus: normalizeString(authStatus.status, "unauthenticated"),
       rawTokensExposed: false,
       capability: {

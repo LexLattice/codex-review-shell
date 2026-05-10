@@ -30,6 +30,7 @@ class DirectAuthIpcController {
     this.filePath = options.filePath ? path.resolve(String(options.filePath)) : "";
     this.loginStarter = typeof options.loginStarter === "function" ? options.loginStarter : null;
     this.manualLoginCompleter = typeof options.manualLoginCompleter === "function" ? options.manualLoginCompleter : null;
+    this.fallbackStore = options.fallbackStore || null;
     this.stores = new Map();
   }
 
@@ -51,7 +52,14 @@ class DirectAuthIpcController {
   }
 
   readStatus(options = {}) {
-    return this.activeStore().readStatus(options);
+    const primaryStatus = this.activeStore().readStatus(options);
+    if (primaryStatus.status !== "unauthenticated") return primaryStatus;
+    const fallbackStore = typeof this.fallbackStore === "function" ? this.fallbackStore() : this.fallbackStore;
+    if (!fallbackStore || typeof fallbackStore.readStatus !== "function") {
+      return primaryStatus;
+    }
+    const fallbackStatus = fallbackStore.readStatus(options);
+    return fallbackStatus.status !== "unauthenticated" ? fallbackStatus : primaryStatus;
   }
 
   readSettings(options = {}) {

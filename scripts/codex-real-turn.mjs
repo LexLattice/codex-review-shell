@@ -30,6 +30,7 @@ const { createDirectAuthStore } = require("../src/main/direct/auth/auth-store");
 const { createDirectAuthIpcController } = require("../src/main/direct/auth/auth-ipc");
 const { createDirectAuthLoginCoordinator } = require("../src/main/direct/auth/auth-login");
 const { codexAuthTokensFromCredentials } = require("../src/main/direct/auth/app-server-auth-bridge");
+const { createCodexCliAuthStore, createDirectAuthCompositeStore } = require("../src/main/direct/auth/codex-cli-auth");
 const { loadDirectCodexProfile } = require("../src/main/direct/odeu-profile/profile-loader");
 const {
   DirectLiveProbeEvidenceStore,
@@ -393,6 +394,7 @@ function baseReport(context) {
     requestLifecycle: "preflight_blocked",
     auth: {
       authKind: runtime === "direct" ? "direct-chatgpt-codex" : "appserver-codex-login",
+      authSource: "unknown",
       status: "unauthenticated",
       refreshAttempted: false,
       refreshOk: false,
@@ -464,6 +466,7 @@ function baseReport(context) {
 
 function applyAuthStatus(report, status = {}, credentials = null) {
   report.auth.status = normalizeString(status.status, credentials?.accessToken ? "authenticated" : "unauthenticated");
+  report.auth.authSource = normalizeString(status.source || credentials?.source, "direct-auth-store");
   report.auth.hasAccessToken = Boolean(status.hasAccessToken || credentials?.accessToken);
   report.auth.hasRefreshToken = Boolean(status.hasRefreshToken || credentials?.refreshToken);
   report.auth.accountEvidenceKey = accountEvidenceKey(credentials || {});
@@ -732,7 +735,7 @@ async function runDirect(context) {
   if (authStatus.status === "expired" || authStatus.status === "refresh_failed") {
     report.requestLifecycle = "auth_refreshing";
     report.auth.refreshAttempted = true;
-    const refresh = await authLogin.refreshCredentials(authController);
+    const refresh = await authLogin.refreshCredentials({ activeStore: () => authStore });
     report.auth.refreshOk = refresh?.ok === true;
     authStatus = authStore.readStatus();
     credentials = authStore.readCredentials();
@@ -865,7 +868,7 @@ async function runDirect(context) {
     const result = await runTextOnlyDirectProbe({
       endpoint,
       authStore,
-      refreshCredentials: () => authLogin.refreshCredentials(authController),
+      refreshCredentials: () => authLogin.refreshCredentials({ activeStore: () => authStore }),
       profileDoc,
       model: requestBodyInitial.model,
       prompt: contextResult.providerInput.prompt,
@@ -1030,13 +1033,13 @@ function waitForAppserverTerminal(webContents, timeoutMs) {
   });
 }
 
-async function directAuthTokensForAppServer(authController, authLogin) {
-  const store = authController.activeStore();
+async function directAuthTokensForAppServer(authStore, authController, authLogin) {
+  const store = authStore || authController.activeStore();
   let credentials = store.readCredentials();
   if (!credentials) return null;
   const status = store.readStatus();
   if (status.status === "expired" || status.status === "refresh_failed") {
-    const refresh = await authLogin.refreshCredentials(authController);
+    const refresh = await authLogin.refreshCredentials({ activeStore: () => store });
     if (!refresh.ok) throw new Error(refresh.reason || refresh.status || "direct_auth_refresh_failed");
     credentials = store.readCredentials();
   }
@@ -1068,7 +1071,7 @@ async function runAppserver(context) {
       wsUrl: managerSnapshot.wsUrl,
       projectId: project.id,
       workspaceRoot: managerSnapshot.workspaceRoot,
-      chatgptAuthTokensProvider: () => directAuthTokensForAppServer(authController, authLogin),
+      chatgptAuthTokensProvider: () => directAuthTokensForAppServer(authStore, authController, authLogin),
     }), timeoutMs, "appserver_timeout");
     const initialize = await withTimeout(surface.request("initialize", {
       clientInfo: {
@@ -1085,7 +1088,7 @@ async function runAppserver(context) {
       rawProtocolFramesStored: false,
     };
     try {
-      const tokens = await directAuthTokensForAppServer(authController, authLogin);
+      const tokens = await directAuthTokensForAppServer(authStore, authController, authLogin);
       if (tokens) await surface.request("account/login/start", tokens);
     } catch {
       // App-server may already own its login state. Keep baseline auth separate.
@@ -1139,10 +1142,10 @@ async function runAppserver(context) {
     });
   } finally {
     try {
-      await surface.dispose({ silent: true, reason: "Headless app-server run completed." });
+      await withTimeout(surface.dispose({ silent: true, reason: "Headless app-server run completed." }), 5_000, "appserver_dispose_timeout");
     } catch {}
     try {
-      await manager.dispose();
+      await withTimeout(manager.dispose(), 5_000, "appserver_dispose_timeout");
     } catch {}
   }
 }
@@ -1241,7 +1244,14 @@ async function main() {
   }
   const authRoot = optionString(options, "auth-root", path.join(appUserDataRoot, "direct-auth"));
   const authFile = optionString(options, "auth-file", "");
-  const authStore = createDirectAuthStore(authFile ? { mode: "file", filePath: authFile } : { mode: "file", rootDir: authRoot });
+  const primaryAuthStore = createDirectAuthStore(authFile ? { mode: "file", filePath: authFile } : { mode: "file", rootDir: authRoot });
+  const codexCliAuthStore = createCodexCliAuthStore({
+    filePath: optionString(options, "codex-auth-file", ""),
+  });
+  const authStore = createDirectAuthCompositeStore({
+    primaryStore: primaryAuthStore,
+    fallbackStore: codexCliAuthStore,
+  });
   const authController = createDirectAuthIpcController(authFile ? { mode: "file", filePath: authFile } : { mode: "file", rootDir: authRoot });
   const authLogin = createDirectAuthLoginCoordinator();
   context.authStore = authStore;
