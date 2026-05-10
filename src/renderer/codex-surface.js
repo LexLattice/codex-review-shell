@@ -105,6 +105,7 @@ const state = {
   agentGraph: null,
   agentGraphRevision: 0,
   agentHydrationRequests: new Map(),
+  subagentActivityByTurn: new Map(),
   liveAttached: false,
   sourceHome: "",
   sessionFilePath: "",
@@ -178,7 +179,8 @@ async function reportAgentGraph() {
     hydrationStatus: agent.hydrationStatus,
     lastAction: agent.lastAction || null,
     promptPreview: agent.promptPreview || "",
-    transcript: Array.isArray(agent.transcript) ? agent.transcript.slice(-12) : [],
+    transcript: Array.isArray(agent.transcript) ? agent.transcript : [],
+    turnScopes: agent.turnScopes && typeof agent.turnScopes === "object" ? agent.turnScopes : {},
     evidenceRefs: Array.isArray(agent.evidenceRefs) ? agent.evidenceRefs : [],
   }));
   try {
@@ -2586,6 +2588,7 @@ function clearRenderedDomState() {
   state.codexItemMap.clear();
   state.thoughtItemMap.clear();
   state.thoughtTurnByItemId.clear();
+  state.subagentActivityByTurn.clear();
   for (const pending of state.pendingThoughtRenderMap.values()) {
     if (pending?.frameId) cancelAnimationFrame(pending.frameId);
   }
@@ -2652,6 +2655,55 @@ function ensureTurnActivity(turnId) {
   };
   state.turnActivityMap.set(id, next);
   return next;
+}
+
+function terminalTurnStatus(status) {
+  const normalized = String(status || "").trim().toLowerCase();
+  return new Set([
+    "complete",
+    "completed",
+    "succeeded",
+    "failed",
+    "error",
+    "errored",
+    "cancelled",
+    "canceled",
+    "interrupted",
+  ]).has(normalized);
+}
+
+function reconcileCompletedTurnState(turnId, status = "completed", completedAt = null) {
+  const id = String(turnId || "").trim();
+  if (!id) return false;
+  const activity = ensureTurnActivity(id);
+  if (activity) {
+    activity.status = String(status || "completed");
+    activity.completedAt = activity.completedAt || completedAt || Date.now() / 1000;
+  }
+  if (!state.activeTurnId || String(state.activeTurnId) === id || String(state.turnId) === id) {
+    state.activeTurnId = "";
+    state.turnPending = false;
+    state.turnStopping = false;
+  }
+  state.turnId = id;
+  return true;
+}
+
+function reconcileTurnStateFromStoredPresentationModel(model) {
+  const turns = Array.isArray(model?.turns) ? model.turns : [];
+  const latest = turns.length ? turns[turns.length - 1] : null;
+  if (!latest || !terminalTurnStatus(latest.status)) return false;
+  return reconcileCompletedTurnState(latest.turnId || latest.turnKey, latest.status, latest.completedAt || latest.completed_at || null);
+}
+
+function reconcileTurnStateFromLiveThread(thread) {
+  const turns = Array.isArray(thread?.turns) ? thread.turns : [];
+  const latest = turns.length ? turns[turns.length - 1] : null;
+  if (!latest) return false;
+  const status = latest.status || latest.state || latest.lifecycleStatus || "";
+  const completedAt = latest.completedAt || latest.completed_at || latest.finishedAt || latest.finished_at || null;
+  if (!terminalTurnStatus(status) && !completedAt) return false;
+  return reconcileCompletedTurnState(latest.id || latest.turnId || latest.turn_id, status || "completed", completedAt);
 }
 
 function markTurnCodexOutput(turnId) {
@@ -3337,8 +3389,16 @@ function storedMessageText(message) {
 
 function subagentNotificationFromText(text) {
   const raw = String(text || "");
+  if (!raw.trim().toLowerCase().startsWith("<subagent_notification>")) return null;
   const match = raw.match(/^\s*<subagent_notification>\s*([\s\S]*?)\s*<\/subagent_notification>\s*$/i);
-  if (!match) return null;
+  if (!match) {
+    return {
+      agentPath: raw.match(/"agent_path"\s*:\s*"([^"]+)"/)?.[1] || "",
+      statusKey: "unknown",
+      statusDetail: "",
+      observedAt: "",
+    };
+  }
   let body = null;
   try {
     body = JSON.parse(match[1].trim());
@@ -3362,6 +3422,16 @@ function subagentNotificationFromText(text) {
     statusKey: statusKey || "unknown",
     statusDetail,
     observedAt: notificationPayloadTimestamp(body),
+  };
+}
+
+function subagentNotificationFromItem(item) {
+  if (!item || item.type !== "subagentNotification") return null;
+  return {
+    agentPath: String(item.agentPath || item.agent_path || "").trim(),
+    statusKey: String(item.statusKey || item.status || "unknown"),
+    statusDetail: String(item.statusDetail || item.detail || ""),
+    observedAt: notificationMessageTimestamp(item, {}),
   };
 }
 
@@ -3474,7 +3544,7 @@ function renderStoredPresentationModel(model, snapshot = {}) {
       const message = turn.userMessages[messageIndex];
       const notification = subagentNotificationFromText(storedMessageText(message));
       if (notification) {
-        renderSubagentNotificationTag(turnKey, { ...notification, observedAt: notificationMessageTimestamp(message, notification) });
+        recordNotificationTurnActivity(turnKey, { ...notification, observedAt: notificationMessageTimestamp(message, notification) });
         continue;
       }
       const id = String(message.id || `stored_user_${turnKey}_${messageIndex}`);
@@ -3493,12 +3563,18 @@ function renderStoredPresentationModel(model, snapshot = {}) {
         turnId: turn.turnId || turnKey,
       }));
       const collabItems = normalizedThoughtItems.filter((item) => item?.type === "collabAgentToolCall");
-      const processItems = normalizedThoughtItems.filter((item) => item?.type !== "collabAgentToolCall");
+      const notificationItems = normalizedThoughtItems.filter((item) => item?.type === "subagentNotification");
+      const processItems = normalizedThoughtItems.filter(
+        (item) => item?.type !== "collabAgentToolCall" && item?.type !== "subagentNotification",
+      );
       for (const item of collabItems) {
         if (!authorContext.isSubagent) {
           updateAgentFromCollabItem(item);
-          renderCollabActivityTag(turnKey, item);
+          recordCollabTurnActivity(turnKey, item);
         }
+      }
+      for (const item of notificationItems) {
+        if (!authorContext.isSubagent) recordNotificationTurnActivity(turnKey, subagentNotificationFromItem(item));
       }
       if (processItems.length) {
         upsertThoughtProcess(turnKey, processItems, { merge: false });
@@ -3514,15 +3590,22 @@ function renderStoredPresentationModel(model, snapshot = {}) {
   const visibleOrphans = (model.orphanItems || []).filter(Boolean);
   if (visibleOrphans.length) {
     const collabOrphans = visibleOrphans.filter((item) => item?.type === "collabAgentToolCall");
-    const processOrphans = visibleOrphans.filter((item) => item?.type !== "collabAgentToolCall");
+    const notificationOrphans = visibleOrphans.filter((item) => item?.type === "subagentNotification");
+    const processOrphans = visibleOrphans.filter(
+      (item) => item?.type !== "collabAgentToolCall" && item?.type !== "subagentNotification",
+    );
     for (const item of collabOrphans) {
       if (!authorContext.isSubagent) {
         updateAgentFromCollabItem(item);
-        renderCollabActivityTag("stored_orphans", item);
+        recordCollabTurnActivity("stored_orphans", item);
       }
+    }
+    for (const item of notificationOrphans) {
+      if (!authorContext.isSubagent) recordNotificationTurnActivity("stored_orphans", subagentNotificationFromItem(item));
     }
     if (processOrphans.length) upsertThoughtProcess("stored_orphans", processOrphans, { merge: false });
   }
+  reconcileTurnStateFromStoredPresentationModel(model);
   return true;
   } finally {
     state.isBulkRendering = previousBulkRendering;
@@ -3606,7 +3689,7 @@ function renderStoredTranscript(snapshot, threadId, options = {}) {
     flushThoughtBuffer();
     const notification = entry.role === "user" ? subagentNotificationFromText(entry.text || "") : null;
     if (notification) {
-      renderSubagentNotificationTag(`stored_notification_${absoluteIndex + 1}`, { ...notification, observedAt: notificationMessageTimestamp(entry, notification) });
+      recordNotificationTurnActivity(`stored_notification_${absoluteIndex + 1}`, { ...notification, observedAt: notificationMessageTimestamp(entry, notification) });
       continue;
     }
     const authorContext = currentAuthorContext();
@@ -3713,6 +3796,7 @@ function applyLiveThreadResult(result) {
   if (!result?.thread) return;
   if (shouldPreserveStoredTranscriptOnLiveAttach(result.thread)) {
     bindThread(result.thread, result.model, { liveAttached: true });
+    reconcileTurnStateFromLiveThread(result.thread);
     state.historyKind = "stored";
     renderRuntimeConstitution();
     return;
@@ -3844,6 +3928,7 @@ function bindThread(thread, modelName = "", options = {}) {
     thread?.preview ? `Resumed thread: ${thread.preview}` : "Managed local Codex app-server is connected.",
     { success: true, showNewThread: true },
   );
+  reconcileTurnStateFromLiveThread(thread);
 }
 
 function isThoughtItem(item) {
@@ -3944,6 +4029,7 @@ function ensureGraphAgent(threadId, patch = {}) {
     activityStatus: "unknown",
     hydrationStatus: "not_requested",
     transcript: [],
+    turnScopes: {},
     evidenceRefs: [],
   };
   const next = {
@@ -4042,45 +4128,6 @@ function applySubagentNotification(notification) {
   return agent;
 }
 
-function renderSubagentNotificationTag(turnKey, notification) {
-  const status = normalizeSubagentNotificationStatus(notification?.statusKey);
-  const agent = applySubagentNotification(notification);
-  const displayLabel = agent?.label || agentDisplayLabel({ threadId: notification?.agentPath || "" });
-  const node = ensureMessage(
-    `subagent_notification_${String(turnKey || "live")}_${String(notification?.agentPath || "agent")}_${status.key}`,
-    "system",
-    "Sub-agent activity",
-  );
-  node.classList.add("collab-meta-message");
-  const bubble = node.querySelector(".bubble");
-  bubble.innerHTML = "";
-  bubble.dataset.rawText = `Sub-agent ${status.label} ${displayLabel}`;
-  bubble.dataset.typedRendered = "true";
-  bubble.dataset.streamingPlain = "false";
-
-  const root = document.createElement("div");
-  root.className = `collab-activity-tag ${status.graphStatus}`;
-  const action = document.createElement("span");
-  action.className = "collab-activity-verb";
-  action.textContent = `Sub-agent ${status.label} `;
-  root.appendChild(action);
-
-  const chip = document.createElement("button");
-  chip.type = "button";
-  chip.className = "collab-agent-chip";
-  chip.textContent = displayLabel;
-  chip.disabled = !agent?.threadId;
-  chip.title = agent?.threadId ? `Open ${displayLabel} in the Sub-agents panel` : "Sub-agent thread unavailable";
-  chip.addEventListener("click", (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    if (agent?.threadId) focusSubAgentFromChip({ threadId: agent.threadId, displayLabel });
-  });
-  root.appendChild(chip);
-  bubble.appendChild(root);
-  maybeAutoScrollBottom();
-}
-
 function normalizeCollabToolKey(tool) {
   const raw = String(tool || "").trim();
   const aliases = {
@@ -4111,12 +4158,6 @@ function collabActivityVerb(collab) {
   if (tool === "wait") return status === "inProgress" ? "Waiting for" : "Wait completed for";
   if (tool === "closeAgent") return "Closed";
   return collabToolDisplayName(tool);
-}
-
-function collabActivityMessageId(turnKey, item) {
-  const collab = normalizeCollabAgentItem(item);
-  const stable = collab.id || item?.id || `${collab.tool}:${collab.receiverThreadIds.join(",")}:${collab.senderThreadId}`;
-  return `collab_${String(turnKey || "live")}_${String(stable || Date.now())}`;
 }
 
 function collabAgentProjection(threadId, statePatch = {}) {
@@ -4165,64 +4206,210 @@ function projectCollabActivityTag(item) {
   };
 }
 
-function focusSubAgentFromChip(agent) {
+function focusSubAgentFromChip(agent, scope = {}) {
   const receiverThreadId = String(agent?.threadId || "").trim();
   if (!receiverThreadId || !bridge?.focusSubAgent) return;
   bridge.focusSubAgent({
     projectId: project?.id || payload.codexConnection?.projectId || "",
     primaryThreadId: state.threadId,
     receiverThreadId,
+    scopeMode: scope.mode || "",
+    turnKey: scope.turnKey || "",
     graphRevision: state.agentGraphRevision,
     activationEpoch: Number(payload.activationEpoch) || 0,
     label: agent.displayLabel || receiverThreadId,
   }).catch(() => {});
 }
 
-function renderCollabActivityTag(turnKey, item) {
-  const projection = projectCollabActivityTag(item);
-  const node = ensureMessage(collabActivityMessageId(turnKey, item), "system", "Sub-agent activity");
+function subagentStatusRank(status) {
+  const normalized = String(status || "").trim();
+  const ranks = {
+    unknown: 0,
+    discovered: 1,
+    pending: 2,
+    creating: 3,
+    waiting: 4,
+    closing: 4,
+    running: 5,
+    active: 5,
+    completed: 6,
+    shutdown: 7,
+    closed: 7,
+    interrupted: 8,
+    failed: 9,
+    errored: 9,
+    not_found: 9,
+  };
+  return ranks[normalized] ?? 0;
+}
+
+function normalizeAgentWorkingStatus(status) {
+  const normalized = String(status || "").trim();
+  if (normalized === "inProgress") return "running";
+  if (normalized === "pending_init") return "pending";
+  if (normalized === "errored") return "failed";
+  return normalized || "unknown";
+}
+
+function collabWorkingStatus(collab) {
+  const tool = normalizeCollabToolKey(collab.tool);
+  const status = String(collab.status || "unknown");
+  if (status === "failed") return "failed";
+  if (tool === "spawnAgent") return status === "inProgress" ? "creating" : "running";
+  if (tool === "sendInput") return status === "inProgress" ? "running" : "running";
+  if (tool === "resumeAgent") return status === "inProgress" ? "running" : "running";
+  if (tool === "wait") return status === "inProgress" ? "waiting" : "waiting";
+  if (tool === "closeAgent") return status === "inProgress" ? "closing" : "shutdown";
+  return normalizeAgentWorkingStatus(status);
+}
+
+function ensureSubagentTurnActivity(turnKey) {
+  const key = String(turnKey || "live");
+  let activity = state.subagentActivityByTurn.get(key);
+  if (!activity) {
+    activity = { turnKey: key, agents: new Map(), events: [] };
+    state.subagentActivityByTurn.set(key, activity);
+  }
+  return activity;
+}
+
+function agentTurnScopeEntry(agent, turnKey) {
+  if (!agent) return null;
+  if (!agent.turnScopes || typeof agent.turnScopes !== "object") agent.turnScopes = {};
+  const key = String(turnKey || "live");
+  if (!agent.turnScopes[key]) {
+    agent.turnScopes[key] = {
+      turnKey: key,
+      events: [],
+    };
+  }
+  return agent.turnScopes[key];
+}
+
+function recordSubagentTurnEvent(turnKey, agent, event) {
+  const key = String(turnKey || "live");
+  const activity = ensureSubagentTurnActivity(key);
+  const id = String(agent?.threadId || event?.threadId || "").trim();
+  if (!id) return;
+  const existing = activity.agents.get(id) || {
+    threadId: id,
+    displayLabel: agent?.label || agent?.displayLabel || agentDisplayLabel({ threadId: id }),
+    status: "unknown",
+    activityStatus: "",
+    events: [],
+  };
+  const nextStatus = normalizeAgentWorkingStatus(event.status || existing.status);
+  const mergedStatus = subagentStatusRank(nextStatus) >= subagentStatusRank(existing.status)
+    ? nextStatus
+    : existing.status;
+  existing.displayLabel = agent?.label || agent?.displayLabel || existing.displayLabel;
+  existing.status = mergedStatus;
+  existing.activityStatus = event.activityStatus || existing.activityStatus;
+  existing.events.push(event);
+  activity.events.push({ ...event, threadId: id, displayLabel: existing.displayLabel });
+  activity.agents.set(id, existing);
+
+  const scope = agentTurnScopeEntry(agent, key);
+  if (scope) {
+    scope.status = mergedStatus;
+    scope.events.push({ ...event, threadId: id, displayLabel: existing.displayLabel });
+  }
+}
+
+function renderSubagentTurnActivity(turnKey) {
+  const key = String(turnKey || "live");
+  const activity = state.subagentActivityByTurn.get(key);
+  const agents = Array.from(activity?.agents?.values?.() || []);
+  const messageId = `subagent_activity_${key}`;
+  if (!agents.length) {
+    const existing = state.itemMap.get(messageId);
+    if (existing) {
+      existing.remove();
+      state.itemMap.delete(messageId);
+    }
+    return;
+  }
+  const node = ensureMessage(messageId, "system", "Sub-agent activity");
   node.classList.add("collab-meta-message");
   const bubble = node.querySelector(".bubble");
   bubble.innerHTML = "";
-  bubble.dataset.rawText = projection.label;
+  bubble.dataset.rawText = `Sub-agents in this turn: ${agents.map((agent) => `${agent.displayLabel} · ${agent.status}`).join(", ")}`;
   bubble.dataset.typedRendered = "true";
   bubble.dataset.streamingPlain = "false";
 
   const root = document.createElement("div");
-  root.className = `collab-activity-tag ${String(projection.status || "unknown")}`;
+  root.className = "collab-activity-tag collab-activity-summary";
   const action = document.createElement("span");
   action.className = "collab-activity-verb";
-  action.textContent = projection.agents.length ? `${projection.verb} ` : projection.label;
+  action.textContent = "Sub-agents in this turn ";
   root.appendChild(action);
 
-  if (projection.agents.length) {
-    const chipList = document.createElement("span");
-    chipList.className = "collab-agent-chip-list";
-    for (const agent of projection.agents) {
-      const chip = document.createElement("button");
-      chip.type = "button";
-      chip.className = "collab-agent-chip";
-      chip.textContent = agent.displayLabel;
-      chip.title = agent.clickable ? `Open ${agent.displayLabel} in the Sub-agents panel` : "Sub-agent thread unavailable";
-      chip.disabled = !agent.clickable;
-      chip.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        focusSubAgentFromChip(agent);
-      });
-      chipList.appendChild(chip);
-    }
-    root.appendChild(chipList);
+  const chipList = document.createElement("span");
+  chipList.className = "collab-agent-chip-list";
+  for (const agent of agents) {
+    const chip = document.createElement("button");
+    chip.type = "button";
+    chip.className = `collab-agent-chip status-${String(agent.status || "unknown").replace(/[^a-z0-9_-]/gi, "-")}`;
+    chip.textContent = `${agent.displayLabel} · ${String(agent.status || "unknown").replace(/_/g, " ")}`;
+    chip.title = `Open ${agent.displayLabel} turn activity in the Sub-agents panel`;
+    chip.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      focusSubAgentFromChip(agent, { mode: "turn", turnKey: key });
+    });
+    chipList.appendChild(chip);
   }
+  root.appendChild(chipList);
 
-  if (projection.status === "failed") {
-    const status = document.createElement("span");
-    status.className = "collab-activity-status";
-    status.textContent = "failed";
-    root.appendChild(status);
-  }
   bubble.appendChild(root);
   maybeAutoScrollBottom();
+}
+
+function recordCollabTurnActivity(turnKey, item) {
+  const projection = projectCollabActivityTag(item);
+  const collab = normalizeCollabAgentItem(item);
+  for (const agentProjection of projection.agents) {
+    const status = normalizeAgentWorkingStatus(agentProjection.lifecycleStatus || collabWorkingStatus(collab));
+    const existing = agentProjection.threadId ? state.agentGraph?.agents?.get(agentProjection.threadId) : null;
+    const mergedStatus = subagentStatusRank(status) >= subagentStatusRank(existing?.status)
+      ? status
+      : existing?.status || status;
+    const agent = ensureGraphAgent(agentProjection.threadId, {
+      nickname: agentProjection.nickname || undefined,
+      role: agentProjection.role || undefined,
+      status: mergedStatus,
+      activityStatus: ["creating", "running", "waiting"].includes(mergedStatus) ? "active" : "last_seen_completed",
+    });
+    recordSubagentTurnEvent(turnKey, agent, {
+      kind: "collab_tool_call",
+      label: projection.label,
+      tool: projection.tool,
+      status: mergedStatus,
+      actionStatus: projection.status,
+      promptPreview: projection.promptPreview || "",
+      observedAt: new Date().toISOString(),
+    });
+  }
+  state.agentGraphRevision += 1;
+  reportAgentGraph();
+  renderSubagentTurnActivity(turnKey);
+}
+
+function recordNotificationTurnActivity(turnKey, notification) {
+  const statusInfo = normalizeSubagentNotificationStatus(notification?.statusKey);
+  const agent = applySubagentNotification(notification);
+  if (!agent) return;
+  recordSubagentTurnEvent(turnKey, agent, {
+    kind: "subagent_notification",
+    label: `Sub-agent ${statusInfo.label}`,
+    status: normalizeAgentWorkingStatus(statusInfo.graphStatus),
+    activityStatus: statusInfo.activityStatus,
+    detail: String(notification?.statusDetail || ""),
+    observedAt: notification?.observedAt || new Date().toISOString(),
+  });
+  state.agentGraphRevision += 1;
+  reportAgentGraph();
+  renderSubagentTurnActivity(turnKey);
 }
 
 function updateAgentFromCollabItem(item) {
@@ -4275,7 +4462,19 @@ function subAgentTranscriptFromSnapshot(snapshot, agent) {
           id: String(message.id || `sub_user_${messages.length}`),
           role: "parent",
           title: context.userTitle,
-          text: compactValue(storedMessageText(message), 1400),
+          text: storedMessageText(message),
+        });
+      }
+      const thoughtItems = Array.isArray(turn.thoughtItems)
+        ? turn.thoughtItems.filter((item) => item?.type !== "subagentNotification")
+        : [];
+      if (thoughtItems.length) {
+        messages.push({
+          id: String(`sub_process_${turn.turnId || turn.turnKey || messages.length}`),
+          role: "process",
+          title: "Thought process",
+          text: thoughtItems.map((item) => thoughtItemLabel(item)).join("\n"),
+          thoughtItems,
         });
       }
       for (const message of turn.assistantFinalMessages || []) {
@@ -4283,11 +4482,11 @@ function subAgentTranscriptFromSnapshot(snapshot, agent) {
           id: String(message.id || `sub_agent_${messages.length}`),
           role: "child",
           title: context.assistantTitle,
-          text: compactValue(storedMessageText(message), 1400),
+          text: storedMessageText(message),
         });
       }
     }
-    return messages.slice(-12);
+    return messages;
   }
   for (const entry of snapshot?.entries || []) {
     const role = entry.role === "assistant" ? "child" : entry.role === "user" ? "parent" : "system";
@@ -4295,10 +4494,10 @@ function subAgentTranscriptFromSnapshot(snapshot, agent) {
       id: String(entry.id || `sub_entry_${messages.length}`),
       role,
       title: role === "child" ? context.assistantTitle : role === "parent" ? context.userTitle : "System",
-      text: compactValue(entry.text || "", 1400),
+      text: String(entry.text || ""),
     });
   }
-  return messages.slice(-12);
+  return messages;
 }
 
 async function hydrateAgentThread(threadId, graphId, primaryThreadId) {
@@ -4318,7 +4517,7 @@ async function hydrateAgentThread(threadId, graphId, primaryThreadId) {
       id,
       state.sourceHome || "",
       "",
-      160,
+      2000,
     );
     if (!isCurrentHydrationTarget()) return;
     const agent = ensureGraphAgent(id, {
@@ -4686,7 +4885,7 @@ function renderItem(item, authorContext = currentAuthorContext()) {
     const text = (item.content || []).map(userInputToText).filter(Boolean).join("\n\n");
     const notification = subagentNotificationFromText(text);
     if (notification) {
-      if (!authorContext.isSubagent) renderSubagentNotificationTag(item.turnId || state.turnId || "live", notification);
+      if (!authorContext.isSubagent) recordNotificationTurnActivity(item.turnId || state.turnId || "live", notification);
       return;
     }
     setMessageText(item.id, authorContext.userRole, text, authorContext.userTitle);
@@ -4706,7 +4905,7 @@ function renderItem(item, authorContext = currentAuthorContext()) {
   if (item.type === "collabAgentToolCall") {
     if (!authorContext.isSubagent) {
       updateAgentFromCollabItem(item);
-      renderCollabActivityTag(item.turnId || state.turnId || "live", item);
+      recordCollabTurnActivity(item.turnId || state.turnId || "live", item);
     }
     return;
   }

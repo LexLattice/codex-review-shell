@@ -815,6 +815,41 @@ function parseJsonObject(value) {
   }
 }
 
+function parseSubagentNotificationText(value) {
+  const raw = String(value || "").trim();
+  if (!raw.toLowerCase().startsWith("<subagent_notification>")) return null;
+  const match = raw.match(/^<subagent_notification>\s*([\s\S]*?)\s*<\/subagent_notification>\s*$/i);
+  const bodyText = match ? match[1].trim() : "";
+  const body = parseJsonObject(bodyText);
+  if (!body) {
+    const agentPath = raw.match(/"agent_path"\s*:\s*"([^"]+)"/)?.[1] || "";
+    return {
+      agentPath,
+      statusKey: "unknown",
+      statusDetail: "",
+      rawText: raw,
+    };
+  }
+  const status = body.status;
+  let statusKey = "";
+  let statusDetail = "";
+  if (typeof status === "string") {
+    statusKey = status;
+  } else if (status && typeof status === "object") {
+    const [key, value] = Object.entries(status)[0] || [];
+    statusKey = String(key || "");
+    if (typeof value === "string") statusDetail = value;
+  }
+  const agentPath = String(body.agent_path || body.agentPath || body.agent_id || body.agentId || "").trim();
+  if (!agentPath && !statusKey) return null;
+  return {
+    agentPath,
+    statusKey: statusKey || "unknown",
+    statusDetail,
+    rawText: raw,
+  };
+}
+
 function durationMillis(duration) {
   if (!duration || typeof duration !== "object") return null;
   const secs = Number(duration.secs ?? duration.seconds ?? 0);
@@ -1078,6 +1113,21 @@ function createStoredPresentationBuilder(threadId, sourceFile, threadMeta = {}) 
       const text = extractContentText(payload.content || []);
       if (!text) return;
       const phase = String(payload.phase || "");
+      const notification = role === "user" ? parseSubagentNotificationText(text) : null;
+      if (notification) {
+        addThoughtItem(turn, {
+          ...base,
+          id: `stored_subagent_notification_${rowIndex}`,
+          type: "subagentNotification",
+          status: notification.statusKey,
+          statusKey: notification.statusKey,
+          statusDetail: notification.statusDetail,
+          agentPath: notification.agentPath,
+          text: notification.rawText,
+          sourceType: "response_item.message.subagent_notification",
+        });
+        return;
+      }
       const message = {
         ...base,
         id: `stored_msg_${rowIndex}`,
@@ -1097,6 +1147,21 @@ function createStoredPresentationBuilder(threadId, sourceFile, threadMeta = {}) 
     if (row.type === "event_msg" && payloadType === "user_message") {
       const text = String(payload.message || "").trim();
       if (!text) return;
+      const notification = parseSubagentNotificationText(text);
+      if (notification) {
+        addThoughtItem(turn, {
+          ...base,
+          id: `stored_subagent_notification_${rowIndex}`,
+          type: "subagentNotification",
+          status: notification.statusKey,
+          statusKey: notification.statusKey,
+          statusDetail: notification.statusDetail,
+          agentPath: notification.agentPath,
+          text: notification.rawText,
+          sourceType: "event_msg.user_message.subagent_notification",
+        });
+        return;
+      }
       addMessage(turn, "user", {
         ...base,
         id: `stored_user_${rowIndex}`,
@@ -1343,7 +1408,7 @@ function createStoredPresentationBuilder(threadId, sourceFile, threadMeta = {}) 
 
 function primaryProjectionCount(turn) {
   const thoughtMessages = Array.isArray(turn?.thoughtItems)
-    ? turn.thoughtItems.filter((item) => item?.type === "agentMessage").length
+    ? turn.thoughtItems.filter((item) => item?.type === "agentMessage" || item?.type === "subagentNotification").length
     : 0;
   return (turn?.userMessages?.length || 0) +
     (turn?.systemMessages?.length || 0) +
@@ -1402,6 +1467,7 @@ function extractTranscriptEntry(row) {
     if (!role || role === "developer") return null;
     const text = extractContentText(payload.content || []);
     if (!text) return null;
+    if (role === "user" && parseSubagentNotificationText(text)) return null;
     return {
       role: role === "assistant" || role === "user" ? role : "system",
       text,
@@ -1414,6 +1480,7 @@ function extractTranscriptEntry(row) {
   if (row.type === "event_msg" && payload.type === "user_message") {
     const text = String(payload.message || "").trim();
     if (!text) return null;
+    if (parseSubagentNotificationText(text)) return null;
     return {
       role: "user",
       text,
