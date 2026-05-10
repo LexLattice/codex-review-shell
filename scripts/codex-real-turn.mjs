@@ -735,7 +735,7 @@ async function runDirect(context) {
   if (authStatus.status === "expired" || authStatus.status === "refresh_failed") {
     report.requestLifecycle = "auth_refreshing";
     report.auth.refreshAttempted = true;
-    const refresh = await authLogin.refreshCredentials(authController);
+    const refresh = await authLogin.refreshCredentials({ activeStore: () => authStore });
     report.auth.refreshOk = refresh?.ok === true;
     authStatus = authStore.readStatus();
     credentials = authStore.readCredentials();
@@ -868,7 +868,7 @@ async function runDirect(context) {
     const result = await runTextOnlyDirectProbe({
       endpoint,
       authStore,
-      refreshCredentials: () => authLogin.refreshCredentials(authController),
+      refreshCredentials: () => authLogin.refreshCredentials({ activeStore: () => authStore }),
       profileDoc,
       model: requestBodyInitial.model,
       prompt: contextResult.providerInput.prompt,
@@ -1039,7 +1039,7 @@ async function directAuthTokensForAppServer(authStore, authController, authLogin
   if (!credentials) return null;
   const status = store.readStatus();
   if (status.status === "expired" || status.status === "refresh_failed") {
-    const refresh = await authLogin.refreshCredentials(authController);
+    const refresh = await authLogin.refreshCredentials({ activeStore: () => store });
     if (!refresh.ok) throw new Error(refresh.reason || refresh.status || "direct_auth_refresh_failed");
     credentials = store.readCredentials();
   }

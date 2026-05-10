@@ -1628,6 +1628,16 @@ function directRuntimeAuthStore() {
   });
 }
 
+function directRuntimeAuthRefreshController() {
+  return {
+    activeStore: () => directRuntimeAuthStore(),
+  };
+}
+
+function refreshDirectRuntimeCredentials() {
+  return ensureDirectAuthLoginCoordinator().refreshCredentials(directRuntimeAuthRefreshController());
+}
+
 function ensureDirectCodexProfileDoc() {
   if (directCodexProfileDoc) return directCodexProfileDoc;
   directCodexProfileDoc = loadDirectCodexProfile();
@@ -1740,7 +1750,7 @@ function ensureDirectLiveTextController() {
     directThreadStore: ensureDirectThreadStore(),
     profileDoc: ensureDirectCodexProfileDoc(),
     authStore: () => directRuntimeAuthStore(),
-    refreshCredentials: () => ensureDirectAuthLoginCoordinator().refreshCredentials(ensureDirectAuthController()),
+    refreshCredentials: () => refreshDirectRuntimeCredentials(),
     modelEvidenceResolver: (context) => ensureDirectLiveProbeEvidenceStore().resolveModelEvidence(context),
     activationStatusResolver: (project) => directActivationEvaluationForProject(project).status,
     workspaceRequest: (project, method, params, timeoutMs) => requestWorkspace(project, method, params, timeoutMs),
@@ -2118,14 +2128,13 @@ function codexSurfaceSessionFor(sender, options = {}) {
 }
 
 async function directAuthTokensForCodexAppServer(options = {}) {
-  const controller = ensureDirectAuthController();
   const store = directRuntimeAuthStore();
   let credentials = store.readCredentials();
   if (!credentials) return null;
 
   const status = store.readStatus();
   if (options.refresh || status.status === "expired" || status.status === "refresh_failed") {
-    const refreshResult = await ensureDirectAuthLoginCoordinator().refreshCredentials(controller);
+    const refreshResult = await refreshDirectRuntimeCredentials();
     if (!refreshResult.ok) {
       throw new Error(refreshResult.reason || refreshResult.status || "direct_auth_refresh_failed");
     }

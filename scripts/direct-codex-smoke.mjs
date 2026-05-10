@@ -2480,6 +2480,41 @@ try {
   });
   nodeAssert.equal(fallbackIpcController.readStatus({ nowMs }).status, "authenticated");
   nodeAssert.equal(fallbackIpcController.activeStore().readCredentials(), null);
+  const expiredCodexCliAuthFile = path.join(codexCliAuthRoot, "expired-auth.json");
+  fs.writeFileSync(expiredCodexCliAuthFile, `${JSON.stringify({
+    auth_mode: "chatgpt",
+    tokens: {
+      access_token: syntheticJwt({ exp: Math.floor((nowMs - 60_000) / 1000) }),
+      refresh_token: "fixture-expired-codex-cli-refresh-token-secret",
+      account_id: "acct_expired_codex_cli_fixture_secret",
+    },
+    last_refresh: new Date(nowMs - 3_600_000).toISOString(),
+  }, null, 2)}\n`);
+  const expiredPrimaryStore = createDirectAuthStore({ mode: "file", rootDir: path.join(authStoreParent, "expired-empty-direct-auth") });
+  const expiredCompositeStore = createDirectAuthCompositeStore({
+    primaryStore: expiredPrimaryStore,
+    fallbackStore: createCodexCliAuthStore({ filePath: expiredCodexCliAuthFile }),
+  });
+  nodeAssert.equal(expiredCompositeStore.readStatus({ nowMs }).status, "expired");
+  const fallbackRefreshCoordinator = createDirectAuthLoginCoordinator({
+    clientId: "codex-desktop-fixture-client",
+    tokenClient: async (request) => {
+      nodeAssert.equal(request.body.grant_type, "refresh_token");
+      nodeAssert.equal(request.body.refresh_token, "fixture-expired-codex-cli-refresh-token-secret");
+      return {
+        access_token: syntheticJwt({
+          exp: Math.floor((nowMs + 3_600_000) / 1000),
+          "https://api.openai.com/auth": { chatgpt_account_id: "acct_expired_codex_cli_fixture_secret" },
+        }),
+        token_type: "Bearer",
+        expires_in: 3_600,
+      };
+    },
+  });
+  const fallbackRefreshResult = await fallbackRefreshCoordinator.refreshCredentials({ activeStore: () => expiredCompositeStore }, { nowMs });
+  nodeAssert.equal(fallbackRefreshResult.ok, true);
+  nodeAssert.equal(expiredCompositeStore.readStatus({ nowMs }).status, "authenticated");
+  nodeAssert.equal(expiredPrimaryStore.readCredentials().accountId, "acct_expired_codex_cli_fixture_secret");
 
   assert(reloadedStore.logout({ nowMs }).removed === true, "Expected file logout to delete credentials.");
   assert(!fs.existsSync(authFilePath), "Expected file auth logout to delete auth file.");

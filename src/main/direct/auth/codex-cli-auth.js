@@ -82,31 +82,26 @@ function windowsHomeCandidates() {
     candidates.push(path.join("/mnt/c/Users", username));
     candidates.push(path.join("/mnt/c/Users", username.charAt(0).toUpperCase() + username.slice(1)));
   }
-  try {
-    for (const entry of fs.readdirSync("/mnt/c/Users", { withFileTypes: true })) {
-      if (entry.isDirectory()) candidates.push(path.join("/mnt/c/Users", entry.name));
-    }
-  } catch {
-    // Windows mount is optional outside WSL.
-  }
   return uniquePaths(candidates);
 }
 
-function defaultCodexAuthFileCandidates(options = {}) {
-  const explicit = [
+function explicitCodexAuthFileCandidates(options = {}) {
+  return uniquePaths([
     options.filePath,
     process.env.CODEX_DIRECT_CODEX_AUTH_FILE,
     process.env.CODEX_AUTH_FILE,
-  ];
+  ]);
+}
+
+function defaultCodexAuthFileCandidates(options = {}) {
+  const explicit = explicitCodexAuthFileCandidates(options);
+  if (explicit.length) return explicit;
   const homes = [
     process.env.CODEX_HOME,
     path.join(os.homedir(), ".codex"),
     ...windowsHomeCandidates().map((home) => path.join(home, ".codex")),
   ];
-  return uniquePaths([
-    ...explicit,
-    ...homes.map((home) => path.join(home, "auth.json")),
-  ]);
+  return uniquePaths(homes.map((home) => path.join(home, "auth.json")));
 }
 
 function normalizeCodexCliCredentials(raw = {}, options = {}) {
@@ -162,10 +157,15 @@ function statusFromCredentials(credentials, options = {}) {
 
 class CodexCliAuthStore {
   constructor(options = {}) {
-    this.filePaths = uniquePaths(options.filePaths || defaultCodexAuthFileCandidates(options));
+    const explicit = options.filePaths ? uniquePaths(options.filePaths) : explicitCodexAuthFileCandidates(options);
+    this.explicitFilePaths = explicit;
+    this.filePaths = explicit.length ? explicit : defaultCodexAuthFileCandidates(options);
   }
 
   readSourceFilePath() {
+    if (this.explicitFilePaths.length) {
+      return this.explicitFilePaths.find((filePath) => existingFileMtimeMs(filePath) > 0) || this.explicitFilePaths[0];
+    }
     let best = "";
     let bestMtime = 0;
     for (const filePath of this.filePaths) {
@@ -229,23 +229,25 @@ class CompositeDirectAuthStore {
     return resolveStore(this.fallbackStore);
   }
 
-  selectedStore(options = {}) {
+  selectedEntry() {
     const primary = this.primary();
     const primaryCredentials = storeCredentials(primary);
-    if (primaryCredentials?.accessToken) return primary;
+    if (primaryCredentials?.accessToken) return { kind: "primary", store: primary, credentials: primaryCredentials };
     const fallback = this.fallback();
     const fallbackCredentials = storeCredentials(fallback);
-    if (fallbackCredentials?.accessToken) return fallback;
-    return primary || fallback || null;
+    if (fallbackCredentials?.accessToken) return { kind: "fallback", store: fallback, credentials: fallbackCredentials };
+    return { kind: primary ? "primary" : "fallback", store: primary || fallback || null, credentials: null };
   }
 
   readCredentials() {
-    return storeCredentials(this.selectedStore());
+    return this.selectedEntry().credentials;
   }
 
   readStatus(options = {}) {
-    const store = this.selectedStore(options);
-    return storeStatus(store, options) || statusFromCredentials(null, options);
+    const entry = this.selectedEntry();
+    if (!entry.credentials) return statusFromCredentials(null, options);
+    if (entry.kind === "fallback") return statusFromCredentials(entry.credentials, options);
+    return storeStatus(entry.store, options) || statusFromCredentials(entry.credentials, options);
   }
 
   writeCredentials(credentials, options = {}) {
@@ -293,5 +295,6 @@ module.exports = {
   createCodexCliAuthStore,
   createDirectAuthCompositeStore,
   defaultCodexAuthFileCandidates,
+  explicitCodexAuthFileCandidates,
   normalizeCodexCliCredentials,
 };

@@ -55,12 +55,11 @@ class DirectAuthIpcController {
     const primaryStatus = this.activeStore().readStatus(options);
     if (primaryStatus.status !== "unauthenticated") return primaryStatus;
     const fallbackStore = typeof this.fallbackStore === "function" ? this.fallbackStore() : this.fallbackStore;
-    if (!fallbackStore || typeof fallbackStore.readStatus !== "function" || typeof fallbackStore.readCredentials !== "function") {
+    if (!fallbackStore || typeof fallbackStore.readStatus !== "function") {
       return primaryStatus;
     }
-    const fallbackCredentials = fallbackStore.readCredentials();
-    if (!fallbackCredentials?.accessToken) return primaryStatus;
-    return fallbackStore.readStatus(options);
+    const fallbackStatus = fallbackStore.readStatus(options);
+    return fallbackStatus.status !== "unauthenticated" ? fallbackStatus : primaryStatus;
   }
 
   readSettings(options = {}) {
