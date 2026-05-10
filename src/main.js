@@ -3401,6 +3401,8 @@ ipcMain.handle("codex-surface:focus-sub-agent", async (_event, payload) => {
     projectId: normalizeString(payload?.projectId, ""),
     primaryThreadId: normalizeString(payload?.primaryThreadId || payload?.threadId, ""),
     receiverThreadId: normalizeString(payload?.receiverThreadId, ""),
+    scopeMode: normalizeString(payload?.scopeMode, ""),
+    turnKey: normalizeString(payload?.turnKey, ""),
     graphRevision: Number(payload?.graphRevision) || 0,
     activationEpoch: Number(payload?.activationEpoch) || 0,
     label: normalizeString(payload?.label, ""),

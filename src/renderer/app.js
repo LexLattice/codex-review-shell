@@ -30,6 +30,13 @@ const ZOOM_POLICY = bridge?.zoomConstants || {};
 // values from the shared zoom policy exposed through the bridge.
 const NORMAL_ZOOM_FALLBACK = 1;
 const NO_ZOOM_DELTA = 0;
+const SUB_AGENT_MESSAGE_PREVIEW_LINES = 10;
+const SUB_AGENT_TOOL_LIKE_THOUGHT_TYPES = new Set([
+  "commandExecution",
+  "mcpToolCall",
+  "dynamicToolCall",
+  "webSearch",
+]);
 
 function zoomPolicyValue(name, fallback = NORMAL_ZOOM_FALLBACK) {
   const value = Number(ZOOM_POLICY?.[name]);
@@ -77,6 +84,8 @@ const state = {
   subAgentGraph: null,
   selectedSubAgentThreadId: "",
   selectedSubAgentSelectedBy: "",
+  selectedSubAgentScope: { mode: "full", turnKey: "" },
+  expandedSubAgentMessages: new Set(),
   drawerMode: "edit",
   threadDrawerMode: "edit",
   currentWidths: { left: 0, middle: 0, right: 0 },
@@ -1543,12 +1552,217 @@ function renderSubAgentAssistantMarkdown(container, text, context = {}) {
 function renderSubAgentMessageBody(container, message, context = {}) {
   const text = String(message?.text || "");
   container.dataset.rawText = text;
+  if (message?.role === "process") {
+    renderSubAgentProcessBody(container, message);
+    return;
+  }
   container.classList.toggle("assistant-markdown", message?.role === "child");
   if (message?.role === "child") renderSubAgentAssistantMarkdown(container, text, context);
   else {
     container.classList.remove("assistant-markdown");
     renderTypedContent(container, text, context);
   }
+}
+
+function subAgentMessagePreviewKey(agent, message, index) {
+  return [
+    subAgentThreadId(agent) || "unknown-agent",
+    String(message?.id || `message_${index}`),
+    String(message?.role || "message"),
+  ].join(":");
+}
+
+function setSubAgentMessagePreviewState(body, toggle, key, expanded) {
+  const isExpanded = Boolean(expanded);
+  body.classList.toggle("is-message-preview-collapsed", !isExpanded);
+  body.classList.toggle("is-message-preview-expanded", isExpanded);
+  toggle.textContent = isExpanded ? "▴ Collapse" : "▾ Expand";
+  toggle.setAttribute("aria-expanded", isExpanded ? "true" : "false");
+  if (key) {
+    if (isExpanded) state.expandedSubAgentMessages.add(key);
+    else state.expandedSubAgentMessages.delete(key);
+  }
+}
+
+function configureSubAgentMessagePreview(item, body, key) {
+  if (!item || !body) return;
+  body.classList.remove("is-message-preview-eligible", "is-message-preview-expanded", "is-message-preview-collapsed");
+  body.style.setProperty("--sub-agent-preview-lines", String(SUB_AGENT_MESSAGE_PREVIEW_LINES));
+  body.classList.add("is-message-preview-eligible", "is-message-preview-collapsed");
+  const explicitLineCount = String(body.textContent || "").split(/\r?\n/).length;
+
+  requestAnimationFrame(() => {
+    if (!item.isConnected) return;
+    const renderedOverflow = body.scrollHeight > body.clientHeight + 1;
+    const shouldClamp = explicitLineCount > SUB_AGENT_MESSAGE_PREVIEW_LINES || renderedOverflow;
+    if (!shouldClamp) {
+      body.classList.remove("is-message-preview-eligible", "is-message-preview-expanded", "is-message-preview-collapsed");
+      body.style.removeProperty("--sub-agent-preview-lines");
+      return;
+    }
+
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "secondary sub-agent-message-preview-toggle";
+    toggle.addEventListener("click", () => {
+      const expanded = body.classList.contains("is-message-preview-collapsed");
+      setSubAgentMessagePreviewState(body, toggle, key, expanded);
+    });
+    item.appendChild(toggle);
+    setSubAgentMessagePreviewState(body, toggle, key, state.expandedSubAgentMessages.has(key));
+  });
+}
+
+function subAgentThoughtItemLabel(item) {
+  if (!item) return "Thought";
+  if (item.type === "reasoning") return "Reasoning";
+  if (item.type === "agentMessage") return `Agent · ${String(item.phase || "thought") || "thought"}`;
+  if (item.type === "commandExecution") return `Shell · ${String(item.command || "command").slice(0, 88)}`;
+  if (item.type === "mcpToolCall") return `Tool · ${item.server || "mcp"}:${item.tool || "tool"}`;
+  if (item.type === "dynamicToolCall") return `Dynamic tool · ${item.tool || "tool"}`;
+  if (item.type === "webSearch") return `Web search · ${String(item.query || "query").slice(0, 88)}`;
+  if (item.type === "fileChange") {
+    const changes = Array.isArray(item.changes) ? item.changes.length : 0;
+    return `Patch · ${changes} file change${changes === 1 ? "" : "s"}`;
+  }
+  if (item.type === "imageGeneration") return "Image generation";
+  if (item.type === "collabAgentToolCall") return `Sub-agent · ${item.tool || "call"}`;
+  return String(item.type || "Thought");
+}
+
+function subAgentThoughtItemBody(item) {
+  if (!item) return "";
+  if (item.type === "agentMessage") return String(item.text || item.message || "").trim();
+  if (item.type === "reasoning") return [...(item.summary || []), ...(item.content || [])].filter(Boolean).join("\n").trim();
+  if (item.type === "commandExecution") {
+    return [
+      item.status || "",
+      item.cwd ? `cwd: ${item.cwd}` : "",
+      item.command || "",
+      item.exitCode === null || item.exitCode === undefined ? "" : `exit ${item.exitCode}`,
+      item.aggregatedOutput || item.stdout || item.stderr || "",
+    ].filter(Boolean).join("\n").trim();
+  }
+  if (item.type === "fileChange") {
+    const changes = Array.isArray(item.changes) ? item.changes : [];
+    const header = `${item.patchStatus || item.status || "completed"}`;
+    const lines = changes.map((change) => {
+      const kind = String(change?.kind || change?.type || "change");
+      const relPath = String(change?.path || change?.relativePath || change?.file || "").trim();
+      return `- ${kind}${relPath ? ` ${relPath}` : ""}`;
+    });
+    return [header, lines.join("\n"), item.stdout || "", item.stderr || ""].filter(Boolean).join("\n").trim();
+  }
+  if (item.type === "mcpToolCall") return [item.server || "mcp", item.tool || "tool", item.status || "unknown", item.result || "", item.error || ""].filter(Boolean).join("\n");
+  if (item.type === "dynamicToolCall") return [item.tool || "tool", item.status || "unknown", item.contentItems || ""].filter(Boolean).join("\n");
+  if (item.type === "webSearch") return `Query: ${item.query || ""}`.trim();
+  if (item.type === "imageGeneration") return [item.revisedPrompt, item.result, item.savedPath].filter(Boolean).join("\n").trim();
+  if (item.type === "collabAgentToolCall") {
+    const targets = Array.isArray(item.receiverThreadIds) && item.receiverThreadIds.length ? `Targets: ${item.receiverThreadIds.join(", ")}` : "";
+    return [item.tool || "call", item.status || "unknown", item.prompt || "", targets].filter(Boolean).join("\n").trim();
+  }
+  return typeof item === "string" ? item : JSON.stringify(item, null, 2);
+}
+
+function subAgentThoughtBody(item) {
+  return String(subAgentThoughtItemBody(item) || "").trim();
+}
+
+function subAgentEmptyThoughtSentinel(text) {
+  const normalized = String(text || "").trim().toLowerCase();
+  return !normalized ||
+    normalized === "no reasoning text." ||
+    normalized === "reasoning not available" ||
+    normalized === "reasoning unavailable" ||
+    normalized === "no reasoning available";
+}
+
+function shouldRenderSubAgentThoughtItem(item) {
+  if (!item || item.type === "subagentNotification") return false;
+  if (SUB_AGENT_TOOL_LIKE_THOUGHT_TYPES.has(item.type) || item.type === "fileChange" || item.type === "collabAgentToolCall") return true;
+  const body = subAgentThoughtBody(item);
+  if (item.type === "reasoning" || item.type === "agentMessage") return !subAgentEmptyThoughtSentinel(body);
+  return !subAgentEmptyThoughtSentinel(body);
+}
+
+function projectSubAgentThoughtItems(items = []) {
+  const visible = Array.isArray(items) ? items.filter(shouldRenderSubAgentThoughtItem) : [];
+  return {
+    reasoningItems: visible.filter((item) => item?.type === "reasoning" || item?.type === "agentMessage"),
+    toolItems: visible.filter((item) => SUB_AGENT_TOOL_LIKE_THOUGHT_TYPES.has(item?.type)),
+    patchItems: visible.filter((item) => item?.type === "fileChange"),
+    otherItems: visible.filter((item) =>
+      item?.type !== "reasoning" &&
+      item?.type !== "agentMessage" &&
+      item?.type !== "fileChange" &&
+      !SUB_AGENT_TOOL_LIKE_THOUGHT_TYPES.has(item?.type)),
+    visibleCount: visible.length,
+  };
+}
+
+function appendSubAgentThoughtDetail(parent, item, className = "sub-agent-thought-tool") {
+  const detail = document.createElement("details");
+  detail.className = className;
+  const summary = document.createElement("summary");
+  summary.textContent = subAgentThoughtItemLabel(item);
+  const content = document.createElement("pre");
+  content.className = "sub-agent-thought-content";
+  renderTypedContent(content, subAgentThoughtBody(item) || "No details.");
+  detail.append(summary, content);
+  parent.appendChild(detail);
+}
+
+function renderSubAgentProcessBody(container, message) {
+  container.textContent = "";
+  container.classList.remove("assistant-markdown");
+  const projection = projectSubAgentThoughtItems(message?.thoughtItems || []);
+  if (!projection.visibleCount) {
+    container.textContent = "";
+    return;
+  }
+  const root = document.createElement("details");
+  root.className = "sub-agent-thought-process";
+  const summary = document.createElement("summary");
+  summary.textContent = projection.reasoningItems.length
+    ? `Thought process (${projection.visibleCount})`
+    : `Process evidence (${projection.visibleCount})`;
+  root.appendChild(summary);
+
+  const body = document.createElement("div");
+  body.className = "sub-agent-thought-body";
+  for (const item of projection.reasoningItems) {
+    const block = document.createElement("div");
+    block.className = "sub-agent-thought-reasoning";
+    renderTypedContent(block, subAgentThoughtBody(item));
+    body.appendChild(block);
+  }
+  if (projection.toolItems.length) {
+    const toolsRoot = document.createElement("details");
+    toolsRoot.className = "sub-agent-thought-tools";
+    const toolsSummary = document.createElement("summary");
+    toolsSummary.textContent = `Shell / tool calls (${projection.toolItems.length})`;
+    toolsRoot.appendChild(toolsSummary);
+    const toolsList = document.createElement("div");
+    toolsList.className = "sub-agent-thought-tools-list";
+    for (const item of projection.toolItems) appendSubAgentThoughtDetail(toolsList, item);
+    toolsRoot.appendChild(toolsList);
+    body.appendChild(toolsRoot);
+  }
+  if (projection.patchItems.length) {
+    const patchesRoot = document.createElement("details");
+    patchesRoot.className = "sub-agent-thought-tools sub-agent-thought-patches";
+    const patchesSummary = document.createElement("summary");
+    patchesSummary.textContent = `Patches (${projection.patchItems.length})`;
+    patchesRoot.appendChild(patchesSummary);
+    const patchesList = document.createElement("div");
+    patchesList.className = "sub-agent-thought-tools-list";
+    for (const item of projection.patchItems) appendSubAgentThoughtDetail(patchesList, item, "sub-agent-thought-tool sub-agent-thought-patch");
+    patchesRoot.appendChild(patchesList);
+    body.appendChild(patchesRoot);
+  }
+  for (const item of projection.otherItems) appendSubAgentThoughtDetail(body, item);
+  root.appendChild(body);
+  container.appendChild(root);
 }
 
 function clampPlaneZoom(value) {
@@ -1721,6 +1935,39 @@ function selectSubAgentTab(threadId, selectedBy = "operator") {
   if (!id) return;
   state.selectedSubAgentThreadId = id;
   state.selectedSubAgentSelectedBy = selectedBy;
+  if (selectedBy === "operator") state.selectedSubAgentScope = { mode: "full", turnKey: "" };
+  renderSubAgentsPanel();
+}
+
+function setSubAgentScopeMode(mode) {
+  const selectedAgent = Array.isArray(state.subAgentGraph?.agents)
+    ? state.subAgentGraph.agents.find((agent) => subAgentThreadId(agent) === state.selectedSubAgentThreadId)
+    : null;
+  const fallbackTurnKey = firstSubAgentTurnKey(selectedAgent);
+  const turnKey = state.selectedSubAgentScope?.turnKey || fallbackTurnKey;
+  const next = mode === "turn" && turnKey
+    ? "turn"
+    : "full";
+  state.selectedSubAgentScope = {
+    mode: next,
+    turnKey,
+  };
+  renderSubAgentsPanel();
+}
+
+function sortedSubAgentTurnKeys(turnScopes = {}) {
+  return Object.keys(turnScopes).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+}
+
+function firstSubAgentTurnKey(agent = {}) {
+  const keys = sortedSubAgentTurnKeys(agent?.turnScopes || {});
+  return keys[0] || "";
+}
+
+function selectSubAgentTurnScope(turnKey) {
+  const key = String(turnKey || "").trim();
+  if (!key) return;
+  state.selectedSubAgentScope = { mode: "turn", turnKey: key };
   renderSubAgentsPanel();
 }
 
@@ -1807,7 +2054,109 @@ function renderSubAgentsPanel() {
   const transcript = document.createElement("div");
   transcript.className = "sub-agent-transcript";
   const messages = Array.isArray(selectedAgent?.transcript) ? selectedAgent.transcript : [];
-  if (!messages.length) {
+  const selectedScope = state.selectedSubAgentScope || { mode: "full", turnKey: "" };
+  const turnScopes = selectedAgent?.turnScopes && typeof selectedAgent.turnScopes === "object"
+    ? selectedAgent.turnScopes
+    : {};
+  const turnKeys = sortedSubAgentTurnKeys(turnScopes);
+  const selectedTurnKey = selectedScope.turnKey && turnScopes[selectedScope.turnKey]
+    ? selectedScope.turnKey
+    : firstSubAgentTurnKey(selectedAgent);
+  if (selectedTurnKey && selectedScope.turnKey !== selectedTurnKey) {
+    state.selectedSubAgentScope = { ...selectedScope, turnKey: selectedTurnKey };
+  }
+  const showTurnMode = state.selectedSubAgentScope?.mode === "turn";
+  const turnScope = showTurnMode && selectedTurnKey
+    ? turnScopes[selectedTurnKey]
+    : null;
+  const showTurnScope = Boolean(turnScope);
+  if (state.selectedSubAgentScope?.mode === "turn" && !turnScope) {
+    state.selectedSubAgentScope = { mode: "full", turnKey: selectedTurnKey || "" };
+  }
+
+  const scopeControls = document.createElement("div");
+  scopeControls.className = "sub-agent-scope-controls";
+  const turnButton = document.createElement("button");
+  turnButton.type = "button";
+  turnButton.className = `sub-agent-scope-button${showTurnScope ? " active" : ""}`;
+  turnButton.textContent = "Turn activity";
+  turnButton.disabled = !selectedTurnKey;
+  turnButton.title = selectedTurnKey ? "Show parent-side activity from the selected main turn" : "No turn-scoped activity is available";
+  turnButton.addEventListener("click", () => setSubAgentScopeMode("turn"));
+  const fullButton = document.createElement("button");
+  fullButton.type = "button";
+  fullButton.className = `sub-agent-scope-button${!showTurnScope ? " active" : ""}`;
+  fullButton.textContent = "Full history";
+  fullButton.title = "Show the full sub-agent transcript history";
+  fullButton.addEventListener("click", () => setSubAgentScopeMode("full"));
+  scopeControls.append(turnButton, fullButton);
+  transcript.appendChild(scopeControls);
+
+  if (turnKeys.length > 1) {
+    const turnSelector = document.createElement("div");
+    turnSelector.className = "sub-agent-turn-selector";
+    const selectorLabel = document.createElement("span");
+    selectorLabel.textContent = "Main turns";
+    turnSelector.appendChild(selectorLabel);
+    for (let index = 0; index < turnKeys.length; index += 1) {
+      const key = turnKeys[index];
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `sub-agent-turn-chip${key === selectedTurnKey ? " active" : ""}`;
+      button.textContent = `Turn ${index + 1}`;
+      button.title = key;
+      button.addEventListener("click", () => selectSubAgentTurnScope(key));
+      turnSelector.appendChild(button);
+    }
+    transcript.appendChild(turnSelector);
+  }
+
+  if (showTurnScope) {
+    const scopeCard = document.createElement("section");
+    scopeCard.className = "sub-agent-turn-scope";
+    const scopeTitle = document.createElement("p");
+    scopeTitle.className = "eyebrow";
+    scopeTitle.textContent = `Main-turn activity · ${selectedTurnKey}`;
+    scopeCard.appendChild(scopeTitle);
+    const events = Array.isArray(turnScope.events) ? turnScope.events : [];
+    if (!events.length) {
+      const empty = document.createElement("p");
+      empty.className = "muted";
+      empty.textContent = "No parent-side activity was recorded for this agent in the selected turn.";
+      scopeCard.appendChild(empty);
+    } else {
+      const list = document.createElement("div");
+      list.className = "sub-agent-turn-events";
+      for (let eventIndex = 0; eventIndex < events.length; eventIndex += 1) {
+        const event = events[eventIndex];
+        const row = document.createElement("div");
+        row.className = `sub-agent-turn-event status-${String(event.status || "unknown").replace(/[^a-z0-9_-]/gi, "-")}`;
+        const label = document.createElement("strong");
+        label.textContent = String(event.label || event.kind || "Sub-agent event").replace(/_/g, " ");
+        const meta = document.createElement("span");
+        meta.textContent = [
+          event.status ? `status: ${String(event.status).replace(/_/g, " ")}` : "",
+          event.actionStatus ? `action: ${String(event.actionStatus).replace(/_/g, " ")}` : "",
+        ].filter(Boolean).join(" · ");
+        row.append(label, meta);
+        if (event.promptPreview || event.detail) {
+          const detail = document.createElement("p");
+          const detailKey = [
+            subAgentThreadId(selectedAgent) || "unknown-agent",
+            selectedTurnKey,
+            `event_${eventIndex}`,
+          ].join(":");
+          detail.className = "sub-agent-turn-event-detail";
+          detail.textContent = event.promptPreview || event.detail;
+          row.appendChild(detail);
+          configureSubAgentMessagePreview(row, detail, detailKey);
+        }
+        list.appendChild(row);
+      }
+      scopeCard.appendChild(list);
+    }
+    transcript.appendChild(scopeCard);
+  } else if (!messages.length) {
     const pending = document.createElement("div");
     pending.className = "sub-agent-message system";
     pending.textContent = selectedAgent?.hydrationStatus === "failed"
@@ -1815,9 +2164,12 @@ function renderSubAgentsPanel() {
       : "Transcript hydration pending.";
     transcript.appendChild(pending);
   } else {
-    for (const message of messages) {
+    for (let messageIndex = 0; messageIndex < messages.length; messageIndex += 1) {
+      const message = messages[messageIndex];
       const item = document.createElement("section");
       item.className = `sub-agent-message ${message.role || "system"}`;
+      const previewKey = subAgentMessagePreviewKey(selectedAgent, message, messageIndex);
+      item.dataset.messagePreviewKey = previewKey;
       const label = document.createElement("p");
       label.className = "eyebrow";
       label.textContent = message.title || message.role || "Message";
@@ -1828,6 +2180,7 @@ function renderSubAgentsPanel() {
         threadTitle: subAgentTabLabel(selectedAgent, labelCounts),
       });
       item.append(label, body);
+      configureSubAgentMessagePreview(item, body, previewKey);
       transcript.appendChild(item);
     }
   }
@@ -1890,6 +2243,9 @@ function handleCodexFocusSubAgent(event) {
   if (state.subAgentGraph?.primaryThreadId && primaryThreadId && String(state.subAgentGraph.primaryThreadId) !== primaryThreadId) return;
   state.selectedSubAgentThreadId = receiverThreadId;
   state.selectedSubAgentSelectedBy = "agent_chip";
+  state.selectedSubAgentScope = event.scopeMode === "turn" && event.turnKey
+    ? { mode: "turn", turnKey: String(event.turnKey) }
+    : { mode: "full", turnKey: "" };
   setRightPlaneTab("subagents");
   renderSubAgentsPanel();
   setLastEvent(`Opened sub-agent: ${event.label || receiverThreadId}.`);
@@ -2981,6 +3337,7 @@ async function selectProject(projectId) {
   state.subAgentGraph = null;
   state.selectedSubAgentThreadId = "";
   state.selectedSubAgentSelectedBy = "";
+  state.selectedSubAgentScope = { mode: "full", turnKey: "" };
   state.rightPlanePinnedTab = "";
   render();
   const project = activeProject();
@@ -3159,6 +3516,7 @@ function handleCodexThreadState(event) {
       state.subAgentGraph = null;
       state.selectedSubAgentThreadId = "";
       state.selectedSubAgentSelectedBy = "";
+      state.selectedSubAgentScope = { mode: "full", turnKey: "" };
       if (state.activeRightTab === "subagents" && !state.rightPlanePinnedTab) state.activeRightTab = "chatgpt";
       renderRightPlaneTabs();
     }
