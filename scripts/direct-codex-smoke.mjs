@@ -2731,6 +2731,19 @@ const failedResponse = normalizeDirectCodexEvents([
 ]);
 assert(failedResponse.normalized[0].type === "response_failed", "Expected response.failed to normalize as response_failed.");
 
+const currentResponsesLifecycleEvents = normalizeDirectCodexEvents([
+  { event: "response.created", data: { response: { id: "resp_lifecycle", model: "gpt-5.5" } } },
+  { event: "response.output_item.added", data: { item: { id: "msg_lifecycle", type: "message", role: "assistant" } } },
+  { event: "response.content_part.added", data: { item_id: "msg_lifecycle", content_index: 0 } },
+  { event: "response.output_text.delta", data: { item_id: "msg_lifecycle", delta: "direct text probe ok" } },
+  { event: "response.output_text.done", data: { item_id: "msg_lifecycle", text: "direct text probe ok" } },
+  { event: "response.content_part.done", data: { item_id: "msg_lifecycle", content_index: 0 } },
+  { event: "response.output_item.done", data: { item: { id: "msg_lifecycle", type: "message", role: "assistant" } } },
+  { event: "response.completed", data: { response: { id: "resp_lifecycle", status: "completed" } } },
+], { failOnUnknown: true, model: "gpt-5.5" });
+assert(currentResponsesLifecycleEvents.unknown.length === 0, "Expected known Responses message lifecycle events not to block live probe evidence.");
+assert(currentResponsesLifecycleEvents.normalized.some((event) => event.type === "message_delta"), "Expected current Responses lifecycle sample to preserve assistant text.");
+
 function textResponse(text, status = 200, headers = {}) {
   return {
     ok: status >= 200 && status < 300,

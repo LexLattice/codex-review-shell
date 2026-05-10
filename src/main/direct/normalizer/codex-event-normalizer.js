@@ -18,6 +18,13 @@ const NORMALIZED_EVENT_TYPES = Object.freeze([
 ]);
 
 const NORMALIZED_EVENT_TYPE_SET = new Set(NORMALIZED_EVENT_TYPES);
+const KNOWN_IGNORED_RAW_EVENT_TYPES = new Set([
+  "response.content_part.added",
+  "response.content_part.done",
+  "response.output_text.done",
+  "response.refusal.done",
+  "response.refusal.delta",
+]);
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -46,6 +53,16 @@ function normalizeSource(raw, rawIndex) {
 
 function isDoneEvent(raw) {
   return normalizeRawType(raw) === "[DONE]" || rawData(raw) === "[DONE]";
+}
+
+function isKnownIgnoredEvent(raw, rawType = normalizeRawType(raw)) {
+  const lowerType = String(rawType || "").toLowerCase();
+  if (KNOWN_IGNORED_RAW_EVENT_TYPES.has(lowerType)) return true;
+  if (lowerType === "response.output_item.added" || lowerType === "response.output_item.done") {
+    const item = itemFromData(rawData(raw));
+    return item.type !== "function_call" && item.type !== "custom_tool_call";
+  }
+  return false;
 }
 
 function itemFromData(data) {
@@ -264,9 +281,11 @@ function normalizeDirectCodexEvents(rawEvents, options = {}) {
     normalized.push(...events);
     if (events.length === 0) {
       const rawType = normalizeRawType(rawEvents[index]);
-      if (rawType && rawType !== "[DONE]") unknown.push({ rawIndex: index, rawType });
+      if (rawType && rawType !== "[DONE]" && !isKnownIgnoredEvent(rawEvents[index], rawType)) {
+        unknown.push({ rawIndex: index, rawType });
+      }
     }
-    if (normalized.length === before && options.failOnUnknown && !isDoneEvent(rawEvents[index])) {
+    if (normalized.length === before && options.failOnUnknown && !isDoneEvent(rawEvents[index]) && !isKnownIgnoredEvent(rawEvents[index])) {
       const rawType = normalizeRawType(rawEvents[index]) || "unknown";
       throw new Error(`No normalizer mapping for raw event ${rawType} at index ${index}.`);
     }
