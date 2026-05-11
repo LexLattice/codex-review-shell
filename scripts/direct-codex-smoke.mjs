@@ -48,11 +48,13 @@ const { buildDirectCodexProfileReport } = require("../src/main/direct/odeu-profi
 const {
   DIRECT_RUNTIME_STATUS_SCHEMA,
   buildDirectRuntimeStatus,
+  normalizeDirectExperimentalRuntimeTier,
   normalizeCodexRuntimeMode,
 } = require("../src/main/direct/runtime/runtime-status");
 const {
   DirectExperimentalActivationStore,
   activeDirectTurnCountForProject,
+  evaluateDirectTextOnlyRuntimeSelection,
   evaluateDirectExperimentalProjectActivation,
 } = require("../src/main/direct/runtime/project-activation");
 const { DirectSessionStore } = require("../src/main/direct/session/session-store");
@@ -327,6 +329,7 @@ function acceptedReadOnlyToolProfile() {
 }
 
 assert(normalizeCodexRuntimeMode("experimental-direct") === "direct-experimental", "Expected direct runtime mode alias normalization.");
+assert(normalizeDirectExperimentalRuntimeTier("text-only-real-turn") === "text-only", "Expected headless text-only tier alias normalization.");
 const directRuntimeStatus = buildDirectRuntimeStatus({
   project: {
     surfaceBinding: {
@@ -391,7 +394,7 @@ const directRuntimeStatusWithLiveText = buildDirectRuntimeStatus({
     },
   },
 });
-assert(directRuntimeStatusWithLiveText.currentCodexLane === "direct live text experimental", "Expected runtime lane to label live text truthfully.");
+assert(directRuntimeStatusWithLiveText.currentCodexLane === "direct implementation lane", "Expected legacy live text binding without tier to preserve implementation-lane routing.");
 assert(directRuntimeStatusWithLiveText.directRuntime.turnRunnable === true, "Expected accepted live text runtime to enable direct turn status.");
 assert(directRuntimeStatusWithLiveText.liveTextRuntime.turnRunnable === true, "Expected live text runtime status to project turn runnable.");
 assert(directRuntimeStatusWithLiveText.transport.runnable === true, "Expected live text transport status to become runnable only through live runtime evidence.");
@@ -451,6 +454,15 @@ const textOnlyActivation = evaluateDirectExperimentalProjectActivation({
 assert(textOnlyActivation.status.state === "text_only_eligible", "Expected text-only activation to remain informational.");
 assert(textOnlyActivation.status.eligible === false, "Text-only preview must not become implementation-lane activation.");
 assert(textOnlyActivation.status.gateSummary.blockers.some((item) => item.blockerCode === "tool_evidence_missing"), "Expected activation status to expose renderer-safe blocker details.");
+const textOnlySelection = evaluateDirectTextOnlyRuntimeSelection({
+  project: activationProject,
+  authStatus: activationAuthStatus,
+  liveTextStatus: activationLiveTextOnly,
+  sessionStore: activationSessionStoreStatus,
+});
+assert(textOnlySelection.status.state === "eligible", "Expected text-only runtime selection to be eligible without tool continuation evidence.");
+assert(textOnlySelection.status.canEnable === true, "Expected text-only runtime selection to be enableable.");
+assert(!textOnlySelection.status.gateSummary.blockers.some((item) => item.blockerCode === "tool_evidence_missing"), "Text-only selection must not require tool evidence.");
 const activationLiveWithTool = {
   ...activationLiveTextOnly,
   toolsEnabled: true,
@@ -482,6 +494,26 @@ const activationRuntimeStatus = buildDirectRuntimeStatus({
 });
 assert(activationRuntimeStatus.activation.state === "eligible", "Expected runtime status to include activation readiness.");
 assert(activationRuntimeStatus.activation.gateSummary.blockedReasons.tool_evidence_missing === undefined, "Eligible activation must not report tool evidence blocker.");
+const textOnlyRuntimeStatus = buildDirectRuntimeStatus({
+  project: {
+    surfaceBinding: {
+      codex: {
+        runtimeMode: "direct-experimental",
+        directTier: "text-only",
+        directTransport: "live-text",
+        model: "gpt-5.4",
+      },
+    },
+  },
+  authStatus: activationAuthStatus,
+  profileDoc: acceptedLiveTextProfile(),
+  liveTextRuntime: { available: true, status: activationLiveTextOnly },
+  activation: textOnlyActivation.status,
+  sessionStore: activationSessionStoreStatus,
+});
+assert(textOnlyRuntimeStatus.directTextOnly.status === "enabled", "Expected selected direct text-only runtime to be enabled.");
+assert(textOnlyRuntimeStatus.directTextOnly.canStartTextTurn === true, "Expected text-only runtime status to allow text turn start.");
+assert(textOnlyRuntimeStatus.directImplementationLane.status === "blocked", "Implementation lane must remain blocked without tool continuation evidence.");
 const redactedAccountActivationA = evaluateDirectExperimentalProjectActivation({
   project: activationProject,
   authStatus: { ...activationAuthStatus, accountId: "[REDACTED:account-id]" },
@@ -517,6 +549,12 @@ try {
   const dottedPending = activationStore.createPendingActivation(dottedProject, implementationActivation.gate, "client_activation_dotted");
   activationStore.markActivationCommitted(dottedPending);
   assert(activationStore.statusForProject(dottedProject.id).committedCount === 1, "Expected dotted legacy project ids to be path-safe in activation store.");
+  const pendingTextOnlySelection = activationStore.createPendingRuntimeSelection(activationProject, textOnlySelection.gate, "client_text_only_selection");
+  assert(pendingTextOnlySelection.transactionState === "pending", "Expected pending text-only runtime selection transaction.");
+  assert(pendingTextOnlySelection.selectedBindingPrivate.directTier === "text-only", "Expected text-only runtime selection to persist canonical tier.");
+  const committedTextOnlySelection = activationStore.markRuntimeSelectionCommitted(pendingTextOnlySelection);
+  assert(committedTextOnlySelection.transactionState === "committed", "Expected committed text-only runtime selection transaction.");
+  assert(activationStore.latestCommittedRuntimeSelection(activationProject.id).selectionId === committedTextOnlySelection.selectionId, "Expected committed text-only runtime selection to recover from store.");
   const corruptProject = { ...activationProject, id: "project_corrupt_activation" };
   const corruptPending = activationStore.createPendingActivation(corruptProject, implementationActivation.gate, "client_activation_corrupt");
   const corruptPath = activationStore.activationPath(corruptProject.id, corruptPending.activationId);
@@ -1675,6 +1713,7 @@ try {
     surfaceBinding: {
       codex: {
         runtimeMode: "direct-experimental",
+        directTier: "text-only",
         directTransport: "live-text",
         model: "gpt-5.4",
         profileId: liveProfileDoc.profile.profileId,
@@ -1727,7 +1766,17 @@ try {
     fetchImpl: async () => textResponse(liveSse, 200, { "content-type": "text/event-stream" }),
   });
   await assertRejects(
-    () => activationBlockedLiveController.startThread({}, { project: liveProject }),
+    () => activationBlockedLiveController.startThread({}, {
+      project: {
+        ...liveProject,
+        surfaceBinding: {
+          codex: {
+            ...liveProject.surfaceBinding.codex,
+            directTier: "implementation-lane",
+          },
+        },
+      },
+    }),
     "Expected direct live text thread start to fail closed when activation requires rollback.",
   );
 
@@ -2177,13 +2226,14 @@ try {
   );
   const liveToolTurn = toolStore.readTurn(liveToolThread.thread.id, liveToolAck.turn.id);
   const liveToolSession = toolStore.readSession(liveToolThread.thread.id);
-  assert(liveToolTurn.state === "failed", "Expected live text tool call to fail closed without accepted tool-continuation evidence.");
+  assert(liveToolTurn.state === "tool_call_blocked_text_only", "Expected text-only live tool call to terminate as blocked without execution.");
+  assert(liveToolTurn.error.code === "provider_tool_call_in_text_only_tier", "Expected text-only tool-call blocker code.");
   assert(liveToolTurn.unresolvedObligations.length === 1, "Expected live text tool call to persist one obligation.");
   assert(liveToolTurn.unresolvedObligations[0].executionAllowed === false, "Live text tool detection must not authorize execution before approval.");
   assert(liveToolTurn.unresolvedObligations[0].continuationAllowed === false, "Live text tool detection must not authorize continuation.");
   assert(liveToolTurn.unresolvedObligations[0].sideEffectExecuted === false, "Live text tool detection must not execute side effects.");
   assert(liveToolTurn.unresolvedObligations[0].status === "unsupported", "Expected text-only evidence alone not to unlock read-only tool continuation.");
-  assert(liveToolTurn.unresolvedObligations[0].failureKind === "tool_continuation_profile_required", "Expected missing tool-continuation profile gate to be explicit.");
+  assert(liveToolTurn.unresolvedObligations[0].failureKind === "provider_tool_call_in_text_only_tier", "Expected text-only tool-call block to be explicit.");
   assert(liveToolSession.messages[0].items.some((item) => item.type === "dynamicToolCall" && item.status === "unsupported"), "Expected unsupported tool call to render in transcript.");
   assert(liveToolSurface.hasServerRequest() === false, "Text-only runtime evidence alone must not create read-only authority requests.");
   assert(!liveToolEvents.some((event) => event.type === "rpc-request" && event.request?.method === "direct/tool/readOnly/requestApproval"), "Text-only evidence alone must not expose tool approval.");
@@ -2192,7 +2242,7 @@ try {
     threadId: liveToolThread.thread.id,
     turnId: liveToolAck.turn.id,
   });
-  assert(liveToolAbort.status === "failed_already", "Expected failed unsupported tool turn to remain terminal.");
+  assert(liveToolAbort.status === "tool_call_blocked_text_only_already", "Expected blocked text-only tool turn to remain terminal.");
 
   const approvedToolStore = new DirectSessionStore({ rootDir: path.join(liveTextControllerParent, "approved-tool-direct-sessions") });
   const approvedContinuationSse = [
@@ -2245,12 +2295,21 @@ try {
     },
   });
   const approvedToolEvents = [];
+  const approvedToolProject = {
+    ...liveProject,
+    surfaceBinding: {
+      codex: {
+        ...liveProject.surfaceBinding.codex,
+        directTier: "implementation-lane",
+      },
+    },
+  };
   const approvedToolSurface = new DirectLiveTextSurfaceSession({
     isDestroyed: () => false,
     send: (_channel, payload) => approvedToolEvents.push(payload),
   }, {
     controller: approvedToolController,
-    project: liveProject,
+    project: approvedToolProject,
   });
   await approvedToolSurface.connect({ transport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT });
   const approvedThread = await approvedToolSurface.request("thread/start", {});

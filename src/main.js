@@ -51,12 +51,14 @@ const {
   buildDirectRuntimeStatus,
   directRuntimeLaneLabel,
   normalizeCodexBindingProvider,
+  normalizeDirectExperimentalRuntimeTier,
   normalizeCodexRuntimeMode: normalizeDirectRuntimeModeForStatus,
 } = require("./main/direct/runtime/runtime-status");
 const {
   DirectExperimentalActivationStore,
   activeDirectTurnCountForProject,
   activationProjectBindingDigest,
+  evaluateDirectTextOnlyRuntimeSelection,
   evaluateDirectExperimentalProjectActivation,
 } = require("./main/direct/runtime/project-activation");
 const { PLANE_ZOOM_DEFAULT, clampZoomFactor, zoomDeltaForDirection } = require("./shared/plane-zoom");
@@ -1118,6 +1120,10 @@ function normalizeProject(input, index = 0) {
   const codexMode = normalizeCodexMode(rawCodex.mode);
   const codexRuntimeMode = normalizeDirectRuntimeModeForStatus(rawCodex.runtimeMode);
   const directTransport = normalizeDirectExperimentalTransport(rawCodex.directTransport);
+  const directTier = normalizeDirectExperimentalRuntimeTier(
+    rawCodex.directTier || rawCodex.activationTier || rawCodex.runtimeTier,
+    codexRuntimeMode === "direct-experimental" && directTransport === "live-text" ? "implementation-lane" : "none",
+  );
   const patterns = Array.isArray(rawFlow.watchedFilePatterns)
     ? rawFlow.watchedFilePatterns.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim())
     : fallback.flowProfile.watchedFilePatterns;
@@ -1161,6 +1167,7 @@ function normalizeProject(input, index = 0) {
           codexRuntimeMode === "legacy-app-server" ? "codex-compatible" : "direct-chatgpt-codex",
         ),
         runtimeMode: codexRuntimeMode,
+        directTier,
         directTransport,
         runtime: normalizeCodexRuntime(normalizeString(rawCodex.runtime, defaultCodexRuntimeForWorkspace(workspace))),
         profileId: normalizeString(rawCodex.profileId, ""),
@@ -1792,7 +1799,18 @@ function buildDirectRuntimeStatusForProject(project, options = {}) {
     attachOnFirstTurnAccepted: false,
     profileHash: normalizeString(profileDoc.summary?.profileHash || profileDoc.profile?.profileHash, ""),
   });
-  return buildDirectRuntimeStatus({
+  const textOnlyEvaluation = evaluateDirectTextOnlyRuntimeSelection({
+    project,
+    authSettings,
+    authStatus: authSettings.authStatus,
+    profileDoc,
+    sessionStore: sessionStore.status(),
+    liveTextStatus,
+    activationStoreStatus,
+    latestSelection: activationStoreStatus.latestRuntimeSelection || null,
+    profileHash: normalizeString(profileDoc.summary?.profileHash || profileDoc.profile?.profileHash, ""),
+  });
+  const runtimeStatus = buildDirectRuntimeStatus({
     project,
     authSettings,
     authStatus: authSettings.authStatus,
@@ -1805,6 +1823,25 @@ function buildDirectRuntimeStatusForProject(project, options = {}) {
     liveTextRuntime: { available: true, status: liveTextStatus, capabilities: buildDirectLiveTextCapabilities(liveTextStatus) },
     legacySession: currentLegacyAppServerSnapshot(),
   });
+  runtimeStatus.directTextOnly = {
+    ...(runtimeStatus.directTextOnly || {}),
+    ...textOnlyEvaluation.status,
+  };
+  const implementationBlockers = activationEvaluation.status.gateSummary?.blockers
+    ?.map((item) => item.blockerCode || item.reason || item.id)
+    .filter(Boolean) || [];
+  runtimeStatus.directImplementationLane = {
+    ...(runtimeStatus.directImplementationLane || {}),
+    tier: "implementation-lane",
+    status: activationEvaluation.status.enabled
+      ? (activationEvaluation.status.degraded ? "degraded" : "enabled")
+      : (activationEvaluation.status.eligible ? "eligible" : "blocked"),
+    selected: activationEvaluation.status.enabled === true,
+    canEnable: activationEvaluation.status.eligible === true,
+    blockers: implementationBlockers,
+    missingImplementationOnlyGates: implementationBlockers,
+  };
+  return runtimeStatus;
 }
 
 function emitDirectRuntimeStatus(project = currentProject) {
@@ -1945,6 +1982,96 @@ async function enableDirectExperimentalProject(payload = {}) {
   });
 }
 
+async function selectDirectTextOnlyRuntime(payload = {}) {
+  const projectId = normalizeString(payload.projectId, "");
+  return withDirectActivationLock(projectId, async () => {
+    const config = await loadConfig();
+    const project = config.projects.find((item) => item.id === projectId);
+    if (!project) throw new Error("Project not found.");
+    const activeTurns = activeDirectTurnCountForProject(ensureDirectSessionStore(), projectId);
+    if (activeTurns > 0) {
+      const error = new Error("A direct turn is active. Wait before changing the runtime selection.");
+      error.code = "active_direct_turn_exists";
+      throw error;
+    }
+    const store = ensureDirectActivationStore();
+    const clientOperationId = normalizeString(payload.clientOperationId || payload.clientSelectionId, "") || newId("client_runtime_selection");
+    const duplicate = store.findRuntimeSelectionByClientId(projectId, clientOperationId);
+    if (duplicate?.transactionState === "committed") {
+      return {
+        ok: true,
+        duplicate: true,
+        selection: duplicate,
+        status: buildDirectRuntimeStatusForProject(project).directTextOnly,
+      };
+    }
+    if (duplicate && duplicate.transactionState !== "abandoned") {
+      const error = new Error("Direct runtime selection idempotency key is already in use.");
+      error.code = "direct_runtime_selection_id_conflict";
+      throw error;
+    }
+    const controller = ensureDirectAuthController();
+    const authSettings = controller.readSettings();
+    authSettings.authStatus = directRuntimeAuthStore().readStatus();
+    const sessionStore = ensureDirectSessionStore();
+    const liveTextStatus = ensureDirectLiveTextController().statusForProject(project);
+    const activationStoreStatus = store.statusForProject(projectId);
+    const evaluation = evaluateDirectTextOnlyRuntimeSelection({
+      project,
+      authSettings,
+      authStatus: authSettings.authStatus,
+      profileDoc: ensureDirectCodexProfileDoc(),
+      sessionStore: sessionStore.status(),
+      liveTextStatus,
+      activationStoreStatus,
+      latestSelection: activationStoreStatus.latestRuntimeSelection || null,
+    });
+    const gate = evaluation.gate;
+    if (gate.state !== "eligible" && gate.state !== "enabled") {
+      const error = new Error("Direct text-only runtime gates are not eligible.");
+      error.code = "direct_text_only_not_eligible";
+      error.status = evaluation.status;
+      throw error;
+    }
+    if (normalizeString(payload.expectedGateId, "") && normalizeString(payload.expectedGateId, "") !== gate.gateId) {
+      const error = new Error("Direct text-only runtime gate is stale.");
+      error.code = "gate_stale";
+      error.status = evaluation.status;
+      throw error;
+    }
+    if (normalizeString(payload.expectedGateDigest, "") && normalizeString(payload.expectedGateDigest, "") !== gate.gateDigest) {
+      const error = new Error("Direct text-only runtime digest is stale.");
+      error.code = "gate_stale";
+      error.status = evaluation.status;
+      throw error;
+    }
+    const pending = store.createPendingRuntimeSelection(project, gate, clientOperationId);
+    let committed = null;
+    try {
+      const latestConfig = await loadConfig();
+      const nextProjects = latestConfig.projects.map((item) =>
+        item.id === projectId ? projectWithCodexBinding(item, pending.selectedBindingPrivate) : item,
+      );
+      const saved = await saveConfig({ ...latestConfig, projects: nextProjects });
+      const savedProject = saved.projects.find((item) => item.id === projectId) || project;
+      const savedDigest = activationProjectBindingDigest(savedProject.surfaceBinding?.codex || {});
+      if (savedDigest !== pending.selectedBindingDigest) {
+        store.markRuntimeSelectionAbandoned(pending, "binding_digest_mismatch");
+        throw new Error("Direct text-only runtime binding digest mismatch.");
+      }
+      committed = store.markRuntimeSelectionCommitted(pending);
+      currentProject = savedProject;
+      await loadCodexSurface(savedProject, { activationEpoch: nextSurfaceActivationEpoch("direct-text-only-selection") });
+      const status = buildDirectRuntimeStatusForProject(savedProject).directTextOnly;
+      emitDirectRuntimeStatus(savedProject);
+      return { ok: true, selection: committed, project: savedProject, config: saved, status };
+    } catch (error) {
+      if (!committed) store.markRuntimeSelectionAbandoned(pending, error.message || "selection_failed");
+      throw error;
+    }
+  });
+}
+
 async function rollbackDirectExperimentalProject(payload = {}) {
   const projectId = normalizeString(payload.projectId, "");
   return withDirectActivationLock(projectId, async () => {
@@ -1971,12 +2098,14 @@ async function rollbackDirectExperimentalProject(payload = {}) {
       ? store.readActivation(projectId, payload.activationId)
       : store.latestCommittedActivation(projectId);
     if (!activation) {
+      const selection = store.latestCommittedRuntimeSelection(projectId);
       const fallbackActivation = {
         activationId: "",
-        previousBindingPrivate: {
+        previousBindingPrivate: selection?.previousBindingPrivate || {
           ...(project.surfaceBinding?.codex || {}),
           bindingProvider: "codex-compatible",
           runtimeMode: "legacy-app-server",
+          directTier: "none",
           directTransport: "fixture",
         },
       };
@@ -2328,6 +2457,7 @@ async function loadCodexSurface(project, options = {}) {
       projectId: project.id,
       transport,
       runtime: transport,
+      directTier: codex.directTier || "none",
       workspaceRoot: workspaceRoot(project),
       capabilities,
       activationEpoch: Number(options.activationEpoch) || 0,
@@ -2343,6 +2473,7 @@ async function loadCodexSurface(project, options = {}) {
       activationEpoch: Number(options.activationEpoch) || 0,
       error: [
         `Direct runtime selected: ${runtimeStatus.runtimeModeLabel}.`,
+        `Direct tier: ${runtimeStatus.directTier || "none"}.`,
         isLiveText
           ? `Live text direct controller selected: ${liveTextStatus?.status || "unknown"}.`
           : "Fixture-only direct controller is enabled; live direct backend turns are not runnable yet.",
@@ -4339,6 +4470,10 @@ ipcMain.handle("workspace:status", async (_event, payload) => {
 ipcMain.handle("direct-runtime:status", async (_event, payload) => {
   const project = await getProjectById(payload?.projectId);
   return buildDirectRuntimeStatusForProject(project);
+});
+
+ipcMain.handle("direct-runtime:select-text-only", async (_event, payload) => {
+  return selectDirectTextOnlyRuntime(payload || {});
 });
 
 ipcMain.handle("direct-runtime:enable-experimental", async (_event, payload) => {

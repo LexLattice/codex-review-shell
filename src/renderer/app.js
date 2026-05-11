@@ -215,6 +215,7 @@ const els = {
   directAuthRefreshButton: document.getElementById("directAuthRefreshButton"),
   directAuthLoginButton: document.getElementById("directAuthLoginButton"),
   directAuthLogoutButton: document.getElementById("directAuthLogoutButton"),
+  directTextOnlyEnableButton: document.getElementById("directTextOnlyEnableButton"),
   directExperimentalEnableButton: document.getElementById("directExperimentalEnableButton"),
   directExperimentalRollbackButton: document.getElementById("directExperimentalRollbackButton"),
   directAuthEvidence: document.getElementById("directAuthEvidence"),
@@ -1762,6 +1763,9 @@ function directAuthModeSignature(modes) {
 }
 
 function directRuntimeStatusLabel(status) {
+  const textOnly = status?.directTextOnly || {};
+  if (textOnly.status === "enabled") return "direct text-only selected";
+  if (textOnly.status === "eligible") return "direct text-only ready";
   const activation = status?.activation || {};
   if (activation.state === "enabled") return "direct experimental enabled";
   if (activation.state === "eligible") return "direct experimental eligible";
@@ -1799,6 +1803,20 @@ function directActivationBlockedDetail(status = state.directRuntimeStatus) {
   return activation.labels?.detail || "Required activation gates are missing.";
 }
 
+function directTextOnlyBlockedDetail(status = state.directRuntimeStatus) {
+  const textOnly = status?.directTextOnly || {};
+  const blockers = Array.isArray(textOnly.gateSummary?.blockers) ? textOnly.gateSummary.blockers : [];
+  if (blockers.length) {
+    return blockers
+      .slice(0, 4)
+      .map((item) => `${item.label || item.id || "gate"}: ${item.reason || item.blockerCode || "blocked"}`)
+      .join("; ");
+  }
+  const codes = Array.isArray(textOnly.blockers) ? textOnly.blockers : [];
+  if (codes.length) return codes.slice(0, 4).join(", ");
+  return textOnly.labels?.detail || "Direct text-only gates are missing.";
+}
+
 function renderDirectRuntimeStatus() {
   if (!els.directRuntimeModeBadge) return;
   const status = state.directRuntimeStatus || {};
@@ -1809,15 +1827,28 @@ function renderDirectRuntimeStatus() {
   els.directRuntimeModeBadge.textContent = directRuntimeModeLabel(status);
   els.directRuntimeModeBadge.title = status.currentCodexLane || directRuntimeModeLabel(status);
   els.directRuntimeStatusBadge.textContent = state.directRuntimeLoading ? "loading runtime" : directRuntimeStatusLabel(status);
-  els.directRuntimeStatusBadge.title = state.directRuntimeError || (activation.state === "blocked" ? directActivationBlockedDetail(status) : activation.labels?.detail) || runtime.reason || directRuntimeStatusLabel(status);
+  els.directRuntimeStatusBadge.title = state.directRuntimeError ||
+    (status.directTextOnly?.status === "eligible" || status.directTextOnly?.status === "enabled"
+      ? status.directTextOnly?.labels?.detail
+      : activation.state === "blocked" ? directActivationBlockedDetail(status) : activation.labels?.detail) ||
+    runtime.reason ||
+    directRuntimeStatusLabel(status);
   els.directModelSourceBadge.textContent = `models: ${modelSource}`;
   els.directModelSourceBadge.title = profileId ? `Profile: ${profileId}` : "Model source is not available.";
+  if (els.directTextOnlyEnableButton) {
+    const canUseTextOnlyAction = Boolean(activeProject()) && Boolean(bridge.selectDirectTextOnlyRuntime) && !state.directRuntimeLoading;
+    const canEnableTextOnly = (status.directTextOnly?.status === "eligible" || status.directTextOnly?.status === "enabled") && canUseTextOnlyAction;
+    els.directTextOnlyEnableButton.disabled = !canEnableTextOnly || status.directTextOnly?.status === "enabled";
+    els.directTextOnlyEnableButton.title = canEnableTextOnly
+      ? "Use Direct text-only. This can answer prompts but cannot read files, run commands, apply patches, or continue tools."
+      : `Check direct text-only gates: ${directTextOnlyBlockedDetail(status)}`;
+  }
   if (els.directExperimentalEnableButton) {
     const canUseEnableAction = Boolean(activeProject()) && Boolean(bridge.enableDirectExperimentalRuntime) && !state.directRuntimeLoading;
     const canEnable = activation.state === "eligible" && canUseEnableAction;
-    els.directExperimentalEnableButton.disabled = !canUseEnableAction;
+    els.directExperimentalEnableButton.disabled = !canEnable;
     els.directExperimentalEnableButton.title = canEnable
-      ? "Enable direct-experimental/live-text for this project."
+      ? "Enable the stricter Direct implementation lane for this project."
       : `Check direct experimental activation gates: ${directActivationBlockedDetail(status)}`;
   }
   if (els.directExperimentalRollbackButton) {
@@ -4409,6 +4440,43 @@ async function enableDirectExperimentalRuntime() {
   }
 }
 
+async function selectDirectTextOnlyRuntime() {
+  const project = activeProject();
+  if (!project || !bridge.selectDirectTextOnlyRuntime) return;
+  await refreshDirectAuthStatus();
+  await refreshDirectRuntimeStatus(project.id);
+  const textOnly = state.directRuntimeStatus?.directTextOnly || {};
+  if (textOnly.state !== "eligible" && textOnly.status !== "eligible" && textOnly.status !== "enabled") {
+    setLastEvent(`Direct text-only blocked: ${directTextOnlyBlockedDetail(state.directRuntimeStatus)}`);
+    return;
+  }
+  if (textOnly.status !== "enabled") {
+    const confirmed = window.confirm("Use Direct text-only for this project? It can answer prompts but cannot read files, run commands, apply patches, or continue tools.");
+    if (!confirmed) return;
+  }
+  state.directRuntimeLoading = true;
+  renderDirectRuntimeStatus();
+  try {
+    const result = await bridge.selectDirectTextOnlyRuntime(project.id, {
+      clientOperationId: directActivationClientId("client_direct_text_only"),
+      expectedGateId: textOnly.gateId,
+      expectedGateDigest: textOnly.gateDigest,
+    });
+    if (result?.config) {
+      state.config = result.config;
+      renderProjects();
+    }
+    await refreshDirectRuntimeStatus(project.id);
+    setLastEvent(result?.duplicate ? "Direct text-only was already selected for this project." : "Direct text-only selected for this project.");
+  } catch (error) {
+    state.directRuntimeError = error.message || "Direct text-only selection failed.";
+    setLastEvent(`Direct text-only selection failed: ${state.directRuntimeError}`);
+  } finally {
+    state.directRuntimeLoading = false;
+    renderDirectRuntimeStatus();
+  }
+}
+
 async function rollbackDirectExperimentalRuntime() {
   const project = activeProject();
   const activation = state.directRuntimeStatus?.activation || {};
@@ -5819,6 +5887,7 @@ function bindEvents() {
   els.directAuthStorageModeSelect.addEventListener("change", () => setDirectAuthStorageMode(els.directAuthStorageModeSelect.value));
   els.directAuthLoginButton.addEventListener("click", beginDirectAuthLogin);
   els.directAuthLogoutButton.addEventListener("click", logoutDirectAuth);
+  els.directTextOnlyEnableButton?.addEventListener("click", selectDirectTextOnlyRuntime);
   els.directExperimentalEnableButton?.addEventListener("click", enableDirectExperimentalRuntime);
   els.directExperimentalRollbackButton?.addEventListener("click", rollbackDirectExperimentalRuntime);
   els.refreshWorkTreeButton.addEventListener("click", loadWorkTreeRoot);

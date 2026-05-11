@@ -3,6 +3,7 @@
 const DIRECT_RUNTIME_STATUS_SCHEMA = "direct_codex_runtime_status@1";
 const CODEX_RUNTIME_MODES = new Set(["legacy-app-server", "direct-experimental", "direct"]);
 const CODEX_BINDING_PROVIDERS = new Set(["codex-compatible", "custom-codex-fork", "direct-chatgpt-codex"]);
+const DIRECT_EXPERIMENTAL_RUNTIME_TIERS = new Set(["none", "text-only", "implementation-lane"]);
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -15,8 +16,16 @@ function normalizeString(value, fallback = "") {
 function normalizeCodexRuntimeMode(value, fallback = "legacy-app-server") {
   const candidate = normalizeString(value, fallback).toLowerCase();
   if (candidate === "app-server" || candidate === "managed" || candidate === "legacy") return "legacy-app-server";
+  if (candidate === "appserver") return "legacy-app-server";
   if (candidate === "experimental-direct") return "direct-experimental";
   return CODEX_RUNTIME_MODES.has(candidate) ? candidate : fallback;
+}
+
+function normalizeDirectExperimentalRuntimeTier(value, fallback = "none") {
+  const candidate = normalizeString(value, fallback).toLowerCase();
+  if (candidate === "text-only-real-turn" || candidate === "text_only" || candidate === "text-only-preview") return "text-only";
+  if (candidate === "implementation" || candidate === "implementation_lane") return "implementation-lane";
+  return DIRECT_EXPERIMENTAL_RUNTIME_TIERS.has(candidate) ? candidate : fallback;
 }
 
 function normalizeCodexBindingProvider(value, fallback = "codex-compatible") {
@@ -30,12 +39,18 @@ function normalizeCodexBinding(raw = {}) {
   const defaultProvider = runtimeMode === "legacy-app-server" ? "codex-compatible" : "direct-chatgpt-codex";
   const rawProvider = binding.bindingProvider || (typeof binding.provider === "string" ? binding.provider : "");
   const directTransport = normalizeString(binding.directTransport, "fixture").toLowerCase() === "live-text" ? "live-text" : "fixture";
+  const tierFallback = runtimeMode === "direct-experimental" && directTransport === "live-text" ? "implementation-lane" : "none";
+  const directTier = runtimeMode === "direct-experimental"
+    ? normalizeDirectExperimentalRuntimeTier(binding.directTier || binding.activationTier || binding.runtimeTier, tierFallback)
+    : "none";
   return {
     provider: normalizeCodexBindingProvider(rawProvider, defaultProvider),
     runtimeMode,
+    directTier,
     directTransport,
     target: normalizeString(binding.target, ""),
     profileId: normalizeString(binding.profileId, ""),
+    model: normalizeString(binding.model, ""),
   };
 }
 
@@ -48,7 +63,8 @@ function directRuntimeModeLabel(runtimeMode) {
 function directRuntimeLaneLabel(codex = {}) {
   const binding = normalizeCodexBinding(codex);
   if (binding.runtimeMode === "direct") return "direct runtime";
-  if (binding.runtimeMode === "direct-experimental" && binding.directTransport === "live-text") return "direct live text experimental";
+  if (binding.runtimeMode === "direct-experimental" && binding.directTransport === "live-text" && binding.directTier === "text-only") return "direct text-only";
+  if (binding.runtimeMode === "direct-experimental" && binding.directTransport === "live-text") return "direct implementation lane";
   if (binding.runtimeMode === "direct-experimental") return "direct experimental scaffold";
   return codex.mode === "managed" ? "legacy app-server bridge" : codex.mode || "legacy app-server";
 }
@@ -91,6 +107,62 @@ function terminalTurnState(value) {
   return ["completed", "failed", "aborted"].includes(state) ? state : "";
 }
 
+function directTextOnlyReadiness({ binding = {}, authStatus = {}, liveTextStatus = {}, sessionStore = {} } = {}) {
+  const selected = binding.runtimeMode === "direct-experimental" &&
+    binding.directTransport === "live-text" &&
+    binding.directTier === "text-only";
+  const blockers = [];
+  const authOk = authStatus.status === "authenticated";
+  const liveOk = liveTextStatus.status === "ready" && liveTextStatus.turnRunnable === true;
+  const recovery = isPlainObject(sessionStore.recovery) ? sessionStore.recovery : {};
+  const storeOk = sessionStore.available !== false && Number(recovery.missingSessionFileCount || 0) === 0;
+  const evidence = isPlainObject(liveTextStatus.liveProbeEvidence) ? liveTextStatus.liveProbeEvidence : {};
+  if (!authOk) {
+    blockers.push(authStatus.status === "expired"
+      ? "direct_auth_expired"
+      : authStatus.status === "refresh_failed"
+        ? "direct_auth_refresh_failed"
+        : "direct_auth_missing");
+  }
+  if (!liveOk) {
+    if (evidence.status === "candidate") blockers.push("live_text_evidence_candidate_only");
+    else if (liveTextStatus.modelEvidenceState === "expired") blockers.push("live_text_evidence_expired");
+    else blockers.push("live_text_evidence_missing");
+  }
+  if (!storeOk) blockers.push("direct_thread_store_unhealthy");
+  const eligible = blockers.length === 0;
+  return {
+    tier: "text-only",
+    status: selected ? (eligible ? "enabled" : "degraded") : (eligible ? "eligible" : "blocked"),
+    selected,
+    canEnable: eligible,
+    canStartTextTurn: selected && eligible,
+    blockers,
+    warnings: [],
+    requestShapeClass: "direct_text_turn_empty_context@1",
+    toolContinuationRequired: false,
+    toolsAvailable: false,
+    appServerFallbackAllowed: false,
+  };
+}
+
+function directImplementationLaneReadiness({ activation = {} } = {}) {
+  const blockers = activation.gateSummary?.blockers;
+  const safeBlockers = Array.isArray(blockers)
+    ? blockers.map((item) => normalizeString(item.blockerCode || item.reason || item.id, "")).filter(Boolean)
+    : [];
+  return {
+    tier: "implementation-lane",
+    status: activation.enabled ? (activation.degraded ? "degraded" : "enabled") : (activation.eligible ? "eligible" : "blocked"),
+    selected: activation.enabled === true && normalizeString(activation.activationTier, "implementation-lane") === "implementation-lane",
+    canEnable: activation.eligible === true,
+    canStartTextTurn: activation.enabled === true || activation.degradedCapabilities?.canStartNewTextTurn === true,
+    blockers: safeBlockers,
+    warnings: [],
+    missingImplementationOnlyGates: safeBlockers,
+  };
+}
+
 function buildDirectRuntimeStatus(options = {}) {
   const generatedAt = normalizeString(options.generatedAt, "") || new Date().toISOString();
   const project = isPlainObject(options.project) ? options.project : {};
@@ -125,6 +197,7 @@ function buildDirectRuntimeStatus(options = {}) {
     version: 1,
     runtime: "direct-chatgpt-codex",
     runtimeMode: binding.runtimeMode,
+    directTier: binding.directTier,
     runtimeModeLabel: directRuntimeModeLabel(binding.runtimeMode),
     provider: binding.provider,
     directTransport: binding.directTransport,
@@ -212,6 +285,13 @@ function buildDirectRuntimeStatus(options = {}) {
       reason: normalizeString(liveTextStatus.reason, ""),
       rawBackendFramesExposed: false,
     },
+    directTextOnly: directTextOnlyReadiness({
+      binding,
+      authStatus,
+      liveTextStatus,
+      sessionStore: sessionStore || {},
+    }),
+    directImplementationLane: directImplementationLaneReadiness({ activation }),
     transport: {
       kind: "sse",
       endpoint: "chatgpt-codex-responses",
@@ -230,13 +310,13 @@ function buildDirectRuntimeStatus(options = {}) {
       gateDigest: normalizeString(activation.gateDigest, ""),
       target: isPlainObject(activation.target)
         ? activation.target
-        : { runtimeMode: "direct-experimental", directTransport: "live-text" },
+        : { runtimeMode: "direct-experimental", directTier: "implementation-lane", directTransport: "live-text" },
       gateSummary: isPlainObject(activation.gateSummary)
         ? activation.gateSummary
         : { requiredCount: 0, passedRequiredCount: 0, blockedReasons: {}, warningsCount: 0 },
       currentBinding: isPlainObject(activation.currentBinding)
         ? activation.currentBinding
-        : { runtimeMode: binding.runtimeMode, directTransport: binding.directTransport },
+        : { runtimeMode: binding.runtimeMode, directTier: binding.directTier, directTransport: binding.directTransport },
       labels: isPlainObject(activation.labels)
         ? activation.labels
         : { headline: "Direct experimental blocked", detail: "Activation status unavailable." },
@@ -255,7 +335,7 @@ function buildDirectRuntimeStatus(options = {}) {
       lastTerminalState: terminalTurnState(sessionStore?.lastTurnState),
       activeTurnCount: Number(sessionStore?.activeTurnCount || 0),
       toolsEnabled: Boolean(liveTextStatus.toolsEnabled),
-      continuationEnabled: Boolean(liveTextStatus.toolsEnabled),
+      continuationEnabled: binding.directTier === "implementation-lane" && Boolean(liveTextStatus.toolsEnabled),
       rawBackendFramesExposed: false,
     },
     toolDetection: {
@@ -369,6 +449,7 @@ function buildDirectRuntimeStatus(options = {}) {
 
 module.exports = {
   CODEX_BINDING_PROVIDERS,
+  DIRECT_EXPERIMENTAL_RUNTIME_TIERS,
   CODEX_RUNTIME_MODES,
   DIRECT_RUNTIME_STATUS_SCHEMA,
   buildDirectRuntimeStatus,
@@ -377,4 +458,5 @@ module.exports = {
   normalizeCodexBinding,
   normalizeCodexBindingProvider,
   normalizeCodexRuntimeMode,
+  normalizeDirectExperimentalRuntimeTier,
 };
