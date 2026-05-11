@@ -2120,6 +2120,12 @@ class DirectThreadStore {
     const projectId = normalizeString(input.projectId || session.projectId, "");
     const threadId = requireSafeId(input.threadId || session.sessionId, "thread");
     const turnId = requireSafeId(input.turnId, "turn");
+    const expectedOperationLedgerHeadDigest = normalizeString(input.expectedOperationLedgerHeadDigest, "");
+    if (expectedOperationLedgerHeadDigest && expectedOperationLedgerHeadDigest !== normalizeString(this.readOperationManifest().hashChainHead, "")) {
+      const error = new Error("operation_ledger_changed");
+      error.code = "operation_ledger_changed";
+      throw error;
+    }
     let contextProjection = null;
     let contextItems = [];
     if (input.useRecentDialogue !== false) {
@@ -2132,6 +2138,35 @@ class DirectThreadStore {
       } catch (error) {
         if (input.requireRecentDialogue === true) throw error;
       }
+    }
+    if (input.requireRecentDialogue === true && !contextProjection) {
+      const error = new Error("context_projection_failed");
+      error.code = "context_projection_failed";
+      throw error;
+    }
+    const expectedRendererProjectionId = normalizeString(input.expectedRendererProjectionId, "");
+    const expectedRendererProjectionDigest = normalizeString(input.expectedRendererProjectionDigest, "");
+    if (contextProjection && (expectedRendererProjectionId || expectedRendererProjectionDigest)) {
+      const rendererRow = this.currentProjectionRow(threadId, RENDERER_TRANSCRIPT_PROJECTION_KIND);
+      const rendererProjection = this.projectionFromRow(rendererRow);
+      if (
+        (expectedRendererProjectionId && rendererProjection?.projectionId !== expectedRendererProjectionId) ||
+        (expectedRendererProjectionDigest && rendererProjection?.projectionDigest !== expectedRendererProjectionDigest)
+      ) {
+        const error = new Error("source_projection_changed");
+        error.code = "source_projection_changed";
+        throw error;
+      }
+    }
+    const expectedContextProjectionId = normalizeString(input.expectedContextProjectionId, "");
+    const expectedContextProjectionDigest = normalizeString(input.expectedContextProjectionDigest, "");
+    if (contextProjection && (
+      (expectedContextProjectionId && contextProjection.projectionId !== expectedContextProjectionId) ||
+      (expectedContextProjectionDigest && contextProjection.projectionDigest !== expectedContextProjectionDigest)
+    )) {
+      const error = new Error("source_projection_changed");
+      error.code = "source_projection_changed";
+      throw error;
     }
     const policyId = contextProjection
       ? DIRECT_TEXT_TURN_RECENT_DIALOGUE_POLICY_ID
@@ -2148,6 +2183,18 @@ class DirectThreadStore {
       nowMs: options.nowMs,
     });
     this.writeContextPack(contextPack, options);
+    if (contextProjection) {
+      const currentContextProjection = this.projectionFromRow(this.currentProjectionRow(threadId, CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND));
+      if (
+        !currentContextProjection ||
+        currentContextProjection.projectionId !== contextProjection.projectionId ||
+        currentContextProjection.projectionDigest !== contextProjection.projectionDigest
+      ) {
+        const error = new Error("source_projection_changed");
+        error.code = "source_projection_changed";
+        throw error;
+      }
+    }
     const request = buildRequestManifest({
       contextPack,
       model: input.model,

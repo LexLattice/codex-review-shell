@@ -137,6 +137,13 @@ function directTextOnlyReadiness({ binding = {}, authStatus = {}, liveTextStatus
     selected,
     canEnable: eligible,
     canStartTextTurn: selected && eligible,
+    canStartEmptyContextTurn: selected && eligible,
+    canStartRecentDialogueTurn: selected && eligible,
+    selectedThreadComposerState: selected && eligible ? "enabled_empty_context" : "disabled_auth_or_evidence",
+    recentDialogue: {
+      requestShapeEvidenceState: liveOk ? "runtime_probed" : (evidence.status === "candidate" ? "candidate" : "missing"),
+      blockerCodes: blockers,
+    },
     blockers,
     warnings: [],
     requestShapeClass: "direct_text_turn_empty_context@1",

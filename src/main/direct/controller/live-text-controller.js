@@ -32,7 +32,18 @@ const ACTIVE_TURN_STATES = new Set([
   "authority_waiting",
   "continuation_ready",
 ]);
-const TERMINAL_TURN_STATES = new Set(["completed", "failed", "aborted", "tool_call_blocked_text_only", "transport_handoff_unknown"]);
+const TERMINAL_TURN_STATES = new Set([
+  "completed",
+  "failed",
+  "aborted",
+  "tool_call_blocked_text_only",
+  "transport_handoff_unknown",
+  "response_incomplete",
+  "content_filter_terminal",
+  "max_output_terminal",
+  "empty_output_terminal",
+]);
+const SAFE_TEXT_ONLY_FOLLOWUP_PREVIOUS_STATES = new Set(["completed"]);
 const DEFAULT_MAX_PROMPT_CHARS = 64_000;
 const DEFAULT_MAX_ASSISTANT_CHARS = 256_000;
 const DEFAULT_READONLY_WORKSPACE_TIMEOUT_MS = 30_000;
@@ -221,8 +232,18 @@ function terminalStatusForState(state) {
   if (state === "tool_waiting") return "tool_waiting";
   if (state === "tool_call_blocked_text_only") return "failed";
   if (state === "transport_handoff_unknown") return "failed";
+  if (state === "response_incomplete") return "failed";
+  if (state === "content_filter_terminal") return "failed";
+  if (state === "max_output_terminal") return "failed";
+  if (state === "empty_output_terminal") return "failed";
   if (state === "streaming" || state === "request_built" || state === "created") return "inProgress";
   return normalizeString(state, "unknown");
+}
+
+function turnPromptDigest(turn = {}) {
+  const input = Array.isArray(turn.input) ? turn.input : [];
+  const text = input.map((entry) => normalizeString(entry?.text, "")).join("\n");
+  return sha256(text);
 }
 
 function turnSnapshot(turn = {}) {
@@ -448,6 +469,10 @@ class DirectLiveTextController {
       modelEvidenceState: status.modelEvidenceState,
       modelEvidenceId: normalizeString(status.evidenceId, ""),
       profileSnapshotId: normalizeString(project.surfaceBinding?.codex?.profileId, ""),
+      sourceClass: "direct-native",
+      nativeDirectSession: true,
+      providerContinuityAvailable: false,
+      continuityState: "fresh_session_only",
     });
     return {
       thread: threadSnapshotFromSession(session),
@@ -2055,6 +2080,12 @@ class DirectLiveTextController {
     }
     const duplicate = this.findTurnByClientRequestId(session, clientTurnRequestId);
     if (duplicate) {
+      const prompt = this.textPrompt(params);
+      if (turnPromptDigest(duplicate) !== sha256(prompt)) {
+        const error = new Error("Direct live text clientTurnRequestId was reused with a different prompt.");
+        error.code = "client_turn_request_id_conflict";
+        throw error;
+      }
       return {
         turn: turnSnapshot(duplicate),
         reused: true,
@@ -2071,13 +2102,54 @@ class DirectLiveTextController {
     }
     const prompt = this.textPrompt(params);
     const model = normalizeString(params.model, "") || status.model;
-    const existingTurnCount = this.sessionStore.listTurnIdsFromDisk(session.sessionId).length;
+    const existingTurnIds = this.sessionStore.listTurnIdsFromDisk(session.sessionId);
+    const existingTurnCount = existingTurnIds.length;
+    const summaries = Array.isArray(session.turns) ? session.turns : [];
+    const previousSummary = summaries.length ? summaries[summaries.length - 1] : null;
+    const previousTurn = previousSummary?.turnId ? this.sessionStore.readTurn(session.sessionId, previousSummary.turnId) : null;
     const binding = normalizeCodexBinding(project.surfaceBinding?.codex || {});
     const textOnlyTier = binding.runtimeMode === "direct-experimental" &&
       binding.directTransport === "live-text" &&
       binding.directTier === "text-only";
+    const useRecentDialogue = existingTurnCount > 0;
+    if (useRecentDialogue) {
+      if (!previousTurn || !SAFE_TEXT_ONLY_FOLLOWUP_PREVIOUS_STATES.has(previousTurn.state)) {
+        const error = new Error("Direct text-only follow-up requires the previous turn to have completed safely.");
+        error.code = "previous_turn_not_safe";
+        error.previousTurnState = normalizeString(previousTurn?.state, "");
+        throw error;
+      }
+      const expectedPreviousTurnId = normalizeString(params.expectedPreviousTurnId, "");
+      if (expectedPreviousTurnId && expectedPreviousTurnId !== previousTurn.turnId) {
+        const error = new Error("Direct text-only follow-up previous turn id is stale.");
+        error.code = "previous_turn_mismatch";
+        throw error;
+      }
+      const expectedPreviousTurnDigest = normalizeString(params.expectedPreviousTurnDigest, "");
+      if (expectedPreviousTurnDigest && expectedPreviousTurnDigest !== sha256(stableStringify({
+        turnId: previousTurn.turnId,
+        state: previousTurn.state,
+        contextBuildId: previousTurn.contextBuildId || "",
+        requestManifestId: previousTurn.requestManifestId || "",
+        responseId: previousTurn.responseId || "",
+      }))) {
+        const error = new Error("Direct text-only follow-up previous turn digest is stale.");
+        error.code = "previous_turn_mismatch";
+        throw error;
+      }
+      const expectedNextTurnOrdinal = Number(params.expectedNextTurnOrdinal || 0);
+      if (expectedNextTurnOrdinal > 0 && expectedNextTurnOrdinal !== existingTurnCount + 1) {
+        const error = new Error("Direct text-only follow-up next turn ordinal is stale.");
+        error.code = "next_turn_ordinal_mismatch";
+        throw error;
+      }
+    }
     if (this.directThreadStore) {
       this.prepareDirectContextProjection(session.sessionId);
+    } else if (useRecentDialogue) {
+      const error = new Error("Direct text-only follow-up requires the direct context store.");
+      error.code = "context_store_unhealthy";
+      throw error;
     }
     let requestBody = buildTextOnlyProbeRequest({
       profileDoc: this.profileDoc,
@@ -2100,13 +2172,19 @@ class DirectLiveTextController {
         threadId: session.sessionId,
         turnId: turn.turnId,
         currentUserPrompt: prompt,
-        useRecentDialogue: textOnlyTier ? false : existingTurnCount > 0,
+        useRecentDialogue,
+        requireRecentDialogue: useRecentDialogue,
+        expectedOperationLedgerHeadDigest: normalizeString(params.expectedOperationLedgerHeadDigest, ""),
+        expectedRendererProjectionId: normalizeString(params.expectedRendererProjectionId, ""),
+        expectedRendererProjectionDigest: normalizeString(params.expectedRendererProjectionDigest, ""),
+        expectedContextProjectionId: normalizeString(params.expectedContextProjectionId, ""),
+        expectedContextProjectionDigest: normalizeString(params.expectedContextProjectionDigest, ""),
         model: requestBody.model,
         requestShape: requestShapeForDiagnostic(requestBody),
         endpointClass: "chatgpt-codex-responses",
         endpointHash: this.endpoint ? sha256(this.endpoint) : "",
         modelEvidenceRef: normalizeString(status.evidenceId, status.modelEvidenceId || ""),
-        requestShapeEvidenceRef: "direct_text_only_response",
+        requestShapeEvidenceRef: useRecentDialogue ? "direct_text_turn_recent_dialogue@1" : "direct_text_turn_empty_context@1",
         endpointEvidenceRef: this.endpoint ? sha256(this.endpoint) : "",
       });
       requestBody = buildTextOnlyProbeRequest({
@@ -2307,17 +2385,32 @@ class DirectLiveTextController {
     }
 
     const toolBlockedTextOnly = textOnlyTier && obligationResult.obligations.length > 0;
-    const terminalState = toolBlockedTextOnly ? "tool_call_blocked_text_only" : obligationResult.obligations.length ? "tool_waiting" : terminal.state;
+    let terminalState = toolBlockedTextOnly ? "tool_call_blocked_text_only" : obligationResult.obligations.length ? "tool_waiting" : terminal.state;
+    const terminalCode = normalizeString(terminal.error?.code, "");
+    if (!toolBlockedTextOnly && !obligationResult.obligations.length) {
+      if (terminalCode === "response_incomplete") terminalState = "response_incomplete";
+      else if (terminalCode === "content_filter" || terminalCode === "content_filter_terminal") terminalState = "content_filter_terminal";
+      else if (terminalCode === "max_output" || terminalCode === "max_output_terminal") terminalState = "max_output_terminal";
+      else if (terminal.state === "completed" && !assistantItem.text) terminalState = "empty_output_terminal";
+    }
     const completedTurn = this.sessionStore.updateTurnState(sessionId, turnId, terminalState, {
       ...(toolBlockedTextOnly
         ? { error: { code: "provider_tool_call_in_text_only_tier", message: "Direct text-only does not execute or continue tool calls." } }
-        : terminal.error ? { error: terminal.error } : {}),
+        : terminalState === "empty_output_terminal"
+          ? { error: { code: "empty_output_terminal", message: "Direct text-only response completed without assistant text." } }
+          : terminal.error ? { error: terminal.error } : {}),
       responseId: result.responseId || "",
       responseStatus: result.response?.status || 0,
       responseContentType: result.response?.contentType || "",
       ...(toolBlockedTextOnly ? { toolExecuted: false, continuationSent: false } : {}),
     });
     this.appendSessionTurn(sessionId, turnId, emittedItems, model, terminalState);
+    if (this.directThreadStore) {
+      this.indexDirectThreadStoreSession(sessionId);
+      try {
+        this.directThreadStore.buildRendererTranscriptProjection(sessionId, { sessionStore: this.sessionStore });
+      } catch {}
+    }
     if (obligationResult.obligations.length && !toolBlockedTextOnly) {
       const createdApprovalRequests = this.emitToolApprovalRequests(surfaceSession, sessionId, turnId, obligationResult.obligations, project);
       this.emitNotification(surfaceSession, "warning", {
@@ -2336,7 +2429,15 @@ class DirectLiveTextController {
     }
 
     const finalTurn = this.sessionStore.readTurn(sessionId, turnId) || completedTurn;
-    if (finalTurn.state === "failed" || finalTurn.state === "aborted" || finalTurn.state === "tool_call_blocked_text_only") {
+    if (
+      finalTurn.state === "failed" ||
+      finalTurn.state === "aborted" ||
+      finalTurn.state === "tool_call_blocked_text_only" ||
+      finalTurn.state === "response_incomplete" ||
+      finalTurn.state === "content_filter_terminal" ||
+      finalTurn.state === "max_output_terminal" ||
+      finalTurn.state === "empty_output_terminal"
+    ) {
       this.emitNotification(surfaceSession, "error", {
         threadId: sessionId,
         turnId,

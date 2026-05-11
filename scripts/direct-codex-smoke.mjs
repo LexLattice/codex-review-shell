@@ -2059,6 +2059,37 @@ try {
   );
   assert(liveFetchCalls === 1, "Unsupported live text methods must not be forwarded to provider transport.");
 
+  const liveThreadStore = new DirectThreadStore({
+    rootDir: path.join(liveTextControllerParent, "direct-sessions"),
+    mode: "index_only",
+  });
+  liveController.directThreadStore = liveThreadStore;
+  const secondLiveAck = await liveSurface.request("turn/start", {
+    threadId: liveThread.thread.id,
+    promptText: "follow up with local context",
+    clientTurnRequestId: "client_req_live_text_2",
+    model: "gpt-5.4",
+    expectedPreviousTurnId: liveAck.turn.id,
+    expectedNextTurnOrdinal: 2,
+  });
+  await waitForCondition(
+    () => liveEvents.some((event) => event.type === "rpc-notification" && event.method === "turn/completed" && event.params?.turnId === secondLiveAck.turn.id),
+    "Expected second direct text-only turn to emit terminal notification.",
+  );
+  assert(liveFetchCalls === 2, "Expected second direct text-only turn to make one additional provider request.");
+  assert(capturedLiveRequest.body.store === false, "Recent-dialogue direct text-only request must keep store=false.");
+  assert(!capturedLiveRequest.body.previous_response_id, "Recent-dialogue direct text-only request must not use previous_response_id.");
+  const secondPromptText = capturedLiveRequest.body.input?.[0]?.content?.[0]?.text || "";
+  assert(secondPromptText.includes("[HISTORICAL TRANSCRIPT EVIDENCE - QUOTED]"), "Second direct text-only turn must quote local recent dialogue.");
+  assert(secondPromptText.includes("[CURRENT USER INTENT]"), "Second direct text-only turn must include current user intent.");
+  assert(capturedLiveRequest.body.instructions.includes("This is a fresh direct Codex request"), "Second direct text-only turn must resend harness policy.");
+  const secondTurn = liveSessionStore.readTurn(liveThread.thread.id, secondLiveAck.turn.id);
+  assert(secondTurn.contextBuildId, "Second direct text-only turn must persist a context build id.");
+  assert(secondTurn.requestManifestId, "Second direct text-only turn must persist a request manifest id.");
+  const secondManifest = liveThreadStore.readRequestManifest(secondTurn.requestManifestId);
+  assert(secondManifest.requestShapeClass === "direct_text_turn_recent_dialogue@1", "Second direct text-only turn must use recent-dialogue manifest class.");
+  assert(secondManifest.continuity.previousResponseIdUsed === false, "Second direct text-only turn must remain a fresh request.");
+
   const truncatedStore = new DirectSessionStore({ rootDir: path.join(liveTextControllerParent, "truncated-direct-sessions") });
   const truncatedController = new DirectLiveTextController({
     sessionStore: truncatedStore,
