@@ -2082,6 +2082,7 @@ try {
   const secondPromptText = capturedLiveRequest.body.input?.[0]?.content?.[0]?.text || "";
   assert(secondPromptText.includes("[HISTORICAL TRANSCRIPT EVIDENCE - QUOTED]"), "Second direct text-only turn must quote local recent dialogue.");
   assert(secondPromptText.includes("[CURRENT USER INTENT]"), "Second direct text-only turn must include current user intent.");
+  assert(secondPromptText.indexOf("follow up with local context") === secondPromptText.lastIndexOf("follow up with local context"), "Current prompt must not be duplicated as historical dialogue.");
   assert(capturedLiveRequest.body.instructions.includes("This is a fresh direct Codex request"), "Second direct text-only turn must resend harness policy.");
   const secondTurn = liveSessionStore.readTurn(liveThread.thread.id, secondLiveAck.turn.id);
   assert(secondTurn.contextBuildId, "Second direct text-only turn must persist a context build id.");

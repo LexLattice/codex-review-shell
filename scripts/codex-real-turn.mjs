@@ -826,7 +826,8 @@ async function runDirect(context) {
       if (!session) {
         return failureReport(report, "direct_thread_missing", "Direct recent-dialogue thread was not found.");
       }
-      if (normalizeString(session.projectId, "") && normalizeString(session.projectId, "") !== project.id) {
+      const sessionProjectId = normalizeString(session.projectId, "");
+      if (sessionProjectId && sessionProjectId !== project.id) {
         return failureReport(report, "direct_thread_project_mismatch", "Direct recent-dialogue thread belongs to a different project.");
       }
       if (session.runtimeMode !== "direct-experimental" || session.sourceClass && session.sourceClass !== "direct-native") {
@@ -863,6 +864,12 @@ async function runDirect(context) {
         continuityState: "fresh_session_only",
       });
     }
+    const frozenContextProjection = recentDialogueRequested
+      ? threadStore.projectionFromRow(threadStore.currentProjectionRow(session.sessionId, "context_recent_dialogue"))
+      : null;
+    if (recentDialogueRequested && !frozenContextProjection) {
+      return failureReport(report, "context_projection_failed", "Direct recent-dialogue context projection was not available.");
+    }
     turn = sessionStore.createTurn(session.sessionId, {
       input: [{ role: "user", text: prompt.text }],
       model: requestBodyInitial.model,
@@ -880,6 +887,9 @@ async function runDirect(context) {
       currentUserPrompt: prompt.text,
       useRecentDialogue: recentDialogueRequested,
       requireRecentDialogue: recentDialogueRequested,
+      sourceContextProjectionId: normalizeString(frozenContextProjection?.projectionId, ""),
+      expectedContextProjectionId: normalizeString(frozenContextProjection?.projectionId, ""),
+      expectedContextProjectionDigest: normalizeString(frozenContextProjection?.projectionDigest, ""),
       model: requestBodyInitial.model,
       requestShape: requestShapeForDiagnostic(requestBodyInitial),
       requestShapeHash,

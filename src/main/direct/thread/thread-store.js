@@ -2130,10 +2130,24 @@ class DirectThreadStore {
     let contextItems = [];
     if (input.useRecentDialogue !== false) {
       try {
-        const built = this.buildContextRecentDialogueProjection(threadId, options);
-        if (built.status === "valid") {
-          contextProjection = this.projectionFromRow(this.currentProjectionRow(threadId, CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND));
+        const sourceContextProjectionId = normalizeString(input.sourceContextProjectionId, "");
+        if (sourceContextProjectionId) {
+          contextProjection = this.projectionFromRow(
+            this.db.prepare("select * from direct_projections where projection_id = ? and projection_kind = ?")
+              .get(requireSafeId(sourceContextProjectionId, "projection"), CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND),
+          );
+          if (!contextProjection || contextProjection.status !== "valid" || contextProjection.unsafeForContextBuild === true) {
+            const error = new Error("context_projection_failed");
+            error.code = "context_projection_failed";
+            throw error;
+          }
           contextItems = this.readProjectionItems(contextProjection.projectionId);
+        } else {
+          const built = this.buildContextRecentDialogueProjection(threadId, options);
+          if (built.status === "valid") {
+            contextProjection = this.projectionFromRow(this.currentProjectionRow(threadId, CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND));
+            contextItems = this.readProjectionItems(contextProjection.projectionId);
+          }
         }
       } catch (error) {
         if (input.requireRecentDialogue === true) throw error;

@@ -2112,6 +2112,7 @@ class DirectLiveTextController {
       binding.directTransport === "live-text" &&
       binding.directTier === "text-only";
     const useRecentDialogue = existingTurnCount > 0;
+    let frozenContextProjection = null;
     if (useRecentDialogue) {
       if (!previousTurn || !SAFE_TEXT_ONLY_FOLLOWUP_PREVIOUS_STATES.has(previousTurn.state)) {
         const error = new Error("Direct text-only follow-up requires the previous turn to have completed safely.");
@@ -2146,6 +2147,24 @@ class DirectLiveTextController {
     }
     if (this.directThreadStore) {
       this.prepareDirectContextProjection(session.sessionId);
+      if (useRecentDialogue && typeof this.directThreadStore.buildContextRecentDialogueProjection === "function") {
+        const builtContext = this.directThreadStore.buildContextRecentDialogueProjection(session.sessionId, {
+          sessionStore: this.sessionStore,
+        });
+        if (builtContext.status !== "valid") {
+          const error = new Error("Direct text-only follow-up context projection is not valid.");
+          error.code = "context_projection_failed";
+          throw error;
+        }
+        frozenContextProjection = this.directThreadStore.projectionFromRow(
+          this.directThreadStore.currentProjectionRow(session.sessionId, "context_recent_dialogue"),
+        );
+        if (!frozenContextProjection || frozenContextProjection.status !== "valid") {
+          const error = new Error("Direct text-only follow-up context projection is missing.");
+          error.code = "context_projection_failed";
+          throw error;
+        }
+      }
     } else if (useRecentDialogue) {
       const error = new Error("Direct text-only follow-up requires the direct context store.");
       error.code = "context_store_unhealthy";
@@ -2174,11 +2193,12 @@ class DirectLiveTextController {
         currentUserPrompt: prompt,
         useRecentDialogue,
         requireRecentDialogue: useRecentDialogue,
+        sourceContextProjectionId: normalizeString(frozenContextProjection?.projectionId, ""),
         expectedOperationLedgerHeadDigest: normalizeString(params.expectedOperationLedgerHeadDigest, ""),
         expectedRendererProjectionId: normalizeString(params.expectedRendererProjectionId, ""),
         expectedRendererProjectionDigest: normalizeString(params.expectedRendererProjectionDigest, ""),
-        expectedContextProjectionId: normalizeString(params.expectedContextProjectionId, ""),
-        expectedContextProjectionDigest: normalizeString(params.expectedContextProjectionDigest, ""),
+        expectedContextProjectionId: normalizeString(params.expectedContextProjectionId, frozenContextProjection?.projectionId || ""),
+        expectedContextProjectionDigest: normalizeString(params.expectedContextProjectionDigest, frozenContextProjection?.projectionDigest || ""),
         model: requestBody.model,
         requestShape: requestShapeForDiagnostic(requestBody),
         endpointClass: "chatgpt-codex-responses",
