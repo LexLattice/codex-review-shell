@@ -1122,7 +1122,7 @@ function normalizeProject(input, index = 0) {
   const directTransport = normalizeDirectExperimentalTransport(rawCodex.directTransport);
   const directTier = normalizeDirectExperimentalRuntimeTier(
     rawCodex.directTier || rawCodex.activationTier || rawCodex.runtimeTier,
-    codexRuntimeMode === "direct-experimental" && directTransport === "live-text" ? "text-only" : "none",
+    codexRuntimeMode === "direct-experimental" && directTransport === "live-text" ? "implementation-lane" : "none",
   );
   const patterns = Array.isArray(rawFlow.watchedFilePatterns)
     ? rawFlow.watchedFilePatterns.filter((item) => typeof item === "string" && item.trim()).map((item) => item.trim())
@@ -1827,6 +1827,9 @@ function buildDirectRuntimeStatusForProject(project, options = {}) {
     ...(runtimeStatus.directTextOnly || {}),
     ...textOnlyEvaluation.status,
   };
+  const implementationBlockers = activationEvaluation.status.gateSummary?.blockers
+    ?.map((item) => item.blockerCode || item.reason || item.id)
+    .filter(Boolean) || [];
   runtimeStatus.directImplementationLane = {
     ...(runtimeStatus.directImplementationLane || {}),
     tier: "implementation-lane",
@@ -1835,8 +1838,8 @@ function buildDirectRuntimeStatusForProject(project, options = {}) {
       : (activationEvaluation.status.eligible ? "eligible" : "blocked"),
     selected: activationEvaluation.status.enabled === true,
     canEnable: activationEvaluation.status.eligible === true,
-    blockers: activationEvaluation.status.gateSummary?.blockers?.map((item) => item.blockerCode || item.reason || item.id).filter(Boolean) || [],
-    missingImplementationOnlyGates: activationEvaluation.status.gateSummary?.blockers?.map((item) => item.blockerCode || item.reason || item.id).filter(Boolean) || [],
+    blockers: implementationBlockers,
+    missingImplementationOnlyGates: implementationBlockers,
   };
   return runtimeStatus;
 }

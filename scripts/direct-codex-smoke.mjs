@@ -394,7 +394,7 @@ const directRuntimeStatusWithLiveText = buildDirectRuntimeStatus({
     },
   },
 });
-assert(directRuntimeStatusWithLiveText.currentCodexLane === "direct text-only", "Expected runtime lane to label text-only live text truthfully.");
+assert(directRuntimeStatusWithLiveText.currentCodexLane === "direct implementation lane", "Expected legacy live text binding without tier to preserve implementation-lane routing.");
 assert(directRuntimeStatusWithLiveText.directRuntime.turnRunnable === true, "Expected accepted live text runtime to enable direct turn status.");
 assert(directRuntimeStatusWithLiveText.liveTextRuntime.turnRunnable === true, "Expected live text runtime status to project turn runnable.");
 assert(directRuntimeStatusWithLiveText.transport.runnable === true, "Expected live text transport status to become runnable only through live runtime evidence.");

@@ -162,12 +162,14 @@ old direct-experimental/live-text + implementation-lane activation record:
   directTier = implementation-lane
 
 old direct-experimental/live-text + no implementation-lane activation record:
-  directTier = text-only
-  warning = previous direct-experimental selection migrated to text-only tier
+  directTier = implementation-lane
+  state = rollback_required or blocked until repaired
 ```
 
-Never infer implementation-lane readiness from an old direct-experimental
-binding alone.
+Never migrate an old direct-experimental binding to text-only automatically.
+Text-only selection must come from the new explicit text-only selection flow,
+otherwise an old implementation-lane project could silently lose tool
+continuation behavior.
 
 ## Readiness Split
 

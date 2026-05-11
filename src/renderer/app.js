@@ -1837,7 +1837,7 @@ function renderDirectRuntimeStatus() {
   els.directModelSourceBadge.title = profileId ? `Profile: ${profileId}` : "Model source is not available.";
   if (els.directTextOnlyEnableButton) {
     const canUseTextOnlyAction = Boolean(activeProject()) && Boolean(bridge.selectDirectTextOnlyRuntime) && !state.directRuntimeLoading;
-    const canEnableTextOnly = (status.directTextOnly?.state === "eligible" || status.directTextOnly?.status === "eligible" || status.directTextOnly?.status === "enabled") && canUseTextOnlyAction;
+    const canEnableTextOnly = (status.directTextOnly?.status === "eligible" || status.directTextOnly?.status === "enabled") && canUseTextOnlyAction;
     els.directTextOnlyEnableButton.disabled = !canEnableTextOnly || status.directTextOnly?.status === "enabled";
     els.directTextOnlyEnableButton.title = canEnableTextOnly
       ? "Use Direct text-only. This can answer prompts but cannot read files, run commands, apply patches, or continue tools."

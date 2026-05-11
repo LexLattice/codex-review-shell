@@ -39,7 +39,7 @@ function normalizeCodexBinding(raw = {}) {
   const defaultProvider = runtimeMode === "legacy-app-server" ? "codex-compatible" : "direct-chatgpt-codex";
   const rawProvider = binding.bindingProvider || (typeof binding.provider === "string" ? binding.provider : "");
   const directTransport = normalizeString(binding.directTransport, "fixture").toLowerCase() === "live-text" ? "live-text" : "fixture";
-  const tierFallback = runtimeMode === "direct-experimental" && directTransport === "live-text" ? "text-only" : "none";
+  const tierFallback = runtimeMode === "direct-experimental" && directTransport === "live-text" ? "implementation-lane" : "none";
   const directTier = runtimeMode === "direct-experimental"
     ? normalizeDirectExperimentalRuntimeTier(binding.directTier || binding.activationTier || binding.runtimeTier, tierFallback)
     : "none";
