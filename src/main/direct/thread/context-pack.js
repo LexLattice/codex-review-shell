@@ -18,6 +18,7 @@ const DIRECT_TEXT_TURN_RECENT_DIALOGUE_POLICY_ID = "direct_text_turn_recent_dial
 const DIRECT_TEXT_TURN_EMPTY_CONTEXT_POLICY_ID = "direct_text_turn_empty_context@1";
 const DIRECT_IMPORT_CHECKPOINT_CONTINUATION_POLICY_ID = "direct_import_checkpoint_continuation@1";
 const DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID = "direct_readonly_tool_continuation@1";
+const DIRECT_PATCH_APPLY_CONTINUATION_POLICY_ID = "direct_patch_apply_continuation@1";
 const DIRECT_FORK_START_POLICY_ID = "direct_fork_start_from_preview@1";
 const DIRECT_DERIVED_PREVIEW_FORK_START_POLICY_ID = "direct_derived_preview_fork_start@1";
 const DIRECT_CONTEXT_ROLE_MAPPING_ID = "direct_context_role_mapping@1";
@@ -39,6 +40,12 @@ const TOOL_CONTINUATION_HARNESS_POLICY_TEXT = [
   "For this read-only tool continuation, use the accompanying provider tool-output item as quoted local evidence.",
   "You may request at most one additional read_file call only if more local file evidence is necessary and the local harness allows another approved read-only step.",
   "Do not request write, shell, network, browser, patch, MCP, or any other tool.",
+].join(" ");
+const PATCH_CONTINUATION_HARNESS_POLICY_TEXT = [
+  "For this patch continuation, use the apply_patch result as quoted local evidence.",
+  "Do not request another tool in this turn.",
+  "If the patch was applied, summarize the change and any user-visible next step.",
+  "If the patch was declined, canceled, or failed safely, explain that no workspace change was committed.",
 ].join(" ");
 const FORK_START_HARNESS_POLICY_TEXT = [
   "This is a fresh direct-native fork.",
@@ -155,6 +162,18 @@ function policyDefinition(policyId) {
       currentUserPromptRequired: false,
       historicalEvidenceAllowed: true,
       toolResultEvidenceAllowed: true,
+    };
+  }
+  if (policyId === DIRECT_PATCH_APPLY_CONTINUATION_POLICY_ID) {
+    return {
+      ...common,
+      policyVersion: "1",
+      purpose: "patch_apply_continuation",
+      sourceProjectionKind: "tool_continuation_context",
+      currentUserPromptRequired: false,
+      historicalEvidenceAllowed: true,
+      toolResultEvidenceAllowed: true,
+      patchResultEvidenceAllowed: true,
     };
   }
   if (policyId === DIRECT_FORK_START_POLICY_ID) {
@@ -589,6 +608,15 @@ function buildContextPack({
       textHash: sha256(TOOL_CONTINUATION_HARNESS_POLICY_TEXT),
     });
   }
+  if (policy.policyId === DIRECT_PATCH_APPLY_CONTINUATION_POLICY_ID) {
+    messages.push({
+      role: "harness",
+      authority: "harness-policy",
+      quotedEvidence: false,
+      text: PATCH_CONTINUATION_HARNESS_POLICY_TEXT,
+      textHash: sha256(PATCH_CONTINUATION_HARNESS_POLICY_TEXT),
+    });
+  }
   if (policy.policyId === DIRECT_FORK_START_POLICY_ID) {
     messages.push({
       role: "harness",
@@ -743,7 +771,13 @@ function buildContextPack({
     });
     mergeCounts(omittedCounts, derivedForkSeed.omittedCounts || {});
   }
-  const currentIntentText = policy.policyId === DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID && !prompt
+  const currentIntentText = policy.policyId === DIRECT_PATCH_APPLY_CONTINUATION_POLICY_ID && !prompt
+    ? [
+        "[PATCH CONTINUATION INTENT]",
+        "Continue the parent response using the quoted local apply_patch result evidence.",
+        "Do not request another tool in this turn.",
+      ].join("\n")
+    : policy.policyId === DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID && !prompt
     ? [
         "[CONTINUATION INTENT]",
         "Continue the parent response using the quoted local read-only tool result evidence.",
@@ -753,10 +787,12 @@ function buildContextPack({
     : `[CURRENT USER INTENT]\n${prompt || "Continue from the available direct context under the harness policy."}`;
   messages.push({
     role: "user",
-    authority: policy.policyId === DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID && !prompt
+    authority: (policy.policyId === DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID ||
+      policy.policyId === DIRECT_PATCH_APPLY_CONTINUATION_POLICY_ID) && !prompt
       ? "status-evidence"
       : "current-user-intent",
-    quotedEvidence: policy.policyId === DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID && !prompt,
+    quotedEvidence: (policy.policyId === DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID ||
+      policy.policyId === DIRECT_PATCH_APPLY_CONTINUATION_POLICY_ID) && !prompt,
     sourcePromptArtifactId: currentPrompt.artifactId,
     text: currentIntentText,
     textHash: sha256(currentIntentText),
@@ -1028,6 +1064,7 @@ module.exports = {
   DIRECT_FORK_START_POLICY_ID,
   DIRECT_HARNESS_POLICY_ID,
   DIRECT_IMPORT_CHECKPOINT_CONTINUATION_POLICY_ID,
+  DIRECT_PATCH_APPLY_CONTINUATION_POLICY_ID,
   DIRECT_PROVIDER_INPUT_PROJECTION_SCHEMA,
   DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID,
   DIRECT_REQUEST_MANIFEST_SCHEMA,
