@@ -21,6 +21,7 @@ const {
   declineReadOnlyToolObligation,
   executeApprovedReadOnlyToolObligation,
 } = require("../tools/read-only-authority");
+const { normalizeCodexBinding } = require("../runtime/runtime-status");
 
 const DIRECT_LIVE_TEXT_SURFACE_TRANSPORT = "direct-live-text";
 const ACTIVE_TURN_STATES = new Set([
@@ -31,7 +32,7 @@ const ACTIVE_TURN_STATES = new Set([
   "authority_waiting",
   "continuation_ready",
 ]);
-const TERMINAL_TURN_STATES = new Set(["completed", "failed", "aborted"]);
+const TERMINAL_TURN_STATES = new Set(["completed", "failed", "aborted", "tool_call_blocked_text_only", "transport_handoff_unknown"]);
 const DEFAULT_MAX_PROMPT_CHARS = 64_000;
 const DEFAULT_MAX_ASSISTANT_CHARS = 256_000;
 const DEFAULT_READONLY_WORKSPACE_TIMEOUT_MS = 30_000;
@@ -218,6 +219,8 @@ function terminalStatusForState(state) {
   if (state === "failed") return "failed";
   if (state === "aborted") return "aborted";
   if (state === "tool_waiting") return "tool_waiting";
+  if (state === "tool_call_blocked_text_only") return "failed";
+  if (state === "transport_handoff_unknown") return "failed";
   if (state === "streaming" || state === "request_built" || state === "created") return "inProgress";
   return normalizeString(state, "unknown");
 }
@@ -370,6 +373,14 @@ class DirectLiveTextController {
       throw error;
     }
     if (this.activationStatusResolver) {
+      const binding = normalizeCodexBinding(project.surfaceBinding?.codex || {});
+      if (
+        binding.runtimeMode === "direct-experimental" &&
+        binding.directTransport === "live-text" &&
+        binding.directTier === "text-only"
+      ) {
+        return status;
+      }
       const activation = this.activationStatusResolver(project) || {};
       const canStart = activation.state === "enabled" ||
         (activation.state === "degraded" && activation.degradedCapabilities?.canStartNewTextTurn === true);
@@ -2061,6 +2072,10 @@ class DirectLiveTextController {
     const prompt = this.textPrompt(params);
     const model = normalizeString(params.model, "") || status.model;
     const existingTurnCount = this.sessionStore.listTurnIdsFromDisk(session.sessionId).length;
+    const binding = normalizeCodexBinding(project.surfaceBinding?.codex || {});
+    const textOnlyTier = binding.runtimeMode === "direct-experimental" &&
+      binding.directTransport === "live-text" &&
+      binding.directTier === "text-only";
     if (this.directThreadStore) {
       this.prepareDirectContextProjection(session.sessionId);
     }
@@ -2085,7 +2100,7 @@ class DirectLiveTextController {
         threadId: session.sessionId,
         turnId: turn.turnId,
         currentUserPrompt: prompt,
-        useRecentDialogue: existingTurnCount > 0,
+        useRecentDialogue: textOnlyTier ? false : existingTurnCount > 0,
         model: requestBody.model,
         requestShape: requestShapeForDiagnostic(requestBody),
         endpointClass: "chatgpt-codex-responses",
@@ -2262,7 +2277,27 @@ class DirectLiveTextController {
       emitAssistantCompleted();
     }
 
-    const obligationResult = this.sessionStore.addToolObligations(sessionId, turnId, result.normalizedEvents);
+    const binding = normalizeCodexBinding(project.surfaceBinding?.codex || {});
+    const textOnlyTier = binding.runtimeMode === "direct-experimental" &&
+      binding.directTransport === "live-text" &&
+      binding.directTier === "text-only";
+    let obligationResult = this.sessionStore.addToolObligations(sessionId, turnId, result.normalizedEvents);
+    if (textOnlyTier && obligationResult.obligations.length) {
+      const unsupported = [];
+      for (const obligation of obligationResult.obligations) {
+        const updated = this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
+          status: "unsupported",
+          failureKind: "provider_tool_call_in_text_only_tier",
+          authorityState: "text_only_tier_blocked",
+          approvalAvailable: false,
+          executionAllowed: false,
+          continuationAllowed: false,
+          sideEffectExecuted: false,
+        }).obligation;
+        unsupported.push(updated);
+      }
+      obligationResult = { ...obligationResult, obligations: unsupported };
+    }
     if (obligationResult.obligations.length) {
       for (const item of obligationResult.obligations.map(toolTranscriptItemFromObligation)) {
         emittedItems.push(item);
@@ -2271,15 +2306,19 @@ class DirectLiveTextController {
       }
     }
 
-    const terminalState = obligationResult.obligations.length ? "tool_waiting" : terminal.state;
+    const toolBlockedTextOnly = textOnlyTier && obligationResult.obligations.length > 0;
+    const terminalState = toolBlockedTextOnly ? "tool_call_blocked_text_only" : obligationResult.obligations.length ? "tool_waiting" : terminal.state;
     const completedTurn = this.sessionStore.updateTurnState(sessionId, turnId, terminalState, {
-      ...(terminal.error ? { error: terminal.error } : {}),
+      ...(toolBlockedTextOnly
+        ? { error: { code: "provider_tool_call_in_text_only_tier", message: "Direct text-only does not execute or continue tool calls." } }
+        : terminal.error ? { error: terminal.error } : {}),
       responseId: result.responseId || "",
       responseStatus: result.response?.status || 0,
       responseContentType: result.response?.contentType || "",
+      ...(toolBlockedTextOnly ? { toolExecuted: false, continuationSent: false } : {}),
     });
     this.appendSessionTurn(sessionId, turnId, emittedItems, model, terminalState);
-    if (obligationResult.obligations.length) {
+    if (obligationResult.obligations.length && !toolBlockedTextOnly) {
       const createdApprovalRequests = this.emitToolApprovalRequests(surfaceSession, sessionId, turnId, obligationResult.obligations, project);
       this.emitNotification(surfaceSession, "warning", {
         threadId: sessionId,
@@ -2288,10 +2327,16 @@ class DirectLiveTextController {
           ? "Direct live text detected a read-only tool call. Local approval is required before workspace content is sent back to the provider."
           : "Direct live text detected a tool call, but read-only tool continuation is not enabled by accepted evidence.",
       });
+    } else if (toolBlockedTextOnly) {
+      this.emitNotification(surfaceSession, "warning", {
+        threadId: sessionId,
+        turnId,
+        message: "The model requested a tool call, but Direct text-only does not execute tools.",
+      });
     }
 
     const finalTurn = this.sessionStore.readTurn(sessionId, turnId) || completedTurn;
-    if (finalTurn.state === "failed" || finalTurn.state === "aborted") {
+    if (finalTurn.state === "failed" || finalTurn.state === "aborted" || finalTurn.state === "tool_call_blocked_text_only") {
       this.emitNotification(surfaceSession, "error", {
         threadId: sessionId,
         turnId,

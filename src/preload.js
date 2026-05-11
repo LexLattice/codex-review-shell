@@ -56,6 +56,8 @@ contextBridge.exposeInMainWorld("workspaceShell", {
   completeDirectAuthLogin: (loginId, input) => ipcRenderer.invoke("direct-auth:complete-manual-login", { loginId, input }),
   logoutDirectAuth: () => ipcRenderer.invoke("direct-auth:logout"),
   getDirectRuntimeStatus: (projectId) => ipcRenderer.invoke("direct-runtime:status", { projectId }),
+  selectDirectTextOnlyRuntime: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-runtime:select-text-only", { ...options, projectId }),
   enableDirectExperimentalRuntime: (projectId, options = {}) =>
     ipcRenderer.invoke("direct-runtime:enable-experimental", { ...options, projectId }),
   rollbackDirectExperimentalRuntime: (projectId, options = {}) =>

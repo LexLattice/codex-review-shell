@@ -7,6 +7,7 @@ const { normalizeCodexBinding } = require("./runtime-status");
 
 const DIRECT_EXPERIMENTAL_ACTIVATION_SCHEMA = "direct_experimental_activation_record@1";
 const DIRECT_EXPERIMENTAL_ROLLBACK_SCHEMA = "direct_experimental_rollback_record@1";
+const DIRECT_RUNTIME_SELECTION_SCHEMA = "direct_runtime_selection_record@1";
 const DIRECT_EXPERIMENTAL_GATE_SCHEMA = "direct_experimental_project_gate@1";
 const SAFE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,120}$/;
 const DEFAULT_GATE_MAX_AGE_MS = 5 * 60 * 1000;
@@ -143,8 +144,21 @@ function activationTargetBinding(previousBinding = {}, gate = {}) {
     mode: normalizeString(previousBinding.mode, "managed"),
     bindingProvider: "direct-chatgpt-codex",
     runtimeMode: "direct-experimental",
+    directTier: "implementation-lane",
     directTransport: "live-text",
     model: normalizeString(gate?.scope?.model || previousBinding.model, previousBinding.model || ""),
+  };
+}
+
+function textOnlyTargetBinding(previousBinding = {}, options = {}) {
+  return {
+    ...privateBindingSnapshot(previousBinding),
+    mode: normalizeString(previousBinding.mode, "managed"),
+    bindingProvider: "direct-chatgpt-codex",
+    runtimeMode: "direct-experimental",
+    directTier: "text-only",
+    directTransport: "live-text",
+    model: normalizeString(options.model || previousBinding.model, previousBinding.model || ""),
   };
 }
 
@@ -154,6 +168,7 @@ function activationProjectBindingDigest(binding = {}) {
     mode: snapshot.mode,
     bindingProvider: snapshot.bindingProvider,
     runtimeMode: snapshot.runtimeMode,
+    directTier: snapshot.directTier,
     directTransport: snapshot.directTransport,
     model: snapshot.model,
     profileId: snapshot.profileId,
@@ -389,6 +404,50 @@ function rendererSafeActivationStatusFromGate(gate = {}, activationState = {}) {
   };
 }
 
+function rendererSafeTextOnlyStatusFromGate(gate = {}, selectionState = {}) {
+  const requirements = Array.isArray(gate.requirements) ? gate.requirements : [];
+  const blockers = rendererSafeBlockers(requirements);
+  const state = normalizeString(gate.state, "blocked");
+  const enabled = state === "enabled" || state === "degraded";
+  return {
+    tier: "text-only",
+    state,
+    status: state,
+    eligible: state === "eligible",
+    enabled,
+    selected: enabled,
+    canEnable: state === "eligible",
+    canStartTextTurn: enabled && blockers.length === 0,
+    selectionId: normalizeString(selectionState.selectionId, ""),
+    gateId: normalizeString(gate.gateId, ""),
+    gateDigest: normalizeString(gate.gateDigest, ""),
+    target: {
+      runtimeMode: "direct-experimental",
+      directTier: "text-only",
+      directTransport: "live-text",
+    },
+    gateSummary: {
+      requiredCount: requirements.filter((item) => item.requirementClass !== "warning_only").length,
+      passedRequiredCount: requirements.filter((item) => item.requirementClass !== "warning_only" && item.status === "passed").length,
+      blockedReasons: countBlockers(requirements),
+      blockers,
+      warningsCount: Array.isArray(gate.optionalWarnings) ? gate.optionalWarnings.length : 0,
+    },
+    labels: {
+      headline: state === "eligible" ? "Direct text-only available" : enabled ? "Direct text-only selected" : "Direct text-only blocked",
+      detail: state === "eligible" || enabled
+        ? "Text-only direct can answer prompts but cannot read files, run commands, apply patches, or continue tools."
+        : "Direct text-only gates are missing.",
+    },
+    requestShapeClass: "direct_text_turn_empty_context@1",
+    toolContinuationRequired: false,
+    rawAuthExposed: false,
+    rawRequestExposed: false,
+    rawStreamExposed: false,
+    rawWorkspacePathExposed: false,
+  };
+}
+
 function evaluateDirectExperimentalProjectActivation(options = {}) {
   const nowMs = Number(options.nowMs || Date.now());
   const evaluatedAt = nowIso(nowMs);
@@ -409,6 +468,7 @@ function evaluateDirectExperimentalProjectActivation(options = {}) {
     bindingProvider: "direct-chatgpt-codex",
     activationTier: "implementation-lane",
   };
+  const currentTier = binding.directTier || (latestActivation ? "implementation-lane" : "text-only");
   const authOk = authStatus.status === "authenticated";
   const liveOk = liveTextReady(liveTextStatus);
   const toolOk = readOnlyToolReady(liveTextStatus);
@@ -434,7 +494,7 @@ function evaluateDirectExperimentalProjectActivation(options = {}) {
     item.requirementClass === "warning_only" ||
     (item.requirementClass === "contextual_import" && !importContinuationRequired(imports)));
   const textOnlyPass = bindingSupported && authOk && liveOk && storeOk && activationOk;
-  const enabledBinding = binding.runtimeMode === "direct-experimental" && binding.directTransport === "live-text";
+  const enabledBinding = binding.runtimeMode === "direct-experimental" && binding.directTransport === "live-text" && currentTier === "implementation-lane";
   const committedActivation = latestActivation?.transactionState === "committed";
   let state = "blocked";
   if (textOnlyPass && !toolOk) state = "text_only_eligible";
@@ -498,6 +558,7 @@ function evaluateDirectExperimentalProjectActivation(options = {}) {
     workspace,
     currentBinding: {
       runtimeMode: binding.runtimeMode,
+      directTier: currentTier,
       directTransport: binding.directTransport,
       bindingProvider: binding.provider,
     },
@@ -531,6 +592,99 @@ function evaluateDirectExperimentalProjectActivation(options = {}) {
   };
 }
 
+function evaluateDirectTextOnlyRuntimeSelection(options = {}) {
+  const nowMs = Number(options.nowMs || Date.now());
+  const evaluatedAt = nowIso(nowMs);
+  const expiresAt = nowIso(nowMs + Number(options.maxAgeMs || DEFAULT_GATE_MAX_AGE_MS));
+  const project = isPlainObject(options.project) ? options.project : {};
+  const projectId = normalizeString(project.id, "");
+  const binding = normalizeCodexBinding(project.surfaceBinding?.codex || {});
+  const authStatus = isPlainObject(options.authStatus) ? options.authStatus : {};
+  const liveTextStatus = isPlainObject(options.liveTextStatus) ? options.liveTextStatus : {};
+  const sessionStore = isPlainObject(options.sessionStore) ? options.sessionStore : {};
+  const storeStatus = isPlainObject(options.activationStoreStatus) ? options.activationStoreStatus : {};
+  const latestSelection = isPlainObject(options.latestSelection) ? options.latestSelection : null;
+  const authOk = authStatus.status === "authenticated";
+  const liveOk = liveTextReady(liveTextStatus);
+  const storeOk = sessionStoreHealthy(sessionStore);
+  const selectionOk = !activationCorrupt(storeStatus);
+  const productionDirectSelected = binding.runtimeMode === "direct";
+  const bindingSupported = Boolean(projectId) && !productionDirectSelected;
+  const target = {
+    runtimeMode: "direct-experimental",
+    directTier: "text-only",
+    directTransport: "live-text",
+    bindingProvider: "direct-chatgpt-codex",
+    requestShapeClass: "direct_text_turn_empty_context@1",
+  };
+  const requirements = [
+    requirement("project", "Project is selected", "hard", "text_only", Boolean(projectId), DIRECT_EXPERIMENTAL_BLOCKER_CODES.PROJECT_MISSING),
+    requirement("binding", "Binding can target direct text-only", "hard", "text_only", bindingSupported, productionDirectSelected ? DIRECT_EXPERIMENTAL_BLOCKER_CODES.PRODUCTION_DIRECT_UNAVAILABLE : DIRECT_EXPERIMENTAL_BLOCKER_CODES.BINDING_UNSUPPORTED),
+    requirement("auth", "Direct auth is authenticated", "hard", "text_only", authOk, authStatus.status === "refresh_failed" ? DIRECT_EXPERIMENTAL_BLOCKER_CODES.AUTH_REFRESH_FAILED : DIRECT_EXPERIMENTAL_BLOCKER_CODES.AUTH_MISSING),
+    requirement("live-text", "Live text evidence is accepted", "hard", "text_only", liveOk, liveTextStatus.liveProbeEvidence?.status === "candidate" ? "live_text_evidence_candidate_only" : liveTextStatus.modelEvidenceState === "expired" ? DIRECT_EXPERIMENTAL_BLOCKER_CODES.LIVE_TEXT_EVIDENCE_EXPIRED : DIRECT_EXPERIMENTAL_BLOCKER_CODES.LIVE_TEXT_EVIDENCE_MISSING, liveTextStatus.reason || ""),
+    requirement("session-store", "Direct session store recovered cleanly", "hard", "text_only", storeOk, DIRECT_EXPERIMENTAL_BLOCKER_CODES.SESSION_STORE_CORRUPT),
+    requirement("selection-store", "Runtime selection records recovered cleanly", "hard", "text_only", selectionOk, DIRECT_EXPERIMENTAL_BLOCKER_CODES.ACTIVATION_RECORD_CORRUPT),
+  ];
+  const hardPass = requirements.every((item) => item.status === "passed" || item.requirementClass === "warning_only");
+  const selectedBinding = binding.runtimeMode === "direct-experimental" && binding.directTransport === "live-text" && binding.directTier === "text-only";
+  let state = hardPass ? "eligible" : "blocked";
+  if (selectedBinding) state = hardPass ? "enabled" : "degraded";
+  if (!projectId) state = "unavailable";
+  const scope = {
+    profileId: normalizeString(project.surfaceBinding?.codex?.profileId || options.profileId, ""),
+    model: normalizeString(liveTextStatus.model || project.surfaceBinding?.codex?.model, ""),
+    requestShapeClass: "direct_text_turn_empty_context@1",
+    liveTextRequestShapeHash: normalizeString(liveTextStatus.liveProbeEvidence?.requestShapeHash || liveTextStatus.requestShapeHash, ""),
+    normalizerVersion: normalizeString(options.normalizerVersion, "direct-normalizer@1"),
+    requestBuilderVersion: normalizeString(options.requestBuilderVersion, "direct-request-builder@1"),
+    transportAdapterVersion: normalizeString(options.transportAdapterVersion, "direct-transport@1"),
+  };
+  const gateCore = {
+    schema: DIRECT_EXPERIMENTAL_GATE_SCHEMA,
+    gateId: "",
+    projectId,
+    evaluatedAt,
+    freshness: { evaluatedAt, expiresAt, maxAgeMs: Number(options.maxAgeMs || DEFAULT_GATE_MAX_AGE_MS) },
+    evaluatorVersion: "direct-text-only-selection@1",
+    target,
+    state,
+    requirements,
+    optionalWarnings: [],
+    scope,
+    currentBinding: {
+      runtimeMode: binding.runtimeMode,
+      directTier: binding.directTier,
+      directTransport: binding.directTransport,
+      bindingProvider: binding.provider,
+    },
+    exposure: {
+      rawAuthExposed: false,
+      rawRequestExposed: false,
+      rawStreamExposed: false,
+      rawWorkspacePathExposed: false,
+    },
+  };
+  const gateDigest = digest({
+    projectId,
+    target,
+    scope,
+    requirements: requirements.map((item) => ({
+      id: item.id,
+      requirementClass: item.requirementClass,
+      status: item.status,
+      affects: item.affects,
+      blockerCode: item.blockerCode || "",
+    })),
+    exposure: gateCore.exposure,
+    evaluatorVersion: gateCore.evaluatorVersion,
+  });
+  const gate = { ...gateCore, gateId: `direct_text_gate_${gateDigest.slice(0, 16)}`, gateDigest };
+  return {
+    gate,
+    status: rendererSafeTextOnlyStatusFromGate(gate, latestSelection || {}),
+  };
+}
+
 class DirectExperimentalActivationStore {
   constructor(options = {}) {
     const rootDir = normalizeString(options.rootDir, "");
@@ -549,6 +703,10 @@ class DirectExperimentalActivationStore {
 
   rollbackPath(projectId, rollbackId) {
     return path.join(this.projectDir(projectId), "rollbacks", `${requireSafeId(rollbackId, "rollback")}.json`);
+  }
+
+  runtimeSelectionPath(projectId, selectionId) {
+    return path.join(this.projectDir(projectId), "runtime-selections", `${requireSafeId(selectionId, "runtime selection")}.json`);
   }
 
   listIds(projectId, kind) {
@@ -592,6 +750,20 @@ class DirectExperimentalActivationStore {
     return record;
   }
 
+  readRuntimeSelection(projectId, selectionId) {
+    const record = readJsonFile(this.runtimeSelectionPath(projectId, selectionId));
+    return record?.schema === DIRECT_RUNTIME_SELECTION_SCHEMA ? record : null;
+  }
+
+  writeRuntimeSelection(record) {
+    if (!isPlainObject(record) || record.schema !== DIRECT_RUNTIME_SELECTION_SCHEMA) {
+      throw new Error("Invalid direct runtime selection record.");
+    }
+    writeJsonAtomic(this.runtimeSelectionPath(record.projectId, record.selectionId), record);
+    this._statusCache.delete(normalizeString(record.projectId, ""));
+    return record;
+  }
+
   listActivations(projectId) {
     return this.listIds(projectId, "activations")
       .map((id) => {
@@ -625,6 +797,29 @@ class DirectExperimentalActivationStore {
     return null;
   }
 
+  listRuntimeSelections(projectId) {
+    return this.listIds(projectId, "runtime-selections")
+      .map((id) => {
+        try {
+          return this.readRuntimeSelection(projectId, id);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean)
+      .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+  }
+
+  latestCommittedRuntimeSelection(projectId) {
+    return this.listRuntimeSelections(projectId).find((record) => record.transactionState === "committed") || null;
+  }
+
+  findRuntimeSelectionByClientId(projectId, clientOperationId) {
+    const key = normalizeString(clientOperationId, "");
+    if (!key) return null;
+    return this.listRuntimeSelections(projectId).find((record) => record.clientOperationId === key) || null;
+  }
+
   statusForProject(projectId) {
     const cacheKey = normalizeString(projectId, "");
     const cached = this._statusCache.get(cacheKey);
@@ -634,6 +829,7 @@ class DirectExperimentalActivationStore {
     let committedCount = 0;
     let pendingCount = 0;
     let latestActivation = null;
+    let latestRuntimeSelection = null;
     for (const id of ids) {
       try {
         const record = this.readActivation(projectId, id);
@@ -654,6 +850,24 @@ class DirectExperimentalActivationStore {
         corruptedCount += 1;
       }
     }
+    for (const id of this.listIds(projectId, "runtime-selections")) {
+      try {
+        const record = this.readRuntimeSelection(projectId, id);
+        if (!record) {
+          corruptedCount += 1;
+          continue;
+        }
+        if (record.transactionState === "pending") pendingCount += 1;
+        if (
+          record.transactionState === "committed" &&
+          (!latestRuntimeSelection || String(record.createdAt || "").localeCompare(String(latestRuntimeSelection.createdAt || "")) > 0)
+        ) {
+          latestRuntimeSelection = record;
+        }
+      } catch {
+        corruptedCount += 1;
+      }
+    }
     const status = {
       available: true,
       projectId: normalizeString(projectId, ""),
@@ -661,6 +875,7 @@ class DirectExperimentalActivationStore {
       pendingCount,
       corruptedCount,
       latestActivation,
+      latestRuntimeSelection,
     };
     this._statusCache.set(cacheKey, status);
     return status;
@@ -695,6 +910,54 @@ class DirectExperimentalActivationStore {
       rolledBackByRollbackId: "",
     };
     return this.writeActivation(record);
+  }
+
+  createPendingRuntimeSelection(project, gate, clientOperationId) {
+    const previousBindingPrivate = privateBindingSnapshot(project.surfaceBinding?.codex || {});
+    const selectedBindingPrivate = textOnlyTargetBinding(previousBindingPrivate, {
+      model: gate?.scope?.model || previousBindingPrivate.model,
+    });
+    const now = nowIso();
+    const selectionId = newId("direct_selection");
+    const record = {
+      schema: DIRECT_RUNTIME_SELECTION_SCHEMA,
+      selectionId,
+      clientOperationId: normalizeString(clientOperationId, ""),
+      projectId: safeProjectId(project),
+      createdAt: now,
+      transactionState: "pending",
+      selectionTier: "text-only",
+      previousBindingPrivate,
+      previousBindingRendererSummary: rendererBindingSummary(previousBindingPrivate),
+      selectedBindingPrivate,
+      selectedBindingRendererSummary: {
+        ...rendererBindingSummary(selectedBindingPrivate),
+        directTier: "text-only",
+      },
+      previousBindingDigest: activationProjectBindingDigest(previousBindingPrivate),
+      selectedBindingDigest: activationProjectBindingDigest(selectedBindingPrivate),
+      gateId: gate.gateId,
+      gateDigest: gate.gateDigest,
+      requestShapeClass: "direct_text_turn_empty_context@1",
+    };
+    return this.writeRuntimeSelection(record);
+  }
+
+  markRuntimeSelectionCommitted(record) {
+    return this.writeRuntimeSelection({
+      ...record,
+      transactionState: "committed",
+      committedAt: nowIso(),
+    });
+  }
+
+  markRuntimeSelectionAbandoned(record, reason) {
+    return this.writeRuntimeSelection({
+      ...record,
+      transactionState: "abandoned",
+      abandonedAt: nowIso(),
+      abandonedReason: normalizeString(reason, "abandoned"),
+    });
   }
 
   markActivationCommitted(record) {
@@ -768,9 +1031,12 @@ module.exports = {
   DIRECT_EXPERIMENTAL_BLOCKER_CODES,
   DIRECT_EXPERIMENTAL_GATE_SCHEMA,
   DIRECT_EXPERIMENTAL_ROLLBACK_SCHEMA,
+  DIRECT_RUNTIME_SELECTION_SCHEMA,
   DirectExperimentalActivationStore,
   activeDirectTurnCountForProject,
   activationProjectBindingDigest,
+  evaluateDirectTextOnlyRuntimeSelection,
   evaluateDirectExperimentalProjectActivation,
+  rendererSafeTextOnlyStatusFromGate,
   rendererSafeActivationStatusFromGate,
 };
