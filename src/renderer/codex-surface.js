@@ -108,6 +108,8 @@ const state = {
   composerMenu: "",
   composerGeometryObserver: null,
   activeTurnId: "",
+  primaryThreadActive: false,
+  primaryThreadActivitySource: "",
   turnPending: false,
   turnStopping: false,
   itemMap: new Map(),
@@ -834,6 +836,7 @@ function applyThreadTokenUsageUpdate(params) {
 
 function turnIsActive() {
   if (state.turnPending || state.turnStopping) return true;
+  if (state.primaryThreadActive) return true;
   const activeId = String(state.activeTurnId || state.turnId || "");
   if (!activeId) return false;
   const activity = state.turnActivityMap.get(activeId);
@@ -2649,10 +2652,16 @@ function clearRenderedDomState() {
 }
 
 function resetThreadSessionState() {
+  state.turnId = "";
+  state.activeTurnId = "";
   state.turnActivityMap.clear();
   state.turnPromptMap.clear();
   state.turnRetryCountMap.clear();
   state.emptyTurnRetrying.clear();
+  state.primaryThreadActive = false;
+  state.primaryThreadActivitySource = "";
+  state.turnPending = false;
+  state.turnStopping = false;
 }
 
 function clearRenderedThreadState(options = {}) {
@@ -2689,6 +2698,44 @@ function openThreadFromEvent(event) {
 
 function turnIdFromNotification(params) {
   return String(params?.turn?.id || params?.turnId || "");
+}
+
+function clearPrimaryTurnActivityState() {
+  state.activeTurnId = "";
+  state.primaryThreadActive = false;
+  state.primaryThreadActivitySource = "";
+  state.turnPending = false;
+  state.turnStopping = false;
+}
+
+function threadIdFromNotification(params = {}) {
+  return String(
+    params.threadId ||
+    params.thread_id ||
+    params.thread?.id ||
+    params.item?.threadId ||
+    params.item?.thread_id ||
+    "",
+  );
+}
+
+function notificationMatchesPrimaryThread(params = {}) {
+  const threadId = threadIdFromNotification(params);
+  return !threadId || !state.threadId || String(threadId) === String(state.threadId);
+}
+
+function shouldApplyTurnCompletionNotification(params = {}, turnId = "") {
+  if (!notificationMatchesPrimaryThread(params)) return false;
+  const threadId = threadIdFromNotification(params);
+  if (threadId) return true;
+  const id = String(turnId || "").trim();
+  if (!id || !state.activeTurnId) return true;
+  return String(state.activeTurnId) === id || state.turnActivityMap.has(id);
+}
+
+function lifecycleStatus(value = "") {
+  if (value && typeof value === "object") return String(value.type || value.status || value.state || "");
+  return String(value || "");
 }
 
 function ensureTurnActivity(turnId) {
@@ -2738,9 +2785,7 @@ function reconcileCompletedTurnState(turnId, status = "completed", completedAt =
     activity.completedAt = activity.completedAt || timestampSeconds(completedAt) || Date.now() / 1000;
   }
   if (!state.activeTurnId || String(state.activeTurnId) === id || String(state.turnId) === id) {
-    state.activeTurnId = "";
-    state.turnPending = false;
-    state.turnStopping = false;
+    clearPrimaryTurnActivityState();
   }
   state.turnId = id;
   return true;
@@ -2757,6 +2802,8 @@ function reconcileActiveTurnState(turnId, status = "inProgress", startedAt = nul
   }
   state.turnId = id;
   state.activeTurnId = id;
+  state.primaryThreadActive = true;
+  state.primaryThreadActivitySource = "turn-state";
   state.turnPending = false;
   state.turnStopping = false;
   return true;
@@ -2788,16 +2835,23 @@ function reconcileTurnStateFromStoredPresentationModel(model) {
 function reconcileTurnStateFromLiveThread(thread) {
   const turns = Array.isArray(thread?.turns) ? thread.turns : [];
   const latest = turns.length ? turns[turns.length - 1] : null;
-  if (!latest) return false;
+  if (!latest) {
+    state.primaryThreadActive = activeTurnStatus(lifecycleStatus(thread?.status));
+    state.primaryThreadActivitySource = state.primaryThreadActive ? "thread-status" : "";
+    return state.primaryThreadActive;
+  }
+  const threadStatus = lifecycleStatus(thread?.status);
   const status = latest.status || latest.state || latest.lifecycleStatus || "";
   const completedAt = latest.completedAt || latest.completed_at || latest.finishedAt || latest.finished_at || null;
   if (terminalTurnStatus(status) || completedAt) {
     return reconcileCompletedTurnState(latest.id || latest.turnId || latest.turn_id, status || "completed", completedAt);
   }
   const startedAt = latest.startedAt || latest.started_at || latest.createdAt || latest.created_at || null;
-  if (activeTurnStatus(status)) {
+  if (activeTurnStatus(status) || activeTurnStatus(threadStatus)) {
     return reconcileActiveTurnState(latest.id || latest.turnId || latest.turn_id, status || "inProgress", startedAt);
   }
+  state.primaryThreadActive = false;
+  state.primaryThreadActivitySource = "";
   return false;
 }
 
@@ -5268,8 +5322,7 @@ async function sendPrompt(text) {
     await startCodexTurn(text);
     els.composerInput.value = "";
   } catch (error) {
-    state.turnPending = false;
-    state.activeTurnId = "";
+    clearPrimaryTurnActivityState();
     renderRuntimeConstitution();
     throw error;
   }
@@ -5291,8 +5344,7 @@ async function stopCurrentTurn() {
       activity.status = "interrupted";
       activity.completedAt = activity.completedAt || Date.now() / 1000;
     }
-    state.activeTurnId = "";
-    state.turnPending = false;
+    clearPrimaryTurnActivityState();
   } finally {
     state.turnStopping = false;
     renderRuntimeConstitution();
@@ -5311,6 +5363,7 @@ async function initializeBridgeSession() {
 
 function handleNotification(method, params) {
   if (method === "error") {
+    if (!notificationMatchesPrimaryThread(params)) return;
     const turnId = String(params?.turnId || state.turnId || "");
     const activity = ensureTurnActivity(turnId);
     if (activity) {
@@ -5322,9 +5375,7 @@ function handleNotification(method, params) {
       }
     }
     if (!params?.willRetry) {
-      state.turnPending = false;
-      state.activeTurnId = "";
-      state.turnStopping = false;
+      clearPrimaryTurnActivityState();
       renderRuntimeConstitution();
     }
     const error = params?.error || {};
@@ -5406,11 +5457,11 @@ function handleNotification(method, params) {
   }
   if (method === "turn/completed") {
     const completedTurnId = turnIdFromNotification(params);
-    if (completedTurnId) {
+    if (completedTurnId && shouldApplyTurnCompletionNotification(params, completedTurnId)) {
       state.turnId = completedTurnId;
-      if (String(state.activeTurnId) === String(completedTurnId)) state.activeTurnId = "";
-      state.turnPending = false;
-      state.turnStopping = false;
+      if (!state.activeTurnId || String(state.activeTurnId) === String(completedTurnId)) {
+        clearPrimaryTurnActivityState();
+      }
       const activity = ensureTurnActivity(completedTurnId);
       if (activity) {
         activity.status = String(params?.turn?.status || "completed");
@@ -5425,9 +5476,11 @@ function handleNotification(method, params) {
   }
   if (method === "turn/started") {
     const startedTurnId = turnIdFromNotification(params);
-    if (startedTurnId) {
+    if (startedTurnId && notificationMatchesPrimaryThread(params)) {
       state.turnId = startedTurnId;
       state.activeTurnId = startedTurnId;
+      state.primaryThreadActive = true;
+      state.primaryThreadActivitySource = "turn-started-notification";
       state.turnPending = false;
       const activity = ensureTurnActivity(startedTurnId);
       if (activity) {
