@@ -2314,6 +2314,7 @@ class DirectThreadStore {
       stream: true,
       store: false,
       tools: false,
+      parallelToolCalls: false,
       hasPreviousResponseId: Boolean(previousResponseId),
       functionCallOutputCount: continuationRequest.toolResult?.outputType === "function_call_output" ? 1 : 0,
       customToolCallOutputCount: continuationRequest.toolResult?.outputType === "custom_tool_call_output" ? 1 : 0,
@@ -2340,13 +2341,14 @@ class DirectThreadStore {
         toolOutputItem: true,
         previousResponseId: true,
         includes: false,
+        parallelToolCalls: false,
       },
       continuity: {
         previousResponseIdUsed: true,
         providerContinuityHandleUsed: true,
         importedContinuityHandleUsed: false,
         continuityPolicy: "native_parent_turn_previous_response_id",
-        previousResponseIdSource: "native_direct_parent_initial_stream",
+        previousResponseIdSource: normalizeString(continuationRequest.source?.previousResponseIdSource, "native_direct_initial_stream"),
         previousResponseIdDigest: sha256(previousResponseId),
         previousResponseSourceTurnDigest: sha256(stableStringify({
           threadId,
@@ -2362,7 +2364,7 @@ class DirectThreadStore {
       },
       previousResponse: {
         id: previousResponseId,
-        source: "native_direct_parent_initial_stream",
+        source: normalizeString(continuationRequest.source?.previousResponseIdSource, "native_direct_initial_stream"),
         sourceEventDigest: normalizeString(continuationRequest.source?.sourceEventDigest, sha256(previousResponseId)),
         sourceTurnDigest: normalizeString(continuationRequest.source?.sourceTurnDigest, sha256(stableStringify({
           threadId,
@@ -2381,8 +2383,12 @@ class DirectThreadStore {
       toolContinuation: {
         continuationId: normalizeString(continuationRequest.continuationId, ""),
         obligationId,
+        toolLoopId: normalizeString(continuationRequest.toolLoop?.toolLoopId, ""),
+        stepId: normalizeString(continuationRequest.toolLoop?.stepId, ""),
+        stepOrdinal: Number(continuationRequest.toolLoop?.stepOrdinal || 1),
+        maxStepCount: Number(continuationRequest.toolLoop?.maxStepCount || 0),
         parentTurnId: turnId,
-        previousResponseIdSource: "native_direct_parent_initial_stream",
+        previousResponseIdSource: normalizeString(continuationRequest.source?.previousResponseIdSource, "native_direct_initial_stream"),
         sourceProjectionId: toolContinuationContext.projectionId,
       },
     };

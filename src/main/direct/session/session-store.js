@@ -113,16 +113,56 @@ function toolObligationId(sessionId, turnId, key) {
   return `tool_obligation_${digest}`;
 }
 
-function buildToolObligationsFromEvents(sessionId, turnId, events = []) {
+function toolLoopIdForTurn(sessionId, turnId) {
+  const digest = crypto
+    .createHash("sha256")
+    .update(`${normalizeString(sessionId, "")}:${normalizeString(turnId, "")}:read_only_tool_loop`)
+    .digest("hex")
+    .slice(0, 20);
+  return `tool_loop_${digest}`;
+}
+
+function toolStepIdForObligation(sessionId, turnId, toolLoopId, stepOrdinal, obligationId) {
+  const digest = crypto
+    .createHash("sha256")
+    .update([
+      normalizeString(sessionId, ""),
+      normalizeString(turnId, ""),
+      normalizeString(toolLoopId, ""),
+      String(Number(stepOrdinal) || 1),
+      normalizeString(obligationId, ""),
+    ].join(":"))
+    .digest("hex")
+    .slice(0, 20);
+  return `tool_step_${digest}`;
+}
+
+function buildToolObligationsFromEvents(sessionId, turnId, events = [], options = {}) {
   const obligations = new Map();
+  const toolLoopId = normalizeString(options.toolLoopId, toolLoopIdForTurn(sessionId, turnId));
+  const stepOrdinal = Math.max(1, Number(options.stepOrdinal || 1) || 1);
+  const parentResponseId = normalizeString(options.parentResponseId, "");
+  const parentResponseSource = normalizeString(options.parentResponseSource, stepOrdinal > 1
+    ? "native_direct_tool_continuation_stream"
+    : "native_direct_initial_stream");
+  const parentResponseDigest = parentResponseId
+    ? crypto.createHash("sha256").update(parentResponseId).digest("hex")
+    : "";
   for (const event of Array.isArray(events) ? events : []) {
     if (!["tool_call_started", "tool_call_delta", "tool_call_completed"].includes(event?.type)) continue;
     const key = toolObligationKey(event);
+    const obligationId = toolObligationId(sessionId, turnId, key);
     const existing = obligations.get(key) || {
       schema: DIRECT_TOOL_OBLIGATION_SCHEMA,
-      obligationId: toolObligationId(sessionId, turnId, key),
+      obligationId,
       sessionId: normalizeString(sessionId, ""),
       turnId: normalizeString(turnId, ""),
+      toolLoopId,
+      stepId: toolStepIdForObligation(sessionId, turnId, toolLoopId, stepOrdinal, obligationId),
+      stepOrdinal,
+      parentResponseId,
+      parentResponseSource,
+      parentResponseDigest,
       status: "collecting_arguments",
       authorityState: "execution_disabled",
       approvalAvailable: false,
@@ -191,6 +231,12 @@ function mergeToolObligation(existing = {}, incoming = {}) {
     executionAllowed: false,
     sideEffectExecuted: Boolean(existing.sideEffectExecuted || incoming.sideEffectExecuted),
     continuationAllowed: false,
+    toolLoopId: normalizeString(existing.toolLoopId || incoming.toolLoopId, ""),
+    stepId: normalizeString(existing.stepId || incoming.stepId, ""),
+    stepOrdinal: Number(existing.stepOrdinal || incoming.stepOrdinal || 1),
+    parentResponseId: normalizeString(existing.parentResponseId || incoming.parentResponseId, ""),
+    parentResponseSource: normalizeString(existing.parentResponseSource || incoming.parentResponseSource, ""),
+    parentResponseDigest: normalizeString(existing.parentResponseDigest || incoming.parentResponseDigest, ""),
     sourceItemId: normalizeString(existing.sourceItemId || incoming.sourceItemId, ""),
     callId: normalizeString(existing.callId || incoming.callId, ""),
     name: normalizeString(incoming.name, existing.name),
@@ -224,6 +270,10 @@ function toolTranscriptItemFromObligation(obligation = {}) {
     relPath: normalizeString(obligation.approvedRead?.relPath || obligation.result?.relPath, ""),
     resultClass: normalizeString(obligation.result?.resultClass, ""),
     toolCallSource: normalizeString(obligation.toolCallSource, "provider-native-implicit"),
+    toolLoopId: normalizeString(obligation.toolLoopId, ""),
+    stepId: normalizeString(obligation.stepId, ""),
+    stepOrdinal: Number(obligation.stepOrdinal || 1),
+    parentResponseSource: normalizeString(obligation.parentResponseSource, ""),
   };
 }
 
@@ -286,6 +336,8 @@ function indexEntryFromSession(session) {
     eventCount: turns.reduce((count, turn) => count + Number(turn.normalizedEventCount || 0), 0),
     activeTurnCount: turns.filter((turn) => DIRECT_ACTIVE_TURN_STATES.has(turn.state)).length,
     lastTurnState: turns[turns.length - 1]?.state || "",
+    activeToolLoopId: normalizeString(session.activeToolLoopId, ""),
+    activeToolStepOrdinal: Number(session.activeToolStepOrdinal || 0),
   };
 }
 
@@ -802,7 +854,15 @@ class DirectSessionStore {
   addToolObligations(sessionId, turnId, normalizedEvents = [], options = {}) {
     const turn = this.readTurn(sessionId, turnId);
     if (!turn) throw new Error(`Direct turn not found: ${turnId}`);
-    const obligations = buildToolObligationsFromEvents(sessionId, turnId, normalizedEvents);
+    const existingStepOrdinals = (Array.isArray(turn.unresolvedObligations) ? turn.unresolvedObligations : [])
+      .map((obligation) => Number(obligation?.stepOrdinal || 0))
+      .filter((value) => Number.isFinite(value) && value > 0);
+    const inferredStepOrdinal = existingStepOrdinals.length ? Math.max(...existingStepOrdinals) + 1 : 1;
+    const obligations = buildToolObligationsFromEvents(sessionId, turnId, normalizedEvents, {
+      ...options,
+      toolLoopId: normalizeString(options.toolLoopId, turn.toolLoopId || toolLoopIdForTurn(sessionId, turnId)),
+      stepOrdinal: Number(options.stepOrdinal || inferredStepOrdinal),
+    });
     if (!obligations.length) return { turn, obligations: [] };
     const now = nowIso(options.nowMs);
     const existingTurnObligations = new Map((Array.isArray(turn.unresolvedObligations) ? turn.unresolvedObligations : [])
@@ -814,6 +874,9 @@ class DirectSessionStore {
       ...turn,
       state: "tool_waiting",
       updatedAt: now,
+      toolLoopId: normalizeString(options.toolLoopId, turn.toolLoopId || obligations[0]?.toolLoopId),
+      activeToolStepId: normalizeString(obligations[0]?.stepId, turn.activeToolStepId),
+      activeToolStepOrdinal: Number(obligations[0]?.stepOrdinal || turn.activeToolStepOrdinal || 1),
       unresolvedObligations: [...existingTurnObligations.values()],
       error: null,
     };
@@ -832,6 +895,8 @@ class DirectSessionStore {
         ...session,
         status: "tool_waiting",
         updatedAt: now,
+        activeToolLoopId: normalizeString(options.toolLoopId, session.activeToolLoopId || obligations[0]?.toolLoopId),
+        activeToolStepOrdinal: Number(obligations[0]?.stepOrdinal || session.activeToolStepOrdinal || 1),
         unresolvedObligations: [...existingSessionObligations.values()],
         turns: session.turns.map((summary) =>
           summary.turnId === turnId
@@ -1024,6 +1089,7 @@ class DirectSessionStore {
     const eventCount = index.sessions.reduce((count, session) => count + Number(session.eventCount || 0), 0);
     const activeTurnCount = index.sessions.reduce((count, session) => count + Number(session.activeTurnCount || 0), 0);
     const unresolvedObligationCount = index.sessions.reduce((count, session) => count + Number(session.unresolvedObligationCount || 0), 0);
+    const activeToolSession = index.sessions.find((session) => Number(session.activeToolStepOrdinal || 0) > 0) || {};
     return {
       schema: "direct_codex_session_store_status@1",
       available: true,
@@ -1034,6 +1100,8 @@ class DirectSessionStore {
       activeTurnCount,
       unresolvedObligationCount,
       lastTurnState: index.sessions[0]?.lastTurnState || "",
+      activeToolLoopId: normalizeString(activeToolSession.activeToolLoopId, ""),
+      activeToolStepOrdinal: Number(activeToolSession.activeToolStepOrdinal || 0),
       lastSessionUpdatedAt: index.sessions[0]?.updatedAt || "",
       recovery: index.recovery || {},
     };

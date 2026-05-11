@@ -1,5 +1,7 @@
 "use strict";
 
+const { MAX_READONLY_TOOL_LOOP_STEPS } = require("../tools/read-only-authority");
+
 const DIRECT_RUNTIME_STATUS_SCHEMA = "direct_codex_runtime_status@1";
 const CODEX_RUNTIME_MODES = new Set(["legacy-app-server", "direct-experimental", "direct"]);
 const CODEX_BINDING_PROVIDERS = new Set(["codex-compatible", "custom-codex-fork", "direct-chatgpt-codex"]);
@@ -195,9 +197,15 @@ function directImplementationLaneReadiness({ activation = {}, sessionStore = {},
       toolContextProjectionHealthy: !safeBlockers.includes("tool_continuation_context_projection_unhealthy"),
       workspaceReadHealthy: !safeBlockers.includes("workspace_backend_unattached"),
       continuationEvidenceState: normalizeString(liveTextStatus.readOnlyToolContinuation?.evidenceState, safeBlockers.some((code) => code.includes("tool")) ? "missing" : "accepted"),
+      loopEvidenceState: normalizeString(liveTextStatus.readOnlyToolContinuation?.evidenceState, safeBlockers.some((code) => code.includes("tool")) ? "missing" : "accepted"),
+      activeLoopCount: Number(sessionStore.unresolvedObligationCount || 0) > 0 ? 1 : 0,
+      activeStepOrdinal: Number(sessionStore.activeToolStepOrdinal || 0) || undefined,
+      maxStepCount: MAX_READONLY_TOOL_LOOP_STEPS,
       activeObligationCount: Number(sessionStore.unresolvedObligationCount || 0),
       pendingDecisionCount: Number(sessionStore.unresolvedObligationCount || 0),
       streamingContinuationCount: normalizeString(sessionStore.lastTurnState, "") === "streaming_continuation" ? 1 : 0,
+      canContinueSequentialReadOnlyLoop: canApproveReadFile,
+      blockerCodes: safeBlockers,
     },
   };
 }
