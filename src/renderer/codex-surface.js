@@ -76,6 +76,18 @@ const state = {
   tokenUsage: null,
   tokenUsageStatus: "idle",
   tokenUsageObservedAt: 0,
+  usageLedgerStatus: {
+    enabled: false,
+    state: "disabled",
+    ledgerId: "",
+    ledgerPath: "",
+    manifestPath: "",
+    queuedRows: 0,
+    droppedRows: 0,
+    rowCount: 0,
+    lastError: "",
+    lastObservedAt: "",
+  },
   configRequirements: null,
   configRequirementsStatus: "idle",
   configRequirementsError: "",
@@ -955,6 +967,7 @@ function buildRuntimeConstitution() {
       : turnCount || commandCount || approvalCount || toolCallCount
       ? `activity: ${turnCount} turn${turnCount === 1 ? "" : "s"}`
       : "usage: unknown";
+  const ledgerStatus = state.usageLedgerStatus || {};
 
   const constitution = {
     thread: {
@@ -1062,6 +1075,22 @@ function buildRuntimeConstitution() {
         toolCallCount,
         sessionDurationMs: sessionDurationMs(),
         evidenceRefs: [evidenceRef("renderer_observation", "Renderer-observed thread activity", { confidence: "observed" })],
+      },
+      ledger: {
+        enabled: ledgerStatus.enabled === true,
+        status: ledgerStatus.state || "disabled",
+        ledgerId: ledgerStatus.ledgerId || "",
+        ledgerPath: ledgerStatus.ledgerPath || "",
+        manifestPath: ledgerStatus.manifestPath || "",
+        queuedRows: Number(ledgerStatus.queuedRows || 0),
+        droppedRows: Number(ledgerStatus.droppedRows || 0),
+        rowCount: Number(ledgerStatus.rowCount || 0),
+        lastError: ledgerStatus.lastError || "",
+        lastObservedAt: ledgerStatus.lastObservedAt || "",
+        evidenceRefs: [evidenceRef("runtime_snapshot", ledgerStatus.enabled ? "Usage ledger collector reported status" : "Usage ledger disabled", {
+          confidence: ledgerStatus.enabled ? "observed" : "configured",
+          status: ledgerStatus.enabled ? "fresh" : "unavailable",
+        })],
       },
     },
     environment: {
@@ -1881,6 +1910,18 @@ function runtimeDrawerSections(c, tab) {
         ["approvals", c.usage.activity.approvalCount],
         ["duration", c.usage.activity.sessionDurationMs ? `${Math.round(c.usage.activity.sessionDurationMs / 1000)}s` : "—"],
       ], c.usage.activity.evidenceRefs),
+      drawerSection("Usage Ledger", [
+        ["status", c.usage.ledger?.status || "disabled"],
+        ["enabled", c.usage.ledger?.enabled ? "yes" : "no"],
+        ["rows", c.usage.ledger?.rowCount || 0],
+        ["queued", c.usage.ledger?.queuedRows || 0],
+        ["dropped", c.usage.ledger?.droppedRows || 0],
+        ["ledger id", c.usage.ledger?.ledgerId || "—"],
+        ["ledger path", c.usage.ledger?.ledgerPath || "—"],
+        ["manifest", c.usage.ledger?.manifestPath || "—"],
+        ["last observed", c.usage.ledger?.lastObservedAt || "—"],
+        ["error", c.usage.ledger?.lastError || "—"],
+      ], c.usage.ledger?.evidenceRefs || []),
     ];
   }
   if (tab === "capabilities") {
@@ -5460,6 +5501,14 @@ function handleBridgeEvent(event) {
   }
   if (event.type === "workspace-status") {
     state.workspaceStatus = event.session || null;
+    renderRuntimeConstitution();
+    return;
+  }
+  if (event.type === "usage-ledger-status") {
+    state.usageLedgerStatus = {
+      ...state.usageLedgerStatus,
+      ...(event.status || {}),
+    };
     renderRuntimeConstitution();
     return;
   }

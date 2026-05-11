@@ -19,6 +19,8 @@ const { CodexSurfaceSession } = require("./main/codex-surface-session");
 const { MiddleWebHost } = require("./main/middle-web-host");
 const { WorkspaceBackendManager, workspaceLabel, workspaceRoot } = require("./main/workspace-backend");
 const { ThreadAnalyticsStore, buildThreadKey } = require("./main/thread-analytics-store");
+const { UsageLedgerCollector } = require("./main/usage-ledger-collector");
+const { defaultUsageLedgerConfig, normalizeUsageLedgerConfig } = require("./main/usage-ledger-config");
 const { PLANE_ZOOM_DEFAULT, clampZoomFactor, zoomDeltaForDirection } = require("./shared/plane-zoom");
 
 const APP_TITLE = "Codex Review Shell";
@@ -237,6 +239,7 @@ function defaultConfig() {
               kind: "codex_executable",
               flavor: "vanilla",
             },
+            usageLedger: defaultUsageLedgerConfig(),
             remoteAuth: {
               mode: "none",
               tokenFilePath: "",
@@ -1062,6 +1065,7 @@ function normalizeProject(input, index = 0) {
           configuredFlavor: rawCodex.configuredFlavor,
           connectionPath: rawCodex.connectionPath,
         }),
+        usageLedger: normalizeUsageLedgerConfig(rawCodex.usageLedger || rawCodex.usage_ledger),
         remoteAuth: normalizeRemoteAuthConfig(rawCodex.remoteAuth),
       },
       chatgpt: {
@@ -1527,7 +1531,18 @@ function codexSurfaceSessionFor(sender) {
   if (!isCodexSurfaceSender(sender)) throw new Error("Codex surface bridge is not available from this renderer.");
   const sessions = ensureCodexSurfaceSessions();
   if (sessions.has(sender.id)) return sessions.get(sender.id);
-  const session = new CodexSurfaceSession(sender);
+  const usageLedger = new UsageLedgerCollector({
+    getProjectById,
+    emitStatus: (status) => {
+      if (sender.isDestroyed()) return;
+      sender.send("codex-surface:event", {
+        type: "usage-ledger-status",
+        status,
+        at: nowIso(),
+      });
+    },
+  });
+  const session = new CodexSurfaceSession(sender, { usageLedger });
   session.on("event", (payload) => {
     if (payload?.type === "rpc-request" || payload?.type === "rpc-request-updated") {
       emitShellEvent({
@@ -1730,8 +1745,11 @@ async function loadCodexSurface(project, options = {}) {
       activeCodexSurfaceConnection = {
         projectId: project.id,
         wsUrl: session.wsUrl,
+        readyUrl: session.readyUrl,
         runtime: session.runtime,
         codexHome: session.codexHome || "",
+        workspaceRoot: session.workspaceRoot || "",
+        binaryPath: session.binaryPath || "",
         provider: session.provider || null,
         capabilities: session.capabilities || null,
         activationEpoch: Number(options.activationEpoch) || 0,
