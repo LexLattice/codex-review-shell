@@ -903,7 +903,25 @@ function buildRequestManifest({
   endpointEvidenceRef = "",
   nowMs = Date.now(),
 } = {}) {
-  const providerInput = providerInputFromContextPack(contextPack);
+  const baseProviderInput = providerInputFromContextPack(contextPack);
+  const requestShapeClassOverride = normalizeString(requestShape.requestShapeClass, "");
+  const providerInput = requestShapeClassOverride
+    ? {
+        ...baseProviderInput,
+        projection: {
+          ...baseProviderInput.projection,
+          requestShapeClass: requestShapeClassOverride,
+          providerInputShapeHash: sha256(stableStringify({
+            schema: DIRECT_PROVIDER_INPUT_PROJECTION_SCHEMA,
+            provider: "chatgpt-codex-responses",
+            requestShapeClass: requestShapeClassOverride,
+            hasInstructions: Boolean(baseProviderInput.instructions),
+            inputMessageCount: baseProviderInput.prompt ? 1 : 0,
+            rawRequestBodyStored: false,
+          })),
+        },
+      }
+    : baseProviderInput;
   const shapeHash = normalizeString(requestShapeHash, "") || sha256(stableStringify(requestShape));
   const requestManifestId = `request_manifest_${sha256(`${contextPack.contextBuildId}:${model}:${shapeHash}:${providerInput.projection.providerInputTextHash}`).slice(0, 24)}`;
   const builtAt = nowIso(nowMs);
@@ -931,6 +949,7 @@ function buildRequestManifest({
       serviceTier: false,
       promptCache: false,
       includes: false,
+      parallelToolCalls: false,
     },
     continuity: {
       previousResponseIdUsed: false,

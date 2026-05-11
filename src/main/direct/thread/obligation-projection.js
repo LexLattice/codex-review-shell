@@ -97,6 +97,9 @@ function obligationSourceDigest({ turn = {}, obligations = [], operationLedgerHe
     builderVersion: DIRECT_OBLIGATIONS_BUILDER_VERSION,
     obligations: obligations.map((obligation) => ({
       obligationId: normalizeString(obligation.obligationId, ""),
+      toolLoopId: normalizeString(obligation.toolLoopId, ""),
+      stepId: normalizeString(obligation.stepId, ""),
+      stepOrdinal: Number(obligation.stepOrdinal || 1),
       status: normalizeString(obligation.status, ""),
       authorityState: normalizeString(obligation.authorityState, ""),
       name: normalizeString(obligation.name, ""),
@@ -125,7 +128,10 @@ function obligationItemText(obligation = {}, unsupportedReason = "") {
 
 function buildDirectObligationsProjection({ session = {}, turn = {}, operationManifest = {}, nowMs = Date.now() } = {}) {
   const obligations = Array.isArray(turn.unresolvedObligations) ? turn.unresolvedObligations : [];
-  const providerToolCalls = obligations.filter((obligation) => normalizeString(obligation.status, "") !== "declined" && normalizeString(obligation.status, "") !== "canceled");
+  const providerToolCalls = obligations.filter((obligation) => {
+    const status = normalizeString(obligation.status, "");
+    return status !== "declined" && status !== "canceled" && status !== "continuation_sent";
+  });
   const multipleProviderToolCalls = providerToolCalls.length > 1;
   const sourceDigest = obligationSourceDigest({
     turn,
@@ -284,6 +290,9 @@ function buildToolContinuationContextProjection({
     threadId: normalizeString(session.sessionId || turn.sessionId, ""),
     turnId: normalizeString(turn.turnId, ""),
     obligationId: normalizeString(obligation.obligationId, ""),
+    toolLoopId: normalizeString(obligation.toolLoopId, ""),
+    stepId: normalizeString(obligation.stepId, ""),
+    stepOrdinal: Number(obligation.stepOrdinal || 1),
     obligationProjectionId: normalizeString(obligationProjection.projectionId, ""),
     obligationItemKey: normalizeString(obligationItem.stableSourceItemKey, ""),
     resultId: normalizeString(result.resultId, ""),
@@ -343,6 +352,9 @@ function buildToolContinuationContextProjection({
       continuation: {
         continuationId: normalizeString(continuationRequest.continuationId, ""),
         obligationId: normalizeString(obligation.obligationId, ""),
+        toolLoopId: normalizeString(obligation.toolLoopId || continuationRequest.toolLoop?.toolLoopId, ""),
+        stepId: normalizeString(obligation.stepId || continuationRequest.toolLoop?.stepId, ""),
+        stepOrdinal: Number(obligation.stepOrdinal || continuationRequest.toolLoop?.stepOrdinal || 1),
         providerCallType,
         providerOutputType,
         previousResponseIdDigest: sha256(previousResponseId),

@@ -17,9 +17,11 @@ const { toolTranscriptItemFromObligation } = require("../session/session-store")
 const {
   approveReadOnlyToolObligation,
   buildReadOnlyToolContinuationRequest,
+  canonicalToolLoopId,
   cancelReadOnlyToolObligation,
   declineReadOnlyToolObligation,
   executeApprovedReadOnlyToolObligation,
+  MAX_READONLY_TOOL_LOOP_STEPS,
 } = require("../tools/read-only-authority");
 const { normalizeCodexBinding } = require("../runtime/runtime-status");
 
@@ -254,6 +256,23 @@ function turnPromptDigest(turn = {}) {
   const input = Array.isArray(turn.input) ? turn.input : [];
   const text = input.map((entry) => normalizeString(entry?.text, "")).join("\n");
   return sha256(text);
+}
+
+function parentResponseIdForToolStep(turn = {}, obligation = {}) {
+  return normalizeString(
+    obligation.parentResponseId ||
+    (Number(obligation.stepOrdinal || 1) > 1 ? turn.continuationResponseId : turn.responseId),
+    "",
+  );
+}
+
+function parentResponseSourceForToolStep(obligation = {}) {
+  return normalizeString(
+    obligation.parentResponseSource,
+    Number(obligation.stepOrdinal || 1) > 1
+      ? "native_direct_tool_continuation_stream"
+      : "native_direct_initial_stream",
+  );
 }
 
 function turnSnapshot(turn = {}) {
@@ -1695,7 +1714,9 @@ class DirectLiveTextController {
     } catch (error) {
       argumentsError = error?.message || "invalid_tool_arguments";
     }
-    const hasContinuityHandle = Boolean(normalizeString(turn.responseId, ""));
+    const parentResponseId = parentResponseIdForToolStep(turn, obligation);
+    const parentResponseSource = parentResponseSourceForToolStep(obligation);
+    const hasContinuityHandle = Boolean(parentResponseId);
     const providerCallType = normalizeString(obligation.providerCallType || obligation.toolType, "");
     const namespace = normalizeString(obligation.namespace, "");
     const supportedCallType = providerCallType === "function_call" || providerCallType === "custom_tool_call";
@@ -1710,17 +1731,23 @@ class DirectLiveTextController {
       continuationEvidence.status === "ready";
     const obligationDigest = sha256(stableStringify({
       obligationId: normalizeString(obligation.obligationId, ""),
+      toolLoopId: normalizeString(obligation.toolLoopId, ""),
+      stepId: normalizeString(obligation.stepId, ""),
+      stepOrdinal: Number(obligation.stepOrdinal || 1),
       status: normalizeString(obligation.status, ""),
       callIdDigest: sha256(obligation.callId || ""),
       argumentsDigest: sha256(obligation.argumentsText || ""),
-      responseIdDigest: sha256(turn?.responseId || ""),
+      responseIdDigest: sha256(parentResponseId),
     }));
-    const actionToken = (action) => `direct_tool_action_${sha256(`${obligation.obligationId}:${action}:${obligationDigest}`).slice(0, 24)}`;
+    const actionToken = (action) => `direct_tool_action_${sha256(`${obligation.toolLoopId || ""}:${obligation.stepId || ""}:${obligation.obligationId}:${action}:${obligationDigest}`).slice(0, 24)}`;
     return {
       sessionId: obligation.sessionId,
       threadId: obligation.sessionId,
       turnId: obligation.turnId,
       obligationId: obligation.obligationId,
+      toolLoopId: normalizeString(obligation.toolLoopId, ""),
+      stepId: normalizeString(obligation.stepId, ""),
+      stepOrdinal: Number(obligation.stepOrdinal || 1),
       obligationDigest,
       operationLedgerHeadDigest: normalizeString(turn?.operationLedgerHeadDigest || turn?.ledgerDigest, ""),
       tool: normalizeString(obligation.name, "read_file"),
@@ -1730,12 +1757,15 @@ class DirectLiveTextController {
       toolCallSource: normalizeString(obligation.toolCallSource, "provider-native-implicit"),
       callIdPresent: Boolean(normalizeString(obligation.callId, "")),
       hasContinuityHandle,
+      parentResponseSource,
+      parentResponseDigest: sha256(parentResponseId),
       toolContinuationEvidence: continuationEvidence,
       approvalAvailable,
       argumentsError,
       maxReadFileBytes: 384 * 1024,
       maxProviderOutputChars: 64 * 1024,
       maxApprovalPreviewChars: 512,
+      maxToolLoopSteps: MAX_READONLY_TOOL_LOOP_STEPS,
       sensitivePathPolicy: "deny-by-default",
       actionTokens: {
         approve: actionToken("approve"),
@@ -1773,14 +1803,17 @@ class DirectLiveTextController {
     let createdCount = 0;
     for (const obligation of obligations) {
       const params = this.readOnlyToolRequestParams(obligation, turn, project);
-      if (!params.approvalAvailable) {
+      const loopCapExceeded = Number(params.stepOrdinal || 1) > MAX_READONLY_TOOL_LOOP_STEPS;
+      if (!params.approvalAvailable || loopCapExceeded) {
         this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
           status: "unsupported",
           authorityState: "unsupported",
           approvalAvailable: false,
           executionAllowed: false,
           continuationAllowed: false,
-          failureKind: params.argumentsError
+          failureKind: loopCapExceeded
+            ? "tool_loop_cap_exceeded"
+            : params.argumentsError
             ? "invalid_tool_arguments"
             : (!params.hasContinuityHandle
                 ? "continuation_missing_context_handle"
@@ -1789,12 +1822,16 @@ class DirectLiveTextController {
           nextTurnState: "failed",
           turnPatch: {
             error: {
-              code: params.argumentsError
+              code: loopCapExceeded
+                ? "tool_loop_cap_exceeded"
+                : params.argumentsError
                 ? "invalid_tool_arguments"
                 : (!params.hasContinuityHandle
                     ? "continuation_missing_context_handle"
                     : (params.toolContinuationEvidence?.status !== "ready" ? "tool_continuation_profile_required" : "unsupported_tool_call_shape")),
-              message: "Direct read-only tool call cannot be approved for continuation in this runtime bundle.",
+              message: loopCapExceeded
+                ? "Direct read-only tool loop reached its configured step cap."
+                : "Direct read-only tool call cannot be approved for continuation in this runtime bundle.",
             },
           },
         });
@@ -1990,6 +2027,12 @@ class DirectLiveTextController {
       workspaceRequest: (method, params) => this.workspaceRequest(project, method, params, this.readOnlyWorkspaceTimeoutMs),
     });
     const turn = this.sessionStore.readTurn(sessionId, turnId);
+    const currentObligation = this.sessionStore.findToolObligation(sessionId, turnId, obligationId).obligation;
+    const parentResponseId = parentResponseIdForToolStep(turn, currentObligation);
+    const parentResponseSource = parentResponseSourceForToolStep(currentObligation);
+    const toolLoopId = canonicalToolLoopId(currentObligation);
+    const stepOrdinal = Number(currentObligation.stepOrdinal || 1) || 1;
+    const stepId = normalizeString(currentObligation.stepId, "");
     let continuationRequest = null;
     let continuationContext = null;
     if (this.directThreadStore && typeof this.directThreadStore.buildAndPersistContextForToolContinuation === "function") {
@@ -2005,16 +2048,19 @@ class DirectLiveTextController {
         ...baseContinuationRequest,
         source: {
           ...(baseContinuationRequest.source || {}),
-          previousResponseId: normalizeString(turn?.responseId, ""),
-          previousResponseIdSource: "native_direct_parent_initial_stream",
-          sourceEventDigest: sha256(normalizeString(turn?.responseId, "")),
+          previousResponseId: parentResponseId,
+          previousResponseIdSource: parentResponseSource,
+          sourceEventDigest: sha256(parentResponseId),
           sourceTurnDigest: sha256(stableStringify({
             threadId: sessionId,
             turnId,
-            responseId: normalizeString(turn?.responseId, ""),
+            responseId: parentResponseId,
             requestManifestId: normalizeString(turn?.requestManifestId, ""),
+            stepId,
+            stepOrdinal,
           })),
           sourceRequestManifestId: normalizeString(turn?.requestManifestId, ""),
+          sourceStepId: stepId,
           importedContinuityHandleUsed: false,
         },
       };
@@ -2024,12 +2070,20 @@ class DirectLiveTextController {
         stream: true,
         store: false,
         tools: false,
+        parallelToolCalls: false,
         hasInstructions: true,
-        hasPreviousResponseId: Boolean(normalizeString(turn?.responseId, "")),
+        hasPreviousResponseId: Boolean(parentResponseId),
         functionCallOutputCount: outputType === "function_call_output" ? 1 : 0,
         customToolCallOutputCount: outputType === "custom_tool_call_output" ? 1 : 0,
         providerCallType: normalizeString(continuationRequest.toolResult?.providerCallType, ""),
         providerOutputType: outputType,
+        requestShapeClass: stepOrdinal > 1
+          ? "direct_readonly_tool_loop_continuation@1"
+          : "direct_readonly_tool_continuation@1",
+        parentResponseSource,
+        toolLoopId,
+        stepId,
+        stepOrdinal,
       };
       continuationContext = this.directThreadStore.buildAndPersistContextForToolContinuation({
         sessionStore: this.sessionStore,
@@ -2039,20 +2093,32 @@ class DirectLiveTextController {
         turnId,
         obligationId,
         continuationRequest,
-        previousResponseId: normalizeString(turn?.responseId, ""),
+        previousResponseId: parentResponseId,
         model: normalizeString(turn?.model, ""),
         requestShape: continuationShape,
         requestShapeHash: sha256(stableStringify(continuationShape)),
         endpointClass: "chatgpt-codex-responses",
         endpointHash: this.endpoint ? sha256(this.endpoint) : "",
         modelEvidenceRef: normalizeString(this.statusForProject(project).evidenceId, ""),
-        requestShapeEvidenceRef: "continuation.tool_result",
+        requestShapeEvidenceRef: stepOrdinal > 1
+          ? "direct_readonly_tool_loop_continuation@1"
+          : "continuation.tool_result",
         endpointEvidenceRef: this.endpoint ? sha256(this.endpoint) : "",
       }, {
         sessionStore: this.sessionStore,
       });
       continuationRequest = {
         ...continuationRequest,
+        toolLoop: {
+          ...(continuationRequest.toolLoop || {}),
+          toolLoopId,
+          stepId,
+          stepOrdinal,
+          maxStepCount: MAX_READONLY_TOOL_LOOP_STEPS,
+          parentResponseId,
+          parentResponseSource,
+          parentResponseDigest: sha256(parentResponseId),
+        },
         source: {
           ...(continuationRequest.source || {}),
           contextBuildId: continuationContext.contextPack.contextBuildId,
@@ -2072,7 +2138,7 @@ class DirectLiveTextController {
       turnId,
       obligationId,
       continuationRequest,
-      previousResponseId: normalizeString(turn?.responseId, ""),
+      previousResponseId: parentResponseId,
       instructions: normalizeString(continuationContext?.providerInput?.instructions, ""),
       endpoint: this.endpoint || undefined,
       authStore: this.currentAuthStore(),
@@ -2080,6 +2146,7 @@ class DirectLiveTextController {
       profileDoc: this.profileDoc,
       model: normalizeString(turn?.model, ""),
       fetchImpl: this.fetchImpl || undefined,
+      allowSequentialReadOnlyToolLoop: true,
       onLifecycle: (event) => {
         if (event.phase === "streaming") {
           this.emitNotification(surfaceSession, "turn/started", {
@@ -2095,16 +2162,51 @@ class DirectLiveTextController {
     }
     const continuationId = normalizeString(continuation.continuation?.continuationId || continuation.obligation?.continuationRequest?.continuationId, "continuation");
     this.emitContinuationAssistant(surfaceSession, sessionId, turnId, continuationId, continuation.normalizedEvents || []);
-    this.emitNotification(surfaceSession, "turn/completed", {
-      threadId: sessionId,
-      turnId,
-      turn: {
-        id: turnId,
-        status: terminalStatusForState(continuation.turnState),
-        completedAt: nowSeconds(),
-        streamPhase: "continuation",
-      },
-    });
+    if (continuation.turnState === "tool_waiting" && Array.isArray(continuation.nextToolObligations) && continuation.nextToolObligations.length) {
+      const nextToolItems = continuation.nextToolObligations.map(toolTranscriptItemFromObligation);
+      const currentSession = this.sessionStore.readSession(sessionId);
+      if (currentSession && Array.isArray(currentSession.messages)) {
+        this.sessionStore.writeSession({
+          ...currentSession,
+          messages: currentSession.messages.map((message) => {
+            if (message.id !== turnId) return message;
+            const existingItems = Array.isArray(message.items) ? message.items : [];
+            const existingIds = new Set(existingItems.map((item) => item?.id));
+            return {
+              ...message,
+              status: "tool_waiting",
+              items: [
+                ...existingItems,
+                ...nextToolItems.filter((item) => !existingIds.has(item.id)),
+              ],
+            };
+          }),
+        });
+      }
+      for (const item of nextToolItems) {
+        this.emitNotification(surfaceSession, "item/started", { threadId: sessionId, turnId, item });
+        this.emitNotification(surfaceSession, "item/completed", { threadId: sessionId, turnId, item });
+      }
+      const createdApprovalRequests = this.emitToolApprovalRequests(surfaceSession, sessionId, turnId, continuation.nextToolObligations, project);
+      this.emitNotification(surfaceSession, "warning", {
+        threadId: sessionId,
+        turnId,
+        message: createdApprovalRequests
+          ? "Direct read-only continuation requested another file. Local approval is required for the next read."
+          : "Direct read-only continuation requested another tool call, but it is not available for approval.",
+      });
+    } else {
+      this.emitNotification(surfaceSession, "turn/completed", {
+        threadId: sessionId,
+        turnId,
+        turn: {
+          id: turnId,
+          status: terminalStatusForState(continuation.turnState),
+          completedAt: nowSeconds(),
+          streamPhase: "continuation",
+        },
+      });
+    }
     return {
       decision: "approved",
       turn: turnSnapshot(this.sessionStore.readTurn(sessionId, turnId)),
@@ -2443,7 +2545,11 @@ class DirectLiveTextController {
     const textOnlyTier = binding.runtimeMode === "direct-experimental" &&
       binding.directTransport === "live-text" &&
       binding.directTier === "text-only";
-    let obligationResult = this.sessionStore.addToolObligations(sessionId, turnId, result.normalizedEvents);
+    let obligationResult = this.sessionStore.addToolObligations(sessionId, turnId, result.normalizedEvents, {
+      parentResponseId: result.responseId || "",
+      parentResponseSource: "native_direct_initial_stream",
+      stepOrdinal: 1,
+    });
     if (textOnlyTier && obligationResult.obligations.length) {
       const unsupported = [];
       for (const obligation of obligationResult.obligations) {

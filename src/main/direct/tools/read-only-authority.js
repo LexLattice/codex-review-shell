@@ -9,6 +9,9 @@ const READ_FILE_TOOL_NAMES = new Set(["read_file", "readFile"]);
 const MAX_READ_FILE_BYTES = 384 * 1024;
 const MAX_PROVIDER_OUTPUT_CHARS = 64 * 1024;
 const MAX_APPROVAL_PREVIEW_CHARS = 512;
+const MAX_READONLY_TOOL_LOOP_STEPS = 8;
+const MAX_READONLY_TOOL_LOOP_TOTAL_PROVIDER_CHARS = 256 * 1024;
+const MAX_READONLY_TOOL_LOOP_REPEATED_PATH_READS = 2;
 const SUPPORTED_READONLY_CONTINUATION_KINDS = new Map([
   ["function_call", "function_call_output"],
   ["custom_tool_call", "custom_tool_call_output"],
@@ -75,6 +78,34 @@ function continuationIdForResult(obligationId, resultId) {
     .digest("hex")
     .slice(0, 20);
   return `tool_continuation_${digest}`;
+}
+
+function canonicalToolLoopId(obligation = {}) {
+  const existing = normalizeString(obligation.toolLoopId, "");
+  if (existing) return existing;
+  const digest = crypto
+    .createHash("sha256")
+    .update(`${normalizeString(obligation.sessionId, "")}:${normalizeString(obligation.turnId, "")}:read_only_tool_loop`)
+    .digest("hex")
+    .slice(0, 20);
+  return `tool_loop_${digest}`;
+}
+
+function canonicalToolStepId(obligation = {}) {
+  const existing = normalizeString(obligation.stepId, "");
+  if (existing) return existing;
+  const digest = crypto
+    .createHash("sha256")
+    .update([
+      normalizeString(obligation.sessionId, ""),
+      normalizeString(obligation.turnId, ""),
+      canonicalToolLoopId(obligation),
+      String(Number(obligation.stepOrdinal || 1) || 1),
+      normalizeString(obligation.obligationId, ""),
+    ].join(":"))
+    .digest("hex")
+    .slice(0, 20);
+  return `tool_step_${digest}`;
 }
 
 function parseArgumentsJson(obligation = {}) {
@@ -256,6 +287,9 @@ function projectReadResult(raw = {}, obligation = {}, approvedAt = "", nowMs) {
     schema: DIRECT_READONLY_TOOL_RESULT_SCHEMA,
     resultId: resultIdForObligation(obligation.obligationId),
     obligationId: obligation.obligationId,
+    toolLoopId: canonicalToolLoopId(obligation),
+    stepId: canonicalToolStepId(obligation),
+    stepOrdinal: Number(obligation.stepOrdinal || 1),
     tool: normalizeString(obligation.name, "read_file"),
     status: "completed",
     relPath: normalizeString(result.relPath, ""),
@@ -275,6 +309,57 @@ function projectReadResult(raw = {}, obligation = {}, approvedAt = "", nowMs) {
     sideEffectExecuted: false,
     rawWorkspacePathExposed: false,
   };
+}
+
+function loopSummaryFromTurn(turn = {}, nextObligation = null) {
+  const obligations = Array.isArray(turn.unresolvedObligations) ? turn.unresolvedObligations : [];
+  const loopId = canonicalToolLoopId(nextObligation || obligations[0] || {
+    sessionId: turn.sessionId,
+    turnId: turn.turnId,
+  });
+  const loopObligations = obligations.filter((obligation) => canonicalToolLoopId(obligation) === loopId);
+  const providerOutputTotalChars = loopObligations.reduce((sum, obligation) =>
+    sum + Number(obligation?.result?.providerOutputChars || 0), 0);
+  const completedStepCount = loopObligations.filter((obligation) =>
+    ["continuation_built", "continuation_sent"].includes(normalizeString(obligation.status, ""))).length;
+  const readCounts = new Map();
+  for (const obligation of loopObligations) {
+    const relPath = normalizeString(obligation.approvedRead?.relPath || obligation.result?.relPath, "");
+    if (!relPath) continue;
+    readCounts.set(relPath, (readCounts.get(relPath) || 0) + 1);
+  }
+  return {
+    toolLoopId: loopId,
+    maxStepCount: MAX_READONLY_TOOL_LOOP_STEPS,
+    completedStepCount,
+    totalStepCount: loopObligations.length,
+    providerOutputTotalChars,
+    redactionBlockedStepCount: loopObligations.filter((obligation) => obligation.result?.toolResultRedaction?.status === "blocked").length,
+    redactedStepCount: loopObligations.filter((obligation) => obligation.result?.toolResultRedaction?.status === "redacted").length,
+    repeatedPathReads: Object.fromEntries(readCounts.entries()),
+  };
+}
+
+function assertLoopCapsBeforeExecution(turn = {}, obligation = {}) {
+  const stepOrdinal = Number(obligation.stepOrdinal || 1) || 1;
+  if (stepOrdinal > MAX_READONLY_TOOL_LOOP_STEPS) {
+    const error = new Error("Direct read-only tool loop step cap exceeded.");
+    error.code = "tool_loop_cap_exceeded";
+    throw error;
+  }
+  const summary = loopSummaryFromTurn(turn, obligation);
+  if (summary.providerOutputTotalChars > MAX_READONLY_TOOL_LOOP_TOTAL_PROVIDER_CHARS) {
+    const error = new Error("Direct read-only tool loop provider-output cap exceeded.");
+    error.code = "tool_loop_cap_exceeded";
+    throw error;
+  }
+  const parsed = assertReadFileObligation(obligation);
+  const currentCount = Number(summary.repeatedPathReads[parsed.relPath] || 0);
+  if (currentCount > MAX_READONLY_TOOL_LOOP_REPEATED_PATH_READS) {
+    const error = new Error("Direct read-only tool loop repeated-path cap exceeded.");
+    error.code = "tool_loop_cap_exceeded";
+    throw error;
+  }
 }
 
 function assertRecordedReadOnlyResult(obligation = {}) {
@@ -325,6 +410,9 @@ function approveReadOnlyToolObligation(options = {}) {
   return sessionStore.updateToolObligation(options.sessionId, options.turnId, obligation.obligationId, {
     status: "approved",
     authorityState: "approved_readonly",
+    toolLoopId: canonicalToolLoopId(obligation),
+    stepId: canonicalToolStepId(obligation),
+    stepOrdinal: Number(obligation.stepOrdinal || 1),
     executionAllowed: true,
     continuationAllowed: false,
     approvalAvailable: false,
@@ -406,6 +494,8 @@ async function executeApprovedReadOnlyToolObligation(options = {}) {
     error.code = "tool_obligation_not_approved";
     throw error;
   }
+  const turn = sessionStore.readTurn(options.sessionId, options.turnId) || {};
+  assertLoopCapsBeforeExecution(turn, obligation);
   const parsed = assertReadFileObligation(obligation);
   const workspaceResult = await options.workspaceRequest("readFile", {
     relPath: parsed.relPath,
@@ -416,6 +506,9 @@ async function executeApprovedReadOnlyToolObligation(options = {}) {
   const updated = sessionStore.updateToolObligation(options.sessionId, options.turnId, obligation.obligationId, {
     status: "result_recorded",
     authorityState: "result_recorded",
+    toolLoopId: canonicalToolLoopId(obligation),
+    stepId: canonicalToolStepId(obligation),
+    stepOrdinal: Number(obligation.stepOrdinal || 1),
     executionAllowed: false,
     continuationAllowed: false,
     approvalAvailable: false,
@@ -454,6 +547,15 @@ function buildReadOnlyToolContinuationRequest(options = {}) {
       recordedResultId: result.resultId,
       recordedAt: normalizeString(result.recordedAt, ""),
       approvedAt: normalizeString(result.approvedAt || obligation.approvedAt, ""),
+    },
+    toolLoop: {
+      toolLoopId: canonicalToolLoopId(obligation),
+      stepId: canonicalToolStepId(obligation),
+      stepOrdinal: Number(obligation.stepOrdinal || 1),
+      maxStepCount: MAX_READONLY_TOOL_LOOP_STEPS,
+      parentResponseId: normalizeString(obligation.parentResponseId, ""),
+      parentResponseSource: normalizeString(obligation.parentResponseSource, ""),
+      parentResponseDigest: normalizeString(obligation.parentResponseDigest, ""),
     },
     toolResult: {
       obligationId: obligation.obligationId,
@@ -532,6 +634,9 @@ function recordReadOnlyToolContinuationRequest(options = {}) {
   const updated = sessionStore.updateToolObligation(options.sessionId, options.turnId, obligation.obligationId, {
     status: "continuation_built",
     authorityState: "continuation_built",
+    toolLoopId: canonicalToolLoopId(obligation),
+    stepId: canonicalToolStepId(obligation),
+    stepOrdinal: Number(obligation.stepOrdinal || 1),
     executionAllowed: false,
     continuationAllowed: false,
     continuationRequest,
@@ -554,11 +659,17 @@ module.exports = {
   MAX_APPROVAL_PREVIEW_CHARS,
   MAX_PROVIDER_OUTPUT_CHARS,
   MAX_READ_FILE_BYTES,
+  MAX_READONLY_TOOL_LOOP_REPEATED_PATH_READS,
+  MAX_READONLY_TOOL_LOOP_STEPS,
+  MAX_READONLY_TOOL_LOOP_TOTAL_PROVIDER_CHARS,
   approveReadOnlyToolObligation,
   buildReadOnlyToolContinuationRequest,
+  canonicalToolLoopId,
+  canonicalToolStepId,
   cancelReadOnlyToolObligation,
   declineReadOnlyToolObligation,
   executeApprovedReadOnlyToolObligation,
+  loopSummaryFromTurn,
   projectReadResult,
   projectReadOnlyAuthorityDecision,
   recordReadOnlyToolContinuationRequest,

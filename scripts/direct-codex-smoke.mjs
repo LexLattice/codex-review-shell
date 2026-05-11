@@ -2388,7 +2388,7 @@ try {
   assert(approvedToolRequestManifest.enabledFeatures.store === false, "Expected approved live tool manifest to record store=false.");
   assert(approvedToolRequestManifest.enabledFeatures.toolDeclarations === false, "Expected approved live tool manifest to disable new tool declarations.");
   assert(approvedToolRequestManifest.enabledFeatures.toolOutputItem === true, "Expected approved live tool manifest to allow exactly one tool-output item.");
-  assert(approvedToolRequestManifest.previousResponse.source === "native_direct_parent_initial_stream", "Expected approved live tool manifest to cite native parent response source.");
+	  assert(approvedToolRequestManifest.previousResponse.source === "native_direct_initial_stream", "Expected approved live tool manifest to cite native parent response source.");
   assert(approvedToolRequestManifest.contextPolicy.harnessPolicyDigest, "Expected approved live tool manifest to cite continuation harness policy.");
   assert(approvedToolRequestManifest.rawRequestBodyStored === false, "Expected approved live tool manifest not to store raw request body.");
   assert(approvedContinuationBody.instructions.includes("Do not request or execute another tool"), "Expected approved live tool continuation request to preserve continuation-specific instructions.");
@@ -2404,12 +2404,132 @@ try {
     actionTokenId: approvalRequest.params.actionTokens.approve,
   });
   assert(approvedWorkspaceReads === 1, "Expected duplicate completed approval response not to reread workspace.");
-  assert(approvedToolController.toolDecisionClaims.size <= 1, "Expected direct tool decision claim cache to stay bounded.");
-  assert(approvedToolController.toolDecisionResults.size <= 1, "Expected direct tool decision result cache to stay bounded.");
-  approvedToolThreadStore.close();
-} finally {
-  cleanupSmokeTempDir(liveTextControllerParent);
-}
+	  assert(approvedToolController.toolDecisionClaims.size <= 1, "Expected direct tool decision claim cache to stay bounded.");
+	  assert(approvedToolController.toolDecisionResults.size <= 1, "Expected direct tool decision result cache to stay bounded.");
+	  approvedToolThreadStore.close();
+
+	  const loopToolStore = new DirectSessionStore({ rootDir: path.join(liveTextControllerParent, "loop-tool-direct-sessions") });
+	  const loopToolThreadStore = new DirectThreadStore({
+	    rootDir: path.join(liveTextControllerParent, "loop-tool-direct-thread-store"),
+	    mode: "index_only",
+	  });
+	  const loopStepTwoSse = [
+	    "event: response.created",
+	    "data: {\"response\":{\"id\":\"resp_live_tool_step2\",\"model\":\"gpt-5.4\"}}",
+	    "",
+	    "event: response.output_item.added",
+	    "data: {\"item\":{\"id\":\"tool_live_text_step2\",\"type\":\"function_call\",\"call_id\":\"call_live_read_step2\",\"name\":\"read_file\"}}",
+	    "",
+	    "event: response.function_call_arguments.delta",
+	    "data: {\"item_id\":\"tool_live_text_step2\",\"call_id\":\"call_live_read_step2\",\"delta\":\"{\\\"path\\\":\\\"package.json\\\"}\"}",
+	    "",
+	    "event: response.output_item.done",
+	    "data: {\"item\":{\"id\":\"tool_live_text_step2\",\"type\":\"function_call\",\"call_id\":\"call_live_read_step2\",\"name\":\"read_file\",\"arguments\":\"{\\\"path\\\":\\\"package.json\\\"}\"}}",
+	    "",
+	    "event: response.completed",
+	    "data: {\"response\":{\"id\":\"resp_live_tool_step2\",\"status\":\"completed\"}}",
+	    "",
+	  ].join("\n");
+	  const loopFinalSse = [
+	    "event: response.created",
+	    "data: {\"response\":{\"id\":\"resp_live_tool_final\",\"model\":\"gpt-5.4\"}}",
+	    "",
+	    "event: response.output_text.delta",
+	    "data: {\"item_id\":\"msg_live_tool_final\",\"delta\":\"two reads accepted\"}",
+	    "",
+	    "event: response.completed",
+	    "data: {\"response\":{\"id\":\"resp_live_tool_final\",\"status\":\"completed\"}}",
+	    "",
+	  ].join("\n");
+	  let loopFetchCalls = 0;
+	  const loopContinuationBodies = [];
+	  const loopWorkspaceReads = [];
+	  const loopToolController = new DirectLiveTextController({
+	    sessionStore: loopToolStore,
+	    directThreadStore: loopToolThreadStore,
+	    profileDoc: acceptedReadOnlyToolProfile(),
+	    authStore: liveAuthStore,
+	    workspaceRequest: async (_project, method, params) => {
+	      assert(method === "readFile", "Expected multi-step direct loop to use workspace readFile.");
+	      loopWorkspaceReads.push(params.relPath);
+	      return {
+	        relPath: params.relPath,
+	        size: params.relPath === "README.md" ? 23 : 17,
+	        truncated: false,
+	        binary: false,
+	        text: `${params.relPath} fixture content`,
+	        source: "local",
+	      };
+	    },
+	    fetchImpl: async (_url, init = {}) => {
+	      loopFetchCalls += 1;
+	      if (loopFetchCalls > 1 && init.body) loopContinuationBodies.push(JSON.parse(init.body));
+	      if (loopFetchCalls === 1) return textResponse(liveToolSse, 200, { "content-type": "text/event-stream" });
+	      if (loopFetchCalls === 2) return textResponse(loopStepTwoSse, 200, { "content-type": "text/event-stream" });
+	      return textResponse(loopFinalSse, 200, { "content-type": "text/event-stream" });
+	    },
+	  });
+	  const loopToolEvents = [];
+	  const loopToolSurface = new DirectLiveTextSurfaceSession({
+	    isDestroyed: () => false,
+	    send: (_channel, payload) => loopToolEvents.push(payload),
+	  }, {
+	    controller: loopToolController,
+	    project: approvedToolProject,
+	  });
+	  await loopToolSurface.connect({ transport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT });
+	  const loopThread = await loopToolSurface.request("thread/start", {});
+	  const loopAck = await loopToolSurface.request("turn/start", {
+	    threadId: loopThread.thread.id,
+	    promptText: "multi-step tool prompt",
+	    clientTurnRequestId: "client_req_live_tool_loop_1",
+	    model: "gpt-5.4",
+	  });
+	  await waitForCondition(
+	    () => loopToolEvents.some((event) => event.type === "rpc-request" && event.request?.method === "direct/tool/readOnly/requestApproval"),
+	    "Expected multi-step direct loop to request first read-only approval.",
+	  );
+	  const firstLoopApproval = loopToolEvents.find((event) => event.type === "rpc-request")?.request;
+	  assert(firstLoopApproval.params.stepOrdinal === 1, "Expected first read-only loop approval to be step 1.");
+	  const firstLoopResponse = await loopToolSurface.respond(firstLoopApproval.key, {
+	    decision: "approve",
+	    clientToolDecisionId: "client_tool_loop_decision_1",
+	    actionTokenId: firstLoopApproval.params.actionTokens.approve,
+	  });
+	  assert(firstLoopResponse.response.continuation.ok === true, "Expected first read-only loop continuation to succeed.");
+	  assert(firstLoopResponse.response.continuation.terminal.state === "tool_waiting", "Expected first continuation to produce the next read-only obligation.");
+	  await waitForCondition(
+	    () => loopToolEvents.filter((event) => event.type === "rpc-request" && event.request?.method === "direct/tool/readOnly/requestApproval").length === 2,
+	    "Expected multi-step direct loop to request second read-only approval.",
+	  );
+	  const loopApprovalRequests = loopToolEvents.filter((event) => event.type === "rpc-request" && event.request?.method === "direct/tool/readOnly/requestApproval");
+	  const secondLoopApproval = loopApprovalRequests[1].request;
+	  assert(secondLoopApproval.params.relPath === "package.json", "Expected second read-only loop approval to show the nested path.");
+	  assert(secondLoopApproval.params.stepOrdinal === 2, "Expected second read-only loop approval to be step 2.");
+	  assert(secondLoopApproval.params.parentResponseSource === "native_direct_tool_continuation_stream", "Expected second read-only loop approval to cite continuation-stream parent response.");
+	  const secondLoopResponse = await loopToolSurface.respond(secondLoopApproval.key, {
+	    decision: "approve",
+	    clientToolDecisionId: "client_tool_loop_decision_2",
+	    actionTokenId: secondLoopApproval.params.actionTokens.approve,
+	  });
+	  assert(secondLoopResponse.response.continuation.ok === true, "Expected second read-only loop continuation to complete.");
+	  assert(loopFetchCalls === 3, "Expected multi-step direct loop to make initial plus two continuation requests.");
+	  assert(loopWorkspaceReads.join(",") === "README.md,package.json", "Expected multi-step direct loop to read each approved path exactly once.");
+	  assert(loopContinuationBodies.length === 2, "Expected multi-step direct loop to send two continuation requests.");
+	  assert(loopContinuationBodies[0].parallel_tool_calls === false, "Expected first loop continuation to disable parallel tool calls.");
+	  assert(loopContinuationBodies[1].parallel_tool_calls === false, "Expected second loop continuation to disable parallel tool calls.");
+	  const loopTurn = loopToolStore.readTurn(loopThread.thread.id, loopAck.turn.id);
+	  assert(loopTurn.state === "completed", "Expected multi-step direct read-only loop to complete after final assistant text.");
+	  assert(loopTurn.unresolvedObligations.length === 2, "Expected multi-step direct read-only loop to persist both obligations.");
+	  assert(loopTurn.unresolvedObligations.every((obligation) => obligation.status === "continuation_sent"), "Expected all loop obligations to record sent continuation.");
+	  assert(loopTurn.toolLoopResponseChain.length === 2, "Expected multi-step direct loop to preserve response-id chain.");
+	  assert(loopTurn.continuationRequests.length === 2, "Expected multi-step direct loop to persist both continuation manifests.");
+	  const loopSession = loopToolStore.readSession(loopThread.thread.id);
+	  assert(loopSession.messages[0].items.some((item) => item.type === "agentMessage" && item.text === "two reads accepted"), "Expected final loop assistant output in same turn transcript.");
+	  loopToolThreadStore.close();
+	} finally {
+	  cleanupSmokeTempDir(liveTextControllerParent);
+	}
 
 const secretFixture = {
   headers: {

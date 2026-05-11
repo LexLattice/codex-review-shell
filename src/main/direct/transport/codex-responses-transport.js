@@ -154,6 +154,7 @@ function buildReadOnlyToolContinuationProbeRequest(options = {}) {
     model: normalizeString(options.model, modelFromProfile(options.profileDoc)),
     stream: true,
     store: false,
+    parallel_tool_calls: false,
     instructions: normalizeString(options.instructions, DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS),
     input: [
       {
@@ -193,6 +194,7 @@ function requestShapeForDiagnostic(requestBody = {}) {
       ? requestBody.input.filter((item) => item?.type === "custom_tool_call_output").length
       : 0,
     toolCount: Array.isArray(requestBody.tools) ? requestBody.tools.length : 0,
+    parallelToolCalls: requestBody.parallel_tool_calls === true,
   };
 }
 
@@ -741,7 +743,12 @@ async function runPersistedReadOnlyToolContinuation(options = {}) {
     event.type === "tool_call_started" ||
     event.type === "tool_call_delta" ||
     event.type === "tool_call_completed");
-  const terminal = nestedToolCall
+  const allowSequentialLoop = options.allowSequentialReadOnlyToolLoop === true;
+  const parentResponseId = result.responseId || responseIdFromNormalizedEvents(result.normalizedEvents);
+  const currentStepOrdinal = Number(continuationRequest.toolLoop?.stepOrdinal || recorded.obligation.stepOrdinal || 1) || 1;
+  let nestedObligationResult = { obligations: [] };
+  let continuationOutcome = "";
+  let terminal = nestedToolCall
     ? {
         state: "failed",
         error: {
@@ -750,17 +757,81 @@ async function runPersistedReadOnlyToolContinuation(options = {}) {
         },
       }
     : (result.terminal || terminalStateFromNormalizedEvents(result.normalizedEvents));
+  if (nestedToolCall && allowSequentialLoop) {
+    nestedObligationResult = sessionStore.addToolObligations(options.sessionId, options.turnId, result.normalizedEvents, {
+      ...options,
+      toolLoopId: normalizeString(continuationRequest.toolLoop?.toolLoopId || recorded.obligation.toolLoopId, ""),
+      stepOrdinal: currentStepOrdinal + 1,
+      parentResponseId,
+      parentResponseSource: "native_direct_tool_continuation_stream",
+    });
+    if (nestedObligationResult.obligations.length === 1) {
+      continuationOutcome = "next_read_file_step";
+      terminal = { state: "tool_waiting", error: null };
+    } else {
+      continuationOutcome = "multiple_tool_calls_unsupported";
+      terminal = {
+        state: "failed",
+        error: {
+          code: "multiple_tool_calls_unsupported",
+          message: "Direct read-only loop supports exactly one nested read_file call per continuation.",
+        },
+      };
+      for (const obligation of nestedObligationResult.obligations) {
+        sessionStore.updateToolObligation(options.sessionId, options.turnId, obligation.obligationId, {
+          status: "unsupported",
+          authorityState: "unsupported",
+          approvalAvailable: false,
+          executionAllowed: false,
+          continuationAllowed: false,
+          failureKind: "multiple_tool_calls_unsupported",
+        }, {
+          ...options,
+          nextTurnState: "failed",
+          turnPatch: { error: terminal.error },
+        });
+      }
+    }
+  } else if (nestedToolCall) {
+    continuationOutcome = "unsupported_nested_tool_call";
+  } else if (terminal.state === "completed" && assistantTextFromEvents(result.normalizedEvents)) {
+    continuationOutcome = "assistant_final";
+  } else if (terminal.state === "completed") {
+    continuationOutcome = "empty_output";
+    terminal = {
+      state: "failed",
+      error: {
+        code: "empty_continuation_output",
+        message: "Direct read-only continuation completed without assistant text or a supported tool call.",
+      },
+    };
+  } else {
+    continuationOutcome = terminal.error?.code === "response_incomplete" ? "incomplete" : "transport_failed";
+  }
   const completedTurn = sessionStore.updateTurnState(
     options.sessionId,
     options.turnId,
     terminal.state,
     {
       ...(terminal.error ? { error: terminal.error } : {}),
-      continuationResponseId: result.responseId || responseIdFromNormalizedEvents(result.normalizedEvents),
+      continuationResponseId: parentResponseId,
+      toolLoopResponseChain: [
+        ...(Array.isArray(existingTurn.toolLoopResponseChain) ? existingTurn.toolLoopResponseChain : []),
+        {
+          stepOrdinal: currentStepOrdinal,
+          emittedToolCallResponseId: normalizeString(continuationRequest.toolLoop?.parentResponseId || continuationRequest.source?.previousResponseId, ""),
+          continuationResponseId: parentResponseId,
+          sourceEventDigest: normalizeString(continuationRequest.source?.sourceEventDigest, ""),
+        },
+      ],
     },
     options,
   );
-  const continuationOk = result.ok && !nestedToolCall && completedTurn.state === "completed";
+  const continuationOk = (
+    result.ok && !nestedToolCall && completedTurn.state === "completed"
+  ) || (
+    allowSequentialLoop && continuationOutcome === "next_read_file_step" && completedTurn.state === "tool_waiting"
+  );
   const updatedObligation = sessionStore.updateToolObligation(options.sessionId, options.turnId, options.obligationId, {
     status: "continuation_sent",
     authorityState: "continuation_sent",
@@ -773,9 +844,10 @@ async function runPersistedReadOnlyToolContinuation(options = {}) {
       ok: continuationOk,
       terminal,
       responseId: result.responseId,
+      continuationOutcome,
       normalizedEventCount: result.normalizedEvents.length,
       originalRequestRetried: false,
-      failureKind: nestedToolCall ? "nested_tool_call_unsupported" : "",
+      failureKind: continuationOutcome === "unsupported_nested_tool_call" ? "nested_tool_call_unsupported" : "",
     },
   }, {
     ...options,
@@ -790,6 +862,8 @@ async function runPersistedReadOnlyToolContinuation(options = {}) {
     turnId: options.turnId,
     turnState: completedTurn.state,
     obligation: updatedObligation.obligation,
+    nextToolObligations: nestedObligationResult.obligations,
+    continuationOutcome,
   };
 }
 
