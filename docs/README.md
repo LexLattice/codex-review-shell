@@ -9,6 +9,7 @@
 - [Codex Internal Knobs ODEU Map](./CODEX_INTERNAL_KNOBS_ODEU_MAP.md)
 - [Codex Runtime Provider Profile Spec](./CODEX_RUNTIME_PROVIDER_PROFILE_SPEC.md)
 - [Codex Runtime Header And Drawer Spec](./CODEX_RUNTIME_HEADER_DRAWER_SPEC.md)
+- [Codex Usage Ledger Spec](./CODEX_USAGE_LEDGER_SPEC.md)
 - [Composer Runtime Band ODEU Debug Note](./COMPOSER_RUNTIME_BAND_ODEU_DEBUG.md)
 - [Middle Pane Web Tab Spec](./MIDDLE_PANE_WEB_TAB_SPEC.md)
 - [Codex Surface Reload, History, Thought, And Markdown Spec](./CODEX_SURFACE_RELOAD_HISTORY_MARKDOWN_SPEC.md)
