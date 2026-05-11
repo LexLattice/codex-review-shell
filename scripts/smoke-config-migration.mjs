@@ -2,10 +2,13 @@ import fs from "node:fs";
 import path from "node:path";
 import vm from "node:vm";
 import crypto from "node:crypto";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(__dirname, "..");
+const require = createRequire(import.meta.url);
+const { defaultUsageLedgerConfig, normalizeUsageLedgerConfig } = require("../src/main/usage-ledger-config.js");
 const mainPath = path.join(appRoot, "src", "main.js");
 const source = fs.readFileSync(mainPath, "utf8");
 const start = source.indexOf("function nowIso()");
@@ -21,6 +24,8 @@ const sandbox = {
   process,
   repoRoot: appRoot,
   CODEX_THREAD_RUNTIME_PREF_MAX_ENTRIES: 500,
+  defaultUsageLedgerConfig,
+  normalizeUsageLedgerConfig,
 };
 vm.createContext(sandbox);
 vm.runInContext(

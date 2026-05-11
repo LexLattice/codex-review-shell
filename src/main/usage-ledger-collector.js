@@ -2,6 +2,7 @@
 
 const crypto = require("node:crypto");
 const path = require("node:path");
+const { normalizeUsageLedgerConfig } = require("./usage-ledger-config");
 const { UsageLedgerStore, evidenceRef, sha256, WRITER_VERSION } = require("./usage-ledger-store");
 
 function nowIso() {
@@ -24,26 +25,6 @@ function cleanOptionalNumber(value) {
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function normalizeUsageLedgerConfig(value = {}) {
-  const raw = isPlainObject(value) ? value : {};
-  const envEnabled = /^(1|true|yes)$/i.test(String(process.env.CODEX_USAGE_LEDGER_ENABLED || "").trim());
-  const rawPathPolicy = cleanString(raw.rawPathPolicy || raw.raw_path_policy, "excluded");
-  const payloadHashMode = cleanString(raw.payloadHashMode || raw.payload_hash_mode, "none");
-  return {
-    enabled: raw.enabled !== false || envEnabled,
-    mode: cleanString(raw.mode, "metadata_only"),
-    outputDir: cleanString(raw.outputDir || raw.output_dir, ".codex/usage-ledgers"),
-    strict: raw.strict === true,
-    includePayloadRefs: raw.includePayloadRefs === true || raw.include_payload_refs === true,
-    includePromptText: raw.includePromptText === true || raw.include_prompt_text === true,
-    includeToolOutputText: raw.includeToolOutputText === true || raw.include_tool_output_text === true,
-    includeRequestPayloadHashes: raw.includeRequestPayloadHashes === true || raw.include_request_payload_hashes === true,
-    includeResponsePayloadHashes: raw.includeResponsePayloadHashes === true || raw.include_response_payload_hashes === true,
-    payloadHashMode: ["none", "sha256", "hmac_sha256"].includes(payloadHashMode) ? payloadHashMode : "none",
-    rawPathPolicy: ["excluded", "private_diagnostic_only", "included_explicit"].includes(rawPathPolicy) ? rawPathPolicy : "excluded",
-  };
 }
 
 function wslUncPath(workspace) {
@@ -512,7 +493,7 @@ class UsageLedgerCollector {
     const rowKind =
       type === "rpc-request-updated" && status === "resolved"
         ? "server_request_resolved"
-        : type === "rpc-request-updated" && (status === "connection_closed" || status === "connection-closed")
+        : type === "rpc-request-updated" && status === "connection_closed"
           ? "server_request_closed"
           : type === "rpc-request-updated"
             ? "server_request_responded"
@@ -570,5 +551,4 @@ class UsageLedgerCollector {
 
 module.exports = {
   UsageLedgerCollector,
-  normalizeUsageLedgerConfig,
 };

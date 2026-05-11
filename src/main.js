@@ -20,6 +20,7 @@ const { MiddleWebHost } = require("./main/middle-web-host");
 const { WorkspaceBackendManager, workspaceLabel, workspaceRoot } = require("./main/workspace-backend");
 const { ThreadAnalyticsStore, buildThreadKey } = require("./main/thread-analytics-store");
 const { UsageLedgerCollector } = require("./main/usage-ledger-collector");
+const { defaultUsageLedgerConfig, normalizeUsageLedgerConfig } = require("./main/usage-ledger-config");
 const { PLANE_ZOOM_DEFAULT, clampZoomFactor, zoomDeltaForDirection } = require("./shared/plane-zoom");
 
 const APP_TITLE = "Codex Review Shell";
@@ -201,22 +202,6 @@ function defaultCodexRuntimeForWorkspace(workspace) {
   return workspace?.kind === "wsl" && process.platform === "win32" ? "wsl" : "auto";
 }
 
-function defaultCodexUsageLedgerConfig() {
-  return {
-    enabled: true,
-    mode: "metadata_only",
-    outputDir: ".codex/usage-ledgers",
-    strict: false,
-    includePayloadRefs: false,
-    includePromptText: false,
-    includeToolOutputText: false,
-    includeRequestPayloadHashes: false,
-    includeResponsePayloadHashes: false,
-    payloadHashMode: "none",
-    rawPathPolicy: "excluded",
-  };
-}
-
 function defaultConfig() {
   const defaultProjectId = "project_example";
   const defaultWorkspace = defaultProjectWorkspaceConfig();
@@ -254,7 +239,7 @@ function defaultConfig() {
               kind: "codex_executable",
               flavor: "vanilla",
             },
-            usageLedger: defaultCodexUsageLedgerConfig(),
+            usageLedger: defaultUsageLedgerConfig(),
             remoteAuth: {
               mode: "none",
               tokenFilePath: "",
@@ -468,26 +453,6 @@ function normalizeCodexProviderConfig(value) {
     flavor,
     selectedBy: normalizeString(raw.selectedBy, "project_config"),
     configuredAt: normalizeString(raw.configuredAt, ""),
-  };
-}
-
-function normalizeCodexUsageLedgerConfig(value) {
-  const raw = isPlainObject(value) ? value : {};
-  const defaults = defaultCodexUsageLedgerConfig();
-  const payloadHashMode = normalizeString(raw.payloadHashMode || raw.payload_hash_mode, defaults.payloadHashMode);
-  const rawPathPolicy = normalizeString(raw.rawPathPolicy || raw.raw_path_policy, defaults.rawPathPolicy);
-  return {
-    enabled: raw.enabled !== false,
-    mode: normalizeString(raw.mode, defaults.mode),
-    outputDir: normalizeString(raw.outputDir || raw.output_dir, defaults.outputDir),
-    strict: raw.strict === true,
-    includePayloadRefs: raw.includePayloadRefs === true || raw.include_payload_refs === true,
-    includePromptText: raw.includePromptText === true || raw.include_prompt_text === true,
-    includeToolOutputText: raw.includeToolOutputText === true || raw.include_tool_output_text === true,
-    includeRequestPayloadHashes: raw.includeRequestPayloadHashes === true || raw.include_request_payload_hashes === true,
-    includeResponsePayloadHashes: raw.includeResponsePayloadHashes === true || raw.include_response_payload_hashes === true,
-    payloadHashMode: ["none", "sha256", "hmac_sha256"].includes(payloadHashMode) ? payloadHashMode : defaults.payloadHashMode,
-    rawPathPolicy: ["excluded", "private_diagnostic_only", "included_explicit"].includes(rawPathPolicy) ? rawPathPolicy : defaults.rawPathPolicy,
   };
 }
 
@@ -1100,7 +1065,7 @@ function normalizeProject(input, index = 0) {
           configuredFlavor: rawCodex.configuredFlavor,
           connectionPath: rawCodex.connectionPath,
         }),
-        usageLedger: normalizeCodexUsageLedgerConfig(rawCodex.usageLedger || rawCodex.usage_ledger),
+        usageLedger: normalizeUsageLedgerConfig(rawCodex.usageLedger || rawCodex.usage_ledger),
         remoteAuth: normalizeRemoteAuthConfig(rawCodex.remoteAuth),
       },
       chatgpt: {

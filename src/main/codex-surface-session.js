@@ -640,11 +640,7 @@ class CodexSurfaceSession extends EventEmitter {
     const reason = options.reason || "Codex surface session disposed.";
     this.rejectPending(reason);
     this.closeServerRequests(reason);
-    if (options.silent) {
-      this.usageLedger?.captureConnectionClosed?.(reason).catch(() => {});
-    } else {
-      await this.usageLedger?.close?.(reason).catch(() => {});
-    }
+    await this.usageLedger?.close?.(reason).catch(() => {});
     this.connection = options.keepConnection ? this.connection : null;
     if (!options.keepConnection) this.connectionId = "";
     if (!options.silent) this.emitStatus("disconnected", { error: options.reason || "" });
