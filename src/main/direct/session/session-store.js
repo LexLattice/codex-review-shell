@@ -19,6 +19,8 @@ const DIRECT_TURN_STATES = new Set([
   "tool_waiting",
   "authority_waiting",
   "continuation_ready",
+  "continuation_sent",
+  "streaming_continuation",
   "completed",
   "failed",
   "aborted",
@@ -30,7 +32,21 @@ const DIRECT_TURN_STATES = new Set([
   "empty_output_terminal",
   "checkpoint_required",
 ]);
-const DIRECT_RECOVERABLE_ACTIVE_TURN_STATES = new Set(["request_built", "streaming"]);
+const DIRECT_ACTIVE_TURN_STATES = new Set([
+  "request_built",
+  "streaming",
+  "tool_waiting",
+  "authority_waiting",
+  "continuation_ready",
+  "continuation_sent",
+  "streaming_continuation",
+]);
+const DIRECT_RECOVERABLE_ACTIVE_TURN_STATES = new Set([
+  "request_built",
+  "streaming",
+  "continuation_sent",
+  "streaming_continuation",
+]);
 const DIRECT_TOOL_OBLIGATION_TERMINAL_STATUSES = new Set([
   "approved",
   "declined",
@@ -268,7 +284,7 @@ function indexEntryFromSession(session) {
     turnCount: turns.length,
     unresolvedObligationCount: Array.isArray(session.unresolvedObligations) ? session.unresolvedObligations.length : 0,
     eventCount: turns.reduce((count, turn) => count + Number(turn.normalizedEventCount || 0), 0),
-    activeTurnCount: turns.filter((turn) => DIRECT_RECOVERABLE_ACTIVE_TURN_STATES.has(turn.state)).length,
+    activeTurnCount: turns.filter((turn) => DIRECT_ACTIVE_TURN_STATES.has(turn.state)).length,
     lastTurnState: turns[turns.length - 1]?.state || "",
   };
 }
@@ -1026,6 +1042,7 @@ class DirectSessionStore {
 
 module.exports = {
   DIRECT_DIAGNOSTIC_SCHEMA,
+  DIRECT_ACTIVE_TURN_STATES,
   DIRECT_IMPORT_INDEX_SCHEMA,
   DIRECT_RECOVERABLE_ACTIVE_TURN_STATES,
   DIRECT_SESSION_INDEX_SCHEMA,

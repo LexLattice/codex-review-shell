@@ -8,7 +8,7 @@ const DIRECT_READONLY_TOOL_RESULT_SCHEMA = "direct_codex_readonly_tool_result@1"
 const READ_FILE_TOOL_NAMES = new Set(["read_file", "readFile"]);
 const MAX_READ_FILE_BYTES = 384 * 1024;
 const MAX_PROVIDER_OUTPUT_CHARS = 64 * 1024;
-const MAX_APPROVAL_PREVIEW_CHARS = 4 * 1024;
+const MAX_APPROVAL_PREVIEW_CHARS = 512;
 const SUPPORTED_READONLY_CONTINUATION_KINDS = new Map([
   ["function_call", "function_call_output"],
   ["custom_tool_call", "custom_tool_call_output"],
@@ -98,6 +98,7 @@ function normalizeRelativePath(value) {
     /[\0-\x1f\x7f]/.test(text) ||
     text.startsWith("/") ||
     /^[A-Za-z]:\//.test(text) ||
+    /^mnt\/[a-z]\//i.test(text) ||
     text.includes("://") ||
     text.split("/").includes("..")
   ) {
@@ -232,11 +233,14 @@ function projectReadResult(raw = {}, obligation = {}, approvedAt = "", nowMs) {
     ? "binary_summary"
     : (truncated ? "text_preview_truncated" : "text_preview_untruncated");
   const providerEnvelope = {
+    kind: "read_file_result",
     path: normalizeString(result.relPath, ""),
     textPreview: providerTextPreview,
     truncated,
+    redacted: toolResultRedaction.status === "redacted",
     bytesRead: Number(result.size || 0),
     binary,
+    encoding: binary ? "" : "utf-8",
     resultClass,
     redaction: {
       scanned: true,

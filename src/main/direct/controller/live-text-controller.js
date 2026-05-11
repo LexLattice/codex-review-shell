@@ -31,6 +31,8 @@ const ACTIVE_TURN_STATES = new Set([
   "tool_waiting",
   "authority_waiting",
   "continuation_ready",
+  "continuation_sent",
+  "streaming_continuation",
 ]);
 const TERMINAL_TURN_STATES = new Set([
   "completed",
@@ -236,7 +238,15 @@ function terminalStatusForState(state) {
   if (state === "content_filter_terminal") return "failed";
   if (state === "max_output_terminal") return "failed";
   if (state === "empty_output_terminal") return "failed";
-  if (state === "streaming" || state === "request_built" || state === "created") return "inProgress";
+  if ([
+    "streaming",
+    "request_built",
+    "created",
+    "authority_waiting",
+    "continuation_ready",
+    "continuation_sent",
+    "streaming_continuation",
+  ].includes(state)) return "inProgress";
   return normalizeString(state, "unknown");
 }
 
@@ -1698,11 +1708,21 @@ class DirectLiveTextController {
       supportedCallType &&
       supportedNamespace &&
       continuationEvidence.status === "ready";
+    const obligationDigest = sha256(stableStringify({
+      obligationId: normalizeString(obligation.obligationId, ""),
+      status: normalizeString(obligation.status, ""),
+      callIdDigest: sha256(obligation.callId || ""),
+      argumentsDigest: sha256(obligation.argumentsText || ""),
+      responseIdDigest: sha256(turn?.responseId || ""),
+    }));
+    const actionToken = (action) => `direct_tool_action_${sha256(`${obligation.obligationId}:${action}:${obligationDigest}`).slice(0, 24)}`;
     return {
       sessionId: obligation.sessionId,
       threadId: obligation.sessionId,
       turnId: obligation.turnId,
       obligationId: obligation.obligationId,
+      obligationDigest,
+      operationLedgerHeadDigest: normalizeString(turn?.operationLedgerHeadDigest || turn?.ledgerDigest, ""),
       tool: normalizeString(obligation.name, "read_file"),
       relPath,
       providerCallType,
@@ -1715,8 +1735,13 @@ class DirectLiveTextController {
       argumentsError,
       maxReadFileBytes: 384 * 1024,
       maxProviderOutputChars: 64 * 1024,
-      maxApprovalPreviewChars: 4 * 1024,
+      maxApprovalPreviewChars: 512,
       sensitivePathPolicy: "deny-by-default",
+      actionTokens: {
+        approve: actionToken("approve"),
+        decline: actionToken("decline"),
+        cancel: actionToken("cancel"),
+      },
       rawWorkspacePathExposed: false,
     };
   }
@@ -1826,18 +1851,30 @@ class DirectLiveTextController {
     const obligationId = normalizeString(params.obligationId, "");
     const decision = normalizeString(result.decision || result.action, "decline");
     const clientToolDecisionId = normalizeString(result.clientToolDecisionId, `${record.key}:${decision}`);
+    const actionTokenId = normalizeString(result.actionTokenId, "");
+    const canonicalDecision = decision === "approve" || decision === "approved" || decision === "accept"
+      ? "approve"
+      : decision === "cancel" || decision === "canceled" || decision === "abort"
+        ? "cancel"
+        : "decline";
+    const expectedActionToken = normalizeString(params.actionTokens?.[canonicalDecision], "");
+    if (expectedActionToken && actionTokenId !== expectedActionToken) {
+      const error = new Error("Read-only tool action token is stale or missing.");
+      error.code = "stale_tool_action_token";
+      throw error;
+    }
     const decisionKey = clientToolDecisionId;
     const existingClaim = this.toolDecisionClaims.get(decisionKey);
-    if (existingClaim && (existingClaim.obligationId !== obligationId || existingClaim.decision !== decision)) {
+    if (existingClaim && (existingClaim.obligationId !== obligationId || existingClaim.decision !== canonicalDecision)) {
       const error = new Error("clientToolDecisionId was reused for a different read-only tool decision.");
       error.code = "tool_decision_id_conflict";
       throw error;
     }
-    this.toolDecisionClaims.set(decisionKey, { obligationId, decision });
+    this.toolDecisionClaims.set(decisionKey, { obligationId, decision: canonicalDecision });
     this.pruneToolDecisionCache();
     const previousDecision = this.toolDecisionResults.get(decisionKey);
     if (previousDecision) {
-      if (previousDecision.obligationId !== obligationId || previousDecision.decision !== decision) {
+      if (previousDecision.obligationId !== obligationId || previousDecision.decision !== canonicalDecision) {
         const error = new Error("clientToolDecisionId was reused for a different read-only tool decision.");
         error.code = "tool_decision_id_conflict";
         throw error;
@@ -1845,7 +1882,25 @@ class DirectLiveTextController {
       return previousDecision.response;
     }
     const response = await this.withToolDecisionLock(obligationId, async () => {
-      if (decision === "approve" || decision === "approved" || decision === "accept") {
+      const found = this.sessionStore.findToolObligation(sessionId, turnId, obligationId);
+      if (!found || !found.obligation) {
+        const error = new Error("Read-only tool obligation not found.");
+        error.code = "obligation_not_found";
+        throw error;
+      }
+      const current = found.obligation;
+      const currentStatus = normalizeString(current.status, "");
+      if (["declined", "canceled"].includes(currentStatus)) {
+        const error = new Error("Read-only tool obligation already has a terminal local decision.");
+        error.code = "terminal_decision_exists";
+        throw error;
+      }
+      if (["result_recorded", "continuation_built", "continuation_sent"].includes(currentStatus) && canonicalDecision !== "approve") {
+        const error = new Error("Read-only tool obligation is too late for decline or cancel.");
+        error.code = "too_late_for_decision";
+        throw error;
+      }
+      if (canonicalDecision === "approve") {
         return this.approveExecuteAndContinueReadOnlyTool({
           project: context.project || this.project || {},
           surfaceSession: context.surfaceSession,
@@ -1855,7 +1910,7 @@ class DirectLiveTextController {
           clientToolDecisionId,
         });
       }
-      if (decision === "cancel" || decision === "canceled" || decision === "abort") {
+      if (canonicalDecision === "cancel") {
         const canceled = cancelReadOnlyToolObligation({
           sessionStore: this.sessionStore,
           sessionId,
@@ -1886,7 +1941,7 @@ class DirectLiveTextController {
       });
       return { decision: "declined", turn: turnSnapshot(declined.turn), obligation: declined.obligation };
     });
-    this.toolDecisionResults.set(decisionKey, { obligationId, decision, response });
+    this.toolDecisionResults.set(decisionKey, { obligationId, decision: canonicalDecision, response });
     this.pruneToolDecisionCache();
     return response;
   }
@@ -1951,7 +2006,16 @@ class DirectLiveTextController {
         source: {
           ...(baseContinuationRequest.source || {}),
           previousResponseId: normalizeString(turn?.responseId, ""),
-          previousResponseIdSource: "initial_stream",
+          previousResponseIdSource: "native_direct_parent_initial_stream",
+          sourceEventDigest: sha256(normalizeString(turn?.responseId, "")),
+          sourceTurnDigest: sha256(stableStringify({
+            threadId: sessionId,
+            turnId,
+            responseId: normalizeString(turn?.responseId, ""),
+            requestManifestId: normalizeString(turn?.requestManifestId, ""),
+          })),
+          sourceRequestManifestId: normalizeString(turn?.requestManifestId, ""),
+          importedContinuityHandleUsed: false,
         },
       };
       const outputType = normalizeString(continuationRequest.toolResult?.outputType || continuationRequest.toolResult?.content?.[0]?.type, "");

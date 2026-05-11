@@ -394,7 +394,7 @@ const directRuntimeStatusWithLiveText = buildDirectRuntimeStatus({
     },
   },
 });
-assert(directRuntimeStatusWithLiveText.currentCodexLane === "direct implementation lane", "Expected legacy live text binding without tier to preserve implementation-lane routing.");
+assert(directRuntimeStatusWithLiveText.currentCodexLane === "direct text-only", "Expected legacy live text binding without tier to migrate conservatively to text-only routing.");
 assert(directRuntimeStatusWithLiveText.directRuntime.turnRunnable === true, "Expected accepted live text runtime to enable direct turn status.");
 assert(directRuntimeStatusWithLiveText.liveTextRuntime.turnRunnable === true, "Expected live text runtime status to project turn runnable.");
 assert(directRuntimeStatusWithLiveText.transport.runnable === true, "Expected live text transport status to become runnable only through live runtime evidence.");
@@ -687,8 +687,13 @@ try {
     state: "streaming",
     input: [{ role: "user", text: "active two" }],
   }, { nowMs: 1_700_000_014_000 });
+  sessionStore.createTurn(activeSession.sessionId, {
+    turnId: "turn_tool_waiting",
+    state: "tool_waiting",
+    input: [{ role: "user", text: "waiting for approval" }],
+  }, { nowMs: 1_700_000_014_500 });
   const activeStatus = sessionStore.status();
-  assert(activeStatus.activeTurnCount === 3, "Expected status to count active turns across all session turns.");
+  assert(activeStatus.activeTurnCount === 4, "Expected status to count active and durable tool-wait turns across all session turns.");
   const reloadedSessionStore = new DirectSessionStore({ rootDir: path.join(sessionStoreParent, "direct-sessions") });
   const interruptedRecovery = reloadedSessionStore.recoverInterruptedTurns({ nowMs: 1_700_000_015_000 });
   assert(interruptedRecovery.recoveredTurnCount === 4, "Expected interrupted active turns to recover on explicit reload maintenance.");
@@ -697,8 +702,10 @@ try {
   assert(recoveredTurn.error.code === "restart_interrupted_turn", "Expected interrupted turn recovery error code.");
   const recoveredStaleSummaryTurn = reloadedSessionStore.readTurn(staleSummarySession.sessionId, staleSummaryTurn.turnId);
   assert(recoveredStaleSummaryTurn.state === "failed", "Expected stale-summary active turn file to recover as failed.");
+  const preservedToolWaitingTurn = reloadedSessionStore.readTurn(activeSession.sessionId, "turn_tool_waiting");
+  assert(preservedToolWaitingTurn.state === "tool_waiting", "Expected durable tool-waiting turn not to be failed by interrupted-turn recovery.");
   const postRecoveryStatus = reloadedSessionStore.status();
-  assert(postRecoveryStatus.activeTurnCount === 0, "Expected status to remain read-only and report no active turns after explicit recovery.");
+  assert(postRecoveryStatus.activeTurnCount === 1, "Expected status to preserve durable tool-wait active state after explicit recovery.");
 
   const directThreadStore = new DirectThreadStore({
     rootDir: path.join(sessionStoreParent, "direct-sessions"),
@@ -2362,6 +2369,7 @@ try {
   const approvalResponse = await approvedToolSurface.respond(approvalRequest.key, {
     decision: "approve",
     clientToolDecisionId: "client_tool_decision_approved_1",
+    actionTokenId: approvalRequest.params.actionTokens.approve,
   });
   assert(approvalResponse.response.continuation.ok === true, "Expected approved direct read-only tool continuation to complete.");
   assert(approvedFetchCalls === 2, "Expected approved direct tool path to make one initial and one continuation provider request.");
@@ -2378,16 +2386,22 @@ try {
   assert(approvedToolContextPack.policy.policyId === DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID, "Expected approved live tool continuation to use read-only tool context policy.");
   assert(approvedToolRequestManifest.enabledFeatures.previousResponseId === true, "Expected approved live tool manifest to record previous_response_id.");
   assert(approvedToolRequestManifest.enabledFeatures.store === false, "Expected approved live tool manifest to record store=false.");
+  assert(approvedToolRequestManifest.enabledFeatures.toolDeclarations === false, "Expected approved live tool manifest to disable new tool declarations.");
+  assert(approvedToolRequestManifest.enabledFeatures.toolOutputItem === true, "Expected approved live tool manifest to allow exactly one tool-output item.");
+  assert(approvedToolRequestManifest.previousResponse.source === "native_direct_parent_initial_stream", "Expected approved live tool manifest to cite native parent response source.");
+  assert(approvedToolRequestManifest.contextPolicy.harnessPolicyDigest, "Expected approved live tool manifest to cite continuation harness policy.");
   assert(approvedToolRequestManifest.rawRequestBodyStored === false, "Expected approved live tool manifest not to store raw request body.");
   assert(approvedContinuationBody.instructions.includes("Do not request or execute another tool"), "Expected approved live tool continuation request to preserve continuation-specific instructions.");
   const approvedObligation = approvedTurn.unresolvedObligations[0];
   assert(approvedObligation.status === "continuation_sent", "Expected approved obligation to record sent continuation.");
+  assert(JSON.parse(approvedObligation.result.providerOutputText).kind === "read_file_result", "Expected approved provider output to use read_file_result envelope.");
   assert(JSON.parse(approvedObligation.result.providerOutputText).textPreview === "live approved read result", "Expected approved provider output to be bounded JSON evidence.");
   const approvedSession = approvedToolStore.readSession(approvedThread.thread.id);
   assert(approvedSession.messages[0].items.some((item) => item.type === "agentMessage" && item.text === "read result accepted"), "Expected approved continuation assistant output to persist.");
   await approvedToolSurface.respond(approvalRequest.key, {
     decision: "approve",
     clientToolDecisionId: "client_tool_decision_approved_1",
+    actionTokenId: approvalRequest.params.actionTokens.approve,
   });
   assert(approvedWorkspaceReads === 1, "Expected duplicate completed approval response not to reread workspace.");
   assert(approvedToolController.toolDecisionClaims.size <= 1, "Expected direct tool decision claim cache to stay bounded.");
@@ -3650,8 +3664,8 @@ try {
   });
   assert(failedContinuation.ok === false, "Expected failed read-only continuation to report failure.");
   assert(capturedFailedContinuationRequest.body.previous_response_id === "resp_preserved_from_continuation_source", "Expected read-only continuation to preserve existing previous response id.");
-  assert(failedContinuation.obligation.status === "continuation_built", "Expected failed read-only continuation to remain retryable.");
-  assert(failedContinuation.obligation.continuationSentAt === "", "Expected failed read-only continuation not to record sent timestamp.");
+  assert(failedContinuation.obligation.status === "continuation_sent", "Expected failed read-only continuation to record transport handoff.");
+  assert(failedContinuation.obligation.continuationSentAt, "Expected failed read-only continuation to record sent timestamp.");
   const failedContinuationSessionAfter = probeSessionStore.readSession(failedContinuationSession.sessionId);
   assert(failedContinuationSessionAfter.messages === "unexpected-malformed-messages", "Expected malformed session messages to be preserved.");
 

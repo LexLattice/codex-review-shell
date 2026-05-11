@@ -3269,14 +3269,17 @@ function renderDirectReadOnlyToolRequestDetails(request, details, actions) {
   actions.appendChild(createRequestButton("Approve read", "", (event) => submitRequestResponse(request, {
     decision: "approve",
     clientToolDecisionId: decisionId("approve"),
+    actionTokenId: params.actionTokens?.approve || "",
   }, event.currentTarget)));
   actions.appendChild(createRequestButton("Decline", "secondary", (event) => submitRequestResponse(request, {
     decision: "decline",
     clientToolDecisionId: decisionId("decline"),
+    actionTokenId: params.actionTokens?.decline || "",
   }, event.currentTarget)));
   actions.appendChild(createRequestButton("Cancel turn", "secondary", (event) => submitRequestResponse(request, {
     decision: "cancel",
     clientToolDecisionId: decisionId("cancel"),
+    actionTokenId: params.actionTokens?.cancel || "",
   }, event.currentTarget)));
 }
 

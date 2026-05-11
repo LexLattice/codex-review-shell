@@ -1764,14 +1764,14 @@ function directAuthModeSignature(modes) {
 
 function directRuntimeStatusLabel(status) {
   const textOnly = status?.directTextOnly || {};
-  if (textOnly.status === "enabled") return "direct text-only selected";
-  if (textOnly.status === "eligible") return "direct text-only ready";
   const activation = status?.activation || {};
   if (activation.state === "enabled") return "direct experimental enabled";
   if (activation.state === "eligible") return "direct experimental eligible";
-  if (activation.state === "text_only_eligible") return "text-only preview";
   if (activation.state === "degraded") return "direct experimental degraded";
   if (activation.state === "rollback_required") return "rollback required";
+  if (textOnly.status === "enabled") return "direct text-only selected";
+  if (textOnly.status === "eligible") return "direct text-only ready";
+  if (activation.state === "text_only_eligible") return "text-only preview";
   const runtime = status?.directRuntime || {};
   if (runtime.turnRunnable) return "turns runnable";
   if (runtime.status === "not_selected") return "legacy bridge active";
@@ -1845,11 +1845,11 @@ function renderDirectRuntimeStatus() {
   }
   if (els.directExperimentalEnableButton) {
     const canUseEnableAction = Boolean(activeProject()) && Boolean(bridge.enableDirectExperimentalRuntime) && !state.directRuntimeLoading;
-    const canEnable = activation.state === "eligible" && canUseEnableAction;
+    const canEnable = (status.directImplementationLane?.canSelect === true || activation.state === "eligible") && canUseEnableAction;
     els.directExperimentalEnableButton.disabled = !canEnable;
     els.directExperimentalEnableButton.title = canEnable
       ? "Enable the stricter Direct implementation lane for this project."
-      : `Check direct experimental activation gates: ${directActivationBlockedDetail(status)}`;
+      : `Check direct implementation-lane gates: ${directActivationBlockedDetail(status)}`;
   }
   if (els.directExperimentalRollbackButton) {
     const canRollback = activation.rollbackAvailable === true && !state.directRuntimeLoading;
