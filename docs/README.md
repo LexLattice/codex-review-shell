@@ -23,6 +23,7 @@
 - [Direct Fork Preview Start Spec](./DIRECT_FORK_PREVIEW_START_SPEC.md)
 - [Direct Derived Preview Fork Start Spec](./DIRECT_DERIVED_PREVIEW_FORK_START_SPEC.md)
 - [Direct Headless Runtime Parity Harness Spec](./DIRECT_HEADLESS_RUNTIME_PARITY_HARNESS_SPEC.md)
+- [Direct Text-Only Runtime Tier And Toggle Spec](./DIRECT_TEXT_ONLY_RUNTIME_TIER_AND_TOGGLE_SPEC.md)
 - [Direct Documentation Hygiene Backlog](./DIRECT_DOC_HYGIENE_BACKLOG.md)
 - [OAI Codex Upstream ODEU Profile](./OAI_CODEX_UPSTREAM_ODEU_PROFILE.md)
 - [Meta-Orchestrator Loop ODEU Spec](./META_ORCHESTRATOR_LOOP_ODEU_SPEC.md)
