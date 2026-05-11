@@ -2891,6 +2891,128 @@ function buildAnalyticsBarChart(title, points, options = {}) {
   return wrapper;
 }
 
+function usageLedgerNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "—";
+  return Math.round(number).toLocaleString();
+}
+
+function usageLedgerMetricCard(label, value, evidence = "") {
+  const card = document.createElement("article");
+  card.className = "analytics-metric-card";
+  const keyNode = document.createElement("span");
+  keyNode.className = "metric-key";
+  keyNode.textContent = label;
+  const valueNode = document.createElement("strong");
+  valueNode.className = "metric-value";
+  valueNode.textContent = value;
+  const evidenceNode = document.createElement("span");
+  evidenceNode.className = "metric-evidence";
+  evidenceNode.textContent = evidence || "Evidence: —";
+  card.append(keyNode, valueNode, evidenceNode);
+  return card;
+}
+
+function usageLedgerResetLabel(window) {
+  const resetsAt = window?.resetsAt;
+  if (!resetsAt) return "";
+  const date = new Date(resetsAt);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString(undefined, {
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+function usageLedgerRateLimitLabel(window, fallbackLabel) {
+  if (!window) return "";
+  const percent = Number(window.usedPercent);
+  const used = Number.isFinite(percent) ? `${Math.round(percent)}%` : "unknown";
+  const reset = usageLedgerResetLabel(window);
+  return `${fallbackLabel} ${used}${reset ? ` reset ${reset}` : ""}`;
+}
+
+function renderUsageLedgerAnalytics(dashboard) {
+  const ledger = dashboard?.usageLedger;
+  const wrapper = document.createElement("section");
+  wrapper.className = "analytics-ledger-section";
+
+  const header = document.createElement("div");
+  header.className = "analytics-ledger-header";
+  const title = document.createElement("h4");
+  title.textContent = "Usage ledger";
+  const status = document.createElement("span");
+  status.className = `status-chip status-${ledger?.status || "unavailable"}`;
+  status.textContent = ledger?.status || "unavailable";
+  header.append(title, status);
+  wrapper.appendChild(header);
+
+  if (!ledger || !["available", "partial"].includes(ledger.status)) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = ledger?.reason || "No usage ledger evidence is available for this thread yet.";
+    wrapper.appendChild(empty);
+    return wrapper;
+  }
+
+  const tokens = ledger.tokens || {};
+  const turns = ledger.turns || {};
+  const tools = ledger.tools || {};
+  const requests = ledger.requests || {};
+  const metricGrid = document.createElement("div");
+  metricGrid.className = "analytics-ledger-grid";
+  metricGrid.append(
+    usageLedgerMetricCard("Token snapshot", usageLedgerNumber(tokens.totalTokens), `Source: ${tokens.usageScope || "snapshot"} · ${tokens.confidence || "unknown"}`),
+    usageLedgerMetricCard("Input / cached", `${usageLedgerNumber(tokens.inputTokens)} / ${usageLedgerNumber(tokens.cachedInputTokens)}`, "Latest provider token row"),
+    usageLedgerMetricCard("Output / reasoning", `${usageLedgerNumber(tokens.outputTokens)} / ${usageLedgerNumber(tokens.reasoningOutputTokens)}`, "Latest provider token row"),
+    usageLedgerMetricCard("Turns", `${usageLedgerNumber(turns.completed)} done · ${usageLedgerNumber(turns.active)} active`, `Avg first token: ${formatDurationMs(turns.timeToFirstTokenMs)}`),
+    usageLedgerMetricCard("Tool calls", `${usageLedgerNumber(tools.total)} total · ${usageLedgerNumber(tools.failed)} failed`, `${usageLedgerNumber(tools.commands)} commands · ${usageLedgerNumber(tools.patches)} patches`),
+    usageLedgerMetricCard("Requests", `${usageLedgerNumber(requests.total)} total`, `${usageLedgerNumber(requests.pending)} pending · ${usageLedgerNumber(requests.resolved)} resolved`),
+  );
+  wrapper.appendChild(metricGrid);
+
+  const rateLimit = ledger.rateLimits || {};
+  if (rateLimit.status === "available") {
+    const rateLine = document.createElement("p");
+    rateLine.className = "analytics-ledger-evidence";
+    const primary = usageLedgerRateLimitLabel(rateLimit.primary, "Primary");
+    const secondary = usageLedgerRateLimitLabel(rateLimit.secondary, "Secondary");
+    rateLine.textContent = [
+      rateLimit.planType ? `Plan: ${rateLimit.planType}` : "",
+      primary,
+      secondary,
+      rateLimit.observedAt ? `Observed ${formatTime(rateLimit.observedAt)}` : "",
+    ].filter(Boolean).join(" · ");
+    wrapper.appendChild(rateLine);
+  }
+
+  const chartGrid = document.createElement("div");
+  chartGrid.className = "analytics-ledger-charts";
+  const series = ledger.series || {};
+  chartGrid.append(
+    buildAnalyticsBarChart("Token mix", series.token_mix || []),
+    buildAnalyticsBarChart("Ledger tool mix", series.tool_kind_mix || []),
+  );
+  if (Array.isArray(series.request_kind_mix) && series.request_kind_mix.length) {
+    chartGrid.appendChild(buildAnalyticsBarChart("Request mix", series.request_kind_mix));
+  }
+  wrapper.appendChild(chartGrid);
+
+  const evidence = document.createElement("p");
+  evidence.className = "analytics-ledger-evidence";
+  evidence.textContent = [
+    `${usageLedgerNumber(ledger.matchedRowCount)} matched rows`,
+    `${usageLedgerNumber(ledger.fileCount)} ledger files`,
+    ledger.rowLimitReached ? "row limit reached" : "",
+    ledger.lastObservedAt ? `Last observed ${formatTime(ledger.lastObservedAt)}` : "",
+    ledger.outputDirEvidenceKey ? `Path witness ${ledger.outputDirEvidenceKey}` : "",
+  ].filter(Boolean).join(" · ");
+  wrapper.appendChild(evidence);
+  return wrapper;
+}
+
 function renderAnalyticsThreadList() {
   els.analyticsThreadCount.textContent = String(state.analyticsThreads.length);
   els.analyticsThreadList.innerHTML = "";
@@ -2990,6 +3112,7 @@ function renderAnalyticsDashboard() {
     summaryStrip.appendChild(card);
   }
   container.appendChild(summaryStrip);
+  container.appendChild(renderUsageLedgerAnalytics(dashboard));
 
   const series = dashboard.series || {};
   container.appendChild(buildAnalyticsBarChart("Work composition", series.work_composition || []));
