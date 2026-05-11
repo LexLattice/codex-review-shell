@@ -182,8 +182,55 @@ function stripLineEnding(line) {
   return String(line || "").replace(/\r?\n$/, "");
 }
 
+function unquotePatchPath(value = "") {
+  const text = String(value || "").trim();
+  if (text.length >= 2 && text.startsWith("\"") && text.endsWith("\"")) {
+    return text
+      .slice(1, -1)
+      .replace(/\\(["\\])/g, "$1")
+      .replace(/\\t/g, "\t")
+      .replace(/\\n/g, "\n")
+      .replace(/\\r/g, "\r");
+  }
+  return text;
+}
+
+function splitGitDiffPaths(headerText = "") {
+  const parts = [];
+  let current = "";
+  let inQuote = false;
+  let escaping = false;
+  for (const char of String(headerText || "").trim()) {
+    if (escaping) {
+      current += `\\${char}`;
+      escaping = false;
+      continue;
+    }
+    if (char === "\\" && inQuote) {
+      escaping = true;
+      continue;
+    }
+    if (char === "\"") {
+      inQuote = !inQuote;
+      current += char;
+      continue;
+    }
+    if (/\s/.test(char) && !inQuote) {
+      if (current) {
+        parts.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += char;
+  }
+  if (escaping) current += "\\";
+  if (current) parts.push(current);
+  return parts;
+}
+
 function normalizePatchPath(value = "") {
-  let text = String(value || "").trim();
+  let text = unquotePatchPath(value);
   if (!text || text === "/dev/null") return text;
   if (text.startsWith("a/") || text.startsWith("b/")) text = text.slice(2);
   return displayRelPath(normalizeRelPath(text));
@@ -237,20 +284,25 @@ function parseUnifiedPatch(patchText) {
     if (current) files.push(current);
     current = null;
   }
+  function recordFileLine(line) {
+    if (current) current.rawLines.push(line);
+  }
 
-  for (const rawLine of lines) {
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const rawLine = lines[lineIndex];
     const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
     if (line.startsWith("diff --git ")) {
       finishFile();
-      const match = /^diff --git\s+(.+?)\s+(.+)$/.exec(line);
-      if (!match) throw new Error("Malformed git-style diff header.");
+      const parts = splitGitDiffPaths(line.slice("diff --git ".length));
+      if (parts.length !== 2) throw new Error("Malformed git-style diff header.");
       current = {
-        oldPath: normalizePatchPath(match[1]),
-        newPath: normalizePatchPath(match[2]),
+        oldPath: normalizePatchPath(parts[0]),
+        newPath: normalizePatchPath(parts[1]),
         operation: "update",
         hunks: [],
         addedLineCount: 0,
         removedLineCount: 0,
+        rawLines: [line],
       };
       continue;
     }
@@ -260,6 +312,7 @@ function parseUnifiedPatch(patchText) {
     }
     if (/^(rename|copy) (from|to) /.test(line)) throw new Error("Rename/copy patch headers are unsupported.");
     if (/^(old mode|new mode|deleted file mode) /.test(line)) {
+      recordFileLine(line);
       if (line.startsWith("deleted file mode")) {
         const error = new Error("Patch deletes are deferred in v0.");
         error.code = "PATCH_DELETE_DEFERRED";
@@ -268,16 +321,19 @@ function parseUnifiedPatch(patchText) {
       if (!line.startsWith("new file mode")) throw new Error("Patch mode changes are unsupported.");
     }
     if (line.startsWith("new file mode ")) {
+      recordFileLine(line);
       current.operation = "create";
       continue;
     }
     if (line.startsWith("--- ")) {
+      recordFileLine(line);
       const oldPath = normalizePatchPath(line.slice(4).split(/\t/)[0]);
       if (oldPath === "/dev/null") current.operation = "create";
       else current.oldPath = oldPath;
       continue;
     }
     if (line.startsWith("+++ ")) {
+      recordFileLine(line);
       const newPath = normalizePatchPath(line.slice(4).split(/\t/)[0]);
       if (newPath === "/dev/null") {
         const error = new Error("Patch deletes are deferred in v0.");
@@ -288,15 +344,26 @@ function parseUnifiedPatch(patchText) {
       continue;
     }
     if (line.startsWith("@@ ")) {
+      recordFileLine(line);
       finishHunk();
       currentHunk = { header: parseHunkHeader(line), lines: [] };
       continue;
     }
     if (currentHunk) {
-      if (line.startsWith("\\ No newline at end of file")) continue;
+      if (line === "" && lineIndex === lines.length - 1) continue;
+      recordFileLine(line);
+      if (line.startsWith("\\ No newline at end of file")) {
+        const previous = currentHunk.lines[currentHunk.lines.length - 1];
+        if (previous) previous.noNewline = true;
+        continue;
+      }
       const prefix = line[0];
       if (![" ", "+", "-"].includes(prefix)) throw new Error("Malformed patch hunk line.");
-      currentHunk.lines.push(line);
+      currentHunk.lines.push({
+        prefix,
+        content: line.slice(1),
+        noNewline: false,
+      });
       if (prefix === "+") current.addedLineCount += 1;
       if (prefix === "-") current.removedLineCount += 1;
     }
@@ -346,8 +413,8 @@ function applyParsedHunks(beforeText, filePatch) {
       cursor += 1;
     }
     for (const patchLine of hunk.lines) {
-      const prefix = patchLine[0];
-      const content = patchLine.slice(1);
+      const prefix = patchLine.prefix || String(patchLine)[0];
+      const content = typeof patchLine.content === "string" ? patchLine.content : String(patchLine).slice(1);
       if (prefix === " ") {
         const current = beforeLines[cursor];
         if (stripLineEnding(current) !== content) throw new Error("Patch context does not match current file content.");
@@ -359,7 +426,7 @@ function applyParsedHunks(beforeText, filePatch) {
         cursor += 1;
       } else if (prefix === "+") {
         const lineEnding = beforeText.includes("\r\n") ? "\r\n" : "\n";
-        output.push(`${content}${lineEnding}`);
+        output.push(patchLine.noNewline ? content : `${content}${lineEnding}`);
       }
     }
   }
@@ -402,7 +469,9 @@ async function applyPatchPlan(params = {}) {
     if (filePatch.operation === "update" && !before.exists) throw new Error("Patch update target does not exist.");
     const afterText = applyParsedHunks(before.text, filePatch);
     const afterDigest = sha256(afterText);
-    const preview = patchText.slice(0, MAX_PATCH_FILE_PREVIEW_CHARS);
+    const filePreviewText = (Array.isArray(filePatch.rawLines) ? filePatch.rawLines : [])
+      .join("\n");
+    const preview = filePreviewText.slice(0, MAX_PATCH_FILE_PREVIEW_CHARS);
     filePlans.push({
       filePlanId: `patch_file_${sha256(`${target.displayRel}:${before.digest}:${afterDigest}`).slice(0, 20)}`,
       operation: filePatch.operation,
@@ -421,7 +490,7 @@ async function applyPatchPlan(params = {}) {
       removedLineCount: filePatch.removedLineCount,
       previewText: preview,
       previewTextHash: sha256(preview),
-      previewTruncated: patchText.length > preview.length,
+      previewTruncated: filePreviewText.length > preview.length,
       _fullPath: target.fullPath,
       _afterText: afterText,
     });
