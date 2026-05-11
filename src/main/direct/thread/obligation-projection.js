@@ -13,6 +13,7 @@ const TOOL_CONTINUATION_CONTEXT_BUILDER_VERSION = "direct_tool_continuation_cont
 const TOOL_CONTINUATION_CONTEXT_POLICY_ID = "direct_readonly_tool_continuation@1";
 const READ_FILE_TOOL_NAMES = new Set(["read_file", "readFile"]);
 const APPLY_PATCH_TOOL_NAMES = new Set(["apply_patch", "applyPatch"]);
+const RUN_COMMAND_TOOL_NAMES = new Set(["run_command", "runCommand"]);
 const SUPPORTED_PROVIDER_CALL_TYPES = new Map([
   ["function_call", "function_call_output"],
   ["custom_tool_call", "custom_tool_call_output"],
@@ -73,7 +74,8 @@ function obligationUnsupportedReason(obligation = {}, context = {}) {
   const toolName = normalizeString(obligation.name, "");
   const isReadFile = READ_FILE_TOOL_NAMES.has(toolName);
   const isPatchApply = APPLY_PATCH_TOOL_NAMES.has(toolName);
-  if (!isReadFile && !isPatchApply) return "unsupported_readonly_tool";
+  const isRunCommand = RUN_COMMAND_TOOL_NAMES.has(toolName);
+  if (!isReadFile && !isPatchApply && !isRunCommand) return "unsupported_readonly_tool";
   if (normalizeString(obligation.namespace, "")) return "unsupported_tool_namespace";
   const { providerOutputType } = providerOutputTypeFor(obligation);
   if (!providerOutputType) return "unsupported_tool_call_type";
@@ -82,8 +84,10 @@ function obligationUnsupportedReason(obligation = {}, context = {}) {
   if (!parsed.ok) return parsed.reason;
   if (isReadFile && !normalizeString(parsed.args.path || parsed.args.relPath || parsed.args.relativePath, "")) return "invalid_read_file_path";
   if (isPatchApply && !normalizeString(parsed.args.patch, "")) return "malformed_patch_arguments";
+  if (isRunCommand && !normalizeString(parsed.args.command || parsed.args.executable, "")) return "malformed_command_arguments";
   if (normalizeString(obligation.status, "") !== "result_recorded" &&
       normalizeString(obligation.status, "") !== "patch_result_recorded" &&
+      normalizeString(obligation.status, "") !== "command_result_recorded" &&
       normalizeString(obligation.status, "") !== "continuation_built" &&
       normalizeString(obligation.status, "") !== "continuation_sent") {
     return "";

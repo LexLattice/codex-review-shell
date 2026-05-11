@@ -7,6 +7,8 @@ const DIRECT_READONLY_TOOL_CONTINUATION_REQUEST_SCHEMA = "direct_codex_readonly_
 const DIRECT_READONLY_TOOL_RESULT_SCHEMA = "direct_codex_readonly_tool_result@1";
 const DIRECT_PATCH_APPLY_CONTINUATION_REQUEST_SCHEMA = "direct_codex_patch_apply_continuation_request@1";
 const DIRECT_PATCH_APPLY_RESULT_SCHEMA = "direct_codex_patch_apply_result@1";
+const DIRECT_COMMAND_EXECUTION_CONTINUATION_REQUEST_SCHEMA = "direct_codex_command_execution_continuation_request@1";
+const DIRECT_COMMAND_EXECUTION_RESULT_SCHEMA = "direct_codex_command_execution_result@1";
 const READ_FILE_TOOL_NAMES = new Set(["read_file", "readFile"]);
 const MAX_READ_FILE_BYTES = 384 * 1024;
 const MAX_PROVIDER_OUTPUT_CHARS = 64 * 1024;
@@ -365,7 +367,7 @@ function assertLoopCapsBeforeExecution(turn = {}, obligation = {}) {
 }
 
 function assertRecordedReadOnlyResult(obligation = {}) {
-  if (!["result_recorded", "patch_result_recorded", "continuation_built", "continuation_sent"].includes(normalizeString(obligation.status, ""))) {
+  if (!["result_recorded", "patch_result_recorded", "command_result_recorded", "continuation_built", "continuation_sent"].includes(normalizeString(obligation.status, ""))) {
     const error = new Error("Read-only tool continuation requires a recorded tool result.");
     error.code = "tool_result_not_recorded";
     throw error;
@@ -375,7 +377,7 @@ function assertRecordedReadOnlyResult(obligation = {}) {
     error.code = "tool_result_missing";
     throw error;
   }
-  if (![DIRECT_READONLY_TOOL_RESULT_SCHEMA, DIRECT_PATCH_APPLY_RESULT_SCHEMA].includes(obligation.result.schema)) {
+  if (![DIRECT_READONLY_TOOL_RESULT_SCHEMA, DIRECT_PATCH_APPLY_RESULT_SCHEMA, DIRECT_COMMAND_EXECUTION_RESULT_SCHEMA].includes(obligation.result.schema)) {
     const error = new Error("Read-only tool continuation requires a direct read-only result record.");
     error.code = "invalid_tool_result_schema";
     throw error;
@@ -606,7 +608,7 @@ function buildReadOnlyToolContinuationRequest(options = {}) {
 
 function assertContinuationRequestForObligation(request = {}, obligation = {}) {
   const result = assertRecordedReadOnlyResult(obligation);
-  if (![DIRECT_READONLY_TOOL_CONTINUATION_REQUEST_SCHEMA, DIRECT_PATCH_APPLY_CONTINUATION_REQUEST_SCHEMA].includes(request.schema)) {
+  if (![DIRECT_READONLY_TOOL_CONTINUATION_REQUEST_SCHEMA, DIRECT_PATCH_APPLY_CONTINUATION_REQUEST_SCHEMA, DIRECT_COMMAND_EXECUTION_CONTINUATION_REQUEST_SCHEMA].includes(request.schema)) {
     const error = new Error("Read-only tool continuation request has an invalid schema.");
     error.code = "invalid_continuation_request_schema";
     throw error;

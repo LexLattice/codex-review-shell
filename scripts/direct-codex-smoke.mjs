@@ -61,6 +61,7 @@ const { DirectSessionStore } = require("../src/main/direct/session/session-store
 const {
   COMPACT_TRANSCRIPT_PROJECTION_KIND,
   CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND,
+  DIRECT_COMMAND_EXECUTION_CONTINUATION_POLICY_ID,
   DIRECT_OBLIGATIONS_PROJECTION_KIND,
   DIRECT_PATCH_APPLY_CONTINUATION_POLICY_ID,
   DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID,
@@ -346,6 +347,29 @@ function acceptedPatchApplyProfile() {
         field: "apply_patch continuation",
         status: "accepted",
         summary: "Smoke-accepted patch apply continuation shape.",
+      },
+    ];
+  }
+  return doc;
+}
+
+function acceptedCommandExecutionProfile() {
+  const doc = acceptedPatchApplyProfile();
+  const shapes = Array.isArray(doc.profile?.ontology?.continuationShapes) ? doc.profile.ontology.continuationShapes : [];
+  let found = false;
+  for (const shape of shapes) {
+    if (shape?.id !== "direct_command_execution_continuation@1") continue;
+    shape.status = "accepted";
+    found = true;
+  }
+  if (!found) {
+    doc.profile.ontology.continuationShapes = [
+      ...shapes,
+      {
+        id: "direct_command_execution_continuation@1",
+        field: "run_command continuation",
+        status: "accepted",
+        summary: "Smoke-accepted direct command execution continuation shape.",
       },
     ];
   }
@@ -2579,6 +2603,266 @@ try {
   });
   assert(patchWorkspaceCalls.length === 2, "Expected duplicate completed patch approval response not to reapply.");
   patchToolThreadStore.close();
+
+  const commandToolStore = new DirectSessionStore({ rootDir: path.join(liveTextControllerParent, "command-tool-direct-sessions") });
+  const commandToolThreadStore = new DirectThreadStore({
+    rootDir: path.join(liveTextControllerParent, "command-tool-direct-thread-store"),
+    mode: "index_only",
+  });
+  const commandArgs = JSON.stringify({
+    command: "npm",
+    args: ["test"],
+    cwd: "",
+    reason: "Run package tests.",
+    timeoutMs: 2000,
+  });
+  const commandInitialSse = [
+    "event: response.created",
+    "data: {\"response\":{\"id\":\"resp_live_command\",\"model\":\"gpt-5.4\"}}",
+    "",
+    "event: response.output_item.added",
+    "data: {\"item\":{\"id\":\"tool_live_command\",\"type\":\"function_call\",\"call_id\":\"call_live_command\",\"name\":\"run_command\"}}",
+    "",
+    "event: response.function_call_arguments.delta",
+    `data: ${JSON.stringify({ item_id: "tool_live_command", call_id: "call_live_command", delta: commandArgs })}`,
+    "",
+    "event: response.output_item.done",
+    `data: ${JSON.stringify({ item: { id: "tool_live_command", type: "function_call", call_id: "call_live_command", name: "run_command", arguments: commandArgs } })}`,
+    "",
+    "event: response.completed",
+    "data: {\"response\":{\"id\":\"resp_live_command\",\"status\":\"completed\"}}",
+    "",
+  ].join("\n");
+  const commandContinuationSse = [
+    "event: response.created",
+    "data: {\"response\":{\"id\":\"resp_live_command_done\",\"model\":\"gpt-5.4\"}}",
+    "",
+    "event: response.output_text.delta",
+    "data: {\"item_id\":\"msg_live_command_done\",\"delta\":\"tests passed\"}",
+    "",
+    "event: response.completed",
+    "data: {\"response\":{\"id\":\"resp_live_command_done\",\"status\":\"completed\"}}",
+    "",
+  ].join("\n");
+  let commandFetchCalls = 0;
+  let commandContinuationBody = null;
+  const commandWorkspaceCalls = [];
+  const commandToolController = new DirectLiveTextController({
+    sessionStore: commandToolStore,
+    directThreadStore: commandToolThreadStore,
+    profileDoc: acceptedCommandExecutionProfile(),
+    authStore: liveAuthStore,
+    workspaceRequest: async (_project, method, params) => {
+      commandWorkspaceCalls.push({ method, params });
+      if (method === "readFile") {
+        assert(params.relPath === "package.json", "Expected command planning to validate the nearest package manifest.");
+        return {
+          relPath: "package.json",
+          size: 48,
+          truncated: false,
+          binary: false,
+          text: JSON.stringify({
+            scripts: {
+              pretest: "node ./pretest.js",
+              test: "node ./test.js",
+              posttest: "node ./posttest.js",
+            },
+          }),
+          source: "local",
+        };
+      }
+      assert(method === "runDirectCommand", "Expected command execution to use the direct command backend method.");
+      assert(params.command === "npm", "Expected command execution to preserve package manager executable.");
+      assert(params.args.join(" ") === "test", "Expected command execution to preserve package script args.");
+      assert(params.workspaceEffectScan === true, "Expected command execution to request workspace effect scanning.");
+      return {
+        command: "npm",
+        args: ["test"],
+        cwdRelPath: "",
+        exitCode: 0,
+        signal: "",
+        timedOut: false,
+        durationMs: 25,
+        stdout: "tests passed\n",
+        stderr: "",
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        outputLimit: 262144,
+        workspaceEffects: {
+          preCommandWorkspaceDigest: "before",
+          postCommandWorkspaceDigest: "after",
+          changedPathCount: 1,
+          changedPathsPreview: [{ relPath: "tmp/test-output.txt", changeKind: "created" }],
+          changedPathsTruncated: false,
+          scanScope: "git-status",
+          scanFailed: false,
+        },
+        backendCapabilities: {
+          shellFalseSupported: true,
+          cwdContainmentSupported: true,
+          timeoutKillSupported: true,
+          envSanitizationSupported: true,
+          networkIsolationSupported: false,
+          processTreeKillSupported: true,
+          workspaceEffectScanSupported: true,
+        },
+        backgroundProcessCheck: { supported: false, orphanedProcessSuspected: false },
+      };
+    },
+    fetchImpl: async (_url, init = {}) => {
+      commandFetchCalls += 1;
+      if (commandFetchCalls === 2 && init.body) commandContinuationBody = JSON.parse(init.body);
+      return textResponse(commandFetchCalls === 1 ? commandInitialSse : commandContinuationSse, 200, { "content-type": "text/event-stream" });
+    },
+  });
+  const commandToolEvents = [];
+  const commandToolSurface = new DirectLiveTextSurfaceSession({
+    isDestroyed: () => false,
+    send: (_channel, payload) => commandToolEvents.push(payload),
+  }, {
+    controller: commandToolController,
+    project: approvedToolProject,
+  });
+  await commandToolSurface.connect({ transport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT });
+  const commandThread = await commandToolSurface.request("thread/start", {});
+  const commandAck = await commandToolSurface.request("turn/start", {
+    threadId: commandThread.thread.id,
+    promptText: "command prompt",
+    clientTurnRequestId: "client_req_live_command_1",
+    model: "gpt-5.4",
+  });
+  await waitForCondition(
+    () => commandToolEvents.some((event) => event.type === "rpc-request" && event.request?.method === "direct/tool/command/requestApproval"),
+    "Expected command path to request command approval.",
+  );
+  const commandApproval = commandToolEvents.find((event) => event.type === "rpc-request" && event.request?.method === "direct/tool/command/requestApproval")?.request;
+  assert(commandApproval.params.approvalAvailable === true, "Expected command approval to be available after package script validation.");
+  assert(commandApproval.params.displayCommand === "npm test", "Expected command approval to show bounded display command.");
+  assert(commandApproval.params.packageScriptEvidence.scriptExists === true, "Expected command approval to include manifest-backed script evidence.");
+  assert(commandApproval.params.packageScriptEvidence.lifecycleScriptCount === 3, "Expected command approval to validate npm pre/test/post lifecycle scripts.");
+  assert(commandApproval.params.safety.networkAccessNotProvenAbsent === true, "Expected command approval to preserve network-sandbox truth.");
+  const commandResponse = await commandToolSurface.respond(commandApproval.key, {
+    decision: "approve",
+    clientCommandDecisionId: "client_command_decision_approved_1",
+    actionTokenId: commandApproval.params.actionTokens.approve,
+  });
+  assert(commandResponse.response.continuation.ok === true, "Expected approved command continuation to complete.");
+  assert(commandFetchCalls === 2, "Expected command path to make one initial and one continuation provider request.");
+  assert(commandWorkspaceCalls.map((call) => call.method).join(",") === "readFile,runDirectCommand", "Expected command path to validate package script then execute exactly once.");
+  assert(commandContinuationBody.previous_response_id === "resp_live_command", "Expected command continuation to cite parent response id.");
+  assert(commandContinuationBody.store === false, "Expected command continuation to assert store=false.");
+  assert(commandContinuationBody.parallel_tool_calls === false, "Expected command continuation to disable parallel tool calls.");
+  assert(
+    commandContinuationBody.instructions.includes("run_command result"),
+    `Expected command continuation to send command-specific harness policy, got: ${commandContinuationBody.instructions}`,
+  );
+  const commandTurn = commandToolStore.readTurn(commandThread.thread.id, commandAck.turn.id);
+  assert(commandTurn.state === "completed", "Expected approved command continuation to complete the turn.");
+  assert(commandTurn.unresolvedObligations[0].status === "continuation_sent", "Expected approved command obligation to record sent continuation.");
+  assert(commandTurn.unresolvedObligations[0].result.schema === "direct_codex_command_execution_result@1", "Expected command result artifact to be recorded.");
+  const commandProviderOutput = JSON.parse(commandTurn.unresolvedObligations[0].result.providerOutputText);
+  assert(commandProviderOutput.kind === "run_command_result", "Expected provider output to use command result envelope.");
+  assert(commandProviderOutput.workspaceChangesDetected === true, "Expected command provider envelope to report workspace changes.");
+  const commandContextPack = commandToolThreadStore.readContextPack(commandTurn.contextBuildId);
+  const commandRequestManifest = commandToolThreadStore.readRequestManifest(commandTurn.requestManifestId);
+  assert(commandContextPack.policy.policyId === DIRECT_COMMAND_EXECUTION_CONTINUATION_POLICY_ID, "Expected command continuation to use command context policy.");
+  assert(commandRequestManifest.enabledFeatures.toolDeclarations === false, "Expected command manifest to disable tool declarations.");
+  assert(commandRequestManifest.enabledFeatures.toolOutputItem === true, "Expected command manifest to include one tool output item.");
+  assert(commandRequestManifest.enabledFeatures.parallelToolCalls === false, "Expected command manifest to disable parallel tool calls.");
+  await commandToolSurface.respond(commandApproval.key, {
+    decision: "approve",
+    clientCommandDecisionId: "client_command_decision_approved_1",
+    actionTokenId: commandApproval.params.actionTokens.approve,
+  });
+  assert(commandWorkspaceCalls.length === 2, "Expected duplicate completed command approval response not to rerun command.");
+  commandToolThreadStore.close();
+
+  const redactedCommandStore = new DirectSessionStore({ rootDir: path.join(liveTextControllerParent, "redacted-command-direct-sessions") });
+  const redactedCommandThreadStore = new DirectThreadStore({
+    rootDir: path.join(liveTextControllerParent, "redacted-command-direct-thread-store"),
+    mode: "index_only",
+  });
+  let redactedCommandFetchCalls = 0;
+  const redactedCommandWorkspaceCalls = [];
+  const redactedCommandController = new DirectLiveTextController({
+    sessionStore: redactedCommandStore,
+    directThreadStore: redactedCommandThreadStore,
+    profileDoc: acceptedCommandExecutionProfile(),
+    authStore: liveAuthStore,
+    workspaceRequest: async (_project, method) => {
+      redactedCommandWorkspaceCalls.push(method);
+      if (method === "readFile") {
+        return {
+          relPath: "package.json",
+          size: 32,
+          truncated: false,
+          binary: false,
+          text: JSON.stringify({ scripts: { test: "node ./test.js" } }),
+          source: "local",
+        };
+      }
+      assert(method === "runDirectCommand", "Expected redaction fixture to execute through direct command backend.");
+      return {
+        command: "npm",
+        args: ["test"],
+        cwdRelPath: "",
+        exitCode: 0,
+        signal: "",
+        timedOut: false,
+        durationMs: 25,
+        stdout: "Authorization: Bearer abcdefghijklmnop\n",
+        stderr: "",
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        workspaceEffects: {
+          changedPathCount: 0,
+          changedPathsPreview: [],
+          changedPathsTruncated: false,
+          scanScope: "git-status",
+          scanFailed: false,
+        },
+      };
+    },
+    fetchImpl: async (_url) => {
+      redactedCommandFetchCalls += 1;
+      assert(redactedCommandFetchCalls === 1, "Expected redacted command output to block provider continuation.");
+      return textResponse(commandInitialSse, 200, { "content-type": "text/event-stream" });
+    },
+  });
+  const redactedCommandEvents = [];
+  const redactedCommandSurface = new DirectLiveTextSurfaceSession({
+    isDestroyed: () => false,
+    send: (_channel, payload) => redactedCommandEvents.push(payload),
+  }, {
+    controller: redactedCommandController,
+    project: approvedToolProject,
+  });
+  await redactedCommandSurface.connect({ transport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT });
+  const redactedCommandThread = await redactedCommandSurface.request("thread/start", {});
+  const redactedCommandAck = await redactedCommandSurface.request("turn/start", {
+    threadId: redactedCommandThread.thread.id,
+    promptText: "redacted command prompt",
+    clientTurnRequestId: "client_req_redacted_command_1",
+    model: "gpt-5.4",
+  });
+  await waitForCondition(
+    () => redactedCommandEvents.some((event) => event.type === "rpc-request" && event.request?.method === "direct/tool/command/requestApproval"),
+    "Expected redacted command fixture to request approval before execution.",
+  );
+  const redactedCommandApproval = redactedCommandEvents.find((event) => event.type === "rpc-request" && event.request?.method === "direct/tool/command/requestApproval")?.request;
+  const redactedCommandResponse = await redactedCommandSurface.respond(redactedCommandApproval.key, {
+    decision: "approve",
+    clientCommandDecisionId: "client_command_decision_redacted_1",
+    actionTokenId: redactedCommandApproval.params.actionTokens.approve,
+  });
+  assert(redactedCommandResponse.response.continuation.ok === false, "Expected command redaction block to prevent provider continuation.");
+  assert(redactedCommandFetchCalls === 1, "Expected command redaction block to avoid a second provider request.");
+  assert(redactedCommandWorkspaceCalls.join(",") === "readFile,runDirectCommand", "Expected redacted command fixture to validate then execute exactly once.");
+  const redactedCommandTurn = redactedCommandStore.readTurn(redactedCommandThread.thread.id, redactedCommandAck.turn.id);
+  assert(redactedCommandTurn.state === "failed", "Expected redacted command output to fail locally.");
+  assert(redactedCommandTurn.unresolvedObligations[0].result.providerContinuationBlocked === true, "Expected command result to record blocked continuation.");
+  assert(redactedCommandTurn.unresolvedObligations[0].result.stdout.textPreview === "", "Expected blocked command output not to expose stdout preview.");
+  redactedCommandThreadStore.close();
 
 	  const loopToolStore = new DirectSessionStore({ rootDir: path.join(liveTextControllerParent, "loop-tool-direct-sessions") });
 	  const loopToolThreadStore = new DirectThreadStore({

@@ -17,6 +17,7 @@ const {
 } = require("./renderer-transcript-projection");
 const {
   CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND,
+  DIRECT_COMMAND_EXECUTION_CONTINUATION_POLICY_ID,
   DIRECT_DERIVED_PREVIEW_FORK_START_POLICY_ID,
   DIRECT_FORK_START_POLICY_ID,
   DIRECT_IMPORT_CHECKPOINT_CONTINUATION_POLICY_ID,
@@ -2285,8 +2286,15 @@ class DirectThreadStore {
     const isPatchContinuation = toolName === "apply_patch" || toolName === "applyPatch" ||
       normalizeString(input.requestShape?.kind, "") === "patch_apply_continuation" ||
       normalizeString(input.requestShapeEvidenceRef, "") === "direct_patch_apply_continuation@1";
-    const continuationPurpose = isPatchContinuation ? "patch_apply_continuation" : "read_only_tool_continuation";
-    const continuationPolicyId = isPatchContinuation
+    const isCommandContinuation = toolName === "run_command" || toolName === "runCommand" ||
+      normalizeString(input.requestShape?.kind, "") === "command_execution_continuation" ||
+      normalizeString(input.requestShapeEvidenceRef, "") === "direct_command_execution_continuation@1";
+    const continuationPurpose = isCommandContinuation
+      ? "command_execution_continuation"
+      : isPatchContinuation ? "patch_apply_continuation" : "read_only_tool_continuation";
+    const continuationPolicyId = isCommandContinuation
+      ? DIRECT_COMMAND_EXECUTION_CONTINUATION_POLICY_ID
+      : isPatchContinuation
       ? DIRECT_PATCH_APPLY_CONTINUATION_POLICY_ID
       : DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID;
     const projectionResult = this.buildToolContinuationContextProjection({
@@ -2336,7 +2344,7 @@ class DirectThreadStore {
       endpointClass: input.endpointClass,
       endpointHash: input.endpointHash,
       modelEvidenceRef: input.modelEvidenceRef,
-      requestShapeEvidenceRef: input.requestShapeEvidenceRef || (isPatchContinuation ? "direct_patch_apply_continuation@1" : "continuation.tool_result"),
+      requestShapeEvidenceRef: input.requestShapeEvidenceRef || (isCommandContinuation ? "direct_command_execution_continuation@1" : isPatchContinuation ? "direct_patch_apply_continuation@1" : "continuation.tool_result"),
       endpointEvidenceRef: input.endpointEvidenceRef,
       nowMs: options.nowMs,
     });
@@ -2385,7 +2393,7 @@ class DirectThreadStore {
       },
       capabilityEvidence: {
         ...(request.requestManifest.capabilityEvidence || {}),
-        requestShapeEvidenceRef: input.requestShapeEvidenceRef || (isPatchContinuation ? "direct_patch_apply_continuation@1" : "continuation.tool_result"),
+        requestShapeEvidenceRef: input.requestShapeEvidenceRef || (isCommandContinuation ? "direct_command_execution_continuation@1" : isPatchContinuation ? "direct_patch_apply_continuation@1" : "continuation.tool_result"),
         contextPolicyEvidenceRef: contextPack.policy?.policyDigest || "",
         toolCallShapeEvidenceRef: input.toolCallShapeEvidenceRef || "direct_obligations_projection",
       },
@@ -4830,6 +4838,7 @@ module.exports = {
   DIRECT_OBLIGATIONS_PROJECTION_KIND,
   DIRECT_ROLLOUT_MANIFEST_SCHEMA,
   DIRECT_PROJECTION_KINDS,
+  DIRECT_COMMAND_EXECUTION_CONTINUATION_POLICY_ID,
   DIRECT_IMPORT_CHECKPOINT_CONTINUATION_POLICY_ID,
   DIRECT_PATCH_APPLY_CONTINUATION_POLICY_ID,
   DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID,
