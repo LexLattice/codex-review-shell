@@ -26,7 +26,7 @@ const MAX_CONTEXT_PACK_CHARS = 128 * 1024;
 const MAX_CONTEXT_PROJECTION_CHARS = 96 * 1024;
 const MAX_CONTEXT_ITEM_CHARS = 16 * 1024;
 const MAX_CONTEXT_CURRENT_USER_CHARS = 64 * 1024;
-const MAX_CONTEXT_MESSAGES = 200;
+const MAX_CONTEXT_MESSAGES = 80;
 
 const HARNESS_POLICY_TEXT = [
   "This is a fresh direct Codex request assembled by the local harness.",
@@ -225,13 +225,13 @@ function roleMappingSnapshot() {
         localRole: "user",
         providerRole: "user",
         providerPlacement: "user_message",
-        allowedAuthorities: ["current-user-intent", "historical-evidence", "status-evidence", "tool-result-evidence"],
+        allowedAuthorities: ["current-user-intent", "historical-dialogue-evidence", "historical-evidence", "status-evidence", "tool-result-evidence"],
       },
       {
         localRole: "assistant",
         providerRole: "assistant",
         providerPlacement: "assistant_message",
-        allowedAuthorities: ["historical-evidence"],
+        allowedAuthorities: ["historical-dialogue-evidence", "historical-evidence"],
       },
       {
         localRole: "tool",
@@ -335,10 +335,10 @@ function createContextProjectionItem({ projectionId, ordinal, rendererItem, item
 function contextItemForRendererItem(rendererItem = {}) {
   const kind = normalizeString(rendererItem.itemKind, "");
   if (kind === "user_message") {
-    return { itemKind: "historical_user_message", role: "user", authority: "historical-evidence" };
+    return { itemKind: "historical_user_message", role: "user", authority: "historical-dialogue-evidence" };
   }
   if (kind === "assistant_message" || kind === "thought_summary") {
-    return { itemKind: "historical_assistant_message", role: "assistant", authority: "historical-evidence" };
+    return { itemKind: "historical_assistant_message", role: "assistant", authority: "historical-dialogue-evidence" };
   }
   if (kind === "tool_result") {
     return { itemKind: "tool_result_evidence", role: "tool", authority: "tool-result-evidence" };
@@ -867,7 +867,9 @@ function providerInputFromContextPack(contextPack = {}) {
             ? "direct_fork_start_live_text@1"
             : (contextPack.policy?.policyId === DIRECT_DERIVED_PREVIEW_FORK_START_POLICY_ID
                 ? "direct_derived_preview_fork_start_live_text@1"
-                : "direct_text_only_response")));
+                : (contextPack.policy?.policyId === DIRECT_TEXT_TURN_RECENT_DIALOGUE_POLICY_ID
+                    ? "direct_text_turn_recent_dialogue@1"
+                    : "direct_text_turn_empty_context@1"))));
   const projection = {
     schema: DIRECT_PROVIDER_INPUT_PROJECTION_SCHEMA,
     providerInputProjectionId: `provider_input_${sha256(`${contextPack.contextBuildId}:${roleMapping.mappingDigest}:${prompt}:${instructions}`).slice(0, 24)}`,
@@ -916,6 +918,7 @@ function buildRequestManifest({
     transport: "live-text",
     model: normalizeString(model, ""),
     modelEvidenceRef: normalizeString(modelEvidenceRef, ""),
+    requestShapeClass: providerInput.projection.requestShapeClass,
     requestShapeHash: shapeHash,
     endpointClass: normalizeString(endpointClass, "chatgpt-codex-responses"),
     endpointHash: normalizeString(endpointHash, ""),
@@ -933,7 +936,9 @@ function buildRequestManifest({
       previousResponseIdUsed: false,
       providerContinuityHandleUsed: false,
       importedContinuityHandleUsed: false,
-      continuityPolicy: "fresh_request",
+      continuityPolicy: contextPack.policy?.policyId === DIRECT_TEXT_TURN_RECENT_DIALOGUE_POLICY_ID
+        ? "fresh_request_with_quoted_recent_dialogue"
+        : "fresh_request",
     },
     capabilityEvidence: {
       modelEvidenceRef: normalizeString(modelEvidenceRef, ""),

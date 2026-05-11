@@ -24,6 +24,10 @@ const DIRECT_TURN_STATES = new Set([
   "aborted",
   "tool_call_blocked_text_only",
   "transport_handoff_unknown",
+  "response_incomplete",
+  "content_filter_terminal",
+  "max_output_terminal",
+  "empty_output_terminal",
   "checkpoint_required",
 ]);
 const DIRECT_RECOVERABLE_ACTIVE_TURN_STATES = new Set(["request_built", "streaming"]);

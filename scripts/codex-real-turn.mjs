@@ -638,6 +638,32 @@ function requestShapeClassForOptions(options) {
   return raw;
 }
 
+function applyFromReportOptions(options) {
+  const fromReport = optionString(options, "from-report", "");
+  if (!fromReport) return null;
+  const report = readJsonFile(path.resolve(fromReport));
+  if (!isPlainObject(report)) {
+    const error = new Error("from_report_unreadable");
+    error.code = "from_report_unreadable";
+    throw error;
+  }
+  const threadId = normalizeString(
+    report.createdThreadId ||
+    report.artifacts?.threadId ||
+    report.artifacts?.sessionId ||
+    report.twoTurnReport?.firstTurn?.threadId,
+    "",
+  );
+  if (threadId && !optionString(options, "thread-id", "")) options["thread-id"] = threadId;
+  if (report.projectId && !optionString(options, "project-id", "")) options["project-id"] = report.projectId;
+  return {
+    reportPath: path.resolve(fromReport),
+    threadId,
+    sessionId: normalizeString(report.createdSessionId || report.artifacts?.sessionId, threadId),
+    lastTurnId: normalizeString(report.lastTurnId || report.artifacts?.turnId, ""),
+  };
+}
+
 function classifyUnknownEvents(rawTypes = [], failOnUnknown = false) {
   return rawTypes.slice(0, MAX_HEADLESS_UNKNOWN_EVENT_TYPES).map((rawType) => {
     const safe = normalizeString(rawType, "unknown");
@@ -663,6 +689,7 @@ function reportExistingOrConflict(reportPath, context) {
   const same = existing.runtime === context.runtime &&
     existing.projectId === context.projectId &&
     existing.prompt?.promptDigest === context.promptEnvelope.promptDigest &&
+    existing.runtimeEvidence?.requestShapeClass === context.requestShapeClass &&
     existing.runtimeEvidence?.requestShapeHash === context.requestShapeHash;
   if (same) return { report: existing, conflict: false };
   const report = baseReport(context);
@@ -719,8 +746,15 @@ async function runDirect(context) {
   if (!ciLiveOptInOk()) {
     return failureReport(report, "live_provider_call_opt_in_missing", "CI direct live transport requires CODEX_DIRECT_REAL_TURN_ALLOW_CI=1.");
   }
-  if (requestShapeClass !== DIRECT_EMPTY_CONTEXT_SHAPE || !optionFlag(options, "new-thread", false) || optionString(options, "thread-id", "")) {
-    return failureReport(report, "unsupported_direct_context_policy_for_v0", "V0 direct headless runner supports only --new-thread with direct_text_turn_empty_context@1.");
+  const requestedThreadId = optionString(options, "thread-id", "");
+  const newThreadRequested = optionFlag(options, "new-thread", false);
+  const recentDialogueRequested = requestShapeClass === DIRECT_RECENT_DIALOGUE_SHAPE;
+  const emptyContextRequested = requestShapeClass === DIRECT_EMPTY_CONTEXT_SHAPE;
+  if (!(
+    (emptyContextRequested && newThreadRequested && !requestedThreadId) ||
+    (recentDialogueRequested && requestedThreadId && !newThreadRequested)
+  )) {
+    return failureReport(report, "unsupported_direct_context_policy_for_v0", "V0 direct headless runner supports --new-thread with direct_text_turn_empty_context@1 or --thread-id with direct_text_turn_recent_dialogue@1.");
   }
   if (optionFlag(options, "probe-if-missing") && !optionFlag(options, "diagnostic-probe-mode")) {
     return failureReport(report, "live_evidence_missing", "--probe-if-missing is restricted to diagnostic probe mode.");
@@ -787,21 +821,55 @@ async function runDirect(context) {
       model: evidence.accepted ? (evidence.model || model) : model,
       prompt: prompt.text,
     });
-    session = sessionStore.createSession({
-      projectId: project.id,
-      workspace: isPlainObject(project.workspace) ? project.workspace : {},
-      workspaceDisplayPath: context.workspace.evidencePath,
-      title: "Headless direct real turn",
-      model: requestBodyInitial.model,
-      runtimeMode: "direct-experimental",
-      directTransport: "direct-live-text",
-      modelSource: evidence.accepted ? "live-probe-evidence" : context.modelSource,
-      modelEvidenceState: evidence.accepted ? "runtime_probed" : "diagnostic-no-promotion",
-      modelEvidenceId: evidence.evidenceId || "",
-      sourceClass: "direct-native",
-      nativeDirectSession: true,
-      providerContinuityAvailable: false,
-    });
+    if (recentDialogueRequested) {
+      session = sessionStore.readSession(requestedThreadId);
+      if (!session) {
+        return failureReport(report, "direct_thread_missing", "Direct recent-dialogue thread was not found.");
+      }
+      const sessionProjectId = normalizeString(session.projectId, "");
+      if (sessionProjectId && sessionProjectId !== project.id) {
+        return failureReport(report, "direct_thread_project_mismatch", "Direct recent-dialogue thread belongs to a different project.");
+      }
+      if (session.runtimeMode !== "direct-experimental" || session.sourceClass && session.sourceClass !== "direct-native") {
+        return failureReport(report, "direct_thread_schema_too_old", "Direct recent-dialogue follow-up requires a direct-native text-only thread.");
+      }
+      const summaries = Array.isArray(session.turns) ? session.turns : [];
+      const previousSummary = summaries.length ? summaries[summaries.length - 1] : null;
+      const previousTurn = previousSummary?.turnId ? sessionStore.readTurn(session.sessionId, previousSummary.turnId) : null;
+      if (!previousTurn || previousTurn.state !== "completed") {
+        return failureReport(report, "previous_turn_not_safe", "Direct recent-dialogue follow-up requires the previous turn to have completed safely.");
+      }
+      threadStore.indexSessionArtifacts(
+        sessionStore,
+        session,
+        sessionStore.listTurnIdsFromDisk(session.sessionId).map((turnId) => sessionStore.readTurn(session.sessionId, turnId)).filter(Boolean),
+      );
+      threadStore.buildRendererTranscriptProjection(session.sessionId, { sessionStore });
+      threadStore.buildContextRecentDialogueProjection(session.sessionId, { sessionStore });
+    } else {
+      session = sessionStore.createSession({
+        projectId: project.id,
+        workspace: isPlainObject(project.workspace) ? project.workspace : {},
+        workspaceDisplayPath: context.workspace.evidencePath,
+        title: "Headless direct real turn",
+        model: requestBodyInitial.model,
+        runtimeMode: "direct-experimental",
+        directTransport: "direct-live-text",
+        modelSource: evidence.accepted ? "live-probe-evidence" : context.modelSource,
+        modelEvidenceState: evidence.accepted ? "runtime_probed" : "diagnostic-no-promotion",
+        modelEvidenceId: evidence.evidenceId || "",
+        sourceClass: "direct-native",
+        nativeDirectSession: true,
+        providerContinuityAvailable: false,
+        continuityState: "fresh_session_only",
+      });
+    }
+    const frozenContextProjection = recentDialogueRequested
+      ? threadStore.projectionFromRow(threadStore.currentProjectionRow(session.sessionId, "context_recent_dialogue"))
+      : null;
+    if (recentDialogueRequested && !frozenContextProjection) {
+      return failureReport(report, "context_projection_failed", "Direct recent-dialogue context projection was not available.");
+    }
     turn = sessionStore.createTurn(session.sessionId, {
       input: [{ role: "user", text: prompt.text }],
       model: requestBodyInitial.model,
@@ -810,29 +878,55 @@ async function runDirect(context) {
       previousResponseIdUsed: false,
       providerContinuityHandleUsed: false,
     });
-    threadStore.indexSessionArtifacts(sessionStore, session, [turn]);
+    if (!recentDialogueRequested) threadStore.indexSessionArtifacts(sessionStore, session, [turn]);
     const contextResult = threadStore.buildAndPersistContextForTextTurn({
       session: sessionStore.readSession(session.sessionId) || session,
       projectId: project.id,
       threadId: session.sessionId,
       turnId: turn.turnId,
       currentUserPrompt: prompt.text,
-      useRecentDialogue: false,
+      useRecentDialogue: recentDialogueRequested,
+      requireRecentDialogue: recentDialogueRequested,
+      sourceContextProjectionId: normalizeString(frozenContextProjection?.projectionId, ""),
+      expectedContextProjectionId: normalizeString(frozenContextProjection?.projectionId, ""),
+      expectedContextProjectionDigest: normalizeString(frozenContextProjection?.projectionDigest, ""),
       model: requestBodyInitial.model,
       requestShape: requestShapeForDiagnostic(requestBodyInitial),
       requestShapeHash,
       endpointClass: endpointClass(endpoint),
       endpointHash: endpointHash(endpoint),
       modelEvidenceRef: evidence.evidenceId || "",
-      requestShapeEvidenceRef: DIRECT_EMPTY_CONTEXT_SHAPE,
+      requestShapeEvidenceRef: recentDialogueRequested ? DIRECT_RECENT_DIALOGUE_SHAPE : DIRECT_EMPTY_CONTEXT_SHAPE,
       endpointEvidenceRef: endpointHash(endpoint),
     });
+    const rendererProjectionForReport = recentDialogueRequested
+      ? threadStore.projectionFromRow(threadStore.currentProjectionRow(session.sessionId, "renderer_transcript"))
+      : null;
+    const contextProjectionForReport = recentDialogueRequested
+      ? threadStore.projectionFromRow(threadStore.currentProjectionRow(session.sessionId, "context_recent_dialogue"))
+      : null;
     report.requestLifecycle = "request_built";
     report.artifacts.sessionId = session.sessionId;
     report.artifacts.threadId = session.sessionId;
     report.artifacts.turnId = turn.turnId;
     report.artifacts.contextBuildId = contextResult.contextPack.contextBuildId;
     report.artifacts.requestManifestId = contextResult.requestManifest.requestManifestId;
+    report.createdThreadId = session.sessionId;
+    report.createdSessionId = session.sessionId;
+    report.lastTurnId = turn.turnId;
+    report.nextRecommendedCommand = `scripts/codex-real-turn.mjs --runtime=direct --project-id=${project.id} --from-report=<this-report.json> --context-policy=${DIRECT_RECENT_DIALOGUE_SHAPE}`;
+    report.turnReport = {
+      requestShapeClass: recentDialogueRequested ? DIRECT_RECENT_DIALOGUE_SHAPE : DIRECT_EMPTY_CONTEXT_SHAPE,
+      threadId: session.sessionId,
+      turnId: turn.turnId,
+      rendererProjectionId: rendererProjectionForReport?.projectionId || "",
+      rendererProjectionDigest: rendererProjectionForReport?.projectionDigest || "",
+      contextProjectionId: contextProjectionForReport?.projectionId || "",
+      contextProjectionDigest: contextProjectionForReport?.projectionDigest || "",
+      contextBuildId: contextResult.contextPack.contextBuildId,
+      requestManifestId: contextResult.requestManifest.requestManifestId,
+      terminalState: "request_built",
+    };
     report.artifacts.artifactIds.push(
       session.sessionId,
       turn.turnId,
@@ -950,9 +1044,11 @@ async function runDirect(context) {
         },
       ],
     });
-    threadStore.indexSessionArtifacts(sessionStore, sessionStore.readSession(session.sessionId), [
-      sessionStore.readTurn(session.sessionId, turn.turnId),
-    ].filter(Boolean));
+    threadStore.indexSessionArtifacts(
+      sessionStore,
+      sessionStore.readSession(session.sessionId),
+      sessionStore.listTurnIdsFromDisk(session.sessionId).map((turnId) => sessionStore.readTurn(session.sessionId, turnId)).filter(Boolean),
+    );
     try {
       threadStore.buildRendererTranscriptProjection(session.sessionId, { sessionStore });
     } catch {}
@@ -966,6 +1062,22 @@ async function runDirect(context) {
     report.stream.normalizedEventTypes = result.normalizedEvents.map((event) => event.type).filter(Boolean).slice(0, MAX_HEADLESS_EVENT_TYPES);
     report.stream.unknownEvents = unknownEvents;
     report.stream.terminalState = terminalState;
+    if (report.turnReport) report.turnReport.terminalState = terminalState;
+    if (recentDialogueRequested) {
+      const firstTurnId = normalizeString((Array.isArray(session.turns) ? session.turns : [])[0]?.turnId, "");
+      const firstTurn = firstTurnId ? sessionStore.readTurn(session.sessionId, firstTurnId) : null;
+      report.twoTurnReport = {
+        firstTurn: {
+          requestShapeClass: DIRECT_EMPTY_CONTEXT_SHAPE,
+          threadId: session.sessionId,
+          turnId: firstTurnId,
+          contextBuildId: normalizeString(firstTurn?.contextBuildId, ""),
+          requestManifestId: normalizeString(firstTurn?.requestManifestId, ""),
+          terminalState: normalizeString(firstTurn?.state, ""),
+        },
+        secondTurn: report.turnReport,
+      };
+    }
     report.stream.providerBytesObserved = report.providerBytesObserved;
     report.stream.toolExecuted = false;
     report.stream.continuationSent = false;
@@ -1152,6 +1264,13 @@ async function runAppserver(context) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  let fromReport = null;
+  try {
+    fromReport = applyFromReportOptions(options);
+  } catch (error) {
+    console.error(error?.message || String(error));
+    process.exit(2);
+  }
   const runtime = optionString(options, "runtime", "");
   if (!["direct", "appserver"].includes(runtime)) {
     console.error("Usage: node scripts/codex-real-turn.mjs --runtime=direct|appserver --project-id=<id> --prompt=<text>");
@@ -1229,6 +1348,7 @@ async function main() {
     requestShapeClass,
     requestShapeHash,
     liveProviderCallOptIn: runtime === "direct" ? directLiveOptIn(options) : false,
+    fromReport,
   };
   const reportPath = reportPathForRun(appUserDataRoot, runId, options);
   if (clientRunId) {
