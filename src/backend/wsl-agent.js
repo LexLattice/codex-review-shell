@@ -837,6 +837,215 @@ async function runCommand(params = {}) {
   });
 }
 
+function minimalCommandEnv(extraEnv = {}) {
+  const base = {};
+  for (const key of ["PATH", "HOME", "TMPDIR", "TMP", "TEMP", "SystemRoot", "ComSpec"]) {
+    if (process.env[key]) base[key] = process.env[key];
+  }
+  base.CI = "1";
+  base.NO_COLOR = "1";
+  return { ...base, ...(extraEnv && typeof extraEnv === "object" ? extraEnv : {}) };
+}
+
+function killProcessTree(child, signal) {
+  if (!child || !child.pid) return;
+  try {
+    if (process.platform !== "win32") {
+      process.kill(-child.pid, signal);
+      return;
+    }
+  } catch {
+    // Fall back to killing the parent process if process-group cleanup failed.
+  }
+  try {
+    child.kill(signal);
+  } catch {
+    // Ignore cleanup races.
+  }
+}
+
+function parseGitStatusPorcelain(text) {
+  const lines = String(text || "").split(/\r?\n/).filter(Boolean);
+  const entries = [];
+  for (const line of lines) {
+    const status = line.slice(0, 2);
+    const rawPath = line.slice(3).trim();
+    if (!rawPath) continue;
+    const relPath = rawPath.includes(" -> ") ? rawPath.split(" -> ").pop() : rawPath;
+    let changeKind = "modified";
+    if (status.includes("?") || status.includes("A")) changeKind = "created";
+    if (status.includes("D")) changeKind = "deleted";
+    if (!status.trim()) changeKind = "unknown";
+    entries.push({
+      relPath: displayRelPath(relPath.replace(/^"|"$/g, "")),
+      changeKind,
+    });
+  }
+  return entries;
+}
+
+async function workspaceEffectSnapshot() {
+  const git = await captureProcess("git", ["status", "--porcelain"], {
+    cwd: root,
+    timeoutMs: 5000,
+    env: minimalCommandEnv(),
+  }).catch((error) => ({ exitCode: 1, stderr: error.message, stdout: "" }));
+  if (git.exitCode !== 0) {
+    return {
+      supported: false,
+      scanScope: "none",
+      scanFailed: true,
+      digest: "",
+      entries: [],
+      error: String(git.stderr || "").slice(0, 500),
+    };
+  }
+  const entries = parseGitStatusPorcelain(git.stdout);
+  return {
+    supported: true,
+    scanScope: "git-status",
+    scanFailed: false,
+    digest: crypto.createHash("sha256").update(JSON.stringify(entries)).digest("hex"),
+    entries,
+  };
+}
+
+function workspaceEffectSummary(before, after) {
+  if (!after?.supported) {
+    return {
+      preCommandWorkspaceDigest: before?.digest || "",
+      postCommandWorkspaceDigest: after?.digest || "",
+      changedPathCount: 0,
+      changedPathsPreview: [],
+      changedPathsTruncated: false,
+      scanScope: "none",
+      scanFailed: true,
+    };
+  }
+  const beforeMap = new Map((before?.entries || []).map((entry) => [entry.relPath, entry.changeKind]));
+  const changed = [];
+  for (const entry of after.entries || []) {
+    if (beforeMap.get(entry.relPath) !== entry.changeKind) changed.push(entry);
+  }
+  for (const entry of before?.entries || []) {
+    if (!(after.entries || []).some((next) => next.relPath === entry.relPath)) {
+      changed.push({ relPath: entry.relPath, changeKind: "unknown" });
+    }
+  }
+  return {
+    preCommandWorkspaceDigest: before?.digest || "",
+    postCommandWorkspaceDigest: after.digest || "",
+    changedPathCount: changed.length,
+    changedPathsPreview: changed.slice(0, 25),
+    changedPathsTruncated: changed.length > 25,
+    scanScope: after.scanScope || "git-status",
+    scanFailed: false,
+  };
+}
+
+async function runDirectCommand(params = {}) {
+  const command = String(params.command || "").trim();
+  if (!command) throw new Error("Command is required.");
+  const args = Array.isArray(params.args) ? params.args.map((arg) => String(arg)) : [];
+  const { fullPath, displayRel } = resolveWithinRoot(params.cwdRelPath || "");
+  const timeoutMs = Number.isFinite(Number(params.timeoutMs))
+    ? Math.max(1000, Math.min(Number(params.timeoutMs), 2 * 60_000))
+    : DEFAULT_COMMAND_TIMEOUT_MS;
+  const backendCapabilities = {
+    shellFalseSupported: true,
+    cwdContainmentSupported: true,
+    timeoutKillSupported: true,
+    envSanitizationSupported: true,
+    networkIsolationSupported: false,
+    processTreeKillSupported: process.platform !== "win32",
+    workspaceEffectScanSupported: true,
+  };
+  const beforeEffects = await workspaceEffectSnapshot();
+  return new Promise((resolve, reject) => {
+    const startedAt = Date.now();
+    const child = spawn(command, args, {
+      cwd: fullPath,
+      env: minimalCommandEnv(params.env),
+      shell: false,
+      windowsHide: true,
+      detached: process.platform !== "win32",
+    });
+
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
+    let settled = false;
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      timedOut = true;
+      killProcessTree(child, "SIGTERM");
+      setTimeout(() => {
+        if (!settled) killProcessTree(child, "SIGKILL");
+      }, 1200);
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk) => {
+      stdoutTruncated = appendLimited(stdoutChunks, chunk, COMMAND_OUTPUT_LIMIT_BYTES) || stdoutTruncated;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderrTruncated = appendLimited(stderrChunks, chunk, COMMAND_OUTPUT_LIMIT_BYTES) || stderrTruncated;
+    });
+    child.on("error", async (error) => {
+      clearTimeout(timer);
+      settled = true;
+      const afterEffects = await workspaceEffectSnapshot();
+      resolve({
+        command,
+        args,
+        cwdRelPath: displayRel,
+        exitCode: null,
+        signal: "",
+        spawnError: String(error.message || error).slice(0, 500),
+        timedOut,
+        durationMs: Date.now() - startedAt,
+        stdout: Buffer.concat(stdoutChunks).toString("utf8"),
+        stderr: Buffer.concat(stderrChunks).toString("utf8"),
+        stdoutTruncated,
+        stderrTruncated,
+        outputLimit: COMMAND_OUTPUT_LIMIT_BYTES,
+        workspaceEffects: workspaceEffectSummary(beforeEffects, afterEffects),
+        backendCapabilities,
+        backgroundProcessCheck: {
+          supported: false,
+          orphanedProcessSuspected: false,
+        },
+      });
+    });
+    child.on("close", async (exitCode, signal) => {
+      clearTimeout(timer);
+      settled = true;
+      const afterEffects = await workspaceEffectSnapshot();
+      resolve({
+        command,
+        args,
+        cwdRelPath: displayRel,
+        exitCode,
+        signal,
+        timedOut,
+        durationMs: Date.now() - startedAt,
+        stdout: Buffer.concat(stdoutChunks).toString("utf8"),
+        stderr: Buffer.concat(stderrChunks).toString("utf8"),
+        stdoutTruncated,
+        stderrTruncated,
+        outputLimit: COMMAND_OUTPUT_LIMIT_BYTES,
+        workspaceEffects: workspaceEffectSummary(beforeEffects, afterEffects),
+        backendCapabilities,
+        backgroundProcessCheck: {
+          supported: false,
+          orphanedProcessSuspected: false,
+        },
+      });
+    });
+  });
+}
+
 function captureProcess(command, args, options = {}) {
   const timeoutMs = Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : DEFAULT_COMMAND_TIMEOUT_MS;
   return new Promise((resolve, reject) => {
@@ -2510,6 +2719,7 @@ async function handleRequest(method, params = {}) {
         readFilePreview: true,
         applyPatch: true,
         runCommand: true,
+        runDirectCommand: true,
         ensureCodexSandboxArtifactIgnored: true,
         listMatchingFiles: true,
         resolvePath: true,
@@ -2526,6 +2736,7 @@ async function handleRequest(method, params = {}) {
   if (method === "listMatchingFiles") return listMatchingFiles(params);
   if (method === "resolvePath") return resolvePathPreview(params);
   if (method === "runCommand") return runCommand(params);
+  if (method === "runDirectCommand") return runDirectCommand(params);
   if (method === "ensureCodexSandboxArtifactIgnored") return ensureCodexSandboxArtifactIgnored(params);
   if (method === "watchStatus") return watchStatus(params);
   if (method === "listCodexThreads") return listCodexThreads(params);

@@ -25,6 +25,14 @@ const {
   planPatchApplyObligation,
 } = require("../tools/patch-apply-authority");
 const {
+  RUN_COMMAND_TOOL_NAMES,
+  approveCommandExecutionObligation,
+  buildCommandExecutionContinuationRequest,
+  decideCommandExecutionObligation,
+  executeApprovedCommandExecutionObligation,
+  planCommandExecutionObligation,
+} = require("../tools/command-execution-authority");
+const {
   approveReadOnlyToolObligation,
   buildReadOnlyToolContinuationRequest,
   canonicalToolLoopId,
@@ -182,6 +190,25 @@ function patchApplyContinuationEvidenceFor(profileDoc = {}) {
   };
 }
 
+function commandExecutionContinuationEvidenceFor(profileDoc = {}) {
+  const shapes = profileDoc.profile?.ontology?.continuationShapes;
+  const entries = Array.isArray(shapes) ? shapes : [];
+  const entry = entries.find((shape) =>
+    shape?.id === "direct_command_execution_continuation@1" ||
+    String(shape?.field || "").toLowerCase().includes("command-execution") ||
+    String(shape?.field || "").toLowerCase().includes("command execution") ||
+    String(shape?.field || "").toLowerCase().includes("run_command"));
+  const state = modelEvidenceState(entry?.status);
+  const accepted = state === "accepted" || state === "runtime_probed";
+  return {
+    accepted,
+    status: accepted ? "ready" : "profile_required",
+    capabilityId: normalizeString(entry?.id, "direct_command_execution_continuation@1"),
+    evidenceState: state,
+    reason: accepted ? "" : "accepted_command_execution_continuation_required",
+  };
+}
+
 function sanitizeStatus(status = {}) {
   return {
     status: normalizeString(status.status, "unauthenticated"),
@@ -199,9 +226,11 @@ function buildDirectLiveTextCapabilities(status = {}) {
   const ready = status.status === "ready";
   const readOnlyToolReady = ready && status.readOnlyToolContinuation?.status === "ready";
   const patchApplyReady = ready && status.patchApplyContinuation?.status === "ready";
+  const commandExecutionReady = ready && status.commandExecutionContinuation?.status === "ready";
   const toolMethods = [];
   if (readOnlyToolReady) toolMethods.push("direct/tool/readOnly/requestApproval");
   if (patchApplyReady) toolMethods.push("direct/tool/patchApply/requestApproval");
+  if (commandExecutionReady) toolMethods.push("direct/tool/command/requestApproval");
   return {
     version: 1,
     status: ready ? "ready" : "blocked",
@@ -230,16 +259,18 @@ function buildDirectLiveTextCapabilities(status = {}) {
       canUseOutputSchema: false,
     },
     authority: {
-      commandApproval: false,
+      commandApproval: commandExecutionReady,
       fileChangeApproval: patchApplyReady,
       permissionsApproval: false,
       approvalPolicies: [
         ...(readOnlyToolReady ? ["explicit-read-only-tool"] : []),
         ...(patchApplyReady ? ["explicit-patch-apply"] : []),
+        ...(commandExecutionReady ? ["explicit-command-execution"] : []),
       ],
       sandboxModes: [],
       readOnlyToolApproval: readOnlyToolReady,
       patchApplyApproval: patchApplyReady,
+      commandExecutionApproval: commandExecutionReady,
     },
     requests: {
       supportedServerMethods: toolMethods,
@@ -250,7 +281,7 @@ function buildDirectLiveTextCapabilities(status = {}) {
       runtime: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
       source: "direct-live-text-controller",
       appServerRequired: false,
-      toolsEnabled: readOnlyToolReady || patchApplyReady,
+      toolsEnabled: readOnlyToolReady || patchApplyReady || commandExecutionReady,
       rawBackendFramesExposed: false,
     },
   };
@@ -426,6 +457,7 @@ class DirectLiveTextController {
     const evidence = this.modelEvidenceForProject(project);
     const readOnlyToolContinuation = readOnlyContinuationEvidenceFor(this.profileDoc);
     const patchApplyContinuation = patchApplyContinuationEvidenceFor(this.profileDoc);
+    const commandExecutionContinuation = commandExecutionContinuationEvidenceFor(this.profileDoc);
     let status = "ready";
     let reason = "";
     if (auth.status !== "authenticated") {
@@ -445,7 +477,8 @@ class DirectLiveTextController {
       appServerRequired: false,
       toolsEnabled: status === "ready" && (
         readOnlyToolContinuation.status === "ready" ||
-        patchApplyContinuation.status === "ready"
+        patchApplyContinuation.status === "ready" ||
+        commandExecutionContinuation.status === "ready"
       ),
       reason,
       auth,
@@ -453,6 +486,7 @@ class DirectLiveTextController {
       liveProbeEvidence: evidence.liveProbeEvidence || null,
       readOnlyToolContinuation,
       patchApplyContinuation,
+      commandExecutionContinuation,
     };
   }
 
@@ -1895,6 +1929,175 @@ class DirectLiveTextController {
     };
   }
 
+  isCommandExecutionObligation(obligation = {}) {
+    return RUN_COMMAND_TOOL_NAMES.has(normalizeString(obligation.name, ""));
+  }
+
+  commandExecutionRequestParams(obligation = {}, turn = {}, project = {}) {
+    const parentResponseId = parentResponseIdForToolStep(turn, obligation);
+    const parentResponseSource = parentResponseSourceForToolStep(obligation);
+    const hasContinuityHandle = Boolean(parentResponseId);
+    const providerCallType = normalizeString(obligation.providerCallType || obligation.toolType, "");
+    const namespace = normalizeString(obligation.namespace, "");
+    const supportedCallType = providerCallType === "function_call" || providerCallType === "custom_tool_call";
+    const supportedNamespace = !namespace;
+    const commandEvidence = this.statusForProject(project).commandExecutionContinuation || commandExecutionContinuationEvidenceFor(this.profileDoc);
+    const commandPlan = isPlainObject(obligation.commandPlan) ? obligation.commandPlan : null;
+    const approvalAvailable = normalizeString(obligation.status, "") === "command_planned" &&
+      Boolean(normalizeString(obligation.callId, "")) &&
+      hasContinuityHandle &&
+      supportedCallType &&
+      supportedNamespace &&
+      commandEvidence.status === "ready" &&
+      commandPlan?.status === "planned";
+    const obligationDigest = sha256(stableStringify({
+      obligationId: normalizeString(obligation.obligationId, ""),
+      commandPlanId: normalizeString(commandPlan?.commandPlanId, ""),
+      status: normalizeString(obligation.status, ""),
+      callIdDigest: sha256(obligation.callId || ""),
+      argumentsDigest: sha256(obligation.argumentsText || ""),
+      responseIdDigest: sha256(parentResponseId),
+      planDigest: normalizeString(commandPlan?.integrity?.artifactDigest, ""),
+    }));
+    const actionToken = (action) => `direct_command_action_${sha256(`${obligation.obligationId}:${action}:${obligationDigest}`).slice(0, 24)}`;
+    return {
+      sessionId: obligation.sessionId,
+      threadId: obligation.sessionId,
+      turnId: obligation.turnId,
+      obligationId: obligation.obligationId,
+      commandPlanId: normalizeString(commandPlan?.commandPlanId, ""),
+      obligationDigest,
+      operationLedgerHeadDigest: normalizeString(turn?.operationLedgerHeadDigest || turn?.ledgerDigest, ""),
+      tool: "run_command",
+      providerCallType,
+      namespace,
+      toolCallSource: normalizeString(obligation.toolCallSource, "provider-native-implicit"),
+      callIdPresent: Boolean(normalizeString(obligation.callId, "")),
+      hasContinuityHandle,
+      parentResponseSource,
+      parentResponseDigest: sha256(parentResponseId),
+      commandExecutionEvidence: commandEvidence,
+      approvalAvailable,
+      command: normalizeString(commandPlan?.command, ""),
+      args: Array.isArray(commandPlan?.args) ? commandPlan.args : [],
+      displayCommand: normalizeString(commandPlan?.displayCommand, "run_command"),
+      cwdRelPath: normalizeString(commandPlan?.cwdRelPath, ""),
+      timeoutMs: Number(commandPlan?.timeoutMs || 0),
+      commandClass: normalizeString(commandPlan?.commandClass, "package_script"),
+      workspaceWritePolicy: normalizeString(commandPlan?.workspaceWritePolicy, "writes_possible_with_warning"),
+      packageScriptEvidence: isPlainObject(commandPlan?.packageScriptEvidence) ? {
+        packageManager: normalizeString(commandPlan.packageScriptEvidence.packageManager, ""),
+        packageJsonRelPath: normalizeString(commandPlan.packageScriptEvidence.packageJsonRelPath, ""),
+        scriptName: normalizeString(commandPlan.packageScriptEvidence.scriptName, ""),
+        scriptExists: commandPlan.packageScriptEvidence.scriptExists === true,
+        scriptCommandEvidenceKey: normalizeString(commandPlan.packageScriptEvidence.scriptCommandEvidenceKey, ""),
+        scriptCommandPreview: normalizeString(commandPlan.packageScriptEvidence.scriptCommandPreview, ""),
+        scriptCommandPreviewTruncated: commandPlan.packageScriptEvidence.scriptCommandPreviewTruncated === true,
+        scriptPolicyWarning: normalizeString(commandPlan.packageScriptEvidence.scriptPolicyWarning, ""),
+      } : {},
+      safety: {
+        shellFalse: true,
+        knownNetworkCommandHelpersBlocked: true,
+        networkAccessNotProvenAbsent: true,
+        workspaceWritesPossible: true,
+        rawWorkspacePathExposed: false,
+      },
+      actionTokens: {
+        approve: actionToken("approve"),
+        decline: actionToken("decline"),
+        cancel: actionToken("cancel"),
+      },
+      rawWorkspacePathExposed: false,
+      rawCommandOutputExposed: false,
+    };
+  }
+
+  async emitCommandExecutionApprovalRequest(surfaceSession, sessionId, turnId, obligation = {}, project = {}) {
+    if (!surfaceSession || typeof surfaceSession.createCommandExecutionRequest !== "function") return 0;
+    if (typeof this.workspaceRequest !== "function") {
+      this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
+        status: "unsupported",
+        authorityState: "unsupported",
+        approvalAvailable: false,
+        executionAllowed: false,
+        continuationAllowed: false,
+        failureKind: "workspace_command_backend_unavailable",
+      }, {
+        nextTurnState: "failed",
+        turnPatch: {
+          error: {
+            code: "workspace_command_backend_unavailable",
+            message: "Direct command execution requires the workspace backend.",
+          },
+        },
+      });
+      return 0;
+    }
+    let planned = null;
+    try {
+      planned = await planCommandExecutionObligation({
+        sessionStore: this.sessionStore,
+        sessionId,
+        turnId,
+        obligationId: obligation.obligationId,
+        workspaceRequest: (method, params) => this.workspaceRequest(project, method, params, this.readOnlyWorkspaceTimeoutMs),
+      });
+    } catch (error) {
+      this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
+        status: "unsupported",
+        authorityState: "unsupported",
+        approvalAvailable: false,
+        executionAllowed: false,
+        continuationAllowed: false,
+        failureKind: error.code || "command_plan_failed",
+      }, {
+        nextTurnState: "failed",
+        turnPatch: {
+          error: {
+            code: error.code || "command_plan_failed",
+            message: error.message || "Command plan failed.",
+          },
+        },
+      });
+      return 0;
+    }
+    const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
+    const params = this.commandExecutionRequestParams(planned.obligation, turn, project);
+    if (!params.approvalAvailable) {
+      const code = !params.hasContinuityHandle
+        ? "continuation_missing_context_handle"
+        : (params.commandExecutionEvidence?.status !== "ready" ? "command_tool_evidence_missing" : "unsupported_command_tool_shape");
+      this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
+        status: "unsupported",
+        authorityState: "unsupported",
+        approvalAvailable: false,
+        executionAllowed: false,
+        continuationAllowed: false,
+        failureKind: code,
+      }, {
+        nextTurnState: "failed",
+        turnPatch: {
+          error: {
+            code,
+            message: "Direct command execution cannot be approved for continuation in this runtime bundle.",
+          },
+        },
+      });
+      return 0;
+    }
+    this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
+      approvalAvailable: true,
+      authorityState: "command_waiting_for_approval",
+    }, {
+      nextTurnState: "tool_waiting",
+    });
+    surfaceSession.createCommandExecutionRequest({
+      params,
+      summary: params.displayCommand || "run_command",
+    });
+    return 1;
+  }
+
   async emitPatchApplyApprovalRequest(surfaceSession, sessionId, turnId, obligation = {}, project = {}) {
     if (!surfaceSession || typeof surfaceSession.createPatchApplyRequest !== "function") return 0;
     if (typeof this.workspaceRequest !== "function") {
@@ -2009,6 +2212,10 @@ class DirectLiveTextController {
     for (const obligation of obligations) {
       if (this.isPatchApplyObligation(obligation)) {
         createdCount += await this.emitPatchApplyApprovalRequest(surfaceSession, sessionId, turnId, obligation, project);
+        continue;
+      }
+      if (this.isCommandExecutionObligation(obligation)) {
+        createdCount += await this.emitCommandExecutionApprovalRequest(surfaceSession, sessionId, turnId, obligation, project);
         continue;
       }
       if (typeof surfaceSession.createReadOnlyToolRequest !== "function") continue;
@@ -2266,6 +2473,100 @@ class DirectLiveTextController {
         decision: canonicalDecision === "cancel" ? "canceled" : "declined",
         decidedBy: "local-user",
         reason: canonicalDecision === "cancel" ? "User canceled patch apply." : "User declined patch apply.",
+      });
+      this.emitNotification(context.surfaceSession, "turn/completed", {
+        threadId: sessionId,
+        turnId,
+        turn: {
+          id: turnId,
+          status: canonicalDecision === "cancel" ? "aborted" : "failed",
+          completedAt: nowSeconds(),
+        },
+      });
+      return {
+        decision: canonicalDecision === "cancel" ? "canceled" : "declined",
+        turn: turnSnapshot(decided.turn),
+        obligation: decided.obligation,
+      };
+    });
+    this.toolDecisionResults.set(decisionKey, { obligationId, decision: canonicalDecision, response });
+    this.pruneToolDecisionCache();
+    return response;
+  }
+
+  async handleCommandExecutionResponse(record = {}, result = {}, context = {}) {
+    const params = record.params || {};
+    const sessionId = normalizeString(params.sessionId || params.threadId, "");
+    const turnId = normalizeString(params.turnId, "");
+    const obligationId = normalizeString(params.obligationId, "");
+    const decision = normalizeString(result.decision || result.action, "decline");
+    const clientCommandDecisionId = normalizeString(result.clientCommandDecisionId || result.clientToolDecisionId, `${record.key}:${decision}`);
+    const actionTokenId = normalizeString(result.actionTokenId, "");
+    const canonicalDecision = decision === "approve" || decision === "approved" || decision === "accept"
+      ? "approve"
+      : decision === "cancel" || decision === "canceled" || decision === "abort"
+        ? "cancel"
+        : "decline";
+    const expectedActionToken = normalizeString(params.actionTokens?.[canonicalDecision], "");
+    if (expectedActionToken && actionTokenId !== expectedActionToken) {
+      const error = new Error("Command action token is stale or missing.");
+      error.code = "stale_command_action_token";
+      throw error;
+    }
+    const decisionKey = clientCommandDecisionId;
+    const existingClaim = this.toolDecisionClaims.get(decisionKey);
+    if (existingClaim && (existingClaim.obligationId !== obligationId || existingClaim.decision !== canonicalDecision)) {
+      const error = new Error("clientCommandDecisionId was reused for a different command decision.");
+      error.code = "command_decision_id_conflict";
+      throw error;
+    }
+    this.toolDecisionClaims.set(decisionKey, { obligationId, decision: canonicalDecision });
+    this.pruneToolDecisionCache();
+    const previousDecision = this.toolDecisionResults.get(decisionKey);
+    if (previousDecision) {
+      if (previousDecision.obligationId !== obligationId || previousDecision.decision !== canonicalDecision) {
+        const error = new Error("clientCommandDecisionId was reused for a different command decision.");
+        error.code = "command_decision_id_conflict";
+        throw error;
+      }
+      return previousDecision.response;
+    }
+    const response = await this.withToolDecisionLock(`command:${obligationId}`, async () => {
+      const found = this.sessionStore.findToolObligation(sessionId, turnId, obligationId);
+      if (!found || !found.obligation) {
+        const error = new Error("Command obligation not found.");
+        error.code = "obligation_not_found";
+        throw error;
+      }
+      const currentStatus = normalizeString(found.obligation.status, "");
+      if (["command_declined", "command_canceled"].includes(currentStatus)) {
+        const error = new Error("Command obligation already has a terminal local decision.");
+        error.code = "terminal_decision_exists";
+        throw error;
+      }
+      if (["command_result_recorded", "continuation_built", "continuation_sent"].includes(currentStatus) && canonicalDecision !== "approve") {
+        const error = new Error("Command obligation is too late for decline or cancel.");
+        error.code = "too_late_for_decision";
+        throw error;
+      }
+      if (canonicalDecision === "approve") {
+        return this.approveExecuteAndContinueCommandExecution({
+          project: context.project || this.project || {},
+          surfaceSession: context.surfaceSession,
+          sessionId,
+          turnId,
+          obligationId,
+          clientCommandDecisionId,
+        });
+      }
+      const decided = decideCommandExecutionObligation({
+        sessionStore: this.sessionStore,
+        sessionId,
+        turnId,
+        obligationId,
+        decision: canonicalDecision === "cancel" ? "canceled" : "declined",
+        decidedBy: "local-user",
+        reason: canonicalDecision === "cancel" ? "User canceled command execution." : "User declined command execution.",
       });
       this.emitNotification(context.surfaceSession, "turn/completed", {
         threadId: sessionId,
@@ -2684,6 +2985,166 @@ class DirectLiveTextController {
     };
   }
 
+  async approveExecuteAndContinueCommandExecution(options = {}) {
+    if (typeof this.workspaceRequest !== "function") {
+      const error = new Error("Direct command execution requires the workspace backend.");
+      error.code = "workspace_command_backend_unavailable";
+      throw error;
+    }
+    const { sessionId, turnId, obligationId, project, surfaceSession } = options;
+    approveCommandExecutionObligation({
+      sessionStore: this.sessionStore,
+      sessionId,
+      turnId,
+      obligationId,
+      approvedBy: "local-user",
+    });
+    const executed = await executeApprovedCommandExecutionObligation({
+      sessionStore: this.sessionStore,
+      sessionId,
+      turnId,
+      obligationId,
+      clientCommandDecisionId: normalizeString(options.clientCommandDecisionId, ""),
+      workspaceRequest: (method, params) => this.workspaceRequest(project, method, params, Math.max(this.readOnlyWorkspaceTimeoutMs, Number(params?.timeoutMs || 0) + 5000)),
+    });
+    const turn = this.sessionStore.readTurn(sessionId, turnId);
+    const currentObligation = this.sessionStore.findToolObligation(sessionId, turnId, obligationId).obligation;
+    const parentResponseId = parentResponseIdForToolStep(turn, currentObligation);
+    const parentResponseSource = parentResponseSourceForToolStep(currentObligation);
+    let continuationRequest = null;
+    let continuationContext = null;
+    if (this.directThreadStore && typeof this.directThreadStore.buildAndPersistContextForToolContinuation === "function") {
+      this.indexDirectThreadStoreSession(sessionId);
+      const baseContinuationRequest = buildCommandExecutionContinuationRequest({
+        sessionStore: this.sessionStore,
+        sessionId,
+        turnId,
+        obligationId,
+        continuationLiveSendEnabled: true,
+      });
+      continuationRequest = {
+        ...baseContinuationRequest,
+        source: {
+          ...(baseContinuationRequest.source || {}),
+          previousResponseId: parentResponseId,
+          previousResponseIdSource: parentResponseSource,
+          sourceEventDigest: sha256(parentResponseId),
+          sourceTurnDigest: sha256(stableStringify({
+            threadId: sessionId,
+            turnId,
+            responseId: parentResponseId,
+            requestManifestId: normalizeString(turn?.requestManifestId, ""),
+            commandPlanId: normalizeString(currentObligation.commandPlan?.commandPlanId, ""),
+          })),
+          sourceRequestManifestId: normalizeString(turn?.requestManifestId, ""),
+          importedContinuityHandleUsed: false,
+        },
+      };
+      const outputType = normalizeString(continuationRequest.toolResult?.outputType || continuationRequest.toolResult?.content?.[0]?.type, "");
+      const continuationShape = {
+        kind: "command_execution_continuation",
+        stream: true,
+        store: false,
+        tools: false,
+        toolDeclarations: false,
+        toolOutputItem: true,
+        parallelToolCalls: false,
+        hasInstructions: true,
+        hasPreviousResponseId: Boolean(parentResponseId),
+        functionCallOutputCount: outputType === "function_call_output" ? 1 : 0,
+        customToolCallOutputCount: outputType === "custom_tool_call_output" ? 1 : 0,
+        providerCallType: normalizeString(continuationRequest.toolResult?.providerCallType, ""),
+        providerOutputType: outputType,
+        requestShapeClass: "direct_command_execution_continuation@1",
+        commandPlanId: normalizeString(currentObligation.commandPlan?.commandPlanId, ""),
+        commandResultId: normalizeString(executed.result?.resultId, ""),
+      };
+      continuationContext = this.directThreadStore.buildAndPersistContextForToolContinuation({
+        sessionStore: this.sessionStore,
+        session: this.sessionStore.readSession(sessionId),
+        projectId: normalizeString(project?.id || project?.projectId || project?.name, ""),
+        threadId: sessionId,
+        turnId,
+        obligationId,
+        continuationRequest,
+        previousResponseId: parentResponseId,
+        model: normalizeString(turn?.model, ""),
+        requestShape: continuationShape,
+        requestShapeHash: sha256(stableStringify(continuationShape)),
+        endpointClass: "chatgpt-codex-responses",
+        endpointHash: this.endpoint ? sha256(this.endpoint) : "",
+        modelEvidenceRef: normalizeString(this.statusForProject(project).evidenceId, ""),
+        requestShapeEvidenceRef: "direct_command_execution_continuation@1",
+        endpointEvidenceRef: this.endpoint ? sha256(this.endpoint) : "",
+      }, {
+        sessionStore: this.sessionStore,
+      });
+      continuationRequest = {
+        ...continuationRequest,
+        source: {
+          ...(continuationRequest.source || {}),
+          contextBuildId: continuationContext.contextPack.contextBuildId,
+          requestManifestId: continuationContext.requestManifest.requestManifestId,
+        },
+        safety: {
+          ...(continuationRequest.safety || {}),
+          contextPackBuilt: true,
+          requestManifestBuilt: true,
+          rawRequestBodyStored: false,
+        },
+      };
+    }
+    const continuation = await runPersistedReadOnlyToolContinuation({
+      sessionStore: this.sessionStore,
+      sessionId,
+      turnId,
+      obligationId,
+      continuationRequest,
+      previousResponseId: parentResponseId,
+      instructions: normalizeString(continuationContext?.providerInput?.instructions, ""),
+      endpoint: this.endpoint || undefined,
+      authStore: this.currentAuthStore(),
+      refreshCredentials: this.refreshCredentials,
+      profileDoc: this.profileDoc,
+      model: normalizeString(turn?.model, ""),
+      fetchImpl: this.fetchImpl || undefined,
+      allowSequentialReadOnlyToolLoop: false,
+      onLifecycle: (event) => {
+        if (event.phase === "streaming") {
+          this.emitNotification(surfaceSession, "turn/started", {
+            threadId: sessionId,
+            turnId,
+            turn: { id: turnId, status: "inProgress", startedAt: nowSeconds(), streamPhase: "command-continuation" },
+          });
+        }
+      },
+    });
+    if (this.directThreadStore) this.indexDirectThreadStoreSession(sessionId);
+    const continuationId = normalizeString(continuation.continuation?.continuationId || continuation.obligation?.continuationRequest?.continuationId, "command_continuation");
+    this.emitContinuationAssistant(surfaceSession, sessionId, turnId, continuationId, continuation.normalizedEvents || []);
+    this.emitNotification(surfaceSession, "turn/completed", {
+      threadId: sessionId,
+      turnId,
+      turn: {
+        id: turnId,
+        status: terminalStatusForState(continuation.turnState),
+        completedAt: nowSeconds(),
+        streamPhase: "command-continuation",
+      },
+    });
+    return {
+      decision: "approved",
+      turn: turnSnapshot(this.sessionStore.readTurn(sessionId, turnId)),
+      obligation: continuation.obligation || executed.obligation,
+      result: executed.result,
+      continuation: {
+        ok: continuation.ok,
+        continuationId,
+        terminal: continuation.terminal || null,
+      },
+    };
+  }
+
   textPrompt(params = {}) {
     const prompt = normalizeString(params.promptText, "") || firstTextInput(params.input);
     if (!prompt) throw new Error("Direct live text turn requires prompt text.");
@@ -3071,8 +3532,8 @@ class DirectLiveTextController {
         threadId: sessionId,
         turnId,
         message: createdApprovalRequests
-          ? "Direct live text detected a read-only tool call. Local approval is required before workspace content is sent back to the provider."
-          : "Direct live text detected a tool call, but read-only tool continuation is not enabled by accepted evidence.",
+          ? "Direct live text detected a tool call. Local approval is required before local authority is used."
+          : "Direct live text detected a tool call, but the required direct tool continuation evidence is not enabled.",
       });
     } else if (toolBlockedTextOnly) {
       this.emitNotification(surfaceSession, "warning", {
@@ -3284,6 +3745,31 @@ class DirectLiveTextSurfaceSession extends EventEmitter {
     return this.publicServerRequest(record);
   }
 
+  createCommandExecutionRequest(input = {}) {
+    const params = isPlainObject(input.params) ? input.params : {};
+    const id = normalizeString(input.id, `direct_command_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`);
+    const key = `direct:${id}`;
+    const now = nowIso();
+    const record = {
+      id,
+      key,
+      method: "direct/tool/command/requestApproval",
+      title: "Approve command execution",
+      summary: normalizeString(input.summary || params.displayCommand || "run_command", "run_command"),
+      riskCategory: "command",
+      status: "pending",
+      params,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.serverRequests.set(key, record);
+    this.sendEvent({
+      type: "rpc-request",
+      request: this.publicServerRequest(record),
+    });
+    return this.publicServerRequest(record);
+  }
+
   async respond(key, result = {}) {
     const requestKey = normalizeString(key, "");
     const record = this.serverRequests.get(requestKey);
@@ -3294,7 +3780,9 @@ class DirectLiveTextSurfaceSession extends EventEmitter {
     try {
       const handler = record.method === "direct/tool/patchApply/requestApproval"
         ? "handlePatchApplyResponse"
-        : "handleReadOnlyToolResponse";
+        : record.method === "direct/tool/command/requestApproval"
+          ? "handleCommandExecutionResponse"
+          : "handleReadOnlyToolResponse";
       const response = await this.controller[handler](record, result || {}, {
         project: this.project,
         surfaceSession: this,

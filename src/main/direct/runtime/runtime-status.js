@@ -176,6 +176,10 @@ function directImplementationLaneReadiness({ activation = {}, sessionStore = {},
     degradedCapabilities.canStartNewTextTurn === true;
   const canApproveReadFile = selected && !hasLiveBlocker && !hasToolBlocker && !degraded ||
     degradedCapabilities.canApproveReadOnlyTool === true;
+  const canApproveCommand = selected &&
+    normalizeString(liveTextStatus.commandExecutionContinuation?.status, "") === "ready" &&
+    !hasLiveBlocker &&
+    !degraded;
   return {
     tier: "implementation-lane",
     status: selected ? (degraded ? "degraded" : "enabled") : (activation.eligible ? "eligible" : "blocked"),
@@ -187,6 +191,7 @@ function directImplementationLaneReadiness({ activation = {}, sessionStore = {},
     canStartTextTurn: canStartText,
     canShowObligations: selected || eligible,
     canApproveReadFile,
+    canApproveCommand,
     canBuildContinuationContext: canApproveReadFile,
     canSendContinuation: canApproveReadFile,
     blockers: safeBlockers,
@@ -206,6 +211,15 @@ function directImplementationLaneReadiness({ activation = {}, sessionStore = {},
       streamingContinuationCount: normalizeString(sessionStore.lastTurnState, "") === "streaming_continuation" ? 1 : 0,
       canContinueSequentialReadOnlyLoop: canApproveReadFile,
       blockerCodes: safeBlockers,
+    },
+    commandExecution: {
+      canApprove: canApproveCommand,
+      canExecute: canApproveCommand,
+      continuationEvidenceState: normalizeString(liveTextStatus.commandExecutionContinuation?.evidenceState, "missing"),
+      workspaceEffectScanRequired: true,
+      shellFalseRequired: true,
+      networkIsolationProven: false,
+      blockerCodes: canApproveCommand ? [] : safeBlockers,
     },
   };
 }
@@ -328,6 +342,12 @@ function buildDirectRuntimeStatus(options = {}) {
       toolsEnabled: Boolean(liveTextStatus.toolsEnabled),
       readOnlyToolContinuation: isPlainObject(liveTextStatus.readOnlyToolContinuation)
         ? liveTextStatus.readOnlyToolContinuation
+        : null,
+      patchApplyContinuation: isPlainObject(liveTextStatus.patchApplyContinuation)
+        ? liveTextStatus.patchApplyContinuation
+        : null,
+      commandExecutionContinuation: isPlainObject(liveTextStatus.commandExecutionContinuation)
+        ? liveTextStatus.commandExecutionContinuation
         : null,
       reason: normalizeString(liveTextStatus.reason, ""),
       rawBackendFramesExposed: false,
