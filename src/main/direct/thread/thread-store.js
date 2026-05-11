@@ -20,6 +20,7 @@ const {
   DIRECT_DERIVED_PREVIEW_FORK_START_POLICY_ID,
   DIRECT_FORK_START_POLICY_ID,
   DIRECT_IMPORT_CHECKPOINT_CONTINUATION_POLICY_ID,
+  DIRECT_PATCH_APPLY_CONTINUATION_POLICY_ID,
   DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID,
   DIRECT_TEXT_TURN_EMPTY_CONTEXT_POLICY_ID,
   DIRECT_TEXT_TURN_RECENT_DIALOGUE_POLICY_ID,
@@ -2280,6 +2281,14 @@ class DirectThreadStore {
     const obligationId = requireSafeId(input.obligationId, "obligation");
     const continuationRequest = isPlainObject(input.continuationRequest) ? input.continuationRequest : {};
     const previousResponseId = normalizeString(input.previousResponseId || continuationRequest.source?.previousResponseId || "", "");
+    const toolName = normalizeString(continuationRequest.toolResult?.name, "");
+    const isPatchContinuation = toolName === "apply_patch" || toolName === "applyPatch" ||
+      normalizeString(input.requestShape?.kind, "") === "patch_apply_continuation" ||
+      normalizeString(input.requestShapeEvidenceRef, "") === "direct_patch_apply_continuation@1";
+    const continuationPurpose = isPatchContinuation ? "patch_apply_continuation" : "read_only_tool_continuation";
+    const continuationPolicyId = isPatchContinuation
+      ? DIRECT_PATCH_APPLY_CONTINUATION_POLICY_ID
+      : DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID;
     const projectionResult = this.buildToolContinuationContextProjection({
       sessionStore,
       session,
@@ -2301,8 +2310,8 @@ class DirectThreadStore {
       projectId,
       threadId,
       turnId,
-      purpose: "read_only_tool_continuation",
-      policyId: DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID,
+      purpose: continuationPurpose,
+      policyId: continuationPolicyId,
       toolContinuationContext,
       toolContinuationItems,
       currentUserPrompt: "",
@@ -2327,7 +2336,7 @@ class DirectThreadStore {
       endpointClass: input.endpointClass,
       endpointHash: input.endpointHash,
       modelEvidenceRef: input.modelEvidenceRef,
-      requestShapeEvidenceRef: input.requestShapeEvidenceRef || "continuation.tool_result",
+      requestShapeEvidenceRef: input.requestShapeEvidenceRef || (isPatchContinuation ? "direct_patch_apply_continuation@1" : "continuation.tool_result"),
       endpointEvidenceRef: input.endpointEvidenceRef,
       nowMs: options.nowMs,
     });
@@ -2357,7 +2366,7 @@ class DirectThreadStore {
         })),
       },
       contextPolicy: {
-        policyId: DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID,
+        policyId: continuationPolicyId,
         contextPolicyDigest: normalizeString(contextPack.policy?.policyDigest, ""),
         harnessPolicyDigest: normalizeString(contextPack.policy?.policyDigest, ""),
         roleMappingDigest: normalizeString(contextPack.roleMapping?.mappingDigest || request.providerInput?.projection?.roleMappingDigest, ""),
@@ -2376,13 +2385,15 @@ class DirectThreadStore {
       },
       capabilityEvidence: {
         ...(request.requestManifest.capabilityEvidence || {}),
-        requestShapeEvidenceRef: input.requestShapeEvidenceRef || "continuation.tool_result",
+        requestShapeEvidenceRef: input.requestShapeEvidenceRef || (isPatchContinuation ? "direct_patch_apply_continuation@1" : "continuation.tool_result"),
         contextPolicyEvidenceRef: contextPack.policy?.policyDigest || "",
         toolCallShapeEvidenceRef: input.toolCallShapeEvidenceRef || "direct_obligations_projection",
       },
       toolContinuation: {
         continuationId: normalizeString(continuationRequest.continuationId, ""),
         obligationId,
+        toolName,
+        continuationKind: continuationPurpose,
         toolLoopId: normalizeString(continuationRequest.toolLoop?.toolLoopId, ""),
         stepId: normalizeString(continuationRequest.toolLoop?.stepId, ""),
         stepOrdinal: Number(continuationRequest.toolLoop?.stepOrdinal || 1),
@@ -4820,6 +4831,7 @@ module.exports = {
   DIRECT_ROLLOUT_MANIFEST_SCHEMA,
   DIRECT_PROJECTION_KINDS,
   DIRECT_IMPORT_CHECKPOINT_CONTINUATION_POLICY_ID,
+  DIRECT_PATCH_APPLY_CONTINUATION_POLICY_ID,
   DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID,
   DIRECT_TEXT_TURN_EMPTY_CONTEXT_POLICY_ID,
   DIRECT_TEXT_TURN_RECENT_DIALOGUE_POLICY_ID,

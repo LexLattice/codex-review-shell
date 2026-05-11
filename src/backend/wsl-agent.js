@@ -33,6 +33,23 @@ const CODEX_ANALYTICS_TAIL_HASH_LINE_LIMIT = 24;
 const CODEX_SANDBOX_ARTIFACT_NAME = ".codex";
 const CODEX_SANDBOX_ARTIFACT_EXCLUDE_COMMENT =
   "# codex-review-shell: Codex Linux sandbox may leak a zero-byte bwrap placeholder here.";
+const MAX_PATCH_TEXT_CHARS = 256 * 1024;
+const MAX_PATCH_FILES = 16;
+const MAX_PATCH_HUNKS = 128;
+const MAX_PATCH_LINES_CHANGED = 4000;
+const MAX_PATCH_FILE_PREVIEW_CHARS = 8000;
+const PATCH_DENY_PATTERNS = [
+  /(?:^|\/)\.git(?:\/|$)/i,
+  /(?:^|\/)node_modules(?:\/|$)/i,
+  /(?:^|\/)dist(?:\/|$)/i,
+  /(?:^|\/)build(?:\/|$)/i,
+  /(?:^|\/)coverage(?:\/|$)/i,
+  /(?:^|\/)[^/]*\.lock$/i,
+  /(?:^|\/)\.env(?:\.|$)/i,
+  /(?:^|\/)[^/]+\.pem$/i,
+  /(?:^|\/)[^/]+\.key$/i,
+  /(?:^|\/)\.ssh(?:\/|$)/i,
+];
 const SENSITIVE_READ_FILE_PATTERNS = [
   /(?:^|\/)\.env(?:\.|$)/i,
   /(?:^|\/)[^/]+\.pem$/i,
@@ -150,6 +167,364 @@ async function resolveFileWithinRoot(relPath = "") {
 function sensitiveReadFileReason(relPath = "") {
   const normalized = displayRelPath(normalizeRelPath(relPath));
   return SENSITIVE_READ_FILE_PATTERNS.some((pattern) => pattern.test(normalized)) ? "sensitive_path" : "";
+}
+
+function sha256(value) {
+  return crypto.createHash("sha256").update(String(value ?? "")).digest("hex");
+}
+
+function splitLinesWithEndings(text) {
+  const matches = String(text ?? "").match(/[^\n]*\n|[^\n]+/g);
+  return matches || [];
+}
+
+function stripLineEnding(line) {
+  return String(line || "").replace(/\r?\n$/, "");
+}
+
+function unquotePatchPath(value = "") {
+  const text = String(value || "").trim();
+  if (text.length >= 2 && text.startsWith("\"") && text.endsWith("\"")) {
+    return text
+      .slice(1, -1)
+      .replace(/\\(["\\])/g, "$1")
+      .replace(/\\t/g, "\t")
+      .replace(/\\n/g, "\n")
+      .replace(/\\r/g, "\r");
+  }
+  return text;
+}
+
+function splitGitDiffPaths(headerText = "") {
+  const parts = [];
+  let current = "";
+  let inQuote = false;
+  let escaping = false;
+  for (const char of String(headerText || "").trim()) {
+    if (escaping) {
+      current += `\\${char}`;
+      escaping = false;
+      continue;
+    }
+    if (char === "\\" && inQuote) {
+      escaping = true;
+      continue;
+    }
+    if (char === "\"") {
+      inQuote = !inQuote;
+      current += char;
+      continue;
+    }
+    if (/\s/.test(char) && !inQuote) {
+      if (current) {
+        parts.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += char;
+  }
+  if (escaping) current += "\\";
+  if (current) parts.push(current);
+  return parts;
+}
+
+function normalizePatchPath(value = "") {
+  let text = unquotePatchPath(value);
+  if (!text || text === "/dev/null") return text;
+  if (text.startsWith("a/") || text.startsWith("b/")) text = text.slice(2);
+  return displayRelPath(normalizeRelPath(text));
+}
+
+function assertPatchPathAllowed(relPath) {
+  const normalized = displayRelPath(normalizeRelPath(relPath));
+  if (PATCH_DENY_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    const error = new Error("Patch target is blocked by workspace policy.");
+    error.code = "PATCH_GENERATED_PATH_BLOCKED";
+    throw error;
+  }
+  return normalized;
+}
+
+function parseHunkHeader(line) {
+  const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
+  if (!match) throw new Error("Malformed patch hunk range.");
+  return {
+    oldStart: Number(match[1]),
+    oldCount: Number(match[2] || "1"),
+    newStart: Number(match[3]),
+    newCount: Number(match[4] || "1"),
+  };
+}
+
+function parseUnifiedPatch(patchText) {
+  const patch = String(patchText || "");
+  if (!patch.trim()) throw new Error("Patch text is empty.");
+  if (patch.length > MAX_PATCH_TEXT_CHARS) {
+    const error = new Error("Patch text exceeds the configured size limit.");
+    error.code = "PATCH_CAPS_EXCEEDED";
+    throw error;
+  }
+  if (/GIT binary patch|Binary files /i.test(patch)) {
+    const error = new Error("Binary patches are unsupported.");
+    error.code = "PATCH_BINARY_UNSUPPORTED";
+    throw error;
+  }
+  const lines = patch.split(/\n/);
+  const files = [];
+  let current = null;
+  let currentHunk = null;
+
+  function finishHunk() {
+    if (currentHunk && current) current.hunks.push(currentHunk);
+    currentHunk = null;
+  }
+  function finishFile() {
+    finishHunk();
+    if (current) files.push(current);
+    current = null;
+  }
+  function recordFileLine(line) {
+    if (current) current.rawLines.push(line);
+  }
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const rawLine = lines[lineIndex];
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    if (line.startsWith("diff --git ")) {
+      finishFile();
+      const parts = splitGitDiffPaths(line.slice("diff --git ".length));
+      if (parts.length !== 2) throw new Error("Malformed git-style diff header.");
+      current = {
+        oldPath: normalizePatchPath(parts[0]),
+        newPath: normalizePatchPath(parts[1]),
+        operation: "update",
+        hunks: [],
+        addedLineCount: 0,
+        removedLineCount: 0,
+        rawLines: [line],
+      };
+      continue;
+    }
+    if (!current) {
+      if (line.trim()) throw new Error("Patch must use git-style unified diff headers.");
+      continue;
+    }
+    if (/^(rename|copy) (from|to) /.test(line)) throw new Error("Rename/copy patch headers are unsupported.");
+    if (/^(old mode|new mode|deleted file mode) /.test(line)) {
+      recordFileLine(line);
+      if (line.startsWith("deleted file mode")) {
+        const error = new Error("Patch deletes are deferred in v0.");
+        error.code = "PATCH_DELETE_DEFERRED";
+        throw error;
+      }
+      if (!line.startsWith("new file mode")) throw new Error("Patch mode changes are unsupported.");
+    }
+    if (line.startsWith("new file mode ")) {
+      recordFileLine(line);
+      current.operation = "create";
+      continue;
+    }
+    if (line.startsWith("--- ")) {
+      recordFileLine(line);
+      const oldPath = normalizePatchPath(line.slice(4).split(/\t/)[0]);
+      if (oldPath === "/dev/null") current.operation = "create";
+      else current.oldPath = oldPath;
+      continue;
+    }
+    if (line.startsWith("+++ ")) {
+      recordFileLine(line);
+      const newPath = normalizePatchPath(line.slice(4).split(/\t/)[0]);
+      if (newPath === "/dev/null") {
+        const error = new Error("Patch deletes are deferred in v0.");
+        error.code = "PATCH_DELETE_DEFERRED";
+        throw error;
+      }
+      current.newPath = newPath;
+      continue;
+    }
+    if (line.startsWith("@@ ")) {
+      recordFileLine(line);
+      finishHunk();
+      currentHunk = { header: parseHunkHeader(line), lines: [] };
+      continue;
+    }
+    if (currentHunk) {
+      if (line === "" && lineIndex === lines.length - 1) continue;
+      recordFileLine(line);
+      if (line.startsWith("\\ No newline at end of file")) {
+        const previous = currentHunk.lines[currentHunk.lines.length - 1];
+        if (previous) previous.noNewline = true;
+        continue;
+      }
+      const prefix = line[0];
+      if (![" ", "+", "-"].includes(prefix)) throw new Error("Malformed patch hunk line.");
+      currentHunk.lines.push({
+        prefix,
+        content: line.slice(1),
+        noNewline: false,
+      });
+      if (prefix === "+") current.addedLineCount += 1;
+      if (prefix === "-") current.removedLineCount += 1;
+    }
+  }
+  finishFile();
+  if (!files.length) throw new Error("Patch contains no file changes.");
+  if (files.length > MAX_PATCH_FILES) {
+    const error = new Error("Patch file count exceeds the configured cap.");
+    error.code = "PATCH_CAPS_EXCEEDED";
+    throw error;
+  }
+  const totalHunks = files.reduce((sum, file) => sum + file.hunks.length, 0);
+  const totalChanged = files.reduce((sum, file) => sum + file.addedLineCount + file.removedLineCount, 0);
+  if (totalHunks > MAX_PATCH_HUNKS || totalChanged > MAX_PATCH_LINES_CHANGED) {
+    const error = new Error("Patch hunk or line-change count exceeds configured caps.");
+    error.code = "PATCH_CAPS_EXCEEDED";
+    throw error;
+  }
+  return files.map((file) => ({
+    ...file,
+    relPath: assertPatchPathAllowed(file.newPath || file.oldPath),
+  }));
+}
+
+async function fileDigestIfExists(fullPath) {
+  try {
+    const stat = await fs.lstat(fullPath);
+    if (stat.isSymbolicLink()) throw new Error("Symlink patch targets are unsupported.");
+    if (!stat.isFile()) throw new Error("Patch target is not a text file.");
+    const buffer = await fs.readFile(fullPath);
+    if (looksBinary(buffer)) throw new Error("Binary patch targets are unsupported.");
+    return { exists: true, text: buffer.toString("utf8"), digest: sha256(buffer.toString("utf8")), size: stat.size };
+  } catch (error) {
+    if (error.code === "ENOENT") return { exists: false, text: "", digest: "", size: 0 };
+    throw error;
+  }
+}
+
+function applyParsedHunks(beforeText, filePatch) {
+  const beforeLines = splitLinesWithEndings(beforeText);
+  const output = [];
+  let cursor = 0;
+  for (const hunk of filePatch.hunks) {
+    const oldStartIndex = Math.max(0, Number(hunk.header.oldStart || 1) - 1);
+    while (cursor < oldStartIndex && cursor < beforeLines.length) {
+      output.push(beforeLines[cursor]);
+      cursor += 1;
+    }
+    for (const patchLine of hunk.lines) {
+      const prefix = patchLine.prefix || String(patchLine)[0];
+      const content = typeof patchLine.content === "string" ? patchLine.content : String(patchLine).slice(1);
+      if (prefix === " ") {
+        const current = beforeLines[cursor];
+        if (stripLineEnding(current) !== content) throw new Error("Patch context does not match current file content.");
+        output.push(current);
+        cursor += 1;
+      } else if (prefix === "-") {
+        const current = beforeLines[cursor];
+        if (stripLineEnding(current) !== content) throw new Error("Patch removal does not match current file content.");
+        cursor += 1;
+      } else if (prefix === "+") {
+        const lineEnding = beforeText.includes("\r\n") ? "\r\n" : "\n";
+        output.push(patchLine.noNewline ? content : `${content}${lineEnding}`);
+      }
+    }
+  }
+  while (cursor < beforeLines.length) {
+    output.push(beforeLines[cursor]);
+    cursor += 1;
+  }
+  return output.join("");
+}
+
+async function resolvePatchTarget(relPath) {
+  const normalizedRel = assertPatchPathAllowed(relPath);
+  const resolved = resolveWithinRoot(normalizedRel);
+  const realRoot = await fs.realpath(root);
+  const parentDir = path.dirname(resolved.fullPath);
+  let nearestParent = parentDir;
+  while (!fsSync.existsSync(nearestParent) && nearestParent !== root && nearestParent !== path.dirname(nearestParent)) {
+    nearestParent = path.dirname(nearestParent);
+  }
+  const realParent = await fs.realpath(nearestParent);
+  if (!pathIsUnderRoot(realRoot, realParent)) throw new Error("Patch target parent resolves outside the workspace root.");
+  return { ...resolved, displayRel: displayRelPath(normalizedRel), realRoot, realParent };
+}
+
+async function applyPatchPlan(params = {}) {
+  const patchText = String(params.patch || "");
+  const mode = params.mode === "apply" ? "apply" : "dryRun";
+  const parsedFiles = parseUnifiedPatch(patchText);
+  const seen = new Set();
+  const filePlans = [];
+  for (const filePatch of parsedFiles) {
+    const target = await resolvePatchTarget(filePatch.relPath);
+    const normalizedKey = process.platform === "win32"
+      ? target.displayRel.toLocaleLowerCase().normalize("NFC")
+      : target.displayRel.normalize("NFC");
+    if (seen.has(normalizedKey)) throw new Error("Patch has colliding target paths after normalization.");
+    seen.add(normalizedKey);
+    const before = await fileDigestIfExists(target.fullPath);
+    if (filePatch.operation === "create" && before.exists) throw new Error("Patch create target already exists.");
+    if (filePatch.operation === "update" && !before.exists) throw new Error("Patch update target does not exist.");
+    const afterText = applyParsedHunks(before.text, filePatch);
+    const afterDigest = sha256(afterText);
+    const filePreviewText = (Array.isArray(filePatch.rawLines) ? filePatch.rawLines : [])
+      .join("\n");
+    const preview = filePreviewText.slice(0, MAX_PATCH_FILE_PREVIEW_CHARS);
+    filePlans.push({
+      filePlanId: `patch_file_${sha256(`${target.displayRel}:${before.digest}:${afterDigest}`).slice(0, 20)}`,
+      operation: filePatch.operation,
+      displayPath: target.displayRel,
+      canonicalPathEvidenceKey: sha256(target.displayRel),
+      beforeDigest: before.digest,
+      afterDigest,
+      beforeExists: before.exists,
+      beforeNonExistenceProof: before.exists ? null : {
+        parentDirectoryEvidenceKey: sha256(target.realParent),
+        checkedAt: new Date().toISOString(),
+      },
+      afterExists: true,
+      hunkCount: filePatch.hunks.length,
+      addedLineCount: filePatch.addedLineCount,
+      removedLineCount: filePatch.removedLineCount,
+      previewText: preview,
+      previewTextHash: sha256(preview),
+      previewTruncated: filePreviewText.length > preview.length,
+      _fullPath: target.fullPath,
+      _afterText: afterText,
+    });
+  }
+
+  if (mode === "apply") {
+    for (const file of filePlans) {
+      await fs.mkdir(path.dirname(file._fullPath), { recursive: true });
+      const tempPath = `${file._fullPath}.codex-patch-${process.pid}-${Date.now()}.tmp`;
+      await fs.writeFile(tempPath, file._afterText, "utf8");
+      await fs.rename(tempPath, file._fullPath);
+      file.applied = true;
+    }
+  }
+
+  const publicPlans = filePlans.map(({ _fullPath, _afterText, ...file }) => file);
+  return {
+    schema: "workspace_apply_patch_result@1",
+    mode,
+    status: mode === "apply" ? "applied" : "dry_run_passed",
+    patchPlanId: `patch_plan_${sha256(patchText).slice(0, 20)}`,
+    patchTextHash: sha256(patchText),
+    files: publicPlans,
+    totals: {
+      fileCount: publicPlans.length,
+      createCount: publicPlans.filter((file) => file.operation === "create").length,
+      updateCount: publicPlans.filter((file) => file.operation === "update").length,
+      deleteCount: 0,
+      addedLineCount: publicPlans.reduce((sum, file) => sum + Number(file.addedLineCount || 0), 0),
+      removedLineCount: publicPlans.reduce((sum, file) => sum + Number(file.removedLineCount || 0), 0),
+      hunkCount: publicPlans.reduce((sum, file) => sum + Number(file.hunkCount || 0), 0),
+    },
+    rawPathsExposed: false,
+  };
 }
 
 function assertNoEncodedTraversal(relPath = "") {
@@ -2133,6 +2508,7 @@ async function handleRequest(method, params = {}) {
       capabilities: {
         listTree: true,
         readFilePreview: true,
+        applyPatch: true,
         runCommand: true,
         ensureCodexSandboxArtifactIgnored: true,
         listMatchingFiles: true,
@@ -2146,6 +2522,7 @@ async function handleRequest(method, params = {}) {
   }
   if (method === "listTree") return listTree(params);
   if (method === "readFile") return readFilePreview(params);
+  if (method === "applyPatch") return applyPatchPlan(params);
   if (method === "listMatchingFiles") return listMatchingFiles(params);
   if (method === "resolvePath") return resolvePathPreview(params);
   if (method === "runCommand") return runCommand(params);

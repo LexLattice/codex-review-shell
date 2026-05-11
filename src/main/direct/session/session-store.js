@@ -55,6 +55,9 @@ const DIRECT_TOOL_OBLIGATION_TERMINAL_STATUSES = new Set([
   "continuation_built",
   "continuation_sent",
   "unsupported",
+  "patch_declined",
+  "patch_canceled",
+  "patch_result_recorded",
 ]);
 
 function isPlainObject(value) {

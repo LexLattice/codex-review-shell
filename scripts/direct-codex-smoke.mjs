@@ -62,6 +62,7 @@ const {
   COMPACT_TRANSCRIPT_PROJECTION_KIND,
   CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND,
   DIRECT_OBLIGATIONS_PROJECTION_KIND,
+  DIRECT_PATCH_APPLY_CONTINUATION_POLICY_ID,
   DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID,
   DIRECT_THREAD_OPERATION_EVENT_SCHEMA,
   DIRECT_THREAD_OPERATION_LEDGER_MANIFEST_SCHEMA,
@@ -322,6 +323,29 @@ function acceptedReadOnlyToolProfile() {
         field: "tool-result continuation",
         status: "accepted",
         summary: "Smoke-accepted read-only tool continuation shape.",
+      },
+    ];
+  }
+  return doc;
+}
+
+function acceptedPatchApplyProfile() {
+  const doc = acceptedReadOnlyToolProfile();
+  const shapes = Array.isArray(doc.profile?.ontology?.continuationShapes) ? doc.profile.ontology.continuationShapes : [];
+  let found = false;
+  for (const shape of shapes) {
+    if (shape?.id !== "direct_patch_apply_continuation@1") continue;
+    shape.status = "accepted";
+    found = true;
+  }
+  if (!found) {
+    doc.profile.ontology.continuationShapes = [
+      ...shapes,
+      {
+        id: "direct_patch_apply_continuation@1",
+        field: "apply_patch continuation",
+        status: "accepted",
+        summary: "Smoke-accepted patch apply continuation shape.",
       },
     ];
   }
@@ -2408,6 +2432,153 @@ try {
 	  assert(approvedToolController.toolDecisionClaims.size <= 1, "Expected direct tool decision claim cache to stay bounded.");
 	  assert(approvedToolController.toolDecisionResults.size <= 1, "Expected direct tool decision result cache to stay bounded.");
 	  approvedToolThreadStore.close();
+
+  const patchToolStore = new DirectSessionStore({ rootDir: path.join(liveTextControllerParent, "patch-tool-direct-sessions") });
+  const patchToolThreadStore = new DirectThreadStore({
+    rootDir: path.join(liveTextControllerParent, "patch-tool-direct-thread-store"),
+    mode: "index_only",
+  });
+  const patchText = [
+    "diff --git a/README.md b/README.md",
+    "--- a/README.md",
+    "+++ b/README.md",
+    "@@ -1 +1 @@",
+    "-old line",
+    "+new line",
+    "",
+  ].join("\n");
+  const patchArgs = JSON.stringify({ patch: patchText, summary: "Update README first line." });
+  const patchInitialSse = [
+    "event: response.created",
+    "data: {\"response\":{\"id\":\"resp_live_patch\",\"model\":\"gpt-5.4\"}}",
+    "",
+    "event: response.output_item.added",
+    "data: {\"item\":{\"id\":\"tool_live_patch\",\"type\":\"function_call\",\"call_id\":\"call_live_patch\",\"name\":\"apply_patch\"}}",
+    "",
+    "event: response.function_call_arguments.delta",
+    `data: ${JSON.stringify({ item_id: "tool_live_patch", call_id: "call_live_patch", delta: patchArgs })}`,
+    "",
+    "event: response.output_item.done",
+    `data: ${JSON.stringify({ item: { id: "tool_live_patch", type: "function_call", call_id: "call_live_patch", name: "apply_patch", arguments: patchArgs } })}`,
+    "",
+    "event: response.completed",
+    "data: {\"response\":{\"id\":\"resp_live_patch\",\"status\":\"completed\"}}",
+    "",
+  ].join("\n");
+  const patchContinuationSse = [
+    "event: response.created",
+    "data: {\"response\":{\"id\":\"resp_live_patch_done\",\"model\":\"gpt-5.4\"}}",
+    "",
+    "event: response.output_text.delta",
+    "data: {\"item_id\":\"msg_live_patch_done\",\"delta\":\"patch applied\"}",
+    "",
+    "event: response.completed",
+    "data: {\"response\":{\"id\":\"resp_live_patch_done\",\"status\":\"completed\"}}",
+    "",
+  ].join("\n");
+  let patchFetchCalls = 0;
+  let patchContinuationBody = null;
+  const patchWorkspaceCalls = [];
+  const patchToolController = new DirectLiveTextController({
+    sessionStore: patchToolStore,
+    directThreadStore: patchToolThreadStore,
+    profileDoc: acceptedPatchApplyProfile(),
+    authStore: liveAuthStore,
+    workspaceRequest: async (_project, method, params) => {
+      assert(method === "applyPatch", "Expected patch controller to route through workspace applyPatch.");
+      patchWorkspaceCalls.push({ mode: params.mode, patch: params.patch });
+      assert(params.patch === patchText, "Expected patch controller to pass exact provider patch text to workspace backend.");
+      return {
+        schema: "workspace_apply_patch_result@1",
+        mode: params.mode,
+        status: params.mode === "apply" ? "applied" : "dry_run_passed",
+        files: [{
+          path: "README.md",
+          displayPath: "README.md",
+          operation: "update",
+          beforeDigest: "before_evidence",
+          afterDigest: "after_evidence",
+          addedLineCount: 1,
+          removedLineCount: 1,
+          hunkCount: 1,
+          previewText: patchText,
+          previewTruncated: false,
+        }],
+        totals: {
+          fileCount: 1,
+          createCount: 0,
+          updateCount: 1,
+          deleteCount: 0,
+          addedLineCount: 1,
+          removedLineCount: 1,
+          hunkCount: 1,
+        },
+      };
+    },
+    fetchImpl: async (_url, init = {}) => {
+      patchFetchCalls += 1;
+      if (patchFetchCalls === 2 && init.body) patchContinuationBody = JSON.parse(init.body);
+      return textResponse(patchFetchCalls === 1 ? patchInitialSse : patchContinuationSse, 200, { "content-type": "text/event-stream" });
+    },
+  });
+  const patchToolEvents = [];
+  const patchToolSurface = new DirectLiveTextSurfaceSession({
+    isDestroyed: () => false,
+    send: (_channel, payload) => patchToolEvents.push(payload),
+  }, {
+    controller: patchToolController,
+    project: approvedToolProject,
+  });
+  await patchToolSurface.connect({ transport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT });
+  const patchThread = await patchToolSurface.request("thread/start", {});
+  const patchAck = await patchToolSurface.request("turn/start", {
+    threadId: patchThread.thread.id,
+    promptText: "patch prompt",
+    clientTurnRequestId: "client_req_live_patch_1",
+    model: "gpt-5.4",
+  });
+  await waitForCondition(
+    () => patchToolEvents.some((event) => event.type === "rpc-request" && event.request?.method === "direct/tool/patchApply/requestApproval"),
+    "Expected patch apply path to request patch approval.",
+  );
+  const patchApproval = patchToolEvents.find((event) => event.type === "rpc-request" && event.request?.method === "direct/tool/patchApply/requestApproval")?.request;
+  assert(patchApproval.params.approvalAvailable === true, "Expected patch approval to be available after dry-run.");
+  assert(patchApproval.params.files[0].path === "README.md", "Expected patch approval to show renderer-safe relative path.");
+  assert(patchApproval.params.preview.text.includes("+new line"), "Expected patch approval to include bounded patch preview.");
+  assert(patchApproval.params.rawPatchExposed === false, "Expected patch approval to mark raw patch exposure false.");
+  const patchResponse = await patchToolSurface.respond(patchApproval.key, {
+    decision: "approve",
+    clientPatchDecisionId: "client_patch_decision_approved_1",
+    actionTokenId: patchApproval.params.actionTokens.approve,
+  });
+  assert(patchResponse.response.continuation.ok === true, "Expected approved patch continuation to complete.");
+  assert(patchFetchCalls === 2, "Expected patch path to make one initial and one continuation provider request.");
+  assert(patchWorkspaceCalls.map((call) => call.mode).join(",") === "dryRun,apply", "Expected patch path to dry-run then apply exactly once.");
+  assert(patchContinuationBody.previous_response_id === "resp_live_patch", "Expected patch continuation to cite parent response id.");
+  assert(patchContinuationBody.store === false, "Expected patch continuation to assert store=false.");
+  assert(patchContinuationBody.parallel_tool_calls === false, "Expected patch continuation to disable parallel tool calls.");
+  assert(
+    patchContinuationBody.instructions.includes("apply_patch result"),
+    `Expected patch continuation to send patch-specific harness policy, got: ${patchContinuationBody.instructions}`,
+  );
+  const patchTurn = patchToolStore.readTurn(patchThread.thread.id, patchAck.turn.id);
+  assert(patchTurn.state === "completed", "Expected approved patch continuation to complete the turn.");
+  assert(patchTurn.unresolvedObligations[0].status === "continuation_sent", "Expected approved patch obligation to record sent continuation.");
+  assert(patchTurn.unresolvedObligations[0].result.schema === "direct_codex_patch_apply_result@1", "Expected patch result artifact to be recorded.");
+  assert(JSON.parse(patchTurn.unresolvedObligations[0].result.providerOutputText).kind === "apply_patch_result", "Expected provider output to use patch result envelope.");
+  const patchContextPack = patchToolThreadStore.readContextPack(patchTurn.contextBuildId);
+  const patchRequestManifest = patchToolThreadStore.readRequestManifest(patchTurn.requestManifestId);
+  assert(patchContextPack.policy.policyId === DIRECT_PATCH_APPLY_CONTINUATION_POLICY_ID, "Expected patch continuation to use patch context policy.");
+  assert(patchRequestManifest.enabledFeatures.toolDeclarations === false, "Expected patch manifest to disable tool declarations.");
+  assert(patchRequestManifest.enabledFeatures.toolOutputItem === true, "Expected patch manifest to include one tool output item.");
+  assert(patchRequestManifest.enabledFeatures.parallelToolCalls === false, "Expected patch manifest to disable parallel tool calls.");
+  await patchToolSurface.respond(patchApproval.key, {
+    decision: "approve",
+    clientPatchDecisionId: "client_patch_decision_approved_1",
+    actionTokenId: patchApproval.params.actionTokens.approve,
+  });
+  assert(patchWorkspaceCalls.length === 2, "Expected duplicate completed patch approval response not to reapply.");
+  patchToolThreadStore.close();
 
 	  const loopToolStore = new DirectSessionStore({ rootDir: path.join(liveTextControllerParent, "loop-tool-direct-sessions") });
 	  const loopToolThreadStore = new DirectThreadStore({
