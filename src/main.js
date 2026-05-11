@@ -21,6 +21,7 @@ const { WorkspaceBackendManager, workspaceLabel, workspaceRoot } = require("./ma
 const { ThreadAnalyticsStore, buildThreadKey } = require("./main/thread-analytics-store");
 const { UsageLedgerCollector } = require("./main/usage-ledger-collector");
 const { defaultUsageLedgerConfig, normalizeUsageLedgerConfig } = require("./main/usage-ledger-config");
+const { readUsageLedgerAnalytics } = require("./main/usage-ledger-analytics");
 const { PLANE_ZOOM_DEFAULT, clampZoomFactor, zoomDeltaForDirection } = require("./shared/plane-zoom");
 
 const APP_TITLE = "Codex Review Shell";
@@ -2792,10 +2793,13 @@ async function getThreadAnalyticsDashboard(projectId, threadKey) {
   const key = normalizeString(threadKey, "");
   if (!key) throw new Error("threadKey is required.");
   const dashboard = store.getProjectThreadDashboard(project.id, key);
+  const usageLedger = dashboard?.thread?.threadId
+    ? await readUsageLedgerAnalytics(project, dashboard.thread.threadId)
+    : await readUsageLedgerAnalytics(project, "");
   return {
     projectId: project.id,
     threadKey: key,
-    dashboard,
+    dashboard: dashboard ? { ...dashboard, usageLedger } : dashboard,
     analyzerVersion: THREAD_ANALYTICS_ANALYZER_VERSION,
   };
 }
