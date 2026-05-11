@@ -12,6 +12,7 @@ const mainPath = path.join(appRoot, "src", "main.js");
 const source = fs.readFileSync(mainPath, "utf8");
 const {
   normalizeCodexBindingProvider,
+  normalizeDirectExperimentalRuntimeTier,
   normalizeCodexRuntimeMode: normalizeDirectRuntimeModeForStatus,
 } = require("../src/main/direct/runtime/runtime-status");
 const start = source.indexOf("function nowIso()");
@@ -27,6 +28,7 @@ const sandbox = {
   process,
   repoRoot: appRoot,
   normalizeCodexBindingProvider,
+  normalizeDirectExperimentalRuntimeTier,
   normalizeDirectRuntimeModeForStatus,
   CODEX_THREAD_RUNTIME_PREF_MAX_ENTRIES: 500,
 };

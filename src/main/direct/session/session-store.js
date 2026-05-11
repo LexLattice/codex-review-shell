@@ -19,6 +19,8 @@ const DIRECT_TURN_STATES = new Set([
   "tool_waiting",
   "authority_waiting",
   "continuation_ready",
+  "continuation_sent",
+  "streaming_continuation",
   "completed",
   "failed",
   "aborted",
@@ -30,7 +32,15 @@ const DIRECT_TURN_STATES = new Set([
   "empty_output_terminal",
   "checkpoint_required",
 ]);
-const DIRECT_RECOVERABLE_ACTIVE_TURN_STATES = new Set(["request_built", "streaming"]);
+const DIRECT_RECOVERABLE_ACTIVE_TURN_STATES = new Set([
+  "request_built",
+  "streaming",
+  "tool_waiting",
+  "authority_waiting",
+  "continuation_ready",
+  "continuation_sent",
+  "streaming_continuation",
+]);
 const DIRECT_TOOL_OBLIGATION_TERMINAL_STATUSES = new Set([
   "approved",
   "declined",

@@ -706,13 +706,24 @@ async function runPersistedReadOnlyToolContinuation(options = {}) {
     continuationStreamStartedAt: "",
     streamPhase: "continuation",
   }, options);
+  sessionStore.updateToolObligation(options.sessionId, options.turnId, options.obligationId, {
+    status: "continuation_sent",
+    authorityState: "continuation_sent",
+    executionAllowed: false,
+    continuationAllowed: false,
+    continuationRequest,
+    continuationSentAt: nowIso(options.nowMs),
+  }, {
+    ...options,
+    nextTurnState: "continuation_sent",
+  });
   const callerLifecycle = options.onLifecycle;
   const result = await runReadOnlyToolContinuationProbe({
     ...options,
     continuationRequest,
     onLifecycle: (event) => {
       if (event.phase === "streaming") {
-        sessionStore.updateTurnState(options.sessionId, options.turnId, "streaming", {
+        sessionStore.updateTurnState(options.sessionId, options.turnId, "streaming_continuation", {
           continuationStreamStartedAt: event.at,
           continuationResponseStatus: event.status,
           continuationResponseContentType: event.contentType,
@@ -750,14 +761,13 @@ async function runPersistedReadOnlyToolContinuation(options = {}) {
     options,
   );
   const continuationOk = result.ok && !nestedToolCall && completedTurn.state === "completed";
-  const nextObligationStatus = continuationOk ? "continuation_sent" : recorded.obligation.status;
   const updatedObligation = sessionStore.updateToolObligation(options.sessionId, options.turnId, options.obligationId, {
-    status: nextObligationStatus,
-    authorityState: continuationOk ? "continuation_sent" : recorded.obligation.authorityState,
+    status: "continuation_sent",
+    authorityState: "continuation_sent",
     executionAllowed: false,
     continuationAllowed: false,
     continuationRequest,
-    continuationSentAt: continuationOk ? result.completedAt : "",
+    continuationSentAt: normalizeString(recorded.obligation.continuationSentAt, "") || result.completedAt || nowIso(options.nowMs),
     continuationResult: {
       schema: result.schema,
       ok: continuationOk,

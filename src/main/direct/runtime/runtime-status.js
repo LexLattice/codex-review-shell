@@ -39,7 +39,7 @@ function normalizeCodexBinding(raw = {}) {
   const defaultProvider = runtimeMode === "legacy-app-server" ? "codex-compatible" : "direct-chatgpt-codex";
   const rawProvider = binding.bindingProvider || (typeof binding.provider === "string" ? binding.provider : "");
   const directTransport = normalizeString(binding.directTransport, "fixture").toLowerCase() === "live-text" ? "live-text" : "fixture";
-  const tierFallback = runtimeMode === "direct-experimental" && directTransport === "live-text" ? "implementation-lane" : "none";
+  const tierFallback = runtimeMode === "direct-experimental" && directTransport === "live-text" ? "text-only" : "none";
   const directTier = runtimeMode === "direct-experimental"
     ? normalizeDirectExperimentalRuntimeTier(binding.directTier || binding.activationTier || binding.runtimeTier, tierFallback)
     : "none";
@@ -153,20 +153,52 @@ function directTextOnlyReadiness({ binding = {}, authStatus = {}, liveTextStatus
   };
 }
 
-function directImplementationLaneReadiness({ activation = {} } = {}) {
+function directImplementationLaneReadiness({ activation = {}, sessionStore = {}, liveTextStatus = {} } = {}) {
   const blockers = activation.gateSummary?.blockers;
   const safeBlockers = Array.isArray(blockers)
     ? blockers.map((item) => normalizeString(item.blockerCode || item.reason || item.id, "")).filter(Boolean)
     : [];
+  const selected = activation.enabled === true && normalizeString(activation.activationTier, "implementation-lane") === "implementation-lane";
+  const eligible = activation.eligible === true || selected;
+  const degraded = activation.degraded === true;
+  const degradedCapabilities = isPlainObject(activation.degradedCapabilities) ? activation.degradedCapabilities : {};
+  const hasToolBlocker = safeBlockers.some((code) =>
+    code.includes("tool") ||
+    code.includes("workspace") ||
+    code.includes("continuation"));
+  const hasLiveBlocker = safeBlockers.some((code) =>
+    code.includes("auth") ||
+    code.includes("live_text") ||
+    code.includes("session_store"));
+  const canStartText = selected && !hasLiveBlocker && !degraded ||
+    degradedCapabilities.canStartNewTextTurn === true;
+  const canApproveReadFile = selected && !hasLiveBlocker && !hasToolBlocker && !degraded ||
+    degradedCapabilities.canApproveReadOnlyTool === true;
   return {
     tier: "implementation-lane",
-    status: activation.enabled ? (activation.degraded ? "degraded" : "enabled") : (activation.eligible ? "eligible" : "blocked"),
-    selected: activation.enabled === true && normalizeString(activation.activationTier, "implementation-lane") === "implementation-lane",
+    status: selected ? (degraded ? "degraded" : "enabled") : (activation.eligible ? "eligible" : "blocked"),
+    selected,
     canEnable: activation.eligible === true,
-    canStartTextTurn: activation.enabled === true || activation.degradedCapabilities?.canStartNewTextTurn === true,
+    canSelect: activation.eligible === true,
+    canStartFirstTurn: canStartText,
+    canStartFollowupTurn: canStartText,
+    canStartTextTurn: canStartText,
+    canShowObligations: selected || eligible,
+    canApproveReadFile,
+    canBuildContinuationContext: canApproveReadFile,
+    canSendContinuation: canApproveReadFile,
     blockers: safeBlockers,
     warnings: [],
     missingImplementationOnlyGates: safeBlockers,
+    readOnlyToolLoop: {
+      obligationProjectionHealthy: !safeBlockers.includes("direct_obligations_projection_unhealthy"),
+      toolContextProjectionHealthy: !safeBlockers.includes("tool_continuation_context_projection_unhealthy"),
+      workspaceReadHealthy: !safeBlockers.includes("workspace_backend_unattached"),
+      continuationEvidenceState: normalizeString(liveTextStatus.readOnlyToolContinuation?.evidenceState, safeBlockers.some((code) => code.includes("tool")) ? "missing" : "accepted"),
+      activeObligationCount: Number(sessionStore.unresolvedObligationCount || 0),
+      pendingDecisionCount: Number(sessionStore.unresolvedObligationCount || 0),
+      streamingContinuationCount: normalizeString(sessionStore.lastTurnState, "") === "streaming_continuation" ? 1 : 0,
+    },
   };
 }
 
@@ -298,7 +330,11 @@ function buildDirectRuntimeStatus(options = {}) {
       liveTextStatus,
       sessionStore: sessionStore || {},
     }),
-    directImplementationLane: directImplementationLaneReadiness({ activation }),
+    directImplementationLane: directImplementationLaneReadiness({
+      activation,
+      sessionStore: sessionStore || {},
+      liveTextStatus,
+    }),
     transport: {
       kind: "sse",
       endpoint: "chatgpt-codex-responses",
