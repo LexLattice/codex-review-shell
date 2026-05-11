@@ -2700,6 +2700,14 @@ function turnIdFromNotification(params) {
   return String(params?.turn?.id || params?.turnId || "");
 }
 
+function clearPrimaryTurnActivityState() {
+  state.activeTurnId = "";
+  state.primaryThreadActive = false;
+  state.primaryThreadActivitySource = "";
+  state.turnPending = false;
+  state.turnStopping = false;
+}
+
 function threadIdFromNotification(params = {}) {
   return String(
     params.threadId ||
@@ -2777,11 +2785,7 @@ function reconcileCompletedTurnState(turnId, status = "completed", completedAt =
     activity.completedAt = activity.completedAt || timestampSeconds(completedAt) || Date.now() / 1000;
   }
   if (!state.activeTurnId || String(state.activeTurnId) === id || String(state.turnId) === id) {
-    state.activeTurnId = "";
-    state.primaryThreadActive = false;
-    state.primaryThreadActivitySource = "";
-    state.turnPending = false;
-    state.turnStopping = false;
+    clearPrimaryTurnActivityState();
   }
   state.turnId = id;
   return true;
@@ -5318,8 +5322,7 @@ async function sendPrompt(text) {
     await startCodexTurn(text);
     els.composerInput.value = "";
   } catch (error) {
-    state.turnPending = false;
-    state.activeTurnId = "";
+    clearPrimaryTurnActivityState();
     renderRuntimeConstitution();
     throw error;
   }
@@ -5341,8 +5344,7 @@ async function stopCurrentTurn() {
       activity.status = "interrupted";
       activity.completedAt = activity.completedAt || Date.now() / 1000;
     }
-    state.activeTurnId = "";
-    state.turnPending = false;
+    clearPrimaryTurnActivityState();
   } finally {
     state.turnStopping = false;
     renderRuntimeConstitution();
@@ -5373,9 +5375,7 @@ function handleNotification(method, params) {
       }
     }
     if (!params?.willRetry) {
-      state.turnPending = false;
-      state.activeTurnId = "";
-      state.turnStopping = false;
+      clearPrimaryTurnActivityState();
       renderRuntimeConstitution();
     }
     const error = params?.error || {};
@@ -5460,11 +5460,7 @@ function handleNotification(method, params) {
     if (completedTurnId && shouldApplyTurnCompletionNotification(params, completedTurnId)) {
       state.turnId = completedTurnId;
       if (!state.activeTurnId || String(state.activeTurnId) === String(completedTurnId)) {
-        state.activeTurnId = "";
-        state.primaryThreadActive = false;
-        state.primaryThreadActivitySource = "";
-        state.turnPending = false;
-        state.turnStopping = false;
+        clearPrimaryTurnActivityState();
       }
       const activity = ensureTurnActivity(completedTurnId);
       if (activity) {
