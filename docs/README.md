@@ -26,6 +26,7 @@
 - [Direct Text-Only Runtime Tier And Toggle Spec](./DIRECT_TEXT_ONLY_RUNTIME_TIER_AND_TOGGLE_SPEC.md)
 - [Direct Text-Only Multi-Turn Recent Dialogue Spec](./DIRECT_TEXT_ONLY_MULTITURN_RECENT_DIALOGUE_SPEC.md)
 - [Direct Implementation-Lane Read-Only Tool UI Spec](./DIRECT_IMPLEMENTATION_LANE_READONLY_TOOL_UI_SPEC.md)
+- [Direct Implementation-Lane Multi-Step Read-Only Tool Loop Spec](./DIRECT_IMPLEMENTATION_LANE_MULTI_STEP_READONLY_TOOL_LOOP_SPEC.md)
 - [Direct Documentation Hygiene Backlog](./DIRECT_DOC_HYGIENE_BACKLOG.md)
 - [OAI Codex Upstream ODEU Profile](./OAI_CODEX_UPSTREAM_ODEU_PROFILE.md)
 - [Meta-Orchestrator Loop ODEU Spec](./META_ORCHESTRATOR_LOOP_ODEU_SPEC.md)
