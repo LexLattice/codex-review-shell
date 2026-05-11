@@ -1,6 +1,7 @@
 "use strict";
 
 const crypto = require("node:crypto");
+const { scanTextForRawExposure } = require("../thread/renderer-transcript-projection");
 
 const DIRECT_COMMAND_EXECUTION_PLAN_SCHEMA = "direct_command_execution_plan@1";
 const DIRECT_COMMAND_EXECUTION_RESULT_SCHEMA = "direct_codex_command_execution_result@1";
@@ -36,6 +37,7 @@ const MAX_COMMAND_ARGS = 32;
 const MAX_COMMAND_ARG_CHARS = 2048;
 const MAX_COMMAND_TIMEOUT_MS = 120_000;
 const MAX_COMMAND_OUTPUT_PREVIEW_CHARS = 24_000;
+const MAX_PROVIDER_COMMAND_STREAM_CHARS = 20_000;
 const MAX_PROVIDER_COMMAND_OUTPUT_CHARS = 64 * 1024;
 const MAX_COMMAND_APPROVAL_SUMMARY_CHARS = 2000;
 
@@ -136,6 +138,11 @@ function scriptBodyPolicy(scriptBody) {
     ok: true,
     warning: /[|&;<>()`$]/.test(text) ? "package_script_shell_syntax_present" : "",
   };
+}
+
+function packageLifecycleScriptNames(scriptName) {
+  const safeName = normalizeString(scriptName, "");
+  return safeName ? [`pre${safeName}`, safeName, `post${safeName}`] : [];
 }
 
 function packageScriptFor(command, args) {
@@ -282,27 +289,44 @@ async function readPackageScriptEvidence(workspaceRequest, parsed) {
     throw next;
   }
   const scripts = isPlainObject(manifest.scripts) ? manifest.scripts : {};
-  const scriptBody = preserveString(scripts[parsed.packageScript.scriptName]);
+  const scriptName = parsed.packageScript.scriptName;
+  const scriptBody = preserveString(scripts[scriptName]);
   if (!scriptBody) {
     const error = new Error(`Package script is missing: ${parsed.packageScript.scriptName}`);
     error.code = "package_script_missing";
     throw error;
   }
-  const bodyPolicy = scriptBodyPolicy(scriptBody);
-  if (!bodyPolicy.ok) {
-    const error = new Error(bodyPolicy.reason || "Package script body is blocked.");
-    error.code = bodyPolicy.blockerCode || "package_script_body_blocked";
-    throw error;
+  const lifecycleScripts = [];
+  let warning = "";
+  for (const name of packageLifecycleScriptNames(scriptName)) {
+    const body = preserveString(scripts[name]);
+    if (!body) continue;
+    const bodyPolicy = scriptBodyPolicy(body);
+    if (!bodyPolicy.ok) {
+      const error = new Error(bodyPolicy.reason || "Package script body is blocked.");
+      error.code = bodyPolicy.blockerCode || "package_script_body_blocked";
+      throw error;
+    }
+    if (bodyPolicy.warning) warning = bodyPolicy.warning;
+    lifecycleScripts.push({
+      scriptName: name,
+      scriptCommandEvidenceKey: `pkg_script_${sha256(`${packageJsonRelPath}:${name}:${body}`).slice(0, 24)}`,
+      scriptCommandPreview: body.slice(0, MAX_COMMAND_APPROVAL_SUMMARY_CHARS),
+      scriptCommandPreviewTruncated: body.length > MAX_COMMAND_APPROVAL_SUMMARY_CHARS,
+      lifecycleKind: name === scriptName ? "main" : name.startsWith("pre") ? "pre" : "post",
+    });
   }
   return {
     packageManager: parsed.command,
     packageJsonRelPath,
-    scriptName: parsed.packageScript.scriptName,
+    scriptName,
     scriptExists: true,
     scriptCommandEvidenceKey: `pkg_script_${sha256(`${packageJsonRelPath}:${parsed.packageScript.scriptName}:${scriptBody}`).slice(0, 24)}`,
     scriptCommandPreview: scriptBody.slice(0, MAX_COMMAND_APPROVAL_SUMMARY_CHARS),
     scriptCommandPreviewTruncated: scriptBody.length > MAX_COMMAND_APPROVAL_SUMMARY_CHARS,
-    scriptPolicyWarning: bodyPolicy.warning || "",
+    lifecycleScripts,
+    lifecycleScriptCount: lifecycleScripts.length,
+    scriptPolicyWarning: warning,
   };
 }
 
@@ -483,11 +507,33 @@ function boundedOutput(value, maxChars) {
 function commandStatusFromResult(result = {}) {
   if (result.timedOut === true) return "timed_out";
   if (normalizeString(result.spawnError, "")) return "spawn_failed";
-  if (Number(result.exitCode) === 0) {
+  if (result.exitCode === 0) {
     const changed = Number(result.workspaceEffects?.changedPathCount || 0) > 0;
     return changed ? "completed_with_workspace_changes" : "completed_exit_zero";
   }
   return "completed_nonzero_exit";
+}
+
+function commandExitCode(value) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function blockingRawExposureFindings(text) {
+  return scanTextForRawExposure(text).filter((finding) => finding.severity === "block");
+}
+
+function commandOutputRedactionSummary(stdoutPreview = {}, stderrPreview = {}) {
+  const stdoutFindings = blockingRawExposureFindings(stdoutPreview.text);
+  const stderrFindings = blockingRawExposureFindings(stderrPreview.text);
+  const findings = [...stdoutFindings, ...stderrFindings];
+  return {
+    scanned: true,
+    scanVersion: "direct_raw_exposure_scan@1",
+    status: findings.length ? "blocked" : "passed",
+    findingCount: findings.length,
+    categories: Array.from(new Set(findings.map((finding) => finding.reason || "raw_exposure"))),
+    providerOutputAllowed: findings.length === 0,
+  };
 }
 
 async function executeApprovedCommandExecutionObligation(options = {}) {
@@ -515,6 +561,8 @@ async function executeApprovedCommandExecutionObligation(options = {}) {
   const stdoutPreview = boundedOutput(executed.stdout, MAX_COMMAND_OUTPUT_PREVIEW_CHARS);
   const stderrPreview = boundedOutput(executed.stderr, MAX_COMMAND_OUTPUT_PREVIEW_CHARS);
   const status = commandStatusFromResult(executed);
+  const exitCode = commandExitCode(executed.exitCode);
+  const redaction = commandOutputRedactionSummary(stdoutPreview, stderrPreview);
   const workspaceEffects = isPlainObject(executed.workspaceEffects)
     ? executed.workspaceEffects
     : {
@@ -531,15 +579,16 @@ async function executeApprovedCommandExecutionObligation(options = {}) {
     commandClass: "package_script",
     displayCommand: normalizeString(commandPlan.displayCommand, [parsed.command, ...parsed.args].join(" ")),
     cwdRelPath: normalizeString(commandPlan.cwdRelPath, parsed.cwdRelPath),
-    exitCode: Number.isFinite(Number(executed.exitCode)) ? Number(executed.exitCode) : null,
+    exitCode,
     signal: normalizeString(executed.signal, ""),
     timedOut: executed.timedOut === true,
     durationMs: Number(executed.durationMs || 0),
-    success: Number(executed.exitCode) === 0 && executed.timedOut !== true,
-    stdoutPreview: stdoutPreview.text.slice(0, 20_000),
-    stderrPreview: stderrPreview.text.slice(0, 20_000),
+    success: executed.exitCode === 0 && executed.timedOut !== true,
+    stdoutPreview: redaction.providerOutputAllowed ? stdoutPreview.text.slice(0, MAX_PROVIDER_COMMAND_STREAM_CHARS) : "",
+    stderrPreview: redaction.providerOutputAllowed ? stderrPreview.text.slice(0, MAX_PROVIDER_COMMAND_STREAM_CHARS) : "",
     stdoutTruncated: executed.stdoutTruncated === true || stdoutPreview.truncated,
     stderrTruncated: executed.stderrTruncated === true || stderrPreview.truncated,
+    redactionStatus: redaction.status,
     workspaceChangeScanSupported: workspaceEffects.scanScope !== "none",
     workspaceChangesDetected: Number(workspaceEffects.changedPathCount || 0) > 0,
     workspaceChangesPreview: Array.isArray(workspaceEffects.changedPathsPreview) ? workspaceEffects.changedPathsPreview.slice(0, 20) : [],
@@ -559,32 +608,45 @@ async function executeApprovedCommandExecutionObligation(options = {}) {
     });
     providerOutputTruncated = true;
   }
+  if (!redaction.providerOutputAllowed) {
+    providerOutputText = JSON.stringify({
+      kind: "run_command_result",
+      status: "command_output_redaction_blocked",
+      commandPlanId: normalizeString(commandPlan.commandPlanId, ""),
+      outputRedacted: true,
+      providerContinuationBlocked: true,
+      workspaceChangesDetected: Number(workspaceEffects.changedPathCount || 0) > 0,
+      rawPathsExposed: false,
+    });
+    providerOutputTruncated = false;
+  }
   const result = {
     schema: DIRECT_COMMAND_EXECUTION_RESULT_SCHEMA,
     resultId,
     obligationId: obligation.obligationId,
     tool: "run_command",
-    status,
-    resultClass: status,
+    status: redaction.providerOutputAllowed ? status : "command_output_redaction_blocked",
+    resultClass: redaction.providerOutputAllowed ? status : "command_output_redaction_blocked",
     commandPlanId: normalizeString(commandPlan.commandPlanId, ""),
     displayCommand: normalizeString(commandPlan.displayCommand, ""),
     cwdRelPath: normalizeString(commandPlan.cwdRelPath, ""),
-    exitCode: Number.isFinite(Number(executed.exitCode)) ? Number(executed.exitCode) : null,
+    exitCode,
     signal: normalizeString(executed.signal, ""),
     durationMs: Number(executed.durationMs || 0),
     stdout: {
-      textPreview: stdoutPreview.text,
+      textPreview: redaction.providerOutputAllowed ? stdoutPreview.text : "",
       byteCount: Buffer.byteLength(preserveString(executed.stdout)),
       truncated: executed.stdoutTruncated === true || stdoutPreview.truncated,
       hashMode: "none",
     },
     stderr: {
-      textPreview: stderrPreview.text,
+      textPreview: redaction.providerOutputAllowed ? stderrPreview.text : "",
       byteCount: Buffer.byteLength(preserveString(executed.stderr)),
       truncated: executed.stderrTruncated === true || stderrPreview.truncated,
       hashMode: "none",
     },
     workspaceEffects,
+    commandOutputRedaction: redaction,
     backendCapabilities: isPlainObject(executed.backendCapabilities) ? executed.backendCapabilities : {},
     backgroundProcessCheck: isPlainObject(executed.backgroundProcessCheck) ? executed.backgroundProcessCheck : {
       supported: false,
@@ -593,10 +655,11 @@ async function executeApprovedCommandExecutionObligation(options = {}) {
     providerOutputText,
     providerOutputChars: providerOutputText.length,
     providerOutputTruncated,
+    providerContinuationBlocked: !redaction.providerOutputAllowed,
     recordedAt: nowIso(options.nowMs),
     sideEffectExecuted: true,
-    commandExecutionState: status,
-    commandContinuationState: "not_built",
+    commandExecutionState: redaction.providerOutputAllowed ? status : "redaction_blocked",
+    commandContinuationState: redaction.providerOutputAllowed ? "not_built" : "blocked",
     rawWorkspacePathExposed: false,
     rawCommandOutputHashExposed: false,
   };
@@ -611,7 +674,13 @@ async function executeApprovedCommandExecutionObligation(options = {}) {
     resultRecordedAt: result.recordedAt,
   }, {
     ...options,
-    nextTurnState: "continuation_ready",
+    nextTurnState: redaction.providerOutputAllowed ? "continuation_ready" : "failed",
+    turnPatch: redaction.providerOutputAllowed ? undefined : {
+      error: {
+        code: "command_output_redaction_blocked",
+        message: "Command output was blocked by redaction policy; no provider continuation was sent.",
+      },
+    },
   });
   return { reused: false, obligation: updated.obligation, result };
 }
@@ -623,6 +692,11 @@ function buildCommandExecutionContinuationRequest(options = {}) {
   if (!isPlainObject(obligation.result) || obligation.result.schema !== DIRECT_COMMAND_EXECUTION_RESULT_SCHEMA) {
     const error = new Error("Command continuation requires a recorded command result.");
     error.code = "command_result_missing";
+    throw error;
+  }
+  if (obligation.result.providerContinuationBlocked === true) {
+    const error = new Error("Command continuation is blocked by command output redaction policy.");
+    error.code = "command_output_redaction_blocked";
     throw error;
   }
   const parsed = assertCommandObligation(obligation);

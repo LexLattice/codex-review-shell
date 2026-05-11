@@ -2661,7 +2661,13 @@ try {
           size: 48,
           truncated: false,
           binary: false,
-          text: JSON.stringify({ scripts: { test: "node ./test.js" } }),
+          text: JSON.stringify({
+            scripts: {
+              pretest: "node ./pretest.js",
+              test: "node ./test.js",
+              posttest: "node ./posttest.js",
+            },
+          }),
           source: "local",
         };
       }
@@ -2733,6 +2739,7 @@ try {
   assert(commandApproval.params.approvalAvailable === true, "Expected command approval to be available after package script validation.");
   assert(commandApproval.params.displayCommand === "npm test", "Expected command approval to show bounded display command.");
   assert(commandApproval.params.packageScriptEvidence.scriptExists === true, "Expected command approval to include manifest-backed script evidence.");
+  assert(commandApproval.params.packageScriptEvidence.lifecycleScriptCount === 3, "Expected command approval to validate npm pre/test/post lifecycle scripts.");
   assert(commandApproval.params.safety.networkAccessNotProvenAbsent === true, "Expected command approval to preserve network-sandbox truth.");
   const commandResponse = await commandToolSurface.respond(commandApproval.key, {
     decision: "approve",
@@ -2769,6 +2776,93 @@ try {
   });
   assert(commandWorkspaceCalls.length === 2, "Expected duplicate completed command approval response not to rerun command.");
   commandToolThreadStore.close();
+
+  const redactedCommandStore = new DirectSessionStore({ rootDir: path.join(liveTextControllerParent, "redacted-command-direct-sessions") });
+  const redactedCommandThreadStore = new DirectThreadStore({
+    rootDir: path.join(liveTextControllerParent, "redacted-command-direct-thread-store"),
+    mode: "index_only",
+  });
+  let redactedCommandFetchCalls = 0;
+  const redactedCommandWorkspaceCalls = [];
+  const redactedCommandController = new DirectLiveTextController({
+    sessionStore: redactedCommandStore,
+    directThreadStore: redactedCommandThreadStore,
+    profileDoc: acceptedCommandExecutionProfile(),
+    authStore: liveAuthStore,
+    workspaceRequest: async (_project, method) => {
+      redactedCommandWorkspaceCalls.push(method);
+      if (method === "readFile") {
+        return {
+          relPath: "package.json",
+          size: 32,
+          truncated: false,
+          binary: false,
+          text: JSON.stringify({ scripts: { test: "node ./test.js" } }),
+          source: "local",
+        };
+      }
+      assert(method === "runDirectCommand", "Expected redaction fixture to execute through direct command backend.");
+      return {
+        command: "npm",
+        args: ["test"],
+        cwdRelPath: "",
+        exitCode: 0,
+        signal: "",
+        timedOut: false,
+        durationMs: 25,
+        stdout: "Authorization: Bearer abcdefghijklmnop\n",
+        stderr: "",
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        workspaceEffects: {
+          changedPathCount: 0,
+          changedPathsPreview: [],
+          changedPathsTruncated: false,
+          scanScope: "git-status",
+          scanFailed: false,
+        },
+      };
+    },
+    fetchImpl: async (_url) => {
+      redactedCommandFetchCalls += 1;
+      assert(redactedCommandFetchCalls === 1, "Expected redacted command output to block provider continuation.");
+      return textResponse(commandInitialSse, 200, { "content-type": "text/event-stream" });
+    },
+  });
+  const redactedCommandEvents = [];
+  const redactedCommandSurface = new DirectLiveTextSurfaceSession({
+    isDestroyed: () => false,
+    send: (_channel, payload) => redactedCommandEvents.push(payload),
+  }, {
+    controller: redactedCommandController,
+    project: approvedToolProject,
+  });
+  await redactedCommandSurface.connect({ transport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT });
+  const redactedCommandThread = await redactedCommandSurface.request("thread/start", {});
+  const redactedCommandAck = await redactedCommandSurface.request("turn/start", {
+    threadId: redactedCommandThread.thread.id,
+    promptText: "redacted command prompt",
+    clientTurnRequestId: "client_req_redacted_command_1",
+    model: "gpt-5.4",
+  });
+  await waitForCondition(
+    () => redactedCommandEvents.some((event) => event.type === "rpc-request" && event.request?.method === "direct/tool/command/requestApproval"),
+    "Expected redacted command fixture to request approval before execution.",
+  );
+  const redactedCommandApproval = redactedCommandEvents.find((event) => event.type === "rpc-request" && event.request?.method === "direct/tool/command/requestApproval")?.request;
+  const redactedCommandResponse = await redactedCommandSurface.respond(redactedCommandApproval.key, {
+    decision: "approve",
+    clientCommandDecisionId: "client_command_decision_redacted_1",
+    actionTokenId: redactedCommandApproval.params.actionTokens.approve,
+  });
+  assert(redactedCommandResponse.response.continuation.ok === false, "Expected command redaction block to prevent provider continuation.");
+  assert(redactedCommandFetchCalls === 1, "Expected command redaction block to avoid a second provider request.");
+  assert(redactedCommandWorkspaceCalls.join(",") === "readFile,runDirectCommand", "Expected redacted command fixture to validate then execute exactly once.");
+  const redactedCommandTurn = redactedCommandStore.readTurn(redactedCommandThread.thread.id, redactedCommandAck.turn.id);
+  assert(redactedCommandTurn.state === "failed", "Expected redacted command output to fail locally.");
+  assert(redactedCommandTurn.unresolvedObligations[0].result.providerContinuationBlocked === true, "Expected command result to record blocked continuation.");
+  assert(redactedCommandTurn.unresolvedObligations[0].result.stdout.textPreview === "", "Expected blocked command output not to expose stdout preview.");
+  redactedCommandThreadStore.close();
 
 	  const loopToolStore = new DirectSessionStore({ rootDir: path.join(liveTextControllerParent, "loop-tool-direct-sessions") });
 	  const loopToolThreadStore = new DirectThreadStore({

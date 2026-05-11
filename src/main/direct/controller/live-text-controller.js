@@ -1993,6 +1993,16 @@ class DirectLiveTextController {
         scriptCommandEvidenceKey: normalizeString(commandPlan.packageScriptEvidence.scriptCommandEvidenceKey, ""),
         scriptCommandPreview: normalizeString(commandPlan.packageScriptEvidence.scriptCommandPreview, ""),
         scriptCommandPreviewTruncated: commandPlan.packageScriptEvidence.scriptCommandPreviewTruncated === true,
+        lifecycleScriptCount: Number(commandPlan.packageScriptEvidence.lifecycleScriptCount || 0),
+        lifecycleScripts: Array.isArray(commandPlan.packageScriptEvidence.lifecycleScripts)
+          ? commandPlan.packageScriptEvidence.lifecycleScripts.map((script) => ({
+              scriptName: normalizeString(script.scriptName, ""),
+              scriptCommandEvidenceKey: normalizeString(script.scriptCommandEvidenceKey, ""),
+              scriptCommandPreview: normalizeString(script.scriptCommandPreview, ""),
+              scriptCommandPreviewTruncated: script.scriptCommandPreviewTruncated === true,
+              lifecycleKind: normalizeString(script.lifecycleKind, ""),
+            }))
+          : [],
         scriptPolicyWarning: normalizeString(commandPlan.packageScriptEvidence.scriptPolicyWarning, ""),
       } : {},
       safety: {
@@ -3009,6 +3019,33 @@ class DirectLiveTextController {
     });
     const turn = this.sessionStore.readTurn(sessionId, turnId);
     const currentObligation = this.sessionStore.findToolObligation(sessionId, turnId, obligationId).obligation;
+    if (executed.result?.providerContinuationBlocked === true) {
+      this.emitNotification(surfaceSession, "turn/completed", {
+        threadId: sessionId,
+        turnId,
+        turn: {
+          id: turnId,
+          status: "failed",
+          completedAt: nowSeconds(),
+          streamPhase: "command-output-redaction-blocked",
+        },
+      });
+      return {
+        decision: "approved",
+        turn: turnSnapshot(this.sessionStore.readTurn(sessionId, turnId)),
+        obligation: currentObligation,
+        result: executed.result,
+        continuation: {
+          ok: false,
+          continuationId: "",
+          terminal: {
+            status: "failed",
+            failureKind: "command_output_redaction_blocked",
+            providerRequestStarted: false,
+          },
+        },
+      };
+    }
     const parentResponseId = parentResponseIdForToolStep(turn, currentObligation);
     const parentResponseSource = parentResponseSourceForToolStep(currentObligation);
     let continuationRequest = null;
