@@ -97,7 +97,6 @@ function normalizeRelativePath(value) {
     !text ||
     /[\0-\x1f\x7f]/.test(text) ||
     text.startsWith("/") ||
-    text.startsWith("//") ||
     /^[A-Za-z]:\//.test(text) ||
     /^mnt\/[a-z]\//i.test(text) ||
     text.includes("://") ||

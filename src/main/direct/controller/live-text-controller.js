@@ -1713,7 +1713,7 @@ class DirectLiveTextController {
       status: normalizeString(obligation.status, ""),
       callIdDigest: sha256(obligation.callId || ""),
       argumentsDigest: sha256(obligation.argumentsText || ""),
-      responseIdDigest: sha256(turn.responseId || ""),
+      responseIdDigest: sha256(turn?.responseId || ""),
     }));
     const actionToken = (action) => `direct_tool_action_${sha256(`${obligation.obligationId}:${action}:${obligationDigest}`).slice(0, 24)}`;
     return {
@@ -1722,7 +1722,7 @@ class DirectLiveTextController {
       turnId: obligation.turnId,
       obligationId: obligation.obligationId,
       obligationDigest,
-      operationLedgerHeadDigest: normalizeString(turn.operationLedgerHeadDigest || turn.ledgerDigest, ""),
+      operationLedgerHeadDigest: normalizeString(turn?.operationLedgerHeadDigest || turn?.ledgerDigest, ""),
       tool: normalizeString(obligation.name, "read_file"),
       relPath,
       providerCallType,
@@ -1882,7 +1882,13 @@ class DirectLiveTextController {
       return previousDecision.response;
     }
     const response = await this.withToolDecisionLock(obligationId, async () => {
-      const current = this.sessionStore.findToolObligation(sessionId, turnId, obligationId).obligation;
+      const found = this.sessionStore.findToolObligation(sessionId, turnId, obligationId);
+      if (!found || !found.obligation) {
+        const error = new Error("Read-only tool obligation not found.");
+        error.code = "obligation_not_found";
+        throw error;
+      }
+      const current = found.obligation;
       const currentStatus = normalizeString(current.status, "");
       if (["declined", "canceled"].includes(currentStatus)) {
         const error = new Error("Read-only tool obligation already has a terminal local decision.");
