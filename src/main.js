@@ -2793,9 +2793,9 @@ async function getThreadAnalyticsDashboard(projectId, threadKey) {
   const key = normalizeString(threadKey, "");
   if (!key) throw new Error("threadKey is required.");
   const dashboard = store.getProjectThreadDashboard(project.id, key);
-  const usageLedger = dashboard?.thread?.threadId
-    ? await readUsageLedgerAnalytics(project, dashboard.thread.threadId)
-    : await readUsageLedgerAnalytics(project, "");
+  const usageLedger = dashboard
+    ? await readUsageLedgerAnalytics(project, dashboard.thread?.threadId || "")
+    : null;
   return {
     projectId: project.id,
     threadKey: key,

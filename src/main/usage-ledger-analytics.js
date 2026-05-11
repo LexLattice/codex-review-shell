@@ -156,8 +156,11 @@ async function usageLedgerJsonlFiles(outputDir) {
     throw error;
   }
   const files = [];
-  for (const entry of entries) {
-    if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+  const candidates = entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".jsonl"))
+    .sort((a, b) => b.name.localeCompare(a.name))
+    .slice(0, USAGE_LEDGER_ANALYTICS_FILE_LIMIT * 2);
+  for (const entry of candidates) {
     const filePath = path.join(outputDir, entry.name);
     try {
       const stat = await fs.stat(filePath);
@@ -208,11 +211,16 @@ function rowMatchesUsageThread(row, projectId, threadId) {
 function rateLimitWindowSummary(value) {
   if (!isPlainObject(value)) return null;
   const usedPercent = safeUsageNumber(value.usedPercent, NaN);
+  const numericResetsAt = Number(value.resetsAt);
+  const resetsAtIso = normalizeString(
+    value.resetsAtIso,
+    Number.isFinite(numericResetsAt) ? new Date(numericResetsAt * 1000).toISOString() : "",
+  );
   return {
     name: normalizeString(value.name || value.windowName || value.rateLimitReachedType, ""),
     usedPercent: Number.isFinite(usedPercent) ? usedPercent : null,
     windowDurationMins: safeUsageNumber(value.windowDurationMins, 0),
-    resetsAt: normalizeString(value.resetsAt, ""),
+    resetsAt: resetsAtIso || normalizeString(value.resetsAt, ""),
     resetSeconds: safeUsageNumber(value.resetSeconds, 0),
   };
 }
