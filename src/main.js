@@ -19,6 +19,7 @@ const { CodexSurfaceSession } = require("./main/codex-surface-session");
 const { MiddleWebHost } = require("./main/middle-web-host");
 const { WorkspaceBackendManager, workspaceLabel, workspaceRoot } = require("./main/workspace-backend");
 const { ThreadAnalyticsStore, buildThreadKey } = require("./main/thread-analytics-store");
+const { UsageLedgerCollector } = require("./main/usage-ledger-collector");
 const { PLANE_ZOOM_DEFAULT, clampZoomFactor, zoomDeltaForDirection } = require("./shared/plane-zoom");
 
 const APP_TITLE = "Codex Review Shell";
@@ -200,6 +201,22 @@ function defaultCodexRuntimeForWorkspace(workspace) {
   return workspace?.kind === "wsl" && process.platform === "win32" ? "wsl" : "auto";
 }
 
+function defaultCodexUsageLedgerConfig() {
+  return {
+    enabled: true,
+    mode: "metadata_only",
+    outputDir: ".codex/usage-ledgers",
+    strict: false,
+    includePayloadRefs: false,
+    includePromptText: false,
+    includeToolOutputText: false,
+    includeRequestPayloadHashes: false,
+    includeResponsePayloadHashes: false,
+    payloadHashMode: "none",
+    rawPathPolicy: "excluded",
+  };
+}
+
 function defaultConfig() {
   const defaultProjectId = "project_example";
   const defaultWorkspace = defaultProjectWorkspaceConfig();
@@ -237,6 +254,7 @@ function defaultConfig() {
               kind: "codex_executable",
               flavor: "vanilla",
             },
+            usageLedger: defaultCodexUsageLedgerConfig(),
             remoteAuth: {
               mode: "none",
               tokenFilePath: "",
@@ -450,6 +468,26 @@ function normalizeCodexProviderConfig(value) {
     flavor,
     selectedBy: normalizeString(raw.selectedBy, "project_config"),
     configuredAt: normalizeString(raw.configuredAt, ""),
+  };
+}
+
+function normalizeCodexUsageLedgerConfig(value) {
+  const raw = isPlainObject(value) ? value : {};
+  const defaults = defaultCodexUsageLedgerConfig();
+  const payloadHashMode = normalizeString(raw.payloadHashMode || raw.payload_hash_mode, defaults.payloadHashMode);
+  const rawPathPolicy = normalizeString(raw.rawPathPolicy || raw.raw_path_policy, defaults.rawPathPolicy);
+  return {
+    enabled: raw.enabled !== false,
+    mode: normalizeString(raw.mode, defaults.mode),
+    outputDir: normalizeString(raw.outputDir || raw.output_dir, defaults.outputDir),
+    strict: raw.strict === true,
+    includePayloadRefs: raw.includePayloadRefs === true || raw.include_payload_refs === true,
+    includePromptText: raw.includePromptText === true || raw.include_prompt_text === true,
+    includeToolOutputText: raw.includeToolOutputText === true || raw.include_tool_output_text === true,
+    includeRequestPayloadHashes: raw.includeRequestPayloadHashes === true || raw.include_request_payload_hashes === true,
+    includeResponsePayloadHashes: raw.includeResponsePayloadHashes === true || raw.include_response_payload_hashes === true,
+    payloadHashMode: ["none", "sha256", "hmac_sha256"].includes(payloadHashMode) ? payloadHashMode : defaults.payloadHashMode,
+    rawPathPolicy: ["excluded", "private_diagnostic_only", "included_explicit"].includes(rawPathPolicy) ? rawPathPolicy : defaults.rawPathPolicy,
   };
 }
 
@@ -1062,6 +1100,7 @@ function normalizeProject(input, index = 0) {
           configuredFlavor: rawCodex.configuredFlavor,
           connectionPath: rawCodex.connectionPath,
         }),
+        usageLedger: normalizeCodexUsageLedgerConfig(rawCodex.usageLedger || rawCodex.usage_ledger),
         remoteAuth: normalizeRemoteAuthConfig(rawCodex.remoteAuth),
       },
       chatgpt: {
@@ -1527,7 +1566,18 @@ function codexSurfaceSessionFor(sender) {
   if (!isCodexSurfaceSender(sender)) throw new Error("Codex surface bridge is not available from this renderer.");
   const sessions = ensureCodexSurfaceSessions();
   if (sessions.has(sender.id)) return sessions.get(sender.id);
-  const session = new CodexSurfaceSession(sender);
+  const usageLedger = new UsageLedgerCollector({
+    getProjectById,
+    emitStatus: (status) => {
+      if (sender.isDestroyed()) return;
+      sender.send("codex-surface:event", {
+        type: "usage-ledger-status",
+        status,
+        at: nowIso(),
+      });
+    },
+  });
+  const session = new CodexSurfaceSession(sender, { usageLedger });
   session.on("event", (payload) => {
     if (payload?.type === "rpc-request" || payload?.type === "rpc-request-updated") {
       emitShellEvent({
@@ -1730,8 +1780,11 @@ async function loadCodexSurface(project, options = {}) {
       activeCodexSurfaceConnection = {
         projectId: project.id,
         wsUrl: session.wsUrl,
+        readyUrl: session.readyUrl,
         runtime: session.runtime,
         codexHome: session.codexHome || "",
+        workspaceRoot: session.workspaceRoot || "",
+        binaryPath: session.binaryPath || "",
         provider: session.provider || null,
         capabilities: session.capabilities || null,
         activationEpoch: Number(options.activationEpoch) || 0,

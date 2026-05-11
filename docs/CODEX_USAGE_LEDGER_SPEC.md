@@ -178,7 +178,7 @@ raw_path_policy = "excluded" # excluded | private_diagnostic_only | included_exp
 Default posture:
 
 ```text
-enabled: false until implemented and exposed
+enabled: true after implementation; users may disable per project
 mode: metadata_only
 prompt/output content: excluded
 payload refs: excluded unless trace import is configured

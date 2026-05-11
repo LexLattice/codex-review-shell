@@ -226,9 +226,10 @@ function timeoutResultFor(method) {
 }
 
 class CodexSurfaceSession extends EventEmitter {
-  constructor(webContents) {
+  constructor(webContents, options = {}) {
     super();
     this.webContents = webContents;
+    this.usageLedger = options.usageLedger || null;
     this.socket = null;
     this.connection = null;
     this.connectionId = "";
@@ -318,6 +319,7 @@ class CodexSurfaceSession extends EventEmitter {
       record.status = "connection-closed";
       record.errorSummary = message;
       record.resolvedAt = new Date().toISOString();
+      this.usageLedger?.captureServerRequest?.(record, "rpc-request-updated").catch(() => {});
       this.emitRequestEvent(record, "rpc-request-updated");
     }
     this.serverRequests.clear();
@@ -341,6 +343,7 @@ class CodexSurfaceSession extends EventEmitter {
       connectionId: this.connectionId,
       remoteAuth: auth.metadata,
     };
+    if (this.usageLedger) await this.usageLedger.start(this.connection);
     this.disposing = false;
     this.emitStatus("connecting");
 
@@ -369,8 +372,13 @@ class CodexSurfaceSession extends EventEmitter {
             const pending = this.pending.get(message.id);
             this.pending.delete(message.id);
             if (pending.timer) clearTimeout(pending.timer);
-            if (message.error) pending.reject(jsonRpcErrorToError(message.error));
-            else pending.resolve(message.result);
+            if (message.error) {
+              this.usageLedger?.captureClientError?.(pending.method, message.error, message.id).catch(() => {});
+              pending.reject(jsonRpcErrorToError(message.error));
+            } else {
+              this.usageLedger?.captureClientResponse?.(pending.method, message.result, message.id).catch(() => {});
+              pending.resolve(message.result);
+            }
             return;
           }
 
@@ -397,6 +405,7 @@ class CodexSurfaceSession extends EventEmitter {
       socket.once("close", () => {
         if (this.disposing) return;
         const message = this.lastError || "Codex app-server connection closed.";
+        this.usageLedger?.captureConnectionClosed?.(message).catch(() => {});
         this.rejectPending(message);
         this.closeServerRequests(message);
         if (this.socket === socket) this.socket = null;
@@ -418,6 +427,7 @@ class CodexSurfaceSession extends EventEmitter {
     if (method === "serverRequest/resolved") {
       this.resolveServerRequest(params);
     }
+    this.usageLedger?.captureNotification?.(method, params || {}).catch(() => {});
     this.sendEvent({ type: "rpc-notification", method, params: params || {} });
   }
 
@@ -445,6 +455,7 @@ class CodexSurfaceSession extends EventEmitter {
       hardTimer: null,
     };
     this.serverRequests.set(key, record);
+    this.usageLedger?.captureServerRequest?.(record, "rpc-request").catch(() => {});
     this.emitRequestEvent(record, "rpc-request");
 
     if (AUTO_UNSUPPORTED_SERVER_REQUEST_METHODS.has(method)) {
@@ -482,6 +493,7 @@ class CodexSurfaceSession extends EventEmitter {
     this.clearServerRequestTimers(record);
     record.status = "resolved";
     record.resolvedAt = new Date().toISOString();
+    this.usageLedger?.captureServerRequest?.(record, "rpc-request-updated").catch(() => {});
     this.emitRequestEvent(record, "rpc-request-updated");
     this.serverRequests.delete(key);
   }
@@ -585,6 +597,7 @@ class CodexSurfaceSession extends EventEmitter {
     record.status = options.status || statusFromResult(result || {});
     record.respondedAt = new Date().toISOString();
     record.responseSummary = summarizeResponse(result || {});
+    this.usageLedger?.captureServerRequest?.(record, "rpc-request-updated").catch(() => {});
     this.emitRequestEvent(record, "rpc-request-updated");
     if (record.status === "timed-out" || record.status === "declined" || record.status === "canceled") {
       this.serverRequests.delete(record.key);
@@ -603,6 +616,7 @@ class CodexSurfaceSession extends EventEmitter {
     record.status = options.status || "declined";
     record.respondedAt = new Date().toISOString();
     record.errorSummary = rpcError.message;
+    this.usageLedger?.captureServerRequest?.(record, "rpc-request-updated").catch(() => {});
     this.emitRequestEvent(record, "rpc-request-updated");
     this.serverRequests.delete(record.key);
     return { ok: true, request: this.publicRequestRecord(record) };
@@ -618,7 +632,6 @@ class CodexSurfaceSession extends EventEmitter {
     const socket = this.socket;
     this.disposing = true;
     this.socket = null;
-    this.connection = options.keepConnection ? this.connection : null;
     if (socket && socket.readyState === WebSocket.OPEN) {
       try {
         socket.close();
@@ -627,6 +640,12 @@ class CodexSurfaceSession extends EventEmitter {
     const reason = options.reason || "Codex surface session disposed.";
     this.rejectPending(reason);
     this.closeServerRequests(reason);
+    if (options.silent) {
+      this.usageLedger?.captureConnectionClosed?.(reason).catch(() => {});
+    } else {
+      await this.usageLedger?.close?.(reason).catch(() => {});
+    }
+    this.connection = options.keepConnection ? this.connection : null;
     if (!options.keepConnection) this.connectionId = "";
     if (!options.silent) this.emitStatus("disconnected", { error: options.reason || "" });
   }
