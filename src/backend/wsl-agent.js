@@ -879,6 +879,8 @@ function createTranscriptTurn(turnId, rowIndex, kind) {
     assistantFinalMessages: [],
     thoughtItems: [],
     status: "unknown",
+    startedAt: null,
+    completedAt: null,
   };
 }
 
@@ -915,11 +917,17 @@ function createStoredPresentationBuilder(threadId, sourceFile, threadMeta = {}) 
     if (row.type === "event_msg" && payload.type === "task_started" && found) {
       currentTurnId = found;
       const turn = ensureTurn(found, rowIndex, "task_started");
-      if (turn) turn.status = "partial";
+      if (turn) {
+        turn.status = "partial";
+        turn.startedAt = payload.started_at || payload.startedAt || turn.startedAt || null;
+      }
     }
     if (row.type === "event_msg" && payload.type === "task_complete") {
       const turn = ensureTurn(found || currentTurnId, rowIndex, "task_complete");
-      if (turn) turn.status = payload.last_agent_message ? "complete" : "unknown";
+      if (turn) {
+        turn.status = payload.last_agent_message ? "complete" : "unknown";
+        turn.completedAt = payload.completed_at || payload.completedAt || turn.completedAt || null;
+      }
     }
   }
 
