@@ -44,6 +44,17 @@ const TOOL_LIKE_THOUGHT_TYPES = new Set([
   "dynamicToolCall",
   "webSearch",
 ]);
+const ACTIVE_TURN_STATUS_SET = new Set([
+  "inprogress",
+  "in_progress",
+  "running",
+  "pending",
+  "started",
+  "partial",
+  "open",
+  "active",
+  "interrupting",
+]);
 const THOUGHT_ASSISTANT_PHASES = new Set([
   // Canonical Codex phase for interim assistant preamble/progress text.
   "commentary",
@@ -814,8 +825,7 @@ function turnIsActive() {
   const activeId = String(state.activeTurnId || state.turnId || "");
   if (!activeId) return false;
   const activity = state.turnActivityMap.get(activeId);
-  const status = String(activity?.status || "").trim().toLowerCase();
-  return Boolean(activity && !activity.completedAt && ["inprogress", "in_progress", "running", "pending", "started", "partial", "open", "active", "interrupting"].includes(status));
+  return Boolean(activity && !activity.completedAt && activeTurnStatus(activity.status));
 }
 
 function countCodexItems(typeSet) {
@@ -2675,16 +2685,7 @@ function terminalTurnStatus(status) {
 
 function activeTurnStatus(status) {
   const normalized = String(status || "").trim().toLowerCase();
-  return new Set([
-    "inprogress",
-    "in_progress",
-    "running",
-    "pending",
-    "started",
-    "partial",
-    "open",
-    "active",
-  ]).has(normalized);
+  return ACTIVE_TURN_STATUS_SET.has(normalized);
 }
 
 function reconcileCompletedTurnState(turnId, status = "completed", completedAt = null) {
@@ -3540,20 +3541,36 @@ function normalizedControlText(value) {
   return String(value || "").replace(/\r\n/g, "\n").replace(/[ \t]+$/gm, "").trim();
 }
 
-function collabPromptTextsFromItems(items = []) {
-  const prompts = new Set();
+function finiteSourceOrder(value, fallback = Number.POSITIVE_INFINITY) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function collabPromptInfoFromItem(item, orderFallback = Number.POSITIVE_INFINITY) {
+  if (item?.type !== "collabAgentToolCall") return null;
+  const text = normalizedControlText(item.prompt || item.promptPreview || "");
+  if (!text) return null;
+  return {
+    text,
+    order: finiteSourceOrder(item.sourceOrderStart ?? item.sourceOrderEnd, orderFallback),
+  };
+}
+
+function collabPromptInfosFromItems(items = []) {
+  const prompts = [];
   for (const item of Array.isArray(items) ? items : []) {
-    if (item?.type !== "collabAgentToolCall") continue;
-    const prompt = normalizedControlText(item.prompt || item.promptPreview || "");
-    if (prompt) prompts.add(prompt);
+    const prompt = collabPromptInfoFromItem(item);
+    if (prompt) prompts.push(prompt);
   }
   return prompts;
 }
 
 function messageMatchesCollabPrompt(message, collabPrompts) {
-  if (!collabPrompts?.size) return false;
+  if (!Array.isArray(collabPrompts) || !collabPrompts.length) return false;
   const text = normalizedControlText(storedMessageText(message));
-  return Boolean(text && collabPrompts.has(text));
+  if (!text) return false;
+  const messageOrder = finiteSourceOrder(message?.sourceOrderStart ?? message?.sourceOrderEnd, Number.NEGATIVE_INFINITY);
+  return collabPrompts.some((prompt) => prompt.text === text && prompt.order < messageOrder);
 }
 
 function userMessageItemText(item) {
@@ -3561,14 +3578,14 @@ function userMessageItemText(item) {
 }
 
 function userMessageItemMatchesCollabPrompt(item, collabPrompts) {
-  if (!collabPrompts?.size) return false;
+  if (!Array.isArray(collabPrompts) || !collabPrompts.length) return false;
   const text = normalizedControlText(userMessageItemText(item));
-  return Boolean(text && collabPrompts.has(text));
+  return Boolean(text && collabPrompts.some((prompt) => prompt.text === text));
 }
 
 function storedTurnUserMessageCount(turn) {
   if (!Array.isArray(turn?.userMessages)) return 0;
-  const collabPrompts = collabPromptTextsFromItems(turn?.thoughtItems);
+  const collabPrompts = collabPromptInfosFromItems(turn?.thoughtItems);
   return turn.userMessages.filter((message) =>
     !storedMessageIsSubagentNotification(message) &&
     !messageMatchesCollabPrompt(message, collabPrompts)).length;
@@ -3626,7 +3643,7 @@ function renderStoredPresentationModel(model, snapshot = {}) {
   for (let index = 0; index < visibleTurns.length; index += 1) {
     const turn = visibleTurns[index];
     const turnKey = String(turn.turnKey || turn.turnId || `stored_turn_${startTurnIndex + index + 1}`);
-    const collabPrompts = collabPromptTextsFromItems(turn.thoughtItems);
+    const collabPrompts = collabPromptInfosFromItems(turn.thoughtItems);
     for (let messageIndex = 0; messageIndex < (turn.userMessages || []).length; messageIndex += 1) {
       const message = turn.userMessages[messageIndex];
       const notification = subagentNotificationFromText(storedMessageText(message));
@@ -5080,11 +5097,16 @@ function renderThreadHistory(thread, options = {}) {
   const allTurns = Array.isArray(thread?.turns) ? thread.turns : [];
   const userMessageTurnIndices = [];
   for (let index = 0; index < allTurns.length; index += 1) {
-    const collabPrompts = collabPromptTextsFromItems(allTurns[index]?.items);
+    const seenCollabPrompts = [];
     for (const item of allTurns[index]?.items || []) {
+      const collabPrompt = collabPromptInfoFromItem(item, seenCollabPrompts.length);
+      if (collabPrompt) {
+        seenCollabPrompts.push(collabPrompt);
+        continue;
+      }
       if (item?.type === "userMessage") {
         const text = userMessageItemText(item);
-        if (!subagentNotificationFromText(text) && !userMessageItemMatchesCollabPrompt(item, collabPrompts)) {
+        if (!subagentNotificationFromText(text) && !userMessageItemMatchesCollabPrompt(item, seenCollabPrompts)) {
           userMessageTurnIndices.push(index);
         }
       }
@@ -5107,14 +5129,16 @@ function renderThreadHistory(thread, options = {}) {
     const userItems = [];
     const regularItems = [];
     const thoughtItems = [];
-    const collabPrompts = collabPromptTextsFromItems(turn.items);
+    const seenCollabPrompts = [];
     for (const item of turn.items || []) {
       if (!item) continue;
       const normalizedItem = item.turnId ? item : { ...item, turnId: turnKey };
       if (normalizedItem?.id) rememberCodexItem({ threadId: thread?.id || state.threadId, turnId: turnKey, itemId: normalizedItem.id }, normalizedItem);
+      const collabPrompt = collabPromptInfoFromItem(normalizedItem, seenCollabPrompts.length);
+      if (collabPrompt) seenCollabPrompts.push(collabPrompt);
       if (isThoughtItem(normalizedItem) || isThoughtAssistantMessageItem(normalizedItem)) thoughtItems.push(normalizedItem);
       else if (normalizedItem?.type === "userMessage") {
-        if (!userMessageItemMatchesCollabPrompt(normalizedItem, collabPrompts)) userItems.push(normalizedItem);
+        if (!userMessageItemMatchesCollabPrompt(normalizedItem, seenCollabPrompts)) userItems.push(normalizedItem);
       }
       else regularItems.push(normalizedItem);
     }
