@@ -190,6 +190,28 @@ function workspaceIdentityFromProject(project = {}) {
   };
 }
 
+function workspaceBindingEvidenceKey(secret, workspaceIdentity = {}) {
+  if (!workspaceIdentity.scoped || !workspaceIdentity.value) return "";
+  return hmacHex(secret, {
+    workspace: workspaceIdentity.value,
+    source: workspaceIdentity.source,
+  });
+}
+
+function evidenceVersionsDigest(versions = {}) {
+  return hashValue({
+    evidenceSchemaVersion: versions.evidenceSchemaVersion,
+    profileId: versions.profileId,
+    profileVersion: versions.profileVersion,
+    profileHash: versions.profileHash,
+    requestBuilderVersion: versions.requestBuilderVersion,
+    transportAdapterVersion: versions.transportAdapterVersion,
+    normalizerVersion: versions.normalizerVersion,
+    redactionVersion: versions.redactionVersion,
+    probeScriptVersion: versions.probeScriptVersion,
+  });
+}
+
 function observedModelFromEvents(events = []) {
   for (const event of Array.isArray(events) ? events : []) {
     if (event?.type === "session_started" && event.model) return normalizeString(event.model, "");
@@ -348,9 +370,27 @@ function ttlForStatus(status, options = {}) {
 
 function indexEntryFromEvidence(evidence = {}, options = {}) {
   const computedStatus = computedEvidenceStatus(evidence, options);
+  const workspaceBindingKey = normalizeString(evidence.auth?.workspaceBindingEvidenceKey, "");
+  const scope = {
+    profileId: normalizeString(evidence.profile?.profileId, ""),
+    profileHash: normalizeString(evidence.profile?.profileHash, ""),
+    profileSource: normalizeString(evidence.profile?.profileSource, ""),
+    authSource: normalizeString(evidence.auth?.authSource || evidence.auth?.storageMode, ""),
+    endpointClass: normalizeString(evidence.provider?.endpointClass, ""),
+    endpointHash: normalizeString(evidence.provider?.endpointHash, ""),
+    accountEvidenceKey: normalizeString(evidence.auth?.accountEvidenceKey, ""),
+    requestShapeHash: normalizeString(evidence.requestShape?.shapeHash, ""),
+    workspaceScope: {
+      projectScoped: evidence.auth?.workspaceScoped === true || Boolean(workspaceBindingKey),
+      workspaceBindingEvidenceKey: workspaceBindingKey,
+      workspaceAccessRequired: false,
+    },
+    versionsDigest: evidenceVersionsDigest(evidence.versions || {}),
+  };
   return {
     evidenceId: normalizeString(evidence.evidenceId, ""),
     status: normalizeString(evidence.status, "candidate"),
+    scopeCompleteness: "full",
     computedStatus,
     usable: computedStatus === "runtime_probed",
     source: normalizeString(evidence.source, ""),
@@ -362,6 +402,8 @@ function indexEntryFromEvidence(evidence = {}, options = {}) {
     profileHash: normalizeString(evidence.profile?.profileHash, ""),
     accountEvidenceKey: normalizeString(evidence.auth?.accountEvidenceKey, ""),
     workspaceScoped: Boolean(evidence.auth?.workspaceScoped),
+    scope,
+    artifactDigest: normalizeString(evidence.integrity?.digest, ""),
   };
 }
 
@@ -531,12 +573,15 @@ class DirectLiveProbeEvidenceStore {
     const accountIdentity = accountIdentityFromCredentials(credentials);
     const workspaceIdentity = workspaceIdentityFromProject(project);
     const accountKnown = Boolean(accountIdentity.value);
-    const workspaceAllowed = workspaceIdentity.scoped || this.allowAccountOnlyEvidence || context.allowAccountOnlyEvidence === true;
+    const workspaceBindingKey = workspaceBindingEvidenceKey(secret, workspaceIdentity);
     const effectiveAccountScope = {
       authMode: "chatgpt",
       account: accountIdentity.value,
-      workspace: workspaceIdentity.value,
       planClass: normalizeString(context.planClass, ""),
+    };
+    const legacyAccountScope = {
+      ...effectiveAccountScope,
+      workspace: "",
     };
     const model = normalizeString(context.model || context.requestedModel, "");
     return {
@@ -547,12 +592,18 @@ class DirectLiveProbeEvidenceStore {
       profileHash: profileHash(profileDoc),
       authMode: "chatgpt",
       storageMode: normalizeString(authStatus.storageMode, ""),
+      authSource: normalizeString(authStatus.authSource || authStatus.source || authStatus.storageMode, ""),
       accountIdSource: accountIdentity.source,
       accountEvidenceKey: accountKnown ? hmacHex(secret, effectiveAccountScope) : "",
+      legacyAccountEvidenceKeys: accountKnown ? [hmacHex(secret, legacyAccountScope)] : [],
       accountKnown,
       workspaceEvidenceSource: workspaceIdentity.source,
       workspaceScoped: Boolean(workspaceIdentity.scoped),
-      workspaceAllowed,
+      workspaceScope: {
+        projectScoped: Boolean(workspaceIdentity.scoped),
+        workspaceBindingEvidenceKey: workspaceBindingKey,
+        workspaceAccessRequired: false,
+      },
       endpointClass: endpointClass(context.endpoint),
       endpointHash: endpointHash(context.endpoint),
       transport: "sse",
@@ -658,11 +709,14 @@ class DirectLiveProbeEvidenceStore {
       auth: {
         authMode: "chatgpt",
         storageMode: scope.storageMode || "unknown",
+        authSource: scope.authSource || "unknown",
         accountIdSource: scope.accountIdSource,
         accountEvidenceKey: scope.accountEvidenceKey,
         accountEvidenceKeyDerivation: "local-hmac-sha256",
         workspaceEvidenceSource: scope.workspaceEvidenceSource,
-        workspaceScoped: scope.workspaceScoped,
+        workspaceScoped: scope.workspaceScope.projectScoped,
+        workspaceBindingEvidenceKey: scope.workspaceScope.workspaceBindingEvidenceKey,
+        workspaceAccessRequired: false,
         rawTokensExposed: false,
       },
       provider: {
@@ -736,18 +790,50 @@ class DirectLiveProbeEvidenceStore {
 
   scopeMatchesEvidence(evidence = {}, scope = {}, options = {}) {
     const requestedModel = normalizeString(scope.model, "");
+    const evidenceScope = isPlainObject(evidence.scope) ? evidence.scope : null;
+    const evidenceWorkspaceScope = evidenceScope?.workspaceScope || {
+      projectScoped: evidence.auth?.workspaceScoped === true,
+      workspaceBindingEvidenceKey: normalizeString(evidence.auth?.workspaceBindingEvidenceKey, ""),
+      workspaceAccessRequired: false,
+    };
+    const scopeWorkspace = scope.workspaceScope || {};
+    const workspaceAccessRequired = scopeWorkspace.workspaceAccessRequired === true;
+    const requestShapeClassMatches = true;
+    const requestShapeHashMatches = evidence.requestShape?.shapeHash === scope.requestShapeHash;
     return {
       profileMatches: evidence.profile?.profileHash === scope.profileHash && evidence.profile?.profileId === scope.profileId,
-      accountMatches: Boolean(scope.accountEvidenceKey) && evidence.auth?.accountEvidenceKey === scope.accountEvidenceKey,
+      accountMatches: Boolean(scope.accountEvidenceKey) && (
+        evidence.auth?.accountEvidenceKey === scope.accountEvidenceKey ||
+        (Array.isArray(scope.legacyAccountEvidenceKeys) && scope.legacyAccountEvidenceKeys.includes(evidence.auth?.accountEvidenceKey))
+      ),
       endpointMatches: evidence.provider?.endpointHash === scope.endpointHash && evidence.provider?.endpointClass === scope.endpointClass,
-      requestShapeMatches: evidence.requestShape?.shapeHash === scope.requestShapeHash,
+      authSourceMatches: !scope.authSource || !evidence.auth?.authSource || evidence.auth.authSource === scope.authSource,
+      requestShapeClassMatches,
+      requestShapeHashMatches,
+      requestShapeMatches: requestShapeClassMatches && requestShapeHashMatches,
       modelMatches: !requestedModel || evidence.model?.requested === requestedModel,
-      workspaceMatches: scope.workspaceAllowed === true && (evidence.auth?.workspaceScoped === true || this.allowAccountOnlyEvidence || options.allowAccountOnlyEvidence === true),
+      workspaceMatches: workspaceAccessRequired
+        ? Boolean(evidenceWorkspaceScope.workspaceBindingEvidenceKey && evidenceWorkspaceScope.workspaceBindingEvidenceKey === scopeWorkspace.workspaceBindingEvidenceKey)
+        : true,
       versionMatches: evidence.versions?.normalizerVersion === scope.versions?.normalizerVersion &&
         evidence.versions?.requestBuilderVersion === scope.versions?.requestBuilderVersion &&
         evidence.versions?.transportAdapterVersion === scope.versions?.transportAdapterVersion &&
         evidence.versions?.redactionVersion === scope.versions?.redactionVersion,
     };
+  }
+
+  mismatchCategories(scopeMatches = {}) {
+    const categories = [];
+    if (scopeMatches.profileMatches === false) categories.push("profile");
+    if (scopeMatches.accountMatches === false) categories.push("account");
+    if (scopeMatches.authSourceMatches === false) categories.push("auth_source");
+    if (scopeMatches.endpointMatches === false) categories.push("endpoint");
+    if (scopeMatches.requestShapeClassMatches === false) categories.push("request_shape_class");
+    if (scopeMatches.requestShapeHashMatches === false) categories.push("request_shape_hash");
+    if (scopeMatches.modelMatches === false) categories.push("model");
+    if (scopeMatches.workspaceMatches === false) categories.push("workspace");
+    if (scopeMatches.versionMatches === false) categories.push("version");
+    return categories;
   }
 
   viewForEvidence(evidence = {}, options = {}) {
@@ -777,12 +863,16 @@ class DirectLiveProbeEvidenceStore {
       scope: scopeMatches || {
         profileMatches: false,
         accountMatches: false,
+        authSourceMatches: false,
         endpointMatches: false,
+        requestShapeClassMatches: false,
+        requestShapeHashMatches: false,
         requestShapeMatches: false,
         modelMatches: false,
         workspaceMatches: false,
         versionMatches: false,
       },
+      scopeMismatchCategories: scopeMatches ? this.mismatchCategories(scopeMatches) : [],
       rawTokensExposed: false,
       rawBackendFramesExposed: false,
     };
@@ -793,9 +883,35 @@ class DirectLiveProbeEvidenceStore {
     let latestRelated = null;
     for (const entry of index.evidence || []) {
       if (entry.source === FAKE_SMOKE_SOURCE && !(this.allowFakeEvidence || options.allowFakeEvidence === true)) continue;
-      if (entry.endpointHash !== scope.endpointHash || entry.requestShapeHash !== scope.requestShapeHash) continue;
+      const completeness = normalizeString(entry.scopeCompleteness, entry.scope ? "full" : "legacy");
+      if (completeness === "full" && entry.scope) {
+        if (entry.scope.endpointHash !== scope.endpointHash || entry.scope.requestShapeHash !== scope.requestShapeHash) continue;
+      } else if (entry.endpointHash && entry.requestShapeHash) {
+        if (entry.endpointHash !== scope.endpointHash || entry.requestShapeHash !== scope.requestShapeHash) continue;
+      }
       const evidence = this.readEvidence(entry.evidenceId);
-      if (!evidence || !this.verifyIntegrity(evidence)) continue;
+      if (!evidence || !this.verifyIntegrity(evidence)) {
+        const artifactView = {
+          available: false,
+          usable: false,
+          status: evidence ? "live_evidence_artifact_corrupt" : "live_evidence_artifact_missing",
+          model: normalizeString(scope.model, ""),
+          modelSource: "live-probe",
+          modelEvidenceState: "unknown",
+          evidenceId: normalizeString(entry.evidenceId, ""),
+          observedAt: normalizeString(entry.createdAt, ""),
+          expiresAt: normalizeString(entry.expiresAt, ""),
+          source: normalizeString(entry.source, ""),
+          failureKind: "evidence_artifact",
+          reason: evidence ? "live_evidence_artifact_corrupt" : "live_evidence_artifact_missing",
+          scope: {},
+          scopeMismatchCategories: ["evidence_artifact"],
+          rawTokensExposed: false,
+          rawBackendFramesExposed: false,
+        };
+        if (!latestRelated) latestRelated = artifactView;
+        continue;
+      }
       const view = this.viewForEvidence(evidence, { ...options, scope });
       if (!latestRelated) latestRelated = view;
       if (view.usable) return view;
@@ -815,12 +931,16 @@ class DirectLiveProbeEvidenceStore {
       scope: {
         profileMatches: false,
         accountMatches: false,
+        authSourceMatches: false,
         endpointMatches: false,
+        requestShapeClassMatches: false,
+        requestShapeHashMatches: false,
         requestShapeMatches: false,
         modelMatches: false,
         workspaceMatches: false,
         versionMatches: false,
       },
+      scopeMismatchCategories: [],
       rawTokensExposed: false,
       rawBackendFramesExposed: false,
     };
