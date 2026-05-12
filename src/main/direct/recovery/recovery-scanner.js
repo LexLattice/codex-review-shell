@@ -264,12 +264,28 @@ function responseChainStateFor(turn = {}, obligation = {}, continuationRequest =
   if (!normalizeString(obligation.parentResponseId || continuationRequest?.toolLoop?.parentResponseId, "")) return "missing_parent_response";
   const chain = Array.isArray(turn.toolLoopResponseChain) ? turn.toolLoopResponseChain : [];
   if (!chain.length) return "chain_broken";
-  const entry = chain.find((item) => Number(item?.stepOrdinal || 0) === stepOrdinal);
+  const entry = chain.find((item) => Number(item?.stepOrdinal || 0) === stepOrdinal - 1);
   if (!entry) return "chain_broken";
-  if (normalizeString(entry.emittedToolCallResponseId, "") !== normalizeString(obligation.parentResponseId, "")) {
+  if (normalizeString(entry.continuationResponseId, "") !== normalizeString(obligation.parentResponseId, "")) {
     return "parent_response_digest_mismatch";
   }
   return "valid";
+}
+
+function sideEffectStateAfterDecision(authorityKind, recoveryState) {
+  if (authorityKind === "apply_patch") return "patch_planned_only";
+  if (authorityKind === "read_file") return "read_maybe_executed_no_result";
+  if (authorityKind !== "run_command") return "none";
+  if (recoveryState === "command_completed_no_result") return "command_ran";
+  if (recoveryState.startsWith("command_")) return "command_may_have_run";
+  return "none";
+}
+
+function sideEffectStateForRecordedResult(authorityKind, hasResult = true) {
+  if (authorityKind === "apply_patch") return "workspace_patch_applied";
+  if (authorityKind === "run_command") return "command_ran";
+  if (authorityKind === "read_file" && hasResult) return "read_evidence_recorded";
+  return "none";
 }
 
 function stepRefFor(turn = {}, obligation = {}) {
@@ -316,9 +332,7 @@ function classifyByObligation(turn = {}, obligation = {}, context = {}) {
     } else {
       recoveryState = "decision_committed_no_result";
     }
-    sideEffectState = authorityKind === "apply_patch"
-      ? "patch_planned_only"
-      : (authorityKind === "read_file" ? "read_maybe_executed_no_result" : (recoveryState === "command_completed_no_result" ? "command_ran" : (recoveryState.startsWith("command_") ? "command_may_have_run" : "none")));
+    sideEffectState = sideEffectStateAfterDecision(authorityKind, recoveryState);
     manualActionKind = "manual_recovery_required";
     composerAllowedReason = recoveryState === "command_started_no_terminal" ? "disabled_side_effect_incomplete" : "disabled_manual_recovery_required";
     recoveryConfidence = recoveryState === "command_started_no_terminal" ? "conservative_from_partial" : "exact";
@@ -326,37 +340,35 @@ function classifyByObligation(turn = {}, obligation = {}, context = {}) {
     recoveryState = obligation.continuationContextId || obligation.continuationContextBuiltAt
       ? "context_built_no_manifest"
       : "result_recorded_no_context";
-    if (authorityKind === "read_file") sideEffectState = "read_evidence_recorded";
-    if (authorityKind === "apply_patch") sideEffectState = "workspace_patch_applied";
-    if (authorityKind === "run_command") sideEffectState = "command_ran";
+    sideEffectState = sideEffectStateForRecordedResult(authorityKind, true);
     manualActionKind = "inspect_only";
     composerAllowedReason = authorityKind === "read_file" ? "disabled_manual_recovery_required" : "disabled_side_effect_incomplete";
   } else if (hasContinuation && !["continuation_sent", "streaming_continuation", "completed", "failed"].includes(turn.state)) {
     recoveryState = "request_built_not_sent";
-    sideEffectState = authorityKind === "apply_patch" ? "workspace_patch_applied" : (authorityKind === "run_command" ? "command_ran" : "read_evidence_recorded");
+    sideEffectState = sideEffectStateForRecordedResult(authorityKind, true);
     manualActionKind = "inspect_only";
     composerAllowedReason = authorityKind === "read_file" ? "disabled_manual_recovery_required" : "disabled_side_effect_incomplete";
   } else if (providerHandoffState === "sent_no_bytes") {
     recoveryState = "continuation_sent_no_bytes";
-    sideEffectState = authorityKind === "apply_patch" ? "workspace_patch_applied" : (authorityKind === "run_command" ? "command_ran" : "read_evidence_recorded");
+    sideEffectState = sideEffectStateForRecordedResult(authorityKind, true);
     manualActionKind = "manual_recovery_required";
     composerAllowedReason = "disabled_provider_handoff_unknown";
     recoveryConfidence = "conservative_from_partial";
   } else if (providerHandoffState === "stream_interrupted") {
     recoveryState = "stream_interrupted";
-    sideEffectState = authorityKind === "apply_patch" ? "workspace_patch_applied" : (authorityKind === "run_command" ? "command_ran" : "read_evidence_recorded");
+    sideEffectState = sideEffectStateForRecordedResult(authorityKind, true);
     manualActionKind = "manual_recovery_required";
     composerAllowedReason = "disabled_provider_handoff_unknown";
     recoveryConfidence = "conservative_from_partial";
   } else if (providerTerminalKind === "completed_with_assistant_text") {
     recoveryState = "terminal";
-    sideEffectState = authorityKind === "apply_patch" ? "workspace_patch_applied" : (authorityKind === "run_command" ? "command_ran" : (hasResult ? "read_evidence_recorded" : "none"));
+    sideEffectState = sideEffectStateForRecordedResult(authorityKind, hasResult);
     manualActionKind = "start_new_turn";
     composerAllowed = true;
     composerAllowedReason = "safe_terminal";
   } else if (providerTerminalKind !== "not_terminal") {
     recoveryState = "terminal";
-    sideEffectState = authorityKind === "apply_patch" ? "workspace_patch_applied" : (authorityKind === "run_command" ? "command_ran" : (hasResult ? "read_evidence_recorded" : "none"));
+    sideEffectState = sideEffectStateForRecordedResult(authorityKind, hasResult);
     manualActionKind = "inspect_only";
     composerAllowedReason = "disabled_manual_recovery_required";
   }

@@ -425,8 +425,8 @@ function createFixtureCase(store, definition) {
   };
   if (stepOrdinal > 1) {
     turnPatch.toolLoopResponseChain = definition.brokenResponseChain
-      ? [{ stepOrdinal, emittedToolCallResponseId: "resp_wrong", sourceEventDigest: "event_wrong" }]
-      : [{ stepOrdinal, emittedToolCallResponseId: parentResponseId, continuationResponseId: `resp_cont_${caseId}`, sourceEventDigest: `event_${caseId}` }];
+      ? [{ stepOrdinal: stepOrdinal - 1, emittedToolCallResponseId: providerParentId(`${caseId}_previous`), continuationResponseId: "resp_wrong", sourceEventDigest: "event_wrong" }]
+      : [{ stepOrdinal: stepOrdinal - 1, emittedToolCallResponseId: providerParentId(`${caseId}_previous`), continuationResponseId: parentResponseId, sourceEventDigest: `event_${caseId}` }];
   }
   turn = store.updateTurnState(sessionId, turnId, turn.state, turnPatch);
   return { session: store.readSession(sessionId), turn, obligation: activeObligationFromTurn(turn) };
