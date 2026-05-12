@@ -292,6 +292,30 @@ function runFixtureCases() {
     notes: [`loopId=${repairLoopIdForTurn("session_repair_fixture", "turn_repair_fixture")}`],
     failureCode: loopOk ? "" : "loop_artifact_invalid",
   }));
+  const persistedCounterTurn = turnWithObligations([
+    obligation("read_file", 1, { result: { resultId: "read_result_counter", providerOutputChars: 32 } }),
+  ]);
+  persistedCounterTurn.repairLoop = {
+    counters: {
+      totalSteps: 99,
+      readFileSteps: 99,
+      patchSteps: 99,
+      commandSteps: 99,
+      providerToolOutputCharsTotal: 99,
+      repeatedCanonicalReadPathCounts: {},
+    },
+  };
+  const counterLoop = buildRepairLoopForTurn(persistedCounterTurn);
+  const countersOk = counterLoop.counters.totalSteps === 1 &&
+    counterLoop.counters.readFileSteps === 1 &&
+    counterLoop.counters.patchSteps === 0 &&
+    counterLoop.counters.commandSteps === 0;
+  cases.push(caseReport({
+    caseId: "counter_summary_ignores_persisted_totals",
+    status: countersOk ? "proved" : "failed",
+    proofOutcome: countersOk ? "proved_full_loop" : "local_authority_failed",
+    failureCode: countersOk ? "" : "repair_counter_double_count",
+  }));
   return cases;
 }
 
@@ -334,6 +358,16 @@ async function main() {
   const outputRoot = path.resolve(optionString(options, "output-root", path.join(appUserDataRoot, "direct-iterative-repair-runs", runId)));
   ensureDirectory(outputRoot);
   const transitionGraph = buildTransitionGraph();
+  validateRepairReport({
+    schema: DIRECT_IMPLEMENTATION_REPAIR_REPORT_SCHEMA,
+    cases: [
+      {
+        caseId: "validation_missing_matrix_rows",
+        coverageSource: "fixture_provider",
+        matrixPromotionCandidate: false,
+      },
+    ],
+  });
   const report = {
     schema: DIRECT_IMPLEMENTATION_REPAIR_REPORT_SCHEMA,
     runId,

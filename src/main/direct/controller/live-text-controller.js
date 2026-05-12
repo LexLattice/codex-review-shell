@@ -2279,6 +2279,56 @@ class DirectLiveTextController {
     return createdCount;
   }
 
+  async emitContinuationNextToolOrComplete(surfaceSession, sessionId, turnId, continuation = {}, project = {}, options = {}) {
+    const streamPhase = normalizeString(options.streamPhase, "continuation");
+    if (continuation.turnState === "tool_waiting" && Array.isArray(continuation.nextToolObligations) && continuation.nextToolObligations.length) {
+      const nextToolItems = continuation.nextToolObligations.map(toolTranscriptItemFromObligation);
+      const currentSession = this.sessionStore.readSession(sessionId);
+      if (currentSession && Array.isArray(currentSession.messages)) {
+        this.sessionStore.writeSession({
+          ...currentSession,
+          messages: currentSession.messages.map((message) => {
+            if (message.id !== turnId) return message;
+            const existingItems = Array.isArray(message.items) ? message.items : [];
+            const existingIds = new Set(existingItems.map((item) => item?.id));
+            return {
+              ...message,
+              status: "tool_waiting",
+              items: [
+                ...existingItems,
+                ...nextToolItems.filter((item) => !existingIds.has(item.id)),
+              ],
+            };
+          }),
+        });
+      }
+      for (const item of nextToolItems) {
+        this.emitNotification(surfaceSession, "item/started", { threadId: sessionId, turnId, item });
+        this.emitNotification(surfaceSession, "item/completed", { threadId: sessionId, turnId, item });
+      }
+      const createdApprovalRequests = await this.emitToolApprovalRequests(surfaceSession, sessionId, turnId, continuation.nextToolObligations, project);
+      this.emitNotification(surfaceSession, "warning", {
+        threadId: sessionId,
+        turnId,
+        message: createdApprovalRequests
+          ? normalizeString(options.approvalMessage, "Direct implementation continuation requested another tool. Local approval is required.")
+          : normalizeString(options.unavailableMessage, "Direct implementation continuation requested another tool call, but it is not available for approval."),
+      });
+      return true;
+    }
+    this.emitNotification(surfaceSession, "turn/completed", {
+      threadId: sessionId,
+      turnId,
+      turn: {
+        id: turnId,
+        status: terminalStatusForState(continuation.turnState),
+        completedAt: nowSeconds(),
+        streamPhase,
+      },
+    });
+    return false;
+  }
+
   async withToolDecisionLock(key, action) {
     const lockKey = normalizeString(key, "");
     const existing = this.toolDecisionLocks.get(lockKey);
@@ -2778,51 +2828,11 @@ class DirectLiveTextController {
     }
     const continuationId = normalizeString(continuation.continuation?.continuationId || continuation.obligation?.continuationRequest?.continuationId, "continuation");
     this.emitContinuationAssistant(surfaceSession, sessionId, turnId, continuationId, continuation.normalizedEvents || []);
-    if (continuation.turnState === "tool_waiting" && Array.isArray(continuation.nextToolObligations) && continuation.nextToolObligations.length) {
-      const nextToolItems = continuation.nextToolObligations.map(toolTranscriptItemFromObligation);
-      const currentSession = this.sessionStore.readSession(sessionId);
-      if (currentSession && Array.isArray(currentSession.messages)) {
-        this.sessionStore.writeSession({
-          ...currentSession,
-          messages: currentSession.messages.map((message) => {
-            if (message.id !== turnId) return message;
-            const existingItems = Array.isArray(message.items) ? message.items : [];
-            const existingIds = new Set(existingItems.map((item) => item?.id));
-            return {
-              ...message,
-              status: "tool_waiting",
-              items: [
-                ...existingItems,
-                ...nextToolItems.filter((item) => !existingIds.has(item.id)),
-              ],
-            };
-          }),
-        });
-      }
-      for (const item of nextToolItems) {
-        this.emitNotification(surfaceSession, "item/started", { threadId: sessionId, turnId, item });
-        this.emitNotification(surfaceSession, "item/completed", { threadId: sessionId, turnId, item });
-      }
-      const createdApprovalRequests = await this.emitToolApprovalRequests(surfaceSession, sessionId, turnId, continuation.nextToolObligations, project);
-      this.emitNotification(surfaceSession, "warning", {
-        threadId: sessionId,
-        turnId,
-        message: createdApprovalRequests
-          ? "Direct read-only continuation requested another file. Local approval is required for the next read."
-          : "Direct read-only continuation requested another tool call, but it is not available for approval.",
-      });
-    } else {
-      this.emitNotification(surfaceSession, "turn/completed", {
-        threadId: sessionId,
-        turnId,
-        turn: {
-          id: turnId,
-          status: terminalStatusForState(continuation.turnState),
-          completedAt: nowSeconds(),
-          streamPhase: "continuation",
-        },
-      });
-    }
+    await this.emitContinuationNextToolOrComplete(surfaceSession, sessionId, turnId, continuation, project, {
+      streamPhase: "continuation",
+      approvalMessage: "Direct read-only continuation requested another file. Local approval is required for the next read.",
+      unavailableMessage: "Direct read-only continuation requested another tool call, but it is not available for approval.",
+    });
     return {
       decision: "approved",
       turn: turnSnapshot(this.sessionStore.readTurn(sessionId, turnId)),
@@ -2974,15 +2984,10 @@ class DirectLiveTextController {
     if (this.directThreadStore) this.indexDirectThreadStoreSession(sessionId);
     const continuationId = normalizeString(continuation.continuation?.continuationId || continuation.obligation?.continuationRequest?.continuationId, "patch_continuation");
     this.emitContinuationAssistant(surfaceSession, sessionId, turnId, continuationId, continuation.normalizedEvents || []);
-    this.emitNotification(surfaceSession, "turn/completed", {
-      threadId: sessionId,
-      turnId,
-      turn: {
-        id: turnId,
-        status: terminalStatusForState(continuation.turnState),
-        completedAt: nowSeconds(),
-        streamPhase: "patch-continuation",
-      },
+    await this.emitContinuationNextToolOrComplete(surfaceSession, sessionId, turnId, continuation, project, {
+      streamPhase: "patch-continuation",
+      approvalMessage: "Direct patch continuation requested another tool. Local approval is required to continue the repair loop.",
+      unavailableMessage: "Direct patch continuation requested another tool call, but it is not available for approval.",
     });
     return {
       decision: "approved",
@@ -3162,15 +3167,10 @@ class DirectLiveTextController {
     if (this.directThreadStore) this.indexDirectThreadStoreSession(sessionId);
     const continuationId = normalizeString(continuation.continuation?.continuationId || continuation.obligation?.continuationRequest?.continuationId, "command_continuation");
     this.emitContinuationAssistant(surfaceSession, sessionId, turnId, continuationId, continuation.normalizedEvents || []);
-    this.emitNotification(surfaceSession, "turn/completed", {
-      threadId: sessionId,
-      turnId,
-      turn: {
-        id: turnId,
-        status: terminalStatusForState(continuation.turnState),
-        completedAt: nowSeconds(),
-        streamPhase: "command-continuation",
-      },
+    await this.emitContinuationNextToolOrComplete(surfaceSession, sessionId, turnId, continuation, project, {
+      streamPhase: "command-continuation",
+      approvalMessage: "Direct command continuation requested another tool. Local approval is required to continue the repair loop.",
+      unavailableMessage: "Direct command continuation requested another tool call, but it is not available for approval.",
     });
     return {
       decision: "approved",

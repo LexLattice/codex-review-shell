@@ -111,10 +111,7 @@ function toolCounterKey(tool) {
 }
 
 function summarizeRepairCounters(turn = {}, nextTool = "") {
-  const counters = {
-    ...createRepairCounters(),
-    ...(isPlainObject(turn.repairLoop?.counters) ? turn.repairLoop.counters : {}),
-  };
+  const counters = createRepairCounters();
   const obligations = Array.isArray(turn.unresolvedObligations) ? turn.unresolvedObligations : [];
   for (const obligation of obligations) {
     const tool = canonicalRepairToolName(obligation?.name);
@@ -391,7 +388,7 @@ function validateRepairReport(report = {}) {
     if (entry.coverageSource !== "real_provider" && entry.matrixPromotionCandidate === true) {
       throw new Error(`Fixture/non-real case ${entry.caseId || "unknown"} cannot promote matrix rows.`);
     }
-    if (entry.matrixRowsExercised?.includes("D18") && entry.transitionGraphDigest === "") {
+    if (Array.isArray(entry.matrixRowsExercised) && entry.matrixRowsExercised.includes("D18") && !entry.transitionGraphDigest) {
       throw new Error(`Case ${entry.caseId || "unknown"} exercises D18 without a transition graph digest.`);
     }
   }
