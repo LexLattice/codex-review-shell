@@ -893,6 +893,7 @@ module.exports = {
   requestShapeForDiagnostic,
   runPersistedReadOnlyToolContinuation,
   runPersistedTextOnlyDirectProbe,
+  runDirectCodexStreamingRequest,
   runReadOnlyToolContinuationProbe,
   runTextOnlyDirectProbe,
   terminalStateFromNormalizedEvents,
