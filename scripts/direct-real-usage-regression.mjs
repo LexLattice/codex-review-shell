@@ -121,25 +121,41 @@ function createWorkspace(root) {
   return workspace;
 }
 
+function childEnv(overrides = {}) {
+  const env = { ...process.env };
+  for (const [key, value] of Object.entries(overrides)) {
+    if (value === undefined || value === null) {
+      delete env[key];
+    } else {
+      env[key] = String(value);
+    }
+  }
+  return env;
+}
+
 function runCommand(command, args, options = {}) {
   return new Promise((resolve) => {
     const child = spawn(command, args, {
       cwd: options.cwd || repoRoot,
-      env: { ...process.env, ...(options.env || {}) },
+      env: childEnv(options.env || {}),
       stdio: ["ignore", "pipe", "pipe"],
     });
-    let stdout = "";
-    let stderr = "";
+    const stdoutChunks = [];
+    const stderrChunks = [];
     child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString("utf8");
+      stdoutChunks.push(Buffer.from(chunk));
     });
     child.stderr.on("data", (chunk) => {
-      stderr += chunk.toString("utf8");
+      stderrChunks.push(Buffer.from(chunk));
     });
     child.on("error", (error) => {
+      const stdout = Buffer.concat(stdoutChunks).toString("utf8");
+      const stderr = Buffer.concat(stderrChunks).toString("utf8");
       resolve({ exitCode: 1, stdout, stderr: `${stderr}${error.message}\n` });
     });
     child.on("close", (code, signal) => {
+      const stdout = Buffer.concat(stdoutChunks).toString("utf8");
+      const stderr = Buffer.concat(stderrChunks).toString("utf8");
       resolve({ exitCode: code ?? 1, signal: signal || "", stdout, stderr });
     });
   });
@@ -217,6 +233,14 @@ function validateRegressionReport(report) {
   return true;
 }
 
+function readJsonFromText(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
 async function runRealTurn(args, options = {}) {
   return runCommand(process.execPath, [realTurnScript, ...args], options);
 }
@@ -243,7 +267,15 @@ async function main() {
 
   let liveProbe = { ran: false, status: "skipped", unknownRawEventTypeCount: 0 };
   if (mode === "live" && optionFlag(options, "run-live-probe")) {
-    const probe = await runCommand(process.execPath, [liveProbeScript], { env: { CODEX_DIRECT_LIVE_PROBE: "1" } });
+    const probeEnv = {
+      [USER_DATA_ROOT_ENV_VAR]: appUserDataRoot,
+      CODEX_DIRECT_APP_USER_DATA_ROOT: appUserDataRoot,
+      CODEX_DIRECT_AUTH_ROOT: path.join(appUserDataRoot, "direct-auth"),
+      CODEX_DIRECT_PROBE_EVIDENCE_ROOT: path.join(appUserDataRoot, "direct-probe-evidence"),
+      CODEX_DIRECT_LIVE_PROBE: "1",
+    };
+    if (envFlag("CODEX_DIRECT_LIVE_PROBE_ALLOW_CI")) probeEnv.CODEX_DIRECT_LIVE_PROBE_ALLOW_CI = "1";
+    const probe = await runCommand(process.execPath, [liveProbeScript], { env: probeEnv });
     const jsonStart = probe.stdout.indexOf("{");
     const parsed = jsonStart >= 0 ? readJsonFromText(probe.stdout.slice(jsonStart)) : null;
     liveProbe = {
@@ -329,7 +361,12 @@ async function main() {
       "--context-policy=direct_text_turn_empty_context@1",
       "--prompt", "This prompt must not be sent because live opt-in is missing.",
       "--client-run-id", guardRunId,
-    ]);
+    ], {
+      env: {
+        CODEX_DIRECT_REAL_TURN: undefined,
+        CODEX_DIRECT_REAL_TURN_ALLOW_CI: undefined,
+      },
+    });
     const guardCase = caseFromReport("direct_opt_in_guard", "direct", parseReportPath(guard.stdout), guard);
     guardCase.status = guardCase.failureCode === "live_provider_call_opt_in_missing" &&
       guardCase.providerRequestStarted === false
@@ -417,7 +454,7 @@ async function main() {
   }
   writeJson(reportPath, report);
   writeText(markdownPath, markdown);
-  const postWriteFindings = scanFiles([reportPath, markdownPath, ...linkedReportPaths], [workspace]);
+  const postWriteFindings = scanFiles([reportPath, markdownPath, ...linkedReportPaths], [workspace, runRoot]);
   if (postWriteFindings.length) {
     const minimal = {
       schema: "direct_real_usage_regression_report@1",
@@ -434,14 +471,6 @@ async function main() {
   console.log(reportPath);
   const failed = publicCases.some((item) => item.status === "failed" || item.status === "blocked");
   process.exit(failed ? 1 : 0);
-}
-
-function readJsonFromText(text) {
-  try {
-    return JSON.parse(text);
-  } catch {
-    return null;
-  }
 }
 
 function markdownSummary(report) {
