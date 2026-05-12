@@ -218,7 +218,8 @@ function runCommand(command, args, options = {}) {
       }
     }
     const started = Date.now();
-    const child = spawn(command, args, {
+    const spawnCommand = process.platform === "win32" && command === "npm" ? "npm.cmd" : command;
+    const child = spawn(spawnCommand, args, {
       cwd: options.cwd || repoRoot,
       env,
       shell: false,
@@ -226,6 +227,11 @@ function runCommand(command, args, options = {}) {
     });
     const stdout = [];
     const stderr = [];
+    const maxCaptureBytes = Math.max(1024, Number(options.maxCaptureBytes || MAX_STDIO_CAPTURE_CHARS));
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let stdoutTruncated = false;
+    let stderrTruncated = false;
     let timer = null;
     let timedOut = false;
     if (options.timeoutMs) {
@@ -241,8 +247,24 @@ function runCommand(command, args, options = {}) {
         }, 1000).unref?.();
       }, Number(options.timeoutMs));
     }
-    child.stdout.on("data", (chunk) => stdout.push(Buffer.from(chunk)));
-    child.stderr.on("data", (chunk) => stderr.push(Buffer.from(chunk)));
+    child.stdout.on("data", (chunk) => {
+      const buffer = Buffer.from(chunk);
+      const remaining = maxCaptureBytes - stdoutBytes;
+      if (remaining > 0) {
+        stdout.push(buffer.subarray(0, remaining));
+        stdoutBytes += Math.min(buffer.length, remaining);
+      }
+      if (buffer.length > remaining) stdoutTruncated = true;
+    });
+    child.stderr.on("data", (chunk) => {
+      const buffer = Buffer.from(chunk);
+      const remaining = maxCaptureBytes - stderrBytes;
+      if (remaining > 0) {
+        stderr.push(buffer.subarray(0, remaining));
+        stderrBytes += Math.min(buffer.length, remaining);
+      }
+      if (buffer.length > remaining) stderrTruncated = true;
+    });
     child.on("error", (error) => {
       if (timer) clearTimeout(timer);
       resolve({
@@ -250,6 +272,8 @@ function runCommand(command, args, options = {}) {
         signal: "",
         stdout: Buffer.concat(stdout).toString("utf8"),
         stderr: `${Buffer.concat(stderr).toString("utf8")}${error.message}\n`,
+        stdoutTruncated,
+        stderrTruncated,
         spawnError: error.message,
         timedOut,
         durationMs: Date.now() - started,
@@ -262,6 +286,8 @@ function runCommand(command, args, options = {}) {
         signal: signal || "",
         stdout: Buffer.concat(stdout).toString("utf8"),
         stderr: Buffer.concat(stderr).toString("utf8"),
+        stdoutTruncated,
+        stderrTruncated,
         timedOut,
         durationMs: Date.now() - started,
       });
@@ -377,15 +403,14 @@ function parseSimpleUnifiedPatch(patchText) {
       index += 1;
       continue;
     }
-    const diffLine = lines[index];
-    const match = /^diff --git a\/(.+?) b\/(.+)$/.exec(diffLine);
-    if (!match) {
+    const parsedHeader = parseDiffGitHeader(lines[index]);
+    if (!parsedHeader) {
       const error = new Error("Unsupported patch dialect.");
       error.code = "unsupported_patch_dialect";
       throw error;
     }
-    const oldPath = normalizeRelPath(match[1]);
-    const newPath = normalizeRelPath(match[2]);
+    const oldPath = normalizeRelPath(parsedHeader.oldPath);
+    const newPath = normalizeRelPath(parsedHeader.newPath);
     if (oldPath !== newPath) {
       const error = new Error("Rename/copy patches are unsupported.");
       error.code = "unsupported_patch_dialect";
@@ -407,13 +432,21 @@ function parseSimpleUnifiedPatch(patchText) {
         throw error;
       }
       if (line.startsWith("@@ ")) {
+        const hunkHeader = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(line);
+        if (!hunkHeader) {
+          const error = new Error("Malformed patch hunk range.");
+          error.code = "unsupported_patch_dialect";
+          throw error;
+        }
         const hunkLines = [];
+        const oldStart = Number(hunkHeader[1]);
+        const newStart = Number(hunkHeader[2]);
         index += 1;
         while (index < lines.length && !lines[index].startsWith("@@ ") && !lines[index].startsWith("diff --git ")) {
           hunkLines.push(lines[index]);
           index += 1;
         }
-        file.hunks.push(hunkLines);
+        file.hunks.push({ oldStart, newStart, lines: hunkLines });
         continue;
       }
       index += 1;
@@ -428,6 +461,21 @@ function parseSimpleUnifiedPatch(patchText) {
   return files;
 }
 
+function parseDiffGitHeader(line) {
+  const prefix = "diff --git ";
+  if (!line.startsWith(prefix)) return null;
+  const body = line.slice(prefix.length);
+  if (body.startsWith("\"") || body.includes("\"")) return null;
+  if (!body.startsWith("a/")) return null;
+  const separator = " b/";
+  const firstSeparator = body.indexOf(separator);
+  if (firstSeparator < 0 || firstSeparator !== body.lastIndexOf(separator)) return null;
+  const oldPath = body.slice(2, firstSeparator);
+  const newPath = body.slice(firstSeparator + separator.length);
+  if (!oldPath || !newPath || oldPath.includes(" b/") || newPath.includes(" b/")) return null;
+  return { oldPath, newPath };
+}
+
 function applySimplePatchToText(originalText, file) {
   const originalLines = originalText.replace(/\r\n/g, "\n").split("\n");
   if (originalLines.length && originalLines[originalLines.length - 1] === "") originalLines.pop();
@@ -435,8 +483,19 @@ function applySimplePatchToText(originalText, file) {
   let cursor = 0;
   let addedLineCount = 0;
   let removedLineCount = 0;
+  let noNewlineAtEnd = false;
   for (const hunk of file.hunks) {
-    for (const line of hunk) {
+    const targetIndex = Math.max(0, Number(hunk.oldStart || 1) - 1);
+    if (targetIndex < cursor) {
+      const error = new Error("Patch hunks overlap or move backwards.");
+      error.code = "patch_context_mismatch";
+      throw error;
+    }
+    while (cursor < targetIndex) {
+      result.push(originalLines[cursor]);
+      cursor += 1;
+    }
+    for (const line of hunk.lines) {
       if (!line) continue;
       const marker = line[0];
       const content = line.slice(1);
@@ -460,7 +519,7 @@ function applySimplePatchToText(originalText, file) {
         result.push(content);
         addedLineCount += 1;
       } else if (line.startsWith("\\ No newline")) {
-        // Ignore marker.
+        noNewlineAtEnd = true;
       } else {
         const error = new Error("Unsupported patch hunk line.");
         error.code = "unsupported_patch_dialect";
@@ -473,7 +532,7 @@ function applySimplePatchToText(originalText, file) {
     cursor += 1;
   }
   return {
-    text: `${result.join("\n")}\n`,
+    text: `${result.join("\n")}${noNewlineAtEnd ? "" : "\n"}`,
     addedLineCount,
     removedLineCount,
   };
@@ -1262,6 +1321,35 @@ async function runNegativeSafetyCases(workspaceRequest) {
   return cases;
 }
 
+async function runLocalPreflightCases(workspaceRequest) {
+  const cases = [];
+  const patchOffset = baseCaseReport("preflight_patch_hunk_offset", "patch", "local_preflight");
+  try {
+    const planned = await workspaceRequest("applyPatch", {
+      mode: "dryRun",
+      patch: [
+        "diff --git a/src/alpha.txt b/src/alpha.txt",
+        "--- a/src/alpha.txt",
+        "+++ b/src/alpha.txt",
+        "@@ -2,1 +2,1 @@",
+        "-alpha two",
+        "+alpha two patched",
+        "",
+      ].join("\n"),
+    });
+    patchOffset.status = planned.files?.[0]?.afterDigest ? "blocked" : "failed";
+    patchOffset.proofOutcome = "provider_tool_not_emitted";
+    patchOffset.failureCode = patchOffset.status === "blocked" ? "live_provider_not_requested" : "patch_offset_preflight_failed";
+    patchOffset.notes.push("Local preflight proved offset hunks can dry-run without provider transport.");
+  } catch (error) {
+    patchOffset.status = "failed";
+    patchOffset.proofOutcome = "local_authority_failed";
+    patchOffset.failureCode = normalizeString(error?.code, "patch_offset_preflight_failed");
+  }
+  cases.push(patchOffset);
+  return cases;
+}
+
 function validateReport(report) {
   if (report.schema !== "direct_implementation_lane_real_provider_proof_report@1") throw new Error("Invalid proof report schema.");
   if (!Array.isArray(report.cases)) throw new Error("Proof report cases must be an array.");
@@ -1364,6 +1452,7 @@ async function main() {
       failureCode: "live_provider_not_requested",
       notes: ["Disposable workspace and local policy substrate are available; provider not called."],
     });
+    report.cases.push(...await runLocalPreflightCases(workspaceRequest));
   } else {
     const { authStore, authLogin } = await loadAuth({ appUserDataRoot, options });
     const profileDoc = loadDirectCodexProfile();
