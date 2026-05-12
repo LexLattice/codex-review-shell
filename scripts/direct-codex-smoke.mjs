@@ -1892,16 +1892,56 @@ try {
   assert(recordedLiveProbe.view.usable === true, "Expected exact fake live probe evidence to be usable in test mode.");
   assert(recordedLiveProbe.evidence.result.assistantTextObserved === true, "Runtime-probed evidence must require non-empty assistant text.");
   assert(recordedLiveProbe.evidence.result.usageSummary.observed === true, "Expected usage to be recorded as observed when provider emits usage.");
+  assert(liveProbeEvidenceStore.readIndex().evidence[0].scopeCompleteness === "full", "Expected new live probe evidence index rows to record full scope completeness.");
   assert(directTextRequestShapeHash({ model: "gpt-5.4" }) === directTextRequestShapeHash({ model: "gpt-5.5" }), "Request-shape hash must not include model identity.");
   assert(endpointClass(DEFAULT_CODEX_RESPONSES_ENDPOINT) === "chatgpt-codex-responses", "Expected default direct endpoint class.");
   assert(endpointClass("https://example.invalid/custom/responses") === "custom", "Expected custom endpoints to use a distinct endpoint class.");
+
+  const accountOnlyProbeRoot = path.join(liveTextControllerParent, "account-only-direct-probe-evidence");
+  const accountOnlyProbeStore = new DirectLiveProbeEvidenceStore({
+    rootDir: accountOnlyProbeRoot,
+    allowFakeEvidence: true,
+  });
+  const accountOnlyContext = {
+    ...liveProbeContext,
+    project: {},
+    evidenceId: "live_probe_evidence_account_only",
+  };
+  accountOnlyProbeStore.recordProbeResult(promotionResult, accountOnlyContext);
+  const accountOnlyResolved = accountOnlyProbeStore.resolveModelEvidence(liveProbeContext);
+  assert(accountOnlyResolved.accepted === true, "Text-only evidence must not require workspace-scoped file authority.");
+  assert(accountOnlyResolved.liveProbeEvidence.scope.workspaceMatches === true, "Text-only workspace scope should match without file access authority.");
 
 	  const liveProbeResolved = liveProbeEvidenceStore.resolveModelEvidence(liveProbeContext);
 	  assert(liveProbeResolved.accepted === true, "Expected matching live probe evidence to resolve as accepted.");
 	  assert(liveProbeResolved.modelSource === "live-probe", "Expected matching live probe evidence source.");
 	  assert(liveProbeResolved.liveProbeEvidence.scope.accountMatches === true, "Expected live probe evidence to be account-scoped.");
 	  assert(liveProbeResolved.liveProbeEvidence.scope.workspaceMatches === true, "Expected live probe evidence to be workspace-scoped.");
+    const mismatchingProbe = liveProbeEvidenceStore.recordProbeResult(promotionResult, {
+      ...liveProbeContext,
+      model: "gpt-5.5",
+      evidenceId: "live_probe_evidence_compact_mismatch",
+      nowMs: Date.now() + 1,
+    });
 	  const originalLiveProbeIndex = liveProbeEvidenceStore.readIndex();
+    fs.writeFileSync(liveProbeEvidenceStore.indexPath(), `${JSON.stringify({
+      ...originalLiveProbeIndex,
+      evidence: [
+        {
+          evidenceId: mismatchingProbe.evidence.evidenceId,
+          status: "runtime_probed",
+          scopeCompleteness: "compact",
+          source: FAKE_SMOKE_SOURCE,
+          createdAt: new Date(Date.now() + 1).toISOString(),
+          expiresAt: mismatchingProbe.evidence.expiresAt,
+          model: "gpt-5.5",
+        },
+        ...originalLiveProbeIndex.evidence.filter((entry) => entry.evidenceId !== mismatchingProbe.evidence.evidenceId),
+      ],
+      updatedAt: new Date().toISOString(),
+    }, null, 2)}\n`);
+    const hydratedAfterCompactMismatch = liveProbeEvidenceStore.resolveModelEvidence(liveProbeContext);
+    assert(hydratedAfterCompactMismatch.accepted === true, "Resolver must skip a hydrated mismatching compact row and continue to an exact match.");
 	  fs.writeFileSync(liveProbeEvidenceStore.indexPath(), `${JSON.stringify({
 	    ...originalLiveProbeIndex,
 	    evidence: [],
@@ -1937,7 +1977,7 @@ try {
 
   const modelMismatch = liveProbeEvidenceStore.resolveModelEvidence({
     ...liveProbeContext,
-    model: "gpt-5.5",
+    model: "gpt-5.6",
   });
   assert(modelMismatch.accepted === false, "Live probe evidence must not unlock a different model.");
   assert(modelMismatch.liveProbeEvidence.status === "scope_mismatch", "Expected model mismatch to be reported as a scope mismatch.");

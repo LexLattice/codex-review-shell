@@ -658,9 +658,29 @@ function applyFromReportOptions(options) {
   if (report.projectId && !optionString(options, "project-id", "")) options["project-id"] = report.projectId;
   return {
     reportPath: path.resolve(fromReport),
+    reportId: normalizeString(report.artifacts?.reportId || report.runId, ""),
+    runMode: normalizeString(report.runMode, "strict"),
+    status: normalizeString(report.status, ""),
+    providerRequestStarted: report.providerRequestStarted === true,
+    providerBytesObserved: report.providerBytesObserved === true,
     threadId,
     sessionId: normalizeString(report.createdSessionId || report.artifacts?.sessionId, threadId),
     lastTurnId: normalizeString(report.lastTurnId || report.artifacts?.turnId, ""),
+  };
+}
+
+function rendererSafeFailureCode(error) {
+  const code = normalizeString(error?.code, "");
+  const message = normalizeString(error?.message, "");
+  if (code === "ERR_SQLITE_ERROR" || /FOREIGN KEY constraint failed/i.test(message)) {
+    return {
+      code: "projection_store_integrity_failed",
+      message: "Direct projection store integrity check failed before transport.",
+    };
+  }
+  return {
+    code: code || "provider_transport_failed",
+    message: message || "Headless run failed.",
   };
 }
 
@@ -822,6 +842,9 @@ async function runDirect(context) {
       prompt: prompt.text,
     });
     if (recentDialogueRequested) {
+      if (context.runMode !== "diagnostic-no-promotion" && context.fromReport?.runMode === "diagnostic-no-promotion") {
+        return failureReport(report, "source_report_not_strict", "Strict direct follow-up requires a strict completed source report.");
+      }
       session = sessionStore.readSession(requestedThreadId);
       if (!session) {
         return failureReport(report, "direct_thread_missing", "Direct recent-dialogue thread was not found.");
@@ -836,6 +859,9 @@ async function runDirect(context) {
       const summaries = Array.isArray(session.turns) ? session.turns : [];
       const previousSummary = summaries.length ? summaries[summaries.length - 1] : null;
       const previousTurn = previousSummary?.turnId ? sessionStore.readTurn(session.sessionId, previousSummary.turnId) : null;
+      if (context.fromReport?.lastTurnId && context.fromReport.lastTurnId !== normalizeString(previousTurn?.turnId, "")) {
+        return failureReport(report, "previous_turn_changed", "Direct recent-dialogue source turn changed after the source report.");
+      }
       if (!previousTurn || previousTurn.state !== "completed") {
         return failureReport(report, "previous_turn_not_safe", "Direct recent-dialogue follow-up requires the previous turn to have completed safely.");
       }
@@ -879,6 +905,13 @@ async function runDirect(context) {
       providerContinuityHandleUsed: false,
     });
     if (!recentDialogueRequested) threadStore.indexSessionArtifacts(sessionStore, session, [turn]);
+    if (recentDialogueRequested) {
+      threadStore.indexSessionArtifacts(
+        sessionStore,
+        sessionStore.readSession(session.sessionId) || session,
+        sessionStore.listTurnIdsFromDisk(session.sessionId).map((turnId) => sessionStore.readTurn(session.sessionId, turnId)).filter(Boolean),
+      );
+    }
     const contextResult = threadStore.buildAndPersistContextForTextTurn({
       session: sessionStore.readSession(session.sessionId) || session,
       projectId: project.id,
@@ -1064,6 +1097,13 @@ async function runDirect(context) {
     report.stream.terminalState = terminalState;
     if (report.turnReport) report.turnReport.terminalState = terminalState;
     if (recentDialogueRequested) {
+      report.sourceReport = context.fromReport ? {
+        reportId: context.fromReport.reportId,
+        runMode: context.fromReport.runMode,
+        status: context.fromReport.status,
+        providerRequestStarted: context.fromReport.providerRequestStarted,
+        providerBytesObserved: context.fromReport.providerBytesObserved,
+      } : null;
       const firstTurnId = normalizeString((Array.isArray(session.turns) ? session.turns : [])[0]?.turnId, "");
       const firstTurn = firstTurnId ? sessionStore.readTurn(session.sessionId, firstTurnId) : null;
       report.twoTurnReport = {
@@ -1384,7 +1424,8 @@ async function main() {
       ? await runDirect({ ...context, report })
       : await runAppserver({ ...context, report });
   } catch (error) {
-    finalReport = failureReport(report, error.code || "provider_transport_failed", error.message || "Headless run failed.", {
+    const safe = rendererSafeFailureCode(error);
+    finalReport = failureReport(report, safe.code, safe.message, {
       status: "failed",
       requestLifecycle: report.providerRequestStarted ? "transport_handoff_unknown" : "failed",
       providerRequestStarted: report.providerRequestStarted,
