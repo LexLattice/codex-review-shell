@@ -2762,6 +2762,7 @@ class DirectLiveTextController {
       model: normalizeString(turn?.model, ""),
       fetchImpl: this.fetchImpl || undefined,
       allowSequentialReadOnlyToolLoop: true,
+      allowSequentialImplementationRepairLoop: true,
       onLifecycle: (event) => {
         if (event.phase === "streaming") {
           this.emitNotification(surfaceSession, "turn/started", {
@@ -2959,6 +2960,7 @@ class DirectLiveTextController {
       model: normalizeString(turn?.model, ""),
       fetchImpl: this.fetchImpl || undefined,
       allowSequentialReadOnlyToolLoop: false,
+      allowSequentialImplementationRepairLoop: true,
       onLifecycle: (event) => {
         if (event.phase === "streaming") {
           this.emitNotification(surfaceSession, "turn/started", {
@@ -3146,6 +3148,7 @@ class DirectLiveTextController {
       model: normalizeString(turn?.model, ""),
       fetchImpl: this.fetchImpl || undefined,
       allowSequentialReadOnlyToolLoop: false,
+      allowSequentialImplementationRepairLoop: true,
       onLifecycle: (event) => {
         if (event.phase === "streaming") {
           this.emitNotification(surfaceSession, "turn/started", {
