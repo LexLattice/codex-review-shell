@@ -108,19 +108,41 @@ function nowIso(nowMs = Date.now()) {
   return new Date(Number(nowMs) || Date.now()).toISOString();
 }
 
+const RAW_HOST_PATH_PATTERN = /(?:^|["\s])(?:\/home\/|\/mnt\/[a-z]\/|\\\\wsl\.localhost\\|[A-Za-z]:\\)/;
+const RAW_CHATGPT_URL_PATTERN = /https?:\/\/chatgpt\.com\//i;
+const RAW_PROVIDER_FRAME_PATTERN = /"raw(?:Provider|Response|Request|Frame)"/i;
+const RAW_AUTH_TOKEN_PATTERN = /\b(?:sk-[A-Za-z0-9_-]{20,}|Bearer\s+[A-Za-z0-9._-]{20,})\b/;
+
+function sensitiveRawField(keyPath = []) {
+  const key = String(keyPath[keyPath.length - 1] || "").toLowerCase();
+  return /(^|_)(raw|path|url|root|directory|file|provider|request|response|frame|auth|token|secret)(_|$)/i.test(key)
+    || /raw|path|url|root|directory|file|provider|request|response|frame|auth|token|secret/i.test(key);
+}
+
 function rawExposureFindings(value) {
-  const text = stableStringify(value);
   const findings = [];
-  const patterns = [
-    ["raw_host_path", /(?:^|["\s])(?:\/home\/|\/mnt\/[a-z]\/|\\\\wsl\.localhost\\|[A-Za-z]:\\)/],
-    ["raw_chatgpt_url", /https?:\/\/chatgpt\.com\//i],
-    ["raw_provider_frame", /"raw(?:Provider|Response|Request|Frame)"/i],
-    ["raw_auth_token", /\b(?:sk-[A-Za-z0-9_-]{20,}|Bearer\s+[A-Za-z0-9._-]{20,})\b/],
-  ];
-  for (const [code, pattern] of patterns) {
-    if (pattern.test(text)) findings.push(code);
-  }
-  return findings;
+  const visit = (entry, keyPath = []) => {
+    const rawField = sensitiveRawField(keyPath);
+    if (typeof entry === "string") {
+      if (RAW_AUTH_TOKEN_PATTERN.test(entry)) findings.push("raw_auth_token");
+      if (rawField && RAW_HOST_PATH_PATTERN.test(entry)) findings.push("raw_host_path");
+      if (rawField && RAW_CHATGPT_URL_PATTERN.test(entry)) findings.push("raw_chatgpt_url");
+      if (rawField && RAW_PROVIDER_FRAME_PATTERN.test(entry)) findings.push("raw_provider_frame");
+      return;
+    }
+    if (Array.isArray(entry)) {
+      entry.forEach((item, index) => visit(item, [...keyPath, String(index)]));
+      return;
+    }
+    if (isPlainObject(entry)) {
+      for (const [key, item] of Object.entries(entry)) {
+        if (/^raw[A-Z].*Exposed$/.test(key) && item === true) findings.push("raw_exposure_flag_true");
+        visit(item, [...keyPath, key]);
+      }
+    }
+  };
+  visit(value);
+  return [...new Set(findings)];
 }
 
 function assertThreadEvidenceWorkbenchRendererSafe(value) {

@@ -150,7 +150,7 @@ function fixtureSnapshot() {
     threads: [
       {
         threadId: "thread_active_fixture",
-        title: "Active fixture thread",
+        title: "Active fixture thread debugging /home/alice/app",
         sourceClass: "direct",
         lifecycle: { state: "active" },
         rendererProjection: {
@@ -270,6 +270,10 @@ function buildReport() {
   const projection = report.projection;
   assert(report.schema === DIRECT_THREAD_EVIDENCE_WORKBENCH_REPORT_SCHEMA, "Report schema must match.");
   assert(validateThreadEvidenceWorkbenchProjection(projection), "Evidence workbench projection must validate.");
+  assert(
+    projection.threads.some((thread) => /\/home\/alice\/app/.test(thread.displayTitle || "")),
+    "Renderer-safe display text may mention path-like user labels without blocking the snapshot.",
+  );
   assert(DIRECT_THREAD_LIFECYCLE_TRANSITIONS.soft_deleted.restore_soft_deleted_thread === "active", "Soft-deleted restore must use explicit operation.");
   assert(!DIRECT_THREAD_LIFECYCLE_TRANSITIONS.soft_deleted.restore_thread, "restore_thread must not restore soft-deleted state.");
   assert(projection.previews.length >= 2, "Fixture should include preview summaries.");

@@ -3908,7 +3908,6 @@ async function loadDirectThreadWorkbench(options = {}) {
     if (isRequestStale("directThreadWorkbench", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
     state.directThreadWorkbench.projectId = project.id;
     state.directThreadWorkbench.snapshot = result || null;
-    state.directThreadWorkbench.evidenceProjection = result?.evidenceWorkbench || null;
     if (bridge.getDirectThreadEvidenceWorkbenchProjection) {
       try {
         state.directThreadWorkbench.evidenceProjection = await bridge.getDirectThreadEvidenceWorkbenchProjection(project.id, {
@@ -3922,6 +3921,8 @@ async function loadDirectThreadWorkbench(options = {}) {
       } catch (projectionError) {
         state.directThreadWorkbench.evidenceProjection = result?.evidenceWorkbench || null;
       }
+    } else {
+      state.directThreadWorkbench.evidenceProjection = result?.evidenceWorkbench || null;
     }
     state.directThreadWorkbench.status = "loaded";
     const threads = result?.threads || [];
