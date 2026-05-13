@@ -9,6 +9,10 @@ const {
   THREAD_GRAPH_PROJECTION_KIND,
   THREAD_LIFECYCLE_PROJECTION_KIND,
 } = require("./thread-store");
+const {
+  buildDirectThreadEvidenceWorkbenchProjection,
+  validateThreadEvidenceWorkbenchProjection,
+} = require("./thread-evidence-workbench");
 
 const DIRECT_THREAD_WORKBENCH_SNAPSHOT_SCHEMA = "renderer_safe_direct_thread_workbench_snapshot@1";
 const DIRECT_THREAD_WORKBENCH_CONTROLLER_VERSION = "direct_thread_workbench_controller@1";
@@ -292,7 +296,7 @@ class DirectThreadWorkbenchController {
     const graphProjection = this.threadStore.readThreadGraphProjection(projectId, { offset: 0, limit: 120 });
     const operations = this.readOperationHistorySync(projectId, params.page?.operations || { limit: 20 });
     const revision = this.workbenchRevision(projectId);
-    return {
+    const snapshot = {
       schema: DIRECT_THREAD_WORKBENCH_SNAPSHOT_SCHEMA,
       projectId,
       projectGeneration: this.projectGeneration(project),
@@ -341,6 +345,14 @@ class DirectThreadWorkbenchController {
         rawAuthExposed: false,
       },
     };
+    snapshot.evidenceWorkbench = buildDirectThreadEvidenceWorkbenchProjection({ snapshot });
+    if (!validateThreadEvidenceWorkbenchProjection(snapshot.evidenceWorkbench)) throw makeError("renderer_projection_unsafe");
+    return snapshot;
+  }
+
+  async getEvidenceWorkbenchProjection(projectOrId, params = {}) {
+    const snapshot = await this.getSnapshot(projectOrId, params);
+    return snapshot.evidenceWorkbench;
   }
 
   async readThreadProjection(projectOrId, threadId, params = {}) {
@@ -526,6 +538,7 @@ class DirectThreadWorkbenchController {
       projectId,
       threadId,
       expectedWorkbenchRevision: normalizeString(input.expectedWorkbenchRevision, ""),
+      operationLedgerHeadDigest: this.workbenchRevision(projectId).operationLedgerHeadDigest,
       expectedLifecycleState: normalizeString(row.lifecycle_state, "active"),
       expiresAtMs: nowMs + SOFT_DELETE_CONFIRMATION_TTL_MS,
     };
@@ -534,6 +547,8 @@ class DirectThreadWorkbenchController {
     return {
       confirmationId,
       expiresAt: nowIso(confirmation.expiresAtMs),
+      workbenchRevision: confirmation.expectedWorkbenchRevision,
+      operationLedgerHeadDigest: confirmation.operationLedgerHeadDigest,
       rendererSafeThreadLabel: normalizeString(row.title, "Direct thread"),
       reversible: true,
       rawPathExposed: false,
@@ -617,6 +632,7 @@ class DirectThreadWorkbenchController {
     const project = await this.resolveProject(projectOrId);
     const projectId = this.projectId(project);
     if (!projectId) throw makeError("project_missing");
+    this.assertExpectedRevision(projectId, input);
     if (input.url || input.rawUrl) throw makeError("raw_external_url_not_allowed");
     const ref = this.threadStore.createExternalRef({ ...input, projectId });
     this.threadStore.buildThreadGraphProjection(projectId, { force: true });
