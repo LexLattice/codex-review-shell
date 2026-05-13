@@ -88,6 +88,7 @@ const state = {
     requestGeneration: 0,
     status: "idle",
     snapshot: null,
+    evidenceProjection: null,
     selectedThreadId: "",
     selectedPreviewId: "",
     selectedProjection: null,
@@ -2534,9 +2535,12 @@ function selectedDirectWorkbenchThread() {
 
 function directThreadWorkbenchExpectedInput(extra = {}) {
   const snapshot = state.directThreadWorkbench.snapshot || {};
+  const projection = state.directThreadWorkbench.evidenceProjection || {};
   return {
     expectedWorkbenchRevision: snapshot.workbenchRevision || "",
     expectedOperationLedgerHeadDigest: snapshot.operationLedgerHeadDigest || "",
+    expectedUiProjectionGeneration: projection.meta?.uiProjectionGeneration || "",
+    expectedUiProjectionSourceDigest: projection.meta?.sourceDigest || "",
     ...extra,
   };
 }
@@ -2698,8 +2702,11 @@ function renderDirectThreadWorkbenchSide() {
   els.directThreadWorkbenchSide.textContent = "";
   const revision = document.createElement("div");
   revision.className = "direct-thread-side-section";
-  revision.innerHTML = `<p class="eyebrow">Workbench revision</p><p class="mono muted"></p>`;
+  revision.innerHTML = `<p class="eyebrow">Workbench revision</p><p class="mono muted"></p><p class="muted"></p>`;
   revision.querySelector("p.mono").textContent = snapshot?.workbenchRevision || "not loaded";
+  revision.querySelector("p.muted:last-child").textContent = state.directThreadWorkbench.evidenceProjection
+    ? "Evidence workbench projection is renderer-safe and non-runnable."
+    : "Evidence projection not loaded.";
   els.directThreadWorkbenchSide.appendChild(revision);
 
   const graph = document.createElement("div");
@@ -2733,27 +2740,15 @@ function renderDirectThreadWorkbenchSide() {
     if (["fork_preview", "merge_preview", "prune_preview"].includes(preview.projectionKind) && preview.status === "valid") {
       const forkForm = document.createElement("div");
       forkForm.className = "direct-fork-start-form";
-      const prompt = document.createElement("textarea");
-      prompt.rows = 4;
-      prompt.placeholder = "Current user intent for the fresh fork";
-      prompt.value = state.directThreadWorkbench.forkStartPrompt || "";
-      prompt.addEventListener("input", () => {
-        state.directThreadWorkbench.forkStartPrompt = prompt.value;
-      });
       const button = document.createElement("button");
       button.type = "button";
-      button.className = "primary small";
-      button.textContent = "Start fresh fork";
-      button.disabled = state.directThreadWorkbench.status === "working";
-      button.addEventListener("click", () => {
-        startDirectThreadForkFromSelectedPreview().catch((error) => setLastEvent(`Start fresh fork failed: ${error.message}`));
-      });
+      button.className = "ghost small";
+      button.textContent = "Preview only";
+      button.disabled = true;
       const note = document.createElement("p");
       note.className = "muted";
-      note.textContent = preview.projectionKind === "fork_preview"
-        ? "Fresh direct-native session; no provider continuity or source approvals are reused."
-        : "Fresh direct-native session from derived preview evidence; source rollouts are not materialized or resumed.";
-      forkForm.append(prompt, button, note);
+      note.textContent = "Fresh fork execution is outside this evidence workbench view; previews do not build context packs, request manifests, or sessions here.";
+      forkForm.append(button, note);
       previewBody.appendChild(forkForm);
     }
     for (const item of (preview.items || []).slice(0, 8)) {
@@ -2776,7 +2771,7 @@ function renderDirectThreadWorkbenchSide() {
     for (const operation of entries.slice(0, 10)) {
       const row = document.createElement("div");
       row.className = "direct-thread-side-row";
-      row.textContent = `${operation.operationType} · ${operation.status}`;
+      row.textContent = `${operation.operationType} · ${operation.status} · read-only history`;
       operationBody.appendChild(row);
     }
   }
@@ -2842,6 +2837,7 @@ function resetDirectThreadWorkbench(projectId = activeProject()?.id || "") {
     requestGeneration: Number(state.directThreadWorkbench?.requestGeneration || 0) + 1,
     status: "idle",
     snapshot: null,
+    evidenceProjection: null,
     selectedThreadId: "",
     selectedPreviewId: "",
     selectedProjection: null,
@@ -3912,6 +3908,21 @@ async function loadDirectThreadWorkbench(options = {}) {
     if (isRequestStale("directThreadWorkbench", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
     state.directThreadWorkbench.projectId = project.id;
     state.directThreadWorkbench.snapshot = result || null;
+    state.directThreadWorkbench.evidenceProjection = result?.evidenceWorkbench || null;
+    if (bridge.getDirectThreadEvidenceWorkbenchProjection) {
+      try {
+        state.directThreadWorkbench.evidenceProjection = await bridge.getDirectThreadEvidenceWorkbenchProjection(project.id, {
+          refresh: false,
+          filters: state.directThreadWorkbench.filters,
+          page: {
+            threads: { offset: 0, limit: 80 },
+            operations: { offset: 0, limit: 20 },
+          },
+        });
+      } catch (projectionError) {
+        state.directThreadWorkbench.evidenceProjection = result?.evidenceWorkbench || null;
+      }
+    }
     state.directThreadWorkbench.status = "loaded";
     const threads = result?.threads || [];
     if (state.directThreadWorkbench.selectedThreadId && !threads.find((thread) => thread.threadId === state.directThreadWorkbench.selectedThreadId)) {

@@ -4633,6 +4633,11 @@ ipcMain.handle("direct-thread-workbench:snapshot", async (_event, payload) => {
   return ensureDirectThreadWorkbenchController().getSnapshot(project, payload || {});
 });
 
+ipcMain.handle("direct-thread-workbench:evidence-projection", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return ensureDirectThreadWorkbenchController().getEvidenceWorkbenchProjection(project, payload || {});
+});
+
 ipcMain.handle("direct-thread-workbench:read-thread-projection", async (_event, payload) => {
   const project = await getProjectById(payload?.projectId);
   return ensureDirectThreadWorkbenchController().readThreadProjection(project, payload?.threadId, payload || {});

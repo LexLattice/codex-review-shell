@@ -98,6 +98,8 @@ contextBridge.exposeInMainWorld("workspaceShell", {
     ipcRenderer.invoke("direct-import:start-checkpoint-continuation", { ...options, projectId }),
   getDirectThreadWorkbenchSnapshot: (projectId, options = {}) =>
     ipcRenderer.invoke("direct-thread-workbench:snapshot", { ...options, projectId }),
+  getDirectThreadEvidenceWorkbenchProjection: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-thread-workbench:evidence-projection", { ...options, projectId }),
   readDirectThreadWorkbenchThreadProjection: (projectId, threadId, options = {}) =>
     ipcRenderer.invoke("direct-thread-workbench:read-thread-projection", { ...options, projectId, threadId }),
   readDirectThreadWorkbenchProjectProjection: (projectId, projectionKind, options = {}) =>
