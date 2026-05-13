@@ -196,6 +196,12 @@ function buildReport() {
   const project = { id: "project_ui_fixture", name: "UI fixture" };
   const runtimeStatus = fixtureRuntimeStatus();
   const uiStatus = buildDirectImplementationLaneUiStatus({ project, runtimeStatus });
+  const recoveryRuntimeStatus = fixtureRuntimeStatus();
+  recoveryRuntimeStatus.directImplementationLane.activeRecoveryState = "stream_interrupted";
+  const recoveryUiStatus = buildDirectImplementationLaneUiStatus({ project, runtimeStatus: recoveryRuntimeStatus });
+  const circularRuntimeStatus = fixtureRuntimeStatus();
+  circularRuntimeStatus.self = circularRuntimeStatus;
+  const circularUiStatus = buildDirectImplementationLaneUiStatus({ project, runtimeStatus: circularRuntimeStatus });
   const policy = buildDirectPolicyReadOnlyView({ project, runtimeStatus });
   const history = projectOperationHistoryPage({
     projectId: project.id,
@@ -209,6 +215,8 @@ function buildReport() {
   assert(uiStatus.implementationLane.facets.canApproveRead.canUse, "Read approval facet should be usable.");
   assert(uiStatus.implementationLane.facets.canApprovePatch.canUse, "Patch approval facet should be usable.");
   assert(uiStatus.implementationLane.facets.canApproveCommand.canUse, "Command approval facet should be usable.");
+  assert(recoveryUiStatus.implementationLane.canRollbackToAppServer === false, "Active recovery must block app-server rollback.");
+  assert(validateDirectUiProjection(circularUiStatus, DIRECT_IMPLEMENTATION_LANE_UI_STATUS_SCHEMA), "Circular runtime input must still produce a safe projection.");
   assert(policy.editable === false && policy.privateConfigIncluded === false, "Policy view must be read-only and private-config-free.");
   assert(history.rows.every((row) => row.actionability?.actionable === false), "Operation history rows must be read-only.");
   assert(uiStatus.witnesses.some((entry) => entry.kind === "handoff-boundary" && entry.handoff?.handoffStateUsedForReadiness === false), "Handoff witness must stay non-authoritative.");

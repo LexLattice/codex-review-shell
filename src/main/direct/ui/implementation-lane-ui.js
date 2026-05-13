@@ -19,12 +19,18 @@ function bool(value) {
   return value === true;
 }
 
-function stableValue(value) {
-  if (Array.isArray(value)) return value.map(stableValue);
+function stableValue(value, seen = new WeakSet()) {
+  if (Array.isArray(value)) {
+    if (seen.has(value)) return "[Circular]";
+    seen.add(value);
+    return value.map((item) => stableValue(item, seen));
+  }
   if (value && typeof value === "object") {
+    if (seen.has(value)) return "[Circular]";
+    seen.add(value);
     const output = {};
     for (const key of Object.keys(value).sort()) {
-      if (value[key] !== undefined) output[key] = stableValue(value[key]);
+      if (value[key] !== undefined) output[key] = stableValue(value[key], seen);
     }
     return output;
   }
@@ -136,13 +142,15 @@ function implementationReadiness(runtimeStatus = {}) {
   const canApproveCommand = bool(lane.canApproveRunCommand || lane.canApproveCommand || lane.commandExecution?.canApprove);
   const canContinue = bool(lane.canSendContinuation || canApproveRead || canApprovePatch || canApproveCommand);
   const degradedToReadOnly = bool(lane.degradedToReadOnly || (lane.status === "degraded" && canApproveRead && !canApprovePatch && !canApproveCommand));
+  const activeRecoveryState = normalizeString(lane.activeRecoveryState, "");
+  const activeRepairLoopState = normalizeString(lane.activeRepairLoopState, "");
   const base = tierStatus({
     tier: "direct-implementation-lane",
     available: true,
     selected,
     selectable: bool(lane.canSelect || lane.canEnable),
     canStartTurn: canStart,
-    canRollbackToAppServer: !bool(lane.activeRecoveryState || lane.activeRepairLoopState),
+    canRollbackToAppServer: !activeRecoveryState && !activeRepairLoopState,
     readiness: selected ? (lane.status === "degraded" ? "degraded" : "ready") : blockers.length ? "blocked" : "unknown",
     blockerCodes: blockers,
     evidenceKeys: ["direct_implementation_lane_status"],
@@ -161,15 +169,15 @@ function implementationReadiness(runtimeStatus = {}) {
     canShowOperationHistory: true,
     canShowPolicySnapshot: true,
     degradedToReadOnly,
-    activeRecoveryState: normalizeString(lane.activeRecoveryState, ""),
-    activeRepairLoopState: normalizeString(lane.activeRepairLoopState, ""),
+    activeRecoveryState,
+    activeRepairLoopState,
     activeWorkspaceEffectState: normalizeString(lane.activeWorkspaceEffectState, ""),
     facets: {
       canStartTurn: facet({ canUse: canStart, blockerCodes: canStart ? [] : blockers, evidenceKeys: ["direct_text_turn_empty_context@1"] }),
       canShowApprovalCards: facet({ canUse: bool(lane.canShowApprovalCards || lane.canShowObligations || selected), blockerCodes: selected || bool(lane.canShowObligations) ? [] : blockers, evidenceKeys: ["direct_obligations@1"] }),
       canApproveRead: facet({ canUse: canApproveRead, blockerCodes: canApproveRead ? [] : blockers, evidenceKeys: ["direct_readonly_tool_continuation@1"] }),
-      canApprovePatch: facet({ canUse: canApprovePatch, blockerCodes: canApprovePatch ? [] : blockers.concat(canApprovePatch ? [] : ["patch_apply_continuation_evidence_missing"]), evidenceKeys: ["direct_patch_apply_continuation@1"] }),
-      canApproveCommand: facet({ canUse: canApproveCommand, blockerCodes: canApproveCommand ? [] : blockers.concat(canApproveCommand ? [] : ["command_execution_continuation_evidence_missing"]), evidenceKeys: ["direct_command_execution_continuation@1"] }),
+      canApprovePatch: facet({ canUse: canApprovePatch, blockerCodes: canApprovePatch ? [] : blockers.concat(["patch_apply_continuation_evidence_missing"]), evidenceKeys: ["direct_patch_apply_continuation@1"] }),
+      canApproveCommand: facet({ canUse: canApproveCommand, blockerCodes: canApproveCommand ? [] : blockers.concat(["command_execution_continuation_evidence_missing"]), evidenceKeys: ["direct_command_execution_continuation@1"] }),
       canContinueAfterResult: facet({ canUse: canContinue, blockerCodes: canContinue ? [] : blockers, evidenceKeys: ["direct_request_manifest@1"] }),
       canRecoverSafely: facet({ canUse: true, evidenceKeys: ["direct_recovery_report@1"] }),
       workspaceMutationTruth: facet({ canUse: true, evidenceKeys: ["direct_workspace_effect_summary@1"] }),
@@ -489,17 +497,21 @@ function buildDirectPolicyReadOnlyView({ project = {}, runtimeStatus = {}, gener
   return view;
 }
 
-function collectStrings(value, output = []) {
+function collectStrings(value, output = [], seen = new WeakSet()) {
   if (typeof value === "string") {
     output.push(value);
     return output;
   }
   if (Array.isArray(value)) {
-    for (const item of value) collectStrings(item, output);
+    if (seen.has(value)) return output;
+    seen.add(value);
+    for (const item of value) collectStrings(item, output, seen);
     return output;
   }
   if (value && typeof value === "object") {
-    for (const item of Object.values(value)) collectStrings(item, output);
+    if (seen.has(value)) return output;
+    seen.add(value);
+    for (const item of Object.values(value)) collectStrings(item, output, seen);
   }
   return output;
 }

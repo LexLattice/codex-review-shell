@@ -4486,9 +4486,12 @@ ipcMain.handle("direct-ui:implementation-status", async (_event, payload) => {
 ipcMain.handle("direct-ui:operation-history", async (_event, payload) => {
   const project = await getProjectById(payload?.projectId);
   const cursorOffset = Number.parseInt(String(payload?.cursor || ""), 10);
-  const offset = Number.isFinite(cursorOffset) ? cursorOffset : payload?.offset;
+  const rawOffset = Number.parseInt(String(payload?.offset || ""), 10);
+  const rawLimit = Number.parseInt(String(payload?.limit || ""), 10);
+  const offset = Number.isFinite(cursorOffset) ? cursorOffset : Number.isFinite(rawOffset) ? rawOffset : undefined;
+  const limit = Number.isFinite(rawLimit) ? rawLimit : undefined;
   const params = {
-    limit: payload?.limit,
+    limit,
     offset,
     operationTypes: payload?.operationTypes,
     statuses: payload?.statuses,
@@ -4499,7 +4502,7 @@ ipcMain.handle("direct-ui:operation-history", async (_event, payload) => {
     operationHistory,
     request: {
       scope: payload?.scope || "active-turn",
-      limit: payload?.limit,
+      limit,
       offset,
     },
   });
