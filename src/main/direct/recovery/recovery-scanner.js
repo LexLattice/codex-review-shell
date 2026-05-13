@@ -2,6 +2,7 @@
 
 const crypto = require("node:crypto");
 const { DIRECT_TURN_STATES } = require("../session/session-store");
+const { workspaceEffectRecoveryState } = require("../workspace/mutation-truth");
 
 const DIRECT_RECOVERY_REPORT_SCHEMA = "direct_recovery_report@1";
 const DIRECT_RECOVERY_SCANNER_VERSION = "direct-recovery-scanner@1";
@@ -212,6 +213,16 @@ function patchJournalStateFor(obligation = {}, result = {}) {
 
 function commandWorkspaceEffectStateFor(result = {}) {
   if (!isPlainObject(result) || result.tool !== "run_command") return "not_applicable";
+  const effectRecoveryState = workspaceEffectRecoveryState(result);
+  if (effectRecoveryState === "effect_summary_missing") return "scan_missing";
+  if (effectRecoveryState === "effect_summary_corrupt") return "scan_failed";
+  if (effectRecoveryState === "effect_summary_scan_failed") return "scan_failed";
+  if (isPlainObject(result.workspaceEffectSummary)) {
+    if (result.workspaceEffectSummary.scan?.scanFailed === true) return "scan_failed";
+    if (Number(result.workspaceEffectSummary.changedPathCount || 0) > 0) return "changes_detected";
+    if (result.workspaceEffectSummary.scan?.supported === false) return "scan_missing";
+    return "scan_passed";
+  }
   const effects = isPlainObject(result.workspaceEffects) ? result.workspaceEffects : {};
   if (!Object.keys(effects).length) return "scan_missing";
   if (effects.scanFailed === true) return "scan_failed";
@@ -374,6 +385,28 @@ function classifyByObligation(turn = {}, obligation = {}, context = {}) {
   }
 
   const patchJournalState = authorityKind === "apply_patch" ? patchJournalStateFor(obligation, result) : "not_applicable";
+  const workspaceEffectState = workspaceEffectRecoveryState(result);
+  if (authorityKind === "apply_patch" && workspaceEffectState === "effect_summary_missing" && hasResult) {
+    recoveryState = "patch_applied_effect_summary_missing";
+    artifactDurabilityState = "required_missing";
+    recoveryConfidence = "conservative_from_partial";
+    composerAllowed = false;
+    composerAllowedReason = "disabled_side_effect_incomplete";
+  }
+  if (authorityKind === "run_command" && workspaceEffectState === "effect_summary_missing" && hasResult) {
+    recoveryState = "command_ran_effect_summary_missing";
+    artifactDurabilityState = "required_missing";
+    recoveryConfidence = "conservative_from_partial";
+    composerAllowed = false;
+    composerAllowedReason = "disabled_side_effect_incomplete";
+  }
+  if (workspaceEffectState === "effect_summary_corrupt") {
+    recoveryState = "corrupt";
+    artifactDurabilityState = "digest_mismatch";
+    recoveryConfidence = "corrupt_untrusted";
+    composerAllowed = false;
+    composerAllowedReason = "disabled_corrupt";
+  }
   if (patchJournalState === "applied_verified" && !hasResult) {
     recoveryState = "patch_applied_no_result";
     sideEffectState = "workspace_patch_applied";
@@ -435,6 +468,7 @@ function classifyByObligation(turn = {}, obligation = {}, context = {}) {
     authorityKind,
     stepRef: stepRefFor(turn, obligation),
     patchJournalState,
+    workspaceEffectRecoveryState: workspaceEffectState,
     commandWorkspaceEffectState: authorityKind === "run_command" ? commandWorkspaceEffectStateFor(result) : "not_applicable",
     autoRetryAllowed: false,
     autoReexecuteAllowed: false,
