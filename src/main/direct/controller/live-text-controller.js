@@ -111,6 +111,51 @@ function boundedPositiveInteger(value, fallback, min = 1, max = 10_000) {
   return Math.max(min, Math.min(max, Math.floor(number)));
 }
 
+function derivedPreviewForkStartRequestShapeClassForKind(sourcePreviewKind) {
+  return normalizeString(sourcePreviewKind, "") === "merge_preview"
+    ? DIRECT_MERGE_PREVIEW_START_REQUEST_SHAPE
+    : DIRECT_PRUNE_PREVIEW_START_REQUEST_SHAPE;
+}
+
+function firstForkTurnTerminalKind(result = {}, assistantText = "", unsupportedTool = false) {
+  if (unsupportedTool) return "tool_call_unsupported";
+  if (!assistantText && result.terminal?.state === "completed") return "completed_empty_output";
+  const terminal = isPlainObject(result.terminal) ? result.terminal : {};
+  const terminalCode = normalizeString(terminal.error?.code || result.error?.code, "");
+  if (terminalCode === "response_incomplete") return "response_incomplete";
+  if (terminalCode === "content_filter" || terminalCode === "content_filter_terminal") return "content_filter_terminal";
+  if (terminalCode === "max_output" || terminalCode === "max_output_terminal") return "max_output_terminal";
+  if (terminalCode === "empty_output" || terminalCode === "empty_output_terminal") return "completed_empty_output";
+  if (terminalCode === "stream_interrupted") return "stream_interrupted";
+  if (terminalCode === "transport_handoff_unknown") return "transport_handoff_unknown";
+  const state = normalizeString(terminal.state, "");
+  if (state === "response_incomplete" || state === "stream_interrupted" || state === "transport_handoff_unknown") return state;
+  if (state === "content_filter_terminal" || state === "max_output_terminal" || state === "empty_output_terminal") return state;
+  return result.ok ? "completed_with_assistant_text" : "provider_failed";
+}
+
+function firstForkTurnTerminal(result = {}, assistantText = "", unsupportedTool = false, label = "Fork start") {
+  const terminalKind = firstForkTurnTerminalKind(result, assistantText, unsupportedTool);
+  if (terminalKind === "tool_call_unsupported") {
+    return {
+      state: "failed",
+      error: { code: "fresh_fork_first_turn_tool_call_unsupported", message: `${label} does not support provider tool calls.` },
+      terminalKind,
+    };
+  }
+  if (terminalKind === "completed_empty_output") {
+    return {
+      state: "failed",
+      error: { code: "completed_empty_output", message: `${label} completed without assistant text.` },
+      terminalKind,
+    };
+  }
+  return {
+    ...(result.terminal || { state: result.ok ? "completed" : "failed", error: result.error || null }),
+    terminalKind,
+  };
+}
+
 function firstTextInput(input) {
   const entries = Array.isArray(input) ? input : [];
   for (const entry of entries) {
@@ -696,9 +741,7 @@ class DirectLiveTextController {
 
   derivedPreviewForkStartRequestShapeHash(input = {}) {
     const sourcePreviewKind = normalizeString(input.sourcePreviewKind, "");
-    const requestShapeClass = sourcePreviewKind === "merge_preview"
-      ? DIRECT_MERGE_PREVIEW_START_REQUEST_SHAPE
-      : DIRECT_PRUNE_PREVIEW_START_REQUEST_SHAPE;
+    const requestShapeClass = this.derivedPreviewForkStartRequestShapeClass(sourcePreviewKind);
     return sha256(stableStringify({
       schema: requestShapeClass,
       sourcePreviewKind,
@@ -721,9 +764,7 @@ class DirectLiveTextController {
   }
 
   derivedPreviewForkStartRequestShapeClass(sourcePreviewKind) {
-    return normalizeString(sourcePreviewKind, "") === "merge_preview"
-      ? DIRECT_MERGE_PREVIEW_START_REQUEST_SHAPE
-      : DIRECT_PRUNE_PREVIEW_START_REQUEST_SHAPE;
+    return derivedPreviewForkStartRequestShapeClassForKind(sourcePreviewKind);
   }
 
   async startForkFromPreview(options = {}) {
@@ -1047,11 +1088,7 @@ class DirectLiveTextController {
       if (result.normalizedEvents.length) this.sessionStore.appendNormalizedEvents(session.sessionId, turn.turnId, result.normalizedEvents, options);
       const assistantText = assistantTextFromNormalizedEvents(result.normalizedEvents);
       const unsupportedTool = result.normalizedEvents.some((event) => String(event.type || "").startsWith("tool_call_"));
-      const terminal = unsupportedTool
-        ? { state: "failed", error: { code: "fresh_fork_first_turn_tool_call_unsupported", message: "Fork start does not support provider tool calls." }, terminalKind: "tool_call_unsupported" }
-        : (!assistantText && result.terminal?.state === "completed"
-            ? { state: "failed", error: { code: "completed_empty_output", message: "Fork start completed without assistant text." }, terminalKind: "completed_empty_output" }
-            : { ...(result.terminal || { state: result.ok ? "completed" : "failed", error: result.error || null }), terminalKind: result.ok ? "completed_with_assistant_text" : "provider_failed" });
+      const terminal = firstForkTurnTerminal(result, assistantText, unsupportedTool, "Fork start");
       const completedTurn = this.sessionStore.updateTurnState(session.sessionId, turn.turnId, terminal.state, {
         ...(terminal.error ? { error: terminal.error } : {}),
         responseId: result.responseId || "",
@@ -1502,11 +1539,7 @@ class DirectLiveTextController {
       if (result.normalizedEvents.length) this.sessionStore.appendNormalizedEvents(session.sessionId, turn.turnId, result.normalizedEvents, options);
       const assistantText = assistantTextFromNormalizedEvents(result.normalizedEvents);
       const unsupportedTool = result.normalizedEvents.some((event) => String(event.type || "").startsWith("tool_call_"));
-      const terminal = unsupportedTool
-        ? { state: "failed", error: { code: "fresh_fork_first_turn_tool_call_unsupported", message: "Derived fork start does not support provider tool calls." }, terminalKind: "tool_call_unsupported" }
-        : (!assistantText && result.terminal?.state === "completed"
-            ? { state: "failed", error: { code: "completed_empty_output", message: "Derived fork start completed without assistant text." }, terminalKind: "completed_empty_output" }
-            : { ...(result.terminal || { state: result.ok ? "completed" : "failed", error: result.error || null }), terminalKind: result.ok ? "completed_with_assistant_text" : "provider_failed" });
+      const terminal = firstForkTurnTerminal(result, assistantText, unsupportedTool, "Derived fork start");
       const completedTurn = this.sessionStore.updateTurnState(session.sessionId, turn.turnId, terminal.state, {
         ...(terminal.error ? { error: terminal.error } : {}),
         responseId: result.responseId || "",

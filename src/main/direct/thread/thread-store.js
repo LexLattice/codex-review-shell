@@ -203,6 +203,18 @@ function freshForkSeedPolicyIdForPreviewKind(sourcePreviewKind) {
   return DIRECT_FRESH_FORK_FROM_FORK_PREVIEW_POLICY_ID;
 }
 
+function forkSeedExclusionReason(item = {}) {
+  const itemKind = normalizeString(item.itemKind, "message");
+  if (["tool_result", "tool_call", "diagnostic", "approval_decision"].includes(itemKind)) {
+    return { itemKind, reason: `${itemKind}_excluded` };
+  }
+  const role = normalizeString(item.role || item.authorRole, "");
+  if (["system", "developer", "runtime", "harness"].includes(role)) {
+    return { itemKind, reason: `${role}_policy_excluded` };
+  }
+  return { itemKind, reason: "" };
+}
+
 function isSafeId(value) {
   return SAFE_ID_PATTERN.test(normalizeString(value, ""));
 }
@@ -2983,14 +2995,9 @@ class DirectThreadStore {
     let totalChars = 0;
     const evidence = [];
     for (const item of sourceItems) {
-      const itemKind = normalizeString(item.itemKind, "message");
-      const role = normalizeString(item.role || item.authorRole, "");
-      if (itemKind === "tool_result" || itemKind === "tool_call" || itemKind === "diagnostic" || itemKind === "approval_decision") {
-        omittedCounts[`${itemKind}_excluded`] = (Number(omittedCounts[`${itemKind}_excluded`]) || 0) + 1;
-        continue;
-      }
-      if (role === "system" || role === "developer" || role === "runtime" || role === "harness") {
-        omittedCounts[`${role}_policy_excluded`] = (Number(omittedCounts[`${role}_policy_excluded`]) || 0) + 1;
+      const { itemKind, reason } = forkSeedExclusionReason(item);
+      if (reason) {
+        omittedCounts[reason] = (Number(omittedCounts[reason]) || 0) + 1;
         continue;
       }
       const text = preserveString(item.text);
@@ -3220,14 +3227,9 @@ class DirectThreadStore {
         omittedCounts.items = (Number(omittedCounts.items) || 0) + 1;
         continue;
       }
-      const itemKind = normalizeString(item.itemKind, "message");
-      const role = normalizeString(item.role || item.authorRole, "");
-      if (itemKind === "tool_result" || itemKind === "tool_call" || itemKind === "diagnostic" || itemKind === "approval_decision") {
-        omittedCounts[`${itemKind}_excluded`] = (Number(omittedCounts[`${itemKind}_excluded`]) || 0) + 1;
-        continue;
-      }
-      if (role === "system" || role === "developer" || role === "runtime" || role === "harness") {
-        omittedCounts[`${role}_policy_excluded`] = (Number(omittedCounts[`${role}_policy_excluded`]) || 0) + 1;
+      const { itemKind, reason } = forkSeedExclusionReason(item);
+      if (reason) {
+        omittedCounts[reason] = (Number(omittedCounts[reason]) || 0) + 1;
         continue;
       }
       if (itemKind === "prune_omission_marker") omittedMarkers += 1;
