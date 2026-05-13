@@ -132,6 +132,14 @@ const DIRECT_THREAD_OPERATION_TYPES = new Set([
   "materialize_projection_thread",
   "rebuild_projection",
   "repair_index",
+  "context_pressure_estimate",
+  "context_maintenance_route",
+  "context_maintenance_manifest",
+  "raw_window_trim",
+  "context_omission_ledger",
+  "thread_memory_refresh",
+  "durable_thread_memory",
+  "frontier_baton",
 ]);
 const DIRECT_THREAD_OPERATION_EVENT_TYPES = new Set([
   "operation_planned",
@@ -437,6 +445,16 @@ class DirectThreadStore {
       "fork-starts",
       requireSafeId(projectId, "project"),
       requireSafeId(forkStartId, "fork start"),
+      safeArtifactName(artifactName),
+    );
+  }
+
+  contextMaintenancePath(projectId, threadId, artifactName) {
+    return path.join(
+      this.rootDir,
+      "context-maintenance",
+      safeStorageKey(projectId, "project"),
+      safeStorageKey(threadId, "thread"),
       safeArtifactName(artifactName),
     );
   }
@@ -1988,6 +2006,7 @@ class DirectThreadStore {
           JSON.stringify({
             sourceArtifacts: contextPack.sourceArtifacts || [],
             sourceProjections: contextPack.sourceProjections || [],
+            maintenanceRefs: contextPack.maintenanceRefs || null,
             policyDigest: normalizeString(contextPack.policy?.policyDigest, ""),
             roleMappingDigest: normalizeString(contextPack.roleMapping?.mappingDigest, ""),
             rawExposure: contextPack.rawExposure || {},
@@ -2124,6 +2143,17 @@ class DirectThreadStore {
     return value;
   }
 
+  writeContextMaintenanceArtifact(projectId, threadId, artifactName, value) {
+    writeJsonAtomic(this.contextMaintenancePath(projectId, threadId, artifactName), value);
+    return value;
+  }
+
+  readContextMaintenanceArtifact(projectId, threadId, artifactName) {
+    const targetPath = this.contextMaintenancePath(projectId, threadId, artifactName);
+    if (!fs.existsSync(targetPath)) return null;
+    return readJsonFile(targetPath);
+  }
+
   readRequestManifest(requestManifestId) {
     const row = this.db.prepare("select * from direct_request_manifests where request_manifest_id = ?")
       .get(requireSafeId(requestManifestId, "request manifest"));
@@ -2218,6 +2248,8 @@ class DirectThreadStore {
       contextProjection,
       contextItems,
       currentUserPrompt: preserveString(input.currentUserPrompt),
+      maintenanceRefs: input.maintenanceRefs,
+      maintenanceArtifacts: input.maintenanceArtifacts,
       nowMs: options.nowMs,
     });
     this.writeContextPack(contextPack, options);
@@ -2269,6 +2301,8 @@ class DirectThreadStore {
       policyId: DIRECT_IMPORT_CHECKPOINT_CONTINUATION_POLICY_ID,
       currentUserPrompt: preserveString(input.currentUserPrompt),
       checkpointSeed: seed,
+      maintenanceRefs: input.maintenanceRefs,
+      maintenanceArtifacts: input.maintenanceArtifacts,
       nowMs: options.nowMs,
     });
     this.writeContextPack(contextPack, options);
@@ -2345,6 +2379,8 @@ class DirectThreadStore {
       toolContinuationContext,
       toolContinuationItems,
       currentUserPrompt: "",
+      maintenanceRefs: input.maintenanceRefs,
+      maintenanceArtifacts: input.maintenanceArtifacts,
       nowMs: options.nowMs,
     });
     this.writeContextPack(contextPack, options);
@@ -2467,6 +2503,8 @@ class DirectThreadStore {
       policyId: DIRECT_FORK_START_POLICY_ID,
       currentUserPrompt: preserveString(input.currentUserPrompt),
       forkSeed,
+      maintenanceRefs: input.maintenanceRefs,
+      maintenanceArtifacts: input.maintenanceArtifacts,
       nowMs: options.nowMs,
     });
     this.writeContextPack(contextPack, options);
@@ -2552,6 +2590,8 @@ class DirectThreadStore {
       policyId: DIRECT_DERIVED_PREVIEW_FORK_START_POLICY_ID,
       currentUserPrompt: preserveString(input.currentUserPrompt),
       derivedForkSeed,
+      maintenanceRefs: input.maintenanceRefs,
+      maintenanceArtifacts: input.maintenanceArtifacts,
       nowMs: options.nowMs,
     });
     this.writeContextPack(contextPack, options);
