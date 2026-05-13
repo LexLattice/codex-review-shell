@@ -1,6 +1,11 @@
 "use strict";
 
 const crypto = require("node:crypto");
+const {
+  buildPatchWorkspaceEffectSummary,
+  inspectPatchJournal,
+  providerEnvelopeForEffectSummary,
+} = require("../workspace/mutation-truth");
 
 const DIRECT_PATCH_APPLY_PLAN_SCHEMA = "direct_patch_apply_plan@1";
 const DIRECT_PATCH_APPLY_RESULT_SCHEMA = "direct_codex_patch_apply_result@1";
@@ -341,6 +346,32 @@ async function executeApprovedPatchApplyObligation(options = {}) {
     addedLineCount: Number(file.addedLineCount || 0),
     removedLineCount: Number(file.removedLineCount || 0),
   }));
+  const workspaceEffectSummary = buildPatchWorkspaceEffectSummary({
+    projectId: normalizeString(options.projectId, ""),
+    sessionId: normalizeString(options.sessionId, obligation.sessionId),
+    turnId: normalizeString(options.turnId, obligation.turnId),
+    loopId: normalizeString(obligation.toolLoopId, ""),
+    stepId: normalizeString(obligation.stepId, ""),
+    stepOrdinal: Number(obligation.stepOrdinal || 0) || undefined,
+    sourceArtifactId: resultId,
+    sourceOperationId: normalizeString(options.clientPatchDecisionId, ""),
+    resultId,
+    files,
+    backendCapabilityDigest: applied.backendCapabilities ? sha256(stableStringify(applied.backendCapabilities)) : "",
+    workspaceBindingEvidenceKey: normalizeString(applied.workspaceBindingEvidenceKey, ""),
+    nowMs: options.nowMs,
+  });
+  const patchJournalInspection = inspectPatchJournal({
+    patchPlanId: normalizeString(obligation.patchPlan?.patchPlanId, ""),
+    patchResultId: resultId,
+    journalId: `patch_journal_${sha256(`${obligation.obligationId}:${resultId}`).slice(0, 20)}`,
+    journalStatus: "applied_verified",
+    files,
+    effectSummary: workspaceEffectSummary,
+  });
+  const workspaceEffectProviderEnvelope = providerEnvelopeForEffectSummary(workspaceEffectSummary, {
+    source: "patch_apply",
+  });
   const summary = files.map((file) => `${file.operation} ${file.path}`).join("; ").slice(0, MAX_PATCH_RESULT_SUMMARY_CHARS);
   const providerEnvelope = {
     kind: "apply_patch_result",
@@ -349,6 +380,10 @@ async function executeApprovedPatchApplyObligation(options = {}) {
     operationId: normalizeString(options.clientPatchDecisionId, ""),
     files,
     summary,
+    workspaceEffect: workspaceEffectProviderEnvelope,
+    workspaceEffectSummaryId: workspaceEffectSummary.effectSummaryId,
+    patchJournalInspectionId: patchJournalInspection.inspectionId,
+    providerSawChangedFileContents: false,
     truncated: false,
     rawPathsExposed: false,
     rawPatchIncluded: false,
@@ -364,6 +399,11 @@ async function executeApprovedPatchApplyObligation(options = {}) {
     patchPlanId: normalizeString(obligation.patchPlan?.patchPlanId, ""),
     files,
     summary,
+    workspaceEffectSummary,
+    workspaceEffectSummaryId: workspaceEffectSummary.effectSummaryId,
+    workspaceEffectProviderEnvelope,
+    patchJournalInspection,
+    patchJournalInspectionId: patchJournalInspection.inspectionId,
     providerOutputText,
     providerOutputChars: providerOutputText.length,
     appliedAt: nowIso(options.nowMs),
@@ -426,6 +466,8 @@ function buildPatchApplyContinuationRequest(options = {}) {
       metadata: {
         resultId: obligation.result.resultId,
         patchPlanId: normalizeString(obligation.result.patchPlanId, ""),
+        workspaceEffectSummaryId: normalizeString(obligation.result.workspaceEffectSummaryId, ""),
+        patchJournalInspectionId: normalizeString(obligation.result.patchJournalInspectionId, ""),
         status: normalizeString(obligation.result.status, "applied"),
       },
     },
@@ -434,6 +476,7 @@ function buildPatchApplyContinuationRequest(options = {}) {
       originalRequestRetried: false,
       sideEffectExecuted: true,
       workspaceBackendOnly: true,
+      workspaceEffectSummaryId: normalizeString(obligation.result.workspaceEffectSummaryId, ""),
       continuationLiveSendEnabled: options.continuationLiveSendEnabled === true,
     },
     requestControls: {

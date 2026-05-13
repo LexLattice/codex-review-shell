@@ -131,7 +131,11 @@ function summarizeRepairCounters(turn = {}, nextTool = "") {
     }
     if (tool === "run_command") {
       counters.commandRuntimeMsTotal += Number(result.durationMs || 0) || 0;
-      counters.commandWorkspaceChangedPathsTotal += Number(result.workspaceEffects?.changedPathCount || 0) || 0;
+      counters.commandWorkspaceChangedPathsTotal += Number(
+        result.workspaceEffectSummary?.changedPathCount ||
+        result.workspaceEffects?.changedPathCount ||
+        0,
+      ) || 0;
     }
     if (tool === "read_file") {
       const relPath = normalizeString(result.canonicalEvidenceKey || result.relPath || obligation.approvedRead?.relPath, "");
@@ -226,7 +230,11 @@ function sideEffectStateFromTurn(turn = {}) {
     if (tool === "apply_patch") patch = true;
     if (tool === "run_command") {
       command = true;
-      commandChanged = commandChanged || Number(obligation.result.workspaceEffects?.changedPathCount || 0) > 0;
+      commandChanged = commandChanged || Number(
+        obligation.result.workspaceEffectSummary?.changedPathCount ||
+        obligation.result.workspaceEffects?.changedPathCount ||
+        0,
+      ) > 0;
     }
   }
   if (patch && command) return "workspace_patch_and_command_effects";

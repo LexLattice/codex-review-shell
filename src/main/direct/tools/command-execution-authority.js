@@ -2,6 +2,11 @@
 
 const crypto = require("node:crypto");
 const { scanTextForRawExposure } = require("../thread/renderer-transcript-projection");
+const {
+  buildCommandWorkspaceEffectSummary,
+  postSideEffectPolicyViolation,
+  providerEnvelopeForEffectSummary,
+} = require("../workspace/mutation-truth");
 
 const DIRECT_COMMAND_EXECUTION_PLAN_SCHEMA = "direct_command_execution_plan@1";
 const DIRECT_COMMAND_EXECUTION_RESULT_SCHEMA = "direct_codex_command_execution_result@1";
@@ -572,6 +577,34 @@ async function executeApprovedCommandExecutionObligation(options = {}) {
         scanScope: "none",
         scanFailed: true,
       };
+  const workspaceEffectSummary = buildCommandWorkspaceEffectSummary({
+    projectId: normalizeString(options.projectId, ""),
+    sessionId: normalizeString(options.sessionId, obligation.sessionId),
+    turnId: normalizeString(options.turnId, obligation.turnId),
+    loopId: normalizeString(obligation.toolLoopId, ""),
+    stepId: normalizeString(obligation.stepId, ""),
+    stepOrdinal: Number(obligation.stepOrdinal || 0) || undefined,
+    sourceArtifactId: resultId,
+    sourceOperationId: normalizeString(options.clientCommandDecisionId, ""),
+    resultId,
+    workspaceEffects,
+    scanCapabilities: isPlainObject(executed.workspaceEffectScanCapabilities) ? executed.workspaceEffectScanCapabilities : undefined,
+    backendCapabilityDigest: isPlainObject(executed.backendCapabilities) ? sha256(stableStringify(executed.backendCapabilities)) : "",
+    workspaceBindingEvidenceKey: normalizeString(executed.workspaceBindingEvidenceKey, ""),
+    scanConsistency: normalizeString(executed.workspaceEffectScanConsistency, "stable"),
+    workspaceWritePolicy: normalizeString(commandPlan.workspaceWritePolicy, "writes_possible_with_warning"),
+    startedAt: normalizeString(executed.startedAt, ""),
+    completedAt: normalizeString(executed.completedAt, nowIso(options.nowMs)),
+    nowMs: options.nowMs,
+  });
+  const workspaceEffectProviderEnvelope = providerEnvelopeForEffectSummary(workspaceEffectSummary, {
+    source: "run_command",
+  });
+  const postPolicyViolation = postSideEffectPolicyViolation(
+    workspaceEffectSummary,
+    "run_command",
+    normalizeString(commandPlan.workspaceWritePolicy, "writes_possible_with_warning"),
+  );
   const providerEnvelope = {
     kind: "run_command_result",
     status,
@@ -593,6 +626,9 @@ async function executeApprovedCommandExecutionObligation(options = {}) {
     workspaceChangesDetected: Number(workspaceEffects.changedPathCount || 0) > 0,
     workspaceChangesPreview: Array.isArray(workspaceEffects.changedPathsPreview) ? workspaceEffects.changedPathsPreview.slice(0, 20) : [],
     workspaceChangesTruncated: workspaceEffects.changedPathsTruncated === true,
+    workspaceEffect: workspaceEffectProviderEnvelope,
+    workspaceEffectSummaryId: workspaceEffectSummary.effectSummaryId,
+    postSideEffectPolicyViolation: postPolicyViolation,
     sideEffectPossible: true,
     networkAccessNotProvenAbsent: true,
     rawPathsExposed: false,
@@ -616,6 +652,28 @@ async function executeApprovedCommandExecutionObligation(options = {}) {
       outputRedacted: true,
       providerContinuationBlocked: true,
       workspaceChangesDetected: Number(workspaceEffects.changedPathCount || 0) > 0,
+      workspaceEffectSummaryId: workspaceEffectSummary.effectSummaryId,
+      postSideEffectPolicyViolation: postPolicyViolation,
+      rawPathsExposed: false,
+    });
+    providerOutputTruncated = false;
+  }
+  const providerContinuationBlockedByPolicy = [
+    "sensitive_path_changed",
+    "app_private_path_changed",
+    "vcs_internal_changed",
+    "must_not_write_changed_files",
+    "workspace_changes_truncated_unknown",
+  ].includes(postPolicyViolation);
+  if (providerContinuationBlockedByPolicy) {
+    providerOutputText = JSON.stringify({
+      kind: "run_command_result",
+      status: "command_workspace_policy_blocked",
+      commandPlanId: normalizeString(commandPlan.commandPlanId, ""),
+      providerContinuationBlocked: true,
+      workspaceChangesDetected: Number(workspaceEffects.changedPathCount || 0) > 0,
+      workspaceEffectSummaryId: workspaceEffectSummary.effectSummaryId,
+      postSideEffectPolicyViolation: postPolicyViolation,
       rawPathsExposed: false,
     });
     providerOutputTruncated = false;
@@ -646,6 +704,10 @@ async function executeApprovedCommandExecutionObligation(options = {}) {
       hashMode: "none",
     },
     workspaceEffects,
+    workspaceEffectSummary,
+    workspaceEffectSummaryId: workspaceEffectSummary.effectSummaryId,
+    workspaceEffectProviderEnvelope,
+    postSideEffectPolicyViolation: postPolicyViolation,
     commandOutputRedaction: redaction,
     backendCapabilities: isPlainObject(executed.backendCapabilities) ? executed.backendCapabilities : {},
     backgroundProcessCheck: isPlainObject(executed.backgroundProcessCheck) ? executed.backgroundProcessCheck : {
@@ -655,11 +717,13 @@ async function executeApprovedCommandExecutionObligation(options = {}) {
     providerOutputText,
     providerOutputChars: providerOutputText.length,
     providerOutputTruncated,
-    providerContinuationBlocked: !redaction.providerOutputAllowed,
+    providerContinuationBlocked: !redaction.providerOutputAllowed || providerContinuationBlockedByPolicy,
     recordedAt: nowIso(options.nowMs),
     sideEffectExecuted: true,
-    commandExecutionState: redaction.providerOutputAllowed ? status : "redaction_blocked",
-    commandContinuationState: redaction.providerOutputAllowed ? "not_built" : "blocked",
+    commandExecutionState: redaction.providerOutputAllowed
+      ? (providerContinuationBlockedByPolicy ? "completed_with_policy_blocked_workspace_changes" : status)
+      : "redaction_blocked",
+    commandContinuationState: redaction.providerOutputAllowed && !providerContinuationBlockedByPolicy ? "not_built" : "blocked",
     rawWorkspacePathExposed: false,
     rawCommandOutputHashExposed: false,
   };
@@ -674,11 +738,13 @@ async function executeApprovedCommandExecutionObligation(options = {}) {
     resultRecordedAt: result.recordedAt,
   }, {
     ...options,
-    nextTurnState: redaction.providerOutputAllowed ? "continuation_ready" : "failed",
-    turnPatch: redaction.providerOutputAllowed ? undefined : {
+    nextTurnState: redaction.providerOutputAllowed && !providerContinuationBlockedByPolicy ? "continuation_ready" : "failed",
+    turnPatch: redaction.providerOutputAllowed && !providerContinuationBlockedByPolicy ? undefined : {
       error: {
-        code: "command_output_redaction_blocked",
-        message: "Command output was blocked by redaction policy; no provider continuation was sent.",
+        code: providerContinuationBlockedByPolicy ? "command_workspace_policy_blocked" : "command_output_redaction_blocked",
+        message: providerContinuationBlockedByPolicy
+          ? "Command changed a policy-blocked workspace path; no provider continuation was sent."
+          : "Command output was blocked by redaction policy; no provider continuation was sent.",
       },
     },
   });
@@ -696,7 +762,9 @@ function buildCommandExecutionContinuationRequest(options = {}) {
   }
   if (obligation.result.providerContinuationBlocked === true) {
     const error = new Error("Command continuation is blocked by command output redaction policy.");
-    error.code = "command_output_redaction_blocked";
+    error.code = normalizeString(obligation.result.postSideEffectPolicyViolation, "") !== "none"
+      ? "command_workspace_policy_blocked"
+      : "command_output_redaction_blocked";
     throw error;
   }
   const parsed = assertCommandObligation(obligation);
@@ -725,6 +793,7 @@ function buildCommandExecutionContinuationRequest(options = {}) {
       metadata: {
         resultId: obligation.result.resultId,
         commandPlanId: normalizeString(obligation.result.commandPlanId, ""),
+        workspaceEffectSummaryId: normalizeString(obligation.result.workspaceEffectSummaryId, ""),
         status: normalizeString(obligation.result.status, ""),
       },
     },
@@ -734,6 +803,7 @@ function buildCommandExecutionContinuationRequest(options = {}) {
       sideEffectExecuted: true,
       workspaceBackendOnly: true,
       commandExecutedLocally: true,
+      workspaceEffectSummaryId: normalizeString(obligation.result.workspaceEffectSummaryId, ""),
       continuationLiveSendEnabled: options.continuationLiveSendEnabled === true,
     },
     requestControls: {

@@ -24,6 +24,12 @@ const {
   createZeroRecoverySentinelCounters,
   validateDirectRecoveryReport,
 } = require("../src/main/direct/recovery/recovery-scanner");
+const {
+  buildCommandWorkspaceEffectSummary,
+  buildPatchWorkspaceEffectSummary,
+  inspectPatchJournal,
+  providerEnvelopeForEffectSummary,
+} = require("../src/main/direct/workspace/mutation-truth");
 
 const USER_DATA_ROOT_ENV_VAR = "CODEX_REVIEW_SHELL_USER_DATA_ROOT";
 
@@ -128,6 +134,21 @@ function toolEvent(caseId, toolName) {
 
 function resultFor(toolName, obligation, caseId, options = {}) {
   if (toolName === "apply_patch") {
+    const files = [{ path: "src/demo.txt", operation: "update", addedLineCount: 1, removedLineCount: 1 }];
+    const workspaceEffectSummary = buildPatchWorkspaceEffectSummary({
+      sessionId: obligation.sessionId,
+      turnId: obligation.turnId,
+      sourceArtifactId: `patch_result_${safeIdPart(caseId)}`,
+      files,
+    });
+    const patchJournalInspection = inspectPatchJournal({
+      patchPlanId: `patch_plan_${safeIdPart(caseId)}`,
+      patchResultId: `patch_result_${safeIdPart(caseId)}`,
+      journalId: `patch_journal_${safeIdPart(caseId)}`,
+      journalStatus: options.journalStatus || "applied",
+      files,
+      effectSummary: workspaceEffectSummary,
+    });
     return {
       schema: "direct_codex_patch_apply_result@1",
       resultId: `patch_result_${safeIdPart(caseId)}`,
@@ -136,8 +157,13 @@ function resultFor(toolName, obligation, caseId, options = {}) {
       status: "applied",
       resultClass: "patch_applied",
       patchPlanId: `patch_plan_${safeIdPart(caseId)}`,
-      files: [{ path: "src/demo.txt", operation: "update", addedLineCount: 1, removedLineCount: 1 }],
-      providerOutputText: JSON.stringify({ kind: "apply_patch_result", status: "applied", rawPathsExposed: false }),
+      files,
+      workspaceEffectSummary,
+      workspaceEffectSummaryId: workspaceEffectSummary.effectSummaryId,
+      workspaceEffectProviderEnvelope: providerEnvelopeForEffectSummary(workspaceEffectSummary),
+      patchJournalInspection,
+      patchJournalInspectionId: patchJournalInspection.inspectionId,
+      providerOutputText: JSON.stringify({ kind: "apply_patch_result", status: "applied", workspaceEffectSummaryId: workspaceEffectSummary.effectSummaryId, rawPathsExposed: false }),
       providerOutputChars: 76,
       appliedAt: nowIso(),
       sideEffectExecuted: true,
@@ -159,6 +185,14 @@ function resultFor(toolName, obligation, caseId, options = {}) {
           scanScope: "workspace-index",
           scanFailed: false,
         };
+    const workspaceEffectSummary = options.omitWorkspaceEffects
+      ? undefined
+      : buildCommandWorkspaceEffectSummary({
+          sessionId: obligation.sessionId,
+          turnId: obligation.turnId,
+          sourceArtifactId: `command_result_${safeIdPart(caseId)}`,
+          workspaceEffects,
+        });
     return {
       schema: "direct_codex_command_execution_result@1",
       resultId: `command_result_${safeIdPart(caseId)}`,
@@ -175,6 +209,11 @@ function resultFor(toolName, obligation, caseId, options = {}) {
       stdout: { byteCount: 12, truncated: false, hashMode: "none" },
       stderr: { byteCount: 0, truncated: false, hashMode: "none" },
       workspaceEffects,
+      ...(workspaceEffectSummary ? {
+        workspaceEffectSummary,
+        workspaceEffectSummaryId: workspaceEffectSummary.effectSummaryId,
+        workspaceEffectProviderEnvelope: providerEnvelopeForEffectSummary(workspaceEffectSummary),
+      } : {}),
       commandOutputRedaction: { scanned: true, status: "passed", providerOutputAllowed: true },
       providerOutputText: JSON.stringify({ kind: "run_command_result", status: "completed_exit_zero", rawPathsExposed: false }),
       providerOutputChars: 91,
@@ -462,7 +501,7 @@ const CASES = [
   { caseId: "command_started_no_terminal", group: "command", toolName: "run_command", stage: "decision_no_result", commandStarted: true, expect: { recoveryState: "command_started_no_terminal", sideEffectState: "command_may_have_run" } },
   { caseId: "command_completed_no_result", group: "command", toolName: "run_command", stage: "decision_no_result", commandCompleted: true, expect: { recoveryState: "command_completed_no_result", sideEffectState: "command_ran" } },
   { caseId: "command_result_no_continuation", group: "command", toolName: "run_command", stage: "result_no_context", expect: { recoveryState: "result_recorded_no_context", sideEffectState: "command_ran", commandWorkspaceEffectState: "scan_passed" } },
-  { caseId: "command_effect_scan_missing", group: "command", toolName: "run_command", stage: "result_no_context", omitWorkspaceEffects: true, expect: { recoveryState: "result_recorded_no_context", commandWorkspaceEffectState: "scan_missing" } },
+  { caseId: "command_effect_scan_missing", group: "command", toolName: "run_command", stage: "result_no_context", omitWorkspaceEffects: true, expect: { recoveryState: "command_ran_effect_summary_missing", commandWorkspaceEffectState: "scan_missing", workspaceEffectRecoveryState: "effect_summary_missing" } },
   { caseId: "command_sent_no_bytes", group: "command", toolName: "run_command", stage: "sent_no_bytes", expect: { recoveryState: "continuation_sent_no_bytes", sideEffectState: "command_ran" } },
   { caseId: "command_stream_interrupted", group: "command", toolName: "run_command", stage: "stream_interrupted", expect: { recoveryState: "stream_interrupted", sideEffectState: "command_ran" } },
   { caseId: "text_only_completed", group: "text_only", stage: "terminal", expect: { recoveryState: "terminal", authorityKind: "text_only", composerAllowed: true } },
