@@ -180,6 +180,10 @@ function directImplementationLaneReadiness({ activation = {}, sessionStore = {},
     normalizeString(liveTextStatus.commandExecutionContinuation?.status, "") === "ready" &&
     !hasLiveBlocker &&
     !degraded;
+  const canApprovePatch = selected &&
+    normalizeString(liveTextStatus.patchApplyContinuation?.status, "") === "ready" &&
+    !hasLiveBlocker &&
+    !degraded;
   return {
     tier: "implementation-lane",
     status: selected ? (degraded ? "degraded" : "enabled") : (activation.eligible ? "eligible" : "blocked"),
@@ -191,9 +195,12 @@ function directImplementationLaneReadiness({ activation = {}, sessionStore = {},
     canStartTextTurn: canStartText,
     canShowObligations: selected || eligible,
     canApproveReadFile,
+    canApprovePatch,
+    canApprovePatchApply: canApprovePatch,
     canApproveCommand,
+    canApproveRunCommand: canApproveCommand,
     canBuildContinuationContext: canApproveReadFile,
-    canSendContinuation: canApproveReadFile,
+    canSendContinuation: canApproveReadFile || canApprovePatch || canApproveCommand,
     blockers: safeBlockers,
     warnings: [],
     missingImplementationOnlyGates: safeBlockers,
@@ -220,6 +227,14 @@ function directImplementationLaneReadiness({ activation = {}, sessionStore = {},
       shellFalseRequired: true,
       networkIsolationProven: false,
       blockerCodes: canApproveCommand ? [] : safeBlockers,
+    },
+    patchApply: {
+      canApprove: canApprovePatch,
+      canApply: canApprovePatch,
+      continuationEvidenceState: normalizeString(liveTextStatus.patchApplyContinuation?.evidenceState, "missing"),
+      deleteDeferred: true,
+      workspaceEffectScanRequired: true,
+      blockerCodes: canApprovePatch ? [] : safeBlockers,
     },
   };
 }

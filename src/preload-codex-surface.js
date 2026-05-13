@@ -12,6 +12,10 @@ contextBridge.exposeInMainWorld("codexSurfaceBridge", {
   focusSubAgent: (request) => ipcRenderer.invoke("codex-surface:focus-sub-agent", request),
   getRuntimePreferences: (request) => ipcRenderer.invoke("codex-runtime-preferences:get", request || {}),
   updateRuntimePreferences: (request) => ipcRenderer.invoke("codex-runtime-preferences:update", request || {}),
+  getDirectImplementationLaneUiStatus: (projectId) => ipcRenderer.invoke("direct-ui:implementation-status", { projectId }),
+  readDirectImplementationOperationHistory: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-ui:operation-history", { ...options, projectId }),
+  getDirectImplementationPolicyView: (projectId) => ipcRenderer.invoke("direct-ui:policy-readonly-view", { projectId }),
   openWorkspaceLink: (url, options = {}) => ipcRenderer.invoke("link:open", { ...options, url }),
   openExternalUrl: (url) => ipcRenderer.invoke("external:open-url", { url }),
   revealProjectFile: (projectId, relPath) => ipcRenderer.invoke("worktree:reveal-file", { projectId, relPath }),

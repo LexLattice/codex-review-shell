@@ -55,6 +55,11 @@ const {
   normalizeCodexRuntimeMode: normalizeDirectRuntimeModeForStatus,
 } = require("./main/direct/runtime/runtime-status");
 const {
+  buildDirectImplementationLaneUiStatus,
+  buildDirectPolicyReadOnlyView,
+  projectOperationHistoryPage,
+} = require("./main/direct/ui/implementation-lane-ui");
+const {
   DirectExperimentalActivationStore,
   activeDirectTurnCountForProject,
   activationProjectBindingDigest,
@@ -4470,6 +4475,40 @@ ipcMain.handle("workspace:status", async (_event, payload) => {
 ipcMain.handle("direct-runtime:status", async (_event, payload) => {
   const project = await getProjectById(payload?.projectId);
   return buildDirectRuntimeStatusForProject(project);
+});
+
+ipcMain.handle("direct-ui:implementation-status", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  const runtimeStatus = buildDirectRuntimeStatusForProject(project);
+  return buildDirectImplementationLaneUiStatus({ project, runtimeStatus });
+});
+
+ipcMain.handle("direct-ui:operation-history", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  const cursorOffset = Number.parseInt(String(payload?.cursor || ""), 10);
+  const offset = Number.isFinite(cursorOffset) ? cursorOffset : payload?.offset;
+  const params = {
+    limit: payload?.limit,
+    offset,
+    operationTypes: payload?.operationTypes,
+    statuses: payload?.statuses,
+  };
+  const operationHistory = await ensureDirectThreadWorkbenchController().readOperationHistory(project, params);
+  return projectOperationHistoryPage({
+    projectId: project.id,
+    operationHistory,
+    request: {
+      scope: payload?.scope || "active-turn",
+      limit: payload?.limit,
+      offset,
+    },
+  });
+});
+
+ipcMain.handle("direct-ui:policy-readonly-view", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  const runtimeStatus = buildDirectRuntimeStatusForProject(project);
+  return buildDirectPolicyReadOnlyView({ project, runtimeStatus });
 });
 
 ipcMain.handle("direct-runtime:select-text-only", async (_event, payload) => {
