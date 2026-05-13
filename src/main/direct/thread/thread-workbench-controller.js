@@ -40,6 +40,9 @@ const PREVIEW_KINDS = new Set([
   FORK_PREVIEW_PROJECTION_KIND,
 ]);
 const FORK_START_CONFIRMATION_TTL_MS = 2 * 60 * 1000;
+const DIRECT_FORK_PREVIEW_START_REQUEST_SHAPE = "direct_fork_preview_start_live_text@1";
+const DIRECT_MERGE_PREVIEW_START_REQUEST_SHAPE = "direct_merge_preview_start_live_text@1";
+const DIRECT_PRUNE_PREVIEW_START_REQUEST_SHAPE = "direct_prune_preview_start_live_text@1";
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -74,6 +77,13 @@ function makeError(code, message = code) {
   const error = new Error(message);
   error.code = code;
   return error;
+}
+
+function requestShapeEvidenceRefForPreviewKind(sourcePreviewKind) {
+  const kind = normalizeString(sourcePreviewKind, "");
+  if (kind === MERGE_PREVIEW_PROJECTION_KIND) return DIRECT_MERGE_PREVIEW_START_REQUEST_SHAPE;
+  if (kind === PRUNE_PREVIEW_PROJECTION_KIND) return DIRECT_PRUNE_PREVIEW_START_REQUEST_SHAPE;
+  return DIRECT_FORK_PREVIEW_START_REQUEST_SHAPE;
 }
 
 function pageParams(params = {}, fallbackLimit = 60) {
@@ -744,7 +754,11 @@ class DirectThreadWorkbenchController {
     const preview = this.threadStore.previewProjectionRecord(projectId, previewId);
     const seedItem = preview.items.find((item) => item.itemKind === "fork_seed_metadata") || preview.items[0] || {};
     const sourceKind = normalizeString(seedItem.seed?.sourceKind || preview.projection.source?.sourceKind, "direct_thread");
-    return { ...preview, seedItem, sourceKind };
+    const sourcePreviewOperationId = normalizeString(
+      seedItem.seed?.sourcePreviewOperationId || this.threadStore.previewOperationIdForProjection(preview.projection.projectionId),
+      "",
+    );
+    return { ...preview, seedItem, sourceKind, sourcePreviewOperationId };
   }
 
   derivedPreviewRecord(projectId, previewId, sourcePreviewKind) {
@@ -777,6 +791,7 @@ class DirectThreadWorkbenchController {
         ? "merge_preview_fork_start_deferred"
         : (preview.sourceKind === "prune_preview" ? "prune_preview_fork_start_deferred" : "fork_preview_source_kind_unsupported"));
     }
+    if (!preview.sourcePreviewOperationId) throw makeError("source_preview_operation_missing");
     const liveText = this.resolveLiveTextController();
     const status = typeof liveText.assertReady === "function"
       ? liveText.assertReady(project)
@@ -795,10 +810,14 @@ class DirectThreadWorkbenchController {
       operationLedgerHeadDigest: revision.operationLedgerHeadDigest,
       sourcePreviewId,
       sourcePreviewDigest: preview.projection.projectionDigest,
+      sourcePreviewOperationId: preview.sourcePreviewOperationId,
+      sourcePreviewVersion: normalizeString(preview.projection.projectionVersion, ""),
+      sourcePreviewBuilderVersion: normalizeString(preview.projection.builderVersion, ""),
+      previewPolicyDigest: normalizeString(preview.projection.policyDigest, ""),
       targetRuntime: "direct-experimental/live-text",
       selectedModel: model,
       modelEvidenceRef: normalizeString(status.evidenceId, ""),
-      requestShapeEvidenceRef: "direct_fork_start_live_text@1",
+      requestShapeEvidenceRef: DIRECT_FORK_PREVIEW_START_REQUEST_SHAPE,
       endpointEvidenceRef: "",
       expiresAtMs: nowMs + FORK_START_CONFIRMATION_TTL_MS,
     };
@@ -812,6 +831,10 @@ class DirectThreadWorkbenchController {
       operationLedgerHeadDigest: confirmation.operationLedgerHeadDigest,
       sourcePreviewId,
       sourcePreviewDigest: preview.projection.projectionDigest,
+      sourcePreviewOperationId: preview.sourcePreviewOperationId,
+      sourcePreviewVersion: confirmation.sourcePreviewVersion,
+      sourcePreviewBuilderVersion: confirmation.sourcePreviewBuilderVersion,
+      previewPolicyDigest: confirmation.previewPolicyDigest,
       rendererSafeSourceLabel: normalizeString(preview.seedItem.threadId, "Fork preview"),
       targetRuntime: "direct-experimental/live-text",
       selectedModel: model,
@@ -868,10 +891,13 @@ class DirectThreadWorkbenchController {
       sourcePreviewKind,
       sourcePreviewDigest: preview.projection.projectionDigest,
       sourcePreviewOperationId: preview.sourcePreviewOperationId,
+      sourcePreviewVersion: normalizeString(preview.projection.projectionVersion, ""),
+      sourcePreviewBuilderVersion: normalizeString(preview.projection.builderVersion, ""),
+      previewPolicyDigest: normalizeString(preview.projection.policyDigest, ""),
       targetRuntime: "direct-experimental/live-text",
       selectedModel: model,
       modelEvidenceRef: normalizeString(status.evidenceId, ""),
-      requestShapeEvidenceRef: "direct_derived_preview_fork_start_live_text@1",
+      requestShapeEvidenceRef: requestShapeEvidenceRefForPreviewKind(sourcePreviewKind),
       endpointEvidenceRef: "",
       expiresAtMs: nowMs + FORK_START_CONFIRMATION_TTL_MS,
     };
@@ -887,6 +913,9 @@ class DirectThreadWorkbenchController {
       sourcePreviewKind,
       sourcePreviewDigest: preview.projection.projectionDigest,
       sourcePreviewOperationId: preview.sourcePreviewOperationId,
+      sourcePreviewVersion: confirmation.sourcePreviewVersion,
+      sourcePreviewBuilderVersion: confirmation.sourcePreviewBuilderVersion,
+      previewPolicyDigest: confirmation.previewPolicyDigest,
       rendererSafeSourceLabel: sourcePreviewKind === MERGE_PREVIEW_PROJECTION_KIND ? "Merge preview" : "Prune preview",
       targetRuntime: "direct-experimental/live-text",
       selectedModel: model,
@@ -964,6 +993,7 @@ class DirectThreadWorkbenchController {
       ...input,
       project,
       sourcePreviewId: confirmation.sourcePreviewId,
+      sourcePreviewOperationId: confirmation.sourcePreviewOperationId,
       expectedSourcePreviewDigest: confirmation.sourcePreviewDigest,
       selectedModel: confirmation.selectedModel,
       modelEvidenceRef: confirmation.modelEvidenceRef,

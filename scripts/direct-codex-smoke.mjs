@@ -1381,6 +1381,14 @@ try {
       assert(forkedSession.composerState === "enabled", "Forked session composer should enable only after terminal completion.");
       const forkedTurn = forkStartSessionStore.readTurn(forkStartResult.sessionId, forkStartResult.turnId);
       assert(forkedTurn.requestShape.previousResponseIdUsed === false, "Forked first turn must record no provider continuity.");
+      assert(forkedTurn.requestShape.schema === "direct_fork_preview_start_live_text@1", "Fork preview starts must use source-kind-specific request evidence.");
+      const forkStartManifest = forkStartThreadStore.readRequestManifest(forkedTurn.requestManifestId);
+      assert(forkStartManifest.requestShapeClass === "direct_fork_preview_start_live_text@1", "Fork preview request manifest must record source-kind-specific request class.");
+      assert(forkStartManifest.providerInputProjection?.requestShapeClass === "direct_fork_preview_start_live_text@1", "Fork preview provider input projection must record source-kind-specific request class.");
+      const forkSeedArtifact = JSON.parse(fs.readFileSync(forkStartThreadStore.forkStartPath("project_fork_start", forkStartResult.forkStartId, "fork-seed.json"), "utf8"));
+      assert(forkSeedArtifact.seedPolicyId === "direct_fresh_fork_from_fork_preview@1", "Fork seed must record source-kind-specific seed policy.");
+      assert(forkSeedArtifact.sourcePreviewOperationId === forkStartPreviewOperation.operationId, "Fork seed must retain the source preview operation id.");
+      assert(forkSeedArtifact.sourceToolResultsIncluded === false && forkSeedArtifact.sourceSystemPolicyIncluded === false, "Fork seed must not silently include source tool/system authority.");
       const forkStartStatus = await forkWorkbenchController.readForkStartStatus({ id: "project_fork_start" }, forkStartResult.forkStartId);
       assert(forkStartStatus.artifacts.contextPackStored === true && forkStartStatus.artifacts.requestManifestStored === true, "Fork-start status must expose durable context/request artifacts without text.");
       const postForkSnapshot = await forkWorkbenchController.getSnapshot({ id: "project_fork_start" }, { refresh: true });
@@ -1422,6 +1430,14 @@ try {
       assert(mergeForkSession.sourceClass === "forked-direct-native", "Derived merge fork must create a forked direct-native session.");
       assert(mergeForkSession.providerContinuityAvailable === false, "Derived merge fork must not claim provider continuity.");
       assert(mergeForkSession.composerState === "enabled_after_completed_first_turn", "Derived merge fork composer should enable only after terminal completion.");
+      const mergeForkTurn = forkStartSessionStore.readTurn(mergeForkResult.sessionId, mergeForkResult.turnId);
+      assert(mergeForkTurn.requestShape.schema === "direct_merge_preview_start_live_text@1", "Merge preview starts must use merge-specific request evidence.");
+      const mergeManifest = forkStartThreadStore.readRequestManifest(mergeForkTurn.requestManifestId);
+      assert(mergeManifest.requestShapeClass === "direct_merge_preview_start_live_text@1", "Merge preview request manifest must record source-kind-specific request class.");
+      const mergeSeedArtifact = JSON.parse(fs.readFileSync(forkStartThreadStore.forkStartPath("project_fork_start", mergeForkResult.forkStartId, "derived-fork-seed.json"), "utf8"));
+      assert(mergeSeedArtifact.seedPolicyId === "direct_fresh_fork_from_merge_preview@1", "Merge seed must record source-kind-specific seed policy.");
+      assert(mergeSeedArtifact.sourcePreviewOperationId === mergePreviewOperation.operationId, "Merge seed must retain the source preview operation id.");
+      assert(mergeSeedArtifact.mergeOrdering?.orderingDigest, "Merge seed must record deterministic ordering evidence.");
       const mergeRetryFetchCallsBefore = forkStartFetchCalls;
       const mergeForkRetry = await forkLiveController.startForkFromDerivedPreview({
         project: { id: "project_fork_start" },
@@ -1464,6 +1480,13 @@ try {
         selectedModel: prunePreparation.selectedModel,
       });
       assert(pruneForkResult.status === "completed", "Expected prune preview fork start to complete through fake transport.");
+      const pruneForkTurn = forkStartSessionStore.readTurn(pruneForkResult.sessionId, pruneForkResult.turnId);
+      assert(pruneForkTurn.requestShape.schema === "direct_prune_preview_start_live_text@1", "Prune preview starts must use prune-specific request evidence.");
+      const pruneManifest = forkStartThreadStore.readRequestManifest(pruneForkTurn.requestManifestId);
+      assert(pruneManifest.requestShapeClass === "direct_prune_preview_start_live_text@1", "Prune preview request manifest must record source-kind-specific request class.");
+      const pruneSeedArtifact = JSON.parse(fs.readFileSync(forkStartThreadStore.forkStartPath("project_fork_start", pruneForkResult.forkStartId, "derived-fork-seed.json"), "utf8"));
+      assert(pruneSeedArtifact.seedPolicyId === "direct_fresh_fork_from_prune_preview@1", "Prune seed must record source-kind-specific seed policy.");
+      assert(pruneSeedArtifact.includedEvidence.omissionMarkerCount > 0, "Prune seed must retain visible omission evidence.");
       const pruneForkRequestBody = forkStartRequestBodies.at(-1);
       assert(pruneForkRequestBody.input[0].content[0].text.includes("Source preview kind: prune_preview@1"), "Derived prune fork seed must cite prune preview kind.");
       assert(pruneForkRequestBody.input[0].content[0].text.includes("OMISSION MARKER"), "Derived prune fork seed must carry visible omission evidence.");

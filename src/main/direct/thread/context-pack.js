@@ -22,6 +22,9 @@ const DIRECT_PATCH_APPLY_CONTINUATION_POLICY_ID = "direct_patch_apply_continuati
 const DIRECT_COMMAND_EXECUTION_CONTINUATION_POLICY_ID = "direct_command_execution_continuation@1";
 const DIRECT_FORK_START_POLICY_ID = "direct_fork_start_from_preview@1";
 const DIRECT_DERIVED_PREVIEW_FORK_START_POLICY_ID = "direct_derived_preview_fork_start@1";
+const DIRECT_FRESH_FORK_FROM_FORK_PREVIEW_POLICY_ID = "direct_fresh_fork_from_fork_preview@1";
+const DIRECT_FRESH_FORK_FROM_MERGE_PREVIEW_POLICY_ID = "direct_fresh_fork_from_merge_preview@1";
+const DIRECT_FRESH_FORK_FROM_PRUNE_PREVIEW_POLICY_ID = "direct_fresh_fork_from_prune_preview@1";
 const DIRECT_CONTEXT_ROLE_MAPPING_ID = "direct_context_role_mapping@1";
 const DIRECT_HARNESS_POLICY_ID = "direct_harness_context_policy@1";
 const MAX_CONTEXT_PACK_CHARS = 128 * 1024;
@@ -195,9 +198,10 @@ function policyDefinition(policyId) {
       commandResultEvidenceAllowed: true,
     };
   }
-  if (policyId === DIRECT_FORK_START_POLICY_ID) {
+  if (policyId === DIRECT_FORK_START_POLICY_ID || policyId === DIRECT_FRESH_FORK_FROM_FORK_PREVIEW_POLICY_ID) {
     return {
       ...common,
+      policyId,
       policyVersion: "1",
       purpose: "fork_start",
       sourceArtifactKind: "fork_seed",
@@ -206,9 +210,14 @@ function policyDefinition(policyId) {
       toolResultEvidenceAllowed: false,
     };
   }
-  if (policyId === DIRECT_DERIVED_PREVIEW_FORK_START_POLICY_ID) {
+  if (
+    policyId === DIRECT_DERIVED_PREVIEW_FORK_START_POLICY_ID ||
+    policyId === DIRECT_FRESH_FORK_FROM_MERGE_PREVIEW_POLICY_ID ||
+    policyId === DIRECT_FRESH_FORK_FROM_PRUNE_PREVIEW_POLICY_ID
+  ) {
     return {
       ...common,
+      policyId,
       policyVersion: "1",
       purpose: "derived_preview_fork_start",
       sourceArtifactKind: "derived_fork_seed",
@@ -1099,6 +1108,9 @@ module.exports = {
   DIRECT_COMMAND_EXECUTION_CONTINUATION_POLICY_ID,
   DIRECT_DERIVED_PREVIEW_FORK_START_POLICY_ID,
   DIRECT_FORK_START_POLICY_ID,
+  DIRECT_FRESH_FORK_FROM_FORK_PREVIEW_POLICY_ID,
+  DIRECT_FRESH_FORK_FROM_MERGE_PREVIEW_POLICY_ID,
+  DIRECT_FRESH_FORK_FROM_PRUNE_PREVIEW_POLICY_ID,
   DIRECT_HARNESS_POLICY_ID,
   DIRECT_IMPORT_CHECKPOINT_CONTINUATION_POLICY_ID,
   DIRECT_PATCH_APPLY_CONTINUATION_POLICY_ID,

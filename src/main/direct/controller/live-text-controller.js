@@ -44,6 +44,9 @@ const {
 const { normalizeCodexBinding } = require("../runtime/runtime-status");
 
 const DIRECT_LIVE_TEXT_SURFACE_TRANSPORT = "direct-live-text";
+const DIRECT_FORK_PREVIEW_START_REQUEST_SHAPE = "direct_fork_preview_start_live_text@1";
+const DIRECT_MERGE_PREVIEW_START_REQUEST_SHAPE = "direct_merge_preview_start_live_text@1";
+const DIRECT_PRUNE_PREVIEW_START_REQUEST_SHAPE = "direct_prune_preview_start_live_text@1";
 const ACTIVE_TURN_STATES = new Set([
   "created",
   "request_built",
@@ -106,6 +109,51 @@ function boundedPositiveInteger(value, fallback, min = 1, max = 10_000) {
   const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
   return Math.max(min, Math.min(max, Math.floor(number)));
+}
+
+function derivedPreviewForkStartRequestShapeClassForKind(sourcePreviewKind) {
+  return normalizeString(sourcePreviewKind, "") === "merge_preview"
+    ? DIRECT_MERGE_PREVIEW_START_REQUEST_SHAPE
+    : DIRECT_PRUNE_PREVIEW_START_REQUEST_SHAPE;
+}
+
+function firstForkTurnTerminalKind(result = {}, assistantText = "", unsupportedTool = false) {
+  if (unsupportedTool) return "tool_call_unsupported";
+  if (!assistantText && result.terminal?.state === "completed") return "completed_empty_output";
+  const terminal = isPlainObject(result.terminal) ? result.terminal : {};
+  const terminalCode = normalizeString(terminal.error?.code || result.error?.code, "");
+  if (terminalCode === "response_incomplete") return "response_incomplete";
+  if (terminalCode === "content_filter" || terminalCode === "content_filter_terminal") return "content_filter_terminal";
+  if (terminalCode === "max_output" || terminalCode === "max_output_terminal") return "max_output_terminal";
+  if (terminalCode === "empty_output" || terminalCode === "empty_output_terminal") return "completed_empty_output";
+  if (terminalCode === "stream_interrupted") return "stream_interrupted";
+  if (terminalCode === "transport_handoff_unknown") return "transport_handoff_unknown";
+  const state = normalizeString(terminal.state, "");
+  if (state === "response_incomplete" || state === "stream_interrupted" || state === "transport_handoff_unknown") return state;
+  if (state === "content_filter_terminal" || state === "max_output_terminal" || state === "empty_output_terminal") return state;
+  return result.ok ? "completed_with_assistant_text" : "provider_failed";
+}
+
+function firstForkTurnTerminal(result = {}, assistantText = "", unsupportedTool = false, label = "Fork start") {
+  const terminalKind = firstForkTurnTerminalKind(result, assistantText, unsupportedTool);
+  if (terminalKind === "tool_call_unsupported") {
+    return {
+      state: "failed",
+      error: { code: "fresh_fork_first_turn_tool_call_unsupported", message: `${label} does not support provider tool calls.` },
+      terminalKind,
+    };
+  }
+  if (terminalKind === "completed_empty_output") {
+    return {
+      state: "failed",
+      error: { code: "completed_empty_output", message: `${label} completed without assistant text.` },
+      terminalKind,
+    };
+  }
+  return {
+    ...(result.terminal || { state: result.ok ? "completed" : "failed", error: result.error || null }),
+    terminalKind,
+  };
 }
 
 function firstTextInput(input) {
@@ -672,7 +720,7 @@ class DirectLiveTextController {
 
   forkStartRequestShapeHash(input = {}) {
     return sha256(stableStringify({
-      schema: "direct_fork_start_live_text@1",
+      schema: DIRECT_FORK_PREVIEW_START_REQUEST_SHAPE,
       model: normalizeString(input.model, ""),
       endpointHash: normalizeString(input.endpointHash, ""),
       store: false,
@@ -692,9 +740,11 @@ class DirectLiveTextController {
   }
 
   derivedPreviewForkStartRequestShapeHash(input = {}) {
+    const sourcePreviewKind = normalizeString(input.sourcePreviewKind, "");
+    const requestShapeClass = this.derivedPreviewForkStartRequestShapeClass(sourcePreviewKind);
     return sha256(stableStringify({
-      schema: "direct_derived_preview_fork_start_live_text@1",
-      sourcePreviewKind: normalizeString(input.sourcePreviewKind, ""),
+      schema: requestShapeClass,
+      sourcePreviewKind,
       model: normalizeString(input.model, ""),
       endpointHash: normalizeString(input.endpointHash, ""),
       store: false,
@@ -711,6 +761,10 @@ class DirectLiveTextController {
         "response_incomplete",
       ],
     }));
+  }
+
+  derivedPreviewForkStartRequestShapeClass(sourcePreviewKind) {
+    return derivedPreviewForkStartRequestShapeClassForKind(sourcePreviewKind);
   }
 
   async startForkFromPreview(options = {}) {
@@ -845,7 +899,7 @@ class DirectLiveTextController {
         input: [{ role: "current_user_intent", text: currentUserPrompt }],
         model,
         clientTurnRequestId: clientForkStartId,
-        requestShape: { schema: "direct_fork_start_live_text@1", requestShapeHash },
+        requestShape: { schema: DIRECT_FORK_PREVIEW_START_REQUEST_SHAPE, requestShapeHash },
         sourceClass: "forked-direct-native",
         nativeDirectSession: true,
         forkStartId,
@@ -862,6 +916,7 @@ class DirectLiveTextController {
         projectId,
         forkStartId,
         sourcePreviewId,
+        sourcePreviewOperationId: normalizeString(options.sourcePreviewOperationId, ""),
         expectedSourcePreviewDigest: normalizeString(options.expectedSourcePreviewDigest, seedPreview.projection.projectionDigest),
         targetThreadId: session.sessionId,
         targetTurnId: turn.turnId,
@@ -888,12 +943,20 @@ class DirectLiveTextController {
         forkSeed,
         currentUserPrompt,
         model,
-        requestShape: { schema: "direct_fork_start_live_text@1", model, stream: true, store: false, tools: false, previousResponseId: false },
+        requestShape: {
+          schema: DIRECT_FORK_PREVIEW_START_REQUEST_SHAPE,
+          requestShapeClass: DIRECT_FORK_PREVIEW_START_REQUEST_SHAPE,
+          model,
+          stream: true,
+          store: false,
+          tools: false,
+          previousResponseId: false,
+        },
         requestShapeHash,
         endpointClass: "chatgpt-codex-responses",
         endpointHash,
         modelEvidenceRef: normalizeString(status.evidenceId, status.modelEvidenceId || ""),
-        requestShapeEvidenceRef: "direct_fork_start_live_text@1",
+        requestShapeEvidenceRef: DIRECT_FORK_PREVIEW_START_REQUEST_SHAPE,
         endpointEvidenceRef: endpointHash,
         accountEvidenceRef: normalizeString(status.auth?.accountId, ""),
       }, options);
@@ -902,7 +965,7 @@ class DirectLiveTextController {
         { type: "request_manifest_built", requestManifestId: contextResult.requestManifest.requestManifestId },
       ], options);
       const requestShape = {
-        schema: "direct_fork_start_live_text@1",
+        schema: DIRECT_FORK_PREVIEW_START_REQUEST_SHAPE,
         requestShapeHash,
         contextBuildId: contextResult.contextPack.contextBuildId,
         contextPackContentHash: contextResult.contextPack.contextPackContentHash,
@@ -1025,17 +1088,15 @@ class DirectLiveTextController {
       if (result.normalizedEvents.length) this.sessionStore.appendNormalizedEvents(session.sessionId, turn.turnId, result.normalizedEvents, options);
       const assistantText = assistantTextFromNormalizedEvents(result.normalizedEvents);
       const unsupportedTool = result.normalizedEvents.some((event) => String(event.type || "").startsWith("tool_call_"));
-      const terminal = unsupportedTool
-        ? { state: "failed", error: { code: "tool_call_unsupported", message: "Fork start does not support provider tool calls." } }
-        : (!assistantText && result.terminal?.state === "completed"
-            ? { state: "failed", error: { code: "empty_fork_output", message: "Fork start completed without assistant text." } }
-            : (result.terminal || { state: result.ok ? "completed" : "failed", error: result.error || null }));
+      const terminal = firstForkTurnTerminal(result, assistantText, unsupportedTool, "Fork start");
       const completedTurn = this.sessionStore.updateTurnState(session.sessionId, turn.turnId, terminal.state, {
         ...(terminal.error ? { error: terminal.error } : {}),
         responseId: result.responseId || "",
         responseStatus: result.response?.status || 0,
         responseContentType: result.response?.contentType || "",
         forkStartStatus: terminal.state,
+        firstTurnTerminalKind: terminal.terminalKind,
+        localSessionState: terminal.state === "completed" ? "provider_completed" : "provider_sent_not_completed",
       }, options);
       const currentSession = this.sessionStore.readSession(session.sessionId);
       this.sessionStore.writeSession({
@@ -1072,6 +1133,8 @@ class DirectLiveTextController {
         rawUrlExposed: false,
         contextTextExposed: false,
         requestBodyExposed: false,
+        firstTurnTerminalKind: terminal.terminalKind,
+        localSessionState: terminal.state === "completed" ? "provider_completed" : "provider_sent_not_completed",
       };
     } catch (error) {
       if (!operationCommitted && session?.sessionId && turn?.turnId) {
@@ -1214,6 +1277,7 @@ class DirectLiveTextController {
       const model = normalizeString(options.selectedModel || options.model, "") || status.model;
       const endpointHash = this.endpoint ? sha256(this.endpoint) : "";
       const requestShapeHash = this.derivedPreviewForkStartRequestShapeHash({ model, endpointHash, sourcePreviewKind });
+      const requestShapeClass = this.derivedPreviewForkStartRequestShapeClass(sourcePreviewKind);
       operationInputDigest = sha256(stableStringify({
         schema: "direct_derived_preview_fork_start_operation_input@1",
         projectId,
@@ -1290,7 +1354,7 @@ class DirectLiveTextController {
         input: [{ role: "current_user_intent", text: currentUserPrompt }],
         model,
         clientTurnRequestId: clientDerivedForkStartId,
-        requestShape: { schema: "direct_derived_preview_fork_start_live_text@1", requestShapeHash, sourcePreviewKind },
+        requestShape: { schema: requestShapeClass, requestShapeHash, sourcePreviewKind },
         sourceClass: "forked-direct-native",
         nativeDirectSession: true,
         forkStartId,
@@ -1325,7 +1389,8 @@ class DirectLiveTextController {
         currentUserPrompt,
         model,
         requestShape: {
-          schema: "direct_derived_preview_fork_start_live_text@1",
+          schema: requestShapeClass,
+          requestShapeClass,
           sourcePreviewKind,
           model,
           stream: true,
@@ -1337,7 +1402,7 @@ class DirectLiveTextController {
         endpointClass: "chatgpt-codex-responses",
         endpointHash,
         modelEvidenceRef: normalizeString(status.evidenceId, status.modelEvidenceId || ""),
-        requestShapeEvidenceRef: "direct_derived_preview_fork_start_live_text@1",
+        requestShapeEvidenceRef: requestShapeClass,
         endpointEvidenceRef: endpointHash,
         accountEvidenceRef: normalizeString(status.auth?.accountId, ""),
       }, options);
@@ -1346,7 +1411,7 @@ class DirectLiveTextController {
         { type: "request_manifest_built", requestManifestId: contextResult.requestManifest.requestManifestId },
       ], options);
       const requestShape = {
-        schema: "direct_derived_preview_fork_start_live_text@1",
+        schema: requestShapeClass,
         requestShapeHash,
         sourcePreviewKind,
         contextBuildId: contextResult.contextPack.contextBuildId,
@@ -1474,17 +1539,15 @@ class DirectLiveTextController {
       if (result.normalizedEvents.length) this.sessionStore.appendNormalizedEvents(session.sessionId, turn.turnId, result.normalizedEvents, options);
       const assistantText = assistantTextFromNormalizedEvents(result.normalizedEvents);
       const unsupportedTool = result.normalizedEvents.some((event) => String(event.type || "").startsWith("tool_call_"));
-      const terminal = unsupportedTool
-        ? { state: "failed", error: { code: "tool_call_unsupported", message: "Derived fork start does not support provider tool calls." } }
-        : (!assistantText && result.terminal?.state === "completed"
-            ? { state: "failed", error: { code: "empty_fork_output", message: "Derived fork start completed without assistant text." } }
-            : (result.terminal || { state: result.ok ? "completed" : "failed", error: result.error || null }));
+      const terminal = firstForkTurnTerminal(result, assistantText, unsupportedTool, "Derived fork start");
       const completedTurn = this.sessionStore.updateTurnState(session.sessionId, turn.turnId, terminal.state, {
         ...(terminal.error ? { error: terminal.error } : {}),
         responseId: result.responseId || "",
         responseStatus: result.response?.status || 0,
         responseContentType: result.response?.contentType || "",
         forkStartStatus: terminal.state,
+        firstTurnTerminalKind: terminal.terminalKind,
+        localSessionState: terminal.state === "completed" ? "provider_completed" : "provider_sent_not_completed",
       }, options);
       const currentSession = this.sessionStore.readSession(session.sessionId);
       this.sessionStore.writeSession({
@@ -1523,6 +1586,8 @@ class DirectLiveTextController {
         rawUrlExposed: false,
         contextTextExposed: false,
         requestBodyExposed: false,
+        firstTurnTerminalKind: terminal.terminalKind,
+        localSessionState: terminal.state === "completed" ? "provider_completed" : "provider_sent_not_completed",
       };
     } catch (error) {
       if (!operationCommitted && session?.sessionId && turn?.turnId) {

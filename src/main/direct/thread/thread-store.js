@@ -56,6 +56,9 @@ const PRUNE_PREVIEW_PROJECTION_VERSION = "prune_preview@1";
 const FORK_PREVIEW_PROJECTION_VERSION = "fork_preview@1";
 const BRIDGE_SUMMARY_PROJECTION_VERSION = "bridge_summary@1";
 const DIRECT_THREAD_CONTROL_BUILDER_VERSION = "direct_thread_control_builder@1";
+const DIRECT_FRESH_FORK_FROM_FORK_PREVIEW_POLICY_ID = "direct_fresh_fork_from_fork_preview@1";
+const DIRECT_FRESH_FORK_FROM_MERGE_PREVIEW_POLICY_ID = "direct_fresh_fork_from_merge_preview@1";
+const DIRECT_FRESH_FORK_FROM_PRUNE_PREVIEW_POLICY_ID = "direct_fresh_fork_from_prune_preview@1";
 const MAX_PREVIEW_ITEMS = 2000;
 const MAX_PREVIEW_TEXT_CHARS_PER_ITEM = 16_000;
 const MAX_PREVIEW_TOTAL_TEXT_CHARS = 1_000_000;
@@ -191,6 +194,25 @@ function normalizeLifecycleState(value, fallback = "active") {
 
 function nowIso(nowMs = Date.now()) {
   return new Date(Number(nowMs) || Date.now()).toISOString();
+}
+
+function freshForkSeedPolicyIdForPreviewKind(sourcePreviewKind) {
+  const kind = normalizeString(sourcePreviewKind, "");
+  if (kind === MERGE_PREVIEW_PROJECTION_KIND) return DIRECT_FRESH_FORK_FROM_MERGE_PREVIEW_POLICY_ID;
+  if (kind === PRUNE_PREVIEW_PROJECTION_KIND) return DIRECT_FRESH_FORK_FROM_PRUNE_PREVIEW_POLICY_ID;
+  return DIRECT_FRESH_FORK_FROM_FORK_PREVIEW_POLICY_ID;
+}
+
+function forkSeedExclusionReason(item = {}) {
+  const itemKind = normalizeString(item.itemKind, "message");
+  if (["tool_result", "tool_call", "diagnostic", "approval_decision"].includes(itemKind)) {
+    return { itemKind, reason: `${itemKind}_excluded` };
+  }
+  const role = normalizeString(item.role || item.authorRole, "");
+  if (["system", "developer", "runtime", "harness"].includes(role)) {
+    return { itemKind, reason: `${role}_policy_excluded` };
+  }
+  return { itemKind, reason: "" };
 }
 
 function isSafeId(value) {
@@ -2456,13 +2478,17 @@ class DirectThreadStore {
       endpointClass: input.endpointClass,
       endpointHash: input.endpointHash,
       modelEvidenceRef: input.modelEvidenceRef,
-      requestShapeEvidenceRef: input.requestShapeEvidenceRef || "direct_fork_start_live_text@1",
+      requestShapeEvidenceRef: input.requestShapeEvidenceRef || input.requestShape?.requestShapeClass || input.requestShape?.schema || "direct_fork_preview_start_live_text@1",
       endpointEvidenceRef: input.endpointEvidenceRef,
       nowMs: options.nowMs,
     });
+    const requestShapeClass = normalizeString(
+      input.requestShape?.requestShapeClass || input.requestShape?.schema,
+      "direct_fork_preview_start_live_text@1",
+    );
     const requestManifest = {
       ...request.requestManifest,
-      requestShapeClass: "direct_fork_start_live_text@1",
+      requestShapeClass,
       forkStartId: normalizeString(input.forkStartId, ""),
       forkSeedId: normalizeString(forkSeed.forkSeedId, ""),
       sourcePreviewId: normalizeString(forkSeed.sourcePreviewId, ""),
@@ -2488,7 +2514,7 @@ class DirectThreadStore {
       capabilityEvidence: {
         ...(request.requestManifest.capabilityEvidence || {}),
         modelEvidenceRef: normalizeString(input.modelEvidenceRef, ""),
-        requestShapeEvidenceRef: normalizeString(input.requestShapeEvidenceRef || "direct_fork_start_live_text@1", ""),
+        requestShapeEvidenceRef: normalizeString(input.requestShapeEvidenceRef || requestShapeClass, ""),
         endpointEvidenceRef: normalizeString(input.endpointEvidenceRef, ""),
         accountEvidenceRef: normalizeString(input.accountEvidenceRef, ""),
         contextPolicyEvidenceRef: contextPack.policy?.policyDigest || "",
@@ -2537,13 +2563,17 @@ class DirectThreadStore {
       endpointClass: input.endpointClass,
       endpointHash: input.endpointHash,
       modelEvidenceRef: input.modelEvidenceRef,
-      requestShapeEvidenceRef: input.requestShapeEvidenceRef || "direct_derived_preview_fork_start_live_text@1",
+      requestShapeEvidenceRef: input.requestShapeEvidenceRef || input.requestShape?.requestShapeClass || input.requestShape?.schema || "direct_merge_preview_start_live_text@1",
       endpointEvidenceRef: input.endpointEvidenceRef,
       nowMs: options.nowMs,
     });
+    const requestShapeClass = normalizeString(
+      input.requestShape?.requestShapeClass || input.requestShape?.schema,
+      "direct_merge_preview_start_live_text@1",
+    );
     const requestManifest = {
       ...request.requestManifest,
-      requestShapeClass: "direct_derived_preview_fork_start_live_text@1",
+      requestShapeClass,
       forkStartId: normalizeString(input.forkStartId, ""),
       derivedForkSeedId: normalizeString(derivedForkSeed.derivedForkSeedId, ""),
       sourcePreviewId: normalizeString(derivedForkSeed.sourcePreviewId, ""),
@@ -2571,7 +2601,7 @@ class DirectThreadStore {
       capabilityEvidence: {
         ...(request.requestManifest.capabilityEvidence || {}),
         modelEvidenceRef: normalizeString(input.modelEvidenceRef, ""),
-        requestShapeEvidenceRef: normalizeString(input.requestShapeEvidenceRef || "direct_derived_preview_fork_start_live_text@1", ""),
+        requestShapeEvidenceRef: normalizeString(input.requestShapeEvidenceRef || requestShapeClass, ""),
         endpointEvidenceRef: normalizeString(input.endpointEvidenceRef, ""),
         accountEvidenceRef: normalizeString(input.accountEvidenceRef, ""),
         contextPolicyEvidenceRef: contextPack.policy?.policyDigest || "",
@@ -2940,6 +2970,12 @@ class DirectThreadStore {
     const seedItem = preview.items.find((item) => item.itemKind === "fork_seed_metadata") || preview.items[0] || {};
     const sourceKind = normalizeString(seedItem.seed?.sourceKind || preview.projection.source?.sourceKind, "direct_thread");
     if (sourceKind !== "direct_thread") throw new Error("fork_preview_source_kind_unsupported");
+    const sourcePreviewOperationId = normalizeString(
+      input.sourcePreviewOperationId || seedItem.seed?.sourcePreviewOperationId || this.previewOperationIdForProjection(sourcePreviewId),
+      "",
+    );
+    if (!sourcePreviewOperationId) throw new Error("source_preview_operation_missing");
+    const seedPolicyId = freshForkSeedPolicyIdForPreviewKind(FORK_PREVIEW_PROJECTION_KIND);
     const sourceThreadIds = Array.from(new Set((Array.isArray(seedItem.sourceRefs) ? seedItem.sourceRefs : [])
       .map((ref) => normalizeString(ref.threadId, ""))
       .filter(Boolean)));
@@ -2959,9 +2995,9 @@ class DirectThreadStore {
     let totalChars = 0;
     const evidence = [];
     for (const item of sourceItems) {
-      const itemKind = normalizeString(item.itemKind, "message");
-      if (itemKind === "tool_result" || itemKind === "diagnostic") {
-        omittedCounts[`${itemKind}_excluded`] = (Number(omittedCounts[`${itemKind}_excluded`]) || 0) + 1;
+      const { itemKind, reason } = forkSeedExclusionReason(item);
+      if (reason) {
+        omittedCounts[reason] = (Number(omittedCounts[reason]) || 0) + 1;
         continue;
       }
       const text = preserveString(item.text);
@@ -2984,10 +3020,13 @@ class DirectThreadStore {
       "[SOURCE EVIDENCE - QUOTED]",
       evidence.join("\n\n"),
     ].join("\n");
+    const resumeWarning = /\b(resume|continue exactly|previous_response_id|prior approval|prior approvals|replay)\b/i.test(preserveString(input.currentUserPrompt));
     const seedShapeHash = sha256(stableStringify({
       schema: "direct_fork_seed_shape@1",
-      policyId: DIRECT_FORK_START_POLICY_ID,
+      seedPolicyId,
       sourcePreviewVersion: preview.projection.projectionVersion,
+      sourcePreviewBuilderVersion: normalizeString(preview.projection.builderVersion, DIRECT_THREAD_CONTROL_BUILDER_VERSION),
+      previewPolicyDigest: normalizeString(preview.projection.policyDigest, ""),
       sourceThreadCount: sourceThreadIds.length,
       includedItemCount: evidence.length,
       omittedCounts,
@@ -3000,12 +3039,23 @@ class DirectThreadStore {
       builderVersion: DIRECT_THREAD_CONTROL_BUILDER_VERSION,
       redactionVersion: "fork_seed_raw_exposure_scan@1",
     }));
+    const seedTextHash = sha256(seedText);
+    const seedInputDigest = sha256(stableStringify({
+      schema: "direct_fork_seed_input@1",
+      sourcePreviewDigest: preview.projection.projectionDigest,
+      sourcePreviewOperationId,
+      currentUserPromptHash: sha256(preserveString(input.currentUserPrompt)),
+      seedPolicyId,
+      seedShapeHash,
+    }));
     const artifactDigest = sha256(stableStringify({
       forkStartId,
       sourcePreviewId,
       sourcePreviewDigest: preview.projection.projectionDigest,
+      sourcePreviewOperationId,
       seedShapeHash,
-      seedTextHash: sha256(seedText),
+      seedTextHash,
+      seedInputDigest,
     }));
     const forkSeed = {
       schema: "direct_fork_seed@1",
@@ -3016,12 +3066,17 @@ class DirectThreadStore {
       targetTurnId: normalizeString(input.targetTurnId, ""),
       sourcePreviewId,
       sourcePreviewDigest: preview.projection.projectionDigest,
-      sourcePreviewOperationId: normalizeString(seedItem.seed?.sourcePreviewOperationId, ""),
+      sourcePreviewOperationId,
+      sourcePreviewVersion: normalizeString(preview.projection.projectionVersion, ""),
+      sourcePreviewBuilderVersion: normalizeString(preview.projection.builderVersion, DIRECT_THREAD_CONTROL_BUILDER_VERSION),
+      previewPolicyDigest: normalizeString(preview.projection.policyDigest, ""),
+      seedPolicyId,
+      seedInputDigest,
       parentLineage: {
         sourceKind: "fork_preview",
         sourcePreviewId,
         sourcePreviewDigest: preview.projection.projectionDigest,
-        sourcePreviewOperationId: normalizeString(seedItem.seed?.sourcePreviewOperationId, ""),
+        sourcePreviewOperationId,
         sourceProjectId: projectId,
         sourceThreadIds,
         sourceRendererProjectionRefs: Array.isArray(seedItem.seed?.sourceRendererProjectionRefs) ? seedItem.seed.sourceRendererProjectionRefs : [],
@@ -3031,12 +3086,13 @@ class DirectThreadStore {
         providerContinuityHandleUsed: false,
       },
       seedPolicy: {
-        policyId: DIRECT_FORK_START_POLICY_ID,
+        policyId: seedPolicyId,
         policyVersion: "1",
-        policyDigest: policySnapshot(DIRECT_FORK_START_POLICY_ID).policyDigest,
-        policyArtifactDigest: policySnapshot(DIRECT_FORK_START_POLICY_ID).policyArtifactDigest,
+        policyDigest: policySnapshot(seedPolicyId).policyDigest,
+        policyArtifactDigest: policySnapshot(seedPolicyId).policyArtifactDigest,
         harnessPolicyDigest: "",
         roleMappingDigest: "",
+        sourceToolResultsIncluded: false,
       },
       includedEvidence: {
         itemCount: evidence.length,
@@ -3053,14 +3109,25 @@ class DirectThreadStore {
       },
       currentUserPrompt: {
         artifactId: normalizeString(input.currentUserPromptArtifactId, ""),
+        promptClass: "fresh_fork_user_intent",
         promptTextHash: sha256(preserveString(input.currentUserPrompt)),
-        promptShapeHash: sha256(stableStringify({ charCount: preserveString(input.currentUserPrompt).length })),
+        promptShapeHash: sha256(stableStringify({ charCount: preserveString(input.currentUserPrompt).length, resumeWarning })),
         charCount: preserveString(input.currentUserPrompt).length,
         redactionStatus: "passed",
+        continuityMisleadingIntentDetected: resumeWarning,
+        continuityWarningShown: resumeWarning,
       },
       seedText,
-      seedTextHash: sha256(seedText),
+      seedTextHash,
       seedShapeHash,
+      sourceToolResultsIncluded: false,
+      sourceSystemPolicyIncluded: false,
+      sourceDeveloperPolicyIncluded: false,
+      sourceRuntimePolicyIncluded: false,
+      sourceToolAuthorityReplayed: false,
+      sourceApprovalAuthorityReplayed: false,
+      previousResponseIdUsed: false,
+      providerContinuityAvailable: false,
       integrity: {
         algorithm: "sha256",
         artifactDigest,
@@ -3096,6 +3163,7 @@ class DirectThreadStore {
     if (!sourcePreviewOperationId) throw new Error("source_preview_operation_missing");
     const expectedOperationId = normalizeString(input.expectedSourcePreviewOperationId, "");
     if (expectedOperationId && expectedOperationId !== sourcePreviewOperationId) throw new Error("source_preview_operation_mismatch");
+    const seedPolicyId = freshForkSeedPolicyIdForPreviewKind(sourcePreviewKind);
 
     const sourceRefs = [];
     for (const item of preview.items) {
@@ -3139,22 +3207,29 @@ class DirectThreadStore {
     const evidence = [];
     let totalChars = 0;
     let omittedMarkers = 0;
+    const rawOrdering = normalizeString(input.ordering, "source-thread-order-then-turn-order");
     const ordering = sourcePreviewKind === MERGE_PREVIEW_PROJECTION_KIND
-      ? normalizeString(input.ordering, "by-thread-then-turn")
+      ? (rawOrdering === "by-thread-then-turn" ? "source-thread-order-then-turn-order" : rawOrdering)
       : "source-preview-order";
     const mergeOrdering = {
       ordering,
       tieBreak: ordering === "chronological" ? "created-at-then-thread-id-then-turn-order" : "source-thread-order-then-turn-order",
       sourceThreadOrder: sourceThreadIds,
+      orderingDigest: sha256(stableStringify({
+        sourcePreviewKind,
+        ordering,
+        tieBreak: ordering === "chronological" ? "created-at-then-thread-id-then-turn-order" : "source-thread-order-then-turn-order",
+        sourceThreadOrder: sourceThreadIds,
+      })),
     };
     for (const item of preview.items) {
       if (evidence.length >= MAX_DERIVED_FORK_SEED_ITEMS) {
         omittedCounts.items = (Number(omittedCounts.items) || 0) + 1;
         continue;
       }
-      const itemKind = normalizeString(item.itemKind, "message");
-      if (itemKind === "tool_result" || itemKind === "tool_call" || itemKind === "diagnostic" || itemKind === "approval_decision") {
-        omittedCounts[`${itemKind}_excluded`] = (Number(omittedCounts[`${itemKind}_excluded`]) || 0) + 1;
+      const { itemKind, reason } = forkSeedExclusionReason(item);
+      if (reason) {
+        omittedCounts[reason] = (Number(omittedCounts[reason]) || 0) + 1;
         continue;
       }
       if (itemKind === "prune_omission_marker") omittedMarkers += 1;
@@ -3175,7 +3250,7 @@ class DirectThreadStore {
     }
     const pruneOmittedItemCount = Number(preview.projection.caps?.omittedCounts?.items || preview.projection.caps?.omittedCounts?.item || 0);
     if (sourcePreviewKind === PRUNE_PREVIEW_PROJECTION_KIND && pruneOmittedItemCount > 0 && omittedMarkers === 0) {
-      throw new Error("derived_fork_seed_caps_exceeded");
+      throw new Error("fresh_fork_prune_omission_unrepresentable");
     }
     const revalidated = this.previewProjectionRecord(projectId, sourcePreviewId, sourcePreviewKind);
     if (revalidated.projection.projectionDigest !== preview.projection.projectionDigest) throw new Error("source_preview_changed_after_seed");
@@ -3197,9 +3272,11 @@ class DirectThreadStore {
     }
     const seedShapeHash = sha256(stableStringify({
       schema: "direct_derived_fork_seed_shape@1",
-      policyId: DIRECT_DERIVED_PREVIEW_FORK_START_POLICY_ID,
+      seedPolicyId,
       sourcePreviewKind,
       sourcePreviewVersion: preview.projection.projectionVersion,
+      sourcePreviewBuilderVersion: normalizeString(preview.projection.builderVersion, DIRECT_THREAD_CONTROL_BUILDER_VERSION),
+      previewPolicyDigest: normalizeString(preview.projection.policyDigest, ""),
       sourcePreviewOperationId,
       sourceThreadCount: sourceThreadIds.length,
       includedItemCount: evidence.length,
@@ -3216,6 +3293,16 @@ class DirectThreadStore {
       builderVersion: DIRECT_THREAD_CONTROL_BUILDER_VERSION,
       redactionVersion: "derived_fork_seed_raw_exposure_scan@1",
     }));
+    const seedTextHash = sha256(seedText);
+    const seedInputDigest = sha256(stableStringify({
+      schema: "direct_derived_fork_seed_input@1",
+      sourcePreviewDigest: preview.projection.projectionDigest,
+      sourcePreviewKind,
+      sourcePreviewOperationId,
+      currentUserPromptHash: sha256(preserveString(input.currentUserPrompt)),
+      seedPolicyId,
+      seedShapeHash,
+    }));
     const artifactDigest = sha256(stableStringify({
       forkStartId,
       sourcePreviewId,
@@ -3223,7 +3310,8 @@ class DirectThreadStore {
       sourcePreviewOperationId,
       sourcePreviewDigest: preview.projection.projectionDigest,
       seedShapeHash,
-      seedTextHash: sha256(seedText),
+      seedTextHash,
+      seedInputDigest,
     }));
     const derivedForkSeed = {
       schema: "direct_derived_fork_seed@1",
@@ -3236,6 +3324,11 @@ class DirectThreadStore {
       sourcePreviewKind,
       sourcePreviewDigest: preview.projection.projectionDigest,
       sourcePreviewOperationId,
+      sourcePreviewVersion: normalizeString(preview.projection.projectionVersion, ""),
+      sourcePreviewBuilderVersion: normalizeString(preview.projection.builderVersion, DIRECT_THREAD_CONTROL_BUILDER_VERSION),
+      previewPolicyDigest: normalizeString(preview.projection.policyDigest, ""),
+      seedPolicyId,
+      seedInputDigest,
       parentLineage: {
         sourceKind: sourcePreviewKind,
         sourcePreviewId,
@@ -3250,10 +3343,10 @@ class DirectThreadStore {
         providerContinuityHandleUsed: false,
       },
       seedPolicy: {
-        policyId: DIRECT_DERIVED_PREVIEW_FORK_START_POLICY_ID,
+        policyId: seedPolicyId,
         policyVersion: "1",
-        policyDigest: policySnapshot(DIRECT_DERIVED_PREVIEW_FORK_START_POLICY_ID).policyDigest,
-        policyArtifactDigest: policySnapshot(DIRECT_DERIVED_PREVIEW_FORK_START_POLICY_ID).policyArtifactDigest,
+        policyDigest: policySnapshot(seedPolicyId).policyDigest,
+        policyArtifactDigest: policySnapshot(seedPolicyId).policyArtifactDigest,
         sourceToolResultsIncluded: false,
       },
       includedEvidence: {
@@ -3278,15 +3371,26 @@ class DirectThreadStore {
         budgetExceeded: false,
       },
       currentUserPrompt: {
+        promptClass: "fresh_fork_user_intent",
         promptTextHash: sha256(preserveString(input.currentUserPrompt)),
         promptShapeHash: sha256(stableStringify({ charCount: preserveString(input.currentUserPrompt).length, resumeWarning })),
         charCount: preserveString(input.currentUserPrompt).length,
         redactionStatus: "passed",
-        continuityWarning: resumeWarning,
+        continuityMisleadingIntentDetected: resumeWarning,
+        continuityWarningShown: resumeWarning,
       },
       seedText,
-      seedTextHash: sha256(seedText),
+      seedTextHash,
       seedShapeHash,
+      mergeOrdering: sourcePreviewKind === MERGE_PREVIEW_PROJECTION_KIND ? mergeOrdering : null,
+      sourceToolResultsIncluded: false,
+      sourceSystemPolicyIncluded: false,
+      sourceDeveloperPolicyIncluded: false,
+      sourceRuntimePolicyIncluded: false,
+      sourceToolAuthorityReplayed: false,
+      sourceApprovalAuthorityReplayed: false,
+      previousResponseIdUsed: false,
+      providerContinuityAvailable: false,
       integrity: {
         algorithm: "sha256",
         artifactDigest,
