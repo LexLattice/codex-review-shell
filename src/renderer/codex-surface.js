@@ -90,6 +90,11 @@ const state = {
   runtimeConstitution: null,
   runtimeDrawerOpen: false,
   runtimeDrawerTab: "runtime",
+  directUiStatus: null,
+  directUiStatusState: "idle",
+  directUiStatusError: "",
+  directUiOperationHistory: null,
+  directUiPolicyView: null,
   composerMenu: "",
   composerGeometryObserver: null,
   activeTurnId: "",
@@ -406,6 +411,9 @@ const RUNTIME_DRAWER_TABS = [
   ["model", "Model"],
   ["access", "Access"],
   ["usage", "Usage"],
+  ["implementation", "Implementation"],
+  ["history", "History"],
+  ["policy", "Policy"],
   ["capabilities", "Capabilities"],
   ["environment", "Environment"],
   ["advanced", "Advanced"],
@@ -1233,11 +1241,40 @@ function createRuntimeChip(chip) {
   return button;
 }
 
+async function refreshDirectImplementationUi({ force = false } = {}) {
+  if (!project?.id || !bridge?.getDirectImplementationLaneUiStatus) return;
+  if (state.directUiStatusState === "loading" && !force) return;
+  state.directUiStatusState = "loading";
+  state.directUiStatusError = "";
+  try {
+    const [status, history, policy] = await Promise.all([
+      bridge.getDirectImplementationLaneUiStatus(project.id),
+      bridge.readDirectImplementationOperationHistory
+        ? bridge.readDirectImplementationOperationHistory(project.id, { scope: "active-turn", limit: 24 })
+        : Promise.resolve(null),
+      bridge.getDirectImplementationPolicyView
+        ? bridge.getDirectImplementationPolicyView(project.id)
+        : Promise.resolve(null),
+    ]);
+    state.directUiStatus = status || null;
+    state.directUiOperationHistory = history || null;
+    state.directUiPolicyView = policy || null;
+    state.directUiStatusState = "ready";
+  } catch (error) {
+    state.directUiStatusState = "failed";
+    state.directUiStatusError = error?.message || "Direct implementation UI status unavailable.";
+  }
+  renderRuntimeConstitution();
+}
+
 function openRuntimeDrawer(tab = "runtime") {
   dismissComposerOverlay("runtime-drawer-open");
   state.runtimeDrawerOpen = true;
   state.runtimeDrawerTab = RUNTIME_DRAWER_TABS.some(([id]) => id === tab) ? tab : "runtime";
   renderRuntimeConstitution();
+  if (["implementation", "history", "policy"].includes(state.runtimeDrawerTab)) {
+    refreshDirectImplementationUi();
+  }
 }
 
 function closeRuntimeDrawer() {
@@ -1301,6 +1338,7 @@ function renderRuntimeDrawer() {
     button.addEventListener("click", () => {
       state.runtimeDrawerTab = id;
       renderRuntimeDrawer();
+      if (["implementation", "history", "policy"].includes(id)) refreshDirectImplementationUi();
     });
     els.runtimeDrawerTabs.appendChild(button);
   }
@@ -1791,6 +1829,67 @@ function quotaWindowRows(snapshot) {
   return rows;
 }
 
+function directUiProjectionRows() {
+  const status = state.directUiStatus;
+  if (state.directUiStatusState === "loading" && !status) return [["status", "loading"]];
+  if (state.directUiStatusState === "failed") return [["status", "failed"], ["blocker", state.directUiStatusError || "direct_ui_projection_unavailable"]];
+  if (!status) return [["status", "not loaded"]];
+  return [
+    ["schema", status.schema],
+    ["generation", status.meta?.uiProjectionGeneration],
+    ["active tier", status.activeRuntimeTier],
+    ["source digest", status.meta?.sourceDigest],
+    ["ledger digest", status.meta?.operationLedgerHeadDigest],
+  ];
+}
+
+function readinessRows(readiness = {}) {
+  const facets = readiness.facets || {};
+  return [
+    ["status", readiness.readiness],
+    ["selected", readiness.selected ? "yes" : "no"],
+    ["start turn", facets.canStartTurn?.state || (readiness.canStartFirstTurn ? "ready" : "blocked")],
+    ["show cards", facets.canShowApprovalCards?.state || (readiness.canShowApprovalCards ? "ready" : "blocked")],
+    ["approve read", facets.canApproveRead?.state || (readiness.canApproveReadFile ? "ready" : "blocked")],
+    ["approve patch", facets.canApprovePatch?.state || (readiness.canApprovePatchApply ? "ready" : "blocked")],
+    ["approve command", facets.canApproveCommand?.state || (readiness.canApproveRunCommand ? "ready" : "blocked")],
+    ["continue result", facets.canContinueAfterResult?.state || (readiness.canSendContinuation ? "ready" : "blocked")],
+    ["workspace truth", facets.workspaceMutationTruth?.state || "unknown"],
+    ["policy", facets.policyUsable?.state || "unknown"],
+    ["degraded read-only", readiness.degradedToReadOnly ? "yes" : "no"],
+    ["blockers", (readiness.blockerCodes || []).join(", ") || "none"],
+  ];
+}
+
+function witnessRows(status = {}) {
+  return (status.witnesses || []).map((chip) => [
+    chip.label || chip.kind || "witness",
+    [chip.state, chip.freshness, chip.summary].filter(Boolean).join(" · "),
+  ]);
+}
+
+function operationHistoryRows(history = {}) {
+  if (!history?.rows?.length) return [["status", state.directUiStatusState === "loading" ? "loading" : "no rows"]];
+  return history.rows.slice(0, 12).map((row) => [
+    `${row.family || "operation"} · ${row.status || "unknown"}`,
+    `${row.rendererSafeSummary || row.eventKind || row.rowId} · ${row.actionability?.reason || "history_is_read_only"}`,
+  ]);
+}
+
+function policyRows(policy = {}) {
+  if (!policy) return [["status", state.directUiStatusState === "loading" ? "loading" : "not loaded"]];
+  return [
+    ["editable", policy.editable ? "yes" : "no"],
+    ["effective source", policy.effectiveSource || "unknown"],
+    ["command classes", policy.commandClasses?.summary || "unknown"],
+    ["sensitive paths", policy.sensitivePathPolicy?.summary || "unknown"],
+    ["generated/vendor/lock", policy.generatedVendorLockPolicy?.summary || "unknown"],
+    ["caps", policy.caps?.summary || "unknown"],
+    ["network risk", policy.networkRisk?.summary || "unknown"],
+    ["private config", policy.privateConfigIncluded ? "included" : "excluded"],
+  ];
+}
+
 function runtimeDrawerSections(c, tab) {
   if (tab === "runtime") {
     return [
@@ -1876,6 +1975,46 @@ function runtimeDrawerSections(c, tab) {
         ["approvals", c.usage.activity.approvalCount],
         ["duration", c.usage.activity.sessionDurationMs ? `${Math.round(c.usage.activity.sessionDurationMs / 1000)}s` : "—"],
       ], c.usage.activity.evidenceRefs),
+    ];
+  }
+  if (tab === "implementation") {
+    const status = state.directUiStatus || {};
+    const readiness = status.implementationLane || {};
+    return [
+      drawerSection("Direct Implementation Projection", directUiProjectionRows()),
+      drawerSection("Readiness", readinessRows(readiness)),
+      drawerSection("Witness Chips", witnessRows(status)),
+      drawerSection("Active Turn", [
+        ["state", status.activeTurn?.state || "unknown"],
+        ["composer", status.activeTurn?.composerAllowed ? "allowed" : "blocked"],
+        ["reason", status.activeTurn?.composerAllowedReason || "unknown"],
+        ["unresolved obligations", status.currentSession?.unresolvedObligationCount ?? "unknown"],
+      ]),
+    ];
+  }
+  if (tab === "history") {
+    const history = state.directUiOperationHistory;
+    return [
+      drawerSection("Operation History", [
+        ["schema", history?.schema || "direct_operation_history_projection@1"],
+        ["scope", history?.scope || "active-turn"],
+        ["rows", history?.rows?.length ?? 0],
+        ["actionable", "false"],
+        ["page digest", history?.pageDigest || "not loaded"],
+      ]),
+      drawerSection("Recent Rows", operationHistoryRows(history)),
+    ];
+  }
+  if (tab === "policy") {
+    return [
+      drawerSection("Policy Snapshot", policyRows(state.directUiPolicyView)),
+      drawerSection("Boundary", [
+        ["view", "read-only"],
+        ["policy editor", "not enabled"],
+        ["runtime authority", "main-process revalidation only"],
+        ["right-pane ChatGPT", "separate"],
+        ["handoff queue", "unchanged"],
+      ]),
     ];
   }
   if (tab === "capabilities") {
