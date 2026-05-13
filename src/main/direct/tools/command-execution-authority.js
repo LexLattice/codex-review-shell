@@ -658,7 +658,13 @@ async function executeApprovedCommandExecutionObligation(options = {}) {
     });
     providerOutputTruncated = false;
   }
-  const providerContinuationBlockedByPolicy = ["sensitive_path_changed", "app_private_path_changed", "vcs_internal_changed"].includes(postPolicyViolation);
+  const providerContinuationBlockedByPolicy = [
+    "sensitive_path_changed",
+    "app_private_path_changed",
+    "vcs_internal_changed",
+    "must_not_write_changed_files",
+    "workspace_changes_truncated_unknown",
+  ].includes(postPolicyViolation);
   if (providerContinuationBlockedByPolicy) {
     providerOutputText = JSON.stringify({
       kind: "run_command_result",

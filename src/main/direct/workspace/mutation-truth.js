@@ -294,6 +294,11 @@ function effectSummaryIdFor(input = {}) {
   return `workspace_effect_${sha256(`${normalizeString(input.source, "")}:${normalizeString(input.sourceArtifactId, "")}:${stableJson(input.changes || [])}`).slice(0, 24)}`;
 }
 
+function positiveInteger(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
+}
+
 function buildWorkspaceEffectSummary(input = {}) {
   const source = normalizeString(input.source, "manual_fixture");
   const rawChanges = Array.isArray(input.changes) ? input.changes : [];
@@ -309,7 +314,9 @@ function buildWorkspaceEffectSummary(input = {}) {
   );
   const changes = rawChanges.map((change) => normalizeRawChange(change, source === "patch_apply" ? "expected_patch_change" : "expected_command_change"));
   const caps = { ...DEFAULT_DIRECT_WORKSPACE_MUTATION_CAPS, ...(isPlainObject(input.caps) ? input.caps : {}) };
-  const changedPathsPreview = changes.slice(0, caps.maxEffectPreviewPaths).map((change) => ({
+  const reportedChangedPathCount = Math.max(positiveInteger(input.changedPathCount, changes.length), changes.length);
+  const omittedChangeCount = Math.max(0, reportedChangedPathCount - changes.length);
+  const changedPathsPreview = changes.filter((change) => change.providerSummaryAllowed).slice(0, caps.maxEffectPreviewPaths).map((change) => ({
     relPath: change.relPath,
     changeKind: change.changeKind,
     policyClass: change.policyClass,
@@ -320,6 +327,11 @@ function buildWorkspaceEffectSummary(input = {}) {
     ...input,
     action: source === "patch_apply" ? "patch_apply" : "command_effect",
   });
+  if (omittedChangeCount > 0) {
+    policyEvaluation.warningCount += omittedChangeCount;
+    policyEvaluation.unknownPolicyRelevantChangeCount = omittedChangeCount;
+    policyEvaluation.strictestDecision = strictestDecision([policyEvaluation.strictestDecision, "manual_recovery_required"]);
+  }
   const providerVisibility = visibilityFromChanges(changes, input);
   const effectSummaryId = normalizeString(input.effectSummaryId, "") || effectSummaryIdFor({ ...input, source, sourceArtifactId, changes });
   const baselineDirtyState = isPlainObject(input.baselineDirtyState)
@@ -364,9 +376,12 @@ function buildWorkspaceEffectSummary(input = {}) {
     expectationConfidence,
     baselineDirtyState,
     changes,
-    changedPathCount: changes.length,
+    changedPathCount: reportedChangedPathCount,
+    knownChangedPathCount: changes.length,
+    omittedChangeCount,
+    unknownPolicyRelevantChangeCount: omittedChangeCount,
     changedPathsPreview,
-    changedPathsTruncated: changes.length > changedPathsPreview.length,
+    changedPathsTruncated: input.changedPathsTruncated === true || reportedChangedPathCount > changedPathsPreview.length,
     expectedChangeCount: changes.filter((change) => change.sourceExpectation === "expected_patch_change" || change.sourceExpectation === "expected_command_change").length,
     unexpectedChangeCount: changes.filter((change) => change.sourceExpectation === "unexpected_extra_change").length,
     blockedChangeCount: changes.filter((change) => change.policyDecision === "block").length,
@@ -376,9 +391,11 @@ function buildWorkspaceEffectSummary(input = {}) {
     providerVisibility,
     policyEvaluation,
     rendererSafeSummary: {
-      changedPathCount: changes.length,
+      changedPathCount: reportedChangedPathCount,
+      knownChangedPathCount: changes.length,
+      omittedChangeCount,
       changedPathsPreview,
-      changedPathsTruncated: changes.length > changedPathsPreview.length,
+      changedPathsTruncated: input.changedPathsTruncated === true || reportedChangedPathCount > changedPathsPreview.length,
       providerVisibilityCompleteness: providerVisibility.providerVisibilityCompleteness,
       strictestPolicyDecision: policyEvaluation.strictestDecision,
       rawPathsIncluded: false,
@@ -416,6 +433,8 @@ function buildCommandWorkspaceEffectSummary(input = {}) {
     scanScope,
     scanFailed: workspaceEffects.scanFailed === true || input.scanFailed === true,
     scanSupported: scanScope !== "none",
+    changedPathCount: positiveInteger(workspaceEffects.changedPathCount, changes.length),
+    changedPathsTruncated: workspaceEffects.changedPathsTruncated === true,
     preState: workspaceEffects.preCommandWorkspaceDigest ? {
       evidenceKey: `workspace_state_${sha256(workspaceEffects.preCommandWorkspaceDigest).slice(0, 24)}`,
       algorithm: "backend-index",
@@ -438,7 +457,7 @@ function changesFromPatchFiles(files = []) {
   return files.map((file) => ({
     relPath: file.path || file.displayPath,
     changeKind: file.operation === "create" ? "created" : (file.operation === "delete" ? "deleted" : "modified"),
-    sourceExpectation: "expected_patch_change",
+    sourceExpectation: file.expected === false ? "unexpected_extra_change" : "expected_patch_change",
     beforeEvidenceKey: file.beforeEvidenceKey || file.beforeDigest,
     afterEvidenceKey: file.afterEvidenceKey || file.afterDigest,
     providerVisibility: "summary_only",
@@ -460,15 +479,23 @@ function buildPatchWorkspaceEffectSummary(input = {}) {
 
 function inspectPatchJournal(input = {}) {
   const files = Array.isArray(input.files) ? input.files : [];
+  const plannedFiles = Array.isArray(input.plannedFiles) ? input.plannedFiles : files;
+  const appliedFiles = Array.isArray(input.appliedFiles) ? input.appliedFiles : files;
   const effectSummary = input.effectSummary;
   const journalStatus = normalizeString(input.journalStatus || input.journal?.status, files.length ? "applied_verified" : "planned_only");
   const unexpectedChangesDetected = Number(effectSummary?.unexpectedChangeCount || 0) > 0;
-  const beforeAfterEvidenceComplete = files.every((file) => {
+  const beforeAfterEvidenceComplete = appliedFiles.every((file) => {
     const operation = normalizeString(file.operation, "update");
     const beforeOk = operation === "create" || Boolean(normalizeString(file.beforeEvidenceKey || file.beforeDigest, ""));
     const afterOk = operation === "delete" || Boolean(normalizeString(file.afterEvidenceKey || file.afterDigest, ""));
     return beforeOk && afterOk;
   });
+  const appliedKeys = new Set(appliedFiles.map((file) =>
+    `${safeRelPath(file.path || file.displayPath)}:${normalizeString(file.operation, "update")}`,
+  ));
+  const missingExpectedFiles = plannedFiles.filter((file) => file.expected !== false && !appliedKeys.has(
+    `${safeRelPath(file.path || file.displayPath)}:${normalizeString(file.operation, "update")}`,
+  ));
   return {
     schema: DIRECT_PATCH_JOURNAL_INSPECTION_SCHEMA,
     inspectionId: `patch_journal_inspection_${sha256(`${normalizeString(input.patchPlanId, "")}:${normalizeString(input.patchResultId, "")}:${journalStatus}`).slice(0, 24)}`,
@@ -476,11 +503,11 @@ function inspectPatchJournal(input = {}) {
     patchResultId: normalizeString(input.patchResultId, ""),
     journalId: normalizeString(input.journalId || input.journal?.journalId, ""),
     journalState: journalStatus,
-    plannedFiles: files.map((file) => ({
+    plannedFiles: plannedFiles.map((file) => ({
       path: normalizeString(file.path || file.displayPath, ""),
       operation: normalizeString(file.operation, "update"),
     })),
-    appliedFiles: files.map((file) => ({
+    appliedFiles: appliedFiles.map((file) => ({
       path: normalizeString(file.path || file.displayPath, ""),
       operation: normalizeString(file.operation, "update"),
       beforeEvidenceKey: normalizeString(file.beforeEvidenceKey || file.beforeDigest, ""),
@@ -489,7 +516,11 @@ function inspectPatchJournal(input = {}) {
     expectedWorkspaceEffectSummaryId: normalizeString(effectSummary?.effectSummaryId, ""),
     actualWorkspaceEffectSummaryId: normalizeString(effectSummary?.effectSummaryId, ""),
     unexpectedChangesDetected,
-    missingExpectedChangesDetected: false,
+    missingExpectedChangesDetected: missingExpectedFiles.length > 0,
+    missingExpectedFiles: missingExpectedFiles.map((file) => ({
+      path: normalizeString(file.path || file.displayPath, ""),
+      operation: normalizeString(file.operation, "update"),
+    })),
     beforeAfterEvidenceComplete,
     userFacingRevertAvailable: false,
   };
@@ -505,6 +536,9 @@ function postSideEffectPolicyViolation(summary = {}, source = "", workspaceWrite
     return "sensitive_path_changed";
   }
   if (summary.blockedChangeCount > 0) return "policy_blocked_path_changed";
+  if (source === "run_command" && Number(summary.unknownPolicyRelevantChangeCount || 0) > 0) {
+    return "workspace_changes_truncated_unknown";
+  }
   if (source === "run_command" && workspaceWritePolicy === "must_not_write" && summary.changedPathCount > 0) {
     return "must_not_write_changed_files";
   }
@@ -523,6 +557,8 @@ function providerEnvelopeForEffectSummary(summary = {}, input = {}) {
     changedPathCount: Number(summary.changedPathCount || 0),
     changedPathsPreview: Array.isArray(summary.changedPathsPreview) ? summary.changedPathsPreview : [],
     changedPathsTruncated: summary.changedPathsTruncated === true,
+    omittedChangeCount: Number(summary.omittedChangeCount || 0),
+    unknownPolicyRelevantChangeCount: Number(summary.unknownPolicyRelevantChangeCount || 0),
     expectedChangeCount: Number(summary.expectedChangeCount || 0),
     unexpectedChangeCount: Number(summary.unexpectedChangeCount || 0),
     policyBlockedChangeCount: Number(summary.blockedChangeCount || 0),

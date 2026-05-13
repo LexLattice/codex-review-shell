@@ -172,13 +172,109 @@ function patchUnexpectedCase() {
     preStateConfidence: "exact",
     expectationConfidence: "exact",
   });
-  const ok = effectSummary.unexpectedChangeCount === 1;
+  const patchJournalInspection = inspectPatchJournal({
+    patchPlanId: "patch_plan_unexpected",
+    patchResultId: "patch_result_unexpected",
+    files: [
+      { path: "src/demo.ts", operation: "update", beforeEvidenceKey: "before_demo", afterEvidenceKey: "after_demo" },
+      { path: "src/extra.ts", operation: "create", expected: false, afterEvidenceKey: "after_extra" },
+    ],
+    effectSummary,
+    journalStatus: "applied_verified",
+  });
+  const ok = effectSummary.unexpectedChangeCount === 1 &&
+    patchJournalInspection.unexpectedChangesDetected === true;
   return baseCase({
     caseId: "patch_unexpected_extra_change",
     status: ok ? "passed" : "failed",
     proofOutcome: "effect_summary_recorded",
     effectSummary,
+    patchJournalInspection,
     failureCode: ok ? "" : "unexpected_change_not_detected",
+  });
+}
+
+function patchMissingExpectedCase() {
+  const plannedFiles = [
+    { path: "src/demo.ts", operation: "update", beforeEvidenceKey: "before_demo", afterEvidenceKey: "after_demo" },
+    { path: "src/missing.ts", operation: "update", beforeEvidenceKey: "before_missing", afterEvidenceKey: "after_missing" },
+  ];
+  const appliedFiles = [
+    { path: "src/demo.ts", operation: "update", beforeEvidenceKey: "before_demo", afterEvidenceKey: "after_demo" },
+  ];
+  const effectSummary = buildPatchWorkspaceEffectSummary({
+    sourceArtifactId: "patch_result_missing_expected",
+    files: appliedFiles,
+  });
+  const patchJournalInspection = inspectPatchJournal({
+    patchPlanId: "patch_plan_missing_expected",
+    patchResultId: "patch_result_missing_expected",
+    plannedFiles,
+    appliedFiles,
+    effectSummary,
+    journalStatus: "applied_verified",
+  });
+  const ok = patchJournalInspection.missingExpectedChangesDetected === true &&
+    patchJournalInspection.missingExpectedFiles.length === 1;
+  return baseCase({
+    caseId: "patch_missing_expected_change",
+    status: ok ? "degraded" : "failed",
+    proofOutcome: "patch_journal_inspected",
+    effectSummary,
+    patchJournalInspection,
+    failureCode: ok ? "missing_expected_patch_change" : "missing_expected_not_detected",
+  });
+}
+
+function sensitivePreviewFilteredCase() {
+  const effectSummary = buildCommandWorkspaceEffectSummary({
+    sourceArtifactId: "command_result_sensitive_filtered",
+    workspaceEffects: {
+      changedPathCount: 1,
+      changedPathsPreview: [{ relPath: ".env", changeKind: "modified" }],
+      scanScope: "workspace-index",
+      scanFailed: false,
+    },
+  });
+  const envelope = providerEnvelopeForEffectSummary(effectSummary);
+  const ok = effectSummary.sensitiveChangeCount === 1 &&
+    effectSummary.changedPathsPreview.length === 0 &&
+    envelope.changedPathsPreview.length === 0;
+  return baseCase({
+    caseId: "sensitive_preview_filtered",
+    status: ok ? "blocked" : "failed",
+    proofOutcome: "side_effect_recorded_degraded",
+    effectSummary,
+    failureCode: ok ? "sensitive_path_preview_filtered" : "sensitive_preview_exposed",
+  });
+}
+
+function commandTruncatedUnknownCase() {
+  const preview = Array.from({ length: 25 }, (_, index) => ({
+    relPath: `tmp/output-${index}.txt`,
+    changeKind: "created",
+  }));
+  const effectSummary = buildCommandWorkspaceEffectSummary({
+    sourceArtifactId: "command_result_truncated_unknown",
+    workspaceEffects: {
+      changedPathCount: 30,
+      changedPathsPreview: preview,
+      changedPathsTruncated: true,
+      scanScope: "workspace-index",
+      scanFailed: false,
+    },
+  });
+  const violation = postSideEffectPolicyViolation(effectSummary, "run_command", "writes_possible_with_warning");
+  const ok = effectSummary.changedPathCount === 30 &&
+    effectSummary.knownChangedPathCount === 25 &&
+    effectSummary.omittedChangeCount === 5 &&
+    violation === "workspace_changes_truncated_unknown";
+  return baseCase({
+    caseId: "command_truncated_unknown_changes",
+    status: ok ? "degraded" : "failed",
+    proofOutcome: "side_effect_recorded_degraded",
+    effectSummary,
+    failureCode: ok ? "workspace_changes_truncated_unknown" : "truncated_changes_not_preserved",
   });
 }
 
@@ -485,6 +581,9 @@ function runCases() {
   return [
     patchExpectedCase(),
     patchUnexpectedCase(),
+    patchMissingExpectedCase(),
+    sensitivePreviewFilteredCase(),
+    commandTruncatedUnknownCase(),
     policyBlockedPathCase(),
     generatedVendorLockfileCase(),
     commandNoChangesCase(),
