@@ -6,6 +6,9 @@ const {
   scanTextForRawExposure,
   stableStringify,
 } = require("./renderer-transcript-projection");
+const {
+  validateGovernanceRequestRefs,
+} = require("../governance/broker");
 
 const CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND = "context_recent_dialogue";
 const CONTEXT_RECENT_DIALOGUE_PROJECTION_VERSION = "context_recent_dialogue@1";
@@ -603,6 +606,7 @@ function buildContextPack({
   toolContinuationItems = [],
   forkSeed = null,
   derivedForkSeed = null,
+  governanceRefs = null,
   nowMs = Date.now(),
 } = {}) {
   const safeProjectId = normalizeString(projectId, "");
@@ -687,6 +691,7 @@ function buildContextPack({
     },
   ];
   const omittedCounts = {};
+  validateGovernanceRequestRefs(governanceRefs || {});
   if (contextProjection?.projectionId && contextItems.length) {
     const evidenceText = contextItems.map((item) => {
       const label = `${normalizeString(item.role, "evidence").toUpperCase()} ${normalizeString(item.itemKind, "message")}`;
@@ -808,6 +813,24 @@ function buildContextPack({
     });
     mergeCounts(omittedCounts, derivedForkSeed.omittedCounts || {});
   }
+  if (governanceRefs?.refsDigest) {
+    for (const [artifactKind, artifactIdKey, artifactDigestKey] of [
+      ["governance_packet", "governancePacketId", "governancePacketDigest"],
+      ["compiled_prompt_layers", "compiledPromptLayersId", "compiledPromptLayersDigest"],
+      ["workflow_transition_graph", "transitionGraphId", "transitionGraphDigest"],
+      ["semantic_broker_packet", "semanticBrokerPacketId", "semanticBrokerPacketDigest"],
+      ["semantic_broker_fallback", "brokerFallbackId", "brokerFallbackDigest"],
+    ]) {
+      if (governanceRefs[artifactIdKey]) {
+        sourceArtifacts.push({
+          artifactKind,
+          artifactId: normalizeString(governanceRefs[artifactIdKey], ""),
+          artifactDigest: normalizeString(governanceRefs[artifactDigestKey], ""),
+          appPrivate: true,
+        });
+      }
+    }
+  }
   const currentIntentText = policy.policyId === DIRECT_COMMAND_EXECUTION_CONTINUATION_POLICY_ID && !prompt
     ? [
         "[COMMAND CONTINUATION INTENT]",
@@ -864,6 +887,7 @@ function buildContextPack({
     derivedForkSeedId: derivedForkSeed?.derivedForkSeedId || "",
     derivedForkSeedShapeHash: derivedForkSeed?.seedShapeHash || "",
     derivedSourcePreviewKind: derivedForkSeed?.sourcePreviewKind || "",
+    governanceRefsDigest: governanceRefs?.refsDigest || "",
     sourceArtifactKinds: sourceArtifacts.map((artifact) => artifact.artifactKind),
     messageAuthorities: messages.map((message) => message.authority),
     caps: contextCaps(),
@@ -904,6 +928,7 @@ function buildContextPack({
         projectionDigest: toolContinuationContext.projectionDigest,
       } : null,
     ].filter(Boolean),
+    governanceRefs: isPlainObject(governanceRefs) ? governanceRefs : null,
     caps: {
       ...contextCaps(),
       charCount: totalChars,
@@ -993,6 +1018,7 @@ function buildRequestManifest({
   endpointEvidenceRef = "",
   nowMs = Date.now(),
 } = {}) {
+  validateGovernanceRequestRefs(contextPack?.governanceRefs || {});
   const baseProviderInput = providerInputFromContextPack(contextPack);
   const requestShapeClassOverride = normalizeString(requestShape.requestShapeClass, "");
   const providerInput = requestShapeClassOverride
@@ -1055,7 +1081,15 @@ function buildRequestManifest({
       endpointEvidenceRef: normalizeString(endpointEvidenceRef, ""),
       contextPolicyEvidenceRef: contextPack.policy?.policyDigest || "",
     },
+    governanceRefs: isPlainObject(contextPack.governanceRefs) ? contextPack.governanceRefs : null,
     providerInputProjection: providerInput.projection,
+    providerInputProjectionGovernanceRefs: contextPack.governanceRefs ? {
+      compiledPromptLayersDigest: normalizeString(contextPack.governanceRefs.compiledPromptLayersDigest, ""),
+      governancePacketDigest: normalizeString(contextPack.governanceRefs.governancePacketDigest, ""),
+      semanticBrokerPacketDigest: normalizeString(contextPack.governanceRefs.semanticBrokerPacketDigest, ""),
+      rawCompiledTextIncluded: false,
+      rawBrokerPromptIncluded: false,
+    } : null,
     roleMappingDigest: providerInput.projection.roleMappingDigest,
     rawAuthExposed: false,
     rawRequestBodyStored: false,
@@ -1088,6 +1122,7 @@ function rendererSafeContextSummary(contextPack = {}, requestManifest = null) {
     builtAt: normalizeString(contextPack.builtAt, ""),
     truncated: contextPack.caps?.truncated === true,
     omittedCounts: contextPack.caps?.omittedCounts || {},
+    governanceRefsPresent: Boolean(contextPack.governanceRefs),
     contextTextExposed: false,
     requestManifestTextExposed: false,
     rawPathExposed: false,
