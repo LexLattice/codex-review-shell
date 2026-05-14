@@ -98,8 +98,14 @@ function normalizeString(value, fallback = "") {
 
 function stableStringify(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
-  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(",")}}`;
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => (entry === undefined ? "null" : stableStringify(entry))).join(",")}]`;
+  }
+  return `{${Object.keys(value)
+    .filter((key) => value[key] !== undefined)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
+    .join(",")}}`;
 }
 
 function sha256(value) {
@@ -146,12 +152,13 @@ function normalizeSourceRefs(values) {
 function buildGovernanceModeSnapshot(input = {}) {
   const effectiveMode = ["off", "shadow", "enforce_unavailable"].includes(input.effectiveMode) ? input.effectiveMode : "shadow";
   const effectiveSource = ["default", "project", "runtime-profile", "diagnostic"].includes(input.effectiveSource) ? input.effectiveSource : "default";
+  const sourceDigest = normalizeString(input.sourceDigest, sha256(`${effectiveMode}:${effectiveSource}`));
   const snapshot = {
     schema: DIRECT_GOVERNANCE_MODE_SNAPSHOT_SCHEMA,
-    governanceModeSnapshotId: normalizeString(input.governanceModeSnapshotId, `governance_mode_${sha256(`${effectiveMode}:${effectiveSource}:${input.sourceDigest || ""}`).slice(0, 24)}`),
+    governanceModeSnapshotId: normalizeString(input.governanceModeSnapshotId, `governance_mode_${sha256(sourceDigest).slice(0, 24)}`),
     effectiveMode,
     effectiveSource,
-    sourceDigest: normalizeString(input.sourceDigest, sha256(`${effectiveMode}:${effectiveSource}`)),
+    sourceDigest,
     editableInThisPr: false,
     enforceModeAvailable: false,
     enforceUnavailableReason: effectiveMode === "enforce_unavailable"
@@ -337,9 +344,10 @@ function buildWorkflowTransitionGraph(input = {}) {
     version: DIRECT_WORKFLOW_GRAPH_VERSION,
   };
   const graphDigest = sha256(stableStringify(graphSource));
+  const transitionGraphId = normalizeString(input.transitionGraphId, `transition_graph_${graphDigest.slice(0, 24)}`);
   const graph = {
     schema: DIRECT_WORKFLOW_TRANSITION_GRAPH_SCHEMA,
-    transitionGraphId: normalizeString(input.transitionGraphId, `transition_graph_${graphDigest.slice(0, 24)}`),
+    transitionGraphId,
     projectId: normalizeString(input.projectId, ""),
     graphVersion: normalizeString(input.graphVersion, DIRECT_WORKFLOW_GRAPH_VERSION),
     mode: normalizeString(input.mode, "diagnostic"),
@@ -359,13 +367,16 @@ function buildWorkflowTransitionGraph(input = {}) {
     allowedEdges: normalizedAllowed,
     blockedEdges: normalizedBlocked,
     parityResult: input.parityResult || {
-      graphId: `transition_graph_${graphDigest.slice(0, 24)}`,
+      graphId: transitionGraphId,
       controllerVersion: "fixture_controller_parity@1",
-      checkedTransitions: [...normalizedAllowed, ...normalizedBlocked].map((edge) => ({
+      checkedTransitions: [
+        ...normalizedAllowed.map((edge) => ({ edge, graphDecision: "allowed" })),
+        ...normalizedBlocked.map((edge) => ({ edge, graphDecision: "blocked" })),
+      ].map(({ edge, graphDecision }) => ({
         from: edge.from,
         to: edge.to,
         edgeKind: edge.edgeKind,
-        graphDecision: normalizedBlocked.includes(edge) ? "blocked" : "allowed",
+        graphDecision,
         controllerDecision: "unknown",
         parity: "not_checked",
       })),
@@ -460,6 +471,25 @@ function candidateFromRoute(route, overrides = {}) {
   };
 }
 
+function normalizeBrokerCandidate(candidate = {}, index = 0) {
+  const route = {
+    routeKind: normalizeString(candidate.routeKind, "unsupported"),
+    toolSurface: normalizeString(candidate.toolSurface, "none"),
+    contextPolicyKinds: candidate.contextPolicyHint ? [candidate.contextPolicyHint] : [],
+  };
+  return candidateFromRoute(route, {
+    ...candidate,
+    candidateId: normalizeString(candidate.candidateId, `candidate_supplied_${index + 1}`),
+  });
+}
+
+function fallbackUiStateForKind(fallbackKind) {
+  if (fallbackKind === "ask_human") return "disabled_ask_human";
+  if (fallbackKind === "degrade_to_text_only") return "disabled_degrade_to_text_only";
+  if (fallbackKind === "block_until_source_available") return "disabled_block_until_source_available";
+  return "diagnostic_only";
+}
+
 function buildSemanticBrokerFallback(input = {}) {
   const fallbackKind = normalizeString(input.fallbackKind, "diagnostic_only");
   const reasonCode = normalizeString(input.reasonCode, "ambiguous_task_route");
@@ -471,7 +501,7 @@ function buildSemanticBrokerFallback(input = {}) {
     fallbackKind,
     reasonCode,
     enabledInThisPr: false,
-    fallbackUiState: normalizeString(input.fallbackUiState, fallbackKind === "ask_human" ? "disabled_ask_human" : "diagnostic_only"),
+    fallbackUiState: fallbackUiStateForKind(fallbackKind),
     rendererSafePrompt: normalizeString(input.rendererSafePrompt, ""),
     rawUserPromptIncluded: false,
   };
@@ -484,7 +514,7 @@ function buildSemanticBrokerPacket(input = {}) {
   const registry = isPlainObject(input.registrySnapshot) ? input.registrySnapshot : buildSemanticBrokerRegistrySnapshot(input);
   const inputSnapshot = isPlainObject(input.inputSnapshot) ? input.inputSnapshot : buildSemanticBrokerInputSnapshot(input);
   const candidates = Array.isArray(input.candidates) && input.candidates.length
-    ? input.candidates
+    ? input.candidates.map((candidate, index) => normalizeBrokerCandidate(candidate, index))
     : registry.routes.map((route) => candidateFromRoute(route));
   const ambiguous = candidates.length !== 1 || input.forceAmbiguous === true;
   const sourceDigest = sha256(stableStringify({
@@ -493,13 +523,15 @@ function buildSemanticBrokerPacket(input = {}) {
     candidates,
   }));
   const semanticBrokerPacketId = normalizeString(input.semanticBrokerPacketId, `broker_packet_${sourceDigest.slice(0, 24)}`);
-  const fallbackState = input.fallbackState || (ambiguous
+  const suppliedFallback = isPlainObject(input.fallbackState) ? input.fallbackState : {};
+  const fallbackState = ambiguous
     ? buildSemanticBrokerFallback({
         semanticBrokerPacketId,
-        fallbackKind: "ask_human",
-        reasonCode: "ambiguous_task_route",
+        fallbackKind: suppliedFallback.fallbackKind || "ask_human",
+        reasonCode: suppliedFallback.reasonCode || "ambiguous_task_route",
+        rendererSafePrompt: suppliedFallback.rendererSafePrompt,
       })
-    : null);
+    : null;
   const packet = {
     schema: DIRECT_SEMANTIC_BROKER_PACKET_SCHEMA,
     semanticBrokerPacketId,
@@ -595,15 +627,27 @@ function governanceRequestRefsFromArtifacts(input = {}) {
   return refs;
 }
 
-function validateGovernanceRequestRefs(refs = {}) {
-  if (!refs || !isPlainObject(refs)) return true;
-  for (const [key, value] of Object.entries(refs)) {
-    if (/raw/i.test(key) && value === true) {
+function assertNoRawExposureFlags(value, path = "") {
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => assertNoRawExposureFlags(entry, `${path}[${index}]`));
+    return;
+  }
+  if (!isPlainObject(value)) return;
+  for (const [key, entry] of Object.entries(value)) {
+    const nextPath = path ? `${path}.${key}` : key;
+    if (/^raw/i.test(key) && entry === true) {
       const error = new Error("governance_request_refs_raw_exposure_blocked");
       error.code = "governance_request_refs_raw_exposure_blocked";
+      error.path = nextPath;
       throw error;
     }
+    assertNoRawExposureFlags(entry, nextPath);
   }
+}
+
+function validateGovernanceRequestRefs(refs = {}) {
+  if (!refs || !isPlainObject(refs)) return true;
+  assertNoRawExposureFlags(refs);
   if (refs.requiredForFutureEnforce === true) {
     const error = new Error("governance_enforce_unavailable");
     error.code = "governance_enforce_unavailable";

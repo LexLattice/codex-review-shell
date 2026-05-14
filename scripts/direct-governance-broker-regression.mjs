@@ -20,6 +20,7 @@ const {
   buildGovernancePacket,
   buildGovernanceShadowReport,
   buildGovernanceStatusProjection,
+  buildSemanticBrokerFallback,
   buildSemanticBrokerInputSnapshot,
   buildSemanticBrokerPacket,
   buildSemanticBrokerRegistrySnapshot,
@@ -31,6 +32,7 @@ const {
   sha256,
   stableStringify,
   validateGovernanceBrokerRegressionReport,
+  validateGovernanceRequestRefs,
 } = require("../src/main/direct/governance/broker");
 const {
   DIRECT_TEXT_TURN_RECENT_DIALOGUE_POLICY_ID,
@@ -50,6 +52,15 @@ function nowIso() {
 
 function safeIdPart(value, fallback = "run") {
   return normalizeString(value, fallback).replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80) || fallback;
+}
+
+function throwsCode(fn, code) {
+  try {
+    fn();
+  } catch (error) {
+    return error?.code === code || error?.message === code;
+  }
+  return false;
 }
 
 function parseArgs(argv) {
@@ -232,6 +243,42 @@ function buildFixtureArtifacts() {
       }),
     ],
   });
+  const suppliedAuthorityCandidatePacket = buildSemanticBrokerPacket({
+    projectId,
+    threadId,
+    turnId,
+    registrySnapshot: registry,
+    inputSnapshot: brokerInput,
+    candidates: [{
+      candidateId: "candidate_supplied_authority_leak",
+      routeKind: "implementation_lane_command",
+      toolSurface: "run_command",
+      confidence: "high",
+      reasonCodes: ["supplied_classifier_candidate"],
+      rendererSafeSummary: "Supplied candidate must remain diagnostic.",
+      mayAutoApplyInThisPr: true,
+      enabledInThisPr: true,
+    }],
+  });
+  const suppliedEnabledFallbackPacket = buildSemanticBrokerPacket({
+    projectId,
+    threadId,
+    turnId,
+    registrySnapshot: registry,
+    inputSnapshot: brokerInput,
+    forceAmbiguous: true,
+    candidates: [
+      candidateFromRoute(textOnlyRoute, { confidence: "low" }),
+      candidateFromRoute(registry.routes.find((route) => route.routeKind === "repair_loop"), { confidence: "low" }),
+    ],
+    fallbackState: buildSemanticBrokerFallback({
+      semanticBrokerPacketId: "caller_supplied_fallback",
+      fallbackKind: "degrade_to_text_only",
+      reasonCode: "caller_supplied_enabled_state",
+      fallbackUiState: "enabled_degrade_to_text_only",
+      enabledInThisPr: true,
+    }),
+  });
   const shadowReport = buildGovernanceShadowReport({
     governancePacket,
     compiledPromptLayers: compiledLayers,
@@ -293,6 +340,8 @@ function buildFixtureArtifacts() {
     brokerInput,
     brokerPacket,
     ambiguousBrokerPacket,
+    suppliedAuthorityCandidatePacket,
+    suppliedEnabledFallbackPacket,
     shadowReport,
     governanceRefs,
     contextPackWithoutGovernance,
@@ -308,8 +357,38 @@ function buildReport() {
     artifacts.requestWithoutGovernance.providerInput.projection.providerInputTextHash ===
     artifacts.requestWithGovernance.providerInput.projection.providerInputTextHash;
   if (!providerInputTextUnchanged) throw new Error("governance_refs_changed_provider_input_text");
+  const stableStringifyMatchesJsonUndefinedSemantics =
+    stableStringify({ keep: true, omit: undefined }) === "{\"keep\":true}" &&
+    stableStringify([undefined]) === "[null]" &&
+    stableStringify([undefined]) !== stableStringify([]);
+  const nestedRawExposureBlocked = throwsCode(
+    () => validateGovernanceRequestRefs({ providerInputProjectionGovernanceRefs: { rawCompiledTextIncluded: true } }),
+    "governance_request_refs_raw_exposure_blocked",
+  );
+  let rawSubstringAllowed = false;
+  try {
+    validateGovernanceRequestRefs({ withdraw: true, nested: { strawberry: true } });
+    rawSubstringAllowed = true;
+  } catch {
+    rawSubstringAllowed = false;
+  }
 
   const cases = [
+    baseCase({
+      caseId: "stable_stringify_undefined_json_semantics",
+      proofOutcome: stableStringifyMatchesJsonUndefinedSemantics
+        ? "stable_digest_input_normalized"
+        : "failed",
+    }),
+    baseCase({
+      caseId: "governance_mode_snapshot_id_derived_from_source_digest",
+      proofOutcome: buildGovernanceModeSnapshot({
+        effectiveMode: "shadow",
+        effectiveSource: "default",
+      }).governanceModeSnapshotId === `governance_mode_${sha256(sha256("shadow:default")).slice(0, 24)}`
+        ? "source_digest_consistent"
+        : "failed",
+    }),
     baseCase({
       caseId: "governance_packet_shadow_happy_path",
       artifacts: { governancePacketId: artifacts.governancePacket.governancePacketId },
@@ -357,6 +436,29 @@ function buildReport() {
         ? "disabled_fallback_recorded"
         : "failed",
       artifacts: { fallbackId: artifacts.ambiguousBrokerPacket.fallbackState?.fallbackId },
+    }),
+    baseCase({
+      caseId: "semantic_broker_supplied_candidate_forces_authority_flags_off",
+      proofOutcome: artifacts.suppliedAuthorityCandidatePacket.candidates.every((candidate) => candidate.mayAutoApplyInThisPr === false && candidate.enabledInThisPr === false)
+        ? "candidate_non_authority_enforced"
+        : "failed",
+      artifacts: { semanticBrokerPacketId: artifacts.suppliedAuthorityCandidatePacket.semanticBrokerPacketId },
+    }),
+    baseCase({
+      caseId: "semantic_broker_supplied_fallback_forces_disabled_state",
+      proofOutcome: artifacts.suppliedEnabledFallbackPacket.fallbackState?.enabledInThisPr === false &&
+        artifacts.suppliedEnabledFallbackPacket.fallbackState?.fallbackUiState === "disabled_degrade_to_text_only"
+        ? "fallback_non_authority_enforced"
+        : "failed",
+      artifacts: { fallbackId: artifacts.suppliedEnabledFallbackPacket.fallbackState?.fallbackId },
+    }),
+    baseCase({
+      caseId: "governance_request_refs_nested_raw_exposure_blocked",
+      proofOutcome: nestedRawExposureBlocked ? "nested_raw_exposure_blocked" : "failed",
+    }),
+    baseCase({
+      caseId: "governance_request_refs_raw_substring_keys_allowed",
+      proofOutcome: rawSubstringAllowed ? "raw_prefix_only" : "failed",
     }),
     baseCase({
       caseId: "enforce_mode_unavailable_status",
