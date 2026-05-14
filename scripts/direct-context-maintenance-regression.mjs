@@ -313,7 +313,38 @@ function buildReport() {
       recoveryState: maintenanceRecoveryState({ batonRequiredMissing: true }),
       blockerCode: (() => {
         try {
-          validateMaintenanceRefs({ requiredBaton: true }, { requireBaton: true });
+          validateMaintenanceRefs({}, { requireBaton: true });
+        } catch (error) {
+          return error.code || error.message;
+        }
+        return "missing_expected_blocker";
+      })(),
+    }),
+    baseCase({
+      caseId: "required_class_omission_ledger_blocks",
+      status: "blocked",
+      routeKind: "local_trim",
+      routeClass: "trim",
+      proofOutcome: "required_artifact_omission_blocked",
+      blockerCode: (() => {
+        const blockedPlan = buildTrimPlan({
+          route: artifacts.route,
+          sourceContextProjectionId: "context_projection_fixture",
+          sourceContextProjectionDigest: "context_projection_digest_fixture",
+          trimPolicy: artifacts.trimPolicy,
+          candidateOmissions: [
+            {
+              sourceArtifactKind: "context_recent_dialogue",
+              sourceArtifactId: "context_projection_fixture",
+              sourceDigest: "context_projection_digest_fixture",
+              omittedItemCount: 1,
+              requiredArtifactClass: "harness_policy",
+              rendererSafeSummary: "Required harness policy must not be omitted.",
+            },
+          ],
+        });
+        try {
+          buildOmissionLedger({ trimPlan: blockedPlan });
         } catch (error) {
           return error.code || error.message;
         }

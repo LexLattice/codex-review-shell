@@ -61,10 +61,6 @@ function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
-function preserveString(value) {
-  return typeof value === "string" ? value : "";
-}
-
 function stableStringify(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
@@ -341,11 +337,22 @@ function buildTrimPlan(input = {}) {
 
 function buildOmissionLedger(input = {}) {
   const trimPlan = isPlainObject(input.trimPlan) ? input.trimPlan : null;
+  if (trimPlan?.status === "blocked" || (Array.isArray(trimPlan?.blockedRequiredArtifacts) && trimPlan.blockedRequiredArtifacts.length)) {
+    const error = new Error("context_omission_ledger_blocked_trim_plan");
+    error.code = "context_omission_ledger_blocked_trim_plan";
+    throw error;
+  }
+  const requiredClasses = new Set(Array.isArray(trimPlan?.requiredArtifactClasses) ? trimPlan.requiredArtifactClasses : DIRECT_REQUIRED_CONTEXT_ARTIFACT_CLASSES);
   const sourceCandidates = Array.isArray(input.entries)
     ? input.entries
     : (Array.isArray(trimPlan?.candidateOmissions) ? trimPlan.candidateOmissions : []);
+  if (sourceCandidates.some((candidate) => candidate.requiredArtifact === true || requiredClasses.has(candidate.requiredArtifactClass))) {
+    const error = new Error("context_omission_ledger_required_artifact_candidate");
+    error.code = "context_omission_ledger_required_artifact_candidate";
+    throw error;
+  }
   const entries = sourceCandidates
-    .filter((candidate) => candidate.requiredArtifact !== true)
+    .filter((candidate) => candidate.requiredArtifact !== true && !requiredClasses.has(candidate.requiredArtifactClass))
     .map((candidate, index) => ({
       omissionId: normalizeString(candidate.omissionId, `omission_${index + 1}`),
       sourceArtifactKind: normalizeString(candidate.sourceArtifactKind, "context_recent_dialogue"),
