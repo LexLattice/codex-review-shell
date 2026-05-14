@@ -132,6 +132,14 @@ const DIRECT_THREAD_OPERATION_TYPES = new Set([
   "materialize_projection_thread",
   "rebuild_projection",
   "repair_index",
+  "governance_input_snapshot",
+  "governance_packet",
+  "compiled_prompt_layers",
+  "workflow_transition_graph",
+  "governance_shadow_report",
+  "semantic_broker_input_snapshot",
+  "semantic_broker_packet",
+  "semantic_broker_fallback",
 ]);
 const DIRECT_THREAD_OPERATION_EVENT_TYPES = new Set([
   "operation_planned",
@@ -437,6 +445,16 @@ class DirectThreadStore {
       "fork-starts",
       requireSafeId(projectId, "project"),
       requireSafeId(forkStartId, "fork start"),
+      safeArtifactName(artifactName),
+    );
+  }
+
+  governanceArtifactPath(projectId, threadId, artifactName) {
+    return path.join(
+      this.rootDir,
+      "governance-diagnostics",
+      safeStorageKey(projectId, "project"),
+      safeStorageKey(threadId, "thread"),
       safeArtifactName(artifactName),
     );
   }
@@ -1988,6 +2006,7 @@ class DirectThreadStore {
           JSON.stringify({
             sourceArtifacts: contextPack.sourceArtifacts || [],
             sourceProjections: contextPack.sourceProjections || [],
+            governanceRefs: contextPack.governanceRefs || null,
             policyDigest: normalizeString(contextPack.policy?.policyDigest, ""),
             roleMappingDigest: normalizeString(contextPack.roleMapping?.mappingDigest, ""),
             rawExposure: contextPack.rawExposure || {},
@@ -2124,6 +2143,17 @@ class DirectThreadStore {
     return value;
   }
 
+  writeGovernanceArtifact(projectId, threadId, artifactName, value) {
+    writeJsonAtomic(this.governanceArtifactPath(projectId, threadId, artifactName), value);
+    return value;
+  }
+
+  readGovernanceArtifact(projectId, threadId, artifactName) {
+    const targetPath = this.governanceArtifactPath(projectId, threadId, artifactName);
+    if (!fs.existsSync(targetPath)) return null;
+    return readJsonFile(targetPath);
+  }
+
   readRequestManifest(requestManifestId) {
     const row = this.db.prepare("select * from direct_request_manifests where request_manifest_id = ?")
       .get(requireSafeId(requestManifestId, "request manifest"));
@@ -2218,6 +2248,7 @@ class DirectThreadStore {
       contextProjection,
       contextItems,
       currentUserPrompt: preserveString(input.currentUserPrompt),
+      governanceRefs: input.governanceRefs,
       nowMs: options.nowMs,
     });
     this.writeContextPack(contextPack, options);
@@ -2269,6 +2300,7 @@ class DirectThreadStore {
       policyId: DIRECT_IMPORT_CHECKPOINT_CONTINUATION_POLICY_ID,
       currentUserPrompt: preserveString(input.currentUserPrompt),
       checkpointSeed: seed,
+      governanceRefs: input.governanceRefs,
       nowMs: options.nowMs,
     });
     this.writeContextPack(contextPack, options);
@@ -2345,6 +2377,7 @@ class DirectThreadStore {
       toolContinuationContext,
       toolContinuationItems,
       currentUserPrompt: "",
+      governanceRefs: input.governanceRefs,
       nowMs: options.nowMs,
     });
     this.writeContextPack(contextPack, options);
@@ -2467,6 +2500,7 @@ class DirectThreadStore {
       policyId: DIRECT_FORK_START_POLICY_ID,
       currentUserPrompt: preserveString(input.currentUserPrompt),
       forkSeed,
+      governanceRefs: input.governanceRefs,
       nowMs: options.nowMs,
     });
     this.writeContextPack(contextPack, options);
@@ -2552,6 +2586,7 @@ class DirectThreadStore {
       policyId: DIRECT_DERIVED_PREVIEW_FORK_START_POLICY_ID,
       currentUserPrompt: preserveString(input.currentUserPrompt),
       derivedForkSeed,
+      governanceRefs: input.governanceRefs,
       nowMs: options.nowMs,
     });
     this.writeContextPack(contextPack, options);
