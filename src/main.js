@@ -66,6 +66,9 @@ const {
   evaluateDirectTextOnlyRuntimeSelection,
   evaluateDirectExperimentalProjectActivation,
 } = require("./main/direct/runtime/project-activation");
+const { UsageLedgerCollector } = require("./main/usage-ledger-collector");
+const { defaultUsageLedgerConfig, normalizeUsageLedgerConfig } = require("./main/usage-ledger-config");
+const { readUsageLedgerAnalytics } = require("./main/usage-ledger-analytics");
 const { PLANE_ZOOM_DEFAULT, clampZoomFactor, zoomDeltaForDirection } = require("./shared/plane-zoom");
 
 const APP_TITLE = "Codex Review Shell";
@@ -343,6 +346,7 @@ function defaultConfig() {
               kind: "codex_executable",
               flavor: "vanilla",
             },
+            usageLedger: defaultUsageLedgerConfig(),
             remoteAuth: {
               mode: "none",
               tokenFilePath: "",
@@ -1187,6 +1191,7 @@ function normalizeProject(input, index = 0) {
           configuredFlavor: rawCodex.configuredFlavor,
           connectionPath: rawCodex.connectionPath,
         }),
+        usageLedger: normalizeUsageLedgerConfig(rawCodex.usageLedger || rawCodex.usage_ledger),
         remoteAuth: normalizeRemoteAuthConfig(rawCodex.remoteAuth),
       },
       chatgpt: {
@@ -2216,7 +2221,18 @@ function createCodexSurfaceSession(sender, connection = {}) {
       project: currentProject,
     });
   }
-  const session = new CodexSurfaceSession(sender);
+  const usageLedger = new UsageLedgerCollector({
+    getProjectById,
+    emitStatus: (status) => {
+      if (sender.isDestroyed()) return;
+      sender.send("codex-surface:event", {
+        type: "usage-ledger-status",
+        status,
+        at: nowIso(),
+      });
+    },
+  });
+  const session = new CodexSurfaceSession(sender, { usageLedger });
   session.transportKind = "codex-app-server";
   return session;
 }
@@ -2540,8 +2556,11 @@ async function loadCodexSurface(project, options = {}) {
       activeCodexSurfaceConnection = {
         projectId: project.id,
         wsUrl: session.wsUrl,
+        readyUrl: session.readyUrl,
         runtime: session.runtime,
         codexHome: session.codexHome || "",
+        workspaceRoot: session.workspaceRoot || "",
+        binaryPath: session.binaryPath || "",
         provider: session.provider || null,
         capabilities: session.capabilities || null,
         activationEpoch: Number(options.activationEpoch) || 0,
@@ -3599,10 +3618,13 @@ async function getThreadAnalyticsDashboard(projectId, threadKey) {
   const key = normalizeString(threadKey, "");
   if (!key) throw new Error("threadKey is required.");
   const dashboard = store.getProjectThreadDashboard(project.id, key);
+  const usageLedger = dashboard
+    ? await readUsageLedgerAnalytics(project, dashboard.thread?.threadId || "")
+    : null;
   return {
     projectId: project.id,
     threadKey: key,
-    dashboard,
+    dashboard: dashboard ? { ...dashboard, usageLedger } : dashboard,
     analyzerVersion: THREAD_ANALYTICS_ANALYZER_VERSION,
   };
 }
@@ -4265,6 +4287,8 @@ ipcMain.handle("codex-surface:focus-sub-agent", async (_event, payload) => {
     projectId: normalizeString(payload?.projectId, ""),
     primaryThreadId: normalizeString(payload?.primaryThreadId || payload?.threadId, ""),
     receiverThreadId: normalizeString(payload?.receiverThreadId, ""),
+    scopeMode: normalizeString(payload?.scopeMode, ""),
+    turnKey: normalizeString(payload?.turnKey, ""),
     graphRevision: Number(payload?.graphRevision) || 0,
     activationEpoch: Number(payload?.activationEpoch) || 0,
     label: normalizeString(payload?.label, ""),

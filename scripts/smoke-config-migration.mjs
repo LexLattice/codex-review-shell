@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(__dirname, "..");
+const { defaultUsageLedgerConfig, normalizeUsageLedgerConfig } = require("../src/main/usage-ledger-config.js");
 const mainPath = path.join(appRoot, "src", "main.js");
 const source = fs.readFileSync(mainPath, "utf8");
 const {
@@ -31,6 +32,8 @@ const sandbox = {
   normalizeDirectExperimentalRuntimeTier,
   normalizeDirectRuntimeModeForStatus,
   CODEX_THREAD_RUNTIME_PREF_MAX_ENTRIES: 500,
+  defaultUsageLedgerConfig,
+  normalizeUsageLedgerConfig,
 };
 vm.createContext(sandbox);
 vm.runInContext(
