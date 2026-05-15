@@ -9,6 +9,9 @@ const {
 const {
   validateGovernanceRequestRefs,
 } = require("../governance/broker");
+const {
+  validateMaintenanceRefs,
+} = require("../context/maintenance");
 
 const CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND = "context_recent_dialogue";
 const CONTEXT_RECENT_DIALOGUE_PROJECTION_VERSION = "context_recent_dialogue@1";
@@ -592,6 +595,123 @@ function contextPackIntegrity(input) {
   }));
 }
 
+function maintenanceContextEvidence({ maintenanceRefs = null, maintenanceArtifacts = {} } = {}) {
+  const refs = isPlainObject(maintenanceRefs) ? maintenanceRefs : {};
+  const artifacts = isPlainObject(maintenanceArtifacts) ? maintenanceArtifacts : {};
+  const messages = [];
+  const sourceArtifacts = [];
+  const omittedCounts = {};
+
+  if (artifacts.memory?.memoryId && Array.isArray(artifacts.memory.entries) && artifacts.memory.entries.length) {
+    const lines = artifacts.memory.entries
+      .filter((entry) => normalizeString(entry.contextUse, "quoted_context_only") !== "blocked")
+      .map((entry) => {
+        const label = normalizeString(entry.authority, "historical_context");
+        return `${label}: ${preserveString(entry.rendererSafeSummary)}`;
+      })
+      .filter(Boolean);
+    if (lines.length) {
+      const text = `[DURABLE THREAD MEMORY - QUOTED CONTEXT EVIDENCE]\n${lines.join("\n")}`;
+      const findings = blockingRawExposureFindings(text);
+      if (findings.length) {
+        const error = new Error("Direct durable memory failed context redaction.");
+        error.code = "maintenance_memory_redaction_failed";
+        throw error;
+      }
+      messages.push({
+        role: "user",
+        authority: "historical-evidence",
+        quotedEvidence: true,
+        sourceMemoryId: artifacts.memory.memoryId,
+        text,
+        textHash: sha256(text),
+      });
+      sourceArtifacts.push({
+        artifactKind: "durable_thread_memory",
+        artifactId: artifacts.memory.memoryId,
+        artifactDigest: normalizeString(artifacts.memory.integrity?.artifactDigest || artifacts.memory.memoryDigest, refs.memoryDigest || ""),
+        appPrivate: true,
+      });
+    }
+  }
+
+  if (artifacts.baton?.batonId) {
+    const frontier = artifacts.baton.frontier || {};
+    const text = [
+      "[FRONTIER BATON - STATUS EVIDENCE]",
+      `Goal: ${normalizeString(frontier.rendererSafeGoalSummary, "unknown")}`,
+      `Next expected action: ${normalizeString(frontier.nextExpectedAction, "unknown")}`,
+      "Replay authority: false",
+      "Approval authority: false",
+      "Continuation authority: false",
+    ].join("\n");
+    const findings = blockingRawExposureFindings(text);
+    if (findings.length) {
+      const error = new Error("Direct frontier baton failed context redaction.");
+      error.code = "maintenance_baton_redaction_failed";
+      throw error;
+    }
+    messages.push({
+      role: "user",
+      authority: "status-evidence",
+      quotedEvidence: true,
+      sourceBatonId: artifacts.baton.batonId,
+      text,
+      textHash: sha256(text),
+    });
+    sourceArtifacts.push({
+      artifactKind: "frontier_baton",
+      artifactId: artifacts.baton.batonId,
+      artifactDigest: normalizeString(artifacts.baton.integrity?.artifactDigest, refs.batonDigest || ""),
+      appPrivate: true,
+    });
+  }
+
+  if (artifacts.omissionLedger?.omissionLedgerId) {
+    const totals = artifacts.omissionLedger.totals || {};
+    const text = [
+      "[CONTEXT OMISSIONS - STATUS EVIDENCE]",
+      `${Number(totals.omittedItemCount || 0)} context item(s) omitted under the recorded maintenance policy.`,
+      "Omitted material is not hidden context.",
+    ].join("\n");
+    messages.push({
+      role: "user",
+      authority: "status-evidence",
+      quotedEvidence: true,
+      sourceOmissionLedgerId: artifacts.omissionLedger.omissionLedgerId,
+      text,
+      textHash: sha256(text),
+    });
+    sourceArtifacts.push({
+      artifactKind: "context_omission_ledger",
+      artifactId: artifacts.omissionLedger.omissionLedgerId,
+      artifactDigest: normalizeString(artifacts.omissionLedger.integrity?.artifactDigest, refs.omissionLedgerDigest || ""),
+      appPrivate: true,
+    });
+    omittedCounts.context_omission_ledger_items = Number(totals.omittedItemCount || 0);
+    omittedCounts.context_omission_ledger_turns = Number(totals.omittedTurnCount || 0);
+    omittedCounts.context_omission_ledger_chars = Number(totals.omittedCharCount || 0);
+  }
+
+  if (refs.maintenanceManifestId) {
+    sourceArtifacts.push({
+      artifactKind: "context_maintenance_manifest",
+      artifactId: refs.maintenanceManifestId,
+      artifactDigest: normalizeString(refs.maintenanceManifestDigest, ""),
+      appPrivate: true,
+    });
+  }
+  if (refs.pressureEstimateId) {
+    sourceArtifacts.push({
+      artifactKind: "context_pressure_estimate",
+      artifactId: refs.pressureEstimateId,
+      artifactDigest: normalizeString(refs.pressureEstimateDigest, ""),
+      appPrivate: true,
+    });
+  }
+  return { messages, sourceArtifacts, omittedCounts };
+}
+
 function buildContextPack({
   projectId,
   threadId,
@@ -607,6 +727,8 @@ function buildContextPack({
   forkSeed = null,
   derivedForkSeed = null,
   governanceRefs = null,
+  maintenanceRefs = null,
+  maintenanceArtifacts = null,
   nowMs = Date.now(),
 } = {}) {
   const safeProjectId = normalizeString(projectId, "");
@@ -692,6 +814,7 @@ function buildContextPack({
   ];
   const omittedCounts = {};
   validateGovernanceRequestRefs(governanceRefs || {});
+  validateMaintenanceRefs(maintenanceRefs || {});
   if (contextProjection?.projectionId && contextItems.length) {
     const evidenceText = contextItems.map((item) => {
       const label = `${normalizeString(item.role, "evidence").toUpperCase()} ${normalizeString(item.itemKind, "message")}`;
@@ -831,6 +954,10 @@ function buildContextPack({
       }
     }
   }
+  const maintenanceEvidence = maintenanceContextEvidence({ maintenanceRefs, maintenanceArtifacts });
+  for (const message of maintenanceEvidence.messages) messages.push(message);
+  for (const artifact of maintenanceEvidence.sourceArtifacts) sourceArtifacts.push(artifact);
+  mergeCounts(omittedCounts, maintenanceEvidence.omittedCounts);
   const currentIntentText = policy.policyId === DIRECT_COMMAND_EXECUTION_CONTINUATION_POLICY_ID && !prompt
     ? [
         "[COMMAND CONTINUATION INTENT]",
@@ -888,6 +1015,7 @@ function buildContextPack({
     derivedForkSeedShapeHash: derivedForkSeed?.seedShapeHash || "",
     derivedSourcePreviewKind: derivedForkSeed?.sourcePreviewKind || "",
     governanceRefsDigest: governanceRefs?.refsDigest || "",
+    maintenanceRefsDigest: maintenanceRefs?.refsDigest || "",
     sourceArtifactKinds: sourceArtifacts.map((artifact) => artifact.artifactKind),
     messageAuthorities: messages.map((message) => message.authority),
     caps: contextCaps(),
@@ -929,6 +1057,7 @@ function buildContextPack({
       } : null,
     ].filter(Boolean),
     governanceRefs: isPlainObject(governanceRefs) ? governanceRefs : null,
+    maintenanceRefs: isPlainObject(maintenanceRefs) ? maintenanceRefs : null,
     caps: {
       ...contextCaps(),
       charCount: totalChars,
@@ -1019,6 +1148,7 @@ function buildRequestManifest({
   nowMs = Date.now(),
 } = {}) {
   validateGovernanceRequestRefs(contextPack?.governanceRefs || {});
+  validateMaintenanceRefs(contextPack?.maintenanceRefs || {});
   const baseProviderInput = providerInputFromContextPack(contextPack);
   const requestShapeClassOverride = normalizeString(requestShape.requestShapeClass, "");
   const providerInput = requestShapeClassOverride
@@ -1082,6 +1212,7 @@ function buildRequestManifest({
       contextPolicyEvidenceRef: contextPack.policy?.policyDigest || "",
     },
     governanceRefs: isPlainObject(contextPack.governanceRefs) ? contextPack.governanceRefs : null,
+    maintenanceRefs: isPlainObject(contextPack.maintenanceRefs) ? contextPack.maintenanceRefs : null,
     providerInputProjection: providerInput.projection,
     providerInputProjectionGovernanceRefs: contextPack.governanceRefs ? {
       compiledPromptLayersDigest: normalizeString(contextPack.governanceRefs.compiledPromptLayersDigest, ""),
@@ -1123,6 +1254,7 @@ function rendererSafeContextSummary(contextPack = {}, requestManifest = null) {
     truncated: contextPack.caps?.truncated === true,
     omittedCounts: contextPack.caps?.omittedCounts || {},
     governanceRefsPresent: Boolean(contextPack.governanceRefs),
+    maintenanceRefsPresent: Boolean(contextPack.maintenanceRefs),
     contextTextExposed: false,
     requestManifestTextExposed: false,
     rawPathExposed: false,
