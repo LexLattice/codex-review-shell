@@ -55,6 +55,11 @@ const {
   normalizeCodexRuntimeMode: normalizeDirectRuntimeModeForStatus,
 } = require("./main/direct/runtime/runtime-status");
 const {
+  bindingForDirectRuntimePath,
+  directRuntimePathFromBinding,
+  normalizeDirectRuntimePath,
+} = require("./main/direct/runtime/runtime-path-selection");
+const {
   buildDirectImplementationLaneUiStatus,
   buildDirectPolicyReadOnlyView,
   projectOperationHistoryPage,
@@ -2079,6 +2084,72 @@ async function selectDirectTextOnlyRuntime(payload = {}) {
       if (!committed) store.markRuntimeSelectionAbandoned(pending, error.message || "selection_failed");
       throw error;
     }
+  });
+}
+
+async function setCodexRuntimePath(payload = {}) {
+  const projectId = normalizeString(payload.projectId, "");
+  const runtimePath = normalizeDirectRuntimePath(payload.runtimePath || payload.path);
+  const config = await loadConfig();
+  const project = config.projects.find((item) => item.id === projectId);
+  if (!project) throw new Error("Project not found.");
+
+  const currentPath = directRuntimePathFromBinding(project.surfaceBinding?.codex || {});
+  if (currentPath === runtimePath) {
+    return {
+      ok: true,
+      duplicate: true,
+      runtimePath,
+      project,
+      config,
+      status: buildDirectRuntimeStatusForProject(project),
+    };
+  }
+
+  if (runtimePath === "direct-text") {
+    return selectDirectTextOnlyRuntime({
+      ...payload,
+      projectId,
+      clientOperationId: payload.clientOperationId || payload.clientSelectionId,
+    });
+  }
+
+  if (runtimePath === "direct-implementation") {
+    return enableDirectExperimentalProject({
+      ...payload,
+      projectId,
+      clientActivationId: payload.clientActivationId || payload.clientOperationId,
+      expectedRuntimeMode: "direct-experimental",
+      expectedDirectTransport: "live-text",
+    });
+  }
+
+  return withDirectActivationLock(projectId, async () => {
+    const latestConfig = await loadConfig();
+    const latestProject = latestConfig.projects.find((item) => item.id === projectId);
+    if (!latestProject) throw new Error("Project not found.");
+    const activeTurns = activeDirectTurnCountForProject(ensureDirectSessionStore(), projectId);
+    if (activeTurns > 0) {
+      const error = new Error("A direct turn is active. Wait before changing the runtime selection.");
+      error.code = "active_direct_turn_exists";
+      throw error;
+    }
+    const nextBinding = bindingForDirectRuntimePath(latestProject.surfaceBinding?.codex || {}, "app-server");
+    const nextProjects = latestConfig.projects.map((item) =>
+      item.id === projectId ? projectWithCodexBinding(item, nextBinding) : item,
+    );
+    const saved = await saveConfig({ ...latestConfig, projects: nextProjects });
+    const savedProject = saved.projects.find((item) => item.id === projectId) || latestProject;
+    currentProject = savedProject;
+    await loadCodexSurface(savedProject, { activationEpoch: nextSurfaceActivationEpoch("runtime-path-app-server") });
+    emitDirectRuntimeStatus(savedProject);
+    return {
+      ok: true,
+      runtimePath: "app-server",
+      project: savedProject,
+      config: saved,
+      status: buildDirectRuntimeStatusForProject(savedProject),
+    };
   });
 }
 
@@ -4540,6 +4611,10 @@ ipcMain.handle("direct-ui:policy-readonly-view", async (_event, payload) => {
 
 ipcMain.handle("direct-runtime:select-text-only", async (_event, payload) => {
   return selectDirectTextOnlyRuntime(payload || {});
+});
+
+ipcMain.handle("direct-runtime:set-path", async (_event, payload) => {
+  return setCodexRuntimePath(payload || {});
 });
 
 ipcMain.handle("direct-runtime:enable-experimental", async (_event, payload) => {

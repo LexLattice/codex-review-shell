@@ -60,6 +60,8 @@ contextBridge.exposeInMainWorld("workspaceShell", {
   readDirectImplementationOperationHistory: (projectId, options = {}) =>
     ipcRenderer.invoke("direct-ui:operation-history", { ...options, projectId }),
   getDirectImplementationPolicyView: (projectId) => ipcRenderer.invoke("direct-ui:policy-readonly-view", { projectId }),
+  setDirectRuntimePath: (projectId, runtimePath, options = {}) =>
+    ipcRenderer.invoke("direct-runtime:set-path", { ...options, projectId, runtimePath }),
   selectDirectTextOnlyRuntime: (projectId, options = {}) =>
     ipcRenderer.invoke("direct-runtime:select-text-only", { ...options, projectId }),
   enableDirectExperimentalRuntime: (projectId, options = {}) =>
