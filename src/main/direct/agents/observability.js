@@ -75,7 +75,7 @@ function finiteNumber(value, fallback = 0) {
 
 function stableStringify(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map((entry) => (entry === undefined ? "null" : stableStringify(entry))).join(",")}]`;
+  if (Array.isArray(value)) return `[${Array.from(value).map((entry) => (entry === undefined ? "null" : stableStringify(entry))).join(",")}]`;
   return `{${Object.keys(value)
     .filter((key) => value[key] !== undefined)
     .sort()
@@ -223,7 +223,7 @@ function normalizeGraphEdge(input = {}, index = 0, nodeByThreadId = new Map()) {
 function detectCycles(nodes, edges) {
   const adjacency = new Map(nodes.map((node) => [node.agentNodeId, []]));
   for (const edge of edges) {
-    if (edge.edgeKind === "derived_from_fixture") continue;
+    if (edge.edgeKind === "derived_from_fixture" || edge.edgeKind === "reported_progress") continue;
     if (adjacency.has(edge.sourceAgentNodeId)) adjacency.get(edge.sourceAgentNodeId).push(edge.targetAgentNodeId);
   }
   const visiting = new Set();
@@ -313,6 +313,16 @@ function buildAgentGraph(input = {}) {
   const nodes = arrayValue(input.nodes).map((node, index) => normalizeGraphNode(node, index, duplicateLabels));
   const nodeByThreadId = new Map(nodes.map((node) => [node.agentThreadId, node]));
   const edges = arrayValue(input.edges).map((edge, index) => normalizeGraphEdge(edge, index, nodeByThreadId));
+  const edgeTopologyDigestInput = edges
+    .map((edge) => ({
+      edgeKind: edge.edgeKind,
+      sourceAgentNodeId: edge.sourceAgentNodeId,
+      targetAgentNodeId: edge.targetAgentNodeId,
+      parentThreadId: edge.parentThreadId,
+      childThreadId: edge.childThreadId,
+      status: edge.status,
+    }))
+    .sort((left, right) => stableStringify(left).localeCompare(stableStringify(right)));
   const sourceSchemaRef = buildAgentSourceSchemaRef(input.sourceSchemaRef || { runtimeSourceClass });
   const sourceSchemaRefDigest = normalizeString(input.sourceSchemaRefDigest, sourceSchemaRef.sourceSchemaRefDigest || sha256(stableStringify(sourceSchemaRef)));
   const digestInput = {
@@ -322,6 +332,7 @@ function buildAgentGraph(input = {}) {
     runtimeSourceClass,
     sourceEventDigests: arrayValue(input.sourceEventDigests).map((value) => normalizeString(value, "")).filter(Boolean).sort(),
     sourceThreadIds: nodes.map((node) => node.agentThreadId).sort(),
+    edgeTopology: edgeTopologyDigestInput,
     sourceSchemaRefDigest,
     containmentProfileDigest: normalizeString(input.containmentProfileDigest, ""),
     normalizerVersion: sourceSchemaRef.sourceNormalizerVersion,
@@ -619,14 +630,28 @@ function buildAttentionProjection(input = {}) {
   const witnessesByAgent = new Map(arrayValue(input.witnesses).map((witness) => [witness.agentThreadId, witness]));
   const perAgent = arrayValue(graph.nodes).map((node) => {
     const witness = witnessesByAgent.get(node.agentThreadId);
-    const attentionState = ATTENTION_PROJECTION_STATES.has(witness?.attentionState) ? witness.attentionState : node.lifecycleState === "failed" ? "failed" : node.lifecycleState === "stale" ? "stale" : node.activityState === "active" ? "active" : "none";
+    const attentionState = ATTENTION_PROJECTION_STATES.has(witness?.attentionState)
+      ? witness.attentionState
+      : node.lifecycleState === "failed"
+        ? "failed"
+        : node.lifecycleState === "stale"
+          ? "stale"
+          : node.activityState === "blocked" || node.activityState === "attention_required"
+            ? "blocked"
+            : node.activityState === "active" || node.activityState === "responding"
+              ? "active"
+              : "none";
     return {
       agentThreadId: node.agentThreadId,
       attentionState,
-      selectedByDefault: attentionState === "active",
+      selectedByDefault: false,
       rendererSafeSummary: `${node.displayLabel}: ${attentionState}`,
     };
   });
+  const selectedAgent = perAgent.find((agent) => agent.attentionState === "active") ||
+    perAgent.find((agent) => agent.attentionState === "blocked") ||
+    perAgent.find((agent) => agent.attentionState === "failed");
+  if (selectedAgent) selectedAgent.selectedByDefault = true;
   const sourceDigest = normalizeString(input.sourceDigest, sha256(stableStringify({
     graphDigest: graph.integrity?.artifactDigest || graph.sourceDigest || "",
     perAgent,

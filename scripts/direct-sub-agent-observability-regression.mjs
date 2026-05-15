@@ -197,6 +197,54 @@ function fixtureArtifacts() {
       { edgeKind: "spawned_child", parentThreadId: "cycle_b", childThreadId: "cycle_a" },
     ],
   });
+  const topologyGraphA = buildAgentGraph({
+    projectId,
+    primaryThreadId,
+    runtimeSourceClass: "fixture",
+    sourceSchemaRef: { runtimeSourceClass: "fixture", sourceNormalizerVersion: "fixture-topology@1" },
+    nodes: [
+      { agentThreadId: "topology_parent", parentThreadId: primaryThreadId },
+      { agentThreadId: "topology_child", parentThreadId: "topology_parent" },
+    ],
+    edges: [
+      { edgeKind: "spawned_child", parentThreadId: "topology_parent", childThreadId: "topology_child", status: "completed" },
+    ],
+  });
+  const topologyGraphB = buildAgentGraph({
+    projectId,
+    primaryThreadId,
+    runtimeSourceClass: "fixture",
+    sourceSchemaRef: { runtimeSourceClass: "fixture", sourceNormalizerVersion: "fixture-topology@1" },
+    nodes: [
+      { agentThreadId: "topology_parent", parentThreadId: primaryThreadId },
+      { agentThreadId: "topology_child", parentThreadId: "topology_parent" },
+    ],
+    edges: [
+      { edgeKind: "sent_input", parentThreadId: "topology_parent", childThreadId: "topology_child", status: "in_progress" },
+    ],
+  });
+  const blockedNoWitnessGraph = buildAgentGraph({
+    projectId,
+    primaryThreadId,
+    runtimeSourceClass: "fixture",
+    sourceSchemaRef: { runtimeSourceClass: "fixture", sourceNormalizerVersion: "fixture-blocked-attention@1" },
+    nodes: [
+      {
+        agentThreadId: "agent_blocked_no_witness",
+        parentThreadId: primaryThreadId,
+        nickname: "Blocked",
+        lifecycleState: "running",
+        activityState: "blocked",
+      },
+    ],
+    edges: [
+      { edgeKind: "spawned_child", parentThreadId: primaryThreadId, childThreadId: "agent_blocked_no_witness", status: "in_progress" },
+    ],
+  });
+  const blockedNoWitnessAttention = buildAttentionProjection({
+    agentGraph: blockedNoWitnessGraph,
+    witnesses: [],
+  });
   const staleTime = new Date(Date.now() - 120000).toISOString();
   const progressRegistry = buildProgressRegistry({
     agentGraph: graph,
@@ -266,6 +314,10 @@ function fixtureArtifacts() {
     unknownContainment,
     graph,
     cycleGraph,
+    topologyGraphA,
+    topologyGraphB,
+    blockedNoWitnessGraph,
+    blockedNoWitnessAttention,
     progressRegistry,
     witnesses,
     inspection,
@@ -285,6 +337,8 @@ function buildReport() {
     new Set(artifacts.graph.nodes.map((node) => node.identityResolution.identityKey)).size === artifacts.graph.nodes.length;
   const staleEntry = artifacts.progressRegistry.entries.find((entry) => entry.agentThreadId === "agent_scout");
   const invalidEntry = artifacts.progressRegistry.entries.find((entry) => entry.agentThreadId === "agent_nested");
+  const blockedNoWitnessAgent = artifacts.blockedNoWitnessAttention.perAgent.find((entry) => entry.agentThreadId === "agent_blocked_no_witness");
+  const sparseArrayJson = stableStringify([1, , 3]);
   const zeroSentinels = {
     providerTransportCalls: 0,
     appServerMutationCalls: 0,
@@ -309,7 +363,10 @@ function buildReport() {
     baseCase({ caseId: "multi_receiver_send_input_progress", artifacts: { edgeCount: artifacts.graph.edges.length } }),
     baseCase({ caseId: "nested_child_agent_graph", proofOutcome: artifacts.graph.nodes.some((node) => node.depth === 2) ? "nested_graph_recorded" : "failed" }),
     baseCase({ caseId: "agent_identity_duplicate_label_not_merged", proofOutcome: duplicateLabelsKeptSeparate ? "identity_key_kept_distinct" : "failed" }),
+    baseCase({ caseId: "reported_progress_edge_not_cycle", proofOutcome: artifacts.graph.cycleDetected === false ? "reported_progress_excluded_from_cycle_detection" : "failed" }),
     baseCase({ caseId: "agent_graph_cycle_detected", proofOutcome: artifacts.cycleGraph.cycleDetected ? "cycle_detected" : "failed", blockerCode: "agent_graph_cycle_detected" }),
+    baseCase({ caseId: "agent_graph_source_digest_includes_topology", proofOutcome: artifacts.topologyGraphA.sourceDigest !== artifacts.topologyGraphB.sourceDigest ? "edge_topology_digest_distinct" : "failed" }),
+    baseCase({ caseId: "stable_stringify_sparse_array_json", proofOutcome: sparseArrayJson === "[1,null,3]" ? "sparse_array_holes_encoded_null" : "failed" }),
     baseCase({ caseId: "child_metadata_missing_unknown_label", proofOutcome: "unknown_identity_not_primary" }),
     baseCase({ caseId: "child_thread_not_found_hydration_failed", proofOutcome: agentObservabilityRecoveryState({ transcriptHydrationFailed: true }) }),
     baseCase({ caseId: "stored_live_projection_parity", proofOutcome: "projection_builder_shared" }),
@@ -322,6 +379,7 @@ function buildReport() {
     baseCase({ caseId: "agent_chip_focus_rejects_stale_graph", proofOutcome: "renderer_projection_stale" }),
     baseCase({ caseId: "selected_agent_tab_activation_epoch_rejected", proofOutcome: artifacts.staleSelectedTab.selectionState === "stale_graph" ? "stale_selection_rejected" : "failed" }),
     baseCase({ caseId: "attention_badge_failed_child", proofOutcome: artifacts.attentionProjection.tabBadge.failed === 1 ? "failed_badge_recorded" : "failed" }),
+    baseCase({ caseId: "attention_badge_blocked_without_witness", proofOutcome: blockedNoWitnessAgent?.attentionState === "blocked" && blockedNoWitnessAgent.selectedByDefault === true ? "blocked_fallback_selected" : "failed" }),
     baseCase({ caseId: "containment_profile_known_contained", proofOutcome: artifacts.containmentProfile.spawnAllowedInThisPr === false ? "containment_visible_no_authority" : "failed" }),
     baseCase({ caseId: "containment_profile_unknown_degrades_status", proofOutcome: artifacts.unknownContainment.toolSurfaceVisibility === "unknown" ? "containment_unknown_degraded" : "failed" }),
     baseCase({ caseId: "fork_capability_path_substring_not_proof", proofOutcome: "path_substring_not_evidence" }),
