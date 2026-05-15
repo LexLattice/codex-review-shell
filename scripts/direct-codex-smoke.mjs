@@ -948,6 +948,9 @@ try {
     assert(textContext.requestManifest.enabledFeatures.store === false, "Request manifest must record store=false.");
     assert(textContext.requestManifest.continuity.previousResponseIdUsed === false, "Request manifest must record fresh-request continuity.");
     assert(textContext.requestManifest.rawRequestBodyStored === false, "Request manifest must not store raw request body.");
+    assert(textContext.contextPack.budget.budgetPolicyId === "char_estimate_budget@1", "Context pack must record the context budget policy.");
+    assert(Number.isFinite(textContext.contextPack.budget.estimatedInputTokens), "Context pack must record an input token estimate.");
+    assert(textContext.contextPack.budget.budgetExceeded === false, "Context pack budget status must be explicit.");
     assert(directThreadStore.readContextPack(textContext.contextPack.contextBuildId).schema === "direct_context_pack@1", "Expected persisted context pack artifact.");
     assert(directThreadStore.readRequestManifest(textContext.requestManifest.requestManifestId).schema === "direct_request_manifest@1", "Expected persisted request manifest artifact.");
     const emptyContext = directThreadStore.buildAndPersistContextForTextTurn({
@@ -1487,6 +1490,8 @@ try {
       const pruneSeedArtifact = JSON.parse(fs.readFileSync(forkStartThreadStore.forkStartPath("project_fork_start", pruneForkResult.forkStartId, "derived-fork-seed.json"), "utf8"));
       assert(pruneSeedArtifact.seedPolicyId === "direct_fresh_fork_from_prune_preview@1", "Prune seed must record source-kind-specific seed policy.");
       assert(pruneSeedArtifact.includedEvidence.omissionMarkerCount > 0, "Prune seed must retain visible omission evidence.");
+      assert(pruneSeedArtifact.budget.budgetPolicyId === "derived_fork_char_estimate_budget@1", "Derived fork seed must record its budget policy.");
+      assert(pruneSeedArtifact.budget.budgetExceeded === false, "Derived fork seed budget status must be explicit.");
       const pruneForkRequestBody = forkStartRequestBodies.at(-1);
       assert(pruneForkRequestBody.input[0].content[0].text.includes("Source preview kind: prune_preview@1"), "Derived prune fork seed must cite prune preview kind.");
       assert(pruneForkRequestBody.input[0].content[0].text.includes("OMISSION MARKER"), "Derived prune fork seed must carry visible omission evidence.");
