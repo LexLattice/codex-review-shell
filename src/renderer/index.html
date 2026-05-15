@@ -156,15 +156,23 @@
               <span id="directRuntimeStatusBadge" class="pill subtle">turns not runnable</span>
               <span id="directModelSourceBadge" class="pill subtle">model source unknown</span>
             </div>
+            <div class="direct-auth-grid direct-runtime-path-grid">
+              <label class="compact-label">
+                Default Codex path
+                <select id="directRuntimePathSelect">
+                  <option value="app-server">App Server</option>
+                  <option value="direct-text">Direct Text</option>
+                  <option value="direct-implementation">Direct Tools</option>
+                </select>
+              </label>
+              <div class="direct-auth-status">
+                <button class="primary small" id="directRuntimePathApplyButton" type="button">Apply</button>
+              </div>
+            </div>
             <div class="direct-auth-actions">
               <button class="ghost small" id="directAuthRefreshButton" type="button">Refresh</button>
               <button class="ghost small" id="directAuthLoginButton" type="button">Login</button>
               <button class="danger small" id="directAuthLogoutButton" type="button">Logout</button>
-            </div>
-            <div class="direct-auth-actions direct-activation-actions">
-              <button class="ghost small" id="directTextOnlyEnableButton" type="button">Use Direct text-only</button>
-              <button class="ghost small" id="directExperimentalEnableButton" type="button">Enable Direct implementation lane</button>
-              <button class="danger small" id="directExperimentalRollbackButton" type="button">Rollback to app-server</button>
             </div>
             <p id="directAuthEvidence" class="muted direct-auth-evidence">No raw tokens exposed to renderer.</p>
           </section>
@@ -591,6 +599,14 @@
 
         <div class="form-grid">
           <label>
+            Default Codex path
+            <select id="codexDefaultPathInput">
+              <option value="app-server">App Server</option>
+              <option value="direct-text">Direct Text</option>
+              <option value="direct-implementation">Direct Tools</option>
+            </select>
+          </label>
+          <label>
             Codex runtime
             <select id="codexRuntimeInput">
               <option value="auto">Auto</option>
@@ -599,8 +615,8 @@
             </select>
           </label>
           <label>
-            Runtime mode
-            <select id="codexRuntimeModeInput">
+            Runtime mode <span class="muted">derived</span>
+            <select id="codexRuntimeModeInput" disabled>
               <option value="legacy-app-server">Legacy app-server</option>
               <option value="direct-experimental">Direct experimental</option>
               <option value="direct" disabled>Direct</option>
@@ -610,8 +626,8 @@
 
         <div class="form-grid">
           <label>
-            Direct transport
-            <select id="codexDirectTransportInput">
+            Direct transport <span class="muted">derived</span>
+            <select id="codexDirectTransportInput" disabled>
               <option value="fixture">Fixture</option>
               <option value="live-text">Live text</option>
             </select>
