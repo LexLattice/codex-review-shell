@@ -26,6 +26,7 @@ const {
   buildRuntimeWitnessProjection,
   buildUsageLedger,
   normalizeEvidenceRef,
+  nowIso: directReadinessNowIso,
   sha256,
   stableStringify,
   usageReadinessRecoveryState,
@@ -202,7 +203,6 @@ function fixtureArtifacts() {
         usageSource: "response_completed_usage",
         inputTokens: 7,
         outputTokens: 5,
-        totalTokens: 12,
         cachedInputTokens: 2,
         sourceRefs: [usageRef],
         requestManifestId: "request_manifest_text",
@@ -443,6 +443,24 @@ function fixtureArtifacts() {
       { gateId: "report_registry_valid", status: "blocked", requiredForReadyBehindFlag: true, blockerCodes: ["required_report_missing"] },
     ],
   });
+  const missingBaselineReadinessReport = buildMainlineReadinessReport({
+    branch: "codex/direct-usage-readiness",
+    coverageSource: "fixture_readiness",
+    appServerBaseline: {
+      reportId: "",
+      status: "missing",
+      generatedAt: "",
+      maxAgeHours: 24,
+    },
+    preconditions: [
+      { preconditionId: "text_regression", required: true, status: "present_valid", evidenceRefs: [usageRef] },
+    ],
+    gates: [
+      { gateId: "direct_default_false", status: "passed", requiredForReadyBehindFlag: true },
+      { gateId: "app_server_baseline_required", status: "passed", requiredForReadyBehindFlag: true },
+      { gateId: "app_server_removal_forbidden", status: "passed", requiredForReadyBehindFlag: true },
+    ],
+  });
 
   return {
     projectId,
@@ -463,6 +481,7 @@ function fixtureArtifacts() {
     witnessProjection,
     readinessReport,
     blockedReadinessReport,
+    missingBaselineReadinessReport,
   };
 }
 
@@ -503,6 +522,7 @@ function buildReport() {
     baseCase({ caseId: "prompt_cache_affinity_diagnostic_only", proofOutcome: artifacts.cacheEvidence.providerContinuityGranted === false && artifacts.cacheEvidence.promptCacheEvidence.grantsContinuity === false ? "cache_not_continuity" : "failed" }),
     baseCase({ caseId: "session_affinity_not_provider_continuity", proofOutcome: artifacts.cacheEvidence.sessionAffinityEvidence.grantsProviderContinuity === false && artifacts.cacheEvidence.sessionAffinityEvidence.grantsImportedContinuity === false ? "session_affinity_no_continuity" : "failed" }),
     baseCase({ caseId: "usage_delta_records_known_tokens", proofOutcome: artifacts.usageLedger.totals.totalTokensKnown === 20 ? "known_usage_summed" : "failed" }),
+    baseCase({ caseId: "total_tokens_fallback_from_input_output", proofOutcome: directUsage[0]?.totalTokens === 12 ? "total_tokens_derived" : "failed" }),
     baseCase({ caseId: "usage_dedupe_prevents_double_count", proofOutcome: directUsage.length === 1 && artifacts.usageLedger.entries.length === 3 ? "deduped_by_response" : "failed" }),
     baseCase({ caseId: "missing_usage_is_not_zero", proofOutcome: missingUsage?.usageSource === "missing" && missingUsage.tokenFieldConfidence.inputTokens === "missing" ? "missing_not_zero" : "failed" }),
     baseCase({ caseId: "cached_tokens_recorded_as_cache_signal_not_continuity", proofOutcome: artifacts.usageLedger.totals.cachedInputTokensKnown === 2 && artifacts.cacheEvidence.providerContinuityGranted === false ? "cached_tokens_diagnostic" : "failed" }),
@@ -513,6 +533,7 @@ function buildReport() {
     baseCase({ caseId: "single_request_quota_error_not_global_truth", proofOutcome: artifacts.quotaExhausted.buckets[0].quotaInferenceScope === "single_request" ? "single_request_scope" : "failed" }),
     baseCase({ caseId: "drift_unknown_event_blocks_promotion", proofOutcome: runCommandDrift?.severity === "block" && textDrift?.severity === "none" ? "scoped_drift_block" : "failed" }),
     baseCase({ caseId: "report_schema_invalid_blocks_mainline_readiness", proofOutcome: usageReadinessRecoveryState({ reportRegistryInvalid: true }) === "report_registry_invalid" ? "registry_invalid_classified" : "failed" }),
+    baseCase({ caseId: "report_registry_derives_missing_required_reports", proofOutcome: artifacts.reportRegistry.missingRequiredReports.includes("direct_sub_agent_observability_report@1") ? "missing_required_derived" : "failed" }),
     baseCase({ caseId: "runtime_evidence_status_facets_are_granular", proofOutcome: artifacts.runtimeEvidenceStatus.facets.textEmptyContext.state === "ready" && artifacts.runtimeEvidenceStatus.facets.runCommand.state === "degraded" ? "facet_status_granular" : "failed" }),
     baseCase({ caseId: "capability_downgrade_on_evidence_expiry", proofOutcome: artifacts.downgradeEvent.schema === "direct_capability_downgrade_event@1" && artifacts.downgradeEvent.newState === "blocked" ? "downgrade_recorded" : "failed" }),
     baseCase({ caseId: "readiness_behind_flag_split_from_runtime_enablement", proofOutcome: artifacts.readinessReport.mainlineReadiness === "ready_behind_flag" && artifacts.readinessReport.runtimeEnablement === "eligible_projects_only" ? "readiness_split" : "failed" }),
@@ -520,6 +541,8 @@ function buildReport() {
     baseCase({ caseId: "missing_precondition_blocks_readiness", proofOutcome: artifacts.blockedReadinessReport.mainlineReadiness === "blocked" && artifacts.blockedReadinessReport.missingPreconditions.includes("missing_required_report") ? "missing_blocks" : "failed" }),
     baseCase({ caseId: "direct_default_invariants_hard_gates", proofOutcome: artifacts.readinessReport.directDefaultAllowed === false && artifacts.readinessReport.appServerBaselineRequired === true && artifacts.readinessReport.appServerRemovalAllowed === false ? "baseline_invariants_preserved" : "failed" }),
     baseCase({ caseId: "app_server_baseline_freshness_checked", proofOutcome: artifacts.readinessReport.appServerBaseline.status === "green" && artifacts.readinessReport.appServerBaseline.maxAgeHours === 24 ? "baseline_freshness_recorded" : "failed" }),
+    baseCase({ caseId: "missing_app_server_baseline_blocks_readiness", proofOutcome: artifacts.missingBaselineReadinessReport.mainlineReadiness === "blocked" ? "missing_baseline_blocks" : "failed" }),
+    baseCase({ caseId: "now_iso_preserves_epoch_and_iso_strings", proofOutcome: directReadinessNowIso(0) === "1970-01-01T00:00:00.000Z" && directReadinessNowIso("2020-01-01T00:00:00.000Z") === "2020-01-01T00:00:00.000Z" ? "timestamp_inputs_preserved" : "failed" }),
     baseCase({ caseId: "docs_migration_checklist_artifact", proofOutcome: artifacts.docsChecklist.complete === true && artifacts.docsChecklist.rawPathsIncluded === false ? "docs_checklist_complete" : "failed" }),
     baseCase({ caseId: "ci_live_call_guard_blocks_without_env", proofOutcome: artifacts.ciGuard.providerCallWithoutOptInStarted === false && artifacts.ciGuard.ciLiveCallWithoutOverrideStarted === false ? "live_guard_proved" : "failed" }),
     baseCase({ caseId: "cost_estimator_hard_disabled", proofOutcome: artifacts.costStatus.costEstimatorAvailable === false && artifacts.costStatus.billingGrade === false && artifacts.costStatus.pricingSnapshotId === undefined ? "cost_disabled" : "failed" }),

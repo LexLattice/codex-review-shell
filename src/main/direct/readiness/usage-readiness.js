@@ -83,8 +83,8 @@ function bool(value) {
   return value === true;
 }
 
-function nowIso(nowMs = Date.now()) {
-  return new Date(Number(nowMs) || Date.now()).toISOString();
+function nowIso(nowMs) {
+  return new Date(nowMs !== undefined && nowMs !== null ? nowMs : Date.now()).toISOString();
 }
 
 function stableStringify(value) {
@@ -114,9 +114,15 @@ function makeIntegrity(sourceDigest) {
 }
 
 function finalizeArtifact(artifact) {
-  if (!artifact.integrity) artifact.integrity = makeIntegrity(artifact.sourceDigest || "");
-  artifact.integrity.artifactDigest = artifactDigest({ ...artifact, integrity: { ...artifact.integrity, artifactDigest: "" } });
-  return artifact;
+  const integrity = artifact.integrity || makeIntegrity(artifact.sourceDigest || "");
+  const digestInput = { ...artifact, integrity: { ...integrity, artifactDigest: "" } };
+  return {
+    ...artifact,
+    integrity: {
+      ...integrity,
+      artifactDigest: artifactDigest(digestInput),
+    },
+  };
 }
 
 function evidenceState(value, fallback = "unknown") {
@@ -331,7 +337,9 @@ function normalizeUsageEntry(input = {}, index = 0, previousEntryDigest = "") {
     usageSource: USAGE_SOURCES.has(input.usageSource) ? input.usageSource : usageRecordKind === "missing" ? "missing" : "diagnostic_report",
     inputTokens: input.inputTokens === undefined ? undefined : numberValue(input.inputTokens, 0),
     outputTokens: input.outputTokens === undefined ? undefined : numberValue(input.outputTokens, 0),
-    totalTokens: input.totalTokens === undefined ? undefined : numberValue(input.totalTokens, numberValue(input.inputTokens, 0) + numberValue(input.outputTokens, 0)),
+    totalTokens: input.totalTokens === undefined && input.inputTokens === undefined && input.outputTokens === undefined
+      ? undefined
+      : numberValue(input.totalTokens, numberValue(input.inputTokens, 0) + numberValue(input.outputTokens, 0)),
     cachedInputTokens: input.cachedInputTokens === undefined ? undefined : numberValue(input.cachedInputTokens, 0),
     reasoningTokens: input.reasoningTokens === undefined ? undefined : numberValue(input.reasoningTokens, 0),
     tokenFieldConfidence,
@@ -622,14 +630,26 @@ function buildReportValidationRegistry(input = {}) {
     authorityPromotionCandidate: bool(report.authorityPromotionCandidate),
     evidenceRefs: normalizeEvidenceRefs(report.evidenceRefs),
   }));
-  const sourceDigest = normalizeString(input.sourceDigest, sha256(stableStringify(reports)));
+  const requiredReportSchemas = arrayValue(input.requiredReportSchemas).map(String).filter(Boolean);
+  const validReportKeys = new Set(reports
+    .filter((report) => !["missing", "schema_invalid", "digest_mismatch", "raw_exposure_blocked"].includes(report.validationState))
+    .flatMap((report) => [report.schema, report.reportKind])
+    .filter(Boolean));
+  const suppliedMissingRequiredReports = arrayValue(input.missingRequiredReports).map(String).filter(Boolean);
+  const derivedMissingRequiredReports = requiredReportSchemas.filter((required) => !validReportKeys.has(required));
+  const missingRequiredReports = Array.from(new Set([...suppliedMissingRequiredReports, ...derivedMissingRequiredReports]));
+  const sourceDigest = normalizeString(input.sourceDigest, sha256(stableStringify({
+    reports,
+    requiredReportSchemas,
+    missingRequiredReports,
+  })));
   return finalizeArtifact({
     schema: DIRECT_REPORT_VALIDATION_REGISTRY_SCHEMA,
     registryId: normalizeString(input.registryId, `report_registry_${sourceDigest.slice(0, 24)}`),
     generatedAt: normalizeString(input.generatedAt, nowIso()),
     reports,
-    requiredReportSchemas: arrayValue(input.requiredReportSchemas).map(String),
-    missingRequiredReports: arrayValue(input.missingRequiredReports).map(String),
+    requiredReportSchemas,
+    missingRequiredReports,
     invalidRequiredReports: reports.filter((report) => ["schema_invalid", "digest_mismatch", "raw_exposure_blocked"].includes(report.validationState)).map((report) => report.reportKind),
     rawExposureFailures: reports.filter((report) => report.validationState === "raw_exposure_blocked").map((report) => report.reportKind),
     sourceDigest,
@@ -745,11 +765,13 @@ function normalizeGate(input = {}) {
 }
 
 function computeMainlineReadiness(preconditions, gates, input = {}) {
-  if (input.mainlineReadiness && MAINLINE_READINESS.has(input.mainlineReadiness)) return input.mainlineReadiness;
   const badPrecondition = preconditions.some((entry) => entry.required && ["missing", "present_invalid"].includes(entry.status));
   const blockingWaiver = preconditions.some((entry) => entry.required && entry.status === "skipped_with_waiver" && entry.waiver?.reason !== "feature_not_in_current_merge_scope");
   const badGate = gates.some((gate) => gate.requiredForReadyBehindFlag && gate.readinessEffect === "required_for_ready_behind_flag" && gate.status !== "passed");
-  if (badPrecondition || blockingWaiver || badGate || input.directDefaultAllowed === true || input.appServerBaselineRequired === false || input.appServerRemovalAllowed === true) return "blocked";
+  const appServerBaselineStatus = normalizeString(input.appServerBaseline?.status, "missing");
+  const appServerBaselineBad = appServerBaselineStatus !== "green";
+  if (badPrecondition || blockingWaiver || badGate || appServerBaselineBad || input.directDefaultAllowed === true || input.appServerBaselineRequired === false || input.appServerRemovalAllowed === true) return "blocked";
+  if (input.mainlineReadiness && MAINLINE_READINESS.has(input.mainlineReadiness)) return input.mainlineReadiness;
   return "ready_behind_flag";
 }
 
@@ -896,6 +918,7 @@ module.exports = {
   buildRuntimeWitnessProjection,
   buildUsageLedger,
   normalizeEvidenceRef,
+  nowIso,
   sha256,
   stableStringify,
   usageReadinessRecoveryState,
