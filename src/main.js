@@ -55,6 +55,11 @@ const {
   normalizeCodexRuntimeMode: normalizeDirectRuntimeModeForStatus,
 } = require("./main/direct/runtime/runtime-status");
 const {
+  bindingForDirectRuntimePath,
+  directRuntimePathFromBinding,
+  normalizeDirectRuntimePath,
+} = require("./main/direct/runtime/runtime-path-selection");
+const {
   buildDirectImplementationLaneUiStatus,
   buildDirectPolicyReadOnlyView,
   projectOperationHistoryPage,
@@ -66,6 +71,9 @@ const {
   evaluateDirectTextOnlyRuntimeSelection,
   evaluateDirectExperimentalProjectActivation,
 } = require("./main/direct/runtime/project-activation");
+const { UsageLedgerCollector } = require("./main/usage-ledger-collector");
+const { defaultUsageLedgerConfig, normalizeUsageLedgerConfig } = require("./main/usage-ledger-config");
+const { readUsageLedgerAnalytics } = require("./main/usage-ledger-analytics");
 const { PLANE_ZOOM_DEFAULT, clampZoomFactor, zoomDeltaForDirection } = require("./shared/plane-zoom");
 
 const APP_TITLE = "Codex Review Shell";
@@ -343,6 +351,7 @@ function defaultConfig() {
               kind: "codex_executable",
               flavor: "vanilla",
             },
+            usageLedger: defaultUsageLedgerConfig(),
             remoteAuth: {
               mode: "none",
               tokenFilePath: "",
@@ -1187,6 +1196,7 @@ function normalizeProject(input, index = 0) {
           configuredFlavor: rawCodex.configuredFlavor,
           connectionPath: rawCodex.connectionPath,
         }),
+        usageLedger: normalizeUsageLedgerConfig(rawCodex.usageLedger || rawCodex.usage_ledger),
         remoteAuth: normalizeRemoteAuthConfig(rawCodex.remoteAuth),
       },
       chatgpt: {
@@ -2077,6 +2087,72 @@ async function selectDirectTextOnlyRuntime(payload = {}) {
   });
 }
 
+async function setCodexRuntimePath(payload = {}) {
+  const projectId = normalizeString(payload.projectId, "");
+  const runtimePath = normalizeDirectRuntimePath(payload.runtimePath || payload.path);
+  const config = await loadConfig();
+  const project = config.projects.find((item) => item.id === projectId);
+  if (!project) throw new Error("Project not found.");
+
+  const currentPath = directRuntimePathFromBinding(project.surfaceBinding?.codex || {});
+  if (currentPath === runtimePath) {
+    return {
+      ok: true,
+      duplicate: true,
+      runtimePath,
+      project,
+      config,
+      status: buildDirectRuntimeStatusForProject(project),
+    };
+  }
+
+  if (runtimePath === "direct-text") {
+    return selectDirectTextOnlyRuntime({
+      ...payload,
+      projectId,
+      clientOperationId: payload.clientOperationId || payload.clientSelectionId,
+    });
+  }
+
+  if (runtimePath === "direct-implementation") {
+    return enableDirectExperimentalProject({
+      ...payload,
+      projectId,
+      clientActivationId: payload.clientActivationId || payload.clientOperationId,
+      expectedRuntimeMode: "direct-experimental",
+      expectedDirectTransport: "live-text",
+    });
+  }
+
+  return withDirectActivationLock(projectId, async () => {
+    const latestConfig = await loadConfig();
+    const latestProject = latestConfig.projects.find((item) => item.id === projectId);
+    if (!latestProject) throw new Error("Project not found.");
+    const activeTurns = activeDirectTurnCountForProject(ensureDirectSessionStore(), projectId);
+    if (activeTurns > 0) {
+      const error = new Error("A direct turn is active. Wait before changing the runtime selection.");
+      error.code = "active_direct_turn_exists";
+      throw error;
+    }
+    const nextBinding = bindingForDirectRuntimePath(latestProject.surfaceBinding?.codex || {}, "app-server");
+    const nextProjects = latestConfig.projects.map((item) =>
+      item.id === projectId ? projectWithCodexBinding(item, nextBinding) : item,
+    );
+    const saved = await saveConfig({ ...latestConfig, projects: nextProjects });
+    const savedProject = saved.projects.find((item) => item.id === projectId) || latestProject;
+    currentProject = savedProject;
+    await loadCodexSurface(savedProject, { activationEpoch: nextSurfaceActivationEpoch("runtime-path-app-server") });
+    emitDirectRuntimeStatus(savedProject);
+    return {
+      ok: true,
+      runtimePath: "app-server",
+      project: savedProject,
+      config: saved,
+      status: buildDirectRuntimeStatusForProject(savedProject),
+    };
+  });
+}
+
 async function rollbackDirectExperimentalProject(payload = {}) {
   const projectId = normalizeString(payload.projectId, "");
   return withDirectActivationLock(projectId, async () => {
@@ -2216,7 +2292,18 @@ function createCodexSurfaceSession(sender, connection = {}) {
       project: currentProject,
     });
   }
-  const session = new CodexSurfaceSession(sender);
+  const usageLedger = new UsageLedgerCollector({
+    getProjectById,
+    emitStatus: (status) => {
+      if (sender.isDestroyed()) return;
+      sender.send("codex-surface:event", {
+        type: "usage-ledger-status",
+        status,
+        at: nowIso(),
+      });
+    },
+  });
+  const session = new CodexSurfaceSession(sender, { usageLedger });
   session.transportKind = "codex-app-server";
   return session;
 }
@@ -2540,8 +2627,11 @@ async function loadCodexSurface(project, options = {}) {
       activeCodexSurfaceConnection = {
         projectId: project.id,
         wsUrl: session.wsUrl,
+        readyUrl: session.readyUrl,
         runtime: session.runtime,
         codexHome: session.codexHome || "",
+        workspaceRoot: session.workspaceRoot || "",
+        binaryPath: session.binaryPath || "",
         provider: session.provider || null,
         capabilities: session.capabilities || null,
         activationEpoch: Number(options.activationEpoch) || 0,
@@ -3599,10 +3689,13 @@ async function getThreadAnalyticsDashboard(projectId, threadKey) {
   const key = normalizeString(threadKey, "");
   if (!key) throw new Error("threadKey is required.");
   const dashboard = store.getProjectThreadDashboard(project.id, key);
+  const usageLedger = dashboard
+    ? await readUsageLedgerAnalytics(project, dashboard.thread?.threadId || "")
+    : null;
   return {
     projectId: project.id,
     threadKey: key,
-    dashboard,
+    dashboard: dashboard ? { ...dashboard, usageLedger } : dashboard,
     analyzerVersion: THREAD_ANALYTICS_ANALYZER_VERSION,
   };
 }
@@ -4265,6 +4358,8 @@ ipcMain.handle("codex-surface:focus-sub-agent", async (_event, payload) => {
     projectId: normalizeString(payload?.projectId, ""),
     primaryThreadId: normalizeString(payload?.primaryThreadId || payload?.threadId, ""),
     receiverThreadId: normalizeString(payload?.receiverThreadId, ""),
+    scopeMode: normalizeString(payload?.scopeMode, ""),
+    turnKey: normalizeString(payload?.turnKey, ""),
     graphRevision: Number(payload?.graphRevision) || 0,
     activationEpoch: Number(payload?.activationEpoch) || 0,
     label: normalizeString(payload?.label, ""),
@@ -4516,6 +4611,10 @@ ipcMain.handle("direct-ui:policy-readonly-view", async (_event, payload) => {
 
 ipcMain.handle("direct-runtime:select-text-only", async (_event, payload) => {
   return selectDirectTextOnlyRuntime(payload || {});
+});
+
+ipcMain.handle("direct-runtime:set-path", async (_event, payload) => {
+  return setCodexRuntimePath(payload || {});
 });
 
 ipcMain.handle("direct-runtime:enable-experimental", async (_event, payload) => {

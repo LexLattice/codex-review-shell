@@ -31,6 +31,13 @@ const ZOOM_POLICY = bridge?.zoomConstants || {};
 // values from the shared zoom policy exposed through the bridge.
 const NORMAL_ZOOM_FALLBACK = 1;
 const NO_ZOOM_DELTA = 0;
+const SUB_AGENT_MESSAGE_PREVIEW_LINES = 10;
+const SUB_AGENT_TOOL_LIKE_THOUGHT_TYPES = new Set([
+  "commandExecution",
+  "mcpToolCall",
+  "dynamicToolCall",
+  "webSearch",
+]);
 
 function zoomPolicyValue(name, fallback = NORMAL_ZOOM_FALLBACK) {
   const value = Number(ZOOM_POLICY?.[name]);
@@ -111,6 +118,8 @@ const state = {
   subAgentGraph: null,
   selectedSubAgentThreadId: "",
   selectedSubAgentSelectedBy: "",
+  selectedSubAgentScope: { mode: "full", turnKey: "" },
+  expandedSubAgentMessages: new Set(),
   drawerMode: "edit",
   threadDrawerMode: "edit",
   currentWidths: { left: 0, middle: 0, right: 0 },
@@ -216,6 +225,8 @@ const els = {
   directAuthRefreshButton: document.getElementById("directAuthRefreshButton"),
   directAuthLoginButton: document.getElementById("directAuthLoginButton"),
   directAuthLogoutButton: document.getElementById("directAuthLogoutButton"),
+  directRuntimePathSelect: document.getElementById("directRuntimePathSelect"),
+  directRuntimePathApplyButton: document.getElementById("directRuntimePathApplyButton"),
   directTextOnlyEnableButton: document.getElementById("directTextOnlyEnableButton"),
   directExperimentalEnableButton: document.getElementById("directExperimentalEnableButton"),
   directExperimentalRollbackButton: document.getElementById("directExperimentalRollbackButton"),
@@ -321,6 +332,7 @@ const els = {
   wslLinuxPathInput: document.getElementById("wslLinuxPathInput"),
   codexModeInput: document.getElementById("codexModeInput"),
   codexLabelInput: document.getElementById("codexLabelInput"),
+  codexDefaultPathInput: document.getElementById("codexDefaultPathInput"),
   codexProviderKindInput: document.getElementById("codexProviderKindInput"),
   codexProviderFlavorInput: document.getElementById("codexProviderFlavorInput"),
   codexRuntimeInput: document.getElementById("codexRuntimeInput"),
@@ -1631,12 +1643,217 @@ function renderSubAgentAssistantMarkdown(container, text, context = {}) {
 function renderSubAgentMessageBody(container, message, context = {}) {
   const text = String(message?.text || "");
   container.dataset.rawText = text;
+  if (message?.role === "process") {
+    renderSubAgentProcessBody(container, message);
+    return;
+  }
   container.classList.toggle("assistant-markdown", message?.role === "child");
   if (message?.role === "child") renderSubAgentAssistantMarkdown(container, text, context);
   else {
     container.classList.remove("assistant-markdown");
     renderTypedContent(container, text, context);
   }
+}
+
+function subAgentMessagePreviewKey(agent, message, index) {
+  return [
+    subAgentThreadId(agent) || "unknown-agent",
+    String(message?.id || `message_${index}`),
+    String(message?.role || "message"),
+  ].join(":");
+}
+
+function setSubAgentMessagePreviewState(body, toggle, key, expanded) {
+  const isExpanded = Boolean(expanded);
+  body.classList.toggle("is-message-preview-collapsed", !isExpanded);
+  body.classList.toggle("is-message-preview-expanded", isExpanded);
+  toggle.textContent = isExpanded ? "▴ Collapse" : "▾ Expand";
+  toggle.setAttribute("aria-expanded", isExpanded ? "true" : "false");
+  if (key) {
+    if (isExpanded) state.expandedSubAgentMessages.add(key);
+    else state.expandedSubAgentMessages.delete(key);
+  }
+}
+
+function configureSubAgentMessagePreview(item, body, key) {
+  if (!item || !body) return;
+  body.classList.remove("is-message-preview-eligible", "is-message-preview-expanded", "is-message-preview-collapsed");
+  body.style.setProperty("--sub-agent-preview-lines", String(SUB_AGENT_MESSAGE_PREVIEW_LINES));
+  body.classList.add("is-message-preview-eligible", "is-message-preview-collapsed");
+  const explicitLineCount = String(body.textContent || "").split(/\r?\n/).length;
+
+  requestAnimationFrame(() => {
+    if (!item.isConnected) return;
+    const renderedOverflow = body.scrollHeight > body.clientHeight + 1;
+    const shouldClamp = explicitLineCount > SUB_AGENT_MESSAGE_PREVIEW_LINES || renderedOverflow;
+    if (!shouldClamp) {
+      body.classList.remove("is-message-preview-eligible", "is-message-preview-expanded", "is-message-preview-collapsed");
+      body.style.removeProperty("--sub-agent-preview-lines");
+      return;
+    }
+
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "secondary sub-agent-message-preview-toggle";
+    toggle.addEventListener("click", () => {
+      const expanded = body.classList.contains("is-message-preview-collapsed");
+      setSubAgentMessagePreviewState(body, toggle, key, expanded);
+    });
+    item.appendChild(toggle);
+    setSubAgentMessagePreviewState(body, toggle, key, state.expandedSubAgentMessages.has(key));
+  });
+}
+
+function subAgentThoughtItemLabel(item) {
+  if (!item) return "Thought";
+  if (item.type === "reasoning") return "Reasoning";
+  if (item.type === "agentMessage") return `Agent · ${String(item.phase || "thought") || "thought"}`;
+  if (item.type === "commandExecution") return `Shell · ${String(item.command || "command").slice(0, 88)}`;
+  if (item.type === "mcpToolCall") return `Tool · ${item.server || "mcp"}:${item.tool || "tool"}`;
+  if (item.type === "dynamicToolCall") return `Dynamic tool · ${item.tool || "tool"}`;
+  if (item.type === "webSearch") return `Web search · ${String(item.query || "query").slice(0, 88)}`;
+  if (item.type === "fileChange") {
+    const changes = Array.isArray(item.changes) ? item.changes.length : 0;
+    return `Patch · ${changes} file change${changes === 1 ? "" : "s"}`;
+  }
+  if (item.type === "imageGeneration") return "Image generation";
+  if (item.type === "collabAgentToolCall") return `Sub-agent · ${item.tool || "call"}`;
+  return String(item.type || "Thought");
+}
+
+function subAgentThoughtItemBody(item) {
+  if (!item) return "";
+  if (item.type === "agentMessage") return String(item.text || item.message || "").trim();
+  if (item.type === "reasoning") return [...(item.summary || []), ...(item.content || [])].filter(Boolean).join("\n").trim();
+  if (item.type === "commandExecution") {
+    return [
+      item.status || "",
+      item.cwd ? `cwd: ${item.cwd}` : "",
+      item.command || "",
+      item.exitCode === null || item.exitCode === undefined ? "" : `exit ${item.exitCode}`,
+      item.aggregatedOutput || item.stdout || item.stderr || "",
+    ].filter(Boolean).join("\n").trim();
+  }
+  if (item.type === "fileChange") {
+    const changes = Array.isArray(item.changes) ? item.changes : [];
+    const header = `${item.patchStatus || item.status || "completed"}`;
+    const lines = changes.map((change) => {
+      const kind = String(change?.kind || change?.type || "change");
+      const relPath = String(change?.path || change?.relativePath || change?.file || "").trim();
+      return `- ${kind}${relPath ? ` ${relPath}` : ""}`;
+    });
+    return [header, lines.join("\n"), item.stdout || "", item.stderr || ""].filter(Boolean).join("\n").trim();
+  }
+  if (item.type === "mcpToolCall") return [item.server || "mcp", item.tool || "tool", item.status || "unknown", item.result || "", item.error || ""].filter(Boolean).join("\n");
+  if (item.type === "dynamicToolCall") return [item.tool || "tool", item.status || "unknown", item.contentItems || ""].filter(Boolean).join("\n");
+  if (item.type === "webSearch") return `Query: ${item.query || ""}`.trim();
+  if (item.type === "imageGeneration") return [item.revisedPrompt, item.result, item.savedPath].filter(Boolean).join("\n").trim();
+  if (item.type === "collabAgentToolCall") {
+    const targets = Array.isArray(item.receiverThreadIds) && item.receiverThreadIds.length ? `Targets: ${item.receiverThreadIds.join(", ")}` : "";
+    return [item.tool || "call", item.status || "unknown", item.prompt || "", targets].filter(Boolean).join("\n").trim();
+  }
+  return typeof item === "string" ? item : JSON.stringify(item, null, 2);
+}
+
+function subAgentThoughtBody(item) {
+  return String(subAgentThoughtItemBody(item) || "").trim();
+}
+
+function subAgentEmptyThoughtSentinel(text) {
+  const normalized = String(text || "").trim().toLowerCase();
+  return !normalized ||
+    normalized === "no reasoning text." ||
+    normalized === "reasoning not available" ||
+    normalized === "reasoning unavailable" ||
+    normalized === "no reasoning available";
+}
+
+function shouldRenderSubAgentThoughtItem(item) {
+  if (!item || item.type === "subagentNotification") return false;
+  if (SUB_AGENT_TOOL_LIKE_THOUGHT_TYPES.has(item.type) || item.type === "fileChange" || item.type === "collabAgentToolCall") return true;
+  const body = subAgentThoughtBody(item);
+  if (item.type === "reasoning" || item.type === "agentMessage") return !subAgentEmptyThoughtSentinel(body);
+  return !subAgentEmptyThoughtSentinel(body);
+}
+
+function projectSubAgentThoughtItems(items = []) {
+  const visible = Array.isArray(items) ? items.filter(shouldRenderSubAgentThoughtItem) : [];
+  return {
+    reasoningItems: visible.filter((item) => item?.type === "reasoning" || item?.type === "agentMessage"),
+    toolItems: visible.filter((item) => SUB_AGENT_TOOL_LIKE_THOUGHT_TYPES.has(item?.type)),
+    patchItems: visible.filter((item) => item?.type === "fileChange"),
+    otherItems: visible.filter((item) =>
+      item?.type !== "reasoning" &&
+      item?.type !== "agentMessage" &&
+      item?.type !== "fileChange" &&
+      !SUB_AGENT_TOOL_LIKE_THOUGHT_TYPES.has(item?.type)),
+    visibleCount: visible.length,
+  };
+}
+
+function appendSubAgentThoughtDetail(parent, item, className = "sub-agent-thought-tool") {
+  const detail = document.createElement("details");
+  detail.className = className;
+  const summary = document.createElement("summary");
+  summary.textContent = subAgentThoughtItemLabel(item);
+  const content = document.createElement("pre");
+  content.className = "sub-agent-thought-content";
+  renderTypedContent(content, subAgentThoughtBody(item) || "No details.");
+  detail.append(summary, content);
+  parent.appendChild(detail);
+}
+
+function renderSubAgentProcessBody(container, message) {
+  container.textContent = "";
+  container.classList.remove("assistant-markdown");
+  const projection = projectSubAgentThoughtItems(message?.thoughtItems || []);
+  if (!projection.visibleCount) {
+    container.textContent = "";
+    return;
+  }
+  const root = document.createElement("details");
+  root.className = "sub-agent-thought-process";
+  const summary = document.createElement("summary");
+  summary.textContent = projection.reasoningItems.length
+    ? `Thought process (${projection.visibleCount})`
+    : `Process evidence (${projection.visibleCount})`;
+  root.appendChild(summary);
+
+  const body = document.createElement("div");
+  body.className = "sub-agent-thought-body";
+  for (const item of projection.reasoningItems) {
+    const block = document.createElement("div");
+    block.className = "sub-agent-thought-reasoning";
+    renderTypedContent(block, subAgentThoughtBody(item));
+    body.appendChild(block);
+  }
+  if (projection.toolItems.length) {
+    const toolsRoot = document.createElement("details");
+    toolsRoot.className = "sub-agent-thought-tools";
+    const toolsSummary = document.createElement("summary");
+    toolsSummary.textContent = `Shell / tool calls (${projection.toolItems.length})`;
+    toolsRoot.appendChild(toolsSummary);
+    const toolsList = document.createElement("div");
+    toolsList.className = "sub-agent-thought-tools-list";
+    for (const item of projection.toolItems) appendSubAgentThoughtDetail(toolsList, item);
+    toolsRoot.appendChild(toolsList);
+    body.appendChild(toolsRoot);
+  }
+  if (projection.patchItems.length) {
+    const patchesRoot = document.createElement("details");
+    patchesRoot.className = "sub-agent-thought-tools sub-agent-thought-patches";
+    const patchesSummary = document.createElement("summary");
+    patchesSummary.textContent = `Patches (${projection.patchItems.length})`;
+    patchesRoot.appendChild(patchesSummary);
+    const patchesList = document.createElement("div");
+    patchesList.className = "sub-agent-thought-tools-list";
+    for (const item of projection.patchItems) appendSubAgentThoughtDetail(patchesList, item, "sub-agent-thought-tool sub-agent-thought-patch");
+    patchesRoot.appendChild(patchesList);
+    body.appendChild(patchesRoot);
+  }
+  for (const item of projection.otherItems) appendSubAgentThoughtDetail(body, item);
+  root.appendChild(body);
+  container.appendChild(root);
 }
 
 function clampPlaneZoom(value) {
@@ -1784,6 +2001,69 @@ function directRuntimeModeLabel(status) {
   return status?.runtimeModeLabel || status?.runtimeMode || "legacy app-server";
 }
 
+function directRuntimePathFromCodex(codex = {}) {
+  const runtimeMode = String(codex.runtimeMode || "legacy-app-server").toLowerCase();
+  const directTransport = String(codex.directTransport || "fixture").toLowerCase();
+  const directTier = String(codex.directTier || codex.activationTier || codex.runtimeTier || "none").toLowerCase();
+  if (runtimeMode !== "direct-experimental") return "app-server";
+  if (directTransport === "live-text" && (directTier === "text-only" || directTier === "text_only")) {
+    return "direct-text";
+  }
+  if (directTransport === "live-text" && (directTier === "implementation-lane" || directTier === "implementation_lane")) {
+    return "direct-implementation";
+  }
+  return "app-server";
+}
+
+function directRuntimeBindingFieldsForPath(runtimePath) {
+  if (runtimePath === "direct-text") {
+    return {
+      bindingProvider: "direct-chatgpt-codex",
+      runtimeMode: "direct-experimental",
+      directTransport: "live-text",
+      directTier: "text-only",
+    };
+  }
+  if (runtimePath === "direct-implementation") {
+    return {
+      bindingProvider: "direct-chatgpt-codex",
+      runtimeMode: "direct-experimental",
+      directTransport: "live-text",
+      directTier: "implementation-lane",
+    };
+  }
+  return {
+    bindingProvider: "codex-compatible",
+    runtimeMode: "legacy-app-server",
+    directTransport: "fixture",
+    directTier: "none",
+  };
+}
+
+function projectWithRuntimePath(project, runtimePath) {
+  return {
+    ...project,
+    surfaceBinding: {
+      ...project.surfaceBinding,
+      codex: {
+        ...(project.surfaceBinding?.codex || {}),
+        ...directRuntimeBindingFieldsForPath(runtimePath),
+      },
+    },
+  };
+}
+
+function syncProjectRuntimeFieldsFromDefaultPath() {
+  if (!els.codexDefaultPathInput) return;
+  const fields = directRuntimeBindingFieldsForPath(els.codexDefaultPathInput.value || "app-server");
+  if (els.codexRuntimeModeInput) els.codexRuntimeModeInput.value = fields.runtimeMode;
+  if (els.codexDirectTransportInput) els.codexDirectTransportInput.value = fields.directTransport;
+}
+
+function selectedDirectRuntimePath() {
+  return directRuntimePathFromCodex(activeProject()?.surfaceBinding?.codex || {});
+}
+
 function directActivationBlockers(status = state.directRuntimeStatus) {
   const blockers = status?.activation?.gateSummary?.blockers;
   return Array.isArray(blockers) ? blockers : [];
@@ -1836,6 +2116,37 @@ function renderDirectRuntimeStatus() {
     directRuntimeStatusLabel(status);
   els.directModelSourceBadge.textContent = `models: ${modelSource}`;
   els.directModelSourceBadge.title = profileId ? `Profile: ${profileId}` : "Model source is not available.";
+  if (els.directRuntimePathSelect) {
+    const currentPath = selectedDirectRuntimePath();
+    const textOnlyReady = status.directTextOnly?.status === "eligible" || status.directTextOnly?.status === "enabled";
+    const implementationReady = status.directImplementationLane?.canSelect === true || activation.state === "eligible" || currentPath === "direct-implementation";
+    const directTextOption = [...els.directRuntimePathSelect.options].find((option) => option.value === "direct-text");
+    const directImplementationOption = [...els.directRuntimePathSelect.options].find((option) => option.value === "direct-implementation");
+    if (directTextOption) directTextOption.disabled = !textOnlyReady && currentPath !== "direct-text";
+    if (directImplementationOption) directImplementationOption.disabled = !implementationReady;
+    if (document.activeElement !== els.directRuntimePathSelect) {
+      els.directRuntimePathSelect.value = currentPath;
+    }
+    const selectedPath = els.directRuntimePathSelect.value || currentPath;
+    const selectedBlocked =
+      selectedPath === "direct-text" && !textOnlyReady && currentPath !== "direct-text" ||
+      selectedPath === "direct-implementation" && !implementationReady;
+    if (els.directRuntimePathApplyButton) {
+      els.directRuntimePathApplyButton.disabled =
+        state.directRuntimeLoading ||
+        !activeProject() ||
+        !bridge.setDirectRuntimePath ||
+        selectedPath === currentPath ||
+        selectedBlocked;
+      els.directRuntimePathApplyButton.title = selectedPath === currentPath
+        ? "This Codex path is already the persisted project default."
+        : selectedBlocked
+          ? selectedPath === "direct-text"
+            ? `Direct Text is blocked: ${directTextOnlyBlockedDetail(status)}`
+            : `Direct Tools is blocked: ${directActivationBlockedDetail(status)}`
+          : "Persist this Codex path as the project default and reload the Codex lane.";
+    }
+  }
   if (els.directTextOnlyEnableButton) {
     const canUseTextOnlyAction = Boolean(activeProject()) && Boolean(bridge.selectDirectTextOnlyRuntime) && !state.directRuntimeLoading;
     const canEnableTextOnly = (status.directTextOnly?.status === "eligible" || status.directTextOnly?.status === "enabled") && canUseTextOnlyAction;
@@ -1979,6 +2290,39 @@ function selectSubAgentTab(threadId, selectedBy = "operator") {
   if (!id) return;
   state.selectedSubAgentThreadId = id;
   state.selectedSubAgentSelectedBy = selectedBy;
+  if (selectedBy === "operator") state.selectedSubAgentScope = { mode: "full", turnKey: "" };
+  renderSubAgentsPanel();
+}
+
+function setSubAgentScopeMode(mode) {
+  const selectedAgent = Array.isArray(state.subAgentGraph?.agents)
+    ? state.subAgentGraph.agents.find((agent) => subAgentThreadId(agent) === state.selectedSubAgentThreadId)
+    : null;
+  const fallbackTurnKey = firstSubAgentTurnKey(selectedAgent);
+  const turnKey = state.selectedSubAgentScope?.turnKey || fallbackTurnKey;
+  const next = mode === "turn" && turnKey
+    ? "turn"
+    : "full";
+  state.selectedSubAgentScope = {
+    mode: next,
+    turnKey,
+  };
+  renderSubAgentsPanel();
+}
+
+function sortedSubAgentTurnKeys(turnScopes = {}) {
+  return Object.keys(turnScopes).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: "base" }));
+}
+
+function firstSubAgentTurnKey(agent = {}) {
+  const keys = sortedSubAgentTurnKeys(agent?.turnScopes || {});
+  return keys[0] || "";
+}
+
+function selectSubAgentTurnScope(turnKey) {
+  const key = String(turnKey || "").trim();
+  if (!key) return;
+  state.selectedSubAgentScope = { mode: "turn", turnKey: key };
   renderSubAgentsPanel();
 }
 
@@ -2065,7 +2409,109 @@ function renderSubAgentsPanel() {
   const transcript = document.createElement("div");
   transcript.className = "sub-agent-transcript";
   const messages = Array.isArray(selectedAgent?.transcript) ? selectedAgent.transcript : [];
-  if (!messages.length) {
+  const selectedScope = state.selectedSubAgentScope || { mode: "full", turnKey: "" };
+  const turnScopes = selectedAgent?.turnScopes && typeof selectedAgent.turnScopes === "object"
+    ? selectedAgent.turnScopes
+    : {};
+  const turnKeys = sortedSubAgentTurnKeys(turnScopes);
+  const selectedTurnKey = selectedScope.turnKey && turnScopes[selectedScope.turnKey]
+    ? selectedScope.turnKey
+    : firstSubAgentTurnKey(selectedAgent);
+  if (selectedTurnKey && selectedScope.turnKey !== selectedTurnKey) {
+    state.selectedSubAgentScope = { ...selectedScope, turnKey: selectedTurnKey };
+  }
+  const showTurnMode = state.selectedSubAgentScope?.mode === "turn";
+  const turnScope = showTurnMode && selectedTurnKey
+    ? turnScopes[selectedTurnKey]
+    : null;
+  const showTurnScope = Boolean(turnScope);
+  if (state.selectedSubAgentScope?.mode === "turn" && !turnScope) {
+    state.selectedSubAgentScope = { mode: "full", turnKey: selectedTurnKey || "" };
+  }
+
+  const scopeControls = document.createElement("div");
+  scopeControls.className = "sub-agent-scope-controls";
+  const turnButton = document.createElement("button");
+  turnButton.type = "button";
+  turnButton.className = `sub-agent-scope-button${showTurnScope ? " active" : ""}`;
+  turnButton.textContent = "Turn activity";
+  turnButton.disabled = !selectedTurnKey;
+  turnButton.title = selectedTurnKey ? "Show parent-side activity from the selected main turn" : "No turn-scoped activity is available";
+  turnButton.addEventListener("click", () => setSubAgentScopeMode("turn"));
+  const fullButton = document.createElement("button");
+  fullButton.type = "button";
+  fullButton.className = `sub-agent-scope-button${!showTurnScope ? " active" : ""}`;
+  fullButton.textContent = "Full history";
+  fullButton.title = "Show the full sub-agent transcript history";
+  fullButton.addEventListener("click", () => setSubAgentScopeMode("full"));
+  scopeControls.append(turnButton, fullButton);
+  transcript.appendChild(scopeControls);
+
+  if (turnKeys.length > 1) {
+    const turnSelector = document.createElement("div");
+    turnSelector.className = "sub-agent-turn-selector";
+    const selectorLabel = document.createElement("span");
+    selectorLabel.textContent = "Main turns";
+    turnSelector.appendChild(selectorLabel);
+    for (let index = 0; index < turnKeys.length; index += 1) {
+      const key = turnKeys[index];
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `sub-agent-turn-chip${key === selectedTurnKey ? " active" : ""}`;
+      button.textContent = `Turn ${index + 1}`;
+      button.title = key;
+      button.addEventListener("click", () => selectSubAgentTurnScope(key));
+      turnSelector.appendChild(button);
+    }
+    transcript.appendChild(turnSelector);
+  }
+
+  if (showTurnScope) {
+    const scopeCard = document.createElement("section");
+    scopeCard.className = "sub-agent-turn-scope";
+    const scopeTitle = document.createElement("p");
+    scopeTitle.className = "eyebrow";
+    scopeTitle.textContent = `Main-turn activity · ${selectedTurnKey}`;
+    scopeCard.appendChild(scopeTitle);
+    const events = Array.isArray(turnScope.events) ? turnScope.events : [];
+    if (!events.length) {
+      const empty = document.createElement("p");
+      empty.className = "muted";
+      empty.textContent = "No parent-side activity was recorded for this agent in the selected turn.";
+      scopeCard.appendChild(empty);
+    } else {
+      const list = document.createElement("div");
+      list.className = "sub-agent-turn-events";
+      for (let eventIndex = 0; eventIndex < events.length; eventIndex += 1) {
+        const event = events[eventIndex];
+        const row = document.createElement("div");
+        row.className = `sub-agent-turn-event status-${String(event.status || "unknown").replace(/[^a-z0-9_-]/gi, "-")}`;
+        const label = document.createElement("strong");
+        label.textContent = String(event.label || event.kind || "Sub-agent event").replace(/_/g, " ");
+        const meta = document.createElement("span");
+        meta.textContent = [
+          event.status ? `status: ${String(event.status).replace(/_/g, " ")}` : "",
+          event.actionStatus ? `action: ${String(event.actionStatus).replace(/_/g, " ")}` : "",
+        ].filter(Boolean).join(" · ");
+        row.append(label, meta);
+        if (event.promptPreview || event.detail) {
+          const detail = document.createElement("p");
+          const detailKey = [
+            subAgentThreadId(selectedAgent) || "unknown-agent",
+            selectedTurnKey,
+            `event_${eventIndex}`,
+          ].join(":");
+          detail.className = "sub-agent-turn-event-detail";
+          detail.textContent = event.promptPreview || event.detail;
+          row.appendChild(detail);
+          configureSubAgentMessagePreview(row, detail, detailKey);
+        }
+        list.appendChild(row);
+      }
+      scopeCard.appendChild(list);
+    }
+    transcript.appendChild(scopeCard);
+  } else if (!messages.length) {
     const pending = document.createElement("div");
     pending.className = "sub-agent-message system";
     pending.textContent = selectedAgent?.hydrationStatus === "failed"
@@ -2073,9 +2519,12 @@ function renderSubAgentsPanel() {
       : "Transcript hydration pending.";
     transcript.appendChild(pending);
   } else {
-    for (const message of messages) {
+    for (let messageIndex = 0; messageIndex < messages.length; messageIndex += 1) {
+      const message = messages[messageIndex];
       const item = document.createElement("section");
       item.className = `sub-agent-message ${message.role || "system"}`;
+      const previewKey = subAgentMessagePreviewKey(selectedAgent, message, messageIndex);
+      item.dataset.messagePreviewKey = previewKey;
       const label = document.createElement("p");
       label.className = "eyebrow";
       label.textContent = message.title || message.role || "Message";
@@ -2086,6 +2535,7 @@ function renderSubAgentsPanel() {
         threadTitle: subAgentTabLabel(selectedAgent, labelCounts),
       });
       item.append(label, body);
+      configureSubAgentMessagePreview(item, body, previewKey);
       transcript.appendChild(item);
     }
   }
@@ -2148,6 +2598,9 @@ function handleCodexFocusSubAgent(event) {
   if (state.subAgentGraph?.primaryThreadId && primaryThreadId && String(state.subAgentGraph.primaryThreadId) !== primaryThreadId) return;
   state.selectedSubAgentThreadId = receiverThreadId;
   state.selectedSubAgentSelectedBy = "agent_chip";
+  state.selectedSubAgentScope = event.scopeMode === "turn" && event.turnKey
+    ? { mode: "turn", turnKey: String(event.turnKey) }
+    : { mode: "full", turnKey: "" };
   setRightPlaneTab("subagents");
   renderSubAgentsPanel();
   setLastEvent(`Opened sub-agent: ${event.label || receiverThreadId}.`);
@@ -3475,6 +3928,128 @@ function buildAnalyticsBarChart(title, points, options = {}) {
   return wrapper;
 }
 
+function usageLedgerNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "—";
+  return Math.round(number).toLocaleString();
+}
+
+function usageLedgerMetricCard(label, value, evidence = "") {
+  const card = document.createElement("article");
+  card.className = "analytics-metric-card";
+  const keyNode = document.createElement("span");
+  keyNode.className = "metric-key";
+  keyNode.textContent = label;
+  const valueNode = document.createElement("strong");
+  valueNode.className = "metric-value";
+  valueNode.textContent = value;
+  const evidenceNode = document.createElement("span");
+  evidenceNode.className = "metric-evidence";
+  evidenceNode.textContent = evidence || "Evidence: —";
+  card.append(keyNode, valueNode, evidenceNode);
+  return card;
+}
+
+function usageLedgerResetLabel(window) {
+  const resetsAt = window?.resetsAt;
+  if (!resetsAt) return "";
+  const date = new Date(resetsAt);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleString(undefined, {
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
+function usageLedgerRateLimitLabel(window, fallbackLabel) {
+  if (!window) return "";
+  const percent = Number(window.usedPercent);
+  const used = Number.isFinite(percent) ? `${Math.round(percent)}%` : "unknown";
+  const reset = usageLedgerResetLabel(window);
+  return `${fallbackLabel} ${used}${reset ? ` reset ${reset}` : ""}`;
+}
+
+function renderUsageLedgerAnalytics(dashboard) {
+  const ledger = dashboard?.usageLedger;
+  const wrapper = document.createElement("section");
+  wrapper.className = "analytics-ledger-section";
+
+  const header = document.createElement("div");
+  header.className = "analytics-ledger-header";
+  const title = document.createElement("h4");
+  title.textContent = "Usage ledger";
+  const status = document.createElement("span");
+  status.className = `status-chip status-${ledger?.status || "unavailable"}`;
+  status.textContent = ledger?.status || "unavailable";
+  header.append(title, status);
+  wrapper.appendChild(header);
+
+  if (!ledger || !["available", "partial"].includes(ledger.status)) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = ledger?.reason || "No usage ledger evidence is available for this thread yet.";
+    wrapper.appendChild(empty);
+    return wrapper;
+  }
+
+  const tokens = ledger.tokens || {};
+  const turns = ledger.turns || {};
+  const tools = ledger.tools || {};
+  const requests = ledger.requests || {};
+  const metricGrid = document.createElement("div");
+  metricGrid.className = "analytics-ledger-grid";
+  metricGrid.append(
+    usageLedgerMetricCard("Token snapshot", usageLedgerNumber(tokens.totalTokens), `Source: ${tokens.usageScope || "snapshot"} · ${tokens.confidence || "unknown"}`),
+    usageLedgerMetricCard("Input / cached", `${usageLedgerNumber(tokens.inputTokens)} / ${usageLedgerNumber(tokens.cachedInputTokens)}`, "Latest provider token row"),
+    usageLedgerMetricCard("Output / reasoning", `${usageLedgerNumber(tokens.outputTokens)} / ${usageLedgerNumber(tokens.reasoningOutputTokens)}`, "Latest provider token row"),
+    usageLedgerMetricCard("Turns", `${usageLedgerNumber(turns.completed)} done · ${usageLedgerNumber(turns.active)} active`, `Avg first token: ${formatDurationMs(turns.timeToFirstTokenMs)}`),
+    usageLedgerMetricCard("Tool calls", `${usageLedgerNumber(tools.total)} total · ${usageLedgerNumber(tools.failed)} failed`, `${usageLedgerNumber(tools.commands)} commands · ${usageLedgerNumber(tools.patches)} patches`),
+    usageLedgerMetricCard("Requests", `${usageLedgerNumber(requests.total)} total`, `${usageLedgerNumber(requests.pending)} pending · ${usageLedgerNumber(requests.resolved)} resolved`),
+  );
+  wrapper.appendChild(metricGrid);
+
+  const rateLimit = ledger.rateLimits || {};
+  if (rateLimit.status === "available") {
+    const rateLine = document.createElement("p");
+    rateLine.className = "analytics-ledger-evidence";
+    const primary = usageLedgerRateLimitLabel(rateLimit.primary, "Primary");
+    const secondary = usageLedgerRateLimitLabel(rateLimit.secondary, "Secondary");
+    rateLine.textContent = [
+      rateLimit.planType ? `Plan: ${rateLimit.planType}` : "",
+      primary,
+      secondary,
+      rateLimit.observedAt ? `Observed ${formatTime(rateLimit.observedAt)}` : "",
+    ].filter(Boolean).join(" · ");
+    wrapper.appendChild(rateLine);
+  }
+
+  const chartGrid = document.createElement("div");
+  chartGrid.className = "analytics-ledger-charts";
+  const series = ledger.series || {};
+  chartGrid.append(
+    buildAnalyticsBarChart("Token mix", series.token_mix || []),
+    buildAnalyticsBarChart("Ledger tool mix", series.tool_kind_mix || []),
+  );
+  if (Array.isArray(series.request_kind_mix) && series.request_kind_mix.length) {
+    chartGrid.appendChild(buildAnalyticsBarChart("Request mix", series.request_kind_mix));
+  }
+  wrapper.appendChild(chartGrid);
+
+  const evidence = document.createElement("p");
+  evidence.className = "analytics-ledger-evidence";
+  evidence.textContent = [
+    `${usageLedgerNumber(ledger.matchedRowCount)} matched rows`,
+    `${usageLedgerNumber(ledger.fileCount)} ledger files`,
+    ledger.rowLimitReached ? "row limit reached" : "",
+    ledger.lastObservedAt ? `Last observed ${formatTime(ledger.lastObservedAt)}` : "",
+    ledger.outputDirEvidenceKey ? `Path witness ${ledger.outputDirEvidenceKey}` : "",
+  ].filter(Boolean).join(" · ");
+  wrapper.appendChild(evidence);
+  return wrapper;
+}
+
 function renderAnalyticsThreadList() {
   els.analyticsThreadCount.textContent = String(state.analyticsThreads.length);
   els.analyticsThreadList.innerHTML = "";
@@ -3574,6 +4149,7 @@ function renderAnalyticsDashboard() {
     summaryStrip.appendChild(card);
   }
   container.appendChild(summaryStrip);
+  container.appendChild(renderUsageLedgerAnalytics(dashboard));
 
   const series = dashboard.series || {};
   container.appendChild(buildAnalyticsBarChart("Work composition", series.work_composition || []));
@@ -4438,7 +5014,7 @@ async function enableDirectExperimentalRuntime() {
     });
     if (result?.config) {
       state.config = result.config;
-      renderProjects();
+      render();
     }
     state.directRuntimeStatus = result?.status ? { ...state.directRuntimeStatus, activation: result.status } : state.directRuntimeStatus;
     await refreshDirectRuntimeStatus(project.id);
@@ -4476,13 +5052,75 @@ async function selectDirectTextOnlyRuntime() {
     });
     if (result?.config) {
       state.config = result.config;
-      renderProjects();
+      render();
     }
     await refreshDirectRuntimeStatus(project.id);
     setLastEvent(result?.duplicate ? "Direct text-only was already selected for this project." : "Direct text-only selected for this project.");
   } catch (error) {
     state.directRuntimeError = error.message || "Direct text-only selection failed.";
     setLastEvent(`Direct text-only selection failed: ${state.directRuntimeError}`);
+  } finally {
+    state.directRuntimeLoading = false;
+    renderDirectRuntimeStatus();
+  }
+}
+
+async function setDirectRuntimePathFromControl() {
+  const project = activeProject();
+  if (!project || !bridge.setDirectRuntimePath || !els.directRuntimePathSelect) return;
+  const runtimePath = els.directRuntimePathSelect.value || "app-server";
+  const currentPath = selectedDirectRuntimePath();
+  if (runtimePath === currentPath) return;
+  await refreshDirectAuthStatus();
+  await refreshDirectRuntimeStatus(project.id);
+  const status = state.directRuntimeStatus || {};
+  const textOnly = status.directTextOnly || {};
+  const activation = status.activation || {};
+  const implementation = status.directImplementationLane || {};
+  const options = {
+    clientOperationId: directActivationClientId("client_runtime_path"),
+  };
+  if (runtimePath === "direct-text") {
+    if (textOnly.status !== "eligible" && textOnly.status !== "enabled") {
+      setLastEvent(`Direct Text blocked: ${directTextOnlyBlockedDetail(status)}`);
+      renderDirectRuntimeStatus();
+      return;
+    }
+    options.expectedGateId = textOnly.gateId;
+    options.expectedGateDigest = textOnly.gateDigest;
+  }
+  if (runtimePath === "direct-implementation") {
+    if (implementation.canSelect !== true && activation.state !== "eligible") {
+      setLastEvent(`Direct Tools blocked: ${directActivationBlockedDetail(status)}`);
+      renderDirectRuntimeStatus();
+      return;
+    }
+    options.expectedGateId = activation.gateId;
+    options.expectedGateDigest = activation.gateDigest;
+  }
+  const label = runtimePath === "app-server"
+    ? "App Server"
+    : runtimePath === "direct-text"
+      ? "Direct Text"
+      : "Direct Tools";
+  const confirmed = window.confirm(`Set ${label} as this project's default Codex path and reload the Codex lane?`);
+  if (!confirmed) {
+    renderDirectRuntimeStatus();
+    return;
+  }
+  state.directRuntimeLoading = true;
+  renderDirectRuntimeStatus();
+  try {
+    const result = await bridge.setDirectRuntimePath(project.id, runtimePath, options);
+    if (result?.config) {
+      state.config = result.config;
+      render();
+    }
+    await refreshDirectRuntimeStatus(project.id);
+    setLastEvent(result?.duplicate ? `${label} is already the default Codex path.` : `Default Codex path set to ${label}.`);
+  } catch (error) {
+    state.directRuntimeError = error.message || "Codex path switch failed.";
+    setLastEvent(`Codex path switch failed: ${state.directRuntimeError}`);
   } finally {
     state.directRuntimeLoading = false;
     renderDirectRuntimeStatus();
@@ -4509,7 +5147,7 @@ async function rollbackDirectExperimentalRuntime() {
     });
     if (result?.config) {
       state.config = result.config;
-      renderProjects();
+      render();
     }
     state.directRuntimeStatus = result?.status ? { ...state.directRuntimeStatus, activation: result.status } : state.directRuntimeStatus;
     await refreshDirectRuntimeStatus(project.id);
@@ -4661,6 +5299,7 @@ async function selectProject(projectId) {
   state.subAgentGraph = null;
   state.selectedSubAgentThreadId = "";
   state.selectedSubAgentSelectedBy = "";
+  state.selectedSubAgentScope = { mode: "full", turnKey: "" };
   state.rightPlanePinnedTab = "";
   render();
   const project = activeProject();
@@ -4846,6 +5485,7 @@ function handleCodexThreadState(event) {
       state.subAgentGraph = null;
       state.selectedSubAgentThreadId = "";
       state.selectedSubAgentSelectedBy = "";
+      state.selectedSubAgentScope = { mode: "full", turnKey: "" };
       if (state.activeRightTab === "subagents" && !state.rightPlanePinnedTab) state.activeRightTab = "chatgpt";
       renderRightPlaneTabs();
     }
@@ -4955,8 +5595,12 @@ function openDrawer(mode) {
   updateWorkspaceFieldVisibility();
   els.codexModeInput.value = draft.surfaceBinding.codex.mode;
   els.codexLabelInput.value = draft.surfaceBinding.codex.label;
+  if (els.codexDefaultPathInput) {
+    els.codexDefaultPathInput.value = directRuntimePathFromCodex(draft.surfaceBinding.codex);
+  }
   els.codexRuntimeModeInput.value = draft.surfaceBinding.codex.runtimeMode || "legacy-app-server";
   els.codexDirectTransportInput.value = draft.surfaceBinding.codex.directTransport || "fixture";
+  syncProjectRuntimeFieldsFromDefaultPath();
   els.codexProviderKindInput.value = draft.surfaceBinding.codex.provider?.kind || draft.surfaceBinding.codex.providerKind || "codex_executable";
   els.codexProviderFlavorInput.value = draft.surfaceBinding.codex.provider?.flavor || draft.surfaceBinding.codex.providerFlavor || "vanilla";
   els.codexRuntimeInput.value = draft.surfaceBinding.codex.runtime || "auto";
@@ -5035,6 +5679,7 @@ function projectFromForm() {
   const fallbackThreadId = currentPrimary?.id || threads[0]?.id || "";
   const activeChatThreadId = preservedThreadId(threads, existing?.activeChatThreadId, fallbackThreadId);
   const lastActiveThreadId = preservedThreadId(threads, existing?.lastActiveThreadId, activeChatThreadId);
+  const runtimePathFields = directRuntimeBindingFieldsForPath(els.codexDefaultPathInput?.value || "app-server");
 
   return {
     id: els.projectIdInput.value || createId("project"),
@@ -5044,9 +5689,10 @@ function projectFromForm() {
     surfaceBinding: {
       codex: {
         mode: els.codexModeInput.value,
-        bindingProvider: els.codexRuntimeModeInput.value === "legacy-app-server" ? "codex-compatible" : "direct-chatgpt-codex",
-        runtimeMode: els.codexRuntimeModeInput.value,
-        directTransport: els.codexDirectTransportInput.value || "fixture",
+        bindingProvider: runtimePathFields.bindingProvider,
+        runtimeMode: runtimePathFields.runtimeMode,
+        directTransport: runtimePathFields.directTransport,
+        directTier: runtimePathFields.directTier,
         provider: {
           kind: els.codexProviderKindInput.value || "codex_executable",
           flavor: els.codexProviderFlavorInput.value || "vanilla",
@@ -5094,12 +5740,39 @@ async function handleProjectFormSubmit(event) {
     return;
   }
   const existingIndex = state.config.projects.findIndex((item) => item.id === project.id);
+  const existingProject = existingIndex >= 0 ? state.config.projects[existingIndex] : null;
+  const requestedRuntimePath = directRuntimePathFromCodex(project.surfaceBinding?.codex || {});
+  const currentRuntimePath = directRuntimePathFromCodex(existingProject?.surfaceBinding?.codex || {});
+  const runtimePathChanged = requestedRuntimePath !== currentRuntimePath;
+  const projectForConfig = runtimePathChanged ? projectWithRuntimePath(project, currentRuntimePath) : project;
   const projects = [...state.config.projects];
-  if (existingIndex >= 0) projects[existingIndex] = project;
-  else projects.push(project);
-  await saveConfig({ ...state.config, selectedProjectId: project.id, projects });
+  if (existingIndex >= 0) projects[existingIndex] = projectForConfig;
+  else projects.push(projectForConfig);
+  await saveConfig({ ...state.config, selectedProjectId: projectForConfig.id, projects });
   closeDrawer();
-  await selectProject(project.id);
+  await selectProject(projectForConfig.id);
+  if (runtimePathChanged && bridge.setDirectRuntimePath) {
+    state.directRuntimeLoading = true;
+    renderDirectRuntimeStatus();
+    try {
+      const result = await bridge.setDirectRuntimePath(project.id, requestedRuntimePath, {
+        clientOperationId: directActivationClientId("client_project_runtime_path"),
+      });
+      if (result?.config) {
+        state.config = result.config;
+        render();
+      }
+      await refreshDirectRuntimeStatus(project.id);
+      setLastEvent(`Saved project binding for ${project.name}; default Codex path updated.`);
+    } catch (error) {
+      state.directRuntimeError = error.message || "Codex path switch failed.";
+      setLastEvent(`Saved project binding for ${project.name}; Codex path change blocked: ${state.directRuntimeError}`);
+    } finally {
+      state.directRuntimeLoading = false;
+      renderDirectRuntimeStatus();
+    }
+    return;
+  }
   setLastEvent(`Saved project binding for ${project.name}.`);
 }
 
@@ -5843,6 +6516,7 @@ function bindEvents() {
     chooseDirectImportRoot().catch((error) => setLastEvent(`Choose import root failed: ${error.message}`));
   });
   els.workspaceKindInput.addEventListener("change", updateWorkspaceFieldVisibility);
+  els.codexDefaultPathInput?.addEventListener("change", syncProjectRuntimeFieldsFromDefaultPath);
   els.projectChatgptThreadSelect.addEventListener("change", syncProjectChatgptUrlFromSelection);
   els.addThreadButton.addEventListener("click", () => openThreadDrawer("new"));
   els.threadForm.addEventListener("submit", handleThreadFormSubmit);
@@ -5899,6 +6573,8 @@ function bindEvents() {
   els.directAuthStorageModeSelect.addEventListener("change", () => setDirectAuthStorageMode(els.directAuthStorageModeSelect.value));
   els.directAuthLoginButton.addEventListener("click", beginDirectAuthLogin);
   els.directAuthLogoutButton.addEventListener("click", logoutDirectAuth);
+  els.directRuntimePathSelect?.addEventListener("change", renderDirectRuntimeStatus);
+  els.directRuntimePathApplyButton?.addEventListener("click", setDirectRuntimePathFromControl);
   els.directTextOnlyEnableButton?.addEventListener("click", selectDirectTextOnlyRuntime);
   els.directExperimentalEnableButton?.addEventListener("click", enableDirectExperimentalRuntime);
   els.directExperimentalRollbackButton?.addEventListener("click", rollbackDirectExperimentalRuntime);
