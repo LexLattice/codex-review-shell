@@ -130,6 +130,13 @@ assertIncludes(rendererSource, "directRuntimePathSelect", "shell renderer select
 assertIncludes(rendererSource, "setDirectRuntimePathFromControl", "shell renderer apply action");
 assertIncludes(rendererSource, "codexDefaultPathInput", "project drawer default selector");
 assertIncludes(rendererSource, "directTier: runtimePathFields.directTier", "project drawer preserves direct tier");
+assertIncludes(rendererSource, ".toLowerCase()", "renderer path normalization");
+assertIncludes(rendererSource, "directTier === \"text-only\" || directTier === \"text_only\"", "renderer text-only tier variants");
+assertIncludes(rendererSource, "directTier === \"implementation-lane\" || directTier === \"implementation_lane\"", "renderer implementation tier variants");
+assertIncludes(rendererSource, "const runtimePathChanged = requestedRuntimePath !== currentRuntimePath", "drawer detects runtime path changes");
+assertIncludes(rendererSource, "const projectForConfig = runtimePathChanged ? projectWithRuntimePath(project, currentRuntimePath) : project", "drawer preserves previous path before guarded switch");
+assertIncludes(rendererSource, "bridge.setDirectRuntimePath(project.id, requestedRuntimePath", "drawer routes runtime path changes through guarded IPC");
+assert.ok(!rendererSource.includes("renderProjects("), "renderer should not call undefined renderProjects()");
 assertIncludes(htmlSource, "Default Codex path", "shell UI label");
 assertIncludes(htmlSource, "value=\"app-server\"", "app-server option");
 assertIncludes(htmlSource, "value=\"direct-text\"", "direct text option");

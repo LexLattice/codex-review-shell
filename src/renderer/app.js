@@ -2002,13 +2002,14 @@ function directRuntimeModeLabel(status) {
 }
 
 function directRuntimePathFromCodex(codex = {}) {
-  const runtimeMode = String(codex.runtimeMode || "legacy-app-server");
-  const directTransport = String(codex.directTransport || "fixture");
-  const directTier = String(codex.directTier || codex.activationTier || codex.runtimeTier || "none");
-  if (runtimeMode === "direct-experimental" && directTransport === "live-text" && directTier === "text-only") {
+  const runtimeMode = String(codex.runtimeMode || "legacy-app-server").toLowerCase();
+  const directTransport = String(codex.directTransport || "fixture").toLowerCase();
+  const directTier = String(codex.directTier || codex.activationTier || codex.runtimeTier || "none").toLowerCase();
+  if (runtimeMode !== "direct-experimental") return "app-server";
+  if (directTransport === "live-text" && (directTier === "text-only" || directTier === "text_only")) {
     return "direct-text";
   }
-  if (runtimeMode === "direct-experimental" && directTransport === "live-text" && directTier === "implementation-lane") {
+  if (directTransport === "live-text" && (directTier === "implementation-lane" || directTier === "implementation_lane")) {
     return "direct-implementation";
   }
   return "app-server";
@@ -2036,6 +2037,19 @@ function directRuntimeBindingFieldsForPath(runtimePath) {
     runtimeMode: "legacy-app-server",
     directTransport: "fixture",
     directTier: "none",
+  };
+}
+
+function projectWithRuntimePath(project, runtimePath) {
+  return {
+    ...project,
+    surfaceBinding: {
+      ...project.surfaceBinding,
+      codex: {
+        ...(project.surfaceBinding?.codex || {}),
+        ...directRuntimeBindingFieldsForPath(runtimePath),
+      },
+    },
   };
 }
 
@@ -5000,7 +5014,7 @@ async function enableDirectExperimentalRuntime() {
     });
     if (result?.config) {
       state.config = result.config;
-      renderProjects();
+      render();
     }
     state.directRuntimeStatus = result?.status ? { ...state.directRuntimeStatus, activation: result.status } : state.directRuntimeStatus;
     await refreshDirectRuntimeStatus(project.id);
@@ -5038,7 +5052,7 @@ async function selectDirectTextOnlyRuntime() {
     });
     if (result?.config) {
       state.config = result.config;
-      renderProjects();
+      render();
     }
     await refreshDirectRuntimeStatus(project.id);
     setLastEvent(result?.duplicate ? "Direct text-only was already selected for this project." : "Direct text-only selected for this project.");
@@ -5100,7 +5114,7 @@ async function setDirectRuntimePathFromControl() {
     const result = await bridge.setDirectRuntimePath(project.id, runtimePath, options);
     if (result?.config) {
       state.config = result.config;
-      renderProjects();
+      render();
     }
     await refreshDirectRuntimeStatus(project.id);
     setLastEvent(result?.duplicate ? `${label} is already the default Codex path.` : `Default Codex path set to ${label}.`);
@@ -5133,7 +5147,7 @@ async function rollbackDirectExperimentalRuntime() {
     });
     if (result?.config) {
       state.config = result.config;
-      renderProjects();
+      render();
     }
     state.directRuntimeStatus = result?.status ? { ...state.directRuntimeStatus, activation: result.status } : state.directRuntimeStatus;
     await refreshDirectRuntimeStatus(project.id);
@@ -5726,12 +5740,39 @@ async function handleProjectFormSubmit(event) {
     return;
   }
   const existingIndex = state.config.projects.findIndex((item) => item.id === project.id);
+  const existingProject = existingIndex >= 0 ? state.config.projects[existingIndex] : null;
+  const requestedRuntimePath = directRuntimePathFromCodex(project.surfaceBinding?.codex || {});
+  const currentRuntimePath = directRuntimePathFromCodex(existingProject?.surfaceBinding?.codex || {});
+  const runtimePathChanged = requestedRuntimePath !== currentRuntimePath;
+  const projectForConfig = runtimePathChanged ? projectWithRuntimePath(project, currentRuntimePath) : project;
   const projects = [...state.config.projects];
-  if (existingIndex >= 0) projects[existingIndex] = project;
-  else projects.push(project);
-  await saveConfig({ ...state.config, selectedProjectId: project.id, projects });
+  if (existingIndex >= 0) projects[existingIndex] = projectForConfig;
+  else projects.push(projectForConfig);
+  await saveConfig({ ...state.config, selectedProjectId: projectForConfig.id, projects });
   closeDrawer();
-  await selectProject(project.id);
+  await selectProject(projectForConfig.id);
+  if (runtimePathChanged && bridge.setDirectRuntimePath) {
+    state.directRuntimeLoading = true;
+    renderDirectRuntimeStatus();
+    try {
+      const result = await bridge.setDirectRuntimePath(project.id, requestedRuntimePath, {
+        clientOperationId: directActivationClientId("client_project_runtime_path"),
+      });
+      if (result?.config) {
+        state.config = result.config;
+        render();
+      }
+      await refreshDirectRuntimeStatus(project.id);
+      setLastEvent(`Saved project binding for ${project.name}; default Codex path updated.`);
+    } catch (error) {
+      state.directRuntimeError = error.message || "Codex path switch failed.";
+      setLastEvent(`Saved project binding for ${project.name}; Codex path change blocked: ${state.directRuntimeError}`);
+    } finally {
+      state.directRuntimeLoading = false;
+      renderDirectRuntimeStatus();
+    }
+    return;
+  }
   setLastEvent(`Saved project binding for ${project.name}.`);
 }
 
