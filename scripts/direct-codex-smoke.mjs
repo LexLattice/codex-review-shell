@@ -107,6 +107,7 @@ const {
   DEFAULT_TEXT_PROBE_PROMPT,
   DIRECT_TOOL_CONTINUATION_RESULT_SCHEMA,
   DIRECT_TEXT_PROBE_RESULT_SCHEMA,
+  buildReadOnlyToolContinuationProbeRequest,
   buildTextOnlyProbeRequest,
   runPersistedReadOnlyToolContinuation,
   runPersistedTextOnlyDirectProbe,
@@ -1627,6 +1628,26 @@ try {
   assert(incrementalResult.obligations[0].argumentsText === "{\"path\":\"README.md\"}", "Expected incremental tool obligation updates to merge argument deltas.");
   const incrementalPersisted = sessionStore.readTurn(incrementalSession.sessionId, incrementalTurn.turnId);
   assert(incrementalPersisted.unresolvedObligations.length === 1, "Expected incremental tool obligation updates to preserve one stable obligation.");
+
+  const itemKeySession = sessionStore.createSession({
+    sessionId: "session_item_key_tool",
+    projectId: "project_fixture",
+    workspace: { kind: "local", localPath: "[REDACTED:private-path]" },
+    title: "Item-key tool obligation session",
+    model: "gpt-5.4",
+    profileSnapshotId: profileDoc.profile.profileId,
+  }, { nowMs: 1_700_000_019_500 });
+  const itemKeyTurn = sessionStore.createTurn(itemKeySession.sessionId, {
+    turnId: "turn_item_key_tool",
+    input: [{ role: "user", text: "item key tool" }],
+  }, { nowMs: 1_700_000_019_600 });
+  const itemKeyResult = sessionStore.addToolObligations(itemKeySession.sessionId, itemKeyTurn.turnId, [
+    { type: "tool_call_started", sequence: 0, itemId: "tool_item_key", callId: "call_item_key", name: "read_file", toolType: "function_call" },
+    { type: "tool_call_delta", sequence: 1, itemId: "tool_item_key", argumentsDelta: "{\"path\":\"README.md\"}" },
+    { type: "tool_call_completed", sequence: 2, itemId: "tool_item_key", callId: "call_item_key", name: "read_file", argumentsJson: "{\"path\":\"README.md\"}", toolType: "function_call" },
+  ], { nowMs: 1_700_000_019_700 });
+  assert(itemKeyResult.obligations.length === 1, "Expected item-id keyed tool events to preserve one obligation when deltas omit call ids.");
+  assert(itemKeyResult.obligations[0].callId === "call_item_key", "Expected item-id keyed obligation to retain completed call id.");
 } finally {
   cleanupSmokeTempDir(sessionStoreParent);
 }
@@ -2489,19 +2510,24 @@ try {
   const approvedTurn = approvedToolStore.readTurn(approvedThread.thread.id, approvedAck.turn.id);
   assert(approvedTurn.state === "completed", "Expected approved direct read-only continuation to complete the turn.");
   assert(approvedTurn.streamPhase === "continuation", "Expected approved continuation to record continuation stream phase.");
-  assert(approvedTurn.continuationRequestShape.hasPreviousResponseId === true, "Expected approved continuation to require previous_response_id.");
+  assert(approvedTurn.continuationRequestShape.hasPreviousResponseId === false, "Expected approved ChatGPT continuation to avoid unsupported previous_response_id.");
+  assert(approvedTurn.continuationRequestShape.continuationTransportMode === "fresh_context", "Expected approved ChatGPT continuation to record fresh-context transport mode.");
   assert(approvedTurn.contextBuildId, "Expected approved live tool continuation to persist context build id before transport.");
   assert(approvedTurn.requestManifestId, "Expected approved live tool continuation to persist request manifest id before transport.");
   const approvedToolContextPack = approvedToolThreadStore.readContextPack(approvedTurn.contextBuildId);
   const approvedToolRequestManifest = approvedToolThreadStore.readRequestManifest(approvedTurn.requestManifestId);
   assert(approvedToolContextPack.policy.policyId === DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID, "Expected approved live tool continuation to use read-only tool context policy.");
-  assert(approvedToolRequestManifest.enabledFeatures.previousResponseId === true, "Expected approved live tool manifest to record previous_response_id.");
+  assert(approvedToolRequestManifest.enabledFeatures.previousResponseId === false, "Expected approved live tool manifest to record fresh-context continuity.");
   assert(approvedToolRequestManifest.enabledFeatures.store === false, "Expected approved live tool manifest to record store=false.");
   assert(approvedToolRequestManifest.enabledFeatures.toolDeclarations === false, "Expected approved live tool manifest to disable new tool declarations.");
-  assert(approvedToolRequestManifest.enabledFeatures.toolOutputItem === true, "Expected approved live tool manifest to allow exactly one tool-output item.");
-	  assert(approvedToolRequestManifest.previousResponse.source === "native_direct_initial_stream", "Expected approved live tool manifest to cite native parent response source.");
+  assert(approvedToolRequestManifest.enabledFeatures.toolOutputItem === false, "Expected approved live tool manifest to quote tool evidence rather than send provider-native tool-output items.");
+  assert(approvedToolRequestManifest.continuity.continuityPolicy === "fresh_request_with_quoted_tool_result", "Expected approved live tool manifest to record quoted tool-result continuity.");
+  assert(approvedToolRequestManifest.previousResponse.source === "native_direct_initial_stream", "Expected approved live tool manifest to cite native parent response source.");
   assert(approvedToolRequestManifest.contextPolicy.harnessPolicyDigest, "Expected approved live tool manifest to cite continuation harness policy.");
   assert(approvedToolRequestManifest.rawRequestBodyStored === false, "Expected approved live tool manifest not to store raw request body.");
+  assert(!("previous_response_id" in approvedContinuationBody), "Expected approved ChatGPT continuation request not to send previous_response_id.");
+  assert(!approvedContinuationBody.input.some((item) => item.type === "function_call_output"), "Expected approved ChatGPT continuation request not to send function_call_output.");
+  assert(approvedContinuationBody.input[0].content[0].text.includes("read_file_result"), "Expected approved ChatGPT continuation request to quote read_file result evidence.");
   assert(approvedContinuationBody.instructions.includes("You may request at most one additional read_file call"), "Expected approved live tool continuation request to preserve loop-aware continuation instructions.");
   assert(approvedContinuationBody.instructions.includes("Do not request write, shell, network"), "Expected approved live tool continuation request to ban unsupported tools.");
   const approvedObligation = approvedTurn.unresolvedObligations[0];
@@ -2641,9 +2667,11 @@ try {
   assert(patchResponse.response.continuation.ok === true, "Expected approved patch continuation to complete.");
   assert(patchFetchCalls === 2, "Expected patch path to make one initial and one continuation provider request.");
   assert(patchWorkspaceCalls.map((call) => call.mode).join(",") === "dryRun,apply", "Expected patch path to dry-run then apply exactly once.");
-  assert(patchContinuationBody.previous_response_id === "resp_live_patch", "Expected patch continuation to cite parent response id.");
+  assert(!("previous_response_id" in patchContinuationBody), "Expected ChatGPT patch continuation not to send unsupported previous_response_id.");
   assert(patchContinuationBody.store === false, "Expected patch continuation to assert store=false.");
   assert(patchContinuationBody.parallel_tool_calls === false, "Expected patch continuation to disable parallel tool calls.");
+  assert(!patchContinuationBody.input.some((item) => item.type === "function_call_output"), "Expected ChatGPT patch continuation not to send function_call_output.");
+  assert(patchContinuationBody.input[0].content[0].text.includes("apply_patch_result"), "Expected ChatGPT patch continuation to quote patch result evidence.");
   assert(
     patchContinuationBody.instructions.includes("apply_patch result"),
     `Expected patch continuation to send patch-specific harness policy, got: ${patchContinuationBody.instructions}`,
@@ -2657,7 +2685,8 @@ try {
   const patchRequestManifest = patchToolThreadStore.readRequestManifest(patchTurn.requestManifestId);
   assert(patchContextPack.policy.policyId === DIRECT_PATCH_APPLY_CONTINUATION_POLICY_ID, "Expected patch continuation to use patch context policy.");
   assert(patchRequestManifest.enabledFeatures.toolDeclarations === false, "Expected patch manifest to disable tool declarations.");
-  assert(patchRequestManifest.enabledFeatures.toolOutputItem === true, "Expected patch manifest to include one tool output item.");
+  assert(patchRequestManifest.enabledFeatures.toolOutputItem === false, "Expected patch manifest to quote result evidence rather than send provider-native tool output.");
+  assert(patchRequestManifest.continuity.continuityPolicy === "fresh_request_with_quoted_tool_result", "Expected patch manifest to record fresh quoted-result continuity.");
   assert(patchRequestManifest.enabledFeatures.parallelToolCalls === false, "Expected patch manifest to disable parallel tool calls.");
   await patchToolSurface.respond(patchApproval.key, {
     decision: "approve",
@@ -2812,9 +2841,11 @@ try {
   assert(commandResponse.response.continuation.ok === true, "Expected approved command continuation to complete.");
   assert(commandFetchCalls === 2, "Expected command path to make one initial and one continuation provider request.");
   assert(commandWorkspaceCalls.map((call) => call.method).join(",") === "readFile,runDirectCommand", "Expected command path to validate package script then execute exactly once.");
-  assert(commandContinuationBody.previous_response_id === "resp_live_command", "Expected command continuation to cite parent response id.");
+  assert(!("previous_response_id" in commandContinuationBody), "Expected ChatGPT command continuation not to send unsupported previous_response_id.");
   assert(commandContinuationBody.store === false, "Expected command continuation to assert store=false.");
   assert(commandContinuationBody.parallel_tool_calls === false, "Expected command continuation to disable parallel tool calls.");
+  assert(!commandContinuationBody.input.some((item) => item.type === "function_call_output"), "Expected ChatGPT command continuation not to send function_call_output.");
+  assert(commandContinuationBody.input[0].content[0].text.includes("run_command_result"), "Expected ChatGPT command continuation to quote command result evidence.");
   assert(
     commandContinuationBody.instructions.includes("run_command result"),
     `Expected command continuation to send command-specific harness policy, got: ${commandContinuationBody.instructions}`,
@@ -2830,7 +2861,8 @@ try {
   const commandRequestManifest = commandToolThreadStore.readRequestManifest(commandTurn.requestManifestId);
   assert(commandContextPack.policy.policyId === DIRECT_COMMAND_EXECUTION_CONTINUATION_POLICY_ID, "Expected command continuation to use command context policy.");
   assert(commandRequestManifest.enabledFeatures.toolDeclarations === false, "Expected command manifest to disable tool declarations.");
-  assert(commandRequestManifest.enabledFeatures.toolOutputItem === true, "Expected command manifest to include one tool output item.");
+  assert(commandRequestManifest.enabledFeatures.toolOutputItem === false, "Expected command manifest to quote result evidence rather than send provider-native tool output.");
+  assert(commandRequestManifest.continuity.continuityPolicy === "fresh_request_with_quoted_tool_result", "Expected command manifest to record fresh quoted-result continuity.");
   assert(commandRequestManifest.enabledFeatures.parallelToolCalls === false, "Expected command manifest to disable parallel tool calls.");
   await commandToolSurface.respond(commandApproval.key, {
     decision: "approve",
@@ -4255,6 +4287,7 @@ try {
     turnId: persistedToolProbe.turnId,
     obligationId: persistedToolProbe.toolObligations[0].obligationId,
     continuationRequest,
+    continuationTransportMode: "previous_response_id",
     endpoint: "https://chatgpt.com/backend-api/codex/responses",
     credentials: { accessToken: "continuation_probe_access_token_secret_1234567890" },
     profileDoc,
@@ -4273,6 +4306,21 @@ try {
   assert(capturedContinuationRequest.body.input[0].type === "function_call_output", "Expected read-only continuation to send function call output.");
   assert(capturedContinuationRequest.body.input[0].call_id === "call_probe_read", "Expected read-only continuation to pair to the original tool call id.");
   assert(JSON.parse(capturedContinuationRequest.body.input[0].output).textPreview === "fixture read result", "Expected read-only continuation to send recorded tool output envelope.");
+
+  const freshContextContinuationRequest = buildReadOnlyToolContinuationProbeRequest({
+    continuationRequest,
+    continuationTransportMode: "fresh_context",
+    instructions: "fresh continuation instructions",
+    prompt: "[LOCAL TOOL RESULT EVIDENCE - QUOTED]\nfixture read result\n\nContinue.",
+    endpoint: DEFAULT_CODEX_RESPONSES_ENDPOINT,
+    profileDoc,
+    model: "gpt-5.4",
+  });
+  assert(!("previous_response_id" in freshContextContinuationRequest), "Fresh-context continuation must not send previous_response_id.");
+  assert(freshContextContinuationRequest.input[0].content[0].type === "input_text", "Fresh-context continuation must send quoted tool evidence as input text.");
+  assert(freshContextContinuationRequest.input[0].content[0].text.includes("fixture read result"), "Fresh-context continuation prompt must include tool result evidence.");
+  assert(!freshContextContinuationRequest.input.some((item) => item.type === "function_call_output"), "Fresh-context continuation must not send provider-native function_call_output items.");
+  assert(!("metadata" in freshContextContinuationRequest), "Fresh-context continuation must keep local result metadata out of the provider request body.");
   assert(sentContinuation.continuation.originalRequestRetried === false, "Read-only continuation send must not retry the original request.");
   assert(sentContinuation.obligation.status === "continuation_sent", "Expected read-only continuation to persist sent status.");
   assert(sentContinuation.obligation.continuationAllowed === false, "Read-only continuation must not enable automatic further continuation.");
@@ -4386,7 +4434,8 @@ try {
     nowMs: 1_700_000_027_000,
   });
   assert(failedContinuation.ok === false, "Expected failed read-only continuation to report failure.");
-  assert(capturedFailedContinuationRequest.body.previous_response_id === "resp_preserved_from_continuation_source", "Expected read-only continuation to preserve existing previous response id.");
+  assert(!("previous_response_id" in capturedFailedContinuationRequest.body), "Expected default ChatGPT continuation failure path not to send previous_response_id.");
+  assert(capturedFailedContinuationRequest.body.input[0].content[0].text.includes("failed continuation fixture"), "Expected default ChatGPT continuation failure path to quote local result evidence.");
   assert(failedContinuation.obligation.status === "continuation_sent", "Expected failed read-only continuation to record transport handoff.");
   assert(failedContinuation.obligation.continuationSentAt, "Expected failed read-only continuation to record sent timestamp.");
   const failedContinuationSessionAfter = probeSessionStore.readSession(failedContinuationSession.sessionId);

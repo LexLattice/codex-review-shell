@@ -15,6 +15,129 @@ const smokeScript = path.join(__dirname, "direct-codex-smoke.mjs");
 const APP_TITLE = "Codex Review Shell";
 const CONFIG_FILE_NAME = "workspace-config.json";
 const USER_DATA_ROOT_ENV_VAR = "CODEX_REVIEW_SHELL_USER_DATA_ROOT";
+const REAL_USAGE_SCENARIOS = [
+  {
+    scenarioId: "RU-PRE-001",
+    title: "Preflight disposable workspace",
+    runner: "direct-real-usage-regression",
+    mode: "preflight",
+    providerCallExpected: false,
+    proofGoal: "Creates an isolated workspace and proves the live suite can run without provider transport.",
+  },
+  {
+    scenarioId: "RU-LIVE-001",
+    title: "Direct live probe evidence",
+    runner: "direct-real-usage-regression --run-live-probe",
+    mode: "live",
+    providerCallExpected: true,
+    proofGoal: "Records exact-scope direct text evidence before strict direct turns use it.",
+  },
+  {
+    scenarioId: "RU-APP-001",
+    title: "App-server baseline first turn",
+    runner: "direct-real-usage-regression",
+    mode: "live",
+    providerCallExpected: true,
+    proofGoal: "Proves the app-server baseline still answers a simple headless prompt.",
+  },
+  {
+    scenarioId: "RU-DIR-001",
+    title: "Direct empty-context first turn",
+    runner: "direct-real-usage-regression",
+    mode: "live",
+    providerCallExpected: true,
+    proofGoal: "Proves strict direct text can complete a first turn from empty context.",
+  },
+  {
+    scenarioId: "RU-DIR-002",
+    title: "Direct recent-dialogue follow-up",
+    runner: "direct-real-usage-regression",
+    mode: "live",
+    providerCallExpected: true,
+    proofGoal: "Proves direct follow-up uses durable recent-dialogue context without provider continuity.",
+  },
+  {
+    scenarioId: "RU-GUARD-001",
+    title: "Direct live opt-in guard",
+    runner: "direct-real-usage-regression",
+    mode: "live",
+    providerCallExpected: false,
+    proofGoal: "Proves direct live transport refuses to start without explicit opt-in.",
+  },
+  {
+    scenarioId: "RU-IDEM-001",
+    title: "Client run id idempotency",
+    runner: "direct-real-usage-regression",
+    mode: "live",
+    providerCallExpected: false,
+    proofGoal: "Proves repeating an already completed client run id returns the existing report rather than resending.",
+  },
+  {
+    scenarioId: "RU-IMP-001",
+    title: "Implementation lane read_file",
+    runner: "direct-implementation-proof-regression --scenarios=read",
+    mode: "live",
+    providerCallExpected: true,
+    proofGoal: "Proves provider emits read_file, local authority executes it, and continuation completes.",
+  },
+  {
+    scenarioId: "RU-IMP-002",
+    title: "Implementation lane sequential read loop",
+    runner: "direct-implementation-proof-regression --scenarios=read_loop",
+    mode: "live",
+    providerCallExpected: true,
+    proofGoal: "Proves bounded iterative read repair can continue through a second read if requested.",
+  },
+  {
+    scenarioId: "RU-IMP-003",
+    title: "Implementation lane apply_patch",
+    runner: "direct-implementation-proof-regression --scenarios=patch",
+    mode: "live",
+    providerCallExpected: true,
+    proofGoal: "Proves provider patch intent can be planned, applied in a disposable workspace, and summarized.",
+  },
+  {
+    scenarioId: "RU-IMP-004",
+    title: "Implementation lane run_command",
+    runner: "direct-implementation-proof-regression --scenarios=command",
+    mode: "live",
+    providerCallExpected: true,
+    proofGoal: "Proves provider command intent can run through local authority and workspace-effect scan.",
+  },
+  {
+    scenarioId: "RU-NEG-001",
+    title: "Patch delete blocked",
+    runner: "direct-implementation-proof-regression --include-negative-safety",
+    mode: "preflight",
+    providerCallExpected: false,
+    proofGoal: "Proves destructive patch delete remains blocked by local authority.",
+  },
+  {
+    scenarioId: "RU-NEG-002",
+    title: "Network/helper command blocked",
+    runner: "direct-implementation-proof-regression --include-negative-safety",
+    mode: "preflight",
+    providerCallExpected: false,
+    proofGoal: "Proves broad/network command helpers remain blocked by local authority.",
+  },
+  {
+    scenarioId: "RU-PATH-001",
+    title: "Persisted runtime path switch",
+    runner: "direct-runtime-path-switch-regression",
+    mode: "fixture",
+    providerCallExpected: false,
+    proofGoal: "Proves app-server/direct-text/direct-implementation selection is persisted and guarded.",
+  },
+];
+
+const CASE_SCENARIO_IDS = new Map([
+  ["preflight_workspace", "RU-PRE-001"],
+  ["appserver_baseline", "RU-APP-001"],
+  ["direct_strict_first_turn", "RU-DIR-001"],
+  ["direct_strict_followup", "RU-DIR-002"],
+  ["direct_opt_in_guard", "RU-GUARD-001"],
+  ["direct_client_run_id_idempotency", "RU-IDEM-001"],
+]);
 
 function parseArgs(argv) {
   const options = {};
@@ -173,6 +296,7 @@ function caseFromReport(caseId, runtime, reportPath, commandResult, notes = []) 
     : report?.status === "blocked" ? "blocked" : commandResult.exitCode === 0 ? "passed" : "failed";
   return {
     caseId,
+    scenarioId: CASE_SCENARIO_IDS.get(caseId) || "",
     runtime,
     status,
     reportId: report?.artifacts?.reportId || report?.runId || "",
@@ -290,6 +414,7 @@ async function main() {
   if (mode === "preflight") {
     cases.push({
       caseId: "preflight_workspace",
+      scenarioId: CASE_SCENARIO_IDS.get("preflight_workspace"),
       runtime: "local",
       status: fs.existsSync(path.join(workspace, "README.md")) ? "passed" : "failed",
       providerRequestStarted: false,
@@ -345,6 +470,7 @@ async function main() {
     } else {
       cases.push({
         caseId: "direct_strict_followup",
+        scenarioId: CASE_SCENARIO_IDS.get("direct_strict_followup"),
         runtime: "direct",
         status: "skipped",
         providerRequestStarted: false,
@@ -390,6 +516,11 @@ async function main() {
         before === after ? "existing report returned without rewrite" : "report mtime changed",
       ]);
       idemCase.status = before === after && idem.exitCode === 0 ? "passed" : "failed";
+      idemCase.originalReportProviderRequestStarted = idemCase.providerRequestStarted;
+      idemCase.originalReportProviderBytesObserved = idemCase.providerBytesObserved;
+      idemCase.providerRequestStarted = false;
+      idemCase.providerBytesObserved = false;
+      idemCase.requestLifecycle = before === after ? "existing_report_returned" : idemCase.requestLifecycle;
       cases.push(idemCase);
     }
   }
@@ -406,11 +537,12 @@ async function main() {
   }
 
   const futureGaps = [
-    "real_read_file_approval_loop",
-    "real_apply_patch_approval_loop",
-    "real_run_command_approval_loop",
-    "real_command_workspace_effect_scan",
-  ].map((gapId) => ({ gapId, status: "not_covered" }));
+    ["real_read_file_approval_loop", "RU-IMP-001"],
+    ["real_sequential_read_loop", "RU-IMP-002"],
+    ["real_apply_patch_approval_loop", "RU-IMP-003"],
+    ["real_run_command_approval_loop", "RU-IMP-004"],
+    ["real_command_workspace_effect_scan", "RU-IMP-004"],
+  ].map(([gapId, scenarioId]) => ({ gapId, scenarioId, status: "not_covered_by_direct_real_usage_runner" }));
 
   const linkedReportPaths = cases.map((item) => item._reportPath).filter(Boolean);
   const publicCases = cases.map(({ _reportPath, ...item }) => item);
@@ -423,6 +555,7 @@ async function main() {
     mode,
     liveProviderCallOptIn,
     liveProbe,
+    scenarioMatrix: REAL_USAGE_SCENARIOS,
     cases: publicCases,
     rawExposureScan: {
       scanned: true,
@@ -475,7 +608,10 @@ async function main() {
 
 function markdownSummary(report) {
   const rows = report.cases.map((item) =>
-    `| ${item.caseId} | ${item.runtime} | ${item.status} | ${item.requestLifecycle || ""} | ${item.failureCode || ""} |`,
+    `| ${item.scenarioId || ""} | ${item.caseId} | ${item.runtime} | ${item.status} | ${item.requestLifecycle || ""} | ${item.failureCode || ""} |`,
+  ).join("\n");
+  const matrixRows = report.scenarioMatrix.map((item) =>
+    `| ${item.scenarioId} | ${item.title} | ${item.mode} | ${item.providerCallExpected} | ${item.runner} |`,
   ).join("\n");
   return `# Direct Real Usage Regression ${report.runId}
 
@@ -484,8 +620,16 @@ function markdownSummary(report) {
 - Commit: \`${report.commit}\`
 - Fixture smoke: \`${report.fixtureSmoke.status}\` (${report.fixtureSmoke.coverageClass})
 
-| Case | Runtime | Status | Lifecycle | Failure |
+## Scenario Matrix
+
+| Scenario | Title | Mode | Provider Call | Runner |
 | --- | --- | --- | --- | --- |
+${matrixRows}
+
+## Results
+
+| Scenario | Case | Runtime | Status | Lifecycle | Failure |
+| --- | --- | --- | --- | --- | --- |
 ${rows}
 
 Future implementation-lane real-provider gaps remain not covered:

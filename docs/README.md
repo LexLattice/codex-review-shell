@@ -23,6 +23,7 @@
 - [Direct Fork Preview Start Spec](./DIRECT_FORK_PREVIEW_START_SPEC.md)
 - [Direct Derived Preview Fork Start Spec](./DIRECT_DERIVED_PREVIEW_FORK_START_SPEC.md)
 - [Direct Headless Runtime Parity Harness Spec](./DIRECT_HEADLESS_RUNTIME_PARITY_HARNESS_SPEC.md)
+- [Direct Real Usage Test Matrix](./DIRECT_REAL_USAGE_TEST_MATRIX.md)
 - [Direct Text-Only Runtime Tier And Toggle Spec](./DIRECT_TEXT_ONLY_RUNTIME_TIER_AND_TOGGLE_SPEC.md)
 - [Direct Text-Only Multi-Turn Recent Dialogue Spec](./DIRECT_TEXT_ONLY_MULTITURN_RECENT_DIALOGUE_SPEC.md)
 - [Direct Implementation-Lane Read-Only Tool UI Spec](./DIRECT_IMPLEMENTATION_LANE_READONLY_TOOL_UI_SPEC.md)

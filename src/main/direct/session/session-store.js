@@ -107,7 +107,7 @@ function normalizeTurnState(value, fallback = "created") {
 }
 
 function toolObligationKey(event = {}) {
-  return normalizeString(event.callId || event.itemId || event.name || `sequence_${event.sequence}`, "unknown_tool_call");
+  return normalizeString(event.itemId || event.callId || event.name || `sequence_${event.sequence}`, "unknown_tool_call");
 }
 
 function toolObligationId(sessionId, turnId, key) {

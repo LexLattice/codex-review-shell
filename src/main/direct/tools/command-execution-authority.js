@@ -77,9 +77,12 @@ function stableStringify(value) {
 function safeRelPath(value) {
   const text = normalizeString(value, "");
   if (!text || text === ".") return "";
-  const normalized = text.replace(/\\/g, "/").replace(/^\/+/, "").split("/").filter(Boolean).join("/");
+  const slashNormalized = text.replace(/\\/g, "/");
+  if (slashNormalized === "/workspace" || slashNormalized === "/workspace/") return "";
+  const normalized = slashNormalized.split("/").filter(Boolean).join("/");
   if (
     /^[A-Za-z]:/.test(text) ||
+    slashNormalized.startsWith("/") ||
     text.startsWith("//") ||
     normalized.split("/").includes("..") ||
     /[\0\r\n]/.test(text)

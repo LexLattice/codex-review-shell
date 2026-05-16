@@ -20,6 +20,8 @@ const {
 const DIRECT_TEXT_PROBE_RESULT_SCHEMA = "direct_codex_text_probe_result@1";
 const DIRECT_TOOL_CONTINUATION_RESULT_SCHEMA = "direct_codex_tool_continuation_result@1";
 const DEFAULT_CODEX_RESPONSES_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
+const CONTINUATION_TRANSPORT_FRESH_CONTEXT = "fresh_context";
+const CONTINUATION_TRANSPORT_PREVIOUS_RESPONSE_ID = "previous_response_id";
 const DEFAULT_TEXT_PROBE_PROMPT = "Reply with exactly: direct text probe ok";
 const DEFAULT_TEXT_PROBE_INSTRUCTIONS = "You are Codex running a text-only direct transport probe. Do not request tools.";
 const DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS = [
@@ -43,6 +45,17 @@ function isPlainObject(value) {
 
 function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function continuationTransportMode(options = {}) {
+  const explicit = normalizeString(options.continuationTransportMode, "");
+  if ([CONTINUATION_TRANSPORT_FRESH_CONTEXT, CONTINUATION_TRANSPORT_PREVIOUS_RESPONSE_ID].includes(explicit)) {
+    return explicit;
+  }
+  const endpoint = normalizeString(options.endpoint, DEFAULT_CODEX_RESPONSES_ENDPOINT);
+  return endpoint.includes("/backend-api/codex/responses")
+    ? CONTINUATION_TRANSPORT_FRESH_CONTEXT
+    : CONTINUATION_TRANSPORT_PREVIOUS_RESPONSE_ID;
 }
 
 function nowIso(nowMs = Date.now()) {
@@ -156,6 +169,57 @@ function buildReadOnlyToolContinuationProbeRequest(options = {}) {
     error.code = "unsupported_tool_output_type";
     throw error;
   }
+  const mode = continuationTransportMode(options);
+  const instructions = normalizeString(
+    options.instructions,
+    options.allowSequentialImplementationRepairLoop === true
+      ? DEFAULT_REPAIR_LOOP_CONTINUATION_INSTRUCTIONS
+      : DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS,
+  );
+  if (mode === CONTINUATION_TRANSPORT_FRESH_CONTEXT) {
+    const prompt = normalizeString(
+      options.prompt || options.contextPrompt,
+      outputText
+        ? [
+            "[LOCAL TOOL RESULT EVIDENCE - QUOTED]",
+            outputText,
+            "",
+            "Continue the parent response using the quoted local tool result evidence.",
+          ].join("\n")
+        : "",
+    );
+    if (!prompt) {
+      const error = new Error("Fresh-context tool continuation requires a provider input prompt or tool output evidence.");
+      error.code = "continuation_missing_context_prompt";
+      throw error;
+    }
+    const requestBody = {
+      model: normalizeString(options.model, modelFromProfile(options.profileDoc)),
+      stream: true,
+      store: false,
+      parallel_tool_calls: false,
+      instructions,
+      input: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: prompt,
+            },
+          ],
+        },
+      ],
+    };
+    const continuationTools = Array.isArray(options.continuationTools)
+      ? options.continuationTools.filter(Boolean)
+      : [];
+    if (continuationTools.length) {
+      requestBody.tools = continuationTools;
+      requestBody.tool_choice = "auto";
+    }
+    return requestBody;
+  }
   const previousResponseId = normalizeString(
     options.previousResponseId ||
     continuationRequest.source?.previousResponseId ||
@@ -172,12 +236,7 @@ function buildReadOnlyToolContinuationProbeRequest(options = {}) {
     stream: true,
     store: false,
     parallel_tool_calls: false,
-    instructions: normalizeString(
-      options.instructions,
-      options.allowSequentialImplementationRepairLoop === true
-        ? DEFAULT_REPAIR_LOOP_CONTINUATION_INSTRUCTIONS
-        : DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS,
-    ),
+    instructions,
     input: [
       {
         type: outputType,
@@ -724,6 +783,7 @@ async function runPersistedReadOnlyToolContinuation(options = {}) {
     ...options,
     continuationRequest: effectiveContinuationRequest,
   });
+  const effectiveContinuationTransportMode = continuationTransportMode(options);
   sessionStore.updateTurnState(options.sessionId, options.turnId, "request_built", {
     continuationRequestBuiltAt: nowIso(options.nowMs),
     continuationRequestShape: {
@@ -732,6 +792,7 @@ async function runPersistedReadOnlyToolContinuation(options = {}) {
       requestManifestId: normalizeString(effectiveContinuationRequest.source?.requestManifestId, ""),
       store: false,
       previousResponseIdUsed: Boolean(requestBody.previous_response_id),
+      continuationTransportMode: effectiveContinuationTransportMode,
       rawRequestBodyStored: false,
       repairLoopEnabled,
       repairLoopId: normalizeString(effectiveContinuationRequest.repairLoop?.loopId, ""),

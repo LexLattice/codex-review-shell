@@ -300,7 +300,7 @@ function createDisposableWorkspace(root) {
   ensureDirectory(path.join(workspace, "src"));
   ensureDirectory(path.join(workspace, "test"));
   writeTextFile(path.join(workspace, "README.md"), "# Direct implementation proof fixture\n\nDisposable workspace.\n");
-  writeTextFile(path.join(workspace, "src", "alpha.txt"), "alpha one\nalpha two\n");
+  writeTextFile(path.join(workspace, "src", "alpha.txt"), "alpha one\nalpha two\nalpha three\n");
   writeTextFile(path.join(workspace, "src", "beta.txt"), "beta one\nbeta two\n");
   writeTextFile(path.join(workspace, ".env"), "SECRET_VALUE=do-not-read\n");
   writeTextFile(path.join(workspace, "test", "fixture.test.js"), "console.log('fixture test ok')\n");
@@ -399,15 +399,23 @@ function parseSimpleUnifiedPatch(patchText) {
   const files = [];
   let index = 0;
   while (index < lines.length) {
-    if (!lines[index].startsWith("diff --git ")) {
+    let parsedHeader = null;
+    let operation = "update";
+    if (lines[index].startsWith("diff --git ")) {
+      parsedHeader = parseDiffGitHeader(lines[index]);
+      if (!parsedHeader) {
+        const error = new Error("Unsupported patch dialect.");
+        error.code = "unsupported_patch_dialect";
+        throw error;
+      }
+      index += 1;
+    } else if (lines[index].startsWith("--- ") && lines[index + 1]?.startsWith("+++ ")) {
+      parsedHeader = parseUnifiedFileHeader(lines[index], lines[index + 1]);
+      operation = parsedHeader.operation;
+      index += 2;
+    } else {
       index += 1;
       continue;
-    }
-    const parsedHeader = parseDiffGitHeader(lines[index]);
-    if (!parsedHeader) {
-      const error = new Error("Unsupported patch dialect.");
-      error.code = "unsupported_patch_dialect";
-      throw error;
     }
     const oldPath = normalizeRelPath(parsedHeader.oldPath);
     const newPath = normalizeRelPath(parsedHeader.newPath);
@@ -416,10 +424,10 @@ function parseSimpleUnifiedPatch(patchText) {
       error.code = "unsupported_patch_dialect";
       throw error;
     }
-    const file = { relPath: newPath, operation: "update", hunks: [] };
-    index += 1;
+    const file = { relPath: newPath, operation, hunks: [] };
     while (index < lines.length && !lines[index].startsWith("diff --git ")) {
       const line = lines[index];
+      if (line.startsWith("--- ") && lines[index + 1]?.startsWith("+++ ") && file.hunks.length) break;
       if (line.startsWith("deleted file mode") || line === "+++ /dev/null") {
         const error = new Error("Patch delete is deferred in v0.");
         error.code = "patch_delete_deferred";
@@ -453,12 +461,39 @@ function parseSimpleUnifiedPatch(patchText) {
     }
     files.push(file);
   }
-  if (!files.length) {
+  if (!files.some((file) => file.hunks.length)) {
     const error = new Error("Patch contains no supported file hunks.");
     error.code = "unsupported_patch_dialect";
     throw error;
   }
   return files;
+}
+
+function normalizeUnifiedHeaderPath(value) {
+  const text = String(value || "").trim();
+  if (text === "/dev/null") return text;
+  if (text.startsWith("a/") || text.startsWith("b/")) return text.slice(2);
+  return text;
+}
+
+function parseUnifiedFileHeader(oldLine, newLine) {
+  const oldPath = normalizeUnifiedHeaderPath(oldLine.slice(4));
+  const newPath = normalizeUnifiedHeaderPath(newLine.slice(4));
+  if (newPath === "/dev/null") {
+    const error = new Error("Patch delete is deferred in v0.");
+    error.code = "patch_delete_deferred";
+    throw error;
+  }
+  if (!oldPath || !newPath || oldPath.includes("\t") || newPath.includes("\t")) {
+    const error = new Error("Unsupported patch dialect.");
+    error.code = "unsupported_patch_dialect";
+    throw error;
+  }
+  return {
+    oldPath: oldPath === "/dev/null" ? newPath : oldPath,
+    newPath,
+    operation: oldPath === "/dev/null" ? "create" : "update",
+  };
 }
 
 function parseDiffGitHeader(line) {
@@ -899,6 +934,17 @@ function continuationShapeFor(kind, continuationRequest, extra = {}) {
   };
 }
 
+function freshContextContinuationShape(extra = {}) {
+  return {
+    continuationTransportMode: "fresh_context",
+    hasPreviousResponseId: false,
+    toolOutputItem: false,
+    functionCallOutputCount: 0,
+    customToolCallOutputCount: 0,
+    ...extra,
+  };
+}
+
 async function continueObligation({ scenario, sessionStore, threadStore, workspaceRequest, sessionId, turnId, obligationId, project, endpoint, authStore, authLogin, profileDoc, model, evidenceId, allowSequentialReadOnlyToolLoop }) {
   const turn = sessionStore.readTurn(sessionId, turnId);
   const obligation = sessionStore.findToolObligation(sessionId, turnId, obligationId).obligation;
@@ -928,10 +974,10 @@ async function continueObligation({ scenario, sessionStore, threadStore, workspa
       },
     };
     requestShapeEvidenceRef = "direct_patch_apply_continuation@1";
-    continuationShape = continuationShapeFor("patch_apply_continuation", continuationRequest, {
+    continuationShape = continuationShapeFor("patch_apply_continuation", continuationRequest, freshContextContinuationShape({
       requestShapeClass: requestShapeEvidenceRef,
       patchResultId: normalizeString(executed.result?.resultId, ""),
-    });
+    }));
   } else if (scenario === "command") {
     await planCommandExecutionObligation({ sessionStore, sessionId, turnId, obligationId, workspaceRequest });
     approveCommandExecutionObligation({ sessionStore, sessionId, turnId, obligationId, approvedBy: "headless-proof" });
@@ -951,10 +997,10 @@ async function continueObligation({ scenario, sessionStore, threadStore, workspa
       },
     };
     requestShapeEvidenceRef = "direct_command_execution_continuation@1";
-    continuationShape = continuationShapeFor("command_execution_continuation", continuationRequest, {
+    continuationShape = continuationShapeFor("command_execution_continuation", continuationRequest, freshContextContinuationShape({
       requestShapeClass: requestShapeEvidenceRef,
       commandResultId: normalizeString(executed.result?.resultId, ""),
-    });
+    }));
   } else {
     approveReadOnlyToolObligation({ sessionStore, sessionId, turnId, obligationId, approvedBy: "headless-proof" });
     const executed = await executeApprovedReadOnlyToolObligation({ sessionStore, sessionId, turnId, obligationId, workspaceRequest });
@@ -987,12 +1033,12 @@ async function continueObligation({ scenario, sessionStore, threadStore, workspa
       },
     };
     requestShapeEvidenceRef = stepOrdinal > 1 ? "direct_readonly_tool_loop_continuation@1" : "direct_readonly_tool_continuation@1";
-    continuationShape = continuationShapeFor("read_only_tool_continuation", continuationRequest, {
+    continuationShape = continuationShapeFor("read_only_tool_continuation", continuationRequest, freshContextContinuationShape({
       requestShapeClass: requestShapeEvidenceRef,
       toolLoopId,
       stepId,
       stepOrdinal,
-    });
+    }));
   }
 
   const context = await buildContinuationContext({
@@ -1030,11 +1076,14 @@ async function continueObligation({ scenario, sessionStore, threadStore, workspa
     continuationRequest,
     previousResponseId: parentResponseId,
     instructions: normalizeString(context.providerInput?.instructions, ""),
+    prompt: normalizeString(context.providerInput?.prompt, ""),
+    continuationTransportMode: "fresh_context",
     endpoint,
     authStore,
     refreshCredentials: () => authLogin.refreshCredentials({ activeStore: () => authStore }),
     profileDoc,
     model,
+    continuationTools: allowSequentialReadOnlyToolLoop ? directToolSchemas("read_file") : [],
     allowSequentialReadOnlyToolLoop,
   });
   return { localResult, continuation, continuationContext: context };
@@ -1347,6 +1396,31 @@ async function runLocalPreflightCases(workspaceRequest) {
     patchOffset.failureCode = normalizeString(error?.code, "patch_offset_preflight_failed");
   }
   cases.push(patchOffset);
+  const patchHeaderOnly = baseCaseReport("preflight_patch_header_only_hunk", "patch", "local_preflight");
+  try {
+    const planned = await workspaceRequest("applyPatch", {
+      mode: "dryRun",
+      patch: [
+        "--- a/src/alpha.txt",
+        "+++ b/src/alpha.txt",
+        "@@ -1,3 +1,3 @@",
+        " alpha one",
+        "-alpha two",
+        "+alpha two patched",
+        " alpha three",
+        "",
+      ].join("\n"),
+    });
+    patchHeaderOnly.status = planned.files?.[0]?.afterDigest ? "blocked" : "failed";
+    patchHeaderOnly.proofOutcome = "provider_tool_not_emitted";
+    patchHeaderOnly.failureCode = patchHeaderOnly.status === "blocked" ? "live_provider_not_requested" : "patch_header_only_preflight_failed";
+    patchHeaderOnly.notes.push("Local preflight proved header-only unified hunks can dry-run without provider transport.");
+  } catch (error) {
+    patchHeaderOnly.status = "failed";
+    patchHeaderOnly.proofOutcome = "local_authority_failed";
+    patchHeaderOnly.failureCode = normalizeString(error?.code, "patch_header_only_preflight_failed");
+  }
+  cases.push(patchHeaderOnly);
   return cases;
 }
 

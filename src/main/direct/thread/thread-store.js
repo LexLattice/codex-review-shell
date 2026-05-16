@@ -2427,6 +2427,9 @@ class DirectThreadStore {
       functionCallOutputCount: continuationRequest.toolResult?.outputType === "function_call_output" ? 1 : 0,
       customToolCallOutputCount: continuationRequest.toolResult?.outputType === "custom_tool_call_output" ? 1 : 0,
     };
+    const usesPreviousResponseId = requestShape.hasPreviousResponseId === true;
+    const toolOutputItemCount = Number(requestShape.functionCallOutputCount || 0) + Number(requestShape.customToolCallOutputCount || 0);
+    const usesToolOutputItem = requestShape.toolOutputItem === true || toolOutputItemCount > 0;
     const request = buildRequestManifest({
       contextPack,
       model: input.model,
@@ -2446,16 +2449,18 @@ class DirectThreadStore {
         store: false,
         tools: false,
         toolDeclarations: false,
-        toolOutputItem: true,
-        previousResponseId: true,
+        toolOutputItem: usesToolOutputItem,
+        previousResponseId: usesPreviousResponseId,
         includes: false,
         parallelToolCalls: false,
       },
       continuity: {
-        previousResponseIdUsed: true,
-        providerContinuityHandleUsed: true,
+        previousResponseIdUsed: usesPreviousResponseId,
+        providerContinuityHandleUsed: usesPreviousResponseId,
         importedContinuityHandleUsed: false,
-        continuityPolicy: "native_parent_turn_previous_response_id",
+        continuityPolicy: usesPreviousResponseId
+          ? "native_parent_turn_previous_response_id"
+          : "fresh_request_with_quoted_tool_result",
         previousResponseIdSource: normalizeString(continuationRequest.source?.previousResponseIdSource, "native_direct_initial_stream"),
         previousResponseIdDigest: sha256(previousResponseId),
         previousResponseSourceTurnDigest: sha256(stableStringify({
