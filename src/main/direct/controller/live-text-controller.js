@@ -257,6 +257,38 @@ function commandExecutionContinuationEvidenceFor(profileDoc = {}) {
   };
 }
 
+function capabilityStatusFromProof(proof = {}, capabilityId = "") {
+  const rows = Array.isArray(proof.requiredCapabilities) ? proof.requiredCapabilities : [];
+  return rows.find((row) => row?.capabilityId === capabilityId) || null;
+}
+
+function proofCapabilityReady(proof = {}, capabilityId = "") {
+  const row = capabilityStatusFromProof(proof, capabilityId);
+  return row?.status === "ready" && row?.evidenceState === "runtime_probed";
+}
+
+function mergeScopedProofWithProfileEvidence(profileEvidence = {}, proof = {}, capabilityId = "", missingReason = "") {
+  if (profileEvidence.status !== "ready") return profileEvidence;
+  const row = capabilityStatusFromProof(proof, capabilityId);
+  if (row?.status === "ready" && row?.evidenceState === "runtime_probed") {
+    return {
+      ...profileEvidence,
+      evidenceState: "runtime_probed",
+      scopedProofEvidenceId: normalizeString(row.evidenceId, ""),
+      scopedProofSourceCaseId: normalizeString(row.sourceCaseId, ""),
+      scopedProofCapabilityId: capabilityId,
+    };
+  }
+  return {
+    ...profileEvidence,
+    accepted: false,
+    status: row?.status === "expired" ? "evidence_expired" : "proof_required",
+    evidenceState: row?.evidenceState || "missing",
+    scopedProofCapabilityId: capabilityId,
+    reason: normalizeString(row?.reason, "") || missingReason,
+  };
+}
+
 function sanitizeStatus(status = {}) {
   return {
     status: normalizeString(status.status, "unauthenticated"),
@@ -413,6 +445,7 @@ class DirectLiveTextController {
     this.directThreadStore = options.directThreadStore || options.threadStore || null;
     this.refreshCredentials = typeof options.refreshCredentials === "function" ? options.refreshCredentials : null;
     this.modelEvidenceResolver = typeof options.modelEvidenceResolver === "function" ? options.modelEvidenceResolver : null;
+    this.implementationProofEvidenceResolver = typeof options.implementationProofEvidenceResolver === "function" ? options.implementationProofEvidenceResolver : null;
     this.activationStatusResolver = typeof options.activationStatusResolver === "function" ? options.activationStatusResolver : null;
     this.fetchImpl = typeof options.fetchImpl === "function" ? options.fetchImpl : null;
     this.workspaceRequest = typeof options.workspaceRequest === "function" ? options.workspaceRequest : null;
@@ -489,6 +522,43 @@ class DirectLiveTextController {
     }
   }
 
+  resolveImplementationProofEvidence(project = {}, requestedModel = "") {
+    if (!this.implementationProofEvidenceResolver) {
+      return {
+        status: "missing",
+        evidenceState: "missing",
+        canSelectImplementationLane: false,
+        requiredCapabilities: [],
+        missingCapabilityIds: ["read_file", "read_file_loop", "apply_patch", "run_command"],
+        rawProviderPayloadIncluded: false,
+        rawToolArgsIncluded: false,
+        rawWorkspacePathIncluded: false,
+        rawAccountIncluded: false,
+      };
+    }
+    try {
+      return this.implementationProofEvidenceResolver({
+        project,
+        model: requestedModel,
+        endpoint: this.endpoint,
+        authStatus: this.authStatus(),
+        credentials: this.currentAuthCredentials(),
+      }) || null;
+    } catch {
+      return {
+        status: "error",
+        evidenceState: "unknown",
+        canSelectImplementationLane: false,
+        requiredCapabilities: [],
+        missingCapabilityIds: ["read_file", "read_file_loop", "apply_patch", "run_command"],
+        rawProviderPayloadIncluded: false,
+        rawToolArgsIncluded: false,
+        rawWorkspacePathIncluded: false,
+        rawAccountIncluded: false,
+      };
+    }
+  }
+
   modelEvidenceForProject(project = {}) {
     const requestedModel = this.requestedModelForProject(project);
     const staticEvidence = modelEvidenceFor(this.profileDoc, requestedModel);
@@ -505,9 +575,25 @@ class DirectLiveTextController {
   statusForProject(project = {}) {
     const auth = this.authStatus();
     const evidence = this.modelEvidenceForProject(project);
-    const readOnlyToolContinuation = readOnlyContinuationEvidenceFor(this.profileDoc);
-    const patchApplyContinuation = patchApplyContinuationEvidenceFor(this.profileDoc);
-    const commandExecutionContinuation = commandExecutionContinuationEvidenceFor(this.profileDoc);
+    const implementationLaneProof = this.resolveImplementationProofEvidence(project, evidence.model);
+    const readOnlyToolContinuation = mergeScopedProofWithProfileEvidence(
+      readOnlyContinuationEvidenceFor(this.profileDoc),
+      implementationLaneProof,
+      "read_file",
+      "scoped_read_file_proof_required",
+    );
+    const patchApplyContinuation = mergeScopedProofWithProfileEvidence(
+      patchApplyContinuationEvidenceFor(this.profileDoc),
+      implementationLaneProof,
+      "apply_patch",
+      "scoped_patch_apply_proof_required",
+    );
+    const commandExecutionContinuation = mergeScopedProofWithProfileEvidence(
+      commandExecutionContinuationEvidenceFor(this.profileDoc),
+      implementationLaneProof,
+      "run_command",
+      "scoped_command_execution_proof_required",
+    );
     let status = "ready";
     let reason = "";
     if (auth.status !== "authenticated") {
@@ -537,6 +623,10 @@ class DirectLiveTextController {
       readOnlyToolContinuation,
       patchApplyContinuation,
       commandExecutionContinuation,
+      implementationLaneProof: {
+        ...(implementationLaneProof || {}),
+        readLoopReady: proofCapabilityReady(implementationLaneProof, "read_file_loop"),
+      },
     };
   }
 

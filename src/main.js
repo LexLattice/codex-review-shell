@@ -32,6 +32,10 @@ const { DirectThreadStore } = require("./main/direct/thread/thread-store");
 const { DirectThreadWorkbenchController } = require("./main/direct/thread/thread-workbench-controller");
 const { DirectImportController } = require("./main/direct/import/import-controller");
 const {
+  DIRECT_IMPLEMENTATION_PROOF_RUNS_ROOT_NAME,
+  DirectImplementationProofEvidenceStore,
+} = require("./main/direct/probes/implementation-proof-evidence-store");
+const {
   DIRECT_LIVE_PROBE_EVIDENCE_ROOT_NAME,
   DirectLiveProbeEvidenceStore,
 } = require("./main/direct/probes/live-probe-evidence-store");
@@ -211,6 +215,7 @@ let directThreadStore = null;
 let directThreadWorkbenchController = null;
 let directImportController = null;
 let directLiveProbeEvidenceStore = null;
+let directImplementationProofEvidenceStore = null;
 let directFixtureController = null;
 let directLiveTextController = null;
 let directActivationStore = null;
@@ -283,6 +288,10 @@ function directSessionRootDir() {
 
 function directLiveProbeEvidenceRootDir() {
   return path.join(app.getPath("userData"), DIRECT_LIVE_PROBE_EVIDENCE_ROOT_NAME);
+}
+
+function directImplementationProofRunsRootDir() {
+  return path.join(app.getPath("userData"), DIRECT_IMPLEMENTATION_PROOF_RUNS_ROOT_NAME);
 }
 
 function tempFilePath(targetPath) {
@@ -1799,6 +1808,14 @@ function ensureDirectLiveProbeEvidenceStore() {
   return directLiveProbeEvidenceStore;
 }
 
+function ensureDirectImplementationProofEvidenceStore() {
+  if (directImplementationProofEvidenceStore) return directImplementationProofEvidenceStore;
+  directImplementationProofEvidenceStore = new DirectImplementationProofEvidenceStore({
+    rootDir: directImplementationProofRunsRootDir(),
+  });
+  return directImplementationProofEvidenceStore;
+}
+
 function ensureDirectFixtureController() {
   if (directFixtureController) return directFixtureController;
   directFixtureController = new DirectFixtureController({
@@ -1817,6 +1834,7 @@ function ensureDirectLiveTextController() {
     authStore: () => directRuntimeAuthStore(),
     refreshCredentials: () => refreshDirectRuntimeCredentials(),
     modelEvidenceResolver: (context) => ensureDirectLiveProbeEvidenceStore().resolveModelEvidence(context),
+    implementationProofEvidenceResolver: (context) => ensureDirectImplementationProofEvidenceStore().resolveScopedProofEvidence(context),
     activationStatusResolver: (project) => directActivationEvaluationForProject(project).status,
     workspaceRequest: (project, method, params, timeoutMs) => requestWorkspace(project, method, params, timeoutMs),
   });
@@ -4387,6 +4405,7 @@ async function createWindow() {
     directFixtureController = null;
     directLiveTextController = null;
     directLiveProbeEvidenceStore = null;
+    directImplementationProofEvidenceStore = null;
     directActivationStore = null;
     directThreadWorkbenchController = null;
     directThreadStore?.close();
@@ -5166,6 +5185,7 @@ app.on("before-quit", () => {
   directFixtureController = null;
   directLiveTextController = null;
   directLiveProbeEvidenceStore = null;
+  directImplementationProofEvidenceStore = null;
   directActivationStore = null;
   directThreadWorkbenchController = null;
   directThreadStore?.close();
