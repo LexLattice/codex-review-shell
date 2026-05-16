@@ -266,6 +266,8 @@ function sanitizeStatus(status = {}) {
     hasAccessToken: Boolean(status.hasAccessToken),
     hasRefreshToken: Boolean(status.hasRefreshToken),
     storageMode: normalizeString(status.storageMode, ""),
+    source: normalizeString(status.source, ""),
+    authSource: normalizeString(status.authSource || status.source, ""),
     rawTokensExposed: false,
   };
 }
