@@ -138,6 +138,33 @@ function fixtureRuntimeStatus() {
         confidence: "exact",
       },
     },
+    directContextMaintenance: {
+      pressureState: "approaching_budget",
+      routeKind: "estimate_only",
+      routeClass: "diagnostic",
+      routeReasonCode: "approaching_budget_estimate_only",
+      memoryState: "current_valid",
+      memoryPointerState: "current_valid",
+      batonState: "present",
+      batonRequirement: "optional",
+      omissionState: "represented",
+      providerCompactState: "live_gated",
+      providerCompactionEvidenceState: "missing",
+      appServerSibling: {
+        sourceClass: "vanilla_app_server_sibling",
+        contextCompaction: [{ itemId: "context_compaction_fixture", rawTextIncluded: false }],
+        memoryCitations: [{ itemId: "memory_citation_fixture", rawTextIncluded: false }],
+        memoryControls: [
+          { method: "thread/memoryMode/set", evidenceKey: "memory_mode_fixture", rawPayloadIncluded: false },
+          { method: "memory/reset", evidenceKey: "memory_reset_fixture", rawPayloadIncluded: false },
+        ],
+        compactControls: [
+          { method: "thread/compact/start", evidenceKey: "compact_control_fixture", rawPayloadIncluded: false },
+        ],
+      },
+      warnings: ["manual_compact_unavailable"],
+      evidenceKeys: ["context_pressure_fixture", "vanilla_sibling_context_fixture"],
+    },
   };
 }
 
@@ -220,6 +247,16 @@ function buildReport() {
   assert(policy.editable === false && policy.privateConfigIncluded === false, "Policy view must be read-only and private-config-free.");
   assert(history.rows.every((row) => row.actionability?.actionable === false), "Operation history rows must be read-only.");
   assert(uiStatus.witnesses.some((entry) => entry.kind === "handoff-boundary" && entry.handoff?.handoffStateUsedForReadiness === false), "Handoff witness must stay non-authoritative.");
+  assert(uiStatus.contextMaintenance?.displayOnly === true, "Context maintenance UI must be display-only.");
+  assert(uiStatus.contextMaintenance?.actionability?.actionable === false, "Context maintenance status must not expose actions.");
+  assert(uiStatus.contextMaintenance?.compactActionAllowed === false, "Context maintenance must not expose compact execution.");
+  assert(uiStatus.contextMaintenance?.memoryEditorAllowed === false, "Context maintenance must not expose memory editing.");
+  assert(uiStatus.contextMaintenance?.memoryResetAllowed === false, "Context maintenance must not expose memory reset.");
+  assert(uiStatus.contextMaintenance?.maintenanceExecutionAllowed === false, "Context maintenance status must not execute maintenance.");
+  assert(uiStatus.contextMaintenance?.providerCompact?.providerTransportAllowed === false, "Provider compact must remain transport-disabled.");
+  assert(uiStatus.contextMaintenance?.providerCompact?.promotionCandidate === false, "Provider compact must not be promoted by UI evidence.");
+  assert(uiStatus.contextMaintenance?.appServerSibling?.directArtifactPromotionAllowed === false, "Vanilla sibling evidence must not promote Direct artifacts.");
+  assert(uiStatus.contextMaintenance?.appServerSibling?.contextCompactionObserved === true, "Vanilla sibling context compaction should be visible as evidence.");
 
   return {
     schema: DIRECT_UI_PARITY_REPORT_SCHEMA,
@@ -237,6 +274,11 @@ function buildReport() {
       witnessCount: uiStatus.witnesses.length,
       policyEditable: policy.editable,
       operationHistoryActionableRows: history.rows.filter((row) => row.actionability?.actionable).length,
+      contextMaintenanceDisplayOnly: uiStatus.contextMaintenance.displayOnly,
+      contextMaintenanceActionable: uiStatus.contextMaintenance.actionability.actionable,
+      contextMaintenanceCompactActionAllowed: uiStatus.contextMaintenance.compactActionAllowed,
+      contextMaintenanceProviderTransportAllowed: uiStatus.contextMaintenance.providerCompact.providerTransportAllowed,
+      contextMaintenanceVanillaSiblingObserved: uiStatus.contextMaintenance.appServerSibling.contextCompactionObserved,
     },
     sentinelCounters: {
       providerTransportCalls: 0,

@@ -65,6 +65,9 @@ const {
   projectOperationHistoryPage,
 } = require("./main/direct/ui/implementation-lane-ui");
 const {
+  buildVanillaSiblingContextEvidence,
+} = require("./main/direct/context/maintenance");
+const {
   DirectExperimentalActivationStore,
   activeDirectTurnCountForProject,
   activationProjectBindingDigest,
@@ -209,9 +212,38 @@ const nativePlaneZoomFactors = {
 const lastSuccessfulCodexThreadByProject = new Map();
 const latestCodexOpenTargetByProject = new Map();
 const latestCodexThreadFailureByProject = new Map();
+const latestContextManagementEvidenceByProject = new Map();
+const contextManagementObservationsByProject = new Map();
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function stableDigestValue(value, seen = new WeakSet()) {
+  if (typeof value === "bigint") return `bigint:${value.toString()}`;
+  if (Array.isArray(value)) {
+    if (seen.has(value)) return "[Circular]";
+    seen.add(value);
+    return value.map((item) => stableDigestValue(item, seen));
+  }
+  if (value && typeof value === "object") {
+    if (seen.has(value)) return "[Circular]";
+    seen.add(value);
+    const output = {};
+    for (const key of Object.keys(value).sort()) {
+      if (value[key] !== undefined) output[key] = stableDigestValue(value[key], seen);
+    }
+    return output;
+  }
+  return value;
+}
+
+function stableDigest(value) {
+  try {
+    return crypto.createHash("sha256").update(JSON.stringify(stableDigestValue(value))).digest("hex");
+  } catch {
+    return crypto.createHash("sha256").update(String(value || "")).digest("hex");
+  }
 }
 
 function newId(prefix) {
@@ -1784,6 +1816,201 @@ function currentLegacyAppServerSnapshot() {
   return codexAppServer?.snapshot?.() || null;
 }
 
+function latestDirectSessionForProject(sessionStore, projectId) {
+  try {
+    const index = sessionStore?.ensure?.() || sessionStore?.readIndex?.() || {};
+    const sessions = Array.isArray(index.sessions) ? index.sessions : [];
+    return sessions.find((session) => normalizeString(session.projectId, "") === projectId) || null;
+  } catch {
+    return null;
+  }
+}
+
+function readContextMaintenanceArtifactSafe(threadStore, projectId, threadId, artifactName) {
+  if (!threadStore || !projectId || !threadId) return { artifact: null, errorCode: "" };
+  try {
+    return {
+      artifact: threadStore.readContextMaintenanceArtifact(projectId, threadId, artifactName),
+      errorCode: "",
+    };
+  } catch {
+    return { artifact: null, errorCode: `context_${artifactName.replace(/[^a-z0-9]+/gi, "_")}_corrupt` };
+  }
+}
+
+function contextEvidenceCounts(evidence = {}) {
+  return {
+    contextCompactionCount: Array.isArray(evidence.contextCompaction) ? evidence.contextCompaction.length : 0,
+    memoryCitationCount: Array.isArray(evidence.memoryCitations) ? evidence.memoryCitations.length : 0,
+    memoryModeObserved: Array.isArray(evidence.memoryControls)
+      ? evidence.memoryControls.some((control) => normalizeString(control.method, "") === "thread/memoryMode/set")
+      : false,
+    memoryResetObserved: Array.isArray(evidence.memoryControls)
+      ? evidence.memoryControls.some((control) => normalizeString(control.method, "") === "memory/reset")
+      : false,
+    compactControlObserved: Array.isArray(evidence.compactControls) && evidence.compactControls.length > 0,
+  };
+}
+
+function buildDirectContextMaintenanceRuntimeStatus(project, sessionStore, threadStore) {
+  const projectId = normalizeString(project?.id, "");
+  const latestSession = latestDirectSessionForProject(sessionStore, projectId);
+  const threadId = normalizeString(latestSession?.sessionId, "");
+  const blockers = [];
+  const { artifact: statusProjection, errorCode } = readContextMaintenanceArtifactSafe(threadStore, projectId, threadId, "status-projection.json");
+  if (errorCode) blockers.push(errorCode);
+  const siblingEvidence = latestContextManagementEvidenceByProject.get(projectId) || null;
+  const siblingCounts = contextEvidenceCounts(siblingEvidence || {});
+  return {
+    schema: "direct_context_maintenance_runtime_status@1",
+    projectId,
+    threadId,
+    sourceDigest: stableDigest({
+      projectId,
+      threadId,
+      statusProjectionDigest: statusProjection?.projectionDigest || "",
+      siblingEvidenceId: siblingEvidence?.evidenceId || "",
+      siblingObservedAt: siblingEvidence?.observedAt || "",
+    }),
+    statusProjection: isPlainObject(statusProjection) ? statusProjection : null,
+    pressureState: normalizeString(statusProjection?.pressureState, "unknown"),
+    memoryState: normalizeString(statusProjection?.memoryState, "none"),
+    memoryPointerState: normalizeString(statusProjection?.memoryPointerState, "none"),
+    batonState: normalizeString(statusProjection?.batonState, "not_required"),
+    batonRequirement: normalizeString(statusProjection?.batonRequirement, "not_required"),
+    omissionState: normalizeString(statusProjection?.omissionState, "none"),
+    providerCompactState: "not_proven",
+    providerCompactionEvidenceState: "missing",
+    appServerSibling: siblingEvidence ? {
+      ...siblingEvidence,
+      ...siblingCounts,
+      displayOnly: true,
+      directArtifactPromotionAllowed: false,
+      directContextPackUsable: false,
+    } : {
+      sourceClass: "vanilla_app_server_sibling",
+      sourceConfidence: "unknown",
+      displayOnly: true,
+      contextCompaction: [],
+      compactControls: [],
+      memoryCitations: [],
+      memoryControls: [],
+      contextCompactionCount: 0,
+      memoryCitationCount: 0,
+      memoryModeObserved: false,
+      memoryResetObserved: false,
+      compactControlObserved: false,
+      directArtifactPromotionAllowed: false,
+      directContextPackUsable: false,
+      rawTextIncluded: false,
+      rawPayloadIncluded: false,
+    },
+    blockers,
+    warnings: [],
+    evidenceKeys: [
+      statusProjection?.projectionDigest ? "direct_context_maintenance_status_projection@1" : "",
+      siblingEvidence?.evidenceId ? "vanilla_sibling_context_evidence@1" : "",
+    ].filter(Boolean),
+    displayOnly: true,
+    rawTextIncluded: false,
+    rawPayloadIncluded: false,
+    providerTransportAllowed: false,
+    maintenanceExecutionAllowed: false,
+    memoryEditorAllowed: false,
+    memoryResetAllowed: false,
+    compactActionAllowed: false,
+  };
+}
+
+function mergeUniqueByKey(existing = [], incoming = [], keyFn = (item) => JSON.stringify(item)) {
+  const byKey = new Map();
+  for (const item of [...existing, ...incoming]) {
+    const key = keyFn(item);
+    if (key) byKey.set(key, item);
+  }
+  return Array.from(byKey.values());
+}
+
+function sanitizeContextThreadItems(items = []) {
+  return (Array.isArray(items) ? items : [])
+    .map((item) => {
+      const type = normalizeString(item?.type, "");
+      const id = normalizeString(item?.id || item?.itemId, "");
+      if (!id) return null;
+      if (type === "contextCompaction") {
+        return {
+          id,
+          type,
+          lifecycle: normalizeString(item.lifecycle || item.status, "observed"),
+        };
+      }
+      if (isPlainObject(item?.memoryCitation)) {
+        return {
+          id,
+          type: type || "memoryCitation",
+          memoryCitation: {
+            evidenceKey: normalizeString(item.memoryCitation.evidenceKey || item.memoryCitation.memoryId || id, ""),
+          },
+        };
+      }
+      return null;
+    })
+    .filter(Boolean);
+}
+
+function sanitizeContextControls(controls = []) {
+  const allowedMethods = new Set(["thread/compact/start", "thread/memoryMode/set", "memory/reset"]);
+  return (Array.isArray(controls) ? controls : [])
+    .map((control) => ({
+      method: normalizeString(control?.method, ""),
+      evidenceKey: normalizeString(control?.evidenceKey, ""),
+    }))
+    .filter((control) => allowedMethods.has(control.method) && control.evidenceKey);
+}
+
+function recordContextManagementEvidence(payload = {}) {
+  const projectId = normalizeString(payload.projectId, "");
+  const threadId = normalizeString(payload.threadId, "");
+  if (!projectId || !threadId) return null;
+  const incomingThreadItems = sanitizeContextThreadItems(payload.threadItems);
+  const incomingControls = sanitizeContextControls(payload.controlsObserved);
+  if (!incomingThreadItems.length && !incomingControls.length) return null;
+  const previous = contextManagementObservationsByProject.get(projectId) || {
+    threadId,
+    threadItems: [],
+    controlsObserved: [],
+  };
+  const scopedPrevious = normalizeString(previous.threadId, "") === threadId
+    ? previous
+    : { threadId, threadItems: [], controlsObserved: [] };
+  const threadItems = mergeUniqueByKey(scopedPrevious.threadItems, incomingThreadItems, (item) =>
+    `${item.type}:${item.id}:${item.memoryCitation?.evidenceKey || ""}`);
+  const controlsObserved = mergeUniqueByKey(scopedPrevious.controlsObserved, incomingControls, (control) =>
+    `${control.method}:${control.evidenceKey}`);
+  contextManagementObservationsByProject.set(projectId, {
+    threadId,
+    threadItems,
+    controlsObserved,
+  });
+  const evidence = buildVanillaSiblingContextEvidence({
+    projectId,
+    threadId,
+    threadItems,
+    controlsObserved,
+    sourceConfidence: "observed",
+    sourceRefs: [{
+      kind: "renderer_observation",
+      evidenceKey: "codex_surface_context_management_observation",
+      rawTextIncluded: false,
+    }],
+  });
+  latestContextManagementEvidenceByProject.set(projectId, {
+    ...evidence,
+    observedAt: nowIso(),
+  });
+  return latestContextManagementEvidenceByProject.get(projectId);
+}
+
 function buildDirectRuntimeStatusForProject(project, options = {}) {
   const controller = ensureDirectAuthController();
   const authSettings = controller.readSettings(options);
@@ -1856,6 +2083,11 @@ function buildDirectRuntimeStatusForProject(project, options = {}) {
     blockers: implementationBlockers,
     missingImplementationOnlyGates: implementationBlockers,
   };
+  let threadStoreForContext = null;
+  try {
+    threadStoreForContext = ensureDirectThreadStore();
+  } catch {}
+  runtimeStatus.directContextMaintenance = buildDirectContextMaintenanceRuntimeStatus(project, sessionStore, threadStoreForContext);
   return runtimeStatus;
 }
 
@@ -4322,9 +4554,46 @@ ipcMain.handle("codex-surface:thread-state", async (event, payload) => {
     connectionId: session.connectionId || "",
     at: nowIso(),
   };
+  const previousContextEvidence = latestContextManagementEvidenceByProject.get(state.projectId);
+  if (
+    previousContextEvidence &&
+    normalizeString(previousContextEvidence.threadId, "") &&
+    state.threadId &&
+    normalizeString(previousContextEvidence.threadId, "") !== state.threadId
+  ) {
+    latestContextManagementEvidenceByProject.delete(state.projectId);
+    contextManagementObservationsByProject.delete(state.projectId);
+  }
   rememberCodexThreadRestoreTarget(state);
   emitToShell("surface:event", state);
   return { ok: true };
+});
+
+ipcMain.handle("codex-surface:context-management-evidence", async (event, payload) => {
+  if (isStaleSurfaceActivationEpoch(payload?.activationEpoch)) return { ok: false, stale: true };
+  const session = codexSurfaceSessionFor(event.sender);
+  const evidence = recordContextManagementEvidence({
+    projectId: normalizeString(payload?.projectId, ""),
+    threadId: normalizeString(payload?.threadId, ""),
+    threadItems: payload?.threadItems,
+    controlsObserved: payload?.controlsObserved,
+  });
+  if (!evidence) return { ok: false, error: "context_management_evidence_empty" };
+  const state = {
+    surface: "codex",
+    type: "context-management-evidence",
+    projectId: evidence.projectId,
+    threadId: evidence.threadId,
+    evidenceId: evidence.evidenceId,
+    contextCompactionCount: Array.isArray(evidence.contextCompaction) ? evidence.contextCompaction.length : 0,
+    compactControlCount: Array.isArray(evidence.compactControls) ? evidence.compactControls.length : 0,
+    memoryCitationCount: Array.isArray(evidence.memoryCitations) ? evidence.memoryCitations.length : 0,
+    memoryControlCount: Array.isArray(evidence.memoryControls) ? evidence.memoryControls.length : 0,
+    connectionId: session.connectionId || "",
+    at: nowIso(),
+  };
+  emitToShell("surface:event", state);
+  return { ok: true, evidenceId: evidence.evidenceId };
 });
 
 ipcMain.handle("codex-surface:agent-graph", async (event, payload) => {

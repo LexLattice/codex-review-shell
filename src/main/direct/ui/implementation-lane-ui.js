@@ -221,6 +221,7 @@ function witnessChips(runtimeStatus = {}) {
   const lane = runtimeStatus.directImplementationLane || {};
   const text = runtimeStatus.directTextOnly || {};
   const active = activeRuntimeTier(runtimeStatus);
+  const contextMaintenance = contextMaintenanceStatus(runtimeStatus);
   return [
     chip({
       chipId: "runtime-tier",
@@ -277,6 +278,15 @@ function witnessChips(runtimeStatus = {}) {
       freshness: "fresh",
     }),
     chip({
+      chipId: "context-maintenance",
+      kind: "context-maintenance",
+      label: "Context maintenance",
+      state: contextMaintenance.blockers.length ? "blocked" : contextMaintenance.pressureState === "unknown" ? "unknown" : "diagnostic",
+      summary: "Status only; compact and memory actions stay disabled.",
+      evidenceKey: contextMaintenance.evidenceKeys[0] || "direct_context_maintenance_status_projection@1",
+      freshness: contextMaintenance.pressureState === "unknown" ? "unknown" : "fresh",
+    }),
+    chip({
       chipId: "handoff-boundary",
       kind: "handoff-boundary",
       label: "Handoff separate",
@@ -286,6 +296,104 @@ function witnessChips(runtimeStatus = {}) {
       freshness: "fresh",
     }),
   ];
+}
+
+function contextMaintenanceInput(runtimeStatus = {}) {
+  if (isPlainObject(runtimeStatus.directContextMaintenance)) return runtimeStatus.directContextMaintenance;
+  if (isPlainObject(runtimeStatus.contextMaintenance)) return runtimeStatus.contextMaintenance;
+  if (isPlainObject(runtimeStatus.directThreadStore?.contextMaintenance)) return runtimeStatus.directThreadStore.contextMaintenance;
+  return {};
+}
+
+function contextMaintenanceStatus(runtimeStatus = {}) {
+  const input = contextMaintenanceInput(runtimeStatus);
+  const statusProjection = isPlainObject(input.statusProjection) ? input.statusProjection : {};
+  const sibling = isPlainObject(input.appServerSibling)
+    ? input.appServerSibling
+    : isPlainObject(input.vanillaSiblingContextEvidence)
+      ? input.vanillaSiblingContextEvidence
+      : isPlainObject(input.vanillaSibling)
+        ? input.vanillaSibling
+        : {};
+  const providerCompact = isPlainObject(input.providerCompact) ? input.providerCompact : {};
+  const memoryControls = safeArray(sibling.memoryControls);
+  const compactControls = safeArray(sibling.compactControls);
+  const blockers = blockerCodes(input.blockers || input.blockerCodes || statusProjection.blockers);
+  const warnings = blockerCodes(input.warnings || input.warningCodes || statusProjection.warnings);
+  const evidenceKeys = blockerCodes(input.evidenceKeys || statusProjection.evidenceKeys || [
+    statusProjection.projectionDigest ? "direct_context_maintenance_status_projection@1" : "",
+    sibling.evidenceId ? "vanilla_sibling_context_evidence@1" : "",
+  ]);
+  const contextCompactionCount = Number(input.contextCompactionCount ?? sibling.contextCompactionCount ?? safeArray(sibling.contextCompaction).length);
+  const memoryCitationCount = Number(input.memoryCitationCount ?? sibling.memoryCitationCount ?? safeArray(sibling.memoryCitations).length);
+  const memoryModeObserved = input.memoryModeObserved === true ||
+    sibling.memoryModeObserved === true ||
+    memoryControls.some((control) => normalizeString(control.method, "") === "thread/memoryMode/set");
+  const memoryResetObserved = input.memoryResetObserved === true ||
+    sibling.memoryResetObserved === true ||
+    memoryControls.some((control) => normalizeString(control.method, "") === "memory/reset");
+  const compactControlObserved = input.compactControlObserved === true ||
+    sibling.compactControlObserved === true ||
+    compactControls.length > 0;
+  return {
+    schema: "direct_context_maintenance_status_summary@1",
+    source: "runtime-status-resolver",
+    statusDigest: digestValue({ input, statusProjection, sibling }),
+    displayOnly: true,
+    actionability: {
+      actionable: false,
+      allowedActions: [],
+      reason: "context_maintenance_status_only",
+    },
+    pressureState: normalizeString(input.pressureState || statusProjection.pressureState, "unknown"),
+    route: {
+      routeKind: normalizeString(input.routeKind || input.currentRouteKind || statusProjection.routeKind, "none"),
+      routeClass: normalizeString(input.routeClass || statusProjection.routeClass, "no_change"),
+      reasonCode: normalizeString(input.routeReasonCode || input.reasonCode || statusProjection.routeReasonCode, ""),
+      blocked: input.routeBlocked === true || blockers.length > 0,
+    },
+    memory: {
+      state: normalizeString(input.memoryState || statusProjection.memoryState, "none"),
+      pointerState: normalizeString(input.memoryPointerState || statusProjection.memoryPointerState, "none"),
+      citationCount: Number.isFinite(memoryCitationCount) ? memoryCitationCount : 0,
+    },
+    baton: {
+      state: normalizeString(input.batonState || statusProjection.batonState, "not_required"),
+      requirement: normalizeString(input.batonRequirement || statusProjection.batonRequirement, "not_required"),
+    },
+    omission: {
+      state: normalizeString(input.omissionState || statusProjection.omissionState, "none"),
+    },
+    providerCompact: {
+      state: normalizeString(providerCompact.state || input.providerCompactState || input.providerCompactionState, "not_proven"),
+      evidenceState: normalizeString(providerCompact.evidenceState || input.providerCompactionEvidenceState, "missing"),
+      promotionCandidate: false,
+      providerTransportAllowed: false,
+      requestAllowed: false,
+    },
+    appServerSibling: {
+      sourceClass: normalizeString(sibling.sourceClass, "vanilla_app_server_sibling"),
+      displayOnly: true,
+      contextCompactionObserved: contextCompactionCount > 0 || input.contextCompactionObserved === true,
+      contextCompactionCount: Number.isFinite(contextCompactionCount) ? contextCompactionCount : 0,
+      memoryCitationCount: Number.isFinite(memoryCitationCount) ? memoryCitationCount : 0,
+      memoryModeObserved,
+      memoryResetObserved,
+      compactControlObserved,
+      directArtifactPromotionAllowed: false,
+      directContextPackUsable: false,
+    },
+    blockers,
+    warnings,
+    evidenceKeys,
+    rawTextIncluded: false,
+    rawPayloadIncluded: false,
+    providerTransportAllowed: false,
+    maintenanceExecutionAllowed: false,
+    memoryEditorAllowed: false,
+    memoryResetAllowed: false,
+    compactActionAllowed: false,
+  };
 }
 
 function buildDirectImplementationLaneUiStatus({ project = {}, runtimeStatus = {}, generatedAt = "" } = {}) {
@@ -309,6 +417,7 @@ function buildDirectImplementationLaneUiStatus({ project = {}, runtimeStatus = {
   });
   const textOnly = runtimeStatus.directTextOnly || {};
   const appServerSelected = activeTier === "app-server";
+  const contextMaintenance = contextMaintenanceStatus(runtimeStatus);
   const status = {
     schema: DIRECT_IMPLEMENTATION_LANE_UI_STATUS_SCHEMA,
     meta,
@@ -359,6 +468,7 @@ function buildDirectImplementationLaneUiStatus({ project = {}, runtimeStatus = {
       effectiveSource: "default",
       policySnapshotDigest: digestValue({ implementationLane: "default-policy", projectId }),
     },
+    contextMaintenance,
     witnesses: witnessChips(runtimeStatus),
     blockers: implementationLane.blockerCodes.map((code) => ({ code, source: "runtime-status", rendererSafe: true })),
     warnings: [],

@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld("codexSurfaceBridge", {
   respondRequest: (key, result) => ipcRenderer.invoke("codex-surface:respond", { key, result }),
   reportThreadState: (state) => ipcRenderer.invoke("codex-surface:thread-state", state),
   reportAgentGraph: (graph) => ipcRenderer.invoke("codex-surface:agent-graph", graph),
+  reportContextManagementEvidence: (evidence) => ipcRenderer.invoke("codex-surface:context-management-evidence", evidence),
   focusSubAgent: (request) => ipcRenderer.invoke("codex-surface:focus-sub-agent", request),
   getRuntimePreferences: (request) => ipcRenderer.invoke("codex-runtime-preferences:get", request || {}),
   updateRuntimePreferences: (request) => ipcRenderer.invoke("codex-runtime-preferences:update", request || {}),
