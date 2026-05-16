@@ -96,6 +96,7 @@ const PREVIEW_LIMIT_BYTES = 384 * 1024;
 const DIRECTORY_ENTRY_LIMIT = 500;
 const CODEX_THREAD_RUNTIME_PREF_MAX_ENTRIES = 500;
 const PROFILE_ENV_VAR = "CODEX_REVIEW_SHELL_PROFILE";
+const USER_DATA_DIR_ENV_VAR = "CODEX_REVIEW_SHELL_USER_DATA_DIR";
 const USER_DATA_ROOT_ENV_VAR = "CODEX_REVIEW_SHELL_USER_DATA_ROOT";
 
 const appRoot = path.resolve(__dirname, "..");
@@ -138,6 +139,16 @@ function normalizeProfileName(value) {
 
 function configureAppProfile() {
   app.setName(APP_TITLE);
+  const explicitUserDataDir = earlyNormalizeString(process.env[USER_DATA_DIR_ENV_VAR], "");
+  if (explicitUserDataDir) {
+    const userData = path.resolve(explicitUserDataDir);
+    app.setPath("userData", userData);
+    return {
+      profileName: "explicit",
+      isolated: true,
+      userData,
+    };
+  }
   const profileName = normalizeProfileName(process.env[PROFILE_ENV_VAR]);
   if (!profileName) {
     const appDataPath = app.getPath("appData");
