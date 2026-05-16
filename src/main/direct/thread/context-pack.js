@@ -595,6 +595,21 @@ function contextPackIntegrity(input) {
   }));
 }
 
+function batonContextIneligibilityReason(baton = {}) {
+  if (!baton?.batonId) return "baton_missing";
+  if (normalizeString(baton.batonState, "") !== "present") return "baton_stale";
+  if (normalizeString(baton.supersededByBatonId, "")) return "baton_superseded";
+  if (baton.rawTextIncluded === true) return "baton_raw_text_included";
+  if (
+    baton.replayAuthority !== false ||
+    baton.approvalAuthority !== false ||
+    baton.continuationAuthority !== false
+  ) {
+    return "baton_authority_present";
+  }
+  return "";
+}
+
 function maintenanceContextEvidence({ maintenanceRefs = null, maintenanceArtifacts = {} } = {}) {
   const refs = isPlainObject(maintenanceRefs) ? maintenanceRefs : {};
   const artifacts = isPlainObject(maintenanceArtifacts) ? maintenanceArtifacts : {};
@@ -636,35 +651,45 @@ function maintenanceContextEvidence({ maintenanceRefs = null, maintenanceArtifac
   }
 
   if (artifacts.baton?.batonId) {
-    const frontier = artifacts.baton.frontier || {};
-    const text = [
-      "[FRONTIER BATON - STATUS EVIDENCE]",
-      `Goal: ${normalizeString(frontier.rendererSafeGoalSummary, "unknown")}`,
-      `Next expected action: ${normalizeString(frontier.nextExpectedAction, "unknown")}`,
-      "Replay authority: false",
-      "Approval authority: false",
-      "Continuation authority: false",
-    ].join("\n");
-    const findings = blockingRawExposureFindings(text);
-    if (findings.length) {
-      const error = new Error("Direct frontier baton failed context redaction.");
-      error.code = "maintenance_baton_redaction_failed";
-      throw error;
+    const ineligibleReason = batonContextIneligibilityReason(artifacts.baton);
+    if (ineligibleReason) {
+      if (refs.requiredBaton === true) {
+        const error = new Error("Direct required frontier baton is stale or ineligible.");
+        error.code = "required_baton_stale";
+        error.reasonCode = ineligibleReason;
+        throw error;
+      }
+    } else {
+      const frontier = artifacts.baton.frontier || {};
+      const text = [
+        "[FRONTIER BATON - STATUS EVIDENCE]",
+        `Goal: ${normalizeString(frontier.rendererSafeGoalSummary, "unknown")}`,
+        `Next expected action: ${normalizeString(frontier.nextExpectedAction, "unknown")}`,
+        "Replay authority: false",
+        "Approval authority: false",
+        "Continuation authority: false",
+      ].join("\n");
+      const findings = blockingRawExposureFindings(text);
+      if (findings.length) {
+        const error = new Error("Direct frontier baton failed context redaction.");
+        error.code = "maintenance_baton_redaction_failed";
+        throw error;
+      }
+      messages.push({
+        role: "user",
+        authority: "status-evidence",
+        quotedEvidence: true,
+        sourceBatonId: artifacts.baton.batonId,
+        text,
+        textHash: sha256(text),
+      });
+      sourceArtifacts.push({
+        artifactKind: "frontier_baton",
+        artifactId: artifacts.baton.batonId,
+        artifactDigest: normalizeString(artifacts.baton.integrity?.artifactDigest, refs.batonDigest || ""),
+        appPrivate: true,
+      });
     }
-    messages.push({
-      role: "user",
-      authority: "status-evidence",
-      quotedEvidence: true,
-      sourceBatonId: artifacts.baton.batonId,
-      text,
-      textHash: sha256(text),
-    });
-    sourceArtifacts.push({
-      artifactKind: "frontier_baton",
-      artifactId: artifacts.baton.batonId,
-      artifactDigest: normalizeString(artifacts.baton.integrity?.artifactDigest, refs.batonDigest || ""),
-      appPrivate: true,
-    });
   }
 
   if (artifacts.omissionLedger?.omissionLedgerId) {

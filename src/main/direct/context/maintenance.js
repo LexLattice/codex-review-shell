@@ -12,6 +12,7 @@ const DIRECT_CONTEXT_OMISSION_LEDGER_SCHEMA = "context_omission_ledger@1";
 const DIRECT_DURABLE_THREAD_MEMORY_SCHEMA = "durable_thread_memory@1";
 const DIRECT_THREAD_MEMORY_REFRESH_SCHEMA = "thread_memory_refresh@1";
 const DIRECT_FRONTIER_BATON_SCHEMA = "frontier_baton@1";
+const DIRECT_VANILLA_SIBLING_CONTEXT_EVIDENCE_SCHEMA = "direct_vanilla_sibling_context_evidence@1";
 const DIRECT_CONTEXT_MAINTENANCE_STATUS_PROJECTION_SCHEMA = "direct_context_maintenance_status_projection@1";
 const DIRECT_CONTEXT_MAINTENANCE_REGRESSION_REPORT_SCHEMA = "direct_context_maintenance_regression_report@1";
 const DIRECT_CONTEXT_MAINTENANCE_POLICY_VERSION = "direct-context-maintenance-policy@1";
@@ -467,9 +468,33 @@ function buildDurableThreadMemory(input = {}) {
   return memory;
 }
 
+function memoryRefreshSourceRefInvalidReason(ref = {}) {
+  if (!isPlainObject(ref)) return "source_ref_invalid";
+  const artifactKind = normalizeString(ref.artifactKind, "");
+  if (artifactKind === "renderer_dom" || ref.rendererDomOnly === true) return "source_ref_renderer_dom_only";
+  if (!normalizeString(ref.artifactDigest, "")) return "source_ref_digest_missing";
+  const sourceState = normalizeString(ref.sourceState || ref.projectionState || ref.status, "");
+  if (sourceState === "stale") return "source_ref_stale";
+  if (sourceState === "blocked") return "source_ref_blocked";
+  if (sourceState === "corrupt") return "source_ref_corrupt";
+  if (ref.blockedProjection === true) return "source_ref_blocked_projection";
+  if (ref.rawTextIncluded === true) return "source_ref_raw_text_included";
+  return "";
+}
+
 function buildMemoryRefreshManifest(input = {}) {
   const currentMemory = isPlainObject(input.currentMemory) ? input.currentMemory : null;
   const nextMemory = isPlainObject(input.nextMemory) ? input.nextMemory : null;
+  const sourceRefs = Array.isArray(input.sourceRefs) ? input.sourceRefs : [];
+  for (const sourceRef of sourceRefs) {
+    const invalidReason = memoryRefreshSourceRefInvalidReason(sourceRef);
+    if (invalidReason) {
+      const error = new Error("memory_refresh_source_ref_invalid");
+      error.code = "memory_refresh_source_ref_invalid";
+      error.reasonCode = invalidReason;
+      throw error;
+    }
+  }
   const status = normalizeString(input.status, nextMemory ? "completed" : "failed_current_retained");
   const manifest = {
     schema: DIRECT_THREAD_MEMORY_REFRESH_SCHEMA,
@@ -477,7 +502,7 @@ function buildMemoryRefreshManifest(input = {}) {
     projectId: normalizeString(input.projectId, nextMemory?.projectId || currentMemory?.projectId || ""),
     threadId: normalizeString(input.threadId, nextMemory?.threadId || currentMemory?.threadId || ""),
     status,
-    sourceRefs: Array.isArray(input.sourceRefs) ? input.sourceRefs : [],
+    sourceRefs,
     currentMemoryId: normalizeString(currentMemory?.memoryId, ""),
     nextMemoryId: normalizeString(nextMemory?.memoryId, ""),
     currentRetained: status !== "completed",
@@ -609,6 +634,171 @@ function buildStatusProjection(input = {}) {
   return projection;
 }
 
+function makeStatusActionError(code, extra = {}) {
+  const error = new Error(code);
+  error.code = code;
+  Object.assign(error, extra);
+  return error;
+}
+
+function validateStatusProjectionAction(input = {}) {
+  const projection = isPlainObject(input.projection) ? input.projection : null;
+  if (!projection || projection.schema !== DIRECT_CONTEXT_MAINTENANCE_STATUS_PROJECTION_SCHEMA) {
+    throw makeStatusActionError("context_status_projection_missing");
+  }
+  if (projection.displayOnly !== true || projection.rawTextIncluded !== false) {
+    throw makeStatusActionError("context_status_projection_unsafe");
+  }
+  const expectedGeneration = input.expectedUiProjectionGeneration === undefined || input.expectedUiProjectionGeneration === null
+    ? ""
+    : String(input.expectedUiProjectionGeneration);
+  if (expectedGeneration && expectedGeneration !== String(projection.uiProjectionGeneration)) {
+    throw makeStatusActionError("context_status_projection_stale", {
+      currentGeneration: projection.uiProjectionGeneration,
+      submittedGeneration: input.expectedUiProjectionGeneration,
+    });
+  }
+  const expectedSourceDigest = normalizeString(input.expectedSourceDigest, "");
+  if (expectedSourceDigest && expectedSourceDigest !== normalizeString(projection.sourceDigest, "")) {
+    throw makeStatusActionError("context_status_source_digest_changed");
+  }
+  const expectedLedgerDigest = normalizeString(input.expectedOperationLedgerHeadDigest, "");
+  if (expectedLedgerDigest && expectedLedgerDigest !== normalizeString(projection.operationLedgerHeadDigest, "")) {
+    throw makeStatusActionError("operation_ledger_changed");
+  }
+  const actionKind = normalizeString(input.actionKind, "read_status");
+  if (["read_status", "inspect_status", "refresh_status_projection"].includes(actionKind)) {
+    return {
+      allowed: true,
+      actionKind,
+      displayOnly: true,
+      runtimeAuthorityGranted: false,
+      providerTransportAllowed: false,
+      retryAutomatically: false,
+    };
+  }
+  if ([
+    "send_provider_request",
+    "start_turn",
+    "composer_send",
+    "build_context_pack",
+    "build_request_manifest",
+    "run_context_maintenance",
+  ].includes(actionKind)) {
+    throw makeStatusActionError("context_status_not_runtime_authority", {
+      composerAllowed: projection.composerAllowed === true,
+      composerAllowedReason: normalizeString(projection.composerAllowedReason, ""),
+    });
+  }
+  throw makeStatusActionError("context_status_action_unsupported");
+}
+
+function buildVanillaSiblingContextEvidence(input = {}) {
+  const threadItems = Array.isArray(input.threadItems) ? input.threadItems : [];
+  const controlsObserved = Array.isArray(input.controlsObserved) ? input.controlsObserved : [];
+  const sourceRefs = Array.isArray(input.sourceRefs) ? input.sourceRefs : [];
+  const contextCompaction = threadItems
+    .filter((item) => normalizeString(item.type, "") === "contextCompaction")
+    .map((item, index) => ({
+      itemId: normalizeString(item.id, `context_compaction_${index + 1}`),
+      lifecycle: normalizeString(item.lifecycle || item.status, "observed"),
+      appServerOwned: true,
+      rendererSafeSummary: "App-server thread contains a context compaction item.",
+      directProviderCompactPrimitiveProven: false,
+      directOmissionLedgerCreated: false,
+      rawTextIncluded: false,
+    }));
+  const memoryCitations = threadItems
+    .filter((item) => isPlainObject(item.memoryCitation))
+    .map((item, index) => ({
+      itemId: normalizeString(item.id, `memory_citation_${index + 1}`),
+      citationEvidenceKey: normalizeString(item.memoryCitation.evidenceKey || item.memoryCitation.memoryId, ""),
+      appServerOwned: true,
+      directDurableMemoryEntryCreated: false,
+      rawTextIncluded: false,
+    }));
+  const memoryControls = controlsObserved
+    .filter((control) => ["thread/memoryMode/set", "memory/reset"].includes(normalizeString(control.method, "")))
+    .map((control) => ({
+      method: normalizeString(control.method, ""),
+      evidenceKey: normalizeString(control.evidenceKey, ""),
+      appServerOnly: true,
+      directMemoryEditorProven: false,
+      directMemoryArtifactsMutated: false,
+      rawPayloadIncluded: false,
+    }));
+  const compactControls = controlsObserved
+    .filter((control) => normalizeString(control.method, "") === "thread/compact/start")
+    .map((control) => ({
+      method: "thread/compact/start",
+      evidenceKey: normalizeString(control.evidenceKey, ""),
+      appServerOnly: true,
+      directProviderCompactPrimitiveProven: false,
+      directMaintenanceRouteSelected: false,
+      rawPayloadIncluded: false,
+    }));
+  const sourceDigest = normalizeString(input.sourceDigest, sha256(stableStringify({
+    sourceRefs,
+    threadItems: threadItems.map((item) => ({
+      id: normalizeString(item.id, ""),
+      type: normalizeString(item.type, ""),
+      hasMemoryCitation: isPlainObject(item.memoryCitation),
+      lifecycle: normalizeString(item.lifecycle || item.status, ""),
+    })),
+    controlsObserved: controlsObserved.map((control) => ({
+      method: normalizeString(control.method, ""),
+      evidenceKey: normalizeString(control.evidenceKey, ""),
+    })),
+  })));
+  const evidence = {
+    schema: DIRECT_VANILLA_SIBLING_CONTEXT_EVIDENCE_SCHEMA,
+    evidenceId: normalizeString(input.evidenceId, `vanilla_context_sibling_${sha256(`${input.projectId}:${input.threadId}:${sourceDigest}`).slice(0, 24)}`),
+    projectId: normalizeString(input.projectId, ""),
+    threadId: normalizeString(input.threadId, ""),
+    sourceClass: "vanilla_app_server_sibling",
+    sourceConfidence: normalizeString(input.sourceConfidence, "diagnostic"),
+    sourceRefs,
+    threadContinuity: {
+      scope: "app_server_only",
+      threadItemCount: threadItems.length,
+      appServerOwned: true,
+      directProviderContinuityGranted: false,
+    },
+    contextCompaction,
+    compactControls,
+    memoryCitations,
+    memoryControls,
+    statusProjection: {
+      statusItemKind: "vanilla_sibling_context_management",
+      displayOnly: true,
+      rendererSafeSummary: contextCompaction.length
+        ? "App-server context compaction observed as sibling evidence."
+        : "No app-server context compaction item observed.",
+      actionability: {
+        actionable: false,
+        allowedActions: [],
+        reason: "vanilla_sibling_evidence_is_read_only",
+      },
+      directArtifactPromotionAllowed: false,
+      rawTextIncluded: false,
+    },
+    directContinuityGranted: false,
+    directContextPackUsable: false,
+    providerCompactPrimitiveProven: false,
+    directOmissionLedgerCreated: false,
+    directMemoryEditorProven: false,
+    directMemoryArtifactsMutated: false,
+    appServerMutationUsed: input.appServerMutationUsed === true,
+    providerTransportUsed: false,
+    rawTextIncluded: false,
+    rawPayloadIncluded: false,
+    createdAt: normalizeString(input.createdAt, nowIso(input.nowMs)),
+  };
+  evidence.integrity = makeIntegrity(sourceDigest);
+  evidence.integrity.artifactDigest = artifactDigest({ ...evidence, integrity: { ...evidence.integrity, artifactDigest: "" } });
+  return evidence;
+}
+
 function maintenanceRecoveryState(input = {}) {
   if (input.rawExposureBlocked === true) return "raw_exposure_blocked";
   if (input.corrupt === true) return "corrupt";
@@ -667,6 +857,7 @@ module.exports = {
   DIRECT_RAW_WINDOW_TRIM_POLICY_SCHEMA,
   DIRECT_REQUIRED_CONTEXT_ARTIFACT_CLASSES,
   DIRECT_THREAD_MEMORY_REFRESH_SCHEMA,
+  DIRECT_VANILLA_SIBLING_CONTEXT_EVIDENCE_SCHEMA,
   MAINTENANCE_ENGINES,
   ROUTE_CLASSES,
   ROUTE_KINDS,
@@ -681,11 +872,13 @@ module.exports = {
   buildRouteInput,
   buildStatusProjection,
   buildTrimPlan,
+  buildVanillaSiblingContextEvidence,
   maintenanceRecoveryState,
   maintenanceRefsFromArtifacts,
   selectMaintenanceRoute,
   sha256,
   stableStringify,
+  validateStatusProjectionAction,
   validateContextMaintenanceReport,
   validateMaintenanceRefs,
 };
