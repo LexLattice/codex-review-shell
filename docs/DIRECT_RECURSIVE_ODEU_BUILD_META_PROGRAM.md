@@ -502,6 +502,10 @@ risk:
 terminal_status: open | probe_required | locked | deferred | pass_through | conflict_isolated
 probe_refs: []
 implementation_owner: runtime_path_selection | controller | renderer | store | report | unknown
+known_conflicts: []
+candidate_upstream_discriminators: []
+counterfactual_probe_refs: []
+regression_retention_probe_refs: []
 ```
 
 ## E-Probe Row Schema
@@ -606,6 +610,87 @@ OP-E failure -> evidence state, probe oracle, report promotion
 
 If a failure maps to no leaf, the theory tree is missing a branch.
 
+## Conflict Branch Reconciliation
+
+When two sibling branches cannot both stay green under the same broad
+implementation rule, do not choose one leaf and keep broad-patching until the
+other fails. Treat the red/green conflict as evidence that the ontology tree is
+missing a parent discriminator.
+
+Construction version:
+
+```text
+repair fixes one Direct branch but regresses another
+  -> stop broad patching
+  -> move upward to the smallest shared parent node or shared authority surface
+  -> name the flat rule that made the branches conflict
+  -> derive candidate upstream discriminators from the law or sibling profile
+  -> build counterfactual E-probes that differ only by the proposed discriminator
+  -> keep regression-retention probes for the branch that was already green
+  -> patch only after the discriminator is specified by matrix/spec law,
+     vanilla sibling evidence, fixture/headless evidence, or live evidence
+```
+
+The repair artifact should be an upstream-discriminator row before it is a code
+patch:
+
+```yaml
+conflict_id: CM-CONFLICT-...
+shared_parent_node: Direct/ContextMaintenance/FrontierBaton
+conflicting_branches:
+  - required stale baton blocks context build
+  - optional stale baton is omitted from provider-visible context
+flat_rule_that_failed: stale baton is either always invalid or always ignored
+candidate_discriminator:
+  name: baton_requirement
+  values: [required, optional]
+  evidence_authority: matrix_law
+counterfactual_probes:
+  - required_stale_baton_blocks
+  - optional_stale_baton_omits
+regression_retention_probes:
+  - current_valid_baton_included
+implementation_owner: context_pack
+```
+
+For Direct construction, the discriminator can come from:
+
+```text
+matrix/spec law
+vanilla app-server sibling instantiation
+fixture/headless observation
+real-runtime observation
+live-provider observation
+explicit product decision
+```
+
+It must not come from:
+
+```text
+making a local patch pass one failing assertion;
+renderer wording alone;
+provider output quality alone;
+one branch's green probe without a counterfactual sibling probe.
+```
+
+Direct examples:
+
+- `baton_requirement` separates required stale baton blocking from optional
+  stale baton omission.
+- `source_ref_freshness` separates valid memory refresh sources from
+  renderer-DOM-only, stale, blocked, corrupt, or digest-missing sources.
+- `action_kind` separates display/inspect status reads from provider-send or
+  request-build actions.
+- `runtime_family` separates app-server contextCompaction sibling evidence from
+  Direct provider compact primitive proof.
+- `provider_visibility_class` separates summary-only workspace visibility from
+  changed-content visibility.
+
+This rule is especially important for new-program construction because there is
+no hidden reference executable to settle the conflict later. If the upstream
+discriminator is absent, the correct next step is to update the law or mark the
+branch conflict-isolated, not to overfit code to the most recent red probe.
+
 ## Bookkeeper Audit
 
 The bookkeeper audits operator continuity, not just whether a checklist exists.
@@ -621,6 +706,8 @@ Do non-commuting shared-surface interactions have OP-C probes?
 Is fixture evidence prevented from promoting live/runtime authority?
 Are provider/app-server observations exact-scope?
 Are negative controls proving forbidden paths stay forbidden?
+Did any repair that affected sibling branches identify an upstream
+  discriminator first?
 ```
 
 Blocking bookkeeper failures:
@@ -636,6 +723,9 @@ fixture_overpromoted_to_live_truth
 diagnostic_overpromoted_to_authority
 live_observation_scope_mismatch
 report_green_badge_without_negative_controls
+branch_conflict_patched_without_discriminator
+counterfactual_probe_missing_for_conflict
+regression_retention_probe_missing_for_conflict
 ```
 
 ## Observation And Repair Loop
@@ -658,6 +748,13 @@ clustered failures
   -> run theory audit
   -> repair branch tree and probe map
   -> then remand implementation by primary operator/owner
+
+branch conflict after repair
+  -> attach both red and green observations to the shared parent node
+  -> derive candidate upstream discriminator
+  -> add counterfactual probes that differ only by the discriminator
+  -> keep the previously green branch as a retention probe
+  -> patch only after the discriminator is law-backed or evidence-backed
 ```
 
 Do not patch failures one by one until the theory audit says they are localized
@@ -682,8 +779,10 @@ For each new Direct harness capability:
 10. Run real-usage/live probes when authority, transport, persistence, or UI
    behavior must be proven in actual use.
 11. Cluster failures by wrong theory, not by failing assertion.
-12. Repair theory first, then implementation.
-13. Record report/promotion state with exact evidence scope.
+12. For intertwined red/green branches, add an upstream-discriminator row and
+    counterfactual probes before implementation patching.
+13. Repair theory first, then implementation.
+14. Record report/promotion state with exact evidence scope.
 ```
 
 ## Minimal Generator Prompt Skeleton
@@ -716,13 +815,19 @@ For every operation:
 - stop only with locked, probed, pass-through, deferred, or conflict-isolated
   status.
 
+When observations or repairs create conflicting sibling branches, ascend to the
+smallest shared parent, name the missing upstream discriminator, and emit
+counterfactual probes plus regression-retention probes before proposing a code
+patch.
+
 Finally emit:
 1. recursive ontology tree;
 2. operator application ledger;
 3. terminal behavior leaves;
 4. E-probe witness map;
 5. implementation coverage map;
-6. bookkeeper questions and residual risks.
+6. upstream-discriminator rows for any conflicts;
+7. bookkeeper questions and residual risks.
 ```
 
 ## Minimal Bookkeeper Prompt Skeleton
@@ -744,6 +849,8 @@ For every node:
 - reject fixture-to-live overpromotion;
 - reject diagnostic-to-authority overpromotion;
 - reject green reports without negative controls for forbidden paths.
+- reject conflict repairs that did not identify the parent discriminator and
+  add counterfactual plus retention probes.
 
 Return blocking objections with the smallest missing node/operator/probe repair.
 ```

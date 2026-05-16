@@ -322,34 +322,34 @@ P-CM-10 Vanilla sibling parity:
 Coverage is inadequate if it contains only happy paths. Each high-risk law must
 have at least one negative or blocked witness.
 
-## Product Decisions Still Open
+## Product Decisions
 
-These are not probe problems yet:
+These are resolved by
+[DIRECT_CONTEXT_MANAGEMENT_RECURSIVE_ODEU_PHASE_L.md](./DIRECT_CONTEXT_MANAGEMENT_RECURSIVE_ODEU_PHASE_L.md).
 
 ```text
 D-CM-1 Direct compact action:
-  Should Direct expose a manual compact action, or keep compaction behind
-  app-server fallback and future maintenance routing?
+  no user-facing Direct manual compact action in the next slice.
 
 D-CM-2 Direct memory eligibility:
-  Should Direct add a project/thread memory eligibility setting analogous to
-  vanilla thread/memoryMode/set?
+  no Direct project/thread memory eligibility setting yet;
+  vanilla thread/memoryMode/set remains sibling evidence only.
 
 D-CM-3 Direct memory reset:
-  Should Direct expose reset as app-private maintenance, app-server sibling
-  action only, or no UI action?
+  no user-facing Direct memory reset action yet;
+  vanilla memory/reset remains sibling evidence only.
 
 D-CM-4 First automatic maintenance behavior:
-  Should the first live Direct behavior be status-only, manual local trim,
-  automatic pre-request local trim, or provider compact diagnostic only?
+  first live Direct behavior remains status-only and fail-closed;
+  no hidden automatic maintenance execution.
 
 D-CM-5 App-server compaction status display:
-  Should app-server contextCompaction appear in the shared runtime status lane,
-  operation history only, or a separate app-server-path status surface?
+  app-server contextCompaction appears as display-only vanilla sibling context
+  management evidence without Direct artifact promotion.
 ```
 
-Phase D should avoid generating implementation probes that assume answers to
-these product decisions.
+Future work may revisit these decisions only with explicit upstream
+discriminator rows and counterfactual probes.
 
 ## Phase C Stop Point
 

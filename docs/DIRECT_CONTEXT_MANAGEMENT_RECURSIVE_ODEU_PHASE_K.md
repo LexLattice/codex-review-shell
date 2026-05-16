@@ -207,11 +207,13 @@ direct context maintenance regression passed
 The local/fixture context-management E-probe matrix now has no high-value
 missing rows.
 
-Open product decisions remain separate from the probes:
+Product decisions are recorded in
+[DIRECT_CONTEXT_MANAGEMENT_RECURSIVE_ODEU_PHASE_L.md](./DIRECT_CONTEXT_MANAGEMENT_RECURSIVE_ODEU_PHASE_L.md):
 
 ```text
-Direct memory mode/reset posture
-Direct manual compact action
-first automatic maintenance behavior
-live provider compact primitive proof
+status visibility first
+no Direct manual compact execution yet
+no Direct memory mode/reset UI yet
+no hidden automatic maintenance execution yet
+provider compact primitive remains live-gated
 ```

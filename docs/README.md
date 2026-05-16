@@ -30,6 +30,7 @@
 - [Direct Context Management Recursive ODEU - Phase I](./DIRECT_CONTEXT_MANAGEMENT_RECURSIVE_ODEU_PHASE_I.md)
 - [Direct Context Management Recursive ODEU - Phase J](./DIRECT_CONTEXT_MANAGEMENT_RECURSIVE_ODEU_PHASE_J.md)
 - [Direct Context Management Recursive ODEU - Phase K](./DIRECT_CONTEXT_MANAGEMENT_RECURSIVE_ODEU_PHASE_K.md)
+- [Direct Context Management Recursive ODEU - Phase L](./DIRECT_CONTEXT_MANAGEMENT_RECURSIVE_ODEU_PHASE_L.md)
 - [Direct Obligation Projection And Tool Context Spec](./DIRECT_OBLIGATION_PROJECTION_AND_TOOL_CONTEXT_SPEC.md)
 - [Direct Fork Preview Start Spec](./DIRECT_FORK_PREVIEW_START_SPEC.md)
 - [Direct Derived Preview Fork Start Spec](./DIRECT_DERIVED_PREVIEW_FORK_START_SPEC.md)

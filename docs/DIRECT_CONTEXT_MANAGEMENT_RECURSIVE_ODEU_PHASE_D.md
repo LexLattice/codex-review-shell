@@ -341,9 +341,8 @@ possible_implementation_gap:
   none from the current local E-probe slice.
 
 product_decision_needed:
-  Direct memory mode/reset posture;
-  Direct manual compact action;
-  first automatic maintenance behavior.
+  none for the next status-only implementation slice; Phase L records the
+  current posture. Future execution controls require new discriminator rows.
 
 live_gated:
   native previous_response_id proof;
