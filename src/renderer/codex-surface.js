@@ -136,6 +136,7 @@ const state = {
   turnRetryCountMap: new Map(),
   emptyTurnRetrying: new Set(),
   serverRequests: new Map(),
+  contextManagementEvidenceKeys: new Set(),
   connected: false,
   readyForThreadOpen: false,
   pendingOpenThreadEvent: null,
@@ -237,6 +238,73 @@ async function reportAgentGraph() {
   } catch {
     // Agent graph reporting is advisory and must not block transcript rendering.
   }
+}
+
+function contextManagementEvidenceKey(kind, id) {
+  return [state.threadId || "", kind, id || ""].map((value) => String(value || "")).join(":");
+}
+
+function contextThreadItemEvidenceKey(item = {}) {
+  const id = String(item.itemId || item.id || "").trim();
+  if (!id) return "";
+  const type = String(item.type || "item").trim();
+  const memoryKey = String(item.memoryCitation?.evidenceKey || item.memoryCitation?.memoryId || "").trim();
+  return contextManagementEvidenceKey("item", [type, id, memoryKey].filter(Boolean).join(":"));
+}
+
+function contextControlEvidenceKey(control = {}) {
+  const method = String(control.method || "").trim();
+  const evidenceKey = String(control.evidenceKey || "").trim();
+  if (!method || !evidenceKey) return "";
+  return contextManagementEvidenceKey("control", `${method}:${evidenceKey}`);
+}
+
+async function reportContextManagementEvidence(input = {}) {
+  if (!bridge?.reportContextManagementEvidence) return;
+  const threadId = String(input.threadId || state.threadId || "");
+  if (!threadId) return;
+  const threadItems = Array.isArray(input.threadItems) ? input.threadItems : [];
+  const controlsObserved = Array.isArray(input.controlsObserved) ? input.controlsObserved : [];
+  const pendingKeys = [];
+  const newThreadItems = threadItems.filter((item) => {
+    const key = contextThreadItemEvidenceKey(item);
+    if (!key || state.contextManagementEvidenceKeys.has(key)) return false;
+    pendingKeys.push(key);
+    return true;
+  });
+  const newControlsObserved = controlsObserved.filter((control) => {
+    const key = contextControlEvidenceKey(control);
+    if (!key || state.contextManagementEvidenceKeys.has(key)) return false;
+    pendingKeys.push(key);
+    return true;
+  });
+  if (!newThreadItems.length && !newControlsObserved.length) return;
+  try {
+    await bridge.reportContextManagementEvidence({
+      projectId: project?.id || payload.codexConnection?.projectId || "",
+      threadId,
+      activationEpoch: Number(payload.activationEpoch) || 0,
+      threadItems: newThreadItems,
+      controlsObserved: newControlsObserved,
+    });
+    for (const key of pendingKeys) state.contextManagementEvidenceKeys.add(key);
+    if (state.runtimeDrawerOpen && state.runtimeDrawerTab === "implementation") {
+      refreshDirectImplementationUi({ force: true }).catch(() => {});
+    }
+  } catch {
+    // Context evidence reporting is status-only and must never block rendering.
+  }
+}
+
+function maybeReportContextManagementControl(request = {}) {
+  const method = String(request.method || "");
+  if (!["thread/compact/start", "thread/memoryMode/set", "memory/reset"].includes(method)) return;
+  reportContextManagementEvidence({
+    controlsObserved: [{
+      method,
+      evidenceKey: String(request.key || request.requestId || method),
+    }],
+  }).catch(() => {});
 }
 
 function shortAgentThreadId(threadId) {
@@ -1913,6 +1981,37 @@ function witnessRows(status = {}) {
   ]);
 }
 
+function contextMaintenanceRows(status = {}) {
+  const context = status.contextMaintenance || {};
+  const route = context.route || {};
+  const memory = context.memory || {};
+  const baton = context.baton || {};
+  const omission = context.omission || {};
+  const providerCompact = context.providerCompact || {};
+  const appServerSibling = context.appServerSibling || {};
+  if (!context.schema) return [["status", "not loaded"]];
+  return [
+    ["display", context.displayOnly ? "status only" : "unknown"],
+    ["pressure", context.pressureState || "unknown"],
+    ["route", [route.routeClass, route.routeKind, route.reasonCode].filter(Boolean).join(" · ") || "unknown"],
+    ["memory", [memory.state, memory.pointerState].filter(Boolean).join(" · ") || "unknown"],
+    ["baton", [baton.requirement, baton.state].filter(Boolean).join(" · ") || "unknown"],
+    ["omissions", omission.state || "none"],
+    ["provider compact", `${providerCompact.state || "not_proven"} · transport disabled`],
+    ["vanilla sibling", appServerSibling.contextCompactionObserved ? "context compaction observed" : "no context compaction observed"],
+    ["sibling memory", [
+      appServerSibling.memoryModeObserved ? "memory mode observed" : "",
+      appServerSibling.memoryResetObserved ? "memory reset observed" : "",
+      appServerSibling.memoryCitationCount ? `${appServerSibling.memoryCitationCount} citation${appServerSibling.memoryCitationCount === 1 ? "" : "s"}` : "",
+    ].filter(Boolean).join(" · ") || "none"],
+    ["actions", context.actionability?.actionable ? "actionable" : context.actionability?.reason || "read-only"],
+    ["compact action", context.compactActionAllowed ? "enabled" : "disabled"],
+    ["memory editor", context.memoryEditorAllowed ? "enabled" : "disabled"],
+    ["memory reset", context.memoryResetAllowed ? "enabled" : "disabled"],
+    ["blockers", (context.blockers || []).join(", ") || "none"],
+  ];
+}
+
 function operationHistoryRows(history = {}) {
   if (!history?.rows?.length) return [["status", state.directUiStatusState === "loading" ? "loading" : "no rows"]];
   return history.rows.slice(0, 12).map((row) => [
@@ -2041,6 +2140,7 @@ function runtimeDrawerSections(c, tab) {
       drawerSection("Direct Implementation Projection", directUiProjectionRows()),
       drawerSection("Readiness", readinessRows(readiness)),
       drawerSection("Witness Chips", witnessRows(status)),
+      drawerSection("Context Maintenance", contextMaintenanceRows(status)),
       drawerSection("Active Turn", [
         ["state", status.activeTurn?.state || "unknown"],
         ["composer", status.activeTurn?.composerAllowed ? "allowed" : "blocked"],
@@ -2788,6 +2888,7 @@ function clearRenderedDomState() {
   els.transcript.innerHTML = "";
   state.itemMap.clear();
   state.codexItemMap.clear();
+  state.contextManagementEvidenceKeys.clear();
   state.thoughtItemMap.clear();
   state.thoughtTurnByItemId.clear();
   state.subagentActivityByTurn.clear();
@@ -3631,6 +3732,7 @@ function renderGenericRequestDetails(request, details) {
 
 function renderServerRequest(request) {
   if (!request?.key) return;
+  maybeReportContextManagementControl(request);
   state.serverRequests.set(request.key, request);
   renderRuntimeConstitution();
   const node = ensureMessage(requestMessageId(request), "system", request.title || "Codex request");
@@ -5281,6 +5383,17 @@ function appendThoughtAssistantDelta(itemId, delta, phaseHint = "") {
 function renderItem(item, authorContext = currentAuthorContext()) {
   if (!item || !item.id) return;
   rememberCodexItem({ threadId: state.threadId, turnId: item.turnId || state.turnId, itemId: item.id }, item);
+  if (item.memoryCitation && typeof item.memoryCitation === "object") {
+    reportContextManagementEvidence({
+      threadItems: [{
+        id: String(item.id),
+        type: String(item.type || "memoryCitation"),
+        memoryCitation: {
+          evidenceKey: String(item.memoryCitation.evidenceKey || item.memoryCitation.memoryId || item.id),
+        },
+      }],
+    }).catch(() => {});
+  }
   if (item.type === "userMessage") {
     const text = (item.content || []).map(userInputToText).filter(Boolean).join("\n\n");
     const notification = subagentNotificationFromText(text);
@@ -5334,6 +5447,13 @@ function renderItem(item, authorContext = currentAuthorContext()) {
     return;
   }
   if (item.type === "contextCompaction") {
+    reportContextManagementEvidence({
+      threadItems: [{
+        id: String(item.id),
+        type: "contextCompaction",
+        lifecycle: String(item.lifecycle || item.status || "observed"),
+      }],
+    }).catch(() => {});
     setMessageText(item.id, "system", "Context compacted for this thread.", "System");
     return;
   }
