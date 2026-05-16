@@ -177,10 +177,14 @@ function buildScopedProofEvidenceFromCase(caseReport = {}, context = {}) {
 
 function buildScopedImplementationLaneProofEvidence({ report = {}, model = "", endpoint = "", authStatus = {}, credentials = {}, profileHash = "" } = {}) {
   const createdAt = normalizeString(report.createdAt, "") || nowIso();
+  const createdAtMs = Date.parse(createdAt);
+  const expiresAtMs = Number.isFinite(createdAtMs)
+    ? createdAtMs + DEFAULT_IMPLEMENTATION_PROOF_MAX_AGE_MS
+    : Date.now();
   const context = {
     runId: report.runId,
     generatedAt: createdAt,
-    expiresAt: nowIso(Date.parse(createdAt) + DEFAULT_IMPLEMENTATION_PROOF_MAX_AGE_MS),
+    expiresAt: nowIso(expiresAtMs),
     model,
     accountEvidenceKey: accountEvidenceKeyFromInputs({ authStatus, credentials }),
     endpointClass: endpointClass(endpoint),
@@ -228,6 +232,20 @@ function newestFiles(rootDir, maxFiles = 100) {
     .map((entry) => entry.filePath);
 }
 
+function directoryMtimeMs(directory) {
+  try {
+    return fs.statSync(directory).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+function requiredExactScopeMatch(scope = {}, expected = {}, key = "") {
+  const expectedValue = normalizeString(expected[key], "");
+  const actualValue = normalizeString(scope[key], "");
+  return Boolean(expectedValue) && actualValue === expectedValue;
+}
+
 function rowScopeMatches(row = {}, expected = {}) {
   const scope = isPlainObject(row.scope) ? row.scope : {};
   const capability = capabilityForScenario(scope.scenario) ||
@@ -236,13 +254,10 @@ function rowScopeMatches(row = {}, expected = {}) {
   if (scope.capabilityId !== capability.capabilityId) return false;
   if (scope.requestShapeClass !== capability.requestShapeClass) return false;
   if (scope.toolName !== capability.toolName) return false;
-  const model = normalizeString(expected.model, "");
-  if (model && normalizeString(scope.model, "") && normalizeString(scope.model, "") !== model) return false;
-  const accountEvidenceKey = normalizeString(expected.accountEvidenceKey, "");
-  if (accountEvidenceKey && normalizeString(scope.accountEvidenceKey, "") && normalizeString(scope.accountEvidenceKey, "") !== accountEvidenceKey) return false;
-  const expectedEndpointClass = normalizeString(expected.endpointClass, "");
-  if (expectedEndpointClass && normalizeString(scope.endpointClass, "") && normalizeString(scope.endpointClass, "") !== expectedEndpointClass) return false;
-  return true;
+  return requiredExactScopeMatch(scope, expected, "model") &&
+    requiredExactScopeMatch(scope, expected, "accountEvidenceKey") &&
+    requiredExactScopeMatch(scope, expected, "endpointClass") &&
+    requiredExactScopeMatch(scope, expected, "endpointHash");
 }
 
 function usableRow(row = {}, expected = {}, nowMs = Date.now()) {
@@ -250,7 +265,7 @@ function usableRow(row = {}, expected = {}, nowMs = Date.now()) {
   if (row.usable !== true || row.status !== "runtime_probed") return false;
   if (row.coverageSource !== "real_provider" || row.countsAsRealProviderProof !== true) return false;
   const expiresAtMs = Date.parse(normalizeString(row.expiresAt, ""));
-  if (Number.isFinite(expiresAtMs) && expiresAtMs > 0 && expiresAtMs <= nowMs) return false;
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= nowMs) return false;
   return rowScopeMatches(row, expected);
 }
 
@@ -258,9 +273,30 @@ class DirectImplementationProofEvidenceStore {
   constructor(options = {}) {
     this.rootDir = normalizeString(options.rootDir, "");
     this.maxReports = Number(options.maxReports || 100);
+    this.cacheTtlMs = Number(options.cacheTtlMs || 2_000);
+    this.cache = {
+      fingerprint: "",
+      rows: [],
+      loadedAtMs: 0,
+    };
+  }
+
+  evidenceFingerprint() {
+    return JSON.stringify({
+      rootDir: this.rootDir,
+      rootMtimeMs: directoryMtimeMs(this.rootDir),
+      maxReports: this.maxReports,
+    });
   }
 
   readEvidenceRows() {
+    const nowMs = Date.now();
+    if (this.cache.loadedAtMs && nowMs - this.cache.loadedAtMs < this.cacheTtlMs) return this.cache.rows;
+    const fingerprint = this.evidenceFingerprint();
+    if (this.cache.fingerprint === fingerprint) {
+      this.cache.loadedAtMs = nowMs;
+      return this.cache.rows;
+    }
     const rows = [];
     for (const filePath of newestFiles(this.rootDir, this.maxReports)) {
       const report = readJsonFile(filePath);
@@ -271,6 +307,7 @@ class DirectImplementationProofEvidenceStore {
         if (isPlainObject(row)) rows.push(row);
       }
     }
+    this.cache = { fingerprint, rows, loadedAtMs: nowMs };
     return rows;
   }
 
@@ -280,6 +317,7 @@ class DirectImplementationProofEvidenceStore {
       model: normalizeString(options.model || options.project?.surfaceBinding?.codex?.model, ""),
       accountEvidenceKey: accountEvidenceKeyFromInputs(options),
       endpointClass: endpointClass(options.endpoint),
+      endpointHash: endpointHash(options.endpoint),
     };
     const rows = this.readEvidenceRows();
     const capabilities = DIRECT_IMPLEMENTATION_REQUIRED_CAPABILITIES.map((capability) => {
@@ -314,6 +352,7 @@ class DirectImplementationProofEvidenceStore {
       expectedScope: {
         model: expected.model,
         endpointClass: expected.endpointClass,
+        endpointHashPresent: Boolean(expected.endpointHash),
         accountEvidenceKeyPresent: Boolean(expected.accountEvidenceKey),
         rawAccountIncluded: false,
       },

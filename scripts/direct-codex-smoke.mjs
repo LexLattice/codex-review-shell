@@ -689,6 +689,47 @@ try {
   });
   assert(mismatchedProof.canSelectImplementationLane === false, "Scoped proof resolver must reject account-scope mismatch.");
   assert(scopedAccountEvidenceKey("account-fixture") !== scopedAccountEvidenceKey("other-account"), "Scoped proof account keys must differ without exposing raw account ids.");
+  const customEndpointRoot = path.join(proofEvidenceRoot, "custom-endpoint-root");
+  const customEndpointRunDir = path.join(customEndpointRoot, "run_custom_endpoint");
+  fs.mkdirSync(customEndpointRunDir, { recursive: true });
+  const customEndpointReport = {
+    ...proofReport,
+    runId: "run_custom_endpoint",
+    scopedImplementationLaneProof: null,
+  };
+  customEndpointReport.scopedImplementationLaneProof = buildScopedImplementationLaneProofEvidence({
+    report: customEndpointReport,
+    model: "gpt-5.4",
+    endpoint: "https://example.invalid/proxy-a/responses",
+    authStatus: { accountId: "account-fixture" },
+    credentials: {},
+    profileHash: "profile_hash_fixture",
+  });
+  fs.writeFileSync(path.join(customEndpointRunDir, "implementation-proof-report.json"), `${JSON.stringify(customEndpointReport, null, 2)}\n`);
+  const customEndpointProof = new DirectImplementationProofEvidenceStore({ rootDir: customEndpointRoot }).resolveScopedProofEvidence({
+    model: "gpt-5.4",
+    authStatus: { accountId: "account-fixture" },
+    endpoint: "https://example.invalid/proxy-b/responses",
+  });
+  assert(customEndpointProof.canSelectImplementationLane === false, "Scoped proof resolver must reject same-class custom endpoint hash mismatch.");
+  const invalidExpiryRoot = path.join(proofEvidenceRoot, "invalid-expiry-root");
+  const invalidExpiryRunDir = path.join(invalidExpiryRoot, "run_invalid_expiry");
+  fs.mkdirSync(invalidExpiryRunDir, { recursive: true });
+  const invalidExpiryReport = {
+    ...proofReport,
+    runId: "run_invalid_expiry",
+    scopedImplementationLaneProof: {
+      ...proofReport.scopedImplementationLaneProof,
+      evidence: proofReport.scopedImplementationLaneProof.evidence.map((entry) => ({ ...entry, expiresAt: "" })),
+    },
+  };
+  fs.writeFileSync(path.join(invalidExpiryRunDir, "implementation-proof-report.json"), `${JSON.stringify(invalidExpiryReport, null, 2)}\n`);
+  const invalidExpiryProof = new DirectImplementationProofEvidenceStore({ rootDir: invalidExpiryRoot }).resolveScopedProofEvidence({
+    model: "gpt-5.4",
+    authStatus: { accountId: "account-fixture" },
+    endpoint: "https://chatgpt.com/backend-api/codex/responses",
+  });
+  assert(invalidExpiryProof.canSelectImplementationLane === false, "Scoped proof resolver must fail closed on missing expiry.");
 } finally {
   fs.rmSync(proofEvidenceRoot, { recursive: true, force: true });
 }
