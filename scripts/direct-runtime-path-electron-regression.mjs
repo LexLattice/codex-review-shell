@@ -37,7 +37,8 @@ function relaunchUnderXvfb() {
   });
 }
 
-if (isLinuxWithoutDisplay()) relaunchUnderXvfb();
+const relaunchingUnderXvfb = isLinuxWithoutDisplay();
+if (relaunchingUnderXvfb) relaunchUnderXvfb();
 
 function parseArgs(argv) {
   const options = {};
@@ -72,6 +73,22 @@ function ensureDirectory(directory) {
 
 function sha256(value) {
   return crypto.createHash("sha256").update(String(value || "")).digest("hex");
+}
+
+function pathLeakVariants(value) {
+  const text = String(value || "");
+  if (!text) return [];
+  return [
+    text,
+    text.replace(/\\/g, "\\\\"),
+    text.replace(/\\/g, "/"),
+  ].filter(Boolean);
+}
+
+function containsPathLeak(serialized, paths = []) {
+  return paths
+    .flatMap(pathLeakVariants)
+    .some((variant) => variant && serialized.includes(variant));
 }
 
 function stableValue(value) {
@@ -406,7 +423,7 @@ function cleanupTempRoot(tempRoot) {
 function rawExposureScan(report) {
   const serialized = JSON.stringify(report);
   const blockers = [];
-  if (/\/home\/rose\/work|\/home\/rose\/\.config/.test(serialized)) blockers.push("raw_home_path");
+  if (containsPathLeak(serialized, [os.homedir(), repoRoot])) blockers.push("raw_home_path");
   if (/[A-Za-z]:\\/.test(serialized)) blockers.push("raw_windows_path");
   if (/\/mnt\/[a-z]\//.test(serialized)) blockers.push("raw_wsl_path");
   if (/(Bearer\s+[A-Za-z0-9._-]+|accessToken|refreshToken|session_token|sk-[A-Za-z0-9])/i.test(serialized)) blockers.push("raw_token");
@@ -612,7 +629,9 @@ async function main() {
   process.exit(report.summary.status === "passed" ? 0 : 1);
 }
 
-main().catch((error) => {
-  console.error(error?.stack || error?.message || String(error));
-  process.exit(1);
-});
+if (!relaunchingUnderXvfb) {
+  main().catch((error) => {
+    console.error(error?.stack || error?.message || String(error));
+    process.exit(1);
+  });
+}

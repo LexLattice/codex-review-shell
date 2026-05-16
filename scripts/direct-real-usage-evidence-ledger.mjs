@@ -53,6 +53,22 @@ function sha256(value) {
   return crypto.createHash("sha256").update(String(value || "")).digest("hex");
 }
 
+function pathLeakVariants(value) {
+  const text = String(value || "");
+  if (!text) return [];
+  return [
+    text,
+    text.replace(/\\/g, "\\\\"),
+    text.replace(/\\/g, "/"),
+  ].filter(Boolean);
+}
+
+function containsPathLeak(serialized, paths = []) {
+  return paths
+    .flatMap(pathLeakVariants)
+    .some((variant) => variant && serialized.includes(variant));
+}
+
 function stableValue(value) {
   if (Array.isArray(value)) return value.map(stableValue);
   if (isPlainObject(value)) {
@@ -233,6 +249,7 @@ function rowsFromImplementationCase(item) {
 }
 
 function ingestMatrixReport(rowMap, source, report) {
+  if (reportStatus(report) !== "passed") return;
   const rows = rowsFromMatrixReport(report);
   if (!rows.length) return;
   pushEvidence(rowMap, rows, {
@@ -354,7 +371,6 @@ function ingestReport(rowMap, source, report, hint = "") {
 function rawExposureScan(report) {
   const serialized = JSON.stringify(report);
   const patterns = [
-    { code: "raw_home_path", pattern: /\/home\/rose\/work|\/home\/rose\/\.config/ },
     { code: "raw_windows_path", pattern: /[A-Za-z]:\\/ },
     { code: "raw_wsl_path", pattern: /\/mnt\/[a-z]\// },
     { code: "raw_token", pattern: /(Bearer\s+[A-Za-z0-9._-]+|accessToken|refreshToken|session_token|sk-[A-Za-z0-9])/i },
@@ -362,6 +378,7 @@ function rawExposureScan(report) {
     { code: "raw_provider_payload", pattern: /"(rawProviderPayload|rawRequestBody|rawResponseBody)"\s*:\s*"(?!false\b)[^"]+"/i },
   ];
   const hits = patterns.filter((entry) => entry.pattern.test(serialized)).map((entry) => entry.code);
+  if (containsPathLeak(serialized, [os.homedir(), repoRoot])) hits.push("raw_home_path");
   return {
     passed: hits.length === 0,
     blockerCodes: hits,
@@ -457,6 +474,10 @@ async function main() {
   });
 
   const countBy = (predicate) => rowEvidence.filter(predicate).length;
+  const failedProofSources = sources.filter((source) =>
+    source.loaded &&
+    (source.schema === "direct_matrix_eprobe_conformance_report@1" || source.inputKind === "matrix") &&
+    source.reportStatus !== "passed");
   const report = {
     schema: REPORT_SCHEMA,
     reportId: runId,
@@ -471,7 +492,12 @@ async function main() {
     sourceDigest: sha256(stableStringify({ sources, rowEvidence })),
     sources,
     summary: {
-      status: sources.every((source) => source.loaded) ? "passed" : "source_missing",
+      status: !sources.every((source) => source.loaded)
+        ? "source_missing"
+        : failedProofSources.length
+          ? "source_failed"
+          : "passed",
+      failedProofSourceIds: failedProofSources.map((source) => source.sourceId),
       matrixRowsTotal: matrixRows.length,
       representedRows: countBy((row) => row.proofLevel !== "not_represented"),
       liveProviderRows: countBy((row) => row.liveProviderProved),
