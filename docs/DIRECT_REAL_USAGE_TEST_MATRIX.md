@@ -7,6 +7,10 @@ direct harness with actual app-server/direct provider traffic. Fixture and
 preflight cases remain in the matrix because they prove safety boundaries that
 must hold before and after live calls.
 
+Current evidence ledger:
+
+- [2026-05-16 round-2 evidence ledger](./audits/DIRECT_REAL_USAGE_EVIDENCE_LEDGER_2026-05-16.md)
+
 ## Run Levels
 
 | Level | Provider calls | Purpose |
@@ -15,6 +19,7 @@ must hold before and after live calls.
 | `live-text` | Yes | Proves app-server baseline and direct text-only first/follow-up turns against current credentials. |
 | `live-implementation` | Yes | Proves real provider tool-call intent plus local read/patch/command authority in a disposable workspace. |
 | `fixture-ui` | No | Proves user-facing runtime path switching and persisted defaults without live transport. |
+| `electron-ui` | No provider model call | Proves visible Electron controls, restart persistence, and settings preservation. |
 
 ## Matrix
 
@@ -34,6 +39,8 @@ must hold before and after live calls.
 | `RU-NEG-001` | `preflight` | `node scripts/direct-implementation-proof-regression.mjs --mode=preflight --include-negative-safety` | Patch delete is blocked by local authority. | `negative_patch_delete_deferred.status=blocked` |
 | `RU-NEG-002` | `preflight` | same preflight implementation run | Network/helper command is blocked by local authority. | `negative_command_network_helper_blocked.status=blocked` |
 | `RU-PATH-001` | `fixture-ui` | `npm run direct:runtime-path` | User-facing app-server/direct-text/direct-implementation switch persists and preserves existing model/reasoning settings. | runtime path regression passes |
+| `RU-LEDGER-001` | `preflight` | `npm run direct:evidence-ledger -- --matrix-report ... --live-text-report ... --implementation-reports ... --ui-report ... --context-report ...` | Aggregates selected live, fixture, and UI reports into one row-level evidence ledger without starting provider/app-server/tool authority. | `rug001Closed=true`, raw exposure passes, sentinels are zero |
+| `RU-PATH-002` | `electron-ui` | `npm run direct:runtime-path:electron` | Visible Electron path selector reads a persisted Direct Text default, switches back to App Server, recognizes copied real live-probe evidence, switches App Server -> Direct Text, survives restart, and preserves model/reasoning/permission settings. | `directTextSelectionExercised=true`; Direct Tools remains blocked unless implementation-lane gate evidence is present |
 
 ## Default Execution Order
 
@@ -43,6 +50,8 @@ must hold before and after live calls.
 4. `RU-IMP-002`.
 5. `RU-IMP-003`.
 6. `RU-IMP-004`.
+7. `RU-LEDGER-001` after all selected reports exist.
+8. `RU-PATH-002` for visible Electron persistence coverage.
 
 Stop and cluster failures by theory before continuing to a higher-risk level.
 For example, an evidence-scope failure in `RU-LIVE-001` should be fixed before
