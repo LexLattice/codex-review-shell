@@ -160,6 +160,51 @@ These are green, but should not be described as live-provider proof:
 | Usage/readiness aggregation | fixture/preflight | `usage_readiness` suite passed. |
 | Runtime path switch persistence | fixture UI plus Electron UI | `direct:runtime-path` passed; `direct:runtime-path:electron` passed the visible App Server -> Direct Text selector path with copied live-probe evidence. |
 
+## 2026-05-17 Scoped Implementation-Lane Proof Refresh
+
+After wiring Direct Tools selection to scoped implementation-lane proof
+evidence, the prior 2026-05-16 live reports were no longer sufficient by
+themselves because they predated `scopedImplementationLaneProof`. The live
+implementation proof runner was re-run against the pinned WSL app profile:
+
+```bash
+npm run direct:implementation-proof -- --mode=live --allow-live-provider-call --app-user-data-root /home/rose/.config/codex-review-shell --scenarios=read --include-negative-safety --run-id real_usage_scoped_20260517_read --timeout-ms 180000
+npm run direct:implementation-proof -- --mode=live --allow-live-provider-call --app-user-data-root /home/rose/.config/codex-review-shell --scenarios=read_loop --include-negative-safety --run-id real_usage_scoped_20260517_read_loop --timeout-ms 180000
+npm run direct:implementation-proof -- --mode=live --allow-live-provider-call --app-user-data-root /home/rose/.config/codex-review-shell --scenarios=patch --include-negative-safety --run-id real_usage_scoped_20260517_patch --timeout-ms 180000
+npm run direct:implementation-proof -- --mode=live --allow-live-provider-call --app-user-data-root /home/rose/.config/codex-review-shell --scenarios=command --include-negative-safety --run-id real_usage_scoped_20260517_command --timeout-ms 180000
+```
+
+All four reports passed raw-exposure scanning and produced usable scoped
+proof rows under the current account/model/endpoint scope:
+
+| Scoped capability | Report path | Evidence id |
+| --- | --- | --- |
+| `read_file` | `/home/rose/.config/codex-review-shell/direct-implementation-proof-runs/real_usage_scoped_20260517_read/implementation-proof-report.json` | `impl_tool_proof_d67e33223df5c59506ee` |
+| `read_file_loop` | `/home/rose/.config/codex-review-shell/direct-implementation-proof-runs/real_usage_scoped_20260517_read_loop/implementation-proof-report.json` | `impl_tool_proof_9a0002faa51b304cca1d` |
+| `apply_patch` | `/home/rose/.config/codex-review-shell/direct-implementation-proof-runs/real_usage_scoped_20260517_patch/implementation-proof-report.json` | `impl_tool_proof_673a7f70760eb20940a1` |
+| `run_command` | `/home/rose/.config/codex-review-shell/direct-implementation-proof-runs/real_usage_scoped_20260517_command/implementation-proof-report.json` | `impl_tool_proof_87d20004051f2bb09d0f` |
+
+The aggregate scoped proof resolver returned:
+
+```text
+status: ready
+evidenceState: runtime_probed
+canSelectImplementationLane: true
+missingCapabilityIds: []
+```
+
+Follow-up local checks:
+
+```bash
+npm run check:syntax
+npm run direct:smoke
+npm run direct:runtime-path
+```
+
+This closes the headless evidence side of Direct Tools selector eligibility.
+The remaining `RUG-002` work is visible Electron UI coverage for the
+Direct Text -> Direct Tools transition with these real scoped proofs present.
+
 ## E-Probe Gap Matrix
 
 The next probe work should target gaps in branch distinctions, not individual
@@ -168,7 +213,7 @@ code paths.
 | Gap id | Classification | Why it matters | Existing evidence | Next E-probe shape |
 | --- | --- | --- | --- | --- |
 | `RUG-001` | closed in current code bundle | The aggregate matrix report cannot mark external live proof rows as live-proved because that runner is fixture/preflight conformance only. | `direct:evidence-ledger` ingests selected live/fixture/UI reports and emits per-row proof levels. | Keep this aggregator in the default post-round evidence pass. |
-| `RUG-002` | partial Electron path proof | Runtime switch persistence is headless-fixture proved, but Direct Tools selection still lacks visible evidence-backed gate coverage. | `direct:runtime-path` passed; `direct:runtime-path:electron` passed persisted Direct Text readback, UI rollback to App Server, copied real live-probe evidence recognition, App Server -> Direct Text switch, restart persistence, and independent settings preservation. | Remaining: evidence-backed Electron switch from Direct Text -> Direct Implementation after implementation-lane tool-continuation proof is wired into the runtime gate. Do not fake direct eligibility. |
+| `RUG-002` | partial Electron path proof | Runtime switch persistence is headless-fixture proved, and scoped Direct Tools proof evidence is now headless-resolver proved, but the visible selector transition still needs Electron observation. | `direct:runtime-path` passed; `direct:runtime-path:electron` passed persisted Direct Text readback, UI rollback to App Server, copied real live-probe evidence recognition, App Server -> Direct Text switch, restart persistence, and independent settings preservation. Scoped implementation proof resolver now returns `canSelectImplementationLane=true`. | Remaining: Electron switch probe for Direct Text -> Direct Tools with real scoped proofs present; observe enabled state, persistence, and rollback. |
 | `RUG-003` | manual/Electron provider loop gap | Live read/patch/command loops are script-proved, but approval cards and status rows are not clicked/observed in the visible UI. | `direct:implementation-proof` live reports passed; UI projection fixture passed. | Electron probe with disposable workspace: trigger provider read/patch/command, approve via card, observe operation history/status row and final assistant continuation. |
 | `RUG-004` | crash/recovery live-side-effect gap | No round-2 live probe interrupts after patch/command side effect and then restarts. | Recovery fixture suite passed; live patch/command normal path passed. | Fault-injection probe: after local patch/command result write but before/after continuation handoff, restart and assert no auto-retry, degraded state visible, workspace effect summary retained. |
 | `RUG-005` | long-context live pressure gap | Context maintenance is status/projection proved, not exercised under a real long-context pressure turn. | `direct:context-eprobes` passed; no provider compaction authority claimed. | Construct bounded long thread; assert pressure/status projection, no hidden compaction, no provider compact call, and context pack omission refs if cap forces omission. |
@@ -186,7 +231,7 @@ The next bundle should remain probe expansion, not feature work. Since
 `RUG-001` is now covered by `direct:evidence-ledger`, the next high-leverage
 work is:
 
-1. Wire implementation-lane proof evidence into the runtime gate, then extend the Electron switch probe for the remaining Direct Text -> Direct Tools part of `RUG-002`.
+1. Extend the Electron switch probe for the remaining Direct Text -> Direct Tools part of `RUG-002` using the 2026-05-17 scoped proof reports.
 2. Add Electron approval-card/status-row probes for `RUG-003`.
 
 These connect the already-green headless/live proof to the actual user-visible
