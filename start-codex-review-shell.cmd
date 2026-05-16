@@ -7,6 +7,7 @@ if "%ROOT_DIR:~-1%"=="\" set "ROOT_DIR=%ROOT_DIR:~0,-1%"
 set "PATH=C:\Program Files\nodejs;C:\Program Files\Git\cmd;C:\Users\%USERNAME%\AppData\Roaming\npm;%PATH%"
 if not defined CODEX_REVIEW_SHELL_DEFAULT_WSL_DISTRO set "CODEX_REVIEW_SHELL_DEFAULT_WSL_DISTRO=Ubuntu"
 if not defined CODEX_REVIEW_SHELL_DEFAULT_WSL_PATH set "CODEX_REVIEW_SHELL_DEFAULT_WSL_PATH=/home/rose/work/LexLattice/codex-review-shell"
+if not defined CODEX_REVIEW_SHELL_USER_DATA_DIR set "CODEX_REVIEW_SHELL_USER_DATA_DIR=%APPDATA%\codex-review-shell"
 
 set "LAUNCHER_STDOUT=%ROOT_DIR%\launcher-stdout.log"
 set "LAUNCHER_STDERR=%ROOT_DIR%\launcher-stderr.log"

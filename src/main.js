@@ -39,6 +39,7 @@ const CHATGPT_PARTITION = "persist:codex-review-shell-chatgpt";
 const PREVIEW_LIMIT_BYTES = 384 * 1024;
 const DIRECTORY_ENTRY_LIMIT = 500;
 const CODEX_THREAD_RUNTIME_PREF_MAX_ENTRIES = 500;
+const USER_DATA_DIR_ENV_VAR = "CODEX_REVIEW_SHELL_USER_DATA_DIR";
 
 const appRoot = path.resolve(__dirname, "..");
 const repoRoot = appRoot;
@@ -48,6 +49,10 @@ const shellHtmlPath = path.join(rendererRoot, "index.html");
 const codexSurfacePreloadPath = path.join(__dirname, "preload-codex-surface.js");
 const smokeExitMs = Number.parseInt(process.env.CODEX_REVIEW_SHELL_SMOKE_EXIT_MS ?? "", 10);
 const workspaceAgentPath = path.join(__dirname, "backend", "wsl-agent.js");
+
+function earlyNormalizeString(value, fallback = "") {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
 
 function existingFileMtimeMs(targetPath) {
   try {
@@ -70,6 +75,11 @@ function uniquePaths(values) {
 
 function configureAppIdentity() {
   app.setName(APP_TITLE);
+  const explicitUserDataDir = earlyNormalizeString(process.env[USER_DATA_DIR_ENV_VAR], "");
+  if (explicitUserDataDir) {
+    app.setPath("userData", path.resolve(explicitUserDataDir));
+    return;
+  }
   const appDataPath = app.getPath("appData");
   const canonicalUserDataPath = path.join(appDataPath, APP_TITLE);
   const legacyUserDataPath = path.join(appDataPath, "codex-review-shell");
