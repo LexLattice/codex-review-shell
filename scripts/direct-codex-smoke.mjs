@@ -52,6 +52,11 @@ const {
   normalizeCodexRuntimeMode,
 } = require("../src/main/direct/runtime/runtime-status");
 const {
+  DirectImplementationProofEvidenceStore,
+  buildScopedImplementationLaneProofEvidence,
+  scopedAccountEvidenceKey,
+} = require("../src/main/direct/probes/implementation-proof-evidence-store");
+const {
   DirectExperimentalActivationStore,
   activeDirectTurnCountForProject,
   evaluateDirectTextOnlyRuntimeSelection,
@@ -477,6 +482,34 @@ const activationSessionStoreStatus = {
   available: true,
   recovery: { missingSessionFileCount: 0 },
 };
+function implementationProofFixture(missingCapabilityIds = []) {
+  const required = ["read_file", "read_file_loop", "apply_patch", "run_command"];
+  const rows = required.map((capabilityId) => {
+    const missing = missingCapabilityIds.includes(capabilityId);
+    return {
+      capabilityId,
+      status: missing ? "missing" : "ready",
+      evidenceState: missing ? "missing" : "runtime_probed",
+      evidenceId: missing ? "" : `proof_${capabilityId}`,
+      sourceCaseId: missing ? "" : `real_provider_${capabilityId}`,
+      rawProviderPayloadIncluded: false,
+      rawToolArgsIncluded: false,
+      rawWorkspacePathIncluded: false,
+      rawAccountIncluded: false,
+    };
+  });
+  return {
+    status: missingCapabilityIds.length ? "partial" : "ready",
+    evidenceState: missingCapabilityIds.length ? "partial" : "runtime_probed",
+    canSelectImplementationLane: missingCapabilityIds.length === 0,
+    requiredCapabilities: rows,
+    missingCapabilityIds,
+    rawProviderPayloadIncluded: false,
+    rawToolArgsIncluded: false,
+    rawWorkspacePathIncluded: false,
+    rawAccountIncluded: false,
+  };
+}
 const activationLiveTextOnly = {
   status: "ready",
   turnRunnable: true,
@@ -502,7 +535,7 @@ const textOnlyActivation = evaluateDirectExperimentalProjectActivation({
 });
 assert(textOnlyActivation.status.state === "text_only_eligible", "Expected text-only activation to remain informational.");
 assert(textOnlyActivation.status.eligible === false, "Text-only preview must not become implementation-lane activation.");
-assert(textOnlyActivation.status.gateSummary.blockers.some((item) => item.blockerCode === "tool_evidence_missing"), "Expected activation status to expose renderer-safe blocker details.");
+assert(textOnlyActivation.status.gateSummary.blockers.some((item) => item.blockerCode === "read_tool_proof_missing"), "Expected activation status to expose renderer-safe scoped proof blocker details.");
 const textOnlySelection = evaluateDirectTextOnlyRuntimeSelection({
   project: activationProject,
   authStatus: activationAuthStatus,
@@ -517,11 +550,21 @@ const activationLiveWithTool = {
   toolsEnabled: true,
   readOnlyToolContinuation: {
     status: "ready",
-    evidenceState: "accepted",
+    evidenceState: "runtime_probed",
     capabilityId: "continuation.tool_result",
   },
+  patchApplyContinuation: {
+    status: "ready",
+    evidenceState: "runtime_probed",
+    capabilityId: "direct_patch_apply_continuation@1",
+  },
+  commandExecutionContinuation: {
+    status: "ready",
+    evidenceState: "runtime_probed",
+    capabilityId: "direct_command_execution_continuation@1",
+  },
 };
-const implementationActivation = evaluateDirectExperimentalProjectActivation({
+const profileOnlyImplementationActivation = evaluateDirectExperimentalProjectActivation({
   project: activationProject,
   authStatus: activationAuthStatus,
   accountEvidenceKey: "raw-account-fixture",
@@ -530,7 +573,23 @@ const implementationActivation = evaluateDirectExperimentalProjectActivation({
   imports: {},
   workspaceStatus: activationWorkspaceStatus,
 });
-assert(implementationActivation.status.state === "eligible", "Expected live text plus read-only tool evidence to be implementation-lane eligible.");
+assert(profileOnlyImplementationActivation.status.state === "text_only_eligible", "Profile-level tool support must not enable Direct Tools without scoped implementation proof.");
+assert(profileOnlyImplementationActivation.status.gateSummary.blockers.some((item) => item.blockerCode === "read_tool_proof_missing"), "Expected missing scoped read proof blocker.");
+assert(profileOnlyImplementationActivation.status.gateSummary.blockers.some((item) => item.blockerCode === "patch_tool_proof_missing"), "Expected missing scoped patch proof blocker.");
+const activationLiveWithScopedProof = {
+  ...activationLiveWithTool,
+  implementationLaneProof: implementationProofFixture(),
+};
+const implementationActivation = evaluateDirectExperimentalProjectActivation({
+  project: activationProject,
+  authStatus: activationAuthStatus,
+  accountEvidenceKey: "raw-account-fixture",
+  liveTextStatus: activationLiveWithScopedProof,
+  sessionStore: activationSessionStoreStatus,
+  imports: {},
+  workspaceStatus: activationWorkspaceStatus,
+});
+assert(implementationActivation.status.state === "eligible", "Expected live text plus scoped tool proof evidence to be implementation-lane eligible.");
 assert(implementationActivation.status.eligible === true, "Expected implementation-lane activation to be eligible.");
 assert(implementationActivation.status.rawAuthExposed === false, "Activation status must not expose raw auth.");
 assert(implementationActivation.status.rawWorkspacePathExposed === false, "Activation status must not expose raw workspace paths.");
@@ -538,11 +597,12 @@ const activationRuntimeStatus = buildDirectRuntimeStatus({
   project: activationProject,
   authStatus: activationAuthStatus,
   profileDoc: acceptedLiveTextProfile(),
-  liveTextRuntime: { available: true, status: activationLiveWithTool },
+  liveTextRuntime: { available: true, status: activationLiveWithScopedProof },
   activation: implementationActivation.status,
 });
 assert(activationRuntimeStatus.activation.state === "eligible", "Expected runtime status to include activation readiness.");
-assert(activationRuntimeStatus.activation.gateSummary.blockedReasons.tool_evidence_missing === undefined, "Eligible activation must not report tool evidence blocker.");
+assert(activationRuntimeStatus.activation.gateSummary.blockedReasons.read_tool_proof_missing === undefined, "Eligible activation must not report scoped read proof blocker.");
+assert(activationRuntimeStatus.directImplementationLane.implementationProof.canSelectImplementationLane === true, "Runtime status must expose scoped proof readiness.");
 const textOnlyRuntimeStatus = buildDirectRuntimeStatus({
   project: {
     surfaceBinding: {
@@ -567,7 +627,7 @@ const redactedAccountActivationA = evaluateDirectExperimentalProjectActivation({
   project: activationProject,
   authStatus: { ...activationAuthStatus, accountId: "[REDACTED:account-id]" },
   accountEvidenceKey: "private-account-a",
-  liveTextStatus: activationLiveWithTool,
+  liveTextStatus: activationLiveWithScopedProof,
   sessionStore: activationSessionStoreStatus,
   imports: {},
   workspaceStatus: activationWorkspaceStatus,
@@ -576,12 +636,103 @@ const redactedAccountActivationB = evaluateDirectExperimentalProjectActivation({
   project: activationProject,
   authStatus: { ...activationAuthStatus, accountId: "[REDACTED:account-id]" },
   accountEvidenceKey: "private-account-b",
-  liveTextStatus: activationLiveWithTool,
+  liveTextStatus: activationLiveWithScopedProof,
   sessionStore: activationSessionStoreStatus,
   imports: {},
   workspaceStatus: activationWorkspaceStatus,
 });
 assert(redactedAccountActivationA.gate.scope.accountEvidenceKey !== redactedAccountActivationB.gate.scope.accountEvidenceKey, "Private account evidence must scope gates even when renderer auth status is redacted.");
+const proofEvidenceRoot = fs.mkdtempSync(path.join(os.tmpdir(), "direct-impl-proof-evidence-"));
+try {
+  const proofRunDir = path.join(proofEvidenceRoot, "run_scoped");
+  fs.mkdirSync(proofRunDir, { recursive: true });
+  const proofReport = {
+    schema: "direct_implementation_lane_real_provider_proof_report@1",
+    runId: "run_scoped",
+    createdAt: new Date().toISOString(),
+    cases: ["read", "read_loop", "patch", "command"].map((scenario) => ({
+      caseId: `real_provider_${scenario}`,
+      scenario,
+      status: "proved",
+      proofOutcome: "proved_full_loop",
+      coverageSource: "real_provider",
+      countsAsRealProviderProof: true,
+      providerToolCallObserved: true,
+      localAuthorityExecuted: true,
+      providerContinuationSent: true,
+      providerContinuationCompleted: true,
+      toolDeclarationEvidence: {},
+      localAction: {},
+    })),
+    rawExposureScan: { status: "passed", findingCount: 0 },
+  };
+  proofReport.scopedImplementationLaneProof = buildScopedImplementationLaneProofEvidence({
+    report: proofReport,
+    model: "gpt-5.4",
+    endpoint: "https://chatgpt.com/backend-api/codex/responses",
+    authStatus: { accountId: "account-fixture" },
+    credentials: {},
+    profileHash: "profile_hash_fixture",
+  });
+  fs.writeFileSync(path.join(proofRunDir, "implementation-proof-report.json"), `${JSON.stringify(proofReport, null, 2)}\n`);
+  const proofStore = new DirectImplementationProofEvidenceStore({ rootDir: proofEvidenceRoot });
+  const resolvedProof = proofStore.resolveScopedProofEvidence({
+    model: "gpt-5.4",
+    authStatus: { accountId: "account-fixture" },
+    endpoint: "https://chatgpt.com/backend-api/codex/responses",
+  });
+  assert(resolvedProof.canSelectImplementationLane === true, "Scoped proof resolver should accept matching read/read-loop/patch/command proof rows.");
+  const mismatchedProof = proofStore.resolveScopedProofEvidence({
+    model: "gpt-5.4",
+    authStatus: { accountId: "other-account" },
+    endpoint: "https://chatgpt.com/backend-api/codex/responses",
+  });
+  assert(mismatchedProof.canSelectImplementationLane === false, "Scoped proof resolver must reject account-scope mismatch.");
+  assert(scopedAccountEvidenceKey("account-fixture") !== scopedAccountEvidenceKey("other-account"), "Scoped proof account keys must differ without exposing raw account ids.");
+  const customEndpointRoot = path.join(proofEvidenceRoot, "custom-endpoint-root");
+  const customEndpointRunDir = path.join(customEndpointRoot, "run_custom_endpoint");
+  fs.mkdirSync(customEndpointRunDir, { recursive: true });
+  const customEndpointReport = {
+    ...proofReport,
+    runId: "run_custom_endpoint",
+    scopedImplementationLaneProof: null,
+  };
+  customEndpointReport.scopedImplementationLaneProof = buildScopedImplementationLaneProofEvidence({
+    report: customEndpointReport,
+    model: "gpt-5.4",
+    endpoint: "https://example.invalid/proxy-a/responses",
+    authStatus: { accountId: "account-fixture" },
+    credentials: {},
+    profileHash: "profile_hash_fixture",
+  });
+  fs.writeFileSync(path.join(customEndpointRunDir, "implementation-proof-report.json"), `${JSON.stringify(customEndpointReport, null, 2)}\n`);
+  const customEndpointProof = new DirectImplementationProofEvidenceStore({ rootDir: customEndpointRoot }).resolveScopedProofEvidence({
+    model: "gpt-5.4",
+    authStatus: { accountId: "account-fixture" },
+    endpoint: "https://example.invalid/proxy-b/responses",
+  });
+  assert(customEndpointProof.canSelectImplementationLane === false, "Scoped proof resolver must reject same-class custom endpoint hash mismatch.");
+  const invalidExpiryRoot = path.join(proofEvidenceRoot, "invalid-expiry-root");
+  const invalidExpiryRunDir = path.join(invalidExpiryRoot, "run_invalid_expiry");
+  fs.mkdirSync(invalidExpiryRunDir, { recursive: true });
+  const invalidExpiryReport = {
+    ...proofReport,
+    runId: "run_invalid_expiry",
+    scopedImplementationLaneProof: {
+      ...proofReport.scopedImplementationLaneProof,
+      evidence: proofReport.scopedImplementationLaneProof.evidence.map((entry) => ({ ...entry, expiresAt: "" })),
+    },
+  };
+  fs.writeFileSync(path.join(invalidExpiryRunDir, "implementation-proof-report.json"), `${JSON.stringify(invalidExpiryReport, null, 2)}\n`);
+  const invalidExpiryProof = new DirectImplementationProofEvidenceStore({ rootDir: invalidExpiryRoot }).resolveScopedProofEvidence({
+    model: "gpt-5.4",
+    authStatus: { accountId: "account-fixture" },
+    endpoint: "https://chatgpt.com/backend-api/codex/responses",
+  });
+  assert(invalidExpiryProof.canSelectImplementationLane === false, "Scoped proof resolver must fail closed on missing expiry.");
+} finally {
+  fs.rmSync(proofEvidenceRoot, { recursive: true, force: true });
+}
 const activationStoreParent = fs.mkdtempSync(path.join(os.tmpdir(), "direct-codex-activation-store-"));
 try {
   const activationStore = new DirectExperimentalActivationStore({ rootDir: path.join(activationStoreParent, "direct-sessions") });
@@ -2439,6 +2590,7 @@ try {
     directThreadStore: approvedToolThreadStore,
     profileDoc: acceptedReadOnlyToolProfile(),
     authStore: liveAuthStore,
+    implementationProofEvidenceResolver: () => implementationProofFixture(),
     readOnlyWorkspaceTimeoutMs: 45_000,
     toolDecisionCacheLimit: 1,
     workspaceRequest: async (project, method, params, timeoutMs) => {
@@ -2597,6 +2749,7 @@ try {
     directThreadStore: patchToolThreadStore,
     profileDoc: acceptedPatchApplyProfile(),
     authStore: liveAuthStore,
+    implementationProofEvidenceResolver: () => implementationProofFixture(),
     workspaceRequest: async (_project, method, params) => {
       assert(method === "applyPatch", "Expected patch controller to route through workspace applyPatch.");
       patchWorkspaceCalls.push({ mode: params.mode, patch: params.patch });
@@ -2744,6 +2897,7 @@ try {
     directThreadStore: commandToolThreadStore,
     profileDoc: acceptedCommandExecutionProfile(),
     authStore: liveAuthStore,
+    implementationProofEvidenceResolver: () => implementationProofFixture(),
     workspaceRequest: async (_project, method, params) => {
       commandWorkspaceCalls.push({ method, params });
       if (method === "readFile") {
@@ -2884,6 +3038,7 @@ try {
     directThreadStore: redactedCommandThreadStore,
     profileDoc: acceptedCommandExecutionProfile(),
     authStore: liveAuthStore,
+    implementationProofEvidenceResolver: () => implementationProofFixture(),
     workspaceRequest: async (_project, method) => {
       redactedCommandWorkspaceCalls.push(method);
       if (method === "readFile") {
@@ -3000,6 +3155,7 @@ try {
 	    directThreadStore: loopToolThreadStore,
 	    profileDoc: acceptedReadOnlyToolProfile(),
 	    authStore: liveAuthStore,
+	    implementationProofEvidenceResolver: () => implementationProofFixture(),
 	    workspaceRequest: async (_project, method, params) => {
 	      assert(method === "readFile", "Expected multi-step direct loop to use workspace readFile.");
 	      loopWorkspaceReads.push(params.relPath);
@@ -3108,6 +3264,7 @@ try {
 	    directThreadStore: failedNestedThreadStore,
 	    profileDoc: acceptedReadOnlyToolProfile(),
 	    authStore: liveAuthStore,
+	    implementationProofEvidenceResolver: () => implementationProofFixture(),
 	    workspaceRequest: async (_project, method, params) => {
 	      assert(method === "readFile", "Expected failed nested direct loop to use workspace readFile.");
 	      failedNestedWorkspaceReads += 1;

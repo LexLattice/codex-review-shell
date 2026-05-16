@@ -26,6 +26,10 @@ const DIRECT_EXPERIMENTAL_BLOCKER_CODES = Object.freeze({
   LIVE_TEXT_SCOPE_MISMATCH: "live_text_scope_mismatch",
   TOOL_EVIDENCE_MISSING: "tool_evidence_missing",
   TOOL_EVIDENCE_EXPIRED: "tool_evidence_expired",
+  READ_TOOL_PROOF_MISSING: "read_tool_proof_missing",
+  READ_LOOP_PROOF_MISSING: "read_loop_proof_missing",
+  PATCH_TOOL_PROOF_MISSING: "patch_tool_proof_missing",
+  COMMAND_TOOL_PROOF_MISSING: "command_tool_proof_missing",
   IMPORT_CHECKPOINT_EVIDENCE_MISSING: "import_checkpoint_evidence_missing",
   SESSION_STORE_CORRUPT: "session_store_corrupt",
   EVIDENCE_INDEX_CORRUPT: "evidence_index_corrupt",
@@ -234,6 +238,31 @@ function readOnlyToolReady(liveTextStatus = {}) {
     (!evidence || evidence === "accepted" || evidence === "runtime_probed");
 }
 
+function scopedProofCapabilityReady(liveTextStatus = {}, capabilityId = "") {
+  const proof = isPlainObject(liveTextStatus.implementationLaneProof) ? liveTextStatus.implementationLaneProof : {};
+  const rows = Array.isArray(proof.requiredCapabilities) ? proof.requiredCapabilities : [];
+  const row = rows.find((item) => item?.capabilityId === capabilityId);
+  return row?.status === "ready" && row?.evidenceState === "runtime_probed";
+}
+
+function patchToolReady(liveTextStatus = {}) {
+  const continuation = isPlainObject(liveTextStatus.patchApplyContinuation)
+    ? liveTextStatus.patchApplyContinuation
+    : {};
+  return liveTextStatus.toolsEnabled === true &&
+    continuation.status === "ready" &&
+    scopedProofCapabilityReady(liveTextStatus, "apply_patch");
+}
+
+function commandToolReady(liveTextStatus = {}) {
+  const continuation = isPlainObject(liveTextStatus.commandExecutionContinuation)
+    ? liveTextStatus.commandExecutionContinuation
+    : {};
+  return liveTextStatus.toolsEnabled === true &&
+    continuation.status === "ready" &&
+    scopedProofCapabilityReady(liveTextStatus, "run_command");
+}
+
 function sessionStoreHealthy(sessionStore = {}) {
   const recovery = isPlainObject(sessionStore.recovery) ? sessionStore.recovery : {};
   return Number(recovery.missingSessionFileCount || 0) === 0;
@@ -289,7 +318,10 @@ function buildDegradedCapabilities(blockers = []) {
     codes.has(DIRECT_EXPERIMENTAL_BLOCKER_CODES.SESSION_STORE_CORRUPT);
   const toolBlocked = liveBlocked ||
     codes.has(DIRECT_EXPERIMENTAL_BLOCKER_CODES.TOOL_EVIDENCE_MISSING) ||
-    codes.has(DIRECT_EXPERIMENTAL_BLOCKER_CODES.TOOL_EVIDENCE_EXPIRED);
+    codes.has(DIRECT_EXPERIMENTAL_BLOCKER_CODES.TOOL_EVIDENCE_EXPIRED) ||
+    codes.has(DIRECT_EXPERIMENTAL_BLOCKER_CODES.READ_TOOL_PROOF_MISSING);
+  const patchBlocked = liveBlocked || codes.has(DIRECT_EXPERIMENTAL_BLOCKER_CODES.PATCH_TOOL_PROOF_MISSING);
+  const commandBlocked = liveBlocked || codes.has(DIRECT_EXPERIMENTAL_BLOCKER_CODES.COMMAND_TOOL_PROOF_MISSING);
   const importBlocked = liveBlocked || codes.has(DIRECT_EXPERIMENTAL_BLOCKER_CODES.IMPORT_CHECKPOINT_EVIDENCE_MISSING);
   const reasons = {};
   for (const blocker of blockers) {
@@ -299,6 +331,8 @@ function buildDegradedCapabilities(blockers = []) {
     canReadCompletedDirectSessions: true,
     canStartNewTextTurn: !liveBlocked,
     canApproveReadOnlyTool: !toolBlocked,
+    canApprovePatchApply: !patchBlocked,
+    canApproveCommand: !commandBlocked,
     canStartImportCheckpointContinuation: !importBlocked,
     canRunManualProbe: true,
     canRollback: true,
@@ -471,7 +505,11 @@ function evaluateDirectExperimentalProjectActivation(options = {}) {
   const currentTier = binding.directTier || (latestActivation ? "implementation-lane" : "text-only");
   const authOk = authStatus.status === "authenticated";
   const liveOk = liveTextReady(liveTextStatus);
-  const toolOk = readOnlyToolReady(liveTextStatus);
+  const readToolOk = readOnlyToolReady(liveTextStatus) && scopedProofCapabilityReady(liveTextStatus, "read_file");
+  const readLoopOk = scopedProofCapabilityReady(liveTextStatus, "read_file_loop");
+  const patchOk = patchToolReady(liveTextStatus);
+  const commandOk = commandToolReady(liveTextStatus);
+  const toolOk = readToolOk && readLoopOk && patchOk && commandOk;
   const workspaceOk = workspace.backendAttached || workspace.attachPolicy === "attach_on_first_turn_accepted";
   const storeOk = sessionStoreHealthy(sessionStore);
   const activationOk = !activationCorrupt(storeStatus);
@@ -484,7 +522,10 @@ function evaluateDirectExperimentalProjectActivation(options = {}) {
     requirement("workspace", "Workspace backend is healthy", "tier_implementation_lane", "activation", workspaceOk, DIRECT_EXPERIMENTAL_BLOCKER_CODES.WORKSPACE_BACKEND_UNATTACHED),
     requirement("auth", "Direct auth is authenticated", "hard", "new_turns", authOk, authStatus.status === "refresh_failed" ? DIRECT_EXPERIMENTAL_BLOCKER_CODES.AUTH_REFRESH_FAILED : DIRECT_EXPERIMENTAL_BLOCKER_CODES.AUTH_MISSING),
     requirement("live-text", "Live text evidence is accepted", "tier_text_only", "new_turns", liveOk, liveTextStatus.modelEvidenceState === "expired" ? DIRECT_EXPERIMENTAL_BLOCKER_CODES.LIVE_TEXT_EVIDENCE_EXPIRED : DIRECT_EXPERIMENTAL_BLOCKER_CODES.LIVE_TEXT_EVIDENCE_MISSING, liveTextStatus.reason || ""),
-    requirement("read-only-tool", "Read-only tool continuation is accepted", "tier_implementation_lane", "tool_continuation", toolOk, DIRECT_EXPERIMENTAL_BLOCKER_CODES.TOOL_EVIDENCE_MISSING, liveTextStatus.readOnlyToolContinuation?.reason || ""),
+    requirement("read-only-tool", "Read-only tool continuation is scoped and proved", "tier_implementation_lane", "tool_continuation", readToolOk, DIRECT_EXPERIMENTAL_BLOCKER_CODES.READ_TOOL_PROOF_MISSING, liveTextStatus.readOnlyToolContinuation?.reason || "scoped_read_file_proof_required"),
+    requirement("read-only-loop", "Sequential read-only loop is scoped and proved", "tier_implementation_lane", "tool_continuation", readLoopOk, DIRECT_EXPERIMENTAL_BLOCKER_CODES.READ_LOOP_PROOF_MISSING, "scoped_read_loop_proof_required"),
+    requirement("patch-apply", "Patch apply continuation is scoped and proved", "tier_implementation_lane", "tool_continuation", patchOk, DIRECT_EXPERIMENTAL_BLOCKER_CODES.PATCH_TOOL_PROOF_MISSING, liveTextStatus.patchApplyContinuation?.reason || "scoped_patch_apply_proof_required"),
+    requirement("command-execution", "Command execution continuation is scoped and proved", "tier_implementation_lane", "tool_continuation", commandOk, DIRECT_EXPERIMENTAL_BLOCKER_CODES.COMMAND_TOOL_PROOF_MISSING, liveTextStatus.commandExecutionContinuation?.reason || "scoped_command_execution_proof_required"),
     requirement("import-checkpoint", "Import checkpoint continuation is accepted when relevant", "contextual_import", "import_continuation", importOk, DIRECT_EXPERIMENTAL_BLOCKER_CODES.IMPORT_CHECKPOINT_EVIDENCE_MISSING),
     requirement("session-store", "Direct session store recovered cleanly", "hard", "new_turns", storeOk, DIRECT_EXPERIMENTAL_BLOCKER_CODES.SESSION_STORE_CORRUPT),
     requirement("activation-store", "Activation records recovered cleanly", "hard", "activation", activationOk, DIRECT_EXPERIMENTAL_BLOCKER_CODES.ACTIVATION_RECORD_CORRUPT),
@@ -533,6 +574,10 @@ function evaluateDirectExperimentalProjectActivation(options = {}) {
     model: normalizeString(liveTextStatus.model || project.surfaceBinding?.codex?.model, ""),
     liveTextRequestShapeHash: normalizeString(liveTextStatus.liveProbeEvidence?.requestShapeHash || liveTextStatus.requestShapeHash, ""),
     readOnlyToolShapeHash: normalizeString(liveTextStatus.readOnlyToolContinuation?.capabilityId, ""),
+    implementationProofEvidenceState: normalizeString(liveTextStatus.implementationLaneProof?.evidenceState, ""),
+    implementationProofMissingCapabilityIds: Array.isArray(liveTextStatus.implementationLaneProof?.missingCapabilityIds)
+      ? liveTextStatus.implementationLaneProof.missingCapabilityIds.map((item) => normalizeString(item, "")).filter(Boolean)
+      : [],
     importCheckpointSeedShapeHash: importContinuationRequired(imports) ? "contextual-import-checkpoint" : "",
     normalizerVersion: normalizeString(options.normalizerVersion, "direct-normalizer@1"),
     requestBuilderVersion: normalizeString(options.requestBuilderVersion, "direct-request-builder@1"),

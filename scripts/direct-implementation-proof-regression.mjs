@@ -42,6 +42,9 @@ const {
   endpointClass,
   endpointHash,
 } = require("../src/main/direct/probes/live-probe-evidence-store");
+const {
+  buildScopedImplementationLaneProofEvidence,
+} = require("../src/main/direct/probes/implementation-proof-evidence-store");
 const { DirectSessionStore } = require("../src/main/direct/session/session-store");
 const { DirectThreadStore } = require("../src/main/direct/thread/thread-store");
 const {
@@ -1427,6 +1430,9 @@ async function runLocalPreflightCases(workspaceRequest) {
 function validateReport(report) {
   if (report.schema !== "direct_implementation_lane_real_provider_proof_report@1") throw new Error("Invalid proof report schema.");
   if (!Array.isArray(report.cases)) throw new Error("Proof report cases must be an array.");
+  if (report.scopedImplementationLaneProof && !Array.isArray(report.scopedImplementationLaneProof.evidence)) {
+    throw new Error("Scoped implementation proof evidence must be an array.");
+  }
   for (const entry of report.cases) {
     for (const key of ["providerToolCallObserved", "localAuthorityExecuted", "providerContinuationSent", "providerContinuationCompleted", "countsAsRealProviderProof"]) {
       if (typeof entry[key] !== "boolean") throw new Error(`Case ${entry.caseId} missing boolean ${key}.`);
@@ -1456,6 +1462,7 @@ function markdownSummary(report) {
 - Mode: \`${report.mode}\`
 - Live opt-in: \`${report.liveProviderCallOptIn}\`
 - Matrix promotion candidates: \`${report.cases.filter((entry) => entry.matrixPromotionCandidate).length}\`
+- Scoped tool proof rows: \`${report.scopedImplementationLaneProof?.evidence?.filter((entry) => entry.usable).length || 0}\`
 
 | Case | Coverage | Status | Proof outcome | Proof | Failure |
 | --- | --- | --- | --- | --- | --- |
@@ -1480,6 +1487,13 @@ async function main() {
   const workspaceRequest = createWorkspaceBackend(workspace);
   const reportPath = path.join(outputRoot, "implementation-proof-report.json");
   const markdownPath = path.join(outputRoot, "implementation-proof-report.md");
+  const scopedProofContext = {
+    model: optionString(options, "model", "gpt-5.5"),
+    endpoint: optionString(options, "endpoint", process.env.CODEX_DIRECT_RESPONSES_ENDPOINT || DEFAULT_CODEX_RESPONSES_ENDPOINT),
+    authStatus: {},
+    credentials: {},
+    profileHash: "",
+  };
   const project = {
     id: optionString(options, "project-id", `direct-implementation-proof-${runId}`),
     workspace: {
@@ -1510,6 +1524,14 @@ async function main() {
       noRightPaneMutation: true,
       noHandoffMutation: true,
     },
+    versions: {
+      requestBuilderVersion: REQUEST_BUILDER_VERSION,
+      normalizerVersion: NORMALIZER_VERSION,
+      redactionVersion: REDACTION_VERSION,
+      roleMappingDigest: ROLE_MAPPING_DIGEST,
+      harnessPolicyDigest: HARNESS_POLICY_DIGEST,
+      contextPolicyDigest: CONTEXT_POLICY_DIGEST,
+    },
     cases: [],
     rawExposureScan: {
       scanned: false,
@@ -1537,6 +1559,11 @@ async function main() {
       throw new Error("Direct credentials are missing; run direct auth/login first.");
     }
     const authStatus = authStore.readStatus();
+    scopedProofContext.model = model;
+    scopedProofContext.endpoint = endpoint;
+    scopedProofContext.authStatus = authStatus;
+    scopedProofContext.credentials = credentials;
+    scopedProofContext.profileHash = normalizeString(profileDoc.summary?.profileHash || profileDoc.profile?.profileHash, "");
     const evidenceStore = new DirectLiveProbeEvidenceStore({
       rootDir: optionString(options, "evidence-root", path.join(appUserDataRoot, "direct-probe-evidence")),
     });
@@ -1552,7 +1579,10 @@ async function main() {
       liveProbeEvidenceId: evidence.evidenceId || "",
       liveProbeEvidenceStatus: evidence.liveProbeEvidence?.status || evidence.modelEvidenceState || "",
       parentTextRequestShapeClass: DIRECT_EMPTY_CONTEXT_SHAPE,
-      implementationProofCreatesActivationEvidence: false,
+      requestBuilderVersion: REQUEST_BUILDER_VERSION,
+      normalizerVersion: NORMALIZER_VERSION,
+      redactionVersion: REDACTION_VERSION,
+      implementationProofCreatesActivationEvidence: true,
     };
     if (!evidence.accepted && !optionFlag(options, "allow-diagnostic-no-promotion")) {
       throw new Error(`Accepted direct live text evidence is required before implementation proof: ${evidence.reason || "missing"}`);
@@ -1587,6 +1617,10 @@ async function main() {
     report.cases.push(...await runNegativeSafetyCases(workspaceRequest));
   }
 
+  report.scopedImplementationLaneProof = buildScopedImplementationLaneProofEvidence({
+    report,
+    ...scopedProofContext,
+  });
   validateReport(report);
   const preFindings = rawExposureFindings(report, [workspace, outputRoot, appUserDataRoot]);
   report.rawExposureScan = {

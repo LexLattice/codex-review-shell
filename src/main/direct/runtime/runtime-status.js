@@ -166,6 +166,7 @@ function directImplementationLaneReadiness({ activation = {}, sessionStore = {},
   const degradedCapabilities = isPlainObject(activation.degradedCapabilities) ? activation.degradedCapabilities : {};
   const hasToolBlocker = safeBlockers.some((code) =>
     code.includes("tool") ||
+    code.includes("proof") ||
     code.includes("workspace") ||
     code.includes("continuation"));
   const hasLiveBlocker = safeBlockers.some((code) =>
@@ -219,6 +220,29 @@ function directImplementationLaneReadiness({ activation = {}, sessionStore = {},
       canContinueSequentialReadOnlyLoop: canApproveReadFile,
       blockerCodes: safeBlockers,
     },
+    implementationProof: isPlainObject(liveTextStatus.implementationLaneProof)
+      ? {
+          status: normalizeString(liveTextStatus.implementationLaneProof.status, "missing"),
+          evidenceState: normalizeString(liveTextStatus.implementationLaneProof.evidenceState, "missing"),
+          canSelectImplementationLane: liveTextStatus.implementationLaneProof.canSelectImplementationLane === true,
+          missingCapabilityIds: Array.isArray(liveTextStatus.implementationLaneProof.missingCapabilityIds)
+            ? liveTextStatus.implementationLaneProof.missingCapabilityIds.map((item) => normalizeString(item, "")).filter(Boolean)
+            : [],
+          rawProviderPayloadIncluded: false,
+          rawToolArgsIncluded: false,
+          rawWorkspacePathIncluded: false,
+          rawAccountIncluded: false,
+        }
+      : {
+          status: "missing",
+          evidenceState: "missing",
+          canSelectImplementationLane: false,
+          missingCapabilityIds: ["read_file", "read_file_loop", "apply_patch", "run_command"],
+          rawProviderPayloadIncluded: false,
+          rawToolArgsIncluded: false,
+          rawWorkspacePathIncluded: false,
+          rawAccountIncluded: false,
+        },
     commandExecution: {
       canApprove: canApproveCommand,
       canExecute: canApproveCommand,
@@ -363,6 +387,20 @@ function buildDirectRuntimeStatus(options = {}) {
         : null,
       commandExecutionContinuation: isPlainObject(liveTextStatus.commandExecutionContinuation)
         ? liveTextStatus.commandExecutionContinuation
+        : null,
+      implementationLaneProof: isPlainObject(liveTextStatus.implementationLaneProof)
+        ? {
+            status: normalizeString(liveTextStatus.implementationLaneProof.status, "missing"),
+            evidenceState: normalizeString(liveTextStatus.implementationLaneProof.evidenceState, "missing"),
+            canSelectImplementationLane: liveTextStatus.implementationLaneProof.canSelectImplementationLane === true,
+            missingCapabilityIds: Array.isArray(liveTextStatus.implementationLaneProof.missingCapabilityIds)
+              ? liveTextStatus.implementationLaneProof.missingCapabilityIds.map((item) => normalizeString(item, "")).filter(Boolean)
+              : [],
+            rawProviderPayloadIncluded: false,
+            rawToolArgsIncluded: false,
+            rawWorkspacePathIncluded: false,
+            rawAccountIncluded: false,
+          }
         : null,
       reason: normalizeString(liveTextStatus.reason, ""),
       rawBackendFramesExposed: false,
