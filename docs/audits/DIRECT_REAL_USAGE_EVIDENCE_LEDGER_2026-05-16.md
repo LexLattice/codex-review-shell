@@ -466,6 +466,70 @@ returning `client_operation_id_conflict`. The controller now compares against
 the deterministic fork-start id and the probe asserts retry does not resend
 provider transport.
 
+## 2026-05-17 RUG-008 Import Checkpoint Continuation Probe
+
+Status: import-checkpoint continuation runner added and fixture-provider-shaped
+route passed; real-provider promotion remains opt-in and not yet run.
+
+Added `direct:import-checkpoint-continuation`, a focused probe over the import
+checkpoint and live-text continuation route:
+
+```text
+legacy JSONL source
+  -> validated checkpoint import
+  -> read-only imported parent session
+  -> checkpoint continuation preview
+  -> direct_import_checkpoint_seed@1
+  -> fresh direct-native continuation session
+  -> context/request-shape artifacts
+  -> first-turn provider-shaped request
+  -> terminal assistant text
+```
+
+The runner defaults to fixture-provider-shaped transport, so it can be run in
+normal local validation without a live backend call. Live promotion requires
+`--mode live --allow-live-provider-call` or `CODEX_DIRECT_RUG008_LIVE=1` and
+still obeys the CI live-call guard.
+
+Probe command:
+
+```bash
+npm run direct:import-checkpoint-continuation -- --run-id rug008_import_checkpoint_continuation_fixture_20260517
+```
+
+Report:
+
+```text
+/home/rose/.config/codex-review-shell/direct-import-checkpoint-continuation-runs/rug008_import_checkpoint_continuation_fixture_20260517/direct-import-checkpoint-continuation-report.json
+```
+
+Observed result:
+
+```text
+status: passed
+coverageSource: fixture_provider_shaped
+cases: 13/13
+matrixPromotionCandidate: false
+rug008Closed: false
+directProviderRequestCalls: 1
+fixtureProviderShapeCalls: 1
+liveProviderTransportCalls: 0
+previousResponseIdFromImportUsed: false
+importedToolReplayAttempted: false
+readOnlyImported: true
+nativeDirectSession: false
+idempotent retry: reused without resend
+```
+
+The probe validates the discriminator that matters for this gap:
+
+```text
+imported checkpoint evidence can seed a fresh Direct continuation, but the
+imported parent remains read-only and no imported provider continuity, tool
+replay, app-server fallback, workspace action, patch, command, right-pane
+mutation, or handoff mutation is allowed.
+```
+
 Report:
 
 ```text
@@ -539,7 +603,7 @@ code paths.
 | `RUG-005` | closed in current code bundle | Context maintenance is status/projection proved, but needed a real long Direct thread pressure path through session/thread stores and context-pack/request-manifest artifacts. | `direct:long-context-pressure` passed; over-budget pressure selected `local_trim`, omission parity passed, context pack/request manifest cited maintenance refs, provider/app-server/tool sentinels stayed zero. | Keep this probe in the post-context validation set. |
 | `RUG-006` | closed in current code bundle | We normalize vanilla sibling context evidence, but needed a captured app-server-shaped observation probe to prove compact/memory/status evidence remains sibling-only across Direct thread switch. | `direct:appserver-sibling-context` passed; context compaction, memory citation, compact control, memory mode, and memory reset observations projected display-only; Direct context pack excluded sibling refs; app-server and Direct authority sentinels stayed zero. | Keep this probe in the context validation set; a later live app-server capture can replace the fixture source when available. |
 | `RUG-007` | live promotion pending | Fresh fork from preview needed a focused route probe and still needs an explicit live-provider first turn for promotion. | `direct:fresh-fork-start` fixture-provider-shaped mode passed; valid fork preview, confirmation, seed, fresh direct-native session, context pack, request manifest, one provider-shaped first turn, no source continuity, terminal assistant text, composer enabled, and idempotent retry no-resend were all asserted. | Run `npm run direct:fresh-fork-start -- --mode live --allow-live-provider-call` when we want the real-provider promotion artifact. |
-| `RUG-008` | import/checkpoint live gap | Import checkpoint continuation remains fixture/spec-level. | Import/workbench specs and fixture coverage. | Live checkpoint follow-up probe with validated imported source, asserting fresh context seed and no provider continuity import. |
+| `RUG-008` | live promotion pending | Import checkpoint continuation needed a focused route probe and still needs an explicit live-provider first turn for promotion. | `direct:import-checkpoint-continuation` fixture-provider-shaped mode passed; validated checkpoint import, read-only imported parent, runnable checkpoint continuation action, seed preview, fresh direct-native continuation session, request-shape artifacts, one provider-shaped request, no imported provider continuity, no imported tool replay, and idempotent retry no-resend were all asserted. | Run `npm run direct:import-checkpoint-continuation -- --mode live --allow-live-provider-call` when we want the real-provider promotion artifact. |
 | `RUG-009` | model/quota/usage real-status gap | Usage/readiness is fixture/preflight; quota/model catalog are not current account live status proof. | Live text reports include usage-like provider events; `usage_readiness` suite passed. | Read-only usage/quota/model status probe with explicit opt-in, no model generation unless separately requested, and no billing-grade claims. |
 | `RUG-010` | provider compaction primitive gap | Provider compact remains gated and unproved for this profile. | Context E-probes explicitly avoid provider compact authority. | Separate diagnostic-only compact primitive probe if exact profile evidence says endpoint is available; otherwise keep blocked. |
 | `RUG-011` | governance non-authority leak gap | Governance/broker diagnostics are fixture-proved; no live runtime action proves `wouldBlockInFutureEnforceMode` cannot block a real turn. | Governance matrix suite passed. | Run real text or implementation turn with shadow diagnostics present and assert provider input/control path unchanged. |
@@ -550,14 +614,14 @@ code paths.
 The next bundle should remain probe expansion, not feature work. Since
 `RUG-001` is covered by `direct:evidence-ledger`, `RUG-005` is covered by
 `direct:long-context-pressure`, `RUG-006` is covered by
-`direct:appserver-sibling-context`, and `RUG-007` now has a focused
+`direct:appserver-sibling-context`, `RUG-007` now has a focused
+fixture-provider-shaped runner, and `RUG-008` now has a focused
 fixture-provider-shaped runner, the next high-leverage work is:
 
 1. Keep Electron approval-card/status-row probes for `RUG-003` and side-effect
    recovery probes for `RUG-004` in the default visible-app validation set.
-2. Run `RUG-007` in live mode when explicitly promoting fresh-fork provider
-   evidence, or move to `RUG-008` import/checkpoint live follow-up if we want
-   another non-default continuity discriminator first.
+2. Run `RUG-007` or `RUG-008` in live mode when explicitly promoting
+   fresh-fork or import-checkpoint provider evidence.
 
 These connect the already-green headless/live proof to the actual user-visible
 app path.
