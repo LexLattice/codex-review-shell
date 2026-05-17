@@ -178,6 +178,73 @@ function firstForkTurnTerminal(result = {}, assistantText = "", unsupportedTool 
   };
 }
 
+function toolHistoryOperationType(toolName) {
+  const tool = normalizeString(toolName, "");
+  if (tool === "apply_patch") return "apply_patch_tool_result";
+  if (tool === "run_command") return "run_command_tool_result";
+  return "read_file_tool_result";
+}
+
+function toolHistorySummary(toolName, result = {}) {
+  const tool = normalizeString(toolName, "tool");
+  const status = normalizeString(result.status, "recorded");
+  if (tool === "apply_patch") return `apply_patch ${status}`;
+  if (tool === "run_command") return `run_command ${status}`;
+  return `read_file ${status}`;
+}
+
+function toolHistoryEffects(result = {}, continuation = {}) {
+  const effects = [{
+    effectKind: "tool_approval_recorded",
+    targetKind: "tool_obligation",
+    targetId: normalizeString(result.obligationId, ""),
+    rendererSafeSummary: "tool approval recorded",
+  }, {
+    effectKind: "tool_result_recorded",
+    targetKind: "tool_result",
+    targetId: normalizeString(result.resultId, ""),
+    rendererSafeSummary: "tool result recorded",
+  }];
+  const workspaceEffectSummaryId = normalizeString(result.workspaceEffectSummaryId, "");
+  if (workspaceEffectSummaryId) {
+    effects.push({
+      effectKind: "workspace_effect_summary_recorded",
+      targetKind: "workspace_effect_summary",
+      targetId: workspaceEffectSummaryId,
+      rendererSafeSummary: "workspace effect summary recorded",
+    });
+  }
+  const continuationId = normalizeString(continuation.continuationId || continuation.continuation?.continuationId, "");
+  if (continuationId) {
+    effects.push({
+      effectKind: "provider_continuation_recorded",
+      targetKind: "provider_continuation",
+      targetId: continuationId,
+      rendererSafeSummary: "provider continuation recorded",
+    });
+  }
+  return effects.filter((effect) => effect.targetId);
+}
+
+function workspaceEffectHistoryResult(result = {}, toolName = "") {
+  const summary = isPlainObject(result.workspaceEffectSummary) ? result.workspaceEffectSummary : {};
+  const providerVisibility = isPlainObject(summary.providerVisibility) ? summary.providerVisibility : {};
+  return {
+    status: "committed",
+    rendererSafeSummary: "workspace effect summary recorded",
+    tool: normalizeString(toolName, ""),
+    resultStatus: normalizeString(result.status, ""),
+    resultClass: normalizeString(result.resultClass, ""),
+    workspaceEffectSummaryId: normalizeString(result.workspaceEffectSummaryId || summary.effectSummaryId, ""),
+    changedPathCount: Number(summary.changedPathCount || result.workspaceEffects?.changedPathCount || 0) || 0,
+    providerVisibility: normalizeString(providerVisibility.providerVisibilityCompleteness, ""),
+    providerSawChangedFileContents: providerVisibility.providerSawChangedFileContents === true,
+    rawProviderPayloadIncluded: false,
+    rawWorkspacePathIncluded: false,
+    rawToolOutputIncluded: false,
+  };
+}
+
 function firstTextInput(input) {
   const entries = Array.isArray(input) ? input : [];
   for (const entry of entries) {
@@ -2893,6 +2960,120 @@ class DirectLiveTextController {
     if (started) this.emitNotification(surfaceSession, "item/completed", { threadId: sessionId, turnId, item });
   }
 
+  recordToolOperationHistory({
+    project = {},
+    sessionId = "",
+    turnId = "",
+    obligationId = "",
+    toolName = "",
+    result = {},
+    continuation = {},
+    clientDecisionId = "",
+  } = {}) {
+    if (!this.directThreadStore) return null;
+    const projectId = normalizeString(project?.id || project?.projectId || project?.name, "");
+    if (!projectId) return null;
+    const tool = normalizeString(toolName || result.tool, "tool");
+    const resultId = normalizeString(result.resultId, "");
+    const operationType = toolHistoryOperationType(tool);
+    const baseClientOperationId = normalizeString(clientDecisionId, "") ||
+      `direct_tool_result_${sha256(`${projectId}:${sessionId}:${turnId}:${obligationId}:${resultId}:${tool}`).slice(0, 24)}`;
+    const operationInputDigest = sha256(stableStringify({
+      schema: "direct_tool_operation_history_input@1",
+      projectId,
+      sessionId,
+      turnId,
+      obligationId,
+      tool,
+      resultId,
+      status: normalizeString(result.status, ""),
+      workspaceEffectSummaryId: normalizeString(result.workspaceEffectSummaryId, ""),
+    }));
+    const confirmationSafety = { requiresConfirmation: true, confirmedAt: nowIso() };
+    const existing = this.directThreadStore.operationByClient(projectId, baseClientOperationId);
+    if (existing) return this.directThreadStore.operationResult(existing);
+    const planned = this.directThreadStore.planOperation({
+      operationType,
+      projectId,
+      clientOperationId: baseClientOperationId,
+      actor: "local-user",
+      target: { threadIds: [sessionId], turnId, obligationId },
+      parameters: {
+        operationInputDigest,
+        tool,
+      },
+      safety: confirmationSafety,
+    });
+    const committed = this.directThreadStore.commitOperation(planned.operationId, {
+      operationType,
+      projectId,
+      clientOperationId: baseClientOperationId,
+      actor: "local-user",
+      target: { threadIds: [sessionId], turnId, obligationId },
+      result: {
+        status: "committed",
+        operationInputDigest,
+        rendererSafeSummary: toolHistorySummary(tool, result),
+        tool,
+        resultStatus: normalizeString(result.status, ""),
+        resultClass: normalizeString(result.resultClass, ""),
+        resultId,
+        workspaceEffectSummaryId: normalizeString(result.workspaceEffectSummaryId, ""),
+        continuationId: normalizeString(continuation.continuationId || continuation.continuation?.continuationId, ""),
+        rawProviderPayloadIncluded: false,
+        rawWorkspacePathIncluded: false,
+        rawToolOutputIncluded: false,
+        effects: toolHistoryEffects({ ...result, obligationId }, continuation),
+      },
+      safety: confirmationSafety,
+    });
+    const workspaceEffectSummaryId = normalizeString(result.workspaceEffectSummaryId, "");
+    if (workspaceEffectSummaryId) {
+      const workspaceClientOperationId = `${baseClientOperationId}:workspace_effect`;
+      if (!this.directThreadStore.operationByClient(projectId, workspaceClientOperationId)) {
+        const workspaceInputDigest = sha256(stableStringify({
+          schema: "direct_tool_workspace_effect_operation_input@1",
+          projectId,
+          sessionId,
+          turnId,
+          obligationId,
+          tool,
+          resultId,
+          workspaceEffectSummaryId,
+        }));
+        const workspacePlanned = this.directThreadStore.planOperation({
+          operationType: "workspace_effect_summary_recorded",
+          projectId,
+          clientOperationId: workspaceClientOperationId,
+          actor: "local-system",
+          target: { threadIds: [sessionId], turnId, obligationId },
+          parameters: {
+            operationInputDigest: workspaceInputDigest,
+            tool,
+          },
+        });
+        this.directThreadStore.commitOperation(workspacePlanned.operationId, {
+          operationType: "workspace_effect_summary_recorded",
+          projectId,
+          clientOperationId: workspaceClientOperationId,
+          actor: "local-system",
+          target: { threadIds: [sessionId], turnId, obligationId },
+          result: {
+            ...workspaceEffectHistoryResult(result, tool),
+            operationInputDigest: workspaceInputDigest,
+            effects: [{
+              effectKind: "workspace_effect_summary_recorded",
+              targetKind: "workspace_effect_summary",
+              targetId: workspaceEffectSummaryId,
+              rendererSafeSummary: "workspace effect summary recorded",
+            }],
+          },
+        });
+      }
+    }
+    return this.directThreadStore.operationResult(this.directThreadStore.operationById(committed.operationId));
+  }
+
   async approveExecuteAndContinueReadOnlyTool(options = {}) {
     if (typeof this.workspaceRequest !== "function") {
       const error = new Error("Direct read-only tool execution requires the workspace backend.");
@@ -3028,6 +3209,16 @@ class DirectLiveTextController {
         },
       };
     }
+    this.recordToolOperationHistory({
+      project,
+      sessionId,
+      turnId,
+      obligationId,
+      toolName: "read_file",
+      result: executed.result,
+      continuation: { continuationId: normalizeString(continuationRequest?.continuationId, "") },
+      clientDecisionId: normalizeString(options.clientToolDecisionId, ""),
+    });
     const continuation = await runPersistedReadOnlyToolContinuation({
       sessionStore: this.sessionStore,
       sessionId,
@@ -3197,6 +3388,16 @@ class DirectLiveTextController {
         },
       };
     }
+    this.recordToolOperationHistory({
+      project,
+      sessionId,
+      turnId,
+      obligationId,
+      toolName: "apply_patch",
+      result: executed.result,
+      continuation: { continuationId: normalizeString(continuationRequest?.continuationId, "") },
+      clientDecisionId: normalizeString(options.clientPatchDecisionId, ""),
+    });
     const continuation = await runPersistedReadOnlyToolContinuation({
       sessionStore: this.sessionStore,
       sessionId,
@@ -3271,6 +3472,16 @@ class DirectLiveTextController {
     const turn = this.sessionStore.readTurn(sessionId, turnId);
     const currentObligation = this.sessionStore.findToolObligation(sessionId, turnId, obligationId).obligation;
     if (executed.result?.providerContinuationBlocked === true) {
+      this.recordToolOperationHistory({
+        project,
+        sessionId,
+        turnId,
+        obligationId,
+        toolName: "run_command",
+        result: executed.result,
+        continuation: {},
+        clientDecisionId: normalizeString(options.clientCommandDecisionId, ""),
+      });
       this.emitNotification(surfaceSession, "turn/completed", {
         threadId: sessionId,
         turnId,
@@ -3383,6 +3594,16 @@ class DirectLiveTextController {
         },
       };
     }
+    this.recordToolOperationHistory({
+      project,
+      sessionId,
+      turnId,
+      obligationId,
+      toolName: "run_command",
+      result: executed.result,
+      continuation: { continuationId: normalizeString(continuationRequest?.continuationId, "") },
+      clientDecisionId: normalizeString(options.clientCommandDecisionId, ""),
+    });
     const continuation = await runPersistedReadOnlyToolContinuation({
       sessionStore: this.sessionStore,
       sessionId,

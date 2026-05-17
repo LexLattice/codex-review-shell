@@ -130,6 +130,10 @@ const DIRECT_THREAD_OPERATION_TYPES = new Set([
   "preview_prune_thread",
   "preview_fork_thread",
   "materialize_projection_thread",
+  "read_file_tool_result",
+  "apply_patch_tool_result",
+  "run_command_tool_result",
+  "workspace_effect_summary_recorded",
   "rebuild_projection",
   "repair_index",
   "governance_input_snapshot",
@@ -2934,6 +2938,12 @@ class DirectThreadStore {
       target,
       result,
     };
+  }
+
+  operationById(operationId) {
+    const safeOperationId = normalizeString(operationId, "");
+    if (!safeOperationId) return null;
+    return this.db.prepare("select * from direct_operations where operation_id = ?").get(safeOperationId) || null;
   }
 
   returnExistingOperationOrThrowConflict(existing, expected = {}) {

@@ -405,6 +405,10 @@ function latestToolResultStatus(runtimeStatus = {}) {
   const providerVisibility = normalizeString(result.providerVisibility, changedPathCount > 0 ? "summary_only" : "none");
   return {
     schema: "direct_tool_result_status_projection@1",
+    sessionId: normalizeString(result.sessionId, ""),
+    turnId: normalizeString(result.turnId, ""),
+    obligationId: normalizeString(result.obligationId, ""),
+    resultId: normalizeString(result.resultId, ""),
     tool: normalizeString(result.tool, ""),
     status: normalizeString(result.status, "none"),
     resultClass: normalizeString(result.resultClass, ""),
@@ -556,6 +560,12 @@ function projectOperationHistoryPage({ projectId = "", operationHistory = {}, re
     eventKind: normalizeString(entry.operationType, "operation"),
     status: normalizeString(entry.status, "unknown"),
     requestedAt: normalizeString(entry.requestedAt, ""),
+    rendererSafeTargets: {
+      threadIds: safeArray(entry.rendererSafeTargets?.threadIds).map((threadId) => normalizeString(threadId, "")).filter(Boolean),
+      turnId: normalizeString(entry.rendererSafeTargets?.turnId, ""),
+      obligationId: normalizeString(entry.rendererSafeTargets?.obligationId, ""),
+      edgeId: normalizeString(entry.rendererSafeTargets?.edgeId, ""),
+    },
     rendererSafeSummary: normalizeString(entry.rendererSafeSummary || entry.blockerCode || entry.operationType, "operation"),
     artifactRefs: safeArray(entry.effects).slice(0, 12).map((effect, index) => ({
       refId: normalizeString(effect.targetId, `effect_${index}`),
