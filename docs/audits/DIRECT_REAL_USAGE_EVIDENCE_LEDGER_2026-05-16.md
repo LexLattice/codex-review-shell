@@ -258,6 +258,48 @@ npm run direct:runtime-path:electron -- --run-id rug002_direct_tools_visible_202
 npm run direct:smoke
 ```
 
+## RUG-003 Electron Read Approval Card Probe
+
+Status: read-only approval-card path closed for the visible Electron app.
+
+Added `direct:electron-read-approval`, a live opt-in Electron probe that uses
+the supported user route:
+
+```text
+App Server -> Direct Text -> Direct Tools -> prompt -> visible read approval card
+-> Approve read -> completed card/status row -> assistant continuation
+```
+
+The probe starts from App Server rather than seeding Direct Tools as the initial
+runtime, because Direct activation/rollback law intentionally rejects a direct
+implementation-lane start that did not pass through the runtime selector. It
+then submits a real prompt in the Codex surface, observes
+`direct/tool/readOnly/requestApproval`, clicks `Approve read`, and verifies the
+renderer-safe implementation status/history projection after completion.
+
+The implementation gap found by this probe was that the selectable Direct Tools
+surface still built text-only first-turn requests. Direct implementation-lane
+first turns now use scoped implementation tool declarations when the project has
+matching read/patch/command proof evidence; text-only remains unchanged.
+
+Latest live run:
+
+```text
+run id: rug003_electron_read_approval_20260517_retry4
+status: passed
+cases: 14/14
+visibleApprovalCardExercised: true
+assistantContinuationObserved: true
+rawExposure: passed
+```
+
+Validation:
+
+```bash
+npm run check:syntax
+npm run direct:electron-read-approval -- --run-id rug003_electron_read_approval_20260517_retry4 --allow-live-provider-call
+```
+
 ## E-Probe Gap Matrix
 
 The next probe work should target gaps in branch distinctions, not individual
@@ -267,7 +309,7 @@ code paths.
 | --- | --- | --- | --- | --- |
 | `RUG-001` | closed in current code bundle | The aggregate matrix report cannot mark external live proof rows as live-proved because that runner is fixture/preflight conformance only. | `direct:evidence-ledger` ingests selected live/fixture/UI reports and emits per-row proof levels. | Keep this aggregator in the default post-round evidence pass. |
 | `RUG-002` | closed in current code bundle | Runtime switch persistence and visible Direct Tools eligibility must match the real scoped evidence gate. | `direct:runtime-path` passed; `direct:runtime-path:electron` passed App Server readback, copied live probe evidence, copied scoped implementation proof evidence, App Server -> Direct Text, Direct Text -> Direct Tools, restart persistence, and independent settings preservation. Scoped implementation proof resolver returns `canSelectImplementationLane=true`. | Keep the Electron selector probe in the default runtime-path suite. |
-| `RUG-003` | manual/Electron provider loop gap | Live read/patch/command loops are script-proved, but approval cards and status rows are not clicked/observed in the visible UI. | `direct:implementation-proof` live reports passed; UI projection fixture passed. | Electron probe with disposable workspace: trigger provider read/patch/command, approve via card, observe operation history/status row and final assistant continuation. |
+| `RUG-003` | partially closed in current code bundle | Live read/patch/command loops are script-proved, but approval cards and status rows need visible UI coverage. | Read-only Electron path passed: App Server -> Direct Text -> Direct Tools, visible `read_file` approval card, approve click, completed card/status row, assistant continuation, renderer-safe implementation projection. | Extend the same Electron probe family to patch and command after read-only coverage is stable. |
 | `RUG-004` | crash/recovery live-side-effect gap | No round-2 live probe interrupts after patch/command side effect and then restarts. | Recovery fixture suite passed; live patch/command normal path passed. | Fault-injection probe: after local patch/command result write but before/after continuation handoff, restart and assert no auto-retry, degraded state visible, workspace effect summary retained. |
 | `RUG-005` | long-context live pressure gap | Context maintenance is status/projection proved, not exercised under a real long-context pressure turn. | `direct:context-eprobes` passed; no provider compaction authority claimed. | Construct bounded long thread; assert pressure/status projection, no hidden compaction, no provider compact call, and context pack omission refs if cap forces omission. |
 | `RUG-006` | app-server sibling UI observation gap | We normalize vanilla sibling context evidence, but round 2 did not observe a real UI compact/memory control transition from app-server. | Context E-probes cover normalized evidence and discriminator behavior. | Electron/app-server observation probe: capture sibling context/memory controls/status, switch thread, prove discriminator prevents bleed. |
