@@ -24,6 +24,12 @@ const CONTINUATION_TRANSPORT_FRESH_CONTEXT = "fresh_context";
 const CONTINUATION_TRANSPORT_PREVIOUS_RESPONSE_ID = "previous_response_id";
 const DEFAULT_TEXT_PROBE_PROMPT = "Reply with exactly: direct text probe ok";
 const DEFAULT_TEXT_PROBE_INSTRUCTIONS = "You are Codex running a text-only direct transport probe. Do not request tools.";
+const DEFAULT_IMPLEMENTATION_TOOL_INSTRUCTIONS = [
+  "You are Codex running a direct implementation-lane turn in a disposable workspace.",
+  "Use only the declared tools when local file evidence, patching, or command execution is needed.",
+  "Do not invent file contents, patch results, or command results.",
+  "After receiving a local tool result, produce a concise final answer.",
+].join(" ");
 const DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS = [
   "You are Codex continuing after a local read-only workspace tool result.",
   "Use the tool result as evidence.",
@@ -152,6 +158,90 @@ function buildTextOnlyProbeRequest(options = {}) {
       },
     ],
   };
+}
+
+function directImplementationToolSchemas(toolNames = []) {
+  const requested = new Set((Array.isArray(toolNames) ? toolNames : []).map((name) => normalizeString(name, "")));
+  const schemas = {
+    read_file: {
+      type: "function",
+      name: "read_file",
+      description: "Read one UTF-8 text file from the disposable workspace by project-relative path.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { type: "string", description: "Project-relative path to read." },
+        },
+        required: ["path"],
+        additionalProperties: false,
+      },
+    },
+    apply_patch: {
+      type: "function",
+      name: "apply_patch",
+      description: "Propose one git-style unified diff to apply to the disposable workspace.",
+      parameters: {
+        type: "object",
+        properties: {
+          patch: { type: "string", description: "Git-style unified diff." },
+          summary: { type: "string" },
+        },
+        required: ["patch"],
+        additionalProperties: false,
+      },
+    },
+    run_command: {
+      type: "function",
+      name: "run_command",
+      description: "Run one package-manager script in the disposable workspace.",
+      parameters: {
+        type: "object",
+        properties: {
+          command: { type: "string", enum: ["npm"] },
+          args: { type: "array", items: { type: "string" } },
+          cwd: { type: "string" },
+          timeoutMs: { type: "number" },
+          reason: { type: "string" },
+        },
+        required: ["command", "args"],
+        additionalProperties: false,
+      },
+    },
+  };
+  const ordered = ["read_file", "apply_patch", "run_command"].filter((name) => requested.has(name));
+  return ordered.map((name) => schemas[name]).filter(Boolean);
+}
+
+function buildImplementationToolInitialRequest(options = {}) {
+  const prompt = normalizeString(options.prompt, DEFAULT_TEXT_PROBE_PROMPT);
+  const instructions = normalizeString(options.instructions, DEFAULT_IMPLEMENTATION_TOOL_INSTRUCTIONS);
+  const model = normalizeString(options.model, modelFromProfile(options.profileDoc));
+  const tools = Array.isArray(options.tools)
+    ? options.tools.filter(Boolean)
+    : directImplementationToolSchemas(options.toolNames || ["read_file", "apply_patch", "run_command"]);
+  const requestBody = {
+    model,
+    stream: true,
+    store: false,
+    parallel_tool_calls: false,
+    instructions,
+    input: [
+      {
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: prompt,
+          },
+        ],
+      },
+    ],
+  };
+  if (tools.length) {
+    requestBody.tools = tools;
+    requestBody.tool_choice = "auto";
+  }
+  return requestBody;
 }
 
 function buildReadOnlyToolContinuationProbeRequest(options = {}) {
@@ -594,6 +684,16 @@ async function runTextOnlyDirectProbe(options = {}) {
   });
 }
 
+async function runImplementationToolInitialProbe(options = {}) {
+  const requestBody = isPlainObject(options.requestBody)
+    ? options.requestBody
+    : buildImplementationToolInitialRequest(options);
+  return runDirectCodexStreamingRequest(options, requestBody, {
+    schema: DIRECT_TEXT_PROBE_RESULT_SCHEMA,
+    kind: "implementation_tool_initial",
+  });
+}
+
 async function runReadOnlyToolContinuationProbe(options = {}) {
   const continuationRequest = isPlainObject(options.continuationRequest) ? options.continuationRequest : null;
   if (!continuationRequest) throw new Error("Read-only tool continuation probe requires continuationRequest.");
@@ -1018,19 +1118,23 @@ async function runPersistedReadOnlyToolContinuation(options = {}) {
 
 module.exports = {
   DEFAULT_CODEX_RESPONSES_ENDPOINT,
+  DEFAULT_IMPLEMENTATION_TOOL_INSTRUCTIONS,
   DEFAULT_REPAIR_LOOP_CONTINUATION_INSTRUCTIONS,
   DEFAULT_TEXT_PROBE_INSTRUCTIONS,
   DEFAULT_TEXT_PROBE_PROMPT,
   DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS,
   DIRECT_TOOL_CONTINUATION_RESULT_SCHEMA,
   DIRECT_TEXT_PROBE_RESULT_SCHEMA,
+  buildImplementationToolInitialRequest,
   buildReadOnlyToolContinuationProbeRequest,
   buildTextOnlyProbeRequest,
   diagnosticFromResult,
+  directImplementationToolSchemas,
   requestShapeForDiagnostic,
   runPersistedReadOnlyToolContinuation,
   runPersistedTextOnlyDirectProbe,
   runDirectCodexStreamingRequest,
+  runImplementationToolInitialProbe,
   runReadOnlyToolContinuationProbe,
   runTextOnlyDirectProbe,
   terminalStateFromNormalizedEvents,

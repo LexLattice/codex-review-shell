@@ -3,8 +3,11 @@
 const crypto = require("node:crypto");
 const { EventEmitter } = require("node:events");
 const {
+  buildImplementationToolInitialRequest,
   buildTextOnlyProbeRequest,
+  directImplementationToolSchemas,
   requestShapeForDiagnostic,
+  runImplementationToolInitialProbe,
   runPersistedReadOnlyToolContinuation,
   runTextOnlyDirectProbe,
 } = require("../transport/codex-responses-transport");
@@ -386,6 +389,14 @@ function buildDirectLiveTextCapabilities(status = {}) {
       rawBackendFramesExposed: false,
     },
   };
+}
+
+function implementationInitialToolNames(status = {}) {
+  const names = [];
+  if (status.readOnlyToolContinuation?.status === "ready") names.push("read_file");
+  if (status.patchApplyContinuation?.status === "ready") names.push("apply_patch");
+  if (status.commandExecutionContinuation?.status === "ready") names.push("run_command");
+  return names;
 }
 
 function threadSnapshotFromSession(session = {}) {
@@ -3428,6 +3439,10 @@ class DirectLiveTextController {
     const textOnlyTier = binding.runtimeMode === "direct-experimental" &&
       binding.directTransport === "live-text" &&
       binding.directTier === "text-only";
+    const implementationTier = binding.runtimeMode === "direct-experimental" &&
+      binding.directTransport === "live-text" &&
+      binding.directTier === "implementation-lane";
+    const implementationToolNames = implementationTier ? implementationInitialToolNames(status) : [];
     const useRecentDialogue = existingTurnCount > 0;
     let frozenContextProjection = null;
     if (useRecentDialogue) {
@@ -3487,11 +3502,18 @@ class DirectLiveTextController {
       error.code = "context_store_unhealthy";
       throw error;
     }
-    let requestBody = buildTextOnlyProbeRequest({
-      profileDoc: this.profileDoc,
-      model,
-      prompt,
-    });
+    let requestBody = implementationTier
+      ? buildImplementationToolInitialRequest({
+          profileDoc: this.profileDoc,
+          model,
+          prompt,
+          tools: directImplementationToolSchemas(implementationToolNames),
+        })
+      : buildTextOnlyProbeRequest({
+          profileDoc: this.profileDoc,
+          model,
+          prompt,
+        });
     const turn = this.sessionStore.createTurn(session.sessionId, {
       input: [{ role: "user", text: prompt }],
       model: requestBody.model,
@@ -3521,15 +3543,25 @@ class DirectLiveTextController {
         endpointClass: "chatgpt-codex-responses",
         endpointHash: this.endpoint ? sha256(this.endpoint) : "",
         modelEvidenceRef: normalizeString(status.evidenceId, status.modelEvidenceId || ""),
-        requestShapeEvidenceRef: useRecentDialogue ? "direct_text_turn_recent_dialogue@1" : "direct_text_turn_empty_context@1",
+        requestShapeEvidenceRef: implementationTier
+          ? "direct_implementation_tool_initial@1"
+          : useRecentDialogue ? "direct_text_turn_recent_dialogue@1" : "direct_text_turn_empty_context@1",
         endpointEvidenceRef: this.endpoint ? sha256(this.endpoint) : "",
       });
-      requestBody = buildTextOnlyProbeRequest({
-        profileDoc: this.profileDoc,
-        model,
-        prompt: contextResult.providerInput.prompt,
-        instructions: contextResult.providerInput.instructions,
-      });
+      requestBody = implementationTier
+        ? buildImplementationToolInitialRequest({
+            profileDoc: this.profileDoc,
+            model,
+            prompt: contextResult.providerInput.prompt,
+            instructions: contextResult.providerInput.instructions,
+            tools: directImplementationToolSchemas(implementationToolNames),
+          })
+        : buildTextOnlyProbeRequest({
+            profileDoc: this.profileDoc,
+            model,
+            prompt: contextResult.providerInput.prompt,
+            instructions: contextResult.providerInput.instructions,
+          });
     }
     const requestShape = {
       ...requestShapeForDiagnostic(requestBody),
@@ -3581,6 +3613,8 @@ class DirectLiveTextController {
       clientTurnRequestId,
       prompt: requestBody.input?.[0]?.content?.[0]?.text || prompt,
       instructions: requestBody.instructions,
+      requestBody,
+      requestKind: implementationTier ? "implementation_tool_initial" : "text_only",
       model: requestBody.model,
       project,
       surfaceSession,
@@ -3610,6 +3644,8 @@ class DirectLiveTextController {
       clientTurnRequestId,
       prompt,
       instructions,
+      requestBody,
+      requestKind,
       model,
       project,
       surfaceSession,
@@ -3626,7 +3662,7 @@ class DirectLiveTextController {
         });
       }
     };
-    const result = await runTextOnlyDirectProbe({
+    const probeOptions = {
       endpoint: this.endpoint || undefined,
       authStore: this.currentAuthStore(),
       refreshCredentials: this.refreshCredentials,
@@ -3637,7 +3673,13 @@ class DirectLiveTextController {
       fetchImpl: this.fetchImpl || undefined,
       signal: abortController.signal,
       onLifecycle: callerLifecycle,
-    });
+    };
+    const result = requestKind === "implementation_tool_initial"
+      ? await runImplementationToolInitialProbe({
+          ...probeOptions,
+          requestBody,
+        })
+      : await runTextOnlyDirectProbe(probeOptions);
     this.sessionStore.writeDiagnostic(sessionId, "direct_live_text_turn", {
       ...result.diagnostic,
       clientTurnRequestId,
