@@ -1067,7 +1067,7 @@ class DirectLiveTextController {
     let planned = null;
     let session = null;
     let turn = null;
-    let forkStartId = "";
+    let forkStartId = `fork_start_${sha256(`${projectId}:${clientForkStartId}:${sourcePreviewId}`).slice(0, 24)}`;
     let operationInputDigest = "";
     let operationCommitted = false;
     try {
@@ -1075,7 +1075,7 @@ class DirectLiveTextController {
       if (existing) {
         const existingResult = store.operationResult(existing);
         const existingForkStartId = normalizeString(existingResult?.result?.forkStartId, "");
-        if (existingForkStartId && existingForkStartId !== clientForkStartId) {
+        if (existingForkStartId && existingForkStartId !== forkStartId) {
           const error = new Error("client_operation_id_conflict");
           error.code = "client_operation_id_conflict";
           throw error;
@@ -1118,7 +1118,6 @@ class DirectLiveTextController {
         model,
         requestShapeHash,
       }));
-      forkStartId = `fork_start_${sha256(`${projectId}:${clientForkStartId}:${sourcePreviewId}`).slice(0, 24)}`;
       planned = store.planOperation({
         operationType: "start_fork_turn",
         projectId,
