@@ -469,7 +469,13 @@ function buildDirectImplementationLaneUiStatus({ project = {}, runtimeStatus = {
   const latestToolResult = latestToolResultStatus(runtimeStatus);
   const activeTurnCountValue = numberValue(runtimeStatus.sessionStore?.activeTurnCount);
   const activeTurnStateValue = normalizeString(runtimeStatus.sessionStore?.lastTurnState, "");
-  const sideEffectRecoveryState = latestToolResult.sideEffectExecuted && activeTurnCountValue > 0
+  const activeSessionIdValue = normalizeString(runtimeStatus.sessionStore?.activeSessionId, "");
+  const activeTurnIdValue = normalizeString(runtimeStatus.sessionStore?.activeTurnId, "");
+  const latestResultBelongsToActiveTurn = latestToolResult.sideEffectExecuted &&
+    activeTurnIdValue &&
+    latestToolResult.turnId === activeTurnIdValue &&
+    (!activeSessionIdValue || latestToolResult.sessionId === activeSessionIdValue);
+  const sideEffectRecoveryState = latestResultBelongsToActiveTurn && activeTurnCountValue > 0
     ? ["continuation_sent", "streaming_continuation"].includes(activeTurnStateValue)
       ? "continuation_sent_no_bytes"
       : "result_recorded_no_context"
@@ -517,6 +523,8 @@ function buildDirectImplementationLaneUiStatus({ project = {}, runtimeStatus = {
       unresolvedObligationCount: numberValue(runtimeStatus.sessionStore?.unresolvedObligationCount),
     },
     activeTurn: {
+      sessionId: activeSessionIdValue,
+      turnId: activeTurnIdValue,
       state: activeTurnStateValue,
       composerAllowed: activeComposerAllowed,
       composerAllowedReason: activeComposerAllowedReason,

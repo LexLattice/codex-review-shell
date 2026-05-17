@@ -1202,6 +1202,22 @@ class DirectSessionStore {
     };
     const sortedSessions = [...sessions].sort((left, right) => updatedMs(right) - updatedMs(left));
     const activeSession = sortedSessions.find((session) => Number(session.activeTurnCount || 0) > 0) || sortedSessions[0] || {};
+    const activeSessionId = normalizeString(activeSession.sessionId, "");
+    const activeSessionArtifact = activeSessionId ? this.readSession(activeSessionId) : null;
+    const activeTurnSummaries = Array.isArray(activeSessionArtifact?.turns) ? activeSessionArtifact.turns : [];
+    const activeTurnIds = new Set([
+      ...activeTurnSummaries.map((turn) => normalizeString(turn?.turnId, "")).filter(Boolean),
+      ...(activeSessionId ? this.listTurnIdsFromDisk(activeSessionId) : []),
+    ]);
+    const activeTurns = [...activeTurnIds]
+      .map((turnId) => {
+        const durableTurn = activeSessionId ? this.readTurn(activeSessionId, turnId) : null;
+        const summary = activeTurnSummaries.find((entry) => normalizeString(entry?.turnId, "") === turnId) || {};
+        return durableTurn || summary;
+      })
+      .filter((turn) => DIRECT_ACTIVE_TURN_STATES.has(normalizeString(turn?.state, "")))
+      .sort((left, right) => updatedMs(right) - updatedMs(left));
+    const activeTurnSummary = activeTurns[0] || null;
     const sessionCount = sessions.length;
     const turnCount = sessions.reduce((count, session) => count + Number(session.turnCount || 0), 0);
     const eventCount = sessions.reduce((count, session) => count + Number(session.eventCount || 0), 0);
@@ -1218,6 +1234,8 @@ class DirectSessionStore {
       activeTurnCount,
       unresolvedObligationCount,
       lastTurnState: activeSession.lastTurnState || "",
+      activeSessionId,
+      activeTurnId: normalizeString(activeTurnSummary?.turnId, ""),
       activeToolLoopId: normalizeString(activeToolSession.activeToolLoopId, ""),
       activeToolStepOrdinal: Number(activeToolSession.activeToolStepOrdinal || 0),
       lastSessionUpdatedAt: activeSession.updatedAt || "",

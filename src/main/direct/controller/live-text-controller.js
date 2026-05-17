@@ -507,18 +507,27 @@ function implementationInitialToolNames(status = {}, prompt = "") {
   return names;
 }
 
+function promptImpliesFileMutation(prompt) {
+  const text = normalizeString(prompt, "").toLowerCase();
+  return /\b(apply_patch|patch|edit|modify|update|change|fix|replace|insert|delete|remove|rename|write)\b/.test(text) ||
+    /\b(file|line|code|implementation|source)\b/.test(text) && /\b(should|needs?|must|make|add|set|convert)\b/.test(text);
+}
+
+function promptImpliesCommand(prompt) {
+  const text = normalizeString(prompt, "").toLowerCase();
+  return /\b(run_command|run|execute|test|tests|npm test|pnpm test|yarn test|command|script)\b/.test(text);
+}
+
 function implementationContinuationToolNames(status = {}, prompt = "") {
   const names = [];
   const lowerPrompt = normalizeString(prompt, "").toLowerCase();
   const readReady = status.readOnlyToolContinuation?.status === "ready";
   const patchReady = status.patchApplyContinuation?.status === "ready";
   const commandReady = status.commandExecutionContinuation?.status === "ready";
-  const asksRead = lowerPrompt.includes("read_file");
-  const asksPatch = lowerPrompt.includes("apply_patch");
-  const asksCommand = lowerPrompt.includes("run_command");
+  const asksPatch = lowerPrompt.includes("apply_patch") || promptImpliesFileMutation(lowerPrompt);
+  const asksCommand = lowerPrompt.includes("run_command") || promptImpliesCommand(lowerPrompt);
   if (asksPatch && patchReady) names.push("apply_patch");
   if (asksCommand && commandReady) names.push("run_command");
-  if (!names.length && asksRead && readReady) names.push("read_file");
   if (!names.length && readReady) names.push("read_file");
   return names;
 }

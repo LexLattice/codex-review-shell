@@ -559,6 +559,8 @@ async function readImplementationProjection(page) {
       canApproveRead: status?.implementationLane?.facets?.canApproveRead?.canUse === true,
       canShowApprovalCards: status?.implementationLane?.canShowApprovalCards === true,
       activeTurnState: status?.activeTurn?.state || "",
+      activeTurnSessionId: status?.activeTurn?.sessionId || "",
+      activeTurnId: status?.activeTurn?.turnId || "",
       activeTurnComposerAllowed: status?.activeTurn?.composerAllowed === true,
       activeTurnComposerAllowedReason: status?.activeTurn?.composerAllowedReason || "",
       recoveryState: status?.recovery?.state || "",
@@ -703,12 +705,16 @@ function assertSideEffectRecoveryStatus(cases, scenarioName, projection, assista
     latest.rawToolOutputIncluded === false;
   assertCase(cases, `${scenarioName}_restart_keeps_side_effect_result_renderer_safe`, baseSafe, latest);
   assertCase(cases, `${scenarioName}_restart_keeps_turn_nonterminal_without_auto_retry`, ["continuation_ready", "continuation_sent"].includes(projection.activeTurnState) &&
+    projection.activeTurnId === latest.turnId &&
+    (!projection.activeTurnSessionId || projection.activeTurnSessionId === latest.sessionId) &&
     projection.activeTurnCount > 0 &&
     projection.activeTurnComposerAllowed === false &&
     ["disabled_side_effect_incomplete", "disabled_provider_handoff_unknown"].includes(projection.activeTurnComposerAllowedReason) &&
     ["result_recorded_no_context", "continuation_sent_no_bytes"].includes(projection.recoveryState) &&
     assistantAfterRestart.proofObserved === false, {
     activeTurnState: projection.activeTurnState,
+    activeTurnSessionId: projection.activeTurnSessionId,
+    activeTurnId: projection.activeTurnId,
     activeTurnCount: projection.activeTurnCount,
     activeTurnComposerAllowed: projection.activeTurnComposerAllowed,
     activeTurnComposerAllowedReason: projection.activeTurnComposerAllowedReason,
