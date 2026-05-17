@@ -467,6 +467,25 @@ function buildDirectImplementationLaneUiStatus({ project = {}, runtimeStatus = {
   const appServerSelected = activeTier === "app-server";
   const contextMaintenance = contextMaintenanceStatus(runtimeStatus);
   const latestToolResult = latestToolResultStatus(runtimeStatus);
+  const activeTurnCountValue = numberValue(runtimeStatus.sessionStore?.activeTurnCount);
+  const activeTurnStateValue = normalizeString(runtimeStatus.sessionStore?.lastTurnState, "");
+  const activeSessionIdValue = normalizeString(runtimeStatus.sessionStore?.activeSessionId, "");
+  const activeTurnIdValue = normalizeString(runtimeStatus.sessionStore?.activeTurnId, "");
+  const latestResultBelongsToActiveTurn = latestToolResult.sideEffectExecuted &&
+    activeTurnIdValue &&
+    latestToolResult.turnId === activeTurnIdValue &&
+    (!activeSessionIdValue || latestToolResult.sessionId === activeSessionIdValue);
+  const sideEffectRecoveryState = latestResultBelongsToActiveTurn && activeTurnCountValue > 0
+    ? ["continuation_sent", "streaming_continuation"].includes(activeTurnStateValue)
+      ? "continuation_sent_no_bytes"
+      : "result_recorded_no_context"
+    : "";
+  const activeComposerAllowed = activeTurnCountValue === 0;
+  const activeComposerAllowedReason = activeComposerAllowed
+    ? "safe_terminal"
+    : sideEffectRecoveryState === "continuation_sent_no_bytes"
+      ? "disabled_provider_handoff_unknown"
+      : "disabled_side_effect_incomplete";
   const status = {
     schema: DIRECT_IMPLEMENTATION_LANE_UI_STATUS_SCHEMA,
     meta,
@@ -500,17 +519,19 @@ function buildDirectImplementationLaneUiStatus({ project = {}, runtimeStatus = {
     implementationLane,
     currentSession: {
       sessionStoreAvailable: bool(runtimeStatus.sessionStore?.available),
-      activeTurnCount: numberValue(runtimeStatus.sessionStore?.activeTurnCount),
+      activeTurnCount: activeTurnCountValue,
       unresolvedObligationCount: numberValue(runtimeStatus.sessionStore?.unresolvedObligationCount),
     },
     activeTurn: {
-      state: normalizeString(runtimeStatus.sessionStore?.lastTurnState, ""),
-      composerAllowed: numberValue(runtimeStatus.sessionStore?.activeTurnCount) === 0,
-      composerAllowedReason: numberValue(runtimeStatus.sessionStore?.activeTurnCount) === 0 ? "safe_terminal" : "disabled_side_effect_incomplete",
+      sessionId: activeSessionIdValue,
+      turnId: activeTurnIdValue,
+      state: activeTurnStateValue,
+      composerAllowed: activeComposerAllowed,
+      composerAllowedReason: activeComposerAllowedReason,
     },
     recovery: {
-      state: normalizeString(runtimeStatus.directThreadStore?.recovery?.state || runtimeStatus.sessionStore?.recovery?.state, "healthy"),
-      confidence: normalizeString(runtimeStatus.directThreadStore?.recovery?.confidence || runtimeStatus.sessionStore?.recovery?.confidence, "unknown"),
+      state: normalizeString(sideEffectRecoveryState || runtimeStatus.directThreadStore?.recovery?.state || runtimeStatus.sessionStore?.recovery?.state, "healthy"),
+      confidence: sideEffectRecoveryState ? "conservative_from_partial" : normalizeString(runtimeStatus.directThreadStore?.recovery?.confidence || runtimeStatus.sessionStore?.recovery?.confidence, "unknown"),
     },
     policy: {
       editable: false,

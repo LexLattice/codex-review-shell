@@ -390,7 +390,8 @@ function assertCase(cases, caseId, condition, details = {}) {
   }
 }
 
-async function launchApp(tempRoot) {
+async function launchApp(tempRoot, options = {}) {
+  const faultInjection = options.faultInjection || {};
   const app = await electron.launch({
     args: [repoRoot],
     cwd: repoRoot,
@@ -399,6 +400,17 @@ async function launchApp(tempRoot) {
       CODEX_REVIEW_SHELL_PROFILE: PROFILE_NAME,
       CODEX_REVIEW_SHELL_USER_DATA_ROOT: tempRoot,
       CODEX_REVIEW_SHELL_DEFAULT_WSL_PATH: "",
+      ...(faultInjection.enabled
+        ? {
+            CODEX_DIRECT_TEST_TOOL_FAULT_INJECTION: "after_history_before_continuation",
+            CODEX_DIRECT_TEST_TOOL_FAULT_TOOL: faultInjection.toolName || "",
+            CODEX_DIRECT_TEST_TOOL_FAULT_EXIT_CODE: String(faultInjection.exitCode || 87),
+          }
+        : {
+            CODEX_DIRECT_TEST_TOOL_FAULT_INJECTION: "",
+            CODEX_DIRECT_TEST_TOOL_FAULT_TOOL: "",
+            CODEX_DIRECT_TEST_TOOL_FAULT_EXIT_CODE: "",
+          }),
     },
   });
   const window = await app.firstWindow();
@@ -547,7 +559,14 @@ async function readImplementationProjection(page) {
       canApproveRead: status?.implementationLane?.facets?.canApproveRead?.canUse === true,
       canShowApprovalCards: status?.implementationLane?.canShowApprovalCards === true,
       activeTurnState: status?.activeTurn?.state || "",
+      activeTurnSessionId: status?.activeTurn?.sessionId || "",
+      activeTurnId: status?.activeTurn?.turnId || "",
+      activeTurnComposerAllowed: status?.activeTurn?.composerAllowed === true,
+      activeTurnComposerAllowedReason: status?.activeTurn?.composerAllowedReason || "",
+      recoveryState: status?.recovery?.state || "",
+      recoveryConfidence: status?.recovery?.confidence || "",
       unresolvedObligationCount: status?.currentSession?.unresolvedObligationCount ?? null,
+      activeTurnCount: status?.currentSession?.activeTurnCount ?? null,
       historyRows: Array.isArray(history?.rows) ? history.rows.length : 0,
       historyActionableRows: Array.isArray(history?.rows)
         ? history.rows.filter((row) => row?.actionability?.actionable === true).length
@@ -667,6 +686,65 @@ function assertPostToolStatus(cases, scenarioName, projection) {
       projection.historyArtifactKinds.includes("workspace_effect_summary") &&
       projection.historyActionableRows === 0 &&
       projection.historyEvidenceKeyCount >= 2, projection);
+  }
+}
+
+function assertSideEffectRecoveryStatus(cases, scenarioName, projection, assistantAfterRestart = {}) {
+  const latest = projection.latestToolResult || {};
+  const baseSafe = latest.schema === "direct_tool_result_status_projection@1" &&
+    latest.tool === SCENARIOS[scenarioName].toolName &&
+    latest.turnId &&
+    latest.obligationId &&
+    latest.resultId &&
+    latest.sideEffectExecuted === true &&
+    latest.workspaceEffectSummaryId.length > 0 &&
+    latest.workspaceEffectScanRan === true &&
+    latest.actionabilityActionable === false &&
+    latest.rawProviderPayloadIncluded === false &&
+    latest.rawWorkspacePathIncluded === false &&
+    latest.rawToolOutputIncluded === false;
+  assertCase(cases, `${scenarioName}_restart_keeps_side_effect_result_renderer_safe`, baseSafe, latest);
+  assertCase(cases, `${scenarioName}_restart_keeps_turn_nonterminal_without_auto_retry`, ["continuation_ready", "continuation_sent"].includes(projection.activeTurnState) &&
+    projection.activeTurnId === latest.turnId &&
+    (!projection.activeTurnSessionId || projection.activeTurnSessionId === latest.sessionId) &&
+    projection.activeTurnCount > 0 &&
+    projection.activeTurnComposerAllowed === false &&
+    ["disabled_side_effect_incomplete", "disabled_provider_handoff_unknown"].includes(projection.activeTurnComposerAllowedReason) &&
+    ["result_recorded_no_context", "continuation_sent_no_bytes"].includes(projection.recoveryState) &&
+    assistantAfterRestart.proofObserved === false, {
+    activeTurnState: projection.activeTurnState,
+    activeTurnSessionId: projection.activeTurnSessionId,
+    activeTurnId: projection.activeTurnId,
+    activeTurnCount: projection.activeTurnCount,
+    activeTurnComposerAllowed: projection.activeTurnComposerAllowed,
+    activeTurnComposerAllowedReason: projection.activeTurnComposerAllowedReason,
+    recoveryState: projection.recoveryState,
+    recoveryConfidence: projection.recoveryConfidence,
+    assistantAfterRestart,
+  });
+  assertCase(cases, `${scenarioName}_restart_keeps_operation_history_single_side_effect`, projection.historyRows === 2 &&
+    projection.historyFamilies.includes(scenarioName) &&
+    projection.historyFamilies.includes("workspace-effect") &&
+    projection.historyArtifactKinds.includes("tool_result") &&
+    projection.historyArtifactKinds.includes("workspace_effect_summary") &&
+    projection.historyActionableRows === 0 &&
+    projection.historyEvidenceKeyCount >= 2, projection);
+  if (scenarioName === "patch") {
+    assertCase(cases, "patch_restart_preserves_workspace_summary_only_visibility", latest.status === "applied" &&
+      latest.resultClass === "patch_applied" &&
+      latest.workspaceChangesDetected === true &&
+      latest.changedPathCount > 0 &&
+      latest.providerVisibility === "summary_only" &&
+      latest.providerSawChangedFileContents === false &&
+      latest.visibleMessageCode === "workspace_changed_provider_saw_summary_only", latest);
+    return;
+  }
+  if (scenarioName === "command") {
+    assertCase(cases, "command_restart_preserves_clean_workspace_effect_scan", latest.status === "completed_exit_zero" &&
+      latest.workspaceChangesDetected === false &&
+      latest.changedPathCount === 0 &&
+      latest.providerVisibility === "none" &&
+      latest.visibleMessageCode === "workspace_effect_scan_recorded_no_changes", latest);
   }
 }
 
@@ -860,6 +938,49 @@ async function waitForAssistantProof(page, scenario) {
   });
 }
 
+async function assistantProofSnapshot(page, scenario) {
+  return page.evaluate((input) => {
+    const pattern = new RegExp(input.assistantPatternSource, input.assistantPatternFlags);
+    const texts = [...document.querySelectorAll(".message.assistant .bubble")]
+      .map((bubble) => bubble.dataset.rawText || bubble.textContent || "");
+    const latest = texts.at(-1) || "";
+    return {
+      proofObserved: texts.some((text) => text.length >= 20 && pattern.test(text)),
+      proofPrefixObserved: texts.some((text) => new RegExp(`${input.name.toUpperCase()}-PROOF:`, "i").test(text)),
+      assistantMentionsExpectedEvidence: texts.some((text) => pattern.test(text)),
+      assistantMessageCount: texts.length,
+      latestAssistantCharCount: latest.length,
+    };
+  }, {
+    name: scenario.name,
+    assistantPatternSource: scenario.assistantPattern.source,
+    assistantPatternFlags: scenario.assistantPattern.flags,
+  });
+}
+
+async function waitForAppProcessExit(app, timeoutMs = 30_000) {
+  const child = app?.process?.();
+  if (!child) return { exited: false, code: null, signal: "", reason: "process_missing" };
+  if (child.exitCode !== null || child.signalCode) {
+    return { exited: true, code: child.exitCode, signal: child.signalCode || "", reason: "" };
+  }
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve({ exited: false, code: null, signal: "", reason: "timeout" });
+    }, timeoutMs);
+    const cleanup = () => {
+      clearTimeout(timer);
+      child.off("exit", onExit);
+    };
+    const onExit = (code, signal) => {
+      cleanup();
+      resolve({ exited: true, code, signal: signal || "", reason: "" });
+    };
+    child.once("exit", onExit);
+  });
+}
+
 async function closeApp(app) {
   if (!app) return;
   let timedOut = false;
@@ -954,6 +1075,11 @@ async function main() {
   if (!SCENARIOS[scenarioName]) {
     throw new Error(`Unsupported Electron approval scenario: ${scenarioName}`);
   }
+  const faultAfterLocalSideEffect = options["fault-after-local-side-effect"] === true ||
+    optionString(options, "fault-after-local-side-effect", "") === "true";
+  if (faultAfterLocalSideEffect && scenarioName === "read") {
+    throw new Error("Side-effect recovery fault injection is only supported for patch and command scenarios.");
+  }
   const allowLive = options["allow-live-provider-call"] === true || process.env.CODEX_DIRECT_ELECTRON_READ_APPROVAL_LIVE === "1";
   if (!allowLive) {
     throw new Error("This regression starts one live Direct provider turn. Pass --allow-live-provider-call or set CODEX_DIRECT_ELECTRON_READ_APPROVAL_LIVE=1.");
@@ -970,10 +1096,15 @@ async function main() {
   let app = null;
   let finalRuntimeStatus = {};
   let projectionAfterApproval = {};
+  let projectionAfterRestart = {};
   let cardBeforeApproval = {};
   let cardAfterApproval = {};
   let assistantProof = {};
+  let assistantAfterRestart = {};
   let preludeApprovals = [];
+  let faultExit = {};
+  let faultApprovalClick = {};
+  let workspaceAfterFault = {};
   let caughtError = null;
   try {
     seedWorkspace(workspaceRoot);
@@ -994,7 +1125,13 @@ async function main() {
       requiredCapabilityId: scenario.toolName,
     });
 
-    const launched = await launchApp(tempRoot);
+    const launched = await launchApp(tempRoot, {
+      faultInjection: {
+        enabled: faultAfterLocalSideEffect,
+        toolName: scenario.toolName,
+        exitCode: 87,
+      },
+    });
     app = launched.app;
     const window = launched.window;
     window.on("dialog", (dialog) => dialog.accept());
@@ -1024,28 +1161,85 @@ async function main() {
       cardBeforeApproval.mentionsExpectedTarget &&
       cardBeforeApproval.mentionsProviderCallType, cardBeforeApproval);
 
-    await approveVisibleRequest(page, scenario);
-    await waitForCompletedCard(page, scenario);
-    cardAfterApproval = await approvalCardSnapshot(page, scenario);
-    assertCase(cases, `${scenarioName}_approval_card_status_completed_after_click`, cardAfterApproval.completed && /completed/i.test(cardAfterApproval.status), cardAfterApproval);
+    if (faultAfterLocalSideEffect) {
+      const exitPromise = waitForAppProcessExit(app, 45_000);
+      try {
+        await approveVisibleRequest(page, scenario);
+        faultApprovalClick = { clickReturned: true, clickRejected: false };
+      } catch (approvalError) {
+        faultApprovalClick = {
+          clickReturned: false,
+          clickRejected: true,
+          messageHash: sha256(approvalError?.message || String(approvalError)).slice(0, 16),
+        };
+      }
+      faultExit = await exitPromise;
+      assertCase(cases, `${scenarioName}_fault_exit_after_side_effect_history`, faultExit.exited === true && faultExit.code === 87, faultExit);
+      app = null;
+      workspaceAfterFault = scenarioName === "patch"
+        ? {
+            patchApplied: fs.readFileSync(path.join(workspaceRoot, "src", "alpha.txt"), "utf8").includes("alpha two patched"),
+            rawWorkspacePathIncluded: false,
+          }
+        : {
+            commandWorkspaceCheckNotRequired: true,
+            rawWorkspacePathIncluded: false,
+          };
+      if (scenarioName === "patch") {
+        assertCase(cases, "patch_fault_applied_workspace_change_before_restart", workspaceAfterFault.patchApplied === true, workspaceAfterFault);
+      }
 
-    assistantProof = await waitForAssistantProof(page, scenario);
-    assertCase(cases, "provider_continuation_completed_with_assistant_output", assistantProof.proofObserved && assistantProof.assistantMentionsExpectedEvidence, assistantProof);
+      const relaunched = await launchApp(tempRoot, { faultInjection: { enabled: false } });
+      app = relaunched.app;
+      const restartWindow = relaunched.window;
+      restartWindow.on("dialog", (dialog) => dialog.accept());
+      assertCase(cases, `${scenarioName}_restart_keeps_direct_tools_selected`, await selectedRuntimePath(restartWindow) === "direct-implementation", {
+        selectedRuntimePath: await selectedRuntimePath(restartWindow),
+      });
+      const restartPage = await waitForCodexSurfacePage(app);
+      assistantAfterRestart = await assistantProofSnapshot(restartPage, scenario);
+      projectionAfterRestart = await readImplementationProjection(restartPage);
+      assertCase(cases, `${scenarioName}_restart_projection_status_and_history_safe`, projectionAfterRestart.statusSchema === "direct_implementation_lane_ui_status@1" &&
+        projectionAfterRestart.historySchema === "direct_operation_history_projection@1" &&
+        projectionAfterRestart.activeRuntimeTier === "direct-implementation-lane" &&
+        projectionAfterRestart.historyRows > 0 &&
+        projectionAfterRestart.historyActionableRows === 0 &&
+        projectionAfterRestart.rawProviderPayloadIncluded === false &&
+        projectionAfterRestart.rawLocalPathIncluded === false &&
+        projectionAfterRestart.rawToolOutputIncluded === false, projectionAfterRestart);
+      assertSideEffectRecoveryStatus(cases, scenarioName, projectionAfterRestart, assistantAfterRestart);
+      finalRuntimeStatus = await runtimeStatus(restartWindow);
+      assertCase(cases, `${scenarioName}_runtime_does_not_auto_retry_after_restart`, finalRuntimeStatus.implementationSelected === true &&
+        ["continuation_ready", "continuation_sent"].includes(projectionAfterRestart.activeTurnState) &&
+        assistantAfterRestart.proofObserved === false, {
+      finalRuntimeStatus,
+      activeTurnState: projectionAfterRestart.activeTurnState,
+      assistantAfterRestart,
+      });
+    } else {
+      await approveVisibleRequest(page, scenario);
+      await waitForCompletedCard(page, scenario);
+      cardAfterApproval = await approvalCardSnapshot(page, scenario);
+      assertCase(cases, `${scenarioName}_approval_card_status_completed_after_click`, cardAfterApproval.completed && /completed/i.test(cardAfterApproval.status), cardAfterApproval);
 
-    projectionAfterApproval = await readImplementationProjection(page);
-    assertCase(cases, "implementation_projection_status_and_history_safe_after_approval", projectionAfterApproval.statusSchema === "direct_implementation_lane_ui_status@1" &&
-      projectionAfterApproval.historySchema === "direct_operation_history_projection@1" &&
-      projectionAfterApproval.activeRuntimeTier === "direct-implementation-lane" &&
-      projectionAfterApproval.canApproveRead === true &&
-      projectionAfterApproval.historyRows > 0 &&
-      projectionAfterApproval.historyActionableRows === 0 &&
-      projectionAfterApproval.rawProviderPayloadIncluded === false &&
-      projectionAfterApproval.rawLocalPathIncluded === false &&
-      projectionAfterApproval.rawToolOutputIncluded === false, projectionAfterApproval);
-    assertPostToolStatus(cases, scenarioName, projectionAfterApproval);
+      assistantProof = await waitForAssistantProof(page, scenario);
+      assertCase(cases, "provider_continuation_completed_with_assistant_output", assistantProof.proofObserved && assistantProof.assistantMentionsExpectedEvidence, assistantProof);
 
-    finalRuntimeStatus = await runtimeStatus(window);
-    assertCase(cases, "direct_tools_runtime_still_selected_after_live_tool", finalRuntimeStatus.implementationSelected === true && finalRuntimeStatus.canApproveReadFile === true, finalRuntimeStatus);
+      projectionAfterApproval = await readImplementationProjection(page);
+      assertCase(cases, "implementation_projection_status_and_history_safe_after_approval", projectionAfterApproval.statusSchema === "direct_implementation_lane_ui_status@1" &&
+        projectionAfterApproval.historySchema === "direct_operation_history_projection@1" &&
+        projectionAfterApproval.activeRuntimeTier === "direct-implementation-lane" &&
+        projectionAfterApproval.canApproveRead === true &&
+        projectionAfterApproval.historyRows > 0 &&
+        projectionAfterApproval.historyActionableRows === 0 &&
+        projectionAfterApproval.rawProviderPayloadIncluded === false &&
+        projectionAfterApproval.rawLocalPathIncluded === false &&
+        projectionAfterApproval.rawToolOutputIncluded === false, projectionAfterApproval);
+      assertPostToolStatus(cases, scenarioName, projectionAfterApproval);
+
+      finalRuntimeStatus = await runtimeStatus(window);
+      assertCase(cases, "direct_tools_runtime_still_selected_after_live_tool", finalRuntimeStatus.implementationSelected === true && finalRuntimeStatus.canApproveReadFile === true, finalRuntimeStatus);
+    }
   } catch (error) {
     caughtError = error;
     if (error?.caseId && !cases.some((item) => item.caseId === error.caseId)) {
@@ -1081,8 +1275,9 @@ async function main() {
       totalCases: cases.length,
       scenario: scenarioName,
       liveProviderTurnExercised: true,
-      visibleApprovalCardExercised: Boolean(cardBeforeApproval.visible && cardAfterApproval.completed),
-      finalAssistantProofObserved: Boolean(assistantProof.proofObserved),
+      sideEffectRecoveryFaultInjected: faultAfterLocalSideEffect,
+      visibleApprovalCardExercised: Boolean(cardBeforeApproval.visible && (cardAfterApproval.completed || faultAfterLocalSideEffect)),
+      finalAssistantProofObserved: Boolean(faultAfterLocalSideEffect ? assistantAfterRestart.proofObserved : assistantProof.proofObserved),
       failureKind: caughtError ? (caughtError.caseId || caughtError.code || "unhandled_error") : "",
     },
     liveProbeEvidence: {
@@ -1111,15 +1306,31 @@ async function main() {
       cardAfterApproval,
       preludeApprovals,
       assistantProof,
+      assistantAfterRestart,
       projectionAfterApproval,
+      projectionAfterRestart,
       finalRuntimeStatus,
+      faultExit,
+      faultApprovalClick,
+      workspaceAfterFault,
       consoleWarningOrErrorCount: consoleEvents.length,
       pageErrorCount: pageErrors.length,
       consoleEventHashes: consoleEvents.slice(0, 12),
       pageErrorHashes: pageErrors.slice(0, 12),
     },
     cases,
-    sourceDigest: sha256(stableStringify({ cases, cardBeforeApproval, cardAfterApproval, preludeApprovals, assistantProof, projectionAfterApproval })),
+    sourceDigest: sha256(stableStringify({
+      cases,
+      cardBeforeApproval,
+      cardAfterApproval,
+      preludeApprovals,
+      assistantProof,
+      assistantAfterRestart,
+      projectionAfterApproval,
+      projectionAfterRestart,
+      faultExit,
+      workspaceAfterFault,
+    })),
     rawExposure: {
       rawConfigPathIncluded: false,
       rawWorkspacePathIncluded: false,
@@ -1130,6 +1341,7 @@ async function main() {
     sentinelCounters: {
       providerTransportCallsExpected: true,
       providerTransportCallsMinimum: 1,
+      providerContinuationExpected: !faultAfterLocalSideEffect,
       patchApplyCallsExpected: scenario.toolName === "apply_patch",
       commandRunCallsExpected: scenario.toolName === "run_command",
       rightPaneMutationCalls: 0,

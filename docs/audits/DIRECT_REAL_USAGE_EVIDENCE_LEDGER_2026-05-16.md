@@ -300,6 +300,61 @@ npm run check:syntax
 npm run direct:electron-read-approval -- --run-id rug003_electron_read_approval_20260517_retry4 --allow-live-provider-call
 ```
 
+## 2026-05-17 RUG-004 Side-Effect Recovery Fault Probe
+
+Status: live patch/command side-effect recovery path closed for the visible
+Electron app.
+
+The Electron approval probe now supports an explicit test-only fault mode that
+terminates the app after local side-effect result and operation-history rows are
+durably recorded, before the turn reaches a safe assistant terminal state. The
+probe restarts the app and verifies the recovered renderer-safe state:
+
+```text
+App Server -> Direct Text -> Direct Tools -> visible patch/command approval
+-> Approve local side effect -> forced app exit -> restart
+-> side-effect status/history/workspace-effect summary still visible
+-> no automatic retry
+-> composer remains blocked
+-> recovery state reports continuation_sent_no_bytes
+```
+
+Probe commands:
+
+```bash
+npm run direct:electron-read-approval -- --scenario patch --run-id rug004_patch_fault_20260517_final --allow-live-provider-call --fault-after-local-side-effect
+npm run direct:electron-read-approval -- --scenario command --run-id rug004_command_fault_20260517_final --allow-live-provider-call --fault-after-local-side-effect
+```
+
+Reports:
+
+```text
+/home/rose/.config/codex-review-shell/direct-electron-read-approval-runs/rug004_patch_fault_20260517_final/direct-electron-read-approval-report.json
+/home/rose/.config/codex-review-shell/direct-electron-read-approval-runs/rug004_command_fault_20260517_final/direct-electron-read-approval-report.json
+```
+
+Observed results:
+
+```text
+patch:   passed 19/19
+command: passed 18/18
+```
+
+The probe caught and fixed a real status-projection gap: after restart, the
+session store status could report an empty `lastTurnState` because it used the
+first project session rather than the active/latest session. The status resolver
+now uses the active/latest session and the implementation-lane UI projects a
+conservative `continuation_sent_no_bytes` recovery state when a side-effect
+result exists but the turn remains nonterminal.
+
+Validation:
+
+```bash
+npm run check:syntax
+npm run direct:electron-read-approval -- --scenario patch --run-id rug004_patch_fault_20260517_final --allow-live-provider-call --fault-after-local-side-effect
+npm run direct:electron-read-approval -- --scenario command --run-id rug004_command_fault_20260517_final --allow-live-provider-call --fault-after-local-side-effect
+```
+
 ## E-Probe Gap Matrix
 
 The next probe work should target gaps in branch distinctions, not individual
@@ -310,7 +365,7 @@ code paths.
 | `RUG-001` | closed in current code bundle | The aggregate matrix report cannot mark external live proof rows as live-proved because that runner is fixture/preflight conformance only. | `direct:evidence-ledger` ingests selected live/fixture/UI reports and emits per-row proof levels. | Keep this aggregator in the default post-round evidence pass. |
 | `RUG-002` | closed in current code bundle | Runtime switch persistence and visible Direct Tools eligibility must match the real scoped evidence gate. | `direct:runtime-path` passed; `direct:runtime-path:electron` passed App Server readback, copied live probe evidence, copied scoped implementation proof evidence, App Server -> Direct Text, Direct Text -> Direct Tools, restart persistence, and independent settings preservation. Scoped implementation proof resolver returns `canSelectImplementationLane=true`. | Keep the Electron selector probe in the default runtime-path suite. |
 | `RUG-003` | partially closed in current code bundle | Live read/patch/command loops are script-proved, but approval cards and status rows need visible UI coverage. | Read-only Electron path passed: App Server -> Direct Text -> Direct Tools, visible `read_file` approval card, approve click, completed card/status row, assistant continuation, renderer-safe implementation projection. | Extend the same Electron probe family to patch and command after read-only coverage is stable. |
-| `RUG-004` | crash/recovery live-side-effect gap | No round-2 live probe interrupts after patch/command side effect and then restarts. | Recovery fixture suite passed; live patch/command normal path passed. | Fault-injection probe: after local patch/command result write but before/after continuation handoff, restart and assert no auto-retry, degraded state visible, workspace effect summary retained. |
+| `RUG-004` | closed in current code bundle | The visible Electron app must recover safely when patch/command side effects happen locally but the provider continuation does not reach a safe assistant terminal state. | Fault-injection Electron probes passed for patch and command; restart projection preserves tool result, operation history, workspace-effect summary, blocked composer, and `continuation_sent_no_bytes` recovery state. | Keep patch/command side-effect recovery probes in the visible Electron approval suite. |
 | `RUG-005` | long-context live pressure gap | Context maintenance is status/projection proved, not exercised under a real long-context pressure turn. | `direct:context-eprobes` passed; no provider compaction authority claimed. | Construct bounded long thread; assert pressure/status projection, no hidden compaction, no provider compact call, and context pack omission refs if cap forces omission. |
 | `RUG-006` | app-server sibling UI observation gap | We normalize vanilla sibling context evidence, but round 2 did not observe a real UI compact/memory control transition from app-server. | Context E-probes cover normalized evidence and discriminator behavior. | Electron/app-server observation probe: capture sibling context/memory controls/status, switch thread, prove discriminator prevents bleed. |
 | `RUG-007` | fresh-fork live gap | Fresh fork from preview has fixture/spec coverage, but not a live provider first turn from a valid preview. | Matrix fixture suites cover workbench/fork laws. | Build a valid fork/merge/prune preview fixture, start one fresh direct session with live provider opt-in, assert no source continuity and composer state. |
@@ -326,8 +381,10 @@ The next bundle should remain probe expansion, not feature work. Since
 `RUG-001` is now covered by `direct:evidence-ledger`, the next high-leverage
 work is:
 
-1. Add Electron approval-card/status-row probes for `RUG-003`.
-2. Add crash/recovery side-effect probes for `RUG-004` once the visible approval/status path is covered.
+1. Keep Electron approval-card/status-row probes for `RUG-003` and side-effect
+   recovery probes for `RUG-004` in the default visible-app validation set.
+2. Move next to `RUG-005` long-context live pressure, then `RUG-006`
+   app-server sibling context/memory observation.
 
 These connect the already-green headless/live proof to the actual user-visible
 app path.
