@@ -532,6 +532,7 @@ function buildDirectRuntimeStatus(options = {}) {
       unresolvedObligationCount: Number(sessionStore?.unresolvedObligationCount || 0),
       lastTurnState: normalizeString(sessionStore?.lastTurnState, ""),
       lastSessionUpdatedAt: normalizeString(sessionStore?.lastSessionUpdatedAt, ""),
+      latestToolResult: isPlainObject(sessionStore?.latestToolResult) ? sessionStore.latestToolResult : {},
       recovery: isPlainObject(sessionStore?.recovery) ? sessionStore.recovery : {},
     },
     directThreadStore: {

@@ -396,6 +396,50 @@ function contextMaintenanceStatus(runtimeStatus = {}) {
   };
 }
 
+function latestToolResultStatus(runtimeStatus = {}) {
+  const result = isPlainObject(runtimeStatus.sessionStore?.latestToolResult)
+    ? runtimeStatus.sessionStore.latestToolResult
+    : {};
+  const changedPathCount = numberValue(result.changedPathCount);
+  const workspaceEffectSummaryId = normalizeString(result.workspaceEffectSummaryId, "");
+  const providerVisibility = normalizeString(result.providerVisibility, changedPathCount > 0 ? "summary_only" : "none");
+  return {
+    schema: "direct_tool_result_status_projection@1",
+    tool: normalizeString(result.tool, ""),
+    status: normalizeString(result.status, "none"),
+    resultClass: normalizeString(result.resultClass, ""),
+    sideEffectExecuted: bool(result.sideEffectExecuted),
+    workspaceEffectSummaryId,
+    workspaceEffectScanRan: bool(result.workspaceEffectScanRan),
+    workspaceEffectScanSupported: bool(result.workspaceEffectScanSupported),
+    workspaceChangesDetected: bool(result.workspaceChangesDetected) || changedPathCount > 0,
+    changedPathCount,
+    providerVisibility,
+    providerSawChangedFileContents: bool(result.providerSawChangedFileContents),
+    providerSawAllChangedFileContents: bool(result.providerSawAllChangedFileContents),
+    visibleMessageCode: changedPathCount > 0
+      ? providerVisibility === "summary_only"
+        ? "workspace_changed_provider_saw_summary_only"
+        : providerVisibility === "partial_content"
+          ? "workspace_changed_provider_saw_partial_content"
+          : providerVisibility === "unknown"
+            ? "workspace_changed_provider_visibility_unknown"
+            : "workspace_changed_provider_visibility_recorded"
+      : workspaceEffectSummaryId
+        ? "workspace_effect_scan_recorded_no_changes"
+        : "tool_result_recorded_no_workspace_effect",
+    postSideEffectPolicyViolation: normalizeString(result.postSideEffectPolicyViolation, ""),
+    actionability: {
+      actionable: false,
+      allowedActions: [],
+      reason: "tool_result_status_is_read_only",
+    },
+    rawProviderPayloadIncluded: false,
+    rawWorkspacePathIncluded: false,
+    rawToolOutputIncluded: false,
+  };
+}
+
 function buildDirectImplementationLaneUiStatus({ project = {}, runtimeStatus = {}, generatedAt = "" } = {}) {
   const projectId = normalizeString(project.id || runtimeStatus.projectId, "");
   const runtimeStatusDigest = digestValue(runtimeStatus);
@@ -418,6 +462,7 @@ function buildDirectImplementationLaneUiStatus({ project = {}, runtimeStatus = {
   const textOnly = runtimeStatus.directTextOnly || {};
   const appServerSelected = activeTier === "app-server";
   const contextMaintenance = contextMaintenanceStatus(runtimeStatus);
+  const latestToolResult = latestToolResultStatus(runtimeStatus);
   const status = {
     schema: DIRECT_IMPLEMENTATION_LANE_UI_STATUS_SCHEMA,
     meta,
@@ -469,6 +514,7 @@ function buildDirectImplementationLaneUiStatus({ project = {}, runtimeStatus = {
       policySnapshotDigest: digestValue({ implementationLane: "default-policy", projectId }),
     },
     contextMaintenance,
+    latestToolResult,
     witnesses: witnessChips(runtimeStatus),
     blockers: implementationLane.blockerCodes.map((code) => ({ code, source: "runtime-status", rendererSafe: true })),
     warnings: [],
