@@ -162,7 +162,10 @@ function buildMaintenanceForProjection({ projectId, threadId, contextProjection,
   });
   const { route } = selectMaintenanceRoute({ pressureEstimate: pressure });
   const trimPolicy = buildRawWindowTrimPolicy();
-  const sourceStableKeys = contextItems.slice(0, 8).map((item) => item.stableSourceItemKey).filter(Boolean);
+  const omittedItems = contextItems.slice(0, 8);
+  const sourceStableKeys = omittedItems.map((item) => item.stableSourceItemKey).filter(Boolean);
+  const omittedCharCount = omittedItems.reduce((sum, item) => sum + String(item.text || "").length, 0);
+  const omittedTokenEstimate = Math.ceil(omittedCharCount / 4);
   const trimPlan = buildTrimPlan({
     route,
     sourceContextProjectionId: contextProjection.projectionId,
@@ -174,10 +177,10 @@ function buildMaintenanceForProjection({ projectId, threadId, contextProjection,
         sourceArtifactId: contextProjection.projectionId,
         sourceDigest: contextProjection.projectionDigest,
         sourceStableKeys,
-        omittedItemCount: sourceStableKeys.length,
-        omittedTurnCount: sourceStableKeys.length,
-        omittedCharCount: 14_400,
-        omittedTokenEstimate: 3600,
+        omittedItemCount: omittedItems.length,
+        omittedTurnCount: omittedItems.length,
+        omittedCharCount,
+        omittedTokenEstimate,
         reason: "over_budget",
         rendererSafeSummary: "Earlier long-context dialogue was omitted under pressure.",
       },
@@ -324,13 +327,11 @@ async function main() {
       model: "fixture-model",
       requestShape: requestShapeForDiagnostic(requestBody),
     });
-    threadStore.indexSessionArtifacts(
-      sessionStore,
-      sessionStore.readSession(session.sessionId),
-      sessionStore.listTurnIdsFromDisk(session.sessionId).map((turnId) => sessionStore.readTurn(session.sessionId, turnId)).filter(Boolean),
-    );
+    const currentSession = sessionStore.readSession(session.sessionId);
+    const allTurns = [...turns, turn];
+    threadStore.indexSessionArtifacts(sessionStore, currentSession, allTurns);
     const contextResult = threadStore.buildAndPersistContextForTextTurn({
-      session: sessionStore.readSession(session.sessionId),
+      session: currentSession,
       projectId,
       threadId: session.sessionId,
       turnId: turn.turnId,
