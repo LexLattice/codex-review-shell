@@ -7,6 +7,7 @@ import path from "node:path";
 
 const require = createRequire(import.meta.url);
 
+const childProcess = require("node:child_process");
 const { scanFixtureForSecrets } = require("../src/main/direct/fixtures/redaction");
 const { loadDirectCodexProfile } = require("../src/main/direct/odeu-profile/profile-loader");
 const { createCodexCliAuthStore } = require("../src/main/direct/auth/codex-cli-auth");
@@ -77,6 +78,63 @@ function assertCase(cases, caseId, condition, details = {}) {
     status: condition ? "passed" : "failed",
     details,
   });
+}
+
+function readJsonFileOrNull(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function installForbiddenAuthorityGuards(counters) {
+  const originals = {
+    exec: childProcess.exec,
+    execFile: childProcess.execFile,
+    fork: childProcess.fork,
+    spawn: childProcess.spawn,
+  };
+  const blocked = (apiName) => (...args) => {
+    counters.appServerSpawnCalls += 1;
+    const error = new Error(`Forbidden child_process.${apiName} call during Direct fresh-fork probe.`);
+    error.code = "forbidden_child_process_authority";
+    error.details = { apiName, commandPreview: String(args[0] || "").slice(0, 80) };
+    throw error;
+  };
+  childProcess.exec = blocked("exec");
+  childProcess.execFile = blocked("execFile");
+  childProcess.fork = blocked("fork");
+  childProcess.spawn = blocked("spawn");
+  return {
+    restore: () => {
+      childProcess.exec = originals.exec;
+      childProcess.execFile = originals.execFile;
+      childProcess.fork = originals.fork;
+      childProcess.spawn = originals.spawn;
+    },
+    coverage: {
+      appServerSpawnCalls: "child_process guard",
+      workspaceReadCalls: "workspaceRequest guard",
+      patchApplyCalls: "workspaceRequest guard",
+      commandRunCalls: "workspaceRequest guard",
+      rightPaneMutationCalls: "not_applicable_no_renderer_dependency",
+      handoffMutationCalls: "not_applicable_no_handoff_dependency",
+    },
+  };
+}
+
+function makeForbiddenWorkspaceRequest(counters) {
+  return async (_project, method, params = {}) => {
+    const label = `${method || ""} ${params?.toolName || ""} ${params?.operation || ""}`.toLowerCase();
+    if (label.includes("patch")) counters.patchApplyCalls += 1;
+    else if (label.includes("command") || label.includes("run")) counters.commandRunCalls += 1;
+    else counters.workspaceReadCalls += 1;
+    const error = new Error("Forbidden workspace backend call during Direct fresh-fork probe.");
+    error.code = "forbidden_workspace_authority";
+    error.details = { method };
+    throw error;
+  };
 }
 
 function textResponse(text, status = 200, headers = {}) {
@@ -256,6 +314,7 @@ async function main() {
     rightPaneMutationCalls: 0,
     handoffMutationCalls: 0,
   };
+  const authorityGuards = installForbiddenAuthorityGuards(counters);
   const requestBodies = [];
   let threadStore = null;
 
@@ -273,6 +332,7 @@ async function main() {
       authStore: makeAuthStore(mode),
       endpoint: normalizeString(options.endpoint, ""),
       fetchImpl: makeFetchImpl({ mode, counters, requestBodies }),
+      workspaceRequest: makeForbiddenWorkspaceRequest(counters),
     });
     const workbench = new DirectThreadWorkbenchController({
       threadStore,
@@ -337,22 +397,22 @@ async function main() {
 
     const forkedSession = sessionStore.readSession(result.sessionId);
     const forkedTurn = sessionStore.readTurn(result.sessionId, result.turnId);
-    const requestManifest = threadStore.readRequestManifest(forkedTurn.requestManifestId);
-    const contextPack = threadStore.readContextPack(forkedTurn.contextBuildId);
-    const seedArtifact = JSON.parse(fs.readFileSync(threadStore.forkStartPath(projectId, result.forkStartId, "fork-seed.json"), "utf8"));
-    assertCase(cases, "fresh_fork_artifacts_persisted", Boolean(seedArtifact.forkSeedId && requestManifest?.requestManifestId && contextPack?.contextBuildId), {
-      seedPolicyId: seedArtifact.seedPolicyId,
+    const requestManifest = threadStore.readRequestManifest(forkedTurn?.requestManifestId);
+    const contextPack = threadStore.readContextPack(forkedTurn?.contextBuildId);
+    const seedArtifact = readJsonFileOrNull(threadStore.forkStartPath(projectId, result.forkStartId, "fork-seed.json"));
+    assertCase(cases, "fresh_fork_artifacts_persisted", Boolean(seedArtifact?.forkSeedId && requestManifest?.requestManifestId && contextPack?.contextBuildId), {
+      seedPolicyId: seedArtifact?.seedPolicyId,
       requestShapeClass: requestManifest?.requestShapeClass,
       contextPurpose: contextPack?.purpose,
     });
-    assertCase(cases, "fresh_fork_session_terminal_state", forkedSession.sourceClass === "forked-direct-native" &&
-      forkedSession.providerContinuityAvailable === false &&
-      forkedSession.composerState === "enabled" &&
-      forkedTurn.firstTurnTerminalKind === "completed_with_assistant_text", {
-      sourceClass: forkedSession.sourceClass,
-      providerContinuityAvailable: forkedSession.providerContinuityAvailable,
-      composerState: forkedSession.composerState,
-      firstTurnTerminalKind: forkedTurn.firstTurnTerminalKind,
+    assertCase(cases, "fresh_fork_session_terminal_state", forkedSession?.sourceClass === "forked-direct-native" &&
+      forkedSession?.providerContinuityAvailable === false &&
+      forkedSession?.composerState === "enabled" &&
+      forkedTurn?.firstTurnTerminalKind === "completed_with_assistant_text", {
+      sourceClass: forkedSession?.sourceClass,
+      providerContinuityAvailable: forkedSession?.providerContinuityAvailable,
+      composerState: forkedSession?.composerState,
+      firstTurnTerminalKind: forkedTurn?.firstTurnTerminalKind,
     });
 
     const status = await workbench.readForkStartStatus(project, result.forkStartId);
@@ -381,14 +441,14 @@ async function main() {
 
     const forbiddenSentinelsZero = [
       counters.appServerSpawnCalls,
-      counters.appServerMutationCalls,
       counters.workspaceReadCalls,
       counters.patchApplyCalls,
       counters.commandRunCalls,
-      counters.rightPaneMutationCalls,
-      counters.handoffMutationCalls,
     ].every((count) => count === 0);
-    assertCase(cases, "fresh_fork_forbidden_sentinels_zero", forbiddenSentinelsZero, counters);
+    assertCase(cases, "fresh_fork_forbidden_sentinels_zero", forbiddenSentinelsZero, {
+      counters,
+      sentinelCoverage: authorityGuards.coverage,
+    });
 
     const failedCases = cases.filter((entry) => entry.status !== "passed");
     const report = {
@@ -412,14 +472,14 @@ async function main() {
         forkStartId: result.forkStartId,
         sessionId: result.sessionId,
         turnId: result.turnId,
-        firstTurnTerminalKind: forkedTurn.firstTurnTerminalKind,
+        firstTurnTerminalKind: forkedTurn?.firstTurnTerminalKind,
         localSessionState: result.localSessionState,
-        composerState: forkedSession.composerState,
+        composerState: forkedSession?.composerState,
         previousResponseIdUsed: false,
         providerContinuityHandleUsed: false,
         sourcePreviousResponseIdUsed: false,
-        requestShapeClass: requestManifest.requestShapeClass,
-        seedPolicyId: seedArtifact.seedPolicyId,
+        requestShapeClass: requestManifest?.requestShapeClass,
+        seedPolicyId: seedArtifact?.seedPolicyId,
       },
       rawExposure: {
         rawPathExposed: false,
@@ -430,6 +490,7 @@ async function main() {
         contextTextExposed: false,
       },
       sentinelCounters: counters,
+      sentinelCoverage: authorityGuards.coverage,
       cases,
     };
     const findings = scanFixtureForSecrets(report);
@@ -457,6 +518,7 @@ async function main() {
     }, null, 2));
     process.exitCode = report.status === "passed" ? 0 : 1;
   } finally {
+    authorityGuards.restore();
     if (threadStore) threadStore.close();
   }
 }
