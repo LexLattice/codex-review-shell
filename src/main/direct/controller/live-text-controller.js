@@ -2885,6 +2885,8 @@ class DirectLiveTextController {
     const toolLoopId = canonicalToolLoopId(currentObligation);
     const stepOrdinal = Number(currentObligation.stepOrdinal || 1) || 1;
     const stepId = normalizeString(currentObligation.stepId, "");
+    const continuationToolNames = implementationInitialToolNames(this.statusForProject(project));
+    const continuationTools = directImplementationToolSchemas(continuationToolNames);
     let continuationRequest = null;
     let continuationContext = null;
     if (this.directThreadStore && typeof this.directThreadStore.buildAndPersistContextForToolContinuation === "function") {
@@ -2921,7 +2923,9 @@ class DirectLiveTextController {
         kind: "read_only_tool_continuation",
         stream: true,
         store: false,
-        tools: false,
+        tools: continuationTools.length > 0,
+        toolCount: continuationTools.length,
+        declaredToolNames: continuationToolNames,
         parallelToolCalls: false,
         hasInstructions: true,
         hasPreviousResponseId: false,
@@ -3004,6 +3008,7 @@ class DirectLiveTextController {
       fetchImpl: this.fetchImpl || undefined,
       allowSequentialReadOnlyToolLoop: true,
       allowSequentialImplementationRepairLoop: true,
+      continuationTools,
       onLifecycle: (event) => {
         if (event.phase === "streaming") {
           this.emitNotification(surfaceSession, "turn/started", {

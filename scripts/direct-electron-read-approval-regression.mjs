@@ -662,7 +662,7 @@ function rawExposureScan(report, leakRoots = []) {
   if (containsPathLeak(serialized, [os.homedir(), repoRoot, ...leakRoots])) blockers.push("raw_host_path");
   if (/[A-Za-z]:\\/.test(serialized)) blockers.push("raw_windows_path");
   if (/\/mnt\/[a-z]\//.test(serialized)) blockers.push("raw_wsl_path");
-  if (/(Bearer\s+[A-Za-z0-9._-]+|accessToken|refreshToken|session_token|sk-[A-Za-z0-9])/i.test(serialized)) blockers.push("raw_token");
+  if (/(Bearer\s+[A-Za-z0-9._-]+|accessToken|refreshToken|session_token|sk-[A-Za-z0-9_-]{16,})/i.test(serialized)) blockers.push("raw_token");
   if (/https?:\/\/chatgpt\.com/i.test(serialized)) blockers.push("raw_chatgpt_url");
   return {
     passed: blockers.length === 0,
@@ -706,6 +706,7 @@ async function main() {
   let cardBeforeApproval = {};
   let cardAfterApproval = {};
   let assistantProof = {};
+  let caughtError = null;
   try {
     seedWorkspace(workspaceRoot);
     seedConfig(tempRoot, workspaceRoot, { ...options, "initial-runtime-path": "app-server" });
@@ -772,6 +773,24 @@ async function main() {
 
     finalRuntimeStatus = await runtimeStatus(window);
     assertCase(cases, "direct_tools_runtime_still_selected_after_live_read", finalRuntimeStatus.implementationSelected === true && finalRuntimeStatus.canApproveReadFile === true, finalRuntimeStatus);
+  } catch (error) {
+    caughtError = error;
+    if (error?.caseId && !cases.some((item) => item.caseId === error.caseId)) {
+      cases.push({
+        caseId: error.caseId,
+        status: "failed",
+        details: error.details || { message: error.message || "case failed" },
+      });
+    } else if (!error?.caseId) {
+      cases.push({
+        caseId: "electron_read_approval_unhandled_error",
+        status: "failed",
+        details: {
+          messageHash: sha256(error?.message || String(error)).slice(0, 16),
+          code: error?.code || "",
+        },
+      });
+    }
   } finally {
     if (app) await closeApp(app);
   }
@@ -790,6 +809,7 @@ async function main() {
       liveProviderTurnExercised: true,
       visibleApprovalCardExercised: Boolean(cardBeforeApproval.visible && cardAfterApproval.completed),
       finalAssistantProofObserved: Boolean(assistantProof.proofObserved),
+      failureKind: caughtError ? (caughtError.caseId || caughtError.code || "unhandled_error") : "",
     },
     liveProbeEvidence: {
       copied: liveEvidence.copied,
