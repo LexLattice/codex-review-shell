@@ -41,6 +41,7 @@ Current evidence ledger:
 | `RU-PATH-001` | `fixture-ui` | `npm run direct:runtime-path` | User-facing app-server/direct-text/direct-implementation switch persists and preserves existing model/reasoning settings. | runtime path regression passes |
 | `RU-LEDGER-001` | `preflight` | `npm run direct:evidence-ledger -- --matrix-report ... --live-text-report ... --implementation-reports ... --ui-report ... --context-report ...` | Aggregates selected live, fixture, and UI reports into one row-level evidence ledger without starting provider/app-server/tool authority. | `rug001Closed=true`, raw exposure passes, sentinels are zero |
 | `RU-PATH-002` | `electron-ui` | `npm run direct:runtime-path:electron` | Visible Electron path selector reads a persisted Direct Text default, switches back to App Server, recognizes copied real live-probe evidence, switches App Server -> Direct Text, survives restart, and preserves model/reasoning/permission settings. | `directTextSelectionExercised=true`; Direct Tools remains blocked unless implementation-lane gate evidence is present |
+| `RU-CTX-001` | `preflight` | `npm run direct:long-context-pressure` | Builds a real long Direct thread in the session/thread stores, detects context pressure, records deterministic trim/omission artifacts, and builds the next context pack/request manifest without provider/app-server/tool authority. | `rug005Closed=true`; provider transport and provider compact sentinels are zero; omission parity passes |
 
 ## Default Execution Order
 
@@ -52,6 +53,7 @@ Current evidence ledger:
 6. `RU-IMP-004`.
 7. `RU-LEDGER-001` after all selected reports exist.
 8. `RU-PATH-002` for visible Electron persistence coverage.
+9. `RU-CTX-001` after context/status fixture coverage is green.
 
 Stop and cluster failures by theory before continuing to a higher-risk level.
 For example, an evidence-scope failure in `RU-LIVE-001` should be fixed before
