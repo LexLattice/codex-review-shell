@@ -1196,6 +1196,12 @@ class DirectSessionStore {
     const sessions = projectId
       ? index.sessions.filter((session) => normalizeString(session.projectId, "") === projectId)
       : index.sessions;
+    const updatedMs = (session) => {
+      const parsed = Date.parse(normalizeString(session?.updatedAt, ""));
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+    const sortedSessions = [...sessions].sort((left, right) => updatedMs(right) - updatedMs(left));
+    const activeSession = sortedSessions.find((session) => Number(session.activeTurnCount || 0) > 0) || sortedSessions[0] || {};
     const sessionCount = sessions.length;
     const turnCount = sessions.reduce((count, session) => count + Number(session.turnCount || 0), 0);
     const eventCount = sessions.reduce((count, session) => count + Number(session.eventCount || 0), 0);
@@ -1211,11 +1217,11 @@ class DirectSessionStore {
       eventCount,
       activeTurnCount,
       unresolvedObligationCount,
-      lastTurnState: sessions[0]?.lastTurnState || "",
+      lastTurnState: activeSession.lastTurnState || "",
       activeToolLoopId: normalizeString(activeToolSession.activeToolLoopId, ""),
       activeToolStepOrdinal: Number(activeToolSession.activeToolStepOrdinal || 0),
-      lastSessionUpdatedAt: sessions[0]?.updatedAt || "",
-      latestToolResult: latestToolResultSummary(this, { ...index, sessions }, { projectId }),
+      lastSessionUpdatedAt: activeSession.updatedAt || "",
+      latestToolResult: latestToolResultSummary(this, { ...index, sessions: sortedSessions }, { projectId }),
       recovery: index.recovery || {},
     };
   }

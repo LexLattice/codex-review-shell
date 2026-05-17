@@ -7,6 +7,7 @@ const {
   buildTextOnlyProbeRequest,
   DEFAULT_IMPLEMENTATION_TOOL_INSTRUCTIONS,
   DEFAULT_REPAIR_LOOP_CONTINUATION_INSTRUCTIONS,
+  DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS,
   directImplementationToolSchemas,
   requestShapeForDiagnostic,
   runImplementationToolInitialProbe,
@@ -243,6 +244,16 @@ function workspaceEffectHistoryResult(result = {}, toolName = "") {
     rawWorkspacePathIncluded: false,
     rawToolOutputIncluded: false,
   };
+}
+
+function maybeInjectToolFaultAfterHistory(toolName) {
+  if (process.env.CODEX_DIRECT_TEST_TOOL_FAULT_INJECTION !== "after_history_before_continuation") return;
+  const expectedTool = normalizeString(process.env.CODEX_DIRECT_TEST_TOOL_FAULT_TOOL, "");
+  const tool = normalizeString(toolName, "");
+  if (expectedTool && expectedTool !== tool) return;
+  const exitCode = Number(process.env.CODEX_DIRECT_TEST_TOOL_FAULT_EXIT_CODE || 87);
+  process.stderr.write(`[direct-test-fault] after_history_before_continuation:${tool}\n`);
+  process.exit(Number.isFinite(exitCode) && exitCode > 0 ? exitCode : 87);
 }
 
 function firstTextInput(input) {
@@ -493,6 +504,22 @@ function implementationInitialToolNames(status = {}, prompt = "") {
   if (readReady) names.push("read_file");
   if (patchReady) names.push("apply_patch");
   if (commandReady) names.push("run_command");
+  return names;
+}
+
+function implementationContinuationToolNames(status = {}, prompt = "") {
+  const names = [];
+  const lowerPrompt = normalizeString(prompt, "").toLowerCase();
+  const readReady = status.readOnlyToolContinuation?.status === "ready";
+  const patchReady = status.patchApplyContinuation?.status === "ready";
+  const commandReady = status.commandExecutionContinuation?.status === "ready";
+  const asksRead = lowerPrompt.includes("read_file");
+  const asksPatch = lowerPrompt.includes("apply_patch");
+  const asksCommand = lowerPrompt.includes("run_command");
+  if (asksPatch && patchReady) names.push("apply_patch");
+  if (asksCommand && commandReady) names.push("run_command");
+  if (!names.length && asksRead && readReady) names.push("read_file");
+  if (!names.length && readReady) names.push("read_file");
   return names;
 }
 
@@ -3102,10 +3129,10 @@ class DirectLiveTextController {
     const toolLoopId = canonicalToolLoopId(currentObligation);
     const stepOrdinal = Number(currentObligation.stepOrdinal || 1) || 1;
     const stepId = normalizeString(currentObligation.stepId, "");
-    const continuationToolNames = implementationInitialToolNames(this.statusForProject(project));
+    const originalUserIntent = userPromptTextFromTurn(turn);
+    const continuationToolNames = implementationContinuationToolNames(this.statusForProject(project), originalUserIntent);
     const continuationTools = directImplementationToolSchemas(continuationToolNames);
     const implementationRepairContinuation = continuationToolNames.some((name) => name === "apply_patch" || name === "run_command");
-    const originalUserIntent = userPromptTextFromTurn(turn);
     let continuationRequest = null;
     let continuationContext = null;
     if (this.directThreadStore && typeof this.directThreadStore.buildAndPersistContextForToolContinuation === "function") {
@@ -3228,7 +3255,10 @@ class DirectLiveTextController {
       previousResponseId: parentResponseId,
       instructions: implementationRepairContinuation
         ? DEFAULT_REPAIR_LOOP_CONTINUATION_INSTRUCTIONS
-        : normalizeString(continuationContext?.providerInput?.instructions, ""),
+        : [
+            normalizeString(continuationContext?.providerInput?.instructions, ""),
+            DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS,
+          ].filter(Boolean).join("\n\n"),
       prompt: implementationRepairContinuation && originalUserIntent
         ? [
             `[CURRENT USER INTENT]\n${originalUserIntent}`,
@@ -3398,6 +3428,7 @@ class DirectLiveTextController {
       continuation: { continuationId: normalizeString(continuationRequest?.continuationId, "") },
       clientDecisionId: normalizeString(options.clientPatchDecisionId, ""),
     });
+    maybeInjectToolFaultAfterHistory("apply_patch");
     const continuation = await runPersistedReadOnlyToolContinuation({
       sessionStore: this.sessionStore,
       sessionId,
@@ -3604,6 +3635,7 @@ class DirectLiveTextController {
       continuation: { continuationId: normalizeString(continuationRequest?.continuationId, "") },
       clientDecisionId: normalizeString(options.clientCommandDecisionId, ""),
     });
+    maybeInjectToolFaultAfterHistory("run_command");
     const continuation = await runPersistedReadOnlyToolContinuation({
       sessionStore: this.sessionStore,
       sessionId,
