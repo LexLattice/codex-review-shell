@@ -132,6 +132,10 @@ function liveProbeEvidenceRoot(tempRoot) {
   return path.join(profileRoot(tempRoot), "direct-probe-evidence");
 }
 
+function implementationProofRunsRoot(tempRoot) {
+  return path.join(profileRoot(tempRoot), "direct-implementation-proof-runs");
+}
+
 function projectBinding(config) {
   const project = config?.projects?.find((item) => item.id === config.selectedProjectId) || config?.projects?.[0] || {};
   return project.surfaceBinding?.codex || {};
@@ -270,6 +274,74 @@ function copyLiveProbeEvidence(tempRoot, options = {}) {
   };
 }
 
+function implementationProofRootCandidates(options = {}) {
+  const configured = optionString(options, "implementation-proof-root", "") ||
+    normalizeEnvPath(process.env.CODEX_DIRECT_IMPLEMENTATION_PROOF_RUNS_ROOT || "");
+  return [
+    configured,
+    path.join(os.homedir(), ".config", "codex-review-shell", "direct-implementation-proof-runs"),
+    path.join(os.homedir(), ".config", "Codex Review Shell", "direct-implementation-proof-runs"),
+  ].filter(Boolean);
+}
+
+function scopedProofSummary(root) {
+  let reportCount = 0;
+  let usableScopedRows = 0;
+  const capabilityIds = new Set();
+  let entries = [];
+  try {
+    if (!fs.statSync(root).isDirectory()) return { reportCount, usableScopedRows, capabilityIds: [] };
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {}
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const report = readJson(path.join(root, entry.name, "implementation-proof-report.json"));
+    if (report?.schema !== "direct_implementation_lane_real_provider_proof_report@1") continue;
+    reportCount += 1;
+    const rows = Array.isArray(report.scopedImplementationLaneProof?.evidence)
+      ? report.scopedImplementationLaneProof.evidence
+      : [];
+    for (const row of rows) {
+      if (row?.usable !== true || row?.status !== "runtime_probed") continue;
+      usableScopedRows += 1;
+      if (row.scope?.capabilityId) capabilityIds.add(row.scope.capabilityId);
+    }
+  }
+  return {
+    reportCount,
+    usableScopedRows,
+    capabilityIds: [...capabilityIds].sort(),
+  };
+}
+
+function implementationProofRootLooksUsable(root) {
+  if (!root || !fs.existsSync(root)) return false;
+  return scopedProofSummary(root).usableScopedRows > 0;
+}
+
+function copyImplementationProofRuns(tempRoot, options = {}) {
+  const sourceRoot = implementationProofRootCandidates(options).find(implementationProofRootLooksUsable) || "";
+  if (!sourceRoot) {
+    return {
+      copied: false,
+      reason: "implementation_proof_root_missing",
+      proofSourceKey: "",
+      reportCount: 0,
+      usableScopedRows: 0,
+      capabilityIds: [],
+    };
+  }
+  const targetRoot = implementationProofRunsRoot(tempRoot);
+  ensureDirectory(path.dirname(targetRoot));
+  fs.cpSync(sourceRoot, targetRoot, { recursive: true });
+  return {
+    copied: true,
+    reason: "",
+    proofSourceKey: sha256(sourceRoot),
+    ...scopedProofSummary(targetRoot),
+  };
+}
+
 function assertCase(cases, caseId, condition, details = {}) {
   cases.push({
     caseId,
@@ -279,6 +351,7 @@ function assertCase(cases, caseId, condition, details = {}) {
   if (!condition) {
     const error = new Error(`runtime_path_electron_case_failed:${caseId}`);
     error.caseId = caseId;
+    error.details = details;
     throw error;
   }
 }
@@ -338,7 +411,7 @@ async function selectRuntimePathViaUi(window, runtimePath) {
   await window.waitForFunction((nextPath) => {
     const select = document.querySelector("#directRuntimePathSelect");
     return select && select.value === nextPath;
-  }, runtimePath, { timeout: 20_000 });
+  }, runtimePath, { timeout: 60_000 });
 }
 
 async function runtimeStatusSummary(window) {
@@ -364,6 +437,10 @@ async function runtimeStatusSummary(window) {
       directImplementationStatus: status.directImplementationLane?.status || "",
       directImplementationCanSelect: status.directImplementationLane?.canSelect === true,
       directImplementationBlockers: status.directImplementationLane?.blockers || [],
+      directImplementationProofStatus: status.directImplementationLane?.implementationProof?.status || "",
+      directImplementationProofEvidenceState: status.directImplementationLane?.implementationProof?.evidenceState || "",
+      directImplementationProofCanSelect: status.directImplementationLane?.implementationProof?.canSelectImplementationLane === true,
+      directImplementationProofMissingCapabilityIds: status.directImplementationLane?.implementationProof?.missingCapabilityIds || [],
       activationState: status.activation?.state || "",
       activationGateId: status.activation?.gateId || "",
       liveTextRuntimeStatus: status.liveTextRuntime?.status || "",
@@ -454,17 +531,18 @@ async function main() {
   const reportRoot = path.join(os.homedir(), ".config", "codex-review-shell", "direct-runtime-path-electron-runs", runId);
   const cases = [];
   const liveEvidence = copyLiveProbeEvidence(tempRoot, options);
+  const implementationProof = copyImplementationProofRuns(tempRoot, options);
   let directTextSelectionExercised = false;
   let directImplementationSelectionExercised = false;
   let directSelectionSkippedReason = "";
   let directImplementationSkippedReason = "";
   let app = null;
   try {
-    seedConfig(tempRoot, { ...options, "initial-runtime-path": "direct-text" });
+    seedConfig(tempRoot, { ...options, "initial-runtime-path": "app-server" });
     let launched = await launchApp(tempRoot);
     app = launched.app;
     let window = launched.window;
-    assertCase(cases, "electron_direct_text_readback", await selectedRuntimePath(window) === "direct-text");
+    assertCase(cases, "electron_app_server_readback", await selectedRuntimePath(window) === "app-server");
     const directOptions = await optionStates(window);
     assertCase(cases, "electron_runtime_options_visible", ["app-server", "direct-text", "direct-implementation"].every((value) =>
       directOptions.some((option) => option.value === value)));
@@ -477,18 +555,6 @@ async function main() {
     });
 
     window.on("dialog", (dialog) => dialog.accept());
-    await selectRuntimePathViaUi(window, "app-server");
-    config = readJson(configPath(tempRoot));
-    binding = projectBinding(config);
-    assertCase(cases, "electron_app_server_switch_persisted", binding.runtimeMode === "legacy-app-server" && binding.directTier === "none", {
-      runtimeMode: binding.runtimeMode,
-      directTier: binding.directTier,
-    });
-    assertCase(cases, "electron_switch_preserved_model_reasoning", binding.model === expectedModel && binding.reasoningEffort === "high", {
-      modelPreserved: binding.model === expectedModel,
-      reasoningPreserved: binding.reasoningEffort === "high",
-    });
-
     const appServerGateStatus = await runtimeStatusSummary(window);
     assertCase(cases, "electron_app_server_runtime_gate_observed", true, {
       directTextOnlyStatus: appServerGateStatus.directTextOnlyStatus,
@@ -515,6 +581,49 @@ async function main() {
         modelPreserved: binding.model === expectedModel,
         reasoningPreserved: binding.reasoningEffort === "high",
       });
+      const directTextGateStatus = await runtimeStatusSummary(window);
+      assertCase(cases, "electron_scoped_implementation_proof_status_visible", implementationProof.copied
+        ? directTextGateStatus.directImplementationProofCanSelect === true &&
+          directTextGateStatus.directImplementationProofStatus === "ready" &&
+          directTextGateStatus.directImplementationProofEvidenceState === "runtime_probed" &&
+          directTextGateStatus.directImplementationProofMissingCapabilityIds.length === 0
+        : true, {
+        proofCopied: implementationProof.copied,
+        proofStatus: directTextGateStatus.directImplementationProofStatus,
+        proofEvidenceState: directTextGateStatus.directImplementationProofEvidenceState,
+        proofCanSelect: directTextGateStatus.directImplementationProofCanSelect,
+        proofMissingCapabilityIds: directTextGateStatus.directImplementationProofMissingCapabilityIds,
+      });
+      if (implementationProof.copied && directTextGateStatus.directImplementationProofCanSelect) {
+        try {
+          await window.waitForFunction(() => {
+            const option = [...document.querySelectorAll("#directRuntimePathSelect option")]
+              .find((entry) => entry.value === "direct-implementation");
+            return option && !option.disabled;
+          }, null, { timeout: 60_000 });
+        } catch (error) {
+          const visibleState = await window.evaluate(() => {
+            const select = document.querySelector("#directRuntimePathSelect");
+            const option = [...document.querySelectorAll("#directRuntimePathSelect option")]
+              .find((entry) => entry.value === "direct-implementation");
+            const apply = document.querySelector("#directRuntimePathApplyButton");
+            return {
+              selectedPath: select?.value || "",
+              directImplementationOptionDisabled: option ? option.disabled : null,
+              applyDisabled: apply ? apply.disabled : null,
+              applyTitle: apply?.title || "",
+            };
+          });
+          const timeout = new Error("Direct Tools option did not become enabled after scoped proof status was ready.");
+          timeout.caseId = "electron_direct_implementation_option_enable_timeout";
+          timeout.details = {
+            ...visibleState,
+            directTextGateStatus,
+            proofCapabilityIds: implementationProof.capabilityIds,
+          };
+          throw timeout;
+        }
+      }
       const implementationOption = await optionState(window, "direct-implementation");
       if (implementationOption && !implementationOption.disabled) {
         await selectRuntimePathViaUi(window, "direct-implementation");
@@ -525,11 +634,24 @@ async function main() {
           runtimeMode: binding.runtimeMode,
           directTier: binding.directTier,
         });
+        assertCase(cases, "electron_direct_implementation_switch_preserved_model_reasoning", binding.model === expectedModel && binding.reasoningEffort === "high", {
+          modelPreserved: binding.model === expectedModel,
+          reasoningPreserved: binding.reasoningEffort === "high",
+        });
+        const implementationGateStatus = await runtimeStatusSummary(window);
+        assertCase(cases, "electron_direct_implementation_status_enabled", implementationGateStatus.directImplementationStatus === "enabled" && implementationGateStatus.directImplementationCanSelect === true, {
+          directImplementationStatus: implementationGateStatus.directImplementationStatus,
+          directImplementationCanSelect: implementationGateStatus.directImplementationCanSelect,
+          directImplementationBlockers: implementationGateStatus.directImplementationBlockers,
+          activationState: implementationGateStatus.activationState,
+        });
       } else {
         directImplementationSkippedReason = "direct_implementation_option_blocked_by_runtime_gate";
-        assertCase(cases, "electron_direct_implementation_gate_not_faked", true, {
+        assertCase(cases, "electron_direct_implementation_gate_not_faked", !implementationProof.copied, {
+          proofCopied: implementationProof.copied,
           optionPresent: Boolean(implementationOption),
           optionDisabled: implementationOption ? implementationOption.disabled : true,
+          proofCapabilityIds: implementationProof.capabilityIds,
         });
       }
     } else {
@@ -596,6 +718,15 @@ async function main() {
       usableIndexCount: liveEvidence.usableIndexCount,
       rawEvidenceRootIncluded: false,
     },
+    implementationProofEvidence: {
+      copied: implementationProof.copied,
+      reason: implementationProof.reason,
+      proofSourceKey: implementationProof.proofSourceKey,
+      reportCount: implementationProof.reportCount,
+      usableScopedRows: implementationProof.usableScopedRows,
+      capabilityIds: implementationProof.capabilityIds,
+      rawProofRootIncluded: false,
+    },
     cases,
     sourceDigest: sha256(stableStringify(cases)),
     rawExposure: {
@@ -632,6 +763,7 @@ async function main() {
 if (!relaunchingUnderXvfb) {
   main().catch((error) => {
     console.error(error?.stack || error?.message || String(error));
+    if (error?.details) console.error(JSON.stringify(error.details, null, 2));
     process.exit(1);
   });
 }

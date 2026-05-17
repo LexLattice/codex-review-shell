@@ -257,6 +257,11 @@ function commandExecutionContinuationEvidenceFor(profileDoc = {}) {
   };
 }
 
+function capabilityIdsList(capabilityIds = []) {
+  const values = Array.isArray(capabilityIds) ? capabilityIds : [capabilityIds];
+  return values.map((item) => normalizeString(item, "")).filter(Boolean);
+}
+
 function capabilityStatusFromProof(proof = {}, capabilityId = "") {
   const rows = Array.isArray(proof.requiredCapabilities) ? proof.requiredCapabilities : [];
   return rows.find((row) => row?.capabilityId === capabilityId) || null;
@@ -267,25 +272,39 @@ function proofCapabilityReady(proof = {}, capabilityId = "") {
   return row?.status === "ready" && row?.evidenceState === "runtime_probed";
 }
 
-function mergeScopedProofWithProfileEvidence(profileEvidence = {}, proof = {}, capabilityId = "", missingReason = "") {
-  if (profileEvidence.status !== "ready") return profileEvidence;
-  const row = capabilityStatusFromProof(proof, capabilityId);
-  if (row?.status === "ready" && row?.evidenceState === "runtime_probed") {
+function proofCapabilitiesReady(proof = {}, capabilityIds = []) {
+  const ids = capabilityIdsList(capabilityIds);
+  return ids.length > 0 && ids.every((capabilityId) => proofCapabilityReady(proof, capabilityId));
+}
+
+function mergeScopedProofWithProfileEvidence(profileEvidence = {}, proof = {}, capabilityIds = "", missingReason = "") {
+  const ids = capabilityIdsList(capabilityIds);
+  const primaryCapabilityId = ids[0] || "";
+  const rows = ids.map((capabilityId) => capabilityStatusFromProof(proof, capabilityId));
+  if (proofCapabilitiesReady(proof, ids)) {
+    const primaryRow = rows[0] || {};
     return {
       ...profileEvidence,
+      accepted: true,
+      status: "ready",
       evidenceState: "runtime_probed",
-      scopedProofEvidenceId: normalizeString(row.evidenceId, ""),
-      scopedProofSourceCaseId: normalizeString(row.sourceCaseId, ""),
-      scopedProofCapabilityId: capabilityId,
+      scopedProofEvidenceId: normalizeString(primaryRow.evidenceId, ""),
+      scopedProofEvidenceIds: rows.map((row) => normalizeString(row?.evidenceId, "")).filter(Boolean),
+      scopedProofSourceCaseId: normalizeString(primaryRow.sourceCaseId, ""),
+      scopedProofCapabilityId: primaryCapabilityId,
+      scopedProofCapabilityIds: ids,
+      scopedProofAuthoritative: true,
     };
   }
+  const missingRow = rows.find((row) => row?.status !== "ready" || row?.evidenceState !== "runtime_probed") || null;
   return {
     ...profileEvidence,
     accepted: false,
-    status: row?.status === "expired" ? "evidence_expired" : "proof_required",
-    evidenceState: row?.evidenceState || "missing",
-    scopedProofCapabilityId: capabilityId,
-    reason: normalizeString(row?.reason, "") || missingReason,
+    status: missingRow?.status === "expired" ? "evidence_expired" : "proof_required",
+    evidenceState: missingRow?.evidenceState || proof.evidenceState || "missing",
+    scopedProofCapabilityId: primaryCapabilityId,
+    scopedProofCapabilityIds: ids,
+    reason: normalizeString(missingRow?.reason, "") || missingReason,
   };
 }
 
@@ -579,8 +598,8 @@ class DirectLiveTextController {
     const readOnlyToolContinuation = mergeScopedProofWithProfileEvidence(
       readOnlyContinuationEvidenceFor(this.profileDoc),
       implementationLaneProof,
-      "read_file",
-      "scoped_read_file_proof_required",
+      ["read_file", "read_file_loop"],
+      "scoped_read_file_and_loop_proof_required",
     );
     const patchApplyContinuation = mergeScopedProofWithProfileEvidence(
       patchApplyContinuationEvidenceFor(this.profileDoc),
