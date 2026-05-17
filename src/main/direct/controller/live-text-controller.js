@@ -268,15 +268,17 @@ function proofCapabilityReady(proof = {}, capabilityId = "") {
 }
 
 function mergeScopedProofWithProfileEvidence(profileEvidence = {}, proof = {}, capabilityId = "", missingReason = "") {
-  if (profileEvidence.status !== "ready") return profileEvidence;
   const row = capabilityStatusFromProof(proof, capabilityId);
   if (row?.status === "ready" && row?.evidenceState === "runtime_probed") {
     return {
       ...profileEvidence,
+      accepted: true,
+      status: "ready",
       evidenceState: "runtime_probed",
       scopedProofEvidenceId: normalizeString(row.evidenceId, ""),
       scopedProofSourceCaseId: normalizeString(row.sourceCaseId, ""),
       scopedProofCapabilityId: capabilityId,
+      scopedProofAuthoritative: true,
     };
   }
   return {

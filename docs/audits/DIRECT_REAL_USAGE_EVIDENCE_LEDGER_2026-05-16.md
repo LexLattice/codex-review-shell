@@ -205,6 +205,59 @@ This closes the headless evidence side of Direct Tools selector eligibility.
 The remaining `RUG-002` work is visible Electron UI coverage for the
 Direct Text -> Direct Tools transition with these real scoped proofs present.
 
+## 2026-05-17 RUG-002 Electron Selector Closure
+
+The visible Electron runtime-path probe was extended to copy both live text
+probe evidence and scoped implementation proof reports into its isolated app
+profile. It now exercises the user-facing selector route:
+
+```text
+App Server -> Direct Text -> Direct Tools -> app restart
+```
+
+Probe command:
+
+```bash
+npm run direct:runtime-path:electron -- --run-id rug002_direct_tools_visible_20260517_fixed2
+```
+
+Report:
+
+```text
+/home/rose/.config/codex-review-shell/direct-runtime-path-electron-runs/rug002_direct_tools_visible_20260517_fixed2/direct-runtime-path-electron-report.json
+```
+
+Observed result:
+
+```text
+status: passed
+passedCases: 12/12
+rug002Partial: false
+directTextSelectionExercised: true
+directImplementationSelectionExercised: true
+implementationProof.capabilityIds:
+  - apply_patch
+  - read_file
+  - read_file_loop
+  - run_command
+```
+
+The probe also caught and fixed a real gate mismatch: the runtime status
+already exposed `implementationProof.status=ready`, but activation was still
+blocking on older continuation placeholders. The Direct live text controller
+now treats scoped real-provider proof rows as the authoritative readiness
+source for Direct Tools capability selection, and the runtime status marks
+Direct Tools selectable when it is either eligible or already selected.
+
+Validation:
+
+```bash
+npm run check:syntax
+npm run direct:runtime-path
+npm run direct:runtime-path:electron -- --run-id rug002_direct_tools_visible_20260517_fixed2
+npm run direct:smoke
+```
+
 ## E-Probe Gap Matrix
 
 The next probe work should target gaps in branch distinctions, not individual
@@ -213,7 +266,7 @@ code paths.
 | Gap id | Classification | Why it matters | Existing evidence | Next E-probe shape |
 | --- | --- | --- | --- | --- |
 | `RUG-001` | closed in current code bundle | The aggregate matrix report cannot mark external live proof rows as live-proved because that runner is fixture/preflight conformance only. | `direct:evidence-ledger` ingests selected live/fixture/UI reports and emits per-row proof levels. | Keep this aggregator in the default post-round evidence pass. |
-| `RUG-002` | partial Electron path proof | Runtime switch persistence is headless-fixture proved, and scoped Direct Tools proof evidence is now headless-resolver proved, but the visible selector transition still needs Electron observation. | `direct:runtime-path` passed; `direct:runtime-path:electron` passed persisted Direct Text readback, UI rollback to App Server, copied real live-probe evidence recognition, App Server -> Direct Text switch, restart persistence, and independent settings preservation. Scoped implementation proof resolver now returns `canSelectImplementationLane=true`. | Remaining: Electron switch probe for Direct Text -> Direct Tools with real scoped proofs present; observe enabled state, persistence, and rollback. |
+| `RUG-002` | closed in current code bundle | Runtime switch persistence and visible Direct Tools eligibility must match the real scoped evidence gate. | `direct:runtime-path` passed; `direct:runtime-path:electron` passed App Server readback, copied live probe evidence, copied scoped implementation proof evidence, App Server -> Direct Text, Direct Text -> Direct Tools, restart persistence, and independent settings preservation. Scoped implementation proof resolver returns `canSelectImplementationLane=true`. | Keep the Electron selector probe in the default runtime-path suite. |
 | `RUG-003` | manual/Electron provider loop gap | Live read/patch/command loops are script-proved, but approval cards and status rows are not clicked/observed in the visible UI. | `direct:implementation-proof` live reports passed; UI projection fixture passed. | Electron probe with disposable workspace: trigger provider read/patch/command, approve via card, observe operation history/status row and final assistant continuation. |
 | `RUG-004` | crash/recovery live-side-effect gap | No round-2 live probe interrupts after patch/command side effect and then restarts. | Recovery fixture suite passed; live patch/command normal path passed. | Fault-injection probe: after local patch/command result write but before/after continuation handoff, restart and assert no auto-retry, degraded state visible, workspace effect summary retained. |
 | `RUG-005` | long-context live pressure gap | Context maintenance is status/projection proved, not exercised under a real long-context pressure turn. | `direct:context-eprobes` passed; no provider compaction authority claimed. | Construct bounded long thread; assert pressure/status projection, no hidden compaction, no provider compact call, and context pack omission refs if cap forces omission. |
@@ -231,8 +284,8 @@ The next bundle should remain probe expansion, not feature work. Since
 `RUG-001` is now covered by `direct:evidence-ledger`, the next high-leverage
 work is:
 
-1. Extend the Electron switch probe for the remaining Direct Text -> Direct Tools part of `RUG-002` using the 2026-05-17 scoped proof reports.
-2. Add Electron approval-card/status-row probes for `RUG-003`.
+1. Add Electron approval-card/status-row probes for `RUG-003`.
+2. Add crash/recovery side-effect probes for `RUG-004` once the visible approval/status path is covered.
 
 These connect the already-green headless/live proof to the actual user-visible
 app path.
