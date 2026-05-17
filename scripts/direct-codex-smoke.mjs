@@ -98,6 +98,7 @@ const {
   DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
   DirectLiveTextController,
   DirectLiveTextSurfaceSession,
+  buildDirectLiveTextCapabilities,
 } = require("../src/main/direct/controller/live-text-controller");
 const {
   FAKE_SMOKE_SOURCE,
@@ -510,6 +511,31 @@ function implementationProofFixture(missingCapabilityIds = []) {
     rawAccountIncluded: false,
   };
 }
+const missingReadLoopController = new DirectLiveTextController({
+  profileDoc: acceptedCommandExecutionProfile(),
+  authStore: {
+    readStatus: () => activationAuthStatus,
+    readCredentials: () => ({ accessToken: "fixture-token", accountId: "account-fixture" }),
+  },
+  modelEvidenceResolver: () => ({
+    accepted: true,
+    model: "gpt-5.4",
+    modelSource: "fixture-live-probe",
+    modelEvidenceState: "runtime_probed",
+    liveProbeEvidence: {
+      usable: true,
+      status: "runtime_probed",
+      source: "fixture-live-probe",
+      rawTokensExposed: false,
+      rawBackendFramesExposed: false,
+    },
+  }),
+  implementationProofEvidenceResolver: () => implementationProofFixture(["read_file_loop"]),
+});
+const missingReadLoopStatus = missingReadLoopController.statusForProject(activationProject);
+const missingReadLoopCapabilities = buildDirectLiveTextCapabilities(missingReadLoopStatus);
+assert(missingReadLoopStatus.readOnlyToolContinuation.status !== "ready", "Read-only tool continuation must require both read_file and read_file_loop scoped proofs.");
+assert(!missingReadLoopCapabilities.requests.supportedServerMethods.includes("direct/tool/readOnly/requestApproval"), "Read-only approval method must not be advertised when read_file_loop proof is missing.");
 const activationLiveTextOnly = {
   status: "ready",
   turnRunnable: true,

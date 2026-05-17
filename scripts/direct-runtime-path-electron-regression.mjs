@@ -288,22 +288,25 @@ function scopedProofSummary(root) {
   let reportCount = 0;
   let usableScopedRows = 0;
   const capabilityIds = new Set();
+  let entries = [];
   try {
-    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const report = readJson(path.join(root, entry.name, "implementation-proof-report.json"));
-      if (report?.schema !== "direct_implementation_lane_real_provider_proof_report@1") continue;
-      reportCount += 1;
-      const rows = Array.isArray(report.scopedImplementationLaneProof?.evidence)
-        ? report.scopedImplementationLaneProof.evidence
-        : [];
-      for (const row of rows) {
-        if (row?.usable !== true || row?.status !== "runtime_probed") continue;
-        usableScopedRows += 1;
-        if (row.scope?.capabilityId) capabilityIds.add(row.scope.capabilityId);
-      }
-    }
+    if (!fs.statSync(root).isDirectory()) return { reportCount, usableScopedRows, capabilityIds: [] };
+    entries = fs.readdirSync(root, { withFileTypes: true });
   } catch {}
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const report = readJson(path.join(root, entry.name, "implementation-proof-report.json"));
+    if (report?.schema !== "direct_implementation_lane_real_provider_proof_report@1") continue;
+    reportCount += 1;
+    const rows = Array.isArray(report.scopedImplementationLaneProof?.evidence)
+      ? report.scopedImplementationLaneProof.evidence
+      : [];
+    for (const row of rows) {
+      if (row?.usable !== true || row?.status !== "runtime_probed") continue;
+      usableScopedRows += 1;
+      if (row.scope?.capabilityId) capabilityIds.add(row.scope.capabilityId);
+    }
+  }
   return {
     reportCount,
     usableScopedRows,
