@@ -5,6 +5,8 @@ const { EventEmitter } = require("node:events");
 const {
   buildImplementationToolInitialRequest,
   buildTextOnlyProbeRequest,
+  DEFAULT_IMPLEMENTATION_TOOL_INSTRUCTIONS,
+  DEFAULT_REPAIR_LOOP_CONTINUATION_INSTRUCTIONS,
   directImplementationToolSchemas,
   requestShapeForDiagnostic,
   runImplementationToolInitialProbe,
@@ -83,6 +85,23 @@ function isPlainObject(value) {
 
 function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function userPromptTextFromTurn(turn = {}) {
+  const input = Array.isArray(turn.input) ? turn.input : [];
+  for (const item of input) {
+    if (normalizeString(item?.role, "") !== "user") continue;
+    if (typeof item.text === "string" && item.text.trim()) return item.text.trim();
+    if (Array.isArray(item.content)) {
+      const text = item.content
+        .map((content) => typeof content?.text === "string" ? content.text : "")
+        .filter(Boolean)
+        .join("\n")
+        .trim();
+      if (text) return text;
+    }
+  }
+  return "";
 }
 
 function nowIso(nowMs = Date.now()) {
@@ -391,12 +410,29 @@ function buildDirectLiveTextCapabilities(status = {}) {
   };
 }
 
-function implementationInitialToolNames(status = {}) {
+function implementationInitialToolNames(status = {}, prompt = "") {
   const names = [];
-  if (status.readOnlyToolContinuation?.status === "ready") names.push("read_file");
-  if (status.patchApplyContinuation?.status === "ready") names.push("apply_patch");
-  if (status.commandExecutionContinuation?.status === "ready") names.push("run_command");
+  const lowerPrompt = normalizeString(prompt, "").toLowerCase();
+  const readReady = status.readOnlyToolContinuation?.status === "ready";
+  const patchReady = status.patchApplyContinuation?.status === "ready";
+  const commandReady = status.commandExecutionContinuation?.status === "ready";
+  const asksRead = lowerPrompt.includes("read_file");
+  const asksPatch = lowerPrompt.includes("apply_patch");
+  const asksCommand = lowerPrompt.includes("run_command");
+  if (asksRead && readReady) names.push("read_file");
+  if (!asksRead && asksPatch && patchReady) names.push("apply_patch");
+  if (!asksRead && asksCommand && commandReady) names.push("run_command");
+  if (names.length) return names;
+  if (readReady) names.push("read_file");
+  if (patchReady) names.push("apply_patch");
+  if (commandReady) names.push("run_command");
   return names;
+}
+
+function implementationContextInstructions(contextInstructions = "") {
+  const contextText = normalizeString(contextInstructions, "");
+  if (!contextText) return DEFAULT_IMPLEMENTATION_TOOL_INSTRUCTIONS;
+  return `${contextText}\n\n${DEFAULT_IMPLEMENTATION_TOOL_INSTRUCTIONS}`;
 }
 
 function threadSnapshotFromSession(session = {}) {
@@ -2887,6 +2923,8 @@ class DirectLiveTextController {
     const stepId = normalizeString(currentObligation.stepId, "");
     const continuationToolNames = implementationInitialToolNames(this.statusForProject(project));
     const continuationTools = directImplementationToolSchemas(continuationToolNames);
+    const implementationRepairContinuation = continuationToolNames.some((name) => name === "apply_patch" || name === "run_command");
+    const originalUserIntent = userPromptTextFromTurn(turn);
     let continuationRequest = null;
     let continuationContext = null;
     if (this.directThreadStore && typeof this.directThreadStore.buildAndPersistContextForToolContinuation === "function") {
@@ -2997,8 +3035,15 @@ class DirectLiveTextController {
       obligationId,
       continuationRequest,
       previousResponseId: parentResponseId,
-      instructions: normalizeString(continuationContext?.providerInput?.instructions, ""),
-      prompt: normalizeString(continuationContext?.providerInput?.prompt, ""),
+      instructions: implementationRepairContinuation
+        ? DEFAULT_REPAIR_LOOP_CONTINUATION_INSTRUCTIONS
+        : normalizeString(continuationContext?.providerInput?.instructions, ""),
+      prompt: implementationRepairContinuation && originalUserIntent
+        ? [
+            `[CURRENT USER INTENT]\n${originalUserIntent}`,
+            normalizeString(continuationContext?.providerInput?.prompt, ""),
+          ].filter(Boolean).join("\n\n")
+        : normalizeString(continuationContext?.providerInput?.prompt, ""),
       continuationTransportMode: "fresh_context",
       endpoint: this.endpoint || undefined,
       authStore: this.currentAuthStore(),
@@ -3447,7 +3492,7 @@ class DirectLiveTextController {
     const implementationTier = binding.runtimeMode === "direct-experimental" &&
       binding.directTransport === "live-text" &&
       binding.directTier === "implementation-lane";
-    const implementationToolNames = implementationTier ? implementationInitialToolNames(status) : [];
+    const implementationToolNames = implementationTier ? implementationInitialToolNames(status, prompt) : [];
     const useRecentDialogue = existingTurnCount > 0;
     let frozenContextProjection = null;
     if (useRecentDialogue) {
@@ -3508,12 +3553,13 @@ class DirectLiveTextController {
       throw error;
     }
     let requestBody = implementationTier
-      ? buildImplementationToolInitialRequest({
-          profileDoc: this.profileDoc,
-          model,
-          prompt,
-          tools: directImplementationToolSchemas(implementationToolNames),
-        })
+        ? buildImplementationToolInitialRequest({
+            profileDoc: this.profileDoc,
+            model,
+            prompt,
+            tools: directImplementationToolSchemas(implementationToolNames),
+            toolChoicePolicy: "auto",
+          })
       : buildTextOnlyProbeRequest({
           profileDoc: this.profileDoc,
           model,
@@ -3558,8 +3604,9 @@ class DirectLiveTextController {
             profileDoc: this.profileDoc,
             model,
             prompt: contextResult.providerInput.prompt,
-            instructions: contextResult.providerInput.instructions,
+            instructions: implementationContextInstructions(contextResult.providerInput.instructions),
             tools: directImplementationToolSchemas(implementationToolNames),
+            toolChoicePolicy: "auto",
           })
         : buildTextOnlyProbeRequest({
             profileDoc: this.profileDoc,

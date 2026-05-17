@@ -256,6 +256,19 @@ function mergeToolObligation(existing = {}, incoming = {}) {
   };
 }
 
+function equivalentTerminalObligation(existingObligations = [], incoming = {}) {
+  const incomingName = normalizeString(incoming?.name, "");
+  const incomingArguments = normalizeString(incoming?.argumentsText, "");
+  const incomingCallId = normalizeString(incoming?.callId, "");
+  return existingObligations.find((entry) => {
+    if (!DIRECT_TOOL_OBLIGATION_TERMINAL_STATUSES.has(normalizeString(entry?.status, ""))) return false;
+    if (normalizeString(entry?.name, "") !== incomingName) return false;
+    const entryCallId = normalizeString(entry?.callId, "");
+    if (incomingCallId && entryCallId && incomingCallId === entryCallId) return true;
+    return incomingArguments && normalizeString(entry?.argumentsText, "") === incomingArguments;
+  }) || null;
+}
+
 function toolTranscriptItemFromObligation(obligation = {}) {
   const resultSummary = isPlainObject(obligation.result)
     ? obligation.result.summary || obligation.result.textPreview || obligation.result.status
@@ -873,8 +886,18 @@ class DirectSessionStore {
     const now = nowIso(options.nowMs);
     const existingTurnObligations = new Map((Array.isArray(turn.unresolvedObligations) ? turn.unresolvedObligations : [])
       .map((obligation) => [obligation.obligationId, obligation]));
+    const returnedObligationIds = [];
     for (const obligation of obligations) {
-      existingTurnObligations.set(obligation.obligationId, mergeToolObligation(existingTurnObligations.get(obligation.obligationId), obligation));
+      const existing = existingTurnObligations.get(obligation.obligationId) ||
+        equivalentTerminalObligation([...existingTurnObligations.values()], obligation);
+      if (existing && existing.obligationId !== obligation.obligationId) {
+        existingTurnObligations.set(existing.obligationId, mergeToolObligation(existing, obligation));
+        continue;
+      }
+      existingTurnObligations.set(obligation.obligationId, mergeToolObligation(existing, obligation));
+      if (!DIRECT_TOOL_OBLIGATION_TERMINAL_STATUSES.has(normalizeString(existing?.status, ""))) {
+        returnedObligationIds.push(obligation.obligationId);
+      }
     }
     const nextTurn = {
       ...turn,
@@ -911,7 +934,7 @@ class DirectSessionStore {
         ),
       });
     }
-    return { turn: nextTurn, obligations: obligations.map((obligation) => existingTurnObligations.get(obligation.obligationId)) };
+    return { turn: nextTurn, obligations: returnedObligationIds.map((obligationId) => existingTurnObligations.get(obligationId)).filter(Boolean) };
   }
 
   findToolObligation(sessionId, turnId, obligationId) {

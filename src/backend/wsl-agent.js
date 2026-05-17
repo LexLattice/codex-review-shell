@@ -274,6 +274,7 @@ function parseUnifiedPatch(patchText) {
   const files = [];
   let current = null;
   let currentHunk = null;
+  let pendingStandardOldPath = "";
 
   function finishHunk() {
     if (currentHunk && current) current.hunks.push(currentHunk);
@@ -293,6 +294,7 @@ function parseUnifiedPatch(patchText) {
     const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
     if (line.startsWith("diff --git ")) {
       finishFile();
+      pendingStandardOldPath = "";
       const parts = splitGitDiffPaths(line.slice("diff --git ".length));
       if (parts.length !== 2) throw new Error("Malformed git-style diff header.");
       current = {
@@ -304,6 +306,29 @@ function parseUnifiedPatch(patchText) {
         removedLineCount: 0,
         rawLines: [line],
       };
+      continue;
+    }
+    if (!current && line.startsWith("--- ")) {
+      pendingStandardOldPath = normalizePatchPath(line.slice(4).split(/\t/)[0]);
+      continue;
+    }
+    if (!current && pendingStandardOldPath && line.startsWith("+++ ")) {
+      const newPath = normalizePatchPath(line.slice(4).split(/\t/)[0]);
+      if (newPath === "/dev/null") {
+        const error = new Error("Patch deletes are deferred in v0.");
+        error.code = "PATCH_DELETE_DEFERRED";
+        throw error;
+      }
+      current = {
+        oldPath: pendingStandardOldPath,
+        newPath,
+        operation: pendingStandardOldPath === "/dev/null" ? "create" : "update",
+        hunks: [],
+        addedLineCount: 0,
+        removedLineCount: 0,
+        rawLines: [`--- ${pendingStandardOldPath}`, line],
+      };
+      pendingStandardOldPath = "";
       continue;
     }
     if (!current) {
@@ -343,10 +368,12 @@ function parseUnifiedPatch(patchText) {
       current.newPath = newPath;
       continue;
     }
-    if (line.startsWith("@@ ")) {
-      recordFileLine(line);
+    const looseHunkHeader = /^-\d+(?:,\d+)? \+\d+(?:,\d+)? @@/.test(line) ? `@@ ${line}` : "";
+    if (line.startsWith("@@ ") || looseHunkHeader) {
+      const hunkHeaderLine = looseHunkHeader || line;
+      recordFileLine(hunkHeaderLine);
       finishHunk();
-      currentHunk = { header: parseHunkHeader(line), lines: [] };
+      currentHunk = { header: parseHunkHeader(hunkHeaderLine), lines: [] };
       continue;
     }
     if (currentHunk) {
@@ -407,7 +434,7 @@ function applyParsedHunks(beforeText, filePatch) {
   const output = [];
   let cursor = 0;
   for (const hunk of filePatch.hunks) {
-    const oldStartIndex = Math.max(0, Number(hunk.header.oldStart || 1) - 1);
+    const oldStartIndex = locateHunkStart(beforeLines, hunk, Math.max(0, Number(hunk.header.oldStart || 1) - 1), cursor);
     while (cursor < oldStartIndex && cursor < beforeLines.length) {
       output.push(beforeLines[cursor]);
       cursor += 1;
@@ -435,6 +462,29 @@ function applyParsedHunks(beforeText, filePatch) {
     cursor += 1;
   }
   return output.join("");
+}
+
+function hunkMatchesAt(beforeLines, hunk, startIndex) {
+  if (startIndex < 0 || startIndex > beforeLines.length) return false;
+  let index = startIndex;
+  for (const patchLine of hunk.lines || []) {
+    const prefix = patchLine.prefix || String(patchLine)[0];
+    if (prefix === "+") continue;
+    const content = typeof patchLine.content === "string" ? patchLine.content : String(patchLine).slice(1);
+    const current = beforeLines[index];
+    if (stripLineEnding(current) !== content) return false;
+    index += 1;
+  }
+  return true;
+}
+
+function locateHunkStart(beforeLines, hunk, preferredIndex, cursor) {
+  if (hunkMatchesAt(beforeLines, hunk, preferredIndex)) return preferredIndex;
+  for (let index = Math.max(0, cursor); index <= beforeLines.length; index += 1) {
+    if (index === preferredIndex) continue;
+    if (hunkMatchesAt(beforeLines, hunk, index)) return index;
+  }
+  return preferredIndex;
 }
 
 async function resolvePatchTarget(relPath) {

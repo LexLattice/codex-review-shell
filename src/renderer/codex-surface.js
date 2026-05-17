@@ -3724,6 +3724,71 @@ function renderDirectReadOnlyToolRequestDetails(request, details, actions) {
   }, event.currentTarget)));
 }
 
+function renderDirectPatchApplyRequestDetails(request, details, actions) {
+  const params = request.params || {};
+  appendRequestLine(details, "tool", params.tool || "apply_patch", { mono: true });
+  appendRequestLine(details, "call type", params.providerCallType || "unknown", { mono: true });
+  appendRequestLine(details, "source", params.toolCallSource || "provider-native-implicit");
+  appendRequestLine(details, "files", Array.isArray(params.files) && params.files.length
+    ? params.files.map((file) => `${file.operation || "update"} ${file.path || "unknown"}`).join("\n")
+    : "none", { mono: true, pre: true });
+  const totals = params.totals || {};
+  appendRequestLine(details, "summary", `${totals.fileCount || params.files?.length || 0} files · +${totals.addedLineCount || 0} -${totals.removedLineCount || 0}`);
+  appendRequestLine(details, "preview", params.preview?.text || "Patch preview unavailable.", { mono: true, pre: true });
+  if (!params.hasContinuityHandle) appendRequestLine(details, "continuation", "Missing provider continuity handle.");
+  if (params.approvalAvailable === false) appendRequestLine(details, "approval", "Unavailable for this patch shape.");
+  const decisionId = (decision) => `${request.key}:${decision}`;
+  actions.appendChild(createRequestButton("Approve patch", "", (event) => submitRequestResponse(request, {
+    decision: "approve",
+    clientPatchDecisionId: decisionId("approve"),
+    actionTokenId: params.actionTokens?.approve || "",
+  }, event.currentTarget)));
+  actions.appendChild(createRequestButton("Decline", "secondary", (event) => submitRequestResponse(request, {
+    decision: "decline",
+    clientPatchDecisionId: decisionId("decline"),
+    actionTokenId: params.actionTokens?.decline || "",
+  }, event.currentTarget)));
+  actions.appendChild(createRequestButton("Cancel turn", "secondary", (event) => submitRequestResponse(request, {
+    decision: "cancel",
+    clientPatchDecisionId: decisionId("cancel"),
+    actionTokenId: params.actionTokens?.cancel || "",
+  }, event.currentTarget)));
+}
+
+function renderDirectCommandExecutionRequestDetails(request, details, actions) {
+  const params = request.params || {};
+  appendRequestLine(details, "tool", params.tool || "run_command", { mono: true });
+  appendRequestLine(details, "call type", params.providerCallType || "unknown", { mono: true });
+  appendRequestLine(details, "command", params.displayCommand || commandText(params), { mono: true, pre: true });
+  appendRequestLine(details, "cwd", params.cwdRelPath || ".", { mono: true });
+  appendRequestLine(details, "timeout", params.timeoutMs ? `${params.timeoutMs} ms` : "default");
+  appendRequestLine(details, "class", params.commandClass || "package_script");
+  appendRequestLine(details, "workspace writes", params.workspaceWritePolicy || "writes_possible_with_warning");
+  const scriptEvidence = params.packageScriptEvidence || {};
+  if (scriptEvidence.scriptName) {
+    appendRequestLine(details, "package script", `${scriptEvidence.packageManager || "npm"} ${scriptEvidence.scriptName}`, { mono: true });
+    appendRequestLine(details, "script preview", scriptEvidence.scriptCommandPreview || "not available", { mono: true, pre: true });
+  }
+  if (!params.hasContinuityHandle) appendRequestLine(details, "continuation", "Missing provider continuity handle.");
+  if (params.approvalAvailable === false) appendRequestLine(details, "approval", "Unavailable for this command shape.");
+  const decisionId = (decision) => `${request.key}:${decision}`;
+  actions.appendChild(createRequestButton("Approve command", "", (event) => submitRequestResponse(request, {
+    decision: "approve",
+    clientCommandDecisionId: decisionId("approve"),
+    actionTokenId: params.actionTokens?.approve || "",
+  }, event.currentTarget)));
+  actions.appendChild(createRequestButton("Decline", "secondary", (event) => submitRequestResponse(request, {
+    decision: "decline",
+    clientCommandDecisionId: decisionId("decline"),
+    actionTokenId: params.actionTokens?.decline || "",
+  }, event.currentTarget)));
+  actions.appendChild(createRequestButton("Cancel turn", "secondary", (event) => submitRequestResponse(request, {
+    decision: "cancel",
+    clientCommandDecisionId: decisionId("cancel"),
+    actionTokenId: params.actionTokens?.cancel || "",
+  }, event.currentTarget)));
+}
+
 function renderGenericRequestDetails(request, details) {
   appendRequestLine(details, "method", request.method || "", { mono: true });
   appendRequestLine(details, "params", request.params || "", { mono: true, pre: true });
@@ -3770,6 +3835,8 @@ function renderServerRequest(request) {
   else if (request.method === "mcpServer/elicitation/request") renderMcpRequestDetails(request, details, isPending ? actions : document.createElement("div"));
   else if (request.method === "item/permissions/requestApproval") renderPermissionRequestDetails(request, details, isPending ? actions : document.createElement("div"));
   else if (request.method === "direct/tool/readOnly/requestApproval") renderDirectReadOnlyToolRequestDetails(request, details, isPending ? actions : document.createElement("div"));
+  else if (request.method === "direct/tool/patchApply/requestApproval") renderDirectPatchApplyRequestDetails(request, details, isPending ? actions : document.createElement("div"));
+  else if (request.method === "direct/tool/command/requestApproval") renderDirectCommandExecutionRequestDetails(request, details, isPending ? actions : document.createElement("div"));
   else renderGenericRequestDetails(request, details);
 
   if (!isPending) {

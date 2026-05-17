@@ -14,7 +14,37 @@ const REPORT_SCHEMA = "direct_electron_read_approval_regression@1";
 const PROFILE_NAME = "electron-read-approval";
 const PROJECT_ID = "project_electron_read_approval";
 const DEFAULT_MODEL = "gpt-5.5";
-const PROMPT = "Use the read_file tool to read src/alpha.txt. After the tool result, answer with one sentence starting READ-PROOF:";
+const SCENARIOS = {
+  read: {
+    toolName: "read_file",
+    riskCategory: "readOnly",
+    approvalMethod: "direct/tool/readOnly/requestApproval",
+    approveButtonText: "Approve read",
+    prompt: "Use the read_file tool to read src/alpha.txt. After the tool result, answer with one sentence starting READ-PROOF:",
+    assistantPattern: /alpha/i,
+  },
+  patch: {
+    toolName: "apply_patch",
+    riskCategory: "write",
+    approvalMethod: "direct/tool/patchApply/requestApproval",
+    approveButtonText: "Approve patch",
+    prompt: [
+      "First use read_file to inspect src/alpha.txt.",
+      "Then use apply_patch to update src/alpha.txt by changing the line 'alpha two' to 'alpha two patched'.",
+      "Use a git-style unified diff with a/ and b/ prefixes.",
+      "After the patch result, answer with one sentence starting PATCH-PROOF:",
+    ].join(" "),
+    assistantPattern: /patch|alpha/i,
+  },
+  command: {
+    toolName: "run_command",
+    riskCategory: "command",
+    approvalMethod: "direct/tool/command/requestApproval",
+    approveButtonText: "Approve command",
+    prompt: "Use run_command to run npm test in the disposable workspace. Use command npm and args [\"test\"]. After the command result, answer with one sentence starting COMMAND-PROOF:",
+    assistantPattern: /command|test|pass|ok/i,
+  },
+};
 
 function isLinuxWithoutDisplay() {
   return process.platform === "linux" && !process.env.DISPLAY && process.env.CODEX_ELECTRON_READ_APPROVAL_UNDER_XVFB !== "1";
@@ -129,6 +159,11 @@ function implementationProofRunsRoot(tempRoot) {
 function seedWorkspace(workspaceRoot) {
   ensureDirectory(path.join(workspaceRoot, "src"));
   fs.writeFileSync(path.join(workspaceRoot, "src", "alpha.txt"), "alpha one\nalpha two\n", { mode: 0o600 });
+  fs.writeFileSync(path.join(workspaceRoot, "package.json"), `${JSON.stringify({
+    scripts: {
+      test: "node -e \"console.log('direct command probe ok')\"",
+    },
+  }, null, 2)}\n`, { mode: 0o600 });
 }
 
 function bindingFieldsForRuntimePath(runtimePath) {
@@ -505,55 +540,141 @@ async function readImplementationProjection(page) {
   }, PROJECT_ID);
 }
 
-async function submitPrompt(page) {
+async function submitPrompt(page, scenario) {
   await waitForComposerReady(page);
-  await page.fill("#composerInput", PROMPT);
+  await page.fill("#composerInput", scenario.prompt);
   await page.$eval("#composerForm", (form) => {
     form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
   });
 }
 
-async function approvalCardSnapshot(page) {
-  return page.evaluate(() => {
-    const card = document.querySelector(".codex-request-card.readOnly");
+async function approvalCardSnapshot(page, scenario) {
+  return page.evaluate((input) => {
+    const card = document.querySelector(`.codex-request-card.${input.riskCategory}`);
     const text = card?.textContent || "";
     return {
       visible: Boolean(card),
       pending: Boolean(card?.classList.contains("pending")),
       completed: Boolean(card?.classList.contains("completed")),
       status: card?.querySelector(".codex-request-status")?.textContent || "",
-      hasApproveReadButton: Boolean([...document.querySelectorAll(".codex-request-card.readOnly button")]
-        .some((button) => /Approve read/i.test(button.textContent || ""))),
-      mentionsReadFile: /read_file/.test(text),
-      mentionsRelPath: /src\/alpha\.txt/.test(text),
+      hasApproveButton: Boolean([...document.querySelectorAll(`.codex-request-card.${input.riskCategory} button`)]
+        .some((button) => (button.textContent || "").trim() === input.approveButtonText)),
+      mentionsTool: text.includes(input.toolName),
+      mentionsExpectedTarget: input.name === "command" ? /npm test|npm/.test(text) : /src\/alpha\.txt/.test(text),
       mentionsProviderCallType: /call type/i.test(text),
     };
-  });
+  }, scenario);
 }
 
-async function approveRead(page) {
-  await page.waitForSelector(".codex-request-card.readOnly.pending", { timeout: 180_000 });
-  await page.locator(".codex-request-card.readOnly.pending button", { hasText: "Approve read" }).click();
+async function approveVisibleRequest(page, scenario) {
+  const selector = `.codex-request-card.${scenario.riskCategory}.pending`;
+  await page.waitForSelector(selector, { timeout: 180_000 });
+  await page.locator(`${selector} button`, { hasText: scenario.approveButtonText }).click();
 }
 
-async function waitForCompletedCard(page) {
-  await page.waitForFunction(() => {
-    const card = document.querySelector(".codex-request-card.readOnly");
-    return card && card.classList.contains("completed") && /approve|completed/i.test(card.textContent || "");
-  }, null, { timeout: 240_000 });
-}
-
-async function waitForAssistantProof(page) {
+async function waitForTargetApprovalCard(page, scenario) {
+  const readScenario = { ...SCENARIOS.read, name: "read" };
+  const targetSelector = `.codex-request-card.${scenario.riskCategory}.pending`;
+  const preludeApprovals = [];
+  const deadline = Date.now() + 300_000;
+  while (Date.now() < deadline) {
+    if (await page.locator(targetSelector).count()) return preludeApprovals;
+    if (scenario.name !== "read" && await page.locator(".codex-request-card.readOnly.pending").count()) {
+      const snapshot = await approvalCardSnapshot(page, readScenario);
+      await approveVisibleRequest(page, readScenario);
+      await waitForCompletedCard(page, readScenario);
+      preludeApprovals.push({
+        toolName: "read_file",
+        status: "approved",
+        mentionsExpectedTarget: snapshot.mentionsExpectedTarget,
+      });
+      continue;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  const visibleCards = await page.evaluate(() => [...document.querySelectorAll(".codex-request-card")].map((card) => ({
+    className: card.className,
+    status: card.querySelector(".codex-request-status")?.textContent || "",
+    textSignals: {
+      mentionsRead: /read_file/i.test(card.textContent || ""),
+      mentionsPatch: /apply_patch/i.test(card.textContent || ""),
+      mentionsCommand: /run_command/i.test(card.textContent || ""),
+      hasApprove: /approve/i.test(card.textContent || ""),
+    },
+  })));
+  const pageSignals = await page.evaluate((input) => {
+    const safePreview = (value) => String(value || "")
+      .replace(/\/(?:[^/\s]+\/)+[^/\s]*/g, "[path]")
+      .replace(/[A-Za-z]:\\[^\s]*/g, "[path]")
+      .replace(/Bearer\s+[A-Za-z0-9._-]+/gi, "Bearer [token]")
+      .slice(0, 180);
+    const assistantTexts = [...document.querySelectorAll(".message.assistant .bubble")]
+      .map((bubble) => bubble.dataset.rawText || bubble.textContent || "");
+    const systemTexts = [...document.querySelectorAll(".message.system .bubble")]
+      .map((bubble) => bubble.textContent || "");
+    const requestRows = [...document.querySelectorAll(".request-row, .codex-request-card, [data-request-id]")]
+      .map((node) => node.textContent || "");
+    return {
+      assistantMessageCount: assistantTexts.length,
+      assistantCharCounts: assistantTexts.map((text) => text.length),
+      assistantMentionsScenarioTool: assistantTexts.some((text) => text.includes(input.toolName)),
+      assistantMentionsProofPrefix: assistantTexts.some((text) => new RegExp(`${input.name.toUpperCase()}-PROOF:`, "i").test(text)),
+      systemMessageSignals: systemTexts.slice(-8).map((text) => ({
+        charCount: text.length,
+        sanitizedPreview: safePreview(text),
+        mentionsError: /error|failed|failure/i.test(text),
+        mentionsTool: /tool|function/i.test(text),
+        mentionsUnsupported: /unsupported/i.test(text),
+        mentionsTransport: /transport|provider|response/i.test(text),
+      })),
+      requestRowSignals: requestRows.slice(-8).map((text) => ({
+        charCount: text.length,
+        sanitizedPreview: safePreview(text),
+        mentionsRead: /read_file/i.test(text),
+        mentionsPatch: /apply_patch/i.test(text),
+        mentionsCommand: /run_command/i.test(text),
+        mentionsApprove: /approve/i.test(text),
+      })),
+      composerDisabled: document.querySelector("#composerInput")?.disabled === true,
+      sendDisabled: document.querySelector("#sendButton")?.disabled === true,
+    };
+  }, scenario);
+  let projectionSignals = {};
   try {
-    await page.waitForFunction(() => {
+    projectionSignals = await readImplementationProjection(page);
+  } catch (projectionError) {
+    projectionSignals = {
+      projectionReadFailed: true,
+      projectionErrorCode: String(projectionError?.message || projectionError).slice(0, 120),
+    };
+  }
+  const error = new Error(`target_approval_card_not_visible:${scenario.name}`);
+  error.details = { targetRiskCategory: scenario.riskCategory, preludeApprovals, visibleCards, pageSignals, projectionSignals };
+  throw error;
+}
+
+async function waitForCompletedCard(page, scenario) {
+  await page.waitForFunction((input) => {
+    const card = document.querySelector(`.codex-request-card.${input.riskCategory}`);
+    return card && card.classList.contains("completed") && /approve|completed/i.test(card.textContent || "");
+  }, scenario, { timeout: 240_000 });
+}
+
+async function waitForAssistantProof(page, scenario) {
+  try {
+    await page.waitForFunction((input) => {
+      const pattern = new RegExp(input.assistantPatternSource, input.assistantPatternFlags);
       return [...document.querySelectorAll(".message.assistant .bubble")]
         .some((bubble) => {
           const text = bubble.dataset.rawText || bubble.textContent || "";
-          return text.length >= 20 && /alpha/i.test(text);
+          return text.length >= 20 && pattern.test(text);
         });
-    }, null, { timeout: 240_000 });
+    }, {
+      assistantPatternSource: scenario.assistantPattern.source,
+      assistantPatternFlags: scenario.assistantPattern.flags,
+    }, { timeout: 240_000 });
   } catch (error) {
-    const state = await page.evaluate(() => {
+    const state = await page.evaluate((input) => {
       const assistantTexts = [...document.querySelectorAll(".message.assistant .bubble")]
         .map((bubble) => bubble.dataset.rawText || bubble.textContent || "");
       const systemTexts = [...document.querySelectorAll(".message.system .bubble")]
@@ -562,13 +683,14 @@ async function waitForAssistantProof(page) {
         className: card.className,
         status: card.querySelector(".codex-request-status")?.textContent || "",
         hasApproveText: /approve/i.test(card.textContent || ""),
-        hasReadFileText: /read_file/i.test(card.textContent || ""),
+        hasScenarioToolText: card.textContent?.includes(input.toolName) === true,
       }));
+      const pattern = new RegExp(input.assistantPatternSource, input.assistantPatternFlags);
       return {
         assistantMessageCount: assistantTexts.length,
         assistantCharCounts: assistantTexts.map((text) => text.length),
-        assistantProofPrefixObserved: assistantTexts.some((text) => /READ-PROOF:/i.test(text)),
-        assistantMentionsAlpha: assistantTexts.some((text) => /alpha/i.test(text)),
+        assistantProofPrefixObserved: assistantTexts.some((text) => new RegExp(`${input.name.toUpperCase()}-PROOF:`, "i").test(text)),
+        assistantMentionsExpectedEvidence: assistantTexts.some((text) => pattern.test(text)),
         systemMessageSignals: systemTexts.slice(-8).map((text) => ({
           charCount: text.length,
           mentionsError: /error/i.test(text),
@@ -578,23 +700,33 @@ async function waitForAssistantProof(page) {
         })),
         cards,
       };
+    }, {
+      name: scenario.name,
+      toolName: scenario.toolName,
+      assistantPatternSource: scenario.assistantPattern.source,
+      assistantPatternFlags: scenario.assistantPattern.flags,
     });
     const wrapped = new Error(`assistant_continuation_not_observed:${error?.message || "timeout"}`);
     wrapped.details = state;
     throw wrapped;
   }
-  return page.evaluate(() => {
+  return page.evaluate((input) => {
+    const pattern = new RegExp(input.assistantPatternSource, input.assistantPatternFlags);
     const texts = [...document.querySelectorAll(".message.assistant .bubble")]
       .map((bubble) => bubble.dataset.rawText || bubble.textContent || "")
-      .filter((text) => text.length >= 20 && /alpha/i.test(text));
+      .filter((text) => text.length >= 20 && pattern.test(text));
     const latest = texts.at(-1) || "";
     return {
       proofObserved: Boolean(latest),
-      proofPrefixObserved: /READ-PROOF:/i.test(latest),
-      assistantMentionsAlpha: /alpha/i.test(latest),
+      proofPrefixObserved: new RegExp(`${input.name.toUpperCase()}-PROOF:`, "i").test(latest),
+      assistantMentionsExpectedEvidence: pattern.test(latest),
       assistantMessageCount: texts.length,
       latestAssistantCharCount: latest.length,
     };
+  }, {
+    name: scenario.name,
+    assistantPatternSource: scenario.assistantPattern.source,
+    assistantPatternFlags: scenario.assistantPattern.flags,
   });
 }
 
@@ -687,11 +819,16 @@ async function gitOutput(args) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
+  const scenarioName = optionString(options, "scenario", "read");
+  const scenario = { ...(SCENARIOS[scenarioName] || {}), name: scenarioName };
+  if (!SCENARIOS[scenarioName]) {
+    throw new Error(`Unsupported Electron approval scenario: ${scenarioName}`);
+  }
   const allowLive = options["allow-live-provider-call"] === true || process.env.CODEX_DIRECT_ELECTRON_READ_APPROVAL_LIVE === "1";
   if (!allowLive) {
     throw new Error("This regression starts one live Direct provider turn. Pass --allow-live-provider-call or set CODEX_DIRECT_ELECTRON_READ_APPROVAL_LIVE=1.");
   }
-  const runId = optionString(options, "run-id", `electron_read_approval_${Date.now()}`);
+  const runId = optionString(options, "run-id", `electron_${scenarioName}_approval_${Date.now()}`);
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-electron-read-approval-"));
   const workspaceRoot = path.join(tempRoot, "workspace");
   const reportRoot = path.join(os.homedir(), ".config", "codex-review-shell", "direct-electron-read-approval-runs", runId);
@@ -706,6 +843,7 @@ async function main() {
   let cardBeforeApproval = {};
   let cardAfterApproval = {};
   let assistantProof = {};
+  let preludeApprovals = [];
   let caughtError = null;
   try {
     seedWorkspace(workspaceRoot);
@@ -715,12 +853,15 @@ async function main() {
       evidenceCount: liveEvidence.evidenceCount,
       usableIndexCount: liveEvidence.usableIndexCount,
     });
-    assertCase(cases, "scoped_read_proof_evidence_copied", implementationProof.copied === true &&
+    assertCase(cases, "scoped_tool_proof_evidence_copied", implementationProof.copied === true &&
       implementationProof.capabilityIds.includes("read_file") &&
-      implementationProof.capabilityIds.includes("read_file_loop"), {
+      implementationProof.capabilityIds.includes("read_file_loop") &&
+      implementationProof.capabilityIds.includes(scenario.toolName), {
       reportCount: implementationProof.reportCount,
       usableScopedRows: implementationProof.usableScopedRows,
       capabilityIds: implementationProof.capabilityIds,
+      scenario: scenarioName,
+      requiredCapabilityId: scenario.toolName,
     });
 
     const launched = await launchApp(tempRoot);
@@ -739,27 +880,27 @@ async function main() {
     });
 
     const initialRuntimeStatus = await runtimeStatus(window);
-    assertCase(cases, "direct_tools_runtime_selected_and_read_ready", initialRuntimeStatus.implementationSelected === true &&
+    assertCase(cases, "direct_tools_runtime_selected_and_tool_ready", initialRuntimeStatus.implementationSelected === true &&
       ["enabled", "degraded"].includes(initialRuntimeStatus.implementationStatus) &&
       initialRuntimeStatus.canApproveReadFile === true, initialRuntimeStatus);
 
-    await submitPrompt(page);
-    await page.waitForSelector(".codex-request-card.readOnly.pending", { timeout: 180_000 });
-    cardBeforeApproval = await approvalCardSnapshot(page);
-    assertCase(cases, "read_approval_card_visible_with_renderer_safe_details", cardBeforeApproval.visible &&
+    await submitPrompt(page, scenario);
+    preludeApprovals = await waitForTargetApprovalCard(page, scenario);
+    cardBeforeApproval = await approvalCardSnapshot(page, scenario);
+    assertCase(cases, `${scenarioName}_approval_card_visible_with_renderer_safe_details`, cardBeforeApproval.visible &&
       cardBeforeApproval.pending &&
-      cardBeforeApproval.hasApproveReadButton &&
-      cardBeforeApproval.mentionsReadFile &&
-      cardBeforeApproval.mentionsRelPath &&
+      cardBeforeApproval.hasApproveButton &&
+      cardBeforeApproval.mentionsTool &&
+      cardBeforeApproval.mentionsExpectedTarget &&
       cardBeforeApproval.mentionsProviderCallType, cardBeforeApproval);
 
-    await approveRead(page);
-    await waitForCompletedCard(page);
-    cardAfterApproval = await approvalCardSnapshot(page);
-    assertCase(cases, "read_approval_card_status_completed_after_click", cardAfterApproval.completed && /completed/i.test(cardAfterApproval.status), cardAfterApproval);
+    await approveVisibleRequest(page, scenario);
+    await waitForCompletedCard(page, scenario);
+    cardAfterApproval = await approvalCardSnapshot(page, scenario);
+    assertCase(cases, `${scenarioName}_approval_card_status_completed_after_click`, cardAfterApproval.completed && /completed/i.test(cardAfterApproval.status), cardAfterApproval);
 
-    assistantProof = await waitForAssistantProof(page);
-    assertCase(cases, "provider_continuation_completed_with_assistant_output", assistantProof.proofObserved && assistantProof.assistantMentionsAlpha, assistantProof);
+    assistantProof = await waitForAssistantProof(page, scenario);
+    assertCase(cases, "provider_continuation_completed_with_assistant_output", assistantProof.proofObserved && assistantProof.assistantMentionsExpectedEvidence, assistantProof);
 
     projectionAfterApproval = await readImplementationProjection(page);
     assertCase(cases, "implementation_projection_status_and_history_safe_after_approval", projectionAfterApproval.statusSchema === "direct_implementation_lane_ui_status@1" &&
@@ -772,7 +913,7 @@ async function main() {
       projectionAfterApproval.rawToolOutputIncluded === false, projectionAfterApproval);
 
     finalRuntimeStatus = await runtimeStatus(window);
-    assertCase(cases, "direct_tools_runtime_still_selected_after_live_read", finalRuntimeStatus.implementationSelected === true && finalRuntimeStatus.canApproveReadFile === true, finalRuntimeStatus);
+    assertCase(cases, "direct_tools_runtime_still_selected_after_live_tool", finalRuntimeStatus.implementationSelected === true && finalRuntimeStatus.canApproveReadFile === true, finalRuntimeStatus);
   } catch (error) {
     caughtError = error;
     if (error?.caseId && !cases.some((item) => item.caseId === error.caseId)) {
@@ -783,9 +924,9 @@ async function main() {
       });
     } else if (!error?.caseId) {
       cases.push({
-        caseId: "electron_read_approval_unhandled_error",
+        caseId: `electron_${scenarioName}_approval_unhandled_error`,
         status: "failed",
-        details: {
+        details: error?.details || {
           messageHash: sha256(error?.message || String(error)).slice(0, 16),
           code: error?.code || "",
         },
@@ -806,6 +947,7 @@ async function main() {
       status: failedCases.length ? "failed" : "passed",
       passedCases: cases.length - failedCases.length,
       totalCases: cases.length,
+      scenario: scenarioName,
       liveProviderTurnExercised: true,
       visibleApprovalCardExercised: Boolean(cardBeforeApproval.visible && cardAfterApproval.completed),
       finalAssistantProofObserved: Boolean(assistantProof.proofObserved),
@@ -829,11 +971,13 @@ async function main() {
       rawProofRootIncluded: false,
     },
     uiEvidence: {
-      promptClass: "read_file_visible_approval",
-      promptDigest: sha256(PROMPT),
-      relPath: "src/alpha.txt",
+      promptClass: `${scenarioName}_visible_approval`,
+      promptDigest: sha256(scenario.prompt),
+      relPath: scenarioName === "command" ? "" : "src/alpha.txt",
+      toolName: scenario.toolName,
       cardBeforeApproval,
       cardAfterApproval,
+      preludeApprovals,
       assistantProof,
       projectionAfterApproval,
       finalRuntimeStatus,
@@ -843,7 +987,7 @@ async function main() {
       pageErrorHashes: pageErrors.slice(0, 12),
     },
     cases,
-    sourceDigest: sha256(stableStringify({ cases, cardBeforeApproval, cardAfterApproval, assistantProof, projectionAfterApproval })),
+    sourceDigest: sha256(stableStringify({ cases, cardBeforeApproval, cardAfterApproval, preludeApprovals, assistantProof, projectionAfterApproval })),
     rawExposure: {
       rawConfigPathIncluded: false,
       rawWorkspacePathIncluded: false,
@@ -854,8 +998,8 @@ async function main() {
     sentinelCounters: {
       providerTransportCallsExpected: true,
       providerTransportCallsMinimum: 1,
-      patchApplyCalls: 0,
-      commandRunCalls: 0,
+      patchApplyCallsExpected: scenario.toolName === "apply_patch",
+      commandRunCallsExpected: scenario.toolName === "run_command",
       rightPaneMutationCalls: 0,
       handoffMutationCalls: 0,
     },
