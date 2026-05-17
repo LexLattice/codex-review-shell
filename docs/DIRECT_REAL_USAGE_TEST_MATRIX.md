@@ -45,6 +45,7 @@ Current evidence ledger:
 | `RU-CTX-002` | `preflight` | `npm run direct:appserver-sibling-context` | Normalizes app-server-shaped context compaction and memory events as sibling-only evidence, projects them into display-only status, then switches to a Direct thread and proves no Direct context/memory/compaction authority bleeds through. | `rug006Closed=true`; app-server spawn/mutation and Direct context-from-sibling sentinels are zero |
 | `RU-FORK-001` | `fixture-provider-shaped` / `live-text` | `npm run direct:fresh-fork-start -- --mode fixture`; live promotion: `npm run direct:fresh-fork-start -- --mode live --allow-live-provider-call` | Builds a valid fork preview, prepares a confirmed fresh fork start, creates a fresh direct-native session, persists seed/context/manifest artifacts, sends exactly one first-turn provider-shaped request, and proves no source provider continuity. | Fixture mode: `coverageSource=fixture_provider_shaped`, `matrixPromotionCandidate=false`; live mode: `coverageSource=real_provider`, `rug007Closed=true` |
 | `RU-IMPORT-001` | `fixture-provider-shaped` / `live-text` | `npm run direct:import-checkpoint-continuation -- --mode fixture`; live promotion: `npm run direct:import-checkpoint-continuation -- --mode live --allow-live-provider-call` | Materializes a validated imported checkpoint as read-only, starts a fresh Direct checkpoint continuation, persists seed/context/request-shape artifacts, sends exactly one provider-shaped request, and proves no imported provider continuity or tool replay. | Fixture mode: `coverageSource=fixture_provider_shaped`, `matrixPromotionCandidate=false`; live mode: `coverageSource=real_provider`, `rug008Closed=true` |
+| `RU-STATUS-001` | `fixture-provider-shaped` / `live-readonly` | `npm run direct:model-quota-usage-status`; live-readonly promotion: `npm run direct:model-quota-usage-status -- --mode live-readonly --allow-live-status-read` | Projects model catalog, usage ledger, quota/rate snapshot, runtime evidence facets, drift/status chips, and disabled cost/control state from fixture or existing live-probe evidence without starting provider transport or app-server/tool authority. | Fixture mode: `coverageSource=fixture_provider_shaped`, `matrixPromotionCandidate=false`; live-readonly mode: `coverageSource=live_readonly_status`, `rug009Closed=true` when usable runtime-probed evidence exists |
 
 ## Default Execution Order
 
@@ -60,6 +61,7 @@ Current evidence ledger:
 10. `RU-CTX-002` after `RU-CTX-001`.
 11. `RU-FORK-001` fixture mode before any live fresh-fork promotion run.
 12. `RU-IMPORT-001` fixture mode before any live import-checkpoint promotion run.
+13. `RU-STATUS-001` fixture mode before any live-readonly status promotion run.
 
 Stop and cluster failures by theory before continuing to a higher-risk level.
 For example, an evidence-scope failure in `RU-LIVE-001` should be fixed before
