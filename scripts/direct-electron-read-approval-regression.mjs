@@ -164,6 +164,20 @@ function seedWorkspace(workspaceRoot) {
       test: "node -e \"console.log('direct command probe ok')\"",
     },
   }, null, 2)}\n`, { mode: 0o600 });
+  const git = (args) => spawnSync("git", args, {
+    cwd: workspaceRoot,
+    stdio: "ignore",
+    env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1" },
+  });
+  if (
+    git(["init"]).status !== 0 ||
+    git(["config", "user.email", "direct-probe@example.invalid"]).status !== 0 ||
+    git(["config", "user.name", "Direct Probe"]).status !== 0 ||
+    git(["add", "."]).status !== 0 ||
+    git(["commit", "-m", "seed direct electron approval fixture"]).status !== 0
+  ) {
+    throw new Error("failed_to_seed_git_workspace_for_electron_approval_probe");
+  }
 }
 
 function bindingFieldsForRuntimePath(runtimePath) {
@@ -520,6 +534,7 @@ async function readImplementationProjection(page) {
   return page.evaluate(async (projectId) => {
     const status = await window.codexSurfaceBridge.getDirectImplementationLaneUiStatus(projectId);
     const history = await window.codexSurfaceBridge.readDirectImplementationOperationHistory(projectId, { scope: "active-turn", limit: 24 });
+    const latestToolResult = status?.latestToolResult || {};
     return {
       statusSchema: status?.schema || "",
       historySchema: history?.schema || "",
@@ -533,11 +548,81 @@ async function readImplementationProjection(page) {
         ? history.rows.filter((row) => row?.actionability?.actionable === true).length
         : 0,
       historyFamilies: Array.isArray(history?.rows) ? [...new Set(history.rows.map((row) => row.family).filter(Boolean))].sort() : [],
-      rawProviderPayloadIncluded: status?.rawProviderPayloadIncluded === true || history?.rawProviderPayloadIncluded === true,
-      rawLocalPathIncluded: status?.rawLocalPathIncluded === true || history?.rawLocalPathIncluded === true,
-      rawToolOutputIncluded: status?.rawToolOutputIncluded === true || history?.rawToolOutputIncluded === true,
+      latestToolResult: {
+        schema: latestToolResult.schema || "",
+        tool: latestToolResult.tool || "",
+        status: latestToolResult.status || "",
+        resultClass: latestToolResult.resultClass || "",
+        sideEffectExecuted: latestToolResult.sideEffectExecuted === true,
+        workspaceEffectSummaryId: latestToolResult.workspaceEffectSummaryId || "",
+        workspaceEffectScanRan: latestToolResult.workspaceEffectScanRan === true,
+        workspaceEffectScanSupported: latestToolResult.workspaceEffectScanSupported === true,
+        workspaceChangesDetected: latestToolResult.workspaceChangesDetected === true,
+        changedPathCount: Number(latestToolResult.changedPathCount || 0),
+        providerVisibility: latestToolResult.providerVisibility || "",
+        providerSawChangedFileContents: latestToolResult.providerSawChangedFileContents === true,
+        providerSawAllChangedFileContents: latestToolResult.providerSawAllChangedFileContents === true,
+        visibleMessageCode: latestToolResult.visibleMessageCode || "",
+        actionabilityActionable: latestToolResult.actionability?.actionable === true,
+        rawProviderPayloadIncluded: latestToolResult.rawProviderPayloadIncluded === true,
+        rawWorkspacePathIncluded: latestToolResult.rawWorkspacePathIncluded === true,
+        rawToolOutputIncluded: latestToolResult.rawToolOutputIncluded === true,
+      },
+      rawProviderPayloadIncluded: status?.rawProviderPayloadIncluded === true ||
+        status?.latestToolResult?.rawProviderPayloadIncluded === true ||
+        history?.rawProviderPayloadIncluded === true,
+      rawLocalPathIncluded: status?.rawLocalPathIncluded === true ||
+        status?.latestToolResult?.rawWorkspacePathIncluded === true ||
+        history?.rawLocalPathIncluded === true,
+      rawToolOutputIncluded: status?.rawToolOutputIncluded === true ||
+        status?.latestToolResult?.rawToolOutputIncluded === true ||
+        history?.rawToolOutputIncluded === true,
     };
   }, PROJECT_ID);
+}
+
+function assertPostToolStatus(cases, scenarioName, projection) {
+  const latest = projection.latestToolResult || {};
+  const baseSafe = latest.schema === "direct_tool_result_status_projection@1" &&
+    latest.tool === SCENARIOS[scenarioName].toolName &&
+    latest.actionabilityActionable === false &&
+    latest.rawProviderPayloadIncluded === false &&
+    latest.rawWorkspacePathIncluded === false &&
+    latest.rawToolOutputIncluded === false;
+  if (scenarioName === "read") {
+    assertCase(cases, "read_result_status_recorded_without_workspace_effect", baseSafe &&
+      latest.status === "completed" &&
+      latest.sideEffectExecuted === false &&
+      latest.workspaceEffectSummaryId === "" &&
+      latest.workspaceChangesDetected === false &&
+      latest.providerVisibility === "none", latest);
+    return;
+  }
+  if (scenarioName === "patch") {
+    assertCase(cases, "patch_result_status_records_workspace_summary_only_visibility", baseSafe &&
+      latest.status === "applied" &&
+      latest.resultClass === "patch_applied" &&
+      latest.sideEffectExecuted === true &&
+      latest.workspaceEffectSummaryId.length > 0 &&
+      latest.workspaceEffectScanRan === true &&
+      latest.workspaceChangesDetected === true &&
+      latest.changedPathCount > 0 &&
+      latest.providerVisibility === "summary_only" &&
+      latest.providerSawChangedFileContents === false &&
+      latest.visibleMessageCode === "workspace_changed_provider_saw_summary_only", latest);
+    return;
+  }
+  if (scenarioName === "command") {
+    assertCase(cases, "command_result_status_records_scan_and_clean_workspace", baseSafe &&
+      latest.status === "completed_exit_zero" &&
+      latest.sideEffectExecuted === true &&
+      latest.workspaceEffectSummaryId.length > 0 &&
+      latest.workspaceEffectScanRan === true &&
+      latest.workspaceChangesDetected === false &&
+      latest.changedPathCount === 0 &&
+      latest.providerVisibility === "none" &&
+      latest.visibleMessageCode === "workspace_effect_scan_recorded_no_changes", latest);
+  }
 }
 
 async function submitPrompt(page, scenario) {
@@ -911,6 +996,7 @@ async function main() {
       projectionAfterApproval.rawProviderPayloadIncluded === false &&
       projectionAfterApproval.rawLocalPathIncluded === false &&
       projectionAfterApproval.rawToolOutputIncluded === false, projectionAfterApproval);
+    assertPostToolStatus(cases, scenarioName, projectionAfterApproval);
 
     finalRuntimeStatus = await runtimeStatus(window);
     assertCase(cases, "direct_tools_runtime_still_selected_after_live_tool", finalRuntimeStatus.implementationSelected === true && finalRuntimeStatus.canApproveReadFile === true, finalRuntimeStatus);

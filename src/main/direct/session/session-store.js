@@ -359,6 +359,77 @@ function indexEntryFromSession(session) {
   };
 }
 
+function latestToolResultSummary(store, index) {
+  const sessions = Array.isArray(index?.sessions) ? index.sessions : [];
+  for (const sessionEntry of sessions) {
+    const sessionId = normalizeString(sessionEntry?.sessionId, "");
+    if (!sessionId) continue;
+    let session = null;
+    try {
+      session = store.readSession(sessionId);
+    } catch {}
+    const turns = Array.isArray(session?.turns) ? [...session.turns].reverse() : [];
+    for (const turnSummary of turns) {
+      const turnId = normalizeString(turnSummary?.turnId, "");
+      if (!turnId) continue;
+      let turn = null;
+      try {
+        turn = store.readTurn(sessionId, turnId);
+      } catch {}
+      const results = Array.isArray(turn?.toolResults) ? [...turn.toolResults].reverse() : [];
+      if (!results.length) continue;
+      const obligations = Array.isArray(turn?.unresolvedObligations) ? turn.unresolvedObligations : [];
+      const result = results[0] || {};
+      const obligation = obligations.find((entry) => normalizeString(entry?.obligationId, "") === normalizeString(result.obligationId, "")) || {};
+      const workspaceEffectSummary = isPlainObject(result.workspaceEffectSummary) ? result.workspaceEffectSummary : {};
+      const providerVisibility = isPlainObject(workspaceEffectSummary.providerVisibility) ? workspaceEffectSummary.providerVisibility : {};
+      const workspaceEffects = isPlainObject(result.workspaceEffects) ? result.workspaceEffects : {};
+      const changedPathCount = Number(workspaceEffectSummary.changedPathCount ?? workspaceEffects.changedPathCount ?? 0) || 0;
+      return {
+        schema: "direct_latest_tool_result_summary@1",
+        sessionId,
+        turnId,
+        obligationId: normalizeString(result.obligationId || obligation.obligationId, ""),
+        tool: normalizeString(result.tool || obligation.name, "tool"),
+        status: normalizeString(result.status, "unknown"),
+        resultClass: normalizeString(result.resultClass, ""),
+        sideEffectExecuted: result.sideEffectExecuted === true,
+        workspaceEffectSummaryId: normalizeString(result.workspaceEffectSummaryId || workspaceEffectSummary.effectSummaryId, ""),
+        workspaceEffectScanRan: isPlainObject(workspaceEffectSummary.scan) ? workspaceEffectSummary.scan.ran === true : false,
+        workspaceEffectScanSupported: isPlainObject(workspaceEffectSummary.scan) ? workspaceEffectSummary.scan.supported === true : false,
+        workspaceChangesDetected: changedPathCount > 0,
+        changedPathCount,
+        providerVisibility: normalizeString(providerVisibility.providerVisibilityCompleteness, changedPathCount > 0 ? "summary_only" : "none"),
+        providerSawChangedFileContents: providerVisibility.providerSawChangedFileContents === true,
+        providerSawAllChangedFileContents: providerVisibility.providerSawAllChangedFileContents === true,
+        postSideEffectPolicyViolation: normalizeString(result.postSideEffectPolicyViolation, ""),
+        rawProviderPayloadIncluded: false,
+        rawWorkspacePathIncluded: false,
+        rawToolOutputIncluded: false,
+      };
+    }
+  }
+  return {
+    schema: "direct_latest_tool_result_summary@1",
+    tool: "",
+    status: "none",
+    resultClass: "",
+    sideEffectExecuted: false,
+    workspaceEffectSummaryId: "",
+    workspaceEffectScanRan: false,
+    workspaceEffectScanSupported: false,
+    workspaceChangesDetected: false,
+    changedPathCount: 0,
+    providerVisibility: "none",
+    providerSawChangedFileContents: false,
+    providerSawAllChangedFileContents: false,
+    postSideEffectPolicyViolation: "",
+    rawProviderPayloadIncluded: false,
+    rawWorkspacePathIncluded: false,
+    rawToolOutputIncluded: false,
+  };
+}
+
 class DirectSessionStore {
   constructor(options = {}) {
     const rootDir = normalizeString(options.rootDir, "");
@@ -1131,6 +1202,7 @@ class DirectSessionStore {
       activeToolLoopId: normalizeString(activeToolSession.activeToolLoopId, ""),
       activeToolStepOrdinal: Number(activeToolSession.activeToolStepOrdinal || 0),
       lastSessionUpdatedAt: index.sessions[0]?.updatedAt || "",
+      latestToolResult: latestToolResultSummary(this, index),
       recovery: index.recovery || {},
     };
   }
