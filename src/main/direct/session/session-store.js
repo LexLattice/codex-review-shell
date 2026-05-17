@@ -359,27 +359,31 @@ function indexEntryFromSession(session) {
   };
 }
 
-function latestToolResultSummary(store, index) {
+function latestToolResultSummary(store, index, options = {}) {
+  const projectId = normalizeString(options.projectId, "");
   const sessions = Array.isArray(index?.sessions) ? index.sessions : [];
   for (const sessionEntry of sessions) {
+    if (projectId && normalizeString(sessionEntry?.projectId, "") !== projectId) continue;
     const sessionId = normalizeString(sessionEntry?.sessionId, "");
     if (!sessionId) continue;
     let session = null;
     try {
       session = store.readSession(sessionId);
     } catch {}
-    const turns = Array.isArray(session?.turns) ? [...session.turns].reverse() : [];
-    for (const turnSummary of turns) {
+    if (projectId && normalizeString(session?.projectId, "") !== projectId) continue;
+    const turns = Array.isArray(session?.turns) ? session.turns : [];
+    for (let turnIndex = turns.length - 1; turnIndex >= 0; turnIndex -= 1) {
+      const turnSummary = turns[turnIndex];
       const turnId = normalizeString(turnSummary?.turnId, "");
       if (!turnId) continue;
       let turn = null;
       try {
         turn = store.readTurn(sessionId, turnId);
       } catch {}
-      const results = Array.isArray(turn?.toolResults) ? [...turn.toolResults].reverse() : [];
+      const results = Array.isArray(turn?.toolResults) ? turn.toolResults : [];
       if (!results.length) continue;
       const obligations = Array.isArray(turn?.unresolvedObligations) ? turn.unresolvedObligations : [];
-      const result = results[0] || {};
+      const result = results[results.length - 1] || {};
       const obligation = obligations.find((entry) => normalizeString(entry?.obligationId, "") === normalizeString(result.obligationId, "")) || {};
       const workspaceEffectSummary = isPlainObject(result.workspaceEffectSummary) ? result.workspaceEffectSummary : {};
       const providerVisibility = isPlainObject(workspaceEffectSummary.providerVisibility) ? workspaceEffectSummary.providerVisibility : {};
@@ -1181,14 +1185,18 @@ class DirectSessionStore {
     return diagnostic;
   }
 
-  status() {
+  status(options = {}) {
     const index = this.ensure();
-    const sessionCount = index.sessions.length;
-    const turnCount = index.sessions.reduce((count, session) => count + Number(session.turnCount || 0), 0);
-    const eventCount = index.sessions.reduce((count, session) => count + Number(session.eventCount || 0), 0);
-    const activeTurnCount = index.sessions.reduce((count, session) => count + Number(session.activeTurnCount || 0), 0);
-    const unresolvedObligationCount = index.sessions.reduce((count, session) => count + Number(session.unresolvedObligationCount || 0), 0);
-    const activeToolSession = index.sessions.find((session) => Number(session.activeToolStepOrdinal || 0) > 0) || {};
+    const projectId = normalizeString(options.projectId, "");
+    const sessions = projectId
+      ? index.sessions.filter((session) => normalizeString(session.projectId, "") === projectId)
+      : index.sessions;
+    const sessionCount = sessions.length;
+    const turnCount = sessions.reduce((count, session) => count + Number(session.turnCount || 0), 0);
+    const eventCount = sessions.reduce((count, session) => count + Number(session.eventCount || 0), 0);
+    const activeTurnCount = sessions.reduce((count, session) => count + Number(session.activeTurnCount || 0), 0);
+    const unresolvedObligationCount = sessions.reduce((count, session) => count + Number(session.unresolvedObligationCount || 0), 0);
+    const activeToolSession = sessions.find((session) => Number(session.activeToolStepOrdinal || 0) > 0) || {};
     return {
       schema: "direct_codex_session_store_status@1",
       available: true,
@@ -1198,11 +1206,11 @@ class DirectSessionStore {
       eventCount,
       activeTurnCount,
       unresolvedObligationCount,
-      lastTurnState: index.sessions[0]?.lastTurnState || "",
+      lastTurnState: sessions[0]?.lastTurnState || "",
       activeToolLoopId: normalizeString(activeToolSession.activeToolLoopId, ""),
       activeToolStepOrdinal: Number(activeToolSession.activeToolStepOrdinal || 0),
-      lastSessionUpdatedAt: index.sessions[0]?.updatedAt || "",
-      latestToolResult: latestToolResultSummary(this, index),
+      lastSessionUpdatedAt: sessions[0]?.updatedAt || "",
+      latestToolResult: latestToolResultSummary(this, { ...index, sessions }, { projectId }),
       recovery: index.recovery || {},
     };
   }

@@ -2053,13 +2053,14 @@ function buildDirectRuntimeStatusForProject(project, options = {}) {
   const liveTextStatus = ensureDirectLiveTextController().statusForProject(project);
   const activationStore = ensureDirectActivationStore();
   const projectId = normalizeString(project?.id, "");
+  const sessionStoreStatus = sessionStore.status({ projectId });
   const activationStoreStatus = projectId ? activationStore.statusForProject(projectId) : {};
   const activationEvaluation = evaluateDirectExperimentalProjectActivation({
     project,
     authSettings,
     authStatus: authSettings.authStatus,
     profileDoc,
-    sessionStore: sessionStore.status(),
+    sessionStore: sessionStoreStatus,
     sessionStoreObject: sessionStore,
     imports,
     liveTextStatus,
@@ -2075,7 +2076,7 @@ function buildDirectRuntimeStatusForProject(project, options = {}) {
     authSettings,
     authStatus: authSettings.authStatus,
     profileDoc,
-    sessionStore: sessionStore.status(),
+    sessionStore: sessionStoreStatus,
     liveTextStatus,
     activationStoreStatus,
     latestSelection: activationStoreStatus.latestRuntimeSelection || null,
@@ -2086,7 +2087,7 @@ function buildDirectRuntimeStatusForProject(project, options = {}) {
     authSettings,
     authStatus: authSettings.authStatus,
     profileDoc,
-    sessionStore: sessionStore.status(),
+    sessionStore: sessionStoreStatus,
     directThreadStore: directThreadStoreStatus(),
     imports,
     activation: activationEvaluation.status,
