@@ -533,8 +533,13 @@ async function runtimeStatus(window) {
 async function readImplementationProjection(page) {
   return page.evaluate(async (projectId) => {
     const status = await window.codexSurfaceBridge.getDirectImplementationLaneUiStatus(projectId);
-    const history = await window.codexSurfaceBridge.readDirectImplementationOperationHistory(projectId, { scope: "active-turn", limit: 24 });
     const latestToolResult = status?.latestToolResult || {};
+    const history = await window.codexSurfaceBridge.readDirectImplementationOperationHistory(projectId, {
+      scope: "active-turn",
+      limit: 24,
+      targetTurnId: latestToolResult.turnId || "",
+      targetObligationId: latestToolResult.obligationId || "",
+    });
     return {
       statusSchema: status?.schema || "",
       historySchema: history?.schema || "",
@@ -564,6 +569,10 @@ async function readImplementationProjection(page) {
         : 0,
       latestToolResult: {
         schema: latestToolResult.schema || "",
+        sessionId: latestToolResult.sessionId || "",
+        turnId: latestToolResult.turnId || "",
+        obligationId: latestToolResult.obligationId || "",
+        resultId: latestToolResult.resultId || "",
         tool: latestToolResult.tool || "",
         status: latestToolResult.status || "",
         resultClass: latestToolResult.resultClass || "",
@@ -599,6 +608,9 @@ function assertPostToolStatus(cases, scenarioName, projection) {
   const latest = projection.latestToolResult || {};
   const baseSafe = latest.schema === "direct_tool_result_status_projection@1" &&
     latest.tool === SCENARIOS[scenarioName].toolName &&
+    latest.turnId &&
+    latest.obligationId &&
+    latest.resultId &&
     latest.actionabilityActionable === false &&
     latest.rawProviderPayloadIncluded === false &&
     latest.rawWorkspacePathIncluded === false &&

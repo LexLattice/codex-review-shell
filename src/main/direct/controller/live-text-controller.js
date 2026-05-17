@@ -2989,6 +2989,7 @@ class DirectLiveTextController {
       status: normalizeString(result.status, ""),
       workspaceEffectSummaryId: normalizeString(result.workspaceEffectSummaryId, ""),
     }));
+    const confirmationSafety = { requiresConfirmation: true, confirmedAt: nowIso() };
     const existing = this.directThreadStore.operationByClient(projectId, baseClientOperationId);
     if (existing) return this.directThreadStore.operationResult(existing);
     const planned = this.directThreadStore.planOperation({
@@ -3001,7 +3002,7 @@ class DirectLiveTextController {
         operationInputDigest,
         tool,
       },
-      safety: { requiresConfirmation: true, confirmedAt: nowIso() },
+      safety: confirmationSafety,
     });
     const committed = this.directThreadStore.commitOperation(planned.operationId, {
       operationType,
@@ -3024,6 +3025,7 @@ class DirectLiveTextController {
         rawToolOutputIncluded: false,
         effects: toolHistoryEffects({ ...result, obligationId }, continuation),
       },
+      safety: confirmationSafety,
     });
     const workspaceEffectSummaryId = normalizeString(result.workspaceEffectSummaryId, "");
     if (workspaceEffectSummaryId) {
@@ -3069,9 +3071,7 @@ class DirectLiveTextController {
         });
       }
     }
-    return this.directThreadStore.operationResult(
-      this.directThreadStore.db.prepare("select * from direct_operations where operation_id = ?").get(committed.operationId),
-    );
+    return this.directThreadStore.operationResult(this.directThreadStore.operationById(committed.operationId));
   }
 
   async approveExecuteAndContinueReadOnlyTool(options = {}) {
@@ -3209,6 +3209,16 @@ class DirectLiveTextController {
         },
       };
     }
+    this.recordToolOperationHistory({
+      project,
+      sessionId,
+      turnId,
+      obligationId,
+      toolName: "read_file",
+      result: executed.result,
+      continuation: { continuationId: normalizeString(continuationRequest?.continuationId, "") },
+      clientDecisionId: normalizeString(options.clientToolDecisionId, ""),
+    });
     const continuation = await runPersistedReadOnlyToolContinuation({
       sessionStore: this.sessionStore,
       sessionId,
@@ -3254,16 +3264,6 @@ class DirectLiveTextController {
       streamPhase: "continuation",
       approvalMessage: "Direct read-only continuation requested another file. Local approval is required for the next read.",
       unavailableMessage: "Direct read-only continuation requested another tool call, but it is not available for approval.",
-    });
-    this.recordToolOperationHistory({
-      project,
-      sessionId,
-      turnId,
-      obligationId,
-      toolName: "read_file",
-      result: executed.result,
-      continuation: { continuationId },
-      clientDecisionId: normalizeString(options.clientToolDecisionId, ""),
     });
     return {
       decision: "approved",
@@ -3388,6 +3388,16 @@ class DirectLiveTextController {
         },
       };
     }
+    this.recordToolOperationHistory({
+      project,
+      sessionId,
+      turnId,
+      obligationId,
+      toolName: "apply_patch",
+      result: executed.result,
+      continuation: { continuationId: normalizeString(continuationRequest?.continuationId, "") },
+      clientDecisionId: normalizeString(options.clientPatchDecisionId, ""),
+    });
     const continuation = await runPersistedReadOnlyToolContinuation({
       sessionStore: this.sessionStore,
       sessionId,
@@ -3423,16 +3433,6 @@ class DirectLiveTextController {
       streamPhase: "patch-continuation",
       approvalMessage: "Direct patch continuation requested another tool. Local approval is required to continue the repair loop.",
       unavailableMessage: "Direct patch continuation requested another tool call, but it is not available for approval.",
-    });
-    this.recordToolOperationHistory({
-      project,
-      sessionId,
-      turnId,
-      obligationId,
-      toolName: "apply_patch",
-      result: executed.result,
-      continuation: { continuationId },
-      clientDecisionId: normalizeString(options.clientPatchDecisionId, ""),
     });
     return {
       decision: "approved",
@@ -3594,6 +3594,16 @@ class DirectLiveTextController {
         },
       };
     }
+    this.recordToolOperationHistory({
+      project,
+      sessionId,
+      turnId,
+      obligationId,
+      toolName: "run_command",
+      result: executed.result,
+      continuation: { continuationId: normalizeString(continuationRequest?.continuationId, "") },
+      clientDecisionId: normalizeString(options.clientCommandDecisionId, ""),
+    });
     const continuation = await runPersistedReadOnlyToolContinuation({
       sessionStore: this.sessionStore,
       sessionId,
@@ -3629,16 +3639,6 @@ class DirectLiveTextController {
       streamPhase: "command-continuation",
       approvalMessage: "Direct command continuation requested another tool. Local approval is required to continue the repair loop.",
       unavailableMessage: "Direct command continuation requested another tool call, but it is not available for approval.",
-    });
-    this.recordToolOperationHistory({
-      project,
-      sessionId,
-      turnId,
-      obligationId,
-      toolName: "run_command",
-      result: executed.result,
-      continuation: { continuationId },
-      clientDecisionId: normalizeString(options.clientCommandDecisionId, ""),
     });
     return {
       decision: "approved",

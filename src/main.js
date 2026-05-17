@@ -4890,6 +4890,8 @@ ipcMain.handle("direct-ui:operation-history", async (_event, payload) => {
     offset,
     operationTypes: payload?.operationTypes,
     statuses: payload?.statuses,
+    targetTurnId: payload?.targetTurnId,
+    targetObligationId: payload?.targetObligationId,
   };
   const operationHistory = await ensureDirectThreadWorkbenchController().readOperationHistory(project, params);
   return projectOperationHistoryPage({

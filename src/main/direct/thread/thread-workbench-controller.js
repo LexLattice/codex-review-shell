@@ -442,6 +442,8 @@ class DirectThreadWorkbenchController {
     const page = pageParams(params, 40);
     const operationTypes = Array.isArray(params.operationTypes) ? params.operationTypes.map(String).filter(Boolean) : [];
     const statuses = Array.isArray(params.statuses) ? params.statuses.map(String).filter(Boolean) : [];
+    const targetTurnId = normalizeString(params.targetTurnId, "");
+    const targetObligationId = normalizeString(params.targetObligationId, "");
     const where = ["project_id = ?"];
     const values = [projectId];
     if (operationTypes.length) {
@@ -451,6 +453,14 @@ class DirectThreadWorkbenchController {
     if (statuses.length) {
       where.push(`status in (${statuses.map(() => "?").join(", ")})`);
       values.push(...statuses);
+    }
+    if (targetTurnId) {
+      where.push("target_json like ?");
+      values.push(`%"turnId":"${targetTurnId}"%`);
+    }
+    if (targetObligationId) {
+      where.push("target_json like ?");
+      values.push(`%"obligationId":"${targetObligationId}"%`);
     }
     const rows = this.threadStore.db.prepare(`
       select *
@@ -496,6 +506,8 @@ class DirectThreadWorkbenchController {
         committedAt: normalizeString(row.committed_at, ""),
         rendererSafeTargets: {
           threadIds: Array.isArray(target.threadIds) ? target.threadIds.map(String) : [],
+          turnId: normalizeString(target.turnId, ""),
+          obligationId: normalizeString(target.obligationId, ""),
           edgeId: normalizeString(target.edgeId, ""),
         },
         rendererSafeSummary: normalizeString(result.blockerCode, "") || normalizeString(result.lifecycle?.afterState, "") || row.operation_type,

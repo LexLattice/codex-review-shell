@@ -2940,6 +2940,12 @@ class DirectThreadStore {
     };
   }
 
+  operationById(operationId) {
+    const safeOperationId = normalizeString(operationId, "");
+    if (!safeOperationId) return null;
+    return this.db.prepare("select * from direct_operations where operation_id = ?").get(safeOperationId) || null;
+  }
+
   returnExistingOperationOrThrowConflict(existing, expected = {}) {
     if (!existing) return null;
     const expectedOperationType = normalizeString(expected.operationType, "");

@@ -394,6 +394,7 @@ function latestToolResultSummary(store, index, options = {}) {
         sessionId,
         turnId,
         obligationId: normalizeString(result.obligationId || obligation.obligationId, ""),
+        resultId: normalizeString(result.resultId, ""),
         tool: normalizeString(result.tool || obligation.name, "tool"),
         status: normalizeString(result.status, "unknown"),
         resultClass: normalizeString(result.resultClass, ""),
@@ -415,6 +416,10 @@ function latestToolResultSummary(store, index, options = {}) {
   }
   return {
     schema: "direct_latest_tool_result_summary@1",
+    sessionId: "",
+    turnId: "",
+    obligationId: "",
+    resultId: "",
     tool: "",
     status: "none",
     resultClass: "",
