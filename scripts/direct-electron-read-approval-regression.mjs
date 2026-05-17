@@ -548,6 +548,20 @@ async function readImplementationProjection(page) {
         ? history.rows.filter((row) => row?.actionability?.actionable === true).length
         : 0,
       historyFamilies: Array.isArray(history?.rows) ? [...new Set(history.rows.map((row) => row.family).filter(Boolean))].sort() : [],
+      historyEventKinds: Array.isArray(history?.rows) ? [...new Set(history.rows.map((row) => row.eventKind).filter(Boolean))].sort() : [],
+      historyArtifactKinds: Array.isArray(history?.rows)
+        ? [...new Set(history.rows.flatMap((row) => Array.isArray(row.artifactRefs)
+          ? row.artifactRefs.map((ref) => ref.kind).filter(Boolean)
+          : []))].sort()
+        : [],
+      historyArtifactLabels: Array.isArray(history?.rows)
+        ? [...new Set(history.rows.flatMap((row) => Array.isArray(row.artifactRefs)
+          ? row.artifactRefs.map((ref) => ref.label).filter(Boolean)
+          : []))].sort()
+        : [],
+      historyEvidenceKeyCount: Array.isArray(history?.rows)
+        ? history.rows.reduce((count, row) => count + (Array.isArray(row.evidenceKeys) ? row.evidenceKeys.length : 0), 0)
+        : 0,
       latestToolResult: {
         schema: latestToolResult.schema || "",
         tool: latestToolResult.tool || "",
@@ -596,6 +610,11 @@ function assertPostToolStatus(cases, scenarioName, projection) {
       latest.workspaceEffectSummaryId === "" &&
       latest.workspaceChangesDetected === false &&
       latest.providerVisibility === "none", latest);
+    assertCase(cases, "read_operation_history_records_read_result", projection.historyRows > 0 &&
+      projection.historyFamilies.includes("read") &&
+      projection.historyArtifactKinds.includes("tool_result") &&
+      projection.historyActionableRows === 0 &&
+      projection.historyEvidenceKeyCount > 0, projection);
     return;
   }
   if (scenarioName === "patch") {
@@ -610,6 +629,13 @@ function assertPostToolStatus(cases, scenarioName, projection) {
       latest.providerVisibility === "summary_only" &&
       latest.providerSawChangedFileContents === false &&
       latest.visibleMessageCode === "workspace_changed_provider_saw_summary_only", latest);
+    assertCase(cases, "patch_operation_history_records_patch_and_workspace_effect", projection.historyRows >= 2 &&
+      projection.historyFamilies.includes("patch") &&
+      projection.historyFamilies.includes("workspace-effect") &&
+      projection.historyArtifactKinds.includes("tool_result") &&
+      projection.historyArtifactKinds.includes("workspace_effect_summary") &&
+      projection.historyActionableRows === 0 &&
+      projection.historyEvidenceKeyCount >= 2, projection);
     return;
   }
   if (scenarioName === "command") {
@@ -622,6 +648,13 @@ function assertPostToolStatus(cases, scenarioName, projection) {
       latest.changedPathCount === 0 &&
       latest.providerVisibility === "none" &&
       latest.visibleMessageCode === "workspace_effect_scan_recorded_no_changes", latest);
+    assertCase(cases, "command_operation_history_records_command_and_workspace_effect", projection.historyRows >= 2 &&
+      projection.historyFamilies.includes("command") &&
+      projection.historyFamilies.includes("workspace-effect") &&
+      projection.historyArtifactKinds.includes("tool_result") &&
+      projection.historyArtifactKinds.includes("workspace_effect_summary") &&
+      projection.historyActionableRows === 0 &&
+      projection.historyEvidenceKeyCount >= 2, projection);
   }
 }
 
@@ -992,6 +1025,7 @@ async function main() {
       projectionAfterApproval.historySchema === "direct_operation_history_projection@1" &&
       projectionAfterApproval.activeRuntimeTier === "direct-implementation-lane" &&
       projectionAfterApproval.canApproveRead === true &&
+      projectionAfterApproval.historyRows > 0 &&
       projectionAfterApproval.historyActionableRows === 0 &&
       projectionAfterApproval.rawProviderPayloadIncluded === false &&
       projectionAfterApproval.rawLocalPathIncluded === false &&
