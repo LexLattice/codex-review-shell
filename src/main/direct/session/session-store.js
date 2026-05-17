@@ -258,14 +258,13 @@ function mergeToolObligation(existing = {}, incoming = {}) {
 
 function equivalentTerminalObligation(existingObligations = [], incoming = {}) {
   const incomingName = normalizeString(incoming?.name, "");
-  const incomingArguments = normalizeString(incoming?.argumentsText, "");
   const incomingCallId = normalizeString(incoming?.callId, "");
+  if (!incomingCallId) return null;
   return existingObligations.find((entry) => {
     if (!DIRECT_TOOL_OBLIGATION_TERMINAL_STATUSES.has(normalizeString(entry?.status, ""))) return false;
     if (normalizeString(entry?.name, "") !== incomingName) return false;
     const entryCallId = normalizeString(entry?.callId, "");
-    if (incomingCallId && entryCallId && incomingCallId === entryCallId) return true;
-    return incomingArguments && normalizeString(entry?.argumentsText, "") === incomingArguments;
+    return entryCallId && incomingCallId === entryCallId;
   }) || null;
 }
 

@@ -472,7 +472,7 @@ function hunkMatchesAt(beforeLines, hunk, startIndex) {
     if (prefix === "+") continue;
     const content = typeof patchLine.content === "string" ? patchLine.content : String(patchLine).slice(1);
     const current = beforeLines[index];
-    if (stripLineEnding(current) !== content) return false;
+    if (current === undefined || stripLineEnding(current) !== content) return false;
     index += 1;
   }
   return true;
@@ -480,8 +480,16 @@ function hunkMatchesAt(beforeLines, hunk, startIndex) {
 
 function locateHunkStart(beforeLines, hunk, preferredIndex, cursor) {
   if (hunkMatchesAt(beforeLines, hunk, preferredIndex)) return preferredIndex;
-  for (let index = Math.max(0, cursor); index <= beforeLines.length; index += 1) {
-    if (index === preferredIndex) continue;
+  const start = Math.max(0, cursor);
+  const candidates = [];
+  for (let index = start; index <= beforeLines.length; index += 1) {
+    if (index !== preferredIndex) candidates.push(index);
+  }
+  candidates.sort((left, right) => {
+    const distance = Math.abs(left - preferredIndex) - Math.abs(right - preferredIndex);
+    return distance || left - right;
+  });
+  for (const index of candidates) {
     if (hunkMatchesAt(beforeLines, hunk, index)) return index;
   }
   return preferredIndex;
