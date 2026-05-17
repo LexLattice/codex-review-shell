@@ -166,18 +166,23 @@ function fixtureLiveEvidence() {
 
 function evidenceRefFor(evidence = {}, label = "Live probe evidence") {
   const evidenceId = normalizeString(evidence.evidenceId, "evidence_missing");
+  const computedStatus = normalizeString(evidence.computedStatus, "");
   return normalizeEvidenceRef({
     kind: "model_evidence",
     artifactId: evidenceId,
     artifactDigest: sha256(stableStringify({
       evidenceId,
-      status: evidence.status || evidence.computedStatus || "",
+      status: computedStatus || evidence.status || "",
       createdAt: evidence.createdAt || "",
       model: evidence.model?.requested || evidence.model?.observed || "",
     })),
-    sourceConfidence: evidence.status === "runtime_probed" || evidence.computedStatus === "runtime_probed" ? "exact" : "diagnostic",
+    sourceConfidence: computedStatus === "runtime_probed" ? "exact" : "diagnostic",
     rendererSafeLabel: label,
   });
+}
+
+function computedEvidenceUsable(evidence = null) {
+  return normalizeString(evidence?.computedStatus, "") === "runtime_probed";
 }
 
 function latestEvidenceFromStore(evidenceRoot) {
@@ -267,7 +272,7 @@ function quotaStatusFromEvidence(evidence = {}) {
 function buildStatusArtifacts(input = {}) {
   const projectId = "project_rug009_model_quota_usage_status";
   const latest = input.latestEvidence || null;
-  const evidenceUsable = latest?.status === "runtime_probed" || latest?.computedStatus === "runtime_probed";
+  const evidenceUsable = computedEvidenceUsable(latest);
   const evidenceRef = evidenceRefFor(latest || {}, evidenceUsable ? "Runtime-probed live text evidence" : "Live evidence missing or diagnostic");
   const modelId = normalizeString(latest?.model?.requested || latest?.model?.observed, evidenceUsable ? "unknown-live-model" : "model-unproved");
   const endpointClass = normalizeString(latest?.provider?.endpointClass, "unknown");
@@ -476,6 +481,12 @@ function buildReport(input = {}) {
   const cases = [];
   const sentinels = zeroSentinels();
   const artifacts = buildStatusArtifacts(input);
+  const expiredStoredRuntimeProbed = {
+    ...fixtureLiveEvidence(),
+    evidenceId: "rug009_expired_status_guard",
+    status: "runtime_probed",
+    computedStatus: "expired",
+  };
   const liveModel = artifacts.modelCatalog.entries[0];
   const usageEntry = artifacts.usageLedger.entries[0];
   const quotaBucket = artifacts.quotaSnapshot.buckets[0];
@@ -484,6 +495,11 @@ function buildReport(input = {}) {
     modelId: liveModel.modelId,
     evidenceState: liveModel.evidenceState,
     requestShapeFamily: liveModel.scope.requestShapeFamily,
+  });
+  assertCase(cases, "expired_stored_runtime_probed_evidence_does_not_promote", computedEvidenceUsable(expiredStoredRuntimeProbed) === false &&
+    evidenceRefFor(expiredStoredRuntimeProbed).sourceConfidence !== "exact", {
+    storedStatus: expiredStoredRuntimeProbed.status,
+    computedStatus: expiredStoredRuntimeProbed.computedStatus,
   });
   assertCase(cases, "model_catalog_does_not_enable_selector_controls", artifacts.modelCatalog.selectorEnabledInThisPr === false &&
     liveModel.controlDescriptors.every((entry) => entry.uiEnabledInThisPr === false), {
