@@ -41,6 +41,7 @@ Current evidence ledger:
 | `RU-PATH-001` | `fixture-ui` | `npm run direct:runtime-path` | User-facing app-server/direct-text/direct-implementation switch persists and preserves existing model/reasoning settings. | runtime path regression passes |
 | `RU-LEDGER-001` | `preflight` | `npm run direct:evidence-ledger -- --matrix-report ... --live-text-report ... --implementation-reports ... --ui-report ... --context-report ...` | Aggregates selected live, fixture, and UI reports into one row-level evidence ledger without starting provider/app-server/tool authority. | `rug001Closed=true`, raw exposure passes, sentinels are zero |
 | `RU-PATH-002` | `electron-ui` | `npm run direct:runtime-path:electron` | Visible Electron path selector reads a persisted Direct Text default, switches back to App Server, recognizes copied real live-probe evidence, switches App Server -> Direct Text, survives restart, and preserves model/reasoning/permission settings. | `directTextSelectionExercised=true`; Direct Tools remains blocked unless implementation-lane gate evidence is present |
+| `RU-UI-001` | `electron-ui` + live provider | `npm run direct:electron-read-approval -- --scenario read --allow-live-provider-call`; repeat with `--scenario patch` and `--scenario command` | Visible App Server -> Direct Text -> Direct Tools route shows approval cards for read/patch/command, accepts user approval, records renderer-safe status/history rows, and completes provider continuation. | Read passed `14/14`; patch and command passed `16/16`; patch shows `summary_only` workspace visibility and command shows clean workspace scan |
 | `RU-CTX-001` | `preflight` | `npm run direct:long-context-pressure` | Builds a real long Direct thread in the session/thread stores, detects context pressure, records deterministic trim/omission artifacts, and builds the next context pack/request manifest without provider/app-server/tool authority. | `rug005Closed=true`; provider transport and provider compact sentinels are zero; omission parity passes |
 | `RU-CTX-002` | `preflight` | `npm run direct:appserver-sibling-context` | Normalizes app-server-shaped context compaction and memory events as sibling-only evidence, projects them into display-only status, then switches to a Direct thread and proves no Direct context/memory/compaction authority bleeds through. | `rug006Closed=true`; app-server spawn/mutation and Direct context-from-sibling sentinels are zero |
 | `RU-FORK-001` | `fixture-provider-shaped` / `live-text` | `npm run direct:fresh-fork-start -- --mode fixture`; live promotion: `npm run direct:fresh-fork-start -- --mode live --allow-live-provider-call` | Builds a valid fork preview, prepares a confirmed fresh fork start, creates a fresh direct-native session, persists seed/context/manifest artifacts, sends exactly one first-turn provider-shaped request, and proves no source provider continuity. | Fixture mode: `coverageSource=fixture_provider_shaped`, `matrixPromotionCandidate=false`; live mode: `coverageSource=real_provider`, `rug007Closed=true` |
@@ -57,11 +58,12 @@ Current evidence ledger:
 6. `RU-IMP-004`.
 7. `RU-LEDGER-001` after all selected reports exist.
 8. `RU-PATH-002` for visible Electron persistence coverage.
-9. `RU-CTX-001` after context/status fixture coverage is green.
-10. `RU-CTX-002` after `RU-CTX-001`.
-11. `RU-FORK-001` fixture mode before any live fresh-fork promotion run.
-12. `RU-IMPORT-001` fixture mode before any live import-checkpoint promotion run.
-13. `RU-STATUS-001` fixture mode before any live-readonly status promotion run.
+9. `RU-UI-001` for visible read/patch/command approval-card coverage.
+10. `RU-CTX-001` after context/status fixture coverage is green.
+11. `RU-CTX-002` after `RU-CTX-001`.
+12. `RU-FORK-001` fixture mode before any live fresh-fork promotion run.
+13. `RU-IMPORT-001` fixture mode before any live import-checkpoint promotion run.
+14. `RU-STATUS-001` fixture mode before any live-readonly status promotion run.
 
 Stop and cluster failures by theory before continuing to a higher-risk level.
 For example, an evidence-scope failure in `RU-LIVE-001` should be fixed before

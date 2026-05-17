@@ -258,31 +258,34 @@ npm run direct:runtime-path:electron -- --run-id rug002_direct_tools_visible_202
 npm run direct:smoke
 ```
 
-## RUG-003 Electron Read Approval Card Probe
+## RUG-003 Electron Approval Card Probe
 
-Status: read-only approval-card path closed for the visible Electron app.
+Status: read, patch, and command approval-card paths closed for the visible
+Electron app.
 
 Added `direct:electron-read-approval`, a live opt-in Electron probe that uses
 the supported user route:
 
 ```text
-App Server -> Direct Text -> Direct Tools -> prompt -> visible read approval card
--> Approve read -> completed card/status row -> assistant continuation
+App Server -> Direct Text -> Direct Tools -> prompt -> visible approval card
+-> Approve read/patch/command -> completed card/status row -> assistant continuation
 ```
 
 The probe starts from App Server rather than seeding Direct Tools as the initial
 runtime, because Direct activation/rollback law intentionally rejects a direct
 implementation-lane start that did not pass through the runtime selector. It
 then submits a real prompt in the Codex surface, observes
-`direct/tool/readOnly/requestApproval`, clicks `Approve read`, and verifies the
-renderer-safe implementation status/history projection after completion.
+`direct/tool/readOnly/requestApproval`, `direct/tool/patchApply/requestApproval`,
+or `direct/tool/command/requestApproval`, clicks the visible approval button,
+and verifies the renderer-safe implementation status/history projection after
+completion.
 
 The implementation gap found by this probe was that the selectable Direct Tools
 surface still built text-only first-turn requests. Direct implementation-lane
 first turns now use scoped implementation tool declarations when the project has
 matching read/patch/command proof evidence; text-only remains unchanged.
 
-Latest live run:
+Latest read live run:
 
 ```text
 run id: rug003_electron_read_approval_20260517_retry4
@@ -293,11 +296,31 @@ assistantContinuationObserved: true
 rawExposure: passed
 ```
 
+Latest patch and command live runs:
+
+```text
+patch run id: rug003_patch_visible_approval_20260518
+patch status: passed
+patch cases: 16/16
+patch visibleApprovalCardExercised: true
+patch finalAssistantProofObserved: true
+patch workspaceEffect: changedPathCount=1, providerVisibility=summary_only
+
+command run id: rug003_command_visible_approval_20260518
+command status: passed
+command cases: 16/16
+command visibleApprovalCardExercised: true
+command finalAssistantProofObserved: true
+command workspaceEffect: changedPathCount=0, providerVisibility=none
+```
+
 Validation:
 
 ```bash
 npm run check:syntax
 npm run direct:electron-read-approval -- --run-id rug003_electron_read_approval_20260517_retry4 --allow-live-provider-call
+npm run direct:electron-read-approval -- --scenario patch --run-id rug003_patch_visible_approval_20260518 --allow-live-provider-call
+npm run direct:electron-read-approval -- --scenario command --run-id rug003_command_visible_approval_20260518 --allow-live-provider-call
 ```
 
 ## 2026-05-17 RUG-004 Side-Effect Recovery Fault Probe
@@ -669,7 +692,7 @@ code paths.
 | --- | --- | --- | --- | --- |
 | `RUG-001` | closed in current code bundle | The aggregate matrix report cannot mark external live proof rows as live-proved because that runner is fixture/preflight conformance only. | `direct:evidence-ledger` ingests selected live/fixture/UI reports and emits per-row proof levels. | Keep this aggregator in the default post-round evidence pass. |
 | `RUG-002` | closed in current code bundle | Runtime switch persistence and visible Direct Tools eligibility must match the real scoped evidence gate. | `direct:runtime-path` passed; `direct:runtime-path:electron` passed App Server readback, copied live probe evidence, copied scoped implementation proof evidence, App Server -> Direct Text, Direct Text -> Direct Tools, restart persistence, and independent settings preservation. Scoped implementation proof resolver returns `canSelectImplementationLane=true`. | Keep the Electron selector probe in the default runtime-path suite. |
-| `RUG-003` | partially closed in current code bundle | Live read/patch/command loops are script-proved, but approval cards and status rows need visible UI coverage. | Read-only Electron path passed: App Server -> Direct Text -> Direct Tools, visible `read_file` approval card, approve click, completed card/status row, assistant continuation, renderer-safe implementation projection. | Extend the same Electron probe family to patch and command after read-only coverage is stable. |
+| `RUG-003` | closed in current code bundle | Live read/patch/command loops are script-proved, but approval cards and status rows needed visible UI coverage. | Electron approval path passed for read, patch, and command. Patch/command start from App Server, move through Direct Text to Direct Tools, show visible approval cards, accept approval, record renderer-safe status/history rows, run workspace-effect scans, and complete assistant continuation. | Keep read/patch/command Electron approval probes in the visible-app validation set. |
 | `RUG-004` | closed in current code bundle | The visible Electron app must recover safely when patch/command side effects happen locally but the provider continuation does not reach a safe assistant terminal state. | Fault-injection Electron probes passed for patch and command; restart projection preserves tool result, operation history, workspace-effect summary, blocked composer, and `continuation_sent_no_bytes` recovery state. | Keep patch/command side-effect recovery probes in the visible Electron approval suite. |
 | `RUG-005` | closed in current code bundle | Context maintenance is status/projection proved, but needed a real long Direct thread pressure path through session/thread stores and context-pack/request-manifest artifacts. | `direct:long-context-pressure` passed; over-budget pressure selected `local_trim`, omission parity passed, context pack/request manifest cited maintenance refs, provider/app-server/tool sentinels stayed zero. | Keep this probe in the post-context validation set. |
 | `RUG-006` | closed in current code bundle | We normalize vanilla sibling context evidence, but needed a captured app-server-shaped observation probe to prove compact/memory/status evidence remains sibling-only across Direct thread switch. | `direct:appserver-sibling-context` passed; context compaction, memory citation, compact control, memory mode, and memory reset observations projected display-only; Direct context pack excluded sibling refs; app-server and Direct authority sentinels stayed zero. | Keep this probe in the context validation set; a later live app-server capture can replace the fixture source when available. |
@@ -687,18 +710,20 @@ The next bundle should remain probe expansion, not feature work. Since
 `direct:long-context-pressure`, `RUG-006` is covered by
 `direct:appserver-sibling-context`, `RUG-007` now has a focused
 fixture-provider-shaped runner, `RUG-008` now has a focused
-fixture-provider-shaped runner, and `RUG-009` now has a focused
-live-readonly status runner, the next high-leverage work is:
+fixture-provider-shaped runner, `RUG-009` now has a focused
+live-readonly status runner, and `RUG-003`/`RUG-004` are covered by the
+visible Electron approval suite, the next high-leverage work is:
 
-1. Keep Electron approval-card/status-row probes for `RUG-003` and side-effect
-   recovery probes for `RUG-004` in the default visible-app validation set.
+1. Keep the Electron approval-card/status-row and side-effect recovery probes
+   in the default visible-app validation set.
 2. Run `RUG-007` or `RUG-008` in live mode when explicitly promoting
    fresh-fork or import-checkpoint provider evidence.
 3. Move to `RUG-010` only if exact provider compact primitive evidence is
    available; otherwise prefer `RUG-011` governance non-authority leakage.
 
-These connect the already-green headless/live proof to the actual user-visible
-app path.
+The visible Direct Tools gap is closed; remaining work should either promote
+fresh-fork/import-checkpoint evidence live or probe for authority leakage in
+later diagnostic layers.
 
 Do not start with provider compaction or sub-agent source ingestion. Those are
 valid later probes, but they are not the main confidence gap exposed by round 2.
