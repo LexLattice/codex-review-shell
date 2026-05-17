@@ -326,6 +326,112 @@ npm run direct:electron-read-approval -- --scenario patch --run-id rug004_patch_
 npm run direct:electron-read-approval -- --scenario command --run-id rug004_command_fault_20260517_final --allow-live-provider-call --fault-after-local-side-effect
 ```
 
+## 2026-05-17 RUG-005 Long Context Pressure Probe
+
+Status: local real long-context pressure path closed for deterministic Direct
+context maintenance artifacts.
+
+Added `direct:long-context-pressure`, a provider-free probe that constructs a
+real long Direct-native thread in the Direct session/thread stores, builds the
+renderer and `context_recent_dialogue` projections, detects over-budget
+pressure, records local deterministic trim/omission/memory/baton artifacts, and
+builds the next context pack plus request manifest with maintenance refs cited.
+
+Probe command:
+
+```bash
+npm run direct:long-context-pressure -- --run-id rug005_long_context_pressure_20260517
+```
+
+## 2026-05-17 RUG-006 App-Server Sibling Context Observation Probe
+
+Status: captured app-server sibling context observation path closed for
+display-only Direct context/status projection.
+
+Added `direct:appserver-sibling-context`, a provider-free probe that normalizes
+app-server-shaped thread-item and control observations:
+
+```text
+contextCompaction item
+agentMessage memoryCitation
+thread/compact/start
+thread/memoryMode/set
+memory/reset
+```
+
+The probe projects those observations as `vanilla_app_server_sibling` evidence,
+feeds them through the Direct context-maintenance status summary, then switches
+to a Direct thread and proves the sibling evidence does not become Direct
+context, durable memory, provider compact proof, omission ledger, or continuity.
+
+Probe command:
+
+```bash
+npm run direct:appserver-sibling-context -- --run-id rug006_appserver_sibling_context_20260517
+```
+
+Report:
+
+```text
+/home/rose/.config/codex-review-shell/direct-appserver-sibling-context-runs/rug006_appserver_sibling_context_20260517/direct-appserver-sibling-context-report.json
+```
+
+Observed result:
+
+```text
+status: passed
+cases: 6/6
+rug006Closed: true
+appServerSpawnCalls: 0
+appServerMutationCalls: 0
+contextPackBuildsFromSibling: 0
+requestManifestBuildsFromSibling: 0
+```
+
+The probe validates the app-server sibling discriminator:
+
+```text
+vanilla app-server context/memory/compact evidence may be displayed as sibling
+status, but it cannot promote Direct compaction, Direct memory editing, Direct
+context-pack input, or Direct provider continuity.
+```
+
+Validation:
+
+```bash
+npm run direct:appserver-sibling-context -- --run-id rug006_appserver_sibling_context_20260517
+```
+
+Report:
+
+```text
+/home/rose/.config/codex-review-shell/direct-long-context-pressure-runs/rug005_long_context_pressure_20260517/direct-long-context-pressure-report.json
+```
+
+Observed result:
+
+```text
+status: passed
+cases: 7/7
+rug005Closed: true
+providerTransportCalls: 0
+providerCompactPrimitiveCalls: 0
+```
+
+The probe validates the branch distinction that matters for this gap:
+
+```text
+long context pressure can produce local maintenance evidence and omission refs
+without silently invoking provider compaction, app-server fallback, workspace
+actions, or request transport.
+```
+
+Validation:
+
+```bash
+npm run direct:long-context-pressure -- --run-id rug005_long_context_pressure_20260517
+```
+
 Reports:
 
 ```text
@@ -366,8 +472,8 @@ code paths.
 | `RUG-002` | closed in current code bundle | Runtime switch persistence and visible Direct Tools eligibility must match the real scoped evidence gate. | `direct:runtime-path` passed; `direct:runtime-path:electron` passed App Server readback, copied live probe evidence, copied scoped implementation proof evidence, App Server -> Direct Text, Direct Text -> Direct Tools, restart persistence, and independent settings preservation. Scoped implementation proof resolver returns `canSelectImplementationLane=true`. | Keep the Electron selector probe in the default runtime-path suite. |
 | `RUG-003` | partially closed in current code bundle | Live read/patch/command loops are script-proved, but approval cards and status rows need visible UI coverage. | Read-only Electron path passed: App Server -> Direct Text -> Direct Tools, visible `read_file` approval card, approve click, completed card/status row, assistant continuation, renderer-safe implementation projection. | Extend the same Electron probe family to patch and command after read-only coverage is stable. |
 | `RUG-004` | closed in current code bundle | The visible Electron app must recover safely when patch/command side effects happen locally but the provider continuation does not reach a safe assistant terminal state. | Fault-injection Electron probes passed for patch and command; restart projection preserves tool result, operation history, workspace-effect summary, blocked composer, and `continuation_sent_no_bytes` recovery state. | Keep patch/command side-effect recovery probes in the visible Electron approval suite. |
-| `RUG-005` | long-context live pressure gap | Context maintenance is status/projection proved, not exercised under a real long-context pressure turn. | `direct:context-eprobes` passed; no provider compaction authority claimed. | Construct bounded long thread; assert pressure/status projection, no hidden compaction, no provider compact call, and context pack omission refs if cap forces omission. |
-| `RUG-006` | app-server sibling UI observation gap | We normalize vanilla sibling context evidence, but round 2 did not observe a real UI compact/memory control transition from app-server. | Context E-probes cover normalized evidence and discriminator behavior. | Electron/app-server observation probe: capture sibling context/memory controls/status, switch thread, prove discriminator prevents bleed. |
+| `RUG-005` | closed in current code bundle | Context maintenance is status/projection proved, but needed a real long Direct thread pressure path through session/thread stores and context-pack/request-manifest artifacts. | `direct:long-context-pressure` passed; over-budget pressure selected `local_trim`, omission parity passed, context pack/request manifest cited maintenance refs, provider/app-server/tool sentinels stayed zero. | Keep this probe in the post-context validation set. |
+| `RUG-006` | closed in current code bundle | We normalize vanilla sibling context evidence, but needed a captured app-server-shaped observation probe to prove compact/memory/status evidence remains sibling-only across Direct thread switch. | `direct:appserver-sibling-context` passed; context compaction, memory citation, compact control, memory mode, and memory reset observations projected display-only; Direct context pack excluded sibling refs; app-server and Direct authority sentinels stayed zero. | Keep this probe in the context validation set; a later live app-server capture can replace the fixture source when available. |
 | `RUG-007` | fresh-fork live gap | Fresh fork from preview has fixture/spec coverage, but not a live provider first turn from a valid preview. | Matrix fixture suites cover workbench/fork laws. | Build a valid fork/merge/prune preview fixture, start one fresh direct session with live provider opt-in, assert no source continuity and composer state. |
 | `RUG-008` | import/checkpoint live gap | Import checkpoint continuation remains fixture/spec-level. | Import/workbench specs and fixture coverage. | Live checkpoint follow-up probe with validated imported source, asserting fresh context seed and no provider continuity import. |
 | `RUG-009` | model/quota/usage real-status gap | Usage/readiness is fixture/preflight; quota/model catalog are not current account live status proof. | Live text reports include usage-like provider events; `usage_readiness` suite passed. | Read-only usage/quota/model status probe with explicit opt-in, no model generation unless separately requested, and no billing-grade claims. |
@@ -378,13 +484,13 @@ code paths.
 ## Recommended Next Probe Bundle
 
 The next bundle should remain probe expansion, not feature work. Since
-`RUG-001` is now covered by `direct:evidence-ledger`, the next high-leverage
-work is:
+`RUG-001` is covered by `direct:evidence-ledger`, `RUG-005` is covered by
+`direct:long-context-pressure`, and `RUG-006` is covered by
+`direct:appserver-sibling-context`, the next high-leverage work is:
 
 1. Keep Electron approval-card/status-row probes for `RUG-003` and side-effect
    recovery probes for `RUG-004` in the default visible-app validation set.
-2. Move next to `RUG-005` long-context live pressure, then `RUG-006`
-   app-server sibling context/memory observation.
+2. Move next to `RUG-007` fresh-fork live start.
 
 These connect the already-green headless/live proof to the actual user-visible
 app path.
