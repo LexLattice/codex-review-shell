@@ -807,6 +807,76 @@ The first attempt used the wrong app data root and blocked before runtime with
 failure; the probe now follows the same canonical/legacy profile selection law
 as the other real-usage runners.
 
+## 2026-05-18 RUG-010 Provider Compact Gate Probe
+
+Status: provider compact primitive remains live-gated and unproved; the
+diagnostic gate probe passed and did not promote `A12`.
+
+Added `direct:provider-compact-gate`, a focused route/status probe for the
+provider compact boundary:
+
+```text
+provider compaction requested
+  + no exact compact primitive evidence
+  -> route blocked
+  -> blocked maintenance manifest
+  -> renderer-safe diagnostic report
+```
+
+Command:
+
+```bash
+npm run direct:provider-compact-gate -- --run-id rug010_provider_compact_gate_20260518
+```
+
+Report:
+
+```text
+/home/rose/.config/Codex Review Shell/direct-provider-compact-gate-runs/rug010_provider_compact_gate_20260518/direct-provider-compact-gate-report.json
+```
+
+Observed result:
+
+```text
+status: passed
+coverageSource: diagnostic_provider_compact_gate
+providerCompactPrimitive.supportState: live_gated_unproved
+providerCompactPrimitive.providerCompactPrimitiveProven: false
+A12_providerCompaction: false
+rug010Closed: false
+providerTransportCalls: 0
+providerCompactPrimitiveCalls: 0
+appServerSpawnCalls: 0
+workspaceReadCalls: 0
+contextPackBuilds: 0
+requestManifestBuilds: 0
+```
+
+Cases:
+
+```text
+provider_compaction_requested_without_exact_evidence_blocks:
+  routeKind=blocked
+  blockerCode=provider_compaction_missing_evidence
+
+provider_compaction_unknown_pressure_blocks:
+  routeKind=blocked
+  blockerCode=pressure_unknown_over_budget_risk
+
+fixture_provider_compact_evidence_does_not_promote_a12:
+  proofOutcome=fixture_evidence_remains_diagnostic
+  providerCompactionPrimitiveProven=false
+```
+
+This deliberately does not close `RUG-010` as real provider capability proof.
+It closes the unsafe branch distinction:
+
+```text
+provider compact requested != provider compact allowed
+fixture/profile compact evidence != A12 promotion
+diagnostic compact status != provider request
+```
+
 ## E-Probe Gap Matrix
 
 The next probe work should target gaps in branch distinctions, not individual
@@ -823,7 +893,7 @@ code paths.
 | `RUG-007` | closed in current code bundle | Fresh fork from preview needed a focused route probe plus explicit live-provider first-turn promotion. | `direct:fresh-fork-start` fixture-provider-shaped mode passed, then live mode passed with `coverageSource=real_provider`, `matrixPromotionCandidate=true`, `rug007Closed=true`, one live provider request, no `previous_response_id`, no `store`, no tools, terminal assistant text, enabled composer, and idempotent retry no-resend. | Keep fixture mode in normal validation and rerun live mode only when refreshing real-provider promotion evidence. |
 | `RUG-008` | closed in current code bundle | Import checkpoint continuation needed a focused route probe plus explicit live-provider first-turn promotion. | `direct:import-checkpoint-continuation` fixture-provider-shaped mode passed, then live mode passed with `coverageSource=real_provider`, `matrixPromotionCandidate=true`, `rug008Closed=true`, one live provider request, no `previous_response_id`, no `store`, no tools, validated imported parent remains read-only, fresh native Direct continuation session completes, and idempotent retry no-resend. | Keep fixture mode in normal validation and rerun live mode only when refreshing real-provider promotion evidence. |
 | `RUG-009` | closed in current code bundle | Usage/readiness was fixture/preflight, and quota/model catalog needed a current live-evidence status projection without generation. | `direct:model-quota-usage-status` fixture mode passed; live-readonly mode passed against existing runtime-probed live evidence with `providerTransportCalls=0`, exact text model scope, non-billing usage, unknown quota as nonblocking, and model controls disabled. | Keep live-readonly status projection in the default readiness validation set when live probe evidence exists. |
-| `RUG-010` | provider compaction primitive gap | Provider compact remains gated and unproved for this profile. | Context E-probes explicitly avoid provider compact authority. | Separate diagnostic-only compact primitive probe if exact profile evidence says endpoint is available; otherwise keep blocked. |
+| `RUG-010` | live-gated provider compaction primitive gap | Provider compact remains gated and unproved for this profile. | `direct:provider-compact-gate` passed: provider compact request blocks without exact evidence, unknown pressure blocks compaction, fixture/profile evidence stays diagnostic, `A12_providerCompaction=false`, provider compact/transport sentinels are zero. | Only a future explicitly opted-in live compact primitive probe with exact endpoint/request-shape evidence may promote `A12`; otherwise keep blocked. |
 | `RUG-011` | closed in current code bundle | Governance/broker diagnostics are fixture-proved; a real runtime action must prove `wouldBlockInFutureEnforceMode` cannot block a live turn. | `direct:governance-live-non-authority` passed with real provider coverage: shadow diagnostics present, future enforce block true, runtime block false, broker auto-route false, provider input prompt/instructions/text hash/shape hash unchanged, request controls unchanged, and governance refs cited by context/request artifacts. | Keep the live non-authority probe available for refresh runs; do not let shadow diagnostics become runtime gates. |
 | `RUG-012` | sub-agent observability real source gap | Sub-agent observability is fixture/display-only; no live app-server collab event source was projected. | Sub-agent observability suite passed. | Read-only app-server event ingestion probe, if collab/sub-agent evidence exists, proving no spawn/send/wait/close authority. |
 
@@ -840,8 +910,9 @@ Electron approval suite, the next high-leverage work is:
 
 1. Keep the Electron approval-card/status-row and side-effect recovery probes
    in the default visible-app validation set.
-2. Move to `RUG-010` only if exact provider compact primitive evidence is
-   available; otherwise keep it blocked.
+2. Keep `RUG-010` blocked unless exact provider compact primitive evidence is
+   available; `direct:provider-compact-gate` is now the default no-authority
+   regression for that boundary.
 3. Keep `RUG-012` behind read-only app-server source availability; do not infer
    sub-agent source evidence from fixture-only projections.
 
