@@ -32,7 +32,8 @@ const MAX_SOURCE_BYTES = 2 * 1024 * 1024;
 const MAX_SOURCE_FILES = 80;
 
 function normalizeString(value, fallback = "") {
-  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+  const text = (typeof value === "string" || typeof value === "number") ? String(value).trim() : "";
+  return text || fallback;
 }
 
 function nowIso() {
@@ -167,7 +168,12 @@ function sourceKindForObject(object = {}) {
   if (text.includes("sendinput") || text.includes("send_input")) return "collab_tool_call";
   if (text.includes("waitagent") || text.includes("wait_agent")) return "collab_tool_call";
   if (object.agents_states || object.agentsStates || object.agents) return "agents_states";
-  if (object.agentThreadId || object.agent_thread_id || object.childThreadId || object.child_thread_id) return "session_metadata";
+  if (
+    object.agentThreadId !== undefined ||
+    object.agent_thread_id !== undefined ||
+    object.childThreadId !== undefined ||
+    object.child_thread_id !== undefined
+  ) return "session_metadata";
   return "";
 }
 
@@ -182,20 +188,49 @@ function statusToLifecycle(value) {
 }
 
 function objectLabel(object = {}, fallback = "Agent") {
-  return normalizeString(object.nickname || object.label || object.title || object.name || object.role, fallback);
+  return normalizeString(object.nickname ?? object.label ?? object.title ?? object.name ?? object.role, fallback);
 }
 
 function objectThreadId(object = {}, fallback) {
-  return normalizeString(
-    object.agentThreadId ||
-      object.agent_thread_id ||
-      object.childThreadId ||
-      object.child_thread_id ||
-      object.threadId ||
-      object.thread_id ||
-      object.id,
-    fallback,
-  );
+  const id = object.agentThreadId ??
+    object.agent_thread_id ??
+    object.childThreadId ??
+    object.child_thread_id ??
+    object.threadId ??
+    object.thread_id ??
+    object.id;
+  return normalizeString(id, fallback);
+}
+
+function arrayValues(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function receiverThreadIdsForObject(object = {}, fallback) {
+  const explicit = [
+    ...arrayValues(object.receiverThreadIds),
+    ...arrayValues(object.receiver_thread_ids),
+    ...arrayValues(object.receivers),
+  ].map((value) => normalizeString(value, "")).filter(Boolean);
+  const stateThreadIds = [
+    ...arrayValues(object.agentsStates),
+    ...arrayValues(object.agents_states),
+    ...arrayValues(object.agents),
+  ].map((state) => objectThreadId(state, "")).filter(Boolean);
+  const merged = [...new Set([...explicit, ...stateThreadIds])];
+  if (merged.length) return merged;
+  return [objectThreadId(object, fallback)].filter(Boolean);
+}
+
+function agentStateByThreadId(object = {}) {
+  const states = [
+    ...arrayValues(object.agentsStates),
+    ...arrayValues(object.agents_states),
+    ...arrayValues(object.agents),
+  ];
+  return new Map(states
+    .map((state) => [objectThreadId(state, ""), state])
+    .filter(([threadId]) => Boolean(threadId)));
 }
 
 function normalizeSourceObjects({ objects, sourceEvidenceKey }) {
@@ -207,47 +242,51 @@ function normalizeSourceObjects({ objects, sourceEvidenceKey }) {
     const sourceKind = sourceKindForObject(object);
     if (!sourceKind) continue;
     sequence += 1;
-    const artifactId = `${sourceEvidenceKey}_${sequence}`;
-    const eventDigest = sha256(stableStringify({
-      sourceKind,
-      threadId: objectThreadId(object, ""),
-      parentThreadId: object.parentThreadId || object.parent_thread_id || object.primaryThreadId || "",
-      status: object.status || object.state || object.lifecycleState || "",
-      method: object.method || object.name || object.type || "",
-    }));
-    sourceEventDigests.push(eventDigest);
-    const childThreadId = objectThreadId(object, `agent_source_${sequence}`);
-    const parentThreadId = normalizeString(object.parentThreadId || object.parent_thread_id || object.primaryThreadId || object.primary_thread_id, "primary_app_server_thread");
-    const evidenceRef = {
-      kind: sourceKind,
-      artifactId,
-      artifactDigest: eventDigest,
-      rendererSafeLabel: sourceKind === "collab_tool_call" ? "App-server collab tool event" : "App-server agent state",
-      sourceConfidence: "derived",
-    };
-    if (!nodesByThread.has(childThreadId)) {
-      nodesByThread.set(childThreadId, {
-        agentThreadId: childThreadId,
+    const parentThreadId = normalizeString(object.parentThreadId ?? object.parent_thread_id ?? object.primaryThreadId ?? object.primary_thread_id ?? object.senderThreadId ?? object.sender_thread_id, "primary_app_server_thread");
+    const stateByThreadId = agentStateByThreadId(object);
+    const receiverThreadIds = receiverThreadIdsForObject(object, `agent_source_${sequence}`);
+    for (const childThreadId of receiverThreadIds) {
+      const state = stateByThreadId.get(childThreadId) || {};
+      const artifactId = `${sourceEvidenceKey}_${sequence}_${sha256(childThreadId).slice(0, 10)}`;
+      const eventDigest = sha256(stableStringify({
+        sourceKind,
+        threadId: childThreadId,
         parentThreadId,
-        nickname: objectLabel(object, `Agent ${sequence}`),
-        role: normalizeString(object.role || object.agentRole || object.agent_type, ""),
-        depth: parentThreadId === "primary_app_server_thread" ? 1 : 2,
-        labelConfidence: sourceKind === "collab_tool_call" ? "collab_tool_call" : "session_metadata",
-        lifecycleState: statusToLifecycle(object.status || object.state || object.lifecycleState),
-        activityState: ["running", "waiting"].includes(statusToLifecycle(object.status || object.state || object.lifecycleState)) ? "active" : "unknown",
-        containmentState: "unknown",
-        evidenceRefs: [evidenceRef],
-      });
-    }
-    if (sourceKind === "collab_tool_call") {
-      const method = normalizeString(object.method || object.name || object.type, "").toLowerCase();
+        status: object.status ?? object.state ?? object.lifecycleState ?? state.status ?? state.state ?? "",
+        method: object.method ?? object.name ?? object.type ?? "",
+      }));
+      sourceEventDigests.push(eventDigest);
+      const evidenceRef = {
+        kind: sourceKind,
+        artifactId,
+        artifactDigest: eventDigest,
+        rendererSafeLabel: sourceKind === "collab_tool_call" ? "App-server collab tool event" : "App-server agent state",
+        sourceConfidence: "derived",
+      };
+      if (!nodesByThread.has(childThreadId)) {
+        const lifecycleState = statusToLifecycle(state.status ?? state.state ?? object.status ?? object.state ?? object.lifecycleState);
+        nodesByThread.set(childThreadId, {
+          agentThreadId: childThreadId,
+          parentThreadId,
+          nickname: objectLabel(state, objectLabel(object, `Agent ${sequence}`)),
+          role: normalizeString(state.role ?? state.agentRole ?? state.agent_type ?? object.role ?? object.agentRole ?? object.agent_type, ""),
+          depth: parentThreadId === "primary_app_server_thread" ? 1 : 2,
+          labelConfidence: sourceKind === "collab_tool_call" ? "collab_tool_call" : "session_metadata",
+          lifecycleState,
+          activityState: ["running", "waiting"].includes(lifecycleState) ? "active" : "unknown",
+          containmentState: "unknown",
+          evidenceRefs: [evidenceRef],
+        });
+      }
+      if (sourceKind !== "collab_tool_call") continue;
+      const method = normalizeString(object.method ?? object.name ?? object.type, "").toLowerCase();
       const edgeKind = method.includes("send") ? "sent_input" : method.includes("wait") ? "waited_on" : "spawned_child";
       edges.push({
         edgeKind,
         parentThreadId,
         childThreadId,
-        status: statusToLifecycle(object.status || object.state) === "failed" ? "failed" : "completed",
-        sourceCallId: normalizeString(object.callId || object.call_id || object.id, artifactId),
+        status: statusToLifecycle(object.status ?? object.state) === "failed" ? "failed" : "completed",
+        sourceCallId: normalizeString(object.callId ?? object.call_id ?? object.id, artifactId),
         evidenceRefs: [evidenceRef],
       });
     }
@@ -305,6 +344,7 @@ function sourceFilesFromOptions(options) {
 }
 
 function buildUnavailableReport({ sourceFileCount }) {
+  const explicitSourceAttempted = sourceFileCount > 0;
   return {
     schema: DIRECT_SUB_AGENT_OBSERVABILITY_REPORT_SCHEMA,
     generatedAt: nowIso(),
@@ -346,11 +386,11 @@ function buildUnavailableReport({ sourceFileCount }) {
     schemaValidation: "passed",
     cases: [
       baseCase({
-        caseId: "app_server_sub_agent_source_unavailable",
+        caseId: explicitSourceAttempted ? "app_server_sub_agent_source_unrecognized" : "app_server_sub_agent_source_unavailable",
         coverageSource: "live_readonly_app_server_source_unavailable",
-        status: "blocked",
-        proofOutcome: "source_unavailable",
-        blockerCode: "app_server_sub_agent_source_unavailable",
+        status: explicitSourceAttempted ? "failed" : "blocked",
+        proofOutcome: explicitSourceAttempted ? "source_unrecognized" : "source_unavailable",
+        blockerCode: explicitSourceAttempted ? "app_server_sub_agent_source_unrecognized" : "app_server_sub_agent_source_unavailable",
       }),
       baseCase({
         caseId: "source_unavailable_no_authority",
