@@ -745,6 +745,68 @@ controls, cannot claim billing-grade usage/cost, and unknown quota does not
 block direct by itself.
 ```
 
+## 2026-05-18 RUG-011 Governance Non-Authority Live Probe
+
+Status: live governance shadow non-authority route passed.
+
+Added `direct:governance-live-non-authority`, a focused live probe over the
+shadow diagnostics boundary:
+
+```text
+governance shadow artifacts
+  -> governance refs on direct text context/request manifest
+  -> real Direct text provider turn
+  -> completed assistant response
+  -> provider input/control non-mutation assertions
+```
+
+The probe uses `codex-real-turn` with `--include-governance-shadow-refs`.
+The turn runner builds shadow governance refs, attaches them to the context
+pack/request manifest, compares provider input against the same context without
+governance refs, and refuses transport if diagnostics alter prompt,
+instructions, provider input text hash, provider input shape hash, broker route,
+or request controls.
+
+Command:
+
+```bash
+npm run direct:governance-live-non-authority -- --run-id rug011_governance_live_non_authority_20260518 --allow-live-provider-call
+```
+
+Report:
+
+```text
+/home/rose/.config/codex-review-shell/direct-governance-live-non-authority-runs/rug011_governance_live_non_authority_20260518/direct-governance-live-non-authority-report.json
+```
+
+Observed result:
+
+```text
+status: passed
+coverageSource: real_provider
+cases: 5/5
+matrixPromotionCandidate: true
+rug011Closed: true
+providerTransportCalls: 1
+wouldBlockInFutureEnforceMode: true
+blockedInThisPr: false
+autoRouteApplied: false
+providerInputTextUnchangedByGovernanceRefs: true
+providerInputShapeUnchangedByGovernanceRefs: true
+providerInputPromptUnchangedByGovernanceRefs: true
+providerInputInstructionsUnchangedByGovernanceRefs: true
+tools: false
+store: false
+previousResponseIdUsed: false
+contextPackGovernanceRefsPresent: true
+requestManifestGovernanceRefsPresent: true
+```
+
+The first attempt used the wrong app data root and blocked before runtime with
+`live_evidence_missing`. That was a profile-selection issue, not a governance
+failure; the probe now follows the same canonical/legacy profile selection law
+as the other real-usage runners.
+
 ## E-Probe Gap Matrix
 
 The next probe work should target gaps in branch distinctions, not individual
@@ -762,7 +824,7 @@ code paths.
 | `RUG-008` | closed in current code bundle | Import checkpoint continuation needed a focused route probe plus explicit live-provider first-turn promotion. | `direct:import-checkpoint-continuation` fixture-provider-shaped mode passed, then live mode passed with `coverageSource=real_provider`, `matrixPromotionCandidate=true`, `rug008Closed=true`, one live provider request, no `previous_response_id`, no `store`, no tools, validated imported parent remains read-only, fresh native Direct continuation session completes, and idempotent retry no-resend. | Keep fixture mode in normal validation and rerun live mode only when refreshing real-provider promotion evidence. |
 | `RUG-009` | closed in current code bundle | Usage/readiness was fixture/preflight, and quota/model catalog needed a current live-evidence status projection without generation. | `direct:model-quota-usage-status` fixture mode passed; live-readonly mode passed against existing runtime-probed live evidence with `providerTransportCalls=0`, exact text model scope, non-billing usage, unknown quota as nonblocking, and model controls disabled. | Keep live-readonly status projection in the default readiness validation set when live probe evidence exists. |
 | `RUG-010` | provider compaction primitive gap | Provider compact remains gated and unproved for this profile. | Context E-probes explicitly avoid provider compact authority. | Separate diagnostic-only compact primitive probe if exact profile evidence says endpoint is available; otherwise keep blocked. |
-| `RUG-011` | governance non-authority leak gap | Governance/broker diagnostics are fixture-proved; no live runtime action proves `wouldBlockInFutureEnforceMode` cannot block a real turn. | Governance matrix suite passed. | Run real text or implementation turn with shadow diagnostics present and assert provider input/control path unchanged. |
+| `RUG-011` | closed in current code bundle | Governance/broker diagnostics are fixture-proved; a real runtime action must prove `wouldBlockInFutureEnforceMode` cannot block a live turn. | `direct:governance-live-non-authority` passed with real provider coverage: shadow diagnostics present, future enforce block true, runtime block false, broker auto-route false, provider input prompt/instructions/text hash/shape hash unchanged, request controls unchanged, and governance refs cited by context/request artifacts. | Keep the live non-authority probe available for refresh runs; do not let shadow diagnostics become runtime gates. |
 | `RUG-012` | sub-agent observability real source gap | Sub-agent observability is fixture/display-only; no live app-server collab event source was projected. | Sub-agent observability suite passed. | Read-only app-server event ingestion probe, if collab/sub-agent evidence exists, proving no spawn/send/wait/close authority. |
 
 ## Recommended Next Probe Bundle
@@ -772,19 +834,22 @@ The next bundle should remain probe expansion, not feature work. Since
 `direct:long-context-pressure`, `RUG-006` is covered by
 `direct:appserver-sibling-context`, `RUG-007` now has focused fixture and live
 runners, `RUG-008` now has focused fixture and live runners, `RUG-009` now has
-a focused live-readonly status runner, and `RUG-003`/`RUG-004` are covered by
-the visible Electron approval suite, the next high-leverage work is:
+a focused live-readonly status runner, `RUG-011` now has a focused live
+non-authority runner, and `RUG-003`/`RUG-004` are covered by the visible
+Electron approval suite, the next high-leverage work is:
 
 1. Keep the Electron approval-card/status-row and side-effect recovery probes
    in the default visible-app validation set.
 2. Move to `RUG-010` only if exact provider compact primitive evidence is
-   available; otherwise prefer `RUG-011` governance non-authority leakage.
+   available; otherwise keep it blocked.
 3. Keep `RUG-012` behind read-only app-server source availability; do not infer
    sub-agent source evidence from fixture-only projections.
 
-The visible Direct Tools gap is closed; remaining work should either promote
-fresh-fork/import-checkpoint evidence live or probe for authority leakage in
-later diagnostic layers.
+The visible Direct Tools gap, fresh-fork/import-checkpoint live promotion, and
+governance non-authority leak gap are closed. Remaining work should target only
+evidence that exists: provider compact if exact compact primitive support is
+available, or read-only app-server source ingestion if real sub-agent evidence
+exists.
 
 Do not start with provider compaction or sub-agent source ingestion. Those are
 valid later probes, but they are not the main confidence gap exposed by round 2.

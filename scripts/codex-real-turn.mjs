@@ -41,11 +41,28 @@ const {
 const { DirectSessionStore } = require("../src/main/direct/session/session-store");
 const { DirectThreadStore } = require("../src/main/direct/thread/thread-store");
 const {
+  buildRequestManifest,
+} = require("../src/main/direct/thread/context-pack");
+const {
   DEFAULT_CODEX_RESPONSES_ENDPOINT,
   buildTextOnlyProbeRequest,
   requestShapeForDiagnostic,
   runTextOnlyDirectProbe,
 } = require("../src/main/direct/transport/codex-responses-transport");
+const {
+  buildCompiledPromptLayers,
+  buildGovernanceInputSnapshot,
+  buildGovernanceModeSnapshot,
+  buildGovernancePacket,
+  buildGovernanceShadowReport,
+  buildSemanticBrokerInputSnapshot,
+  buildSemanticBrokerPacket,
+  buildSemanticBrokerRegistrySnapshot,
+  buildWorkflowTransitionGraph,
+  candidateFromRoute,
+  governanceRequestRefsFromArtifacts,
+  normalizeSourceRef,
+} = require("../src/main/direct/governance/broker");
 const { scanFixtureForSecrets } = require("../src/main/direct/fixtures/redaction");
 const { CodexAppServerManager } = require("../src/main/codex-app-server");
 const { CodexSurfaceSession } = require("../src/main/codex-surface-session");
@@ -490,6 +507,149 @@ function failureReport(report, code, message, options = {}) {
   return report;
 }
 
+function buildHeadlessGovernanceShadowArtifacts({ projectId, threadId, turnId, promptText }) {
+  const runtimeRef = normalizeSourceRef({
+    kind: "runtime_tier",
+    artifactId: `runtime_direct_text_${safeIdPart(threadId, "thread")}`,
+    artifactDigest: sha256(`runtime:direct-text:${threadId}`),
+    sourceConfidence: "exact",
+    rendererSafeLabel: "Direct Text",
+  });
+  const promptRef = normalizeSourceRef({
+    kind: "current_user_intent",
+    artifactId: `current_user_intent_${safeIdPart(turnId, "turn")}`,
+    artifactDigest: sha256(`prompt:${promptText}`),
+    sourceConfidence: "exact",
+    rendererSafeLabel: "Current user intent",
+  });
+  const modeSnapshot = buildGovernanceModeSnapshot({
+    effectiveMode: "shadow",
+    effectiveSource: "diagnostic",
+  });
+  const inputSnapshot = buildGovernanceInputSnapshot({
+    projectId,
+    threadId,
+    turnId,
+    trigger: "pre_request",
+    runtimeTierRef: runtimeRef,
+    currentUserIntentRef: promptRef,
+  });
+  const transitionGraph = buildWorkflowTransitionGraph({
+    projectId,
+    allowedEdges: [
+      {
+        from: "text_turn",
+        to: "assistant_final",
+        edgeKind: "text",
+        rendererSafeSummary: "Text turn may complete with assistant final.",
+      },
+    ],
+    blockedEdges: [
+      {
+        from: "text_turn",
+        to: "run_command_obligation",
+        edgeKind: "blocked",
+        reasonCode: "governance_packet_missing",
+        rendererSafeSummary: "Future enforce mode would block command routing from text-only diagnostics.",
+      },
+    ],
+  });
+  const governancePacket = buildGovernancePacket({
+    projectId,
+    threadId,
+    turnId,
+    inputSnapshot,
+    modeSnapshot,
+    transitionGraphDigest: transitionGraph.integrity.artifactDigest,
+    diagnostics: [{
+      code: "shadow_report_future_block_diagnostic_only",
+      severity: "warning",
+      rendererSafeSummary: "Future enforce diagnostics are not runtime blockers in this PR.",
+    }],
+  });
+  const compiledPromptLayers = buildCompiledPromptLayers({
+    governancePacket,
+    layers: [
+      {
+        kind: "harness",
+        authority: "harness_policy",
+        rendererSafeSummary: "Existing harness policy remains authoritative.",
+        providerInputEligible: true,
+        currentInstructionAuthority: true,
+        mayBecomeProviderInstructionInThisPr: true,
+        quotedEvidence: false,
+      },
+      {
+        kind: "governance_shadow_status",
+        authority: "governance_diagnostic",
+        rendererSafeSummary: "Governance shadow report is diagnostic evidence only.",
+        providerInputEligible: false,
+        currentInstructionAuthority: false,
+        mayBecomeProviderInstructionInThisPr: false,
+        quotedEvidence: true,
+      },
+    ],
+  });
+  const registry = buildSemanticBrokerRegistrySnapshot({ projectId });
+  const brokerInput = buildSemanticBrokerInputSnapshot({
+    projectId,
+    threadId,
+    turnId,
+    runtimeTierRef: runtimeRef,
+    currentUserIntentRef: promptRef,
+    governancePacketRef: {
+      kind: "policy_snapshot",
+      artifactId: governancePacket.governancePacketId,
+      artifactDigest: governancePacket.integrity.artifactDigest,
+      sourceConfidence: "exact",
+      rendererSafeLabel: "Governance packet",
+    },
+  });
+  const textOnlyRoute = registry.routes.find((route) => route.routeKind === "text_only");
+  const semanticBrokerPacket = buildSemanticBrokerPacket({
+    projectId,
+    threadId,
+    turnId,
+    registrySnapshot: registry,
+    inputSnapshot: brokerInput,
+    governancePacketDigest: governancePacket.integrity.artifactDigest,
+    candidates: [
+      candidateFromRoute(textOnlyRoute, {
+        confidence: "high",
+        reasonCodes: ["live_text_turn_remains_text_only"],
+        rendererSafeSummary: "Live text turn remains text-only; broker output is diagnostic.",
+      }),
+    ],
+  });
+  const shadowReport = buildGovernanceShadowReport({
+    governancePacket,
+    compiledPromptLayers,
+    transitionGraph,
+    semanticBrokerPacket,
+    status: "passed",
+    wouldBlockInFutureEnforceMode: true,
+    rendererSafeSummary: "Shadow diagnostics would block in future enforce mode but do not block this turn.",
+  });
+  return {
+    modeSnapshot,
+    inputSnapshot,
+    transitionGraph,
+    governancePacket,
+    compiledPromptLayers,
+    registry,
+    brokerInput,
+    semanticBrokerPacket,
+    shadowReport,
+    governanceRefs: governanceRequestRefsFromArtifacts({
+      governanceInputSnapshot: inputSnapshot,
+      governancePacket,
+      compiledPromptLayers,
+      transitionGraph,
+      semanticBrokerPacket,
+    }),
+  };
+}
+
 function validateReport(report) {
   const required = [
     "schema",
@@ -912,6 +1072,14 @@ async function runDirect(context) {
         sessionStore.listTurnIdsFromDisk(session.sessionId).map((turnId) => sessionStore.readTurn(session.sessionId, turnId)).filter(Boolean),
       );
     }
+    const governanceShadow = optionFlag(options, "include-governance-shadow-refs")
+      ? buildHeadlessGovernanceShadowArtifacts({
+          projectId: project.id,
+          threadId: session.sessionId,
+          turnId: turn.turnId,
+          promptText: prompt.text,
+        })
+      : null;
     const contextResult = threadStore.buildAndPersistContextForTextTurn({
       session: sessionStore.readSession(session.sessionId) || session,
       projectId: project.id,
@@ -931,7 +1099,63 @@ async function runDirect(context) {
       modelEvidenceRef: evidence.evidenceId || "",
       requestShapeEvidenceRef: recentDialogueRequested ? DIRECT_RECENT_DIALOGUE_SHAPE : DIRECT_EMPTY_CONTEXT_SHAPE,
       endpointEvidenceRef: endpointHash(endpoint),
+      governanceRefs: governanceShadow?.governanceRefs || null,
     });
+    if (governanceShadow) {
+      const baselineContextPack = {
+        ...contextResult.contextPack,
+        governanceRefs: null,
+      };
+      const baselineRequest = buildRequestManifest({
+        contextPack: baselineContextPack,
+        model: requestBodyInitial.model,
+        requestShape: requestShapeForDiagnostic(requestBodyInitial),
+        requestShapeHash,
+        endpointClass: endpointClass(endpoint),
+        endpointHash: endpointHash(endpoint),
+        modelEvidenceRef: evidence.evidenceId || "",
+        requestShapeEvidenceRef: recentDialogueRequested ? DIRECT_RECENT_DIALOGUE_SHAPE : DIRECT_EMPTY_CONTEXT_SHAPE,
+        endpointEvidenceRef: endpointHash(endpoint),
+      });
+      const providerInputTextUnchanged =
+        baselineRequest.providerInput.projection.providerInputTextHash ===
+        contextResult.providerInput.projection.providerInputTextHash;
+      const providerInputShapeUnchanged =
+        baselineRequest.providerInput.projection.providerInputShapeHash ===
+        contextResult.providerInput.projection.providerInputShapeHash;
+      const providerInputPromptUnchanged = baselineRequest.providerInput.prompt === contextResult.providerInput.prompt;
+      const providerInputInstructionsUnchanged = baselineRequest.providerInput.instructions === contextResult.providerInput.instructions;
+      report.governance = {
+        schema: "headless_governance_shadow_non_authority@1",
+        shadowDiagnosticsPresent: true,
+        governanceRefsDigest: governanceShadow.governanceRefs.refsDigest,
+        governancePacketId: governanceShadow.governancePacket.governancePacketId,
+        compiledPromptLayersId: governanceShadow.compiledPromptLayers.compiledPromptLayersId,
+        semanticBrokerPacketId: governanceShadow.semanticBrokerPacket.semanticBrokerPacketId,
+        shadowReportId: governanceShadow.shadowReport.shadowReportId,
+        wouldBlockInFutureEnforceMode: governanceShadow.shadowReport.wouldBlockInFutureEnforceMode === true,
+        blockedInThisPr: governanceShadow.shadowReport.blockedInThisPr === true,
+        autoRouteApplied: governanceShadow.semanticBrokerPacket.adjudication?.autoRouteApplied === true,
+        providerInputTextUnchangedByGovernanceRefs: providerInputTextUnchanged,
+        providerInputShapeUnchangedByGovernanceRefs: providerInputShapeUnchanged,
+        providerInputPromptUnchangedByGovernanceRefs: providerInputPromptUnchanged,
+        providerInputInstructionsUnchangedByGovernanceRefs: providerInputInstructionsUnchanged,
+        contextPackGovernanceRefsPresent: Boolean(contextResult.contextPack.governanceRefs),
+        requestManifestGovernanceRefsPresent: Boolean(contextResult.requestManifest.governanceRefs),
+        rawCompiledTextIncluded: false,
+        rawBrokerPromptIncluded: false,
+      };
+      if (
+        !providerInputTextUnchanged ||
+        !providerInputShapeUnchanged ||
+        !providerInputPromptUnchanged ||
+        !providerInputInstructionsUnchanged ||
+        report.governance.blockedInThisPr ||
+        report.governance.autoRouteApplied
+      ) {
+        return failureReport(report, "governance_shadow_mutated_runtime", "Governance shadow diagnostics changed provider input or runtime route.");
+      }
+    }
     const rendererProjectionForReport = recentDialogueRequested
       ? threadStore.projectionFromRow(threadStore.currentProjectionRow(session.sessionId, "renderer_transcript"))
       : null;
