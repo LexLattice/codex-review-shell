@@ -521,8 +521,8 @@ provider transport.
 
 ## 2026-05-17 RUG-008 Import Checkpoint Continuation Probe
 
-Status: import-checkpoint continuation runner added and fixture-provider-shaped
-route passed; real-provider promotion remains opt-in and not yet run.
+Status: import-checkpoint continuation runner added, fixture-provider-shaped
+route passed, and real-provider promotion passed.
 
 Added `direct:import-checkpoint-continuation`, a focused probe over the import
 checkpoint and live-text continuation route:
@@ -571,6 +571,38 @@ previousResponseIdFromImportUsed: false
 importedToolReplayAttempted: false
 readOnlyImported: true
 nativeDirectSession: false
+idempotent retry: reused without resend
+```
+
+Live promotion run:
+
+```bash
+npm run direct:import-checkpoint-continuation -- --mode live --run-id rug008_import_checkpoint_continuation_live_20260518 --allow-live-provider-call
+```
+
+Live report:
+
+```text
+/home/rose/.config/codex-review-shell/direct-import-checkpoint-continuation-runs/rug008_import_checkpoint_continuation_live_20260518/direct-import-checkpoint-continuation-report.json
+```
+
+Live observed result:
+
+```text
+status: passed
+coverageSource: real_provider
+cases: 13/13
+matrixPromotionCandidate: true
+rug008Closed: true
+directProviderRequestCalls: 1
+liveProviderTransportCalls: 1
+fixtureProviderShapeCalls: 0
+previousResponseIdUsed: false
+store: false
+toolsDeclared: false
+readOnlyImported: true
+nativeDirectSession: true
+imported parent nativeDirectSession: false
 idempotent retry: reused without resend
 ```
 
@@ -727,7 +759,7 @@ code paths.
 | `RUG-005` | closed in current code bundle | Context maintenance is status/projection proved, but needed a real long Direct thread pressure path through session/thread stores and context-pack/request-manifest artifacts. | `direct:long-context-pressure` passed; over-budget pressure selected `local_trim`, omission parity passed, context pack/request manifest cited maintenance refs, provider/app-server/tool sentinels stayed zero. | Keep this probe in the post-context validation set. |
 | `RUG-006` | closed in current code bundle | We normalize vanilla sibling context evidence, but needed a captured app-server-shaped observation probe to prove compact/memory/status evidence remains sibling-only across Direct thread switch. | `direct:appserver-sibling-context` passed; context compaction, memory citation, compact control, memory mode, and memory reset observations projected display-only; Direct context pack excluded sibling refs; app-server and Direct authority sentinels stayed zero. | Keep this probe in the context validation set; a later live app-server capture can replace the fixture source when available. |
 | `RUG-007` | closed in current code bundle | Fresh fork from preview needed a focused route probe plus explicit live-provider first-turn promotion. | `direct:fresh-fork-start` fixture-provider-shaped mode passed, then live mode passed with `coverageSource=real_provider`, `matrixPromotionCandidate=true`, `rug007Closed=true`, one live provider request, no `previous_response_id`, no `store`, no tools, terminal assistant text, enabled composer, and idempotent retry no-resend. | Keep fixture mode in normal validation and rerun live mode only when refreshing real-provider promotion evidence. |
-| `RUG-008` | live promotion pending | Import checkpoint continuation needed a focused route probe and still needs an explicit live-provider first turn for promotion. | `direct:import-checkpoint-continuation` fixture-provider-shaped mode passed; validated checkpoint import, read-only imported parent, runnable checkpoint continuation action, seed preview, fresh direct-native continuation session, request-shape artifacts, one provider-shaped request, no imported provider continuity, no imported tool replay, and idempotent retry no-resend were all asserted. | Run `npm run direct:import-checkpoint-continuation -- --mode live --allow-live-provider-call` when we want the real-provider promotion artifact. |
+| `RUG-008` | closed in current code bundle | Import checkpoint continuation needed a focused route probe plus explicit live-provider first-turn promotion. | `direct:import-checkpoint-continuation` fixture-provider-shaped mode passed, then live mode passed with `coverageSource=real_provider`, `matrixPromotionCandidate=true`, `rug008Closed=true`, one live provider request, no `previous_response_id`, no `store`, no tools, validated imported parent remains read-only, fresh native Direct continuation session completes, and idempotent retry no-resend. | Keep fixture mode in normal validation and rerun live mode only when refreshing real-provider promotion evidence. |
 | `RUG-009` | closed in current code bundle | Usage/readiness was fixture/preflight, and quota/model catalog needed a current live-evidence status projection without generation. | `direct:model-quota-usage-status` fixture mode passed; live-readonly mode passed against existing runtime-probed live evidence with `providerTransportCalls=0`, exact text model scope, non-billing usage, unknown quota as nonblocking, and model controls disabled. | Keep live-readonly status projection in the default readiness validation set when live probe evidence exists. |
 | `RUG-010` | provider compaction primitive gap | Provider compact remains gated and unproved for this profile. | Context E-probes explicitly avoid provider compact authority. | Separate diagnostic-only compact primitive probe if exact profile evidence says endpoint is available; otherwise keep blocked. |
 | `RUG-011` | governance non-authority leak gap | Governance/broker diagnostics are fixture-proved; no live runtime action proves `wouldBlockInFutureEnforceMode` cannot block a real turn. | Governance matrix suite passed. | Run real text or implementation turn with shadow diagnostics present and assert provider input/control path unchanged. |
@@ -739,16 +771,16 @@ The next bundle should remain probe expansion, not feature work. Since
 `RUG-001` is covered by `direct:evidence-ledger`, `RUG-005` is covered by
 `direct:long-context-pressure`, `RUG-006` is covered by
 `direct:appserver-sibling-context`, `RUG-007` now has focused fixture and live
-runners, `RUG-008` now has a focused fixture-provider-shaped runner, `RUG-009`
-now has a focused live-readonly status runner, and `RUG-003`/`RUG-004` are
-covered by the visible Electron approval suite, the next high-leverage work is:
+runners, `RUG-008` now has focused fixture and live runners, `RUG-009` now has
+a focused live-readonly status runner, and `RUG-003`/`RUG-004` are covered by
+the visible Electron approval suite, the next high-leverage work is:
 
 1. Keep the Electron approval-card/status-row and side-effect recovery probes
    in the default visible-app validation set.
-2. Run `RUG-008` in live mode when explicitly promoting import-checkpoint
-   provider evidence.
-3. Move to `RUG-010` only if exact provider compact primitive evidence is
+2. Move to `RUG-010` only if exact provider compact primitive evidence is
    available; otherwise prefer `RUG-011` governance non-authority leakage.
+3. Keep `RUG-012` behind read-only app-server source availability; do not infer
+   sub-agent source evidence from fixture-only projections.
 
 The visible Direct Tools gap is closed; remaining work should either promote
 fresh-fork/import-checkpoint evidence live or probe for authority leakage in
