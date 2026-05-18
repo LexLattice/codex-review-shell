@@ -12,7 +12,9 @@ const repoRoot = path.resolve(__dirname, "..");
 const realTurnScript = path.join(__dirname, "codex-real-turn.mjs");
 const APP_TITLE = "Codex Review Shell";
 const CONFIG_FILE_NAME = "workspace-config.json";
+const PROFILE_ENV_VAR = "CODEX_REVIEW_SHELL_PROFILE";
 const USER_DATA_ROOT_ENV_VAR = "CODEX_REVIEW_SHELL_USER_DATA_ROOT";
+const DIRECT_APP_USER_DATA_ROOT_ENV_VAR = "CODEX_DIRECT_APP_USER_DATA_ROOT";
 const LIVE_ENV = "CODEX_DIRECT_RUG011_LIVE";
 const LIVE_CI_ENV = "CODEX_DIRECT_RUG011_LIVE_ALLOW_CI";
 
@@ -60,6 +62,12 @@ function platformAppDataRoot() {
   return process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
 }
 
+function normalizeProfileName(value) {
+  const text = optionString({ value }, "value", "");
+  if (!text || text === "default") return "";
+  return text.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
+}
+
 function existingFileMtimeMs(targetPath) {
   try {
     return fs.statSync(targetPath).mtimeMs;
@@ -69,6 +77,11 @@ function existingFileMtimeMs(targetPath) {
 }
 
 function defaultAppUserDataRoot() {
+  const profileName = normalizeProfileName(process.env[PROFILE_ENV_VAR]);
+  const configuredRoot = optionString(process.env, USER_DATA_ROOT_ENV_VAR, "");
+  if (profileName) {
+    return path.join(configuredRoot || path.join(platformAppDataRoot(), APP_TITLE), profileName);
+  }
   const canonical = path.join(platformAppDataRoot(), APP_TITLE);
   const legacy = path.join(platformAppDataRoot(), "codex-review-shell");
   const canonicalMtime = existingFileMtimeMs(path.join(canonical, CONFIG_FILE_NAME));
@@ -152,6 +165,11 @@ function readJson(filePath) {
   }
 }
 
+function evidenceKeyForPath(filePath, prefix = "path") {
+  const resolved = path.resolve(String(filePath || ""));
+  return filePath ? `${prefix}_${crypto.createHash("sha256").update(resolved).digest("hex").slice(0, 16)}` : "";
+}
+
 function passedCase(caseId, details = {}) {
   return { caseId, status: "passed", details };
 }
@@ -185,7 +203,11 @@ async function main() {
   }
 
   const runId = safeIdPart(optionString(options, "run-id", `rug011_governance_live_${nowStamp()}`), "run");
-  const appUserDataRoot = path.resolve(optionString(options, "app-user-data-root", process.env[USER_DATA_ROOT_ENV_VAR] || defaultAppUserDataRoot()));
+  const appUserDataRoot = path.resolve(optionString(
+    options,
+    "app-user-data-root",
+    process.env[DIRECT_APP_USER_DATA_ROOT_ENV_VAR] || process.env[USER_DATA_ROOT_ENV_VAR] || defaultAppUserDataRoot(),
+  ));
   const runRoot = path.join(appUserDataRoot, "direct-governance-live-non-authority-runs", runId);
   const workspace = createWorkspace(runRoot);
   const projectId = optionString(options, "project-id", `rug011-governance-${runId}`);
@@ -217,10 +239,12 @@ async function main() {
       })
     : failedCase("governance_shadow_live_turn_completed", {
         exitCode: turn.exitCode,
-        reportPath: turnReportPath,
+        turnReportEvidenceKey: evidenceKeyForPath(turnReportPath, "turn_report"),
+        rawTurnReportPathIncluded: false,
         status: turnReport?.status || "",
         failureCode: turnReport?.failure?.code || "",
-        stderr: turn.stderr.slice(0, 1000),
+        stderrDigest: turn.stderr ? crypto.createHash("sha256").update(turn.stderr).digest("hex") : "",
+        stderrCharCount: turn.stderr.length,
       }));
   cases.push((governance.shadowDiagnosticsPresent === true && governance.wouldBlockInFutureEnforceMode === true && governance.blockedInThisPr === false)
     ? passedCase("shadow_report_future_block_does_not_block_runtime", {
@@ -265,7 +289,8 @@ async function main() {
     runtimeAuthorityExercised: false,
     providerAuthorityExercised: true,
     rug011Closed: !failed,
-    turnReportPath,
+    turnReportEvidenceKey: evidenceKeyForPath(turnReportPath, "turn_report"),
+    rawTurnReportPathIncluded: false,
     turnReportId: turnReport?.runId || "",
     governanceRefsDigest: governance.governanceRefsDigest || "",
     sentinelCounters: {
