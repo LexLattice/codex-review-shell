@@ -877,6 +877,86 @@ fixture/profile compact evidence != A12 promotion
 diagnostic compact status != provider request
 ```
 
+## 2026-05-18 RUG-012 App-Server Sub-Agent Source Probe
+
+Status: read-only source-ingestion probe added. Current local default run found
+no captured app-server sub-agent/collab source, so `RUG-012` remains open until
+real source evidence is supplied; the no-source branch and a captured-source
+projection branch both pass without exercising authority.
+
+Added `direct:appserver-sub-agent-source`, a focused live-readonly probe:
+
+```text
+captured app-server sub-agent/collab source JSON/JSONL
+  -> renderer-safe direct_agent_graph@1 / progress / witness projections
+  -> report with app-server-read-only non-authority proof
+```
+
+Default no-source command:
+
+```bash
+npm run direct:appserver-sub-agent-source -- --run-id rug012_appserver_sub_agent_source_unavailable_20260518
+```
+
+Observed default report:
+
+```text
+/home/rose/.config/Codex Review Shell/direct-appserver-sub-agent-source-runs/rug012_appserver_sub_agent_source_unavailable_20260518/direct-appserver-sub-agent-source-report.json
+```
+
+Default result:
+
+```text
+coverageSource: live_readonly_app_server_source_unavailable
+rug012Closed: false
+recognizedEventCount: 0
+providerTransportCalls: 0
+appServerMutationCalls: 0
+appServerTurnStartCalls: 0
+spawnAgentCalls: 0
+sendInputCalls: 0
+waitAgentCalls: 0
+closeAgentCalls: 0
+contextPackBuilds: 0
+requestManifestBuilds: 0
+```
+
+Captured-source validation used a temporary app-server-shaped collab event file
+only to exercise the projection branch:
+
+```bash
+npm run direct:appserver-sub-agent-source -- --run-id rug012_appserver_sub_agent_source_projected_20260518 --source-file <captured-source-json>
+```
+
+Observed projected result:
+
+```text
+coverageSource: live_readonly_app_server_source
+rug012Closed: true
+recognizedEventCount: 1
+rawSourcePathIncluded: false
+rawSourcePayloadIncluded: false
+graphCannotExecute: true
+appServerReadOnly: true
+appServerEvidenceNotDirectPrimitive: true
+providerContinuityNotGranted: true
+witnessCannotReplay: true
+inspectionIsRendererOnly: true
+childTranscriptNotContextInput: true
+all authority sentinels: 0
+```
+
+This closes the unsafe branch distinction:
+
+```text
+app-server source evidence != Direct sub-agent authority
+child progress projection != model-visible inspect/wait tool
+captured child transcript/status != context-pack input
+```
+
+It does not close the real local source gap until an actual captured app-server
+sub-agent/collab source file exists.
+
 ## E-Probe Gap Matrix
 
 The next probe work should target gaps in branch distinctions, not individual
@@ -895,7 +975,7 @@ code paths.
 | `RUG-009` | closed in current code bundle | Usage/readiness was fixture/preflight, and quota/model catalog needed a current live-evidence status projection without generation. | `direct:model-quota-usage-status` fixture mode passed; live-readonly mode passed against existing runtime-probed live evidence with `providerTransportCalls=0`, exact text model scope, non-billing usage, unknown quota as nonblocking, and model controls disabled. | Keep live-readonly status projection in the default readiness validation set when live probe evidence exists. |
 | `RUG-010` | live-gated provider compaction primitive gap | Provider compact remains gated and unproved for this profile. | `direct:provider-compact-gate` passed: provider compact request blocks without exact evidence, unknown pressure blocks compaction, fixture/profile evidence stays diagnostic, `A12_providerCompaction=false`, provider compact/transport sentinels are zero. | Only a future explicitly opted-in live compact primitive probe with exact endpoint/request-shape evidence may promote `A12`; otherwise keep blocked. |
 | `RUG-011` | closed in current code bundle | Governance/broker diagnostics are fixture-proved; a real runtime action must prove `wouldBlockInFutureEnforceMode` cannot block a live turn. | `direct:governance-live-non-authority` passed with real provider coverage: shadow diagnostics present, future enforce block true, runtime block false, broker auto-route false, provider input prompt/instructions/text hash/shape hash unchanged, request controls unchanged, and governance refs cited by context/request artifacts. | Keep the live non-authority probe available for refresh runs; do not let shadow diagnostics become runtime gates. |
-| `RUG-012` | sub-agent observability real source gap | Sub-agent observability is fixture/display-only; no live app-server collab event source was projected. | Sub-agent observability suite passed. | Read-only app-server event ingestion probe, if collab/sub-agent evidence exists, proving no spawn/send/wait/close authority. |
+| `RUG-012` | app-server sub-agent source gap | Sub-agent observability is fixture/display-only; current local profile has no captured app-server collab/sub-agent source. | `direct:appserver-sub-agent-source` passed no-source mode with `rug012Closed=false` and zero authority sentinels; captured-source projection branch passed with app-server-read-only graph/progress projection and no spawn/send/wait/close/context/provider authority. | Run captured-source mode against real app-server sub-agent/collab source evidence when available; do not infer source evidence from fixture-only projections. |
 
 ## Recommended Next Probe Bundle
 
@@ -913,8 +993,9 @@ Electron approval suite, the next high-leverage work is:
 2. Keep `RUG-010` blocked unless exact provider compact primitive evidence is
    available; `direct:provider-compact-gate` is now the default no-authority
    regression for that boundary.
-3. Keep `RUG-012` behind read-only app-server source availability; do not infer
-   sub-agent source evidence from fixture-only projections.
+3. Keep `RUG-012` behind real captured app-server source availability;
+   `direct:appserver-sub-agent-source` is now the safe no-source/captured-source
+   read-only probe for that boundary.
 
 The visible Direct Tools gap, fresh-fork/import-checkpoint live promotion, and
 governance non-authority leak gap are closed. Remaining work should target only
