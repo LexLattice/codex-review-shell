@@ -103,6 +103,19 @@ function baseCase(input = {}) {
   };
 }
 
+function assertBlockedRoute(route, expectedReasonCode) {
+  const actualReasonCode = normalizeString(route?.reasonCode, "");
+  if (route?.blocked !== true || route?.routeKind !== "blocked" || actualReasonCode !== expectedReasonCode) {
+    const error = new Error(`provider_compact_gate_expected_block:${expectedReasonCode}`);
+    error.code = "provider_compact_gate_expected_block";
+    error.expectedReasonCode = expectedReasonCode;
+    error.actualReasonCode = actualReasonCode;
+    error.actualRouteKind = normalizeString(route?.routeKind, "");
+    throw error;
+  }
+  return actualReasonCode;
+}
+
 function buildProviderCompactGateReport() {
   const projectId = "project_provider_compact_gate";
   const threadId = "thread_provider_compact_gate";
@@ -142,12 +155,14 @@ function buildProviderCompactGateReport() {
     outputKind: "none",
     producedArtifacts: [],
   });
+  const missingEvidenceBlocker = assertBlockedRoute(missingEvidence, "provider_compaction_missing_evidence");
+  const unknownPressureBlocker = assertBlockedRoute(unknownPressure, "pressure_unknown_over_budget_risk");
   const cases = [
     baseCase({
       caseId: "provider_compaction_requested_without_exact_evidence_blocks",
       route: missingEvidence,
       proofOutcome: "provider_compaction_missing_evidence_blocked",
-      blockerCode: "provider_compaction_missing_evidence",
+      blockerCode: missingEvidenceBlocker,
       artifacts: {
         pressureEstimateId: pressure.pressureEstimateId,
         routeId: missingEvidence.routeId,
@@ -158,7 +173,7 @@ function buildProviderCompactGateReport() {
       caseId: "provider_compaction_unknown_pressure_blocks",
       route: unknownPressure,
       proofOutcome: "unknown_pressure_cannot_authorize_provider_compaction",
-      blockerCode: "pressure_unknown_over_budget_risk",
+      blockerCode: unknownPressureBlocker,
     }),
     baseCase({
       caseId: "fixture_provider_compact_evidence_does_not_promote_a12",
@@ -274,7 +289,7 @@ function main() {
       rawExposureBlocked: true,
     };
     writeJsonAtomic(path.join(outputDir, "direct-provider-compact-gate-report.json"), safeFailure);
-    throw new Error(`Direct provider compact gate report failed raw-exposure scan: ${secretFindings.join(", ")}`);
+    throw new Error("Direct provider compact gate report failed raw-exposure scan. Check the diagnostic report for details.");
   }
   const jsonPath = path.join(outputDir, "direct-provider-compact-gate-report.json");
   const markdownPath = path.join(outputDir, "direct-provider-compact-gate-report.md");
