@@ -3,9 +3,11 @@
 Purpose: stable reference for the canonical Codex thread/message ontology used by this app's middle-plane renderer.
 
 Last verified:
-- Codex fork: `/home/rose/work/codex/fork` at `d5e9bd3890`
-- Review shell repo: `/home/rose/work/LexLattice/codex-review-shell` at `784f29f`
-- Verification date: 2026-04-23
+- Codex fork: `/home/rose/work/codex/fork` at `13595c36e2`
+  (`rust-v0.132.0`)
+- Review shell repo: `/home/rose/work/LexLattice/codex-review-shell-direct`
+  at `9156707`
+- Verification date: 2026-05-20
 
 ## Why this exists
 
@@ -54,6 +56,15 @@ Source:
 - `enteredReviewMode { id, review }`
 - `exitedReviewMode { id, review }`
 - `contextCompaction { id }`
+
+Release-132 notes:
+- `userMessage.content[]` image variants now preserve requested image fidelity:
+  `image { url, detail? }` and `localImage { path, detail? }`.
+- The generated `ImageDetail` enum is currently `high | original`; older
+  `auto | low` values are no longer present in the app-server schema.
+- `contextCompaction { id }` remains the app-server thread item used to show
+  compaction activity, even though the lower Responses history now distinguishes
+  `compaction_trigger` input from encrypted `compaction` output.
 
 ## Streaming lifecycle ontology
 
@@ -113,6 +124,21 @@ Observed source families:
 - `unknown`
 
 This matters for list/filter behavior; do not hardcode only `vscode` sources.
+
+## Permission Profile Ontology
+
+Source:
+- `codex-rs/app-server-protocol/schema/typescript/v2/ActivePermissionProfile.ts`
+- `codex-rs/app-server-protocol/schema/typescript/v2/Config.ts`
+
+Release-132 change:
+- App-server schema removed the older rich `PermissionProfile` API surface from
+  generated client types.
+- Thread start/resume/fork responses still expose legacy `sandbox` and
+  approval-policy fields, but exact permission provenance should be read as
+  `activePermissionProfile` when present.
+- Shell clients should treat profile IDs as provenance/status evidence, not as a
+  full permission policy export.
 
 ## Middle-plane rendering rules (policy for this repo)
 

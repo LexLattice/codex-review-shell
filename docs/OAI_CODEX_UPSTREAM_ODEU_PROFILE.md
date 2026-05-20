@@ -15,10 +15,12 @@ and what did Codex CLI choose to build on top of it?
 
 Last verified:
 
-- Review shell repo: `/home/rose/work/LexLattice/codex-review-shell` at `66444b8`
-- Codex fork evidence repo: `/home/rose/work/codex/fork` at `9a78fcb260`
-- Upstream release branch evidence: `upstream-latest-release` at `e4310be51f`
-- Verification date: 2026-05-01
+- Review shell repo: `/home/rose/work/LexLattice/codex-review-shell-direct`
+  at `9156707`
+- Codex fork evidence repo: `/home/rose/work/codex/fork` at `13595c36e2`
+  (`rust-v0.132.0`)
+- Upstream release branch evidence: `upstream-latest-release` at `13595c36e2`
+- Verification date: 2026-05-20
 
 ## Epistemic Status
 
@@ -274,7 +276,7 @@ Observed upstream/output item families:
 Content primitives include:
 
 - input text
-- input image with detail `auto | low | high | original`
+- input image with detail `high | original`
 - output text
 - message phase `commentary | final_answer`
 
@@ -355,7 +357,12 @@ Codex CLI choice:
 
 Observed upstream-facing primitives:
 
-- `responses/compact` accepts a compaction input and returns response items.
+- `responses/compact` accepts compaction input and returns response items.
+- Release 132 remote compaction v2 sends a `compaction_trigger` input item and
+  expects exactly one encrypted `compaction` output item. The older
+  `context_compaction` response item remains compatibility input/history shape
+  and app-server still reduces compaction activity to a `contextCompaction`
+  thread item for UI display.
 - `memories/trace_summarize` accepts memory trace input and returns summaries.
 
 Direct harness implication:
@@ -370,6 +377,11 @@ Codex CLI choice:
 - CLI stores compaction results as rollout/history objects.
 - CLI memory summarization is a client feature using backend endpoints, not a
   complete upstream thread persistence model.
+- Release 132 runs pre-compact and post-compact hooks around remote compaction
+  v2, so app-server/CLI compaction can now be interrupted by hook policy before
+  the provider request or after successful compaction. Direct context
+  maintenance should keep its own route/manifest/omission authority rather than
+  inheriting this as an automatic compact permission.
 
 ### 9. Error And Retry Semantics
 
