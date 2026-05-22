@@ -20,6 +20,11 @@ const { MiddleWebHost } = require("./main/middle-web-host");
 const { WorkspaceBackendManager, workspaceLabel, workspaceRoot } = require("./main/workspace-backend");
 const { ThreadAnalyticsStore, buildThreadKey } = require("./main/thread-analytics-store");
 const { UsageLedgerCollector } = require("./main/usage-ledger-collector");
+const {
+  stagePaths: stageAttachmentPaths,
+  stageClipboardImage,
+  removeDraft: removeAttachmentDraft,
+} = require("./main/attachment-staging-store");
 const { defaultUsageLedgerConfig, normalizeUsageLedgerConfig } = require("./main/usage-ledger-config");
 const { readUsageLedgerAnalytics } = require("./main/usage-ledger-analytics");
 const { PLANE_ZOOM_DEFAULT, clampZoomFactor, zoomDeltaForDirection } = require("./shared/plane-zoom");
@@ -2939,6 +2944,116 @@ async function revealProjectFile(projectId, relPath) {
   return { ...result, opened: false, method: "copied-path" };
 }
 
+async function chooseAttachmentFiles(projectId) {
+  const project = await getProjectById(projectId);
+  const result = await dialog.showOpenDialog({
+    title: "Attach files to Codex prompt",
+    properties: ["openFile", "multiSelections"],
+    filters: [
+      { name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"] },
+      { name: "All files", extensions: ["*"] },
+    ],
+  });
+  if (result.canceled || !result.filePaths?.length) return { ok: true, attachments: [], diagnostics: [] };
+  return stageAttachmentPaths(project, result.filePaths, "file_picker", requestWorkspace);
+}
+
+async function stageDroppedAttachments(projectId, paths) {
+  const project = await getProjectById(projectId);
+  return stageAttachmentPaths(project, paths, "drag_drop", requestWorkspace);
+}
+
+async function pasteClipboardImageAttachment(projectId) {
+  const project = await getProjectById(projectId);
+  const image = clipboard.readImage();
+  if (image.isEmpty()) throw new Error("Clipboard does not contain an image.");
+  return stageClipboardImage(project, image.toPNG(), image.getSize(), requestWorkspace);
+}
+
+async function removeComposerAttachmentDraft(projectId, draftId) {
+  const project = await getProjectById(projectId);
+  return removeAttachmentDraft(project, draftId, requestWorkspace);
+}
+
+function safeContextUrl(value) {
+  try {
+    const parsed = new URL(normalizeString(value, ""));
+    if (!["http:", "https:"].includes(parsed.protocol)) return "";
+    if (parsed.username || parsed.password) return "";
+    return parsed.toString();
+  } catch {
+    return "";
+  }
+}
+
+async function openContextMenu(event, request = {}) {
+  const sender = event.sender;
+  const projectId = normalizeString(request.projectId, "");
+  const targetKind = normalizeString(request.targetKind, "unknown");
+  const selectedText = normalizeString(request.selectedTextPreview, "").slice(0, 1000);
+  const fileRef = request.targetFileRef && typeof request.targetFileRef === "object"
+    ? normalizeString(request.targetFileRef.displayPath, "")
+    : "";
+  const href = safeContextUrl(request.targetHrefDisplay);
+  const template = [];
+
+  if (selectedText) {
+    template.push({ label: "Copy selected text", click: () => clipboard.writeText(selectedText) });
+  } else {
+    template.push({ role: "copy", label: "Copy" });
+  }
+  if (targetKind === "composer") {
+    template.push({ role: "paste", label: "Paste text" });
+    template.push({
+      label: "Paste image",
+      click: async () => {
+        try {
+          const result = await pasteClipboardImageAttachment(projectId);
+          sender.send("codex-surface:event", { type: "attachment-drafts", action: "add", ...result });
+        } catch (error) {
+          sender.send("codex-surface:event", { type: "attachment-diagnostic", message: error.message });
+        }
+      },
+    });
+  }
+  if (href) {
+    template.push({ type: "separator" });
+    template.push({ label: "Copy link URL", click: () => clipboard.writeText(href) });
+  }
+  if (fileRef && projectId) {
+    template.push({ type: "separator" });
+    template.push({ label: "Copy file reference", click: () => clipboard.writeText(fileRef) });
+    template.push({
+      label: "Reveal file",
+      click: async () => {
+        try {
+          await revealProjectFile(projectId, fileRef);
+        } catch (error) {
+          sender.send("codex-surface:event", { type: "attachment-diagnostic", message: `Reveal failed: ${error.message}` });
+        }
+      },
+    });
+  }
+  if (!template.length) return { ok: false, status: "blocked", reason: "No menu items available." };
+  Menu.buildFromTemplate(template).popup();
+  return {
+    ok: true,
+    actionId: normalizeString(request.requestId, ""),
+    status: "completed",
+    mutatedDraftState: false,
+    mutatedProjectFiles: false,
+    approvedCodexRequest: false,
+    providerTransportCalls: 0,
+    appServerMutationCalls: 0,
+    codexApprovalCalls: 0,
+    patchApplyCalls: 0,
+    commandRunCalls: 0,
+    rightPaneMutated: false,
+    handoffMutationCalls: 0,
+    attachmentStagingWrites: 0,
+  };
+}
+
 async function runWorkspaceCommand(projectId, commandPayload) {
   const project = await getProjectById(projectId);
   return requestWorkspace(project, "runCommand", commandPayload, 60_000);
@@ -3593,6 +3708,26 @@ ipcMain.handle("thread-analytics:detail", async (_event, payload) => {
 
 ipcMain.handle("worktree:reveal-file", async (_event, payload) => {
   return revealProjectFile(payload?.projectId, payload?.relPath);
+});
+
+ipcMain.handle("attachments:choose-files", async (_event, payload) => {
+  return chooseAttachmentFiles(payload?.projectId);
+});
+
+ipcMain.handle("attachments:stage-drop", async (_event, payload) => {
+  return stageDroppedAttachments(payload?.projectId, payload?.paths);
+});
+
+ipcMain.handle("attachments:paste-image", async (_event, payload) => {
+  return pasteClipboardImageAttachment(payload?.projectId);
+});
+
+ipcMain.handle("attachments:remove-draft", async (_event, payload) => {
+  return removeComposerAttachmentDraft(payload?.projectId, payload?.draftId);
+});
+
+ipcMain.handle("context-menu:open", async (event, payload) => {
+  return openContextMenu(event, payload || {});
 });
 
 ipcMain.handle("chatgpt:select-thread", async (_event, payload) => {

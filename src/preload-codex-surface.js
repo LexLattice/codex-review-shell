@@ -15,6 +15,11 @@ contextBridge.exposeInMainWorld("codexSurfaceBridge", {
   openWorkspaceLink: (url, options = {}) => ipcRenderer.invoke("link:open", { ...options, url }),
   openExternalUrl: (url) => ipcRenderer.invoke("external:open-url", { url }),
   revealProjectFile: (projectId, relPath) => ipcRenderer.invoke("worktree:reveal-file", { projectId, relPath }),
+  chooseAttachmentFiles: (projectId) => ipcRenderer.invoke("attachments:choose-files", { projectId }),
+  stageDroppedAttachments: (projectId, paths = []) => ipcRenderer.invoke("attachments:stage-drop", { projectId, paths }),
+  pasteImageAttachment: (projectId) => ipcRenderer.invoke("attachments:paste-image", { projectId }),
+  removeAttachmentDraft: (projectId, draftId) => ipcRenderer.invoke("attachments:remove-draft", { projectId, draftId }),
+  openContextMenu: (request) => ipcRenderer.invoke("context-menu:open", request || {}),
   readStoredThreadTranscript: (projectId, threadId, sourceHome = "", sessionFilePath = "", limit = 800) =>
     ipcRenderer.invoke("codex-thread:transcript", { projectId, threadId, sourceHome, sessionFilePath, limit }),
   onEvent: (callback) => {
