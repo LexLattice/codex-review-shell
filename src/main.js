@@ -2990,15 +2990,16 @@ async function openContextMenu(event, request = {}) {
   const sender = event.sender;
   const projectId = normalizeString(request.projectId, "");
   const targetKind = normalizeString(request.targetKind, "unknown");
-  const selectedText = normalizeString(request.selectedTextPreview, "").slice(0, 1000);
+  const selectedTextLength = Math.max(0, Number(request.selectedTextLength) || 0);
+  const selectedTextPreview = normalizeString(request.selectedTextPreview, "").slice(0, 1000);
   const fileRef = request.targetFileRef && typeof request.targetFileRef === "object"
     ? normalizeString(request.targetFileRef.displayPath, "")
     : "";
   const href = safeContextUrl(request.targetHrefDisplay);
   const template = [];
 
-  if (selectedText) {
-    template.push({ label: "Copy selected text", click: () => clipboard.writeText(selectedText) });
+  if (selectedTextLength > 0 || selectedTextPreview) {
+    template.push({ role: "copy", label: "Copy selected text" });
   } else {
     template.push({ role: "copy", label: "Copy" });
   }

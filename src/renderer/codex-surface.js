@@ -5928,12 +5928,15 @@ els.composerInput?.addEventListener("paste", (event) => {
     });
 });
 
-function selectedTextPreview(event) {
+function selectedTextInfo(event) {
   const target = event.target;
   if (target === els.composerInput && typeof target.selectionStart === "number") {
-    return String(target.value || "").slice(target.selectionStart, target.selectionEnd).slice(0, 1000);
+    const selected = String(target.value || "").slice(target.selectionStart, target.selectionEnd);
+    return { preview: selected.slice(0, 1000), length: selected.length };
   }
-  return String(window.getSelection?.() || "").slice(0, 1000);
+  const selection = window.getSelection?.();
+  const selected = String(selection || "");
+  return { preview: selected.slice(0, 1000), length: selected.length };
 }
 
 function contextMenuTarget(event) {
@@ -5975,7 +5978,7 @@ document.addEventListener("contextmenu", (event) => {
   const withinSurface = event.target?.closest?.(".codex-shell");
   if (!withinSurface) return;
   event.preventDefault();
-  const selected = selectedTextPreview(event);
+  const selected = selectedTextInfo(event);
   const target = contextMenuTarget(event);
   bridge.openContextMenu({
     schemaVersion: 1,
@@ -5983,7 +5986,7 @@ document.addEventListener("contextmenu", (event) => {
     surface: "codex_surface",
     projectId: project.id,
     threadId: state.threadId || "",
-    selectedTextPreview: selected,
+    selectedTextPreview: selected.preview,
     selectedTextLength: selected.length,
     pointer: { x: event.clientX, y: event.clientY },
     expiresAt: new Date(Date.now() + 15_000).toISOString(),
