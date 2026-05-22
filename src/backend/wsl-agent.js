@@ -21,6 +21,8 @@ const crypto = require("node:crypto");
 const PROTOCOL_VERSION = 1;
 const PREVIEW_LIMIT_BYTES = 384 * 1024;
 const DIRECTORY_ENTRY_LIMIT = 500;
+const ATTACHMENT_STAGING_ROOT = ".codex/review-shell/attachments";
+const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const COMMAND_OUTPUT_LIMIT_BYTES = 256 * 1024;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
 const MATCH_SCAN_LIMIT = 240;
@@ -109,6 +111,53 @@ function resolveWithinRoot(relPath = "") {
     fullPath,
     displayRel: displayRelPath(relative === "." ? "" : relative),
   };
+}
+
+function safeAttachmentSegment(value, label) {
+  const text = String(value || "").trim();
+  if (!/^[A-Za-z0-9._-]+$/.test(text) || text.includes("..")) {
+    throw new Error(`Invalid attachment ${label}.`);
+  }
+  return text;
+}
+
+async function ensureAttachmentIgnore() {
+  const base = path.join(root, ".codex", "review-shell");
+  await fs.mkdir(base, { recursive: true });
+  try {
+    await fs.writeFile(path.join(base, ".gitignore"), "attachments/\n", { flag: "wx" });
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+  }
+}
+
+async function stageAttachment(params = {}) {
+  const draftId = safeAttachmentSegment(params.draftId, "draft id");
+  const fileName = safeAttachmentSegment(params.fileName, "file name");
+  const content = Buffer.from(String(params.contentBase64 || ""), "base64");
+  if (!content.length) throw new Error("Attachment content is empty.");
+  if (content.length > MAX_ATTACHMENT_BYTES) throw new Error("Attachment content exceeds size limit.");
+  const relPath = path.posix.join(ATTACHMENT_STAGING_ROOT, draftId, fileName);
+  const { fullPath, displayRel } = resolveWithinRoot(relPath);
+  const draftDir = path.dirname(fullPath);
+  await ensureAttachmentIgnore();
+  await fs.mkdir(draftDir, { recursive: true });
+  await fs.writeFile(fullPath, content, { flag: "wx" });
+  const manifest = params.manifest && typeof params.manifest === "object" ? params.manifest : {};
+  await fs.writeFile(path.join(draftDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, { flag: "wx" });
+  return {
+    relPath: displayRel,
+    stagedRelPath: displayRel,
+    sizeBytes: content.length,
+  };
+}
+
+async function removeAttachmentDraft(params = {}) {
+  const draftId = safeAttachmentSegment(params.draftId, "draft id");
+  const relPath = path.posix.join(ATTACHMENT_STAGING_ROOT, draftId);
+  const { fullPath } = resolveWithinRoot(relPath);
+  await fs.rm(fullPath, { recursive: true, force: true });
+  return { ok: true, draftId };
 }
 
 function direntType(dirent) {
@@ -2151,6 +2200,8 @@ async function handleRequest(method, params = {}) {
         listCodexThreads: true,
         readCodexThreadTranscript: true,
         analyzeCodexThread: true,
+        stageAttachment: true,
+        removeAttachmentDraft: true,
       },
     };
   }
@@ -2164,6 +2215,8 @@ async function handleRequest(method, params = {}) {
   if (method === "listCodexThreads") return listCodexThreads(params);
   if (method === "readCodexThreadTranscript") return readCodexThreadTranscript(params);
   if (method === "analyzeCodexThread") return analyzeCodexThread(params);
+  if (method === "stageAttachment") return stageAttachment(params);
+  if (method === "removeAttachmentDraft") return removeAttachmentDraft(params);
   throw new Error(`Unknown workspace-agent method: ${method}`);
 }
 

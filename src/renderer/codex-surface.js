@@ -106,6 +106,10 @@ const state = {
   runtimeDrawerOpen: false,
   runtimeDrawerTab: "runtime",
   composerMenu: "",
+  composerAttachments: [],
+  composerAttachmentGeneration: 0,
+  composerAttachmentError: "",
+  composerDragDepth: 0,
   composerGeometryObserver: null,
   activeTurnId: "",
   primaryThreadActive: false,
@@ -363,6 +367,10 @@ const els = {
   transcript: document.getElementById("transcript"),
   composerForm: document.getElementById("composerForm"),
   composerInput: document.getElementById("composerInput"),
+  composerAttachmentRow: document.getElementById("composerAttachmentRow"),
+  composerAttachmentList: document.getElementById("composerAttachmentList"),
+  chooseAttachmentButton: document.getElementById("chooseAttachmentButton"),
+  pasteImageButton: document.getElementById("pasteImageButton"),
   sendButton: document.getElementById("sendButton"),
   composerAccessButton: document.getElementById("composerAccessButton"),
   composerAccessMenu: document.getElementById("composerAccessMenu"),
@@ -417,6 +425,108 @@ function compactValue(value, maxLength = 240) {
     return json.length > maxLength ? `${json.slice(0, maxLength)}…` : json;
   } catch {
     return String(value).slice(0, maxLength);
+  }
+}
+
+function formatBytes(bytes) {
+  const number = Number(bytes) || 0;
+  if (number < 1024) return `${number} B`;
+  if (number < 1024 * 1024) return `${(number / 1024).toFixed(1)} KB`;
+  return `${(number / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function attachmentRef(attachment) {
+  return String(attachment?.workspaceRelPath || attachment?.stagedRelPath || "").trim();
+}
+
+function attachmentSubmitBlockers() {
+  return state.composerAttachments.filter((attachment) => {
+    if (!attachment || attachment.status !== "ready") return true;
+    return !attachmentRef(attachment);
+  });
+}
+
+function attachmentReferenceBlock() {
+  const lines = [];
+  for (const attachment of state.composerAttachments) {
+    if (!attachment || attachment.status !== "ready") continue;
+    const rel = attachmentRef(attachment);
+    if (!rel) continue;
+    const disposition = attachment?.provider?.disposition || "staged_file_reference";
+    lines.push(`- ${attachment.displayName || "attachment"} (${attachment.mimeType || "application/octet-stream"}, ${formatBytes(attachment.sizeBytes)}): ${rel} [${disposition}]`);
+  }
+  if (!lines.length) return "";
+  return ["", "Attachments staged as workspace references:", ...lines].join("\n");
+}
+
+function addComposerAttachments(result) {
+  const attachments = Array.isArray(result?.attachments) ? result.attachments : [];
+  if (attachments.length) {
+    const byId = new Map(state.composerAttachments.map((attachment) => [attachment.id, attachment]));
+    for (const attachment of attachments) byId.set(attachment.id, attachment);
+    state.composerAttachments = Array.from(byId.values());
+    state.composerAttachmentGeneration += 1;
+  }
+  const diagnostics = Array.isArray(result?.diagnostics) ? result.diagnostics : [];
+  state.composerAttachmentError = diagnostics.map((item) => item.error).filter(Boolean).join(" · ");
+  renderComposerAttachments();
+  renderComposerRuntimeBand();
+}
+
+function clearComposerAttachments() {
+  state.composerAttachments = [];
+  state.composerAttachmentGeneration += 1;
+  state.composerAttachmentError = "";
+  renderComposerAttachments();
+  renderComposerRuntimeBand();
+}
+
+async function removeComposerAttachment(draftId) {
+  const id = String(draftId || "");
+  state.composerAttachments = state.composerAttachments.filter((attachment) => attachment.id !== id);
+  state.composerAttachmentGeneration += 1;
+  renderComposerAttachments();
+  renderComposerRuntimeBand();
+  if (bridge?.removeAttachmentDraft && project?.id) {
+    try {
+      await bridge.removeAttachmentDraft(project.id, id);
+    } catch (error) {
+      state.composerAttachmentError = `Attachment cleanup failed: ${error.message}`;
+      renderComposerAttachments();
+    }
+  }
+}
+
+function renderComposerAttachments() {
+  if (!els.composerAttachmentList) return;
+  els.composerAttachmentList.innerHTML = "";
+  for (const attachment of state.composerAttachments) {
+    const chip = document.createElement("article");
+    chip.className = `composer-attachment-chip ${attachment.status || "ready"}`;
+    chip.dataset.attachmentDraftId = attachment.id || "";
+    chip.dataset.contextTarget = "attachment";
+    const label = document.createElement("span");
+    label.className = "composer-attachment-label";
+    label.textContent = attachment.displayName || "attachment";
+    const meta = document.createElement("span");
+    meta.className = "composer-attachment-meta";
+    const disposition = attachment?.provider?.disposition || "reference";
+    meta.textContent = `${attachment.kind || "file"} · ${formatBytes(attachment.sizeBytes)} · ${disposition.replace(/_/g, " ")}`;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "composer-attachment-remove";
+    remove.textContent = "×";
+    remove.title = "Remove attachment draft";
+    remove.dataset.attachmentAction = "remove";
+    remove.addEventListener("click", () => removeComposerAttachment(attachment.id));
+    chip.append(label, meta, remove);
+    els.composerAttachmentList.appendChild(chip);
+  }
+  if (state.composerAttachmentError) {
+    const error = document.createElement("span");
+    error.className = "composer-attachment-chip failed";
+    error.textContent = state.composerAttachmentError;
+    els.composerAttachmentList.appendChild(error);
   }
 }
 
@@ -1554,6 +1664,7 @@ function renderComposerModelMenu() {
 function renderComposerRuntimeBand() {
   if (!els.composerAccessButton || !els.composerModelButton || !els.sendButton) return;
   const active = turnIsActive();
+  const blockers = attachmentSubmitBlockers();
   const accessText = state.runtimeOverrides.sandboxMode === "danger-full-access"
     ? "Full access"
     : state.runtimeOverrides.sandboxMode || state.runtimeOverrides.approvalPolicy || "Access";
@@ -1578,9 +1689,15 @@ function renderComposerRuntimeBand() {
 
   els.sendButton.textContent = state.turnStopping ? "Stopping" : active ? "Stop" : "Send";
   els.sendButton.classList.toggle("stop", active);
-  els.sendButton.title = active ? "Stop the current Codex turn." : "Send this prompt to Codex.";
+  els.sendButton.title = active
+    ? "Stop the current Codex turn."
+    : blockers.length
+      ? "Remove or fix unsupported attachments before sending."
+      : "Send this prompt to Codex.";
   els.sendButton.setAttribute("aria-label", active ? "Stop current Codex turn" : "Send prompt to Codex");
-  els.sendButton.disabled = state.turnStopping || (!active && els.composerInput.disabled);
+  els.sendButton.disabled = state.turnStopping || (!active && (els.composerInput.disabled || blockers.length > 0));
+  if (els.chooseAttachmentButton) els.chooseAttachmentButton.disabled = els.composerInput.disabled || active;
+  if (els.pasteImageButton) els.pasteImageButton.disabled = els.composerInput.disabled || active;
   els.composerAccessMenu.hidden = state.composerMenu !== "access";
   els.composerModelMenu.hidden = state.composerMenu !== "model";
   els.composerAccessButton.setAttribute("aria-expanded", state.composerMenu === "access" ? "true" : "false");
@@ -2215,6 +2332,8 @@ function renderTypedContent(container, text) {
       button.className = "typed-token typed-token-url";
       button.textContent = token.text;
       button.title = "Open link in browser";
+      button.dataset.contextTarget = "url";
+      button.dataset.contextHref = token.href;
       button.addEventListener("click", () => openTypedUrl(token.href));
       container.appendChild(button);
       continue;
@@ -2225,6 +2344,8 @@ function renderTypedContent(container, text) {
       button.className = `typed-token ${token.type === "line_ref" ? "typed-token-line-ref" : "typed-token-file"}`;
       button.textContent = token.text;
       button.title = token.line ? `Reveal ${token.path}:${token.line}` : `Reveal ${token.path}`;
+      button.dataset.contextTarget = "file_ref";
+      button.dataset.contextFile = token.path;
       button.addEventListener("click", () => revealTypedFile(token.path));
       container.appendChild(button);
       continue;
@@ -2269,6 +2390,8 @@ function appendFileToken(parent, label, fileRef) {
   button.className = `typed-token ${fileRef.line ? "typed-token-line-ref" : "typed-token-file"} assistant-md-link`;
   button.textContent = label || fileRef.path;
   button.title = fileRef.line ? `Reveal ${fileRef.path}:${fileRef.line}` : `Reveal ${fileRef.path}`;
+  button.dataset.contextTarget = "file_ref";
+  button.dataset.contextFile = fileRef.path;
   button.addEventListener("click", () => revealTypedFile(fileRef.path));
   parent.appendChild(button);
 }
@@ -2279,6 +2402,8 @@ function appendUrlToken(parent, label, href) {
   button.className = "typed-token typed-token-url assistant-md-link";
   button.textContent = label || href;
   button.title = `Open ${href}`;
+  button.dataset.contextTarget = "url";
+  button.dataset.contextHref = href;
   button.addEventListener("click", () => openTypedUrl(href));
   parent.appendChild(button);
 }
@@ -5321,6 +5446,7 @@ async function sendPrompt(text) {
   try {
     await startCodexTurn(text);
     els.composerInput.value = "";
+    clearComposerAttachments();
   } catch (error) {
     clearPrimaryTurnActivityState();
     renderRuntimeConstitution();
@@ -5582,6 +5708,15 @@ function handleBridgeEvent(event) {
     dismissComposerOverlay(event.reason || "shell-event");
     return;
   }
+  if (event.type === "attachment-drafts") {
+    addComposerAttachments(event);
+    return;
+  }
+  if (event.type === "attachment-diagnostic") {
+    state.composerAttachmentError = event.message || "Attachment action failed.";
+    renderComposerAttachments();
+    return;
+  }
   if (event.type === "rpc-notification") {
     handleNotification(event.method, event.params || {});
     return;
@@ -5703,12 +5838,164 @@ els.composerForm.addEventListener("submit", (event) => {
     return;
   }
   const text = els.composerInput.value.trim();
-  if (!text) return;
-  sendPrompt(text).catch((error) => addSystemMessage(`Turn failed: ${error.message}`));
+  const blockers = attachmentSubmitBlockers();
+  if (blockers.length) {
+    addSystemMessage("Remove or fix unsupported attachments before sending.");
+    renderComposerRuntimeBand();
+    return;
+  }
+  const attachmentBlock = attachmentReferenceBlock();
+  if (!text && !attachmentBlock) return;
+  const submitText = `${text || "Review the attached files/images."}${attachmentBlock}`;
+  sendPrompt(submitText).catch((error) => addSystemMessage(`Turn failed: ${error.message}`));
 });
 
 els.composerAccessButton?.addEventListener("click", () => toggleComposerMenu("access"));
 els.composerModelButton?.addEventListener("click", () => toggleComposerMenu("model"));
+els.chooseAttachmentButton?.addEventListener("click", async () => {
+  if (!bridge?.chooseAttachmentFiles || !project?.id) {
+    addSystemMessage("Attachment picker is unavailable.");
+    return;
+  }
+  try {
+    addComposerAttachments(await bridge.chooseAttachmentFiles(project.id));
+  } catch (error) {
+    state.composerAttachmentError = `Attachment picker failed: ${error.message}`;
+    renderComposerAttachments();
+  }
+});
+els.pasteImageButton?.addEventListener("click", async () => {
+  if (!bridge?.pasteImageAttachment || !project?.id) {
+    addSystemMessage("Clipboard image paste is unavailable.");
+    return;
+  }
+  try {
+    addComposerAttachments(await bridge.pasteImageAttachment(project.id));
+  } catch (error) {
+    state.composerAttachmentError = `Paste image failed: ${error.message}`;
+    renderComposerAttachments();
+  }
+});
+
+function droppedFilePaths(event) {
+  return Array.from(event.dataTransfer?.files || [])
+    .map((file) => file?.path || "")
+    .filter(Boolean);
+}
+
+for (const eventName of ["dragenter", "dragover"]) {
+  els.composerForm?.addEventListener(eventName, (event) => {
+    event.preventDefault();
+    state.composerDragDepth += eventName === "dragenter" ? 1 : 0;
+    els.composerForm.classList.add("drag-over");
+  });
+}
+
+els.composerForm?.addEventListener("dragleave", () => {
+  state.composerDragDepth = Math.max(0, state.composerDragDepth - 1);
+  if (!state.composerDragDepth) els.composerForm.classList.remove("drag-over");
+});
+
+els.composerForm?.addEventListener("drop", async (event) => {
+  event.preventDefault();
+  state.composerDragDepth = 0;
+  els.composerForm.classList.remove("drag-over");
+  const paths = droppedFilePaths(event);
+  if (!paths.length) {
+    state.composerAttachmentError = "Drop did not contain file paths.";
+    renderComposerAttachments();
+    return;
+  }
+  try {
+    addComposerAttachments(await bridge.stageDroppedAttachments(project.id, paths));
+  } catch (error) {
+    state.composerAttachmentError = `Drop failed: ${error.message}`;
+    renderComposerAttachments();
+  }
+});
+
+els.composerInput?.addEventListener("paste", (event) => {
+  const text = event.clipboardData?.getData("text/plain") || "";
+  if (text) return;
+  const hasImage = Array.from(event.clipboardData?.items || []).some((item) => String(item?.type || "").startsWith("image/"));
+  if (!hasImage || !bridge?.pasteImageAttachment || !project?.id) return;
+  event.preventDefault();
+  bridge.pasteImageAttachment(project.id)
+    .then(addComposerAttachments)
+    .catch((error) => {
+      state.composerAttachmentError = `Paste image failed: ${error.message}`;
+      renderComposerAttachments();
+    });
+});
+
+function selectedTextInfo(event) {
+  const target = event.target;
+  if (target === els.composerInput && typeof target.selectionStart === "number") {
+    const selected = String(target.value || "").slice(target.selectionStart, target.selectionEnd);
+    return { preview: selected.slice(0, 1000), length: selected.length };
+  }
+  const selection = window.getSelection?.();
+  const selected = String(selection || "");
+  return { preview: selected.slice(0, 1000), length: selected.length };
+}
+
+function contextMenuTarget(event) {
+  const target = event.target?.closest?.("[data-context-target]");
+  if (target?.dataset?.contextTarget === "file_ref") {
+    return {
+      targetKind: "file_ref",
+      targetFileRef: {
+        pathEvidenceKey: "",
+        displayPath: target.dataset.contextFile || target.textContent || "",
+      },
+      targetLabel: target.textContent || "",
+    };
+  }
+  if (target?.dataset?.contextTarget === "url") {
+    return {
+      targetKind: "url",
+      targetHrefDisplay: target.dataset.contextHref || target.textContent || "",
+      targetHrefEvidenceKey: "",
+      targetLabel: target.textContent || "",
+    };
+  }
+  if (target?.dataset?.contextTarget === "attachment" || event.target?.closest?.("[data-attachment-draft-id]")) {
+    const attachment = event.target.closest("[data-attachment-draft-id]");
+    return {
+      targetKind: "attachment",
+      attachmentId: attachment?.dataset?.attachmentDraftId || "",
+      targetLabel: attachment?.textContent || "attachment",
+    };
+  }
+  if (event.target === els.composerInput || event.target?.closest?.("#composerForm")) {
+    return { targetKind: "composer", targetLabel: "Composer" };
+  }
+  return { targetKind: "unknown", targetLabel: "" };
+}
+
+document.addEventListener("contextmenu", (event) => {
+  if (!bridge?.openContextMenu || !project?.id) return;
+  const withinSurface = event.target?.closest?.(".codex-shell");
+  if (!withinSurface) return;
+  event.preventDefault();
+  const selected = selectedTextInfo(event);
+  const target = contextMenuTarget(event);
+  bridge.openContextMenu({
+    schemaVersion: 1,
+    requestId: `ctx_${Date.now()}`,
+    surface: "codex_surface",
+    projectId: project.id,
+    threadId: state.threadId || "",
+    selectedTextPreview: selected.preview,
+    selectedTextLength: selected.length,
+    pointer: { x: event.clientX, y: event.clientY },
+    expiresAt: new Date(Date.now() + 15_000).toISOString(),
+    uiProjectionGeneration: state.composerAttachmentGeneration,
+    targetDigest: `${target.targetKind}:${target.targetLabel || ""}:${state.composerAttachmentGeneration}`,
+    evidenceRefs: [],
+    ...target,
+  }).catch((error) => addSystemMessage(`Context menu failed: ${error.message}`));
+});
 
 for (const eventType of ["pointerdown", "mousedown", "touchstart", "click"]) {
   document.addEventListener(eventType, (event) => {

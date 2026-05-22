@@ -57,6 +57,13 @@
           rows="4"
           placeholder="Ask Codex to inspect, change, or explain the project…"
         ></textarea>
+        <div id="composerAttachmentRow" class="composer-attachment-row" data-morphic-region="composer-attachments">
+          <div class="composer-attachment-actions">
+            <button id="chooseAttachmentButton" class="composer-attachment-action" type="button" data-attachment-action="choose-file">+ file</button>
+            <button id="pasteImageButton" class="composer-attachment-action" type="button" data-attachment-action="paste-image">paste image</button>
+          </div>
+          <div id="composerAttachmentList" class="composer-attachment-list" aria-live="polite"></div>
+        </div>
         <div class="composer-runtime-band" data-morphic-region="composer-runtime-band">
           <div class="composer-quick-controls">
             <div class="composer-menu-anchor">
