@@ -2211,6 +2211,55 @@ function splitLineRef(value) {
   };
 }
 
+function normalizeFileAliasToken(value) {
+  return stripTokenPunctuation(value).trim().toLowerCase();
+}
+
+function isBareVersionToken(value) {
+  return /^v\d+(?:\.\d+)+$/i.test(normalizeFileAliasToken(value));
+}
+
+function fileAliasForToken(value, context = {}) {
+  const key = normalizeFileAliasToken(value);
+  if (!key) return null;
+  const aliases = context?.fileAliases;
+  if (aliases instanceof Map) return aliases.get(key) || null;
+  if (aliases && typeof aliases === "object") return aliases[key] || null;
+  return null;
+}
+
+function addFileAlias(aliases, alias, fileRef) {
+  const key = normalizeFileAliasToken(alias);
+  if (!key || !fileRef?.path || aliases.has(key)) return;
+  aliases.set(key, { ...fileRef });
+}
+
+function addVersionAliasesForFile(aliases, label, fileRef) {
+  const parts = [
+    String(label || ""),
+    String(fileRef?.path || "").split("/").pop() || "",
+  ];
+  for (const part of parts) {
+    const withoutExtension = part.replace(/\.[A-Za-z0-9]{1,12}$/i, "");
+    const versionMatch = withoutExtension.match(/(?:^|[_-])(v\d+(?:[_-]\d+)+)(?:$|[_-])/i);
+    if (!versionMatch) continue;
+    const version = versionMatch[1];
+    addFileAlias(aliases, version, fileRef);
+    addFileAlias(aliases, version.replace(/[_-]/g, "."), fileRef);
+  }
+}
+
+function buildMarkdownFileAliasMap(text) {
+  const aliases = new Map();
+  const source = String(text || "");
+  const pattern = /\[([^\]\n]{1,240})\]\(([^) \n]{1,1000})\)/g;
+  for (const match of source.matchAll(pattern)) {
+    const fileRef = markdownLocalHref(match[2]);
+    if (fileRef) addVersionAliasesForFile(aliases, match[1], fileRef);
+  }
+  return aliases;
+}
+
 function addTokenCandidate(candidates, start, end, token) {
   if (start < 0 || end <= start) return;
   candidates.push({ start, end, token });
@@ -2230,7 +2279,7 @@ function chooseTokenCandidates(candidates) {
   return result;
 }
 
-function tokenizeTypedContent(text) {
+function tokenizeTypedContent(text, context = {}) {
   const source = String(text || "");
   if (!source) return [{ type: "text", text: "" }];
   const candidates = [];
@@ -2244,9 +2293,20 @@ function tokenizeTypedContent(text) {
   const backtickPattern = /`([^`\n]{1,240})`/g;
   for (const match of source.matchAll(backtickPattern)) {
     const raw = match[1] || "";
+    const aliasRef = fileAliasForToken(raw, context);
+    if (aliasRef) {
+      addTokenCandidate(candidates, match.index, match.index + match[0].length, {
+        type: aliasRef.line ? "line_ref" : "file_path",
+        text: match[0],
+        path: aliasRef.path,
+        line: aliasRef.line,
+        column: aliasRef.column,
+      });
+      continue;
+    }
     const lineRef = splitLineRef(raw);
     const relPath = relativePathWithinRoot(lineRef.path);
-    if (relPath) {
+    if (relPath && !isBareVersionToken(raw)) {
       addTokenCandidate(candidates, match.index, match.index + match[0].length, {
         type: lineRef.line ? "line_ref" : "file_path",
         text: match[0],
@@ -2266,6 +2326,18 @@ function tokenizeTypedContent(text) {
   for (const match of source.matchAll(filePattern)) {
     const raw = stripTokenPunctuation(match[0]);
     if (!raw || /^https?:\/\//i.test(raw)) continue;
+    const aliasRef = fileAliasForToken(raw, context);
+    if (aliasRef) {
+      addTokenCandidate(candidates, match.index, match.index + raw.length, {
+        type: aliasRef.line ? "line_ref" : "file_path",
+        text: raw,
+        path: aliasRef.path,
+        line: aliasRef.line,
+        column: aliasRef.column,
+      });
+      continue;
+    }
+    if (isBareVersionToken(raw)) continue;
     const lineRef = splitLineRef(raw);
     const relPath = relativePathWithinRoot(lineRef.path);
     if (!relPath) continue;
@@ -2326,9 +2398,9 @@ async function revealTypedFile(relPath) {
   }
 }
 
-function renderTypedContent(container, text) {
+function renderTypedContent(container, text, context = {}) {
   container.textContent = "";
-  const tokens = tokenizeTypedContent(text);
+  const tokens = tokenizeTypedContent(text, context);
   for (const token of tokens) {
     if (!token || token.type === "text") {
       container.appendChild(document.createTextNode(token?.text || ""));
@@ -2365,10 +2437,10 @@ function renderTypedContent(container, text) {
   }
 }
 
-function appendTypedText(parent, text) {
+function appendTypedText(parent, text, context = {}) {
   if (!text) return;
   const span = document.createElement("span");
-  renderTypedContent(span, text);
+  renderTypedContent(span, text, context);
   parent.appendChild(span);
 }
 
@@ -2424,11 +2496,12 @@ function appendUnsupportedMarkdownLink(parent, label, reason) {
   parent.appendChild(span);
 }
 
-function appendInlineCode(parent, raw) {
+function appendInlineCode(parent, raw, context = {}) {
   const code = document.createElement("code");
   code.className = "assistant-md-inline-code";
   const source = String(raw || "");
-  const fileRef = markdownLocalHref(source) || (() => {
+  const fileRef = fileAliasForToken(source, context) || markdownLocalHref(source) || (() => {
+    if (isBareVersionToken(source)) return null;
     const lineRef = splitLineRef(source);
     const relPath = relativePathWithinRoot(lineRef.path);
     return relPath ? { path: relPath, line: lineRef.line, column: lineRef.column } : null;
@@ -2454,12 +2527,12 @@ function appendInlineCode(parent, raw) {
   parent.appendChild(code);
 }
 
-function appendInlineMarkdown(parent, text) {
+function appendInlineMarkdown(parent, text, context = {}) {
   const source = String(text || "");
   const pattern = /(\[[^\]\n]{1,240}\]\([^) \n]{1,1000}\)|`([^`\n]+)`|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|(->|=>))/g;
   let cursor = 0;
   for (const match of source.matchAll(pattern)) {
-    if (match.index > cursor) appendTypedText(parent, source.slice(cursor, match.index));
+    if (match.index > cursor) appendTypedText(parent, source.slice(cursor, match.index), context);
     const token = match[0];
     const linkMatch = token.match(/^\[([^\]\n]+)\]\(([^) \n]+)\)$/);
     if (linkMatch) {
@@ -2469,16 +2542,16 @@ function appendInlineMarkdown(parent, text) {
       else if (fileRef) appendFileToken(parent, linkMatch[1], fileRef);
       else appendUnsupportedMarkdownLink(parent, linkMatch[1], "Unsupported, unsafe, or unresolved link target");
     } else if (token.startsWith("`")) {
-      appendInlineCode(parent, token.slice(1, -1));
+      appendInlineCode(parent, token.slice(1, -1), context);
     } else if (token.startsWith("**")) {
       const strong = document.createElement("strong");
       strong.className = "assistant-md-strong";
-      appendTypedText(strong, token.slice(2, -2));
+      appendTypedText(strong, token.slice(2, -2), context);
       parent.appendChild(strong);
     } else if (token.startsWith("*")) {
       const em = document.createElement("em");
       em.className = "assistant-md-emphasis";
-      appendTypedText(em, token.slice(1, -1));
+      appendTypedText(em, token.slice(1, -1), context);
       parent.appendChild(em);
     } else {
       const arrow = document.createElement("span");
@@ -2488,13 +2561,13 @@ function appendInlineMarkdown(parent, text) {
     }
     cursor = match.index + token.length;
   }
-  if (cursor < source.length) appendTypedText(parent, source.slice(cursor));
+  if (cursor < source.length) appendTypedText(parent, source.slice(cursor), context);
 }
 
-function createMarkdownLineBlock(tagName, className, text) {
+function createMarkdownLineBlock(tagName, className, text, context = {}) {
   const block = document.createElement(tagName);
   block.className = className;
-  appendInlineMarkdown(block, text);
+  appendInlineMarkdown(block, text, context);
   return block;
 }
 
@@ -2512,7 +2585,7 @@ function isMarkdownBlockStart(line) {
   );
 }
 
-function appendMarkdownList(container, lines, ordered) {
+function appendMarkdownList(container, lines, ordered, context = {}) {
   const list = document.createElement(ordered ? "ol" : "ul");
   list.className = "assistant-md-list";
   for (const line of lines) {
@@ -2525,7 +2598,7 @@ function appendMarkdownList(container, lines, ordered) {
       const fragments = String(value || "").split("\n");
       fragments.forEach((fragment, index) => {
         if (index) target.appendChild(document.createElement("br"));
-        appendInlineMarkdown(target, fragment);
+        appendInlineMarkdown(target, fragment, context);
       });
     };
     if (taskMatch) {
@@ -2547,6 +2620,7 @@ function renderFinalAssistantContent(container, text) {
   container.classList.add("assistant-markdown");
   const source = String(text || "").replace(/\r\n/g, "\n");
   if (!source.trim()) return;
+  const renderContext = { fileAliases: buildMarkdownFileAliasMap(source) };
   const lines = source.split("\n");
   for (let index = 0; index < lines.length;) {
     const line = lines[index];
@@ -2583,7 +2657,7 @@ function renderFinalAssistantContent(container, text) {
     const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
     if (heading) {
       const level = Math.min(4, heading[1].length);
-      container.appendChild(createMarkdownLineBlock(`h${level}`, `assistant-md-heading level-${level}`, heading[2]));
+      container.appendChild(createMarkdownLineBlock(`h${level}`, `assistant-md-heading level-${level}`, heading[2], renderContext));
       index += 1;
       continue;
     }
@@ -2602,7 +2676,7 @@ function renderFinalAssistantContent(container, text) {
         quoteLines.push(lines[index].trim().replace(/^>\s?/, ""));
         index += 1;
       }
-      container.appendChild(createMarkdownLineBlock("blockquote", "assistant-md-quote", quoteLines.join("\n")));
+      container.appendChild(createMarkdownLineBlock("blockquote", "assistant-md-quote", quoteLines.join("\n"), renderContext));
       continue;
     }
 
@@ -2632,7 +2706,7 @@ function renderFinalAssistantContent(container, text) {
       if (!listLines.length) {
         index += 1;
       }
-      appendMarkdownList(container, listLines, ordered);
+      appendMarkdownList(container, listLines, ordered, renderContext);
       continue;
     }
 
@@ -2644,7 +2718,7 @@ function renderFinalAssistantContent(container, text) {
       arrow.className = "assistant-md-arrow";
       arrow.textContent = chain[1];
       block.append(arrow, document.createTextNode(" "));
-      appendInlineMarkdown(block, chain[2]);
+      appendInlineMarkdown(block, chain[2], renderContext);
       container.appendChild(block);
       index += 1;
       continue;
@@ -2656,7 +2730,7 @@ function renderFinalAssistantContent(container, text) {
       paragraphLines.push(lines[index]);
       index += 1;
     }
-    container.appendChild(createMarkdownLineBlock("p", "assistant-md-paragraph", paragraphLines.join("\n")));
+    container.appendChild(createMarkdownLineBlock("p", "assistant-md-paragraph", paragraphLines.join("\n"), renderContext));
   }
 }
 

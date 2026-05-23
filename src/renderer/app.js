@@ -1113,6 +1113,55 @@ function splitLineRef(value) {
   };
 }
 
+function normalizeFileAliasToken(value) {
+  return stripTokenPunctuation(value).trim().toLowerCase();
+}
+
+function isBareVersionToken(value) {
+  return /^v\d+(?:\.\d+)+$/i.test(normalizeFileAliasToken(value));
+}
+
+function fileAliasForToken(value, context = {}) {
+  const key = normalizeFileAliasToken(value);
+  if (!key) return null;
+  const aliases = context?.fileAliases;
+  if (aliases instanceof Map) return aliases.get(key) || null;
+  if (aliases && typeof aliases === "object") return aliases[key] || null;
+  return null;
+}
+
+function addFileAlias(aliases, alias, fileRef) {
+  const key = normalizeFileAliasToken(alias);
+  if (!key || !fileRef?.path || aliases.has(key)) return;
+  aliases.set(key, { ...fileRef });
+}
+
+function addVersionAliasesForFile(aliases, label, fileRef) {
+  const parts = [
+    String(label || ""),
+    String(fileRef?.path || "").split("/").pop() || "",
+  ];
+  for (const part of parts) {
+    const withoutExtension = part.replace(/\.[A-Za-z0-9]{1,12}$/i, "");
+    const versionMatch = withoutExtension.match(/(?:^|[_-])(v\d+(?:[_-]\d+)+)(?:$|[_-])/i);
+    if (!versionMatch) continue;
+    const version = versionMatch[1];
+    addFileAlias(aliases, version, fileRef);
+    addFileAlias(aliases, version.replace(/[_-]/g, "."), fileRef);
+  }
+}
+
+function buildMarkdownFileAliasMap(text) {
+  const aliases = new Map();
+  const source = String(text || "");
+  const pattern = /\[([^\]\n]{1,240})\]\(([^) \n]{1,1000})\)/g;
+  for (const match of source.matchAll(pattern)) {
+    const fileRef = markdownLocalHref(match[2]);
+    if (fileRef) addVersionAliasesForFile(aliases, match[1], fileRef);
+  }
+  return aliases;
+}
+
 function addTokenCandidate(candidates, start, end, token) {
   if (start < 0 || end <= start) return;
   candidates.push({ start, end, token });
@@ -1132,7 +1181,7 @@ function chooseTokenCandidates(candidates) {
   return result;
 }
 
-function tokenizeTypedContent(text) {
+function tokenizeTypedContent(text, context = {}) {
   const source = String(text || "");
   if (!source) return [{ type: "text", text: "" }];
   const candidates = [];
@@ -1146,9 +1195,20 @@ function tokenizeTypedContent(text) {
   const backtickPattern = /`([^`\n]{1,240})`/g;
   for (const match of source.matchAll(backtickPattern)) {
     const raw = match[1] || "";
+    const aliasRef = fileAliasForToken(raw, context);
+    if (aliasRef) {
+      addTokenCandidate(candidates, match.index, match.index + match[0].length, {
+        type: aliasRef.line ? "line_ref" : "file_path",
+        text: match[0],
+        path: aliasRef.path,
+        line: aliasRef.line,
+        column: aliasRef.column,
+      });
+      continue;
+    }
     const lineRef = splitLineRef(raw);
     const relPath = relativePathWithinRoot(lineRef.path);
-    if (relPath) {
+    if (relPath && !isBareVersionToken(raw)) {
       addTokenCandidate(candidates, match.index, match.index + match[0].length, {
         type: lineRef.line ? "line_ref" : "file_path",
         text: match[0],
@@ -1168,6 +1228,18 @@ function tokenizeTypedContent(text) {
   for (const match of source.matchAll(filePattern)) {
     const raw = stripTokenPunctuation(match[0]);
     if (!raw || /^https?:\/\//i.test(raw)) continue;
+    const aliasRef = fileAliasForToken(raw, context);
+    if (aliasRef) {
+      addTokenCandidate(candidates, match.index, match.index + raw.length, {
+        type: aliasRef.line ? "line_ref" : "file_path",
+        text: raw,
+        path: aliasRef.path,
+        line: aliasRef.line,
+        column: aliasRef.column,
+      });
+      continue;
+    }
+    if (isBareVersionToken(raw)) continue;
     const lineRef = splitLineRef(raw);
     const relPath = relativePathWithinRoot(lineRef.path);
     if (!relPath) continue;
@@ -1227,7 +1299,7 @@ async function revealSubAgentTypedFile(relPath) {
 
 function renderTypedContent(container, text, context = {}) {
   container.textContent = "";
-  const tokens = tokenizeTypedContent(text);
+  const tokens = tokenizeTypedContent(text, context);
   for (const token of tokens) {
     if (!token || token.type === "text") {
       container.appendChild(document.createTextNode(token?.text || ""));
@@ -1319,7 +1391,8 @@ function appendInlineCode(parent, raw, context = {}) {
   const code = document.createElement("code");
   code.className = "assistant-md-inline-code";
   const source = String(raw || "");
-  const fileRef = markdownLocalHref(source) || (() => {
+  const fileRef = fileAliasForToken(source, context) || markdownLocalHref(source) || (() => {
+    if (isBareVersionToken(source)) return null;
     const lineRef = splitLineRef(source);
     const relPath = relativePathWithinRoot(lineRef.path);
     return relPath ? { path: relPath, line: lineRef.line, column: lineRef.column } : null;
@@ -1438,6 +1511,7 @@ function renderSubAgentAssistantMarkdown(container, text, context = {}) {
   container.classList.add("assistant-markdown");
   const source = String(text || "").replace(/\r\n/g, "\n");
   if (!source.trim()) return;
+  const renderContext = { ...context, fileAliases: buildMarkdownFileAliasMap(source) };
   const lines = source.split("\n");
   for (let index = 0; index < lines.length;) {
     const line = lines[index];
@@ -1474,7 +1548,7 @@ function renderSubAgentAssistantMarkdown(container, text, context = {}) {
     const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
     if (heading) {
       const level = Math.min(4, heading[1].length);
-      container.appendChild(createMarkdownLineBlock(`h${level}`, `assistant-md-heading level-${level}`, heading[2], context));
+      container.appendChild(createMarkdownLineBlock(`h${level}`, `assistant-md-heading level-${level}`, heading[2], renderContext));
       index += 1;
       continue;
     }
@@ -1493,7 +1567,7 @@ function renderSubAgentAssistantMarkdown(container, text, context = {}) {
         quoteLines.push(lines[index].trim().replace(/^>\s?/, ""));
         index += 1;
       }
-      container.appendChild(createMarkdownLineBlock("blockquote", "assistant-md-quote", quoteLines.join("\n"), context));
+      container.appendChild(createMarkdownLineBlock("blockquote", "assistant-md-quote", quoteLines.join("\n"), renderContext));
       continue;
     }
 
@@ -1521,7 +1595,7 @@ function renderSubAgentAssistantMarkdown(container, text, context = {}) {
         break;
       }
       if (!listLines.length) index += 1;
-      appendMarkdownList(container, listLines, ordered, context);
+      appendMarkdownList(container, listLines, ordered, renderContext);
       continue;
     }
 
@@ -1533,7 +1607,7 @@ function renderSubAgentAssistantMarkdown(container, text, context = {}) {
       arrow.className = "assistant-md-arrow";
       arrow.textContent = chain[1];
       block.append(arrow, document.createTextNode(" "));
-      appendInlineMarkdown(block, chain[2], context);
+      appendInlineMarkdown(block, chain[2], renderContext);
       container.appendChild(block);
       index += 1;
       continue;
@@ -1545,7 +1619,7 @@ function renderSubAgentAssistantMarkdown(container, text, context = {}) {
       paragraphLines.push(lines[index]);
       index += 1;
     }
-    container.appendChild(createMarkdownLineBlock("p", "assistant-md-paragraph", paragraphLines.join("\n"), context));
+    container.appendChild(createMarkdownLineBlock("p", "assistant-md-paragraph", paragraphLines.join("\n"), renderContext));
   }
 }
 
