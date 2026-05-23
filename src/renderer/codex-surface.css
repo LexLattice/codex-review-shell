@@ -1019,6 +1019,7 @@ button.typed-token {
   --composer-control-gap: 8px;
   --composer-control-pad-x: 10px;
   --composer-control-height: 30px;
+  --composer-action-width: 116px;
 }
 
 #composerInput {
@@ -1370,16 +1371,109 @@ button {
   cursor: pointer;
 }
 
-#sendButton {
+.composer-action-stack {
   grid-area: send;
+  display: grid;
+  align-self: stretch;
+  justify-self: end;
+  align-content: end;
+  justify-items: end;
+  gap: 6px;
+  min-width: var(--composer-action-width);
+}
+
+.composer-turn-control {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.composer-turn-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  max-width: var(--composer-action-width);
+  padding: 0 8px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.composer-turn-status::before {
+  content: "●";
+  color: currentColor;
+  font-size: 7px;
+}
+
+.composer-turn-status.active {
+  color: #9fd2ff;
+  border-color: rgba(121, 184, 255, 0.22);
+  background: rgba(121, 184, 255, 0.07);
+}
+
+.composer-turn-status.pending {
+  color: var(--warning);
+  border-color: rgba(240, 191, 116, 0.22);
+  background: rgba(240, 191, 116, 0.07);
+}
+
+.composer-turn-status.stopping {
+  color: var(--danger);
+  border-color: rgba(255, 124, 143, 0.28);
+  background: rgba(255, 124, 143, 0.08);
+}
+
+.composer-turn-status.queued {
+  color: #b9c7dc;
+  border-color: rgba(185, 199, 220, 0.18);
+  background: rgba(185, 199, 220, 0.055);
+}
+
+.composer-stop-button {
+  min-height: 24px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border-color: rgba(255, 124, 143, 0.38);
+  background: rgba(255, 124, 143, 0.12);
+  color: #ffd7dd;
+  font-size: 11px;
+}
+
+.composer-stop-button::before {
+  content: "■";
+  margin-right: 5px;
+  font-size: 8px;
+}
+
+.composer-action-anchor {
+  position: relative;
+  display: flex;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+#sendButton,
+.composer-split-action {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  min-width: 78px;
+  min-width: 0;
   min-height: 40px;
-  align-self: end;
-  justify-self: end;
+}
+
+#sendButton {
+  gap: 8px;
+  min-width: min(78px, var(--composer-action-width));
   background: linear-gradient(135deg, #21497f, #295d94);
 }
 
@@ -1392,14 +1486,44 @@ button {
   line-height: 1;
 }
 
-#sendButton.stop {
-  border-color: rgba(255, 124, 143, 0.38);
-  background: linear-gradient(135deg, #7d2636, #b43b4f);
+.composer-split-action {
+  border: 1px solid rgba(121, 184, 255, 0.3);
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(121, 184, 255, 0.08);
 }
 
-#sendButton.stop::before {
-  content: "■";
-  font-size: 10px;
+.composer-split-button {
+  min-height: 40px;
+  min-width: 58px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+}
+
+.composer-split-button + .composer-split-button {
+  border-left: 1px solid rgba(121, 184, 255, 0.22);
+}
+
+.composer-split-button.steer {
+  background: linear-gradient(135deg, rgba(33, 73, 127, 0.92), rgba(41, 93, 148, 0.88));
+}
+
+.composer-split-button.queue {
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.composer-split-button:hover:not(:disabled),
+.composer-stop-button:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.composer-disposition-menu {
+  left: auto;
+  right: 0;
+  width: min(240px, var(--composer-popover-max-width));
 }
 
 .composer-shell[data-composer-size="medium"] .composer-cascade-grid {
@@ -1473,7 +1597,7 @@ button.typed-token {
     max-width: min(var(--composer-popover-max-width), calc(100vw - 24px));
   }
 
-  #sendButton {
+  .composer-action-stack {
     min-height: 40px;
   }
 }
@@ -1487,8 +1611,17 @@ button.typed-token {
       "band band";
   }
 
+  .composer-action-stack {
+    --composer-action-width: 98px;
+  }
+
   #sendButton {
-    min-width: 48px;
+    min-width: 54px;
     padding: 0 10px;
+  }
+
+  .composer-split-button {
+    min-width: 49px;
+    padding: 0 8px;
   }
 }
