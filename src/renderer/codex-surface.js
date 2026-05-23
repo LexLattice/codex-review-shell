@@ -111,6 +111,10 @@ const state = {
   composerAttachmentError: "",
   composerDragDepth: 0,
   composerGeometryObserver: null,
+  queuedComposerMessages: [],
+  queuedPromptDrainInProgress: false,
+  queuedPromptDrainScheduled: false,
+  composerStatusInterval: null,
   activeTurnId: "",
   primaryThreadActive: false,
   primaryThreadActivitySource: "",
@@ -371,7 +375,16 @@ const els = {
   composerAttachmentList: document.getElementById("composerAttachmentList"),
   chooseAttachmentButton: document.getElementById("chooseAttachmentButton"),
   pasteImageButton: document.getElementById("pasteImageButton"),
+  composerActionStack: document.querySelector(".composer-action-stack"),
+  composerTurnStatus: document.getElementById("composerTurnStatus"),
+  composerStopButton: document.getElementById("composerStopButton"),
   sendButton: document.getElementById("sendButton"),
+  activeTurnActions: document.getElementById("activeTurnActions"),
+  steerButton: document.getElementById("steerButton"),
+  queueButton: document.getElementById("queueButton"),
+  composerDispositionMenu: document.getElementById("composerDispositionMenu"),
+  steerMenuButton: document.getElementById("steerMenuButton"),
+  queueMenuButton: document.getElementById("queueMenuButton"),
   composerAccessButton: document.getElementById("composerAccessButton"),
   composerAccessMenu: document.getElementById("composerAccessMenu"),
   composerModelButton: document.getElementById("composerModelButton"),
@@ -408,7 +421,7 @@ function setNotice() {}
 function setComposerEnabled(enabled, placeholder = "") {
   const nextEnabled = Boolean(enabled);
   els.composerInput.disabled = !nextEnabled;
-  els.sendButton.disabled = !nextEnabled && !turnIsActive();
+  if (els.sendButton) els.sendButton.disabled = !nextEnabled && !turnIsActive();
   if (nextEnabled) {
     els.composerInput.placeholder = "Ask Codex to inspect, change, or explain the project…";
   } else if (placeholder) {
@@ -457,6 +470,42 @@ function attachmentReferenceBlock() {
   }
   if (!lines.length) return "";
   return ["", "Attachments staged as workspace references:", ...lines].join("\n");
+}
+
+function composerDraftProjection() {
+  const text = String(els.composerInput?.value || "").trim();
+  const attachmentBlock = attachmentReferenceBlock();
+  const blockers = attachmentSubmitBlockers();
+  if (blockers.length) {
+    return {
+      ok: false,
+      reason: "unsupported_attachments",
+      message: "Remove or fix unsupported attachments before sending.",
+      text: "",
+      hasContent: Boolean(text || attachmentBlock),
+    };
+  }
+  if (!text && !attachmentBlock) {
+    return {
+      ok: false,
+      reason: "empty",
+      message: "",
+      text: "",
+      hasContent: false,
+    };
+  }
+  return {
+    ok: true,
+    reason: "",
+    message: "",
+    text: `${text || "Review the attached files/images."}${attachmentBlock}`,
+    hasContent: true,
+  };
+}
+
+function clearComposerDraft() {
+  if (els.composerInput) els.composerInput.value = "";
+  clearComposerAttachments();
 }
 
 function addComposerAttachments(result) {
@@ -951,6 +1000,57 @@ function turnIsActive() {
   if (!activeId) return false;
   const activity = state.turnActivityMap.get(activeId);
   return Boolean(activity && !activity.completedAt && activeTurnStatus(activity.status));
+}
+
+function currentActiveTurnId() {
+  const candidates = [state.activeTurnId, state.turnId].map((id) => String(id || "").trim()).filter(Boolean);
+  for (const id of candidates) {
+    const activity = state.turnActivityMap.get(id);
+    if (activity && !activity.completedAt && activeTurnStatus(activity.status)) return id;
+  }
+  return "";
+}
+
+function currentActiveTurnActivity() {
+  const id = currentActiveTurnId();
+  return id ? state.turnActivityMap.get(id) || null : null;
+}
+
+function formatElapsedDuration(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  return `${minutes}:${String(secs).padStart(2, "0")}`;
+}
+
+function turnDurationLabel(turnKey) {
+  const activity = state.turnActivityMap.get(String(turnKey || "").trim());
+  if (!activity) return "";
+  const durationMs = Number(activity.durationMs);
+  if (Number.isFinite(durationMs) && durationMs >= 0) return formatElapsedDuration(durationMs / 1000);
+  const startedAt = Number(activity.startedAt || 0);
+  const completedAt = Number(activity.completedAt || 0);
+  if (startedAt > 0 && completedAt >= startedAt) return formatElapsedDuration(completedAt - startedAt);
+  return "";
+}
+
+function activeTurnElapsedLabel() {
+  const activity = currentActiveTurnActivity();
+  const startedAt = Number(activity?.startedAt || 0);
+  if (!startedAt) return "";
+  return formatElapsedDuration(Date.now() / 1000 - startedAt);
+}
+
+function currentQueuedComposerMessages() {
+  const threadId = String(state.threadId || "");
+  const projectId = String(project?.id || "");
+  if (!threadId) return [];
+  return state.queuedComposerMessages.filter((item) => (
+    String(item?.threadId || "") === threadId &&
+    (!projectId || !item?.projectId || String(item.projectId) === projectId)
+  ));
 }
 
 function countCodexItems(typeSet) {
@@ -1529,6 +1629,7 @@ function dismissComposerOverlay(reason = "unknown") {
   state.composerMenu = "";
   if (els.composerAccessMenu) els.composerAccessMenu.hidden = true;
   if (els.composerModelMenu) els.composerModelMenu.hidden = true;
+  if (els.composerDispositionMenu) els.composerDispositionMenu.hidden = true;
   els.composerAccessButton?.setAttribute("aria-expanded", "false");
   els.composerModelButton?.setAttribute("aria-expanded", "false");
   if (hadMenu) {
@@ -1567,8 +1668,11 @@ function eventInsideComposerOverlay(event) {
   return (
     eventTargetsElement(event, els.composerAccessMenu) ||
     eventTargetsElement(event, els.composerModelMenu) ||
+    eventTargetsElement(event, els.composerDispositionMenu) ||
     eventTargetsElement(event, els.composerAccessButton) ||
-    eventTargetsElement(event, els.composerModelButton)
+    eventTargetsElement(event, els.composerModelButton) ||
+    eventTargetsElement(event, els.activeTurnActions) ||
+    eventTargetsElement(event, els.sendButton)
   );
 }
 
@@ -1597,11 +1701,11 @@ function updateComposerGeometry() {
   const controlGap = Math.round(clampNumber(safeWidth / 108, 4, 8));
   const controlPadX = Math.round(clampNumber(safeWidth / 82, 6, 10));
   const controlHeight = Math.round(clampNumber(controlFont * 2.5, 24, 30));
-  const activeTrigger = state.composerMenu === "model"
-    ? els.composerModelButton
-    : state.composerMenu === "access"
-      ? els.composerAccessButton
-      : null;
+  const actionWidth = Math.round(clampNumber(safeWidth * 0.18, 96, 150));
+  let activeTrigger = null;
+  if (state.composerMenu === "model") activeTrigger = els.composerModelButton;
+  else if (state.composerMenu === "access") activeTrigger = els.composerAccessButton;
+  else if (state.composerMenu === "disposition") activeTrigger = els.activeTurnActions || els.sendButton;
   const triggerRect = activeTrigger?.getBoundingClientRect?.();
   const topSpace = triggerRect ? Math.max(140, triggerRect.top - 16) : Math.max(160, window.innerHeight * 0.42);
   const modelMenuHeight = Math.round(clampNumber(Math.min(topSpace, panelHeight * 0.54), 240, 430));
@@ -1624,6 +1728,7 @@ function updateComposerGeometry() {
   els.composerForm.style.setProperty("--composer-control-gap", `${controlGap}px`);
   els.composerForm.style.setProperty("--composer-control-pad-x", `${controlPadX}px`);
   els.composerForm.style.setProperty("--composer-control-height", `${controlHeight}px`);
+  els.composerForm.style.setProperty("--composer-action-width", `${actionWidth}px`);
   els.composerForm.dataset.composerSize = safeWidth < 390 ? "narrow" : safeWidth < 760 ? "medium" : "wide";
 }
 
@@ -1669,10 +1774,26 @@ function renderComposerModelMenu() {
   els.composerModelMenu.appendChild(body);
 }
 
+function updateComposerStatusTicker(active) {
+  const shouldTick = Boolean(active && currentActiveTurnActivity()?.startedAt);
+  if (shouldTick && !state.composerStatusInterval) {
+    state.composerStatusInterval = window.setInterval(() => renderComposerRuntimeBand(), 1000);
+  } else if (!shouldTick && state.composerStatusInterval) {
+    window.clearInterval(state.composerStatusInterval);
+    state.composerStatusInterval = null;
+  }
+}
+
 function renderComposerRuntimeBand() {
   if (!els.composerAccessButton || !els.composerModelButton || !els.sendButton) return;
   const active = turnIsActive();
+  const activeTurnId = currentActiveTurnId();
   const blockers = attachmentSubmitBlockers();
+  const draft = composerDraftProjection();
+  const hasDraft = draft.hasContent;
+  const canSteer = hasCapabilityForMutation("turns", "canSteer");
+  const queuedCount = currentQueuedComposerMessages().length;
+  const elapsedLabel = activeTurnElapsedLabel();
   const accessText = state.runtimeOverrides.sandboxMode === "danger-full-access"
     ? "Full access"
     : state.runtimeOverrides.sandboxMode || state.runtimeOverrides.approvalPolicy || "Access";
@@ -1695,23 +1816,88 @@ function renderComposerRuntimeBand() {
   els.composerContextChip.textContent = contextText;
   els.composerContextChip.title = `Context pressure: ${contextProjection.label}.`;
 
-  els.sendButton.textContent = state.turnStopping ? "Stopping" : active ? "Stop" : "Send";
-  els.sendButton.classList.toggle("stop", active);
-  els.sendButton.title = active
-    ? "Stop the current Codex turn."
-    : blockers.length
-      ? "Remove or fix unsupported attachments before sending."
-      : "Send this prompt to Codex.";
-  els.sendButton.setAttribute("aria-label", active ? "Stop current Codex turn" : "Send prompt to Codex");
-  els.sendButton.disabled = state.turnStopping || (!active && (els.composerInput.disabled || blockers.length > 0));
-  if (els.chooseAttachmentButton) els.chooseAttachmentButton.disabled = els.composerInput.disabled || active;
-  if (els.pasteImageButton) els.pasteImageButton.disabled = els.composerInput.disabled || active;
+  const statusClass = state.turnStopping
+    ? "stopping"
+    : state.turnPending || state.queuedPromptDrainInProgress
+      ? "pending"
+      : active
+        ? "active"
+        : queuedCount
+          ? "queued"
+          : "idle";
+  const statusText = state.turnStopping
+    ? `Stopping${elapsedLabel ? ` ${elapsedLabel}` : ""}`
+    : state.turnPending
+      ? "Starting"
+      : state.queuedPromptDrainInProgress
+        ? "Sending queued"
+        : active
+          ? `Working${elapsedLabel ? ` ${elapsedLabel}` : ""}${queuedCount ? ` · Q${queuedCount}` : ""}`
+          : queuedCount ? `Queued ${queuedCount}` : "Idle";
+  if (els.composerTurnStatus) {
+    els.composerTurnStatus.textContent = statusText;
+    els.composerTurnStatus.className = `composer-turn-status ${statusClass}`;
+    els.composerTurnStatus.title = active
+      ? `Codex turn is active${elapsedLabel ? ` for ${elapsedLabel}` : ""}${queuedCount ? ` with ${queuedCount} queued message${queuedCount === 1 ? "" : "s"}` : ""}.`
+      : queuedCount
+        ? `${queuedCount} message${queuedCount === 1 ? "" : "s"} queued for the next Codex turn.`
+        : "Codex thread is idle.";
+  }
+
+  if (els.composerStopButton) {
+    els.composerStopButton.hidden = !active;
+    els.composerStopButton.disabled = state.turnStopping || !activeTurnId;
+    els.composerStopButton.title = activeTurnId
+      ? "Stop the current Codex turn."
+      : "Active turn id is not available yet.";
+    els.composerStopButton.setAttribute("aria-label", "Stop current Codex turn");
+  }
+
+  els.sendButton.hidden = active;
+  els.sendButton.textContent = "Send";
+  els.sendButton.title = blockers.length
+    ? "Remove or fix unsupported attachments before sending."
+    : "Send this prompt to Codex.";
+  els.sendButton.setAttribute("aria-label", "Send prompt to Codex");
+  els.sendButton.disabled = active || els.composerInput.disabled || blockers.length > 0 || !hasDraft;
+
+  if (els.activeTurnActions) els.activeTurnActions.hidden = !active;
+  const actionDisabled = state.turnStopping || els.composerInput.disabled || blockers.length > 0 || !hasDraft;
+  if (els.steerButton) {
+    els.steerButton.disabled = actionDisabled || !canSteer || !activeTurnId;
+    els.steerButton.title = !canSteer
+      ? "Active runtime does not expose turn/steer capability."
+      : !activeTurnId
+        ? "Active turn id is not available yet."
+        : blockers.length
+          ? "Remove or fix unsupported attachments before steering."
+          : hasDraft
+            ? "Send this message into the active Codex turn."
+            : "Write a message to steer the active Codex turn.";
+    els.steerButton.setAttribute("aria-label", "Steer current Codex turn");
+  }
+  if (els.queueButton) {
+    els.queueButton.disabled = actionDisabled;
+    els.queueButton.title = blockers.length
+      ? "Remove or fix unsupported attachments before queueing."
+      : hasDraft
+        ? "Queue this message to start after the current turn completes."
+        : "Write a message to queue for the next Codex turn.";
+    els.queueButton.setAttribute("aria-label", "Queue message for next Codex turn");
+  }
+  if (els.steerMenuButton) els.steerMenuButton.disabled = els.steerButton?.disabled ?? true;
+  if (els.queueMenuButton) els.queueMenuButton.disabled = els.queueButton?.disabled ?? true;
+
+  if (els.chooseAttachmentButton) els.chooseAttachmentButton.disabled = els.composerInput.disabled;
+  if (els.pasteImageButton) els.pasteImageButton.disabled = els.composerInput.disabled;
   els.composerAccessMenu.hidden = state.composerMenu !== "access";
   els.composerModelMenu.hidden = state.composerMenu !== "model";
+  if (els.composerDispositionMenu) els.composerDispositionMenu.hidden = state.composerMenu !== "disposition";
   els.composerAccessButton.setAttribute("aria-expanded", state.composerMenu === "access" ? "true" : "false");
   els.composerModelButton.setAttribute("aria-expanded", state.composerMenu === "model" ? "true" : "false");
   if (state.composerMenu === "access") renderComposerAccessMenu();
   if (state.composerMenu === "model") renderComposerModelMenu();
+  updateComposerStatusTicker(active);
   updateComposerGeometry();
 }
 
@@ -2954,6 +3140,7 @@ function ensureTurnActivity(turnId) {
     id,
     startedAt: null,
     completedAt: null,
+    durationMs: null,
     status: "",
     hasCodexOutput: false,
     errorShown: false,
@@ -2961,6 +3148,23 @@ function ensureTurnActivity(turnId) {
   };
   state.turnActivityMap.set(id, next);
   return next;
+}
+
+function rememberTurnTiming(turnKey, timing = {}) {
+  const key = String(turnKey || timing?.turnId || timing?.id || "").trim();
+  if (!key) return null;
+  const activity = ensureTurnActivity(key);
+  if (!activity) return null;
+  const startedAt = timestampSeconds(timing.startedAt || timing.started_at || timing.createdAt || timing.created_at || "");
+  const completedAt = timestampSeconds(timing.completedAt || timing.completed_at || timing.finishedAt || timing.finished_at || "");
+  const durationMs = Number(timing.durationMs ?? timing.duration_ms);
+  if (startedAt && !activity.startedAt) activity.startedAt = startedAt;
+  if (completedAt && !activity.completedAt) activity.completedAt = completedAt;
+  if (Number.isFinite(durationMs) && durationMs >= 0) activity.durationMs = durationMs;
+  else if (activity.startedAt && activity.completedAt && activity.completedAt >= activity.startedAt) {
+    activity.durationMs = Math.round((activity.completedAt - activity.startedAt) * 1000);
+  }
+  return activity;
 }
 
 function terminalTurnStatus(status) {
@@ -2990,6 +3194,9 @@ function reconcileCompletedTurnState(turnId, status = "completed", completedAt =
   if (activity) {
     activity.status = String(status || "completed");
     activity.completedAt = activity.completedAt || timestampSeconds(completedAt) || Date.now() / 1000;
+    if (!Number.isFinite(Number(activity.durationMs)) && activity.startedAt && activity.completedAt >= activity.startedAt) {
+      activity.durationMs = Math.round((activity.completedAt - activity.startedAt) * 1000);
+    }
   }
   if (!state.activeTurnId || String(state.activeTurnId) === id || String(state.turnId) === id) {
     clearPrimaryTurnActivityState();
@@ -3006,6 +3213,7 @@ function reconcileActiveTurnState(turnId, status = "inProgress", startedAt = nul
     activity.status = String(status || "inProgress");
     activity.startedAt = activity.startedAt || timestampSeconds(startedAt) || Date.now() / 1000;
     activity.completedAt = null;
+    activity.durationMs = null;
   }
   state.turnId = id;
   state.activeTurnId = id;
@@ -3945,6 +4153,7 @@ function renderStoredPresentationModel(model, snapshot = {}) {
   for (let index = 0; index < visibleTurns.length; index += 1) {
     const turn = visibleTurns[index];
     const turnKey = String(turn.turnKey || turn.turnId || `stored_turn_${startTurnIndex + index + 1}`);
+    rememberTurnTiming(turnKey, turn);
     const collabPrompts = collabPromptInfosFromItems(turn.thoughtItems);
     for (let messageIndex = 0; messageIndex < (turn.userMessages || []).length; messageIndex += 1) {
       const message = turn.userMessages[messageIndex];
@@ -5119,9 +5328,18 @@ function renderThoughtProcess(turnKey, thoughtItems, options = {}) {
   root.className = "thought-process";
   if (options.open) root.open = true;
   const summary = document.createElement("summary");
-  summary.textContent = projection.reasoningItems.length
+  const summaryLabel = projection.reasoningItems.length
     ? `Thought process (${projection.visibleCount})`
     : `Process evidence (${projection.visibleCount})`;
+  summary.appendChild(document.createTextNode(summaryLabel));
+  const durationLabel = turnDurationLabel(turnKey);
+  if (durationLabel) {
+    const duration = document.createElement("span");
+    duration.className = "thought-duration";
+    duration.textContent = durationLabel;
+    duration.title = "Turn duration";
+    summary.appendChild(duration);
+  }
   root.appendChild(summary);
 
   const body = document.createElement("div");
@@ -5428,6 +5646,7 @@ function renderThreadHistory(thread, options = {}) {
     const turn = visibleTurns[index];
     const absoluteTurnIndex = startTurnIndex + index;
     const turnKey = String(turn?.id || `${absoluteTurnIndex + 1}`);
+    rememberTurnTiming(turnKey, turn);
     const userItems = [];
     const regularItems = [];
     const thoughtItems = [];
@@ -5510,6 +5729,7 @@ async function startCodexTurn(text, options = {}) {
     if (activity) {
       activity.status = String(result?.turn?.status || "inProgress");
       activity.startedAt = activity.startedAt || result?.turn?.startedAt || Date.now() / 1000;
+      activity.durationMs = null;
     }
     rememberPromptTurn(turnId, text, options.retryCount || 0);
     renderRuntimeConstitution();
@@ -5517,7 +5737,7 @@ async function startCodexTurn(text, options = {}) {
   return result;
 }
 
-async function sendPrompt(text) {
+async function sendPrompt(text, options = {}) {
   if (!state.threadId) await startNewThread();
   if (!state.liveAttached && state.threadId) {
     const liveResult = await attachLiveThread(state.threadId);
@@ -5526,9 +5746,8 @@ async function sendPrompt(text) {
   state.turnPending = true;
   renderRuntimeConstitution();
   try {
-    await startCodexTurn(text);
-    els.composerInput.value = "";
-    clearComposerAttachments();
+    await startCodexTurn(text, options);
+    if (options.clearComposer !== false) clearComposerDraft();
   } catch (error) {
     clearPrimaryTurnActivityState();
     renderRuntimeConstitution();
@@ -5536,8 +5755,124 @@ async function sendPrompt(text) {
   }
 }
 
+async function steerCurrentTurn(text) {
+  if (!hasCapabilityForMutation("turns", "canSteer")) {
+    throw new Error("Active Codex runtime does not expose turn/steer capability.");
+  }
+  const turnId = currentActiveTurnId();
+  if (!state.threadId || !turnId) {
+    throw new Error("No active Codex turn is available to steer.");
+  }
+  const result = await rpc("turn/steer", {
+    threadId: state.threadId,
+    expectedTurnId: turnId,
+    input: [{ type: "text", text, text_elements: [] }],
+  });
+  clearComposerDraft();
+  renderRuntimeConstitution();
+  return result;
+}
+
+function queueComposerMessage(text) {
+  const threadId = String(state.threadId || "").trim();
+  if (!threadId) throw new Error("No active Codex thread is available for queueing.");
+  const item = {
+    id: `queued_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+    threadId,
+    projectId: String(project?.id || ""),
+    text,
+    createdAt: new Date().toISOString(),
+  };
+  state.queuedComposerMessages.push(item);
+  clearComposerDraft();
+  renderRuntimeConstitution();
+  return item;
+}
+
+function scheduleQueuedPromptDrain(reason = "turn-completed") {
+  if (state.queuedPromptDrainScheduled) return;
+  state.queuedPromptDrainScheduled = true;
+  window.setTimeout(() => {
+    state.queuedPromptDrainScheduled = false;
+    drainQueuedComposerMessages(reason).catch((error) => {
+      addSystemMessage(`Queued message failed: ${error.message}`);
+      renderRuntimeConstitution();
+    });
+  }, 80);
+}
+
+async function drainQueuedComposerMessages(reason = "turn-completed") {
+  if (state.queuedPromptDrainInProgress || turnIsActive() || !state.queuedComposerMessages.length) return;
+  const threadId = String(state.threadId || "").trim();
+  const projectId = String(project?.id || "");
+  if (!threadId) return;
+  const nextIndex = state.queuedComposerMessages.findIndex((item) => (
+    String(item?.threadId || "") === threadId &&
+    (!projectId || !item?.projectId || String(item.projectId) === projectId)
+  ));
+  if (nextIndex < 0) return;
+  const [next] = state.queuedComposerMessages.splice(nextIndex, 1);
+  if (!next?.text) return;
+  state.queuedPromptDrainInProgress = true;
+  renderRuntimeConstitution();
+  try {
+    await sendPrompt(next.text, { clearComposer: false, queuedReason: reason });
+  } catch (error) {
+    state.queuedComposerMessages.splice(nextIndex, 0, next);
+    throw error;
+  } finally {
+    state.queuedPromptDrainInProgress = false;
+    renderRuntimeConstitution();
+  }
+}
+
+function reportComposerDraftBlock(draft) {
+  if (!draft?.message) return false;
+  addSystemMessage(draft.message);
+  renderComposerRuntimeBand();
+  return true;
+}
+
+async function submitIdleComposerDraft() {
+  const draft = composerDraftProjection();
+  if (!draft.ok) {
+    reportComposerDraftBlock(draft);
+    return;
+  }
+  await sendPrompt(draft.text);
+}
+
+async function submitActiveComposerDraft(disposition) {
+  const draft = composerDraftProjection();
+  if (!draft.ok) {
+    reportComposerDraftBlock(draft);
+    return;
+  }
+  if (disposition === "steer") {
+    await steerCurrentTurn(draft.text);
+    return;
+  }
+  if (disposition === "queue") {
+    queueComposerMessage(draft.text);
+    return;
+  }
+  throw new Error(`Unsupported active-turn composer disposition: ${disposition}`);
+}
+
+function showComposerDispositionMenu() {
+  if (!turnIsActive()) return false;
+  state.composerMenu = "disposition";
+  renderComposerRuntimeBand();
+  updateComposerGeometry();
+  window.requestAnimationFrame(() => {
+    if (!els.steerMenuButton?.disabled) els.steerMenuButton.focus();
+    else if (!els.queueMenuButton?.disabled) els.queueMenuButton.focus();
+  });
+  return true;
+}
+
 async function stopCurrentTurn() {
-  const turnId = String(state.activeTurnId || state.turnId || "").trim();
+  const turnId = currentActiveTurnId();
   if (!state.threadId || !turnId) {
     addSystemMessage("No active Codex turn is available to stop yet.");
     return;
@@ -5551,11 +5886,15 @@ async function stopCurrentTurn() {
     if (activity) {
       activity.status = "interrupted";
       activity.completedAt = activity.completedAt || Date.now() / 1000;
+      if (!Number.isFinite(Number(activity.durationMs)) && activity.startedAt && activity.completedAt >= activity.startedAt) {
+        activity.durationMs = Math.round((activity.completedAt - activity.startedAt) * 1000);
+      }
     }
     clearPrimaryTurnActivityState();
   } finally {
     state.turnStopping = false;
     renderRuntimeConstitution();
+    scheduleQueuedPromptDrain("turn-stopped");
   }
 }
 
@@ -5580,6 +5919,9 @@ function handleNotification(method, params) {
       if (!params?.willRetry) {
         activity.status = "error";
         activity.completedAt = activity.completedAt || Date.now() / 1000;
+        if (!Number.isFinite(Number(activity.durationMs)) && activity.startedAt && activity.completedAt >= activity.startedAt) {
+          activity.durationMs = Math.round((activity.completedAt - activity.startedAt) * 1000);
+        }
       }
     }
     if (!params?.willRetry) {
@@ -5674,11 +6016,17 @@ function handleNotification(method, params) {
       if (activity) {
         activity.status = String(params?.turn?.status || "completed");
         activity.completedAt = params?.turn?.completedAt || Date.now() / 1000;
+        const durationMs = Number(params?.turn?.durationMs ?? params?.turn?.duration_ms ?? params?.durationMs ?? params?.duration_ms);
+        if (Number.isFinite(durationMs) && durationMs >= 0) activity.durationMs = durationMs;
+        else if (activity.startedAt && activity.completedAt >= activity.startedAt) {
+          activity.durationMs = Math.round((activity.completedAt - activity.startedAt) * 1000);
+        }
       }
       renderRuntimeConstitution();
       collapseThoughtProcess(completedTurnId);
       finalizeTurnMessages(completedTurnId);
       renderTurnCompletionNotice(completedTurnId, params?.turn || {});
+      scheduleQueuedPromptDrain("turn-completed");
     }
     return;
   }
@@ -5694,6 +6042,7 @@ function handleNotification(method, params) {
       if (activity) {
         activity.status = String(params?.turn?.status || "inProgress");
         activity.startedAt = params?.turn?.startedAt || Date.now() / 1000;
+        activity.durationMs = null;
       }
       renderRuntimeConstitution();
     }
@@ -5916,20 +6265,46 @@ els.composerForm.addEventListener("submit", (event) => {
   event.preventDefault();
   dismissComposerOverlay("composer-submit");
   if (turnIsActive()) {
-    stopCurrentTurn().catch((error) => addSystemMessage(`Stop failed: ${error.message}`));
+    showComposerDispositionMenu();
     return;
   }
-  const text = els.composerInput.value.trim();
-  const blockers = attachmentSubmitBlockers();
-  if (blockers.length) {
-    addSystemMessage("Remove or fix unsupported attachments before sending.");
-    renderComposerRuntimeBand();
-    return;
-  }
-  const attachmentBlock = attachmentReferenceBlock();
-  if (!text && !attachmentBlock) return;
-  const submitText = `${text || "Review the attached files/images."}${attachmentBlock}`;
-  sendPrompt(submitText).catch((error) => addSystemMessage(`Turn failed: ${error.message}`));
+  submitIdleComposerDraft().catch((error) => addSystemMessage(`Turn failed: ${error.message}`));
+});
+
+els.composerStopButton?.addEventListener("click", () => {
+  dismissComposerOverlay("composer-stop");
+  stopCurrentTurn().catch((error) => addSystemMessage(`Stop failed: ${error.message}`));
+});
+
+els.steerButton?.addEventListener("click", () => {
+  dismissComposerOverlay("steer-click");
+  submitActiveComposerDraft("steer").catch((error) => addSystemMessage(`Steer failed: ${error.message}`));
+});
+
+els.queueButton?.addEventListener("click", () => {
+  dismissComposerOverlay("queue-click");
+  submitActiveComposerDraft("queue").catch((error) => addSystemMessage(`Queue failed: ${error.message}`));
+});
+
+els.steerMenuButton?.addEventListener("click", () => {
+  dismissComposerOverlay("steer-menu-click");
+  submitActiveComposerDraft("steer").catch((error) => addSystemMessage(`Steer failed: ${error.message}`));
+});
+
+els.queueMenuButton?.addEventListener("click", () => {
+  dismissComposerOverlay("queue-menu-click");
+  submitActiveComposerDraft("queue").catch((error) => addSystemMessage(`Queue failed: ${error.message}`));
+});
+
+els.composerInput?.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
+  if (!turnIsActive()) return;
+  event.preventDefault();
+  showComposerDispositionMenu();
+});
+
+els.composerInput?.addEventListener("input", () => {
+  renderComposerRuntimeBand();
 });
 
 els.composerAccessButton?.addEventListener("click", () => toggleComposerMenu("access"));
@@ -6028,6 +6403,13 @@ function selectedTextInfo(event) {
 
 function contextMenuTarget(event) {
   const target = event.target?.closest?.("[data-context-target]");
+  if (target?.dataset?.contextTarget === "thread_title") {
+    return {
+      targetKind: "thread_title",
+      targetThreadId: state.threadId || "",
+      targetLabel: target.textContent || "Codex thread title",
+    };
+  }
   if (target?.dataset?.contextTarget === "file_ref") {
     return {
       targetKind: "file_ref",

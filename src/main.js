@@ -3158,6 +3158,7 @@ async function openContextMenu(event, request = {}) {
     ? normalizeString(request.targetFileRef.displayPath, "")
     : "";
   const href = safeContextUrl(request.targetHrefDisplay);
+  const threadId = normalizeString(request.targetThreadId || request.threadId, "");
   const template = [];
 
   if (selectedTextLength > 0 || selectedTextPreview) {
@@ -3182,6 +3183,10 @@ async function openContextMenu(event, request = {}) {
   if (href) {
     template.push({ type: "separator" });
     template.push({ label: "Copy link URL", click: () => clipboard.writeText(href) });
+  }
+  if (targetKind === "thread_title" && threadId) {
+    template.push({ type: "separator" });
+    template.push({ label: "Copy thread ID", click: () => clipboard.writeText(threadId) });
   }
   if (fileRef && projectId) {
     template.push({ type: "separator" });
