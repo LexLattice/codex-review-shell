@@ -114,6 +114,7 @@ const state = {
   queuedComposerMessages: [],
   queuedPromptDrainInProgress: false,
   queuedPromptDrainScheduled: false,
+  composerStatusInterval: null,
   activeTurnId: "",
   primaryThreadActive: false,
   primaryThreadActivitySource: "",
@@ -1010,6 +1011,27 @@ function currentActiveTurnId() {
   return "";
 }
 
+function currentActiveTurnActivity() {
+  const id = currentActiveTurnId();
+  return id ? state.turnActivityMap.get(id) || null : null;
+}
+
+function formatElapsedDuration(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  return `${minutes}:${String(secs).padStart(2, "0")}`;
+}
+
+function activeTurnElapsedLabel() {
+  const activity = currentActiveTurnActivity();
+  const startedAt = Number(activity?.startedAt || 0);
+  if (!startedAt) return "";
+  return formatElapsedDuration(Date.now() / 1000 - startedAt);
+}
+
 function currentQueuedComposerMessages() {
   const threadId = String(state.threadId || "");
   const projectId = String(project?.id || "");
@@ -1741,6 +1763,16 @@ function renderComposerModelMenu() {
   els.composerModelMenu.appendChild(body);
 }
 
+function updateComposerStatusTicker(active) {
+  const shouldTick = Boolean(active && currentActiveTurnActivity()?.startedAt);
+  if (shouldTick && !state.composerStatusInterval) {
+    state.composerStatusInterval = window.setInterval(() => renderComposerRuntimeBand(), 1000);
+  } else if (!shouldTick && state.composerStatusInterval) {
+    window.clearInterval(state.composerStatusInterval);
+    state.composerStatusInterval = null;
+  }
+}
+
 function renderComposerRuntimeBand() {
   if (!els.composerAccessButton || !els.composerModelButton || !els.sendButton) return;
   const active = turnIsActive();
@@ -1750,6 +1782,7 @@ function renderComposerRuntimeBand() {
   const hasDraft = draft.hasContent;
   const canSteer = hasCapabilityForMutation("turns", "canSteer");
   const queuedCount = currentQueuedComposerMessages().length;
+  const elapsedLabel = activeTurnElapsedLabel();
   const accessText = state.runtimeOverrides.sandboxMode === "danger-full-access"
     ? "Full access"
     : state.runtimeOverrides.sandboxMode || state.runtimeOverrides.approvalPolicy || "Access";
@@ -1782,19 +1815,19 @@ function renderComposerRuntimeBand() {
           ? "queued"
           : "idle";
   const statusText = state.turnStopping
-    ? "Stopping"
+    ? `Stopping${elapsedLabel ? ` ${elapsedLabel}` : ""}`
     : state.turnPending
       ? "Starting"
       : state.queuedPromptDrainInProgress
         ? "Sending queued"
         : active
-          ? queuedCount ? `Working · Q${queuedCount}` : "Working"
+          ? `Working${elapsedLabel ? ` ${elapsedLabel}` : ""}${queuedCount ? ` · Q${queuedCount}` : ""}`
           : queuedCount ? `Queued ${queuedCount}` : "Idle";
   if (els.composerTurnStatus) {
     els.composerTurnStatus.textContent = statusText;
     els.composerTurnStatus.className = `composer-turn-status ${statusClass}`;
     els.composerTurnStatus.title = active
-      ? `Codex turn is active${queuedCount ? ` with ${queuedCount} queued message${queuedCount === 1 ? "" : "s"}` : ""}.`
+      ? `Codex turn is active${elapsedLabel ? ` for ${elapsedLabel}` : ""}${queuedCount ? ` with ${queuedCount} queued message${queuedCount === 1 ? "" : "s"}` : ""}.`
       : queuedCount
         ? `${queuedCount} message${queuedCount === 1 ? "" : "s"} queued for the next Codex turn.`
         : "Codex thread is idle.";
@@ -1853,6 +1886,7 @@ function renderComposerRuntimeBand() {
   els.composerModelButton.setAttribute("aria-expanded", state.composerMenu === "model" ? "true" : "false");
   if (state.composerMenu === "access") renderComposerAccessMenu();
   if (state.composerMenu === "model") renderComposerModelMenu();
+  updateComposerStatusTicker(active);
   updateComposerGeometry();
 }
 
