@@ -1002,12 +1002,22 @@ function turnIsActive() {
 }
 
 function currentActiveTurnId() {
-  const activeId = String(state.activeTurnId || "").trim();
-  if (activeId) return activeId;
-  const fallbackId = String(state.turnId || "").trim();
-  if (!fallbackId) return "";
-  const activity = state.turnActivityMap.get(fallbackId);
-  return activity && !activity.completedAt && activeTurnStatus(activity.status) ? fallbackId : "";
+  const candidates = [state.activeTurnId, state.turnId].map((id) => String(id || "").trim()).filter(Boolean);
+  for (const id of candidates) {
+    const activity = state.turnActivityMap.get(id);
+    if (activity && !activity.completedAt && activeTurnStatus(activity.status)) return id;
+  }
+  return "";
+}
+
+function currentQueuedComposerMessages() {
+  const threadId = String(state.threadId || "");
+  const projectId = String(project?.id || "");
+  if (!threadId) return [];
+  return state.queuedComposerMessages.filter((item) => (
+    String(item?.threadId || "") === threadId &&
+    (!projectId || !item?.projectId || String(item.projectId) === projectId)
+  ));
 }
 
 function countCodexItems(typeSet) {
@@ -1739,7 +1749,7 @@ function renderComposerRuntimeBand() {
   const draft = composerDraftProjection();
   const hasDraft = draft.hasContent;
   const canSteer = hasCapabilityForMutation("turns", "canSteer");
-  const queuedCount = state.queuedComposerMessages.length;
+  const queuedCount = currentQueuedComposerMessages().length;
   const accessText = state.runtimeOverrides.sandboxMode === "danger-full-access"
     ? "Full access"
     : state.runtimeOverrides.sandboxMode || state.runtimeOverrides.approvalPolicy || "Access";
@@ -5657,7 +5667,7 @@ async function sendPrompt(text, options = {}) {
   state.turnPending = true;
   renderRuntimeConstitution();
   try {
-    await startCodexTurn(text);
+    await startCodexTurn(text, options);
     if (options.clearComposer !== false) clearComposerDraft();
   } catch (error) {
     clearPrimaryTurnActivityState();
@@ -5685,8 +5695,12 @@ async function steerCurrentTurn(text) {
 }
 
 function queueComposerMessage(text) {
+  const threadId = String(state.threadId || "").trim();
+  if (!threadId) throw new Error("No active Codex thread is available for queueing.");
   const item = {
     id: `queued_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+    threadId,
+    projectId: String(project?.id || ""),
     text,
     createdAt: new Date().toISOString(),
   };
@@ -5710,14 +5724,22 @@ function scheduleQueuedPromptDrain(reason = "turn-completed") {
 
 async function drainQueuedComposerMessages(reason = "turn-completed") {
   if (state.queuedPromptDrainInProgress || turnIsActive() || !state.queuedComposerMessages.length) return;
-  const next = state.queuedComposerMessages.shift();
+  const threadId = String(state.threadId || "").trim();
+  const projectId = String(project?.id || "");
+  if (!threadId) return;
+  const nextIndex = state.queuedComposerMessages.findIndex((item) => (
+    String(item?.threadId || "") === threadId &&
+    (!projectId || !item?.projectId || String(item.projectId) === projectId)
+  ));
+  if (nextIndex < 0) return;
+  const [next] = state.queuedComposerMessages.splice(nextIndex, 1);
   if (!next?.text) return;
   state.queuedPromptDrainInProgress = true;
   renderRuntimeConstitution();
   try {
     await sendPrompt(next.text, { clearComposer: false, queuedReason: reason });
   } catch (error) {
-    state.queuedComposerMessages.unshift(next);
+    state.queuedComposerMessages.splice(nextIndex, 0, next);
     throw error;
   } finally {
     state.queuedPromptDrainInProgress = false;
