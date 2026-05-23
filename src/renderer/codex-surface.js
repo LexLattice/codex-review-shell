@@ -1590,9 +1590,13 @@ function updateComposerGeometry() {
   const safeWidth = Math.max(180, shellWidth - 24);
   const menuWidth = Math.round(clampNumber(safeWidth * 0.46, 190, 280));
   const modelMenuWidth = Math.round(clampNumber(safeWidth * 0.86, 340, 620));
-  const quotaWidth = Math.round(clampNumber(safeWidth * 0.42, 220, 380));
-  const witnessWidth = Math.round(clampNumber(safeWidth * 0.14, 76, 150));
-  const modelPillWidth = Math.round(clampNumber(safeWidth * 0.28, 120, 280));
+  const quotaWidth = Math.round(clampNumber(safeWidth * 0.42, 120, 380));
+  const witnessWidth = Math.round(clampNumber(safeWidth * 0.14, 58, 150));
+  const modelPillWidth = Math.round(clampNumber(safeWidth * 0.28, 88, 280));
+  const controlFont = clampNumber(safeWidth / 66, 10, 12);
+  const controlGap = Math.round(clampNumber(safeWidth / 108, 4, 8));
+  const controlPadX = Math.round(clampNumber(safeWidth / 82, 6, 10));
+  const controlHeight = Math.round(clampNumber(controlFont * 2.5, 24, 30));
   const activeTrigger = state.composerMenu === "model"
     ? els.composerModelButton
     : state.composerMenu === "access"
@@ -1616,6 +1620,10 @@ function updateComposerGeometry() {
   els.composerForm.style.setProperty("--composer-witness-max-width", `${witnessWidth}px`);
   els.composerForm.style.setProperty("--composer-quota-max-width", `${quotaWidth}px`);
   els.composerForm.style.setProperty("--composer-model-pill-max-width", `${modelPillWidth}px`);
+  els.composerForm.style.setProperty("--composer-control-font-size", `${controlFont.toFixed(1)}px`);
+  els.composerForm.style.setProperty("--composer-control-gap", `${controlGap}px`);
+  els.composerForm.style.setProperty("--composer-control-pad-x", `${controlPadX}px`);
+  els.composerForm.style.setProperty("--composer-control-height", `${controlHeight}px`);
   els.composerForm.dataset.composerSize = safeWidth < 390 ? "narrow" : safeWidth < 760 ? "medium" : "wide";
 }
 
@@ -5877,9 +5885,14 @@ els.pasteImageButton?.addEventListener("click", async () => {
   }
 });
 
-function droppedFilePaths(event) {
-  return Array.from(event.dataTransfer?.files || [])
-    .map((file) => file?.path || "")
+async function droppedFilePaths(event) {
+  const files = Array.from(event.dataTransfer?.files || []);
+  if (!files.length) return [];
+  if (typeof bridge?.getDroppedFilePaths === "function") {
+    return bridge.getDroppedFilePaths(files);
+  }
+  return files
+    .map((file) => bridge?.getPathForFile?.(file) || file?.path || "")
     .filter(Boolean);
 }
 
@@ -5900,7 +5913,7 @@ els.composerForm?.addEventListener("drop", async (event) => {
   event.preventDefault();
   state.composerDragDepth = 0;
   els.composerForm.classList.remove("drag-over");
-  const paths = droppedFilePaths(event);
+  const paths = await droppedFilePaths(event);
   if (!paths.length) {
     state.composerAttachmentError = "Drop did not contain file paths.";
     renderComposerAttachments();

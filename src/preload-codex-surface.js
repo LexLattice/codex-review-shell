@@ -1,4 +1,18 @@
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
+
+function fileSystemPathForFile(file) {
+  try {
+    return webUtils?.getPathForFile?.(file) || file?.path || "";
+  } catch {
+    return "";
+  }
+}
+
+function fileSystemPathsForFiles(files) {
+  return Array.from(files || [])
+    .map((file) => fileSystemPathForFile(file))
+    .filter(Boolean);
+}
 
 contextBridge.exposeInMainWorld("codexSurfaceBridge", {
   connect: (connection) => ipcRenderer.invoke("codex-surface:connect", { connection }),
@@ -15,6 +29,8 @@ contextBridge.exposeInMainWorld("codexSurfaceBridge", {
   openWorkspaceLink: (url, options = {}) => ipcRenderer.invoke("link:open", { ...options, url }),
   openExternalUrl: (url) => ipcRenderer.invoke("external:open-url", { url }),
   revealProjectFile: (projectId, relPath) => ipcRenderer.invoke("worktree:reveal-file", { projectId, relPath }),
+  getPathForFile: (file) => fileSystemPathForFile(file),
+  getDroppedFilePaths: (files) => fileSystemPathsForFiles(files),
   chooseAttachmentFiles: (projectId) => ipcRenderer.invoke("attachments:choose-files", { projectId }),
   stageDroppedAttachments: (projectId, paths = []) => ipcRenderer.invoke("attachments:stage-drop", { projectId, paths }),
   pasteImageAttachment: (projectId) => ipcRenderer.invoke("attachments:paste-image", { projectId }),
