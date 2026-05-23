@@ -930,6 +930,7 @@ function createTranscriptTurn(turnId, rowIndex, kind) {
     status: "unknown",
     startedAt: null,
     completedAt: null,
+    durationMs: null,
   };
 }
 
@@ -968,14 +969,27 @@ function createStoredPresentationBuilder(threadId, sourceFile, threadMeta = {}) 
       const turn = ensureTurn(found, rowIndex, "task_started");
       if (turn) {
         turn.status = "partial";
-        turn.startedAt = payload.started_at || payload.startedAt || turn.startedAt || null;
+        turn.startedAt = payload.started_at || payload.startedAt || row.timestamp || turn.startedAt || null;
       }
     }
     if (row.type === "event_msg" && payload.type === "task_complete") {
       const turn = ensureTurn(found || currentTurnId, rowIndex, "task_complete");
       if (turn) {
         turn.status = payload.last_agent_message ? "complete" : "unknown";
-        turn.completedAt = payload.completed_at || payload.completedAt || turn.completedAt || null;
+        turn.completedAt = payload.completed_at || payload.completedAt || row.timestamp || turn.completedAt || null;
+        const durationMs = Number(payload.duration_ms ?? payload.durationMs);
+        if (Number.isFinite(durationMs) && durationMs >= 0) turn.durationMs = durationMs;
+        else {
+          const payloadDurationMs = durationMillis(payload.duration);
+          if (Number.isFinite(payloadDurationMs) && payloadDurationMs >= 0) turn.durationMs = payloadDurationMs;
+          else {
+            const startedMs = parseIsoMillis(turn.startedAt);
+            const completedMs = parseIsoMillis(turn.completedAt);
+            if (startedMs !== null && completedMs !== null && completedMs >= startedMs) {
+              turn.durationMs = completedMs - startedMs;
+            }
+          }
+        }
       }
     }
   }

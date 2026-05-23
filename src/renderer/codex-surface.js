@@ -1025,6 +1025,17 @@ function formatElapsedDuration(seconds) {
   return `${minutes}:${String(secs).padStart(2, "0")}`;
 }
 
+function turnDurationLabel(turnKey) {
+  const activity = state.turnActivityMap.get(String(turnKey || "").trim());
+  if (!activity) return "";
+  const durationMs = Number(activity.durationMs);
+  if (Number.isFinite(durationMs) && durationMs >= 0) return formatElapsedDuration(durationMs / 1000);
+  const startedAt = Number(activity.startedAt || 0);
+  const completedAt = Number(activity.completedAt || 0);
+  if (startedAt > 0 && completedAt >= startedAt) return formatElapsedDuration(completedAt - startedAt);
+  return "";
+}
+
 function activeTurnElapsedLabel() {
   const activity = currentActiveTurnActivity();
   const startedAt = Number(activity?.startedAt || 0);
@@ -3129,6 +3140,7 @@ function ensureTurnActivity(turnId) {
     id,
     startedAt: null,
     completedAt: null,
+    durationMs: null,
     status: "",
     hasCodexOutput: false,
     errorShown: false,
@@ -3136,6 +3148,23 @@ function ensureTurnActivity(turnId) {
   };
   state.turnActivityMap.set(id, next);
   return next;
+}
+
+function rememberTurnTiming(turnKey, timing = {}) {
+  const key = String(turnKey || timing?.turnId || timing?.id || "").trim();
+  if (!key) return null;
+  const activity = ensureTurnActivity(key);
+  if (!activity) return null;
+  const startedAt = timestampSeconds(timing.startedAt || timing.started_at || timing.createdAt || timing.created_at || "");
+  const completedAt = timestampSeconds(timing.completedAt || timing.completed_at || timing.finishedAt || timing.finished_at || "");
+  const durationMs = Number(timing.durationMs ?? timing.duration_ms);
+  if (startedAt && !activity.startedAt) activity.startedAt = startedAt;
+  if (completedAt && !activity.completedAt) activity.completedAt = completedAt;
+  if (Number.isFinite(durationMs) && durationMs >= 0) activity.durationMs = durationMs;
+  else if (activity.startedAt && activity.completedAt && activity.completedAt >= activity.startedAt) {
+    activity.durationMs = Math.round((activity.completedAt - activity.startedAt) * 1000);
+  }
+  return activity;
 }
 
 function terminalTurnStatus(status) {
@@ -3165,6 +3194,9 @@ function reconcileCompletedTurnState(turnId, status = "completed", completedAt =
   if (activity) {
     activity.status = String(status || "completed");
     activity.completedAt = activity.completedAt || timestampSeconds(completedAt) || Date.now() / 1000;
+    if (!Number.isFinite(Number(activity.durationMs)) && activity.startedAt && activity.completedAt >= activity.startedAt) {
+      activity.durationMs = Math.round((activity.completedAt - activity.startedAt) * 1000);
+    }
   }
   if (!state.activeTurnId || String(state.activeTurnId) === id || String(state.turnId) === id) {
     clearPrimaryTurnActivityState();
@@ -3181,6 +3213,7 @@ function reconcileActiveTurnState(turnId, status = "inProgress", startedAt = nul
     activity.status = String(status || "inProgress");
     activity.startedAt = activity.startedAt || timestampSeconds(startedAt) || Date.now() / 1000;
     activity.completedAt = null;
+    activity.durationMs = null;
   }
   state.turnId = id;
   state.activeTurnId = id;
@@ -4120,6 +4153,7 @@ function renderStoredPresentationModel(model, snapshot = {}) {
   for (let index = 0; index < visibleTurns.length; index += 1) {
     const turn = visibleTurns[index];
     const turnKey = String(turn.turnKey || turn.turnId || `stored_turn_${startTurnIndex + index + 1}`);
+    rememberTurnTiming(turnKey, turn);
     const collabPrompts = collabPromptInfosFromItems(turn.thoughtItems);
     for (let messageIndex = 0; messageIndex < (turn.userMessages || []).length; messageIndex += 1) {
       const message = turn.userMessages[messageIndex];
@@ -5294,9 +5328,18 @@ function renderThoughtProcess(turnKey, thoughtItems, options = {}) {
   root.className = "thought-process";
   if (options.open) root.open = true;
   const summary = document.createElement("summary");
-  summary.textContent = projection.reasoningItems.length
+  const summaryLabel = projection.reasoningItems.length
     ? `Thought process (${projection.visibleCount})`
     : `Process evidence (${projection.visibleCount})`;
+  summary.appendChild(document.createTextNode(summaryLabel));
+  const durationLabel = turnDurationLabel(turnKey);
+  if (durationLabel) {
+    const duration = document.createElement("span");
+    duration.className = "thought-duration";
+    duration.textContent = durationLabel;
+    duration.title = "Turn duration";
+    summary.appendChild(duration);
+  }
   root.appendChild(summary);
 
   const body = document.createElement("div");
@@ -5603,6 +5646,7 @@ function renderThreadHistory(thread, options = {}) {
     const turn = visibleTurns[index];
     const absoluteTurnIndex = startTurnIndex + index;
     const turnKey = String(turn?.id || `${absoluteTurnIndex + 1}`);
+    rememberTurnTiming(turnKey, turn);
     const userItems = [];
     const regularItems = [];
     const thoughtItems = [];
@@ -5685,6 +5729,7 @@ async function startCodexTurn(text, options = {}) {
     if (activity) {
       activity.status = String(result?.turn?.status || "inProgress");
       activity.startedAt = activity.startedAt || result?.turn?.startedAt || Date.now() / 1000;
+      activity.durationMs = null;
     }
     rememberPromptTurn(turnId, text, options.retryCount || 0);
     renderRuntimeConstitution();
@@ -5841,6 +5886,9 @@ async function stopCurrentTurn() {
     if (activity) {
       activity.status = "interrupted";
       activity.completedAt = activity.completedAt || Date.now() / 1000;
+      if (!Number.isFinite(Number(activity.durationMs)) && activity.startedAt && activity.completedAt >= activity.startedAt) {
+        activity.durationMs = Math.round((activity.completedAt - activity.startedAt) * 1000);
+      }
     }
     clearPrimaryTurnActivityState();
   } finally {
@@ -5871,6 +5919,9 @@ function handleNotification(method, params) {
       if (!params?.willRetry) {
         activity.status = "error";
         activity.completedAt = activity.completedAt || Date.now() / 1000;
+        if (!Number.isFinite(Number(activity.durationMs)) && activity.startedAt && activity.completedAt >= activity.startedAt) {
+          activity.durationMs = Math.round((activity.completedAt - activity.startedAt) * 1000);
+        }
       }
     }
     if (!params?.willRetry) {
@@ -5965,6 +6016,11 @@ function handleNotification(method, params) {
       if (activity) {
         activity.status = String(params?.turn?.status || "completed");
         activity.completedAt = params?.turn?.completedAt || Date.now() / 1000;
+        const durationMs = Number(params?.turn?.durationMs ?? params?.turn?.duration_ms ?? params?.durationMs ?? params?.duration_ms);
+        if (Number.isFinite(durationMs) && durationMs >= 0) activity.durationMs = durationMs;
+        else if (activity.startedAt && activity.completedAt >= activity.startedAt) {
+          activity.durationMs = Math.round((activity.completedAt - activity.startedAt) * 1000);
+        }
       }
       renderRuntimeConstitution();
       collapseThoughtProcess(completedTurnId);
@@ -5986,6 +6042,7 @@ function handleNotification(method, params) {
       if (activity) {
         activity.status = String(params?.turn?.status || "inProgress");
         activity.startedAt = params?.turn?.startedAt || Date.now() / 1000;
+        activity.durationMs = null;
       }
       renderRuntimeConstitution();
     }
