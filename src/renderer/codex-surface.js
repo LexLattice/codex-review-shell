@@ -101,7 +101,7 @@ const state = {
     serviceTier: "",
   },
   workspaceStatus: payload.workspaceStatus || null,
-  connectionStatus: connection?.wsUrl ? "loading" : "unavailable",
+  connectionStatus: connection?.wsUrl ? "loading" : (payload.runtimeStartupPending ? "starting" : "unavailable"),
   runtimeConstitution: null,
   runtimeDrawerOpen: false,
   runtimeDrawerTab: "runtime",
@@ -619,10 +619,12 @@ function basenameFromPath(value) {
 }
 
 function connectionLabel() {
+  if (payload.runtimeStartupPending && !connection?.wsUrl) return "starting";
   if (!connection?.wsUrl) return "offline";
   const provider = providerProfile();
   const providerSuffix = provider?.flavor ? ` · ${provider.flavor}` : "";
   if (state.connectionStatus === "connected") return `${connection?.runtime || "connected"}${providerSuffix}`;
+  if (state.connectionStatus === "starting") return "starting";
   if (state.connectionStatus === "connecting") return "connecting";
   if (state.connectionStatus === "error") return "error";
   if (state.connectionStatus === "disconnected") return "offline";
@@ -649,6 +651,7 @@ function settingScopeEnabled(scope) {
 
 function runtimeStateStatusFromConnection(value) {
   if (value === "connected") return "ready";
+  if (value === "starting") return "loading";
   if (value === "connecting") return "loading";
   if (value === "error") return "failed";
   if (value === "disconnected" || value === "unavailable") return "unavailable";
@@ -4491,6 +4494,11 @@ async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "",
     const message = String(error?.message || "");
     if (message.toLowerCase().includes("not connected yet")) {
       if (renderedStored) {
+        if (payload.runtimeStartupPending) {
+          addSystemMessage("Stored transcript rendered while Codex app-server starts.");
+          setComposerEnabled(false, "Stored transcript rendered. Live Codex attach is pending app-server startup.");
+          return;
+        }
         addSystemMessage(`Stored transcript rendered. Live attach unavailable: ${message}`);
         await reportThreadState("failed", {
           threadId: requestedThreadId,
@@ -6208,10 +6216,20 @@ async function connect() {
   updateSurfaceHeader(payload.initialThreadTitle || project.name, workspaceText());
 
   if (!connection?.wsUrl) {
-    state.connectionStatus = "unavailable";
+    const startupPending = Boolean(payload.runtimeStartupPending);
+    state.connectionStatus = startupPending ? "starting" : "unavailable";
     renderRuntimeConstitution();
-    addSystemMessage(payload.error || "Codex fallback surface loaded. The managed app-server is not connected.");
-    setComposerEnabled(false, "Read-only transcript mode (Codex app-server unavailable).");
+    addSystemMessage(
+      payload.error ||
+      payload.runtimeStartupMessage ||
+      "Codex fallback surface loaded. The managed app-server is not connected.",
+    );
+    setComposerEnabled(
+      false,
+      startupPending
+        ? "Read-only transcript mode while Codex app-server starts."
+        : "Read-only transcript mode (Codex app-server unavailable).",
+    );
     state.readyForThreadOpen = true;
     if (payload.initialThreadId) {
       try {

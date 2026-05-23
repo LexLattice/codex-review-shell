@@ -1724,6 +1724,8 @@ function encodeCodexSurfacePayload(project, extra = {}) {
     initialThreadSessionFilePath: normalizeString(extra.initialThreadSessionFilePath, ""),
     initialThreadTitle: normalizeString(extra.initialThreadTitle, ""),
     error: normalizeString(extra.error, ""),
+    runtimeStartupPending: Boolean(extra.runtimeStartupPending),
+    runtimeStartupMessage: normalizeString(extra.runtimeStartupMessage, ""),
   };
   return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
 }
@@ -1731,6 +1733,16 @@ function encodeCodexSurfacePayload(project, extra = {}) {
 function codexSurfaceUrl(baseUrl, project, extra = {}) {
   const token = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
   return `${baseUrl}/codex-surface.html?reload=${token}#${encodeCodexSurfacePayload(project, extra)}`;
+}
+
+function codexSurfaceThreadExtras(options = {}) {
+  return {
+    activationEpoch: Number(options.activationEpoch) || 0,
+    initialThreadId: normalizeString(options.initialThreadId, ""),
+    initialThreadSourceHome: normalizeString(options.initialThreadSourceHome, ""),
+    initialThreadSessionFilePath: normalizeString(options.initialThreadSessionFilePath, ""),
+    initialThreadTitle: normalizeString(options.initialThreadTitle, ""),
+  };
 }
 
 async function loadCodexSurface(project, options = {}) {
@@ -1751,8 +1763,21 @@ async function loadCodexSurface(project, options = {}) {
     }
   }
   if (codex.mode === "managed") {
+    const threadExtras = codexSurfaceThreadExtras(options);
+    const workspaceStatus = workspaceBackends?.statusForProject(project) || null;
     try {
       const requestedCodexHome = normalizeString(options.codexHome, "");
+      if (!options.codexSession) {
+        activeCodexSurfaceConnection = null;
+        const startingUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, {
+          ...threadExtras,
+          workspaceStatus,
+          runtimeStartupPending: true,
+          runtimeStartupMessage: "Starting Codex app-server…",
+        });
+        if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
+        await codexView.webContents.loadURL(startingUrl);
+      }
       const session =
         options.codexSession ||
         await ensureCodexAppServerManager().ensureForProject(
@@ -1773,12 +1798,8 @@ async function loadCodexSurface(project, options = {}) {
           capabilities: session.capabilities || null,
           activationEpoch: Number(options.activationEpoch) || 0,
         },
-        workspaceStatus: workspaceBackends?.statusForProject(project) || null,
-        activationEpoch: Number(options.activationEpoch) || 0,
-        initialThreadId: normalizeString(options.initialThreadId, ""),
-        initialThreadSourceHome: normalizeString(options.initialThreadSourceHome, ""),
-        initialThreadSessionFilePath: normalizeString(options.initialThreadSessionFilePath, ""),
-        initialThreadTitle: normalizeString(options.initialThreadTitle, ""),
+        workspaceStatus,
+        ...threadExtras,
       });
       activeCodexSurfaceConnection = {
         projectId: project.id,
@@ -1805,11 +1826,8 @@ async function loadCodexSurface(project, options = {}) {
         at: nowIso(),
       });
       const degradedUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, {
-        activationEpoch: Number(options.activationEpoch) || 0,
-        initialThreadId: normalizeString(options.initialThreadId, ""),
-        initialThreadSourceHome: normalizeString(options.initialThreadSourceHome, ""),
-        initialThreadSessionFilePath: normalizeString(options.initialThreadSessionFilePath, ""),
-        initialThreadTitle: normalizeString(options.initialThreadTitle, ""),
+        ...threadExtras,
+        workspaceStatus,
         error: error.message,
       });
       if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
