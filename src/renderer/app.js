@@ -883,7 +883,9 @@ function recentThreadSortStamp(thread) {
 }
 
 function recentThreadProjectRank(thread) {
-  const rank = Number(thread?.projectRank);
+  const value = thread?.projectRank;
+  if (value === null || value === undefined || value === "") return Number.POSITIVE_INFINITY;
+  const rank = Number(value);
   return Number.isFinite(rank) ? rank : Number.POSITIVE_INFINITY;
 }
 
@@ -1151,11 +1153,11 @@ function addVersionAliasesForFile(aliases, label, fileRef) {
   ];
   for (const part of parts) {
     const withoutExtension = part.replace(/\.[A-Za-z0-9]{1,12}$/i, "");
-    const versionMatch = withoutExtension.match(/(?:^|[_-])(v\d+(?:[_-]\d+)+)(?:$|[_-])/i);
+    const versionMatch = withoutExtension.match(/(?:^|[._-])(v\d+(?:[._-]\d+)+)(?:$|[._-])/i);
     if (!versionMatch) continue;
     const version = versionMatch[1];
     addFileAlias(aliases, version, fileRef);
-    addFileAlias(aliases, version.replace(/[_-]/g, "."), fileRef);
+    addFileAlias(aliases, version.replace(/[._-]/g, "."), fileRef);
   }
 }
 

@@ -486,6 +486,12 @@ function mergeThreadSourceLabels(...values) {
   ).join("+");
 }
 
+function optionalRecentThreadRank(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const rank = Number(value);
+  return Number.isFinite(rank) ? rank : null;
+}
+
 function normalizeRecentThreadEntry(raw, fallbackDiscoveredAt = "") {
   if (!isPlainObject(raw)) return null;
   const externalId = normalizeString(raw.externalId, "");
@@ -497,7 +503,7 @@ function normalizeRecentThreadEntry(raw, fallbackDiscoveredAt = "") {
     updatedAt: normalizeString(raw.updatedAt, ""),
     createdAt: normalizeString(raw.createdAt, ""),
     displayDate: normalizeString(raw.displayDate, ""),
-    projectRank: Number.isFinite(Number(raw.projectRank)) ? Number(raw.projectRank) : null,
+    projectRank: optionalRecentThreadRank(raw.projectRank),
     archived: Boolean(raw.archived),
     snippet: normalizeString(raw.snippet, ""),
     projectName: normalizeString(raw.projectName, ""),
@@ -546,10 +552,10 @@ function mergeRecentThreadEntries(current, incoming) {
         ? incoming.displayDate || current.displayDate || ""
         : current.displayDate || incoming.displayDate || "",
     projectRank:
-      Number.isFinite(Number(incoming.projectRank))
-        ? Number(incoming.projectRank)
-        : Number.isFinite(Number(current.projectRank))
-          ? Number(current.projectRank)
+      optionalRecentThreadRank(incoming.projectRank) !== null
+        ? optionalRecentThreadRank(incoming.projectRank)
+        : optionalRecentThreadRank(current.projectRank) !== null
+          ? optionalRecentThreadRank(current.projectRank)
           : null,
     projectName: incoming.projectName || current.projectName || "",
     workspaceId: incoming.workspaceId || current.workspaceId || "",
@@ -573,8 +579,8 @@ function sortRecentThreadEntries(entries) {
     if (updatedDelta !== 0) return updatedDelta;
     const createdDelta = String(b.createdAt || "").localeCompare(String(a.createdAt || ""));
     if (createdDelta !== 0) return createdDelta;
-    const aRank = Number.isFinite(Number(a.projectRank)) ? Number(a.projectRank) : Number.POSITIVE_INFINITY;
-    const bRank = Number.isFinite(Number(b.projectRank)) ? Number(b.projectRank) : Number.POSITIVE_INFINITY;
+    const aRank = optionalRecentThreadRank(a.projectRank) ?? Number.POSITIVE_INFINITY;
+    const bRank = optionalRecentThreadRank(b.projectRank) ?? Number.POSITIVE_INFINITY;
     if (aRank !== bRank) return aRank - bRank;
     return String(a.title || "").localeCompare(String(b.title || ""));
   });
@@ -2030,6 +2036,11 @@ function chatgptRecentThreadsScript(limit = 40) {
       const origin = location.origin || "https://chatgpt.com";
       const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
       const normalizeText = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+      const optionalProjectRank = (value) => {
+        if (value === null || value === undefined || value === "") return null;
+        const rank = Number(value);
+        return Number.isFinite(rank) ? rank : null;
+      };
       const monthIndex = {
         jan: 0,
         january: 0,
@@ -2168,7 +2179,7 @@ function chatgptRecentThreadsScript(limit = 40) {
           archived: Boolean(item.is_archived),
           snippet: typeof item.snippet === "string" ? item.snippet : "",
           displayDate: String(extra.displayDate || ""),
-          projectRank: Number.isFinite(Number(extra.projectRank)) ? Number(extra.projectRank) : null,
+          projectRank: optionalProjectRank(extra.projectRank),
           projectName,
           workspaceId,
           sourceKind,
@@ -2180,6 +2191,9 @@ function chatgptRecentThreadsScript(limit = 40) {
         if (!current) return incoming;
         const incomingUpdated = String(incoming.updatedAt || "");
         const currentUpdated = String(current.updatedAt || "");
+        const incomingWinsUpdatedAt = Boolean(incomingUpdated && incomingUpdated >= currentUpdated);
+        const incomingRank = optionalProjectRank(incoming.projectRank);
+        const currentRank = optionalProjectRank(current.projectRank);
         const merged = {
           ...current,
           ...incoming,
@@ -2188,17 +2202,14 @@ function chatgptRecentThreadsScript(limit = 40) {
               ? incoming.title
               : current.title || incoming.title || "Untitled ChatGPT thread",
           url: incoming.url || current.url,
-          updatedAt: incomingUpdated > currentUpdated ? incomingUpdated : currentUpdated,
+          updatedAt: incomingWinsUpdatedAt ? incomingUpdated : currentUpdated,
           createdAt: current.createdAt || incoming.createdAt || "",
           archived: Boolean(current.archived && incoming.archived),
           snippet: current.snippet || incoming.snippet || "",
-          displayDate: incoming.displayDate || current.displayDate || "",
-          projectRank:
-            Number.isFinite(Number(incoming.projectRank))
-              ? Number(incoming.projectRank)
-              : Number.isFinite(Number(current.projectRank))
-                ? Number(current.projectRank)
-                : null,
+          displayDate: incomingWinsUpdatedAt
+            ? incoming.displayDate || current.displayDate || ""
+            : current.displayDate || incoming.displayDate || "",
+          projectRank: incomingRank !== null ? incomingRank : currentRank,
           projectName: incoming.projectName || current.projectName || "",
           workspaceId: incoming.workspaceId || current.workspaceId || "",
           sourceKind:
@@ -2225,8 +2236,8 @@ function chatgptRecentThreadsScript(limit = 40) {
         const entries = Array.from(byId.values()).sort((a, b) => {
           const updatedDelta = String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
           if (updatedDelta !== 0) return updatedDelta;
-          const aRank = Number.isFinite(Number(a.projectRank)) ? Number(a.projectRank) : Number.POSITIVE_INFINITY;
-          const bRank = Number.isFinite(Number(b.projectRank)) ? Number(b.projectRank) : Number.POSITIVE_INFINITY;
+          const aRank = optionalProjectRank(a.projectRank) ?? Number.POSITIVE_INFINITY;
+          const bRank = optionalProjectRank(b.projectRank) ?? Number.POSITIVE_INFINITY;
           if (aRank !== bRank) return aRank - bRank;
           return String(a.title || "").localeCompare(String(b.title || ""));
         });
@@ -2280,7 +2291,7 @@ function chatgptRecentThreadsScript(limit = 40) {
             archived: false,
             snippet: "",
             displayDate: String(extra.displayDate || ""),
-            projectRank: Number.isFinite(Number(extra.projectRank)) ? Number(extra.projectRank) : null,
+            projectRank: optionalProjectRank(extra.projectRank),
             projectName,
             workspaceId: "",
             sourceKind,
