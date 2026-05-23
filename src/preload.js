@@ -1,5 +1,19 @@
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 const { PLANE_ZOOM_POLICY, clampZoomFactor, zoomDeltaForDirection } = require("./shared/plane-zoom");
+
+function fileSystemPathForFile(file) {
+  try {
+    return webUtils?.getPathForFile?.(file) || file?.path || "";
+  } catch {
+    return "";
+  }
+}
+
+function fileSystemPathsForFiles(files) {
+  return Array.from(files || [])
+    .map((file) => fileSystemPathForFile(file))
+    .filter(Boolean);
+}
 
 contextBridge.exposeInMainWorld("workspaceShell", {
   loadConfig: () => ipcRenderer.invoke("config:load"),
@@ -26,6 +40,8 @@ contextBridge.exposeInMainWorld("workspaceShell", {
   clampPlaneZoom: (zoomFactor) => clampZoomFactor(zoomFactor),
   zoomDeltaForDirection: (direction) => zoomDeltaForDirection(direction),
   copyText: (text) => ipcRenderer.invoke("clipboard:write-text", text),
+  getPathForFile: (file) => fileSystemPathForFile(file),
+  getDroppedFilePaths: (files) => fileSystemPathsForFiles(files),
   chooseAttachmentFiles: (projectId) => ipcRenderer.invoke("attachments:choose-files", { projectId }),
   stageDroppedAttachments: (projectId, paths = []) => ipcRenderer.invoke("attachments:stage-drop", { projectId, paths }),
   pasteImageAttachment: (projectId) => ipcRenderer.invoke("attachments:paste-image", { projectId }),

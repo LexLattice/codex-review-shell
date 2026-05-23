@@ -1015,6 +1015,10 @@ button.typed-token {
   --composer-popover-max-height: 320px;
   --composer-witness-max-width: 190px;
   --composer-model-pill-max-width: 260px;
+  --composer-control-font-size: 12px;
+  --composer-control-gap: 8px;
+  --composer-control-pad-x: 10px;
+  --composer-control-height: 30px;
 }
 
 #composerInput {
@@ -1024,10 +1028,12 @@ button.typed-token {
 
 .composer-attachment-row {
   grid-area: attachments;
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--composer-control-gap);
   min-width: 0;
+  overflow: hidden;
   padding: 2px 0;
 }
 
@@ -1041,7 +1047,7 @@ button.typed-token {
 .composer-attachment-actions,
 .composer-attachment-list {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 6px;
   min-width: 0;
@@ -1053,17 +1059,25 @@ button.typed-token {
 
 .composer-attachment-list {
   flex: 1 1 auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.composer-attachment-list::-webkit-scrollbar {
+  display: none;
 }
 
 .composer-attachment-action,
 .composer-attachment-chip {
-  min-height: 26px;
+  min-height: max(22px, calc(var(--composer-control-height) - 4px));
   border-radius: 999px;
-  font-size: 11px;
+  font-size: max(10px, calc(var(--composer-control-font-size) - 1px));
 }
 
 .composer-attachment-action {
-  padding: 0 9px;
+  flex: 0 0 auto;
+  padding: 0 var(--composer-control-pad-x);
   border: 1px dashed rgba(141, 180, 255, 0.28);
   background: rgba(141, 180, 255, 0.06);
   color: #dfeaff;
@@ -1073,6 +1087,7 @@ button.typed-token {
   display: inline-flex;
   align-items: center;
   gap: 7px;
+  flex: 0 1 auto;
   max-width: min(360px, 100%);
   padding: 0 4px 0 9px;
   border: 1px solid rgba(111, 224, 255, 0.18);
@@ -1128,9 +1143,9 @@ textarea {
   flex-wrap: nowrap;
   justify-content: space-between;
   align-items: center;
-  gap: 8px;
+  gap: var(--composer-control-gap);
   min-width: 0;
-  overflow: visible;
+  overflow: hidden;
 }
 
 .composer-quick-controls,
@@ -1138,16 +1153,17 @@ textarea {
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
-  gap: 8px;
+  gap: var(--composer-control-gap);
   min-width: 0;
+  overflow: hidden;
 }
 
 .composer-quick-controls {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
 }
 
 .composer-runtime-witnesses {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   justify-content: flex-end;
   margin-left: auto;
   min-width: 0;
@@ -1156,6 +1172,7 @@ textarea {
 .composer-menu-anchor {
   position: relative;
   min-width: 0;
+  flex: 0 1 auto;
 }
 
 .composer-pill,
@@ -1164,10 +1181,11 @@ textarea {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  min-height: 30px;
-  padding: 0 10px;
+  min-width: 0;
+  min-height: var(--composer-control-height);
+  padding: 0 var(--composer-control-pad-x);
   border-radius: 999px;
-  font-size: 12px;
+  font-size: var(--composer-control-font-size);
   white-space: nowrap;
 }
 
@@ -1234,9 +1252,9 @@ textarea {
 #composerQuotaChip {
   flex: 1 1 var(--composer-quota-max-width, 320px);
   max-width: var(--composer-quota-max-width, 320px);
-  min-width: min(250px, var(--composer-quota-max-width, 320px));
+  min-width: 0;
   justify-content: flex-start;
-  font-size: 11.5px;
+  font-size: max(10px, calc(var(--composer-control-font-size) - 0.5px));
 }
 
 #composerQuotaChip::before {
@@ -1423,6 +1441,7 @@ button.typed-token {
     grid-template-columns: minmax(0, 1fr) auto;
     grid-template-areas:
       "input send"
+      "attachments attachments"
       "band band";
   }
 
@@ -1464,6 +1483,7 @@ button.typed-token {
     grid-template-columns: minmax(0, 1fr) auto;
     grid-template-areas:
       "input send"
+      "attachments attachments"
       "band band";
   }
 
