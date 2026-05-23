@@ -5867,6 +5867,53 @@ async function submitActiveComposerDraft(disposition) {
   throw new Error(`Unsupported active-turn composer disposition: ${disposition}`);
 }
 
+function setComposerTextForReview(text) {
+  if (!els.composerInput) return;
+  const existing = String(els.composerInput.value || "").trim();
+  els.composerInput.value = existing ? `${existing}\n\n${text}` : text;
+  els.composerInput.focus();
+  renderComposerRuntimeBand();
+}
+
+async function handleExternalComposerMessage(event) {
+  const text = String(event?.text || "").trim();
+  if (!text) return;
+  if (event?.projectId && project?.id && String(event.projectId) !== String(project.id)) return;
+  const targetThreadId = String(event?.threadId || "").trim();
+  if (targetThreadId && state.threadId !== targetThreadId) {
+    await openThreadHybrid(
+      targetThreadId,
+      event.sourceHome || "",
+      event.sessionFilePath || "",
+      event.title || "",
+    );
+  }
+  const disposition = String(event?.activeTurnDisposition || "queue");
+  try {
+    if (turnIsActive()) {
+      if (disposition === "steer") {
+        await steerCurrentTurn(text);
+        addSystemMessage("Sent ChatGPT download note as active-turn steering.");
+        return;
+      }
+      if (disposition === "ask") {
+        setComposerTextForReview(text);
+        showComposerDispositionMenu();
+        addSystemMessage("Prepared ChatGPT download note in the composer.");
+        return;
+      }
+      queueComposerMessage(text);
+      addSystemMessage("Queued ChatGPT download note for the linked Codex thread.");
+      return;
+    }
+    await sendPrompt(text);
+    addSystemMessage("Sent ChatGPT download note to the linked Codex thread.");
+  } catch (error) {
+    setComposerTextForReview(text);
+    addSystemMessage(`ChatGPT download note was prepared in the composer after send failed: ${error.message}`);
+  }
+}
+
 function showComposerDispositionMenu() {
   if (!turnIsActive()) return false;
   state.composerMenu = "disposition";
@@ -6061,6 +6108,12 @@ function handleBridgeEvent(event) {
   if (!event) return;
   if (event.type === "open-thread-request") {
     openThreadFromEvent(event);
+    return;
+  }
+  if (event.type === "external-composer-message") {
+    handleExternalComposerMessage(event).catch((error) => {
+      addSystemMessage(`External composer message failed: ${error.message}`);
+    });
     return;
   }
   if (event.type === "connection-status") {

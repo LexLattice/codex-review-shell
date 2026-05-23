@@ -121,6 +121,8 @@ let codexAppServer = null;
 let localSurfaceServer = null;
 let codexSurfaceSessions = null;
 let threadAnalyticsStore = null;
+let chatgptDownloadHandler = null;
+let activeChatgptContext = null;
 let surfaceActivationEpoch = 0;
 const nativePlaneZoomFactors = {
   codex: PLANE_ZOOM_DEFAULT,
@@ -236,6 +238,10 @@ function defaultConfig() {
       },
     },
     codexThreadRuntimeDefaults: {},
+    chatgptDownloads: {
+      enabled: true,
+      windowsDownloadDir: "",
+    },
     projects: [
       {
         id: defaultProjectId,
@@ -266,6 +272,13 @@ function defaultConfig() {
           chatgpt: {
             reviewThreadUrl: "https://chatgpt.com/",
             reduceChrome: true,
+            downloadMacro: {
+              enabled: true,
+              workspaceRelDir: ".codex/review-shell/chatgpt-downloads",
+              notifyCodex: true,
+              activeTurnDisposition: "queue",
+              messageTemplate: "GPT review is at {{workspacePath}}",
+            },
           },
         },
         chatThreads: [
@@ -331,6 +344,33 @@ function normalizeRemoteAuthConfig(value) {
     tokenFilePath: mode === "bearer-token-file" ? normalizeString(raw.tokenFilePath, "") : "",
     tokenEnvVar: mode === "bearer-token-env" ? normalizeString(raw.tokenEnvVar, "") : "",
     serverAuthScheme,
+  };
+}
+
+function normalizeChatgptDownloadsConfig(value) {
+  const raw = isPlainObject(value) ? value : {};
+  return {
+    enabled: raw.enabled !== false,
+    windowsDownloadDir: normalizeString(raw.windowsDownloadDir, ""),
+  };
+}
+
+function normalizeWorkspaceRelDir(value, fallback) {
+  const text = normalizeString(value, fallback).replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
+  const parts = text.split("/").filter(Boolean);
+  if (!parts.length || parts.some((part) => part === "." || part === "..")) return fallback;
+  return parts.join("/");
+}
+
+function normalizeDownloadMacroConfig(value) {
+  const raw = isPlainObject(value) ? value : {};
+  const disposition = normalizeString(raw.activeTurnDisposition, "queue").toLowerCase();
+  return {
+    enabled: raw.enabled !== false,
+    workspaceRelDir: normalizeWorkspaceRelDir(raw.workspaceRelDir, ".codex/review-shell/chatgpt-downloads"),
+    notifyCodex: raw.notifyCodex !== false,
+    activeTurnDisposition: ["queue", "steer", "ask"].includes(disposition) ? disposition : "queue",
+    messageTemplate: normalizeString(raw.messageTemplate, "GPT review is at {{workspacePath}}"),
   };
 }
 
@@ -1109,6 +1149,7 @@ function normalizeProject(input, index = 0) {
       chatgpt: {
         reviewThreadUrl: safeChatgptUrl(primaryReview?.url || rawChatgpt.reviewThreadUrl, "https://chatgpt.com/"),
         reduceChrome: rawChatgpt.reduceChrome !== false,
+        downloadMacro: normalizeDownloadMacroConfig(rawChatgpt.downloadMacro),
       },
     },
     chatThreads,
@@ -1158,6 +1199,7 @@ function normalizeConfig(input) {
     ui: migrateUi(raw.ui),
     runtimeDefaults: normalizeRuntimeDefaults(raw.runtimeDefaults),
     codexThreadRuntimeDefaults: normalizeCodexThreadRuntimeDefaults(raw.codexThreadRuntimeDefaults),
+    chatgptDownloads: normalizeChatgptDownloadsConfig(raw.chatgptDownloads),
     projects: dedupedProjects,
   };
 }
@@ -1849,6 +1891,7 @@ async function loadChatgptSurface(project, threadId = "", options = {}) {
     ? project.chatThreads?.find((item) => item.id === threadId) || activeChatThread(project)
     : activeChatThread(project);
   const target = safeLoadableUrl(thread?.url || project.surfaceBinding.chatgpt.reviewThreadUrl, "chatgpt") || "https://chatgpt.com/";
+  setActiveChatgptProjectThread(project, thread, "project-chatgpt-surface");
   if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
   await chatgptView.webContents.loadURL(target);
 }
@@ -2042,8 +2085,226 @@ async function openChatgptThreadUrl(url) {
   if (!chatgptView || chatgptView.webContents.isDestroyed()) {
     return { ok: false, error: "ChatGPT surface is unavailable." };
   }
+  activeChatgptContext = await resolveChatgptContextForUrl(target);
   await chatgptView.webContents.loadURL(target);
   return { ok: true, url: target };
+}
+
+function safeHostDownloadFileName(value) {
+  const base = path.basename(String(value || "download").replace(/\\/g, "/")).trim() || "download";
+  const cleaned = base
+    .replace(/[\u0000-\u001f<>:"/\\|?*]+/g, "_")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 180);
+  return cleaned && cleaned !== "." && cleaned !== ".." ? cleaned : "download";
+}
+
+function defaultChatgptWindowsDownloadDir() {
+  return path.join(app.getPath("downloads"), "codex-review-shell", "chatgpt");
+}
+
+function chatgptWindowsDownloadDir(config) {
+  const configured = normalizeString(config?.chatgptDownloads?.windowsDownloadDir, "");
+  return configured ? path.resolve(configured) : defaultChatgptWindowsDownloadDir();
+}
+
+function uniqueHostDownloadPathSync(dirPath, fileName) {
+  fsSync.mkdirSync(dirPath, { recursive: true });
+  const parsed = path.parse(fileName);
+  for (let index = 0; index < 1000; index += 1) {
+    const candidateName = index === 0
+      ? fileName
+      : `${parsed.name || "download"}-${index}${parsed.ext || ""}`;
+    const candidate = path.join(dirPath, candidateName);
+    try {
+      const fd = fsSync.openSync(candidate, "wx");
+      fsSync.closeSync(fd);
+      return candidate;
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+    }
+  }
+  throw new Error("Unable to allocate a unique ChatGPT download path.");
+}
+
+function urlsEquivalent(left, right) {
+  try {
+    const a = new URL(left);
+    const b = new URL(right);
+    a.hash = "";
+    b.hash = "";
+    return a.toString().replace(/\/+$/, "") === b.toString().replace(/\/+$/, "");
+  } catch {
+    return false;
+  }
+}
+
+async function resolveChatgptContextForUrl(url) {
+  const config = await loadConfig();
+  for (const project of config.projects || []) {
+    for (const thread of project.chatThreads || []) {
+      if (!thread?.archived && urlsEquivalent(thread.url, url)) {
+        return {
+          projectId: project.id,
+          threadId: thread.id,
+          url,
+          source: "configured-chatgpt-thread",
+        };
+      }
+    }
+  }
+  return { projectId: "", threadId: "", url, source: "unbound-url" };
+}
+
+function setActiveChatgptProjectThread(project, thread, source = "project-thread") {
+  activeChatgptContext = {
+    projectId: project?.id || "",
+    threadId: thread?.id || "",
+    url: thread?.url || "",
+    source,
+  };
+}
+
+function bindingForChatThread(project, chatThreadId) {
+  const target = normalizeString(chatThreadId, "");
+  if (!target) return null;
+  return (project?.laneBindings || []).find((binding) => (
+    normalizeString(binding?.chatThreadId, "") === target &&
+    normalizeString(binding?.codexThreadRef?.threadId, "")
+  )) || null;
+}
+
+function renderDownloadMacroMessage(template, values) {
+  const fallback = "GPT review is at {{workspacePath}}";
+  const text = normalizeString(template, fallback);
+  return text
+    .replaceAll("{{workspacePath}}", values.workspacePath || "")
+    .replaceAll("{{relPath}}", values.relPath || "")
+    .replaceAll("{{fileName}}", values.fileName || "");
+}
+
+function workspaceDisplayPath(project, relPath) {
+  const rootPath = workspaceRoot(project, repoRoot).replace(/[\\/]+$/, "");
+  const cleanRel = normalizeString(relPath, "").replace(/\\/g, "/").replace(/^\/+/, "");
+  return cleanRel ? `${rootPath}/${cleanRel}` : rootPath;
+}
+
+async function importChatgptDownload(project, macro, hostPath, fileName) {
+  const contentBase64 = await fs.readFile(hostPath, { encoding: "base64" });
+  const result = await requestWorkspace(project, "importFile", {
+    relDir: macro.workspaceRelDir,
+    fileName,
+    contentBase64,
+  }, 90_000);
+  return result;
+}
+
+function sendChatgptDownloadMessageToCodex(project, binding, macro, importResult, fileName) {
+  if (!codexView || codexView.webContents.isDestroyed()) {
+    return { ok: false, error: "Codex surface is unavailable." };
+  }
+  const ref = binding?.codexThreadRef || {};
+  const relPath = normalizeString(importResult?.relPath, "");
+  const text = renderDownloadMacroMessage(macro.messageTemplate, {
+    workspacePath: workspaceDisplayPath(project, relPath),
+    relPath,
+    fileName,
+  });
+  codexView.webContents.send("codex-surface:event", {
+    type: "external-composer-message",
+    source: "chatgpt-download",
+    projectId: project.id,
+    threadId: normalizeString(ref.threadId, ""),
+    sourceHome: normalizeString(ref.sourceHome, ""),
+    sessionFilePath: normalizeString(ref.sessionFilePath, ""),
+    title: normalizeString(ref.titleSnapshot, ""),
+    text,
+    activeTurnDisposition: macro.activeTurnDisposition || "queue",
+    at: nowIso(),
+  });
+  return { ok: true };
+}
+
+async function runChatgptDownloadMacro(savePath, fileName, downloadContext = null) {
+  const context = downloadContext || activeChatgptContext || {};
+  if (!context.projectId || !context.threadId) return { activated: false, reason: "unbound_chatgpt_thread" };
+  const project = await getProjectById(context.projectId);
+  const activeThread = (project.chatThreads || []).find((thread) => thread.id === context.threadId && !thread.archived);
+  if (!activeThread) return { activated: false, reason: "chatgpt_thread_not_found" };
+  const binding = bindingForChatThread(project, activeThread.id);
+  if (!binding) return { activated: false, reason: "no_linked_codex_thread" };
+  const macro = normalizeDownloadMacroConfig(project.surfaceBinding?.chatgpt?.downloadMacro);
+  if (!macro.enabled) return { activated: false, reason: "project_macro_disabled" };
+  const importResult = await importChatgptDownload(project, macro, savePath, fileName);
+  let notifyResult = { ok: false, skipped: true };
+  if (macro.notifyCodex) {
+    notifyResult = sendChatgptDownloadMessageToCodex(project, binding, macro, importResult, fileName);
+  }
+  return {
+    activated: true,
+    projectId: project.id,
+    chatThreadId: activeThread.id,
+    codexThreadId: binding.codexThreadRef.threadId,
+    importedRelPath: importResult.relPath,
+    notifyResult,
+  };
+}
+
+async function handleCompletedChatgptDownload(savePath, fileName, downloadContext = null) {
+  try {
+    const macroResult = await runChatgptDownloadMacro(savePath, fileName, downloadContext);
+    emitShellEvent({
+      type: "chatgpt-download-completed",
+      fileName,
+      savePath,
+      macro: macroResult,
+      at: nowIso(),
+    });
+  } catch (error) {
+    emitShellEvent({
+      type: "chatgpt-download-completed",
+      fileName,
+      savePath,
+      macro: { activated: false, error: error.message },
+      at: nowIso(),
+    });
+  }
+}
+
+function prepareChatgptDownload(item) {
+  const config = configCache || normalizeConfig(defaultConfig());
+  const downloads = normalizeChatgptDownloadsConfig(config.chatgptDownloads);
+  if (!downloads.enabled) return null;
+  const downloadContext = activeChatgptContext ? { ...activeChatgptContext } : null;
+  const fileName = safeHostDownloadFileName(item.getFilename?.() || "download");
+  const dirPath = chatgptWindowsDownloadDir({ chatgptDownloads: downloads });
+  const savePath = uniqueHostDownloadPathSync(dirPath, fileName);
+  item.setSavePath(savePath);
+  item.once("done", (_event, state) => {
+    if (state !== "completed") {
+      try {
+        const stat = fsSync.statSync(savePath);
+        if (stat.size === 0) fsSync.unlinkSync(savePath);
+      } catch {}
+      emitShellEvent({
+        type: "chatgpt-download-failed",
+        fileName,
+        savePath,
+        state,
+        at: nowIso(),
+      });
+      return;
+    }
+    handleCompletedChatgptDownload(savePath, path.basename(savePath), downloadContext).catch(() => {});
+  });
+  emitShellEvent({
+    type: "chatgpt-download-started",
+    fileName,
+    savePath,
+    at: nowIso(),
+  });
+  return { fileName, savePath };
 }
 
 function chatgptRecentThreadsScript(limit = 40) {
@@ -2755,6 +3016,13 @@ function configureGuestSurface(surfaceName, view) {
     });
   });
   contents.on("did-stop-loading", () => {
+    if (surfaceName === "chatgpt") {
+      resolveChatgptContextForUrl(contents.getURL() || "")
+        .then((context) => {
+          activeChatgptContext = context;
+        })
+        .catch(() => {});
+    }
     emitToShell("surface:event", {
       surface: surfaceName,
       type: "loaded",
@@ -2796,6 +3064,31 @@ function configureGuestSurface(surfaceName, view) {
       at: nowIso(),
     });
   });
+}
+
+function configureChatgptDownloadBridge() {
+  if (!chatgptView || chatgptView.webContents.isDestroyed()) return;
+  const webSession = chatgptView.webContents.session;
+  if (!webSession) return;
+  if (chatgptDownloadHandler) {
+    webSession.removeListener("will-download", chatgptDownloadHandler);
+    chatgptDownloadHandler = null;
+  }
+  chatgptDownloadHandler = (event, item) => {
+    try {
+      prepareChatgptDownload(item);
+    } catch (error) {
+      event.preventDefault();
+      emitShellEvent({
+        type: "chatgpt-download-failed",
+        fileName: item?.getFilename?.() || "download",
+        state: "prepare-failed",
+        error: error.message,
+        at: nowIso(),
+      });
+    }
+  };
+  webSession.on("will-download", chatgptDownloadHandler);
 }
 
 function setShellBoundsToWindow() {
@@ -3529,6 +3822,7 @@ async function createWindow() {
 
   configureGuestSurface("codex", codexView);
   configureGuestSurface("chatgpt", chatgptView);
+  configureChatgptDownloadBridge();
 
   for (const eventName of ["resize", "resized", "maximize", "unmaximize", "enter-full-screen", "leave-full-screen", "restore"]) {
     mainWindow.on(eventName, () => {
@@ -3558,6 +3852,11 @@ async function createWindow() {
     threadAnalyticsStore = null;
     middleWebHost?.dispose();
     middleWebHost = null;
+    if (chatgptDownloadHandler && chatgptView?.webContents && !chatgptView.webContents.isDestroyed()) {
+      chatgptView.webContents.session?.removeListener("will-download", chatgptDownloadHandler);
+    }
+    chatgptDownloadHandler = null;
+    activeChatgptContext = null;
     closeView(codexView);
     closeView(chatgptView);
     closeView(shellView);
