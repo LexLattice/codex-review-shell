@@ -37,6 +37,7 @@ const CODEX_ANALYTICS_TAIL_HASH_LINE_LIMIT = 24;
 const CODEX_SANDBOX_ARTIFACT_NAME = ".codex";
 const CODEX_SANDBOX_ARTIFACT_EXCLUDE_COMMENT =
   "# codex-review-shell: Codex Linux sandbox may leak a zero-byte bwrap placeholder here.";
+let reviewShellIgnorePromise = null;
 
 const SKIPPED_DIR_NAMES = new Set([
   ".git",
@@ -123,7 +124,7 @@ function safeAttachmentSegment(value, label) {
   return text;
 }
 
-async function ensureAttachmentIgnore() {
+async function ensureAttachmentIgnoreInner() {
   const base = path.join(root, ".codex", "review-shell");
   const ignorePath = path.join(base, ".gitignore");
   await fs.mkdir(base, { recursive: true });
@@ -136,7 +137,19 @@ async function ensureAttachmentIgnore() {
     const existing = await fs.readFile(ignorePath, "utf8");
     const additions = ["attachments/", "chatgpt-downloads/"].filter((line) => !existing.split(/\r?\n/).includes(line));
     if (additions.length) await fs.appendFile(ignorePath, `${existing.endsWith("\n") ? "" : "\n"}${additions.join("\n")}\n`);
-  } catch {}
+  } catch (error) {
+    process.stderr.write(`codex-review-shell: unable to update workspace staging .gitignore: ${error.message}\n`);
+  }
+}
+
+async function ensureAttachmentIgnore() {
+  if (!reviewShellIgnorePromise) {
+    reviewShellIgnorePromise = ensureAttachmentIgnoreInner().catch((error) => {
+      reviewShellIgnorePromise = null;
+      throw error;
+    });
+  }
+  return reviewShellIgnorePromise;
 }
 
 async function stageAttachment(params = {}) {

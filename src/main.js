@@ -2120,7 +2120,6 @@ function uniqueHostDownloadPathSync(dirPath, fileName) {
     try {
       const fd = fsSync.openSync(candidate, "wx");
       fsSync.closeSync(fd);
-      fsSync.unlinkSync(candidate);
       return candidate;
     } catch (error) {
       if (error?.code !== "EEXIST") throw error;
@@ -2192,11 +2191,11 @@ function workspaceDisplayPath(project, relPath) {
 }
 
 async function importChatgptDownload(project, macro, hostPath, fileName) {
-  const buffer = await fs.readFile(hostPath);
+  const contentBase64 = await fs.readFile(hostPath, { encoding: "base64" });
   const result = await requestWorkspace(project, "importFile", {
     relDir: macro.workspaceRelDir,
     fileName,
-    contentBase64: buffer.toString("base64"),
+    contentBase64,
   }, 90_000);
   return result;
 }
@@ -2227,8 +2226,8 @@ function sendChatgptDownloadMessageToCodex(project, binding, macro, importResult
   return { ok: true };
 }
 
-async function runChatgptDownloadMacro(savePath, fileName) {
-  const context = activeChatgptContext || {};
+async function runChatgptDownloadMacro(savePath, fileName, downloadContext = null) {
+  const context = downloadContext || activeChatgptContext || {};
   if (!context.projectId || !context.threadId) return { activated: false, reason: "unbound_chatgpt_thread" };
   const project = await getProjectById(context.projectId);
   const activeThread = (project.chatThreads || []).find((thread) => thread.id === context.threadId && !thread.archived);
@@ -2252,9 +2251,9 @@ async function runChatgptDownloadMacro(savePath, fileName) {
   };
 }
 
-async function handleCompletedChatgptDownload(savePath, fileName) {
+async function handleCompletedChatgptDownload(savePath, fileName, downloadContext = null) {
   try {
-    const macroResult = await runChatgptDownloadMacro(savePath, fileName);
+    const macroResult = await runChatgptDownloadMacro(savePath, fileName, downloadContext);
     emitShellEvent({
       type: "chatgpt-download-completed",
       fileName,
@@ -2277,12 +2276,17 @@ function prepareChatgptDownload(item) {
   const config = configCache || normalizeConfig(defaultConfig());
   const downloads = normalizeChatgptDownloadsConfig(config.chatgptDownloads);
   if (!downloads.enabled) return null;
+  const downloadContext = activeChatgptContext ? { ...activeChatgptContext } : null;
   const fileName = safeHostDownloadFileName(item.getFilename?.() || "download");
   const dirPath = chatgptWindowsDownloadDir({ chatgptDownloads: downloads });
   const savePath = uniqueHostDownloadPathSync(dirPath, fileName);
   item.setSavePath(savePath);
   item.once("done", (_event, state) => {
     if (state !== "completed") {
+      try {
+        const stat = fsSync.statSync(savePath);
+        if (stat.size === 0) fsSync.unlinkSync(savePath);
+      } catch {}
       emitShellEvent({
         type: "chatgpt-download-failed",
         fileName,
@@ -2292,7 +2296,7 @@ function prepareChatgptDownload(item) {
       });
       return;
     }
-    handleCompletedChatgptDownload(savePath, path.basename(savePath)).catch(() => {});
+    handleCompletedChatgptDownload(savePath, path.basename(savePath), downloadContext).catch(() => {});
   });
   emitShellEvent({
     type: "chatgpt-download-started",

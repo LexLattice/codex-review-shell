@@ -4000,7 +4000,7 @@ async function handleProjectFormSubmit(event) {
     selectedProjectId: project.id,
     chatgptDownloads: {
       ...(state.config.chatgptDownloads || {}),
-      enabled: true,
+      enabled: state.config.chatgptDownloads?.enabled !== false,
       windowsDownloadDir: els.chatgptDownloadDirInput.value.trim(),
     },
     projects,
