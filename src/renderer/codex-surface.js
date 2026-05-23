@@ -6403,6 +6403,13 @@ function selectedTextInfo(event) {
 
 function contextMenuTarget(event) {
   const target = event.target?.closest?.("[data-context-target]");
+  if (target?.dataset?.contextTarget === "thread_title") {
+    return {
+      targetKind: "thread_title",
+      targetThreadId: state.threadId || "",
+      targetLabel: target.textContent || "Codex thread title",
+    };
+  }
   if (target?.dataset?.contextTarget === "file_ref") {
     return {
       targetKind: "file_ref",
