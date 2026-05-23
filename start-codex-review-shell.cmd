@@ -26,6 +26,9 @@ call "%POWERSHELL%" -NoProfile -Command ^
   "if ($targets) { $targets | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } }" ^
   >> "%LAUNCHER_STDOUT%" 2>> "%LAUNCHER_STDERR%"
 
+echo Existing WSL Codex app-server processes before launch: >> "%LAUNCHER_STDOUT%"
+"%SystemRoot%\System32\wsl.exe" -d "%CODEX_REVIEW_SHELL_DEFAULT_WSL_DISTRO%" -- bash -lc "pgrep -af 'codex app-server --listen ws://127[.]0[.]0[.]1:' || true" >> "%LAUNCHER_STDOUT%" 2>> "%LAUNCHER_STDERR%"
+
 call "%ROOT_DIR%\sync-from-wsl.cmd" >> "%LAUNCHER_STDOUT%" 2>> "%LAUNCHER_STDERR%"
 if errorlevel 1 exit /b %ERRORLEVEL%
 
