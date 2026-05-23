@@ -22,7 +22,9 @@ const PROTOCOL_VERSION = 1;
 const PREVIEW_LIMIT_BYTES = 384 * 1024;
 const DIRECTORY_ENTRY_LIMIT = 500;
 const ATTACHMENT_STAGING_ROOT = ".codex/review-shell/attachments";
+const CHATGPT_DOWNLOAD_STAGING_ROOT = ".codex/review-shell/chatgpt-downloads";
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const MAX_IMPORT_FILE_BYTES = 50 * 1024 * 1024;
 const COMMAND_OUTPUT_LIMIT_BYTES = 256 * 1024;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
 const MATCH_SCAN_LIMIT = 240;
@@ -123,12 +125,18 @@ function safeAttachmentSegment(value, label) {
 
 async function ensureAttachmentIgnore() {
   const base = path.join(root, ".codex", "review-shell");
+  const ignorePath = path.join(base, ".gitignore");
   await fs.mkdir(base, { recursive: true });
   try {
-    await fs.writeFile(path.join(base, ".gitignore"), "attachments/\n", { flag: "wx" });
+    await fs.writeFile(ignorePath, "attachments/\nchatgpt-downloads/\n", { flag: "wx" });
   } catch (error) {
     if (error?.code !== "EEXIST") throw error;
   }
+  try {
+    const existing = await fs.readFile(ignorePath, "utf8");
+    const additions = ["attachments/", "chatgpt-downloads/"].filter((line) => !existing.split(/\r?\n/).includes(line));
+    if (additions.length) await fs.appendFile(ignorePath, `${existing.endsWith("\n") ? "" : "\n"}${additions.join("\n")}\n`);
+  } catch {}
 }
 
 async function stageAttachment(params = {}) {
@@ -158,6 +166,56 @@ async function removeAttachmentDraft(params = {}) {
   const { fullPath } = resolveWithinRoot(relPath);
   await fs.rm(fullPath, { recursive: true, force: true });
   return { ok: true, draftId };
+}
+
+function safeImportFileName(value) {
+  const text = path.basename(String(value || "download").replace(/\\/g, "/")).trim();
+  const fallback = "download";
+  const cleaned = (text || fallback)
+    .replace(/[\u0000-\u001f<>:"/\\|?*]+/g, "_")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 180);
+  return cleaned && cleaned !== "." && cleaned !== ".." ? cleaned : fallback;
+}
+
+async function uniqueFilePath(dirPath, fileName) {
+  const parsed = path.parse(fileName);
+  for (let index = 0; index < 1000; index += 1) {
+    const candidateName = index === 0
+      ? fileName
+      : `${parsed.name || "download"}-${index}${parsed.ext || ""}`;
+    const candidate = path.join(dirPath, candidateName);
+    try {
+      const handle = await fs.open(candidate, "wx");
+      return { handle, fullPath: candidate };
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+    }
+  }
+  throw new Error("Unable to allocate a unique import file path.");
+}
+
+async function importFile(params = {}) {
+  const relDir = normalizeRelPath(params.relDir || CHATGPT_DOWNLOAD_STAGING_ROOT);
+  const fileName = safeImportFileName(params.fileName);
+  const content = Buffer.from(String(params.contentBase64 || ""), "base64");
+  if (!content.length) throw new Error("Import file content is empty.");
+  if (content.length > MAX_IMPORT_FILE_BYTES) throw new Error("Import file exceeds size limit.");
+  const { fullPath: dirPath, displayRel: dirDisplayRel } = resolveWithinRoot(relDir);
+  await ensureAttachmentIgnore();
+  await fs.mkdir(dirPath, { recursive: true });
+  const { handle, fullPath } = await uniqueFilePath(dirPath, fileName);
+  try {
+    await handle.writeFile(content);
+  } finally {
+    await handle.close();
+  }
+  const relPath = path.join(dirDisplayRel, path.basename(fullPath));
+  return {
+    relPath: displayRelPath(relPath),
+    sizeBytes: content.length,
+  };
 }
 
 function direntType(dirent) {
@@ -2216,6 +2274,7 @@ async function handleRequest(method, params = {}) {
         analyzeCodexThread: true,
         stageAttachment: true,
         removeAttachmentDraft: true,
+        importFile: true,
       },
     };
   }
@@ -2231,6 +2290,7 @@ async function handleRequest(method, params = {}) {
   if (method === "analyzeCodexThread") return analyzeCodexThread(params);
   if (method === "stageAttachment") return stageAttachment(params);
   if (method === "removeAttachmentDraft") return removeAttachmentDraft(params);
+  if (method === "importFile") return importFile(params);
   throw new Error(`Unknown workspace-agent method: ${method}`);
 }
 

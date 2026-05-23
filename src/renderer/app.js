@@ -256,6 +256,12 @@ const els = {
   projectCodexThreadSelect: document.getElementById("projectCodexThreadSelect"),
   chatgptUrlInput: document.getElementById("chatgptUrlInput"),
   reduceChromeInput: document.getElementById("reduceChromeInput"),
+  chatgptDownloadDirInput: document.getElementById("chatgptDownloadDirInput"),
+  chatgptDownloadMacroDirInput: document.getElementById("chatgptDownloadMacroDirInput"),
+  chatgptDownloadMacroEnabledInput: document.getElementById("chatgptDownloadMacroEnabledInput"),
+  chatgptDownloadNotifyCodexInput: document.getElementById("chatgptDownloadNotifyCodexInput"),
+  chatgptDownloadDispositionInput: document.getElementById("chatgptDownloadDispositionInput"),
+  chatgptDownloadMessageInput: document.getElementById("chatgptDownloadMessageInput"),
   reviewPromptInput: document.getElementById("reviewPromptInput"),
   architecturePromptInput: document.getElementById("architecturePromptInput"),
   brainstormingPromptInput: document.getElementById("brainstormingPromptInput"),
@@ -3784,7 +3790,17 @@ function openDrawer(mode) {
         reasoningEffort: "",
         label: "Managed Codex lane",
       },
-      chatgpt: { reviewThreadUrl: "https://chatgpt.com/", reduceChrome: true },
+      chatgpt: {
+        reviewThreadUrl: "https://chatgpt.com/",
+        reduceChrome: true,
+        downloadMacro: {
+          enabled: true,
+          workspaceRelDir: ".codex/review-shell/chatgpt-downloads",
+          notifyCodex: true,
+          activeTurnDisposition: "queue",
+          messageTemplate: "GPT review is at {{workspacePath}}",
+        },
+      },
     },
     chatThreads: [
       {
@@ -3840,6 +3856,14 @@ function openDrawer(mode) {
   populateProjectThreadSelectors(draft);
   syncProjectChatgptUrlFromSelection();
   els.reduceChromeInput.checked = draft.surfaceBinding.chatgpt.reduceChrome !== false;
+  const downloads = state.config?.chatgptDownloads || {};
+  const macro = draft.surfaceBinding.chatgpt.downloadMacro || {};
+  els.chatgptDownloadDirInput.value = downloads.windowsDownloadDir || "";
+  els.chatgptDownloadMacroDirInput.value = macro.workspaceRelDir || ".codex/review-shell/chatgpt-downloads";
+  els.chatgptDownloadMacroEnabledInput.checked = macro.enabled !== false;
+  els.chatgptDownloadNotifyCodexInput.checked = macro.notifyCodex !== false;
+  els.chatgptDownloadDispositionInput.value = ["queue", "steer", "ask"].includes(macro.activeTurnDisposition) ? macro.activeTurnDisposition : "queue";
+  els.chatgptDownloadMessageInput.value = macro.messageTemplate || "GPT review is at {{workspacePath}}";
   els.reviewPromptInput.value = templates.review?.text || draft.flowProfile.reviewPromptTemplate;
   els.architecturePromptInput.value = templates.architecture?.text || defaultPromptText("architecture");
   els.brainstormingPromptInput.value = templates.brainstorming?.text || defaultPromptText("brainstorming");
@@ -3931,6 +3955,13 @@ function projectFromForm() {
       chatgpt: {
         reviewThreadUrl: primaryUrl,
         reduceChrome: els.reduceChromeInput.checked,
+        downloadMacro: {
+          enabled: els.chatgptDownloadMacroEnabledInput.checked,
+          workspaceRelDir: els.chatgptDownloadMacroDirInput.value.trim() || ".codex/review-shell/chatgpt-downloads",
+          notifyCodex: els.chatgptDownloadNotifyCodexInput.checked,
+          activeTurnDisposition: els.chatgptDownloadDispositionInput.value || "queue",
+          messageTemplate: els.chatgptDownloadMessageInput.value.trim() || "GPT review is at {{workspacePath}}",
+        },
       },
     },
     chatThreads: threads,
@@ -3964,7 +3995,16 @@ async function handleProjectFormSubmit(event) {
   const projects = [...state.config.projects];
   if (existingIndex >= 0) projects[existingIndex] = project;
   else projects.push(project);
-  await saveConfig({ ...state.config, selectedProjectId: project.id, projects });
+  await saveConfig({
+    ...state.config,
+    selectedProjectId: project.id,
+    chatgptDownloads: {
+      ...(state.config.chatgptDownloads || {}),
+      enabled: true,
+      windowsDownloadDir: els.chatgptDownloadDirInput.value.trim(),
+    },
+    projects,
+  });
   closeDrawer();
   await selectProject(project.id);
   setLastEvent(`Saved project binding for ${project.name}.`);
@@ -4830,6 +4870,20 @@ function bindEvents() {
       if (event.error) setLastEvent(`Workspace backend error: ${event.error}`);
       else if (event.session.status === "attached") setLastEvent(`Workspace backend attached: ${event.session.transport}`);
       else if (event.session.status === "failed") setLastEvent(`Workspace backend failed: ${event.session.lastError || "unknown"}`);
+    }
+    if (event.type === "chatgpt-download-started") {
+      setLastEvent(`ChatGPT download started: ${event.fileName || "download"}.`);
+    }
+    if (event.type === "chatgpt-download-completed") {
+      const macro = event.macro || {};
+      if (macro.activated) {
+        setLastEvent(`ChatGPT download imported: ${macro.importedRelPath || event.fileName || "download"}.`);
+      } else {
+        setLastEvent(`ChatGPT download saved: ${event.fileName || "download"}.`);
+      }
+    }
+    if (event.type === "chatgpt-download-failed") {
+      setLastEvent(`ChatGPT download failed: ${event.error || event.state || "unknown error"}.`);
     }
     if (event.type === "codex-runtime-status") {
       const status = event.session?.status || "unknown";

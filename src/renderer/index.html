@@ -529,6 +529,43 @@
           <span>Apply best-effort ChatGPT chrome reduction CSS</span>
         </label>
 
+        <div class="form-grid">
+          <label>
+            ChatGPT download folder <span class="muted">Windows/global</span>
+            <input id="chatgptDownloadDirInput" autocomplete="off" placeholder="Default: Downloads/codex-review-shell/chatgpt" />
+          </label>
+          <label>
+            Project import folder <span class="muted">workspace-relative</span>
+            <input id="chatgptDownloadMacroDirInput" autocomplete="off" placeholder=".codex/review-shell/chatgpt-downloads" />
+          </label>
+        </div>
+
+        <div class="form-grid">
+          <label class="checkbox-row">
+            <input id="chatgptDownloadMacroEnabledInput" type="checkbox" />
+            <span>When this ChatGPT thread is linked to Codex, import downloads into the project</span>
+          </label>
+          <label class="checkbox-row">
+            <input id="chatgptDownloadNotifyCodexInput" type="checkbox" />
+            <span>Send linked Codex a message after import</span>
+          </label>
+        </div>
+
+        <div class="form-grid">
+          <label>
+            Active-turn behavior
+            <select id="chatgptDownloadDispositionInput">
+              <option value="queue">Queue for next turn</option>
+              <option value="steer">Steer active turn</option>
+              <option value="ask">Ask in Codex composer</option>
+            </select>
+          </label>
+          <label>
+            Codex message template
+            <input id="chatgptDownloadMessageInput" autocomplete="off" placeholder="GPT review is at {{workspacePath}}" />
+          </label>
+        </div>
+
         <label>
           Review prompt template
           <textarea id="reviewPromptInput" rows="4"></textarea>
