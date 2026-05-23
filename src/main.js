@@ -496,6 +496,8 @@ function normalizeRecentThreadEntry(raw, fallbackDiscoveredAt = "") {
     url: normalizeString(raw.url, ""),
     updatedAt: normalizeString(raw.updatedAt, ""),
     createdAt: normalizeString(raw.createdAt, ""),
+    displayDate: normalizeString(raw.displayDate, ""),
+    projectRank: Number.isFinite(Number(raw.projectRank)) ? Number(raw.projectRank) : null,
     archived: Boolean(raw.archived),
     snippet: normalizeString(raw.snippet, ""),
     projectName: normalizeString(raw.projectName, ""),
@@ -512,6 +514,7 @@ function mergeRecentThreadEntries(current, incoming) {
   const currentUpdated = String(current.updatedAt || "");
   const incomingCreated = String(incoming.createdAt || "");
   const currentCreated = String(current.createdAt || "");
+  const mergedUpdatedAt = incomingUpdated > currentUpdated ? incomingUpdated : currentUpdated;
   const incomingTitle = normalizeString(incoming.title, "");
   const currentTitle = normalizeString(current.title, "");
   const chooseIncomingTitle = incomingTitle && incomingTitle !== "Untitled ChatGPT thread";
@@ -527,7 +530,7 @@ function mergeRecentThreadEntries(current, incoming) {
     ...incoming,
     title: chooseIncomingTitle ? incomingTitle : currentTitle || incomingTitle || "Untitled ChatGPT thread",
     url: preferIncomingUrl ? incoming.url : current.url || incoming.url || "",
-    updatedAt: incomingUpdated > currentUpdated ? incomingUpdated : currentUpdated,
+    updatedAt: mergedUpdatedAt,
     createdAt:
       !currentCreated
         ? incomingCreated
@@ -538,6 +541,16 @@ function mergeRecentThreadEntries(current, incoming) {
             : currentCreated,
     archived: Boolean(current.archived && incoming.archived),
     snippet: current.snippet || incoming.snippet || "",
+    displayDate:
+      mergedUpdatedAt && mergedUpdatedAt === incomingUpdated
+        ? incoming.displayDate || current.displayDate || ""
+        : current.displayDate || incoming.displayDate || "",
+    projectRank:
+      Number.isFinite(Number(incoming.projectRank))
+        ? Number(incoming.projectRank)
+        : Number.isFinite(Number(current.projectRank))
+          ? Number(current.projectRank)
+          : null,
     projectName: incoming.projectName || current.projectName || "",
     workspaceId: incoming.workspaceId || current.workspaceId || "",
     sourceKind:
@@ -560,6 +573,9 @@ function sortRecentThreadEntries(entries) {
     if (updatedDelta !== 0) return updatedDelta;
     const createdDelta = String(b.createdAt || "").localeCompare(String(a.createdAt || ""));
     if (createdDelta !== 0) return createdDelta;
+    const aRank = Number.isFinite(Number(a.projectRank)) ? Number(a.projectRank) : Number.POSITIVE_INFINITY;
+    const bRank = Number.isFinite(Number(b.projectRank)) ? Number(b.projectRank) : Number.POSITIVE_INFINITY;
+    if (aRank !== bRank) return aRank - bRank;
     return String(a.title || "").localeCompare(String(b.title || ""));
   });
 }
@@ -2014,6 +2030,33 @@ function chatgptRecentThreadsScript(limit = 40) {
       const origin = location.origin || "https://chatgpt.com";
       const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
       const normalizeText = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+      const monthIndex = {
+        jan: 0,
+        january: 0,
+        feb: 1,
+        february: 1,
+        mar: 2,
+        march: 2,
+        apr: 3,
+        april: 3,
+        may: 4,
+        jun: 5,
+        june: 5,
+        jul: 6,
+        july: 6,
+        aug: 7,
+        august: 7,
+        sep: 8,
+        sept: 8,
+        september: 8,
+        oct: 9,
+        october: 9,
+        nov: 10,
+        november: 10,
+        dec: 11,
+        december: 11,
+      };
+      const displayedDateCandidatePattern = /\\b(today|yesterday|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\b(?:\\s+\\d{1,2}(?:,\\s*\\d{4})?)?/i;
       const visible = (element) => {
         if (!element) return false;
         const style = window.getComputedStyle(element);
@@ -2029,6 +2072,83 @@ function chatgptRecentThreadsScript(limit = 40) {
         element.click();
         return true;
       };
+      const isoDateForLocalDay = (date) => {
+        if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, "0");
+        const day = String(date.getDate()).padStart(2, "0");
+        return year + "-" + month + "-" + day + "T12:00:00.000Z";
+      };
+      const parseDisplayedThreadDate = (value) => {
+        const label = normalizeText(value);
+        if (!label) return "";
+        const now = new Date();
+        if (/^today$/i.test(label)) return isoDateForLocalDay(now);
+        if (/^yesterday$/i.test(label)) {
+          const yesterday = new Date(now);
+          yesterday.setDate(yesterday.getDate() - 1);
+          return isoDateForLocalDay(yesterday);
+        }
+        const match = label.match(/^([A-Za-z]{3,9})\\s+(\\d{1,2})(?:,\\s*(\\d{4}))?$/);
+        if (!match) return "";
+        const month = monthIndex[match[1].toLowerCase()];
+        const day = Number(match[2]);
+        if (!Number.isInteger(month) || !Number.isFinite(day) || day < 1 || day > 31) return "";
+        let year = match[3] ? Number(match[3]) : now.getFullYear();
+        let parsed = new Date(year, month, day, 12, 0, 0, 0);
+        if (!match[3] && parsed.getTime() - now.getTime() > 36 * 60 * 60 * 1000) {
+          year -= 1;
+          parsed = new Date(year, month, day, 12, 0, 0, 0);
+        }
+        return isoDateForLocalDay(parsed);
+      };
+      const directText = (element) =>
+        Array.from(element?.childNodes || [])
+          .filter((node) => node.nodeType === Node.TEXT_NODE)
+          .map((node) => normalizeText(node.textContent))
+          .filter(Boolean)
+          .join(" ");
+      const threadRowForLink = (link) => {
+        let node = link;
+        let compactFallback = link;
+        for (let depth = 0; node && depth < 7; depth += 1, node = node.parentElement) {
+          const anchors = node.querySelectorAll ? Array.from(node.querySelectorAll('a[href*="/c/"]')) : [];
+          const text = normalizeText(node.textContent);
+          if (anchors.length > 2 || text.length > 1200) continue;
+          compactFallback = node;
+          if (node.querySelector?.("time,[datetime]") || displayedDateCandidatePattern.test(text)) return node;
+        }
+        return compactFallback;
+      };
+      const displayedDateFromThreadRow = (row) => {
+        if (!row) return { label: "", iso: "" };
+        for (const element of Array.from(row.querySelectorAll?.("time,[datetime]") || [])) {
+          const datetime = normalizeText(element.getAttribute("datetime"));
+          if (datetime) {
+            const parsed = new Date(datetime);
+            if (!Number.isNaN(parsed.getTime())) return { label: normalizeText(element.textContent) || datetime, iso: parsed.toISOString() };
+          }
+        }
+        const datePattern = new RegExp(displayedDateCandidatePattern.source, "gi");
+        const candidates = [];
+        for (const element of Array.from(row.querySelectorAll?.("*") || [])) {
+          const pieces = [directText(element), element.getAttribute("aria-label"), element.getAttribute("title")]
+            .map(normalizeText)
+            .filter(Boolean);
+          for (const piece of pieces) {
+            for (const match of piece.matchAll(datePattern)) candidates.push(match[0]);
+          }
+        }
+        if (!candidates.length) {
+          for (const match of normalizeText(row.textContent).matchAll(datePattern)) candidates.push(match[0]);
+        }
+        for (let index = candidates.length - 1; index >= 0; index -= 1) {
+          const label = normalizeText(candidates[index]);
+          const iso = parseDisplayedThreadDate(label);
+          if (iso) return { label, iso };
+        }
+        return { label: "", iso: "" };
+      };
 
       const normalizeEntry = (item, extra = {}) => {
         if (!item || !item.id) return null;
@@ -2043,10 +2163,12 @@ function chatgptRecentThreadsScript(limit = 40) {
           externalId,
           title: String(item.title || "Untitled ChatGPT thread"),
           url: externalId ? origin.replace(/\\/$/, "") + "/c/" + encodeURIComponent(externalId) : "",
-          updatedAt: String(item.update_time || ""),
+          updatedAt: String(item.update_time || extra.updatedAt || ""),
           createdAt: String(item.create_time || ""),
           archived: Boolean(item.is_archived),
           snippet: typeof item.snippet === "string" ? item.snippet : "",
+          displayDate: String(extra.displayDate || ""),
+          projectRank: Number.isFinite(Number(extra.projectRank)) ? Number(extra.projectRank) : null,
           projectName,
           workspaceId,
           sourceKind,
@@ -2070,6 +2192,13 @@ function chatgptRecentThreadsScript(limit = 40) {
           createdAt: current.createdAt || incoming.createdAt || "",
           archived: Boolean(current.archived && incoming.archived),
           snippet: current.snippet || incoming.snippet || "",
+          displayDate: incoming.displayDate || current.displayDate || "",
+          projectRank:
+            Number.isFinite(Number(incoming.projectRank))
+              ? Number(incoming.projectRank)
+              : Number.isFinite(Number(current.projectRank))
+                ? Number(current.projectRank)
+                : null,
           projectName: incoming.projectName || current.projectName || "",
           workspaceId: incoming.workspaceId || current.workspaceId || "",
           sourceKind:
@@ -2093,9 +2222,14 @@ function chatgptRecentThreadsScript(limit = 40) {
           if (!item || !item.externalId) continue;
           byId.set(item.externalId, mergeEntries(byId.get(item.externalId), item));
         }
-        const entries = Array.from(byId.values()).sort((a, b) =>
-          String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""))
-        );
+        const entries = Array.from(byId.values()).sort((a, b) => {
+          const updatedDelta = String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
+          if (updatedDelta !== 0) return updatedDelta;
+          const aRank = Number.isFinite(Number(a.projectRank)) ? Number(a.projectRank) : Number.POSITIVE_INFINITY;
+          const bRank = Number.isFinite(Number(b.projectRank)) ? Number(b.projectRank) : Number.POSITIVE_INFINITY;
+          if (aRank !== bRank) return aRank - bRank;
+          return String(a.title || "").localeCompare(String(b.title || ""));
+        });
         const projectEntries = entries.filter((entry) => entry.sourceKind === "project");
         const otherEntries = entries.filter((entry) => entry.sourceKind !== "project");
         return [...projectEntries, ...otherEntries].slice(0, limit);
@@ -2122,7 +2256,7 @@ function chatgptRecentThreadsScript(limit = 40) {
         return dedupe(items);
       };
 
-      const parseLinkEntry = (link, fallbackKind, source, forcedProjectName = "") => {
+      const parseLinkEntry = (link, fallbackKind, source, forcedProjectName = "", extra = {}) => {
         try {
           const url = new URL(link.href, origin);
           const match = url.pathname.match(/\\/c\\/([^/?#]+)/);
@@ -2141,10 +2275,12 @@ function chatgptRecentThreadsScript(limit = 40) {
             externalId: match[1],
             title,
             url: url.toString(),
-            updatedAt: "",
+            updatedAt: String(extra.updatedAt || ""),
             createdAt: "",
             archived: false,
             snippet: "",
+            displayDate: String(extra.displayDate || ""),
+            projectRank: Number.isFinite(Number(extra.projectRank)) ? Number(extra.projectRank) : null,
             projectName,
             workspaceId: "",
             sourceKind,
@@ -2212,6 +2348,13 @@ function chatgptRecentThreadsScript(limit = 40) {
         } catch {
           return "";
         }
+      };
+      const projectMatchesEntry = (project, entry) => {
+        if (!project || !entry) return false;
+        const entryProjectKey = projectKeyFromThreadUrl(entry.url);
+        if (project.projectId && entryProjectKey === project.projectId) return true;
+        const projectNameKey = normalizeText(project.projectName).toLowerCase();
+        return Boolean(projectNameKey && normalizeText(entry.projectName).toLowerCase() === projectNameKey);
       };
 
       const ensureSidebarVisible = async () => {
@@ -2301,10 +2444,16 @@ function chatgptRecentThreadsScript(limit = 40) {
                   }
                 }
                 if (!include) continue;
-                const parsed = parseLinkEntry(link, "project", "project-iframe", project.projectName || "");
+                const row = threadRowForLink(link);
+                const displayedDate = displayedDateFromThreadRow(row);
+                const parsed = parseLinkEntry(link, "project", "project-iframe", project.projectName || "", {
+                  updatedAt: displayedDate.iso,
+                  displayDate: displayedDate.label,
+                  projectRank: scopedEntries.length,
+                });
                 if (parsed) scopedEntries.push(parsed);
               }
-              for (const entry of scopedEntries.slice(0, 5)) items.push(entry);
+              for (const entry of scopedEntries.slice(0, 10)) items.push(entry);
             }
           } catch {}
           frame.remove();
@@ -2363,7 +2512,9 @@ function chatgptRecentThreadsScript(limit = 40) {
         const projectNameKey = normalizeText(project.projectName).toLowerCase();
         const knownById = project.projectId && discoveredProjectKeys.has(project.projectId);
         const knownByName = projectNameKey && discoveredProjectNames.has(projectNameKey);
-        return !(knownById || knownByName);
+        const knownRows = baselineProjects.filter((entry) => projectMatchesEntry(project, entry));
+        const needsDisplayedDateRefresh = knownRows.some((entry) => !entry.updatedAt);
+        return !(knownById || knownByName) || needsDisplayedDateRefresh;
       });
       const iframeProjects = missingSidebarProjects.length ? await fromProjectIframes(missingSidebarProjects) : [];
       const combined = dedupe([...baseline, ...iframeProjects]);

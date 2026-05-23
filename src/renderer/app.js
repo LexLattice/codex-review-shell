@@ -882,6 +882,11 @@ function recentThreadSortStamp(thread) {
   return String(thread?.updatedAt || thread?.discoveredAt || thread?.createdAt || "");
 }
 
+function recentThreadProjectRank(thread) {
+  const rank = Number(thread?.projectRank);
+  return Number.isFinite(rank) ? rank : Number.POSITIVE_INFINITY;
+}
+
 function groupedRecentChatgptThreads(threads) {
   const groups = new Map();
   for (const thread of threads) {
@@ -916,6 +921,8 @@ function groupedRecentChatgptThreads(threads) {
     group.entries.sort((a, b) => {
       const updatedDelta = recentThreadSortStamp(b).localeCompare(recentThreadSortStamp(a));
       if (updatedDelta !== 0) return updatedDelta;
+      const rankDelta = recentThreadProjectRank(a) - recentThreadProjectRank(b);
+      if (rankDelta !== 0 && Number.isFinite(rankDelta)) return rankDelta;
       return String(a.title || "").localeCompare(String(b.title || ""));
     });
   }
@@ -943,16 +950,17 @@ function buildRecentChatgptThreadRow(project, thread) {
         : "Recent ChatGPT";
   row.querySelector("strong").textContent = thread.title || "Untitled ChatGPT thread";
   row.querySelector(".thread-meta").textContent = shortPath(thread.url || "");
+  const displayDate = String(thread.displayDate || "").trim();
   row.querySelector(".thread-notes").textContent =
     attached
       ? `Attached as ${attached.title}`
       : thread.projectName
         ? thread.updatedAt
-          ? `Project ${thread.projectName} · Updated ${formatTime(thread.updatedAt)}`
+          ? `Project ${thread.projectName} · Updated ${displayDate || formatTime(thread.updatedAt)}`
           : `Project ${thread.projectName}`
         : thread.sourceKind === "project"
           ? thread.updatedAt
-            ? `Project folder · Updated ${formatTime(thread.updatedAt)}`
+            ? `Project folder · Updated ${displayDate || formatTime(thread.updatedAt)}`
             : "Project folder thread"
           : thread.updatedAt
             ? `Updated ${formatTime(thread.updatedAt)}`
