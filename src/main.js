@@ -2203,7 +2203,7 @@ function renderDownloadMacroMessage(template, values) {
 }
 
 function chatgptCodexFileReviewScript(payload) {
-  const safePayload = JSON.stringify(payload).replace(/</g, "\\u003c");
+  const safePayload = JSON.stringify(payload).replace(/[$`]/g, "\\$&").replace(/</g, "\\u003c");
   return `
     (async () => {
       const payload = ${safePayload};
@@ -2223,12 +2223,7 @@ function chatgptCodexFileReviewScript(payload) {
         }
         return null;
       };
-      const decodeBase64 = (value) => {
-        const binary = atob(value || "");
-        const bytes = new Uint8Array(binary.length);
-        for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-        return bytes;
-      };
+      const decodeBase64 = (value) => Uint8Array.from(atob(value || ""), (char) => char.charCodeAt(0));
       const fileInput = await waitFor(() => {
         const inputs = [...document.querySelectorAll('input[type="file"]')];
         return inputs.find((input) => !input.disabled && !input.webkitdirectory) || null;
@@ -2328,6 +2323,15 @@ async function resolveProjectFileReference(projectId, relPath) {
 async function submitCodexFileReviewToChatgpt(fileTransfer) {
   if (!chatgptView || chatgptView.webContents.isDestroyed()) {
     throw new Error("ChatGPT surface is unavailable.");
+  }
+  let currentUrl = null;
+  try {
+    currentUrl = new URL(chatgptView.webContents.getURL() || "");
+  } catch {
+    throw new Error("ChatGPT surface URL is unavailable.");
+  }
+  if (currentUrl.protocol !== "https:" || !isAllowedChatgptHost(currentUrl.hostname)) {
+    throw new Error("ChatGPT file handoff is restricted to trusted ChatGPT/OpenAI origins.");
   }
   const result = await chatgptView.webContents.executeJavaScript(chatgptCodexFileReviewScript({
     fileName: normalizeString(fileTransfer?.fileName, "codex-output"),
