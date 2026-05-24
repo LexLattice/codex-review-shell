@@ -2175,6 +2175,24 @@ function bindingForChatThread(project, chatThreadId) {
   )) || null;
 }
 
+function bindingsForCodexThread(project, codexThreadId) {
+  const target = normalizeString(codexThreadId, "");
+  if (!target) return [];
+  const chatThreads = new Map((project?.chatThreads || [])
+    .filter((thread) => normalizeString(thread?.id, "") && !thread.archived)
+    .map((thread) => [thread.id, thread]));
+  const byChatThreadId = new Map();
+  for (const binding of project?.laneBindings || []) {
+    const bindingCodexThreadId = normalizeString(binding?.codexThreadRef?.threadId, "");
+    const chatThreadId = normalizeString(binding?.chatThreadId, "");
+    if (bindingCodexThreadId !== target || !chatThreadId || !chatThreads.has(chatThreadId)) continue;
+    if (!byChatThreadId.has(chatThreadId)) {
+      byChatThreadId.set(chatThreadId, { binding, chatThread: chatThreads.get(chatThreadId) });
+    }
+  }
+  return [...byChatThreadId.values()];
+}
+
 function renderDownloadMacroMessage(template, values) {
   const fallback = "GPT review is at {{workspacePath}}";
   const text = normalizeString(template, fallback);
@@ -2182,6 +2200,100 @@ function renderDownloadMacroMessage(template, values) {
     .replaceAll("{{workspacePath}}", values.workspacePath || "")
     .replaceAll("{{relPath}}", values.relPath || "")
     .replaceAll("{{fileName}}", values.fileName || "");
+}
+
+function chatgptCodexFileReviewScript(payload) {
+  const safePayload = JSON.stringify(payload).replace(/</g, "\\u003c");
+  return `
+    (async () => {
+      const payload = ${safePayload};
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const visible = (element) => {
+        if (!element) return false;
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+      };
+      const waitFor = async (fn, timeoutMs) => {
+        const started = Date.now();
+        while (Date.now() - started < timeoutMs) {
+          const value = fn();
+          if (value) return value;
+          await sleep(150);
+        }
+        return null;
+      };
+      const decodeBase64 = (value) => {
+        const binary = atob(value || "");
+        const bytes = new Uint8Array(binary.length);
+        for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+        return bytes;
+      };
+      const fileInput = await waitFor(() => {
+        const inputs = [...document.querySelectorAll('input[type="file"]')];
+        return inputs.find((input) => !input.disabled && !input.webkitdirectory) || null;
+      }, 6000);
+      if (!fileInput) return { ok: false, error: "file_input_not_found", attached: false };
+      const file = new File([decodeBase64(payload.contentBase64)], payload.fileName || "codex-output", {
+        type: payload.mimeType || "application/octet-stream",
+      });
+      const dataTransfer = new DataTransfer();
+      dataTransfer.items.add(file);
+      fileInput.files = dataTransfer.files;
+      fileInput.dispatchEvent(new Event("input", { bubbles: true }));
+      fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+      await sleep(1200);
+
+      const composer = await waitFor(() => (
+        document.querySelector("#prompt-textarea") ||
+        document.querySelector('textarea[data-testid="prompt-textarea"]') ||
+        [...document.querySelectorAll('[contenteditable="true"]')].find(visible)
+      ), 10000);
+      if (!composer) return { ok: false, error: "composer_not_found", attached: true };
+
+      composer.focus();
+      if (composer instanceof HTMLTextAreaElement || composer instanceof HTMLInputElement) {
+        const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(composer), "value")?.set;
+        if (setter) setter.call(composer, payload.promptText || "");
+        else composer.value = payload.promptText || "";
+        composer.dispatchEvent(new Event("input", { bubbles: true }));
+        composer.dispatchEvent(new Event("change", { bubbles: true }));
+      } else {
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(composer);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        document.execCommand("insertText", false, payload.promptText || "");
+        if (!String(composer.textContent || "").includes(payload.promptText || "")) {
+          composer.textContent = payload.promptText || "";
+          composer.dispatchEvent(new InputEvent("input", {
+            bubbles: true,
+            inputType: "insertText",
+            data: payload.promptText || "",
+          }));
+        }
+      }
+
+      const findSendButton = () => {
+        const preferred = document.querySelector('[data-testid="send-button"], button[aria-label="Send prompt"], button[aria-label="Send message"]');
+        if (preferred) return preferred;
+        return [...document.querySelectorAll("button")].find((button) => {
+          const label = [button.getAttribute("aria-label"), button.title, button.textContent].filter(Boolean).join(" ");
+          return /\\bsend\\b/i.test(label);
+        }) || null;
+      };
+      const sendButton = await waitFor(() => {
+        const button = findSendButton();
+        if (!button || !visible(button)) return null;
+        if (button.disabled || button.getAttribute("aria-disabled") === "true") return null;
+        return button;
+      }, 30000);
+      if (!sendButton) return { ok: false, error: "send_button_unavailable", attached: true };
+      sendButton.click();
+      return { ok: true, attached: true, submitted: true };
+    })();
+  `;
 }
 
 function workspaceDisplayPath(project, relPath) {
@@ -2198,6 +2310,57 @@ async function importChatgptDownload(project, macro, hostPath, fileName) {
     contentBase64,
   }, 90_000);
   return result;
+}
+
+async function resolveProjectFileReference(projectId, relPath) {
+  const project = await getProjectById(projectId);
+  const requestedRelPath = normalizeString(relPath, "").replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!requestedRelPath) throw new Error("File reference is empty.");
+  const result = await requestWorkspace(project, "resolvePath", { relPath: requestedRelPath }, 10_000);
+  if (!result?.isFile) throw new Error("Selected reference is not a workspace file.");
+  return {
+    project,
+    relPath: normalizeString(result.relPath, requestedRelPath),
+    resolved: result,
+  };
+}
+
+async function submitCodexFileReviewToChatgpt(fileTransfer) {
+  if (!chatgptView || chatgptView.webContents.isDestroyed()) {
+    throw new Error("ChatGPT surface is unavailable.");
+  }
+  const result = await chatgptView.webContents.executeJavaScript(chatgptCodexFileReviewScript({
+    fileName: normalizeString(fileTransfer?.fileName, "codex-output"),
+    mimeType: normalizeString(fileTransfer?.mimeType, "application/octet-stream"),
+    contentBase64: normalizeString(fileTransfer?.contentBase64, ""),
+    promptText: "review codex output",
+  }), true);
+  if (!result?.ok) {
+    throw new Error(`ChatGPT review submit failed: ${normalizeString(result?.error, "unknown_error")}`);
+  }
+  return result;
+}
+
+async function sendCodexFileToLinkedChatgpt(projectId, codexThreadId, relPath) {
+  const threadId = normalizeString(codexThreadId, "");
+  if (!threadId) throw new Error("Codex thread id is unavailable.");
+  const { project, relPath: resolvedRelPath } = await resolveProjectFileReference(projectId, relPath);
+  const matches = bindingsForCodexThread(project, threadId);
+  if (matches.length < 1) throw new Error("No linked ChatGPT thread was found for this Codex thread.");
+  if (matches.length > 1) throw new Error("More than one linked ChatGPT thread was found for this Codex thread.");
+  const { chatThread } = matches[0];
+  const transfer = await requestWorkspace(project, "readFileTransfer", { relPath: resolvedRelPath }, 90_000);
+  await loadChatgptSurface(project, chatThread.id);
+  const submitResult = await submitCodexFileReviewToChatgpt(transfer);
+  return {
+    ok: true,
+    projectId: project.id,
+    codexThreadId: threadId,
+    chatThreadId: chatThread.id,
+    chatThreadTitle: normalizeString(chatThread.title, chatThread.id),
+    relPath: normalizeString(transfer.relPath, resolvedRelPath),
+    submitResult,
+  };
 }
 
 function sendChatgptDownloadMessageToCodex(project, binding, macro, importResult, fileName) {
@@ -3465,8 +3628,11 @@ async function openContextMenu(event, request = {}) {
   const targetKind = normalizeString(request.targetKind, "unknown");
   const selectedTextLength = Math.max(0, Number(request.selectedTextLength) || 0);
   const selectedTextPreview = normalizeString(request.selectedTextPreview, "").slice(0, 1000);
-  const fileRef = request.targetFileRef && typeof request.targetFileRef === "object"
-    ? normalizeString(request.targetFileRef.displayPath, "")
+  const rawFileRef = request.targetFileRef && typeof request.targetFileRef === "object"
+    ? request.targetFileRef
+    : null;
+  const fileRef = rawFileRef
+    ? normalizeString(rawFileRef.relPath || rawFileRef.path || rawFileRef.displayPath, "").replace(/\\/g, "/").replace(/^\/+/, "")
     : "";
   const href = safeContextUrl(request.targetHrefDisplay);
   const threadId = normalizeString(request.targetThreadId || request.threadId, "");
@@ -3501,7 +3667,18 @@ async function openContextMenu(event, request = {}) {
   }
   if (fileRef && projectId) {
     template.push({ type: "separator" });
-    template.push({ label: "Copy file reference", click: () => clipboard.writeText(fileRef) });
+    template.push({
+      label: "Copy file reference",
+      click: async () => {
+        try {
+          const resolved = await resolveProjectFileReference(projectId, fileRef);
+          await clipboard.writeText(resolved.relPath || fileRef);
+        } catch (error) {
+          await clipboard.writeText(fileRef);
+          sender.send("codex-surface:event", { type: "attachment-diagnostic", message: `Copied unresolved file reference: ${error.message}` });
+        }
+      },
+    });
     template.push({
       label: "Reveal file",
       click: async () => {
@@ -3512,6 +3689,36 @@ async function openContextMenu(event, request = {}) {
         }
       },
     });
+    if (threadId) {
+      try {
+        const project = await getProjectById(projectId);
+        const matches = bindingsForCodexThread(project, threadId);
+        if (matches.length === 1) {
+          const targetTitle = normalizeString(matches[0].chatThread?.title, "linked ChatGPT");
+          template.push({
+            label: `Send to ${targetTitle} for review`,
+            click: async () => {
+              try {
+                const result = await sendCodexFileToLinkedChatgpt(projectId, threadId, fileRef);
+                sender.send("codex-surface:event", {
+                  type: "attachment-diagnostic",
+                  message: `Sent ${result.relPath} to linked ChatGPT thread "${result.chatThreadTitle}".`,
+                });
+              } catch (error) {
+                sender.send("codex-surface:event", { type: "attachment-diagnostic", message: `ChatGPT review send failed: ${error.message}` });
+              }
+            },
+          });
+        } else {
+          template.push({
+            label: matches.length ? "Send to ChatGPT unavailable: multiple linked threads" : "Send to ChatGPT unavailable: no linked thread",
+            enabled: false,
+          });
+        }
+      } catch {
+        template.push({ label: "Send to ChatGPT unavailable: project not found", enabled: false });
+      }
+    }
   }
   if (!template.length) return { ok: false, status: "blocked", reason: "No menu items available." };
   Menu.buildFromTemplate(template).popup();

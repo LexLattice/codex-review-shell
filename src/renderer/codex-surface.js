@@ -6482,11 +6482,13 @@ function contextMenuTarget(event) {
     };
   }
   if (target?.dataset?.contextTarget === "file_ref") {
+    const relPath = target.dataset.contextFile || "";
     return {
       targetKind: "file_ref",
       targetFileRef: {
         pathEvidenceKey: "",
-        displayPath: target.dataset.contextFile || target.textContent || "",
+        relPath,
+        displayPath: relPath || target.textContent || "",
       },
       targetLabel: target.textContent || "",
     };

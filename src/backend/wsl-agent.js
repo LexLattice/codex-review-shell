@@ -25,6 +25,7 @@ const ATTACHMENT_STAGING_ROOT = ".codex/review-shell/attachments";
 const CHATGPT_DOWNLOAD_STAGING_ROOT = ".codex/review-shell/chatgpt-downloads";
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const MAX_IMPORT_FILE_BYTES = 50 * 1024 * 1024;
+const MAX_CHATGPT_REVIEW_FILE_BYTES = 8 * 1024 * 1024;
 const COMMAND_OUTPUT_LIMIT_BYTES = 256 * 1024;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
 const MATCH_SCAN_LIMIT = 240;
@@ -293,6 +294,38 @@ function looksBinary(buffer) {
   return suspicious / sample.length > 0.12;
 }
 
+function mimeTypeForFileName(fileName) {
+  const ext = path.extname(String(fileName || "")).toLowerCase();
+  const table = {
+    ".bmp": "image/bmp",
+    ".css": "text/css",
+    ".csv": "text/csv",
+    ".gif": "image/gif",
+    ".htm": "text/html",
+    ".html": "text/html",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".js": "text/javascript",
+    ".json": "application/json",
+    ".jsonl": "application/x-ndjson",
+    ".md": "text/markdown",
+    ".pdf": "application/pdf",
+    ".png": "image/png",
+    ".py": "text/x-python",
+    ".rs": "text/rust",
+    ".svg": "image/svg+xml",
+    ".toml": "application/toml",
+    ".ts": "text/typescript",
+    ".tsx": "text/tsx",
+    ".txt": "text/plain",
+    ".webp": "image/webp",
+    ".xml": "application/xml",
+    ".yaml": "application/yaml",
+    ".yml": "application/yaml",
+  };
+  return table[ext] || "application/octet-stream";
+}
+
 async function readFilePreview(params = {}) {
   const { fullPath, displayRel } = resolveWithinRoot(params.relPath || "");
   const stat = await fs.lstat(fullPath);
@@ -318,6 +351,26 @@ async function readFilePreview(params = {}) {
     binary,
     limit: PREVIEW_LIMIT_BYTES,
     text: binary ? "" : buffer.toString("utf8"),
+    source: workspaceKind,
+  };
+}
+
+async function readFileTransfer(params = {}) {
+  const { fullPath, displayRel } = resolveWithinRoot(params.relPath || "");
+  const stat = await fs.lstat(fullPath);
+  if (stat.isSymbolicLink()) throw new Error("Symlink transfer is disabled for this workspace agent.");
+  if (!stat.isFile()) throw new Error("Selected path is not a file.");
+  if (stat.size > MAX_CHATGPT_REVIEW_FILE_BYTES) {
+    throw new Error(`Selected file exceeds the ${Math.round(MAX_CHATGPT_REVIEW_FILE_BYTES / (1024 * 1024))} MB ChatGPT transfer limit.`);
+  }
+  const content = await fs.readFile(fullPath);
+  const fileName = path.basename(fullPath);
+  return {
+    relPath: displayRel,
+    fileName,
+    size: stat.size,
+    mimeType: mimeTypeForFileName(fileName),
+    contentBase64: content.toString("base64"),
     source: workspaceKind,
   };
 }
@@ -2277,6 +2330,7 @@ async function handleRequest(method, params = {}) {
       capabilities: {
         listTree: true,
         readFilePreview: true,
+        readFileTransfer: true,
         runCommand: true,
         ensureCodexSandboxArtifactIgnored: true,
         listMatchingFiles: true,
@@ -2293,6 +2347,7 @@ async function handleRequest(method, params = {}) {
   }
   if (method === "listTree") return listTree(params);
   if (method === "readFile") return readFilePreview(params);
+  if (method === "readFileTransfer") return readFileTransfer(params);
   if (method === "listMatchingFiles") return listMatchingFiles(params);
   if (method === "resolvePath") return resolvePathPreview(params);
   if (method === "runCommand") return runCommand(params);
