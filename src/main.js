@@ -32,6 +32,7 @@ const { PLANE_ZOOM_DEFAULT, clampZoomFactor, zoomDeltaForDirection } = require("
 const APP_TITLE = "Codex Review Shell";
 const CONFIG_FILE_NAME = "workspace-config.json";
 const CHATGPT_THREAD_CACHE_FILE_NAME = "chatgpt-thread-cache.json";
+const MIDDLE_WEB_HISTORY_FILE_NAME = "middle-web-history.json";
 const CHATGPT_THREAD_CACHE_VERSION = 1;
 const CHATGPT_THREAD_CACHE_MAX_ENTRIES = 1500;
 const THREAD_ANALYTICS_DB_FILE_NAME = "thread-analytics.sqlite";
@@ -148,6 +149,10 @@ function configPath() {
 
 function chatgptThreadCachePath() {
   return path.join(app.getPath("userData"), CHATGPT_THREAD_CACHE_FILE_NAME);
+}
+
+function middleWebHistoryPath() {
+  return path.join(app.getPath("userData"), MIDDLE_WEB_HISTORY_FILE_NAME);
 }
 
 function threadAnalyticsDbPath() {
@@ -1383,7 +1388,10 @@ function emitShellEvent(payload) {
 }
 
 function ensureMiddleWebHost() {
-  if (!middleWebHost) middleWebHost = new MiddleWebHost({ emitShellEvent });
+  if (!middleWebHost) {
+    middleWebHost = new MiddleWebHost({ emitShellEvent });
+    middleWebHost.setHistoryStorePath(middleWebHistoryPath());
+  }
   return middleWebHost;
 }
 
@@ -2176,11 +2184,17 @@ function consumeChatgptDownloadMacroRequest(item) {
     : -1;
   if (index < 0 && pendingChatgptDownloadMacroRequests.length === 1) {
     const [candidate] = pendingChatgptDownloadMacroRequests;
-    if (Date.now() - candidate.createdAtMs <= 3000) index = 0;
+    if (Date.now() - candidate.createdAtMs <= 30_000) index = 0;
   }
   if (index < 0) return null;
   const [request] = pendingChatgptDownloadMacroRequests.splice(index, 1);
   return request;
+}
+
+function removePendingChatgptDownloadMacroRequest(requestId) {
+  const target = normalizeString(requestId, "");
+  if (!target) return;
+  pendingChatgptDownloadMacroRequests = pendingChatgptDownloadMacroRequests.filter((request) => request.id !== target);
 }
 
 function urlsEquivalent(left, right) {
@@ -2212,6 +2226,23 @@ function safeDownloadLinkUrl(value) {
     return parsed.toString();
   } catch {
     return "";
+  }
+}
+
+function isLikelyDownloadUrl(value) {
+  try {
+    const parsed = new URL(normalizeString(value, ""));
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password) return false;
+    const host = parsed.hostname.toLowerCase();
+    const pathname = decodeURIComponent(parsed.pathname || "").toLowerCase();
+    const search = parsed.search.toLowerCase();
+    if (host.endsWith("oaiusercontent.com")) return true;
+    if (!isAllowedChatgptHost(host)) return false;
+    if (pathname.includes("/download") || pathname.includes("/backend-api/files/")) return true;
+    if (search.includes("download=") || search.includes("response-content-disposition=attachment")) return true;
+    return false;
+  } catch {
+    return false;
   }
 }
 
@@ -2278,7 +2309,10 @@ function renderDownloadMacroMessage(template, values) {
 }
 
 function chatgptCodexFileReviewScript(payload) {
-  const safePayload = JSON.stringify(payload).replace(/[$`]/g, "\\$&").replace(/</g, "\\u003c");
+  const safePayload = JSON.stringify(payload)
+    .replace(/\\/g, "\\\\")
+    .replace(/[$`]/g, "\\$&")
+    .replace(/</g, "\\u003c");
   return `
     (async () => {
       const payload = ${safePayload};
@@ -2299,16 +2333,28 @@ function chatgptCodexFileReviewScript(payload) {
         return null;
       };
       const decodeBase64 = (value) => Uint8Array.from(atob(value || ""), (char) => char.charCodeAt(0));
+      const files = Array.isArray(payload.files) && payload.files.length
+        ? payload.files
+        : [{
+            fileName: payload.fileName,
+            mimeType: payload.mimeType,
+            contentBase64: payload.contentBase64,
+          }];
+      if (!files.length || files.some((file) => !file || !file.contentBase64)) {
+        return { ok: false, error: "no_files_to_attach", attached: false };
+      }
       const fileInput = await waitFor(() => {
         const inputs = [...document.querySelectorAll('input[type="file"]')];
         return inputs.find((input) => !input.disabled && !input.webkitdirectory) || null;
       }, 6000);
       if (!fileInput) return { ok: false, error: "file_input_not_found", attached: false };
-      const file = new File([decodeBase64(payload.contentBase64)], payload.fileName || "codex-output", {
-        type: payload.mimeType || "application/octet-stream",
-      });
       const dataTransfer = new DataTransfer();
-      dataTransfer.items.add(file);
+      for (const fileData of files) {
+        const file = new File([decodeBase64(fileData.contentBase64)], fileData.fileName || "codex-output", {
+          type: fileData.mimeType || "application/octet-stream",
+        });
+        dataTransfer.items.add(file);
+      }
       fileInput.files = dataTransfer.files;
       fileInput.dispatchEvent(new Event("input", { bubbles: true }));
       fileInput.dispatchEvent(new Event("change", { bubbles: true }));
@@ -2361,7 +2407,7 @@ function chatgptCodexFileReviewScript(payload) {
       }, 30000);
       if (!sendButton) return { ok: false, error: "send_button_unavailable", attached: true };
       sendButton.click();
-      return { ok: true, attached: true, submitted: true };
+      return { ok: true, attached: true, submitted: true, fileCount: files.length };
     })();
   `;
 }
@@ -2395,10 +2441,12 @@ async function resolveProjectFileReference(projectId, relPath) {
   };
 }
 
-async function submitCodexFileReviewToChatgpt(fileTransfer) {
+async function submitCodexFileBundleToChatgpt(fileTransfers, promptText = "review codex output") {
   if (!chatgptView || chatgptView.webContents.isDestroyed()) {
     throw new Error("ChatGPT surface is unavailable.");
   }
+  const transfers = Array.isArray(fileTransfers) ? fileTransfers : [fileTransfers].filter(Boolean);
+  if (!transfers.length) throw new Error("No files are available to send to ChatGPT.");
   let currentUrl = null;
   try {
     currentUrl = new URL(chatgptView.webContents.getURL() || "");
@@ -2409,15 +2457,21 @@ async function submitCodexFileReviewToChatgpt(fileTransfer) {
     throw new Error("ChatGPT file handoff is restricted to trusted ChatGPT/OpenAI origins.");
   }
   const result = await chatgptView.webContents.executeJavaScript(chatgptCodexFileReviewScript({
-    fileName: normalizeString(fileTransfer?.fileName, "codex-output"),
-    mimeType: normalizeString(fileTransfer?.mimeType, "application/octet-stream"),
-    contentBase64: normalizeString(fileTransfer?.contentBase64, ""),
-    promptText: "review codex output",
+    files: transfers.map((fileTransfer) => ({
+      fileName: normalizeString(fileTransfer?.fileName, "codex-output"),
+      mimeType: normalizeString(fileTransfer?.mimeType, "application/octet-stream"),
+      contentBase64: normalizeString(fileTransfer?.contentBase64, ""),
+    })),
+    promptText: normalizeString(promptText, "review codex output"),
   }), true);
   if (!result?.ok) {
     throw new Error(`ChatGPT review submit failed: ${normalizeString(result?.error, "unknown_error")}`);
   }
   return result;
+}
+
+async function submitCodexFileReviewToChatgpt(fileTransfer) {
+  return submitCodexFileBundleToChatgpt([fileTransfer], "review codex output");
 }
 
 async function sendCodexFileToLinkedChatgpt(projectId, codexThreadId, relPath) {
@@ -2438,6 +2492,81 @@ async function sendCodexFileToLinkedChatgpt(projectId, codexThreadId, relPath) {
     chatThreadId: chatThread.id,
     chatThreadTitle: normalizeString(chatThread.title, chatThread.id),
     relPath: normalizeString(transfer.relPath, resolvedRelPath),
+    surfaceResult,
+    submitResult,
+  };
+}
+
+function linkedChatgptTargetForProjectStash(project, files) {
+  const threadIds = [...new Set(files
+    .map((file) => normalizeString(file?.codexThreadId, ""))
+    .filter(Boolean))];
+  if (threadIds.length > 1) {
+    throw new Error("Stashed files belong to more than one Codex thread.");
+  }
+  if (threadIds.length === 1) {
+    const matches = bindingsForCodexThread(project, threadIds[0]);
+    if (matches.length < 1) throw new Error("No linked ChatGPT thread was found for this Codex thread.");
+    if (matches.length > 1) throw new Error("More than one linked ChatGPT thread was found for this Codex thread.");
+    return { ...matches[0], codexThreadId: threadIds[0] };
+  }
+  const binding = projectActivationBinding(project);
+  const fallbackThread = primaryReviewThread(project);
+  const chatThread = binding?.chatThreadId
+    ? (project.chatThreads || []).find((thread) => thread.id === binding.chatThreadId && !thread.archived)
+    : (fallbackThread && !fallbackThread.archived ? fallbackThread : null);
+  if (!chatThread) throw new Error("No active linked ChatGPT thread was found for this project.");
+  return {
+    binding: binding || null,
+    chatThread,
+    codexThreadId: normalizeString(binding?.codexThreadRef?.threadId, ""),
+  };
+}
+
+async function sendProjectStashToLinkedChatgpt(payload = {}) {
+  const projectId = normalizeString(payload.projectId, "");
+  const project = await getProjectById(projectId);
+  const files = Array.isArray(payload.files)
+    ? payload.files
+      .map((file) => ({
+        relPath: normalizeString(file?.relPath, "").replace(/\\/g, "/").replace(/^\/+/, ""),
+        codexThreadId: normalizeString(file?.codexThreadId, ""),
+      }))
+      .filter((file) => file.relPath)
+    : [];
+  if (!files.length) throw new Error("Project stash is empty.");
+  if (files.length > 12) throw new Error("Project stash is limited to 12 files per GPT handoff.");
+
+  const seen = new Set();
+  const uniqueFiles = [];
+  for (const file of files) {
+    const dedupeKey = `${file.codexThreadId}::${file.relPath}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    uniqueFiles.push(file);
+  }
+  const transfers = await Promise.all(uniqueFiles.map(async (file) => {
+    const { relPath: resolvedRelPath } = await resolveProjectFileReference(project.id, file.relPath);
+    const transfer = await requestWorkspace(project, "readFileTransfer", { relPath: resolvedRelPath }, 90_000);
+    return {
+      ...transfer,
+      codexThreadId: file.codexThreadId,
+      relPath: normalizeString(transfer.relPath, resolvedRelPath),
+    };
+  }));
+  if (!transfers.length) throw new Error("No stashed files could be read from the workspace.");
+
+  const target = linkedChatgptTargetForProjectStash(project, files);
+  const surfaceResult = await ensureChatgptThreadDisplayed(project, target.chatThread);
+  const submitResult = await submitCodexFileBundleToChatgpt(transfers, payload.message);
+  return {
+    ok: true,
+    projectId: project.id,
+    codexThreadId: target.codexThreadId,
+    chatThreadId: target.chatThread.id,
+    chatThreadTitle: normalizeString(target.chatThread.title, target.chatThread.id),
+    fileCount: transfers.length,
+    relPaths: transfers.map((transfer) => transfer.relPath),
     surfaceResult,
     submitResult,
   };
@@ -2519,15 +2648,76 @@ async function chatgptDownloadMacroAvailability(downloadContext = null) {
   };
 }
 
-async function startChatgptDownloadMacroFromContext(url) {
+function chatgptElementFromPointClickScript(params = {}) {
+  const x = Math.max(0, Math.round(Number(params.x) || 0));
+  const y = Math.max(0, Math.round(Number(params.y) || 0));
+  return `
+    (() => {
+      const start = document.elementFromPoint(${x}, ${y});
+      if (!start) return { ok: false, error: "no_element_at_pointer" };
+      const candidates = [];
+      const pushCandidate = (node) => {
+        if (!node || candidates.includes(node)) return;
+        candidates.push(node);
+      };
+      pushCandidate(start.closest?.("a[href]"));
+      pushCandidate(start.closest?.("button"));
+      pushCandidate(start.closest?.('[role="button"]'));
+      pushCandidate(start.querySelector?.("a[href]"));
+      pushCandidate(start.querySelector?.("button"));
+      pushCandidate(start.querySelector?.('[role="button"]'));
+      for (let node = start; node && candidates.length < 12; node = node.parentElement) {
+        pushCandidate(node.closest?.("a[href]"));
+        pushCandidate(node.closest?.("button"));
+        pushCandidate(node.closest?.('[role="button"]'));
+        pushCandidate(node.querySelector?.("a[href]"));
+        pushCandidate(node.querySelector?.("button"));
+        pushCandidate(node.querySelector?.('[role="button"]'));
+      }
+      const target = candidates.find((node) => {
+        if (!node) return false;
+        const style = window.getComputedStyle(node);
+        const rect = node.getBoundingClientRect();
+        return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+      });
+      if (!target) return { ok: false, error: "no_clickable_download_target" };
+      const href = target.href || target.getAttribute?.("href") || "";
+      const PointerEventClass = window.PointerEvent || MouseEvent;
+      target.dispatchEvent(new PointerEventClass("pointerdown", { bubbles: true, cancelable: true, view: window }));
+      target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
+      target.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
+      target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+      return {
+        ok: true,
+        href: href ? new URL(href, location.href).toString() : "",
+        tagName: target.tagName || "",
+        text: String(target.textContent || "").trim().slice(0, 120),
+      };
+    })();
+  `;
+}
+
+async function clickChatgptDownloadTarget(params = {}) {
+  if (!chatgptView || chatgptView.webContents.isDestroyed()) throw new Error("ChatGPT surface is unavailable.");
+  if (!trustedChatgptPageUrl(chatgptView.webContents.getURL() || "")) throw new Error("ChatGPT download action is restricted to trusted ChatGPT/OpenAI origins.");
+  return chatgptView.webContents.executeJavaScript(chatgptElementFromPointClickScript(params), true);
+}
+
+async function startChatgptDownloadMacroFromContext(url, params = {}) {
   if (!chatgptView || chatgptView.webContents.isDestroyed()) throw new Error("ChatGPT surface is unavailable.");
   const targetUrl = safeDownloadLinkUrl(url);
   if (!targetUrl) throw new Error("Download macro requires a safe HTTPS link.");
   const context = activeChatgptContext || await resolveChatgptContextForUrl(chatgptView.webContents.getURL() || "");
   const availability = await chatgptDownloadMacroAvailability(context);
   if (!availability.ok) throw new Error(availability.reason);
-  enqueueChatgptDownloadMacroRequest(targetUrl, availability.context);
-  chatgptView.webContents.downloadURL(targetUrl);
+  const request = enqueueChatgptDownloadMacroRequest(targetUrl, availability.context);
+  try {
+    const clickResult = await clickChatgptDownloadTarget(params);
+    if (!clickResult?.ok) throw new Error(clickResult?.error || "download_target_click_failed");
+  } catch (error) {
+    removePendingChatgptDownloadMacroRequest(request.id);
+    throw error;
+  }
   return {
     ok: true,
     url: targetUrl,
@@ -2565,32 +2755,39 @@ function prepareChatgptDownload(item, options = {}) {
   const macroRequest = options.macroRequest || null;
   const downloadContext = macroRequest?.context || null;
   const fileName = safeHostDownloadFileName(item.getFilename?.() || "download");
-  const dirPath = chatgptWindowsDownloadDir({ chatgptDownloads: downloads });
-  const savePath = uniqueHostDownloadPathSync(dirPath, fileName);
-  item.setSavePath(savePath);
+  const savePath = macroRequest
+    ? uniqueHostDownloadPathSync(chatgptWindowsDownloadDir({ chatgptDownloads: downloads }), fileName)
+    : "";
+  if (macroRequest) item.setSavePath(savePath);
+  else if (typeof item.setSaveDialogOptions === "function") {
+    item.setSaveDialogOptions({ defaultPath: path.join(chatgptWindowsDownloadDir({ chatgptDownloads: downloads }), fileName) });
+  }
   item.once("done", (_event, state) => {
+    const completedPath = savePath || item.getSavePath?.() || "";
     if (state !== "completed") {
       try {
-        const stat = fsSync.statSync(savePath);
-        if (stat.size === 0) fsSync.unlinkSync(savePath);
+        if (completedPath) {
+          const stat = fsSync.statSync(completedPath);
+          if (stat.size === 0) fsSync.unlinkSync(completedPath);
+        }
       } catch {}
       emitShellEvent({
         type: "chatgpt-download-failed",
         fileName,
-        savePath,
+        savePath: completedPath,
         state,
         at: nowIso(),
       });
       return;
     }
     if (macroRequest) {
-      handleCompletedChatgptDownload(savePath, path.basename(savePath), downloadContext).catch(() => {});
+      handleCompletedChatgptDownload(completedPath, path.basename(completedPath), downloadContext).catch(() => {});
       return;
     }
     emitShellEvent({
       type: "chatgpt-download-completed",
-      fileName: path.basename(savePath),
-      savePath,
+      fileName: completedPath ? path.basename(completedPath) : fileName,
+      savePath: completedPath,
       macro: { activated: false, reason: "normal_download" },
       at: nowIso(),
     });
@@ -2604,18 +2801,64 @@ function prepareChatgptDownload(item, options = {}) {
   return { fileName, savePath };
 }
 
+async function resolveChatgptContextMenuLink(params = {}) {
+  const directUrl = safeDownloadLinkUrl(params.linkURL || params.srcURL || "");
+  if (directUrl) return directUrl;
+  if (!chatgptView || chatgptView.webContents.isDestroyed()) return "";
+  if (!trustedChatgptPageUrl(chatgptView.webContents.getURL() || "")) return "";
+  const x = Math.max(0, Math.round(Number(params.x) || 0));
+  const y = Math.max(0, Math.round(Number(params.y) || 0));
+  const script = `
+    (() => {
+      const safeHref = (value) => {
+        try {
+          const url = new URL(String(value || ""), location.href);
+          if (url.protocol !== "https:" || url.username || url.password) return "";
+          return url.toString();
+        } catch {
+          return "";
+        }
+      };
+      const start = document.elementFromPoint(${x}, ${y});
+      if (!start) return "";
+      const candidates = [];
+      const pushCandidate = (node) => {
+        if (!node || candidates.includes(node)) return;
+        candidates.push(node);
+      };
+      pushCandidate(start.closest?.("a[href]"));
+      pushCandidate(start.querySelector?.("a[href]"));
+      for (let node = start; node && candidates.length < 8; node = node.parentElement) {
+        pushCandidate(node.closest?.("a[href]"));
+        pushCandidate(node.querySelector?.("a[href]"));
+      }
+      for (const candidate of candidates) {
+        const href = safeHref(candidate?.href || candidate?.getAttribute?.("href"));
+        if (href) return href;
+      }
+      return "";
+    })();
+  `;
+  try {
+    return safeDownloadLinkUrl(await chatgptView.webContents.executeJavaScript(script, true));
+  } catch {
+    return "";
+  }
+}
+
 async function openChatgptContextMenu(params = {}) {
   const template = [];
   const selectionText = normalizeString(params.selectionText, "");
-  const linkUrl = safeDownloadLinkUrl(params.linkURL || params.srcURL || "");
+  const linkUrl = await resolveChatgptContextMenuLink(params);
   if (selectionText) template.push({ role: "copy", label: "Copy selected text" });
   if (linkUrl) {
     if (template.length) template.push({ type: "separator" });
     template.push({
       label: "Download file",
-      click: () => {
+      click: async () => {
         try {
-          chatgptView?.webContents?.downloadURL(linkUrl);
+          const result = await clickChatgptDownloadTarget(params);
+          if (!result?.ok) throw new Error(result?.error || "download_target_click_failed");
         } catch (error) {
           emitShellEvent({ type: "chatgpt-download-failed", fileName: "download", state: "start-failed", error: error.message, at: nowIso() });
         }
@@ -2632,7 +2875,7 @@ async function openChatgptContextMenu(params = {}) {
       enabled: availability.ok,
       click: async () => {
         try {
-          await startChatgptDownloadMacroFromContext(linkUrl);
+          await startChatgptDownloadMacroFromContext(linkUrl, params);
         } catch (error) {
           emitShellEvent({
             type: "chatgpt-download-failed",
@@ -2650,7 +2893,9 @@ async function openChatgptContextMenu(params = {}) {
     if (template.length) template.push({ type: "separator" });
     template.push({ role: "paste", label: "Paste" });
   }
-  if (!template.length) return false;
+  if (!template.length) {
+    template.push({ label: "No ChatGPT actions available here", enabled: false });
+  }
   Menu.buildFromTemplate(template).popup();
   return true;
 }
@@ -2704,7 +2949,8 @@ function chatgptRecentThreadsScript(limit = 40) {
       const click = (element) => {
         if (!element) return false;
         element.scrollIntoView?.({ block: "center", inline: "center" });
-        element.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, view: window }));
+        const PointerEventClass = window.PointerEvent || MouseEvent;
+        element.dispatchEvent(new PointerEventClass("pointerdown", { bubbles: true, cancelable: true, view: window }));
         element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
         element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
         element.click();
@@ -3328,6 +3574,12 @@ function configureGuestSurface(surfaceName, view) {
       });
       return { action: "deny" };
     }
+    if (surfaceName === "chatgpt" && isLikelyDownloadUrl(url)) {
+      setImmediate(() => {
+        if (!contents.isDestroyed()) contents.downloadURL(url);
+      });
+      return { action: "deny" };
+    }
     if (url.startsWith("http://") || url.startsWith("https://")) {
       ensureMiddleWebHost().openLink({
         url,
@@ -3359,6 +3611,11 @@ function configureGuestSurface(surfaceName, view) {
     });
   }
   contents.on("will-navigate", (event, url) => {
+    if (surfaceName === "chatgpt" && isLikelyDownloadUrl(url)) {
+      event.preventDefault();
+      contents.downloadURL(url);
+      return;
+    }
     if (!isPermittedNavigationUrl(url, surfaceName)) {
       event.preventDefault();
       emitToShell("surface:event", {
@@ -3888,6 +4145,29 @@ async function openContextMenu(event, request = {}) {
         }
       },
     });
+    template.push({
+      label: "Add to Project stash",
+      click: async () => {
+        try {
+          const resolved = await resolveProjectFileReference(projectId, fileRef);
+          emitShellEvent({
+            type: "project-stash-add-file",
+            projectId,
+            codexThreadId: threadId,
+            relPath: resolved.relPath || fileRef,
+            label: resolved.relPath || fileRef,
+            source: "codex-file-context-menu",
+            at: nowIso(),
+          });
+          sender.send("codex-surface:event", {
+            type: "attachment-diagnostic",
+            message: `Added ${resolved.relPath || fileRef} to Project stash.`,
+          });
+        } catch (error) {
+          sender.send("codex-surface:event", { type: "attachment-diagnostic", message: `Project stash add failed: ${error.message}` });
+        }
+      },
+    });
     if (threadId) {
       try {
         const project = await getProjectById(projectId);
@@ -3968,7 +4248,8 @@ function openChatgptSettingsScript() {
       const click = (element) => {
         if (!element) return false;
         element.scrollIntoView?.({ block: "center", inline: "center" });
-        element.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, view: window }));
+        const PointerEventClass = window.PointerEvent || MouseEvent;
+        element.dispatchEvent(new PointerEventClass("pointerdown", { bubbles: true, cancelable: true, view: window }));
         element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
         element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
         element.click();
@@ -4517,6 +4798,14 @@ ipcMain.handle("middle-web:copy-url", async () => ensureMiddleWebHost().copyUrl(
 
 ipcMain.handle("middle-web:snapshot", async () => ensureMiddleWebHost().snapshot());
 
+ipcMain.handle("middle-web:history", async () => {
+  return { ok: true, entries: ensureMiddleWebHost().history() };
+});
+
+ipcMain.handle("middle-web:prune-history", async (_event, payload) => {
+  return ensureMiddleWebHost().pruneHistory(payload || {});
+});
+
 ipcMain.handle("plane-zoom:adjust", async (_event, payload) => {
   return adjustPlaneZoom(normalizeString(payload?.plane, "middle"), payload?.direction);
 });
@@ -4619,6 +4908,10 @@ ipcMain.handle("attachments:remove-draft", async (_event, payload) => {
 
 ipcMain.handle("context-menu:open", async (event, payload) => {
   return openContextMenu(event, payload || {});
+});
+
+ipcMain.handle("project-stash:send-to-chatgpt", async (_event, payload) => {
+  return sendProjectStashToLinkedChatgpt(payload || {});
 });
 
 ipcMain.handle("chatgpt:select-thread", async (_event, payload) => {

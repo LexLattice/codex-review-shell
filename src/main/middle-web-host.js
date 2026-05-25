@@ -1,4 +1,7 @@
 const { WebContentsView, clipboard, session, shell } = require("electron");
+const fs = require("node:fs");
+const path = require("node:path");
+const crypto = require("node:crypto");
 const {
   PLANE_ZOOM_DEFAULT,
   PLANE_ZOOM_MAX,
@@ -9,6 +12,8 @@ const {
 } = require("../shared/plane-zoom");
 
 const MIDDLE_WEB_PARTITION = "persist:middle-web";
+const MIDDLE_WEB_HISTORY_SCHEMA_VERSION = 1;
+const MIDDLE_WEB_HISTORY_LIMIT = 80;
 
 function nowIso() {
   return new Date().toISOString();
@@ -112,6 +117,26 @@ function blockedMessage(reason) {
   return labels[reason] || labels.policy_denied;
 }
 
+function historyEntryId(url) {
+  return `web_${crypto.createHash("sha256").update(String(url || "")).digest("hex").slice(0, 16)}`;
+}
+
+function sanitizeHistoryEntry(entry) {
+  const decision = navigationDecision(entry?.displayUrl || entry?.url || "");
+  if (decision.action !== "allow") return null;
+  return {
+    id: normalizeString(entry?.id, historyEntryId(decision.normalizedUrl)),
+    displayUrl: decision.displayUrl,
+    origin: decision.origin,
+    title: normalizeString(entry?.title, decision.origin || decision.displayUrl).slice(0, 180),
+    securityPosture: decision.securityPosture,
+    lastSource: entry?.lastSource ? sanitizeSource(entry.lastSource) : null,
+    firstOpenedAt: normalizeString(entry?.firstOpenedAt, normalizeString(entry?.lastOpenedAt, nowIso())),
+    lastOpenedAt: normalizeString(entry?.lastOpenedAt, nowIso()),
+    visitCount: Math.max(1, Number(entry?.visitCount) || 1),
+  };
+}
+
 function isLoadUrlAbort(error) {
   const code = String(error?.code || "");
   const message = String(error?.message || "");
@@ -145,7 +170,102 @@ class MiddleWebHost {
     this.zoomFactor = PLANE_ZOOM_DEFAULT;
     this.webSession = session.fromPartition(MIDDLE_WEB_PARTITION);
     this.downloadHandler = null;
+    this.historyStorePath = "";
+    this.historyEntries = [];
+    this.historyPersistChain = Promise.resolve();
     this.configureSession();
+  }
+
+  setHistoryStorePath(storePath) {
+    this.historyStorePath = normalizeString(storePath, "");
+    if (this.historyStorePath) {
+      try {
+        fs.mkdirSync(path.dirname(this.historyStorePath), { recursive: true });
+      } catch {
+        // History is a convenience surface; persistence failures should not block browsing.
+      }
+    }
+    this.loadHistory();
+    this.emitHistory();
+  }
+
+  loadHistory() {
+    if (!this.historyStorePath) return;
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.historyStorePath, "utf8"));
+      const entries = Array.isArray(raw?.entries) ? raw.entries : [];
+      this.historyEntries = entries
+        .map(sanitizeHistoryEntry)
+        .filter(Boolean)
+        .sort((a, b) => String(b.lastOpenedAt).localeCompare(String(a.lastOpenedAt)))
+        .slice(0, MIDDLE_WEB_HISTORY_LIMIT);
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        this.historyEntries = [];
+      }
+    }
+  }
+
+  persistHistory() {
+    if (!this.historyStorePath) return;
+    const payloadText = `${JSON.stringify({
+      schemaVersion: MIDDLE_WEB_HISTORY_SCHEMA_VERSION,
+      updatedAt: nowIso(),
+      entries: this.historyEntries,
+    }, null, 2)}\n`;
+    const tmpPath = `${this.historyStorePath}.${process.pid}.${Date.now()}.tmp`;
+    this.historyPersistChain = this.historyPersistChain
+      .catch(() => {})
+      .then(async () => {
+        try {
+          await fs.promises.writeFile(tmpPath, payloadText, "utf8");
+          await fs.promises.rename(tmpPath, this.historyStorePath);
+        } catch {
+          try {
+            await fs.promises.unlink(tmpPath);
+          } catch {
+            // Best-effort cleanup only.
+          }
+        }
+      });
+    return this.historyPersistChain;
+  }
+
+  emitHistory() {
+    this.emitShellEvent({
+      type: "middle-web-history",
+      entries: this.history(),
+      limit: MIDDLE_WEB_HISTORY_LIMIT,
+      at: nowIso(),
+    });
+  }
+
+  recordHistory(options = {}) {
+    if (!this.state.hasPage || this.state.lastError) return;
+    const decision = navigationDecision(this.rawUrl || this.state.displayUrl);
+    if (decision.action !== "allow") return;
+    const now = nowIso();
+    const id = historyEntryId(decision.normalizedUrl);
+    const existing = this.historyEntries.find((entry) => entry.id === id);
+    if (options.bumpVisit === false && !existing) return;
+    const nextEntry = sanitizeHistoryEntry({
+      id,
+      displayUrl: decision.displayUrl,
+      origin: decision.origin,
+      title: normalizeString(this.state.title, existing?.title || decision.origin || decision.displayUrl),
+      securityPosture: decision.securityPosture,
+      lastSource: this.state.lastSource || existing?.lastSource || null,
+      firstOpenedAt: existing?.firstOpenedAt || now,
+      lastOpenedAt: options.bumpVisit === false ? existing?.lastOpenedAt || now : now,
+      visitCount: options.bumpVisit === false ? existing?.visitCount || 1 : (Number(existing?.visitCount) || 0) + 1,
+    });
+    if (!nextEntry) return;
+    this.historyEntries = [
+      nextEntry,
+      ...this.historyEntries.filter((entry) => entry.id !== nextEntry.id),
+    ].slice(0, MIDDLE_WEB_HISTORY_LIMIT);
+    this.persistHistory();
+    this.emitHistory();
   }
 
   configureSession() {
@@ -210,6 +330,7 @@ class MiddleWebHost {
     });
     contents.on("did-stop-loading", () => {
       this.updateFromContents({ loading: false });
+      this.recordHistory({ bumpVisit: true });
       this.emitState("loaded");
     });
     contents.on("did-navigate", (_event, url) => {
@@ -222,6 +343,7 @@ class MiddleWebHost {
       const decision = navigationDecision(url);
       if (decision.action === "allow") this.applyAllowedUrl(decision, { emit: false });
       this.updateFromContents();
+      this.recordHistory({ bumpVisit: true });
       this.emitState("state");
     });
     contents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
@@ -236,6 +358,7 @@ class MiddleWebHost {
     });
     contents.on("page-title-updated", (_event, title) => {
       this.state = { ...this.state, title: normalizeString(title, this.state.title) };
+      this.recordHistory({ bumpVisit: false });
       this.emitState("state");
     });
   }
@@ -314,6 +437,21 @@ class MiddleWebHost {
       ...extra,
       at: nowIso(),
     });
+  }
+
+  history() {
+    return this.historyEntries.map((entry) => ({ ...entry }));
+  }
+
+  async pruneHistory(request = {}) {
+    const id = normalizeString(request.id, "");
+    const clearAll = Boolean(request.clearAll);
+    const before = this.historyEntries.length;
+    if (clearAll) this.historyEntries = [];
+    else if (id) this.historyEntries = this.historyEntries.filter((entry) => entry.id !== id);
+    await this.persistHistory();
+    this.emitHistory();
+    return { ok: true, removed: before - this.historyEntries.length, entries: this.history() };
   }
 
   setNativeSurfacesVisible(visible) {

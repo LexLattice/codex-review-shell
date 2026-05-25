@@ -54,6 +54,14 @@ const state = {
   defaultCodexRuntime: "auto",
   allowNonChatgptUrls: false,
   activeMiddleTab: "overview",
+  projectStash: {
+    projectId: "",
+    files: [],
+    message: "review codex output",
+    status: "idle",
+    lastError: "",
+    generation: 0,
+  },
   middleWeb: {
     hasPage: false,
     displayUrl: "",
@@ -66,6 +74,8 @@ const state = {
     lastSource: null,
     securityPosture: "unknown",
   },
+  middleWebViewMode: "browser",
+  middleWebHistory: [],
   middleWebLayoutRevision: 0,
   planeZooms: {
     middle: PLANE_ZOOM_DEFAULT,
@@ -136,13 +146,22 @@ const els = {
   bindingStatus: document.getElementById("bindingStatus"),
   activeThreadStatus: document.getElementById("activeThreadStatus"),
   overviewTabButton: document.getElementById("overviewTabButton"),
+  projectTabButton: document.getElementById("projectTabButton"),
   threadsTabButton: document.getElementById("threadsTabButton"),
   analyticsTabButton: document.getElementById("analyticsTabButton"),
   webTabButton: document.getElementById("webTabButton"),
   overviewTabPanel: document.getElementById("overviewTabPanel"),
+  projectTabPanel: document.getElementById("projectTabPanel"),
   threadsTabPanel: document.getElementById("threadsTabPanel"),
   analyticsTabPanel: document.getElementById("analyticsTabPanel"),
   webTabPanel: document.getElementById("webTabPanel"),
+  projectStashCount: document.getElementById("projectStashCount"),
+  projectStashHint: document.getElementById("projectStashHint"),
+  projectStashList: document.getElementById("projectStashList"),
+  projectStashMessageInput: document.getElementById("projectStashMessageInput"),
+  projectStashStatus: document.getElementById("projectStashStatus"),
+  clearProjectStashButton: document.getElementById("clearProjectStashButton"),
+  sendProjectStashButton: document.getElementById("sendProjectStashButton"),
   projectList: document.getElementById("projectList"),
   projectCount: document.getElementById("projectCount"),
   threadDeck: document.getElementById("threadDeck"),
@@ -221,6 +240,12 @@ const els = {
   webReloadButton: document.getElementById("webReloadButton"),
   webCopyUrlButton: document.getElementById("webCopyUrlButton"),
   webOpenExternalButton: document.getElementById("webOpenExternalButton"),
+  webBrowserTabButton: document.getElementById("webBrowserTabButton"),
+  webHistoryTabButton: document.getElementById("webHistoryTabButton"),
+  webHistoryCount: document.getElementById("webHistoryCount"),
+  webPruneHistoryButton: document.getElementById("webPruneHistoryButton"),
+  webHistoryPanel: document.getElementById("webHistoryPanel"),
+  webHistoryList: document.getElementById("webHistoryList"),
   webTitle: document.getElementById("webTitle"),
   webOrigin: document.getElementById("webOrigin"),
   webSource: document.getElementById("webSource"),
@@ -1074,12 +1099,209 @@ function setLastEvent(message) {
   els.lastEvent.title = message;
 }
 
+function ensureProjectStash(projectId = activeProject()?.id || "") {
+  const targetProjectId = String(projectId || "");
+  if (state.projectStash.projectId === targetProjectId) return state.projectStash;
+  state.projectStash = {
+    projectId: targetProjectId,
+    files: [],
+    message: "review codex output",
+    status: "idle",
+    lastError: "",
+    generation: 0,
+  };
+  return state.projectStash;
+}
+
+function projectStashFileKey(file) {
+  return [
+    String(file?.projectId || ""),
+    String(file?.codexThreadId || ""),
+    String(file?.relPath || ""),
+  ].join("::");
+}
+
+function projectStashDisplayName(file) {
+  const relPath = String(file?.relPath || "");
+  return relPath.split("/").filter(Boolean).pop() || relPath || "workspace file";
+}
+
+function addProjectStashFile(event) {
+  const project = activeProject();
+  const projectId = String(event?.projectId || project?.id || "");
+  if (!project || project.id !== projectId) {
+    setLastEvent("Project stash add ignored: file belongs to another project.");
+    return;
+  }
+  const relPath = String(event?.relPath || "").replace(/\\/g, "/").replace(/^\/+/, "").trim();
+  if (!relPath) {
+    setLastEvent("Project stash add ignored: file reference was empty.");
+    return;
+  }
+  const stash = ensureProjectStash(projectId);
+  const file = {
+    id: createId("stash_file"),
+    projectId,
+    codexThreadId: String(event?.codexThreadId || event?.threadId || ""),
+    codexThreadTitle: String(event?.codexThreadTitle || ""),
+    relPath,
+    label: String(event?.label || relPath),
+    source: String(event?.source || "codex-file-context-menu"),
+    addedAt: String(event?.at || nowIso()),
+  };
+  const key = projectStashFileKey(file);
+  if (!stash.files.some((item) => projectStashFileKey(item) === key)) {
+    stash.files.push(file);
+    stash.status = "ready";
+    stash.lastError = "";
+    stash.generation += 1;
+    setLastEvent(`Added to GPT stash: ${relPath}.`);
+  } else {
+    setLastEvent(`Already in GPT stash: ${relPath}.`);
+  }
+  setMiddleTab("project");
+  renderProjectStash();
+}
+
+function removeProjectStashFile(fileId) {
+  const stash = ensureProjectStash();
+  const nextFiles = stash.files.filter((file) => file.id !== fileId);
+  if (nextFiles.length === stash.files.length) return;
+  stash.files = nextFiles;
+  stash.status = nextFiles.length ? "ready" : "idle";
+  stash.lastError = "";
+  stash.generation += 1;
+  renderProjectStash();
+}
+
+function clearProjectStash() {
+  const stash = ensureProjectStash();
+  stash.files = [];
+  stash.status = "idle";
+  stash.lastError = "";
+  stash.generation += 1;
+  renderProjectStash();
+  setLastEvent("Cleared GPT handoff stash.");
+}
+
+function projectStashStatusText(stash) {
+  if (stash.status === "sending") return "Sending bundle to linked ChatGPT thread…";
+  if (stash.status === "sent") return "Bundle sent to linked ChatGPT thread.";
+  if (stash.status === "failed") return stash.lastError || "Bundle send failed.";
+  if (!stash.files.length) return "No files stashed.";
+  const distinctThreads = new Set(stash.files.map((file) => String(file.codexThreadId || "")).filter(Boolean));
+  if (distinctThreads.size > 1) return "Stash has files from multiple Codex threads; send is blocked until only one target remains.";
+  return `${stash.files.length} file${stash.files.length === 1 ? "" : "s"} ready for GPT handoff.`;
+}
+
+function renderProjectStash() {
+  if (!els.projectStashList) return;
+  const project = activeProject();
+  const stash = ensureProjectStash(project?.id || "");
+  els.projectStashCount.textContent = String(stash.files.length);
+  if (document.activeElement !== els.projectStashMessageInput) {
+    els.projectStashMessageInput.value = stash.message || "review codex output";
+  }
+  els.projectStashList.innerHTML = "";
+  if (!stash.files.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "No files stashed yet. Use “Add to Project stash” from a Codex file context menu.";
+    els.projectStashList.appendChild(empty);
+  } else {
+    for (const file of stash.files) {
+      const row = document.createElement("div");
+      row.className = "project-stash-item";
+      row.innerHTML = `
+        <div class="project-stash-file-main">
+          <strong class="truncate"></strong>
+          <span class="mono muted truncate"></span>
+        </div>
+        <div class="project-stash-file-meta">
+          <span class="pill subtle"></span>
+          <button class="ghost small remove-stash-file" type="button">Remove</button>
+        </div>
+      `;
+      row.querySelector("strong").textContent = projectStashDisplayName(file);
+      row.querySelector("span.mono").textContent = file.relPath;
+      row.querySelector("span.mono").title = file.relPath;
+      row.querySelector(".pill").textContent = file.codexThreadTitle || (file.codexThreadId ? `Codex ${file.codexThreadId.slice(0, 8)}` : "target unresolved");
+      row.querySelector(".remove-stash-file").addEventListener("click", () => removeProjectStashFile(file.id));
+      els.projectStashList.appendChild(row);
+    }
+  }
+  const sending = stash.status === "sending";
+  const distinctThreads = new Set(stash.files.map((file) => String(file.codexThreadId || "")).filter(Boolean));
+  els.projectStashStatus.textContent = projectStashStatusText(stash);
+  els.projectStashStatus.title = els.projectStashStatus.textContent;
+  els.projectStashStatus.classList.toggle("project-stash-error", stash.status === "failed" || distinctThreads.size > 1);
+  els.clearProjectStashButton.disabled = sending || stash.files.length === 0;
+  els.sendProjectStashButton.disabled = sending || stash.files.length === 0 || distinctThreads.size > 1;
+}
+
+async function sendProjectStashToChatgpt() {
+  const project = activeProject();
+  const stash = ensureProjectStash(project?.id || "");
+  if (!project || !stash.files.length) return;
+  stash.message = String(els.projectStashMessageInput?.value || "").trim() || "review codex output";
+  const sendGeneration = stash.generation;
+  const filesToSend = stash.files.slice();
+  const sentFileKeys = new Set(filesToSend.map(projectStashFileKey));
+  stash.status = "sending";
+  stash.lastError = "";
+  renderProjectStash();
+  try {
+    const result = await bridge.sendProjectStashToChatgpt({
+      projectId: project.id,
+      message: stash.message,
+      files: filesToSend.map((file) => ({
+        relPath: file.relPath,
+        codexThreadId: file.codexThreadId,
+      })),
+      generation: sendGeneration,
+    });
+    stash.files = stash.generation === sendGeneration
+      ? []
+      : stash.files.filter((file) => !sentFileKeys.has(projectStashFileKey(file)));
+    stash.status = stash.files.length ? "ready" : "sent";
+    stash.generation += 1;
+    renderProjectStash();
+    setLastEvent(`Sent ${result.fileCount || 0} stashed file${result.fileCount === 1 ? "" : "s"} to ${result.chatThreadTitle || "linked ChatGPT"}.`);
+  } catch (error) {
+    stash.status = "failed";
+    stash.lastError = error.message || "Project stash send failed.";
+    renderProjectStash();
+    setLastEvent(`Project stash send failed: ${stash.lastError}`);
+  }
+}
+
 function normalizeSlashes(value) {
   return String(value || "").replace(/\\/g, "/");
 }
 
 function stripTokenPunctuation(value) {
   return String(value || "").replace(/[),.;!?]+$/g, "");
+}
+
+function hasStrongFilePathEvidence(filePath) {
+  const normalized = normalizeSlashes(stripTokenPunctuation(filePath).trim()).replace(/^\.\/+/, "");
+  if (!normalized || normalized.includes("\0") || /\s/.test(normalized)) return false;
+  if (normalized.startsWith("../") || normalized.includes("/../") || normalized === "..") return false;
+  if (!normalized.includes("/")) return false;
+  const tail = normalized.split("/").pop() || "";
+  return /^[^./][^/]*\.[A-Za-z0-9]{1,12}$/.test(tail);
+}
+
+function shouldRenderAmbiguousPathSymbol(value) {
+  const raw = stripTokenPunctuation(value).trim();
+  if (!raw || /^https?:\/\//i.test(raw) || raw.includes("://") || /\s/.test(raw)) return false;
+  const lineRef = splitLineRef(raw);
+  if (relativePathWithinRoot(lineRef.path)) return false;
+  const normalized = normalizeSlashes(lineRef.path).replace(/^\.\/+/, "");
+  if (!normalized || normalized.startsWith("../") || normalized.includes("/../")) return false;
+  const hasSlash = normalized.includes("/");
+  const hasDot = /(?:^|[A-Za-z0-9_-])\.[A-Za-z0-9_-]+/.test(normalized);
+  return hasSlash || hasDot;
 }
 
 function currentWorkspaceRoots() {
@@ -1108,13 +1330,16 @@ function relativePathWithinRoot(filePath) {
     const lowerPath = normalized.toLowerCase();
     const lowerRoot = normalizedRoot.toLowerCase();
     if (lowerPath === lowerRoot) return "";
-    if (lowerPath.startsWith(`${lowerRoot}/`)) return normalized.slice(normalizedRoot.length + 1);
+    if (lowerPath.startsWith(`${lowerRoot}/`)) {
+      const relPath = normalized.slice(normalizedRoot.length + 1);
+      return hasStrongFilePathEvidence(relPath) ? relPath : "";
+    }
   }
 
   const isAbsolute = normalized.startsWith("/") || /^[A-Za-z]:\//.test(normalized);
   if (isAbsolute) return "";
-  if (!normalized.includes("/") && !/\.[A-Za-z0-9]{1,12}$/.test(normalized)) return "";
-  return normalized.replace(/^\.\/+/, "");
+  const relPath = normalized.replace(/^\.\/+/, "");
+  return hasStrongFilePathEvidence(relPath) ? relPath : "";
 }
 
 function splitLineRef(value) {
@@ -1255,10 +1480,14 @@ function tokenizeTypedContent(text, context = {}) {
       });
       continue;
     }
-    if (isBareVersionToken(raw)) continue;
     const lineRef = splitLineRef(raw);
     const relPath = relativePathWithinRoot(lineRef.path);
-    if (!relPath) continue;
+    if (!relPath) {
+      if (shouldRenderAmbiguousPathSymbol(raw)) {
+        addTokenCandidate(candidates, match.index, match.index + raw.length, { type: "symbol", text: raw, value: raw });
+      }
+      continue;
+    }
     addTokenCandidate(candidates, match.index, match.index + raw.length, {
       type: lineRef.line ? "line_ref" : "file_path",
       text: raw,
@@ -1266,6 +1495,13 @@ function tokenizeTypedContent(text, context = {}) {
       line: lineRef.line,
       column: lineRef.column,
     });
+  }
+
+  const slashSymbolPattern = /[A-Za-z0-9._@+-]+(?:[\\/][A-Za-z0-9._@+-]+)+(?::\d+(?::\d+)?)?/g;
+  for (const match of source.matchAll(slashSymbolPattern)) {
+    const raw = stripTokenPunctuation(match[0]);
+    if (!shouldRenderAmbiguousPathSymbol(raw)) continue;
+    addTokenCandidate(candidates, match.index, match.index + raw.length, { type: "symbol", text: raw, value: raw });
   }
 
   const chosen = chooseTokenCandidates(candidates);
@@ -2344,6 +2580,7 @@ function handleCodexFocusSubAgent(event) {
 function renderMiddleTabs() {
   const tabs = [
     [els.overviewTabButton, els.overviewTabPanel, "overview"],
+    [els.projectTabButton, els.projectTabPanel, "project"],
     [els.threadsTabButton, els.threadsTabPanel, "threads"],
     [els.analyticsTabButton, els.analyticsTabPanel, "analytics"],
     [els.webTabButton, els.webTabPanel, "web"],
@@ -2365,10 +2602,61 @@ function middleWebSourceLabel(source) {
   return thread ? `Opened from: ${surface} · ${thread}` : `Opened from: ${surface}`;
 }
 
+function setMiddleWebViewMode(mode) {
+  state.middleWebViewMode = mode === "history" ? "history" : "browser";
+  renderMiddleWebTab();
+  scheduleResizeBurst();
+}
+
+function renderMiddleWebHistory() {
+  if (!els.webHistoryList) return;
+  const entries = Array.isArray(state.middleWebHistory) ? state.middleWebHistory : [];
+  els.webHistoryCount.textContent = String(entries.length);
+  els.webPruneHistoryButton.disabled = entries.length === 0;
+  els.webHistoryList.innerHTML = "";
+  if (!entries.length) {
+    const empty = document.createElement("div");
+    empty.className = "web-history-empty";
+    empty.innerHTML = `
+      <p class="eyebrow">No history yet</p>
+      <strong>Open links from Codex or ChatGPT to build quick reopen history.</strong>
+      <span class="muted">Blocked or failed navigations are not added.</span>
+    `;
+    els.webHistoryList.appendChild(empty);
+    return;
+  }
+  for (const entry of entries) {
+    const row = document.createElement("div");
+    row.className = "web-history-item";
+    row.innerHTML = `
+      <button class="web-history-open" type="button">
+        <strong class="truncate"></strong>
+        <span class="mono muted truncate"></span>
+        <span class="muted web-history-meta"></span>
+      </button>
+      <button class="ghost small web-history-prune" type="button">Prune</button>
+    `;
+    row.querySelector("strong").textContent = entry.title || entry.origin || entry.displayUrl || "Untitled page";
+    row.querySelector("span.mono").textContent = entry.displayUrl || "";
+    row.querySelector("span.mono").title = entry.displayUrl || "";
+    const meta = [
+      entry.origin || "",
+      entry.lastOpenedAt ? `opened ${formatTime(entry.lastOpenedAt)}` : "",
+      Number(entry.visitCount) > 1 ? `${entry.visitCount} visits` : "",
+      middleWebSourceLabel(entry.lastSource),
+    ].filter(Boolean).join(" · ");
+    row.querySelector(".web-history-meta").textContent = meta;
+    row.querySelector(".web-history-open").addEventListener("click", () => reopenMiddleWebHistoryEntry(entry));
+    row.querySelector(".web-history-prune").addEventListener("click", () => pruneMiddleWebHistoryEntry(entry.id));
+    els.webHistoryList.appendChild(row);
+  }
+}
+
 function renderMiddleWebTab() {
   const web = state.middleWeb || {};
   const hasPage = Boolean(web.hasPage || web.displayUrl || web.origin);
   const blocked = Boolean(web.lastError);
+  const historyMode = state.middleWebViewMode === "history";
   els.webTitle.textContent = blocked
     ? web.lastError
     : web.title || (hasPage ? "Loading web page…" : "No page open");
@@ -2377,7 +2665,8 @@ function renderMiddleWebTab() {
   els.webOrigin.title = web.displayUrl || web.origin || "";
   els.webSource.textContent = middleWebSourceLabel(web.lastSource);
   els.webSource.title = els.webSource.textContent;
-  els.webEmptyState.hidden = hasPage;
+  els.webEmptyState.hidden = historyMode || hasPage;
+  els.webHistoryPanel.hidden = !historyMode;
   els.webEmptyState.classList.toggle("web-error-state", blocked);
   if (blocked) {
     els.webEmptyState.querySelector("strong").textContent = web.lastError;
@@ -2392,6 +2681,60 @@ function renderMiddleWebTab() {
   els.webReloadButton.disabled = !hasPage;
   els.webCopyUrlButton.disabled = !hasPage;
   els.webOpenExternalButton.disabled = !hasPage;
+  els.webBrowserTabButton.classList.toggle("active", !historyMode);
+  els.webHistoryTabButton.classList.toggle("active", historyMode);
+  renderMiddleWebHistory();
+}
+
+async function loadMiddleWebHistory() {
+  if (!bridge.middleWebHistory) return;
+  try {
+    const result = await bridge.middleWebHistory();
+    state.middleWebHistory = Array.isArray(result?.entries) ? result.entries : [];
+    renderMiddleWebTab();
+  } catch (error) {
+    setLastEvent(`Web history load failed: ${error.message}`);
+  }
+}
+
+async function reopenMiddleWebHistoryEntry(entry) {
+  const url = String(entry?.displayUrl || "");
+  if (!url || !bridge.openWorkspaceLink) return;
+  setMiddleWebViewMode("browser");
+  try {
+    const result = await bridge.openWorkspaceLink(url, {
+      disposition: "middle-web",
+      source: { surface: "shell", itemId: `history:${entry.id || ""}` },
+      userGesture: true,
+    });
+    if (!result?.ok) setLastEvent(`Web history reopen blocked: ${result?.error || "unknown error"}`);
+  } catch (error) {
+    setLastEvent(`Web history reopen failed: ${error.message}`);
+  }
+}
+
+async function pruneMiddleWebHistoryEntry(id) {
+  if (!bridge.middleWebPruneHistory) return;
+  try {
+    const result = await bridge.middleWebPruneHistory({ id });
+    state.middleWebHistory = Array.isArray(result?.entries) ? result.entries : state.middleWebHistory.filter((entry) => entry.id !== id);
+    renderMiddleWebTab();
+    setLastEvent("Pruned Web history entry.");
+  } catch (error) {
+    setLastEvent(`Web history prune failed: ${error.message}`);
+  }
+}
+
+async function pruneAllMiddleWebHistory() {
+  if (!bridge.middleWebPruneHistory) return;
+  try {
+    const result = await bridge.middleWebPruneHistory({ clearAll: true });
+    state.middleWebHistory = Array.isArray(result?.entries) ? result.entries : [];
+    renderMiddleWebTab();
+    setLastEvent("Pruned Web history.");
+  } catch (error) {
+    setLastEvent(`Web history prune failed: ${error.message}`);
+  }
 }
 
 function renderProjectList() {
@@ -3233,6 +3576,7 @@ function render() {
   renderProjectList();
   renderSelectedProject();
   renderThreadDeck();
+  renderProjectStash();
   renderThreadsWorkbench();
   renderAnalyticsPanel();
   renderHandoffTargetSelect();
@@ -3312,7 +3656,9 @@ function sendSurfaceLayout() {
     ? rectToBounds(els.chatgptSlot.getBoundingClientRect())
     : hiddenNativeBounds;
   const web = els.middleWebSlot ? rectToBounds(els.middleWebSlot.getBoundingClientRect()) : { x: 0, y: 0, width: 1, height: 1 };
-  const webVisible = state.activeMiddleTab === "web" && Boolean(state.middleWeb?.hasPage || state.middleWeb?.displayUrl);
+  const webVisible = state.activeMiddleTab === "web" &&
+    state.middleWebViewMode !== "history" &&
+    Boolean(state.middleWeb?.hasPage || state.middleWeb?.displayUrl);
   const signature = [
     `${codex.x},${codex.y},${codex.width},${codex.height}`,
     `${chatgpt.x},${chatgpt.y},${chatgpt.width},${chatgpt.height},${state.activeRightTab}`,
@@ -4164,7 +4510,8 @@ async function deleteThreadFromDrawer() {
 }
 
 function setMiddleTab(tab) {
-  if (tab === "threads") state.activeMiddleTab = "threads";
+  if (tab === "project") state.activeMiddleTab = "project";
+  else if (tab === "threads") state.activeMiddleTab = "threads";
   else if (tab === "analytics") state.activeMiddleTab = "analytics";
   else if (tab === "web") state.activeMiddleTab = "web";
   else state.activeMiddleTab = "overview";
@@ -4696,9 +5043,24 @@ function bindEvents() {
   els.rightChatgptTabButton?.addEventListener("click", () => setRightPlaneTab("chatgpt"));
   els.rightSubAgentsTabButton?.addEventListener("click", () => setRightPlaneTab("subagents"));
   els.overviewTabButton.addEventListener("click", () => setMiddleTab("overview"));
+  els.projectTabButton.addEventListener("click", () => setMiddleTab("project"));
   els.threadsTabButton.addEventListener("click", () => setMiddleTab("threads"));
   els.analyticsTabButton.addEventListener("click", () => setMiddleTab("analytics"));
   els.webTabButton.addEventListener("click", () => setMiddleTab("web"));
+  els.projectStashMessageInput.addEventListener("input", () => {
+    const stash = ensureProjectStash();
+    stash.message = String(els.projectStashMessageInput.value || "");
+  });
+  els.clearProjectStashButton.addEventListener("click", clearProjectStash);
+  els.sendProjectStashButton.addEventListener("click", () => {
+    sendProjectStashToChatgpt().catch((error) => {
+      const stash = ensureProjectStash();
+      stash.status = "failed";
+      stash.lastError = error.message || "Project stash send failed.";
+      renderProjectStash();
+      setLastEvent(`Project stash send failed: ${stash.lastError}`);
+    });
+  });
   els.addProjectButton.addEventListener("click", () => openDrawer("new"));
   els.editProjectButton.addEventListener("click", () => openDrawer("edit"));
   els.closeDrawerButton.addEventListener("click", closeDrawer);
@@ -4790,6 +5152,11 @@ function bindEvents() {
       setLastEvent(`Open external failed: ${error.message}`);
     }
   });
+  els.webBrowserTabButton.addEventListener("click", () => setMiddleWebViewMode("browser"));
+  els.webHistoryTabButton.addEventListener("click", () => setMiddleWebViewMode("history"));
+  els.webPruneHistoryButton.addEventListener("click", () => {
+    pruneAllMiddleWebHistory().catch((error) => setLastEvent(`Web history prune failed: ${error.message}`));
+  });
 
   els.leftSplitter.addEventListener("pointerdown", (event) => beginDrag("left", event));
   els.rightSplitter.addEventListener("pointerdown", (event) => beginDrag("right", event));
@@ -4847,7 +5214,11 @@ function bindEvents() {
     }
     if (event.type === "layout-request") scheduleResizeBurst();
     if (event.type === "middle-web-open-requested") {
+      state.middleWebViewMode = "browser";
       setMiddleTab("web");
+    }
+    if (event.type === "project-stash-add-file") {
+      addProjectStashFile(event);
     }
     if (event.type === "middle-web-state") {
       state.middleWeb = {
@@ -4860,6 +5231,10 @@ function bindEvents() {
       scheduleResizeBurst();
       if (event.webEventType === "navigation-blocked") setLastEvent(event.lastError || "Middle Web navigation blocked.");
       else if (event.webEventType === "load-failed") setLastEvent(`Middle Web load failed: ${event.lastError || event.errorDescription || "unknown error"}`);
+    }
+    if (event.type === "middle-web-history") {
+      state.middleWebHistory = Array.isArray(event.entries) ? event.entries : [];
+      renderMiddleWebTab();
     }
     if (event.type === "plane-zoom-state" && event.plane === "middle") {
       applyMiddlePlaneZoom(event.zoomFactor);
@@ -4925,6 +5300,7 @@ async function init() {
   state.defaultCodexRuntime = result.defaultCodexRuntime || "auto";
   state.allowNonChatgptUrls = Boolean(result.allowNonChatgptUrls);
   render();
+  await loadMiddleWebHistory();
   await selectProject(state.config.selectedProjectId);
   await loadChatgptRecentThreads({ refresh: false });
 }

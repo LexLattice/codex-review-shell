@@ -60,6 +60,7 @@
 
         <nav class="middle-tabs" aria-label="Middle plane views">
           <button class="middle-tab active" id="overviewTabButton" data-tab="overview" type="button">Overview</button>
+          <button class="middle-tab" id="projectTabButton" data-tab="project" type="button">Project</button>
           <button class="middle-tab" id="threadsTabButton" data-tab="threads" type="button">Threads</button>
           <button class="middle-tab" id="analyticsTabButton" data-tab="analytics" type="button">Analytics</button>
           <button class="middle-tab" id="webTabButton" data-tab="web" type="button">Web</button>
@@ -218,6 +219,33 @@
           </footer>
         </section>
 
+        <section class="middle-tab-panel" id="projectTabPanel" data-tab-panel="project" hidden>
+          <section class="control-card project-stash-card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Project control</p>
+                <h3>GPT handoff stash</h3>
+              </div>
+              <span id="projectStashCount" class="counter">0</span>
+            </div>
+            <p class="project-stash-hint muted" id="projectStashHint">
+              Right-click Codex file references and add them here, then send one bundle to the linked ChatGPT thread.
+            </p>
+            <div class="project-stash-list" id="projectStashList"></div>
+            <label class="project-stash-message-label">
+              Message to send with files
+              <textarea id="projectStashMessageInput" rows="5" spellcheck="true">review codex output</textarea>
+            </label>
+            <div class="project-stash-actions">
+              <p class="muted" id="projectStashStatus">No files stashed.</p>
+              <div class="heading-actions">
+                <button class="ghost small" id="clearProjectStashButton" type="button">Clear stash</button>
+                <button class="primary small" id="sendProjectStashButton" type="button">Send to GPT</button>
+              </div>
+            </div>
+          </section>
+        </section>
+
         <section class="middle-tab-panel" id="threadsTabPanel" data-tab-panel="threads" hidden>
           <section class="control-card threads-workbench-card">
             <div class="section-heading">
@@ -347,11 +375,26 @@
                 <button class="ghost small" id="webOpenExternalButton" type="button" disabled>Open external</button>
               </div>
             </div>
+            <div class="web-view-tabs" aria-label="Middle Web views">
+              <button class="web-view-tab active" id="webBrowserTabButton" type="button">Browser</button>
+              <button class="web-view-tab" id="webHistoryTabButton" type="button">History <span id="webHistoryCount" class="counter">0</span></button>
+              <button class="ghost small" id="webPruneHistoryButton" type="button" disabled>Prune all</button>
+            </div>
             <div class="middle-web-slot" id="middleWebSlot" aria-live="polite">
               <div class="web-empty-state" id="webEmptyState">
                 <p class="eyebrow">Utility browser viewport</p>
                 <strong>No page open yet.</strong>
                 <span>Links clicked from Codex or ChatGPT will open here.</span>
+              </div>
+              <div class="web-history-panel" id="webHistoryPanel" hidden>
+                <div class="web-history-header">
+                  <div>
+                    <p class="eyebrow">History</p>
+                    <strong>Previously opened workspace links</strong>
+                  </div>
+                  <span class="muted">Reopens use the same Web policy.</span>
+                </div>
+                <div class="web-history-list" id="webHistoryList"></div>
               </div>
             </div>
           </section>
