@@ -2215,6 +2215,22 @@ function safeDownloadLinkUrl(value) {
   }
 }
 
+function isLikelyDownloadUrl(value) {
+  try {
+    const parsed = new URL(normalizeString(value, ""));
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password) return false;
+    const host = parsed.hostname.toLowerCase();
+    const pathname = decodeURIComponent(parsed.pathname || "").toLowerCase();
+    const search = parsed.search.toLowerCase();
+    if (host.endsWith("oaiusercontent.com")) return true;
+    if (pathname.includes("/download") || pathname.includes("/backend-api/files/") || pathname.includes("/files/")) return true;
+    if (search.includes("download=") || search.includes("response-content-disposition=attachment")) return true;
+    return /\.(zip|tar|tgz|gz|pdf|txt|md|json|jsonl|csv|tsv|png|jpe?g|webp|gif|svg|html?|xml|ya?ml|toml|log|patch|diff)$/i.test(pathname);
+  } catch {
+    return false;
+  }
+}
+
 async function resolveChatgptContextForUrl(url) {
   const config = await loadConfig();
   for (const project of config.projects || []) {
@@ -2604,10 +2620,55 @@ function prepareChatgptDownload(item, options = {}) {
   return { fileName, savePath };
 }
 
+async function resolveChatgptContextMenuLink(params = {}) {
+  const directUrl = safeDownloadLinkUrl(params.linkURL || params.srcURL || "");
+  if (directUrl) return directUrl;
+  if (!chatgptView || chatgptView.webContents.isDestroyed()) return "";
+  if (!trustedChatgptPageUrl(chatgptView.webContents.getURL() || "")) return "";
+  const x = Math.max(0, Math.round(Number(params.x) || 0));
+  const y = Math.max(0, Math.round(Number(params.y) || 0));
+  const script = `
+    (() => {
+      const safeHref = (value) => {
+        try {
+          const url = new URL(String(value || ""), location.href);
+          if (url.protocol !== "https:" || url.username || url.password) return "";
+          return url.toString();
+        } catch {
+          return "";
+        }
+      };
+      const start = document.elementFromPoint(${x}, ${y});
+      if (!start) return "";
+      const candidates = [];
+      const pushCandidate = (node) => {
+        if (!node || candidates.includes(node)) return;
+        candidates.push(node);
+      };
+      pushCandidate(start.closest?.("a[href]"));
+      pushCandidate(start.querySelector?.("a[href]"));
+      for (let node = start; node && candidates.length < 8; node = node.parentElement) {
+        pushCandidate(node.closest?.("a[href]"));
+        pushCandidate(node.querySelector?.("a[href]"));
+      }
+      for (const candidate of candidates) {
+        const href = safeHref(candidate?.href || candidate?.getAttribute?.("href"));
+        if (href) return href;
+      }
+      return "";
+    })();
+  `;
+  try {
+    return safeDownloadLinkUrl(await chatgptView.webContents.executeJavaScript(script, true));
+  } catch {
+    return "";
+  }
+}
+
 async function openChatgptContextMenu(params = {}) {
   const template = [];
   const selectionText = normalizeString(params.selectionText, "");
-  const linkUrl = safeDownloadLinkUrl(params.linkURL || params.srcURL || "");
+  const linkUrl = await resolveChatgptContextMenuLink(params);
   if (selectionText) template.push({ role: "copy", label: "Copy selected text" });
   if (linkUrl) {
     if (template.length) template.push({ type: "separator" });
@@ -2650,7 +2711,9 @@ async function openChatgptContextMenu(params = {}) {
     if (template.length) template.push({ type: "separator" });
     template.push({ role: "paste", label: "Paste" });
   }
-  if (!template.length) return false;
+  if (!template.length) {
+    template.push({ label: "No ChatGPT actions available here", enabled: false });
+  }
   Menu.buildFromTemplate(template).popup();
   return true;
 }
@@ -3328,6 +3391,12 @@ function configureGuestSurface(surfaceName, view) {
       });
       return { action: "deny" };
     }
+    if (surfaceName === "chatgpt" && isLikelyDownloadUrl(url)) {
+      setImmediate(() => {
+        if (!contents.isDestroyed()) contents.downloadURL(url);
+      });
+      return { action: "deny" };
+    }
     if (url.startsWith("http://") || url.startsWith("https://")) {
       ensureMiddleWebHost().openLink({
         url,
@@ -3359,6 +3428,11 @@ function configureGuestSurface(surfaceName, view) {
     });
   }
   contents.on("will-navigate", (event, url) => {
+    if (surfaceName === "chatgpt" && isLikelyDownloadUrl(url)) {
+      event.preventDefault();
+      contents.downloadURL(url);
+      return;
+    }
     if (!isPermittedNavigationUrl(url, surfaceName)) {
       event.preventDefault();
       emitToShell("surface:event", {
