@@ -32,6 +32,7 @@ const { PLANE_ZOOM_DEFAULT, clampZoomFactor, zoomDeltaForDirection } = require("
 const APP_TITLE = "Codex Review Shell";
 const CONFIG_FILE_NAME = "workspace-config.json";
 const CHATGPT_THREAD_CACHE_FILE_NAME = "chatgpt-thread-cache.json";
+const MIDDLE_WEB_HISTORY_FILE_NAME = "middle-web-history.json";
 const CHATGPT_THREAD_CACHE_VERSION = 1;
 const CHATGPT_THREAD_CACHE_MAX_ENTRIES = 1500;
 const THREAD_ANALYTICS_DB_FILE_NAME = "thread-analytics.sqlite";
@@ -148,6 +149,10 @@ function configPath() {
 
 function chatgptThreadCachePath() {
   return path.join(app.getPath("userData"), CHATGPT_THREAD_CACHE_FILE_NAME);
+}
+
+function middleWebHistoryPath() {
+  return path.join(app.getPath("userData"), MIDDLE_WEB_HISTORY_FILE_NAME);
 }
 
 function threadAnalyticsDbPath() {
@@ -1383,7 +1388,10 @@ function emitShellEvent(payload) {
 }
 
 function ensureMiddleWebHost() {
-  if (!middleWebHost) middleWebHost = new MiddleWebHost({ emitShellEvent });
+  if (!middleWebHost) {
+    middleWebHost = new MiddleWebHost({ emitShellEvent });
+    middleWebHost.setHistoryStorePath(middleWebHistoryPath());
+  }
   return middleWebHost;
 }
 
@@ -4779,6 +4787,14 @@ ipcMain.handle("middle-web:open-external", async () => ensureMiddleWebHost().ope
 ipcMain.handle("middle-web:copy-url", async () => ensureMiddleWebHost().copyUrl());
 
 ipcMain.handle("middle-web:snapshot", async () => ensureMiddleWebHost().snapshot());
+
+ipcMain.handle("middle-web:history", async () => {
+  return { ok: true, entries: ensureMiddleWebHost().history() };
+});
+
+ipcMain.handle("middle-web:prune-history", async (_event, payload) => {
+  return ensureMiddleWebHost().pruneHistory(payload || {});
+});
 
 ipcMain.handle("plane-zoom:adjust", async (_event, payload) => {
   return adjustPlaneZoom(normalizeString(payload?.plane, "middle"), payload?.direction);

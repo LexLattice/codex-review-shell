@@ -74,6 +74,8 @@ const state = {
     lastSource: null,
     securityPosture: "unknown",
   },
+  middleWebViewMode: "browser",
+  middleWebHistory: [],
   middleWebLayoutRevision: 0,
   planeZooms: {
     middle: PLANE_ZOOM_DEFAULT,
@@ -238,6 +240,12 @@ const els = {
   webReloadButton: document.getElementById("webReloadButton"),
   webCopyUrlButton: document.getElementById("webCopyUrlButton"),
   webOpenExternalButton: document.getElementById("webOpenExternalButton"),
+  webBrowserTabButton: document.getElementById("webBrowserTabButton"),
+  webHistoryTabButton: document.getElementById("webHistoryTabButton"),
+  webHistoryCount: document.getElementById("webHistoryCount"),
+  webPruneHistoryButton: document.getElementById("webPruneHistoryButton"),
+  webHistoryPanel: document.getElementById("webHistoryPanel"),
+  webHistoryList: document.getElementById("webHistoryList"),
   webTitle: document.getElementById("webTitle"),
   webOrigin: document.getElementById("webOrigin"),
   webSource: document.getElementById("webSource"),
@@ -2589,10 +2597,61 @@ function middleWebSourceLabel(source) {
   return thread ? `Opened from: ${surface} · ${thread}` : `Opened from: ${surface}`;
 }
 
+function setMiddleWebViewMode(mode) {
+  state.middleWebViewMode = mode === "history" ? "history" : "browser";
+  renderMiddleWebTab();
+  scheduleResizeBurst();
+}
+
+function renderMiddleWebHistory() {
+  if (!els.webHistoryList) return;
+  const entries = Array.isArray(state.middleWebHistory) ? state.middleWebHistory : [];
+  els.webHistoryCount.textContent = String(entries.length);
+  els.webPruneHistoryButton.disabled = entries.length === 0;
+  els.webHistoryList.innerHTML = "";
+  if (!entries.length) {
+    const empty = document.createElement("div");
+    empty.className = "web-history-empty";
+    empty.innerHTML = `
+      <p class="eyebrow">No history yet</p>
+      <strong>Open links from Codex or ChatGPT to build quick reopen history.</strong>
+      <span class="muted">Blocked or failed navigations are not added.</span>
+    `;
+    els.webHistoryList.appendChild(empty);
+    return;
+  }
+  for (const entry of entries) {
+    const row = document.createElement("div");
+    row.className = "web-history-item";
+    row.innerHTML = `
+      <button class="web-history-open" type="button">
+        <strong class="truncate"></strong>
+        <span class="mono muted truncate"></span>
+        <span class="muted web-history-meta"></span>
+      </button>
+      <button class="ghost small web-history-prune" type="button">Prune</button>
+    `;
+    row.querySelector("strong").textContent = entry.title || entry.origin || entry.displayUrl || "Untitled page";
+    row.querySelector("span.mono").textContent = entry.displayUrl || "";
+    row.querySelector("span.mono").title = entry.displayUrl || "";
+    const meta = [
+      entry.origin || "",
+      entry.lastOpenedAt ? `opened ${formatTime(entry.lastOpenedAt)}` : "",
+      Number(entry.visitCount) > 1 ? `${entry.visitCount} visits` : "",
+      middleWebSourceLabel(entry.lastSource),
+    ].filter(Boolean).join(" · ");
+    row.querySelector(".web-history-meta").textContent = meta;
+    row.querySelector(".web-history-open").addEventListener("click", () => reopenMiddleWebHistoryEntry(entry));
+    row.querySelector(".web-history-prune").addEventListener("click", () => pruneMiddleWebHistoryEntry(entry.id));
+    els.webHistoryList.appendChild(row);
+  }
+}
+
 function renderMiddleWebTab() {
   const web = state.middleWeb || {};
   const hasPage = Boolean(web.hasPage || web.displayUrl || web.origin);
   const blocked = Boolean(web.lastError);
+  const historyMode = state.middleWebViewMode === "history";
   els.webTitle.textContent = blocked
     ? web.lastError
     : web.title || (hasPage ? "Loading web page…" : "No page open");
@@ -2601,7 +2660,8 @@ function renderMiddleWebTab() {
   els.webOrigin.title = web.displayUrl || web.origin || "";
   els.webSource.textContent = middleWebSourceLabel(web.lastSource);
   els.webSource.title = els.webSource.textContent;
-  els.webEmptyState.hidden = hasPage;
+  els.webEmptyState.hidden = historyMode || hasPage;
+  els.webHistoryPanel.hidden = !historyMode;
   els.webEmptyState.classList.toggle("web-error-state", blocked);
   if (blocked) {
     els.webEmptyState.querySelector("strong").textContent = web.lastError;
@@ -2616,6 +2676,60 @@ function renderMiddleWebTab() {
   els.webReloadButton.disabled = !hasPage;
   els.webCopyUrlButton.disabled = !hasPage;
   els.webOpenExternalButton.disabled = !hasPage;
+  els.webBrowserTabButton.classList.toggle("active", !historyMode);
+  els.webHistoryTabButton.classList.toggle("active", historyMode);
+  renderMiddleWebHistory();
+}
+
+async function loadMiddleWebHistory() {
+  if (!bridge.middleWebHistory) return;
+  try {
+    const result = await bridge.middleWebHistory();
+    state.middleWebHistory = Array.isArray(result?.entries) ? result.entries : [];
+    renderMiddleWebTab();
+  } catch (error) {
+    setLastEvent(`Web history load failed: ${error.message}`);
+  }
+}
+
+async function reopenMiddleWebHistoryEntry(entry) {
+  const url = String(entry?.displayUrl || "");
+  if (!url || !bridge.openWorkspaceLink) return;
+  setMiddleWebViewMode("browser");
+  try {
+    const result = await bridge.openWorkspaceLink(url, {
+      disposition: "middle-web",
+      source: { surface: "shell", itemId: `history:${entry.id || ""}` },
+      userGesture: true,
+    });
+    if (!result?.ok) setLastEvent(`Web history reopen blocked: ${result?.error || "unknown error"}`);
+  } catch (error) {
+    setLastEvent(`Web history reopen failed: ${error.message}`);
+  }
+}
+
+async function pruneMiddleWebHistoryEntry(id) {
+  if (!bridge.middleWebPruneHistory) return;
+  try {
+    const result = await bridge.middleWebPruneHistory({ id });
+    state.middleWebHistory = Array.isArray(result?.entries) ? result.entries : state.middleWebHistory.filter((entry) => entry.id !== id);
+    renderMiddleWebTab();
+    setLastEvent("Pruned Web history entry.");
+  } catch (error) {
+    setLastEvent(`Web history prune failed: ${error.message}`);
+  }
+}
+
+async function pruneAllMiddleWebHistory() {
+  if (!bridge.middleWebPruneHistory) return;
+  try {
+    const result = await bridge.middleWebPruneHistory({ clearAll: true });
+    state.middleWebHistory = Array.isArray(result?.entries) ? result.entries : [];
+    renderMiddleWebTab();
+    setLastEvent("Pruned Web history.");
+  } catch (error) {
+    setLastEvent(`Web history prune failed: ${error.message}`);
+  }
 }
 
 function renderProjectList() {
@@ -3537,7 +3651,9 @@ function sendSurfaceLayout() {
     ? rectToBounds(els.chatgptSlot.getBoundingClientRect())
     : hiddenNativeBounds;
   const web = els.middleWebSlot ? rectToBounds(els.middleWebSlot.getBoundingClientRect()) : { x: 0, y: 0, width: 1, height: 1 };
-  const webVisible = state.activeMiddleTab === "web" && Boolean(state.middleWeb?.hasPage || state.middleWeb?.displayUrl);
+  const webVisible = state.activeMiddleTab === "web" &&
+    state.middleWebViewMode !== "history" &&
+    Boolean(state.middleWeb?.hasPage || state.middleWeb?.displayUrl);
   const signature = [
     `${codex.x},${codex.y},${codex.width},${codex.height}`,
     `${chatgpt.x},${chatgpt.y},${chatgpt.width},${chatgpt.height},${state.activeRightTab}`,
@@ -5031,6 +5147,11 @@ function bindEvents() {
       setLastEvent(`Open external failed: ${error.message}`);
     }
   });
+  els.webBrowserTabButton.addEventListener("click", () => setMiddleWebViewMode("browser"));
+  els.webHistoryTabButton.addEventListener("click", () => setMiddleWebViewMode("history"));
+  els.webPruneHistoryButton.addEventListener("click", () => {
+    pruneAllMiddleWebHistory().catch((error) => setLastEvent(`Web history prune failed: ${error.message}`));
+  });
 
   els.leftSplitter.addEventListener("pointerdown", (event) => beginDrag("left", event));
   els.rightSplitter.addEventListener("pointerdown", (event) => beginDrag("right", event));
@@ -5088,6 +5209,7 @@ function bindEvents() {
     }
     if (event.type === "layout-request") scheduleResizeBurst();
     if (event.type === "middle-web-open-requested") {
+      state.middleWebViewMode = "browser";
       setMiddleTab("web");
     }
     if (event.type === "project-stash-add-file") {
@@ -5104,6 +5226,10 @@ function bindEvents() {
       scheduleResizeBurst();
       if (event.webEventType === "navigation-blocked") setLastEvent(event.lastError || "Middle Web navigation blocked.");
       else if (event.webEventType === "load-failed") setLastEvent(`Middle Web load failed: ${event.lastError || event.errorDescription || "unknown error"}`);
+    }
+    if (event.type === "middle-web-history") {
+      state.middleWebHistory = Array.isArray(event.entries) ? event.entries : [];
+      renderMiddleWebTab();
     }
     if (event.type === "plane-zoom-state" && event.plane === "middle") {
       applyMiddlePlaneZoom(event.zoomFactor);
@@ -5169,6 +5295,7 @@ async function init() {
   state.defaultCodexRuntime = result.defaultCodexRuntime || "auto";
   state.allowNonChatgptUrls = Boolean(result.allowNonChatgptUrls);
   render();
+  await loadMiddleWebHistory();
   await selectProject(state.config.selectedProjectId);
   await loadChatgptRecentThreads({ refresh: false });
 }

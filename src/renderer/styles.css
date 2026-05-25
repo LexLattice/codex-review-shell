@@ -771,7 +771,7 @@ body.dragging .splitter {
   height: 100%;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   gap: 10px;
   overflow: hidden;
 }
@@ -808,6 +808,35 @@ body.dragging .splitter {
 
 .web-origin-witness span {
   font-size: 11px;
+}
+
+.web-view-tabs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.web-view-tab {
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.web-view-tab.active {
+  color: var(--accent-strong);
+  border-color: rgba(141, 180, 255, 0.32);
+  background: rgba(141, 180, 255, 0.12);
+}
+
+.web-view-tab .counter {
+  min-height: 18px;
+  padding: 0 6px;
+  font-size: 10px;
 }
 
 .middle-web-slot {
@@ -851,6 +880,99 @@ body.dragging .splitter {
   color: var(--danger);
 }
 
+.web-history-panel {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  padding: 12px;
+  overflow: hidden;
+}
+
+.web-history-panel[hidden] {
+  display: none !important;
+}
+
+.web-history-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px;
+  border: 1px solid rgba(141, 180, 255, 0.18);
+  border-radius: 13px;
+  background: rgba(5, 7, 11, 0.56);
+}
+
+.web-history-header strong {
+  font-size: 13px;
+}
+
+.web-history-list {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.web-history-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: rgba(5, 7, 11, 0.5);
+}
+
+.web-history-open {
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  display: grid;
+  gap: 4px;
+  text-align: left;
+}
+
+.web-history-open:hover {
+  background: transparent;
+}
+
+.web-history-open strong {
+  font-size: 13px;
+}
+
+.web-history-open span {
+  font-size: 11px;
+}
+
+.web-history-meta {
+  line-height: 1.35;
+}
+
+.web-history-empty {
+  display: grid;
+  gap: 7px;
+  place-items: center;
+  padding: 30px 18px;
+  text-align: center;
+  color: var(--muted);
+  border: 1px dashed rgba(141, 180, 255, 0.2);
+  border-radius: 13px;
+  background: rgba(5, 7, 11, 0.38);
+}
+
+.web-history-empty strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
 .control-header,
 .selected-card,
 .control-card,
@@ -875,7 +997,8 @@ body.dragging .splitter {
 
 .control-plane > .middle-tabs,
 .control-plane > .middle-tab-panel:not(.web-tab-panel),
-.web-toolbar {
+.web-toolbar,
+.web-view-tabs {
   zoom: var(--middle-plane-zoom);
 }
 

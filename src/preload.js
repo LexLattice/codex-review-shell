@@ -34,6 +34,8 @@ contextBridge.exposeInMainWorld("workspaceShell", {
   middleWebOpenExternal: () => ipcRenderer.invoke("middle-web:open-external"),
   middleWebCopyUrl: () => ipcRenderer.invoke("middle-web:copy-url"),
   middleWebSnapshot: () => ipcRenderer.invoke("middle-web:snapshot"),
+  middleWebHistory: () => ipcRenderer.invoke("middle-web:history"),
+  middleWebPruneHistory: (payload = {}) => ipcRenderer.invoke("middle-web:prune-history", payload),
   adjustPlaneZoom: (plane, direction) => ipcRenderer.invoke("plane-zoom:adjust", { plane, direction }),
   setPlaneZoom: (plane, zoomFactor) => ipcRenderer.invoke("plane-zoom:set", { plane, zoomFactor }),
   zoomConstants: PLANE_ZOOM_POLICY,
