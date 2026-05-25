@@ -172,11 +172,19 @@ class MiddleWebHost {
     this.downloadHandler = null;
     this.historyStorePath = "";
     this.historyEntries = [];
+    this.historyPersistChain = Promise.resolve();
     this.configureSession();
   }
 
   setHistoryStorePath(storePath) {
     this.historyStorePath = normalizeString(storePath, "");
+    if (this.historyStorePath) {
+      try {
+        fs.mkdirSync(path.dirname(this.historyStorePath), { recursive: true });
+      } catch {
+        // History is a convenience surface; persistence failures should not block browsing.
+      }
+    }
     this.loadHistory();
     this.emitHistory();
   }
@@ -200,16 +208,27 @@ class MiddleWebHost {
 
   persistHistory() {
     if (!this.historyStorePath) return;
-    const payload = {
+    const payloadText = `${JSON.stringify({
       schemaVersion: MIDDLE_WEB_HISTORY_SCHEMA_VERSION,
       updatedAt: nowIso(),
       entries: this.historyEntries,
-    };
-    const dir = path.dirname(this.historyStorePath);
+    }, null, 2)}\n`;
     const tmpPath = `${this.historyStorePath}.${process.pid}.${Date.now()}.tmp`;
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(tmpPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
-    fs.renameSync(tmpPath, this.historyStorePath);
+    this.historyPersistChain = this.historyPersistChain
+      .catch(() => {})
+      .then(async () => {
+        try {
+          await fs.promises.writeFile(tmpPath, payloadText, "utf8");
+          await fs.promises.rename(tmpPath, this.historyStorePath);
+        } catch {
+          try {
+            await fs.promises.unlink(tmpPath);
+          } catch {
+            // Best-effort cleanup only.
+          }
+        }
+      });
+    return this.historyPersistChain;
   }
 
   emitHistory() {
@@ -424,13 +443,13 @@ class MiddleWebHost {
     return this.historyEntries.map((entry) => ({ ...entry }));
   }
 
-  pruneHistory(request = {}) {
+  async pruneHistory(request = {}) {
     const id = normalizeString(request.id, "");
     const clearAll = Boolean(request.clearAll);
     const before = this.historyEntries.length;
     if (clearAll) this.historyEntries = [];
     else if (id) this.historyEntries = this.historyEntries.filter((entry) => entry.id !== id);
-    this.persistHistory();
+    await this.persistHistory();
     this.emitHistory();
     return { ok: true, removed: before - this.historyEntries.length, entries: this.history() };
   }

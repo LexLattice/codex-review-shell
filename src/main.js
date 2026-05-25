@@ -2237,9 +2237,10 @@ function isLikelyDownloadUrl(value) {
     const pathname = decodeURIComponent(parsed.pathname || "").toLowerCase();
     const search = parsed.search.toLowerCase();
     if (host.endsWith("oaiusercontent.com")) return true;
-    if (pathname.includes("/download") || pathname.includes("/backend-api/files/") || pathname.includes("/files/")) return true;
+    if (!isAllowedChatgptHost(host)) return false;
+    if (pathname.includes("/download") || pathname.includes("/backend-api/files/")) return true;
     if (search.includes("download=") || search.includes("response-content-disposition=attachment")) return true;
-    return /\.(zip|tar|tgz|gz|pdf|txt|md|json|jsonl|csv|tsv|png|jpe?g|webp|gif|svg|html?|xml|ya?ml|toml|log|patch|diff)$/i.test(pathname);
+    return false;
   } catch {
     return false;
   }
@@ -2308,7 +2309,10 @@ function renderDownloadMacroMessage(template, values) {
 }
 
 function chatgptCodexFileReviewScript(payload) {
-  const safePayload = JSON.stringify(payload).replace(/[$`]/g, "\\$&").replace(/</g, "\\u003c");
+  const safePayload = JSON.stringify(payload)
+    .replace(/\\/g, "\\\\")
+    .replace(/[$`]/g, "\\$&")
+    .replace(/</g, "\\u003c");
   return `
     (async () => {
       const payload = ${safePayload};
@@ -2534,19 +2538,22 @@ async function sendProjectStashToLinkedChatgpt(payload = {}) {
   if (files.length > 12) throw new Error("Project stash is limited to 12 files per GPT handoff.");
 
   const seen = new Set();
-  const transfers = [];
+  const uniqueFiles = [];
   for (const file of files) {
     const dedupeKey = `${file.codexThreadId}::${file.relPath}`;
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
+    uniqueFiles.push(file);
+  }
+  const transfers = await Promise.all(uniqueFiles.map(async (file) => {
     const { relPath: resolvedRelPath } = await resolveProjectFileReference(project.id, file.relPath);
     const transfer = await requestWorkspace(project, "readFileTransfer", { relPath: resolvedRelPath }, 90_000);
-    transfers.push({
+    return {
       ...transfer,
       codexThreadId: file.codexThreadId,
       relPath: normalizeString(transfer.relPath, resolvedRelPath),
-    });
-  }
+    };
+  }));
   if (!transfers.length) throw new Error("No stashed files could be read from the workspace.");
 
   const target = linkedChatgptTargetForProjectStash(project, files);
@@ -2675,7 +2682,8 @@ function chatgptElementFromPointClickScript(params = {}) {
       });
       if (!target) return { ok: false, error: "no_clickable_download_target" };
       const href = target.href || target.getAttribute?.("href") || "";
-      target.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, view: window }));
+      const PointerEventClass = window.PointerEvent || MouseEvent;
+      target.dispatchEvent(new PointerEventClass("pointerdown", { bubbles: true, cancelable: true, view: window }));
       target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
       target.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
       target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
@@ -2941,7 +2949,8 @@ function chatgptRecentThreadsScript(limit = 40) {
       const click = (element) => {
         if (!element) return false;
         element.scrollIntoView?.({ block: "center", inline: "center" });
-        element.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, view: window }));
+        const PointerEventClass = window.PointerEvent || MouseEvent;
+        element.dispatchEvent(new PointerEventClass("pointerdown", { bubbles: true, cancelable: true, view: window }));
         element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
         element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
         element.click();
@@ -4239,7 +4248,8 @@ function openChatgptSettingsScript() {
       const click = (element) => {
         if (!element) return false;
         element.scrollIntoView?.({ block: "center", inline: "center" });
-        element.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, view: window }));
+        const PointerEventClass = window.PointerEvent || MouseEvent;
+        element.dispatchEvent(new PointerEventClass("pointerdown", { bubbles: true, cancelable: true, view: window }));
         element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
         element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
         element.click();

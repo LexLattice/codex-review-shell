@@ -1244,6 +1244,9 @@ async function sendProjectStashToChatgpt() {
   const stash = ensureProjectStash(project?.id || "");
   if (!project || !stash.files.length) return;
   stash.message = String(els.projectStashMessageInput?.value || "").trim() || "review codex output";
+  const sendGeneration = stash.generation;
+  const filesToSend = stash.files.slice();
+  const sentFileKeys = new Set(filesToSend.map(projectStashFileKey));
   stash.status = "sending";
   stash.lastError = "";
   renderProjectStash();
@@ -1251,14 +1254,16 @@ async function sendProjectStashToChatgpt() {
     const result = await bridge.sendProjectStashToChatgpt({
       projectId: project.id,
       message: stash.message,
-      files: stash.files.map((file) => ({
+      files: filesToSend.map((file) => ({
         relPath: file.relPath,
         codexThreadId: file.codexThreadId,
       })),
-      generation: stash.generation,
+      generation: sendGeneration,
     });
-    stash.status = "sent";
-    stash.files = [];
+    stash.files = stash.generation === sendGeneration
+      ? []
+      : stash.files.filter((file) => !sentFileKeys.has(projectStashFileKey(file)));
+    stash.status = stash.files.length ? "ready" : "sent";
     stash.generation += 1;
     renderProjectStash();
     setLastEvent(`Sent ${result.fileCount || 0} stashed file${result.fileCount === 1 ? "" : "s"} to ${result.chatThreadTitle || "linked ChatGPT"}.`);
