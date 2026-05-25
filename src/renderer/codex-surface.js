@@ -2353,6 +2353,27 @@ function stripTokenPunctuation(value) {
   return String(value || "").replace(/[),.;!?]+$/g, "");
 }
 
+function hasStrongFilePathEvidence(filePath) {
+  const normalized = normalizeSlashes(stripTokenPunctuation(filePath).trim()).replace(/^\.\/+/, "");
+  if (!normalized || normalized.includes("\0") || /\s/.test(normalized)) return false;
+  if (normalized.startsWith("../") || normalized.includes("/../") || normalized === "..") return false;
+  if (!normalized.includes("/")) return false;
+  const tail = normalized.split("/").pop() || "";
+  return /^[^./][^/]*\.[A-Za-z0-9]{1,12}$/.test(tail);
+}
+
+function shouldRenderAmbiguousPathSymbol(value) {
+  const raw = stripTokenPunctuation(value).trim();
+  if (!raw || /^https?:\/\//i.test(raw) || raw.includes("://") || /\s/.test(raw)) return false;
+  const lineRef = splitLineRef(raw);
+  if (relativePathWithinRoot(lineRef.path)) return false;
+  const normalized = normalizeSlashes(lineRef.path).replace(/^\.\/+/, "");
+  if (!normalized || normalized.startsWith("../") || normalized.includes("/../")) return false;
+  const hasSlash = normalized.includes("/");
+  const hasDot = /(?:^|[A-Za-z0-9_-])\.[A-Za-z0-9_-]+/.test(normalized);
+  return hasSlash || hasDot;
+}
+
 function knownWorkspaceRoots() {
   const roots = [
     connection?.workspaceRoot,
@@ -2379,13 +2400,16 @@ function relativePathWithinRoot(filePath) {
     const lowerPath = normalized.toLowerCase();
     const lowerRoot = normalizedRoot.toLowerCase();
     if (lowerPath === lowerRoot) return "";
-    if (lowerPath.startsWith(`${lowerRoot}/`)) return normalized.slice(normalizedRoot.length + 1);
+    if (lowerPath.startsWith(`${lowerRoot}/`)) {
+      const relPath = normalized.slice(normalizedRoot.length + 1);
+      return hasStrongFilePathEvidence(relPath) ? relPath : "";
+    }
   }
 
   const isAbsolute = normalized.startsWith("/") || /^[A-Za-z]:\//.test(normalized);
   if (isAbsolute) return "";
-  if (!normalized.includes("/") && !/\.[A-Za-z0-9]{1,12}$/.test(normalized)) return "";
-  return normalized.replace(/^\.\/+/, "");
+  const relPath = normalized.replace(/^\.\/+/, "");
+  return hasStrongFilePathEvidence(relPath) ? relPath : "";
 }
 
 function splitLineRef(value) {
@@ -2526,10 +2550,14 @@ function tokenizeTypedContent(text, context = {}) {
       });
       continue;
     }
-    if (isBareVersionToken(raw)) continue;
     const lineRef = splitLineRef(raw);
     const relPath = relativePathWithinRoot(lineRef.path);
-    if (!relPath) continue;
+    if (!relPath) {
+      if (shouldRenderAmbiguousPathSymbol(raw)) {
+        addTokenCandidate(candidates, match.index, match.index + raw.length, { type: "symbol", text: raw, value: raw });
+      }
+      continue;
+    }
     addTokenCandidate(candidates, match.index, match.index + raw.length, {
       type: lineRef.line ? "line_ref" : "file_path",
       text: raw,
@@ -2537,6 +2565,13 @@ function tokenizeTypedContent(text, context = {}) {
       line: lineRef.line,
       column: lineRef.column,
     });
+  }
+
+  const slashSymbolPattern = /[A-Za-z0-9._@+-]+(?:[\\/][A-Za-z0-9._@+-]+)+(?::\d+(?::\d+)?)?/g;
+  for (const match of source.matchAll(slashSymbolPattern)) {
+    const raw = stripTokenPunctuation(match[0]);
+    if (!shouldRenderAmbiguousPathSymbol(raw)) continue;
+    addTokenCandidate(candidates, match.index, match.index + raw.length, { type: "symbol", text: raw, value: raw });
   }
 
   const chosen = chooseTokenCandidates(candidates);
