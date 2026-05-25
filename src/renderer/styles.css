@@ -1155,6 +1155,77 @@ button:active {
   min-height: 0;
 }
 
+.project-stash-card {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+
+.project-stash-hint {
+  margin: -2px 0 0;
+  line-height: 1.45;
+}
+
+.project-stash-list {
+  display: grid;
+  gap: 8px;
+  min-height: 80px;
+}
+
+.project-stash-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: rgba(5, 7, 11, 0.42);
+}
+
+.project-stash-file-main {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.project-stash-file-main strong {
+  font-size: 13px;
+}
+
+.project-stash-file-main span {
+  font-size: 11px;
+}
+
+.project-stash-file-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.project-stash-message-label {
+  margin-top: 2px;
+}
+
+.project-stash-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.project-stash-actions > .muted {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.project-stash-error {
+  color: var(--danger);
+}
+
 .threads-lane-editor {
   display: grid;
   grid-template-columns: minmax(140px, 0.9fr) minmax(180px, 1.2fr) auto auto;

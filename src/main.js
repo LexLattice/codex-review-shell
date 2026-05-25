@@ -2321,16 +2321,28 @@ function chatgptCodexFileReviewScript(payload) {
         return null;
       };
       const decodeBase64 = (value) => Uint8Array.from(atob(value || ""), (char) => char.charCodeAt(0));
+      const files = Array.isArray(payload.files) && payload.files.length
+        ? payload.files
+        : [{
+            fileName: payload.fileName,
+            mimeType: payload.mimeType,
+            contentBase64: payload.contentBase64,
+          }];
+      if (!files.length || files.some((file) => !file || !file.contentBase64)) {
+        return { ok: false, error: "no_files_to_attach", attached: false };
+      }
       const fileInput = await waitFor(() => {
         const inputs = [...document.querySelectorAll('input[type="file"]')];
         return inputs.find((input) => !input.disabled && !input.webkitdirectory) || null;
       }, 6000);
       if (!fileInput) return { ok: false, error: "file_input_not_found", attached: false };
-      const file = new File([decodeBase64(payload.contentBase64)], payload.fileName || "codex-output", {
-        type: payload.mimeType || "application/octet-stream",
-      });
       const dataTransfer = new DataTransfer();
-      dataTransfer.items.add(file);
+      for (const fileData of files) {
+        const file = new File([decodeBase64(fileData.contentBase64)], fileData.fileName || "codex-output", {
+          type: fileData.mimeType || "application/octet-stream",
+        });
+        dataTransfer.items.add(file);
+      }
       fileInput.files = dataTransfer.files;
       fileInput.dispatchEvent(new Event("input", { bubbles: true }));
       fileInput.dispatchEvent(new Event("change", { bubbles: true }));
@@ -2383,7 +2395,7 @@ function chatgptCodexFileReviewScript(payload) {
       }, 30000);
       if (!sendButton) return { ok: false, error: "send_button_unavailable", attached: true };
       sendButton.click();
-      return { ok: true, attached: true, submitted: true };
+      return { ok: true, attached: true, submitted: true, fileCount: files.length };
     })();
   `;
 }
@@ -2417,10 +2429,12 @@ async function resolveProjectFileReference(projectId, relPath) {
   };
 }
 
-async function submitCodexFileReviewToChatgpt(fileTransfer) {
+async function submitCodexFileBundleToChatgpt(fileTransfers, promptText = "review codex output") {
   if (!chatgptView || chatgptView.webContents.isDestroyed()) {
     throw new Error("ChatGPT surface is unavailable.");
   }
+  const transfers = Array.isArray(fileTransfers) ? fileTransfers : [fileTransfers].filter(Boolean);
+  if (!transfers.length) throw new Error("No files are available to send to ChatGPT.");
   let currentUrl = null;
   try {
     currentUrl = new URL(chatgptView.webContents.getURL() || "");
@@ -2431,15 +2445,21 @@ async function submitCodexFileReviewToChatgpt(fileTransfer) {
     throw new Error("ChatGPT file handoff is restricted to trusted ChatGPT/OpenAI origins.");
   }
   const result = await chatgptView.webContents.executeJavaScript(chatgptCodexFileReviewScript({
-    fileName: normalizeString(fileTransfer?.fileName, "codex-output"),
-    mimeType: normalizeString(fileTransfer?.mimeType, "application/octet-stream"),
-    contentBase64: normalizeString(fileTransfer?.contentBase64, ""),
-    promptText: "review codex output",
+    files: transfers.map((fileTransfer) => ({
+      fileName: normalizeString(fileTransfer?.fileName, "codex-output"),
+      mimeType: normalizeString(fileTransfer?.mimeType, "application/octet-stream"),
+      contentBase64: normalizeString(fileTransfer?.contentBase64, ""),
+    })),
+    promptText: normalizeString(promptText, "review codex output"),
   }), true);
   if (!result?.ok) {
     throw new Error(`ChatGPT review submit failed: ${normalizeString(result?.error, "unknown_error")}`);
   }
   return result;
+}
+
+async function submitCodexFileReviewToChatgpt(fileTransfer) {
+  return submitCodexFileBundleToChatgpt([fileTransfer], "review codex output");
 }
 
 async function sendCodexFileToLinkedChatgpt(projectId, codexThreadId, relPath) {
@@ -2460,6 +2480,78 @@ async function sendCodexFileToLinkedChatgpt(projectId, codexThreadId, relPath) {
     chatThreadId: chatThread.id,
     chatThreadTitle: normalizeString(chatThread.title, chatThread.id),
     relPath: normalizeString(transfer.relPath, resolvedRelPath),
+    surfaceResult,
+    submitResult,
+  };
+}
+
+function linkedChatgptTargetForProjectStash(project, files) {
+  const threadIds = [...new Set(files
+    .map((file) => normalizeString(file?.codexThreadId, ""))
+    .filter(Boolean))];
+  if (threadIds.length > 1) {
+    throw new Error("Stashed files belong to more than one Codex thread.");
+  }
+  if (threadIds.length === 1) {
+    const matches = bindingsForCodexThread(project, threadIds[0]);
+    if (matches.length < 1) throw new Error("No linked ChatGPT thread was found for this Codex thread.");
+    if (matches.length > 1) throw new Error("More than one linked ChatGPT thread was found for this Codex thread.");
+    return { ...matches[0], codexThreadId: threadIds[0] };
+  }
+  const binding = projectActivationBinding(project);
+  const fallbackThread = primaryReviewThread(project);
+  const chatThread = binding?.chatThreadId
+    ? (project.chatThreads || []).find((thread) => thread.id === binding.chatThreadId && !thread.archived)
+    : (fallbackThread && !fallbackThread.archived ? fallbackThread : null);
+  if (!chatThread) throw new Error("No active linked ChatGPT thread was found for this project.");
+  return {
+    binding: binding || null,
+    chatThread,
+    codexThreadId: normalizeString(binding?.codexThreadRef?.threadId, ""),
+  };
+}
+
+async function sendProjectStashToLinkedChatgpt(payload = {}) {
+  const projectId = normalizeString(payload.projectId, "");
+  const project = await getProjectById(projectId);
+  const files = Array.isArray(payload.files)
+    ? payload.files
+      .map((file) => ({
+        relPath: normalizeString(file?.relPath, "").replace(/\\/g, "/").replace(/^\/+/, ""),
+        codexThreadId: normalizeString(file?.codexThreadId, ""),
+      }))
+      .filter((file) => file.relPath)
+    : [];
+  if (!files.length) throw new Error("Project stash is empty.");
+  if (files.length > 12) throw new Error("Project stash is limited to 12 files per GPT handoff.");
+
+  const seen = new Set();
+  const transfers = [];
+  for (const file of files) {
+    const dedupeKey = `${file.codexThreadId}::${file.relPath}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    const { relPath: resolvedRelPath } = await resolveProjectFileReference(project.id, file.relPath);
+    const transfer = await requestWorkspace(project, "readFileTransfer", { relPath: resolvedRelPath }, 90_000);
+    transfers.push({
+      ...transfer,
+      codexThreadId: file.codexThreadId,
+      relPath: normalizeString(transfer.relPath, resolvedRelPath),
+    });
+  }
+  if (!transfers.length) throw new Error("No stashed files could be read from the workspace.");
+
+  const target = linkedChatgptTargetForProjectStash(project, files);
+  const surfaceResult = await ensureChatgptThreadDisplayed(project, target.chatThread);
+  const submitResult = await submitCodexFileBundleToChatgpt(transfers, payload.message);
+  return {
+    ok: true,
+    projectId: project.id,
+    codexThreadId: target.codexThreadId,
+    chatThreadId: target.chatThread.id,
+    chatThreadTitle: normalizeString(target.chatThread.title, target.chatThread.id),
+    fileCount: transfers.length,
+    relPaths: transfers.map((transfer) => transfer.relPath),
     surfaceResult,
     submitResult,
   };
@@ -4036,6 +4128,29 @@ async function openContextMenu(event, request = {}) {
         }
       },
     });
+    template.push({
+      label: "Add to Project stash",
+      click: async () => {
+        try {
+          const resolved = await resolveProjectFileReference(projectId, fileRef);
+          emitShellEvent({
+            type: "project-stash-add-file",
+            projectId,
+            codexThreadId: threadId,
+            relPath: resolved.relPath || fileRef,
+            label: resolved.relPath || fileRef,
+            source: "codex-file-context-menu",
+            at: nowIso(),
+          });
+          sender.send("codex-surface:event", {
+            type: "attachment-diagnostic",
+            message: `Added ${resolved.relPath || fileRef} to Project stash.`,
+          });
+        } catch (error) {
+          sender.send("codex-surface:event", { type: "attachment-diagnostic", message: `Project stash add failed: ${error.message}` });
+        }
+      },
+    });
     if (threadId) {
       try {
         const project = await getProjectById(projectId);
@@ -4767,6 +4882,10 @@ ipcMain.handle("attachments:remove-draft", async (_event, payload) => {
 
 ipcMain.handle("context-menu:open", async (event, payload) => {
   return openContextMenu(event, payload || {});
+});
+
+ipcMain.handle("project-stash:send-to-chatgpt", async (_event, payload) => {
+  return sendProjectStashToLinkedChatgpt(payload || {});
 });
 
 ipcMain.handle("chatgpt:select-thread", async (_event, payload) => {
