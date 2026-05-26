@@ -63,6 +63,7 @@
           <button class="middle-tab" id="projectTabButton" data-tab="project" type="button">Project</button>
           <button class="middle-tab" id="threadsTabButton" data-tab="threads" type="button">Threads</button>
           <button class="middle-tab" id="analyticsTabButton" data-tab="analytics" type="button">Analytics</button>
+          <button class="middle-tab" id="filesTabButton" data-tab="files" type="button">Files</button>
           <button class="middle-tab" id="webTabButton" data-tab="web" type="button">Web</button>
         </nav>
 
@@ -353,6 +354,30 @@
               <div class="thread-browser-list analytics-thread-list" id="analyticsThreadList"></div>
               <div class="analytics-dashboard" id="analyticsDashboard"></div>
             </section>
+          </section>
+        </section>
+
+        <section class="middle-tab-panel file-tab-panel" id="filesTabPanel" data-tab-panel="files" hidden>
+          <section class="control-card file-view-card">
+            <div class="file-view-toolbar" aria-label="Middle file viewer controls">
+              <div class="file-view-witness">
+                <p class="eyebrow">Files</p>
+                <strong id="middleFileTitle" class="truncate">No file open</strong>
+                <span id="middleFileMeta" class="muted truncate">Open Codex file references or ChatGPT downloads here.</span>
+                <span id="middleFileSource" class="muted truncate"></span>
+              </div>
+              <div class="heading-actions">
+                <button class="ghost small" id="middleFileCopyRefButton" type="button" disabled>Copy ref</button>
+                <button class="ghost small" id="middleFileRevealButton" type="button" disabled>Reveal</button>
+              </div>
+            </div>
+            <div class="middle-file-content" id="middleFileContent" aria-live="polite">
+              <div class="file-empty-state">
+                <p class="eyebrow">Read-only file viewport</p>
+                <strong>No file open yet.</strong>
+                <span>Codex file references and ChatGPT downloads can be projected here without making them transcript evidence.</span>
+              </div>
+            </div>
           </section>
         </section>
 

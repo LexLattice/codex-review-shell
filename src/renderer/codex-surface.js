@@ -2609,16 +2609,20 @@ async function openTypedUrl(url) {
   if (!result?.ok) addSystemMessage(`URL open blocked: ${result?.error || "unknown error"}`);
 }
 
-async function revealTypedFile(relPath) {
-  if (!bridge?.revealProjectFile || !project?.id) {
-    addSystemMessage("Project file reveal is unavailable in this Codex surface.");
+async function openTypedFile(relPath) {
+  if (!bridge?.openProjectFile || !project?.id) {
+    addSystemMessage("Project file opening is unavailable in this Codex surface.");
     return;
   }
   try {
-    const result = await bridge.revealProjectFile(project.id, relPath);
-    if (!result?.opened && result?.method) addSystemMessage(`File path copied: ${result.absolutePath || relPath}`);
+    const result = await bridge.openProjectFile(project.id, relPath, {
+      sourceSurface: "codex",
+      threadId: state.threadId || "",
+      threadTitle: state.threadTitle || "",
+    });
+    if (!result?.ok) addSystemMessage(`File open failed: ${result?.error || "unknown error"}`);
   } catch (error) {
-    addSystemMessage(`File reveal failed: ${error.message}`);
+    addSystemMessage(`File open failed: ${error.message}`);
   }
 }
 
@@ -2647,10 +2651,10 @@ function renderTypedContent(container, text, context = {}) {
       button.type = "button";
       button.className = `typed-token ${token.type === "line_ref" ? "typed-token-line-ref" : "typed-token-file"}`;
       button.textContent = token.text;
-      button.title = token.line ? `Reveal ${token.path}:${token.line}` : `Reveal ${token.path}`;
+      button.title = token.line ? `Open ${token.path}:${token.line} in Files` : `Open ${token.path} in Files`;
       button.dataset.contextTarget = "file_ref";
       button.dataset.contextFile = token.path;
-      button.addEventListener("click", () => revealTypedFile(token.path));
+      button.addEventListener("click", () => openTypedFile(token.path));
       container.appendChild(button);
       continue;
     }
@@ -2693,10 +2697,10 @@ function appendFileToken(parent, label, fileRef) {
   button.type = "button";
   button.className = `typed-token ${fileRef.line ? "typed-token-line-ref" : "typed-token-file"} assistant-md-link`;
   button.textContent = label || fileRef.path;
-  button.title = fileRef.line ? `Reveal ${fileRef.path}:${fileRef.line}` : `Reveal ${fileRef.path}`;
+  button.title = fileRef.line ? `Open ${fileRef.path}:${fileRef.line} in Files` : `Open ${fileRef.path} in Files`;
   button.dataset.contextTarget = "file_ref";
   button.dataset.contextFile = fileRef.path;
-  button.addEventListener("click", () => revealTypedFile(fileRef.path));
+  button.addEventListener("click", () => openTypedFile(fileRef.path));
   parent.appendChild(button);
 }
 

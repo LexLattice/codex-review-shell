@@ -767,6 +767,95 @@ body.dragging .splitter {
   overflow: hidden;
 }
 
+.file-tab-panel.active {
+  min-height: 0;
+  align-content: stretch;
+  overflow: hidden;
+}
+
+.file-view-card {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 10px;
+  overflow: hidden;
+}
+
+.file-view-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+}
+
+.file-view-witness {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  padding: 7px 10px;
+  border: 1px solid rgba(141, 180, 255, 0.18);
+  border-radius: 12px;
+  background: rgba(5, 7, 11, 0.52);
+}
+
+.file-view-witness strong {
+  font-size: 12px;
+}
+
+.file-view-witness span {
+  font-size: 11px;
+}
+
+.middle-file-content {
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 14px;
+  background:
+    radial-gradient(circle at 50% 0%, rgba(141, 180, 255, 0.08), transparent 38%),
+    rgba(5, 7, 11, 0.8);
+}
+
+.middle-file-content pre {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: "JetBrains Mono", "Fira Code", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  color: #d8e6ff;
+}
+
+.middle-file-content.is-binary,
+.middle-file-content.is-empty,
+.middle-file-content.is-error,
+.file-empty-state {
+  display: grid;
+  place-content: center;
+  gap: 8px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.middle-file-content.is-binary,
+.middle-file-content.is-empty,
+.middle-file-content.is-error {
+  padding: 28px 18px;
+}
+
+.file-empty-state strong,
+.middle-file-content.is-binary strong,
+.middle-file-content.is-empty strong {
+  color: var(--text);
+}
+
+.middle-file-content.is-error strong {
+  color: var(--danger);
+}
+
 .web-card {
   height: 100%;
   min-height: 0;
@@ -996,9 +1085,10 @@ body.dragging .splitter {
 }
 
 .control-plane > .middle-tabs,
-.control-plane > .middle-tab-panel:not(.web-tab-panel),
+.control-plane > .middle-tab-panel:not(.web-tab-panel):not(.file-tab-panel),
 .web-toolbar,
-.web-view-tabs {
+.web-view-tabs,
+.file-view-toolbar {
   zoom: var(--middle-plane-zoom);
 }
 

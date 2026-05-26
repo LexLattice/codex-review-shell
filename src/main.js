@@ -2156,6 +2156,74 @@ function uniqueHostDownloadPathSync(dirPath, fileName) {
   throw new Error("Unable to allocate a unique ChatGPT download path.");
 }
 
+function fileViewMimeType(fileName) {
+  const ext = path.extname(String(fileName || "")).toLowerCase();
+  const map = {
+    ".md": "text/markdown",
+    ".markdown": "text/markdown",
+    ".mdown": "text/markdown",
+    ".txt": "text/plain",
+    ".log": "text/plain",
+    ".json": "application/json",
+    ".jsonl": "application/jsonl",
+    ".yaml": "application/yaml",
+    ".yml": "application/yaml",
+    ".toml": "application/toml",
+    ".csv": "text/csv",
+    ".tsv": "text/tab-separated-values",
+    ".js": "text/javascript",
+    ".ts": "text/typescript",
+    ".tsx": "text/typescript",
+    ".jsx": "text/javascript",
+    ".css": "text/css",
+    ".html": "text/html",
+    ".htm": "text/html",
+    ".xml": "application/xml",
+    ".py": "text/x-python",
+    ".rs": "text/x-rust",
+    ".go": "text/x-go",
+    ".sh": "text/x-shellscript",
+  };
+  return map[ext] || "text/plain";
+}
+
+function isProbablyBinaryBuffer(buffer) {
+  if (!buffer || buffer.length === 0) return false;
+  if (buffer.includes(0)) return true;
+  const text = buffer.toString("utf8");
+  const replacementCount = (text.match(/\uFFFD/g) || []).length;
+  return replacementCount > Math.max(8, text.length * 0.03);
+}
+
+function normalizeMiddleFileSource(options = {}) {
+  const nested = isPlainObject(options.source) ? options.source : {};
+  const surface = normalizeString(nested.surface || options.sourceSurface, "");
+  if (!surface) return null;
+  return {
+    surface,
+    threadId: normalizeString(nested.threadId || options.threadId, ""),
+    threadTitle: normalizeString(nested.threadTitle || options.threadTitle, ""),
+    itemId: normalizeString(nested.itemId || options.itemId, ""),
+  };
+}
+
+function emitMiddleFileState(payload) {
+  emitShellEvent({
+    type: "middle-file-state",
+    at: nowIso(),
+    ...payload,
+  });
+}
+
+function normalizeProjectFileViewRelPath(project, value) {
+  const text = normalizeString(value, "").replace(/^<|>$/g, "").replace(/\\/g, "/");
+  if (!text) return "";
+  const root = workspaceRoot(project, repoRoot).replace(/\\/g, "/").replace(/\/+$/, "");
+  if (root && text === root) return "";
+  if (root && text.startsWith(`${root}/`)) return text.slice(root.length + 1);
+  return text.replace(/^\/+/, "");
+}
+
 function prunePendingChatgptDownloadMacroRequests() {
   const cutoff = Date.now() - CHATGPT_DOWNLOAD_MACRO_REQUEST_TTL_MS;
   pendingChatgptDownloadMacroRequests = pendingChatgptDownloadMacroRequests.filter((request) => request.createdAtMs >= cutoff);
@@ -2598,7 +2666,7 @@ function sendChatgptDownloadMessageToCodex(project, binding, macro, importResult
   return { ok: true };
 }
 
-async function runChatgptDownloadMacro(savePath, fileName, downloadContext = null) {
+async function runChatgptDownloadMacro(savePath, fileName, downloadContext = null, options = {}) {
   const context = downloadContext || activeChatgptContext || {};
   if (!context.projectId || !context.threadId) return { activated: false, reason: "unbound_chatgpt_thread" };
   const project = await getProjectById(context.projectId);
@@ -2610,13 +2678,17 @@ async function runChatgptDownloadMacro(savePath, fileName, downloadContext = nul
   if (!macro.enabled) return { activated: false, reason: "project_macro_disabled" };
   const importResult = await importChatgptDownload(project, macro, savePath, fileName);
   let notifyResult = { ok: false, skipped: true };
-  if (macro.notifyCodex) {
+  const shouldNotifyCodex = Object.prototype.hasOwnProperty.call(options, "notifyCodex")
+    ? Boolean(options.notifyCodex)
+    : macro.notifyCodex;
+  if (shouldNotifyCodex) {
     notifyResult = sendChatgptDownloadMessageToCodex(project, binding, macro, importResult, fileName);
   }
   return {
     activated: true,
     projectId: project.id,
     chatThreadId: activeThread.id,
+    chatThreadTitle: activeThread.title || "",
     codexThreadId: binding.codexThreadRef.threadId,
     importedRelPath: importResult.relPath,
     notifyResult,
@@ -2748,20 +2820,62 @@ async function handleCompletedChatgptDownload(savePath, fileName, downloadContex
   }
 }
 
+async function handleCompletedChatgptDownloadForFileView(savePath, fileName, downloadContext = null) {
+  let macroResult = { activated: false, reason: "normal_download" };
+  try {
+    macroResult = await runChatgptDownloadMacro(savePath, fileName, downloadContext, { notifyCodex: false });
+    if (macroResult?.activated && macroResult.importedRelPath && macroResult.projectId) {
+      await openProjectFileInMiddle({
+        projectId: macroResult.projectId,
+        relPath: macroResult.importedRelPath,
+        sourceKind: "chatgpt_download",
+        source: {
+          surface: "chatgpt",
+          threadId: macroResult.chatThreadId || "",
+          threadTitle: macroResult.chatThreadTitle || "",
+        },
+      });
+    } else {
+      await openHostFileInMiddle(savePath, {
+        displayName: fileName,
+        sourceKind: "chatgpt_download_host",
+        source: { surface: "chatgpt" },
+      });
+    }
+    emitShellEvent({
+      type: "chatgpt-download-completed",
+      fileName,
+      savePath,
+      macro: macroResult,
+      fileView: { opened: true },
+      at: nowIso(),
+    });
+  } catch (error) {
+    const fallbackResult = await openHostFileInMiddle(savePath, {
+      displayName: fileName,
+      sourceKind: "chatgpt_download_host",
+      source: { surface: "chatgpt" },
+    }).catch((fallbackError) => ({ ok: false, error: fallbackError.message }));
+    emitShellEvent({
+      type: "chatgpt-download-completed",
+      fileName,
+      savePath,
+      macro: { ...macroResult, activated: false, error: error.message },
+      fileView: { opened: Boolean(fallbackResult?.ok), fallback: "host_file", error: fallbackResult?.error || "" },
+      at: nowIso(),
+    });
+  }
+}
+
 function prepareChatgptDownload(item, options = {}) {
   const config = configCache || normalizeConfig(defaultConfig());
   const downloads = normalizeChatgptDownloadsConfig(config.chatgptDownloads);
   if (!downloads.enabled) return null;
   const macroRequest = options.macroRequest || null;
-  const downloadContext = macroRequest?.context || null;
+  const downloadContext = macroRequest?.context || activeChatgptContext || null;
   const fileName = safeHostDownloadFileName(item.getFilename?.() || "download");
-  const savePath = macroRequest
-    ? uniqueHostDownloadPathSync(chatgptWindowsDownloadDir({ chatgptDownloads: downloads }), fileName)
-    : "";
-  if (macroRequest) item.setSavePath(savePath);
-  else if (typeof item.setSaveDialogOptions === "function") {
-    item.setSaveDialogOptions({ defaultPath: path.join(chatgptWindowsDownloadDir({ chatgptDownloads: downloads }), fileName) });
-  }
+  const savePath = uniqueHostDownloadPathSync(chatgptWindowsDownloadDir({ chatgptDownloads: downloads }), fileName);
+  item.setSavePath(savePath);
   item.once("done", (_event, state) => {
     const completedPath = savePath || item.getSavePath?.() || "";
     if (state !== "completed") {
@@ -2784,13 +2898,7 @@ function prepareChatgptDownload(item, options = {}) {
       handleCompletedChatgptDownload(completedPath, path.basename(completedPath), downloadContext).catch(() => {});
       return;
     }
-    emitShellEvent({
-      type: "chatgpt-download-completed",
-      fileName: completedPath ? path.basename(completedPath) : fileName,
-      savePath: completedPath,
-      macro: { activated: false, reason: "normal_download" },
-      at: nowIso(),
-    });
+    handleCompletedChatgptDownloadForFileView(completedPath, path.basename(completedPath), downloadContext).catch(() => {});
   });
   emitShellEvent({
     type: "chatgpt-download-started",
@@ -3759,6 +3867,123 @@ async function readProjectFile(projectId, relPath) {
     workspace: project.workspace,
     workspaceLabel: workspaceLabel(project, repoRoot),
   };
+}
+
+async function openProjectFileInMiddle(payload = {}) {
+  const projectId = normalizeString(payload.projectId, "");
+  const requestedRelPath = normalizeString(payload.relPath, "").replace(/^<|>$/g, "");
+  const displayName = path.basename(requestedRelPath.replace(/\\/g, "/")) || "file";
+  const source = normalizeMiddleFileSource(payload);
+  emitShellEvent({ type: "middle-file-open-requested", at: nowIso() });
+  emitMiddleFileState({
+    fileEventType: "loading",
+    status: "loading",
+    sourceKind: normalizeString(payload.sourceKind, "project_file"),
+    projectId,
+    relPath: requestedRelPath,
+    displayName,
+    source,
+  });
+  try {
+    const project = await getProjectById(projectId);
+    const normalizedRelPath = normalizeProjectFileViewRelPath(project, requestedRelPath);
+    const result = await requestWorkspace(project, "readFile", { relPath: normalizedRelPath });
+    const relPath = normalizeString(result.relPath, requestedRelPath);
+    const binary = Boolean(result.binary);
+    emitMiddleFileState({
+      fileEventType: "loaded",
+      status: binary ? "unsupported" : "ready",
+      sourceKind: normalizeString(payload.sourceKind, "project_file"),
+      projectId,
+      relPath,
+      displayName: path.basename(relPath.replace(/\\/g, "/")) || displayName,
+      mimeType: fileViewMimeType(relPath),
+      size: Number(result.size) || 0,
+      truncated: Boolean(result.truncated),
+      limit: Number(result.limit) || PREVIEW_LIMIT_BYTES,
+      binary,
+      text: binary ? "" : String(result.text || ""),
+      workspaceLabel: workspaceLabel(project, repoRoot),
+      source,
+      openedAt: nowIso(),
+    });
+    return { ok: true, status: binary ? "unsupported" : "ready", projectId, relPath };
+  } catch (error) {
+    emitMiddleFileState({
+      fileEventType: "failed",
+      status: "failed",
+      sourceKind: normalizeString(payload.sourceKind, "project_file"),
+      projectId,
+      relPath: requestedRelPath,
+      displayName,
+      error: error.message || "Unable to open file.",
+      source,
+    });
+    return { ok: false, error: error.message || "Unable to open file." };
+  }
+}
+
+async function readHostFilePreview(hostPath) {
+  const stat = await fs.lstat(hostPath);
+  if (!stat.isFile()) throw new Error("Selected download is not a file.");
+  const byteCount = Math.min(stat.size, PREVIEW_LIMIT_BYTES);
+  const handle = await fs.open(hostPath, "r");
+  try {
+    const buffer = Buffer.alloc(byteCount);
+    const result = await handle.read(buffer, 0, byteCount, 0);
+    const slice = buffer.subarray(0, result.bytesRead);
+    const binary = isProbablyBinaryBuffer(slice);
+    return {
+      size: stat.size,
+      truncated: stat.size > PREVIEW_LIMIT_BYTES,
+      limit: PREVIEW_LIMIT_BYTES,
+      binary,
+      text: binary ? "" : slice.toString("utf8"),
+    };
+  } finally {
+    await handle.close();
+  }
+}
+
+async function openHostFileInMiddle(hostPath, options = {}) {
+  const displayName = safeHostDownloadFileName(options.displayName || path.basename(hostPath));
+  const source = normalizeMiddleFileSource(options);
+  emitShellEvent({ type: "middle-file-open-requested", at: nowIso() });
+  emitMiddleFileState({
+    fileEventType: "loading",
+    status: "loading",
+    sourceKind: normalizeString(options.sourceKind, "host_file"),
+    displayName,
+    source,
+  });
+  try {
+    const preview = await readHostFilePreview(hostPath);
+    emitMiddleFileState({
+      fileEventType: "loaded",
+      status: preview.binary ? "unsupported" : "ready",
+      sourceKind: normalizeString(options.sourceKind, "host_file"),
+      displayName,
+      mimeType: fileViewMimeType(displayName),
+      size: preview.size,
+      truncated: preview.truncated,
+      limit: preview.limit,
+      binary: preview.binary,
+      text: preview.text,
+      source,
+      openedAt: nowIso(),
+    });
+    return { ok: true, status: preview.binary ? "unsupported" : "ready", displayName };
+  } catch (error) {
+    emitMiddleFileState({
+      fileEventType: "failed",
+      status: "failed",
+      sourceKind: normalizeString(options.sourceKind, "host_file"),
+      displayName,
+      error: error.message || "Unable to open downloaded file.",
+      source,
+    });
+    return { ok: false, error: error.message || "Unable to open downloaded file." };
+  }
 }
 
 
@@ -4844,6 +5069,10 @@ ipcMain.handle("worktree:list", async (_event, payload) => {
 
 ipcMain.handle("worktree:read-file", async (_event, payload) => {
   return readProjectFile(payload?.projectId, payload?.relPath);
+});
+
+ipcMain.handle("file-view:open-project-file", async (_event, payload) => {
+  return openProjectFileInMiddle(payload || {});
 });
 
 
