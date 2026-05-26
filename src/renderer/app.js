@@ -2761,6 +2761,29 @@ function renderMiddleFileMessage(className, eyebrow, title, detail) {
   els.middleFileContent.appendChild(wrapper);
 }
 
+function middleFileStateFromEvent(event = {}) {
+  const next = {
+    status: "idle",
+    sourceKind: "",
+    projectId: "",
+    relPath: "",
+    displayName: "",
+    mimeType: "",
+    size: 0,
+    truncated: false,
+    binary: false,
+    text: "",
+    error: "",
+    workspaceLabel: "",
+    openedAt: "",
+    source: null,
+    ...event,
+  };
+  delete next.type;
+  delete next.fileEventType;
+  return next;
+}
+
 function renderMiddleFileTab() {
   const file = state.middleFile || {};
   const status = file.status || "idle";
@@ -5384,12 +5407,7 @@ function bindEvents() {
       addProjectStashFile(event);
     }
     if (event.type === "middle-file-state") {
-      state.middleFile = {
-        ...state.middleFile,
-        ...event,
-      };
-      delete state.middleFile.type;
-      delete state.middleFile.fileEventType;
+      state.middleFile = middleFileStateFromEvent(event);
       renderMiddleFileTab();
       if (event.fileEventType === "loaded") setLastEvent(`Opened file: ${event.relPath || event.displayName || "file"}.`);
       else if (event.fileEventType === "failed") setLastEvent(`File open failed: ${event.error || "unknown error"}.`);
