@@ -76,6 +76,22 @@ const state = {
   },
   middleWebViewMode: "browser",
   middleWebHistory: [],
+  middleFile: {
+    status: "idle",
+    sourceKind: "",
+    projectId: "",
+    relPath: "",
+    displayName: "",
+    mimeType: "",
+    size: 0,
+    truncated: false,
+    binary: false,
+    text: "",
+    error: "",
+    workspaceLabel: "",
+    openedAt: "",
+    source: null,
+  },
   middleWebLayoutRevision: 0,
   planeZooms: {
     middle: PLANE_ZOOM_DEFAULT,
@@ -149,11 +165,13 @@ const els = {
   projectTabButton: document.getElementById("projectTabButton"),
   threadsTabButton: document.getElementById("threadsTabButton"),
   analyticsTabButton: document.getElementById("analyticsTabButton"),
+  filesTabButton: document.getElementById("filesTabButton"),
   webTabButton: document.getElementById("webTabButton"),
   overviewTabPanel: document.getElementById("overviewTabPanel"),
   projectTabPanel: document.getElementById("projectTabPanel"),
   threadsTabPanel: document.getElementById("threadsTabPanel"),
   analyticsTabPanel: document.getElementById("analyticsTabPanel"),
+  filesTabPanel: document.getElementById("filesTabPanel"),
   webTabPanel: document.getElementById("webTabPanel"),
   projectStashCount: document.getElementById("projectStashCount"),
   projectStashHint: document.getElementById("projectStashHint"),
@@ -249,6 +267,12 @@ const els = {
   webTitle: document.getElementById("webTitle"),
   webOrigin: document.getElementById("webOrigin"),
   webSource: document.getElementById("webSource"),
+  middleFileTitle: document.getElementById("middleFileTitle"),
+  middleFileMeta: document.getElementById("middleFileMeta"),
+  middleFileSource: document.getElementById("middleFileSource"),
+  middleFileCopyRefButton: document.getElementById("middleFileCopyRefButton"),
+  middleFileRevealButton: document.getElementById("middleFileRevealButton"),
+  middleFileContent: document.getElementById("middleFileContent"),
   refreshWorkTreeButton: document.getElementById("refreshWorkTreeButton"),
   workTree: document.getElementById("workTree"),
   previewPath: document.getElementById("previewPath"),
@@ -1537,15 +1561,28 @@ async function openSubAgentTypedUrl(url, context = {}) {
 
 async function revealSubAgentTypedFile(relPath) {
   const project = activeProject();
-  if (!bridge?.revealProjectFile || !project?.id) {
-    setLastEvent("Project file reveal is unavailable.");
+  if (!project?.id) {
+    setLastEvent("Project file opening is unavailable.");
     return;
   }
   try {
+    if (bridge?.openProjectFile) {
+      const result = await bridge.openProjectFile(project.id, relPath, {
+        sourceSurface: "codex",
+        threadId: state.subAgentGraph?.primaryThreadId || state.openedCodexThreadId || "",
+        threadTitle: state.openedCodexThreadTitle || "",
+      });
+      if (!result?.ok) setLastEvent(`File open failed: ${result?.error || "unknown error"}`);
+      return;
+    }
+    if (!bridge?.revealProjectFile) {
+      setLastEvent("Project file opening is unavailable.");
+      return;
+    }
     const result = await bridge.revealProjectFile(project.id, relPath);
     if (!result?.opened && result?.method) setLastEvent(`File path copied: ${result.absolutePath || relPath}`);
   } catch (error) {
-    setLastEvent(`File reveal failed: ${error.message}`);
+    setLastEvent(`File open failed: ${error.message}`);
   }
 }
 
@@ -1572,7 +1609,7 @@ function renderTypedContent(container, text, context = {}) {
       button.type = "button";
       button.className = `typed-token ${token.type === "line_ref" ? "typed-token-line-ref" : "typed-token-file"}`;
       button.textContent = token.text;
-      button.title = token.line ? `Reveal ${token.path}:${token.line}` : `Reveal ${token.path}`;
+      button.title = token.line ? `Open ${token.path}:${token.line} in Files` : `Open ${token.path} in Files`;
       button.addEventListener("click", () => revealSubAgentTypedFile(token.path));
       container.appendChild(button);
       continue;
@@ -1616,7 +1653,7 @@ function appendFileToken(parent, label, fileRef) {
   button.type = "button";
   button.className = `typed-token ${fileRef.line ? "typed-token-line-ref" : "typed-token-file"} assistant-md-link`;
   button.textContent = label || fileRef.path;
-  button.title = fileRef.line ? `Reveal ${fileRef.path}:${fileRef.line}` : `Reveal ${fileRef.path}`;
+  button.title = fileRef.line ? `Open ${fileRef.path}:${fileRef.line} in Files` : `Open ${fileRef.path} in Files`;
   button.addEventListener("click", () => revealSubAgentTypedFile(fileRef.path));
   parent.appendChild(button);
 }
@@ -2583,6 +2620,7 @@ function renderMiddleTabs() {
     [els.projectTabButton, els.projectTabPanel, "project"],
     [els.threadsTabButton, els.threadsTabPanel, "threads"],
     [els.analyticsTabButton, els.analyticsTabPanel, "analytics"],
+    [els.filesTabButton, els.filesTabPanel, "files"],
     [els.webTabButton, els.webTabPanel, "web"],
   ];
   for (const [button, panel, tab] of tabs) {
@@ -2591,6 +2629,7 @@ function renderMiddleTabs() {
     panel.classList.toggle("active", active);
     panel.hidden = !active;
   }
+  renderMiddleFileTab();
   renderMiddleWebTab();
 }
 
@@ -2684,6 +2723,119 @@ function renderMiddleWebTab() {
   els.webBrowserTabButton.classList.toggle("active", !historyMode);
   els.webHistoryTabButton.classList.toggle("active", historyMode);
   renderMiddleWebHistory();
+}
+
+function middleFileSourceLabel(file) {
+  const source = file?.source || {};
+  const labels = { codex: "Codex", chatgpt: "ChatGPT", shell: "Shell" };
+  if (source.surface) {
+    const surface = labels[source.surface] || source.surface;
+    const thread = source.threadTitle || source.threadId || "";
+    return thread ? `Opened from: ${surface} · ${thread}` : `Opened from: ${surface}`;
+  }
+  if (file?.sourceKind === "chatgpt_download") return "Opened from: ChatGPT download · imported project copy";
+  if (file?.sourceKind === "chatgpt_download_host") return "Opened from: ChatGPT download";
+  if (file?.sourceKind === "project_file") return "Opened from: project file reference";
+  return "";
+}
+
+function middleFileLooksMarkdown(file) {
+  const name = String(file?.relPath || file?.displayName || "").toLowerCase();
+  const mime = String(file?.mimeType || "").toLowerCase();
+  return mime === "text/markdown" || /\.(md|markdown|mdown)$/.test(name);
+}
+
+function renderMiddleFileMessage(className, eyebrow, title, detail) {
+  els.middleFileContent.className = `middle-file-content ${className}`;
+  els.middleFileContent.textContent = "";
+  const wrapper = document.createElement("div");
+  wrapper.className = "file-empty-state";
+  const label = document.createElement("p");
+  label.className = "eyebrow";
+  label.textContent = eyebrow;
+  const strong = document.createElement("strong");
+  strong.textContent = title;
+  const span = document.createElement("span");
+  span.textContent = detail;
+  wrapper.append(label, strong, span);
+  els.middleFileContent.appendChild(wrapper);
+}
+
+function renderMiddleFileTab() {
+  const file = state.middleFile || {};
+  const status = file.status || "idle";
+  const hasFile = status && status !== "idle";
+  const title = file.displayName || file.relPath || (status === "loading" ? "Opening file..." : "No file open");
+  els.middleFileTitle.textContent = title;
+  els.middleFileTitle.title = file.relPath || file.displayName || "";
+  const metaParts = [
+    file.relPath || "",
+    Number.isFinite(Number(file.size)) && Number(file.size) > 0 ? formatBytes(file.size) : "",
+    file.truncated ? `first ${formatBytes(file.limit || 0)}` : "",
+    file.mimeType || "",
+    file.workspaceLabel || "",
+  ].filter(Boolean);
+  els.middleFileMeta.textContent = metaParts.length ? metaParts.join(" · ") : "Open Codex file references or ChatGPT downloads here.";
+  els.middleFileMeta.title = els.middleFileMeta.textContent;
+  els.middleFileSource.textContent = middleFileSourceLabel(file);
+  els.middleFileSource.title = els.middleFileSource.textContent;
+  els.middleFileCopyRefButton.disabled = !hasFile || status === "loading" || (!file.relPath && !file.displayName);
+  els.middleFileRevealButton.disabled = !file.projectId || !file.relPath || status === "loading";
+
+  els.middleFileContent.className = "middle-file-content";
+  els.middleFileContent.textContent = "";
+  if (status === "idle") {
+    renderMiddleFileMessage(
+      "is-empty",
+      "Read-only file viewport",
+      "No file open yet.",
+      "Codex file references and ChatGPT downloads can be projected here without making them transcript evidence.",
+    );
+    return;
+  }
+  if (status === "loading") {
+    renderMiddleFileMessage("is-empty", "Opening file", title, "Reading a safe text preview.");
+    return;
+  }
+  if (status === "failed") {
+    renderMiddleFileMessage("is-error", "File open failed", title, file.error || "The file could not be opened.");
+    return;
+  }
+  if (file.binary || status === "unsupported") {
+    renderMiddleFileMessage("is-binary", "Unsupported preview", title, "Binary or non-text file preview is intentionally disabled in the middle Files tab.");
+    return;
+  }
+
+  const text = String(file.text || "");
+  if (middleFileLooksMarkdown(file)) {
+    renderSubAgentAssistantMarkdown(els.middleFileContent, text, {
+      threadTitle: file.displayName || file.relPath || "File viewer",
+    });
+    return;
+  }
+  const pre = document.createElement("pre");
+  pre.textContent = `${file.truncated ? "/* Preview truncated for responsiveness. */\n\n" : ""}${text}`;
+  els.middleFileContent.appendChild(pre);
+}
+
+async function copyMiddleFileRef() {
+  const file = state.middleFile || {};
+  const text = file.relPath || file.displayName || "";
+  if (!text || !bridge.copyText) return;
+  await bridge.copyText(text);
+  setLastEvent(`Copied file reference: ${text}`);
+}
+
+async function revealMiddleFile() {
+  const file = state.middleFile || {};
+  if (!file.projectId || !file.relPath || !bridge.revealProjectFile) return;
+  try {
+    const result = await bridge.revealProjectFile(file.projectId, file.relPath);
+    if (result?.opened) setLastEvent(`Revealed ${file.relPath}.`);
+    else setLastEvent(`Copied file path: ${file.relPath}.`);
+  } catch (error) {
+    setLastEvent(`File reveal failed: ${error.message}`);
+  }
 }
 
 async function loadMiddleWebHistory() {
@@ -4513,6 +4665,7 @@ function setMiddleTab(tab) {
   if (tab === "project") state.activeMiddleTab = "project";
   else if (tab === "threads") state.activeMiddleTab = "threads";
   else if (tab === "analytics") state.activeMiddleTab = "analytics";
+  else if (tab === "files") state.activeMiddleTab = "files";
   else if (tab === "web") state.activeMiddleTab = "web";
   else state.activeMiddleTab = "overview";
   if (state.activeMiddleTab === "web" && els.controlPlane) els.controlPlane.scrollTop = 0;
@@ -5046,7 +5199,14 @@ function bindEvents() {
   els.projectTabButton.addEventListener("click", () => setMiddleTab("project"));
   els.threadsTabButton.addEventListener("click", () => setMiddleTab("threads"));
   els.analyticsTabButton.addEventListener("click", () => setMiddleTab("analytics"));
+  els.filesTabButton.addEventListener("click", () => setMiddleTab("files"));
   els.webTabButton.addEventListener("click", () => setMiddleTab("web"));
+  els.middleFileCopyRefButton.addEventListener("click", () => {
+    copyMiddleFileRef().catch((error) => setLastEvent(`Copy file reference failed: ${error.message}`));
+  });
+  els.middleFileRevealButton.addEventListener("click", () => {
+    revealMiddleFile().catch((error) => setLastEvent(`File reveal failed: ${error.message}`));
+  });
   els.projectStashMessageInput.addEventListener("input", () => {
     const stash = ensureProjectStash();
     stash.message = String(els.projectStashMessageInput.value || "");
@@ -5217,8 +5377,22 @@ function bindEvents() {
       state.middleWebViewMode = "browser";
       setMiddleTab("web");
     }
+    if (event.type === "middle-file-open-requested") {
+      setMiddleTab("files");
+    }
     if (event.type === "project-stash-add-file") {
       addProjectStashFile(event);
+    }
+    if (event.type === "middle-file-state") {
+      state.middleFile = {
+        ...state.middleFile,
+        ...event,
+      };
+      delete state.middleFile.type;
+      delete state.middleFile.fileEventType;
+      renderMiddleFileTab();
+      if (event.fileEventType === "loaded") setLastEvent(`Opened file: ${event.relPath || event.displayName || "file"}.`);
+      else if (event.fileEventType === "failed") setLastEvent(`File open failed: ${event.error || "unknown error"}.`);
     }
     if (event.type === "middle-web-state") {
       state.middleWeb = {

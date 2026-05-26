@@ -52,6 +52,7 @@ contextBridge.exposeInMainWorld("workspaceShell", {
   sendProjectStashToChatgpt: (payload) => ipcRenderer.invoke("project-stash:send-to-chatgpt", payload || {}),
   listWorkTree: (projectId, relPath) => ipcRenderer.invoke("worktree:list", { projectId, relPath }),
   readProjectFile: (projectId, relPath) => ipcRenderer.invoke("worktree:read-file", { projectId, relPath }),
+  openProjectFile: (projectId, relPath, options = {}) => ipcRenderer.invoke("file-view:open-project-file", { ...options, projectId, relPath }),
   listWatchedArtifacts: (projectId) => ipcRenderer.invoke("worktree:list-watched", { projectId }),
   listCodexThreads: (projectId) => ipcRenderer.invoke("codex-threads:list", { projectId }),
   listThreadAnalytics: (projectId, options = {}) =>

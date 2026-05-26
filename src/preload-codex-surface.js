@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld("codexSurfaceBridge", {
   updateRuntimePreferences: (request) => ipcRenderer.invoke("codex-runtime-preferences:update", request || {}),
   openWorkspaceLink: (url, options = {}) => ipcRenderer.invoke("link:open", { ...options, url }),
   openExternalUrl: (url) => ipcRenderer.invoke("external:open-url", { url }),
+  openProjectFile: (projectId, relPath, options = {}) => ipcRenderer.invoke("file-view:open-project-file", { ...options, projectId, relPath }),
   revealProjectFile: (projectId, relPath) => ipcRenderer.invoke("worktree:reveal-file", { projectId, relPath }),
   getPathForFile: (file) => fileSystemPathForFile(file),
   getDroppedFilePaths: (files) => fileSystemPathsForFiles(files),
