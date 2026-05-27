@@ -1789,6 +1789,7 @@ function updateComposerStatusTicker(active) {
 
 function renderComposerRuntimeBand() {
   if (!els.composerAccessButton || !els.composerModelButton || !els.sendButton) return;
+  if (els.composerForm) els.composerForm.dataset.composerMenu = state.composerMenu || "";
   const active = turnIsActive();
   const activeTurnId = currentActiveTurnId();
   const blockers = attachmentSubmitBlockers();

@@ -1154,6 +1154,7 @@ textarea {
 
 .composer-runtime-band {
   grid-area: band;
+  position: relative;
   display: flex;
   flex-wrap: nowrap;
   justify-content: space-between;
@@ -1161,6 +1162,16 @@ textarea {
   gap: var(--composer-control-gap);
   min-width: 0;
   overflow: hidden;
+}
+
+.composer-shell[data-composer-menu="access"] .composer-runtime-band,
+.composer-shell[data-composer-menu="model"] .composer-runtime-band,
+.composer-shell[data-composer-menu="access"] .composer-quick-controls,
+.composer-shell[data-composer-menu="model"] .composer-quick-controls,
+.composer-shell[data-composer-menu="access"] .composer-runtime-witnesses,
+.composer-shell[data-composer-menu="model"] .composer-runtime-witnesses {
+  overflow: visible;
+  z-index: 9;
 }
 
 .composer-quick-controls,
