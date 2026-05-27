@@ -829,23 +829,6 @@ body.dragging .splitter {
   color: #d8e6ff;
 }
 
-.middle-file-content .assistant-md-codeblock {
-  display: block;
-  margin: 2px 0 10px;
-}
-
-.middle-file-content .assistant-md-codeblock pre {
-  margin: 0;
-  padding: 11px 12px;
-  overflow-x: auto;
-  white-space: pre;
-  overflow-wrap: normal;
-  color: #dceaff;
-  font-family: var(--mono);
-  font-size: 12px;
-  line-height: 1.55;
-}
-
 .middle-file-content.is-binary,
 .middle-file-content.is-empty,
 .middle-file-content.is-error,
