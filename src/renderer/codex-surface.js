@@ -2458,11 +2458,12 @@ function extractFileRefsFromText(value) {
 }
 
 function fileFallbackForToken(value, context = {}) {
+  const lineRef = splitLineRef(value);
   const primary = fileRefFromTextCandidate(value);
-  if (!primary?.path) return null;
   const candidates = Array.isArray(context.fileEvidenceRefs) ? context.fileEvidenceRefs : [];
-  const normalizedPrimary = normalizeSlashes(primary.path).replace(/^\.\/+/, "");
-  if (!normalizedPrimary.includes("/")) return null;
+  const normalizedPrimary = normalizeSlashes(primary?.path || lineRef.path || "").replace(/^\.\/+/, "");
+  if (!normalizedPrimary || isBareVersionToken(normalizedPrimary)) return null;
+  if (!normalizedPrimary.includes("/") && !/^[^./][^/]*\.[A-Za-z0-9]{1,12}$/.test(normalizedPrimary)) return null;
   const matches = [];
   const seen = new Set();
   for (const candidate of candidates) {
@@ -2476,8 +2477,8 @@ function fileFallbackForToken(value, context = {}) {
   if (matches.length !== 1) return null;
   return {
     path: matches[0],
-    line: primary.line,
-    column: primary.column,
+    line: primary?.line ?? lineRef.line,
+    column: primary?.column ?? lineRef.column,
   };
 }
 
@@ -2588,6 +2589,17 @@ function tokenizeTypedContent(text, context = {}) {
       });
       continue;
     }
+    const fallbackRef = fileFallbackForToken(raw, context);
+    if (fallbackRef) {
+      addTokenCandidate(candidates, match.index, match.index + match[0].length, {
+        type: fallbackRef.line ? "line_ref" : "file_path",
+        text: match[0],
+        path: fallbackRef.path,
+        line: fallbackRef.line,
+        column: fallbackRef.column,
+      });
+      continue;
+    }
     const type = /\s|^(npm|pnpm|yarn|node|git|gh|cargo|python|pytest|uv|make|bash|sh)\b/.test(raw.trim())
       ? "command"
       : "symbol";
@@ -2612,6 +2624,17 @@ function tokenizeTypedContent(text, context = {}) {
     const lineRef = splitLineRef(raw);
     const relPath = relativePathWithinRoot(lineRef.path);
     if (!relPath) {
+      const fallbackRef = fileFallbackForToken(raw, context);
+      if (fallbackRef) {
+        addTokenCandidate(candidates, match.index, match.index + raw.length, {
+          type: fallbackRef.line ? "line_ref" : "file_path",
+          text: raw,
+          path: fallbackRef.path,
+          line: fallbackRef.line,
+          column: fallbackRef.column,
+        });
+        continue;
+      }
       if (shouldRenderAmbiguousPathSymbol(raw)) {
         addTokenCandidate(candidates, match.index, match.index + raw.length, { type: "symbol", text: raw, value: raw });
       }
@@ -2829,7 +2852,7 @@ function appendInlineCode(parent, raw, context = {}) {
     if (isBareVersionToken(source)) return null;
     const lineRef = splitLineRef(source);
     const relPath = relativePathWithinRoot(lineRef.path);
-    if (!relPath) return null;
+    if (!relPath) return fileFallbackForToken(source, context);
     const fallbackRef = fileFallbackForToken(source, context);
     return {
       path: relPath,
