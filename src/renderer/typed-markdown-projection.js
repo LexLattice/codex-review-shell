@@ -11,6 +11,10 @@
     return String(value || "").replace(/[),.;!?]+$/g, "");
   }
 
+  function safeProjectionContext(context) {
+    return context && typeof context === "object" ? context : {};
+  }
+
   function hasStrongFilePathEvidence(filePath) {
     const normalized = normalizeSlashes(stripTokenPunctuation(filePath).trim()).replace(/^\.\/+/, "");
     if (!normalized || normalized.includes("\0") || /\s/.test(normalized)) return false;
@@ -21,19 +25,21 @@
   }
 
   function workspaceRoots(context = {}) {
-    if (typeof context.workspaceRoots === "function") return context.workspaceRoots();
-    if (Array.isArray(context.workspaceRoots)) return context.workspaceRoots;
+    const safeContext = safeProjectionContext(context);
+    if (typeof safeContext.workspaceRoots === "function") return safeContext.workspaceRoots();
+    if (Array.isArray(safeContext.workspaceRoots)) return safeContext.workspaceRoots;
     return [];
   }
 
   function relativePathWithinRoot(filePath, context = {}) {
+    const safeContext = safeProjectionContext(context);
     const raw = stripTokenPunctuation(filePath).trim();
     if (!raw || raw.includes("\0")) return "";
     const normalized = normalizeSlashes(raw);
     if (normalized.startsWith("../") || normalized.includes("/../") || normalized === "..") return "";
     if (/\s/.test(normalized)) return "";
 
-    for (const root of workspaceRoots(context)) {
+    for (const root of workspaceRoots(safeContext)) {
       const normalizedRoot = normalizeSlashes(root).replace(/\/+$/, "");
       if (!normalizedRoot) continue;
       const lowerPath = normalized.toLowerCase();
@@ -64,8 +70,9 @@
   }
 
   function fileRefFromTextCandidate(value, context = {}) {
+    const safeContext = safeProjectionContext(context);
     const lineRef = splitLineRef(value);
-    const relPath = relativePathWithinRoot(lineRef.path, context);
+    const relPath = relativePathWithinRoot(lineRef.path, safeContext);
     if (!relPath) return null;
     return {
       path: relPath,
@@ -75,21 +82,23 @@
   }
 
   function extractFileRefsFromText(value, context = {}) {
+    const safeContext = safeProjectionContext(context);
     const source = String(value || "");
     const refs = [];
     const filePattern = /(?:[A-Za-z]:[\\/]|\/|\.{1,2}\/)?[A-Za-z0-9._@+-][A-Za-z0-9._@+:/\\-]*\.[A-Za-z0-9]{1,12}(?::\d+(?::\d+)?)?/g;
     for (const match of source.matchAll(filePattern)) {
-      const ref = fileRefFromTextCandidate(match[0], context);
+      const ref = fileRefFromTextCandidate(match[0], safeContext);
       if (ref) refs.push(ref);
     }
     return refs;
   }
 
   function shouldRenderAmbiguousPathSymbol(value, context = {}) {
+    const safeContext = safeProjectionContext(context);
     const raw = stripTokenPunctuation(value).trim();
     if (!raw || /^https?:\/\//i.test(raw) || raw.includes("://") || /\s/.test(raw)) return false;
     const lineRef = splitLineRef(raw);
-    if (relativePathWithinRoot(lineRef.path, context)) return false;
+    if (relativePathWithinRoot(lineRef.path, safeContext)) return false;
     const normalized = normalizeSlashes(lineRef.path).replace(/^\.\/+/, "");
     if (!normalized || normalized.startsWith("../") || normalized.includes("/../")) return false;
     const hasSlash = normalized.includes("/");
@@ -106,18 +115,20 @@
   }
 
   function fileAliasForToken(value, context = {}) {
+    const safeContext = safeProjectionContext(context);
     const key = normalizeFileAliasToken(value);
     if (!key) return null;
-    const aliases = context?.fileAliases;
+    const aliases = safeContext.fileAliases;
     if (aliases instanceof Map) return aliases.get(key) || null;
     if (aliases && typeof aliases === "object") return aliases[key] || null;
     return null;
   }
 
   function fileFallbackForToken(value, context = {}) {
+    const safeContext = safeProjectionContext(context);
     const lineRef = splitLineRef(value);
-    const primary = fileRefFromTextCandidate(value, context);
-    const candidates = Array.isArray(context.fileEvidenceRefs) ? context.fileEvidenceRefs : [];
+    const primary = fileRefFromTextCandidate(value, safeContext);
+    const candidates = Array.isArray(safeContext.fileEvidenceRefs) ? safeContext.fileEvidenceRefs : [];
     const normalizedPrimary = normalizeSlashes(primary?.path || lineRef.path || "").replace(/^\.\/+/, "");
     if (!normalizedPrimary || isBareVersionToken(normalizedPrimary)) return null;
     if (!normalizedPrimary.includes("/") && !/^[^./][^/]*\.[A-Za-z0-9]{1,12}$/.test(normalizedPrimary)) return null;
@@ -161,14 +172,15 @@
   }
 
   function markdownLocalHref(rawHref, context = {}) {
+    const safeContext = safeProjectionContext(context);
     const original = String(rawHref || "").trim();
     if (!original || original.startsWith("#") || /^[A-Za-z][A-Za-z0-9+.-]*:/i.test(original)) return null;
     const lineHash = original.match(/^(.*)#L(\d+)$/i);
     const withoutHash = lineHash ? lineHash[1] : original.replace(/#.*$/, "");
     const lineRef = splitLineRef(lineHash ? `${withoutHash}:${lineHash[2]}` : withoutHash);
-    const relPath = relativePathWithinRoot(lineRef.path, context);
-    if (!relPath) return fileFallbackForToken(lineRef.path, context);
-    const fallbackRef = fileFallbackForToken(lineRef.path, context);
+    const relPath = relativePathWithinRoot(lineRef.path, safeContext);
+    if (!relPath) return fileFallbackForToken(lineRef.path, safeContext);
+    const fallbackRef = fileFallbackForToken(lineRef.path, safeContext);
     return {
       path: relPath,
       line: lineRef.line,
@@ -178,11 +190,12 @@
   }
 
   function buildMarkdownFileAliasMap(text, context = {}) {
+    const safeContext = safeProjectionContext(context);
     const aliases = new Map();
     const source = String(text || "");
     const pattern = /\[([^\]\n]{1,240})\]\(([^) \n]{1,1000})\)/g;
     for (const match of source.matchAll(pattern)) {
-      const fileRef = markdownLocalHref(match[2], context);
+      const fileRef = markdownLocalHref(match[2], safeContext);
       if (fileRef) addVersionAliasesForFile(aliases, match[1], fileRef);
     }
     return aliases;
@@ -219,6 +232,7 @@
   }
 
   function tokenizeTypedContent(text, context = {}) {
+    const safeContext = safeProjectionContext(context);
     const source = String(text || "");
     if (!source) return [{ type: "text", text: "" }];
     const candidates = [];
@@ -232,15 +246,15 @@
     const backtickPattern = /`([^`\n]{1,240})`/g;
     for (const match of source.matchAll(backtickPattern)) {
       const raw = match[1] || "";
-      const aliasRef = fileAliasForToken(raw, context);
+      const aliasRef = fileAliasForToken(raw, safeContext);
       if (aliasRef) {
         addTokenCandidate(candidates, match.index, match.index + match[0].length, fileTokenFromRef(match[0], aliasRef));
         continue;
       }
       const lineRef = splitLineRef(raw);
-      const relPath = relativePathWithinRoot(lineRef.path, context);
+      const relPath = relativePathWithinRoot(lineRef.path, safeContext);
       if (relPath && !isBareVersionToken(raw)) {
-        const fallbackRef = fileFallbackForToken(raw, context);
+        const fallbackRef = fileFallbackForToken(raw, safeContext);
         addTokenCandidate(candidates, match.index, match.index + match[0].length, fileTokenFromRef(match[0], {
           path: relPath,
           line: lineRef.line,
@@ -249,7 +263,7 @@
         }));
         continue;
       }
-      const fallbackRef = fileFallbackForToken(raw, context);
+      const fallbackRef = fileFallbackForToken(raw, safeContext);
       if (fallbackRef) {
         addTokenCandidate(candidates, match.index, match.index + match[0].length, fileTokenFromRef(match[0], fallbackRef));
         continue;
@@ -264,25 +278,25 @@
     for (const match of source.matchAll(filePattern)) {
       const raw = stripTokenPunctuation(match[0]);
       if (!raw || /^https?:\/\//i.test(raw)) continue;
-      const aliasRef = fileAliasForToken(raw, context);
+      const aliasRef = fileAliasForToken(raw, safeContext);
       if (aliasRef) {
         addTokenCandidate(candidates, match.index, match.index + raw.length, fileTokenFromRef(raw, aliasRef));
         continue;
       }
       const lineRef = splitLineRef(raw);
-      const relPath = relativePathWithinRoot(lineRef.path, context);
+      const relPath = relativePathWithinRoot(lineRef.path, safeContext);
       if (!relPath) {
-        const fallbackRef = fileFallbackForToken(raw, context);
+        const fallbackRef = fileFallbackForToken(raw, safeContext);
         if (fallbackRef) {
           addTokenCandidate(candidates, match.index, match.index + raw.length, fileTokenFromRef(raw, fallbackRef));
           continue;
         }
-        if (shouldRenderAmbiguousPathSymbol(raw, context)) {
+        if (shouldRenderAmbiguousPathSymbol(raw, safeContext)) {
           addTokenCandidate(candidates, match.index, match.index + raw.length, { type: "symbol", text: raw, value: raw });
         }
         continue;
       }
-      const fallbackRef = fileFallbackForToken(raw, context);
+      const fallbackRef = fileFallbackForToken(raw, safeContext);
       addTokenCandidate(candidates, match.index, match.index + raw.length, fileTokenFromRef(raw, {
         path: relPath,
         line: lineRef.line,
@@ -294,7 +308,7 @@
     const slashSymbolPattern = /[A-Za-z0-9._@+-]+(?:[\\/][A-Za-z0-9._@+-]+)+(?::\d+(?::\d+)?)?/g;
     for (const match of source.matchAll(slashSymbolPattern)) {
       const raw = stripTokenPunctuation(match[0]);
-      if (!shouldRenderAmbiguousPathSymbol(raw, context)) continue;
+      if (!shouldRenderAmbiguousPathSymbol(raw, safeContext)) continue;
       addTokenCandidate(candidates, match.index, match.index + raw.length, { type: "symbol", text: raw, value: raw });
     }
 
@@ -320,31 +334,33 @@
   }
 
   function appendFileToken(parent, label, fileRef, context = {}) {
+    const safeContext = safeProjectionContext(context);
     const button = document.createElement("button");
     button.type = "button";
-    button.className = `typed-token ${fileRef.line ? "typed-token-line-ref" : "typed-token-file"}${context.markdownLink ? " assistant-md-link" : ""}`;
+    button.className = `typed-token ${fileRef.line ? "typed-token-line-ref" : "typed-token-file"}${safeContext.markdownLink ? " assistant-md-link" : ""}`;
     button.textContent = label || fileRef.path;
     button.title = fileRef.line ? `Open ${fileRef.path}:${fileRef.line} in Files` : `Open ${fileRef.path} in Files`;
-    if (context.includeContextDataset) {
+    if (safeContext.includeContextDataset) {
       button.dataset.contextTarget = "file_ref";
       button.dataset.contextFile = fileRef.path;
       if (fileRef.fallbackPath) button.dataset.contextFallbackFile = fileRef.fallbackPath;
     }
-    button.addEventListener("click", () => context.onOpenFile?.(fileRef.path, { fallbackPath: fileRef.fallbackPath || "", fileRef, context }));
+    button.addEventListener("click", () => safeContext.onOpenFile?.(fileRef.path, { fallbackPath: fileRef.fallbackPath || "", fileRef, context: safeContext }));
     parent.appendChild(button);
   }
 
   function appendUrlToken(parent, label, href, context = {}) {
+    const safeContext = safeProjectionContext(context);
     const button = document.createElement("button");
     button.type = "button";
-    button.className = `typed-token typed-token-url${context.markdownLink ? " assistant-md-link" : ""}`;
+    button.className = `typed-token typed-token-url${safeContext.markdownLink ? " assistant-md-link" : ""}`;
     button.textContent = label || href;
-    button.title = context.urlTitle || `Open ${href}`;
-    if (context.includeContextDataset) {
+    button.title = safeContext.urlTitle || `Open ${href}`;
+    if (safeContext.includeContextDataset) {
       button.dataset.contextTarget = "url";
       button.dataset.contextHref = href;
     }
-    button.addEventListener("click", () => context.onOpenUrl?.(href, context));
+    button.addEventListener("click", () => safeContext.onOpenUrl?.(href, safeContext));
     parent.appendChild(button);
   }
 
@@ -357,8 +373,9 @@
   }
 
   function renderTypedContent(container, text, context = {}) {
+    const safeContext = safeProjectionContext(context);
     container.textContent = "";
-    const tokens = tokenizeTypedContent(text, context);
+    const tokens = tokenizeTypedContent(text, safeContext);
     for (const token of tokens) {
       if (!token || token.type === "text") {
         container.appendChild(document.createTextNode(token?.text || ""));
@@ -366,13 +383,13 @@
       }
       if (token.type === "url") {
         appendUrlToken(container, token.text, token.href, {
-          ...context,
-          urlTitle: context.urlTokenTitle || context.urlTitle || "Open link",
+          ...safeContext,
+          urlTitle: safeContext.urlTokenTitle || safeContext.urlTitle || "Open link",
         });
         continue;
       }
       if (token.type === "file_path" || token.type === "line_ref") {
-        appendFileToken(container, token.text, token, { ...context, markdownLink: false });
+        appendFileToken(container, token.text, token, { ...safeContext, markdownLink: false });
         continue;
       }
       const span = document.createElement("span");
@@ -383,22 +400,24 @@
   }
 
   function appendTypedText(parent, text, context = {}) {
+    const safeContext = safeProjectionContext(context);
     if (!text) return;
     const span = document.createElement("span");
-    renderTypedContent(span, text, context);
+    renderTypedContent(span, text, safeContext);
     parent.appendChild(span);
   }
 
   function appendInlineCode(parent, raw, context = {}) {
+    const safeContext = safeProjectionContext(context);
     const code = document.createElement("code");
     code.className = "assistant-md-inline-code";
     const source = String(raw || "");
-    const fileRef = fileAliasForToken(source, context) || markdownLocalHref(source, context) || (() => {
+    const fileRef = fileAliasForToken(source, safeContext) || markdownLocalHref(source, safeContext) || (() => {
       if (isBareVersionToken(source)) return null;
       const lineRef = splitLineRef(source);
-      const relPath = relativePathWithinRoot(lineRef.path, context);
-      if (!relPath) return fileFallbackForToken(source, context);
-      const fallbackRef = fileFallbackForToken(source, context);
+      const relPath = relativePathWithinRoot(lineRef.path, safeContext);
+      if (!relPath) return fileFallbackForToken(source, safeContext);
+      const fallbackRef = fileFallbackForToken(source, safeContext);
       return {
         path: relPath,
         line: lineRef.line,
@@ -407,10 +426,10 @@
       };
     })();
     if (fileRef) {
-      appendFileToken(code, source, fileRef, { ...context, markdownLink: true });
+      appendFileToken(code, source, fileRef, { ...safeContext, markdownLink: true });
     } else {
       const href = safeMarkdownHref(source);
-      if (href) appendUrlToken(code, source, href, { ...context, markdownLink: true });
+      if (href) appendUrlToken(code, source, href, { ...safeContext, markdownLink: true });
       else {
         const span = document.createElement("span");
         const trimmed = source.trim();
@@ -428,30 +447,31 @@
   }
 
   function appendInlineMarkdown(parent, text, context = {}) {
+    const safeContext = safeProjectionContext(context);
     const source = String(text || "");
     const pattern = /(\[[^\]\n]{1,240}\]\([^) \n]{1,1000}\)|`([^`\n]+)`|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|(->|=>))/g;
     let cursor = 0;
     for (const match of source.matchAll(pattern)) {
-      if (match.index > cursor) appendTypedText(parent, source.slice(cursor, match.index), context);
+      if (match.index > cursor) appendTypedText(parent, source.slice(cursor, match.index), safeContext);
       const token = match[0];
       const linkMatch = token.match(/^\[([^\]\n]+)\]\(([^) \n]+)\)$/);
       if (linkMatch) {
         const href = safeMarkdownHref(linkMatch[2]);
-        const fileRef = markdownLocalHref(linkMatch[2], context);
-        if (href) appendUrlToken(parent, linkMatch[1], href, { ...context, markdownLink: true });
-        else if (fileRef) appendFileToken(parent, linkMatch[1], fileRef, { ...context, markdownLink: true });
+        const fileRef = markdownLocalHref(linkMatch[2], safeContext);
+        if (href) appendUrlToken(parent, linkMatch[1], href, { ...safeContext, markdownLink: true });
+        else if (fileRef) appendFileToken(parent, linkMatch[1], fileRef, { ...safeContext, markdownLink: true });
         else appendUnsupportedMarkdownLink(parent, linkMatch[1], "Unsupported, unsafe, or unresolved link target");
       } else if (token.startsWith("`")) {
-        appendInlineCode(parent, token.slice(1, -1), context);
+        appendInlineCode(parent, token.slice(1, -1), safeContext);
       } else if (token.startsWith("**")) {
         const strong = document.createElement("strong");
         strong.className = "assistant-md-strong";
-        appendTypedText(strong, token.slice(2, -2), context);
+        appendTypedText(strong, token.slice(2, -2), safeContext);
         parent.appendChild(strong);
       } else if (token.startsWith("*")) {
         const em = document.createElement("em");
         em.className = "assistant-md-emphasis";
-        appendTypedText(em, token.slice(1, -1), context);
+        appendTypedText(em, token.slice(1, -1), safeContext);
         parent.appendChild(em);
       } else {
         const arrow = document.createElement("span");
@@ -461,13 +481,14 @@
       }
       cursor = match.index + token.length;
     }
-    if (cursor < source.length) appendTypedText(parent, source.slice(cursor), context);
+    if (cursor < source.length) appendTypedText(parent, source.slice(cursor), safeContext);
   }
 
   function createMarkdownLineBlock(tagName, className, text, context = {}) {
+    const safeContext = safeProjectionContext(context);
     const block = document.createElement(tagName);
     block.className = className;
-    appendInlineMarkdown(block, text, context);
+    appendInlineMarkdown(block, text, safeContext);
     return block;
   }
 
@@ -553,6 +574,7 @@
   }
 
   function appendMarkdownTable(container, tableLines, context = {}) {
+    const safeContext = safeProjectionContext(context);
     const header = splitMarkdownTableRow(tableLines[0]) || [];
     const bodyRows = tableLines.slice(2).map(splitMarkdownTableRow).filter(Boolean);
     const wrapper = document.createElement("div");
@@ -563,7 +585,7 @@
     const headRow = document.createElement("tr");
     for (const cellText of header) {
       const cell = document.createElement("th");
-      appendInlineMarkdown(cell, cellText, context);
+      appendInlineMarkdown(cell, cellText, safeContext);
       headRow.appendChild(cell);
     }
     thead.appendChild(headRow);
@@ -573,7 +595,7 @@
       const row = document.createElement("tr");
       for (let cellIndex = 0; cellIndex < header.length; cellIndex += 1) {
         const cell = document.createElement("td");
-        appendInlineMarkdown(cell, rowCells[cellIndex] || "", context);
+        appendInlineMarkdown(cell, rowCells[cellIndex] || "", safeContext);
         row.appendChild(cell);
       }
       tbody.appendChild(row);
@@ -600,6 +622,7 @@
   }
 
   function appendMarkdownList(container, lines, ordered, context = {}) {
+    const safeContext = safeProjectionContext(context);
     const list = document.createElement(ordered ? "ol" : "ul");
     list.className = "assistant-md-list";
     for (const line of lines) {
@@ -612,7 +635,7 @@
         const fragments = String(value || "").split("\n");
         fragments.forEach((fragment, index) => {
           if (index) target.appendChild(document.createElement("br"));
-          appendInlineMarkdown(target, fragment, context);
+          appendInlineMarkdown(target, fragment, safeContext);
         });
       };
       if (taskMatch) {
@@ -630,11 +653,12 @@
   }
 
   function renderAssistantMarkdown(container, text, context = {}) {
+    const safeContext = safeProjectionContext(context);
     container.textContent = "";
     container.classList.add("assistant-markdown");
     const source = String(text || "").replace(/\r\n/g, "\n");
     if (!source.trim()) return;
-    const renderContext = { ...context, fileAliases: buildMarkdownFileAliasMap(source, context) };
+    const renderContext = { ...safeContext, fileAliases: buildMarkdownFileAliasMap(source, safeContext) };
     const lines = source.split("\n");
     for (let index = 0; index < lines.length;) {
       const line = lines[index];

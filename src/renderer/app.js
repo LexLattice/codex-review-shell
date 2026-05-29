@@ -2151,11 +2151,12 @@ function renderSubAgentMessageBody(container, message, context = {}) {
 const typedMarkdownProjection = window.CodexTypedMarkdownProjection;
 
 function shellTypedMarkdownContext(context = {}) {
+  const safeContext = context && typeof context === "object" ? context : {};
   return {
-    ...context,
+    ...safeContext,
     workspaceRoots: currentWorkspaceRoots(),
     urlTokenTitle: "Open link in workspace web panel",
-    onOpenUrl: (url) => openSubAgentTypedUrl(url, context),
+    onOpenUrl: (url) => openSubAgentTypedUrl(url, safeContext),
     onOpenFile: (relPath, options = {}) => revealSubAgentTypedFile(relPath, { fallbackPath: options.fallbackPath || "" }),
   };
 }

@@ -217,6 +217,14 @@ function assertTypedTokenBehavior(label, surface) {
 assertTypedTokenBehavior("codex final renderer", codexSurface);
 assertTypedTokenBehavior("middle/sub-agent renderer", appSurface);
 
+const nullContextContainer = documentStub.createElement("div");
+sharedProjection.renderTypedContent(nullContextContainer, "`implementation_src` and https://example.com", null);
+sharedProjection.renderAssistantMarkdown(nullContextContainer, fixture.middleFileMarkdown, null);
+sharedProjection.tokenizeTypedContent(fixture.codexFinalMessage, null);
+sharedProjection.extractFileRefsFromText(fixture.codexFinalMessage, null);
+codexSurface.tokenizeTypedContent(fixture.codexFinalMessage, null);
+appSurface.tokenizeTypedContent(fixture.codexFinalMessage, null);
+
 const codexContainer = documentStub.createElement("div");
 codexSurface.renderFinalAssistantContent(codexContainer, fixture.codexFinalMessage, renderContext);
 assert(nodesByClass(codexContainer, "assistant-md-link-blocked").length === 1, "codex final renderer did not render unsafe link as blocked");

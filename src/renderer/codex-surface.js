@@ -3213,8 +3213,9 @@ function renderFinalAssistantContent(container, text, context = {}) {
 const typedMarkdownProjection = window.CodexTypedMarkdownProjection;
 
 function codexTypedMarkdownContext(context = {}) {
+  const safeContext = context && typeof context === "object" ? context : {};
   return {
-    ...context,
+    ...safeContext,
     workspaceRoots: knownWorkspaceRoots(),
     includeContextDataset: true,
     urlTokenTitle: "Open link in browser",
