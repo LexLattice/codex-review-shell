@@ -19,7 +19,7 @@ const catalog = publicAuthorityCatalog();
 
 assert.equal(catalog.schemaVersion, 1);
 assert.ok(catalog.ipcChannelContracts.some((row) => row.channel === "codex-surface:connect"));
-assert.ok(catalog.ipcChannelContracts.some((row) => row.channel === "workspace:run-command"));
+assert.equal(catalog.ipcChannelContracts.some((row) => row.channel === "workspace:run-command"), false);
 
 assert.equal(
   trustProfileForCodexTarget("https://example.com/codex"),

@@ -82,12 +82,6 @@ const IPC_CHANNEL_CONTRACTS = Object.freeze([
     requiredBridgeProfile: "shell_or_full_codex_surface_bridge",
     authorityEvidence: "ContextMenuRequest",
   },
-  {
-    channel: "workspace:run-command",
-    allowedSenderRoles: [SURFACE_ROLES.SHELL_RENDERER],
-    requiredBridgeProfile: "shell_workspace_bridge",
-    authorityEvidence: "WorkspaceCommandRequest",
-  },
 ]);
 
 const REQUEST_METHOD_SET = new Set(CODEX_CLIENT_REQUEST_METHODS);

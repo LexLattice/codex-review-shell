@@ -4517,8 +4517,77 @@ function selectedContextFileRefs(request = {}) {
   return selected;
 }
 
+function sendContextMenuActionResult(sender, result = {}) {
+  if (!sender || sender.isDestroyed()) return;
+  const authority = senderAuthority(sender);
+  const payload = {
+    type: "context-menu-action-result",
+    schemaVersion: 1,
+    requestId: normalizeString(result.requestId, ""),
+    actionId: normalizeString(result.actionId || result.requestId, ""),
+    actionType: normalizeString(result.actionType, "unknown"),
+    status: normalizeString(result.status, "unknown"),
+    reason: normalizeString(result.reason, ""),
+    mutatedDraftState: Boolean(result.mutatedDraftState),
+    mutatedProjectFiles: false,
+    approvedCodexRequest: false,
+    providerTransportCalls: Number(result.providerTransportCalls) || 0,
+    appServerMutationCalls: 0,
+    codexApprovalCalls: 0,
+    patchApplyCalls: 0,
+    commandRunCalls: 0,
+    rightPaneMutated: Boolean(result.rightPaneMutated),
+    handoffMutationCalls: Number(result.handoffMutationCalls) || 0,
+    attachmentStagingWrites: Number(result.attachmentStagingWrites) || 0,
+    at: nowIso(),
+  };
+  if (authority.surfaceRole === SURFACE_ROLES.TRUSTED_CODEX_SURFACE) {
+    sender.send("codex-surface:event", payload);
+    return;
+  }
+  sender.send("surface:event", { surface: "shell", ...payload });
+}
+
+function sendCodexSurfaceDiagnostic(sender, message) {
+  if (!sender || sender.isDestroyed()) return;
+  const text = normalizeString(message, "");
+  if (!text) return;
+  const authority = senderAuthority(sender);
+  if (authority.surfaceRole === SURFACE_ROLES.TRUSTED_CODEX_SURFACE) {
+    sender.send("codex-surface:event", { type: "attachment-diagnostic", message: text });
+  } else {
+    sender.send("surface:event", { surface: "shell", type: "context-menu-diagnostic", message: text, at: nowIso() });
+  }
+}
+
+function runContextMenuAction(sender, requestId, actionType, options = {}, action) {
+  Promise.resolve()
+    .then(() => action())
+    .then((result = {}) => {
+      sendContextMenuActionResult(sender, {
+        requestId,
+        actionType,
+        status: "completed",
+        ...options,
+        ...result,
+      });
+    })
+    .catch((error) => {
+      if (typeof options.diagnostic === "function") {
+        sendCodexSurfaceDiagnostic(sender, options.diagnostic(error));
+      }
+      sendContextMenuActionResult(sender, {
+        requestId,
+        actionType,
+        status: "failed",
+        reason: errorMessageText(error),
+      });
+    });
+}
+
 async function openContextMenu(event, request = {}) {
   const sender = event.sender;
+  const requestId = normalizeString(request.requestId, "") || crypto.randomUUID();
   const projectId = normalizeString(request.projectId, "");
   const targetKind = normalizeString(request.targetKind, "unknown");
   const selectedTextLength = Math.max(0, Number(request.selectedTextLength) || 0);
@@ -4543,55 +4612,74 @@ async function openContextMenu(event, request = {}) {
     template.push({ role: "paste", label: "Paste text" });
     template.push({
       label: "Paste image",
-      click: async () => {
-        try {
+      click: () => runContextMenuAction(
+        sender,
+        requestId,
+        "paste_image_into_composer",
+        { mutatedDraftState: true, attachmentStagingWrites: 1, diagnostic: (error) => error.message },
+        async () => {
           const result = await pasteClipboardImageAttachment(projectId);
           sender.send("codex-surface:event", { type: "attachment-drafts", action: "add", ...result });
-        } catch (error) {
-          sender.send("codex-surface:event", { type: "attachment-diagnostic", message: error.message });
-        }
-      },
+          return { attachmentStagingWrites: Array.isArray(result?.drafts) ? result.drafts.length : 1 };
+        },
+      ),
     });
   }
   if (href) {
     template.push({ type: "separator" });
-    template.push({ label: "Copy link URL", click: () => clipboard.writeText(href) });
+    template.push({
+      label: "Copy link URL",
+      click: () => runContextMenuAction(sender, requestId, "copy_link_url", {}, async () => {
+        clipboard.writeText(href);
+      }),
+    });
   }
   if (targetKind === "thread_title" && threadId) {
     template.push({ type: "separator" });
-    template.push({ label: "Copy thread ID", click: () => clipboard.writeText(threadId) });
+    template.push({
+      label: "Copy thread ID",
+      click: () => runContextMenuAction(sender, requestId, "copy_thread_id", {}, async () => {
+        clipboard.writeText(threadId);
+      }),
+    });
   }
   if ((fileRef || stashFileRefs.length) && projectId) {
     template.push({ type: "separator" });
     if (fileRef) {
       template.push({
         label: "Copy file reference",
-        click: async () => {
+        click: () => runContextMenuAction(sender, requestId, "copy_file_ref", {}, async () => {
           try {
             const resolved = await resolveProjectFileReferenceWithFallback(projectId, fileRef, fallbackFileRef);
             await clipboard.writeText(resolved.relPath || fileRef);
           } catch (error) {
             await clipboard.writeText(fileRef);
-            sender.send("codex-surface:event", { type: "attachment-diagnostic", message: `Copied unresolved file reference: ${errorMessageText(error)}` });
+            sendCodexSurfaceDiagnostic(sender, `Copied unresolved file reference: ${errorMessageText(error)}`);
           }
-        },
+        }),
       });
       template.push({
         label: "Reveal file",
-        click: async () => {
-          try {
+        click: () => runContextMenuAction(
+          sender,
+          requestId,
+          "reveal_project_file",
+          { diagnostic: (error) => `Reveal failed: ${errorMessageText(error)}` },
+          async () => {
             const resolved = await resolveProjectFileReferenceWithFallback(projectId, fileRef, fallbackFileRef);
             await revealProjectFile(projectId, resolved.relPath || fileRef);
-          } catch (error) {
-            sender.send("codex-surface:event", { type: "attachment-diagnostic", message: `Reveal failed: ${errorMessageText(error)}` });
-          }
-        },
+          },
+        ),
       });
     }
     template.push({
       label: stashFileRefs.length > 1 ? `Add ${stashFileRefs.length} selected files to Project stash` : "Add to Project stash",
-      click: async () => {
-        try {
+      click: () => runContextMenuAction(
+        sender,
+        requestId,
+        "add_to_project_stash",
+        { rightPaneMutated: true, diagnostic: (error) => `Project stash add failed: ${errorMessageText(error)}` },
+        async () => {
           let added = 0;
           const failed = [];
           for (const ref of stashFileRefs) {
@@ -4611,16 +4699,19 @@ async function openContextMenu(event, request = {}) {
               failed.push(`${ref.relPath}: ${errorMessageText(error)}`);
             }
           }
-          sender.send("codex-surface:event", {
-            type: "attachment-diagnostic",
-            message: failed.length
+          sendCodexSurfaceDiagnostic(
+            sender,
+            failed.length
               ? `Added ${added} file${added === 1 ? "" : "s"} to Project stash; ${failed.length} failed.`
               : `Added ${added} file${added === 1 ? "" : "s"} to Project stash.`,
-          });
-        } catch (error) {
-          sender.send("codex-surface:event", { type: "attachment-diagnostic", message: `Project stash add failed: ${errorMessageText(error)}` });
-        }
-      },
+          );
+          return {
+            status: failed.length ? (added ? "partial" : "failed") : "completed",
+            rightPaneMutated: added > 0,
+            reason: failed.length ? `${failed.length} file(s) failed` : "",
+          };
+        },
+      ),
     });
     if (threadId && fileRef) {
       try {
@@ -4630,18 +4721,17 @@ async function openContextMenu(event, request = {}) {
           const targetTitle = normalizeString(matches[0].chatThread?.title, "linked ChatGPT");
           template.push({
             label: `Send to ${targetTitle} for review`,
-            click: async () => {
-              try {
+            click: () => runContextMenuAction(
+              sender,
+              requestId,
+              "send_file_to_linked_chatgpt",
+              { handoffMutationCalls: 1, rightPaneMutated: true, diagnostic: (error) => `ChatGPT review send failed: ${errorMessageText(error)}` },
+              async () => {
                 const resolved = await resolveProjectFileReferenceWithFallback(projectId, fileRef, fallbackFileRef);
                 const result = await sendCodexFileToLinkedChatgpt(projectId, threadId, resolved.relPath || fileRef);
-                sender.send("codex-surface:event", {
-                  type: "attachment-diagnostic",
-                  message: `Sent ${result.relPath} to linked ChatGPT thread "${result.chatThreadTitle}".`,
-                });
-              } catch (error) {
-                sender.send("codex-surface:event", { type: "attachment-diagnostic", message: `ChatGPT review send failed: ${errorMessageText(error)}` });
-              }
-            },
+                sendCodexSurfaceDiagnostic(sender, `Sent ${result.relPath} to linked ChatGPT thread "${result.chatThreadTitle}".`);
+              },
+            ),
           });
         } else {
           template.push({
@@ -4658,25 +4748,13 @@ async function openContextMenu(event, request = {}) {
   Menu.buildFromTemplate(template).popup();
   return {
     ok: true,
-    actionId: normalizeString(request.requestId, ""),
-    status: "completed",
-    mutatedDraftState: false,
-    mutatedProjectFiles: false,
-    approvedCodexRequest: false,
-    providerTransportCalls: 0,
-    appServerMutationCalls: 0,
-    codexApprovalCalls: 0,
-    patchApplyCalls: 0,
-    commandRunCalls: 0,
-    rightPaneMutated: false,
-    handoffMutationCalls: 0,
-    attachmentStagingWrites: 0,
+    schemaVersion: 1,
+    type: "context-menu-open-result",
+    requestId,
+    status: "menu_opened",
+    itemCount: template.length,
+    actionResultDelivery: "async_context_menu_action_result_event",
   };
-}
-
-async function runWorkspaceCommand(projectId, commandPayload) {
-  const project = await getProjectById(projectId);
-  return requestWorkspace(project, "runCommand", commandPayload, 60_000);
 }
 
 async function getWorkspaceStatus(projectId) {
@@ -5476,11 +5554,6 @@ ipcMain.handle("workspace:attach", async (_event, payload) => {
 
 ipcMain.handle("workspace:status", async (_event, payload) => {
   return getWorkspaceStatus(payload?.projectId);
-});
-
-ipcMain.handle("workspace:run-command", async (event, payload) => {
-  requireSenderRole(event.sender, [SURFACE_ROLES.SHELL_RENDERER], "workspace:run-command");
-  return runWorkspaceCommand(payload?.projectId, payload?.command);
 });
 
 ipcMain.handle("chatgpt:open-settings", async () => {
