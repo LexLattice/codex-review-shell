@@ -2513,6 +2513,11 @@ function isMissingFileReferenceError(error) {
   return /ENOENT|no such file|not found|cannot find/i.test(error?.message || error || "");
 }
 
+function errorMessageText(error, fallback = "unknown error") {
+  const value = error?.message || (typeof error === "string" ? error : error ? String(error) : "");
+  return normalizeString(value, fallback);
+}
+
 async function resolveProjectFileReferenceWithFallback(projectId, relPath, fallbackRelPath = "") {
   try {
     return await resolveProjectFileReference(projectId, relPath);
@@ -4396,7 +4401,7 @@ async function openContextMenu(event, request = {}) {
             await clipboard.writeText(resolved.relPath || fileRef);
           } catch (error) {
             await clipboard.writeText(fileRef);
-            sender.send("codex-surface:event", { type: "attachment-diagnostic", message: `Copied unresolved file reference: ${error.message}` });
+            sender.send("codex-surface:event", { type: "attachment-diagnostic", message: `Copied unresolved file reference: ${errorMessageText(error)}` });
           }
         },
       });
@@ -4407,7 +4412,7 @@ async function openContextMenu(event, request = {}) {
             const resolved = await resolveProjectFileReferenceWithFallback(projectId, fileRef, fallbackFileRef);
             await revealProjectFile(projectId, resolved.relPath || fileRef);
           } catch (error) {
-            sender.send("codex-surface:event", { type: "attachment-diagnostic", message: `Reveal failed: ${error.message}` });
+            sender.send("codex-surface:event", { type: "attachment-diagnostic", message: `Reveal failed: ${errorMessageText(error)}` });
           }
         },
       });
@@ -4432,7 +4437,7 @@ async function openContextMenu(event, request = {}) {
               });
               added += 1;
             } catch (error) {
-              failed.push(`${ref.relPath}: ${error.message}`);
+              failed.push(`${ref.relPath}: ${errorMessageText(error)}`);
             }
           }
           sender.send("codex-surface:event", {
@@ -4442,7 +4447,7 @@ async function openContextMenu(event, request = {}) {
               : `Added ${added} file${added === 1 ? "" : "s"} to Project stash.`,
           });
         } catch (error) {
-          sender.send("codex-surface:event", { type: "attachment-diagnostic", message: `Project stash add failed: ${error.message}` });
+          sender.send("codex-surface:event", { type: "attachment-diagnostic", message: `Project stash add failed: ${errorMessageText(error)}` });
         }
       },
     });
@@ -4463,7 +4468,7 @@ async function openContextMenu(event, request = {}) {
                   message: `Sent ${result.relPath} to linked ChatGPT thread "${result.chatThreadTitle}".`,
                 });
               } catch (error) {
-                sender.send("codex-surface:event", { type: "attachment-diagnostic", message: `ChatGPT review send failed: ${error.message}` });
+                sender.send("codex-surface:event", { type: "attachment-diagnostic", message: `ChatGPT review send failed: ${errorMessageText(error)}` });
               }
             },
           });

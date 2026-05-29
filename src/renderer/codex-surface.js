@@ -2666,6 +2666,11 @@ function isFileOpenMissingError(errorText) {
   return /ENOENT|no such file|not found|cannot find/i.test(String(errorText || ""));
 }
 
+function errorMessageText(error, fallback = "unknown error") {
+  const value = error?.message || (typeof error === "string" ? error : error ? String(error) : "");
+  return value || fallback;
+}
+
 async function openTypedFile(relPath, options = {}) {
   if (!bridge?.openProjectFile || !project?.id) {
     addSystemMessage("Project file opening is unavailable in this Codex surface.");
@@ -2692,7 +2697,8 @@ async function openTypedFile(relPath, options = {}) {
     }
     addSystemMessage(`File open failed: ${result?.error || "unknown error"}`);
   } catch (error) {
-    if (fallbackPath && isFileOpenMissingError(error.message)) {
+    const message = errorMessageText(error);
+    if (fallbackPath && isFileOpenMissingError(message)) {
       try {
         const fallbackResult = await bridge.openProjectFile(project.id, fallbackPath, {
           sourceSurface: "codex",
@@ -2703,7 +2709,7 @@ async function openTypedFile(relPath, options = {}) {
         if (fallbackResult?.ok) return;
       } catch {}
     }
-    addSystemMessage(`File open failed: ${error.message}`);
+    addSystemMessage(`File open failed: ${message}`);
   }
 }
 
@@ -2946,7 +2952,7 @@ function splitMarkdownTableRow(line) {
 
 function isMarkdownTableDivider(line) {
   const cells = splitMarkdownTableRow(line);
-  return Boolean(cells?.length) && cells.every((cell) => /^:?-{3,}:?$/.test(cell.trim()));
+  return Boolean(cells?.length) && cells.every((cell) => /^:?-+:?$/.test(cell.trim()));
 }
 
 function markdownTableStart(lines, index) {

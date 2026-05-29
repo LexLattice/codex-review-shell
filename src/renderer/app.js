@@ -1824,7 +1824,7 @@ function splitMarkdownTableRow(line) {
 
 function isMarkdownTableDivider(line) {
   const cells = splitMarkdownTableRow(line);
-  return Boolean(cells?.length) && cells.every((cell) => /^:?-{3,}:?$/.test(cell.trim()));
+  return Boolean(cells?.length) && cells.every((cell) => /^:?-+:?$/.test(cell.trim()));
 }
 
 function markdownTableStart(lines, index) {
@@ -2317,6 +2317,11 @@ function formatBytes(bytes) {
   if (number < 1024) return `${number} B`;
   if (number < 1024 * 1024) return `${(number / 1024).toFixed(1)} KB`;
   return `${(number / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function errorMessageText(error, fallback = "unknown error") {
+  const value = error?.message || (typeof error === "string" ? error : error ? String(error) : "");
+  return value || fallback;
 }
 
 function formatTime(value) {
@@ -5430,7 +5435,7 @@ function bindEvents() {
   });
   const refreshCodexThreadList = () => {
     loadCodexThreads().catch((error) => {
-      setLastEvent(`Codex thread refresh failed: ${error.message}`);
+      setLastEvent(`Codex thread refresh failed: ${errorMessageText(error)}`);
     });
   };
   els.refreshCodexThreadsButton.addEventListener("click", refreshCodexThreadList);
