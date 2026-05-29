@@ -3210,6 +3210,36 @@ function renderFinalAssistantContent(container, text, context = {}) {
   }
 }
 
+const typedMarkdownProjection = window.CodexTypedMarkdownProjection;
+
+function codexTypedMarkdownContext(context = {}) {
+  return {
+    ...context,
+    workspaceRoots: knownWorkspaceRoots(),
+    includeContextDataset: true,
+    urlTokenTitle: "Open link in browser",
+    onOpenUrl: (url) => openTypedUrl(url),
+    onOpenFile: (relPath, options = {}) => openTypedFile(relPath, { fallbackPath: options.fallbackPath || "" }),
+  };
+}
+
+if (typedMarkdownProjection) {
+  extractFileRefsFromText = function sharedExtractFileRefsFromText(value) {
+    return typedMarkdownProjection.extractFileRefsFromText(value, codexTypedMarkdownContext());
+  };
+  tokenizeTypedContent = function sharedTokenizeTypedContent(text, context = {}) {
+    return typedMarkdownProjection.tokenizeTypedContent(text, codexTypedMarkdownContext(context));
+  };
+  renderTypedContent = function sharedRenderTypedContent(container, text, context = {}) {
+    typedMarkdownProjection.renderTypedContent(container, text, codexTypedMarkdownContext(context));
+  };
+  renderFinalAssistantContent = function sharedRenderFinalAssistantContent(container, text, context = {}) {
+    typedMarkdownProjection.renderAssistantMarkdown(container, text, codexTypedMarkdownContext(context));
+  };
+} else {
+  console.error("Shared typed Markdown projection unavailable; using legacy Codex projection.");
+}
+
 function messageCopyText(node) {
   const bubble = node?.querySelector?.(".bubble");
   if (!bubble) return "";

@@ -2148,6 +2148,36 @@ function renderSubAgentMessageBody(container, message, context = {}) {
   }
 }
 
+const typedMarkdownProjection = window.CodexTypedMarkdownProjection;
+
+function shellTypedMarkdownContext(context = {}) {
+  return {
+    ...context,
+    workspaceRoots: currentWorkspaceRoots(),
+    urlTokenTitle: "Open link in workspace web panel",
+    onOpenUrl: (url) => openSubAgentTypedUrl(url, context),
+    onOpenFile: (relPath, options = {}) => revealSubAgentTypedFile(relPath, { fallbackPath: options.fallbackPath || "" }),
+  };
+}
+
+if (typedMarkdownProjection) {
+  tokenizeTypedContent = function sharedTokenizeTypedContent(text, context = {}) {
+    return typedMarkdownProjection.tokenizeTypedContent(text, shellTypedMarkdownContext(context));
+  };
+  renderTypedContent = function sharedRenderTypedContent(container, text, context = {}) {
+    typedMarkdownProjection.renderTypedContent(container, text, shellTypedMarkdownContext(context));
+  };
+  renderSubAgentAssistantMarkdown = function sharedRenderSubAgentAssistantMarkdown(container, text, context = {}) {
+    typedMarkdownProjection.renderAssistantMarkdown(container, text, shellTypedMarkdownContext(context));
+  };
+  renderMiddleFileMarkdown = function sharedRenderMiddleFileMarkdown(container, text, context = {}) {
+    typedMarkdownProjection.renderAssistantMarkdown(container, text, shellTypedMarkdownContext(context));
+    container.classList.add("middle-file-markdown");
+  };
+} else {
+  console.error("Shared typed Markdown projection unavailable; using legacy shell projection.");
+}
+
 function subAgentMessagePreviewKey(agent, message, index) {
   return [
     subAgentThreadId(agent) || "unknown-agent",
