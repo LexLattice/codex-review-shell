@@ -3036,13 +3036,12 @@ async function loadMiddleWebHistory() {
 }
 
 async function reopenMiddleWebHistoryEntry(entry) {
-  const url = String(entry?.displayUrl || "");
-  if (!url || !bridge.openWorkspaceLink) return;
+  const id = String(entry?.id || "");
+  if (!id) return;
   setMiddleWebViewMode("browser");
   try {
-    const result = await bridge.openWorkspaceLink(url, {
-      disposition: "middle-web",
-      source: { surface: "shell", itemId: `history:${entry.id || ""}` },
+    const result = await bridge.middleWebOpenHistoryEntry({
+      id,
       userGesture: true,
     });
     if (!result?.ok) setLastEvent(`Web history reopen blocked: ${result?.error || "unknown error"}`);

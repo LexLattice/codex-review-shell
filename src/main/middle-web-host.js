@@ -1,7 +1,10 @@
 const { WebContentsView, clipboard, session, shell } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
-const crypto = require("node:crypto");
+const {
+  blockedMessage,
+  navigationDecision,
+} = require("./external-navigation-policy");
 const {
   PLANE_ZOOM_DEFAULT,
   PLANE_ZOOM_MAX,
@@ -36,24 +39,6 @@ function sanitizeBounds(bounds) {
   };
 }
 
-function safeHostname(parsed) {
-  return String(parsed?.hostname || "").replace(/^\[|\]$/g, "").toLowerCase();
-}
-
-function isLoopbackHost(hostname) {
-  const host = String(hostname || "").replace(/^\[|\]$/g, "").toLowerCase();
-  if (host === "localhost" || host.endsWith(".localhost") || host === "::1") return true;
-  const octets = host.split(".");
-  if (octets.length !== 4 || octets[0] !== "127") return false;
-  return octets.every((part) => /^\d+$/.test(part) && Number(part) >= 0 && Number(part) <= 255);
-}
-
-function securityPostureFor(parsed) {
-  if (parsed.protocol === "https:") return "https";
-  if (parsed.protocol === "http:" && isLoopbackHost(safeHostname(parsed))) return "loopback_http";
-  return "unknown";
-}
-
 function sanitizeSource(source) {
   const surface = ["codex", "chatgpt", "shell"].includes(source?.surface) ? source.surface : "shell";
   return {
@@ -65,68 +50,14 @@ function sanitizeSource(source) {
   };
 }
 
-function navigationDecision(rawUrl) {
-  let parsed;
-  try {
-    parsed = new URL(String(rawUrl || ""));
-  } catch {
-    return { action: "block", reason: "invalid_url" };
-  }
-
-  if (parsed.username || parsed.password) {
-    return { action: "block", reason: "embedded_credentials" };
-  }
-
-  if (parsed.protocol === "https:") {
-    return {
-      action: "allow",
-      normalizedUrl: parsed.toString(),
-      displayUrl: parsed.toString(),
-      origin: parsed.origin,
-      securityPosture: securityPostureFor(parsed),
-    };
-  }
-
-  if (parsed.protocol === "http:") {
-    if (!isLoopbackHost(safeHostname(parsed))) {
-      return { action: "block", reason: "insecure_http" };
-    }
-    return {
-      action: "allow",
-      normalizedUrl: parsed.toString(),
-      displayUrl: parsed.toString(),
-      origin: parsed.origin,
-      securityPosture: securityPostureFor(parsed),
-    };
-  }
-
-  return { action: "block", reason: "unsupported_protocol" };
-}
-
-function blockedMessage(reason) {
-  const labels = {
-    unsupported_protocol: "Blocked: unsupported protocol",
-    insecure_http: "Blocked: non-loopback HTTP is disabled",
-    embedded_credentials: "Blocked: URL contains embedded credentials",
-    invalid_url: "Blocked: invalid URL",
-    opaque_origin: "Blocked: opaque origin",
-    policy_denied: "Blocked by middle Web policy",
-    download_blocked: "Blocked: downloads are disabled in v0",
-    popup_blocked: "Blocked: navigation attempted to open a popup",
-  };
-  return labels[reason] || labels.policy_denied;
-}
-
-function historyEntryId(url) {
-  return `web_${crypto.createHash("sha256").update(String(url || "")).digest("hex").slice(0, 16)}`;
-}
-
 function sanitizeHistoryEntry(entry) {
-  const decision = navigationDecision(entry?.displayUrl || entry?.url || "");
+  const decision = navigationDecision(entry?.reopenUrl || entry?.url || entry?.displayUrl || "");
   if (decision.action !== "allow") return null;
   return {
-    id: normalizeString(entry?.id, historyEntryId(decision.normalizedUrl)),
-    displayUrl: decision.displayUrl,
+    id: normalizeString(entry?.id, decision.historyId),
+    // Main-owned durable URL for reopening. Do not expose this through history().
+    reopenUrl: decision.normalizedUrl,
+    displayUrl: decision.historyDisplayUrl,
     origin: decision.origin,
     title: normalizeString(entry?.title, decision.origin || decision.displayUrl).slice(0, 180),
     securityPosture: decision.securityPosture,
@@ -135,6 +66,15 @@ function sanitizeHistoryEntry(entry) {
     lastOpenedAt: normalizeString(entry?.lastOpenedAt, nowIso()),
     visitCount: Math.max(1, Number(entry?.visitCount) || 1),
   };
+}
+
+function publicHistoryEntry(entry) {
+  const {
+    reopenUrl: _reopenUrl,
+    url: _url,
+    ...safeEntry
+  } = entry || {};
+  return { ...safeEntry };
 }
 
 function isLoadUrlAbort(error) {
@@ -245,12 +185,13 @@ class MiddleWebHost {
     const decision = navigationDecision(this.rawUrl || this.state.displayUrl);
     if (decision.action !== "allow") return;
     const now = nowIso();
-    const id = historyEntryId(decision.normalizedUrl);
+    const id = decision.historyId;
     const existing = this.historyEntries.find((entry) => entry.id === id);
     if (options.bumpVisit === false && !existing) return;
     const nextEntry = sanitizeHistoryEntry({
       id,
-      displayUrl: decision.displayUrl,
+      reopenUrl: decision.normalizedUrl,
+      displayUrl: decision.historyDisplayUrl,
       origin: decision.origin,
       title: normalizeString(this.state.title, existing?.title || decision.origin || decision.displayUrl),
       securityPosture: decision.securityPosture,
@@ -440,7 +381,23 @@ class MiddleWebHost {
   }
 
   history() {
-    return this.historyEntries.map((entry) => ({ ...entry }));
+    return this.historyEntries.map(publicHistoryEntry);
+  }
+
+  async openHistoryEntry(request = {}) {
+    const id = normalizeString(request.id, "");
+    const entry = this.historyEntries.find((candidate) => candidate.id === id);
+    if (!entry) return { ok: false, error: "history_entry_not_found" };
+    return this.openLink({
+      url: entry.reopenUrl || entry.displayUrl,
+      disposition: "middle-web",
+      source: {
+        surface: "shell",
+        ...(entry.lastSource || {}),
+        itemId: `history:${entry.id || ""}`,
+      },
+      userGesture: request.userGesture !== false,
+    });
   }
 
   async pruneHistory(request = {}) {
@@ -579,7 +536,7 @@ class MiddleWebHost {
   copyUrl() {
     const decision = navigationDecision(this.rawUrl || this.state.displayUrl);
     if (decision.action !== "allow") return { ok: false, error: decision.reason };
-    clipboard.writeText(decision.displayUrl);
+    clipboard.writeText(decision.normalizedUrl);
     return { ok: true, displayUrl: decision.displayUrl };
   }
 
