@@ -31,10 +31,6 @@ function displayUrlFor(parsed) {
   return `${parsed.origin}${pathname}${search}${hash}`;
 }
 
-function historyKeyFor(parsed) {
-  return `${parsed.origin}${parsed.pathname || "/"}`;
-}
-
 function historyEntryId(value) {
   return `web_${crypto.createHash("sha256").update(String(value || "")).digest("hex").slice(0, 16)}`;
 }
@@ -60,14 +56,12 @@ function navigationDecision(rawUrl) {
   }
 
   const displayUrl = displayUrlFor(parsed);
-  const historyKey = historyKeyFor(parsed);
   return {
     action: "allow",
     normalizedUrl: parsed.toString(),
     displayUrl,
     historyDisplayUrl: displayUrl,
-    historyKey,
-    historyId: historyEntryId(historyKey),
+    historyId: historyEntryId(parsed.toString()),
     origin: parsed.origin,
     securityPosture: securityPostureFor(parsed),
   };

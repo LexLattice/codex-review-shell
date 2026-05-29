@@ -17,7 +17,7 @@ const github = navigationDecision("https://github.com/LexLattice/codex-review-sh
 assert.equal(github.action, "allow");
 assert.equal(github.normalizedUrl, "https://github.com/LexLattice/codex-review-shell/pull/108?token=secret#discussion");
 assert.equal(github.displayUrl, "https://github.com/LexLattice/codex-review-shell/pull/108?...#...");
-assert.equal(github.historyId, historyEntryId("https://github.com/LexLattice/codex-review-shell/pull/108"));
+assert.equal(github.historyId, historyEntryId(github.normalizedUrl));
 
 assert.deepEqual(navigationDecision("https://user:pass@example.com/"), {
   action: "block",

@@ -3,7 +3,6 @@ const fs = require("node:fs");
 const path = require("node:path");
 const {
   blockedMessage,
-  historyEntryId,
   navigationDecision,
 } = require("./external-navigation-policy");
 const {
@@ -52,11 +51,13 @@ function sanitizeSource(source) {
 }
 
 function sanitizeHistoryEntry(entry) {
-  const decision = navigationDecision(entry?.displayUrl || entry?.url || "");
+  const decision = navigationDecision(entry?.reopenUrl || entry?.url || entry?.displayUrl || "");
   if (decision.action !== "allow") return null;
   return {
-    id: normalizeString(entry?.id, historyEntryId(decision.historyKey || decision.displayUrl)),
-    displayUrl: decision.historyDisplayUrl || decision.displayUrl,
+    id: normalizeString(entry?.id, decision.historyId),
+    // Main-owned durable URL for reopening. Do not expose this through history().
+    reopenUrl: decision.normalizedUrl,
+    displayUrl: decision.historyDisplayUrl,
     origin: decision.origin,
     title: normalizeString(entry?.title, decision.origin || decision.displayUrl).slice(0, 180),
     securityPosture: decision.securityPosture,
@@ -65,6 +66,15 @@ function sanitizeHistoryEntry(entry) {
     lastOpenedAt: normalizeString(entry?.lastOpenedAt, nowIso()),
     visitCount: Math.max(1, Number(entry?.visitCount) || 1),
   };
+}
+
+function publicHistoryEntry(entry) {
+  const {
+    reopenUrl: _reopenUrl,
+    url: _url,
+    ...safeEntry
+  } = entry || {};
+  return { ...safeEntry };
 }
 
 function isLoadUrlAbort(error) {
@@ -175,12 +185,13 @@ class MiddleWebHost {
     const decision = navigationDecision(this.rawUrl || this.state.displayUrl);
     if (decision.action !== "allow") return;
     const now = nowIso();
-    const id = decision.historyId || historyEntryId(decision.historyKey || decision.displayUrl);
+    const id = decision.historyId;
     const existing = this.historyEntries.find((entry) => entry.id === id);
     if (options.bumpVisit === false && !existing) return;
     const nextEntry = sanitizeHistoryEntry({
       id,
-      displayUrl: decision.historyDisplayUrl || decision.displayUrl,
+      reopenUrl: decision.normalizedUrl,
+      displayUrl: decision.historyDisplayUrl,
       origin: decision.origin,
       title: normalizeString(this.state.title, existing?.title || decision.origin || decision.displayUrl),
       securityPosture: decision.securityPosture,
@@ -370,7 +381,23 @@ class MiddleWebHost {
   }
 
   history() {
-    return this.historyEntries.map((entry) => ({ ...entry }));
+    return this.historyEntries.map(publicHistoryEntry);
+  }
+
+  async openHistoryEntry(request = {}) {
+    const id = normalizeString(request.id, "");
+    const entry = this.historyEntries.find((candidate) => candidate.id === id);
+    if (!entry) return { ok: false, error: "history_entry_not_found" };
+    return this.openLink({
+      url: entry.reopenUrl || entry.displayUrl,
+      disposition: "middle-web",
+      source: {
+        surface: "shell",
+        ...(entry.lastSource || {}),
+        itemId: `history:${entry.id || ""}`,
+      },
+      userGesture: request.userGesture !== false,
+    });
   }
 
   async pruneHistory(request = {}) {

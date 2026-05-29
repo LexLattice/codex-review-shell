@@ -5401,6 +5401,10 @@ ipcMain.handle("middle-web:history", async () => {
   return { ok: true, entries: ensureMiddleWebHost().history() };
 });
 
+ipcMain.handle("middle-web:open-history-entry", async (_event, payload) => {
+  return ensureMiddleWebHost().openHistoryEntry(payload || {});
+});
+
 ipcMain.handle("middle-web:prune-history", async (_event, payload) => {
   return ensureMiddleWebHost().pruneHistory(payload || {});
 });
