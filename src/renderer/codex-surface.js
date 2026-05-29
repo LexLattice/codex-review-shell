@@ -103,7 +103,7 @@ const state = {
     serviceTier: "",
   },
   workspaceStatus: payload.workspaceStatus || null,
-  connectionStatus: connection?.wsUrl ? "loading" : (payload.runtimeStartupPending ? "starting" : "unavailable"),
+  connectionStatus: connectionAvailable() ? "loading" : (payload.runtimeStartupPending ? "starting" : "unavailable"),
   runtimeConstitution: null,
   runtimeDrawerOpen: false,
   runtimeDrawerTab: "runtime",
@@ -163,6 +163,10 @@ const state = {
 
 function capabilityArea(area) {
   return connection?.capabilities?.[area] || {};
+}
+
+function connectionAvailable() {
+  return Boolean(connection?.available || connection?.wsUrl);
 }
 
 function hasCapability(area, name) {
@@ -613,7 +617,7 @@ function firstEvidence(refs) {
 }
 
 function workspaceRootText() {
-  return connection?.workspaceRoot || project?.workspace?.linuxPath || project?.workspace?.localPath || project?.repoPath || "";
+  return project?.workspace?.linuxPath || project?.workspace?.localPath || project?.repoPath || "";
 }
 
 function basenameFromPath(value) {
@@ -623,8 +627,8 @@ function basenameFromPath(value) {
 }
 
 function connectionLabel() {
-  if (payload.runtimeStartupPending && !connection?.wsUrl) return "starting";
-  if (!connection?.wsUrl) return "offline";
+  if (payload.runtimeStartupPending && !connectionAvailable()) return "starting";
+  if (!connectionAvailable()) return "offline";
   const provider = providerProfile();
   const providerSuffix = provider?.flavor ? ` · ${provider.flavor}` : "";
   if (state.connectionStatus === "connected") return `${connection?.runtime || "connected"}${providerSuffix}`;
@@ -640,7 +644,7 @@ function providerProfile() {
     kind: project?.codex?.provider?.kind || project?.codex?.providerKind || "codex_executable",
     flavor: project?.codex?.provider?.flavor || project?.codex?.providerFlavor || "vanilla",
     label: "Codex executable · vanilla",
-    status: connection?.wsUrl ? "configured" : "unknown",
+    status: connectionAvailable() ? "configured" : "unknown",
     capabilitySource: "project_config",
   };
 }
@@ -1094,9 +1098,9 @@ function buildRuntimeConstitution() {
     { confidence: rawCapabilities.provider ? "declared" : "unknown", status: rawCapabilities.provider ? "fresh" : "unavailable" },
   );
   const connectionEvidence = evidenceRef(
-    connection?.wsUrl ? "runtime_snapshot" : "project_config",
-    connection?.wsUrl ? "Codex app-server connection payload" : "No managed app-server connection payload",
-    { confidence: connection?.wsUrl ? "declared" : "configured" },
+    connectionAvailable() ? "runtime_snapshot" : "project_config",
+    connectionAvailable() ? "Main-owned Codex app-server connection ref" : "No managed app-server connection payload",
+    { confidence: connectionAvailable() ? "declared" : "configured" },
   );
   const threadEvidence = evidenceRef(
     state.liveAttached ? "app_server_probe" : state.threadId ? "renderer_observation" : "project_config",
@@ -1199,9 +1203,9 @@ function buildRuntimeConstitution() {
       updatedAt: generatedAt,
     },
     runtime: {
-      kind: connection?.runtime || (connection?.wsUrl ? "remote" : "offline"),
+      kind: connection?.runtime || (connectionAvailable() ? "remote" : "offline"),
       label: connectionLabel(),
-      truth: connection?.wsUrl ? "runtime_declared" : "unknown",
+      truth: connectionAvailable() ? "runtime_declared" : "unknown",
       status: state.connectionStatus === "connected" ? "ready" : state.connectionStatus || "unavailable",
       evidenceRefs: [connectionEvidence],
     },
@@ -2164,7 +2168,7 @@ function runtimeDrawerSections(c, tab) {
         ["transport", connection?.transport || connection?.capabilities?.coreRuntime?.transport || "websocket"],
         ["binary", c.provider?.executable?.command || connection?.runtime || "unknown"],
         ["codex home", c.provider?.executable?.codexHome || "default"],
-        ["ready URL", c.provider?.executable?.appServer?.readyUrl || (connection?.readyUrl ? "local app-server ready URL" : "not connected")],
+        ["ready URL", c.provider?.executable?.appServer?.readyUrl || connection?.readyUrlLabel || "not connected"],
         ["thread state", c.thread.status],
       ], [...(c.provider?.evidenceRefs || []), ...c.runtime.evidenceRefs, ...c.thread.evidenceRefs]),
       drawerSection("Account", [
@@ -2384,7 +2388,6 @@ function shouldRenderAmbiguousPathSymbol(value) {
 
 function knownWorkspaceRoots() {
   const roots = [
-    connection?.workspaceRoot,
     project?.workspace?.linuxPath,
     project?.workspace?.localPath,
     project?.repoPath,
@@ -4625,7 +4628,7 @@ function normalizeThreadReadResult(result, requestedThreadId) {
 async function resumeThreadById(threadId) {
   const attempts = [
     { method: "thread/resume", params: { threadId } },
-    { method: "thread/resume", params: { threadId, cwd: connection?.workspaceRoot || project?.repoPath || null } },
+    { method: "thread/resume", params: { threadId, cwd: workspaceRootText() || null } },
   ];
   let lastError = null;
   for (const attempt of attempts) {
@@ -6019,7 +6022,7 @@ async function startNewThread() {
   if (!hasCapability("threads", "canStart")) {
     throw new Error("Active Codex runtime does not expose thread/start capability.");
   }
-  const cwd = connection?.workspaceRoot || project?.workspace?.linuxPath || project?.workspace?.localPath || project?.repoPath || "";
+  const cwd = workspaceRootText();
   const params = {
     cwd,
     model: activeModelId() || null,
@@ -6592,7 +6595,7 @@ async function connect() {
   await loadRuntimePreferences({ applyThread: false });
   updateSurfaceHeader(payload.initialThreadTitle || project.name, workspaceText());
 
-  if (!connection?.wsUrl) {
+  if (!connectionAvailable()) {
     const startupPending = Boolean(payload.runtimeStartupPending);
     state.connectionStatus = startupPending ? "starting" : "unavailable";
     renderRuntimeConstitution();

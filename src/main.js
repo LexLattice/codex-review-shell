@@ -21,6 +21,11 @@ const { WorkspaceBackendManager, workspaceLabel, workspaceRoot } = require("./ma
 const { ThreadAnalyticsStore, buildThreadKey } = require("./main/thread-analytics-store");
 const { UsageLedgerCollector } = require("./main/usage-ledger-collector");
 const {
+  createCodexSurfaceConnectionAuthority,
+  publicCodexSurfaceConnection,
+  validateCodexSurfaceConnectionRequest,
+} = require("./main/codex-surface-connection-authority");
+const {
   blockedMessage: externalNavigationBlockedMessage,
   navigationDecision: externalNavigationDecision,
 } = require("./main/external-navigation-policy");
@@ -30,8 +35,8 @@ const {
   SURFACE_ROLES,
   codexSurfaceAuthorityForTarget,
   hasFullCodexBridge,
-  isAllowedCodexClientNotificationMethod,
-  isAllowedCodexClientRequestMethod,
+  codexClientNotificationDecision,
+  codexClientRequestDecision,
   normalizeCodexBridgeProfile,
   normalizeCodexTrustProfile,
   normalizeSurfaceRole,
@@ -2016,35 +2021,15 @@ async function loadCodexSurface(project, options = {}) {
           requestedCodexHome ? { codexHome: requestedCodexHome } : {},
         );
       if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
+      const connectionAuthority = createCodexSurfaceConnectionAuthority(project, session, {
+        activationEpoch: Number(options.activationEpoch) || 0,
+      });
+      activeCodexSurfaceConnection = connectionAuthority.privateConnection;
       const localUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, {
-        codexConnection: {
-          projectId: project.id,
-          wsUrl: session.wsUrl,
-          readyUrl: session.readyUrl,
-          runtime: session.runtime,
-          workspaceRoot: session.workspaceRoot,
-          binaryPath: session.binaryPath,
-          codexHome: session.codexHome || "",
-          provider: session.provider || null,
-          capabilities: session.capabilities || null,
-          activationEpoch: Number(options.activationEpoch) || 0,
-        },
+        codexConnection: connectionAuthority.publicConnection,
         workspaceStatus,
         ...threadExtras,
       });
-      activeCodexSurfaceConnection = {
-        projectId: project.id,
-        wsUrl: session.wsUrl,
-        readyUrl: session.readyUrl,
-        runtime: session.runtime,
-        codexHome: session.codexHome || "",
-        workspaceRoot: session.workspaceRoot || "",
-        binaryPath: session.binaryPath || "",
-        provider: session.provider || null,
-        capabilities: session.capabilities || null,
-        activationEpoch: Number(options.activationEpoch) || 0,
-        remoteAuth: project.surfaceBinding?.codex?.remoteAuth || { mode: "none" },
-      };
       if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
       setManagedCodexSurfaceAuthority(project, localUrl, "managed-local-ready");
       await codexView.webContents.loadURL(localUrl);
@@ -5204,20 +5189,17 @@ ipcMain.handle("codex-surface:connect", async (event, payload) => {
   requireFullCodexSurfaceBridge(event.sender, "codex-surface:connect");
   const session = codexSurfaceSessionFor(event.sender);
   const requestedConnection = payload?.connection || null;
-  if (!activeCodexSurfaceConnection?.wsUrl) {
-    throw new Error("No main-owned Codex app-server connection is available.");
-  }
-  if (
-    requestedConnection?.wsUrl &&
-    String(requestedConnection.wsUrl || "") !== String(activeCodexSurfaceConnection.wsUrl || "")
-  ) {
-    throw new Error("Renderer-supplied Codex app-server URL does not match the active main-owned connection.");
-  }
+  const activeConnection = validateCodexSurfaceConnectionRequest(activeCodexSurfaceConnection, requestedConnection);
   const connection = {
-    ...activeCodexSurfaceConnection,
-    remoteAuth: activeCodexSurfaceConnection.remoteAuth || { mode: "none" },
+    ...activeConnection,
+    remoteAuth: activeConnection.remoteAuth || { mode: "none" },
   };
-  return session.connect(connection);
+  const result = await session.connect(connection);
+  return {
+    connected: true,
+    connection: publicCodexSurfaceConnection(connection),
+    connectionId: result?.connectionId || connection.connectionRef,
+  };
 });
 
 ipcMain.handle("codex-surface:disconnect", async (event) => {
@@ -5230,8 +5212,9 @@ ipcMain.handle("codex-surface:disconnect", async (event) => {
 ipcMain.handle("codex-surface:request", async (event, payload) => {
   requireFullCodexSurfaceBridge(event.sender, "codex-surface:request");
   const method = normalizeString(payload?.method, "");
-  if (!isAllowedCodexClientRequestMethod(method)) {
-    throw new Error(`Codex app-server request method is not allowlisted: ${method || "<empty>"}`);
+  const decision = codexClientRequestDecision(method, activeCodexSurfaceConnection?.capabilities || {});
+  if (!decision.ok) {
+    throw new Error(`Codex app-server request method is not authorized: ${method || "<empty>"} (${decision.reason})`);
   }
   const session = codexSurfaceSessionFor(event.sender);
   return session.request(method, payload?.params || {});
@@ -5240,8 +5223,9 @@ ipcMain.handle("codex-surface:request", async (event, payload) => {
 ipcMain.handle("codex-surface:notify", async (event, payload) => {
   requireFullCodexSurfaceBridge(event.sender, "codex-surface:notify");
   const method = normalizeString(payload?.method, "");
-  if (!isAllowedCodexClientNotificationMethod(method)) {
-    throw new Error(`Codex app-server notification method is not allowlisted: ${method || "<empty>"}`);
+  const decision = codexClientNotificationDecision(method, activeCodexSurfaceConnection?.capabilities || {});
+  if (!decision.ok) {
+    throw new Error(`Codex app-server notification method is not authorized: ${method || "<empty>"} (${decision.reason})`);
   }
   const session = codexSurfaceSessionFor(event.sender);
   return session.notify(method, payload?.params || {});

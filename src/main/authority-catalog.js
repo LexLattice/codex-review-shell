@@ -41,6 +41,22 @@ const CODEX_CLIENT_REQUEST_METHODS = Object.freeze([
   "turn/interrupt",
 ]);
 
+const CODEX_CLIENT_REQUEST_CONTRACTS = Object.freeze({
+  "initialize": { class: "session", capabilityPath: ["coreRuntime", "canInitialize"] },
+  "account/read": { class: "account_read", capabilityPath: ["account", "canRead"] },
+  "account/rateLimits/read": { class: "usage_read", capabilityPath: ["usage", "canReadRateLimits"] },
+  "configRequirements/read": { class: "config_read", capabilityPath: ["configRequirements", "canRead"] },
+  "model/list": { class: "model_read", capabilityPath: ["model", "canList"] },
+  "account/login/start": { class: "account_auth_transition", capabilityPath: ["account", "canStartLogin"] },
+  "thread/start": { class: "thread_mutation", capabilityPath: ["threads", "canStart"] },
+  "thread/resume": { class: "thread_lifecycle", capabilityPath: ["threads", "canResume"] },
+  "thread/read": { class: "thread_read", capabilityPath: ["threads", "canRead"] },
+  "thread/rollback": { class: "thread_mutation", capabilityPath: ["threads", "canRollback"] },
+  "turn/start": { class: "turn_mutation", capabilityPath: ["turns", "canStart"] },
+  "turn/steer": { class: "turn_mutation", capabilityPath: ["turns", "canSteer"] },
+  "turn/interrupt": { class: "turn_mutation", capabilityPath: ["turns", "canInterrupt"] },
+});
+
 const CODEX_CLIENT_NOTIFICATION_METHODS = Object.freeze([
   "initialized",
 ]);
@@ -162,8 +178,74 @@ function isAllowedCodexClientRequestMethod(method) {
   return REQUEST_METHOD_SET.has(String(method || ""));
 }
 
+function capabilityValue(capabilities, path) {
+  let cursor = capabilities || {};
+  for (const key of path || []) {
+    if (!cursor || typeof cursor !== "object" || !Object.hasOwn(cursor, key)) return undefined;
+    cursor = cursor[key];
+  }
+  return cursor;
+}
+
+function codexClientRequestContract(method) {
+  return CODEX_CLIENT_REQUEST_CONTRACTS[String(method || "")] || null;
+}
+
+function codexClientRequestDecision(method, capabilities = {}) {
+  const normalized = String(method || "");
+  if (!REQUEST_METHOD_SET.has(normalized)) {
+    return {
+      ok: false,
+      reason: "method_not_allowlisted",
+      contract: null,
+    };
+  }
+  const contract = codexClientRequestContract(normalized);
+  const value = capabilityValue(capabilities, contract?.capabilityPath);
+  if (value !== true) {
+    return {
+      ok: false,
+      reason: "capability_not_declared",
+      contract,
+      capabilityPath: contract?.capabilityPath || [],
+    };
+  }
+  return {
+    ok: true,
+    reason: "capability_declared",
+    contract,
+    capabilityPath: contract?.capabilityPath || [],
+  };
+}
+
 function isAllowedCodexClientNotificationMethod(method) {
   return NOTIFICATION_METHOD_SET.has(String(method || ""));
+}
+
+function codexClientNotificationDecision(method, capabilities = {}) {
+  const normalized = String(method || "");
+  if (!NOTIFICATION_METHOD_SET.has(normalized)) {
+    return {
+      ok: false,
+      reason: "method_not_allowlisted",
+      contract: null,
+    };
+  }
+  const value = capabilityValue(capabilities, ["coreRuntime", "canInitialize"]);
+  if (value !== true) {
+    return {
+      ok: false,
+      reason: "capability_not_declared",
+      contract: { class: "session_notification", capabilityPath: ["coreRuntime", "canInitialize"] },
+      capabilityPath: ["coreRuntime", "canInitialize"],
+    };
+  }
+  return {
+    ok: true,
+    reason: "capability_declared",
+    contract: { class: "session_notification", capabilityPath: ["coreRuntime", "canInitialize"] },
+    capabilityPath: ["coreRuntime", "canInitialize"],
+  };
 }
 
 function publicAuthorityCatalog() {
@@ -173,6 +255,7 @@ function publicAuthorityCatalog() {
     codexSurfaceTrustProfiles: CODEX_SURFACE_TRUST_PROFILES,
     codexSurfaceBridgeProfiles: CODEX_SURFACE_BRIDGE_PROFILES,
     codexClientRequestMethods: CODEX_CLIENT_REQUEST_METHODS,
+    codexClientRequestContracts: CODEX_CLIENT_REQUEST_CONTRACTS,
     codexClientNotificationMethods: CODEX_CLIENT_NOTIFICATION_METHODS,
     ipcChannelContracts: IPC_CHANNEL_CONTRACTS,
   };
@@ -183,6 +266,7 @@ module.exports = {
   CODEX_SURFACE_TRUST_PROFILES,
   CODEX_SURFACE_BRIDGE_PROFILES,
   CODEX_CLIENT_REQUEST_METHODS,
+  CODEX_CLIENT_REQUEST_CONTRACTS,
   CODEX_CLIENT_NOTIFICATION_METHODS,
   IPC_CHANNEL_CONTRACTS,
   normalizeSurfaceRole,
@@ -192,6 +276,9 @@ module.exports = {
   bridgeProfileForTrustProfile,
   codexSurfaceAuthorityForTarget,
   hasFullCodexBridge,
+  codexClientRequestContract,
+  codexClientRequestDecision,
+  codexClientNotificationDecision,
   isAllowedCodexClientRequestMethod,
   isAllowedCodexClientNotificationMethod,
   publicAuthorityCatalog,

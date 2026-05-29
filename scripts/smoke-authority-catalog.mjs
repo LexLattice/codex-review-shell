@@ -7,6 +7,8 @@ const {
   CODEX_SURFACE_TRUST_PROFILES,
   SURFACE_ROLES,
   bridgeProfileForTrustProfile,
+  codexClientNotificationDecision,
+  codexClientRequestDecision,
   codexSurfaceAuthorityForTarget,
   hasFullCodexBridge,
   isAllowedCodexClientNotificationMethod,
@@ -14,6 +16,10 @@ const {
   publicAuthorityCatalog,
   trustProfileForCodexTarget,
 } = require("../src/main/authority-catalog.js");
+const {
+  createCodexSurfaceConnectionAuthority,
+  validateCodexSurfaceConnectionRequest,
+} = require("../src/main/codex-surface-connection-authority.js");
 
 const catalog = publicAuthorityCatalog();
 
@@ -62,5 +68,74 @@ assert.equal(isAllowedCodexClientRequestMethod("thread/rollback"), true);
 assert.equal(isAllowedCodexClientRequestMethod("thread/delete"), false);
 assert.equal(isAllowedCodexClientNotificationMethod("initialized"), true);
 assert.equal(isAllowedCodexClientNotificationMethod("turn/completed"), false);
+
+const readyCapabilities = {
+  coreRuntime: { canInitialize: true },
+  account: { canRead: true, canStartLogin: true },
+  configRequirements: { canRead: true },
+  usage: { canReadRateLimits: true },
+  model: { canList: true },
+  threads: { canStart: true, canResume: true, canRead: true, canRollback: true },
+  turns: { canStart: true, canSteer: true, canInterrupt: true },
+};
+assert.equal(codexClientRequestDecision("turn/start", readyCapabilities).ok, true);
+assert.equal(codexClientRequestDecision("account/rateLimits/read", readyCapabilities).ok, true);
+assert.equal(codexClientRequestDecision("turn/start", { coreRuntime: { canInitialize: true } }).ok, false);
+assert.equal(codexClientRequestDecision("thread/delete", readyCapabilities).reason, "method_not_allowlisted");
+assert.equal(codexClientNotificationDecision("initialized", readyCapabilities).ok, true);
+assert.equal(codexClientNotificationDecision("initialized", {}).reason, "capability_not_declared");
+
+const connectionAuthority = createCodexSurfaceConnectionAuthority(
+  { id: "project_1", surfaceBinding: { codex: { remoteAuth: { mode: "bearer-token-file", tokenFilePath: "/tmp/token" } } } },
+  {
+    wsUrl: "ws://127.0.0.1:1234",
+    readyUrl: "http://127.0.0.1:1234/readyz",
+    runtime: "wsl",
+    workspaceRoot: "/home/rose/work/private/repo",
+    binaryPath: "C:\\Users\\Rose\\bin\\codex.exe",
+    capabilities: {
+      diagnostics: {
+        runtime: "wsl",
+        binaryPath: "/home/rose/bin/codex",
+        codexHome: "/home/rose/.codex",
+        readyUrl: "http://127.0.0.1:1234/readyz",
+      },
+    },
+  },
+  { activationEpoch: 7, connectionRef: "conn_1" },
+);
+assert.equal(connectionAuthority.publicConnection.connectionRef, "conn_1");
+assert.equal(connectionAuthority.publicConnection.available, true);
+assert.equal(connectionAuthority.publicConnection.binaryLabel, "codex.exe");
+assert.equal(connectionAuthority.publicConnection.wsUrl, undefined);
+assert.equal(connectionAuthority.publicConnection.readyUrl, undefined);
+assert.equal(connectionAuthority.publicConnection.remoteAuth, undefined);
+assert.equal(connectionAuthority.publicConnection.capabilities.diagnostics.binaryPath, undefined);
+assert.equal(
+  validateCodexSurfaceConnectionRequest(connectionAuthority.privateConnection, {
+    connectionRef: "conn_1",
+    activationEpoch: 7,
+  }).wsUrl,
+  "ws://127.0.0.1:1234",
+);
+assert.throws(
+  () => validateCodexSurfaceConnectionRequest(connectionAuthority.privateConnection, {
+    connectionRef: "conn_1",
+    wsUrl: "ws://127.0.0.1:9999",
+    activationEpoch: 7,
+  }),
+  /authority-bearing/,
+);
+assert.throws(
+  () => validateCodexSurfaceConnectionRequest(connectionAuthority.privateConnection, null),
+  /stale or invalid/,
+);
+const unavailableConnection = createCodexSurfaceConnectionAuthority(
+  { id: "project_2", surfaceBinding: { codex: {} } },
+  { runtime: "direct_oai", wsUrl: "", capabilities: {} },
+  { connectionRef: "conn_unavailable" },
+);
+assert.equal(unavailableConnection.publicConnection.connectionRef, "conn_unavailable");
+assert.equal(unavailableConnection.publicConnection.available, false);
 
 console.log("authority-catalog:smoke passed");
