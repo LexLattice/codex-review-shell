@@ -1,10 +1,12 @@
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "..");
+const require = createRequire(import.meta.url);
 const fixturePath = path.join(repoRoot, "fixtures", "typed-markdown-brl", "cases.json");
 const fixture = JSON.parse(fs.readFileSync(fixturePath, "utf8"));
 
@@ -100,6 +102,8 @@ const documentStub = {
   createElement: (tagName) => new TestNode(tagName),
   createTextNode: (text) => new TestNode("#text", text),
 };
+globalThis.document = documentStub;
+const sharedProjection = require(path.join(repoRoot, "src", "renderer", "typed-markdown-projection.js"));
 
 function walk(node, visit) {
   visit(node);
@@ -135,6 +139,7 @@ function rendererSlice(sourcePath, startMarker, endMarker, exportNames, sandboxE
     console,
     URL,
     document: documentStub,
+    window: { CodexTypedMarkdownProjection: sharedProjection },
     setTimeout: () => 0,
     navigator: { clipboard: { writeText: async () => undefined } },
     ...sandboxExtras,
@@ -211,6 +216,14 @@ function assertTypedTokenBehavior(label, surface) {
 
 assertTypedTokenBehavior("codex final renderer", codexSurface);
 assertTypedTokenBehavior("middle/sub-agent renderer", appSurface);
+
+const nullContextContainer = documentStub.createElement("div");
+sharedProjection.renderTypedContent(nullContextContainer, "`implementation_src` and https://example.com", null);
+sharedProjection.renderAssistantMarkdown(nullContextContainer, fixture.middleFileMarkdown, null);
+sharedProjection.tokenizeTypedContent(fixture.codexFinalMessage, null);
+sharedProjection.extractFileRefsFromText(fixture.codexFinalMessage, null);
+codexSurface.tokenizeTypedContent(fixture.codexFinalMessage, null);
+appSurface.tokenizeTypedContent(fixture.codexFinalMessage, null);
 
 const codexContainer = documentStub.createElement("div");
 codexSurface.renderFinalAssistantContent(codexContainer, fixture.codexFinalMessage, renderContext);
