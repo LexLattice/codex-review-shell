@@ -1379,6 +1379,31 @@ function splitLineRef(value) {
   };
 }
 
+function fileFallbackForToken(value, context = {}) {
+  const lineRef = splitLineRef(value);
+  const relPath = relativePathWithinRoot(lineRef.path);
+  const candidates = Array.isArray(context.fileEvidenceRefs) ? context.fileEvidenceRefs : [];
+  const normalizedPrimary = normalizeSlashes(relPath || lineRef.path || "").replace(/^\.\/+/, "");
+  if (!normalizedPrimary || isBareVersionToken(normalizedPrimary)) return null;
+  if (!normalizedPrimary.includes("/") && !/^[^./][^/]*\.[A-Za-z0-9]{1,12}$/.test(normalizedPrimary)) return null;
+  const matches = [];
+  const seen = new Set();
+  for (const candidate of candidates) {
+    const candidatePath = normalizeSlashes(candidate?.path || "").replace(/^\.\/+/, "");
+    if (!candidatePath || candidatePath === normalizedPrimary || seen.has(candidatePath)) continue;
+    if (candidatePath.endsWith(`/${normalizedPrimary}`)) {
+      matches.push(candidatePath);
+      seen.add(candidatePath);
+    }
+  }
+  if (matches.length !== 1) return null;
+  return {
+    path: matches[0],
+    line: lineRef.line,
+    column: lineRef.column,
+  };
+}
+
 function normalizeFileAliasToken(value) {
   return stripTokenPunctuation(value).trim().toLowerCase();
 }
@@ -1475,12 +1500,25 @@ function tokenizeTypedContent(text, context = {}) {
     const lineRef = splitLineRef(raw);
     const relPath = relativePathWithinRoot(lineRef.path);
     if (relPath && !isBareVersionToken(raw)) {
+      const fallbackRef = fileFallbackForToken(raw, context);
       addTokenCandidate(candidates, match.index, match.index + match[0].length, {
         type: lineRef.line ? "line_ref" : "file_path",
         text: match[0],
         path: relPath,
         line: lineRef.line,
         column: lineRef.column,
+        fallbackPath: fallbackRef?.path || "",
+      });
+      continue;
+    }
+    const fallbackRef = fileFallbackForToken(raw, context);
+    if (fallbackRef) {
+      addTokenCandidate(candidates, match.index, match.index + match[0].length, {
+        type: fallbackRef.line ? "line_ref" : "file_path",
+        text: match[0],
+        path: fallbackRef.path,
+        line: fallbackRef.line,
+        column: fallbackRef.column,
       });
       continue;
     }
@@ -1508,17 +1546,30 @@ function tokenizeTypedContent(text, context = {}) {
     const lineRef = splitLineRef(raw);
     const relPath = relativePathWithinRoot(lineRef.path);
     if (!relPath) {
+      const fallbackRef = fileFallbackForToken(raw, context);
+      if (fallbackRef) {
+        addTokenCandidate(candidates, match.index, match.index + raw.length, {
+          type: fallbackRef.line ? "line_ref" : "file_path",
+          text: raw,
+          path: fallbackRef.path,
+          line: fallbackRef.line,
+          column: fallbackRef.column,
+        });
+        continue;
+      }
       if (shouldRenderAmbiguousPathSymbol(raw)) {
         addTokenCandidate(candidates, match.index, match.index + raw.length, { type: "symbol", text: raw, value: raw });
       }
       continue;
     }
+    const fallbackRef = fileFallbackForToken(raw, context);
     addTokenCandidate(candidates, match.index, match.index + raw.length, {
       type: lineRef.line ? "line_ref" : "file_path",
       text: raw,
       path: relPath,
       line: lineRef.line,
       column: lineRef.column,
+      fallbackPath: fallbackRef?.path || "",
     });
   }
 
@@ -1560,12 +1611,13 @@ async function openSubAgentTypedUrl(url, context = {}) {
   if (!result?.ok) setLastEvent(`URL open blocked: ${result?.error || "unknown error"}`);
 }
 
-async function revealSubAgentTypedFile(relPath) {
+async function revealSubAgentTypedFile(relPath, options = {}) {
   const project = activeProject();
   if (!project?.id) {
     setLastEvent("Project file opening is unavailable.");
     return;
   }
+  const fallbackPath = String(options?.fallbackPath || "").trim();
   try {
     if (bridge?.openProjectFile) {
       const result = await bridge.openProjectFile(project.id, relPath, {
@@ -1573,6 +1625,16 @@ async function revealSubAgentTypedFile(relPath) {
         threadId: state.subAgentGraph?.primaryThreadId || state.openedCodexThreadId || "",
         threadTitle: state.openedCodexThreadTitle || "",
       });
+      if (!result?.ok && fallbackPath && /ENOENT|no such file|not found|cannot find/i.test(String(result?.error || ""))) {
+        const fallbackResult = await bridge.openProjectFile(project.id, fallbackPath, {
+          sourceSurface: "codex",
+          threadId: state.subAgentGraph?.primaryThreadId || state.openedCodexThreadId || "",
+          threadTitle: state.openedCodexThreadTitle || "",
+          sourceKind: "project_file",
+        });
+        if (!fallbackResult?.ok) setLastEvent(`File open failed: ${fallbackResult?.error || result?.error || "unknown error"}`);
+        return;
+      }
       if (!result?.ok) setLastEvent(`File open failed: ${result?.error || "unknown error"}`);
       return;
     }
@@ -1583,7 +1645,18 @@ async function revealSubAgentTypedFile(relPath) {
     const result = await bridge.revealProjectFile(project.id, relPath);
     if (!result?.opened && result?.method) setLastEvent(`File path copied: ${result.absolutePath || relPath}`);
   } catch (error) {
-    setLastEvent(`File open failed: ${error.message}`);
+    if (bridge?.openProjectFile && fallbackPath && /ENOENT|no such file|not found|cannot find/i.test(String(error?.message || error || ""))) {
+      try {
+        const fallbackResult = await bridge.openProjectFile(project.id, fallbackPath, {
+          sourceSurface: "codex",
+          threadId: state.subAgentGraph?.primaryThreadId || state.openedCodexThreadId || "",
+          threadTitle: state.openedCodexThreadTitle || "",
+          sourceKind: "project_file",
+        });
+        if (fallbackResult?.ok) return;
+      } catch {}
+    }
+    setLastEvent(`File open failed: ${errorMessageText(error)}`);
   }
 }
 
@@ -1611,7 +1684,7 @@ function renderTypedContent(container, text, context = {}) {
       button.className = `typed-token ${token.type === "line_ref" ? "typed-token-line-ref" : "typed-token-file"}`;
       button.textContent = token.text;
       button.title = token.line ? `Open ${token.path}:${token.line} in Files` : `Open ${token.path} in Files`;
-      button.addEventListener("click", () => revealSubAgentTypedFile(token.path));
+      button.addEventListener("click", () => revealSubAgentTypedFile(token.path, { fallbackPath: token.fallbackPath || "" }));
       container.appendChild(button);
       continue;
     }
@@ -1655,7 +1728,7 @@ function appendFileToken(parent, label, fileRef) {
   button.className = `typed-token ${fileRef.line ? "typed-token-line-ref" : "typed-token-file"} assistant-md-link`;
   button.textContent = label || fileRef.path;
   button.title = fileRef.line ? `Open ${fileRef.path}:${fileRef.line} in Files` : `Open ${fileRef.path} in Files`;
-  button.addEventListener("click", () => revealSubAgentTypedFile(fileRef.path));
+  button.addEventListener("click", () => revealSubAgentTypedFile(fileRef.path, { fallbackPath: fileRef.fallbackPath || "" }));
   parent.appendChild(button);
 }
 
@@ -1685,7 +1758,14 @@ function appendInlineCode(parent, raw, context = {}) {
     if (isBareVersionToken(source)) return null;
     const lineRef = splitLineRef(source);
     const relPath = relativePathWithinRoot(lineRef.path);
-    return relPath ? { path: relPath, line: lineRef.line, column: lineRef.column } : null;
+    if (!relPath) return fileFallbackForToken(source, context);
+    const fallbackRef = fileFallbackForToken(source, context);
+    return {
+      path: relPath,
+      line: lineRef.line,
+      column: lineRef.column,
+      fallbackPath: fallbackRef?.path || "",
+    };
   })();
   if (fileRef) {
     appendFileToken(code, source, fileRef);

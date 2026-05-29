@@ -1,0 +1,15 @@
+{
+  "schema": "typed_markdown_brl_fixture@1",
+  "workspaceRoot": "/workspace",
+  "fileEvidenceRefs": [
+    {
+      "path": "docs/support/general_program_ontology_derived_v1_1.md"
+    },
+    {
+      "path": "artifacts/manual_runs/programbench_revive_v47_otb_hob_phase0_20260528T010131+0300/phase_outputs/p63_struct_tag_extended_tail_closeout.md"
+    }
+  ],
+  "codexFinalMessage": "Created v1.1 here:\n\ngeneral_program_ontology_derived_v1_1.md\n\nThe implementation will use `implementation_src`, `x/net/html`, and `cascadia`.\nShort refs: phase_outputs/p63_struct_tag_extended_tail_closeout.md\nUnsafe link: [bad](javascript:alert(1))\n",
+  "middleFileMarkdown": "After that, move to:\n\n    SOURCE_RULE_CATALOG_TAIL_BATCH\n\nwith batches by implementation technique:\n\n    name/import/simple AST rules\n    control-flow rules\n    typechecker-dependent rules\n\n| Group | Probe Needed |\n| --- | --- |\n| XDG/HOME config discovery | Probe actual paths and precedence |\n\nAlso add a transition guard:\n\n    No implementation handoff may call a catalog parent gold-ready while child items are only representative-ready.\n",
+  "subAgentChildMessage": "Sub-agent closeout:\n\n```text\nSTOP_STATUS: reconstruction_complete_no_code\n```\n\n| Artifact | Status |\n| --- | --- |\n| phase_outputs/p63_struct_tag_extended_tail_closeout.md | ready |\n"
+}
