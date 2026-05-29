@@ -169,12 +169,20 @@ function buildRuntimeCapabilityProfile(session) {
       transports: ["websocket"],
       schemaSource: "unknown",
     },
+    account: {
+      canRead: ready,
+      canStartLogin: ready,
+    },
+    configRequirements: {
+      canRead: ready,
+    },
     threads: {
       canStart: ready,
       canRead: ready,
       canResume: ready,
       canList: ready,
       canFork: ready,
+      canRollback: ready,
       canPersistExtendedHistory: true,
     },
     turns: {
