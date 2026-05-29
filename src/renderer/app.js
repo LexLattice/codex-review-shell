@@ -226,6 +226,7 @@ const els = {
   watchedRulesPreview: document.getElementById("watchedRulesPreview"),
   returnHeaderPreview: document.getElementById("returnHeaderPreview"),
   refreshCodexThreadsButton: document.getElementById("refreshCodexThreadsButton"),
+  refreshCodexThreadListButton: document.getElementById("refreshCodexThreadListButton"),
   refreshRecentChatThreadsButton: document.getElementById("refreshRecentChatThreadsButton"),
   bindingLaneInput: document.getElementById("bindingLaneInput"),
   bindingLabelInput: document.getElementById("bindingLabelInput"),
@@ -1751,11 +1752,126 @@ function createMarkdownLineBlock(tagName, className, text, context = {}) {
   return block;
 }
 
-function isMarkdownBlockStart(line) {
+function createMarkdownCodeBlock(codeLines, language = "") {
+  const block = document.createElement("div");
+  block.className = "assistant-md-codeblock";
+  const normalizedLanguage = String(language || "").trim();
+  if (normalizedLanguage && normalizedLanguage.toLowerCase() !== "text") {
+    const caption = document.createElement("div");
+    caption.className = "assistant-md-codeblock-label";
+    caption.textContent = normalizedLanguage;
+    block.appendChild(caption);
+  }
+  const body = document.createElement("div");
+  body.className = "assistant-md-codeblock-body";
+  body.textContent = codeLines.join("\n");
+  block.appendChild(body);
+  return block;
+}
+
+function markdownFenceStart(line) {
+  const trimmed = String(line || "").trim();
+  const match = trimmed.match(/^(```|~~~)\s*([A-Za-z0-9_-]+)?(?:\s+.*)?$/);
+  if (!match) return null;
+  return {
+    marker: match[1],
+    language: match[2] || "",
+  };
+}
+
+function markdownFenceClose(line, marker) {
+  const trimmed = String(line || "").trim();
+  return trimmed === marker;
+}
+
+function isIndentedMarkdownCodeLine(line) {
+  return /^( {4}|\t)/.test(String(line || ""));
+}
+
+function stripIndentedMarkdownCodeLine(line) {
+  const source = String(line || "");
+  return source.startsWith("\t") ? source.slice(1) : source.replace(/^ {4}/, "");
+}
+
+function splitMarkdownTableRow(line) {
+  let source = String(line || "").trim();
+  if (!source.includes("|")) return null;
+  if (source.startsWith("|")) source = source.slice(1);
+  if (source.endsWith("|")) source = source.slice(0, -1);
+  const cells = [];
+  let current = "";
+  let escaped = false;
+  for (const char of source) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === "|") {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  cells.push(current.trim());
+  return cells.length >= 2 ? cells : null;
+}
+
+function isMarkdownTableDivider(line) {
+  const cells = splitMarkdownTableRow(line);
+  return Boolean(cells?.length) && cells.every((cell) => /^:?-{3,}:?$/.test(cell.trim()));
+}
+
+function markdownTableStart(lines, index) {
+  if (!Array.isArray(lines) || index < 0 || index + 1 >= lines.length) return null;
+  const header = splitMarkdownTableRow(lines[index]);
+  if (!header || !isMarkdownTableDivider(lines[index + 1])) return null;
+  return { header };
+}
+
+function appendMarkdownTable(container, tableLines, context = {}) {
+  const header = splitMarkdownTableRow(tableLines[0]) || [];
+  const bodyRows = tableLines.slice(2).map(splitMarkdownTableRow).filter(Boolean);
+  const wrapper = document.createElement("div");
+  wrapper.className = "assistant-md-table-wrap";
+  const table = document.createElement("table");
+  table.className = "assistant-md-table";
+  const thead = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  for (const cellText of header) {
+    const cell = document.createElement("th");
+    appendInlineMarkdown(cell, cellText, context);
+    headRow.appendChild(cell);
+  }
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+  const tbody = document.createElement("tbody");
+  for (const rowCells of bodyRows) {
+    const row = document.createElement("tr");
+    for (let cellIndex = 0; cellIndex < header.length; cellIndex += 1) {
+      const cell = document.createElement("td");
+      appendInlineMarkdown(cell, rowCells[cellIndex] || "", context);
+      row.appendChild(cell);
+    }
+    tbody.appendChild(row);
+  }
+  table.appendChild(tbody);
+  wrapper.appendChild(table);
+  container.appendChild(wrapper);
+}
+
+function isMarkdownBlockStart(line, lines = null, index = -1) {
   const trimmed = String(line || "").trim();
   return Boolean(
     !trimmed ||
-    /^```/.test(trimmed) ||
+    markdownFenceStart(line) ||
+    isIndentedMarkdownCodeLine(line) ||
+    markdownTableStart(lines, index) ||
     /^#{1,4}\s+/.test(trimmed) ||
     /^>\s?/.test(trimmed) ||
     /^---+$/.test(trimmed) ||
@@ -1810,27 +1926,47 @@ function renderSubAgentAssistantMarkdown(container, text, context = {}) {
       continue;
     }
 
-    const fence = trimmed.match(/^```([A-Za-z0-9_-]+)?\s*$/);
+    const fence = markdownFenceStart(line);
     if (fence) {
-      const language = fence[1] || "";
       const codeLines = [];
       index += 1;
-      while (index < lines.length && !lines[index].trim().startsWith("```")) {
+      while (index < lines.length && !markdownFenceClose(lines[index], fence.marker)) {
         codeLines.push(lines[index]);
         index += 1;
       }
       if (index < lines.length) index += 1;
-      const block = document.createElement("figure");
-      block.className = "assistant-md-codeblock";
-      if (language) {
-        const caption = document.createElement("figcaption");
-        caption.textContent = language;
-        block.appendChild(caption);
+      container.appendChild(createMarkdownCodeBlock(codeLines, fence.language));
+      continue;
+    }
+
+    if (isIndentedMarkdownCodeLine(line)) {
+      const codeLines = [];
+      while (index < lines.length) {
+        const nextLine = lines[index];
+        if (isIndentedMarkdownCodeLine(nextLine)) {
+          codeLines.push(stripIndentedMarkdownCodeLine(nextLine));
+          index += 1;
+          continue;
+        }
+        if (!nextLine.trim() && codeLines.length) {
+          codeLines.push("");
+          index += 1;
+          continue;
+        }
+        break;
       }
-      const pre = document.createElement("pre");
-      pre.textContent = codeLines.join("\n");
-      block.appendChild(pre);
-      container.appendChild(block);
+      container.appendChild(createMarkdownCodeBlock(codeLines));
+      continue;
+    }
+
+    if (markdownTableStart(lines, index)) {
+      const tableLines = [lines[index], lines[index + 1]];
+      index += 2;
+      while (index < lines.length && splitMarkdownTableRow(lines[index])) {
+        tableLines.push(lines[index]);
+        index += 1;
+      }
+      appendMarkdownTable(container, tableLines, renderContext);
       continue;
     }
 
@@ -1904,12 +2040,17 @@ function renderSubAgentAssistantMarkdown(container, text, context = {}) {
 
     const paragraphLines = [line];
     index += 1;
-    while (index < lines.length && !isMarkdownBlockStart(lines[index])) {
+    while (index < lines.length && !isMarkdownBlockStart(lines[index], lines, index)) {
       paragraphLines.push(lines[index]);
       index += 1;
     }
     container.appendChild(createMarkdownLineBlock("p", "assistant-md-paragraph", paragraphLines.join("\n"), renderContext));
   }
+}
+
+function renderMiddleFileMarkdown(container, text, context = {}) {
+  renderSubAgentAssistantMarkdown(container, text, context);
+  container.classList.add("middle-file-markdown");
 }
 
 function renderSubAgentMessageBody(container, message, context = {}) {
@@ -2185,6 +2326,23 @@ function formatTime(value) {
   } catch {
     return String(value);
   }
+}
+
+function codexThreadUpdatedSummary(thread = {}) {
+  if (!thread.updatedAt) return { text: "No timestamp", title: "No Codex thread activity timestamp was available." };
+  const sourceLabels = {
+    session_file: "session file",
+    session_index: "index",
+    session_created: "created",
+  };
+  const source = sourceLabels[thread.updatedAtSource] || "thread evidence";
+  const titleParts = [`Activity: ${thread.updatedAt}`, `Source: ${source}`];
+  if (thread.indexUpdatedAt && thread.indexUpdatedAt !== thread.updatedAt) titleParts.push(`Index: ${thread.indexUpdatedAt}`);
+  if (thread.sessionFileMtime && thread.sessionFileMtime !== thread.updatedAt) titleParts.push(`Session file: ${thread.sessionFileMtime}`);
+  return {
+    text: `Updated ${formatTime(thread.updatedAt)} · ${source}`,
+    title: titleParts.join("\n"),
+  };
 }
 
 function formatDurationMs(value) {
@@ -2831,7 +2989,7 @@ function renderMiddleFileTab() {
 
   const text = String(file.text || "");
   if (middleFileLooksMarkdown(file)) {
-    renderSubAgentAssistantMarkdown(els.middleFileContent, text, {
+    renderMiddleFileMarkdown(els.middleFileContent, text, {
       threadTitle: file.displayName || file.relPath || "File viewer",
     });
     return;
@@ -3094,7 +3252,9 @@ function renderCodexThreadBrowser() {
     row.querySelector(".role-badge").textContent = thread.originator || "Codex";
     row.querySelector("strong").textContent = thread.title || "Untitled Codex thread";
     row.querySelector(".thread-meta").textContent = shortPath(thread.cwd || "");
-    row.querySelector(".thread-notes").textContent = thread.updatedAt ? `Updated ${formatTime(thread.updatedAt)}` : "No timestamp";
+    const updated = codexThreadUpdatedSummary(thread);
+    row.querySelector(".thread-notes").textContent = updated.text;
+    row.querySelector(".thread-notes").title = updated.title;
     row.addEventListener("click", () => {
       selectCodexThread(thread.threadId, thread.sourceHome || "", thread.sessionFilePath || "").catch((error) => {
         setLastEvent(`Codex thread open failed: ${error.message}`);
@@ -5268,7 +5428,13 @@ function bindEvents() {
     const selected = threadById(project, state.selectedProjectChatThreadId);
     openThreadDrawer(selected ? "edit" : "new", selected?.id || "");
   });
-  els.refreshCodexThreadsButton.addEventListener("click", loadCodexThreads);
+  const refreshCodexThreadList = () => {
+    loadCodexThreads().catch((error) => {
+      setLastEvent(`Codex thread refresh failed: ${error.message}`);
+    });
+  };
+  els.refreshCodexThreadsButton.addEventListener("click", refreshCodexThreadList);
+  els.refreshCodexThreadListButton?.addEventListener("click", refreshCodexThreadList);
   els.refreshRecentChatThreadsButton.addEventListener("click", () => {
     loadChatgptRecentThreads({ refresh: true }).catch((error) => {
       setLastEvent(`ChatGPT recent-thread refresh failed: ${error.message}`);

@@ -18,6 +18,11 @@ type nul > "%LAUNCHER_STDERR%"
 
 cd /d "%ROOT_DIR%"
 
+echo Launch started %DATE% %TIME% >> "%LAUNCHER_STDOUT%"
+echo Root: %ROOT_DIR% >> "%LAUNCHER_STDOUT%"
+echo WSL distro: %CODEX_REVIEW_SHELL_DEFAULT_WSL_DISTRO% >> "%LAUNCHER_STDOUT%"
+echo WSL path: %CODEX_REVIEW_SHELL_DEFAULT_WSL_PATH% >> "%LAUNCHER_STDOUT%"
+
 call "%POWERSHELL%" -NoProfile -Command ^
   "$targets = Get-CimInstance Win32_Process | Where-Object { " ^
   "($_.Name -eq 'node.exe' -and $_.CommandLine -like '*scripts\\run-electron.mjs*' -and $_.CommandLine -like '*codex-review-shell*') -or " ^
@@ -31,5 +36,12 @@ echo Existing WSL Codex app-server processes before launch: >> "%LAUNCHER_STDOUT
 
 call "%ROOT_DIR%\sync-from-wsl.cmd" >> "%LAUNCHER_STDOUT%" 2>> "%LAUNCHER_STDERR%"
 if errorlevel 1 exit /b %ERRORLEVEL%
+
+if exist "%ROOT_DIR%\src\renderer\app.js" (
+  for %%F in ("%ROOT_DIR%\src\renderer\app.js") do echo Renderer app.js: %%~zF bytes, modified %%~tF >> "%LAUNCHER_STDOUT%"
+)
+if exist "%ROOT_DIR%\src\renderer\styles.css" (
+  for %%F in ("%ROOT_DIR%\src\renderer\styles.css") do echo Renderer styles.css: %%~zF bytes, modified %%~tF >> "%LAUNCHER_STDOUT%"
+)
 
 call node scripts\run-electron.mjs . >> "%LAUNCHER_STDOUT%" 2>> "%LAUNCHER_STDERR%"

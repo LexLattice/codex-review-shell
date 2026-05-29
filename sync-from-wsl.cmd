@@ -39,6 +39,11 @@ set "WSL_HEAD=unknown"
 for /f %%H in ('wsl.exe -d "%WSL_DISTRO%" bash -lc "cd '%WSL_PATH%' && git rev-parse --short=12 HEAD" 2^>nul') do (
   set "WSL_HEAD=%%H"
 )
+echo %WSL_HEAD%| findstr /R /I "^[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]$" >nul
+if errorlevel 1 (
+  >&2 echo Unable to verify WSL git HEAD via wsl.exe; using unknown sync stamp.
+  set "WSL_HEAD=unknown"
+)
 exit /b 0
 
 :mirror_repo
