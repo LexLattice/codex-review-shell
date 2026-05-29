@@ -21,6 +21,18 @@ const { WorkspaceBackendManager, workspaceLabel, workspaceRoot } = require("./ma
 const { ThreadAnalyticsStore, buildThreadKey } = require("./main/thread-analytics-store");
 const { UsageLedgerCollector } = require("./main/usage-ledger-collector");
 const {
+  CODEX_SURFACE_BRIDGE_PROFILES,
+  CODEX_SURFACE_TRUST_PROFILES,
+  SURFACE_ROLES,
+  codexSurfaceAuthorityForTarget,
+  hasFullCodexBridge,
+  isAllowedCodexClientNotificationMethod,
+  isAllowedCodexClientRequestMethod,
+  normalizeCodexBridgeProfile,
+  normalizeCodexTrustProfile,
+  normalizeSurfaceRole,
+} = require("./main/authority-catalog");
+const {
   stagePaths: stageAttachmentPaths,
   stageClipboardImage,
   removeDraft: removeAttachmentDraft,
@@ -127,6 +139,9 @@ let chatgptDownloadHandler = null;
 let pendingChatgptDownloadMacroRequests = [];
 let activeChatgptContext = null;
 let surfaceActivationEpoch = 0;
+const webContentsAuthorityProfiles = new Map();
+const webContentsAuthorityCleanupRegistered = new Set();
+const CODEX_SURFACE_SENSITIVE_RESPONSE_RISKS = new Set(["command", "file-change", "network", "permission"]);
 const nativePlaneZoomFactors = {
   codex: PLANE_ZOOM_DEFAULT,
   chatgpt: PLANE_ZOOM_DEFAULT,
@@ -1613,12 +1628,163 @@ function ensureCodexSurfaceSessions() {
   return codexSurfaceSessions;
 }
 
+function normalizedWebContentsAuthority(profile = {}) {
+  return {
+    surfaceRole: normalizeSurfaceRole(profile.surfaceRole),
+    codexTrustProfile: normalizeCodexTrustProfile(profile.codexTrustProfile),
+    codexBridgeProfile: normalizeCodexBridgeProfile(profile.codexBridgeProfile),
+    surfaceName: normalizeString(profile.surfaceName, ""),
+    projectId: normalizeString(profile.projectId, ""),
+    targetUrl: normalizeString(profile.targetUrl, ""),
+    reason: normalizeString(profile.reason, ""),
+    updatedAt: nowIso(),
+  };
+}
+
+function registerWebContentsAuthority(view, profile = {}) {
+  const contents = view?.webContents || view;
+  if (!contents || contents.isDestroyed()) return null;
+  const authority = normalizedWebContentsAuthority(profile);
+  webContentsAuthorityProfiles.set(contents.id, authority);
+  if (!webContentsAuthorityCleanupRegistered.has(contents.id)) {
+    webContentsAuthorityCleanupRegistered.add(contents.id);
+    contents.once("destroyed", () => {
+      webContentsAuthorityProfiles.delete(contents.id);
+      webContentsAuthorityCleanupRegistered.delete(contents.id);
+    });
+    contents.on("did-start-navigation", (_event, url, isInPlace, isMainFrame) => {
+      if (!isMainFrame || isInPlace) return;
+      const current = webContentsAuthorityProfiles.get(contents.id);
+      if (current?.surfaceName !== "codex" || !hasFullCodexBridge(current)) return;
+      if (urlsShareCodexSurfaceDocument(url, current.targetUrl)) return;
+      demoteCodexSurfaceAuthorityForNavigation(contents, url, "main-frame-navigation-demotion");
+    });
+  }
+  return authority;
+}
+
+function updateWebContentsAuthority(view, profile = {}) {
+  const contents = view?.webContents || view;
+  if (!contents || contents.isDestroyed()) return null;
+  const previous = webContentsAuthorityProfiles.get(contents.id) || {};
+  return registerWebContentsAuthority(contents, { ...previous, ...profile });
+}
+
+function senderAuthority(sender) {
+  if (!sender || sender.isDestroyed?.()) {
+    return normalizedWebContentsAuthority({ surfaceRole: SURFACE_ROLES.UNKNOWN });
+  }
+  return webContentsAuthorityProfiles.get(sender.id) ||
+    normalizedWebContentsAuthority({ surfaceRole: SURFACE_ROLES.UNKNOWN });
+}
+
+function urlsShareCodexSurfaceDocument(left, right) {
+  try {
+    const leftUrl = new URL(String(left || ""));
+    const rightUrl = new URL(String(right || ""));
+    return leftUrl.href === rightUrl.href ||
+      (
+        leftUrl.origin === rightUrl.origin &&
+        leftUrl.pathname === rightUrl.pathname &&
+        leftUrl.pathname.endsWith("/codex-surface.html")
+      );
+  } catch {
+    return false;
+  }
+}
+
+function codexCurrentUrlMatchesAuthority(authority, currentUrl) {
+  if (!hasFullCodexBridge(authority)) return false;
+  if (
+    authority.codexTrustProfile !== CODEX_SURFACE_TRUST_PROFILES.MANAGED_LOCAL_SURFACE &&
+    authority.codexTrustProfile !== CODEX_SURFACE_TRUST_PROFILES.FALLBACK_LOCAL_SURFACE
+  ) {
+    return false;
+  }
+  return urlsShareCodexSurfaceDocument(currentUrl, authority.targetUrl);
+}
+
+function demoteCodexSurfaceAuthorityForNavigation(contents, targetUrl, reason = "navigation-demotion") {
+  const current = webContentsAuthorityProfiles.get(contents.id) || {};
+  updateWebContentsAuthority(contents, {
+    ...codexSurfaceAuthorityForTarget(targetUrl),
+    surfaceName: "codex",
+    projectId: current.projectId || "",
+    targetUrl,
+    reason,
+  });
+  if (codexSurfaceSessions?.has(contents.id)) {
+    const session = codexSurfaceSessions.get(contents.id);
+    codexSurfaceSessions.delete(contents.id);
+    session?.dispose?.({ silent: true, reason: "Codex surface authority demoted." }).catch(() => {});
+  }
+  activeCodexSurfaceConnection = null;
+}
+
+function requireSenderRole(sender, allowedRoles, channel) {
+  const authority = senderAuthority(sender);
+  if (!allowedRoles.includes(authority.surfaceRole)) {
+    throw new Error(`${channel} is not available from ${authority.surfaceRole || SURFACE_ROLES.UNKNOWN}.`);
+  }
+  return authority;
+}
+
+function requireFullCodexSurfaceBridge(sender, channel) {
+  const authority = requireSenderRole(sender, [SURFACE_ROLES.TRUSTED_CODEX_SURFACE], channel);
+  if (!hasFullCodexBridge(authority)) {
+    throw new Error(`${channel} requires a trusted managed Codex surface bridge.`);
+  }
+  const currentUrl = normalizeString(sender?.getURL?.(), "");
+  if (!codexCurrentUrlMatchesAuthority(authority, currentUrl)) {
+    throw new Error(`${channel} requires the active trusted Codex surface document.`);
+  }
+  return authority;
+}
+
+function requireShellOrTrustedCodex(sender, channel) {
+  const authority = requireSenderRole(sender, [SURFACE_ROLES.SHELL_RENDERER, SURFACE_ROLES.TRUSTED_CODEX_SURFACE], channel);
+  if (authority.surfaceRole === SURFACE_ROLES.TRUSTED_CODEX_SURFACE && !hasFullCodexBridge(authority)) {
+    throw new Error(`${channel} requires a trusted managed Codex surface bridge.`);
+  }
+  return authority;
+}
+
+function setCodexSurfaceAuthority(profile = {}) {
+  if (!codexView?.webContents || codexView.webContents.isDestroyed()) return null;
+  return updateWebContentsAuthority(codexView, {
+    surfaceName: "codex",
+    ...profile,
+  });
+}
+
+function setManagedCodexSurfaceAuthority(project, targetUrl, reason) {
+  return setCodexSurfaceAuthority({
+    ...codexSurfaceAuthorityForTarget(targetUrl, {
+      trustProfile: CODEX_SURFACE_TRUST_PROFILES.MANAGED_LOCAL_SURFACE,
+      bridgeProfile: CODEX_SURFACE_BRIDGE_PROFILES.FULL,
+    }),
+    projectId: project?.id || "",
+    targetUrl,
+    reason,
+  });
+}
+
+function setExternalCodexSurfaceAuthority(project, targetUrl, reason) {
+  return setCodexSurfaceAuthority({
+    ...codexSurfaceAuthorityForTarget(targetUrl),
+    projectId: project?.id || "",
+    targetUrl,
+    reason,
+  });
+}
+
 function isCodexSurfaceSender(sender) {
   return Boolean(codexView?.webContents && !codexView.webContents.isDestroyed() && sender.id === codexView.webContents.id);
 }
 
 function codexSurfaceSessionFor(sender) {
   if (!isCodexSurfaceSender(sender)) throw new Error("Codex surface bridge is not available from this renderer.");
+  requireFullCodexSurfaceBridge(sender, "codex-surface session");
   const sessions = ensureCodexSurfaceSessions();
   if (sessions.has(sender.id)) return sessions.get(sender.id);
   const usageLedger = new UsageLedgerCollector({
@@ -1810,6 +1976,7 @@ async function loadCodexSurface(project, options = {}) {
     const target = safeLoadableUrl(codex.target, "codex");
     if (target) {
       if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
+      setExternalCodexSurfaceAuthority(project, target, "configured-codex-url");
       await codexView.webContents.loadURL(target);
       return;
     }
@@ -1828,6 +1995,7 @@ async function loadCodexSurface(project, options = {}) {
           runtimeStartupMessage: "Starting Codex app-server…",
         });
         if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
+        setManagedCodexSurfaceAuthority(project, startingUrl, "managed-local-starting");
         await codexView.webContents.loadURL(startingUrl);
       }
       const session =
@@ -1867,6 +2035,7 @@ async function loadCodexSurface(project, options = {}) {
         remoteAuth: project.surfaceBinding?.codex?.remoteAuth || { mode: "none" },
       };
       if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
+      setManagedCodexSurfaceAuthority(project, localUrl, "managed-local-ready");
       await codexView.webContents.loadURL(localUrl);
       return;
     } catch (error) {
@@ -1883,6 +2052,7 @@ async function loadCodexSurface(project, options = {}) {
         error: error.message,
       });
       if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
+      setManagedCodexSurfaceAuthority(project, degradedUrl, "managed-local-degraded");
       await codexView.webContents.loadURL(degradedUrl);
       return;
     }
@@ -1891,6 +2061,7 @@ async function loadCodexSurface(project, options = {}) {
   activeCodexSurfaceConnection = null;
   const localUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, { activationEpoch: Number(options.activationEpoch) || 0 });
   if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
+  setManagedCodexSurfaceAuthority(project, localUrl, "fallback-local-surface");
   await codexView.webContents.loadURL(localUrl);
 }
 
@@ -4784,6 +4955,24 @@ async function createWindow() {
     },
   });
 
+  registerWebContentsAuthority(shellView, {
+    surfaceName: "shell",
+    surfaceRole: SURFACE_ROLES.SHELL_RENDERER,
+    reason: "shell-preload",
+  });
+  registerWebContentsAuthority(codexView, {
+    surfaceName: "codex",
+    surfaceRole: SURFACE_ROLES.EXTERNAL_CODEX_URL,
+    codexTrustProfile: CODEX_SURFACE_TRUST_PROFILES.UNKNOWN,
+    codexBridgeProfile: CODEX_SURFACE_BRIDGE_PROFILES.NONE,
+    reason: "codex-surface-not-loaded",
+  });
+  registerWebContentsAuthority(chatgptView, {
+    surfaceName: "chatgpt",
+    surfaceRole: SURFACE_ROLES.CHATGPT_WEB,
+    reason: "chatgpt-webcontents",
+  });
+
   mainWindow.contentView.addChildView(shellView);
   mainWindow.contentView.addChildView(codexView);
   mainWindow.contentView.addChildView(chatgptView);
@@ -4918,39 +5107,65 @@ ipcMain.handle("codex:reload-runtime", async (_event, options) => {
 });
 
 ipcMain.handle("codex-surface:connect", async (event, payload) => {
+  requireFullCodexSurfaceBridge(event.sender, "codex-surface:connect");
   const session = codexSurfaceSessionFor(event.sender);
   const requestedConnection = payload?.connection || null;
-  const connection =
-    activeCodexSurfaceConnection &&
-    requestedConnection &&
-    String(activeCodexSurfaceConnection.wsUrl || "") === String(requestedConnection.wsUrl || "")
-      ? { ...requestedConnection, remoteAuth: activeCodexSurfaceConnection.remoteAuth || { mode: "none" } }
-      : requestedConnection;
+  if (!activeCodexSurfaceConnection?.wsUrl) {
+    throw new Error("No main-owned Codex app-server connection is available.");
+  }
+  if (
+    requestedConnection?.wsUrl &&
+    String(requestedConnection.wsUrl || "") !== String(activeCodexSurfaceConnection.wsUrl || "")
+  ) {
+    throw new Error("Renderer-supplied Codex app-server URL does not match the active main-owned connection.");
+  }
+  const connection = {
+    ...activeCodexSurfaceConnection,
+    remoteAuth: activeCodexSurfaceConnection.remoteAuth || { mode: "none" },
+  };
   return session.connect(connection);
 });
 
 ipcMain.handle("codex-surface:disconnect", async (event) => {
+  requireFullCodexSurfaceBridge(event.sender, "codex-surface:disconnect");
   const session = codexSurfaceSessionFor(event.sender);
   await session.dispose({ reason: "Renderer requested disconnect." });
   return true;
 });
 
 ipcMain.handle("codex-surface:request", async (event, payload) => {
+  requireFullCodexSurfaceBridge(event.sender, "codex-surface:request");
+  const method = normalizeString(payload?.method, "");
+  if (!isAllowedCodexClientRequestMethod(method)) {
+    throw new Error(`Codex app-server request method is not allowlisted: ${method || "<empty>"}`);
+  }
   const session = codexSurfaceSessionFor(event.sender);
-  return session.request(payload?.method, payload?.params || {});
+  return session.request(method, payload?.params || {});
 });
 
 ipcMain.handle("codex-surface:notify", async (event, payload) => {
+  requireFullCodexSurfaceBridge(event.sender, "codex-surface:notify");
+  const method = normalizeString(payload?.method, "");
+  if (!isAllowedCodexClientNotificationMethod(method)) {
+    throw new Error(`Codex app-server notification method is not allowlisted: ${method || "<empty>"}`);
+  }
   const session = codexSurfaceSessionFor(event.sender);
-  return session.notify(payload?.method, payload?.params || {});
+  return session.notify(method, payload?.params || {});
 });
 
 ipcMain.handle("codex-surface:respond", async (event, payload) => {
+  requireFullCodexSurfaceBridge(event.sender, "codex-surface:respond");
   const session = codexSurfaceSessionFor(event.sender);
-  return session.respond(payload?.key || payload?.id, payload?.result || {});
+  const requestKey = payload?.key || payload?.id || "";
+  const record = session.findServerRequest(requestKey);
+  if (record && CODEX_SURFACE_SENSITIVE_RESPONSE_RISKS.has(record.riskCategory)) {
+    throw new Error("Sensitive Codex requests must be answered from the shell control plane.");
+  }
+  return session.respondServerRequest(requestKey, payload?.result || {});
 });
 
 ipcMain.handle("codex-surface:thread-state", async (event, payload) => {
+  requireFullCodexSurfaceBridge(event.sender, "codex-surface:thread-state");
   if (isStaleSurfaceActivationEpoch(payload?.activationEpoch)) return { ok: false, stale: true };
   const session = codexSurfaceSessionFor(event.sender);
   const state = {
@@ -4974,6 +5189,7 @@ ipcMain.handle("codex-surface:thread-state", async (event, payload) => {
 });
 
 ipcMain.handle("codex-surface:agent-graph", async (event, payload) => {
+  requireFullCodexSurfaceBridge(event.sender, "codex-surface:agent-graph");
   if (isStaleSurfaceActivationEpoch(payload?.activationEpoch)) return { ok: false, stale: true };
   const session = codexSurfaceSessionFor(event.sender);
   const state = {
@@ -4996,7 +5212,8 @@ ipcMain.handle("codex-surface:agent-graph", async (event, payload) => {
   return { ok: true };
 });
 
-ipcMain.handle("codex-surface:focus-sub-agent", async (_event, payload) => {
+ipcMain.handle("codex-surface:focus-sub-agent", async (event, payload) => {
+  requireFullCodexSurfaceBridge(event.sender, "codex-surface:focus-sub-agent");
   if (isStaleSurfaceActivationEpoch(payload?.activationEpoch)) return { ok: false, stale: true };
   const state = {
     surface: "codex",
@@ -5016,12 +5233,14 @@ ipcMain.handle("codex-surface:focus-sub-agent", async (_event, payload) => {
   return { ok: true };
 });
 
-ipcMain.handle("codex-runtime-preferences:get", async (_event, payload) => {
+ipcMain.handle("codex-runtime-preferences:get", async (event, payload) => {
+  requireFullCodexSurfaceBridge(event.sender, "codex-runtime-preferences:get");
   const config = await loadConfig();
   return { ok: true, ...codexRuntimePreferenceLookup(config, payload || {}) };
 });
 
-ipcMain.handle("codex-runtime-preferences:update", async (_event, payload) => {
+ipcMain.handle("codex-runtime-preferences:update", async (event, payload) => {
+  requireFullCodexSurfaceBridge(event.sender, "codex-runtime-preferences:update");
   return updateCodexRuntimePreferences(payload || {});
 });
 
@@ -5060,7 +5279,8 @@ ipcMain.handle("surface:open-external", async (_event, surfaceName) => {
   return true;
 });
 
-ipcMain.handle("link:open", async (_event, payload) => {
+ipcMain.handle("link:open", async (event, payload) => {
+  requireShellOrTrustedCodex(event.sender, "link:open");
   return ensureMiddleWebHost().openLink(payload || {});
 });
 
@@ -5100,7 +5320,8 @@ ipcMain.handle("plane-zoom:set", async (_event, payload) => {
   return setNativePlaneZoom(plane, payload?.zoomFactor);
 });
 
-ipcMain.handle("external:open-url", async (_event, payload) => {
+ipcMain.handle("external:open-url", async (event, payload) => {
+  requireShellOrTrustedCodex(event.sender, "external:open-url");
   const rawUrl = normalizeString(payload?.url, "");
   try {
     const parsed = new URL(rawUrl);
@@ -5130,7 +5351,8 @@ ipcMain.handle("worktree:read-file", async (_event, payload) => {
   return readProjectFile(payload?.projectId, payload?.relPath);
 });
 
-ipcMain.handle("file-view:open-project-file", async (_event, payload) => {
+ipcMain.handle("file-view:open-project-file", async (event, payload) => {
+  requireShellOrTrustedCodex(event.sender, "file-view:open-project-file");
   return openProjectFileInMiddle(payload || {});
 });
 
@@ -5143,7 +5365,8 @@ ipcMain.handle("codex-threads:list", async (_event, payload) => {
   return listCodexThreads(payload?.projectId);
 });
 
-ipcMain.handle("codex-thread:transcript", async (_event, payload) => {
+ipcMain.handle("codex-thread:transcript", async (event, payload) => {
+  requireFullCodexSurfaceBridge(event.sender, "codex-thread:transcript");
   return readCodexThreadTranscript(
     payload?.projectId,
     payload?.threadId,
@@ -5174,27 +5397,33 @@ ipcMain.handle("thread-analytics:detail", async (_event, payload) => {
   return getThreadAnalyticsDashboard(payload?.projectId, payload?.threadKey);
 });
 
-ipcMain.handle("worktree:reveal-file", async (_event, payload) => {
+ipcMain.handle("worktree:reveal-file", async (event, payload) => {
+  requireShellOrTrustedCodex(event.sender, "worktree:reveal-file");
   return revealProjectFile(payload?.projectId, payload?.relPath);
 });
 
-ipcMain.handle("attachments:choose-files", async (_event, payload) => {
+ipcMain.handle("attachments:choose-files", async (event, payload) => {
+  requireShellOrTrustedCodex(event.sender, "attachments:choose-files");
   return chooseAttachmentFiles(payload?.projectId);
 });
 
-ipcMain.handle("attachments:stage-drop", async (_event, payload) => {
+ipcMain.handle("attachments:stage-drop", async (event, payload) => {
+  requireShellOrTrustedCodex(event.sender, "attachments:stage-drop");
   return stageDroppedAttachments(payload?.projectId, payload?.paths);
 });
 
-ipcMain.handle("attachments:paste-image", async (_event, payload) => {
+ipcMain.handle("attachments:paste-image", async (event, payload) => {
+  requireShellOrTrustedCodex(event.sender, "attachments:paste-image");
   return pasteClipboardImageAttachment(payload?.projectId);
 });
 
-ipcMain.handle("attachments:remove-draft", async (_event, payload) => {
+ipcMain.handle("attachments:remove-draft", async (event, payload) => {
+  requireShellOrTrustedCodex(event.sender, "attachments:remove-draft");
   return removeComposerAttachmentDraft(payload?.projectId, payload?.draftId);
 });
 
 ipcMain.handle("context-menu:open", async (event, payload) => {
+  requireShellOrTrustedCodex(event.sender, "context-menu:open");
   return openContextMenu(event, payload || {});
 });
 
@@ -5249,7 +5478,8 @@ ipcMain.handle("workspace:status", async (_event, payload) => {
   return getWorkspaceStatus(payload?.projectId);
 });
 
-ipcMain.handle("workspace:run-command", async (_event, payload) => {
+ipcMain.handle("workspace:run-command", async (event, payload) => {
+  requireSenderRole(event.sender, [SURFACE_ROLES.SHELL_RENDERER], "workspace:run-command");
   return runWorkspaceCommand(payload?.projectId, payload?.command);
 });
 
