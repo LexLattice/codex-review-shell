@@ -92,7 +92,7 @@ const connectionAuthority = createCodexSurfaceConnectionAuthority(
     readyUrl: "http://127.0.0.1:1234/readyz",
     runtime: "wsl",
     workspaceRoot: "/home/rose/work/private/repo",
-    binaryPath: "/home/rose/bin/codex",
+    binaryPath: "C:\\Users\\Rose\\bin\\codex.exe",
     capabilities: {
       diagnostics: {
         runtime: "wsl",
@@ -105,6 +105,8 @@ const connectionAuthority = createCodexSurfaceConnectionAuthority(
   { activationEpoch: 7, connectionRef: "conn_1" },
 );
 assert.equal(connectionAuthority.publicConnection.connectionRef, "conn_1");
+assert.equal(connectionAuthority.publicConnection.available, true);
+assert.equal(connectionAuthority.publicConnection.binaryLabel, "codex.exe");
 assert.equal(connectionAuthority.publicConnection.wsUrl, undefined);
 assert.equal(connectionAuthority.publicConnection.readyUrl, undefined);
 assert.equal(connectionAuthority.publicConnection.remoteAuth, undefined);
@@ -124,5 +126,16 @@ assert.throws(
   }),
   /authority-bearing/,
 );
+assert.throws(
+  () => validateCodexSurfaceConnectionRequest(connectionAuthority.privateConnection, null),
+  /stale or invalid/,
+);
+const unavailableConnection = createCodexSurfaceConnectionAuthority(
+  { id: "project_2", surfaceBinding: { codex: {} } },
+  { runtime: "direct_oai", wsUrl: "", capabilities: {} },
+  { connectionRef: "conn_unavailable" },
+);
+assert.equal(unavailableConnection.publicConnection.connectionRef, "conn_unavailable");
+assert.equal(unavailableConnection.publicConnection.available, false);
 
 console.log("authority-catalog:smoke passed");

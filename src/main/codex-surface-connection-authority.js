@@ -1,7 +1,6 @@
 "use strict";
 
 const crypto = require("node:crypto");
-const path = require("node:path");
 
 function cleanString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
@@ -14,13 +13,12 @@ function evidenceKey(prefix, value) {
 
 function basenameLabel(value, fallback = "") {
   const text = cleanString(value, "");
-  return text ? path.basename(text) || fallback : fallback;
+  return text ? text.replace(/\\/g, "/").split("/").filter(Boolean).pop() || fallback : fallback;
 }
 
 function commandLabel(value) {
   const text = cleanString(value, "codex");
-  if (!/[\\/]/.test(text)) return text;
-  return path.basename(text) || "codex";
+  return text.replace(/\\/g, "/").split("/").filter(Boolean).pop() || "codex";
 }
 
 function sanitizeCapabilities(capabilities) {
@@ -43,10 +41,11 @@ function sanitizeCapabilities(capabilities) {
 
 function publicCodexSurfaceConnection(connection = {}) {
   const connectionRef = cleanString(connection.connectionRef, "");
+  const connectable = Boolean(connectionRef && cleanString(connection.wsUrl, ""));
   return {
     projectId: cleanString(connection.projectId, ""),
     connectionRef,
-    available: Boolean(connectionRef),
+    available: connectable,
     runtime: cleanString(connection.runtime, ""),
     transport: "websocket",
     workspaceRootLabel: basenameLabel(connection.workspaceRoot, "workspace"),
@@ -72,8 +71,8 @@ function publicCodexSurfaceConnection(connection = {}) {
           id: evidenceKey("codex-connection", connectionRef),
           kind: "CodexAppServerConnectionAuthority",
           label: "Codex app-server connection is resolved by the main process from an opaque ref.",
-          status: connectionRef ? "fresh" : "unavailable",
-          confidence: connectionRef ? "proven" : "unknown",
+          status: connectable ? "fresh" : "unavailable",
+          confidence: connectable ? "proven" : "unknown",
         },
       ],
     },
@@ -103,8 +102,9 @@ function createCodexSurfaceConnectionAuthority(project, session, options = {}) {
 }
 
 function validateCodexSurfaceConnectionRequest(activeConnection, requestedConnection = {}) {
+  const req = requestedConnection && typeof requestedConnection === "object" ? requestedConnection : {};
   const activeRef = cleanString(activeConnection?.connectionRef, "");
-  const requestedRef = cleanString(requestedConnection?.connectionRef, "");
+  const requestedRef = cleanString(req.connectionRef, "");
   if (!activeConnection?.wsUrl || !activeRef) {
     throw new Error("No main-owned Codex app-server connection is available.");
   }
@@ -112,16 +112,16 @@ function validateCodexSurfaceConnectionRequest(activeConnection, requestedConnec
     throw new Error("Renderer-supplied Codex app-server connection ref is stale or invalid.");
   }
   if (
-    requestedConnection.wsUrl ||
-    requestedConnection.readyUrl ||
-    requestedConnection.remoteAuth ||
-    requestedConnection.auth ||
-    requestedConnection.tokenFilePath ||
-    requestedConnection.tokenEnvVar
+    req.wsUrl ||
+    req.readyUrl ||
+    req.remoteAuth ||
+    req.auth ||
+    req.tokenFilePath ||
+    req.tokenEnvVar
   ) {
     throw new Error("Renderer-supplied Codex app-server connection payload contains authority-bearing fields.");
   }
-  const requestedEpoch = Number(requestedConnection.activationEpoch) || 0;
+  const requestedEpoch = Number(req.activationEpoch) || 0;
   const activeEpoch = Number(activeConnection.activationEpoch) || 0;
   if (requestedEpoch && activeEpoch && requestedEpoch !== activeEpoch) {
     throw new Error("Renderer-supplied Codex app-server connection ref belongs to a stale activation epoch.");

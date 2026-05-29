@@ -166,7 +166,7 @@ function capabilityArea(area) {
 }
 
 function connectionAvailable() {
-  return Boolean(connection?.connectionRef || connection?.wsUrl);
+  return Boolean(connection?.available || connection?.wsUrl);
 }
 
 function hasCapability(area, name) {
