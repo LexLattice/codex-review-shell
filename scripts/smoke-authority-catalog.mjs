@@ -57,6 +57,8 @@ assert.equal(external.surfaceRole, SURFACE_ROLES.EXTERNAL_CODEX_URL);
 assert.equal(hasFullCodexBridge(external), false);
 
 assert.equal(isAllowedCodexClientRequestMethod("turn/start"), true);
+assert.equal(isAllowedCodexClientRequestMethod("account/login/start"), true);
+assert.equal(isAllowedCodexClientRequestMethod("thread/rollback"), true);
 assert.equal(isAllowedCodexClientRequestMethod("thread/delete"), false);
 assert.equal(isAllowedCodexClientNotificationMethod("initialized"), true);
 assert.equal(isAllowedCodexClientNotificationMethod("turn/completed"), false);

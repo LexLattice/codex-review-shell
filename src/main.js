@@ -141,6 +141,7 @@ let activeChatgptContext = null;
 let surfaceActivationEpoch = 0;
 const webContentsAuthorityProfiles = new Map();
 const webContentsAuthorityCleanupRegistered = new Set();
+const CODEX_SURFACE_SENSITIVE_RESPONSE_RISKS = new Set(["command", "file-change", "network", "permission"]);
 const nativePlaneZoomFactors = {
   codex: PLANE_ZOOM_DEFAULT,
   chatgpt: PLANE_ZOOM_DEFAULT,
@@ -1651,6 +1652,13 @@ function registerWebContentsAuthority(view, profile = {}) {
       webContentsAuthorityProfiles.delete(contents.id);
       webContentsAuthorityCleanupRegistered.delete(contents.id);
     });
+    contents.on("did-start-navigation", (_event, url, isInPlace, isMainFrame) => {
+      if (!isMainFrame || isInPlace) return;
+      const current = webContentsAuthorityProfiles.get(contents.id);
+      if (current?.surfaceName !== "codex" || !hasFullCodexBridge(current)) return;
+      if (urlsShareCodexSurfaceDocument(url, current.targetUrl)) return;
+      demoteCodexSurfaceAuthorityForNavigation(contents, url, "main-frame-navigation-demotion");
+    });
   }
   return authority;
 }
@@ -1670,6 +1678,49 @@ function senderAuthority(sender) {
     normalizedWebContentsAuthority({ surfaceRole: SURFACE_ROLES.UNKNOWN });
 }
 
+function urlsShareCodexSurfaceDocument(left, right) {
+  try {
+    const leftUrl = new URL(String(left || ""));
+    const rightUrl = new URL(String(right || ""));
+    return leftUrl.href === rightUrl.href ||
+      (
+        leftUrl.origin === rightUrl.origin &&
+        leftUrl.pathname === rightUrl.pathname &&
+        leftUrl.pathname.endsWith("/codex-surface.html")
+      );
+  } catch {
+    return false;
+  }
+}
+
+function codexCurrentUrlMatchesAuthority(authority, currentUrl) {
+  if (!hasFullCodexBridge(authority)) return false;
+  if (
+    authority.codexTrustProfile !== CODEX_SURFACE_TRUST_PROFILES.MANAGED_LOCAL_SURFACE &&
+    authority.codexTrustProfile !== CODEX_SURFACE_TRUST_PROFILES.FALLBACK_LOCAL_SURFACE
+  ) {
+    return false;
+  }
+  return urlsShareCodexSurfaceDocument(currentUrl, authority.targetUrl);
+}
+
+function demoteCodexSurfaceAuthorityForNavigation(contents, targetUrl, reason = "navigation-demotion") {
+  const current = webContentsAuthorityProfiles.get(contents.id) || {};
+  updateWebContentsAuthority(contents, {
+    ...codexSurfaceAuthorityForTarget(targetUrl),
+    surfaceName: "codex",
+    projectId: current.projectId || "",
+    targetUrl,
+    reason,
+  });
+  if (codexSurfaceSessions?.has(contents.id)) {
+    const session = codexSurfaceSessions.get(contents.id);
+    codexSurfaceSessions.delete(contents.id);
+    session?.dispose?.({ silent: true, reason: "Codex surface authority demoted." }).catch(() => {});
+  }
+  activeCodexSurfaceConnection = null;
+}
+
 function requireSenderRole(sender, allowedRoles, channel) {
   const authority = senderAuthority(sender);
   if (!allowedRoles.includes(authority.surfaceRole)) {
@@ -1682,6 +1733,10 @@ function requireFullCodexSurfaceBridge(sender, channel) {
   const authority = requireSenderRole(sender, [SURFACE_ROLES.TRUSTED_CODEX_SURFACE], channel);
   if (!hasFullCodexBridge(authority)) {
     throw new Error(`${channel} requires a trusted managed Codex surface bridge.`);
+  }
+  const currentUrl = normalizeString(sender?.getURL?.(), "");
+  if (!codexCurrentUrlMatchesAuthority(authority, currentUrl)) {
+    throw new Error(`${channel} requires the active trusted Codex surface document.`);
   }
   return authority;
 }
@@ -5102,6 +5157,10 @@ ipcMain.handle("codex-surface:respond", async (event, payload) => {
   requireFullCodexSurfaceBridge(event.sender, "codex-surface:respond");
   const session = codexSurfaceSessionFor(event.sender);
   const requestKey = payload?.key || payload?.id || "";
+  const record = session.findServerRequest(requestKey);
+  if (record && CODEX_SURFACE_SENSITIVE_RESPONSE_RISKS.has(record.riskCategory)) {
+    throw new Error("Sensitive Codex requests must be answered from the shell control plane.");
+  }
   return session.respondServerRequest(requestKey, payload?.result || {});
 });
 
