@@ -4550,7 +4550,7 @@ function sendContextMenuActionResult(sender, result = {}) {
 
 function sendCodexSurfaceDiagnostic(sender, message) {
   if (!sender || sender.isDestroyed()) return;
-  const text = normalizeString(message, "");
+  const text = typeof message === "string" ? message.trim() : errorMessageText(message);
   if (!text) return;
   const authority = senderAuthority(sender);
   if (authority.surfaceRole === SURFACE_ROLES.TRUSTED_CODEX_SURFACE) {
@@ -4574,7 +4574,11 @@ function runContextMenuAction(sender, requestId, actionType, options = {}, actio
     })
     .catch((error) => {
       if (typeof options.diagnostic === "function") {
-        sendCodexSurfaceDiagnostic(sender, options.diagnostic(error));
+        try {
+          sendCodexSurfaceDiagnostic(sender, options.diagnostic(error));
+        } catch {
+          sendCodexSurfaceDiagnostic(sender, error);
+        }
       }
       sendContextMenuActionResult(sender, {
         requestId,
@@ -4616,7 +4620,7 @@ async function openContextMenu(event, request = {}) {
         sender,
         requestId,
         "paste_image_into_composer",
-        { mutatedDraftState: true, attachmentStagingWrites: 1, diagnostic: (error) => error.message },
+        { mutatedDraftState: true, attachmentStagingWrites: 1, diagnostic: (error) => errorMessageText(error) },
         async () => {
           const result = await pasteClipboardImageAttachment(projectId);
           sender.send("codex-surface:event", { type: "attachment-drafts", action: "add", ...result });
