@@ -50,6 +50,13 @@ await store.append({
 
 await store.close("completed");
 
+const status = store.status();
+if (status.ledgerPath || status.manifestPath) throw new Error("Usage ledger status exposed a raw local path.");
+if (!status.ledgerLabel || !status.manifestLabel) throw new Error("Usage ledger status is missing safe file labels.");
+if (!status.ledgerPathEvidenceKey || !status.manifestPathEvidenceKey) {
+  throw new Error("Usage ledger status is missing path evidence keys.");
+}
+
 const rows = (await fs.readFile(ledgerPath, "utf8"))
   .trim()
   .split("\n")

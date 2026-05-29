@@ -21,6 +21,10 @@ const { WorkspaceBackendManager, workspaceLabel, workspaceRoot } = require("./ma
 const { ThreadAnalyticsStore, buildThreadKey } = require("./main/thread-analytics-store");
 const { UsageLedgerCollector } = require("./main/usage-ledger-collector");
 const {
+  blockedMessage: externalNavigationBlockedMessage,
+  navigationDecision: externalNavigationDecision,
+} = require("./main/external-navigation-policy");
+const {
   CODEX_SURFACE_BRIDGE_PROFILES,
   CODEX_SURFACE_TRUST_PROFILES,
   SURFACE_ROLES,
@@ -71,6 +75,13 @@ const workspaceAgentPath = path.join(__dirname, "backend", "wsl-agent.js");
 
 function earlyNormalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function stableEvidenceKey(prefix, value) {
+  const text = earlyNormalizeString(value, "");
+  return text
+    ? `${prefix}:${crypto.createHash("sha256").update(text, "utf8").digest("hex").slice(0, 16)}`
+    : "";
 }
 
 function existingFileMtimeMs(targetPath) {
@@ -4305,7 +4316,8 @@ async function listThreadAnalytics(projectId, options = {}) {
     projectId: project.id,
     entries,
     analyzerVersion: THREAD_ANALYTICS_ANALYZER_VERSION,
-    dbPath: threadAnalyticsDbPath(),
+    dbPathLabel: THREAD_ANALYTICS_DB_FILE_NAME,
+    dbPathEvidenceKey: stableEvidenceKey("thread-analytics-db", threadAnalyticsDbPath()),
   };
 }
 
@@ -5356,8 +5368,9 @@ ipcMain.handle("surface:open-external", async (_event, surfaceName) => {
   const view = surfaceName === "chatgpt" ? chatgptView : codexView;
   if (!view || view.webContents.isDestroyed()) return false;
   const url = view.webContents.getURL();
-  if (!url || url.startsWith("file://")) return false;
-  await shell.openExternal(url);
+  const decision = externalNavigationDecision(url);
+  if (decision.action !== "allow") return false;
+  await shell.openExternal(decision.normalizedUrl);
   return true;
 });
 
@@ -5405,19 +5418,12 @@ ipcMain.handle("plane-zoom:set", async (_event, payload) => {
 ipcMain.handle("external:open-url", async (event, payload) => {
   requireShellOrTrustedCodex(event.sender, "external:open-url");
   const rawUrl = normalizeString(payload?.url, "");
-  try {
-    const parsed = new URL(rawUrl);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      return { ok: false, error: "Only http and https URLs can be opened externally." };
-    }
-    if (parsed.username || parsed.password) {
-      return { ok: false, error: "URLs with embedded credentials cannot be opened externally." };
-    }
-    await shell.openExternal(parsed.toString());
-    return { ok: true, url: parsed.toString() };
-  } catch (error) {
-    return { ok: false, error: error.message || "Invalid URL." };
+  const decision = externalNavigationDecision(rawUrl);
+  if (decision.action !== "allow") {
+    return { ok: false, error: externalNavigationBlockedMessage(decision.reason), reason: decision.reason };
   }
+  await shell.openExternal(decision.normalizedUrl);
+  return { ok: true, url: decision.displayUrl };
 });
 
 ipcMain.handle("clipboard:write-text", async (_event, text) => {
