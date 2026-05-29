@@ -126,6 +126,8 @@ const state = {
   thoughtTurnByItemId: new Map(),
   pendingThoughtRenderMap: new Map(),
   finalMessageByTurnKey: new Map(),
+  finalTurnKeyByMessageId: new Map(),
+  turnFileEvidenceByTurn: new Map(),
   turnActivityMap: new Map(),
   turnPromptMap: new Map(),
   turnRetryCountMap: new Map(),
@@ -2425,6 +2427,52 @@ function splitLineRef(value) {
   };
 }
 
+function fileRefFromTextCandidate(value) {
+  const lineRef = splitLineRef(value);
+  const relPath = relativePathWithinRoot(lineRef.path);
+  if (!relPath) return null;
+  return {
+    path: relPath,
+    line: lineRef.line,
+    column: lineRef.column,
+  };
+}
+
+function extractFileRefsFromText(value) {
+  const source = String(value || "");
+  const refs = [];
+  const filePattern = /(?:[A-Za-z]:[\\/]|\/|\.{1,2}\/)?[A-Za-z0-9._@+-][A-Za-z0-9._@+:/\\-]*\.[A-Za-z0-9]{1,12}(?::\d+(?::\d+)?)?/g;
+  for (const match of source.matchAll(filePattern)) {
+    const ref = fileRefFromTextCandidate(match[0]);
+    if (ref) refs.push(ref);
+  }
+  return refs;
+}
+
+function fileFallbackForToken(value, context = {}) {
+  const primary = fileRefFromTextCandidate(value);
+  if (!primary?.path) return null;
+  const candidates = Array.isArray(context.fileEvidenceRefs) ? context.fileEvidenceRefs : [];
+  const normalizedPrimary = normalizeSlashes(primary.path).replace(/^\.\/+/, "");
+  if (!normalizedPrimary.includes("/")) return null;
+  const matches = [];
+  const seen = new Set();
+  for (const candidate of candidates) {
+    const candidatePath = normalizeSlashes(candidate?.path || "").replace(/^\.\/+/, "");
+    if (!candidatePath || candidatePath === normalizedPrimary || seen.has(candidatePath)) continue;
+    if (candidatePath.endsWith(`/${normalizedPrimary}`)) {
+      matches.push(candidatePath);
+      seen.add(candidatePath);
+    }
+  }
+  if (matches.length !== 1) return null;
+  return {
+    path: matches[0],
+    line: primary.line,
+    column: primary.column,
+  };
+}
+
 function normalizeFileAliasToken(value) {
   return stripTokenPunctuation(value).trim().toLowerCase();
 }
@@ -2521,12 +2569,14 @@ function tokenizeTypedContent(text, context = {}) {
     const lineRef = splitLineRef(raw);
     const relPath = relativePathWithinRoot(lineRef.path);
     if (relPath && !isBareVersionToken(raw)) {
+      const fallbackRef = fileFallbackForToken(raw, context);
       addTokenCandidate(candidates, match.index, match.index + match[0].length, {
         type: lineRef.line ? "line_ref" : "file_path",
         text: match[0],
         path: relPath,
         line: lineRef.line,
         column: lineRef.column,
+        fallbackPath: fallbackRef?.path || "",
       });
       continue;
     }
@@ -2559,12 +2609,14 @@ function tokenizeTypedContent(text, context = {}) {
       }
       continue;
     }
+    const fallbackRef = fileFallbackForToken(raw, context);
     addTokenCandidate(candidates, match.index, match.index + raw.length, {
       type: lineRef.line ? "line_ref" : "file_path",
       text: raw,
       path: relPath,
       line: lineRef.line,
       column: lineRef.column,
+      fallbackPath: fallbackRef?.path || "",
     });
   }
 
@@ -2610,20 +2662,54 @@ async function openTypedUrl(url) {
   if (!result?.ok) addSystemMessage(`URL open blocked: ${result?.error || "unknown error"}`);
 }
 
-async function openTypedFile(relPath) {
+function isFileOpenMissingError(errorText) {
+  return /ENOENT|no such file|not found|cannot find/i.test(String(errorText || ""));
+}
+
+function errorMessageText(error, fallback = "unknown error") {
+  const value = error?.message || (typeof error === "string" ? error : error ? String(error) : "");
+  return value || fallback;
+}
+
+async function openTypedFile(relPath, options = {}) {
   if (!bridge?.openProjectFile || !project?.id) {
     addSystemMessage("Project file opening is unavailable in this Codex surface.");
     return;
   }
+  const fallbackPath = String(options?.fallbackPath || "").trim();
   try {
     const result = await bridge.openProjectFile(project.id, relPath, {
       sourceSurface: "codex",
       threadId: state.threadId || "",
       threadTitle: state.threadTitle || "",
     });
-    if (!result?.ok) addSystemMessage(`File open failed: ${result?.error || "unknown error"}`);
+    if (result?.ok) return;
+    if (fallbackPath && isFileOpenMissingError(result?.error)) {
+      const fallbackResult = await bridge.openProjectFile(project.id, fallbackPath, {
+        sourceSurface: "codex",
+        threadId: state.threadId || "",
+        threadTitle: state.threadTitle || "",
+        sourceKind: "project_file",
+      });
+      if (fallbackResult?.ok) return;
+      addSystemMessage(`File open failed: ${fallbackResult?.error || result?.error || "unknown error"}`);
+      return;
+    }
+    addSystemMessage(`File open failed: ${result?.error || "unknown error"}`);
   } catch (error) {
-    addSystemMessage(`File open failed: ${error.message}`);
+    const message = errorMessageText(error);
+    if (fallbackPath && isFileOpenMissingError(message)) {
+      try {
+        const fallbackResult = await bridge.openProjectFile(project.id, fallbackPath, {
+          sourceSurface: "codex",
+          threadId: state.threadId || "",
+          threadTitle: state.threadTitle || "",
+          sourceKind: "project_file",
+        });
+        if (fallbackResult?.ok) return;
+      } catch {}
+    }
+    addSystemMessage(`File open failed: ${message}`);
   }
 }
 
@@ -2655,7 +2741,8 @@ function renderTypedContent(container, text, context = {}) {
       button.title = token.line ? `Open ${token.path}:${token.line} in Files` : `Open ${token.path} in Files`;
       button.dataset.contextTarget = "file_ref";
       button.dataset.contextFile = token.path;
-      button.addEventListener("click", () => openTypedFile(token.path));
+      if (token.fallbackPath) button.dataset.contextFallbackFile = token.fallbackPath;
+      button.addEventListener("click", () => openTypedFile(token.path, { fallbackPath: token.fallbackPath || "" }));
       container.appendChild(button);
       continue;
     }
@@ -2701,7 +2788,8 @@ function appendFileToken(parent, label, fileRef) {
   button.title = fileRef.line ? `Open ${fileRef.path}:${fileRef.line} in Files` : `Open ${fileRef.path} in Files`;
   button.dataset.contextTarget = "file_ref";
   button.dataset.contextFile = fileRef.path;
-  button.addEventListener("click", () => openTypedFile(fileRef.path));
+  if (fileRef.fallbackPath) button.dataset.contextFallbackFile = fileRef.fallbackPath;
+  button.addEventListener("click", () => openTypedFile(fileRef.path, { fallbackPath: fileRef.fallbackPath || "" }));
   parent.appendChild(button);
 }
 
@@ -2733,7 +2821,14 @@ function appendInlineCode(parent, raw, context = {}) {
     if (isBareVersionToken(source)) return null;
     const lineRef = splitLineRef(source);
     const relPath = relativePathWithinRoot(lineRef.path);
-    return relPath ? { path: relPath, line: lineRef.line, column: lineRef.column } : null;
+    if (!relPath) return null;
+    const fallbackRef = fileFallbackForToken(source, context);
+    return {
+      path: relPath,
+      line: lineRef.line,
+      column: lineRef.column,
+      fallbackPath: fallbackRef?.path || "",
+    };
   })();
   if (fileRef) {
     appendFileToken(code, source, fileRef);
@@ -2800,11 +2895,111 @@ function createMarkdownLineBlock(tagName, className, text, context = {}) {
   return block;
 }
 
-function isMarkdownBlockStart(line) {
+function createMarkdownCodeBlock(codeLines, language = "") {
+  const block = document.createElement("div");
+  block.className = "assistant-md-codeblock";
+  const normalizedLanguage = String(language || "").trim();
+  if (normalizedLanguage && normalizedLanguage.toLowerCase() !== "text") {
+    const caption = document.createElement("div");
+    caption.className = "assistant-md-codeblock-label";
+    caption.textContent = normalizedLanguage;
+    block.appendChild(caption);
+  }
+  const body = document.createElement("div");
+  body.className = "assistant-md-codeblock-body";
+  body.textContent = codeLines.join("\n");
+  block.appendChild(body);
+  return block;
+}
+
+function isIndentedMarkdownCodeLine(line) {
+  return /^( {4}|\t)/.test(String(line || ""));
+}
+
+function stripIndentedMarkdownCodeLine(line) {
+  const source = String(line || "");
+  return source.startsWith("\t") ? source.slice(1) : source.replace(/^ {4}/, "");
+}
+
+function splitMarkdownTableRow(line) {
+  let source = String(line || "").trim();
+  if (!source.includes("|")) return null;
+  if (source.startsWith("|")) source = source.slice(1);
+  if (source.endsWith("|")) source = source.slice(0, -1);
+  const cells = [];
+  let current = "";
+  let escaped = false;
+  for (const char of source) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === "|") {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  cells.push(current.trim());
+  return cells.length >= 2 ? cells : null;
+}
+
+function isMarkdownTableDivider(line) {
+  const cells = splitMarkdownTableRow(line);
+  return Boolean(cells?.length) && cells.every((cell) => /^:?-+:?$/.test(cell.trim()));
+}
+
+function markdownTableStart(lines, index) {
+  if (!Array.isArray(lines) || index < 0 || index + 1 >= lines.length) return null;
+  const header = splitMarkdownTableRow(lines[index]);
+  if (!header || !isMarkdownTableDivider(lines[index + 1])) return null;
+  return { header };
+}
+
+function appendMarkdownTable(container, tableLines, context = {}) {
+  const header = splitMarkdownTableRow(tableLines[0]) || [];
+  const bodyRows = tableLines.slice(2).map(splitMarkdownTableRow).filter(Boolean);
+  const wrapper = document.createElement("div");
+  wrapper.className = "assistant-md-table-wrap";
+  const table = document.createElement("table");
+  table.className = "assistant-md-table";
+  const thead = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  for (const cellText of header) {
+    const cell = document.createElement("th");
+    appendInlineMarkdown(cell, cellText, context);
+    headRow.appendChild(cell);
+  }
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+  const tbody = document.createElement("tbody");
+  for (const rowCells of bodyRows) {
+    const row = document.createElement("tr");
+    for (let cellIndex = 0; cellIndex < header.length; cellIndex += 1) {
+      const cell = document.createElement("td");
+      appendInlineMarkdown(cell, rowCells[cellIndex] || "", context);
+      row.appendChild(cell);
+    }
+    tbody.appendChild(row);
+  }
+  table.appendChild(tbody);
+  wrapper.appendChild(table);
+  container.appendChild(wrapper);
+}
+
+function isMarkdownBlockStart(line, lines = null, index = -1) {
   const trimmed = String(line || "").trim();
   return Boolean(
     !trimmed ||
     /^```/.test(trimmed) ||
+    isIndentedMarkdownCodeLine(line) ||
+    markdownTableStart(lines, index) ||
     /^#{1,4}\s+/.test(trimmed) ||
     /^>\s?/.test(trimmed) ||
     /^---+$/.test(trimmed) ||
@@ -2844,12 +3039,12 @@ function appendMarkdownList(container, lines, ordered, context = {}) {
   container.appendChild(list);
 }
 
-function renderFinalAssistantContent(container, text) {
+function renderFinalAssistantContent(container, text, context = {}) {
   container.textContent = "";
   container.classList.add("assistant-markdown");
   const source = String(text || "").replace(/\r\n/g, "\n");
   if (!source.trim()) return;
-  const renderContext = { fileAliases: buildMarkdownFileAliasMap(source) };
+  const renderContext = { ...context, fileAliases: buildMarkdownFileAliasMap(source) };
   const lines = source.split("\n");
   for (let index = 0; index < lines.length;) {
     const line = lines[index];
@@ -2869,17 +3064,38 @@ function renderFinalAssistantContent(container, text) {
         index += 1;
       }
       if (index < lines.length) index += 1;
-      const block = document.createElement("figure");
-      block.className = "assistant-md-codeblock";
-      if (language) {
-        const caption = document.createElement("figcaption");
-        caption.textContent = language;
-        block.appendChild(caption);
+      container.appendChild(createMarkdownCodeBlock(codeLines, language));
+      continue;
+    }
+
+    if (isIndentedMarkdownCodeLine(line)) {
+      const codeLines = [];
+      while (index < lines.length) {
+        const nextLine = lines[index];
+        if (isIndentedMarkdownCodeLine(nextLine)) {
+          codeLines.push(stripIndentedMarkdownCodeLine(nextLine));
+          index += 1;
+          continue;
+        }
+        if (!nextLine.trim() && codeLines.length) {
+          codeLines.push("");
+          index += 1;
+          continue;
+        }
+        break;
       }
-      const pre = document.createElement("pre");
-      pre.textContent = codeLines.join("\n");
-      block.appendChild(pre);
-      container.appendChild(block);
+      container.appendChild(createMarkdownCodeBlock(codeLines));
+      continue;
+    }
+
+    if (markdownTableStart(lines, index)) {
+      const tableLines = [lines[index], lines[index + 1]];
+      index += 2;
+      while (index < lines.length && splitMarkdownTableRow(lines[index])) {
+        tableLines.push(lines[index]);
+        index += 1;
+      }
+      appendMarkdownTable(container, tableLines, renderContext);
       continue;
     }
 
@@ -2955,7 +3171,7 @@ function renderFinalAssistantContent(container, text) {
 
     const paragraphLines = [line];
     index += 1;
-    while (index < lines.length && !isMarkdownBlockStart(lines[index])) {
+    while (index < lines.length && !isMarkdownBlockStart(lines[index], lines, index)) {
       paragraphLines.push(lines[index]);
       index += 1;
     }
@@ -3017,14 +3233,14 @@ function ensureMessage(id, role, title = "") {
   return article;
 }
 
-function setMessageText(id, role, text, title = "") {
+function setMessageText(id, role, text, title = "", context = {}) {
   const node = ensureMessage(id, role, title);
   const bubble = node.querySelector(".bubble");
   bubble.dataset.rawText = text || "";
   bubble.dataset.typedRendered = "true";
   bubble.dataset.streamingPlain = "false";
   if (role === "assistant") {
-    renderFinalAssistantContent(bubble, text || "");
+    renderFinalAssistantContent(bubble, text || "", context);
   } else {
     bubble.classList.remove("assistant-markdown");
     renderTypedContent(bubble, text || "");
@@ -3061,7 +3277,8 @@ function finalizeMessageTypedContent(id) {
   bubble.dataset.streamingPlain = "false";
   const role = node.classList.contains("user") ? "user" : node.classList.contains("assistant") ? "assistant" : "system";
   if (role === "assistant") {
-    renderFinalAssistantContent(bubble, text);
+    const turnKey = state.finalTurnKeyByMessageId.get(String(id || "")) || "";
+    renderFinalAssistantContent(bubble, text, turnFileEvidenceContext(turnKey));
   } else {
     bubble.classList.remove("assistant-markdown");
     renderTypedContent(bubble, text);
@@ -3085,6 +3302,8 @@ function clearRenderedDomState() {
   }
   state.pendingThoughtRenderMap.clear();
   state.finalMessageByTurnKey.clear();
+  state.finalTurnKeyByMessageId.clear();
+  state.turnFileEvidenceByTurn.clear();
 }
 
 function resetThreadSessionState() {
@@ -4242,7 +4461,8 @@ function renderStoredPresentationModel(model, snapshot = {}) {
     for (let messageIndex = 0; messageIndex < (turn.assistantFinalMessages || []).length; messageIndex += 1) {
       const message = turn.assistantFinalMessages[messageIndex];
       const id = String(message.id || `stored_assistant_${turnKey}_${messageIndex}`);
-      setMessageText(id, "assistant", storedMessageText(message), authorContext.assistantTitle);
+      rememberFinalMessageItem(id, turnKey);
+      setMessageText(id, "assistant", storedMessageText(message), authorContext.assistantTitle, turnFileEvidenceContext(turnKey));
     }
   }
 
@@ -5303,6 +5523,7 @@ function rememberFinalMessageItem(itemId, turnKey = "") {
   const key = String(turnKey || state.turnId || "").trim();
   if (!id || !key) return;
   state.finalMessageByTurnKey.set(key, id);
+  state.finalTurnKeyByMessageId.set(id, key);
   const thoughtNode = state.itemMap.get(thoughtMessageId(key));
   const finalNode = state.itemMap.get(id);
   if (thoughtNode && finalNode && finalNode.parentNode === els.transcript) {
@@ -5321,6 +5542,57 @@ function positionThoughtProcessNode(turnKey, node) {
 
 function normalizeThoughtItemBody(item) {
   return String(thoughtItemBody(item) || "").trim();
+}
+
+function isPatchFileEvidenceItem(item) {
+  if (!item) return false;
+  if (item.type === "fileChange") return true;
+  const toolName = String(item.name || item.tool || item.toolName || "").toLowerCase();
+  if (toolName.includes("apply_patch")) return true;
+  const body = normalizeThoughtItemBody(item);
+  return body.includes("*** Add File:") ||
+    body.includes("*** Update File:") ||
+    body.includes("*** Delete File:") ||
+    body.includes("Updated the following files:");
+}
+
+function fileRefsFromPatchEvidenceItem(item) {
+  if (!isPatchFileEvidenceItem(item)) return [];
+  const refs = [];
+  const pushValue = (value) => {
+    const ref = fileRefFromTextCandidate(value);
+    if (ref) refs.push(ref);
+  };
+  for (const change of Array.isArray(item?.changes) ? item.changes : []) {
+    pushValue(change?.path || change?.relativePath || change?.file || "");
+  }
+  for (const value of [item?.path, item?.relativePath, item?.file, item?.savedPath, item?.stdout, item?.stderr]) {
+    pushValue(value);
+  }
+  refs.push(...extractFileRefsFromText(normalizeThoughtItemBody(item)));
+  return refs;
+}
+
+function registerTurnFileEvidence(turnKey, items) {
+  const key = String(turnKey || "live");
+  const refs = [];
+  for (const item of Array.isArray(items) ? items : []) refs.push(...fileRefsFromPatchEvidenceItem(item));
+  if (!refs.length) return;
+  const evidence = state.turnFileEvidenceByTurn.get(key) || new Map();
+  for (const ref of refs) {
+    if (!ref?.path) continue;
+    evidence.set(ref.path, { path: ref.path, line: ref.line, column: ref.column });
+  }
+  state.turnFileEvidenceByTurn.set(key, evidence);
+}
+
+function turnFileEvidenceContext(turnKey, baseContext = {}) {
+  const evidence = state.turnFileEvidenceByTurn.get(String(turnKey || "live"));
+  if (!evidence?.size) return baseContext;
+  return {
+    ...baseContext,
+    fileEvidenceRefs: Array.from(evidence.values()),
+  };
 }
 
 function isEmptyThoughtSentinel(text) {
@@ -5490,6 +5762,7 @@ function upsertThoughtProcess(turnKey, items, options = {}) {
   const shouldMerge = options.merge !== false;
   const existing = shouldMerge ? state.thoughtItemMap.get(key) || [] : [];
   const merged = shouldMerge ? mergeThoughtItems(existing, items) : [...(items || [])];
+  registerTurnFileEvidence(key, merged);
   state.thoughtItemMap.set(key, merged);
   if (options.defer) {
     scheduleThoughtProcessRender(key, { open: Boolean(options.open) });
@@ -5588,7 +5861,13 @@ function renderItem(item, authorContext = currentAuthorContext()) {
       return;
     }
     rememberFinalMessageItem(item.id, item.turnId || state.turnId || "");
-    setMessageText(item.id, "assistant", item.text || "", authorContext.assistantTitle);
+    setMessageText(
+      item.id,
+      "assistant",
+      item.text || "",
+      authorContext.assistantTitle,
+      turnFileEvidenceContext(item.turnId || state.turnId || ""),
+    );
     return;
   }
   if (item.type === "collabAgentToolCall") {
@@ -6512,6 +6791,35 @@ function selectedTextInfo(event) {
   return { preview: selected.slice(0, 1000), length: selected.length };
 }
 
+function selectedFileRefs() {
+  const selection = window.getSelection?.();
+  if (!selection || selection.isCollapsed || !String(selection).trim()) return [];
+  const refs = [];
+  const seen = new Set();
+  const nodes = document.querySelectorAll("[data-context-target='file_ref'][data-context-file]");
+  for (const node of nodes) {
+    let intersects = false;
+    for (let index = 0; index < selection.rangeCount; index += 1) {
+      const range = selection.getRangeAt(index);
+      if (range?.intersectsNode?.(node)) {
+        intersects = true;
+        break;
+      }
+    }
+    if (!intersects) continue;
+    const relPath = node.dataset.contextFile || "";
+    if (!relPath || seen.has(relPath)) continue;
+    seen.add(relPath);
+    refs.push({
+      relPath,
+      fallbackRelPath: node.dataset.contextFallbackFile || "",
+      displayPath: relPath || node.textContent || "",
+    });
+    if (refs.length >= 50) break;
+  }
+  return refs;
+}
+
 function contextMenuTarget(event) {
   const target = event.target?.closest?.("[data-context-target]");
   if (target?.dataset?.contextTarget === "thread_title") {
@@ -6528,6 +6836,7 @@ function contextMenuTarget(event) {
       targetFileRef: {
         pathEvidenceKey: "",
         relPath,
+        fallbackRelPath: target.dataset.contextFallbackFile || "",
         displayPath: relPath || target.textContent || "",
       },
       targetLabel: target.textContent || "",
@@ -6562,6 +6871,7 @@ document.addEventListener("contextmenu", (event) => {
   event.preventDefault();
   const selected = selectedTextInfo(event);
   const target = contextMenuTarget(event);
+  const selectedFiles = selectedFileRefs();
   bridge.openContextMenu({
     schemaVersion: 1,
     requestId: `ctx_${Date.now()}`,
@@ -6570,6 +6880,7 @@ document.addEventListener("contextmenu", (event) => {
     threadId: state.threadId || "",
     selectedTextPreview: selected.preview,
     selectedTextLength: selected.length,
+    selectedFileRefs: selectedFiles,
     pointer: { x: event.clientX, y: event.clientY },
     expiresAt: new Date(Date.now() + 15_000).toISOString(),
     uiProjectionGeneration: state.composerAttachmentGeneration,

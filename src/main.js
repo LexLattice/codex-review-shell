@@ -2509,6 +2509,25 @@ async function resolveProjectFileReference(projectId, relPath) {
   };
 }
 
+function isMissingFileReferenceError(error) {
+  return /ENOENT|no such file|not found|cannot find/i.test(error?.message || error || "");
+}
+
+function errorMessageText(error, fallback = "unknown error") {
+  const value = error?.message || (typeof error === "string" ? error : error ? String(error) : "");
+  return normalizeString(value, fallback);
+}
+
+async function resolveProjectFileReferenceWithFallback(projectId, relPath, fallbackRelPath = "") {
+  try {
+    return await resolveProjectFileReference(projectId, relPath);
+  } catch (error) {
+    const fallback = normalizeString(fallbackRelPath, "").replace(/\\/g, "/").replace(/^\/+/, "");
+    if (!fallback || !isMissingFileReferenceError(error)) throw error;
+    return resolveProjectFileReference(projectId, fallback);
+  }
+}
+
 async function submitCodexFileBundleToChatgpt(fileTransfers, promptText = "review codex output") {
   if (!chatgptView || chatgptView.webContents.isDestroyed()) {
     throw new Error("ChatGPT surface is unavailable.");
@@ -4303,18 +4322,43 @@ function safeContextUrl(value) {
   }
 }
 
+function normalizeContextFileRef(value) {
+  if (!value || typeof value !== "object") return null;
+  const relPath = normalizeString(value.relPath || value.path || value.displayPath, "").replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!relPath) return null;
+  return {
+    relPath,
+    fallbackRelPath: normalizeString(value.fallbackRelPath || value.fallbackPath || "", "").replace(/\\/g, "/").replace(/^\/+/, ""),
+    displayPath: normalizeString(value.displayPath || relPath, ""),
+  };
+}
+
+function selectedContextFileRefs(request = {}) {
+  const refs = Array.isArray(request.selectedFileRefs) ? request.selectedFileRefs : [];
+  const selected = [];
+  const seen = new Set();
+  for (const raw of refs.slice(0, 50)) {
+    const ref = normalizeContextFileRef(raw);
+    if (!ref || seen.has(ref.relPath)) continue;
+    seen.add(ref.relPath);
+    selected.push(ref);
+  }
+  return selected;
+}
+
 async function openContextMenu(event, request = {}) {
   const sender = event.sender;
   const projectId = normalizeString(request.projectId, "");
   const targetKind = normalizeString(request.targetKind, "unknown");
   const selectedTextLength = Math.max(0, Number(request.selectedTextLength) || 0);
   const selectedTextPreview = normalizeString(request.selectedTextPreview, "").slice(0, 1000);
-  const rawFileRef = request.targetFileRef && typeof request.targetFileRef === "object"
-    ? request.targetFileRef
-    : null;
-  const fileRef = rawFileRef
-    ? normalizeString(rawFileRef.relPath || rawFileRef.path || rawFileRef.displayPath, "").replace(/\\/g, "/").replace(/^\/+/, "")
-    : "";
+  const rawFileRef = normalizeContextFileRef(request.targetFileRef);
+  const fileRef = rawFileRef?.relPath || "";
+  const fallbackFileRef = rawFileRef?.fallbackRelPath || "";
+  const selectedFileRefs = selectedContextFileRefs(request);
+  const stashFileRefs = selectedFileRefs.length > 1
+    ? selectedFileRefs
+    : rawFileRef ? [rawFileRef] : selectedFileRefs;
   const href = safeContextUrl(request.targetHrefDisplay);
   const threadId = normalizeString(request.targetThreadId || request.threadId, "");
   const template = [];
@@ -4346,54 +4390,68 @@ async function openContextMenu(event, request = {}) {
     template.push({ type: "separator" });
     template.push({ label: "Copy thread ID", click: () => clipboard.writeText(threadId) });
   }
-  if (fileRef && projectId) {
+  if ((fileRef || stashFileRefs.length) && projectId) {
     template.push({ type: "separator" });
+    if (fileRef) {
+      template.push({
+        label: "Copy file reference",
+        click: async () => {
+          try {
+            const resolved = await resolveProjectFileReferenceWithFallback(projectId, fileRef, fallbackFileRef);
+            await clipboard.writeText(resolved.relPath || fileRef);
+          } catch (error) {
+            await clipboard.writeText(fileRef);
+            sender.send("codex-surface:event", { type: "attachment-diagnostic", message: `Copied unresolved file reference: ${errorMessageText(error)}` });
+          }
+        },
+      });
+      template.push({
+        label: "Reveal file",
+        click: async () => {
+          try {
+            const resolved = await resolveProjectFileReferenceWithFallback(projectId, fileRef, fallbackFileRef);
+            await revealProjectFile(projectId, resolved.relPath || fileRef);
+          } catch (error) {
+            sender.send("codex-surface:event", { type: "attachment-diagnostic", message: `Reveal failed: ${errorMessageText(error)}` });
+          }
+        },
+      });
+    }
     template.push({
-      label: "Copy file reference",
+      label: stashFileRefs.length > 1 ? `Add ${stashFileRefs.length} selected files to Project stash` : "Add to Project stash",
       click: async () => {
         try {
-          const resolved = await resolveProjectFileReference(projectId, fileRef);
-          await clipboard.writeText(resolved.relPath || fileRef);
-        } catch (error) {
-          await clipboard.writeText(fileRef);
-          sender.send("codex-surface:event", { type: "attachment-diagnostic", message: `Copied unresolved file reference: ${error.message}` });
-        }
-      },
-    });
-    template.push({
-      label: "Reveal file",
-      click: async () => {
-        try {
-          await revealProjectFile(projectId, fileRef);
-        } catch (error) {
-          sender.send("codex-surface:event", { type: "attachment-diagnostic", message: `Reveal failed: ${error.message}` });
-        }
-      },
-    });
-    template.push({
-      label: "Add to Project stash",
-      click: async () => {
-        try {
-          const resolved = await resolveProjectFileReference(projectId, fileRef);
-          emitShellEvent({
-            type: "project-stash-add-file",
-            projectId,
-            codexThreadId: threadId,
-            relPath: resolved.relPath || fileRef,
-            label: resolved.relPath || fileRef,
-            source: "codex-file-context-menu",
-            at: nowIso(),
-          });
+          let added = 0;
+          const failed = [];
+          for (const ref of stashFileRefs) {
+            try {
+              const resolved = await resolveProjectFileReferenceWithFallback(projectId, ref.relPath, ref.fallbackRelPath);
+              emitShellEvent({
+                type: "project-stash-add-file",
+                projectId,
+                codexThreadId: threadId,
+                relPath: resolved.relPath || ref.relPath,
+                label: resolved.relPath || ref.relPath,
+                source: stashFileRefs.length > 1 ? "codex-selection-context-menu" : "codex-file-context-menu",
+                at: nowIso(),
+              });
+              added += 1;
+            } catch (error) {
+              failed.push(`${ref.relPath}: ${errorMessageText(error)}`);
+            }
+          }
           sender.send("codex-surface:event", {
             type: "attachment-diagnostic",
-            message: `Added ${resolved.relPath || fileRef} to Project stash.`,
+            message: failed.length
+              ? `Added ${added} file${added === 1 ? "" : "s"} to Project stash; ${failed.length} failed.`
+              : `Added ${added} file${added === 1 ? "" : "s"} to Project stash.`,
           });
         } catch (error) {
-          sender.send("codex-surface:event", { type: "attachment-diagnostic", message: `Project stash add failed: ${error.message}` });
+          sender.send("codex-surface:event", { type: "attachment-diagnostic", message: `Project stash add failed: ${errorMessageText(error)}` });
         }
       },
     });
-    if (threadId) {
+    if (threadId && fileRef) {
       try {
         const project = await getProjectById(projectId);
         const matches = bindingsForCodexThread(project, threadId);
@@ -4403,13 +4461,14 @@ async function openContextMenu(event, request = {}) {
             label: `Send to ${targetTitle} for review`,
             click: async () => {
               try {
-                const result = await sendCodexFileToLinkedChatgpt(projectId, threadId, fileRef);
+                const resolved = await resolveProjectFileReferenceWithFallback(projectId, fileRef, fallbackFileRef);
+                const result = await sendCodexFileToLinkedChatgpt(projectId, threadId, resolved.relPath || fileRef);
                 sender.send("codex-surface:event", {
                   type: "attachment-diagnostic",
                   message: `Sent ${result.relPath} to linked ChatGPT thread "${result.chatThreadTitle}".`,
                 });
               } catch (error) {
-                sender.send("codex-surface:event", { type: "attachment-diagnostic", message: `ChatGPT review send failed: ${error.message}` });
+                sender.send("codex-surface:event", { type: "attachment-diagnostic", message: `ChatGPT review send failed: ${errorMessageText(error)}` });
               }
             },
           });

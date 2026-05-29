@@ -744,6 +744,26 @@ function sortCodexThreadEntries(entries) {
   });
 }
 
+function timestampMs(value) {
+  if (!value) return null;
+  const ms = Date.parse(String(value));
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function codexThreadActivityStamp({ indexUpdatedAt = "", sessionFileMtime = "", createdAt = "" } = {}) {
+  const candidates = [
+    { source: "session_file", value: sessionFileMtime, ms: timestampMs(sessionFileMtime) },
+    { source: "session_index", value: indexUpdatedAt, ms: timestampMs(indexUpdatedAt) },
+    { source: "session_created", value: createdAt, ms: timestampMs(createdAt) },
+  ].filter((candidate) => candidate.value && candidate.ms !== null);
+  candidates.sort((a, b) => b.ms - a.ms);
+  const selected = candidates[0];
+  return {
+    updatedAt: selected?.value || "",
+    updatedAtSource: selected?.source || "unknown",
+  };
+}
+
 function nullableFiniteNumber(value) {
   if (value === null || value === undefined || value === "") return null;
   const number = Number(value);
@@ -794,13 +814,17 @@ async function listCodexThreadsFromHome(codexHome, options = {}) {
   if (fastMode) {
     const fastEntries = [];
     for (const row of rows) {
+      const indexUpdatedAt = String(row.updated_at || "");
       fastEntries.push({
         threadId: String(row.id || ""),
         title: String(row.thread_name || "Untitled Codex thread"),
-        updatedAt: String(row.updated_at || ""),
+        updatedAt: indexUpdatedAt,
+        indexUpdatedAt,
+        updatedAtSource: indexUpdatedAt ? "session_index" : "unknown",
         cwd: "",
         originator: inferredOriginator,
         sessionFilePath: "",
+        sessionFileMtime: "",
         createdAt: "",
         sourceHome: codexHome,
         parentThreadId: "",
@@ -851,6 +875,7 @@ async function listCodexThreadsFromHome(codexHome, options = {}) {
       depth: subagentMeta.depth,
       isSubagent: subagentMeta.isSubagent,
       sessionFileMtimeMs: Number.isFinite(Number(stat?.mtimeMs)) ? Math.round(Number(stat.mtimeMs)) : 0,
+      sessionFileMtime: stat?.mtime instanceof Date ? stat.mtime.toISOString() : "",
       sessionFileSizeBytes: Number.isFinite(Number(stat?.size)) ? Math.round(Number(stat.size)) : 0,
     });
     return metadataById.size >= wantedIds.size;
@@ -863,14 +888,21 @@ async function listCodexThreadsFromHome(codexHome, options = {}) {
     const originator = String(meta.originator || inferredOriginator || "unknown");
     if (originators.size && !originators.has(originator)) continue;
     if (!includeSubagents && meta.isSubagent) continue;
+    const indexUpdatedAt = String(row.updated_at || "");
+    const createdAt = String(meta.createdAt || "");
+    const sessionFileMtime = String(meta.sessionFileMtime || "");
+    const activity = codexThreadActivityStamp({ indexUpdatedAt, sessionFileMtime, createdAt });
     entries.push({
       threadId: sessionId,
       title: String(row.thread_name || "Untitled Codex thread"),
-      updatedAt: String(row.updated_at || ""),
+      updatedAt: activity.updatedAt,
+      indexUpdatedAt,
+      updatedAtSource: activity.updatedAtSource,
       cwd: String(meta.cwd || ""),
       originator,
       sessionFilePath: String(meta.filePath || ""),
-      createdAt: String(meta.createdAt || ""),
+      sessionFileMtime,
+      createdAt,
       sourceHome: codexHome,
       parentThreadId: String(meta.parentThreadId || ""),
       agentRole: String(meta.agentRole || ""),

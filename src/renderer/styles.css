@@ -542,7 +542,8 @@ button.typed-token {
 .assistant-md-quote,
 .assistant-md-heading,
 .assistant-md-list,
-.assistant-md-codeblock {
+.assistant-md-codeblock,
+.assistant-md-table-wrap {
   margin: 0;
   min-width: 0;
 }
@@ -621,12 +622,14 @@ button.typed-token {
 }
 
 .assistant-md-codeblock {
+  display: block;
   overflow: hidden;
   border: 1px solid rgba(121, 184, 255, 0.22);
   border-radius: 12px;
   background: rgba(6, 10, 16, 0.72);
 }
 
+.assistant-md-codeblock-label,
 .assistant-md-codeblock figcaption {
   padding: 7px 10px;
   border-bottom: 1px solid rgba(121, 184, 255, 0.14);
@@ -637,15 +640,62 @@ button.typed-token {
   letter-spacing: 0.08em;
 }
 
+.assistant-md-codeblock-body,
 .assistant-md-codeblock pre {
+  display: block;
+  min-height: 1.55em;
   margin: 0;
   padding: 11px 12px;
   overflow-x: auto;
-  white-space: pre;
-  color: #dceaff;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #eaf3ff !important;
+  -webkit-text-fill-color: #eaf3ff;
+  background: rgba(2, 4, 8, 0.58);
   font-family: var(--mono);
   font-size: 12px;
   line-height: 1.55;
+}
+
+.assistant-md-table-wrap {
+  overflow-x: auto;
+  border: 1px solid rgba(121, 184, 255, 0.2);
+  border-radius: 12px;
+  background: rgba(6, 10, 16, 0.52);
+}
+
+.assistant-md-table {
+  width: 100%;
+  min-width: max-content;
+  border-collapse: collapse;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.assistant-md-table th,
+.assistant-md-table td {
+  max-width: 520px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(121, 184, 255, 0.14);
+  border-right: 1px solid rgba(121, 184, 255, 0.1);
+  text-align: left;
+  vertical-align: top;
+  white-space: normal;
+}
+
+.assistant-md-table th:last-child,
+.assistant-md-table td:last-child {
+  border-right: 0;
+}
+
+.assistant-md-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.assistant-md-table th {
+  color: #f4f8ff;
+  background: rgba(121, 184, 255, 0.1);
+  font-weight: 800;
 }
 
 .assistant-md-inline-code {
@@ -817,6 +867,35 @@ body.dragging .splitter {
   background:
     radial-gradient(circle at 50% 0%, rgba(141, 180, 255, 0.08), transparent 38%),
     rgba(5, 7, 11, 0.8);
+}
+
+.middle-file-content.middle-file-markdown {
+  display: block;
+  line-height: 1.55;
+}
+
+.middle-file-content.middle-file-markdown > * + * {
+  margin-top: 13px;
+}
+
+.middle-file-content.middle-file-markdown .assistant-md-codeblock {
+  overflow: visible;
+}
+
+.middle-file-content.middle-file-markdown .assistant-md-codeblock-body,
+.middle-file-content.middle-file-markdown .assistant-md-codeblock pre {
+  height: auto;
+  max-height: none;
+  overflow-y: visible;
+}
+
+.middle-file-content.middle-file-markdown .assistant-md-table-wrap {
+  max-width: 100%;
+}
+
+.middle-file-content.middle-file-markdown .assistant-md-table {
+  width: max-content;
+  min-width: 100%;
 }
 
 .middle-file-content > pre {
