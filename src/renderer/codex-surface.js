@@ -215,6 +215,8 @@ async function reportAgentGraph() {
     label: agent.label,
     nickname: agent.nickname,
     role: agent.role,
+    model: agent.model || "",
+    reasoningEffort: agent.reasoningEffort || "",
     status: agent.status,
     activityStatus: agent.activityStatus,
     hydrationStatus: agent.hydrationStatus,
@@ -4974,6 +4976,8 @@ function ensureGraphAgent(threadId, patch = {}) {
     status: "discovered",
     activityStatus: "unknown",
     hydrationStatus: "not_requested",
+    model: "",
+    reasoningEffort: "",
     transcript: [],
     turnScopes: {},
     evidenceRefs: [],
@@ -4985,6 +4989,8 @@ function ensureGraphAgent(threadId, patch = {}) {
     parentThreadId: String(patch.parentThreadId || existing.parentThreadId || state.threadId || ""),
     nickname: String(patch.nickname ?? existing.nickname ?? ""),
     role: String(patch.role ?? existing.role ?? ""),
+    model: String(patch.model ?? existing.model ?? ""),
+    reasoningEffort: String(patch.reasoningEffort ?? existing.reasoningEffort ?? ""),
   };
   next.label = graphAgentLabel(next);
   graph.agents.set(id, next);
@@ -5121,6 +5127,8 @@ function collabAgentProjection(threadId, statePatch = {}) {
     role: meta.role,
     lifecycleStatus: statePatch.status || agent?.status || "",
     activityStatus: agent?.activityStatus || "",
+    model: agent?.model || "",
+    reasoningEffort: agent?.reasoningEffort || "",
     clickable: Boolean(id),
   };
 }
@@ -5243,6 +5251,8 @@ function recordSubagentTurnEvent(turnKey, agent, event) {
     displayLabel: agent?.label || agent?.displayLabel || agentDisplayLabel({ threadId: id }),
     status: "unknown",
     activityStatus: "",
+    model: "",
+    reasoningEffort: "",
     clickable,
     events: [],
   };
@@ -5253,6 +5263,8 @@ function recordSubagentTurnEvent(turnKey, agent, event) {
   existing.displayLabel = agent?.label || agent?.displayLabel || existing.displayLabel;
   existing.status = mergedStatus;
   existing.activityStatus = event.activityStatus || existing.activityStatus;
+  existing.model = event.model || agent?.model || existing.model || "";
+  existing.reasoningEffort = event.reasoningEffort || agent?.reasoningEffort || existing.reasoningEffort || "";
   existing.clickable = existing.clickable || clickable;
   existing.events.push(event);
   activity.events.push({ ...event, threadId: id, displayLabel: existing.displayLabel });
@@ -5261,6 +5273,8 @@ function recordSubagentTurnEvent(turnKey, agent, event) {
   const scope = agentTurnScopeEntry(agent, key);
   if (scope) {
     scope.status = mergedStatus;
+    scope.model = event.model || agent?.model || scope.model || "";
+    scope.reasoningEffort = event.reasoningEffort || agent?.reasoningEffort || scope.reasoningEffort || "";
     scope.events.push({ ...event, threadId: id, displayLabel: existing.displayLabel });
   }
 }
@@ -5330,6 +5344,8 @@ function recordCollabTurnActivity(turnKey, item) {
     const agent = ensureGraphAgent(agentProjection.threadId, {
       nickname: agentProjection.nickname || undefined,
       role: agentProjection.role || undefined,
+      model: projection.model || undefined,
+      reasoningEffort: projection.reasoningEffort || undefined,
       status: mergedStatus,
       activityStatus: ["creating", "running", "waiting"].includes(mergedStatus) ? "active" : "last_seen_completed",
     });
@@ -5340,6 +5356,8 @@ function recordCollabTurnActivity(turnKey, item) {
       status: mergedStatus,
       actionStatus: projection.status,
       promptPreview: projection.promptPreview || "",
+      model: projection.model || "",
+      reasoningEffort: projection.reasoningEffort || "",
       observedAt: new Date().toISOString(),
     });
   }
@@ -5386,6 +5404,8 @@ function updateAgentFromCollabItem(item) {
       parentThreadId: collab.senderThreadId || state.threadId,
       nickname: agentState.nickname || undefined,
       role: agentState.role || undefined,
+      model: collab.model || undefined,
+      reasoningEffort: collab.reasoningEffort || undefined,
       status: agentState.status || collab.status || "unknown",
       activityStatus: collab.status === "inProgress" ? "active" : "last_seen_completed",
       hydrationStatus: "metadata_pending",

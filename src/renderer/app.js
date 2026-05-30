@@ -2509,6 +2509,15 @@ function agentStatusLabel(agent = {}) {
   return status.replace(/_/g, " ");
 }
 
+function subAgentRuntimeSpec(agent = {}) {
+  const model = String(agent.model || "").trim();
+  const effort = String(agent.reasoningEffort || agent.reasoning_effort || "").trim();
+  if (model && effort) return `${model} · ${effort}`;
+  if (model) return model;
+  if (effort) return `effort ${effort}`;
+  return "";
+}
+
 function subAgentThreadId(agent = {}) {
   return String(agent.threadId || agent.key?.threadId || "").trim();
 }
@@ -2646,7 +2655,12 @@ function renderSubAgentsPanel() {
     button.setAttribute("aria-selected", selected ? "true" : "false");
     button.dataset.agentThreadId = id;
     const labelText = subAgentTabLabel(agent, labelCounts);
-    button.title = id ? `${labelText} · ${id}` : labelText;
+    const runtimeSpec = subAgentRuntimeSpec(agent);
+    button.title = [
+      labelText,
+      runtimeSpec,
+      id,
+    ].filter(Boolean).join(" · ");
     button.addEventListener("click", () => selectSubAgentTab(id, "operator"));
 
     const label = document.createElement("span");
@@ -2656,6 +2670,12 @@ function renderSubAgentsPanel() {
     status.className = `sub-agent-tab-status${subAgentIsActive(agent) ? " active" : ""}`;
     status.textContent = agentStatusLabel(agent);
     button.append(label, status);
+    if (runtimeSpec) {
+      const runtime = document.createElement("span");
+      runtime.className = "sub-agent-tab-runtime";
+      runtime.textContent = runtimeSpec;
+      button.appendChild(runtime);
+    }
     tabStrip.appendChild(button);
   }
   panel.appendChild(tabStrip);
@@ -2676,6 +2696,13 @@ function renderSubAgentsPanel() {
   thread.className = "muted mono";
   thread.textContent = subAgentThreadId(selectedAgent) || "unknown thread";
   title.append(eyebrow, heading, thread);
+  const runtimeSpec = subAgentRuntimeSpec(selectedAgent);
+  if (runtimeSpec) {
+    const runtime = document.createElement("span");
+    runtime.className = "sub-agent-runtime muted";
+    runtime.textContent = `Worker runtime: ${runtimeSpec}`;
+    title.appendChild(runtime);
+  }
   const status = document.createElement("span");
   status.className = `status-dot ${String(selectedAgent?.status || "") === "failed" ? "failed" : "loaded"}`;
   status.textContent = agentStatusLabel(selectedAgent);
@@ -2774,6 +2801,7 @@ function renderSubAgentsPanel() {
         meta.textContent = [
           event.status ? `status: ${String(event.status).replace(/_/g, " ")}` : "",
           event.actionStatus ? `action: ${String(event.actionStatus).replace(/_/g, " ")}` : "",
+          subAgentRuntimeSpec(event) ? `runtime: ${subAgentRuntimeSpec(event)}` : "",
         ].filter(Boolean).join(" · ");
         row.append(label, meta);
         if (event.promptPreview || event.detail) {
