@@ -317,6 +317,22 @@ await runCase("instruction_omission_ledger_records_omission_truth", () => {
   assert(result.artifact.rawCompiledPromptIncluded === false, "raw compiled prompt leaked into omission ledger");
 });
 
+await runCase("instruction_omission_ledger_source_digest_uses_normalized_scope", () => {
+  const result = store.recordInstructionOmissionLedger(metaSessionId, {
+    ledgerId: "instruction_omission_default_scope",
+    omissions: [],
+  });
+  assert(result.ok, "default-scope omission ledger should pass");
+  const expected = genericDigest({
+    omissions: [],
+    roleId: result.artifact.roleId,
+    targetContextId: result.artifact.targetContextId,
+  });
+  assert(result.artifact.roleId === "worker", "default role not normalized");
+  assert(result.artifact.targetContextId === "context_fixture", "default target context not normalized");
+  assert(result.artifact.sourceDigest === expected, "source digest did not use normalized scope");
+});
+
 await runCase("instruction_omission_ledger_blocks_raw_omission_summary", () => {
   const result = store.recordInstructionOmissionLedger(metaSessionId, {
     ledgerId: "instruction_omission_raw_fixture",
@@ -371,6 +387,33 @@ await runCase("instruction_package_rejects_mismatched_omission_ledger_scope", ()
     omissionLedgerIds: [mismatch.artifact.ledgerId],
   });
   assert(!result.ok && result.blockerCode === "required_evidence_missing", "package accepted mismatched omission ledger");
+});
+
+await runCase("instruction_package_rejects_non_active_contract_id", () => {
+  const draft = store.draftRunContract(metaSessionId, { contractId: "contract_not_active_for_package" });
+  assert(draft.ok, "non-active contract fixture failed");
+  const result = store.recordInstructionPackage(metaSessionId, {
+    packageId: "instruction_package_wrong_contract",
+    contractId: draft.artifact.contractId,
+    roleId: "worker_adversarial_phase",
+    targetContextId: "context_a",
+    omissionLedgerIds: [omissionLedgerId],
+  });
+  assert(!result.ok && result.blockerCode === "contract_digest_mismatch", "package accepted non-active contract id");
+});
+
+await runCase("instruction_package_ignores_caller_epoch_and_version_overrides", () => {
+  const result = store.recordInstructionPackage(metaSessionId, {
+    packageId: "instruction_package_epoch_override",
+    contractVersion: 99,
+    sessionEpoch: 99,
+    roleId: "worker_adversarial_phase",
+    targetContextId: "context_a",
+    omissionLedgerIds: [omissionLedgerId],
+  });
+  assert(result.ok, "instruction package with ignored override should pass");
+  assert(result.artifact.contractVersion === 1, "caller contract version override was persisted");
+  assert(result.artifact.sessionEpoch === 2, "caller session epoch override was persisted");
 });
 
 await runCase("instruction_package_cites_contract_epoch_and_omission_ledger", () => {

@@ -398,6 +398,8 @@ class DirectMetaSessionStore {
 
   recordInstructionOmissionLedger(metaSessionId, input = {}) {
     const ledgerId = normalizeId(input.ledgerId, "instruction_omission_ledger");
+    const roleId = normalizeString(input.roleId, "worker");
+    const targetContextId = normalizeString(input.targetContextId, "context_fixture");
     const omissions = (Array.isArray(input.omissions) ? input.omissions : []).map((omission, index) => ({
       omissionId: normalizeId(omission.omissionId, `instruction_omission_${index + 1}`),
       sourceRef: omission.sourceRef || sourceRefs({ sourceLabel: `omission_${index + 1}` })[0],
@@ -411,11 +413,11 @@ class DirectMetaSessionStore {
       ledgerId,
       metaSessionId,
       packageId: normalizeString(input.packageId, ""),
-      roleId: normalizeString(input.roleId, "worker"),
-      targetContextId: normalizeString(input.targetContextId, "context_fixture"),
+      roleId,
+      targetContextId,
       omissions,
       omissionCount: omissions.length,
-      sourceDigest: genericDigest({ omissions: omissions.map((omission) => omission.sourceRef.sourceDigest), roleId: input.roleId, targetContextId: input.targetContextId }),
+      sourceDigest: genericDigest({ omissions: omissions.map((omission) => omission.sourceRef.sourceDigest), roleId, targetContextId }),
       rawTextIncluded: false,
       rawCompiledPromptIncluded: false,
     });
@@ -427,11 +429,18 @@ class DirectMetaSessionStore {
   recordInstructionPackage(metaSessionId, input = {}) {
     const session = this.readMetaSession(metaSessionId);
     if (!session) return this.recordAttemptFailure(metaSessionId, { attemptKind: "instruction_package", blockerCode: "session_missing", rendererSafeSummary: "Session missing." });
-    const contractId = normalizeString(input.contractId, session.activeContractId);
+    const contractId = normalizeString(session.activeContractId, "");
     if (!contractId) return this.recordAttemptFailure(metaSessionId, { attemptKind: "instruction_package", blockerCode: "contract_missing", rendererSafeSummary: "Instruction package requires an active contract." });
+    const requestedContractId = normalizeString(input.contractId, contractId);
+    if (requestedContractId !== contractId) {
+      return this.recordAttemptFailure(metaSessionId, { attemptKind: "instruction_package", blockerCode: "contract_digest_mismatch", rendererSafeSummary: "Instruction package contract does not match active contract." });
+    }
     const contract = this.readContract(metaSessionId, contractId);
     if (!contract || contract.status !== "active") {
       return this.recordAttemptFailure(metaSessionId, { attemptKind: "instruction_package", blockerCode: "contract_missing", rendererSafeSummary: "Active contract artifact missing." });
+    }
+    if (Number(contract.sessionEpoch) !== Number(session.sessionEpoch)) {
+      return this.recordAttemptFailure(metaSessionId, { attemptKind: "instruction_package", blockerCode: "contract_epoch_stale", rendererSafeSummary: "Active contract epoch does not match session epoch." });
     }
     const packageId = normalizeId(input.packageId, "instruction_package");
     const roleId = normalizeString(input.roleId, "worker");
@@ -460,8 +469,8 @@ class DirectMetaSessionStore {
       packageId,
       metaSessionId,
       contractId,
-      contractVersion: Number(input.contractVersion || contract.contractVersion),
-      sessionEpoch: Number(input.sessionEpoch || contract.sessionEpoch),
+      contractVersion: Number(contract.contractVersion),
+      sessionEpoch: Number(contract.sessionEpoch),
       roleId,
       targetContextId,
       includedSourceRefs,
