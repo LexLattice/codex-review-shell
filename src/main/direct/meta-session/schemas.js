@@ -7,6 +7,8 @@ const {
   DIRECT_HOB_OBLIGATION_STATUSES,
   DIRECT_HOB_READINESS_POSTURES,
   DIRECT_HOB_OBLIGATION_STATUS_SCHEMA,
+  DIRECT_INSTRUCTION_OMISSION_LEDGER_SCHEMA,
+  DIRECT_INSTRUCTION_PACKAGE_SCHEMA,
   DIRECT_META_ATTEMPT_FAILURE_SCHEMA,
   DIRECT_META_ATTEMPT_KINDS,
   DIRECT_META_CURRENT_POINTER_SET_SCHEMA,
@@ -100,6 +102,52 @@ function validateRunContract(value) {
     && isPlainObject(value.evidencePolicy)
     && validateSourceRefs(value.sourceRefs)
     && value.rawTextIncluded === false
+    && hasDigest(value));
+}
+
+function validateInstructionOmissionLedger(value) {
+  return Boolean(isPlainObject(value)
+    && value.schemaVersion === DIRECT_INSTRUCTION_OMISSION_LEDGER_SCHEMA
+    && normalizeString(value.ledgerId, "")
+    && normalizeString(value.metaSessionId, "")
+    && normalizeString(value.roleId, "")
+    && normalizeString(value.targetContextId, "")
+    && Array.isArray(value.omissions)
+    && value.omissions.every((omission) => isPlainObject(omission)
+      && normalizeString(omission.omissionId, "")
+      && isPlainObject(omission.sourceRef)
+      && validateSourceRefs([omission.sourceRef])
+      && ["irrelevant_to_role", "forbidden_by_contract", "stale", "raw_exposure_risk", "scope_excluded", "future"].includes(omission.reason)
+      && normalizeString(omission.rendererSafeSummary, "")
+      && omission.rawTextIncluded === false)
+    && value.omissionCount === value.omissions.length
+    && value.rawTextIncluded === false
+    && value.rawCompiledPromptIncluded === false
+    && hasDigest(value));
+}
+
+function validateInstructionPackage(value) {
+  return Boolean(isPlainObject(value)
+    && value.schemaVersion === DIRECT_INSTRUCTION_PACKAGE_SCHEMA
+    && normalizeString(value.packageId, "")
+    && normalizeString(value.metaSessionId, "")
+    && normalizeString(value.contractId, "")
+    && Number.isInteger(value.contractVersion)
+    && value.contractVersion >= 1
+    && Number.isInteger(value.sessionEpoch)
+    && value.sessionEpoch >= 1
+    && normalizeString(value.roleId, "")
+    && normalizeString(value.targetContextId, "")
+    && validateSourceRefs(value.includedSourceRefs)
+    && validateArtifactRefs(value.omissionLedgerRefs)
+    && value.omissionLedgerRefs.length > 0
+    && normalizeString(value.compiledMessagesDigest, "").startsWith("sha256:")
+    && Array.isArray(value.authoritySummary)
+    && Array.isArray(value.forbiddenActions)
+    && normalizeString(value.outputArtifactSchemaRef, "")
+    && value.rawCompiledPromptIncluded === false
+    && value.launchEnvelopePersisted === false
+    && value.workerLaunchAuthority === false
     && hasDigest(value));
 }
 
@@ -288,6 +336,8 @@ function validateDirectMetaSessionArtifact(value) {
     case DIRECT_META_SESSION_SCHEMA: return validateMetaSession(value);
     case DIRECT_EXECUTION_CONTEXT_REGISTRY_SCHEMA: return validateExecutionContextRegistry(value);
     case DIRECT_RUN_CONTRACT_SCHEMA: return validateRunContract(value);
+    case DIRECT_INSTRUCTION_OMISSION_LEDGER_SCHEMA: return validateInstructionOmissionLedger(value);
+    case DIRECT_INSTRUCTION_PACKAGE_SCHEMA: return validateInstructionPackage(value);
     case DIRECT_META_STATE_OBJECT_DESCRIPTOR_SCHEMA: return validateStateObjectDescriptor(value);
     case DIRECT_HOB_OBLIGATION_STATUS_SCHEMA: return validateHobObligationStatus(value);
     case DIRECT_TRANSITION_CLAIM_SCHEMA: return validateTransitionClaim(value);
@@ -312,6 +362,8 @@ module.exports = {
   validateExecutionContextRegistry,
   validateHobObligationStatus,
   validateIndex,
+  validateInstructionOmissionLedger,
+  validateInstructionPackage,
   validateLedgerEvent,
   validateLedgerManifest,
   validateMetaSession,

@@ -7,6 +7,8 @@ const DIRECT_META_SESSION_SCHEMA = "direct_meta_session@1";
 const DIRECT_EXECUTION_CONTEXT_SCHEMA = "direct_execution_context@1";
 const DIRECT_EXECUTION_CONTEXT_REGISTRY_SCHEMA = "direct_execution_context_registry@1";
 const DIRECT_RUN_CONTRACT_SCHEMA = "direct_run_contract@1";
+const DIRECT_INSTRUCTION_OMISSION_LEDGER_SCHEMA = "direct_instruction_omission_ledger@1";
+const DIRECT_INSTRUCTION_PACKAGE_SCHEMA = "direct_instruction_package@1";
 const DIRECT_META_STATE_OBJECT_DESCRIPTOR_SCHEMA = "direct_meta_state_object_descriptor@1";
 const DIRECT_HOB_OBLIGATION_STATUS_SCHEMA = "direct_meta_hob_obligation_status@1";
 const DIRECT_TRANSITION_CLAIM_SCHEMA = "direct_meta_transition_claim@1";
@@ -45,6 +47,8 @@ const DIRECT_META_SOURCE_KINDS = Object.freeze([
   "prior_artifact",
   "contract",
   "context_registry",
+  "instruction_package",
+  "omission_ledger",
   "hob_row",
   "otb_row",
   "brl_row",
@@ -58,6 +62,8 @@ const DIRECT_META_EVENT_KINDS = Object.freeze([
   "run_contract_drafted",
   "run_contract_locked",
   "run_contract_activated",
+  "instruction_omission_ledger_recorded",
+  "instruction_package_recorded",
   "hob_obligation_status_recorded",
   "transition_claim_recorded",
   "upstream_discriminator_recorded",
@@ -70,6 +76,8 @@ const DIRECT_META_ATTEMPT_KINDS = Object.freeze([
   "session",
   "context_registry",
   "contract",
+  "instruction_omission_ledger",
+  "instruction_package",
   "descriptor",
   "hob",
   "transition_claim",
@@ -107,6 +115,8 @@ module.exports = {
   DIRECT_HOB_OBLIGATION_STATUSES,
   DIRECT_HOB_READINESS_POSTURES,
   DIRECT_HOB_OBLIGATION_STATUS_SCHEMA,
+  DIRECT_INSTRUCTION_OMISSION_LEDGER_SCHEMA,
+  DIRECT_INSTRUCTION_PACKAGE_SCHEMA,
   DIRECT_META_ARTIFACT_REF_SCHEMA,
   DIRECT_META_ATTEMPT_FAILURE_SCHEMA,
   DIRECT_META_ATTEMPT_KINDS,

@@ -53,6 +53,8 @@ function artifactRefFromArtifact(artifactKind, artifact, storageSlot = "") {
   const artifactId = artifact?.metaSessionId
     || artifact?.registryId
     || artifact?.contractId
+    || artifact?.ledgerId
+    || artifact?.packageId
     || artifact?.id
     || artifact?.rowId
     || artifact?.transitionClaimId

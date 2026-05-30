@@ -30,6 +30,8 @@ function buildDirectMetaSessionStatusProjection(input = {}) {
   const counts = {
     contexts: artifactCount(sessionDir, "execution-context-registries"),
     contracts: artifactCount(sessionDir, "run-contracts"),
+    instructionPackages: artifactCount(sessionDir, "instruction-packages"),
+    omissionLedgers: artifactCount(sessionDir, "instruction-omission-ledgers"),
     descriptors: artifactCount(sessionDir, "state-object-descriptors"),
     hobRows: artifactCount(sessionDir, "hob-obligation-status"),
     transitionClaims: artifactCount(sessionDir, "transition-claims"),

@@ -5,6 +5,8 @@ const path = require("node:path");
 const {
   DIRECT_BRL_REPLAY_LOCK_MANIFEST_SCHEMA,
   DIRECT_EXECUTION_CONTEXT_REGISTRY_SCHEMA,
+  DIRECT_INSTRUCTION_OMISSION_LEDGER_SCHEMA,
+  DIRECT_INSTRUCTION_PACKAGE_SCHEMA,
   DIRECT_META_ATTEMPT_FAILURE_SCHEMA,
   DIRECT_META_SESSION_INDEX_SCHEMA,
   DIRECT_META_SESSION_SCHEMA,
@@ -33,6 +35,8 @@ const ARTIFACT_FOLDERS = Object.freeze({
   context_registry: "execution-context-registries",
   descriptor: "state-object-descriptors",
   contract: "run-contracts",
+  omission_ledger: "instruction-omission-ledgers",
+  instruction_package: "instruction-packages",
   hob: "hob-obligation-status",
   transition_claim: "transition-claims",
   upstream_discriminator: "upstream-discriminators",
@@ -345,6 +349,14 @@ class DirectMetaSessionStore {
     return readJsonFile(this.contractPath(metaSessionId, contractId));
   }
 
+  omissionLedgerPath(metaSessionId, ledgerId) {
+    return this.artifactPath(metaSessionId, ARTIFACT_FOLDERS.omission_ledger, ledgerId);
+  }
+
+  readOmissionLedger(metaSessionId, ledgerId) {
+    return readJsonFile(this.omissionLedgerPath(metaSessionId, ledgerId));
+  }
+
   lockRunContract(metaSessionId, contractId) {
     const contract = this.readContract(metaSessionId, contractId);
     if (!contract) return this.recordAttemptFailure(metaSessionId, { attemptKind: "contract", blockerCode: "contract_missing", rendererSafeSummary: "Contract missing." });
@@ -382,6 +394,89 @@ class DirectMetaSessionStore {
       writeJsonAtomic(this.sessionPath(metaSessionId), updatedSession);
     }
     return result;
+  }
+
+  recordInstructionOmissionLedger(metaSessionId, input = {}) {
+    const ledgerId = normalizeId(input.ledgerId, "instruction_omission_ledger");
+    const omissions = (Array.isArray(input.omissions) ? input.omissions : []).map((omission, index) => ({
+      omissionId: normalizeId(omission.omissionId, `instruction_omission_${index + 1}`),
+      sourceRef: omission.sourceRef || sourceRefs({ sourceLabel: `omission_${index + 1}` })[0],
+      reason: normalizeString(omission.reason, "scope_excluded"),
+      inheritedObligationStatus: normalizeString(omission.inheritedObligationStatus, "deferred_with_risk"),
+      rendererSafeSummary: normalizeString(omission.rendererSafeSummary, "Instruction source omitted"),
+      rawTextIncluded: false,
+    }));
+    const omissionLedger = withArtifactDigest("instruction_omission_ledger", {
+      schemaVersion: DIRECT_INSTRUCTION_OMISSION_LEDGER_SCHEMA,
+      ledgerId,
+      metaSessionId,
+      packageId: normalizeString(input.packageId, ""),
+      roleId: normalizeString(input.roleId, "worker"),
+      targetContextId: normalizeString(input.targetContextId, "context_fixture"),
+      omissions,
+      omissionCount: omissions.length,
+      sourceDigest: genericDigest({ omissions: omissions.map((omission) => omission.sourceRef.sourceDigest), roleId: input.roleId, targetContextId: input.targetContextId }),
+      rawTextIncluded: false,
+      rawCompiledPromptIncluded: false,
+    });
+    return this.writeValidatedArtifact(metaSessionId, "instruction_omission_ledger", ARTIFACT_FOLDERS.omission_ledger, ledgerId, omissionLedger, "instruction_omission_ledger_recorded", {
+      attemptKind: "instruction_omission_ledger",
+    });
+  }
+
+  recordInstructionPackage(metaSessionId, input = {}) {
+    const session = this.readMetaSession(metaSessionId);
+    if (!session) return this.recordAttemptFailure(metaSessionId, { attemptKind: "instruction_package", blockerCode: "session_missing", rendererSafeSummary: "Session missing." });
+    const contractId = normalizeString(input.contractId, session.activeContractId);
+    if (!contractId) return this.recordAttemptFailure(metaSessionId, { attemptKind: "instruction_package", blockerCode: "contract_missing", rendererSafeSummary: "Instruction package requires an active contract." });
+    const contract = this.readContract(metaSessionId, contractId);
+    if (!contract || contract.status !== "active") {
+      return this.recordAttemptFailure(metaSessionId, { attemptKind: "instruction_package", blockerCode: "contract_missing", rendererSafeSummary: "Active contract artifact missing." });
+    }
+    const packageId = normalizeId(input.packageId, "instruction_package");
+    const roleId = normalizeString(input.roleId, "worker");
+    const targetContextId = normalizeString(input.targetContextId, "context_fixture");
+    const omissionLedgerRefs = [];
+    const omissionLedgerIds = Array.isArray(input.omissionLedgerIds) ? input.omissionLedgerIds : [];
+    if (!omissionLedgerIds.length) {
+      return this.recordAttemptFailure(metaSessionId, { attemptKind: "instruction_package", blockerCode: "required_evidence_missing", rendererSafeSummary: "Instruction package requires an omission ledger." });
+    }
+    for (const ledgerId of omissionLedgerIds) {
+      const omissionLedger = this.readOmissionLedger(metaSessionId, ledgerId);
+      if (!omissionLedger) {
+        return this.recordAttemptFailure(metaSessionId, { attemptKind: "instruction_package", blockerCode: "required_evidence_missing", rendererSafeSummary: "Instruction omission ledger missing." });
+      }
+      if (!validateDirectMetaSessionArtifact(omissionLedger)) {
+        return this.recordAttemptFailure(metaSessionId, { attemptKind: "instruction_package", blockerCode: "schema_invalid", rendererSafeSummary: "Instruction omission ledger invalid." });
+      }
+      if (omissionLedger.metaSessionId !== metaSessionId || omissionLedger.roleId !== roleId || omissionLedger.targetContextId !== targetContextId) {
+        return this.recordAttemptFailure(metaSessionId, { attemptKind: "instruction_package", blockerCode: "required_evidence_missing", rendererSafeSummary: "Instruction omission ledger scope mismatch." });
+      }
+      omissionLedgerRefs.push(artifactRefFromArtifact("instruction_omission_ledger", omissionLedger, this.artifactSlot(metaSessionId, ARTIFACT_FOLDERS.omission_ledger, ledgerId)));
+    }
+    const includedSourceRefs = Array.isArray(input.includedSourceRefs) ? input.includedSourceRefs : sourceRefs(input);
+    const instructionPackage = withArtifactDigest("instruction_package", {
+      schemaVersion: DIRECT_INSTRUCTION_PACKAGE_SCHEMA,
+      packageId,
+      metaSessionId,
+      contractId,
+      contractVersion: Number(input.contractVersion || contract.contractVersion),
+      sessionEpoch: Number(input.sessionEpoch || contract.sessionEpoch),
+      roleId,
+      targetContextId,
+      includedSourceRefs,
+      omissionLedgerRefs,
+      compiledMessagesDigest: normalizeString(input.compiledMessagesDigest, genericDigest({ includedSourceRefs, omissionLedgerRefs, contractId, packageId })),
+      authoritySummary: Array.isArray(input.authoritySummary) ? input.authoritySummary : ["diagnostic instruction package only"],
+      forbiddenActions: Array.isArray(input.forbiddenActions) ? input.forbiddenActions : ["worker_launch", "provider_transport", "runtime_enforce"],
+      outputArtifactSchemaRef: normalizeString(input.outputArtifactSchemaRef, "future_worker_artifact@1"),
+      rawCompiledPromptIncluded: false,
+      launchEnvelopePersisted: false,
+      workerLaunchAuthority: false,
+    });
+    return this.writeValidatedArtifact(metaSessionId, "instruction_package", ARTIFACT_FOLDERS.instruction_package, packageId, instructionPackage, "instruction_package_recorded", {
+      attemptKind: "instruction_package",
+    });
   }
 
   recordHobObligationStatus(metaSessionId, input = {}) {
