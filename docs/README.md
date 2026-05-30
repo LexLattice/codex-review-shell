@@ -37,6 +37,8 @@
 - [Direct Headless Runtime Parity Harness Spec](./DIRECT_HEADLESS_RUNTIME_PARITY_HARNESS_SPEC.md)
 - [Direct Real Usage Test Matrix](./DIRECT_REAL_USAGE_TEST_MATRIX.md)
 - [Direct Recursive ODEU Build Meta-Program](./DIRECT_RECURSIVE_ODEU_BUILD_META_PROGRAM.md)
+- [Direct Meta-Session Control Plane Spec](./DIRECT_META_SESSION_CONTROL_PLANE_SPEC.md)
+- [Direct Meta-Session Control Plane Implementation Spec](./DIRECT_META_SESSION_CONTROL_PLANE_IMPLEMENTATION_SPEC.md)
 - [Direct Text-Only Runtime Tier And Toggle Spec](./DIRECT_TEXT_ONLY_RUNTIME_TIER_AND_TOGGLE_SPEC.md)
 - [Direct Text-Only Multi-Turn Recent Dialogue Spec](./DIRECT_TEXT_ONLY_MULTITURN_RECENT_DIALOGUE_SPEC.md)
 - [Direct Implementation-Lane Read-Only Tool UI Spec](./DIRECT_IMPLEMENTATION_LANE_READONLY_TOOL_UI_SPEC.md)
