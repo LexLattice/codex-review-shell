@@ -2510,8 +2510,8 @@ function agentStatusLabel(agent = {}) {
 }
 
 function subAgentRuntimeSpec(agent = {}) {
-  const model = String(agent.model || "").trim();
-  const effort = String(agent.reasoningEffort || agent.reasoning_effort || "").trim();
+  const model = String(agent?.model || "").trim();
+  const effort = String(agent?.reasoningEffort || agent?.reasoning_effort || "").trim();
   if (model && effort) return `${model} · ${effort}`;
   if (model) return model;
   if (effort) return `effort ${effort}`;
@@ -2798,10 +2798,11 @@ function renderSubAgentsPanel() {
         const label = document.createElement("strong");
         label.textContent = String(event.label || event.kind || "Sub-agent event").replace(/_/g, " ");
         const meta = document.createElement("span");
+        const runtime = subAgentRuntimeSpec(event);
         meta.textContent = [
           event.status ? `status: ${String(event.status).replace(/_/g, " ")}` : "",
           event.actionStatus ? `action: ${String(event.actionStatus).replace(/_/g, " ")}` : "",
-          subAgentRuntimeSpec(event) ? `runtime: ${subAgentRuntimeSpec(event)}` : "",
+          runtime ? `runtime: ${runtime}` : "",
         ].filter(Boolean).join(" · ");
         row.append(label, meta);
         if (event.promptPreview || event.detail) {
