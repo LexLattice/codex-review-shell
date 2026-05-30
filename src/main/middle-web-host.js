@@ -1,4 +1,10 @@
 const { WebContentsView, clipboard, session, shell } = require("electron");
+const fs = require("node:fs");
+const path = require("node:path");
+const {
+  blockedMessage,
+  navigationDecision,
+} = require("./external-navigation-policy");
 const {
   PLANE_ZOOM_DEFAULT,
   PLANE_ZOOM_MAX,
@@ -9,6 +15,8 @@ const {
 } = require("../shared/plane-zoom");
 
 const MIDDLE_WEB_PARTITION = "persist:middle-web";
+const MIDDLE_WEB_HISTORY_SCHEMA_VERSION = 1;
+const MIDDLE_WEB_HISTORY_LIMIT = 80;
 
 function nowIso() {
   return new Date().toISOString();
@@ -31,24 +39,6 @@ function sanitizeBounds(bounds) {
   };
 }
 
-function safeHostname(parsed) {
-  return String(parsed?.hostname || "").replace(/^\[|\]$/g, "").toLowerCase();
-}
-
-function isLoopbackHost(hostname) {
-  const host = String(hostname || "").replace(/^\[|\]$/g, "").toLowerCase();
-  if (host === "localhost" || host.endsWith(".localhost") || host === "::1") return true;
-  const octets = host.split(".");
-  if (octets.length !== 4 || octets[0] !== "127") return false;
-  return octets.every((part) => /^\d+$/.test(part) && Number(part) >= 0 && Number(part) <= 255);
-}
-
-function securityPostureFor(parsed) {
-  if (parsed.protocol === "https:") return "https";
-  if (parsed.protocol === "http:" && isLoopbackHost(safeHostname(parsed))) return "loopback_http";
-  return "unknown";
-}
-
 function sanitizeSource(source) {
   const surface = ["codex", "chatgpt", "shell"].includes(source?.surface) ? source.surface : "shell";
   return {
@@ -60,56 +50,31 @@ function sanitizeSource(source) {
   };
 }
 
-function navigationDecision(rawUrl) {
-  let parsed;
-  try {
-    parsed = new URL(String(rawUrl || ""));
-  } catch {
-    return { action: "block", reason: "invalid_url" };
-  }
-
-  if (parsed.username || parsed.password) {
-    return { action: "block", reason: "embedded_credentials" };
-  }
-
-  if (parsed.protocol === "https:") {
-    return {
-      action: "allow",
-      normalizedUrl: parsed.toString(),
-      displayUrl: parsed.toString(),
-      origin: parsed.origin,
-      securityPosture: securityPostureFor(parsed),
-    };
-  }
-
-  if (parsed.protocol === "http:") {
-    if (!isLoopbackHost(safeHostname(parsed))) {
-      return { action: "block", reason: "insecure_http" };
-    }
-    return {
-      action: "allow",
-      normalizedUrl: parsed.toString(),
-      displayUrl: parsed.toString(),
-      origin: parsed.origin,
-      securityPosture: securityPostureFor(parsed),
-    };
-  }
-
-  return { action: "block", reason: "unsupported_protocol" };
+function sanitizeHistoryEntry(entry) {
+  const decision = navigationDecision(entry?.reopenUrl || entry?.url || entry?.displayUrl || "");
+  if (decision.action !== "allow") return null;
+  return {
+    id: normalizeString(entry?.id, decision.historyId),
+    // Main-owned durable URL for reopening. Do not expose this through history().
+    reopenUrl: decision.normalizedUrl,
+    displayUrl: decision.historyDisplayUrl,
+    origin: decision.origin,
+    title: normalizeString(entry?.title, decision.origin || decision.displayUrl).slice(0, 180),
+    securityPosture: decision.securityPosture,
+    lastSource: entry?.lastSource ? sanitizeSource(entry.lastSource) : null,
+    firstOpenedAt: normalizeString(entry?.firstOpenedAt, normalizeString(entry?.lastOpenedAt, nowIso())),
+    lastOpenedAt: normalizeString(entry?.lastOpenedAt, nowIso()),
+    visitCount: Math.max(1, Number(entry?.visitCount) || 1),
+  };
 }
 
-function blockedMessage(reason) {
-  const labels = {
-    unsupported_protocol: "Blocked: unsupported protocol",
-    insecure_http: "Blocked: non-loopback HTTP is disabled",
-    embedded_credentials: "Blocked: URL contains embedded credentials",
-    invalid_url: "Blocked: invalid URL",
-    opaque_origin: "Blocked: opaque origin",
-    policy_denied: "Blocked by middle Web policy",
-    download_blocked: "Blocked: downloads are disabled in v0",
-    popup_blocked: "Blocked: navigation attempted to open a popup",
-  };
-  return labels[reason] || labels.policy_denied;
+function publicHistoryEntry(entry) {
+  const {
+    reopenUrl: _reopenUrl,
+    url: _url,
+    ...safeEntry
+  } = entry || {};
+  return { ...safeEntry };
 }
 
 function isLoadUrlAbort(error) {
@@ -145,7 +110,103 @@ class MiddleWebHost {
     this.zoomFactor = PLANE_ZOOM_DEFAULT;
     this.webSession = session.fromPartition(MIDDLE_WEB_PARTITION);
     this.downloadHandler = null;
+    this.historyStorePath = "";
+    this.historyEntries = [];
+    this.historyPersistChain = Promise.resolve();
     this.configureSession();
+  }
+
+  setHistoryStorePath(storePath) {
+    this.historyStorePath = normalizeString(storePath, "");
+    if (this.historyStorePath) {
+      try {
+        fs.mkdirSync(path.dirname(this.historyStorePath), { recursive: true });
+      } catch {
+        // History is a convenience surface; persistence failures should not block browsing.
+      }
+    }
+    this.loadHistory();
+    this.emitHistory();
+  }
+
+  loadHistory() {
+    if (!this.historyStorePath) return;
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.historyStorePath, "utf8"));
+      const entries = Array.isArray(raw?.entries) ? raw.entries : [];
+      this.historyEntries = entries
+        .map(sanitizeHistoryEntry)
+        .filter(Boolean)
+        .sort((a, b) => String(b.lastOpenedAt).localeCompare(String(a.lastOpenedAt)))
+        .slice(0, MIDDLE_WEB_HISTORY_LIMIT);
+    } catch (error) {
+      if (error?.code !== "ENOENT") {
+        this.historyEntries = [];
+      }
+    }
+  }
+
+  persistHistory() {
+    if (!this.historyStorePath) return;
+    const payloadText = `${JSON.stringify({
+      schemaVersion: MIDDLE_WEB_HISTORY_SCHEMA_VERSION,
+      updatedAt: nowIso(),
+      entries: this.historyEntries,
+    }, null, 2)}\n`;
+    const tmpPath = `${this.historyStorePath}.${process.pid}.${Date.now()}.tmp`;
+    this.historyPersistChain = this.historyPersistChain
+      .catch(() => {})
+      .then(async () => {
+        try {
+          await fs.promises.writeFile(tmpPath, payloadText, "utf8");
+          await fs.promises.rename(tmpPath, this.historyStorePath);
+        } catch {
+          try {
+            await fs.promises.unlink(tmpPath);
+          } catch {
+            // Best-effort cleanup only.
+          }
+        }
+      });
+    return this.historyPersistChain;
+  }
+
+  emitHistory() {
+    this.emitShellEvent({
+      type: "middle-web-history",
+      entries: this.history(),
+      limit: MIDDLE_WEB_HISTORY_LIMIT,
+      at: nowIso(),
+    });
+  }
+
+  recordHistory(options = {}) {
+    if (!this.state.hasPage || this.state.lastError) return;
+    const decision = navigationDecision(this.rawUrl || this.state.displayUrl);
+    if (decision.action !== "allow") return;
+    const now = nowIso();
+    const id = decision.historyId;
+    const existing = this.historyEntries.find((entry) => entry.id === id);
+    if (options.bumpVisit === false && !existing) return;
+    const nextEntry = sanitizeHistoryEntry({
+      id,
+      reopenUrl: decision.normalizedUrl,
+      displayUrl: decision.historyDisplayUrl,
+      origin: decision.origin,
+      title: normalizeString(this.state.title, existing?.title || decision.origin || decision.displayUrl),
+      securityPosture: decision.securityPosture,
+      lastSource: this.state.lastSource || existing?.lastSource || null,
+      firstOpenedAt: existing?.firstOpenedAt || now,
+      lastOpenedAt: options.bumpVisit === false ? existing?.lastOpenedAt || now : now,
+      visitCount: options.bumpVisit === false ? existing?.visitCount || 1 : (Number(existing?.visitCount) || 0) + 1,
+    });
+    if (!nextEntry) return;
+    this.historyEntries = [
+      nextEntry,
+      ...this.historyEntries.filter((entry) => entry.id !== nextEntry.id),
+    ].slice(0, MIDDLE_WEB_HISTORY_LIMIT);
+    this.persistHistory();
+    this.emitHistory();
   }
 
   configureSession() {
@@ -210,6 +271,7 @@ class MiddleWebHost {
     });
     contents.on("did-stop-loading", () => {
       this.updateFromContents({ loading: false });
+      this.recordHistory({ bumpVisit: true });
       this.emitState("loaded");
     });
     contents.on("did-navigate", (_event, url) => {
@@ -222,6 +284,7 @@ class MiddleWebHost {
       const decision = navigationDecision(url);
       if (decision.action === "allow") this.applyAllowedUrl(decision, { emit: false });
       this.updateFromContents();
+      this.recordHistory({ bumpVisit: true });
       this.emitState("state");
     });
     contents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
@@ -236,6 +299,7 @@ class MiddleWebHost {
     });
     contents.on("page-title-updated", (_event, title) => {
       this.state = { ...this.state, title: normalizeString(title, this.state.title) };
+      this.recordHistory({ bumpVisit: false });
       this.emitState("state");
     });
   }
@@ -314,6 +378,37 @@ class MiddleWebHost {
       ...extra,
       at: nowIso(),
     });
+  }
+
+  history() {
+    return this.historyEntries.map(publicHistoryEntry);
+  }
+
+  async openHistoryEntry(request = {}) {
+    const id = normalizeString(request.id, "");
+    const entry = this.historyEntries.find((candidate) => candidate.id === id);
+    if (!entry) return { ok: false, error: "history_entry_not_found" };
+    return this.openLink({
+      url: entry.reopenUrl || entry.displayUrl,
+      disposition: "middle-web",
+      source: {
+        surface: "shell",
+        ...(entry.lastSource || {}),
+        itemId: `history:${entry.id || ""}`,
+      },
+      userGesture: request.userGesture !== false,
+    });
+  }
+
+  async pruneHistory(request = {}) {
+    const id = normalizeString(request.id, "");
+    const clearAll = Boolean(request.clearAll);
+    const before = this.historyEntries.length;
+    if (clearAll) this.historyEntries = [];
+    else if (id) this.historyEntries = this.historyEntries.filter((entry) => entry.id !== id);
+    await this.persistHistory();
+    this.emitHistory();
+    return { ok: true, removed: before - this.historyEntries.length, entries: this.history() };
   }
 
   setNativeSurfacesVisible(visible) {
@@ -441,7 +536,7 @@ class MiddleWebHost {
   copyUrl() {
     const decision = navigationDecision(this.rawUrl || this.state.displayUrl);
     if (decision.action !== "allow") return { ok: false, error: decision.reason };
-    clipboard.writeText(decision.displayUrl);
+    clipboard.writeText(decision.normalizedUrl);
     return { ok: true, displayUrl: decision.displayUrl };
   }
 

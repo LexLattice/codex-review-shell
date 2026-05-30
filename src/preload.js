@@ -1,5 +1,19 @@
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 const { PLANE_ZOOM_POLICY, clampZoomFactor, zoomDeltaForDirection } = require("./shared/plane-zoom");
+
+function fileSystemPathForFile(file) {
+  try {
+    return webUtils?.getPathForFile?.(file) || file?.path || "";
+  } catch {
+    return "";
+  }
+}
+
+function fileSystemPathsForFiles(files) {
+  return Array.from(files || [])
+    .map((file) => fileSystemPathForFile(file))
+    .filter(Boolean);
+}
 
 contextBridge.exposeInMainWorld("workspaceShell", {
   loadConfig: () => ipcRenderer.invoke("config:load"),
@@ -20,14 +34,26 @@ contextBridge.exposeInMainWorld("workspaceShell", {
   middleWebOpenExternal: () => ipcRenderer.invoke("middle-web:open-external"),
   middleWebCopyUrl: () => ipcRenderer.invoke("middle-web:copy-url"),
   middleWebSnapshot: () => ipcRenderer.invoke("middle-web:snapshot"),
+  middleWebHistory: () => ipcRenderer.invoke("middle-web:history"),
+  middleWebOpenHistoryEntry: (payload = {}) => ipcRenderer.invoke("middle-web:open-history-entry", payload),
+  middleWebPruneHistory: (payload = {}) => ipcRenderer.invoke("middle-web:prune-history", payload),
   adjustPlaneZoom: (plane, direction) => ipcRenderer.invoke("plane-zoom:adjust", { plane, direction }),
   setPlaneZoom: (plane, zoomFactor) => ipcRenderer.invoke("plane-zoom:set", { plane, zoomFactor }),
   zoomConstants: PLANE_ZOOM_POLICY,
   clampPlaneZoom: (zoomFactor) => clampZoomFactor(zoomFactor),
   zoomDeltaForDirection: (direction) => zoomDeltaForDirection(direction),
   copyText: (text) => ipcRenderer.invoke("clipboard:write-text", text),
+  getPathForFile: (file) => fileSystemPathForFile(file),
+  getDroppedFilePaths: (files) => fileSystemPathsForFiles(files),
+  chooseAttachmentFiles: (projectId) => ipcRenderer.invoke("attachments:choose-files", { projectId }),
+  stageDroppedAttachments: (projectId, paths = []) => ipcRenderer.invoke("attachments:stage-drop", { projectId, paths }),
+  pasteImageAttachment: (projectId) => ipcRenderer.invoke("attachments:paste-image", { projectId }),
+  removeAttachmentDraft: (projectId, draftId) => ipcRenderer.invoke("attachments:remove-draft", { projectId, draftId }),
+  openContextMenu: (request) => ipcRenderer.invoke("context-menu:open", request || {}),
+  sendProjectStashToChatgpt: (payload) => ipcRenderer.invoke("project-stash:send-to-chatgpt", payload || {}),
   listWorkTree: (projectId, relPath) => ipcRenderer.invoke("worktree:list", { projectId, relPath }),
   readProjectFile: (projectId, relPath) => ipcRenderer.invoke("worktree:read-file", { projectId, relPath }),
+  openProjectFile: (projectId, relPath, options = {}) => ipcRenderer.invoke("file-view:open-project-file", { ...options, projectId, relPath }),
   listWatchedArtifacts: (projectId) => ipcRenderer.invoke("worktree:list-watched", { projectId }),
   listCodexThreads: (projectId) => ipcRenderer.invoke("codex-threads:list", { projectId }),
   listThreadAnalytics: (projectId, options = {}) =>
@@ -45,7 +71,6 @@ contextBridge.exposeInMainWorld("workspaceShell", {
   revealProjectFile: (projectId, relPath) => ipcRenderer.invoke("worktree:reveal-file", { projectId, relPath }),
   attachWorkspace: (projectId) => ipcRenderer.invoke("workspace:attach", { projectId }),
   workspaceStatus: (projectId) => ipcRenderer.invoke("workspace:status", { projectId }),
-  runWorkspaceCommand: (projectId, command) => ipcRenderer.invoke("workspace:run-command", { projectId, command }),
   selectChatThread: (projectId, threadId) => ipcRenderer.invoke("chatgpt:select-thread", { projectId, threadId }),
   respondCodexRequest: (key, result) => ipcRenderer.invoke("codex:respond-request", { key, result }),
   focusCodexRequest: (key) => ipcRenderer.invoke("codex:focus-request", { key }),

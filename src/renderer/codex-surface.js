@@ -88,8 +88,10 @@ const state = {
     enabled: false,
     state: "disabled",
     ledgerId: "",
-    ledgerPath: "",
-    manifestPath: "",
+    ledgerLabel: "",
+    manifestLabel: "",
+    ledgerPathEvidenceKey: "",
+    manifestPathEvidenceKey: "",
     queuedRows: 0,
     droppedRows: 0,
     rowCount: 0,
@@ -109,7 +111,7 @@ const state = {
     serviceTier: "",
   },
   workspaceStatus: payload.workspaceStatus || null,
-  connectionStatus: connection?.wsUrl ? "loading" : "unavailable",
+  connectionStatus: connectionAvailable() ? "loading" : (payload.runtimeStartupPending ? "starting" : "unavailable"),
   runtimeConstitution: null,
   runtimeDrawerOpen: false,
   runtimeDrawerTab: "runtime",
@@ -119,7 +121,15 @@ const state = {
   directUiOperationHistory: null,
   directUiPolicyView: null,
   composerMenu: "",
+  composerAttachments: [],
+  composerAttachmentGeneration: 0,
+  composerAttachmentError: "",
+  composerDragDepth: 0,
   composerGeometryObserver: null,
+  queuedComposerMessages: [],
+  queuedPromptDrainInProgress: false,
+  queuedPromptDrainScheduled: false,
+  composerStatusInterval: null,
   activeTurnId: "",
   primaryThreadActive: false,
   primaryThreadActivitySource: "",
@@ -131,6 +141,8 @@ const state = {
   thoughtTurnByItemId: new Map(),
   pendingThoughtRenderMap: new Map(),
   finalMessageByTurnKey: new Map(),
+  finalTurnKeyByMessageId: new Map(),
+  turnFileEvidenceByTurn: new Map(),
   turnActivityMap: new Map(),
   turnPromptMap: new Map(),
   turnRetryCountMap: new Map(),
@@ -165,6 +177,10 @@ const state = {
 
 function capabilityArea(area) {
   return connection?.capabilities?.[area] || {};
+}
+
+function connectionAvailable() {
+  return Boolean(connection?.available || connection?.wsUrl || DIRECT_TRANSPORTS.has(connection?.transport));
 }
 
 function hasCapability(area, name) {
@@ -213,6 +229,8 @@ async function reportAgentGraph() {
     label: agent.label,
     nickname: agent.nickname,
     role: agent.role,
+    model: agent.model || "",
+    reasoningEffort: agent.reasoningEffort || "",
     status: agent.status,
     activityStatus: agent.activityStatus,
     hydrationStatus: agent.hydrationStatus,
@@ -444,7 +462,20 @@ const els = {
   transcript: document.getElementById("transcript"),
   composerForm: document.getElementById("composerForm"),
   composerInput: document.getElementById("composerInput"),
+  composerAttachmentRow: document.getElementById("composerAttachmentRow"),
+  composerAttachmentList: document.getElementById("composerAttachmentList"),
+  chooseAttachmentButton: document.getElementById("chooseAttachmentButton"),
+  pasteImageButton: document.getElementById("pasteImageButton"),
+  composerActionStack: document.querySelector(".composer-action-stack"),
+  composerTurnStatus: document.getElementById("composerTurnStatus"),
+  composerStopButton: document.getElementById("composerStopButton"),
   sendButton: document.getElementById("sendButton"),
+  activeTurnActions: document.getElementById("activeTurnActions"),
+  steerButton: document.getElementById("steerButton"),
+  queueButton: document.getElementById("queueButton"),
+  composerDispositionMenu: document.getElementById("composerDispositionMenu"),
+  steerMenuButton: document.getElementById("steerMenuButton"),
+  queueMenuButton: document.getElementById("queueMenuButton"),
   composerAccessButton: document.getElementById("composerAccessButton"),
   composerAccessMenu: document.getElementById("composerAccessMenu"),
   composerModelButton: document.getElementById("composerModelButton"),
@@ -481,7 +512,7 @@ function setNotice() {}
 function setComposerEnabled(enabled, placeholder = "") {
   const nextEnabled = Boolean(enabled);
   els.composerInput.disabled = !nextEnabled;
-  els.sendButton.disabled = !nextEnabled && !turnIsActive();
+  if (els.sendButton) els.sendButton.disabled = !nextEnabled && !turnIsActive();
   if (nextEnabled) {
     els.composerInput.placeholder = "Ask Codex to inspect, change, or explain the project…";
   } else if (placeholder) {
@@ -498,6 +529,144 @@ function compactValue(value, maxLength = 240) {
     return json.length > maxLength ? `${json.slice(0, maxLength)}…` : json;
   } catch {
     return String(value).slice(0, maxLength);
+  }
+}
+
+function formatBytes(bytes) {
+  const number = Number(bytes) || 0;
+  if (number < 1024) return `${number} B`;
+  if (number < 1024 * 1024) return `${(number / 1024).toFixed(1)} KB`;
+  return `${(number / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function attachmentRef(attachment) {
+  return String(attachment?.workspaceRelPath || attachment?.stagedRelPath || "").trim();
+}
+
+function attachmentSubmitBlockers() {
+  return state.composerAttachments.filter((attachment) => {
+    if (!attachment || attachment.status !== "ready") return true;
+    return !attachmentRef(attachment);
+  });
+}
+
+function attachmentReferenceBlock() {
+  const lines = [];
+  for (const attachment of state.composerAttachments) {
+    if (!attachment || attachment.status !== "ready") continue;
+    const rel = attachmentRef(attachment);
+    if (!rel) continue;
+    const disposition = attachment?.provider?.disposition || "staged_file_reference";
+    lines.push(`- ${attachment.displayName || "attachment"} (${attachment.mimeType || "application/octet-stream"}, ${formatBytes(attachment.sizeBytes)}): ${rel} [${disposition}]`);
+  }
+  if (!lines.length) return "";
+  return ["", "Attachments staged as workspace references:", ...lines].join("\n");
+}
+
+function composerDraftProjection() {
+  const text = String(els.composerInput?.value || "").trim();
+  const attachmentBlock = attachmentReferenceBlock();
+  const blockers = attachmentSubmitBlockers();
+  if (blockers.length) {
+    return {
+      ok: false,
+      reason: "unsupported_attachments",
+      message: "Remove or fix unsupported attachments before sending.",
+      text: "",
+      hasContent: Boolean(text || attachmentBlock),
+    };
+  }
+  if (!text && !attachmentBlock) {
+    return {
+      ok: false,
+      reason: "empty",
+      message: "",
+      text: "",
+      hasContent: false,
+    };
+  }
+  return {
+    ok: true,
+    reason: "",
+    message: "",
+    text: `${text || "Review the attached files/images."}${attachmentBlock}`,
+    hasContent: true,
+  };
+}
+
+function clearComposerDraft() {
+  if (els.composerInput) els.composerInput.value = "";
+  clearComposerAttachments();
+}
+
+function addComposerAttachments(result) {
+  const attachments = Array.isArray(result?.attachments) ? result.attachments : [];
+  if (attachments.length) {
+    const byId = new Map(state.composerAttachments.map((attachment) => [attachment.id, attachment]));
+    for (const attachment of attachments) byId.set(attachment.id, attachment);
+    state.composerAttachments = Array.from(byId.values());
+    state.composerAttachmentGeneration += 1;
+  }
+  const diagnostics = Array.isArray(result?.diagnostics) ? result.diagnostics : [];
+  state.composerAttachmentError = diagnostics.map((item) => item.error).filter(Boolean).join(" · ");
+  renderComposerAttachments();
+  renderComposerRuntimeBand();
+}
+
+function clearComposerAttachments() {
+  state.composerAttachments = [];
+  state.composerAttachmentGeneration += 1;
+  state.composerAttachmentError = "";
+  renderComposerAttachments();
+  renderComposerRuntimeBand();
+}
+
+async function removeComposerAttachment(draftId) {
+  const id = String(draftId || "");
+  state.composerAttachments = state.composerAttachments.filter((attachment) => attachment.id !== id);
+  state.composerAttachmentGeneration += 1;
+  renderComposerAttachments();
+  renderComposerRuntimeBand();
+  if (bridge?.removeAttachmentDraft && project?.id) {
+    try {
+      await bridge.removeAttachmentDraft(project.id, id);
+    } catch (error) {
+      state.composerAttachmentError = `Attachment cleanup failed: ${error.message}`;
+      renderComposerAttachments();
+    }
+  }
+}
+
+function renderComposerAttachments() {
+  if (!els.composerAttachmentList) return;
+  els.composerAttachmentList.innerHTML = "";
+  for (const attachment of state.composerAttachments) {
+    const chip = document.createElement("article");
+    chip.className = `composer-attachment-chip ${attachment.status || "ready"}`;
+    chip.dataset.attachmentDraftId = attachment.id || "";
+    chip.dataset.contextTarget = "attachment";
+    const label = document.createElement("span");
+    label.className = "composer-attachment-label";
+    label.textContent = attachment.displayName || "attachment";
+    const meta = document.createElement("span");
+    meta.className = "composer-attachment-meta";
+    const disposition = attachment?.provider?.disposition || "reference";
+    meta.textContent = `${attachment.kind || "file"} · ${formatBytes(attachment.sizeBytes)} · ${disposition.replace(/_/g, " ")}`;
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "composer-attachment-remove";
+    remove.textContent = "×";
+    remove.title = "Remove attachment draft";
+    remove.dataset.attachmentAction = "remove";
+    remove.addEventListener("click", () => removeComposerAttachment(attachment.id));
+    chip.append(label, meta, remove);
+    els.composerAttachmentList.appendChild(chip);
+  }
+  if (state.composerAttachmentError) {
+    const error = document.createElement("span");
+    error.className = "composer-attachment-chip failed";
+    error.textContent = state.composerAttachmentError;
+    els.composerAttachmentList.appendChild(error);
   }
 }
 
@@ -534,7 +703,7 @@ function firstEvidence(refs) {
 }
 
 function workspaceRootText() {
-  return connection?.workspaceRoot || project?.workspace?.linuxPath || project?.workspace?.localPath || project?.repoPath || "";
+  return project?.workspace?.linuxPath || project?.workspace?.localPath || project?.repoPath || "";
 }
 
 function basenameFromPath(value) {
@@ -544,10 +713,12 @@ function basenameFromPath(value) {
 }
 
 function connectionLabel() {
-  if (!connection?.wsUrl) return "offline";
+  if (payload.runtimeStartupPending && !connectionAvailable()) return "starting";
+  if (!connectionAvailable()) return "offline";
   const provider = providerProfile();
   const providerSuffix = provider?.flavor ? ` · ${provider.flavor}` : "";
   if (state.connectionStatus === "connected") return `${connection?.runtime || "connected"}${providerSuffix}`;
+  if (state.connectionStatus === "starting") return "starting";
   if (state.connectionStatus === "connecting") return "connecting";
   if (state.connectionStatus === "error") return "error";
   if (state.connectionStatus === "disconnected") return "offline";
@@ -559,7 +730,7 @@ function providerProfile() {
     kind: project?.codex?.provider?.kind || project?.codex?.providerKind || "codex_executable",
     flavor: project?.codex?.provider?.flavor || project?.codex?.providerFlavor || "vanilla",
     label: "Codex executable · vanilla",
-    status: connection?.wsUrl ? "configured" : "unknown",
+    status: connectionAvailable() ? "configured" : "unknown",
     capabilitySource: "project_config",
   };
 }
@@ -574,6 +745,7 @@ function settingScopeEnabled(scope) {
 
 function runtimeStateStatusFromConnection(value) {
   if (value === "connected") return "ready";
+  if (value === "starting") return "loading";
   if (value === "connecting") return "loading";
   if (value === "error") return "failed";
   if (value === "disconnected" || value === "unavailable") return "unavailable";
@@ -927,6 +1099,57 @@ function turnIsActive() {
   return Boolean(activity && !activity.completedAt && activeTurnStatus(activity.status));
 }
 
+function currentActiveTurnId() {
+  const candidates = [state.activeTurnId, state.turnId].map((id) => String(id || "").trim()).filter(Boolean);
+  for (const id of candidates) {
+    const activity = state.turnActivityMap.get(id);
+    if (activity && !activity.completedAt && activeTurnStatus(activity.status)) return id;
+  }
+  return "";
+}
+
+function currentActiveTurnActivity() {
+  const id = currentActiveTurnId();
+  return id ? state.turnActivityMap.get(id) || null : null;
+}
+
+function formatElapsedDuration(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds) || 0));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+  return `${minutes}:${String(secs).padStart(2, "0")}`;
+}
+
+function turnDurationLabel(turnKey) {
+  const activity = state.turnActivityMap.get(String(turnKey || "").trim());
+  if (!activity) return "";
+  const durationMs = Number(activity.durationMs);
+  if (Number.isFinite(durationMs) && durationMs >= 0) return formatElapsedDuration(durationMs / 1000);
+  const startedAt = Number(activity.startedAt || 0);
+  const completedAt = Number(activity.completedAt || 0);
+  if (startedAt > 0 && completedAt >= startedAt) return formatElapsedDuration(completedAt - startedAt);
+  return "";
+}
+
+function activeTurnElapsedLabel() {
+  const activity = currentActiveTurnActivity();
+  const startedAt = Number(activity?.startedAt || 0);
+  if (!startedAt) return "";
+  return formatElapsedDuration(Date.now() / 1000 - startedAt);
+}
+
+function currentQueuedComposerMessages() {
+  const threadId = String(state.threadId || "");
+  const projectId = String(project?.id || "");
+  if (!threadId) return [];
+  return state.queuedComposerMessages.filter((item) => (
+    String(item?.threadId || "") === threadId &&
+    (!projectId || !item?.projectId || String(item.projectId) === projectId)
+  ));
+}
+
 function countCodexItems(typeSet) {
   let count = 0;
   const seen = new Set();
@@ -961,9 +1184,9 @@ function buildRuntimeConstitution() {
     { confidence: rawCapabilities.provider ? "declared" : "unknown", status: rawCapabilities.provider ? "fresh" : "unavailable" },
   );
   const connectionEvidence = evidenceRef(
-    connection?.wsUrl ? "runtime_snapshot" : "project_config",
-    connection?.wsUrl ? "Codex app-server connection payload" : "No managed app-server connection payload",
-    { confidence: connection?.wsUrl ? "declared" : "configured" },
+    connectionAvailable() ? "runtime_snapshot" : "project_config",
+    connectionAvailable() ? "Main-owned Codex app-server connection ref" : "No managed app-server connection payload",
+    { confidence: connectionAvailable() ? "declared" : "configured" },
   );
   const threadEvidence = evidenceRef(
     state.liveAttached ? "app_server_probe" : state.threadId ? "renderer_observation" : "project_config",
@@ -1066,9 +1289,9 @@ function buildRuntimeConstitution() {
       updatedAt: generatedAt,
     },
     runtime: {
-      kind: connection?.runtime || (connection?.wsUrl ? "remote" : "offline"),
+      kind: connection?.runtime || (connectionAvailable() ? "remote" : "offline"),
       label: connectionLabel(),
-      truth: connection?.wsUrl ? "runtime_declared" : "unknown",
+      truth: connectionAvailable() ? "runtime_declared" : "unknown",
       status: state.connectionStatus === "connected" ? "ready" : state.connectionStatus || "unavailable",
       evidenceRefs: [connectionEvidence],
     },
@@ -1167,8 +1390,10 @@ function buildRuntimeConstitution() {
         enabled: ledgerStatus.enabled === true,
         status: ledgerStatus.state || "disabled",
         ledgerId: ledgerStatus.ledgerId || "",
-        ledgerPath: ledgerStatus.ledgerPath || "",
-        manifestPath: ledgerStatus.manifestPath || "",
+        ledgerLabel: ledgerStatus.ledgerLabel || ledgerStatus.ledgerPath || "",
+        manifestLabel: ledgerStatus.manifestLabel || ledgerStatus.manifestPath || "",
+        ledgerPathEvidenceKey: ledgerStatus.ledgerPathEvidenceKey || "",
+        manifestPathEvidenceKey: ledgerStatus.manifestPathEvidenceKey || "",
         queuedRows: Number(ledgerStatus.queuedRows || 0),
         droppedRows: Number(ledgerStatus.droppedRows || 0),
         rowCount: Number(ledgerStatus.rowCount || 0),
@@ -1533,6 +1758,7 @@ function dismissComposerOverlay(reason = "unknown") {
   state.composerMenu = "";
   if (els.composerAccessMenu) els.composerAccessMenu.hidden = true;
   if (els.composerModelMenu) els.composerModelMenu.hidden = true;
+  if (els.composerDispositionMenu) els.composerDispositionMenu.hidden = true;
   els.composerAccessButton?.setAttribute("aria-expanded", "false");
   els.composerModelButton?.setAttribute("aria-expanded", "false");
   if (hadMenu) {
@@ -1571,8 +1797,11 @@ function eventInsideComposerOverlay(event) {
   return (
     eventTargetsElement(event, els.composerAccessMenu) ||
     eventTargetsElement(event, els.composerModelMenu) ||
+    eventTargetsElement(event, els.composerDispositionMenu) ||
     eventTargetsElement(event, els.composerAccessButton) ||
-    eventTargetsElement(event, els.composerModelButton)
+    eventTargetsElement(event, els.composerModelButton) ||
+    eventTargetsElement(event, els.activeTurnActions) ||
+    eventTargetsElement(event, els.sendButton)
   );
 }
 
@@ -1594,14 +1823,18 @@ function updateComposerGeometry() {
   const safeWidth = Math.max(180, shellWidth - 24);
   const menuWidth = Math.round(clampNumber(safeWidth * 0.46, 190, 280));
   const modelMenuWidth = Math.round(clampNumber(safeWidth * 0.86, 340, 620));
-  const quotaWidth = Math.round(clampNumber(safeWidth * 0.42, 220, 380));
-  const witnessWidth = Math.round(clampNumber(safeWidth * 0.14, 76, 150));
-  const modelPillWidth = Math.round(clampNumber(safeWidth * 0.28, 120, 280));
-  const activeTrigger = state.composerMenu === "model"
-    ? els.composerModelButton
-    : state.composerMenu === "access"
-      ? els.composerAccessButton
-      : null;
+  const quotaWidth = Math.round(clampNumber(safeWidth * 0.42, 120, 380));
+  const witnessWidth = Math.round(clampNumber(safeWidth * 0.14, 58, 150));
+  const modelPillWidth = Math.round(clampNumber(safeWidth * 0.28, 88, 280));
+  const controlFont = clampNumber(safeWidth / 66, 10, 12);
+  const controlGap = Math.round(clampNumber(safeWidth / 108, 4, 8));
+  const controlPadX = Math.round(clampNumber(safeWidth / 82, 6, 10));
+  const controlHeight = Math.round(clampNumber(controlFont * 2.5, 24, 30));
+  const actionWidth = Math.round(clampNumber(safeWidth * 0.18, 96, 150));
+  let activeTrigger = null;
+  if (state.composerMenu === "model") activeTrigger = els.composerModelButton;
+  else if (state.composerMenu === "access") activeTrigger = els.composerAccessButton;
+  else if (state.composerMenu === "disposition") activeTrigger = els.activeTurnActions || els.sendButton;
   const triggerRect = activeTrigger?.getBoundingClientRect?.();
   const topSpace = triggerRect ? Math.max(140, triggerRect.top - 16) : Math.max(160, window.innerHeight * 0.42);
   const modelMenuHeight = Math.round(clampNumber(Math.min(topSpace, panelHeight * 0.54), 240, 430));
@@ -1620,6 +1853,11 @@ function updateComposerGeometry() {
   els.composerForm.style.setProperty("--composer-witness-max-width", `${witnessWidth}px`);
   els.composerForm.style.setProperty("--composer-quota-max-width", `${quotaWidth}px`);
   els.composerForm.style.setProperty("--composer-model-pill-max-width", `${modelPillWidth}px`);
+  els.composerForm.style.setProperty("--composer-control-font-size", `${controlFont.toFixed(1)}px`);
+  els.composerForm.style.setProperty("--composer-control-gap", `${controlGap}px`);
+  els.composerForm.style.setProperty("--composer-control-pad-x", `${controlPadX}px`);
+  els.composerForm.style.setProperty("--composer-control-height", `${controlHeight}px`);
+  els.composerForm.style.setProperty("--composer-action-width", `${actionWidth}px`);
   els.composerForm.dataset.composerSize = safeWidth < 390 ? "narrow" : safeWidth < 760 ? "medium" : "wide";
 }
 
@@ -1665,9 +1903,27 @@ function renderComposerModelMenu() {
   els.composerModelMenu.appendChild(body);
 }
 
+function updateComposerStatusTicker(active) {
+  const shouldTick = Boolean(active && currentActiveTurnActivity()?.startedAt);
+  if (shouldTick && !state.composerStatusInterval) {
+    state.composerStatusInterval = window.setInterval(() => renderComposerRuntimeBand(), 1000);
+  } else if (!shouldTick && state.composerStatusInterval) {
+    window.clearInterval(state.composerStatusInterval);
+    state.composerStatusInterval = null;
+  }
+}
+
 function renderComposerRuntimeBand() {
   if (!els.composerAccessButton || !els.composerModelButton || !els.sendButton) return;
+  if (els.composerForm) els.composerForm.dataset.composerMenu = state.composerMenu || "";
   const active = turnIsActive();
+  const activeTurnId = currentActiveTurnId();
+  const blockers = attachmentSubmitBlockers();
+  const draft = composerDraftProjection();
+  const hasDraft = draft.hasContent;
+  const canSteer = hasCapabilityForMutation("turns", "canSteer");
+  const queuedCount = currentQueuedComposerMessages().length;
+  const elapsedLabel = activeTurnElapsedLabel();
   const accessText = state.runtimeOverrides.sandboxMode === "danger-full-access"
     ? "Full access"
     : state.runtimeOverrides.sandboxMode || state.runtimeOverrides.approvalPolicy || "Access";
@@ -1690,17 +1946,88 @@ function renderComposerRuntimeBand() {
   els.composerContextChip.textContent = contextText;
   els.composerContextChip.title = `Context pressure: ${contextProjection.label}.`;
 
-  els.sendButton.textContent = state.turnStopping ? "Stopping" : active ? "Stop" : "Send";
-  els.sendButton.classList.toggle("stop", active);
-  els.sendButton.title = active ? "Stop the current Codex turn." : "Send this prompt to Codex.";
-  els.sendButton.setAttribute("aria-label", active ? "Stop current Codex turn" : "Send prompt to Codex");
-  els.sendButton.disabled = state.turnStopping || (!active && els.composerInput.disabled);
+  const statusClass = state.turnStopping
+    ? "stopping"
+    : state.turnPending || state.queuedPromptDrainInProgress
+      ? "pending"
+      : active
+        ? "active"
+        : queuedCount
+          ? "queued"
+          : "idle";
+  const statusText = state.turnStopping
+    ? `Stopping${elapsedLabel ? ` ${elapsedLabel}` : ""}`
+    : state.turnPending
+      ? "Starting"
+      : state.queuedPromptDrainInProgress
+        ? "Sending queued"
+        : active
+          ? `Working${elapsedLabel ? ` ${elapsedLabel}` : ""}${queuedCount ? ` · Q${queuedCount}` : ""}`
+          : queuedCount ? `Queued ${queuedCount}` : "Idle";
+  if (els.composerTurnStatus) {
+    els.composerTurnStatus.textContent = statusText;
+    els.composerTurnStatus.className = `composer-turn-status ${statusClass}`;
+    els.composerTurnStatus.title = active
+      ? `Codex turn is active${elapsedLabel ? ` for ${elapsedLabel}` : ""}${queuedCount ? ` with ${queuedCount} queued message${queuedCount === 1 ? "" : "s"}` : ""}.`
+      : queuedCount
+        ? `${queuedCount} message${queuedCount === 1 ? "" : "s"} queued for the next Codex turn.`
+        : "Codex thread is idle.";
+  }
+
+  if (els.composerStopButton) {
+    els.composerStopButton.hidden = !active;
+    els.composerStopButton.disabled = state.turnStopping || !activeTurnId;
+    els.composerStopButton.title = activeTurnId
+      ? "Stop the current Codex turn."
+      : "Active turn id is not available yet.";
+    els.composerStopButton.setAttribute("aria-label", "Stop current Codex turn");
+  }
+
+  els.sendButton.hidden = active;
+  els.sendButton.textContent = "Send";
+  els.sendButton.title = blockers.length
+    ? "Remove or fix unsupported attachments before sending."
+    : "Send this prompt to Codex.";
+  els.sendButton.setAttribute("aria-label", "Send prompt to Codex");
+  els.sendButton.disabled = active || els.composerInput.disabled || blockers.length > 0 || !hasDraft;
+
+  if (els.activeTurnActions) els.activeTurnActions.hidden = !active;
+  const actionDisabled = state.turnStopping || els.composerInput.disabled || blockers.length > 0 || !hasDraft;
+  if (els.steerButton) {
+    els.steerButton.disabled = actionDisabled || !canSteer || !activeTurnId;
+    els.steerButton.title = !canSteer
+      ? "Active runtime does not expose turn/steer capability."
+      : !activeTurnId
+        ? "Active turn id is not available yet."
+        : blockers.length
+          ? "Remove or fix unsupported attachments before steering."
+          : hasDraft
+            ? "Send this message into the active Codex turn."
+            : "Write a message to steer the active Codex turn.";
+    els.steerButton.setAttribute("aria-label", "Steer current Codex turn");
+  }
+  if (els.queueButton) {
+    els.queueButton.disabled = actionDisabled;
+    els.queueButton.title = blockers.length
+      ? "Remove or fix unsupported attachments before queueing."
+      : hasDraft
+        ? "Queue this message to start after the current turn completes."
+        : "Write a message to queue for the next Codex turn.";
+    els.queueButton.setAttribute("aria-label", "Queue message for next Codex turn");
+  }
+  if (els.steerMenuButton) els.steerMenuButton.disabled = els.steerButton?.disabled ?? true;
+  if (els.queueMenuButton) els.queueMenuButton.disabled = els.queueButton?.disabled ?? true;
+
+  if (els.chooseAttachmentButton) els.chooseAttachmentButton.disabled = els.composerInput.disabled;
+  if (els.pasteImageButton) els.pasteImageButton.disabled = els.composerInput.disabled;
   els.composerAccessMenu.hidden = state.composerMenu !== "access";
   els.composerModelMenu.hidden = state.composerMenu !== "model";
+  if (els.composerDispositionMenu) els.composerDispositionMenu.hidden = state.composerMenu !== "disposition";
   els.composerAccessButton.setAttribute("aria-expanded", state.composerMenu === "access" ? "true" : "false");
   els.composerModelButton.setAttribute("aria-expanded", state.composerMenu === "model" ? "true" : "false");
   if (state.composerMenu === "access") renderComposerAccessMenu();
   if (state.composerMenu === "model") renderComposerModelMenu();
+  updateComposerStatusTicker(active);
   updateComposerGeometry();
 }
 
@@ -2047,9 +2374,9 @@ function runtimeDrawerSections(c, tab) {
         ["kind", c.runtime.kind],
         ["status", c.runtime.status],
         ["transport", connection?.transport || connection?.capabilities?.coreRuntime?.transport || "websocket"],
-        ["binary", connection?.binaryPath || "unknown"],
-        ["codex home", connection?.codexHome || "default"],
-        ["ready URL", connection?.readyUrl || "not connected"],
+        ["binary", c.provider?.executable?.command || connection?.runtime || "unknown"],
+        ["codex home", c.provider?.executable?.codexHome || "default"],
+        ["ready URL", c.provider?.executable?.appServer?.readyUrl || connection?.readyUrlLabel || "not connected"],
         ["thread state", c.thread.status],
       ], [...(c.provider?.evidenceRefs || []), ...c.runtime.evidenceRefs, ...c.thread.evidenceRefs]),
       drawerSection("Account", [
@@ -2126,8 +2453,9 @@ function runtimeDrawerSections(c, tab) {
         ["queued", c.usage.ledger?.queuedRows || 0],
         ["dropped", c.usage.ledger?.droppedRows || 0],
         ["ledger id", c.usage.ledger?.ledgerId || "—"],
-        ["ledger path", c.usage.ledger?.ledgerPath || "—"],
-        ["manifest", c.usage.ledger?.manifestPath || "—"],
+        ["ledger file", c.usage.ledger?.ledgerLabel || "—"],
+        ["manifest file", c.usage.ledger?.manifestLabel || "—"],
+        ["ledger evidence", c.usage.ledger?.ledgerPathEvidenceKey || "—"],
         ["last observed", c.usage.ledger?.lastObservedAt || "—"],
         ["error", c.usage.ledger?.lastError || "—"],
       ], c.usage.ledger?.evidenceRefs || []),
@@ -2286,9 +2614,29 @@ function stripTokenPunctuation(value) {
   return String(value || "").replace(/[),.;!?]+$/g, "");
 }
 
+function hasStrongFilePathEvidence(filePath) {
+  const normalized = normalizeSlashes(stripTokenPunctuation(filePath).trim()).replace(/^\.\/+/, "");
+  if (!normalized || normalized.includes("\0") || /\s/.test(normalized)) return false;
+  if (normalized.startsWith("../") || normalized.includes("/../") || normalized === "..") return false;
+  if (!normalized.includes("/")) return false;
+  const tail = normalized.split("/").pop() || "";
+  return /^[^./][^/]*\.[A-Za-z0-9]{1,12}$/.test(tail);
+}
+
+function shouldRenderAmbiguousPathSymbol(value) {
+  const raw = stripTokenPunctuation(value).trim();
+  if (!raw || /^https?:\/\//i.test(raw) || raw.includes("://") || /\s/.test(raw)) return false;
+  const lineRef = splitLineRef(raw);
+  if (relativePathWithinRoot(lineRef.path)) return false;
+  const normalized = normalizeSlashes(lineRef.path).replace(/^\.\/+/, "");
+  if (!normalized || normalized.startsWith("../") || normalized.includes("/../")) return false;
+  const hasSlash = normalized.includes("/");
+  const hasDot = /(?:^|[A-Za-z0-9_-])\.[A-Za-z0-9_-]+/.test(normalized);
+  return hasSlash || hasDot;
+}
+
 function knownWorkspaceRoots() {
   const roots = [
-    connection?.workspaceRoot,
     project?.workspace?.linuxPath,
     project?.workspace?.localPath,
     project?.repoPath,
@@ -2312,13 +2660,16 @@ function relativePathWithinRoot(filePath) {
     const lowerPath = normalized.toLowerCase();
     const lowerRoot = normalizedRoot.toLowerCase();
     if (lowerPath === lowerRoot) return "";
-    if (lowerPath.startsWith(`${lowerRoot}/`)) return normalized.slice(normalizedRoot.length + 1);
+    if (lowerPath.startsWith(`${lowerRoot}/`)) {
+      const relPath = normalized.slice(normalizedRoot.length + 1);
+      return hasStrongFilePathEvidence(relPath) ? relPath : "";
+    }
   }
 
   const isAbsolute = normalized.startsWith("/") || /^[A-Za-z]:\//.test(normalized);
   if (isAbsolute) return "";
-  if (!normalized.includes("/") && !/\.[A-Za-z0-9]{1,12}$/.test(normalized)) return "";
-  return normalized.replace(/^\.\/+/, "");
+  const relPath = normalized.replace(/^\.\/+/, "");
+  return hasStrongFilePathEvidence(relPath) ? relPath : "";
 }
 
 function splitLineRef(value) {
@@ -2331,6 +2682,102 @@ function splitLineRef(value) {
     line: Number(match[2]),
     column: match[3] ? Number(match[3]) : null,
   };
+}
+
+function fileRefFromTextCandidate(value) {
+  const lineRef = splitLineRef(value);
+  const relPath = relativePathWithinRoot(lineRef.path);
+  if (!relPath) return null;
+  return {
+    path: relPath,
+    line: lineRef.line,
+    column: lineRef.column,
+  };
+}
+
+function extractFileRefsFromText(value) {
+  const source = String(value || "");
+  const refs = [];
+  const filePattern = /(?:[A-Za-z]:[\\/]|\/|\.{1,2}\/)?[A-Za-z0-9._@+-][A-Za-z0-9._@+:/\\-]*\.[A-Za-z0-9]{1,12}(?::\d+(?::\d+)?)?/g;
+  for (const match of source.matchAll(filePattern)) {
+    const ref = fileRefFromTextCandidate(match[0]);
+    if (ref) refs.push(ref);
+  }
+  return refs;
+}
+
+function fileFallbackForToken(value, context = {}) {
+  const lineRef = splitLineRef(value);
+  const primary = fileRefFromTextCandidate(value);
+  const candidates = Array.isArray(context.fileEvidenceRefs) ? context.fileEvidenceRefs : [];
+  const normalizedPrimary = normalizeSlashes(primary?.path || lineRef.path || "").replace(/^\.\/+/, "");
+  if (!normalizedPrimary || isBareVersionToken(normalizedPrimary)) return null;
+  if (!normalizedPrimary.includes("/") && !/^[^./][^/]*\.[A-Za-z0-9]{1,12}$/.test(normalizedPrimary)) return null;
+  const matches = [];
+  const seen = new Set();
+  for (const candidate of candidates) {
+    const candidatePath = normalizeSlashes(candidate?.path || "").replace(/^\.\/+/, "");
+    if (!candidatePath || candidatePath === normalizedPrimary || seen.has(candidatePath)) continue;
+    if (candidatePath.endsWith(`/${normalizedPrimary}`)) {
+      matches.push(candidatePath);
+      seen.add(candidatePath);
+    }
+  }
+  if (matches.length !== 1) return null;
+  return {
+    path: matches[0],
+    line: primary?.line ?? lineRef.line,
+    column: primary?.column ?? lineRef.column,
+  };
+}
+
+function normalizeFileAliasToken(value) {
+  return stripTokenPunctuation(value).trim().toLowerCase();
+}
+
+function isBareVersionToken(value) {
+  return /^v\d+(?:\.\d+)+$/i.test(normalizeFileAliasToken(value));
+}
+
+function fileAliasForToken(value, context = {}) {
+  const key = normalizeFileAliasToken(value);
+  if (!key) return null;
+  const aliases = context?.fileAliases;
+  if (aliases instanceof Map) return aliases.get(key) || null;
+  if (aliases && typeof aliases === "object") return aliases[key] || null;
+  return null;
+}
+
+function addFileAlias(aliases, alias, fileRef) {
+  const key = normalizeFileAliasToken(alias);
+  if (!key || !fileRef?.path || aliases.has(key)) return;
+  aliases.set(key, { ...fileRef });
+}
+
+function addVersionAliasesForFile(aliases, label, fileRef) {
+  const parts = [
+    String(label || ""),
+    String(fileRef?.path || "").split("/").pop() || "",
+  ];
+  for (const part of parts) {
+    const withoutExtension = part.replace(/\.[A-Za-z0-9]{1,12}$/i, "");
+    const versionMatch = withoutExtension.match(/(?:^|[._-])(v\d+(?:[._-]\d+)+)(?:$|[._-])/i);
+    if (!versionMatch) continue;
+    const version = versionMatch[1];
+    addFileAlias(aliases, version, fileRef);
+    addFileAlias(aliases, version.replace(/[._-]/g, "."), fileRef);
+  }
+}
+
+function buildMarkdownFileAliasMap(text) {
+  const aliases = new Map();
+  const source = String(text || "");
+  const pattern = /\[([^\]\n]{1,240})\]\(([^) \n]{1,1000})\)/g;
+  for (const match of source.matchAll(pattern)) {
+    const fileRef = markdownLocalHref(match[2]);
+    if (fileRef) addVersionAliasesForFile(aliases, match[1], fileRef);
+  }
+  return aliases;
 }
 
 function addTokenCandidate(candidates, start, end, token) {
@@ -2352,7 +2799,7 @@ function chooseTokenCandidates(candidates) {
   return result;
 }
 
-function tokenizeTypedContent(text) {
+function tokenizeTypedContent(text, context = {}) {
   const source = String(text || "");
   if (!source) return [{ type: "text", text: "" }];
   const candidates = [];
@@ -2366,15 +2813,39 @@ function tokenizeTypedContent(text) {
   const backtickPattern = /`([^`\n]{1,240})`/g;
   for (const match of source.matchAll(backtickPattern)) {
     const raw = match[1] || "";
+    const aliasRef = fileAliasForToken(raw, context);
+    if (aliasRef) {
+      addTokenCandidate(candidates, match.index, match.index + match[0].length, {
+        type: aliasRef.line ? "line_ref" : "file_path",
+        text: match[0],
+        path: aliasRef.path,
+        line: aliasRef.line,
+        column: aliasRef.column,
+      });
+      continue;
+    }
     const lineRef = splitLineRef(raw);
     const relPath = relativePathWithinRoot(lineRef.path);
-    if (relPath) {
+    if (relPath && !isBareVersionToken(raw)) {
+      const fallbackRef = fileFallbackForToken(raw, context);
       addTokenCandidate(candidates, match.index, match.index + match[0].length, {
         type: lineRef.line ? "line_ref" : "file_path",
         text: match[0],
         path: relPath,
         line: lineRef.line,
         column: lineRef.column,
+        fallbackPath: fallbackRef?.path || "",
+      });
+      continue;
+    }
+    const fallbackRef = fileFallbackForToken(raw, context);
+    if (fallbackRef) {
+      addTokenCandidate(candidates, match.index, match.index + match[0].length, {
+        type: fallbackRef.line ? "line_ref" : "file_path",
+        text: match[0],
+        path: fallbackRef.path,
+        line: fallbackRef.line,
+        column: fallbackRef.column,
       });
       continue;
     }
@@ -2388,16 +2859,52 @@ function tokenizeTypedContent(text) {
   for (const match of source.matchAll(filePattern)) {
     const raw = stripTokenPunctuation(match[0]);
     if (!raw || /^https?:\/\//i.test(raw)) continue;
+    const aliasRef = fileAliasForToken(raw, context);
+    if (aliasRef) {
+      addTokenCandidate(candidates, match.index, match.index + raw.length, {
+        type: aliasRef.line ? "line_ref" : "file_path",
+        text: raw,
+        path: aliasRef.path,
+        line: aliasRef.line,
+        column: aliasRef.column,
+      });
+      continue;
+    }
     const lineRef = splitLineRef(raw);
     const relPath = relativePathWithinRoot(lineRef.path);
-    if (!relPath) continue;
+    if (!relPath) {
+      const fallbackRef = fileFallbackForToken(raw, context);
+      if (fallbackRef) {
+        addTokenCandidate(candidates, match.index, match.index + raw.length, {
+          type: fallbackRef.line ? "line_ref" : "file_path",
+          text: raw,
+          path: fallbackRef.path,
+          line: fallbackRef.line,
+          column: fallbackRef.column,
+        });
+        continue;
+      }
+      if (shouldRenderAmbiguousPathSymbol(raw)) {
+        addTokenCandidate(candidates, match.index, match.index + raw.length, { type: "symbol", text: raw, value: raw });
+      }
+      continue;
+    }
+    const fallbackRef = fileFallbackForToken(raw, context);
     addTokenCandidate(candidates, match.index, match.index + raw.length, {
       type: lineRef.line ? "line_ref" : "file_path",
       text: raw,
       path: relPath,
       line: lineRef.line,
       column: lineRef.column,
+      fallbackPath: fallbackRef?.path || "",
     });
+  }
+
+  const slashSymbolPattern = /[A-Za-z0-9._@+-]+(?:[\\/][A-Za-z0-9._@+-]+)+(?::\d+(?::\d+)?)?/g;
+  for (const match of source.matchAll(slashSymbolPattern)) {
+    const raw = stripTokenPunctuation(match[0]);
+    if (!shouldRenderAmbiguousPathSymbol(raw)) continue;
+    addTokenCandidate(candidates, match.index, match.index + raw.length, { type: "symbol", text: raw, value: raw });
   }
 
   const chosen = chooseTokenCandidates(candidates);
@@ -2435,22 +2942,60 @@ async function openTypedUrl(url) {
   if (!result?.ok) addSystemMessage(`URL open blocked: ${result?.error || "unknown error"}`);
 }
 
-async function revealTypedFile(relPath) {
-  if (!bridge?.revealProjectFile || !project?.id) {
-    addSystemMessage("Project file reveal is unavailable in this Codex surface.");
+function isFileOpenMissingError(errorText) {
+  return /ENOENT|no such file|not found|cannot find/i.test(String(errorText || ""));
+}
+
+function errorMessageText(error, fallback = "unknown error") {
+  const value = error?.message || (typeof error === "string" ? error : error ? String(error) : "");
+  return value || fallback;
+}
+
+async function openTypedFile(relPath, options = {}) {
+  if (!bridge?.openProjectFile || !project?.id) {
+    addSystemMessage("Project file opening is unavailable in this Codex surface.");
     return;
   }
+  const fallbackPath = String(options?.fallbackPath || "").trim();
   try {
-    const result = await bridge.revealProjectFile(project.id, relPath);
-    if (!result?.opened && result?.method) addSystemMessage(`File path copied: ${result.absolutePath || relPath}`);
+    const result = await bridge.openProjectFile(project.id, relPath, {
+      sourceSurface: "codex",
+      threadId: state.threadId || "",
+      threadTitle: state.threadTitle || "",
+    });
+    if (result?.ok) return;
+    if (fallbackPath && isFileOpenMissingError(result?.error)) {
+      const fallbackResult = await bridge.openProjectFile(project.id, fallbackPath, {
+        sourceSurface: "codex",
+        threadId: state.threadId || "",
+        threadTitle: state.threadTitle || "",
+        sourceKind: "project_file",
+      });
+      if (fallbackResult?.ok) return;
+      addSystemMessage(`File open failed: ${fallbackResult?.error || result?.error || "unknown error"}`);
+      return;
+    }
+    addSystemMessage(`File open failed: ${result?.error || "unknown error"}`);
   } catch (error) {
-    addSystemMessage(`File reveal failed: ${error.message}`);
+    const message = errorMessageText(error);
+    if (fallbackPath && isFileOpenMissingError(message)) {
+      try {
+        const fallbackResult = await bridge.openProjectFile(project.id, fallbackPath, {
+          sourceSurface: "codex",
+          threadId: state.threadId || "",
+          threadTitle: state.threadTitle || "",
+          sourceKind: "project_file",
+        });
+        if (fallbackResult?.ok) return;
+      } catch {}
+    }
+    addSystemMessage(`File open failed: ${message}`);
   }
 }
 
-function renderTypedContent(container, text) {
+function renderTypedContent(container, text, context = {}) {
   container.textContent = "";
-  const tokens = tokenizeTypedContent(text);
+  const tokens = tokenizeTypedContent(text, context);
   for (const token of tokens) {
     if (!token || token.type === "text") {
       container.appendChild(document.createTextNode(token?.text || ""));
@@ -2462,6 +3007,8 @@ function renderTypedContent(container, text) {
       button.className = "typed-token typed-token-url";
       button.textContent = token.text;
       button.title = "Open link in browser";
+      button.dataset.contextTarget = "url";
+      button.dataset.contextHref = token.href;
       button.addEventListener("click", () => openTypedUrl(token.href));
       container.appendChild(button);
       continue;
@@ -2471,8 +3018,11 @@ function renderTypedContent(container, text) {
       button.type = "button";
       button.className = `typed-token ${token.type === "line_ref" ? "typed-token-line-ref" : "typed-token-file"}`;
       button.textContent = token.text;
-      button.title = token.line ? `Reveal ${token.path}:${token.line}` : `Reveal ${token.path}`;
-      button.addEventListener("click", () => revealTypedFile(token.path));
+      button.title = token.line ? `Open ${token.path}:${token.line} in Files` : `Open ${token.path} in Files`;
+      button.dataset.contextTarget = "file_ref";
+      button.dataset.contextFile = token.path;
+      if (token.fallbackPath) button.dataset.contextFallbackFile = token.fallbackPath;
+      button.addEventListener("click", () => openTypedFile(token.path, { fallbackPath: token.fallbackPath || "" }));
       container.appendChild(button);
       continue;
     }
@@ -2483,10 +3033,10 @@ function renderTypedContent(container, text) {
   }
 }
 
-function appendTypedText(parent, text) {
+function appendTypedText(parent, text, context = {}) {
   if (!text) return;
   const span = document.createElement("span");
-  renderTypedContent(span, text);
+  renderTypedContent(span, text, context);
   parent.appendChild(span);
 }
 
@@ -2515,8 +3065,11 @@ function appendFileToken(parent, label, fileRef) {
   button.type = "button";
   button.className = `typed-token ${fileRef.line ? "typed-token-line-ref" : "typed-token-file"} assistant-md-link`;
   button.textContent = label || fileRef.path;
-  button.title = fileRef.line ? `Reveal ${fileRef.path}:${fileRef.line}` : `Reveal ${fileRef.path}`;
-  button.addEventListener("click", () => revealTypedFile(fileRef.path));
+  button.title = fileRef.line ? `Open ${fileRef.path}:${fileRef.line} in Files` : `Open ${fileRef.path} in Files`;
+  button.dataset.contextTarget = "file_ref";
+  button.dataset.contextFile = fileRef.path;
+  if (fileRef.fallbackPath) button.dataset.contextFallbackFile = fileRef.fallbackPath;
+  button.addEventListener("click", () => openTypedFile(fileRef.path, { fallbackPath: fileRef.fallbackPath || "" }));
   parent.appendChild(button);
 }
 
@@ -2526,6 +3079,8 @@ function appendUrlToken(parent, label, href) {
   button.className = "typed-token typed-token-url assistant-md-link";
   button.textContent = label || href;
   button.title = `Open ${href}`;
+  button.dataset.contextTarget = "url";
+  button.dataset.contextHref = href;
   button.addEventListener("click", () => openTypedUrl(href));
   parent.appendChild(button);
 }
@@ -2538,14 +3093,22 @@ function appendUnsupportedMarkdownLink(parent, label, reason) {
   parent.appendChild(span);
 }
 
-function appendInlineCode(parent, raw) {
+function appendInlineCode(parent, raw, context = {}) {
   const code = document.createElement("code");
   code.className = "assistant-md-inline-code";
   const source = String(raw || "");
-  const fileRef = markdownLocalHref(source) || (() => {
+  const fileRef = fileAliasForToken(source, context) || markdownLocalHref(source) || (() => {
+    if (isBareVersionToken(source)) return null;
     const lineRef = splitLineRef(source);
     const relPath = relativePathWithinRoot(lineRef.path);
-    return relPath ? { path: relPath, line: lineRef.line, column: lineRef.column } : null;
+    if (!relPath) return fileFallbackForToken(source, context);
+    const fallbackRef = fileFallbackForToken(source, context);
+    return {
+      path: relPath,
+      line: lineRef.line,
+      column: lineRef.column,
+      fallbackPath: fallbackRef?.path || "",
+    };
   })();
   if (fileRef) {
     appendFileToken(code, source, fileRef);
@@ -2568,12 +3131,12 @@ function appendInlineCode(parent, raw) {
   parent.appendChild(code);
 }
 
-function appendInlineMarkdown(parent, text) {
+function appendInlineMarkdown(parent, text, context = {}) {
   const source = String(text || "");
   const pattern = /(\[[^\]\n]{1,240}\]\([^) \n]{1,1000}\)|`([^`\n]+)`|\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|(->|=>))/g;
   let cursor = 0;
   for (const match of source.matchAll(pattern)) {
-    if (match.index > cursor) appendTypedText(parent, source.slice(cursor, match.index));
+    if (match.index > cursor) appendTypedText(parent, source.slice(cursor, match.index), context);
     const token = match[0];
     const linkMatch = token.match(/^\[([^\]\n]+)\]\(([^) \n]+)\)$/);
     if (linkMatch) {
@@ -2583,16 +3146,16 @@ function appendInlineMarkdown(parent, text) {
       else if (fileRef) appendFileToken(parent, linkMatch[1], fileRef);
       else appendUnsupportedMarkdownLink(parent, linkMatch[1], "Unsupported, unsafe, or unresolved link target");
     } else if (token.startsWith("`")) {
-      appendInlineCode(parent, token.slice(1, -1));
+      appendInlineCode(parent, token.slice(1, -1), context);
     } else if (token.startsWith("**")) {
       const strong = document.createElement("strong");
       strong.className = "assistant-md-strong";
-      appendTypedText(strong, token.slice(2, -2));
+      appendTypedText(strong, token.slice(2, -2), context);
       parent.appendChild(strong);
     } else if (token.startsWith("*")) {
       const em = document.createElement("em");
       em.className = "assistant-md-emphasis";
-      appendTypedText(em, token.slice(1, -1));
+      appendTypedText(em, token.slice(1, -1), context);
       parent.appendChild(em);
     } else {
       const arrow = document.createElement("span");
@@ -2602,21 +3165,121 @@ function appendInlineMarkdown(parent, text) {
     }
     cursor = match.index + token.length;
   }
-  if (cursor < source.length) appendTypedText(parent, source.slice(cursor));
+  if (cursor < source.length) appendTypedText(parent, source.slice(cursor), context);
 }
 
-function createMarkdownLineBlock(tagName, className, text) {
+function createMarkdownLineBlock(tagName, className, text, context = {}) {
   const block = document.createElement(tagName);
   block.className = className;
-  appendInlineMarkdown(block, text);
+  appendInlineMarkdown(block, text, context);
   return block;
 }
 
-function isMarkdownBlockStart(line) {
+function createMarkdownCodeBlock(codeLines, language = "") {
+  const block = document.createElement("div");
+  block.className = "assistant-md-codeblock";
+  const normalizedLanguage = String(language || "").trim();
+  if (normalizedLanguage && normalizedLanguage.toLowerCase() !== "text") {
+    const caption = document.createElement("div");
+    caption.className = "assistant-md-codeblock-label";
+    caption.textContent = normalizedLanguage;
+    block.appendChild(caption);
+  }
+  const body = document.createElement("div");
+  body.className = "assistant-md-codeblock-body";
+  body.textContent = codeLines.join("\n");
+  block.appendChild(body);
+  return block;
+}
+
+function isIndentedMarkdownCodeLine(line) {
+  return /^( {4}|\t)/.test(String(line || ""));
+}
+
+function stripIndentedMarkdownCodeLine(line) {
+  const source = String(line || "");
+  return source.startsWith("\t") ? source.slice(1) : source.replace(/^ {4}/, "");
+}
+
+function splitMarkdownTableRow(line) {
+  let source = String(line || "").trim();
+  if (!source.includes("|")) return null;
+  if (source.startsWith("|")) source = source.slice(1);
+  if (source.endsWith("|")) source = source.slice(0, -1);
+  const cells = [];
+  let current = "";
+  let escaped = false;
+  for (const char of source) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === "|") {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  cells.push(current.trim());
+  return cells.length >= 2 ? cells : null;
+}
+
+function isMarkdownTableDivider(line) {
+  const cells = splitMarkdownTableRow(line);
+  return Boolean(cells?.length) && cells.every((cell) => /^:?-+:?$/.test(cell.trim()));
+}
+
+function markdownTableStart(lines, index) {
+  if (!Array.isArray(lines) || index < 0 || index + 1 >= lines.length) return null;
+  const header = splitMarkdownTableRow(lines[index]);
+  if (!header || !isMarkdownTableDivider(lines[index + 1])) return null;
+  return { header };
+}
+
+function appendMarkdownTable(container, tableLines, context = {}) {
+  const header = splitMarkdownTableRow(tableLines[0]) || [];
+  const bodyRows = tableLines.slice(2).map(splitMarkdownTableRow).filter(Boolean);
+  const wrapper = document.createElement("div");
+  wrapper.className = "assistant-md-table-wrap";
+  const table = document.createElement("table");
+  table.className = "assistant-md-table";
+  const thead = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  for (const cellText of header) {
+    const cell = document.createElement("th");
+    appendInlineMarkdown(cell, cellText, context);
+    headRow.appendChild(cell);
+  }
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+  const tbody = document.createElement("tbody");
+  for (const rowCells of bodyRows) {
+    const row = document.createElement("tr");
+    for (let cellIndex = 0; cellIndex < header.length; cellIndex += 1) {
+      const cell = document.createElement("td");
+      appendInlineMarkdown(cell, rowCells[cellIndex] || "", context);
+      row.appendChild(cell);
+    }
+    tbody.appendChild(row);
+  }
+  table.appendChild(tbody);
+  wrapper.appendChild(table);
+  container.appendChild(wrapper);
+}
+
+function isMarkdownBlockStart(line, lines = null, index = -1) {
   const trimmed = String(line || "").trim();
   return Boolean(
     !trimmed ||
     /^```/.test(trimmed) ||
+    isIndentedMarkdownCodeLine(line) ||
+    markdownTableStart(lines, index) ||
     /^#{1,4}\s+/.test(trimmed) ||
     /^>\s?/.test(trimmed) ||
     /^---+$/.test(trimmed) ||
@@ -2626,7 +3289,7 @@ function isMarkdownBlockStart(line) {
   );
 }
 
-function appendMarkdownList(container, lines, ordered) {
+function appendMarkdownList(container, lines, ordered, context = {}) {
   const list = document.createElement(ordered ? "ol" : "ul");
   list.className = "assistant-md-list";
   for (const line of lines) {
@@ -2639,7 +3302,7 @@ function appendMarkdownList(container, lines, ordered) {
       const fragments = String(value || "").split("\n");
       fragments.forEach((fragment, index) => {
         if (index) target.appendChild(document.createElement("br"));
-        appendInlineMarkdown(target, fragment);
+        appendInlineMarkdown(target, fragment, context);
       });
     };
     if (taskMatch) {
@@ -2656,11 +3319,12 @@ function appendMarkdownList(container, lines, ordered) {
   container.appendChild(list);
 }
 
-function renderFinalAssistantContent(container, text) {
+function renderFinalAssistantContent(container, text, context = {}) {
   container.textContent = "";
   container.classList.add("assistant-markdown");
   const source = String(text || "").replace(/\r\n/g, "\n");
   if (!source.trim()) return;
+  const renderContext = { ...context, fileAliases: buildMarkdownFileAliasMap(source) };
   const lines = source.split("\n");
   for (let index = 0; index < lines.length;) {
     const line = lines[index];
@@ -2680,24 +3344,45 @@ function renderFinalAssistantContent(container, text) {
         index += 1;
       }
       if (index < lines.length) index += 1;
-      const block = document.createElement("figure");
-      block.className = "assistant-md-codeblock";
-      if (language) {
-        const caption = document.createElement("figcaption");
-        caption.textContent = language;
-        block.appendChild(caption);
+      container.appendChild(createMarkdownCodeBlock(codeLines, language));
+      continue;
+    }
+
+    if (isIndentedMarkdownCodeLine(line)) {
+      const codeLines = [];
+      while (index < lines.length) {
+        const nextLine = lines[index];
+        if (isIndentedMarkdownCodeLine(nextLine)) {
+          codeLines.push(stripIndentedMarkdownCodeLine(nextLine));
+          index += 1;
+          continue;
+        }
+        if (!nextLine.trim() && codeLines.length) {
+          codeLines.push("");
+          index += 1;
+          continue;
+        }
+        break;
       }
-      const pre = document.createElement("pre");
-      pre.textContent = codeLines.join("\n");
-      block.appendChild(pre);
-      container.appendChild(block);
+      container.appendChild(createMarkdownCodeBlock(codeLines));
+      continue;
+    }
+
+    if (markdownTableStart(lines, index)) {
+      const tableLines = [lines[index], lines[index + 1]];
+      index += 2;
+      while (index < lines.length && splitMarkdownTableRow(lines[index])) {
+        tableLines.push(lines[index]);
+        index += 1;
+      }
+      appendMarkdownTable(container, tableLines, renderContext);
       continue;
     }
 
     const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
     if (heading) {
       const level = Math.min(4, heading[1].length);
-      container.appendChild(createMarkdownLineBlock(`h${level}`, `assistant-md-heading level-${level}`, heading[2]));
+      container.appendChild(createMarkdownLineBlock(`h${level}`, `assistant-md-heading level-${level}`, heading[2], renderContext));
       index += 1;
       continue;
     }
@@ -2716,7 +3401,7 @@ function renderFinalAssistantContent(container, text) {
         quoteLines.push(lines[index].trim().replace(/^>\s?/, ""));
         index += 1;
       }
-      container.appendChild(createMarkdownLineBlock("blockquote", "assistant-md-quote", quoteLines.join("\n")));
+      container.appendChild(createMarkdownLineBlock("blockquote", "assistant-md-quote", quoteLines.join("\n"), renderContext));
       continue;
     }
 
@@ -2746,7 +3431,7 @@ function renderFinalAssistantContent(container, text) {
       if (!listLines.length) {
         index += 1;
       }
-      appendMarkdownList(container, listLines, ordered);
+      appendMarkdownList(container, listLines, ordered, renderContext);
       continue;
     }
 
@@ -2758,7 +3443,7 @@ function renderFinalAssistantContent(container, text) {
       arrow.className = "assistant-md-arrow";
       arrow.textContent = chain[1];
       block.append(arrow, document.createTextNode(" "));
-      appendInlineMarkdown(block, chain[2]);
+      appendInlineMarkdown(block, chain[2], renderContext);
       container.appendChild(block);
       index += 1;
       continue;
@@ -2766,12 +3451,43 @@ function renderFinalAssistantContent(container, text) {
 
     const paragraphLines = [line];
     index += 1;
-    while (index < lines.length && !isMarkdownBlockStart(lines[index])) {
+    while (index < lines.length && !isMarkdownBlockStart(lines[index], lines, index)) {
       paragraphLines.push(lines[index]);
       index += 1;
     }
-    container.appendChild(createMarkdownLineBlock("p", "assistant-md-paragraph", paragraphLines.join("\n")));
+    container.appendChild(createMarkdownLineBlock("p", "assistant-md-paragraph", paragraphLines.join("\n"), renderContext));
   }
+}
+
+const typedMarkdownProjection = window.CodexTypedMarkdownProjection;
+
+function codexTypedMarkdownContext(context = {}) {
+  const safeContext = context && typeof context === "object" ? context : {};
+  return {
+    ...safeContext,
+    workspaceRoots: knownWorkspaceRoots(),
+    includeContextDataset: true,
+    urlTokenTitle: "Open link in browser",
+    onOpenUrl: (url) => openTypedUrl(url),
+    onOpenFile: (relPath, options = {}) => openTypedFile(relPath, { fallbackPath: options.fallbackPath || "" }),
+  };
+}
+
+if (typedMarkdownProjection) {
+  extractFileRefsFromText = function sharedExtractFileRefsFromText(value) {
+    return typedMarkdownProjection.extractFileRefsFromText(value, codexTypedMarkdownContext());
+  };
+  tokenizeTypedContent = function sharedTokenizeTypedContent(text, context = {}) {
+    return typedMarkdownProjection.tokenizeTypedContent(text, codexTypedMarkdownContext(context));
+  };
+  renderTypedContent = function sharedRenderTypedContent(container, text, context = {}) {
+    typedMarkdownProjection.renderTypedContent(container, text, codexTypedMarkdownContext(context));
+  };
+  renderFinalAssistantContent = function sharedRenderFinalAssistantContent(container, text, context = {}) {
+    typedMarkdownProjection.renderAssistantMarkdown(container, text, codexTypedMarkdownContext(context));
+  };
+} else {
+  console.error("Shared typed Markdown projection unavailable; using legacy Codex projection.");
 }
 
 function messageCopyText(node) {
@@ -2828,14 +3544,14 @@ function ensureMessage(id, role, title = "") {
   return article;
 }
 
-function setMessageText(id, role, text, title = "") {
+function setMessageText(id, role, text, title = "", context = {}) {
   const node = ensureMessage(id, role, title);
   const bubble = node.querySelector(".bubble");
   bubble.dataset.rawText = text || "";
   bubble.dataset.typedRendered = "true";
   bubble.dataset.streamingPlain = "false";
   if (role === "assistant") {
-    renderFinalAssistantContent(bubble, text || "");
+    renderFinalAssistantContent(bubble, text || "", context);
   } else {
     bubble.classList.remove("assistant-markdown");
     renderTypedContent(bubble, text || "");
@@ -2872,7 +3588,8 @@ function finalizeMessageTypedContent(id) {
   bubble.dataset.streamingPlain = "false";
   const role = node.classList.contains("user") ? "user" : node.classList.contains("assistant") ? "assistant" : "system";
   if (role === "assistant") {
-    renderFinalAssistantContent(bubble, text);
+    const turnKey = state.finalTurnKeyByMessageId.get(String(id || "")) || "";
+    renderFinalAssistantContent(bubble, text, turnFileEvidenceContext(turnKey));
   } else {
     bubble.classList.remove("assistant-markdown");
     renderTypedContent(bubble, text);
@@ -2897,6 +3614,8 @@ function clearRenderedDomState() {
   }
   state.pendingThoughtRenderMap.clear();
   state.finalMessageByTurnKey.clear();
+  state.finalTurnKeyByMessageId.clear();
+  state.turnFileEvidenceByTurn.clear();
 }
 
 function resetThreadSessionState() {
@@ -2995,6 +3714,7 @@ function ensureTurnActivity(turnId) {
     id,
     startedAt: null,
     completedAt: null,
+    durationMs: null,
     status: "",
     hasCodexOutput: false,
     errorShown: false,
@@ -3002,6 +3722,23 @@ function ensureTurnActivity(turnId) {
   };
   state.turnActivityMap.set(id, next);
   return next;
+}
+
+function rememberTurnTiming(turnKey, timing = {}) {
+  const key = String(turnKey || timing?.turnId || timing?.id || "").trim();
+  if (!key) return null;
+  const activity = ensureTurnActivity(key);
+  if (!activity) return null;
+  const startedAt = timestampSeconds(timing.startedAt || timing.started_at || timing.createdAt || timing.created_at || "");
+  const completedAt = timestampSeconds(timing.completedAt || timing.completed_at || timing.finishedAt || timing.finished_at || "");
+  const durationMs = Number(timing.durationMs ?? timing.duration_ms);
+  if (startedAt && !activity.startedAt) activity.startedAt = startedAt;
+  if (completedAt && !activity.completedAt) activity.completedAt = completedAt;
+  if (Number.isFinite(durationMs) && durationMs >= 0) activity.durationMs = durationMs;
+  else if (activity.startedAt && activity.completedAt && activity.completedAt >= activity.startedAt) {
+    activity.durationMs = Math.round((activity.completedAt - activity.startedAt) * 1000);
+  }
+  return activity;
 }
 
 function terminalTurnStatus(status) {
@@ -3031,6 +3768,9 @@ function reconcileCompletedTurnState(turnId, status = "completed", completedAt =
   if (activity) {
     activity.status = String(status || "completed");
     activity.completedAt = activity.completedAt || timestampSeconds(completedAt) || Date.now() / 1000;
+    if (!Number.isFinite(Number(activity.durationMs)) && activity.startedAt && activity.completedAt >= activity.startedAt) {
+      activity.durationMs = Math.round((activity.completedAt - activity.startedAt) * 1000);
+    }
   }
   if (!state.activeTurnId || String(state.activeTurnId) === id || String(state.turnId) === id) {
     clearPrimaryTurnActivityState();
@@ -3047,6 +3787,7 @@ function reconcileActiveTurnState(turnId, status = "inProgress", startedAt = nul
     activity.status = String(status || "inProgress");
     activity.startedAt = activity.startedAt || timestampSeconds(startedAt) || Date.now() / 1000;
     activity.completedAt = null;
+    activity.durationMs = null;
   }
   state.turnId = id;
   state.activeTurnId = id;
@@ -4085,6 +4826,7 @@ function renderStoredPresentationModel(model, snapshot = {}) {
   for (let index = 0; index < visibleTurns.length; index += 1) {
     const turn = visibleTurns[index];
     const turnKey = String(turn.turnKey || turn.turnId || `stored_turn_${startTurnIndex + index + 1}`);
+    rememberTurnTiming(turnKey, turn);
     const collabPrompts = collabPromptInfosFromItems(turn.thoughtItems);
     for (let messageIndex = 0; messageIndex < (turn.userMessages || []).length; messageIndex += 1) {
       const message = turn.userMessages[messageIndex];
@@ -4130,7 +4872,8 @@ function renderStoredPresentationModel(model, snapshot = {}) {
     for (let messageIndex = 0; messageIndex < (turn.assistantFinalMessages || []).length; messageIndex += 1) {
       const message = turn.assistantFinalMessages[messageIndex];
       const id = String(message.id || `stored_assistant_${turnKey}_${messageIndex}`);
-      setMessageText(id, "assistant", storedMessageText(message), authorContext.assistantTitle);
+      rememberFinalMessageItem(id, turnKey);
+      setMessageText(id, "assistant", storedMessageText(message), authorContext.assistantTitle, turnFileEvidenceContext(turnKey));
     }
   }
 
@@ -4288,7 +5031,7 @@ function normalizeThreadReadResult(result, requestedThreadId) {
 async function resumeThreadById(threadId) {
   const attempts = [
     { method: "thread/resume", params: { threadId } },
-    { method: "thread/resume", params: { threadId, cwd: connection?.workspaceRoot || project?.repoPath || null } },
+    { method: "thread/resume", params: { threadId, cwd: workspaceRootText() || null } },
   ];
   let lastError = null;
   for (const attempt of attempts) {
@@ -4422,6 +5165,11 @@ async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "",
     const message = String(error?.message || "");
     if (message.toLowerCase().includes("not connected yet")) {
       if (renderedStored) {
+        if (payload.runtimeStartupPending) {
+          addSystemMessage("Stored transcript rendered while Codex app-server starts.");
+          setComposerEnabled(false, "Stored transcript rendered. Live Codex attach is pending app-server startup.");
+          return;
+        }
         addSystemMessage(`Stored transcript rendered. Live attach unavailable: ${message}`);
         await reportThreadState("failed", {
           threadId: requestedThreadId,
@@ -4581,6 +5329,8 @@ function ensureGraphAgent(threadId, patch = {}) {
     status: "discovered",
     activityStatus: "unknown",
     hydrationStatus: "not_requested",
+    model: "",
+    reasoningEffort: "",
     transcript: [],
     turnScopes: {},
     evidenceRefs: [],
@@ -4592,6 +5342,8 @@ function ensureGraphAgent(threadId, patch = {}) {
     parentThreadId: String(patch.parentThreadId || existing.parentThreadId || state.threadId || ""),
     nickname: String(patch.nickname ?? existing.nickname ?? ""),
     role: String(patch.role ?? existing.role ?? ""),
+    model: String(patch.model ?? existing.model ?? ""),
+    reasoningEffort: String(patch.reasoningEffort ?? existing.reasoningEffort ?? ""),
   };
   next.label = graphAgentLabel(next);
   graph.agents.set(id, next);
@@ -4728,6 +5480,8 @@ function collabAgentProjection(threadId, statePatch = {}) {
     role: meta.role,
     lifecycleStatus: statePatch.status || agent?.status || "",
     activityStatus: agent?.activityStatus || "",
+    model: agent?.model || "",
+    reasoningEffort: agent?.reasoningEffort || "",
     clickable: Boolean(id),
   };
 }
@@ -4850,6 +5604,8 @@ function recordSubagentTurnEvent(turnKey, agent, event) {
     displayLabel: agent?.label || agent?.displayLabel || agentDisplayLabel({ threadId: id }),
     status: "unknown",
     activityStatus: "",
+    model: "",
+    reasoningEffort: "",
     clickable,
     events: [],
   };
@@ -4860,6 +5616,8 @@ function recordSubagentTurnEvent(turnKey, agent, event) {
   existing.displayLabel = agent?.label || agent?.displayLabel || existing.displayLabel;
   existing.status = mergedStatus;
   existing.activityStatus = event.activityStatus || existing.activityStatus;
+  existing.model = event.model || agent?.model || existing.model || "";
+  existing.reasoningEffort = event.reasoningEffort || agent?.reasoningEffort || existing.reasoningEffort || "";
   existing.clickable = existing.clickable || clickable;
   existing.events.push(event);
   activity.events.push({ ...event, threadId: id, displayLabel: existing.displayLabel });
@@ -4868,6 +5626,8 @@ function recordSubagentTurnEvent(turnKey, agent, event) {
   const scope = agentTurnScopeEntry(agent, key);
   if (scope) {
     scope.status = mergedStatus;
+    scope.model = event.model || agent?.model || scope.model || "";
+    scope.reasoningEffort = event.reasoningEffort || agent?.reasoningEffort || scope.reasoningEffort || "";
     scope.events.push({ ...event, threadId: id, displayLabel: existing.displayLabel });
   }
 }
@@ -4937,6 +5697,8 @@ function recordCollabTurnActivity(turnKey, item) {
     const agent = ensureGraphAgent(agentProjection.threadId, {
       nickname: agentProjection.nickname || undefined,
       role: agentProjection.role || undefined,
+      model: projection.model || undefined,
+      reasoningEffort: projection.reasoningEffort || undefined,
       status: mergedStatus,
       activityStatus: ["creating", "running", "waiting"].includes(mergedStatus) ? "active" : "last_seen_completed",
     });
@@ -4947,6 +5709,8 @@ function recordCollabTurnActivity(turnKey, item) {
       status: mergedStatus,
       actionStatus: projection.status,
       promptPreview: projection.promptPreview || "",
+      model: projection.model || "",
+      reasoningEffort: projection.reasoningEffort || "",
       observedAt: new Date().toISOString(),
     });
   }
@@ -4993,6 +5757,8 @@ function updateAgentFromCollabItem(item) {
       parentThreadId: collab.senderThreadId || state.threadId,
       nickname: agentState.nickname || undefined,
       role: agentState.role || undefined,
+      model: collab.model || undefined,
+      reasoningEffort: collab.reasoningEffort || undefined,
       status: agentState.status || collab.status || "unknown",
       activityStatus: collab.status === "inProgress" ? "active" : "last_seen_completed",
       hydrationStatus: "metadata_pending",
@@ -5192,6 +5958,7 @@ function rememberFinalMessageItem(itemId, turnKey = "") {
   const key = String(turnKey || state.turnId || "").trim();
   if (!id || !key) return;
   state.finalMessageByTurnKey.set(key, id);
+  state.finalTurnKeyByMessageId.set(id, key);
   const thoughtNode = state.itemMap.get(thoughtMessageId(key));
   const finalNode = state.itemMap.get(id);
   if (thoughtNode && finalNode && finalNode.parentNode === els.transcript) {
@@ -5210,6 +5977,57 @@ function positionThoughtProcessNode(turnKey, node) {
 
 function normalizeThoughtItemBody(item) {
   return String(thoughtItemBody(item) || "").trim();
+}
+
+function isPatchFileEvidenceItem(item) {
+  if (!item) return false;
+  if (item.type === "fileChange") return true;
+  const toolName = String(item.name || item.tool || item.toolName || "").toLowerCase();
+  if (toolName.includes("apply_patch")) return true;
+  const body = normalizeThoughtItemBody(item);
+  return body.includes("*** Add File:") ||
+    body.includes("*** Update File:") ||
+    body.includes("*** Delete File:") ||
+    body.includes("Updated the following files:");
+}
+
+function fileRefsFromPatchEvidenceItem(item) {
+  if (!isPatchFileEvidenceItem(item)) return [];
+  const refs = [];
+  const pushValue = (value) => {
+    const ref = fileRefFromTextCandidate(value);
+    if (ref) refs.push(ref);
+  };
+  for (const change of Array.isArray(item?.changes) ? item.changes : []) {
+    pushValue(change?.path || change?.relativePath || change?.file || "");
+  }
+  for (const value of [item?.path, item?.relativePath, item?.file, item?.savedPath, item?.stdout, item?.stderr]) {
+    pushValue(value);
+  }
+  refs.push(...extractFileRefsFromText(normalizeThoughtItemBody(item)));
+  return refs;
+}
+
+function registerTurnFileEvidence(turnKey, items) {
+  const key = String(turnKey || "live");
+  const refs = [];
+  for (const item of Array.isArray(items) ? items : []) refs.push(...fileRefsFromPatchEvidenceItem(item));
+  if (!refs.length) return;
+  const evidence = state.turnFileEvidenceByTurn.get(key) || new Map();
+  for (const ref of refs) {
+    if (!ref?.path) continue;
+    evidence.set(ref.path, { path: ref.path, line: ref.line, column: ref.column });
+  }
+  state.turnFileEvidenceByTurn.set(key, evidence);
+}
+
+function turnFileEvidenceContext(turnKey, baseContext = {}) {
+  const evidence = state.turnFileEvidenceByTurn.get(String(turnKey || "live"));
+  if (!evidence?.size) return baseContext;
+  return {
+    ...baseContext,
+    fileEvidenceRefs: Array.from(evidence.values()),
+  };
 }
 
 function isEmptyThoughtSentinel(text) {
@@ -5265,9 +6083,18 @@ function renderThoughtProcess(turnKey, thoughtItems, options = {}) {
   root.className = "thought-process";
   if (options.open) root.open = true;
   const summary = document.createElement("summary");
-  summary.textContent = projection.reasoningItems.length
+  const summaryLabel = projection.reasoningItems.length
     ? `Thought process (${projection.visibleCount})`
     : `Process evidence (${projection.visibleCount})`;
+  summary.appendChild(document.createTextNode(summaryLabel));
+  const durationLabel = turnDurationLabel(turnKey);
+  if (durationLabel) {
+    const duration = document.createElement("span");
+    duration.className = "thought-duration";
+    duration.textContent = durationLabel;
+    duration.title = "Turn duration";
+    summary.appendChild(duration);
+  }
   root.appendChild(summary);
 
   const body = document.createElement("div");
@@ -5370,6 +6197,7 @@ function upsertThoughtProcess(turnKey, items, options = {}) {
   const shouldMerge = options.merge !== false;
   const existing = shouldMerge ? state.thoughtItemMap.get(key) || [] : [];
   const merged = shouldMerge ? mergeThoughtItems(existing, items) : [...(items || [])];
+  registerTurnFileEvidence(key, merged);
   state.thoughtItemMap.set(key, merged);
   if (options.defer) {
     scheduleThoughtProcessRender(key, { open: Boolean(options.open) });
@@ -5479,7 +6307,13 @@ function renderItem(item, authorContext = currentAuthorContext()) {
       return;
     }
     rememberFinalMessageItem(item.id, item.turnId || state.turnId || "");
-    setMessageText(item.id, "assistant", item.text || "", authorContext.assistantTitle);
+    setMessageText(
+      item.id,
+      "assistant",
+      item.text || "",
+      authorContext.assistantTitle,
+      turnFileEvidenceContext(item.turnId || state.turnId || ""),
+    );
     return;
   }
   if (item.type === "collabAgentToolCall") {
@@ -5592,6 +6426,7 @@ function renderThreadHistory(thread, options = {}) {
     const turn = visibleTurns[index];
     const absoluteTurnIndex = startTurnIndex + index;
     const turnKey = String(turn?.id || `${absoluteTurnIndex + 1}`);
+    rememberTurnTiming(turnKey, turn);
     const userItems = [];
     const regularItems = [];
     const thoughtItems = [];
@@ -5632,7 +6467,7 @@ async function startNewThread() {
   if (!hasCapability("threads", "canStart")) {
     throw new Error("Active Codex runtime does not expose thread/start capability.");
   }
-  const cwd = connection?.workspaceRoot || project?.workspace?.linuxPath || project?.workspace?.localPath || project?.repoPath || "";
+  const cwd = workspaceRootText();
   const params = {
     cwd,
     model: activeModelId() || null,
@@ -5678,6 +6513,7 @@ async function startCodexTurn(text, options = {}) {
     if (activity) {
       activity.status = String(result?.turn?.status || "inProgress");
       activity.startedAt = activity.startedAt || result?.turn?.startedAt || Date.now() / 1000;
+      activity.durationMs = null;
     }
     rememberPromptTurn(turnId, text, options.retryCount || 0);
     renderRuntimeConstitution();
@@ -5685,7 +6521,7 @@ async function startCodexTurn(text, options = {}) {
   return result;
 }
 
-async function sendPrompt(text) {
+async function sendPrompt(text, options = {}) {
   if (!state.threadId) await startNewThread();
   if (!state.liveAttached && state.threadId) {
     const liveResult = await attachLiveThread(state.threadId);
@@ -5694,8 +6530,8 @@ async function sendPrompt(text) {
   state.turnPending = true;
   renderRuntimeConstitution();
   try {
-    await startCodexTurn(text);
-    els.composerInput.value = "";
+    await startCodexTurn(text, options);
+    if (options.clearComposer !== false) clearComposerDraft();
   } catch (error) {
     clearPrimaryTurnActivityState();
     renderRuntimeConstitution();
@@ -5703,8 +6539,171 @@ async function sendPrompt(text) {
   }
 }
 
+async function steerCurrentTurn(text) {
+  if (!hasCapabilityForMutation("turns", "canSteer")) {
+    throw new Error("Active Codex runtime does not expose turn/steer capability.");
+  }
+  const turnId = currentActiveTurnId();
+  if (!state.threadId || !turnId) {
+    throw new Error("No active Codex turn is available to steer.");
+  }
+  const result = await rpc("turn/steer", {
+    threadId: state.threadId,
+    expectedTurnId: turnId,
+    input: [{ type: "text", text, text_elements: [] }],
+  });
+  clearComposerDraft();
+  renderRuntimeConstitution();
+  return result;
+}
+
+function queueComposerMessage(text) {
+  const threadId = String(state.threadId || "").trim();
+  if (!threadId) throw new Error("No active Codex thread is available for queueing.");
+  const item = {
+    id: `queued_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+    threadId,
+    projectId: String(project?.id || ""),
+    text,
+    createdAt: new Date().toISOString(),
+  };
+  state.queuedComposerMessages.push(item);
+  clearComposerDraft();
+  renderRuntimeConstitution();
+  return item;
+}
+
+function scheduleQueuedPromptDrain(reason = "turn-completed") {
+  if (state.queuedPromptDrainScheduled) return;
+  state.queuedPromptDrainScheduled = true;
+  window.setTimeout(() => {
+    state.queuedPromptDrainScheduled = false;
+    drainQueuedComposerMessages(reason).catch((error) => {
+      addSystemMessage(`Queued message failed: ${error.message}`);
+      renderRuntimeConstitution();
+    });
+  }, 80);
+}
+
+async function drainQueuedComposerMessages(reason = "turn-completed") {
+  if (state.queuedPromptDrainInProgress || turnIsActive() || !state.queuedComposerMessages.length) return;
+  const threadId = String(state.threadId || "").trim();
+  const projectId = String(project?.id || "");
+  if (!threadId) return;
+  const nextIndex = state.queuedComposerMessages.findIndex((item) => (
+    String(item?.threadId || "") === threadId &&
+    (!projectId || !item?.projectId || String(item.projectId) === projectId)
+  ));
+  if (nextIndex < 0) return;
+  const [next] = state.queuedComposerMessages.splice(nextIndex, 1);
+  if (!next?.text) return;
+  state.queuedPromptDrainInProgress = true;
+  renderRuntimeConstitution();
+  try {
+    await sendPrompt(next.text, { clearComposer: false, queuedReason: reason });
+  } catch (error) {
+    state.queuedComposerMessages.splice(nextIndex, 0, next);
+    throw error;
+  } finally {
+    state.queuedPromptDrainInProgress = false;
+    renderRuntimeConstitution();
+  }
+}
+
+function reportComposerDraftBlock(draft) {
+  if (!draft?.message) return false;
+  addSystemMessage(draft.message);
+  renderComposerRuntimeBand();
+  return true;
+}
+
+async function submitIdleComposerDraft() {
+  const draft = composerDraftProjection();
+  if (!draft.ok) {
+    reportComposerDraftBlock(draft);
+    return;
+  }
+  await sendPrompt(draft.text);
+}
+
+async function submitActiveComposerDraft(disposition) {
+  const draft = composerDraftProjection();
+  if (!draft.ok) {
+    reportComposerDraftBlock(draft);
+    return;
+  }
+  if (disposition === "steer") {
+    await steerCurrentTurn(draft.text);
+    return;
+  }
+  if (disposition === "queue") {
+    queueComposerMessage(draft.text);
+    return;
+  }
+  throw new Error(`Unsupported active-turn composer disposition: ${disposition}`);
+}
+
+function setComposerTextForReview(text) {
+  if (!els.composerInput) return;
+  const existing = String(els.composerInput.value || "").trim();
+  els.composerInput.value = existing ? `${existing}\n\n${text}` : text;
+  els.composerInput.focus();
+  renderComposerRuntimeBand();
+}
+
+async function handleExternalComposerMessage(event) {
+  const text = String(event?.text || "").trim();
+  if (!text) return;
+  if (event?.projectId && project?.id && String(event.projectId) !== String(project.id)) return;
+  const targetThreadId = String(event?.threadId || "").trim();
+  if (targetThreadId && state.threadId !== targetThreadId) {
+    await openThreadHybrid(
+      targetThreadId,
+      event.sourceHome || "",
+      event.sessionFilePath || "",
+      event.title || "",
+    );
+  }
+  const disposition = String(event?.activeTurnDisposition || "queue");
+  try {
+    if (turnIsActive()) {
+      if (disposition === "steer") {
+        await steerCurrentTurn(text);
+        addSystemMessage("Sent ChatGPT download note as active-turn steering.");
+        return;
+      }
+      if (disposition === "ask") {
+        setComposerTextForReview(text);
+        showComposerDispositionMenu();
+        addSystemMessage("Prepared ChatGPT download note in the composer.");
+        return;
+      }
+      queueComposerMessage(text);
+      addSystemMessage("Queued ChatGPT download note for the linked Codex thread.");
+      return;
+    }
+    await sendPrompt(text);
+    addSystemMessage("Sent ChatGPT download note to the linked Codex thread.");
+  } catch (error) {
+    setComposerTextForReview(text);
+    addSystemMessage(`ChatGPT download note was prepared in the composer after send failed: ${error.message}`);
+  }
+}
+
+function showComposerDispositionMenu() {
+  if (!turnIsActive()) return false;
+  state.composerMenu = "disposition";
+  renderComposerRuntimeBand();
+  updateComposerGeometry();
+  window.requestAnimationFrame(() => {
+    if (!els.steerMenuButton?.disabled) els.steerMenuButton.focus();
+    else if (!els.queueMenuButton?.disabled) els.queueMenuButton.focus();
+  });
+  return true;
+}
+
 async function stopCurrentTurn() {
-  const turnId = String(state.activeTurnId || state.turnId || "").trim();
+  const turnId = currentActiveTurnId();
   if (!state.threadId || !turnId) {
     addSystemMessage("No active Codex turn is available to stop yet.");
     return;
@@ -5718,11 +6717,15 @@ async function stopCurrentTurn() {
     if (activity) {
       activity.status = "interrupted";
       activity.completedAt = activity.completedAt || Date.now() / 1000;
+      if (!Number.isFinite(Number(activity.durationMs)) && activity.startedAt && activity.completedAt >= activity.startedAt) {
+        activity.durationMs = Math.round((activity.completedAt - activity.startedAt) * 1000);
+      }
     }
     clearPrimaryTurnActivityState();
   } finally {
     state.turnStopping = false;
     renderRuntimeConstitution();
+    scheduleQueuedPromptDrain("turn-stopped");
   }
 }
 
@@ -5747,6 +6750,9 @@ function handleNotification(method, params) {
       if (!params?.willRetry) {
         activity.status = "error";
         activity.completedAt = activity.completedAt || Date.now() / 1000;
+        if (!Number.isFinite(Number(activity.durationMs)) && activity.startedAt && activity.completedAt >= activity.startedAt) {
+          activity.durationMs = Math.round((activity.completedAt - activity.startedAt) * 1000);
+        }
       }
     }
     if (!params?.willRetry) {
@@ -5841,11 +6847,17 @@ function handleNotification(method, params) {
       if (activity) {
         activity.status = String(params?.turn?.status || "completed");
         activity.completedAt = params?.turn?.completedAt || Date.now() / 1000;
+        const durationMs = Number(params?.turn?.durationMs ?? params?.turn?.duration_ms ?? params?.durationMs ?? params?.duration_ms);
+        if (Number.isFinite(durationMs) && durationMs >= 0) activity.durationMs = durationMs;
+        else if (activity.startedAt && activity.completedAt >= activity.startedAt) {
+          activity.durationMs = Math.round((activity.completedAt - activity.startedAt) * 1000);
+        }
       }
       renderRuntimeConstitution();
       collapseThoughtProcess(completedTurnId);
       finalizeTurnMessages(completedTurnId);
       renderTurnCompletionNotice(completedTurnId, params?.turn || {});
+      scheduleQueuedPromptDrain("turn-completed");
     }
     return;
   }
@@ -5861,6 +6873,7 @@ function handleNotification(method, params) {
       if (activity) {
         activity.status = String(params?.turn?.status || "inProgress");
         activity.startedAt = params?.turn?.startedAt || Date.now() / 1000;
+        activity.durationMs = null;
       }
       renderRuntimeConstitution();
     }
@@ -5871,6 +6884,12 @@ function handleBridgeEvent(event) {
   if (!event) return;
   if (event.type === "open-thread-request") {
     openThreadFromEvent(event);
+    return;
+  }
+  if (event.type === "external-composer-message") {
+    handleExternalComposerMessage(event).catch((error) => {
+      addSystemMessage(`External composer message failed: ${error.message}`);
+    });
     return;
   }
   if (event.type === "connection-status") {
@@ -5957,6 +6976,15 @@ function handleBridgeEvent(event) {
     dismissComposerOverlay(event.reason || "shell-event");
     return;
   }
+  if (event.type === "attachment-drafts") {
+    addComposerAttachments(event);
+    return;
+  }
+  if (event.type === "attachment-diagnostic") {
+    state.composerAttachmentError = event.message || "Attachment action failed.";
+    renderComposerAttachments();
+    return;
+  }
   if (event.type === "rpc-notification") {
     handleNotification(event.method, event.params || {});
     return;
@@ -6016,12 +7044,21 @@ async function connect() {
   await loadRuntimePreferences({ applyThread: false });
   updateSurfaceHeader(payload.initialThreadTitle || project.name, workspaceText());
 
-  if (!connection?.wsUrl && !DIRECT_TRANSPORTS.has(connection?.transport)) {
-    setBadge(els.connectionBadge, "fallback", "warning");
-    state.connectionStatus = "unavailable";
+  if (!connectionAvailable()) {
+    const startupPending = Boolean(payload.runtimeStartupPending);
+    state.connectionStatus = startupPending ? "starting" : "unavailable";
     renderRuntimeConstitution();
-    addSystemMessage(payload.error || "Codex fallback surface loaded. The managed app-server is not connected.");
-    setComposerEnabled(false, "Read-only transcript mode (Codex app-server unavailable).");
+    addSystemMessage(
+      payload.error ||
+      payload.runtimeStartupMessage ||
+      "Codex fallback surface loaded. The managed app-server is not connected.",
+    );
+    setComposerEnabled(
+      false,
+      startupPending
+        ? "Read-only transcript mode while Codex app-server starts."
+        : "Read-only transcript mode (Codex app-server unavailable).",
+    );
     state.readyForThreadOpen = true;
     if (payload.initialThreadId) {
       try {
@@ -6078,16 +7115,240 @@ els.composerForm.addEventListener("submit", (event) => {
   event.preventDefault();
   dismissComposerOverlay("composer-submit");
   if (turnIsActive()) {
-    stopCurrentTurn().catch((error) => addSystemMessage(`Stop failed: ${error.message}`));
+    showComposerDispositionMenu();
     return;
   }
-  const text = els.composerInput.value.trim();
-  if (!text) return;
-  sendPrompt(text).catch((error) => addSystemMessage(`Turn failed: ${error.message}`));
+  submitIdleComposerDraft().catch((error) => addSystemMessage(`Turn failed: ${error.message}`));
+});
+
+els.composerStopButton?.addEventListener("click", () => {
+  dismissComposerOverlay("composer-stop");
+  stopCurrentTurn().catch((error) => addSystemMessage(`Stop failed: ${error.message}`));
+});
+
+els.steerButton?.addEventListener("click", () => {
+  dismissComposerOverlay("steer-click");
+  submitActiveComposerDraft("steer").catch((error) => addSystemMessage(`Steer failed: ${error.message}`));
+});
+
+els.queueButton?.addEventListener("click", () => {
+  dismissComposerOverlay("queue-click");
+  submitActiveComposerDraft("queue").catch((error) => addSystemMessage(`Queue failed: ${error.message}`));
+});
+
+els.steerMenuButton?.addEventListener("click", () => {
+  dismissComposerOverlay("steer-menu-click");
+  submitActiveComposerDraft("steer").catch((error) => addSystemMessage(`Steer failed: ${error.message}`));
+});
+
+els.queueMenuButton?.addEventListener("click", () => {
+  dismissComposerOverlay("queue-menu-click");
+  submitActiveComposerDraft("queue").catch((error) => addSystemMessage(`Queue failed: ${error.message}`));
+});
+
+els.composerInput?.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
+  if (!turnIsActive()) return;
+  event.preventDefault();
+  showComposerDispositionMenu();
+});
+
+els.composerInput?.addEventListener("input", () => {
+  renderComposerRuntimeBand();
 });
 
 els.composerAccessButton?.addEventListener("click", () => toggleComposerMenu("access"));
 els.composerModelButton?.addEventListener("click", () => toggleComposerMenu("model"));
+els.chooseAttachmentButton?.addEventListener("click", async () => {
+  if (!bridge?.chooseAttachmentFiles || !project?.id) {
+    addSystemMessage("Attachment picker is unavailable.");
+    return;
+  }
+  try {
+    addComposerAttachments(await bridge.chooseAttachmentFiles(project.id));
+  } catch (error) {
+    state.composerAttachmentError = `Attachment picker failed: ${error.message}`;
+    renderComposerAttachments();
+  }
+});
+els.pasteImageButton?.addEventListener("click", async () => {
+  if (!bridge?.pasteImageAttachment || !project?.id) {
+    addSystemMessage("Clipboard image paste is unavailable.");
+    return;
+  }
+  try {
+    addComposerAttachments(await bridge.pasteImageAttachment(project.id));
+  } catch (error) {
+    state.composerAttachmentError = `Paste image failed: ${error.message}`;
+    renderComposerAttachments();
+  }
+});
+
+async function droppedFilePaths(event) {
+  const files = Array.from(event.dataTransfer?.files || []);
+  if (!files.length) return [];
+  if (typeof bridge?.getDroppedFilePaths === "function") {
+    return bridge.getDroppedFilePaths(files);
+  }
+  return files
+    .map((file) => bridge?.getPathForFile?.(file) || file?.path || "")
+    .filter(Boolean);
+}
+
+for (const eventName of ["dragenter", "dragover"]) {
+  els.composerForm?.addEventListener(eventName, (event) => {
+    event.preventDefault();
+    state.composerDragDepth += eventName === "dragenter" ? 1 : 0;
+    els.composerForm.classList.add("drag-over");
+  });
+}
+
+els.composerForm?.addEventListener("dragleave", () => {
+  state.composerDragDepth = Math.max(0, state.composerDragDepth - 1);
+  if (!state.composerDragDepth) els.composerForm.classList.remove("drag-over");
+});
+
+els.composerForm?.addEventListener("drop", async (event) => {
+  event.preventDefault();
+  state.composerDragDepth = 0;
+  els.composerForm.classList.remove("drag-over");
+  const paths = await droppedFilePaths(event);
+  if (!paths.length) {
+    state.composerAttachmentError = "Drop did not contain file paths.";
+    renderComposerAttachments();
+    return;
+  }
+  try {
+    addComposerAttachments(await bridge.stageDroppedAttachments(project.id, paths));
+  } catch (error) {
+    state.composerAttachmentError = `Drop failed: ${error.message}`;
+    renderComposerAttachments();
+  }
+});
+
+els.composerInput?.addEventListener("paste", (event) => {
+  const text = event.clipboardData?.getData("text/plain") || "";
+  if (text) return;
+  const hasImage = Array.from(event.clipboardData?.items || []).some((item) => String(item?.type || "").startsWith("image/"));
+  if (!hasImage || !bridge?.pasteImageAttachment || !project?.id) return;
+  event.preventDefault();
+  bridge.pasteImageAttachment(project.id)
+    .then(addComposerAttachments)
+    .catch((error) => {
+      state.composerAttachmentError = `Paste image failed: ${error.message}`;
+      renderComposerAttachments();
+    });
+});
+
+function selectedTextInfo(event) {
+  const target = event.target;
+  if (target === els.composerInput && typeof target.selectionStart === "number") {
+    const selected = String(target.value || "").slice(target.selectionStart, target.selectionEnd);
+    return { preview: selected.slice(0, 1000), length: selected.length };
+  }
+  const selection = window.getSelection?.();
+  const selected = String(selection || "");
+  return { preview: selected.slice(0, 1000), length: selected.length };
+}
+
+function selectedFileRefs() {
+  const selection = window.getSelection?.();
+  if (!selection || selection.isCollapsed || !String(selection).trim()) return [];
+  const refs = [];
+  const seen = new Set();
+  const nodes = document.querySelectorAll("[data-context-target='file_ref'][data-context-file]");
+  for (const node of nodes) {
+    let intersects = false;
+    for (let index = 0; index < selection.rangeCount; index += 1) {
+      const range = selection.getRangeAt(index);
+      if (range?.intersectsNode?.(node)) {
+        intersects = true;
+        break;
+      }
+    }
+    if (!intersects) continue;
+    const relPath = node.dataset.contextFile || "";
+    if (!relPath || seen.has(relPath)) continue;
+    seen.add(relPath);
+    refs.push({
+      relPath,
+      fallbackRelPath: node.dataset.contextFallbackFile || "",
+      displayPath: relPath || node.textContent || "",
+    });
+    if (refs.length >= 50) break;
+  }
+  return refs;
+}
+
+function contextMenuTarget(event) {
+  const target = event.target?.closest?.("[data-context-target]");
+  if (target?.dataset?.contextTarget === "thread_title") {
+    return {
+      targetKind: "thread_title",
+      targetThreadId: state.threadId || "",
+      targetLabel: target.textContent || "Codex thread title",
+    };
+  }
+  if (target?.dataset?.contextTarget === "file_ref") {
+    const relPath = target.dataset.contextFile || "";
+    return {
+      targetKind: "file_ref",
+      targetFileRef: {
+        pathEvidenceKey: "",
+        relPath,
+        fallbackRelPath: target.dataset.contextFallbackFile || "",
+        displayPath: relPath || target.textContent || "",
+      },
+      targetLabel: target.textContent || "",
+    };
+  }
+  if (target?.dataset?.contextTarget === "url") {
+    return {
+      targetKind: "url",
+      targetHrefDisplay: target.dataset.contextHref || target.textContent || "",
+      targetHrefEvidenceKey: "",
+      targetLabel: target.textContent || "",
+    };
+  }
+  if (target?.dataset?.contextTarget === "attachment" || event.target?.closest?.("[data-attachment-draft-id]")) {
+    const attachment = event.target.closest("[data-attachment-draft-id]");
+    return {
+      targetKind: "attachment",
+      attachmentId: attachment?.dataset?.attachmentDraftId || "",
+      targetLabel: attachment?.textContent || "attachment",
+    };
+  }
+  if (event.target === els.composerInput || event.target?.closest?.("#composerForm")) {
+    return { targetKind: "composer", targetLabel: "Composer" };
+  }
+  return { targetKind: "unknown", targetLabel: "" };
+}
+
+document.addEventListener("contextmenu", (event) => {
+  if (!bridge?.openContextMenu || !project?.id) return;
+  const withinSurface = event.target?.closest?.(".codex-shell");
+  if (!withinSurface) return;
+  event.preventDefault();
+  const selected = selectedTextInfo(event);
+  const target = contextMenuTarget(event);
+  const selectedFiles = selectedFileRefs();
+  bridge.openContextMenu({
+    schemaVersion: 1,
+    requestId: `ctx_${Date.now()}`,
+    surface: "codex_surface",
+    projectId: project.id,
+    threadId: state.threadId || "",
+    selectedTextPreview: selected.preview,
+    selectedTextLength: selected.length,
+    selectedFileRefs: selectedFiles,
+    pointer: { x: event.clientX, y: event.clientY },
+    expiresAt: new Date(Date.now() + 15_000).toISOString(),
+    uiProjectionGeneration: state.composerAttachmentGeneration,
+    targetDigest: `${target.targetKind}:${target.targetLabel || ""}:${state.composerAttachmentGeneration}`,
+    evidenceRefs: [],
+    ...target,
+  }).catch((error) => addSystemMessage(`Context menu failed: ${error.message}`));
+});
 
 for (const eventType of ["pointerdown", "mousedown", "touchstart", "click"]) {
   document.addEventListener(eventType, (event) => {

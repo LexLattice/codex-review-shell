@@ -55,6 +55,14 @@ const state = {
   defaultCodexRuntime: "auto",
   allowNonChatgptUrls: false,
   activeMiddleTab: "overview",
+  projectStash: {
+    projectId: "",
+    files: [],
+    message: "review codex output",
+    status: "idle",
+    lastError: "",
+    generation: 0,
+  },
   middleWeb: {
     hasPage: false,
     displayUrl: "",
@@ -66,6 +74,24 @@ const state = {
     lastError: "",
     lastSource: null,
     securityPosture: "unknown",
+  },
+  middleWebViewMode: "browser",
+  middleWebHistory: [],
+  middleFile: {
+    status: "idle",
+    sourceKind: "",
+    projectId: "",
+    relPath: "",
+    displayName: "",
+    mimeType: "",
+    size: 0,
+    truncated: false,
+    binary: false,
+    text: "",
+    error: "",
+    workspaceLabel: "",
+    openedAt: "",
+    source: null,
   },
   middleWebLayoutRevision: 0,
   planeZooms: {
@@ -181,15 +207,26 @@ const els = {
   bindingStatus: document.getElementById("bindingStatus"),
   activeThreadStatus: document.getElementById("activeThreadStatus"),
   overviewTabButton: document.getElementById("overviewTabButton"),
+  projectTabButton: document.getElementById("projectTabButton"),
   threadsTabButton: document.getElementById("threadsTabButton"),
   importsTabButton: document.getElementById("importsTabButton"),
   analyticsTabButton: document.getElementById("analyticsTabButton"),
+  filesTabButton: document.getElementById("filesTabButton"),
   webTabButton: document.getElementById("webTabButton"),
   overviewTabPanel: document.getElementById("overviewTabPanel"),
+  projectTabPanel: document.getElementById("projectTabPanel"),
   threadsTabPanel: document.getElementById("threadsTabPanel"),
   importsTabPanel: document.getElementById("importsTabPanel"),
   analyticsTabPanel: document.getElementById("analyticsTabPanel"),
+  filesTabPanel: document.getElementById("filesTabPanel"),
   webTabPanel: document.getElementById("webTabPanel"),
+  projectStashCount: document.getElementById("projectStashCount"),
+  projectStashHint: document.getElementById("projectStashHint"),
+  projectStashList: document.getElementById("projectStashList"),
+  projectStashMessageInput: document.getElementById("projectStashMessageInput"),
+  projectStashStatus: document.getElementById("projectStashStatus"),
+  clearProjectStashButton: document.getElementById("clearProjectStashButton"),
+  sendProjectStashButton: document.getElementById("sendProjectStashButton"),
   projectList: document.getElementById("projectList"),
   projectCount: document.getElementById("projectCount"),
   threadDeck: document.getElementById("threadDeck"),
@@ -265,6 +302,7 @@ const els = {
   directThreadWorkbenchList: document.getElementById("directThreadWorkbenchList"),
   directThreadWorkbenchDetail: document.getElementById("directThreadWorkbenchDetail"),
   directThreadWorkbenchSide: document.getElementById("directThreadWorkbenchSide"),
+  refreshCodexThreadListButton: document.getElementById("refreshCodexThreadListButton"),
   refreshRecentChatThreadsButton: document.getElementById("refreshRecentChatThreadsButton"),
   bindingLaneInput: document.getElementById("bindingLaneInput"),
   bindingLabelInput: document.getElementById("bindingLabelInput"),
@@ -308,9 +346,21 @@ const els = {
   webReloadButton: document.getElementById("webReloadButton"),
   webCopyUrlButton: document.getElementById("webCopyUrlButton"),
   webOpenExternalButton: document.getElementById("webOpenExternalButton"),
+  webBrowserTabButton: document.getElementById("webBrowserTabButton"),
+  webHistoryTabButton: document.getElementById("webHistoryTabButton"),
+  webHistoryCount: document.getElementById("webHistoryCount"),
+  webPruneHistoryButton: document.getElementById("webPruneHistoryButton"),
+  webHistoryPanel: document.getElementById("webHistoryPanel"),
+  webHistoryList: document.getElementById("webHistoryList"),
   webTitle: document.getElementById("webTitle"),
   webOrigin: document.getElementById("webOrigin"),
   webSource: document.getElementById("webSource"),
+  middleFileTitle: document.getElementById("middleFileTitle"),
+  middleFileMeta: document.getElementById("middleFileMeta"),
+  middleFileSource: document.getElementById("middleFileSource"),
+  middleFileCopyRefButton: document.getElementById("middleFileCopyRefButton"),
+  middleFileRevealButton: document.getElementById("middleFileRevealButton"),
+  middleFileContent: document.getElementById("middleFileContent"),
   refreshWorkTreeButton: document.getElementById("refreshWorkTreeButton"),
   workTree: document.getElementById("workTree"),
   previewPath: document.getElementById("previewPath"),
@@ -347,6 +397,12 @@ const els = {
   projectCodexThreadSelect: document.getElementById("projectCodexThreadSelect"),
   chatgptUrlInput: document.getElementById("chatgptUrlInput"),
   reduceChromeInput: document.getElementById("reduceChromeInput"),
+  chatgptDownloadDirInput: document.getElementById("chatgptDownloadDirInput"),
+  chatgptDownloadMacroDirInput: document.getElementById("chatgptDownloadMacroDirInput"),
+  chatgptDownloadMacroEnabledInput: document.getElementById("chatgptDownloadMacroEnabledInput"),
+  chatgptDownloadNotifyCodexInput: document.getElementById("chatgptDownloadNotifyCodexInput"),
+  chatgptDownloadDispositionInput: document.getElementById("chatgptDownloadDispositionInput"),
+  chatgptDownloadMessageInput: document.getElementById("chatgptDownloadMessageInput"),
   reviewPromptInput: document.getElementById("reviewPromptInput"),
   architecturePromptInput: document.getElementById("architecturePromptInput"),
   brainstormingPromptInput: document.getElementById("brainstormingPromptInput"),
@@ -973,6 +1029,13 @@ function recentThreadSortStamp(thread) {
   return String(thread?.updatedAt || thread?.discoveredAt || thread?.createdAt || "");
 }
 
+function recentThreadProjectRank(thread) {
+  const value = thread?.projectRank;
+  if (value === null || value === undefined || value === "") return Number.POSITIVE_INFINITY;
+  const rank = Number(value);
+  return Number.isFinite(rank) ? rank : Number.POSITIVE_INFINITY;
+}
+
 function groupedRecentChatgptThreads(threads) {
   const groups = new Map();
   for (const thread of threads) {
@@ -1007,6 +1070,8 @@ function groupedRecentChatgptThreads(threads) {
     group.entries.sort((a, b) => {
       const updatedDelta = recentThreadSortStamp(b).localeCompare(recentThreadSortStamp(a));
       if (updatedDelta !== 0) return updatedDelta;
+      const rankDelta = recentThreadProjectRank(a) - recentThreadProjectRank(b);
+      if (rankDelta !== 0 && Number.isFinite(rankDelta)) return rankDelta;
       return String(a.title || "").localeCompare(String(b.title || ""));
     });
   }
@@ -1034,16 +1099,17 @@ function buildRecentChatgptThreadRow(project, thread) {
         : "Recent ChatGPT";
   row.querySelector("strong").textContent = thread.title || "Untitled ChatGPT thread";
   row.querySelector(".thread-meta").textContent = shortPath(thread.url || "");
+  const displayDate = String(thread.displayDate || "").trim();
   row.querySelector(".thread-notes").textContent =
     attached
       ? `Attached as ${attached.title}`
       : thread.projectName
         ? thread.updatedAt
-          ? `Project ${thread.projectName} · Updated ${formatTime(thread.updatedAt)}`
+          ? `Project ${thread.projectName} · Updated ${displayDate || formatTime(thread.updatedAt)}`
           : `Project ${thread.projectName}`
         : thread.sourceKind === "project"
           ? thread.updatedAt
-            ? `Project folder · Updated ${formatTime(thread.updatedAt)}`
+            ? `Project folder · Updated ${displayDate || formatTime(thread.updatedAt)}`
             : "Project folder thread"
           : thread.updatedAt
             ? `Updated ${formatTime(thread.updatedAt)}`
@@ -1149,12 +1215,209 @@ function setLastEvent(message) {
   els.lastEvent.title = message;
 }
 
+function ensureProjectStash(projectId = activeProject()?.id || "") {
+  const targetProjectId = String(projectId || "");
+  if (state.projectStash.projectId === targetProjectId) return state.projectStash;
+  state.projectStash = {
+    projectId: targetProjectId,
+    files: [],
+    message: "review codex output",
+    status: "idle",
+    lastError: "",
+    generation: 0,
+  };
+  return state.projectStash;
+}
+
+function projectStashFileKey(file) {
+  return [
+    String(file?.projectId || ""),
+    String(file?.codexThreadId || ""),
+    String(file?.relPath || ""),
+  ].join("::");
+}
+
+function projectStashDisplayName(file) {
+  const relPath = String(file?.relPath || "");
+  return relPath.split("/").filter(Boolean).pop() || relPath || "workspace file";
+}
+
+function addProjectStashFile(event) {
+  const project = activeProject();
+  const projectId = String(event?.projectId || project?.id || "");
+  if (!project || project.id !== projectId) {
+    setLastEvent("Project stash add ignored: file belongs to another project.");
+    return;
+  }
+  const relPath = String(event?.relPath || "").replace(/\\/g, "/").replace(/^\/+/, "").trim();
+  if (!relPath) {
+    setLastEvent("Project stash add ignored: file reference was empty.");
+    return;
+  }
+  const stash = ensureProjectStash(projectId);
+  const file = {
+    id: createId("stash_file"),
+    projectId,
+    codexThreadId: String(event?.codexThreadId || event?.threadId || ""),
+    codexThreadTitle: String(event?.codexThreadTitle || ""),
+    relPath,
+    label: String(event?.label || relPath),
+    source: String(event?.source || "codex-file-context-menu"),
+    addedAt: String(event?.at || nowIso()),
+  };
+  const key = projectStashFileKey(file);
+  if (!stash.files.some((item) => projectStashFileKey(item) === key)) {
+    stash.files.push(file);
+    stash.status = "ready";
+    stash.lastError = "";
+    stash.generation += 1;
+    setLastEvent(`Added to GPT stash: ${relPath}.`);
+  } else {
+    setLastEvent(`Already in GPT stash: ${relPath}.`);
+  }
+  setMiddleTab("project");
+  renderProjectStash();
+}
+
+function removeProjectStashFile(fileId) {
+  const stash = ensureProjectStash();
+  const nextFiles = stash.files.filter((file) => file.id !== fileId);
+  if (nextFiles.length === stash.files.length) return;
+  stash.files = nextFiles;
+  stash.status = nextFiles.length ? "ready" : "idle";
+  stash.lastError = "";
+  stash.generation += 1;
+  renderProjectStash();
+}
+
+function clearProjectStash() {
+  const stash = ensureProjectStash();
+  stash.files = [];
+  stash.status = "idle";
+  stash.lastError = "";
+  stash.generation += 1;
+  renderProjectStash();
+  setLastEvent("Cleared GPT handoff stash.");
+}
+
+function projectStashStatusText(stash) {
+  if (stash.status === "sending") return "Sending bundle to linked ChatGPT thread…";
+  if (stash.status === "sent") return "Bundle sent to linked ChatGPT thread.";
+  if (stash.status === "failed") return stash.lastError || "Bundle send failed.";
+  if (!stash.files.length) return "No files stashed.";
+  const distinctThreads = new Set(stash.files.map((file) => String(file.codexThreadId || "")).filter(Boolean));
+  if (distinctThreads.size > 1) return "Stash has files from multiple Codex threads; send is blocked until only one target remains.";
+  return `${stash.files.length} file${stash.files.length === 1 ? "" : "s"} ready for GPT handoff.`;
+}
+
+function renderProjectStash() {
+  if (!els.projectStashList) return;
+  const project = activeProject();
+  const stash = ensureProjectStash(project?.id || "");
+  els.projectStashCount.textContent = String(stash.files.length);
+  if (document.activeElement !== els.projectStashMessageInput) {
+    els.projectStashMessageInput.value = stash.message || "review codex output";
+  }
+  els.projectStashList.innerHTML = "";
+  if (!stash.files.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "No files stashed yet. Use “Add to Project stash” from a Codex file context menu.";
+    els.projectStashList.appendChild(empty);
+  } else {
+    for (const file of stash.files) {
+      const row = document.createElement("div");
+      row.className = "project-stash-item";
+      row.innerHTML = `
+        <div class="project-stash-file-main">
+          <strong class="truncate"></strong>
+          <span class="mono muted truncate"></span>
+        </div>
+        <div class="project-stash-file-meta">
+          <span class="pill subtle"></span>
+          <button class="ghost small remove-stash-file" type="button">Remove</button>
+        </div>
+      `;
+      row.querySelector("strong").textContent = projectStashDisplayName(file);
+      row.querySelector("span.mono").textContent = file.relPath;
+      row.querySelector("span.mono").title = file.relPath;
+      row.querySelector(".pill").textContent = file.codexThreadTitle || (file.codexThreadId ? `Codex ${file.codexThreadId.slice(0, 8)}` : "target unresolved");
+      row.querySelector(".remove-stash-file").addEventListener("click", () => removeProjectStashFile(file.id));
+      els.projectStashList.appendChild(row);
+    }
+  }
+  const sending = stash.status === "sending";
+  const distinctThreads = new Set(stash.files.map((file) => String(file.codexThreadId || "")).filter(Boolean));
+  els.projectStashStatus.textContent = projectStashStatusText(stash);
+  els.projectStashStatus.title = els.projectStashStatus.textContent;
+  els.projectStashStatus.classList.toggle("project-stash-error", stash.status === "failed" || distinctThreads.size > 1);
+  els.clearProjectStashButton.disabled = sending || stash.files.length === 0;
+  els.sendProjectStashButton.disabled = sending || stash.files.length === 0 || distinctThreads.size > 1;
+}
+
+async function sendProjectStashToChatgpt() {
+  const project = activeProject();
+  const stash = ensureProjectStash(project?.id || "");
+  if (!project || !stash.files.length) return;
+  stash.message = String(els.projectStashMessageInput?.value || "").trim() || "review codex output";
+  const sendGeneration = stash.generation;
+  const filesToSend = stash.files.slice();
+  const sentFileKeys = new Set(filesToSend.map(projectStashFileKey));
+  stash.status = "sending";
+  stash.lastError = "";
+  renderProjectStash();
+  try {
+    const result = await bridge.sendProjectStashToChatgpt({
+      projectId: project.id,
+      message: stash.message,
+      files: filesToSend.map((file) => ({
+        relPath: file.relPath,
+        codexThreadId: file.codexThreadId,
+      })),
+      generation: sendGeneration,
+    });
+    stash.files = stash.generation === sendGeneration
+      ? []
+      : stash.files.filter((file) => !sentFileKeys.has(projectStashFileKey(file)));
+    stash.status = stash.files.length ? "ready" : "sent";
+    stash.generation += 1;
+    renderProjectStash();
+    setLastEvent(`Sent ${result.fileCount || 0} stashed file${result.fileCount === 1 ? "" : "s"} to ${result.chatThreadTitle || "linked ChatGPT"}.`);
+  } catch (error) {
+    stash.status = "failed";
+    stash.lastError = error.message || "Project stash send failed.";
+    renderProjectStash();
+    setLastEvent(`Project stash send failed: ${stash.lastError}`);
+  }
+}
+
 function normalizeSlashes(value) {
   return String(value || "").replace(/\\/g, "/");
 }
 
 function stripTokenPunctuation(value) {
   return String(value || "").replace(/[),.;!?]+$/g, "");
+}
+
+function hasStrongFilePathEvidence(filePath) {
+  const normalized = normalizeSlashes(stripTokenPunctuation(filePath).trim()).replace(/^\.\/+/, "");
+  if (!normalized || normalized.includes("\0") || /\s/.test(normalized)) return false;
+  if (normalized.startsWith("../") || normalized.includes("/../") || normalized === "..") return false;
+  if (!normalized.includes("/")) return false;
+  const tail = normalized.split("/").pop() || "";
+  return /^[^./][^/]*\.[A-Za-z0-9]{1,12}$/.test(tail);
+}
+
+function shouldRenderAmbiguousPathSymbol(value) {
+  const raw = stripTokenPunctuation(value).trim();
+  if (!raw || /^https?:\/\//i.test(raw) || raw.includes("://") || /\s/.test(raw)) return false;
+  const lineRef = splitLineRef(raw);
+  if (relativePathWithinRoot(lineRef.path)) return false;
+  const normalized = normalizeSlashes(lineRef.path).replace(/^\.\/+/, "");
+  if (!normalized || normalized.startsWith("../") || normalized.includes("/../")) return false;
+  const hasSlash = normalized.includes("/");
+  const hasDot = /(?:^|[A-Za-z0-9_-])\.[A-Za-z0-9_-]+/.test(normalized);
+  return hasSlash || hasDot;
 }
 
 function currentWorkspaceRoots() {
@@ -1183,13 +1446,16 @@ function relativePathWithinRoot(filePath) {
     const lowerPath = normalized.toLowerCase();
     const lowerRoot = normalizedRoot.toLowerCase();
     if (lowerPath === lowerRoot) return "";
-    if (lowerPath.startsWith(`${lowerRoot}/`)) return normalized.slice(normalizedRoot.length + 1);
+    if (lowerPath.startsWith(`${lowerRoot}/`)) {
+      const relPath = normalized.slice(normalizedRoot.length + 1);
+      return hasStrongFilePathEvidence(relPath) ? relPath : "";
+    }
   }
 
   const isAbsolute = normalized.startsWith("/") || /^[A-Za-z]:\//.test(normalized);
   if (isAbsolute) return "";
-  if (!normalized.includes("/") && !/\.[A-Za-z0-9]{1,12}$/.test(normalized)) return "";
-  return normalized.replace(/^\.\/+/, "");
+  const relPath = normalized.replace(/^\.\/+/, "");
+  return hasStrongFilePathEvidence(relPath) ? relPath : "";
 }
 
 function splitLineRef(value) {
@@ -1202,6 +1468,80 @@ function splitLineRef(value) {
     line: Number(match[2]),
     column: match[3] ? Number(match[3]) : null,
   };
+}
+
+function fileFallbackForToken(value, context = {}) {
+  const lineRef = splitLineRef(value);
+  const relPath = relativePathWithinRoot(lineRef.path);
+  const candidates = Array.isArray(context.fileEvidenceRefs) ? context.fileEvidenceRefs : [];
+  const normalizedPrimary = normalizeSlashes(relPath || lineRef.path || "").replace(/^\.\/+/, "");
+  if (!normalizedPrimary || isBareVersionToken(normalizedPrimary)) return null;
+  if (!normalizedPrimary.includes("/") && !/^[^./][^/]*\.[A-Za-z0-9]{1,12}$/.test(normalizedPrimary)) return null;
+  const matches = [];
+  const seen = new Set();
+  for (const candidate of candidates) {
+    const candidatePath = normalizeSlashes(candidate?.path || "").replace(/^\.\/+/, "");
+    if (!candidatePath || candidatePath === normalizedPrimary || seen.has(candidatePath)) continue;
+    if (candidatePath.endsWith(`/${normalizedPrimary}`)) {
+      matches.push(candidatePath);
+      seen.add(candidatePath);
+    }
+  }
+  if (matches.length !== 1) return null;
+  return {
+    path: matches[0],
+    line: lineRef.line,
+    column: lineRef.column,
+  };
+}
+
+function normalizeFileAliasToken(value) {
+  return stripTokenPunctuation(value).trim().toLowerCase();
+}
+
+function isBareVersionToken(value) {
+  return /^v\d+(?:\.\d+)+$/i.test(normalizeFileAliasToken(value));
+}
+
+function fileAliasForToken(value, context = {}) {
+  const key = normalizeFileAliasToken(value);
+  if (!key) return null;
+  const aliases = context?.fileAliases;
+  if (aliases instanceof Map) return aliases.get(key) || null;
+  if (aliases && typeof aliases === "object") return aliases[key] || null;
+  return null;
+}
+
+function addFileAlias(aliases, alias, fileRef) {
+  const key = normalizeFileAliasToken(alias);
+  if (!key || !fileRef?.path || aliases.has(key)) return;
+  aliases.set(key, { ...fileRef });
+}
+
+function addVersionAliasesForFile(aliases, label, fileRef) {
+  const parts = [
+    String(label || ""),
+    String(fileRef?.path || "").split("/").pop() || "",
+  ];
+  for (const part of parts) {
+    const withoutExtension = part.replace(/\.[A-Za-z0-9]{1,12}$/i, "");
+    const versionMatch = withoutExtension.match(/(?:^|[._-])(v\d+(?:[._-]\d+)+)(?:$|[._-])/i);
+    if (!versionMatch) continue;
+    const version = versionMatch[1];
+    addFileAlias(aliases, version, fileRef);
+    addFileAlias(aliases, version.replace(/[._-]/g, "."), fileRef);
+  }
+}
+
+function buildMarkdownFileAliasMap(text) {
+  const aliases = new Map();
+  const source = String(text || "");
+  const pattern = /\[([^\]\n]{1,240})\]\(([^) \n]{1,1000})\)/g;
+  for (const match of source.matchAll(pattern)) {
+    const fileRef = markdownLocalHref(match[2]);
+    if (fileRef) addVersionAliasesForFile(aliases, match[1], fileRef);
+  }
+  return aliases;
 }
 
 function addTokenCandidate(candidates, start, end, token) {
@@ -1223,7 +1563,7 @@ function chooseTokenCandidates(candidates) {
   return result;
 }
 
-function tokenizeTypedContent(text) {
+function tokenizeTypedContent(text, context = {}) {
   const source = String(text || "");
   if (!source) return [{ type: "text", text: "" }];
   const candidates = [];
@@ -1237,15 +1577,39 @@ function tokenizeTypedContent(text) {
   const backtickPattern = /`([^`\n]{1,240})`/g;
   for (const match of source.matchAll(backtickPattern)) {
     const raw = match[1] || "";
+    const aliasRef = fileAliasForToken(raw, context);
+    if (aliasRef) {
+      addTokenCandidate(candidates, match.index, match.index + match[0].length, {
+        type: aliasRef.line ? "line_ref" : "file_path",
+        text: match[0],
+        path: aliasRef.path,
+        line: aliasRef.line,
+        column: aliasRef.column,
+      });
+      continue;
+    }
     const lineRef = splitLineRef(raw);
     const relPath = relativePathWithinRoot(lineRef.path);
-    if (relPath) {
+    if (relPath && !isBareVersionToken(raw)) {
+      const fallbackRef = fileFallbackForToken(raw, context);
       addTokenCandidate(candidates, match.index, match.index + match[0].length, {
         type: lineRef.line ? "line_ref" : "file_path",
         text: match[0],
         path: relPath,
         line: lineRef.line,
         column: lineRef.column,
+        fallbackPath: fallbackRef?.path || "",
+      });
+      continue;
+    }
+    const fallbackRef = fileFallbackForToken(raw, context);
+    if (fallbackRef) {
+      addTokenCandidate(candidates, match.index, match.index + match[0].length, {
+        type: fallbackRef.line ? "line_ref" : "file_path",
+        text: match[0],
+        path: fallbackRef.path,
+        line: fallbackRef.line,
+        column: fallbackRef.column,
       });
       continue;
     }
@@ -1259,16 +1623,52 @@ function tokenizeTypedContent(text) {
   for (const match of source.matchAll(filePattern)) {
     const raw = stripTokenPunctuation(match[0]);
     if (!raw || /^https?:\/\//i.test(raw)) continue;
+    const aliasRef = fileAliasForToken(raw, context);
+    if (aliasRef) {
+      addTokenCandidate(candidates, match.index, match.index + raw.length, {
+        type: aliasRef.line ? "line_ref" : "file_path",
+        text: raw,
+        path: aliasRef.path,
+        line: aliasRef.line,
+        column: aliasRef.column,
+      });
+      continue;
+    }
     const lineRef = splitLineRef(raw);
     const relPath = relativePathWithinRoot(lineRef.path);
-    if (!relPath) continue;
+    if (!relPath) {
+      const fallbackRef = fileFallbackForToken(raw, context);
+      if (fallbackRef) {
+        addTokenCandidate(candidates, match.index, match.index + raw.length, {
+          type: fallbackRef.line ? "line_ref" : "file_path",
+          text: raw,
+          path: fallbackRef.path,
+          line: fallbackRef.line,
+          column: fallbackRef.column,
+        });
+        continue;
+      }
+      if (shouldRenderAmbiguousPathSymbol(raw)) {
+        addTokenCandidate(candidates, match.index, match.index + raw.length, { type: "symbol", text: raw, value: raw });
+      }
+      continue;
+    }
+    const fallbackRef = fileFallbackForToken(raw, context);
     addTokenCandidate(candidates, match.index, match.index + raw.length, {
       type: lineRef.line ? "line_ref" : "file_path",
       text: raw,
       path: relPath,
       line: lineRef.line,
       column: lineRef.column,
+      fallbackPath: fallbackRef?.path || "",
     });
+  }
+
+  const slashSymbolPattern = /[A-Za-z0-9._@+-]+(?:[\\/][A-Za-z0-9._@+-]+)+(?::\d+(?::\d+)?)?/g;
+  for (const match of source.matchAll(slashSymbolPattern)) {
+    const raw = stripTokenPunctuation(match[0]);
+    if (!shouldRenderAmbiguousPathSymbol(raw)) continue;
+    addTokenCandidate(candidates, match.index, match.index + raw.length, { type: "symbol", text: raw, value: raw });
   }
 
   const chosen = chooseTokenCandidates(candidates);
@@ -1302,23 +1702,58 @@ async function openSubAgentTypedUrl(url, context = {}) {
   if (!result?.ok) setLastEvent(`URL open blocked: ${result?.error || "unknown error"}`);
 }
 
-async function revealSubAgentTypedFile(relPath) {
+async function revealSubAgentTypedFile(relPath, options = {}) {
   const project = activeProject();
-  if (!bridge?.revealProjectFile || !project?.id) {
-    setLastEvent("Project file reveal is unavailable.");
+  if (!project?.id) {
+    setLastEvent("Project file opening is unavailable.");
     return;
   }
+  const fallbackPath = String(options?.fallbackPath || "").trim();
   try {
+    if (bridge?.openProjectFile) {
+      const result = await bridge.openProjectFile(project.id, relPath, {
+        sourceSurface: "codex",
+        threadId: state.subAgentGraph?.primaryThreadId || state.openedCodexThreadId || "",
+        threadTitle: state.openedCodexThreadTitle || "",
+      });
+      if (!result?.ok && fallbackPath && /ENOENT|no such file|not found|cannot find/i.test(String(result?.error || ""))) {
+        const fallbackResult = await bridge.openProjectFile(project.id, fallbackPath, {
+          sourceSurface: "codex",
+          threadId: state.subAgentGraph?.primaryThreadId || state.openedCodexThreadId || "",
+          threadTitle: state.openedCodexThreadTitle || "",
+          sourceKind: "project_file",
+        });
+        if (!fallbackResult?.ok) setLastEvent(`File open failed: ${fallbackResult?.error || result?.error || "unknown error"}`);
+        return;
+      }
+      if (!result?.ok) setLastEvent(`File open failed: ${result?.error || "unknown error"}`);
+      return;
+    }
+    if (!bridge?.revealProjectFile) {
+      setLastEvent("Project file opening is unavailable.");
+      return;
+    }
     const result = await bridge.revealProjectFile(project.id, relPath);
     if (!result?.opened && result?.method) setLastEvent(`File path copied: ${result.absolutePath || relPath}`);
   } catch (error) {
-    setLastEvent(`File reveal failed: ${error.message}`);
+    if (bridge?.openProjectFile && fallbackPath && /ENOENT|no such file|not found|cannot find/i.test(String(error?.message || error || ""))) {
+      try {
+        const fallbackResult = await bridge.openProjectFile(project.id, fallbackPath, {
+          sourceSurface: "codex",
+          threadId: state.subAgentGraph?.primaryThreadId || state.openedCodexThreadId || "",
+          threadTitle: state.openedCodexThreadTitle || "",
+          sourceKind: "project_file",
+        });
+        if (fallbackResult?.ok) return;
+      } catch {}
+    }
+    setLastEvent(`File open failed: ${errorMessageText(error)}`);
   }
 }
 
 function renderTypedContent(container, text, context = {}) {
   container.textContent = "";
-  const tokens = tokenizeTypedContent(text);
+  const tokens = tokenizeTypedContent(text, context);
   for (const token of tokens) {
     if (!token || token.type === "text") {
       container.appendChild(document.createTextNode(token?.text || ""));
@@ -1339,8 +1774,8 @@ function renderTypedContent(container, text, context = {}) {
       button.type = "button";
       button.className = `typed-token ${token.type === "line_ref" ? "typed-token-line-ref" : "typed-token-file"}`;
       button.textContent = token.text;
-      button.title = token.line ? `Reveal ${token.path}:${token.line}` : `Reveal ${token.path}`;
-      button.addEventListener("click", () => revealSubAgentTypedFile(token.path));
+      button.title = token.line ? `Open ${token.path}:${token.line} in Files` : `Open ${token.path} in Files`;
+      button.addEventListener("click", () => revealSubAgentTypedFile(token.path, { fallbackPath: token.fallbackPath || "" }));
       container.appendChild(button);
       continue;
     }
@@ -1383,8 +1818,8 @@ function appendFileToken(parent, label, fileRef) {
   button.type = "button";
   button.className = `typed-token ${fileRef.line ? "typed-token-line-ref" : "typed-token-file"} assistant-md-link`;
   button.textContent = label || fileRef.path;
-  button.title = fileRef.line ? `Reveal ${fileRef.path}:${fileRef.line}` : `Reveal ${fileRef.path}`;
-  button.addEventListener("click", () => revealSubAgentTypedFile(fileRef.path));
+  button.title = fileRef.line ? `Open ${fileRef.path}:${fileRef.line} in Files` : `Open ${fileRef.path} in Files`;
+  button.addEventListener("click", () => revealSubAgentTypedFile(fileRef.path, { fallbackPath: fileRef.fallbackPath || "" }));
   parent.appendChild(button);
 }
 
@@ -1410,10 +1845,18 @@ function appendInlineCode(parent, raw, context = {}) {
   const code = document.createElement("code");
   code.className = "assistant-md-inline-code";
   const source = String(raw || "");
-  const fileRef = markdownLocalHref(source) || (() => {
+  const fileRef = fileAliasForToken(source, context) || markdownLocalHref(source) || (() => {
+    if (isBareVersionToken(source)) return null;
     const lineRef = splitLineRef(source);
     const relPath = relativePathWithinRoot(lineRef.path);
-    return relPath ? { path: relPath, line: lineRef.line, column: lineRef.column } : null;
+    if (!relPath) return fileFallbackForToken(source, context);
+    const fallbackRef = fileFallbackForToken(source, context);
+    return {
+      path: relPath,
+      line: lineRef.line,
+      column: lineRef.column,
+      fallbackPath: fallbackRef?.path || "",
+    };
   })();
   if (fileRef) {
     appendFileToken(code, source, fileRef);
@@ -1480,11 +1923,126 @@ function createMarkdownLineBlock(tagName, className, text, context = {}) {
   return block;
 }
 
-function isMarkdownBlockStart(line) {
+function createMarkdownCodeBlock(codeLines, language = "") {
+  const block = document.createElement("div");
+  block.className = "assistant-md-codeblock";
+  const normalizedLanguage = String(language || "").trim();
+  if (normalizedLanguage && normalizedLanguage.toLowerCase() !== "text") {
+    const caption = document.createElement("div");
+    caption.className = "assistant-md-codeblock-label";
+    caption.textContent = normalizedLanguage;
+    block.appendChild(caption);
+  }
+  const body = document.createElement("div");
+  body.className = "assistant-md-codeblock-body";
+  body.textContent = codeLines.join("\n");
+  block.appendChild(body);
+  return block;
+}
+
+function markdownFenceStart(line) {
+  const trimmed = String(line || "").trim();
+  const match = trimmed.match(/^(```|~~~)\s*([A-Za-z0-9_-]+)?(?:\s+.*)?$/);
+  if (!match) return null;
+  return {
+    marker: match[1],
+    language: match[2] || "",
+  };
+}
+
+function markdownFenceClose(line, marker) {
+  const trimmed = String(line || "").trim();
+  return trimmed === marker;
+}
+
+function isIndentedMarkdownCodeLine(line) {
+  return /^( {4}|\t)/.test(String(line || ""));
+}
+
+function stripIndentedMarkdownCodeLine(line) {
+  const source = String(line || "");
+  return source.startsWith("\t") ? source.slice(1) : source.replace(/^ {4}/, "");
+}
+
+function splitMarkdownTableRow(line) {
+  let source = String(line || "").trim();
+  if (!source.includes("|")) return null;
+  if (source.startsWith("|")) source = source.slice(1);
+  if (source.endsWith("|")) source = source.slice(0, -1);
+  const cells = [];
+  let current = "";
+  let escaped = false;
+  for (const char of source) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === "|") {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  cells.push(current.trim());
+  return cells.length >= 2 ? cells : null;
+}
+
+function isMarkdownTableDivider(line) {
+  const cells = splitMarkdownTableRow(line);
+  return Boolean(cells?.length) && cells.every((cell) => /^:?-+:?$/.test(cell.trim()));
+}
+
+function markdownTableStart(lines, index) {
+  if (!Array.isArray(lines) || index < 0 || index + 1 >= lines.length) return null;
+  const header = splitMarkdownTableRow(lines[index]);
+  if (!header || !isMarkdownTableDivider(lines[index + 1])) return null;
+  return { header };
+}
+
+function appendMarkdownTable(container, tableLines, context = {}) {
+  const header = splitMarkdownTableRow(tableLines[0]) || [];
+  const bodyRows = tableLines.slice(2).map(splitMarkdownTableRow).filter(Boolean);
+  const wrapper = document.createElement("div");
+  wrapper.className = "assistant-md-table-wrap";
+  const table = document.createElement("table");
+  table.className = "assistant-md-table";
+  const thead = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  for (const cellText of header) {
+    const cell = document.createElement("th");
+    appendInlineMarkdown(cell, cellText, context);
+    headRow.appendChild(cell);
+  }
+  thead.appendChild(headRow);
+  table.appendChild(thead);
+  const tbody = document.createElement("tbody");
+  for (const rowCells of bodyRows) {
+    const row = document.createElement("tr");
+    for (let cellIndex = 0; cellIndex < header.length; cellIndex += 1) {
+      const cell = document.createElement("td");
+      appendInlineMarkdown(cell, rowCells[cellIndex] || "", context);
+      row.appendChild(cell);
+    }
+    tbody.appendChild(row);
+  }
+  table.appendChild(tbody);
+  wrapper.appendChild(table);
+  container.appendChild(wrapper);
+}
+
+function isMarkdownBlockStart(line, lines = null, index = -1) {
   const trimmed = String(line || "").trim();
   return Boolean(
     !trimmed ||
-    /^```/.test(trimmed) ||
+    markdownFenceStart(line) ||
+    isIndentedMarkdownCodeLine(line) ||
+    markdownTableStart(lines, index) ||
     /^#{1,4}\s+/.test(trimmed) ||
     /^>\s?/.test(trimmed) ||
     /^---+$/.test(trimmed) ||
@@ -1529,6 +2087,7 @@ function renderSubAgentAssistantMarkdown(container, text, context = {}) {
   container.classList.add("assistant-markdown");
   const source = String(text || "").replace(/\r\n/g, "\n");
   if (!source.trim()) return;
+  const renderContext = { ...context, fileAliases: buildMarkdownFileAliasMap(source) };
   const lines = source.split("\n");
   for (let index = 0; index < lines.length;) {
     const line = lines[index];
@@ -1538,34 +2097,54 @@ function renderSubAgentAssistantMarkdown(container, text, context = {}) {
       continue;
     }
 
-    const fence = trimmed.match(/^```([A-Za-z0-9_-]+)?\s*$/);
+    const fence = markdownFenceStart(line);
     if (fence) {
-      const language = fence[1] || "";
       const codeLines = [];
       index += 1;
-      while (index < lines.length && !lines[index].trim().startsWith("```")) {
+      while (index < lines.length && !markdownFenceClose(lines[index], fence.marker)) {
         codeLines.push(lines[index]);
         index += 1;
       }
       if (index < lines.length) index += 1;
-      const block = document.createElement("figure");
-      block.className = "assistant-md-codeblock";
-      if (language) {
-        const caption = document.createElement("figcaption");
-        caption.textContent = language;
-        block.appendChild(caption);
+      container.appendChild(createMarkdownCodeBlock(codeLines, fence.language));
+      continue;
+    }
+
+    if (isIndentedMarkdownCodeLine(line)) {
+      const codeLines = [];
+      while (index < lines.length) {
+        const nextLine = lines[index];
+        if (isIndentedMarkdownCodeLine(nextLine)) {
+          codeLines.push(stripIndentedMarkdownCodeLine(nextLine));
+          index += 1;
+          continue;
+        }
+        if (!nextLine.trim() && codeLines.length) {
+          codeLines.push("");
+          index += 1;
+          continue;
+        }
+        break;
       }
-      const pre = document.createElement("pre");
-      pre.textContent = codeLines.join("\n");
-      block.appendChild(pre);
-      container.appendChild(block);
+      container.appendChild(createMarkdownCodeBlock(codeLines));
+      continue;
+    }
+
+    if (markdownTableStart(lines, index)) {
+      const tableLines = [lines[index], lines[index + 1]];
+      index += 2;
+      while (index < lines.length && splitMarkdownTableRow(lines[index])) {
+        tableLines.push(lines[index]);
+        index += 1;
+      }
+      appendMarkdownTable(container, tableLines, renderContext);
       continue;
     }
 
     const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
     if (heading) {
       const level = Math.min(4, heading[1].length);
-      container.appendChild(createMarkdownLineBlock(`h${level}`, `assistant-md-heading level-${level}`, heading[2], context));
+      container.appendChild(createMarkdownLineBlock(`h${level}`, `assistant-md-heading level-${level}`, heading[2], renderContext));
       index += 1;
       continue;
     }
@@ -1584,7 +2163,7 @@ function renderSubAgentAssistantMarkdown(container, text, context = {}) {
         quoteLines.push(lines[index].trim().replace(/^>\s?/, ""));
         index += 1;
       }
-      container.appendChild(createMarkdownLineBlock("blockquote", "assistant-md-quote", quoteLines.join("\n"), context));
+      container.appendChild(createMarkdownLineBlock("blockquote", "assistant-md-quote", quoteLines.join("\n"), renderContext));
       continue;
     }
 
@@ -1612,7 +2191,7 @@ function renderSubAgentAssistantMarkdown(container, text, context = {}) {
         break;
       }
       if (!listLines.length) index += 1;
-      appendMarkdownList(container, listLines, ordered, context);
+      appendMarkdownList(container, listLines, ordered, renderContext);
       continue;
     }
 
@@ -1624,7 +2203,7 @@ function renderSubAgentAssistantMarkdown(container, text, context = {}) {
       arrow.className = "assistant-md-arrow";
       arrow.textContent = chain[1];
       block.append(arrow, document.createTextNode(" "));
-      appendInlineMarkdown(block, chain[2], context);
+      appendInlineMarkdown(block, chain[2], renderContext);
       container.appendChild(block);
       index += 1;
       continue;
@@ -1632,12 +2211,17 @@ function renderSubAgentAssistantMarkdown(container, text, context = {}) {
 
     const paragraphLines = [line];
     index += 1;
-    while (index < lines.length && !isMarkdownBlockStart(lines[index])) {
+    while (index < lines.length && !isMarkdownBlockStart(lines[index], lines, index)) {
       paragraphLines.push(lines[index]);
       index += 1;
     }
-    container.appendChild(createMarkdownLineBlock("p", "assistant-md-paragraph", paragraphLines.join("\n"), context));
+    container.appendChild(createMarkdownLineBlock("p", "assistant-md-paragraph", paragraphLines.join("\n"), renderContext));
   }
+}
+
+function renderMiddleFileMarkdown(container, text, context = {}) {
+  renderSubAgentAssistantMarkdown(container, text, context);
+  container.classList.add("middle-file-markdown");
 }
 
 function renderSubAgentMessageBody(container, message, context = {}) {
@@ -1653,6 +2237,37 @@ function renderSubAgentMessageBody(container, message, context = {}) {
     container.classList.remove("assistant-markdown");
     renderTypedContent(container, text, context);
   }
+}
+
+const typedMarkdownProjection = window.CodexTypedMarkdownProjection;
+
+function shellTypedMarkdownContext(context = {}) {
+  const safeContext = context && typeof context === "object" ? context : {};
+  return {
+    ...safeContext,
+    workspaceRoots: currentWorkspaceRoots(),
+    urlTokenTitle: "Open link in workspace web panel",
+    onOpenUrl: (url) => openSubAgentTypedUrl(url, safeContext),
+    onOpenFile: (relPath, options = {}) => revealSubAgentTypedFile(relPath, { fallbackPath: options.fallbackPath || "" }),
+  };
+}
+
+if (typedMarkdownProjection) {
+  tokenizeTypedContent = function sharedTokenizeTypedContent(text, context = {}) {
+    return typedMarkdownProjection.tokenizeTypedContent(text, shellTypedMarkdownContext(context));
+  };
+  renderTypedContent = function sharedRenderTypedContent(container, text, context = {}) {
+    typedMarkdownProjection.renderTypedContent(container, text, shellTypedMarkdownContext(context));
+  };
+  renderSubAgentAssistantMarkdown = function sharedRenderSubAgentAssistantMarkdown(container, text, context = {}) {
+    typedMarkdownProjection.renderAssistantMarkdown(container, text, shellTypedMarkdownContext(context));
+  };
+  renderMiddleFileMarkdown = function sharedRenderMiddleFileMarkdown(container, text, context = {}) {
+    typedMarkdownProjection.renderAssistantMarkdown(container, text, shellTypedMarkdownContext(context));
+    container.classList.add("middle-file-markdown");
+  };
+} else {
+  console.error("Shared typed Markdown projection unavailable; using legacy shell projection.");
 }
 
 function subAgentMessagePreviewKey(agent, message, index) {
@@ -1906,6 +2521,11 @@ function formatBytes(bytes) {
   return `${(number / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function errorMessageText(error, fallback = "unknown error") {
+  const value = error?.message || (typeof error === "string" ? error : error ? String(error) : "");
+  return value || fallback;
+}
+
 function formatTime(value) {
   if (!value) return "";
   try {
@@ -1913,6 +2533,23 @@ function formatTime(value) {
   } catch {
     return String(value);
   }
+}
+
+function codexThreadUpdatedSummary(thread = {}) {
+  if (!thread.updatedAt) return { text: "No timestamp", title: "No Codex thread activity timestamp was available." };
+  const sourceLabels = {
+    session_file: "session file",
+    session_index: "index",
+    session_created: "created",
+  };
+  const source = sourceLabels[thread.updatedAtSource] || "thread evidence";
+  const titleParts = [`Activity: ${thread.updatedAt}`, `Source: ${source}`];
+  if (thread.indexUpdatedAt && thread.indexUpdatedAt !== thread.updatedAt) titleParts.push(`Index: ${thread.indexUpdatedAt}`);
+  if (thread.sessionFileMtime && thread.sessionFileMtime !== thread.updatedAt) titleParts.push(`Session file: ${thread.sessionFileMtime}`);
+  return {
+    text: `Updated ${formatTime(thread.updatedAt)} · ${source}`,
+    title: titleParts.join("\n"),
+  };
 }
 
 function formatDurationMs(value) {
@@ -2227,6 +2864,15 @@ function agentStatusLabel(agent = {}) {
   return status.replace(/_/g, " ");
 }
 
+function subAgentRuntimeSpec(agent = {}) {
+  const model = String(agent?.model || "").trim();
+  const effort = String(agent?.reasoningEffort || agent?.reasoning_effort || "").trim();
+  if (model && effort) return `${model} · ${effort}`;
+  if (model) return model;
+  if (effort) return `effort ${effort}`;
+  return "";
+}
+
 function subAgentThreadId(agent = {}) {
   return String(agent.threadId || agent.key?.threadId || "").trim();
 }
@@ -2364,7 +3010,12 @@ function renderSubAgentsPanel() {
     button.setAttribute("aria-selected", selected ? "true" : "false");
     button.dataset.agentThreadId = id;
     const labelText = subAgentTabLabel(agent, labelCounts);
-    button.title = id ? `${labelText} · ${id}` : labelText;
+    const runtimeSpec = subAgentRuntimeSpec(agent);
+    button.title = [
+      labelText,
+      runtimeSpec,
+      id,
+    ].filter(Boolean).join(" · ");
     button.addEventListener("click", () => selectSubAgentTab(id, "operator"));
 
     const label = document.createElement("span");
@@ -2374,6 +3025,12 @@ function renderSubAgentsPanel() {
     status.className = `sub-agent-tab-status${subAgentIsActive(agent) ? " active" : ""}`;
     status.textContent = agentStatusLabel(agent);
     button.append(label, status);
+    if (runtimeSpec) {
+      const runtime = document.createElement("span");
+      runtime.className = "sub-agent-tab-runtime";
+      runtime.textContent = runtimeSpec;
+      button.appendChild(runtime);
+    }
     tabStrip.appendChild(button);
   }
   panel.appendChild(tabStrip);
@@ -2394,6 +3051,13 @@ function renderSubAgentsPanel() {
   thread.className = "muted mono";
   thread.textContent = subAgentThreadId(selectedAgent) || "unknown thread";
   title.append(eyebrow, heading, thread);
+  const runtimeSpec = subAgentRuntimeSpec(selectedAgent);
+  if (runtimeSpec) {
+    const runtime = document.createElement("span");
+    runtime.className = "sub-agent-runtime muted";
+    runtime.textContent = `Worker runtime: ${runtimeSpec}`;
+    title.appendChild(runtime);
+  }
   const status = document.createElement("span");
   status.className = `status-dot ${String(selectedAgent?.status || "") === "failed" ? "failed" : "loaded"}`;
   status.textContent = agentStatusLabel(selectedAgent);
@@ -2489,9 +3153,11 @@ function renderSubAgentsPanel() {
         const label = document.createElement("strong");
         label.textContent = String(event.label || event.kind || "Sub-agent event").replace(/_/g, " ");
         const meta = document.createElement("span");
+        const runtime = subAgentRuntimeSpec(event);
         meta.textContent = [
           event.status ? `status: ${String(event.status).replace(/_/g, " ")}` : "",
           event.actionStatus ? `action: ${String(event.actionStatus).replace(/_/g, " ")}` : "",
+          runtime ? `runtime: ${runtime}` : "",
         ].filter(Boolean).join(" · ");
         row.append(label, meta);
         if (event.promptPreview || event.detail) {
@@ -2609,9 +3275,11 @@ function handleCodexFocusSubAgent(event) {
 function renderMiddleTabs() {
   const tabs = [
     [els.overviewTabButton, els.overviewTabPanel, "overview"],
+    [els.projectTabButton, els.projectTabPanel, "project"],
     [els.threadsTabButton, els.threadsTabPanel, "threads"],
     [els.importsTabButton, els.importsTabPanel, "imports"],
     [els.analyticsTabButton, els.analyticsTabPanel, "analytics"],
+    [els.filesTabButton, els.filesTabPanel, "files"],
     [els.webTabButton, els.webTabPanel, "web"],
   ];
   for (const [button, panel, tab] of tabs) {
@@ -2620,6 +3288,7 @@ function renderMiddleTabs() {
     panel.classList.toggle("active", active);
     panel.hidden = !active;
   }
+  renderMiddleFileTab();
   renderMiddleWebTab();
 }
 
@@ -2631,10 +3300,61 @@ function middleWebSourceLabel(source) {
   return thread ? `Opened from: ${surface} · ${thread}` : `Opened from: ${surface}`;
 }
 
+function setMiddleWebViewMode(mode) {
+  state.middleWebViewMode = mode === "history" ? "history" : "browser";
+  renderMiddleWebTab();
+  scheduleResizeBurst();
+}
+
+function renderMiddleWebHistory() {
+  if (!els.webHistoryList) return;
+  const entries = Array.isArray(state.middleWebHistory) ? state.middleWebHistory : [];
+  els.webHistoryCount.textContent = String(entries.length);
+  els.webPruneHistoryButton.disabled = entries.length === 0;
+  els.webHistoryList.innerHTML = "";
+  if (!entries.length) {
+    const empty = document.createElement("div");
+    empty.className = "web-history-empty";
+    empty.innerHTML = `
+      <p class="eyebrow">No history yet</p>
+      <strong>Open links from Codex or ChatGPT to build quick reopen history.</strong>
+      <span class="muted">Blocked or failed navigations are not added.</span>
+    `;
+    els.webHistoryList.appendChild(empty);
+    return;
+  }
+  for (const entry of entries) {
+    const row = document.createElement("div");
+    row.className = "web-history-item";
+    row.innerHTML = `
+      <button class="web-history-open" type="button">
+        <strong class="truncate"></strong>
+        <span class="mono muted truncate"></span>
+        <span class="muted web-history-meta"></span>
+      </button>
+      <button class="ghost small web-history-prune" type="button">Prune</button>
+    `;
+    row.querySelector("strong").textContent = entry.title || entry.origin || entry.displayUrl || "Untitled page";
+    row.querySelector("span.mono").textContent = entry.displayUrl || "";
+    row.querySelector("span.mono").title = entry.displayUrl || "";
+    const meta = [
+      entry.origin || "",
+      entry.lastOpenedAt ? `opened ${formatTime(entry.lastOpenedAt)}` : "",
+      Number(entry.visitCount) > 1 ? `${entry.visitCount} visits` : "",
+      middleWebSourceLabel(entry.lastSource),
+    ].filter(Boolean).join(" · ");
+    row.querySelector(".web-history-meta").textContent = meta;
+    row.querySelector(".web-history-open").addEventListener("click", () => reopenMiddleWebHistoryEntry(entry));
+    row.querySelector(".web-history-prune").addEventListener("click", () => pruneMiddleWebHistoryEntry(entry.id));
+    els.webHistoryList.appendChild(row);
+  }
+}
+
 function renderMiddleWebTab() {
   const web = state.middleWeb || {};
   const hasPage = Boolean(web.hasPage || web.displayUrl || web.origin);
   const blocked = Boolean(web.lastError);
+  const historyMode = state.middleWebViewMode === "history";
   els.webTitle.textContent = blocked
     ? web.lastError
     : web.title || (hasPage ? "Loading web page…" : "No page open");
@@ -2643,7 +3363,8 @@ function renderMiddleWebTab() {
   els.webOrigin.title = web.displayUrl || web.origin || "";
   els.webSource.textContent = middleWebSourceLabel(web.lastSource);
   els.webSource.title = els.webSource.textContent;
-  els.webEmptyState.hidden = hasPage;
+  els.webEmptyState.hidden = historyMode || hasPage;
+  els.webHistoryPanel.hidden = !historyMode;
   els.webEmptyState.classList.toggle("web-error-state", blocked);
   if (blocked) {
     els.webEmptyState.querySelector("strong").textContent = web.lastError;
@@ -2658,6 +3379,195 @@ function renderMiddleWebTab() {
   els.webReloadButton.disabled = !hasPage;
   els.webCopyUrlButton.disabled = !hasPage;
   els.webOpenExternalButton.disabled = !hasPage;
+  els.webBrowserTabButton.classList.toggle("active", !historyMode);
+  els.webHistoryTabButton.classList.toggle("active", historyMode);
+  renderMiddleWebHistory();
+}
+
+function middleFileSourceLabel(file) {
+  const source = file?.source || {};
+  const labels = { codex: "Codex", chatgpt: "ChatGPT", shell: "Shell" };
+  if (source.surface) {
+    const surface = labels[source.surface] || source.surface;
+    const thread = source.threadTitle || source.threadId || "";
+    return thread ? `Opened from: ${surface} · ${thread}` : `Opened from: ${surface}`;
+  }
+  if (file?.sourceKind === "chatgpt_download") return "Opened from: ChatGPT download · imported project copy";
+  if (file?.sourceKind === "chatgpt_download_host") return "Opened from: ChatGPT download";
+  if (file?.sourceKind === "project_file") return "Opened from: project file reference";
+  return "";
+}
+
+function middleFileLooksMarkdown(file) {
+  const name = String(file?.relPath || file?.displayName || "").toLowerCase();
+  const mime = String(file?.mimeType || "").toLowerCase();
+  return mime === "text/markdown" || /\.(md|markdown|mdown)$/.test(name);
+}
+
+function renderMiddleFileMessage(className, eyebrow, title, detail) {
+  els.middleFileContent.className = `middle-file-content ${className}`;
+  els.middleFileContent.textContent = "";
+  const wrapper = document.createElement("div");
+  wrapper.className = "file-empty-state";
+  const label = document.createElement("p");
+  label.className = "eyebrow";
+  label.textContent = eyebrow;
+  const strong = document.createElement("strong");
+  strong.textContent = title;
+  const span = document.createElement("span");
+  span.textContent = detail;
+  wrapper.append(label, strong, span);
+  els.middleFileContent.appendChild(wrapper);
+}
+
+function middleFileStateFromEvent(event = {}) {
+  const next = {
+    status: "idle",
+    sourceKind: "",
+    projectId: "",
+    relPath: "",
+    displayName: "",
+    mimeType: "",
+    size: 0,
+    truncated: false,
+    binary: false,
+    text: "",
+    error: "",
+    workspaceLabel: "",
+    openedAt: "",
+    source: null,
+    ...event,
+  };
+  delete next.type;
+  delete next.fileEventType;
+  return next;
+}
+
+function renderMiddleFileTab() {
+  const file = state.middleFile || {};
+  const status = file.status || "idle";
+  const hasFile = status && status !== "idle";
+  const title = file.displayName || file.relPath || (status === "loading" ? "Opening file..." : "No file open");
+  els.middleFileTitle.textContent = title;
+  els.middleFileTitle.title = file.relPath || file.displayName || "";
+  const metaParts = [
+    file.relPath || "",
+    Number.isFinite(Number(file.size)) && Number(file.size) > 0 ? formatBytes(file.size) : "",
+    file.truncated ? `first ${formatBytes(file.limit || 0)}` : "",
+    file.mimeType || "",
+    file.workspaceLabel || "",
+  ].filter(Boolean);
+  els.middleFileMeta.textContent = metaParts.length ? metaParts.join(" · ") : "Open Codex file references or ChatGPT downloads here.";
+  els.middleFileMeta.title = els.middleFileMeta.textContent;
+  els.middleFileSource.textContent = middleFileSourceLabel(file);
+  els.middleFileSource.title = els.middleFileSource.textContent;
+  els.middleFileCopyRefButton.disabled = !hasFile || status === "loading" || (!file.relPath && !file.displayName);
+  els.middleFileRevealButton.disabled = !file.projectId || !file.relPath || status === "loading";
+
+  els.middleFileContent.className = "middle-file-content";
+  els.middleFileContent.textContent = "";
+  if (status === "idle") {
+    renderMiddleFileMessage(
+      "is-empty",
+      "Read-only file viewport",
+      "No file open yet.",
+      "Codex file references and ChatGPT downloads can be projected here without making them transcript evidence.",
+    );
+    return;
+  }
+  if (status === "loading") {
+    renderMiddleFileMessage("is-empty", "Opening file", title, "Reading a safe text preview.");
+    return;
+  }
+  if (status === "failed") {
+    renderMiddleFileMessage("is-error", "File open failed", title, file.error || "The file could not be opened.");
+    return;
+  }
+  if (file.binary || status === "unsupported") {
+    renderMiddleFileMessage("is-binary", "Unsupported preview", title, "Binary or non-text file preview is intentionally disabled in the middle Files tab.");
+    return;
+  }
+
+  const text = String(file.text || "");
+  if (middleFileLooksMarkdown(file)) {
+    renderMiddleFileMarkdown(els.middleFileContent, text, {
+      threadTitle: file.displayName || file.relPath || "File viewer",
+    });
+    return;
+  }
+  const pre = document.createElement("pre");
+  pre.textContent = `${file.truncated ? "/* Preview truncated for responsiveness. */\n\n" : ""}${text}`;
+  els.middleFileContent.appendChild(pre);
+}
+
+async function copyMiddleFileRef() {
+  const file = state.middleFile || {};
+  const text = file.relPath || file.displayName || "";
+  if (!text || !bridge.copyText) return;
+  await bridge.copyText(text);
+  setLastEvent(`Copied file reference: ${text}`);
+}
+
+async function revealMiddleFile() {
+  const file = state.middleFile || {};
+  if (!file.projectId || !file.relPath || !bridge.revealProjectFile) return;
+  try {
+    const result = await bridge.revealProjectFile(file.projectId, file.relPath);
+    if (result?.opened) setLastEvent(`Revealed ${file.relPath}.`);
+    else setLastEvent(`Copied file path: ${file.relPath}.`);
+  } catch (error) {
+    setLastEvent(`File reveal failed: ${error.message}`);
+  }
+}
+
+async function loadMiddleWebHistory() {
+  if (!bridge.middleWebHistory) return;
+  try {
+    const result = await bridge.middleWebHistory();
+    state.middleWebHistory = Array.isArray(result?.entries) ? result.entries : [];
+    renderMiddleWebTab();
+  } catch (error) {
+    setLastEvent(`Web history load failed: ${error.message}`);
+  }
+}
+
+async function reopenMiddleWebHistoryEntry(entry) {
+  const id = String(entry?.id || "");
+  if (!id) return;
+  setMiddleWebViewMode("browser");
+  try {
+    const result = await bridge.middleWebOpenHistoryEntry({
+      id,
+      userGesture: true,
+    });
+    if (!result?.ok) setLastEvent(`Web history reopen blocked: ${result?.error || "unknown error"}`);
+  } catch (error) {
+    setLastEvent(`Web history reopen failed: ${error.message}`);
+  }
+}
+
+async function pruneMiddleWebHistoryEntry(id) {
+  if (!bridge.middleWebPruneHistory) return;
+  try {
+    const result = await bridge.middleWebPruneHistory({ id });
+    state.middleWebHistory = Array.isArray(result?.entries) ? result.entries : state.middleWebHistory.filter((entry) => entry.id !== id);
+    renderMiddleWebTab();
+    setLastEvent("Pruned Web history entry.");
+  } catch (error) {
+    setLastEvent(`Web history prune failed: ${error.message}`);
+  }
+}
+
+async function pruneAllMiddleWebHistory() {
+  if (!bridge.middleWebPruneHistory) return;
+  try {
+    const result = await bridge.middleWebPruneHistory({ clearAll: true });
+    state.middleWebHistory = Array.isArray(result?.entries) ? result.entries : [];
+    renderMiddleWebTab();
+    setLastEvent("Pruned Web history.");
+  } catch (error) {
+    setLastEvent(`Web history prune failed: ${error.message}`);
+  }
 }
 
 function renderProjectList() {
@@ -2842,7 +3752,9 @@ function renderCodexThreadBrowser() {
     row.querySelector(".role-badge").textContent = thread.originator || "Codex";
     row.querySelector("strong").textContent = thread.title || "Untitled Codex thread";
     row.querySelector(".thread-meta").textContent = shortPath(thread.cwd || "");
-    row.querySelector(".thread-notes").textContent = thread.updatedAt ? `Updated ${formatTime(thread.updatedAt)}` : "No timestamp";
+    const updated = codexThreadUpdatedSummary(thread);
+    row.querySelector(".thread-notes").textContent = updated.text;
+    row.querySelector(".thread-notes").title = updated.title;
     row.addEventListener("click", () => {
       selectCodexThread(thread.threadId, thread.sourceHome || "", thread.sessionFilePath || "").catch((error) => {
         setLastEvent(`Codex thread open failed: ${error.message}`);
@@ -4180,6 +5092,7 @@ function render() {
   renderProjectList();
   renderSelectedProject();
   renderThreadDeck();
+  renderProjectStash();
   renderThreadsWorkbench();
   renderDirectImportWorkbench();
   renderAnalyticsPanel();
@@ -4261,7 +5174,9 @@ function sendSurfaceLayout() {
     ? rectToBounds(els.chatgptSlot.getBoundingClientRect())
     : hiddenNativeBounds;
   const web = els.middleWebSlot ? rectToBounds(els.middleWebSlot.getBoundingClientRect()) : { x: 0, y: 0, width: 1, height: 1 };
-  const webVisible = state.activeMiddleTab === "web" && Boolean(state.middleWeb?.hasPage || state.middleWeb?.displayUrl);
+  const webVisible = state.activeMiddleTab === "web" &&
+    state.middleWebViewMode !== "history" &&
+    Boolean(state.middleWeb?.hasPage || state.middleWeb?.displayUrl);
   const signature = [
     `${codex.x},${codex.y},${codex.width},${codex.height}`,
     `${chatgpt.x},${chatgpt.y},${chatgpt.width},${chatgpt.height},${state.activeRightTab}`,
@@ -5550,7 +6465,17 @@ function openDrawer(mode) {
         reasoningEffort: "",
         label: "Managed Codex lane",
       },
-      chatgpt: { reviewThreadUrl: "https://chatgpt.com/", reduceChrome: true },
+      chatgpt: {
+        reviewThreadUrl: "https://chatgpt.com/",
+        reduceChrome: true,
+        downloadMacro: {
+          enabled: true,
+          workspaceRelDir: ".codex/review-shell/chatgpt-downloads",
+          notifyCodex: true,
+          activeTurnDisposition: "queue",
+          messageTemplate: "GPT review is at {{workspacePath}}",
+        },
+      },
     },
     chatThreads: [
       {
@@ -5613,6 +6538,14 @@ function openDrawer(mode) {
   populateProjectThreadSelectors(draft);
   syncProjectChatgptUrlFromSelection();
   els.reduceChromeInput.checked = draft.surfaceBinding.chatgpt.reduceChrome !== false;
+  const downloads = state.config?.chatgptDownloads || {};
+  const macro = draft.surfaceBinding.chatgpt.downloadMacro || {};
+  els.chatgptDownloadDirInput.value = downloads.windowsDownloadDir || "";
+  els.chatgptDownloadMacroDirInput.value = macro.workspaceRelDir || ".codex/review-shell/chatgpt-downloads";
+  els.chatgptDownloadMacroEnabledInput.checked = macro.enabled !== false;
+  els.chatgptDownloadNotifyCodexInput.checked = macro.notifyCodex !== false;
+  els.chatgptDownloadDispositionInput.value = ["queue", "steer", "ask"].includes(macro.activeTurnDisposition) ? macro.activeTurnDisposition : "queue";
+  els.chatgptDownloadMessageInput.value = macro.messageTemplate || "GPT review is at {{workspacePath}}";
   els.reviewPromptInput.value = templates.review?.text || draft.flowProfile.reviewPromptTemplate;
   els.architecturePromptInput.value = templates.architecture?.text || defaultPromptText("architecture");
   els.brainstormingPromptInput.value = templates.brainstorming?.text || defaultPromptText("brainstorming");
@@ -5710,6 +6643,13 @@ function projectFromForm() {
       chatgpt: {
         reviewThreadUrl: primaryUrl,
         reduceChrome: els.reduceChromeInput.checked,
+        downloadMacro: {
+          enabled: els.chatgptDownloadMacroEnabledInput.checked,
+          workspaceRelDir: els.chatgptDownloadMacroDirInput.value.trim() || ".codex/review-shell/chatgpt-downloads",
+          notifyCodex: els.chatgptDownloadNotifyCodexInput.checked,
+          activeTurnDisposition: els.chatgptDownloadDispositionInput.value || "queue",
+          messageTemplate: els.chatgptDownloadMessageInput.value.trim() || "GPT review is at {{workspacePath}}",
+        },
       },
     },
     chatThreads: threads,
@@ -5748,7 +6688,16 @@ async function handleProjectFormSubmit(event) {
   const projects = [...state.config.projects];
   if (existingIndex >= 0) projects[existingIndex] = projectForConfig;
   else projects.push(projectForConfig);
-  await saveConfig({ ...state.config, selectedProjectId: projectForConfig.id, projects });
+  await saveConfig({
+    ...state.config,
+    selectedProjectId: projectForConfig.id,
+    chatgptDownloads: {
+      ...(state.config.chatgptDownloads || {}),
+      enabled: state.config.chatgptDownloads?.enabled !== false,
+      windowsDownloadDir: els.chatgptDownloadDirInput.value.trim(),
+    },
+    projects,
+  });
   closeDrawer();
   await selectProject(projectForConfig.id);
   if (runtimePathChanged && bridge.setDirectRuntimePath) {
@@ -5930,9 +6879,11 @@ async function deleteThreadFromDrawer() {
 }
 
 function setMiddleTab(tab) {
-  if (tab === "threads") state.activeMiddleTab = "threads";
+  if (tab === "project") state.activeMiddleTab = "project";
+  else if (tab === "threads") state.activeMiddleTab = "threads";
   else if (tab === "imports") state.activeMiddleTab = "imports";
   else if (tab === "analytics") state.activeMiddleTab = "analytics";
+  else if (tab === "files") state.activeMiddleTab = "files";
   else if (tab === "web") state.activeMiddleTab = "web";
   else state.activeMiddleTab = "overview";
   if (state.activeMiddleTab === "web" && els.controlPlane) els.controlPlane.scrollTop = 0;
@@ -6473,10 +7424,32 @@ function bindEvents() {
   els.rightChatgptTabButton?.addEventListener("click", () => setRightPlaneTab("chatgpt"));
   els.rightSubAgentsTabButton?.addEventListener("click", () => setRightPlaneTab("subagents"));
   els.overviewTabButton.addEventListener("click", () => setMiddleTab("overview"));
+  els.projectTabButton.addEventListener("click", () => setMiddleTab("project"));
   els.threadsTabButton.addEventListener("click", () => setMiddleTab("threads"));
   els.importsTabButton.addEventListener("click", () => setMiddleTab("imports"));
   els.analyticsTabButton.addEventListener("click", () => setMiddleTab("analytics"));
+  els.filesTabButton.addEventListener("click", () => setMiddleTab("files"));
   els.webTabButton.addEventListener("click", () => setMiddleTab("web"));
+  els.middleFileCopyRefButton.addEventListener("click", () => {
+    copyMiddleFileRef().catch((error) => setLastEvent(`Copy file reference failed: ${error.message}`));
+  });
+  els.middleFileRevealButton.addEventListener("click", () => {
+    revealMiddleFile().catch((error) => setLastEvent(`File reveal failed: ${error.message}`));
+  });
+  els.projectStashMessageInput.addEventListener("input", () => {
+    const stash = ensureProjectStash();
+    stash.message = String(els.projectStashMessageInput.value || "");
+  });
+  els.clearProjectStashButton.addEventListener("click", clearProjectStash);
+  els.sendProjectStashButton.addEventListener("click", () => {
+    sendProjectStashToChatgpt().catch((error) => {
+      const stash = ensureProjectStash();
+      stash.status = "failed";
+      stash.lastError = error.message || "Project stash send failed.";
+      renderProjectStash();
+      setLastEvent(`Project stash send failed: ${stash.lastError}`);
+    });
+  });
   els.addProjectButton.addEventListener("click", () => openDrawer("new"));
   els.editProjectButton.addEventListener("click", () => openDrawer("edit"));
   els.closeDrawerButton.addEventListener("click", closeDrawer);
@@ -6530,7 +7503,13 @@ function bindEvents() {
     const selected = threadById(project, state.selectedProjectChatThreadId);
     openThreadDrawer(selected ? "edit" : "new", selected?.id || "");
   });
-  els.refreshCodexThreadsButton.addEventListener("click", loadCodexThreads);
+  const refreshCodexThreadList = () => {
+    loadCodexThreads().catch((error) => {
+      setLastEvent(`Codex thread refresh failed: ${errorMessageText(error)}`);
+    });
+  };
+  els.refreshCodexThreadsButton.addEventListener("click", refreshCodexThreadList);
+  els.refreshCodexThreadListButton?.addEventListener("click", refreshCodexThreadList);
   els.refreshRecentChatThreadsButton.addEventListener("click", () => {
     loadChatgptRecentThreads({ refresh: true }).catch((error) => {
       setLastEvent(`ChatGPT recent-thread refresh failed: ${error.message}`);
@@ -6606,6 +7585,11 @@ function bindEvents() {
       setLastEvent(`Open external failed: ${error.message}`);
     }
   });
+  els.webBrowserTabButton.addEventListener("click", () => setMiddleWebViewMode("browser"));
+  els.webHistoryTabButton.addEventListener("click", () => setMiddleWebViewMode("history"));
+  els.webPruneHistoryButton.addEventListener("click", () => {
+    pruneAllMiddleWebHistory().catch((error) => setLastEvent(`Web history prune failed: ${error.message}`));
+  });
 
   els.leftSplitter.addEventListener("pointerdown", (event) => beginDrag("left", event));
   els.rightSplitter.addEventListener("pointerdown", (event) => beginDrag("right", event));
@@ -6663,7 +7647,20 @@ function bindEvents() {
     }
     if (event.type === "layout-request") scheduleResizeBurst();
     if (event.type === "middle-web-open-requested") {
+      state.middleWebViewMode = "browser";
       setMiddleTab("web");
+    }
+    if (event.type === "middle-file-open-requested") {
+      setMiddleTab("files");
+    }
+    if (event.type === "project-stash-add-file") {
+      addProjectStashFile(event);
+    }
+    if (event.type === "middle-file-state") {
+      state.middleFile = middleFileStateFromEvent(event);
+      renderMiddleFileTab();
+      if (event.fileEventType === "loaded") setLastEvent(`Opened file: ${event.relPath || event.displayName || "file"}.`);
+      else if (event.fileEventType === "failed") setLastEvent(`File open failed: ${event.error || "unknown error"}.`);
     }
     if (event.type === "middle-web-state") {
       state.middleWeb = {
@@ -6677,6 +7674,10 @@ function bindEvents() {
       if (event.webEventType === "navigation-blocked") setLastEvent(event.lastError || "Middle Web navigation blocked.");
       else if (event.webEventType === "load-failed") setLastEvent(`Middle Web load failed: ${event.lastError || event.errorDescription || "unknown error"}`);
     }
+    if (event.type === "middle-web-history") {
+      state.middleWebHistory = Array.isArray(event.entries) ? event.entries : [];
+      renderMiddleWebTab();
+    }
     if (event.type === "plane-zoom-state" && event.plane === "middle") {
       applyMiddlePlaneZoom(event.zoomFactor);
     }
@@ -6686,6 +7687,20 @@ function bindEvents() {
       if (event.error) setLastEvent(`Workspace backend error: ${event.error}`);
       else if (event.session.status === "attached") setLastEvent(`Workspace backend attached: ${event.session.transport}`);
       else if (event.session.status === "failed") setLastEvent(`Workspace backend failed: ${event.session.lastError || "unknown"}`);
+    }
+    if (event.type === "chatgpt-download-started") {
+      setLastEvent(`ChatGPT download started: ${event.fileName || "download"}.`);
+    }
+    if (event.type === "chatgpt-download-completed") {
+      const macro = event.macro || {};
+      if (macro.activated) {
+        setLastEvent(`ChatGPT download imported: ${macro.importedRelPath || event.fileName || "download"}.`);
+      } else {
+        setLastEvent(`ChatGPT download saved: ${event.fileName || "download"}.`);
+      }
+    }
+    if (event.type === "chatgpt-download-failed") {
+      setLastEvent(`ChatGPT download failed: ${event.error || event.state || "unknown error"}.`);
     }
     if (event.type === "codex-runtime-status") {
       const status = event.session?.status || "unknown";
@@ -6743,6 +7758,7 @@ async function init() {
   state.allowNonChatgptUrls = Boolean(result.allowNonChatgptUrls);
   render();
   await loadDirectAuthSettings();
+  await loadMiddleWebHistory();
   await selectProject(state.config.selectedProjectId);
   await loadChatgptRecentThreads({ refresh: false });
 }

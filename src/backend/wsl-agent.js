@@ -21,6 +21,11 @@ const crypto = require("node:crypto");
 const PROTOCOL_VERSION = 1;
 const PREVIEW_LIMIT_BYTES = 384 * 1024;
 const DIRECTORY_ENTRY_LIMIT = 500;
+const ATTACHMENT_STAGING_ROOT = ".codex/review-shell/attachments";
+const CHATGPT_DOWNLOAD_STAGING_ROOT = ".codex/review-shell/chatgpt-downloads";
+const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const MAX_IMPORT_FILE_BYTES = 50 * 1024 * 1024;
+const MAX_CHATGPT_REVIEW_FILE_BYTES = 8 * 1024 * 1024;
 const COMMAND_OUTPUT_LIMIT_BYTES = 256 * 1024;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30_000;
 const MATCH_SCAN_LIMIT = 240;
@@ -62,6 +67,7 @@ const SENSITIVE_READ_FILE_PATTERNS = [
   /(?:^|\/)\.ssh(?:\/|$)/i,
   /(?:^|\/)\.git\/config$/i,
 ];
+let reviewShellIgnorePromise = null;
 
 const SKIPPED_DIR_NAMES = new Set([
   ".git",
@@ -191,6 +197,14 @@ function unquotePatchPath(value = "") {
       .replace(/\\t/g, "\t")
       .replace(/\\n/g, "\n")
       .replace(/\\r/g, "\r");
+  }
+  return text;
+}
+
+function safeAttachmentSegment(value, label) {
+  const text = String(value || "").trim();
+  if (!/^[A-Za-z0-9._-]+$/.test(text) || text.includes("..")) {
+    throw new Error(`Invalid attachment ${label}.`);
   }
   return text;
 }
@@ -597,6 +611,113 @@ function assertNoEncodedTraversal(relPath = "") {
   }
 }
 
+async function ensureAttachmentIgnoreInner() {
+  const base = path.join(root, ".codex", "review-shell");
+  const ignorePath = path.join(base, ".gitignore");
+  await fs.mkdir(base, { recursive: true });
+  try {
+    await fs.writeFile(ignorePath, "attachments/\nchatgpt-downloads/\n", { flag: "wx" });
+  } catch (error) {
+    if (error?.code !== "EEXIST") throw error;
+  }
+  try {
+    const existing = await fs.readFile(ignorePath, "utf8");
+    const additions = ["attachments/", "chatgpt-downloads/"].filter((line) => !existing.split(/\r?\n/).includes(line));
+    if (additions.length) await fs.appendFile(ignorePath, `${existing.endsWith("\n") ? "" : "\n"}${additions.join("\n")}\n`);
+  } catch (error) {
+    process.stderr.write(`codex-review-shell: unable to update workspace staging .gitignore: ${error.message}\n`);
+  }
+}
+
+async function ensureAttachmentIgnore() {
+  if (!reviewShellIgnorePromise) {
+    reviewShellIgnorePromise = ensureAttachmentIgnoreInner().catch((error) => {
+      reviewShellIgnorePromise = null;
+      throw error;
+    });
+  }
+  return reviewShellIgnorePromise;
+}
+
+async function stageAttachment(params = {}) {
+  const draftId = safeAttachmentSegment(params.draftId, "draft id");
+  const fileName = safeAttachmentSegment(params.fileName, "file name");
+  const content = Buffer.from(String(params.contentBase64 || ""), "base64");
+  if (!content.length) throw new Error("Attachment content is empty.");
+  if (content.length > MAX_ATTACHMENT_BYTES) throw new Error("Attachment content exceeds size limit.");
+  const relPath = path.posix.join(ATTACHMENT_STAGING_ROOT, draftId, fileName);
+  const { fullPath, displayRel } = resolveWithinRoot(relPath);
+  const draftDir = path.dirname(fullPath);
+  await ensureAttachmentIgnore();
+  await fs.mkdir(draftDir, { recursive: true });
+  await fs.writeFile(fullPath, content, { flag: "wx" });
+  const manifest = params.manifest && typeof params.manifest === "object" ? params.manifest : {};
+  await fs.writeFile(path.join(draftDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, { flag: "wx" });
+  return {
+    relPath: displayRel,
+    stagedRelPath: displayRel,
+    sizeBytes: content.length,
+  };
+}
+
+async function removeAttachmentDraft(params = {}) {
+  const draftId = safeAttachmentSegment(params.draftId, "draft id");
+  const relPath = path.posix.join(ATTACHMENT_STAGING_ROOT, draftId);
+  const { fullPath } = resolveWithinRoot(relPath);
+  await fs.rm(fullPath, { recursive: true, force: true });
+  return { ok: true, draftId };
+}
+
+function safeImportFileName(value) {
+  const text = path.basename(String(value || "download").replace(/\\/g, "/")).trim();
+  const fallback = "download";
+  const cleaned = (text || fallback)
+    .replace(/[\u0000-\u001f<>:"/\\|?*]+/g, "_")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 180);
+  return cleaned && cleaned !== "." && cleaned !== ".." ? cleaned : fallback;
+}
+
+async function uniqueFilePath(dirPath, fileName) {
+  const parsed = path.parse(fileName);
+  for (let index = 0; index < 1000; index += 1) {
+    const candidateName = index === 0
+      ? fileName
+      : `${parsed.name || "download"}-${index}${parsed.ext || ""}`;
+    const candidate = path.join(dirPath, candidateName);
+    try {
+      const handle = await fs.open(candidate, "wx");
+      return { handle, fullPath: candidate };
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+    }
+  }
+  throw new Error("Unable to allocate a unique import file path.");
+}
+
+async function importFile(params = {}) {
+  const relDir = normalizeRelPath(params.relDir || CHATGPT_DOWNLOAD_STAGING_ROOT);
+  const fileName = safeImportFileName(params.fileName);
+  const content = Buffer.from(String(params.contentBase64 || ""), "base64");
+  if (!content.length) throw new Error("Import file content is empty.");
+  if (content.length > MAX_IMPORT_FILE_BYTES) throw new Error("Import file exceeds size limit.");
+  const { fullPath: dirPath, displayRel: dirDisplayRel } = resolveWithinRoot(relDir);
+  await ensureAttachmentIgnore();
+  await fs.mkdir(dirPath, { recursive: true });
+  const { handle, fullPath } = await uniqueFilePath(dirPath, fileName);
+  try {
+    await handle.writeFile(content);
+  } finally {
+    await handle.close();
+  }
+  const relPath = path.join(dirDisplayRel, path.basename(fullPath));
+  return {
+    relPath: displayRelPath(relPath),
+    sizeBytes: content.length,
+  };
+}
+
 function direntType(dirent) {
   if (dirent.isSymbolicLink()) return "symlink";
   if (dirent.isDirectory()) return "dir";
@@ -659,6 +780,51 @@ function looksBinary(buffer) {
   return suspicious / sample.length > 0.12;
 }
 
+function mimeTypeForFileName(fileName) {
+  const ext = path.extname(String(fileName || "")).toLowerCase();
+  const table = {
+    ".bmp": "image/bmp",
+    ".c": "text/x-c",
+    ".cc": "text/x-c++src",
+    ".cpp": "text/x-c++src",
+    ".cxx": "text/x-c++src",
+    ".css": "text/css",
+    ".csv": "text/csv",
+    ".gif": "image/gif",
+    ".go": "text/x-go",
+    ".h": "text/x-c",
+    ".hh": "text/x-c++src",
+    ".hpp": "text/x-c++src",
+    ".hxx": "text/x-c++src",
+    ".htm": "text/html",
+    ".html": "text/html",
+    ".java": "text/x-java",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".js": "text/javascript",
+    ".json": "application/json",
+    ".jsonl": "application/x-ndjson",
+    ".md": "text/markdown",
+    ".pdf": "application/pdf",
+    ".php": "text/x-php",
+    ".png": "image/png",
+    ".py": "text/x-python",
+    ".rb": "text/x-ruby",
+    ".rs": "text/rust",
+    ".sh": "text/x-sh",
+    ".svg": "image/svg+xml",
+    ".toml": "application/toml",
+    ".ts": "text/typescript",
+    ".tsx": "text/tsx",
+    ".txt": "text/plain",
+    ".webp": "image/webp",
+    ".xml": "application/xml",
+    ".yaml": "application/yaml",
+    ".yml": "application/yaml",
+  };
+  return table[ext] || "application/octet-stream";
+}
+
 async function readFilePreview(params = {}) {
   const normalizedRel = displayRelPath(normalizeRelPath(params.relPath || ""));
   if (params.rejectSensitive === true) assertNoEncodedTraversal(String(params.relPath || ""));
@@ -696,6 +862,26 @@ async function readFilePreview(params = {}) {
     binary,
     limit,
     text: binary ? "" : buffer.toString("utf8"),
+    source: workspaceKind,
+  };
+}
+
+async function readFileTransfer(params = {}) {
+  const { fullPath, displayRel } = resolveWithinRoot(params.relPath || "");
+  const stat = await fs.lstat(fullPath);
+  if (stat.isSymbolicLink()) throw new Error("Symlink transfer is disabled for this workspace agent.");
+  if (!stat.isFile()) throw new Error("Selected path is not a file.");
+  if (stat.size > MAX_CHATGPT_REVIEW_FILE_BYTES) {
+    throw new Error(`Selected file exceeds the ${Math.round(MAX_CHATGPT_REVIEW_FILE_BYTES / (1024 * 1024))} MB ChatGPT transfer limit.`);
+  }
+  const content = await fs.readFile(fullPath);
+  const fileName = path.basename(fullPath);
+  return {
+    relPath: displayRel,
+    fileName,
+    size: stat.size,
+    mimeType: mimeTypeForFileName(fileName),
+    contentBase64: content.toString("base64"),
     source: workspaceKind,
   };
 }
@@ -1265,6 +1451,26 @@ function sortCodexThreadEntries(entries) {
   });
 }
 
+function timestampMs(value) {
+  if (!value) return null;
+  const ms = Date.parse(String(value));
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function codexThreadActivityStamp({ indexUpdatedAt = "", sessionFileMtime = "", createdAt = "" } = {}) {
+  const candidates = [
+    { source: "session_file", value: sessionFileMtime, ms: timestampMs(sessionFileMtime) },
+    { source: "session_index", value: indexUpdatedAt, ms: timestampMs(indexUpdatedAt) },
+    { source: "session_created", value: createdAt, ms: timestampMs(createdAt) },
+  ].filter((candidate) => candidate.value && candidate.ms !== null);
+  candidates.sort((a, b) => b.ms - a.ms);
+  const selected = candidates[0];
+  return {
+    updatedAt: selected?.value || "",
+    updatedAtSource: selected?.source || "unknown",
+  };
+}
+
 function nullableFiniteNumber(value) {
   if (value === null || value === undefined || value === "") return null;
   const number = Number(value);
@@ -1315,13 +1521,17 @@ async function listCodexThreadsFromHome(codexHome, options = {}) {
   if (fastMode) {
     const fastEntries = [];
     for (const row of rows) {
+      const indexUpdatedAt = String(row.updated_at || "");
       fastEntries.push({
         threadId: String(row.id || ""),
         title: String(row.thread_name || "Untitled Codex thread"),
-        updatedAt: String(row.updated_at || ""),
+        updatedAt: indexUpdatedAt,
+        indexUpdatedAt,
+        updatedAtSource: indexUpdatedAt ? "session_index" : "unknown",
         cwd: "",
         originator: inferredOriginator,
         sessionFilePath: "",
+        sessionFileMtime: "",
         createdAt: "",
         sourceHome: codexHome,
         parentThreadId: "",
@@ -1372,6 +1582,7 @@ async function listCodexThreadsFromHome(codexHome, options = {}) {
       depth: subagentMeta.depth,
       isSubagent: subagentMeta.isSubagent,
       sessionFileMtimeMs: Number.isFinite(Number(stat?.mtimeMs)) ? Math.round(Number(stat.mtimeMs)) : 0,
+      sessionFileMtime: stat?.mtime instanceof Date ? stat.mtime.toISOString() : "",
       sessionFileSizeBytes: Number.isFinite(Number(stat?.size)) ? Math.round(Number(stat.size)) : 0,
     });
     return metadataById.size >= wantedIds.size;
@@ -1384,14 +1595,21 @@ async function listCodexThreadsFromHome(codexHome, options = {}) {
     const originator = String(meta.originator || inferredOriginator || "unknown");
     if (originators.size && !originators.has(originator)) continue;
     if (!includeSubagents && meta.isSubagent) continue;
+    const indexUpdatedAt = String(row.updated_at || "");
+    const createdAt = String(meta.createdAt || "");
+    const sessionFileMtime = String(meta.sessionFileMtime || "");
+    const activity = codexThreadActivityStamp({ indexUpdatedAt, sessionFileMtime, createdAt });
     entries.push({
       threadId: sessionId,
       title: String(row.thread_name || "Untitled Codex thread"),
-      updatedAt: String(row.updated_at || ""),
+      updatedAt: activity.updatedAt,
+      indexUpdatedAt,
+      updatedAtSource: activity.updatedAtSource,
       cwd: String(meta.cwd || ""),
       originator,
       sessionFilePath: String(meta.filePath || ""),
-      createdAt: String(meta.createdAt || ""),
+      sessionFileMtime,
+      createdAt,
       sourceHome: codexHome,
       parentThreadId: String(meta.parentThreadId || ""),
       agentRole: String(meta.agentRole || ""),
@@ -1588,6 +1806,7 @@ function createTranscriptTurn(turnId, rowIndex, kind) {
     status: "unknown",
     startedAt: null,
     completedAt: null,
+    durationMs: null,
   };
 }
 
@@ -1626,14 +1845,27 @@ function createStoredPresentationBuilder(threadId, sourceFile, threadMeta = {}) 
       const turn = ensureTurn(found, rowIndex, "task_started");
       if (turn) {
         turn.status = "partial";
-        turn.startedAt = payload.started_at || payload.startedAt || turn.startedAt || null;
+        turn.startedAt = payload.started_at || payload.startedAt || row.timestamp || turn.startedAt || null;
       }
     }
     if (row.type === "event_msg" && payload.type === "task_complete") {
       const turn = ensureTurn(found || currentTurnId, rowIndex, "task_complete");
       if (turn) {
         turn.status = payload.last_agent_message ? "complete" : "unknown";
-        turn.completedAt = payload.completed_at || payload.completedAt || turn.completedAt || null;
+        turn.completedAt = payload.completed_at || payload.completedAt || row.timestamp || turn.completedAt || null;
+        const durationMs = Number(payload.duration_ms ?? payload.durationMs);
+        if (Number.isFinite(durationMs) && durationMs >= 0) turn.durationMs = durationMs;
+        else {
+          const payloadDurationMs = durationMillis(payload.duration);
+          if (Number.isFinite(payloadDurationMs) && payloadDurationMs >= 0) turn.durationMs = payloadDurationMs;
+          else {
+            const startedMs = parseIsoMillis(turn.startedAt);
+            const completedMs = parseIsoMillis(turn.completedAt);
+            if (startedMs !== null && completedMs !== null && completedMs >= startedMs) {
+              turn.durationMs = completedMs - startedMs;
+            }
+          }
+        }
       }
     }
   }
@@ -2851,6 +3083,7 @@ async function handleRequest(method, params = {}) {
         listTree: true,
         readFilePreview: true,
         applyPatch: true,
+        readFileTransfer: true,
         runCommand: true,
         runDirectCommand: true,
         ensureCodexSandboxArtifactIgnored: true,
@@ -2860,12 +3093,16 @@ async function handleRequest(method, params = {}) {
         listCodexThreads: true,
         readCodexThreadTranscript: true,
         analyzeCodexThread: true,
+        stageAttachment: true,
+        removeAttachmentDraft: true,
+        importFile: true,
       },
     };
   }
   if (method === "listTree") return listTree(params);
   if (method === "readFile") return readFilePreview(params);
   if (method === "applyPatch") return applyPatchPlan(params);
+  if (method === "readFileTransfer") return readFileTransfer(params);
   if (method === "listMatchingFiles") return listMatchingFiles(params);
   if (method === "resolvePath") return resolvePathPreview(params);
   if (method === "runCommand") return runCommand(params);
@@ -2875,6 +3112,9 @@ async function handleRequest(method, params = {}) {
   if (method === "listCodexThreads") return listCodexThreads(params);
   if (method === "readCodexThreadTranscript") return readCodexThreadTranscript(params);
   if (method === "analyzeCodexThread") return analyzeCodexThread(params);
+  if (method === "stageAttachment") return stageAttachment(params);
+  if (method === "removeAttachmentDraft") return removeAttachmentDraft(params);
+  if (method === "importFile") return importFile(params);
   throw new Error(`Unknown workspace-agent method: ${method}`);
 }
 

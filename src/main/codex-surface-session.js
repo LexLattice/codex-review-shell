@@ -8,6 +8,7 @@ const {
   SUPPORTED_SERVER_REQUEST_METHODS: SUPPORTED_SERVER_REQUEST_METHOD_LIST,
   AUTO_UNSUPPORTED_SERVER_REQUEST_METHODS: AUTO_UNSUPPORTED_SERVER_REQUEST_METHOD_LIST,
 } = require("./codex-app-server-protocol");
+const { publicCodexSurfaceConnection } = require("./codex-surface-connection-authority");
 
 const DEFAULT_RPC_REQUEST_TIMEOUT_MS = 60_000;
 const OVERLOAD_RETRY_CODE = -32001;
@@ -255,7 +256,7 @@ class CodexSurfaceSession extends EventEmitter {
       type: "connection-status",
       status,
       error: extra.error || "",
-      connection: this.connection,
+      connection: publicCodexSurfaceConnection(this.connection || {}),
       connectionId: this.connectionId,
     });
   }

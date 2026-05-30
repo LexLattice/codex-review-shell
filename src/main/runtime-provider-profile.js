@@ -1,5 +1,8 @@
 "use strict";
 
+const crypto = require("node:crypto");
+const path = require("node:path");
+
 const PROVIDER_KINDS = new Set(["codex_executable", "direct_oai"]);
 const EXECUTABLE_FLAVORS = new Set(["vanilla", "lex_fork", "unknown_custom"]);
 
@@ -9,6 +12,22 @@ function cleanString(value, fallback = "") {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function evidenceKey(prefix, value) {
+  const text = cleanString(value, "");
+  return text ? `${prefix}:${crypto.createHash("sha256").update(text, "utf8").digest("hex").slice(0, 16)}` : "";
+}
+
+function basenameLabel(value, fallback = "default") {
+  const text = cleanString(value, "");
+  return text ? path.basename(text) || fallback : fallback;
+}
+
+function commandLabel(value) {
+  const text = cleanString(value, "codex");
+  if (!/[\\/]/.test(text)) return text;
+  return path.basename(text) || "codex";
 }
 
 function evidenceRef(kind, label, options = {}) {
@@ -242,7 +261,7 @@ function buildRuntimeProviderProfile(session, capabilities) {
       : "vanilla";
   return {
     schemaVersion: 1,
-    profileId: `codex_executable:${cleanString(session?.runtime, "unknown")}:${cleanString(session?.binaryPath, "codex")}`,
+    profileId: `codex_executable:${cleanString(session?.runtime, "unknown")}:${evidenceKey("command", cleanString(session?.binaryPath, "codex")) || "command:unknown"}`,
     projectId: cleanString(session?.projectId, ""),
     kind: "codex_executable",
     flavor: flavor.configuredFlavor,
@@ -257,13 +276,18 @@ function buildRuntimeProviderProfile(session, capabilities) {
     executable: {
       requestedRuntime: cleanString(session?.requestedRuntime, "auto"),
       resolvedRuntime: cleanString(session?.runtime, "unknown"),
-      command: cleanString(session?.binaryPath, "codex"),
-      resolvedCommand: cleanString(session?.command, ""),
-      codexHome: cleanString(session?.codexHome, ""),
-      workspaceRoot: cleanString(session?.workspaceRoot, ""),
+      command: commandLabel(session?.binaryPath),
+      commandEvidenceKey: evidenceKey("command", session?.binaryPath),
+      resolvedCommand: commandLabel(session?.command || session?.binaryPath),
+      resolvedCommandEvidenceKey: evidenceKey("resolved-command", session?.command || session?.binaryPath),
+      codexHome: basenameLabel(session?.codexHome, "default"),
+      codexHomeEvidenceKey: evidenceKey("codex-home", session?.codexHome),
+      workspaceRoot: basenameLabel(session?.workspaceRoot, "workspace"),
+      workspaceRootEvidenceKey: evidenceKey("workspace-root", session?.workspaceRoot),
       appServer: {
         status,
-        readyUrl: cleanString(session?.readyUrl, ""),
+        readyUrl: session?.readyUrl ? "local app-server ready URL" : "",
+        readyUrlEvidenceKey: evidenceKey("ready-url", session?.readyUrl),
         transport: "websocket",
         schemaSource: "app_server_probe",
         evidenceRefs: [appServerEvidence],

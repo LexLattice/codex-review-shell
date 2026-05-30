@@ -1,4 +1,18 @@
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
+
+function fileSystemPathForFile(file) {
+  try {
+    return webUtils?.getPathForFile?.(file) || file?.path || "";
+  } catch {
+    return "";
+  }
+}
+
+function fileSystemPathsForFiles(files) {
+  return Array.from(files || [])
+    .map((file) => fileSystemPathForFile(file))
+    .filter(Boolean);
+}
 
 contextBridge.exposeInMainWorld("codexSurfaceBridge", {
   connect: (connection) => ipcRenderer.invoke("codex-surface:connect", { connection }),
@@ -19,7 +33,15 @@ contextBridge.exposeInMainWorld("codexSurfaceBridge", {
   getDirectImplementationPolicyView: (projectId) => ipcRenderer.invoke("direct-ui:policy-readonly-view", { projectId }),
   openWorkspaceLink: (url, options = {}) => ipcRenderer.invoke("link:open", { ...options, url }),
   openExternalUrl: (url) => ipcRenderer.invoke("external:open-url", { url }),
+  openProjectFile: (projectId, relPath, options = {}) => ipcRenderer.invoke("file-view:open-project-file", { ...options, projectId, relPath }),
   revealProjectFile: (projectId, relPath) => ipcRenderer.invoke("worktree:reveal-file", { projectId, relPath }),
+  getPathForFile: (file) => fileSystemPathForFile(file),
+  getDroppedFilePaths: (files) => fileSystemPathsForFiles(files),
+  chooseAttachmentFiles: (projectId) => ipcRenderer.invoke("attachments:choose-files", { projectId }),
+  stageDroppedAttachments: (projectId, paths = []) => ipcRenderer.invoke("attachments:stage-drop", { projectId, paths }),
+  pasteImageAttachment: (projectId) => ipcRenderer.invoke("attachments:paste-image", { projectId }),
+  removeAttachmentDraft: (projectId, draftId) => ipcRenderer.invoke("attachments:remove-draft", { projectId, draftId }),
+  openContextMenu: (request) => ipcRenderer.invoke("context-menu:open", request || {}),
   readStoredThreadTranscript: (projectId, threadId, sourceHome = "", sessionFilePath = "", limit = 800) =>
     ipcRenderer.invoke("codex-thread:transcript", { projectId, threadId, sourceHome, sessionFilePath, limit }),
   onEvent: (callback) => {

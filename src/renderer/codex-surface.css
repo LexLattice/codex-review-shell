@@ -624,6 +624,20 @@ pre.codex-request-line-value {
   color: var(--muted);
 }
 
+.thought-duration {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  padding: 1px 6px;
+  border: 1px solid rgba(121, 184, 255, 0.16);
+  border-radius: 999px;
+  background: rgba(121, 184, 255, 0.06);
+  color: #9fd2ff;
+  font-size: 10px;
+  font-weight: 700;
+  vertical-align: middle;
+}
+
 .thought-process[open] > summary::before,
 .thought-tools[open] > summary::before,
 .thought-tool[open] > summary::before {
@@ -804,7 +818,8 @@ button.typed-token {
 .assistant-md-quote,
 .assistant-md-heading,
 .assistant-md-list,
-.assistant-md-codeblock {
+.assistant-md-codeblock,
+.assistant-md-table-wrap {
   margin: 0;
   min-width: 0;
 }
@@ -883,12 +898,14 @@ button.typed-token {
 }
 
 .assistant-md-codeblock {
+  display: block;
   overflow: hidden;
   border: 1px solid rgba(121, 184, 255, 0.22);
   border-radius: 12px;
   background: rgba(6, 10, 16, 0.72);
 }
 
+.assistant-md-codeblock-label,
 .assistant-md-codeblock figcaption {
   padding: 7px 10px;
   border-bottom: 1px solid rgba(121, 184, 255, 0.14);
@@ -899,15 +916,62 @@ button.typed-token {
   letter-spacing: 0.08em;
 }
 
+.assistant-md-codeblock-body,
 .assistant-md-codeblock pre {
+  display: block;
+  min-height: 1.55em;
   margin: 0;
   padding: 11px 12px;
   overflow-x: auto;
-  white-space: pre;
-  color: #dceaff;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #eaf3ff !important;
+  -webkit-text-fill-color: #eaf3ff;
+  background: rgba(2, 4, 8, 0.58);
   font-family: var(--mono);
   font-size: 12px;
   line-height: 1.55;
+}
+
+.assistant-md-table-wrap {
+  overflow-x: auto;
+  border: 1px solid rgba(121, 184, 255, 0.2);
+  border-radius: 12px;
+  background: rgba(6, 10, 16, 0.52);
+}
+
+.assistant-md-table {
+  width: 100%;
+  min-width: max-content;
+  border-collapse: collapse;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.assistant-md-table th,
+.assistant-md-table td {
+  max-width: 520px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(121, 184, 255, 0.14);
+  border-right: 1px solid rgba(121, 184, 255, 0.1);
+  text-align: left;
+  vertical-align: top;
+  white-space: normal;
+}
+
+.assistant-md-table th:last-child,
+.assistant-md-table td:last-child {
+  border-right: 0;
+}
+
+.assistant-md-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.assistant-md-table th {
+  color: #f4f8ff;
+  background: rgba(121, 184, 255, 0.1);
+  font-weight: 800;
 }
 
 .assistant-md-inline-code {
@@ -996,9 +1060,10 @@ button.typed-token {
 .composer-shell {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  grid-template-rows: auto auto;
+  grid-template-rows: auto auto auto;
   grid-template-areas:
     "input send"
+    "attachments attachments"
     "band band";
   column-gap: 10px;
   row-gap: 9px;
@@ -1014,11 +1079,112 @@ button.typed-token {
   --composer-popover-max-height: 320px;
   --composer-witness-max-width: 190px;
   --composer-model-pill-max-width: 260px;
+  --composer-control-font-size: 12px;
+  --composer-control-gap: 8px;
+  --composer-control-pad-x: 10px;
+  --composer-control-height: 30px;
+  --composer-action-width: 116px;
 }
 
 #composerInput {
   grid-area: input;
   min-width: 0;
+}
+
+.composer-attachment-row {
+  grid-area: attachments;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--composer-control-gap);
+  min-width: 0;
+  overflow: hidden;
+  padding: 2px 0;
+}
+
+.composer-shell.drag-over {
+  box-shadow: inset 0 0 0 1px rgba(111, 224, 255, 0.42);
+  background:
+    radial-gradient(circle at 82% 100%, rgba(121, 184, 255, 0.16), transparent 36%),
+    rgba(11, 20, 29, 0.98);
+}
+
+.composer-attachment-actions,
+.composer-attachment-list {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.composer-attachment-actions {
+  flex: 0 0 auto;
+}
+
+.composer-attachment-list {
+  flex: 1 1 auto;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.composer-attachment-list::-webkit-scrollbar {
+  display: none;
+}
+
+.composer-attachment-action,
+.composer-attachment-chip {
+  min-height: max(22px, calc(var(--composer-control-height) - 4px));
+  border-radius: 999px;
+  font-size: max(10px, calc(var(--composer-control-font-size) - 1px));
+}
+
+.composer-attachment-action {
+  flex: 0 0 auto;
+  padding: 0 var(--composer-control-pad-x);
+  border: 1px dashed rgba(141, 180, 255, 0.28);
+  background: rgba(141, 180, 255, 0.06);
+  color: #dfeaff;
+}
+
+.composer-attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  flex: 0 1 auto;
+  max-width: min(360px, 100%);
+  padding: 0 4px 0 9px;
+  border: 1px solid rgba(111, 224, 255, 0.18);
+  background: rgba(111, 224, 255, 0.06);
+  color: var(--text);
+}
+
+.composer-attachment-chip.unsupported,
+.composer-attachment-chip.failed {
+  border-color: rgba(255, 105, 135, 0.28);
+  background: rgba(255, 105, 135, 0.08);
+}
+
+.composer-attachment-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-attachment-meta {
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.composer-attachment-remove {
+  min-width: 22px;
+  min-height: 22px;
+  padding: 0;
+  border-radius: 999px;
+  color: var(--muted);
 }
 
 textarea {
@@ -1038,13 +1204,24 @@ textarea {
 
 .composer-runtime-band {
   grid-area: band;
+  position: relative;
   display: flex;
   flex-wrap: nowrap;
   justify-content: space-between;
   align-items: center;
-  gap: 8px;
+  gap: var(--composer-control-gap);
   min-width: 0;
+  overflow: hidden;
+}
+
+.composer-shell[data-composer-menu="access"] .composer-runtime-band,
+.composer-shell[data-composer-menu="model"] .composer-runtime-band,
+.composer-shell[data-composer-menu="access"] .composer-quick-controls,
+.composer-shell[data-composer-menu="model"] .composer-quick-controls,
+.composer-shell[data-composer-menu="access"] .composer-runtime-witnesses,
+.composer-shell[data-composer-menu="model"] .composer-runtime-witnesses {
   overflow: visible;
+  z-index: 9;
 }
 
 .composer-quick-controls,
@@ -1052,16 +1229,17 @@ textarea {
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
-  gap: 8px;
+  gap: var(--composer-control-gap);
   min-width: 0;
+  overflow: hidden;
 }
 
 .composer-quick-controls {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
 }
 
 .composer-runtime-witnesses {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   justify-content: flex-end;
   margin-left: auto;
   min-width: 0;
@@ -1070,6 +1248,7 @@ textarea {
 .composer-menu-anchor {
   position: relative;
   min-width: 0;
+  flex: 0 1 auto;
 }
 
 .composer-pill,
@@ -1078,10 +1257,11 @@ textarea {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  min-height: 30px;
-  padding: 0 10px;
+  min-width: 0;
+  min-height: var(--composer-control-height);
+  padding: 0 var(--composer-control-pad-x);
   border-radius: 999px;
-  font-size: 12px;
+  font-size: var(--composer-control-font-size);
   white-space: nowrap;
 }
 
@@ -1148,9 +1328,9 @@ textarea {
 #composerQuotaChip {
   flex: 1 1 var(--composer-quota-max-width, 320px);
   max-width: var(--composer-quota-max-width, 320px);
-  min-width: min(250px, var(--composer-quota-max-width, 320px));
+  min-width: 0;
   justify-content: flex-start;
-  font-size: 11.5px;
+  font-size: max(10px, calc(var(--composer-control-font-size) - 0.5px));
 }
 
 #composerQuotaChip::before {
@@ -1266,16 +1446,109 @@ button {
   cursor: pointer;
 }
 
-#sendButton {
+.composer-action-stack {
   grid-area: send;
+  display: grid;
+  align-self: stretch;
+  justify-self: end;
+  align-content: end;
+  justify-items: end;
+  gap: 6px;
+  min-width: var(--composer-action-width);
+}
+
+.composer-turn-control {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.composer-turn-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  max-width: var(--composer-action-width);
+  padding: 0 8px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.composer-turn-status::before {
+  content: "●";
+  color: currentColor;
+  font-size: 7px;
+}
+
+.composer-turn-status.active {
+  color: #9fd2ff;
+  border-color: rgba(121, 184, 255, 0.22);
+  background: rgba(121, 184, 255, 0.07);
+}
+
+.composer-turn-status.pending {
+  color: var(--warning);
+  border-color: rgba(240, 191, 116, 0.22);
+  background: rgba(240, 191, 116, 0.07);
+}
+
+.composer-turn-status.stopping {
+  color: var(--danger);
+  border-color: rgba(255, 124, 143, 0.28);
+  background: rgba(255, 124, 143, 0.08);
+}
+
+.composer-turn-status.queued {
+  color: #b9c7dc;
+  border-color: rgba(185, 199, 220, 0.18);
+  background: rgba(185, 199, 220, 0.055);
+}
+
+.composer-stop-button {
+  min-height: 24px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border-color: rgba(255, 124, 143, 0.38);
+  background: rgba(255, 124, 143, 0.12);
+  color: #ffd7dd;
+  font-size: 11px;
+}
+
+.composer-stop-button::before {
+  content: "■";
+  margin-right: 5px;
+  font-size: 8px;
+}
+
+.composer-action-anchor {
+  position: relative;
+  display: flex;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+#sendButton,
+.composer-split-action {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
-  min-width: 78px;
+  min-width: 0;
   min-height: 40px;
-  align-self: end;
-  justify-self: end;
+}
+
+#sendButton {
+  gap: 8px;
+  min-width: min(78px, var(--composer-action-width));
   background: linear-gradient(135deg, #21497f, #295d94);
 }
 
@@ -1288,14 +1561,44 @@ button {
   line-height: 1;
 }
 
-#sendButton.stop {
-  border-color: rgba(255, 124, 143, 0.38);
-  background: linear-gradient(135deg, #7d2636, #b43b4f);
+.composer-split-action {
+  border: 1px solid rgba(121, 184, 255, 0.3);
+  border-radius: 12px;
+  overflow: hidden;
+  background: rgba(121, 184, 255, 0.08);
 }
 
-#sendButton.stop::before {
-  content: "■";
-  font-size: 10px;
+.composer-split-button {
+  min-height: 40px;
+  min-width: 58px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+}
+
+.composer-split-button + .composer-split-button {
+  border-left: 1px solid rgba(121, 184, 255, 0.22);
+}
+
+.composer-split-button.steer {
+  background: linear-gradient(135deg, rgba(33, 73, 127, 0.92), rgba(41, 93, 148, 0.88));
+}
+
+.composer-split-button.queue {
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.composer-split-button:hover:not(:disabled),
+.composer-stop-button:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.composer-disposition-menu {
+  left: auto;
+  right: 0;
+  width: min(240px, var(--composer-popover-max-width));
 }
 
 .composer-shell[data-composer-size="medium"] .composer-cascade-grid {
@@ -1337,6 +1640,7 @@ button.typed-token {
     grid-template-columns: minmax(0, 1fr) auto;
     grid-template-areas:
       "input send"
+      "attachments attachments"
       "band band";
   }
 
@@ -1368,7 +1672,7 @@ button.typed-token {
     max-width: min(var(--composer-popover-max-width), calc(100vw - 24px));
   }
 
-  #sendButton {
+  .composer-action-stack {
     min-height: 40px;
   }
 }
@@ -1378,11 +1682,21 @@ button.typed-token {
     grid-template-columns: minmax(0, 1fr) auto;
     grid-template-areas:
       "input send"
+      "attachments attachments"
       "band band";
   }
 
+  .composer-action-stack {
+    --composer-action-width: 98px;
+  }
+
   #sendButton {
-    min-width: 48px;
+    min-width: 54px;
     padding: 0 10px;
+  }
+
+  .composer-split-button {
+    min-width: 49px;
+    padding: 0 8px;
   }
 }

@@ -16,7 +16,7 @@
         <div class="runtime-identity-row">
           <div class="title-block">
             <p class="eyebrow">Codex plane</p>
-            <h1 id="projectName">Codex session</h1>
+            <h1 id="projectName" data-context-target="thread_title">Codex session</h1>
             <p id="repoPath" class="subline mono">—</p>
           </div>
           <div class="runtime-chip-cluster" id="identityChipCluster">
@@ -57,6 +57,13 @@
           rows="4"
           placeholder="Ask Codex to inspect, change, or explain the project…"
         ></textarea>
+        <div id="composerAttachmentRow" class="composer-attachment-row" data-morphic-region="composer-attachments">
+          <div class="composer-attachment-actions">
+            <button id="chooseAttachmentButton" class="composer-attachment-action" type="button" data-attachment-action="choose-file">+ file</button>
+            <button id="pasteImageButton" class="composer-attachment-action" type="button" data-attachment-action="paste-image">paste image</button>
+          </div>
+          <div id="composerAttachmentList" class="composer-attachment-list" aria-live="polite"></div>
+        </div>
         <div class="composer-runtime-band" data-morphic-region="composer-runtime-band">
           <div class="composer-quick-controls">
             <div class="composer-menu-anchor">
@@ -73,9 +80,27 @@
             </div>
           </div>
         </div>
-        <button id="sendButton" class="send-button" type="submit" data-morphic-region="composer-send">Send</button>
+        <div class="composer-action-stack" data-morphic-region="composer-turn-actions">
+          <div class="composer-turn-control" data-morphic-region="composer-turn-status">
+            <span id="composerTurnStatus" class="composer-turn-status idle">Idle</span>
+            <button id="composerStopButton" class="composer-stop-button" type="button" hidden>Stop</button>
+          </div>
+          <div class="composer-action-anchor">
+            <button id="sendButton" class="send-button" type="submit" data-morphic-region="composer-send">Send</button>
+            <div id="activeTurnActions" class="composer-split-action" hidden>
+              <button id="steerButton" class="composer-split-button steer" type="button">Steer</button>
+              <button id="queueButton" class="composer-split-button queue" type="button">Queue</button>
+            </div>
+            <div id="composerDispositionMenu" class="composer-popover composer-disposition-menu" hidden>
+              <p class="composer-menu-note">Active turn message</p>
+              <button id="steerMenuButton" class="composer-menu-item" type="button">Steer current turn</button>
+              <button id="queueMenuButton" class="composer-menu-item" type="button">Queue next turn</button>
+            </div>
+          </div>
+        </div>
       </form>
     </main>
+    <script src="./typed-markdown-projection.js"></script>
     <script src="./codex-surface.js"></script>
   </body>
 </html>

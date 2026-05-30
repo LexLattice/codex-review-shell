@@ -79,6 +79,32 @@ const {
   evaluateDirectExperimentalProjectActivation,
 } = require("./main/direct/runtime/project-activation");
 const { UsageLedgerCollector } = require("./main/usage-ledger-collector");
+const {
+  createCodexSurfaceConnectionAuthority,
+  publicCodexSurfaceConnection,
+  validateCodexSurfaceConnectionRequest,
+} = require("./main/codex-surface-connection-authority");
+const {
+  blockedMessage: externalNavigationBlockedMessage,
+  navigationDecision: externalNavigationDecision,
+} = require("./main/external-navigation-policy");
+const {
+  CODEX_SURFACE_BRIDGE_PROFILES,
+  CODEX_SURFACE_TRUST_PROFILES,
+  SURFACE_ROLES,
+  codexSurfaceAuthorityForTarget,
+  hasFullCodexBridge,
+  codexClientNotificationDecision,
+  codexClientRequestDecision,
+  normalizeCodexBridgeProfile,
+  normalizeCodexTrustProfile,
+  normalizeSurfaceRole,
+} = require("./main/authority-catalog");
+const {
+  stagePaths: stageAttachmentPaths,
+  stageClipboardImage,
+  removeDraft: removeAttachmentDraft,
+} = require("./main/attachment-staging-store");
 const { defaultUsageLedgerConfig, normalizeUsageLedgerConfig } = require("./main/usage-ledger-config");
 const { readUsageLedgerAnalytics } = require("./main/usage-ledger-analytics");
 const { PLANE_ZOOM_DEFAULT, clampZoomFactor, zoomDeltaForDirection } = require("./shared/plane-zoom");
@@ -86,6 +112,7 @@ const { PLANE_ZOOM_DEFAULT, clampZoomFactor, zoomDeltaForDirection } = require("
 const APP_TITLE = "Codex Review Shell";
 const CONFIG_FILE_NAME = "workspace-config.json";
 const CHATGPT_THREAD_CACHE_FILE_NAME = "chatgpt-thread-cache.json";
+const MIDDLE_WEB_HISTORY_FILE_NAME = "middle-web-history.json";
 const CHATGPT_THREAD_CACHE_VERSION = 1;
 const CHATGPT_THREAD_CACHE_MAX_ENTRIES = 1500;
 const THREAD_ANALYTICS_DB_FILE_NAME = "thread-analytics.sqlite";
@@ -102,6 +129,7 @@ const CODEX_THREAD_RUNTIME_PREF_MAX_ENTRIES = 500;
 const PROFILE_ENV_VAR = "CODEX_REVIEW_SHELL_PROFILE";
 const USER_DATA_DIR_ENV_VAR = "CODEX_REVIEW_SHELL_USER_DATA_DIR";
 const USER_DATA_ROOT_ENV_VAR = "CODEX_REVIEW_SHELL_USER_DATA_ROOT";
+const CHATGPT_DOWNLOAD_MACRO_REQUEST_TTL_MS = 60_000;
 
 const appRoot = path.resolve(__dirname, "..");
 const repoRoot = appRoot;
@@ -114,6 +142,13 @@ const workspaceAgentPath = path.join(__dirname, "backend", "wsl-agent.js");
 
 function earlyNormalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function stableEvidenceKey(prefix, value) {
+  const text = earlyNormalizeString(value, "");
+  return text
+    ? `${prefix}:${crypto.createHash("sha256").update(text, "utf8").digest("hex").slice(0, 16)}`
+    : "";
 }
 
 function existingFileMtimeMs(targetPath) {
@@ -220,7 +255,13 @@ let directFixtureController = null;
 let directLiveTextController = null;
 let directActivationStore = null;
 const directActivationLocks = new Map();
+let chatgptDownloadHandler = null;
+let pendingChatgptDownloadMacroRequests = [];
+let activeChatgptContext = null;
 let surfaceActivationEpoch = 0;
+const webContentsAuthorityProfiles = new Map();
+const webContentsAuthorityCleanupRegistered = new Set();
+const CODEX_SURFACE_SENSITIVE_RESPONSE_RISKS = new Set(["command", "file-change", "network", "permission"]);
 const nativePlaneZoomFactors = {
   codex: PLANE_ZOOM_DEFAULT,
   chatgpt: PLANE_ZOOM_DEFAULT,
@@ -272,6 +313,10 @@ function configPath() {
 
 function chatgptThreadCachePath() {
   return path.join(app.getPath("userData"), CHATGPT_THREAD_CACHE_FILE_NAME);
+}
+
+function middleWebHistoryPath() {
+  return path.join(app.getPath("userData"), MIDDLE_WEB_HISTORY_FILE_NAME);
 }
 
 function threadAnalyticsDbPath() {
@@ -380,6 +425,10 @@ function defaultConfig() {
       },
     },
     codexThreadRuntimeDefaults: {},
+    chatgptDownloads: {
+      enabled: true,
+      windowsDownloadDir: "",
+    },
     projects: [
       {
         id: defaultProjectId,
@@ -414,6 +463,13 @@ function defaultConfig() {
           chatgpt: {
             reviewThreadUrl: "https://chatgpt.com/",
             reduceChrome: true,
+            downloadMacro: {
+              enabled: true,
+              workspaceRelDir: ".codex/review-shell/chatgpt-downloads",
+              notifyCodex: true,
+              activeTurnDisposition: "queue",
+              messageTemplate: "GPT review is at {{workspacePath}}",
+            },
           },
         },
         chatThreads: [
@@ -484,6 +540,33 @@ function normalizeRemoteAuthConfig(value) {
     tokenFilePath: mode === "bearer-token-file" ? normalizeString(raw.tokenFilePath, "") : "",
     tokenEnvVar: mode === "bearer-token-env" ? normalizeString(raw.tokenEnvVar, "") : "",
     serverAuthScheme,
+  };
+}
+
+function normalizeChatgptDownloadsConfig(value) {
+  const raw = isPlainObject(value) ? value : {};
+  return {
+    enabled: raw.enabled !== false,
+    windowsDownloadDir: normalizeString(raw.windowsDownloadDir, ""),
+  };
+}
+
+function normalizeWorkspaceRelDir(value, fallback) {
+  const text = normalizeString(value, fallback).replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
+  const parts = text.split("/").filter(Boolean);
+  if (!parts.length || parts.some((part) => part === "." || part === "..")) return fallback;
+  return parts.join("/");
+}
+
+function normalizeDownloadMacroConfig(value) {
+  const raw = isPlainObject(value) ? value : {};
+  const disposition = normalizeString(raw.activeTurnDisposition, "queue").toLowerCase();
+  return {
+    enabled: raw.enabled !== false,
+    workspaceRelDir: normalizeWorkspaceRelDir(raw.workspaceRelDir, ".codex/review-shell/chatgpt-downloads"),
+    notifyCodex: raw.notifyCodex !== false,
+    activeTurnDisposition: ["queue", "steer", "ask"].includes(disposition) ? disposition : "queue",
+    messageTemplate: normalizeString(raw.messageTemplate, "GPT review is at {{workspacePath}}"),
   };
 }
 
@@ -639,6 +722,12 @@ function mergeThreadSourceLabels(...values) {
   ).join("+");
 }
 
+function optionalRecentThreadRank(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const rank = Number(value);
+  return Number.isFinite(rank) ? rank : null;
+}
+
 function normalizeRecentThreadEntry(raw, fallbackDiscoveredAt = "") {
   if (!isPlainObject(raw)) return null;
   const externalId = normalizeString(raw.externalId, "");
@@ -649,6 +738,8 @@ function normalizeRecentThreadEntry(raw, fallbackDiscoveredAt = "") {
     url: normalizeString(raw.url, ""),
     updatedAt: normalizeString(raw.updatedAt, ""),
     createdAt: normalizeString(raw.createdAt, ""),
+    displayDate: normalizeString(raw.displayDate, ""),
+    projectRank: optionalRecentThreadRank(raw.projectRank),
     archived: Boolean(raw.archived),
     snippet: normalizeString(raw.snippet, ""),
     projectName: normalizeString(raw.projectName, ""),
@@ -665,6 +756,7 @@ function mergeRecentThreadEntries(current, incoming) {
   const currentUpdated = String(current.updatedAt || "");
   const incomingCreated = String(incoming.createdAt || "");
   const currentCreated = String(current.createdAt || "");
+  const mergedUpdatedAt = incomingUpdated > currentUpdated ? incomingUpdated : currentUpdated;
   const incomingTitle = normalizeString(incoming.title, "");
   const currentTitle = normalizeString(current.title, "");
   const chooseIncomingTitle = incomingTitle && incomingTitle !== "Untitled ChatGPT thread";
@@ -680,7 +772,7 @@ function mergeRecentThreadEntries(current, incoming) {
     ...incoming,
     title: chooseIncomingTitle ? incomingTitle : currentTitle || incomingTitle || "Untitled ChatGPT thread",
     url: preferIncomingUrl ? incoming.url : current.url || incoming.url || "",
-    updatedAt: incomingUpdated > currentUpdated ? incomingUpdated : currentUpdated,
+    updatedAt: mergedUpdatedAt,
     createdAt:
       !currentCreated
         ? incomingCreated
@@ -691,6 +783,16 @@ function mergeRecentThreadEntries(current, incoming) {
             : currentCreated,
     archived: Boolean(current.archived && incoming.archived),
     snippet: current.snippet || incoming.snippet || "",
+    displayDate:
+      mergedUpdatedAt && mergedUpdatedAt === incomingUpdated
+        ? incoming.displayDate || current.displayDate || ""
+        : current.displayDate || incoming.displayDate || "",
+    projectRank:
+      optionalRecentThreadRank(incoming.projectRank) !== null
+        ? optionalRecentThreadRank(incoming.projectRank)
+        : optionalRecentThreadRank(current.projectRank) !== null
+          ? optionalRecentThreadRank(current.projectRank)
+          : null,
     projectName: incoming.projectName || current.projectName || "",
     workspaceId: incoming.workspaceId || current.workspaceId || "",
     sourceKind:
@@ -713,6 +815,9 @@ function sortRecentThreadEntries(entries) {
     if (updatedDelta !== 0) return updatedDelta;
     const createdDelta = String(b.createdAt || "").localeCompare(String(a.createdAt || ""));
     if (createdDelta !== 0) return createdDelta;
+    const aRank = optionalRecentThreadRank(a.projectRank) ?? Number.POSITIVE_INFINITY;
+    const bRank = optionalRecentThreadRank(b.projectRank) ?? Number.POSITIVE_INFINITY;
+    if (aRank !== bRank) return aRank - bRank;
     return String(a.title || "").localeCompare(String(b.title || ""));
   });
 }
@@ -1254,6 +1359,7 @@ function normalizeProject(input, index = 0) {
       chatgpt: {
         reviewThreadUrl: safeChatgptUrl(primaryReview?.url || rawChatgpt.reviewThreadUrl, "https://chatgpt.com/"),
         reduceChrome: rawChatgpt.reduceChrome !== false,
+        downloadMacro: normalizeDownloadMacroConfig(rawChatgpt.downloadMacro),
       },
     },
     chatThreads,
@@ -1303,6 +1409,7 @@ function normalizeConfig(input) {
     ui: migrateUi(raw.ui),
     runtimeDefaults: normalizeRuntimeDefaults(raw.runtimeDefaults),
     codexThreadRuntimeDefaults: normalizeCodexThreadRuntimeDefaults(raw.codexThreadRuntimeDefaults),
+    chatgptDownloads: normalizeChatgptDownloadsConfig(raw.chatgptDownloads),
     projects: dedupedProjects,
   };
 }
@@ -1484,7 +1591,10 @@ function emitShellEvent(payload) {
 }
 
 function ensureMiddleWebHost() {
-  if (!middleWebHost) middleWebHost = new MiddleWebHost({ emitShellEvent });
+  if (!middleWebHost) {
+    middleWebHost = new MiddleWebHost({ emitShellEvent });
+    middleWebHost.setHistoryStorePath(middleWebHistoryPath());
+  }
   return middleWebHost;
 }
 
@@ -2529,6 +2639,156 @@ function ensureCodexSurfaceSessions() {
   return codexSurfaceSessions;
 }
 
+function normalizedWebContentsAuthority(profile = {}) {
+  return {
+    surfaceRole: normalizeSurfaceRole(profile.surfaceRole),
+    codexTrustProfile: normalizeCodexTrustProfile(profile.codexTrustProfile),
+    codexBridgeProfile: normalizeCodexBridgeProfile(profile.codexBridgeProfile),
+    surfaceName: normalizeString(profile.surfaceName, ""),
+    projectId: normalizeString(profile.projectId, ""),
+    targetUrl: normalizeString(profile.targetUrl, ""),
+    reason: normalizeString(profile.reason, ""),
+    updatedAt: nowIso(),
+  };
+}
+
+function registerWebContentsAuthority(view, profile = {}) {
+  const contents = view?.webContents || view;
+  if (!contents || contents.isDestroyed()) return null;
+  const authority = normalizedWebContentsAuthority(profile);
+  webContentsAuthorityProfiles.set(contents.id, authority);
+  if (!webContentsAuthorityCleanupRegistered.has(contents.id)) {
+    webContentsAuthorityCleanupRegistered.add(contents.id);
+    contents.once("destroyed", () => {
+      webContentsAuthorityProfiles.delete(contents.id);
+      webContentsAuthorityCleanupRegistered.delete(contents.id);
+    });
+    contents.on("did-start-navigation", (_event, url, isInPlace, isMainFrame) => {
+      if (!isMainFrame || isInPlace) return;
+      const current = webContentsAuthorityProfiles.get(contents.id);
+      if (current?.surfaceName !== "codex" || !hasFullCodexBridge(current)) return;
+      if (urlsShareCodexSurfaceDocument(url, current.targetUrl)) return;
+      demoteCodexSurfaceAuthorityForNavigation(contents, url, "main-frame-navigation-demotion");
+    });
+  }
+  return authority;
+}
+
+function updateWebContentsAuthority(view, profile = {}) {
+  const contents = view?.webContents || view;
+  if (!contents || contents.isDestroyed()) return null;
+  const previous = webContentsAuthorityProfiles.get(contents.id) || {};
+  return registerWebContentsAuthority(contents, { ...previous, ...profile });
+}
+
+function senderAuthority(sender) {
+  if (!sender || sender.isDestroyed?.()) {
+    return normalizedWebContentsAuthority({ surfaceRole: SURFACE_ROLES.UNKNOWN });
+  }
+  return webContentsAuthorityProfiles.get(sender.id) ||
+    normalizedWebContentsAuthority({ surfaceRole: SURFACE_ROLES.UNKNOWN });
+}
+
+function urlsShareCodexSurfaceDocument(left, right) {
+  try {
+    const leftUrl = new URL(String(left || ""));
+    const rightUrl = new URL(String(right || ""));
+    return leftUrl.href === rightUrl.href ||
+      (
+        leftUrl.origin === rightUrl.origin &&
+        leftUrl.pathname === rightUrl.pathname &&
+        leftUrl.pathname.endsWith("/codex-surface.html")
+      );
+  } catch {
+    return false;
+  }
+}
+
+function codexCurrentUrlMatchesAuthority(authority, currentUrl) {
+  if (!hasFullCodexBridge(authority)) return false;
+  if (
+    authority.codexTrustProfile !== CODEX_SURFACE_TRUST_PROFILES.MANAGED_LOCAL_SURFACE &&
+    authority.codexTrustProfile !== CODEX_SURFACE_TRUST_PROFILES.FALLBACK_LOCAL_SURFACE
+  ) {
+    return false;
+  }
+  return urlsShareCodexSurfaceDocument(currentUrl, authority.targetUrl);
+}
+
+function demoteCodexSurfaceAuthorityForNavigation(contents, targetUrl, reason = "navigation-demotion") {
+  const current = webContentsAuthorityProfiles.get(contents.id) || {};
+  updateWebContentsAuthority(contents, {
+    ...codexSurfaceAuthorityForTarget(targetUrl),
+    surfaceName: "codex",
+    projectId: current.projectId || "",
+    targetUrl,
+    reason,
+  });
+  if (codexSurfaceSessions?.has(contents.id)) {
+    const session = codexSurfaceSessions.get(contents.id);
+    codexSurfaceSessions.delete(contents.id);
+    session?.dispose?.({ silent: true, reason: "Codex surface authority demoted." }).catch(() => {});
+  }
+  activeCodexSurfaceConnection = null;
+}
+
+function requireSenderRole(sender, allowedRoles, channel) {
+  const authority = senderAuthority(sender);
+  if (!allowedRoles.includes(authority.surfaceRole)) {
+    throw new Error(`${channel} is not available from ${authority.surfaceRole || SURFACE_ROLES.UNKNOWN}.`);
+  }
+  return authority;
+}
+
+function requireFullCodexSurfaceBridge(sender, channel) {
+  const authority = requireSenderRole(sender, [SURFACE_ROLES.TRUSTED_CODEX_SURFACE], channel);
+  if (!hasFullCodexBridge(authority)) {
+    throw new Error(`${channel} requires a trusted managed Codex surface bridge.`);
+  }
+  const currentUrl = normalizeString(sender?.getURL?.(), "");
+  if (!codexCurrentUrlMatchesAuthority(authority, currentUrl)) {
+    throw new Error(`${channel} requires the active trusted Codex surface document.`);
+  }
+  return authority;
+}
+
+function requireShellOrTrustedCodex(sender, channel) {
+  const authority = requireSenderRole(sender, [SURFACE_ROLES.SHELL_RENDERER, SURFACE_ROLES.TRUSTED_CODEX_SURFACE], channel);
+  if (authority.surfaceRole === SURFACE_ROLES.TRUSTED_CODEX_SURFACE && !hasFullCodexBridge(authority)) {
+    throw new Error(`${channel} requires a trusted managed Codex surface bridge.`);
+  }
+  return authority;
+}
+
+function setCodexSurfaceAuthority(profile = {}) {
+  if (!codexView?.webContents || codexView.webContents.isDestroyed()) return null;
+  return updateWebContentsAuthority(codexView, {
+    surfaceName: "codex",
+    ...profile,
+  });
+}
+
+function setManagedCodexSurfaceAuthority(project, targetUrl, reason) {
+  return setCodexSurfaceAuthority({
+    ...codexSurfaceAuthorityForTarget(targetUrl, {
+      trustProfile: CODEX_SURFACE_TRUST_PROFILES.MANAGED_LOCAL_SURFACE,
+      bridgeProfile: CODEX_SURFACE_BRIDGE_PROFILES.FULL,
+    }),
+    projectId: project?.id || "",
+    targetUrl,
+    reason,
+  });
+}
+
+function setExternalCodexSurfaceAuthority(project, targetUrl, reason) {
+  return setCodexSurfaceAuthority({
+    ...codexSurfaceAuthorityForTarget(targetUrl),
+    projectId: project?.id || "",
+    targetUrl,
+    reason,
+  });
+}
+
 function isCodexSurfaceSender(sender) {
   return Boolean(codexView?.webContents && !codexView.webContents.isDestroyed() && sender.id === codexView.webContents.id);
 }
@@ -2572,6 +2832,7 @@ function createCodexSurfaceSession(sender, connection = {}) {
 
 function codexSurfaceSessionFor(sender, options = {}) {
   if (!isCodexSurfaceSender(sender)) throw new Error("Codex surface bridge is not available from this renderer.");
+  requireFullCodexSurfaceBridge(sender, "codex-surface session");
   const sessions = ensureCodexSurfaceSessions();
   const requestedKind = options.connection ? codexSurfaceSessionKindForConnection(options.connection) : "";
   const existing = sessions.get(sender.id);
@@ -2780,6 +3041,8 @@ function encodeCodexSurfacePayload(project, extra = {}) {
     initialThreadSessionFilePath: normalizeString(extra.initialThreadSessionFilePath, ""),
     initialThreadTitle: normalizeString(extra.initialThreadTitle, ""),
     error: normalizeString(extra.error, ""),
+    runtimeStartupPending: Boolean(extra.runtimeStartupPending),
+    runtimeStartupMessage: normalizeString(extra.runtimeStartupMessage, ""),
   };
   return Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
 }
@@ -2787,6 +3050,16 @@ function encodeCodexSurfacePayload(project, extra = {}) {
 function codexSurfaceUrl(baseUrl, project, extra = {}) {
   const token = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
   return `${baseUrl}/codex-surface.html?reload=${token}#${encodeCodexSurfacePayload(project, extra)}`;
+}
+
+function codexSurfaceThreadExtras(options = {}) {
+  return {
+    activationEpoch: Number(options.activationEpoch) || 0,
+    initialThreadId: normalizeString(options.initialThreadId, ""),
+    initialThreadSourceHome: normalizeString(options.initialThreadSourceHome, ""),
+    initialThreadSessionFilePath: normalizeString(options.initialThreadSessionFilePath, ""),
+    initialThreadTitle: normalizeString(options.initialThreadTitle, ""),
+  };
 }
 
 async function loadCodexSurface(project, options = {}) {
@@ -2852,13 +3125,28 @@ async function loadCodexSurface(project, options = {}) {
     const target = safeLoadableUrl(codex.target, "codex");
     if (target) {
       if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
+      setExternalCodexSurfaceAuthority(project, target, "configured-codex-url");
       await codexView.webContents.loadURL(target);
       return;
     }
   }
   if (codex.mode === "managed") {
+    const threadExtras = codexSurfaceThreadExtras(options);
+    const workspaceStatus = workspaceBackends?.statusForProject(project) || null;
     try {
       const requestedCodexHome = normalizeString(options.codexHome, "");
+      if (!options.codexSession) {
+        activeCodexSurfaceConnection = null;
+        const startingUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, {
+          ...threadExtras,
+          workspaceStatus,
+          runtimeStartupPending: true,
+          runtimeStartupMessage: "Starting Codex app-server…",
+        });
+        if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
+        setManagedCodexSurfaceAuthority(project, startingUrl, "managed-local-starting");
+        await codexView.webContents.loadURL(startingUrl);
+      }
       const session =
         options.codexSession ||
         await ensureCodexAppServerManager().ensureForProject(
@@ -2866,40 +3154,17 @@ async function loadCodexSurface(project, options = {}) {
           requestedCodexHome ? { codexHome: requestedCodexHome } : {},
         );
       if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
-      const localUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, {
-        codexConnection: {
-          projectId: project.id,
-          wsUrl: session.wsUrl,
-          readyUrl: session.readyUrl,
-          runtime: session.runtime,
-          workspaceRoot: session.workspaceRoot,
-          binaryPath: session.binaryPath,
-          codexHome: session.codexHome || "",
-          provider: session.provider || null,
-          capabilities: session.capabilities || null,
-          activationEpoch: Number(options.activationEpoch) || 0,
-        },
-        workspaceStatus: workspaceBackends?.statusForProject(project) || null,
+      const connectionAuthority = createCodexSurfaceConnectionAuthority(project, session, {
         activationEpoch: Number(options.activationEpoch) || 0,
-        initialThreadId: normalizeString(options.initialThreadId, ""),
-        initialThreadSourceHome: normalizeString(options.initialThreadSourceHome, ""),
-        initialThreadSessionFilePath: normalizeString(options.initialThreadSessionFilePath, ""),
-        initialThreadTitle: normalizeString(options.initialThreadTitle, ""),
       });
-      activeCodexSurfaceConnection = {
-        projectId: project.id,
-        wsUrl: session.wsUrl,
-        readyUrl: session.readyUrl,
-        runtime: session.runtime,
-        codexHome: session.codexHome || "",
-        workspaceRoot: session.workspaceRoot || "",
-        binaryPath: session.binaryPath || "",
-        provider: session.provider || null,
-        capabilities: session.capabilities || null,
-        activationEpoch: Number(options.activationEpoch) || 0,
-        remoteAuth: project.surfaceBinding?.codex?.remoteAuth || { mode: "none" },
-      };
+      activeCodexSurfaceConnection = connectionAuthority.privateConnection;
+      const localUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, {
+        codexConnection: connectionAuthority.publicConnection,
+        workspaceStatus,
+        ...threadExtras,
+      });
       if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
+      setManagedCodexSurfaceAuthority(project, localUrl, "managed-local-ready");
       await codexView.webContents.loadURL(localUrl);
       return;
     } catch (error) {
@@ -2911,14 +3176,12 @@ async function loadCodexSurface(project, options = {}) {
         at: nowIso(),
       });
       const degradedUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, {
-        activationEpoch: Number(options.activationEpoch) || 0,
-        initialThreadId: normalizeString(options.initialThreadId, ""),
-        initialThreadSourceHome: normalizeString(options.initialThreadSourceHome, ""),
-        initialThreadSessionFilePath: normalizeString(options.initialThreadSessionFilePath, ""),
-        initialThreadTitle: normalizeString(options.initialThreadTitle, ""),
+        ...threadExtras,
+        workspaceStatus,
         error: error.message,
       });
       if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
+      setManagedCodexSurfaceAuthority(project, degradedUrl, "managed-local-degraded");
       await codexView.webContents.loadURL(degradedUrl);
       return;
     }
@@ -2927,6 +3190,7 @@ async function loadCodexSurface(project, options = {}) {
   activeCodexSurfaceConnection = null;
   const localUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, { activationEpoch: Number(options.activationEpoch) || 0 });
   if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
+  setManagedCodexSurfaceAuthority(project, localUrl, "fallback-local-surface");
   await codexView.webContents.loadURL(localUrl);
 }
 
@@ -2937,8 +3201,27 @@ async function loadChatgptSurface(project, threadId = "", options = {}) {
     ? project.chatThreads?.find((item) => item.id === threadId) || activeChatThread(project)
     : activeChatThread(project);
   const target = safeLoadableUrl(thread?.url || project.surfaceBinding.chatgpt.reviewThreadUrl, "chatgpt") || "https://chatgpt.com/";
+  setActiveChatgptProjectThread(project, thread, "project-chatgpt-surface");
   if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
   await chatgptView.webContents.loadURL(target);
+}
+
+async function ensureChatgptThreadDisplayed(project, chatThread) {
+  if (!chatgptView || chatgptView.webContents.isDestroyed()) {
+    throw new Error("ChatGPT surface is unavailable.");
+  }
+  const target = safeLoadableUrl(chatThread?.url || project?.surfaceBinding?.chatgpt?.reviewThreadUrl, "chatgpt");
+  if (!target) throw new Error("Linked ChatGPT thread URL is invalid.");
+  if (!trustedChatgptPageUrl(target)) {
+    throw new Error("ChatGPT file handoff is restricted to trusted ChatGPT/OpenAI origins.");
+  }
+  const currentUrl = chatgptView.webContents.getURL() || "";
+  setActiveChatgptProjectThread(project, chatThread, "codex-file-review");
+  if (urlsEquivalent(currentUrl, target)) {
+    return { ok: true, reused: true, url: target };
+  }
+  await chatgptView.webContents.loadURL(target);
+  return { ok: true, loaded: true, url: target };
 }
 
 async function requestCodexThreadOpen(projectId, threadId, sourceHome = "", sessionFilePath = "") {
@@ -3130,8 +3413,918 @@ async function openChatgptThreadUrl(url) {
   if (!chatgptView || chatgptView.webContents.isDestroyed()) {
     return { ok: false, error: "ChatGPT surface is unavailable." };
   }
+  activeChatgptContext = await resolveChatgptContextForUrl(target);
   await chatgptView.webContents.loadURL(target);
   return { ok: true, url: target };
+}
+
+function safeHostDownloadFileName(value) {
+  const base = path.basename(String(value || "download").replace(/\\/g, "/")).trim() || "download";
+  const cleaned = base
+    .replace(/[\u0000-\u001f<>:"/\\|?*]+/g, "_")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 180);
+  return cleaned && cleaned !== "." && cleaned !== ".." ? cleaned : "download";
+}
+
+function defaultChatgptWindowsDownloadDir() {
+  return path.join(app.getPath("downloads"), "codex-review-shell", "chatgpt");
+}
+
+function chatgptWindowsDownloadDir(config) {
+  const configured = normalizeString(config?.chatgptDownloads?.windowsDownloadDir, "");
+  return configured ? path.resolve(configured) : defaultChatgptWindowsDownloadDir();
+}
+
+function uniqueHostDownloadPathSync(dirPath, fileName) {
+  fsSync.mkdirSync(dirPath, { recursive: true });
+  const parsed = path.parse(fileName);
+  for (let index = 0; index < 1000; index += 1) {
+    const candidateName = index === 0
+      ? fileName
+      : `${parsed.name || "download"}-${index}${parsed.ext || ""}`;
+    const candidate = path.join(dirPath, candidateName);
+    try {
+      const fd = fsSync.openSync(candidate, "wx");
+      fsSync.closeSync(fd);
+      return candidate;
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+    }
+  }
+  throw new Error("Unable to allocate a unique ChatGPT download path.");
+}
+
+function fileViewMimeType(fileName) {
+  const ext = path.extname(String(fileName || "")).toLowerCase();
+  const map = {
+    ".md": "text/markdown",
+    ".markdown": "text/markdown",
+    ".mdown": "text/markdown",
+    ".txt": "text/plain",
+    ".log": "text/plain",
+    ".json": "application/json",
+    ".jsonl": "application/jsonl",
+    ".yaml": "application/yaml",
+    ".yml": "application/yaml",
+    ".toml": "application/toml",
+    ".csv": "text/csv",
+    ".tsv": "text/tab-separated-values",
+    ".js": "text/javascript",
+    ".ts": "text/typescript",
+    ".tsx": "text/typescript",
+    ".jsx": "text/javascript",
+    ".css": "text/css",
+    ".html": "text/html",
+    ".htm": "text/html",
+    ".xml": "application/xml",
+    ".py": "text/x-python",
+    ".rs": "text/x-rust",
+    ".go": "text/x-go",
+    ".sh": "text/x-shellscript",
+  };
+  return map[ext] || "text/plain";
+}
+
+function isProbablyBinaryBuffer(buffer) {
+  if (!buffer || buffer.length === 0) return false;
+  if (buffer.includes(0)) return true;
+  const text = buffer.toString("utf8");
+  const replacementCount = (text.match(/\uFFFD/g) || []).length;
+  return replacementCount > Math.max(8, text.length * 0.03);
+}
+
+function normalizeMiddleFileSource(options = {}) {
+  const nested = isPlainObject(options.source) ? options.source : {};
+  const surface = normalizeString(nested.surface || options.sourceSurface, "");
+  if (!surface) return null;
+  return {
+    surface,
+    threadId: normalizeString(nested.threadId || options.threadId, ""),
+    threadTitle: normalizeString(nested.threadTitle || options.threadTitle, ""),
+    itemId: normalizeString(nested.itemId || options.itemId, ""),
+  };
+}
+
+function emitMiddleFileState(payload) {
+  emitShellEvent({
+    type: "middle-file-state",
+    at: nowIso(),
+    ...payload,
+  });
+}
+
+function normalizeProjectFileViewRelPath(project, value) {
+  const text = normalizeString(value, "").replace(/^<|>$/g, "").replace(/\\/g, "/");
+  if (!text) return "";
+  const root = workspaceRoot(project, repoRoot).replace(/\\/g, "/").replace(/\/+$/, "");
+  if (root && text === root) return "";
+  if (root && text.startsWith(`${root}/`)) return text.slice(root.length + 1);
+  return text.replace(/^\/+/, "");
+}
+
+function prunePendingChatgptDownloadMacroRequests() {
+  const cutoff = Date.now() - CHATGPT_DOWNLOAD_MACRO_REQUEST_TTL_MS;
+  pendingChatgptDownloadMacroRequests = pendingChatgptDownloadMacroRequests.filter((request) => request.createdAtMs >= cutoff);
+}
+
+function enqueueChatgptDownloadMacroRequest(url, context) {
+  prunePendingChatgptDownloadMacroRequests();
+  const targetUrl = safeDownloadLinkUrl(url);
+  if (!targetUrl) throw new Error("Download macro requires a safe HTTPS download URL.");
+  const request = {
+    id: `chatgpt_download_macro_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+    url: targetUrl,
+    context: context ? { ...context } : null,
+    createdAtMs: Date.now(),
+  };
+  pendingChatgptDownloadMacroRequests.push(request);
+  return request;
+}
+
+function consumeChatgptDownloadMacroRequest(item) {
+  prunePendingChatgptDownloadMacroRequests();
+  if (!pendingChatgptDownloadMacroRequests.length) return null;
+  const itemUrl = safeDownloadLinkUrl(item?.getURL?.() || "");
+  let index = itemUrl
+    ? pendingChatgptDownloadMacroRequests.findIndex((request) => urlsEquivalent(request.url, itemUrl))
+    : -1;
+  if (index < 0 && pendingChatgptDownloadMacroRequests.length === 1) {
+    const [candidate] = pendingChatgptDownloadMacroRequests;
+    if (Date.now() - candidate.createdAtMs <= 30_000) index = 0;
+  }
+  if (index < 0) return null;
+  const [request] = pendingChatgptDownloadMacroRequests.splice(index, 1);
+  return request;
+}
+
+function removePendingChatgptDownloadMacroRequest(requestId) {
+  const target = normalizeString(requestId, "");
+  if (!target) return;
+  pendingChatgptDownloadMacroRequests = pendingChatgptDownloadMacroRequests.filter((request) => request.id !== target);
+}
+
+function urlsEquivalent(left, right) {
+  try {
+    const a = new URL(left);
+    const b = new URL(right);
+    a.hash = "";
+    b.hash = "";
+    return a.toString().replace(/\/+$/, "") === b.toString().replace(/\/+$/, "");
+  } catch {
+    return false;
+  }
+}
+
+function trustedChatgptPageUrl(value) {
+  try {
+    const parsed = new URL(normalizeString(value, ""));
+    return parsed.protocol === "https:" && isAllowedChatgptHost(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function safeDownloadLinkUrl(value) {
+  try {
+    const parsed = new URL(normalizeString(value, ""));
+    if (parsed.protocol !== "https:") return "";
+    if (parsed.username || parsed.password) return "";
+    return parsed.toString();
+  } catch {
+    return "";
+  }
+}
+
+function isLikelyDownloadUrl(value) {
+  try {
+    const parsed = new URL(normalizeString(value, ""));
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password) return false;
+    const host = parsed.hostname.toLowerCase();
+    const pathname = decodeURIComponent(parsed.pathname || "").toLowerCase();
+    const search = parsed.search.toLowerCase();
+    if (host.endsWith("oaiusercontent.com")) return true;
+    if (!isAllowedChatgptHost(host)) return false;
+    if (pathname.includes("/download") || pathname.includes("/backend-api/files/")) return true;
+    if (search.includes("download=") || search.includes("response-content-disposition=attachment")) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveChatgptContextForUrl(url) {
+  const config = await loadConfig();
+  for (const project of config.projects || []) {
+    for (const thread of project.chatThreads || []) {
+      if (!thread?.archived && urlsEquivalent(thread.url, url)) {
+        return {
+          projectId: project.id,
+          threadId: thread.id,
+          url,
+          source: "configured-chatgpt-thread",
+        };
+      }
+    }
+  }
+  return { projectId: "", threadId: "", url, source: "unbound-url" };
+}
+
+function setActiveChatgptProjectThread(project, thread, source = "project-thread") {
+  activeChatgptContext = {
+    projectId: project?.id || "",
+    threadId: thread?.id || "",
+    url: thread?.url || "",
+    source,
+  };
+}
+
+function bindingForChatThread(project, chatThreadId) {
+  const target = normalizeString(chatThreadId, "");
+  if (!target) return null;
+  return (project?.laneBindings || []).find((binding) => (
+    normalizeString(binding?.chatThreadId, "") === target &&
+    normalizeString(binding?.codexThreadRef?.threadId, "")
+  )) || null;
+}
+
+function bindingsForCodexThread(project, codexThreadId) {
+  const target = normalizeString(codexThreadId, "");
+  if (!target) return [];
+  const chatThreads = new Map((project?.chatThreads || [])
+    .filter((thread) => normalizeString(thread?.id, "") && !thread.archived)
+    .map((thread) => [thread.id, thread]));
+  const byChatThreadId = new Map();
+  for (const binding of project?.laneBindings || []) {
+    const bindingCodexThreadId = normalizeString(binding?.codexThreadRef?.threadId, "");
+    const chatThreadId = normalizeString(binding?.chatThreadId, "");
+    if (bindingCodexThreadId !== target || !chatThreadId || !chatThreads.has(chatThreadId)) continue;
+    if (!byChatThreadId.has(chatThreadId)) {
+      byChatThreadId.set(chatThreadId, { binding, chatThread: chatThreads.get(chatThreadId) });
+    }
+  }
+  return [...byChatThreadId.values()];
+}
+
+function renderDownloadMacroMessage(template, values) {
+  const fallback = "GPT review is at {{workspacePath}}";
+  const text = normalizeString(template, fallback);
+  return text
+    .replaceAll("{{workspacePath}}", values.workspacePath || "")
+    .replaceAll("{{relPath}}", values.relPath || "")
+    .replaceAll("{{fileName}}", values.fileName || "");
+}
+
+function chatgptCodexFileReviewScript(payload) {
+  const safePayload = JSON.stringify(payload)
+    .replace(/\\/g, "\\\\")
+    .replace(/[$`]/g, "\\$&")
+    .replace(/</g, "\\u003c");
+  return `
+    (async () => {
+      const payload = ${safePayload};
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const visible = (element) => {
+        if (!element) return false;
+        const style = window.getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+      };
+      const waitFor = async (fn, timeoutMs) => {
+        const started = Date.now();
+        while (Date.now() - started < timeoutMs) {
+          const value = fn();
+          if (value) return value;
+          await sleep(150);
+        }
+        return null;
+      };
+      const decodeBase64 = (value) => Uint8Array.from(atob(value || ""), (char) => char.charCodeAt(0));
+      const files = Array.isArray(payload.files) && payload.files.length
+        ? payload.files
+        : [{
+            fileName: payload.fileName,
+            mimeType: payload.mimeType,
+            contentBase64: payload.contentBase64,
+          }];
+      if (!files.length || files.some((file) => !file || !file.contentBase64)) {
+        return { ok: false, error: "no_files_to_attach", attached: false };
+      }
+      const fileInput = await waitFor(() => {
+        const inputs = [...document.querySelectorAll('input[type="file"]')];
+        return inputs.find((input) => !input.disabled && !input.webkitdirectory) || null;
+      }, 6000);
+      if (!fileInput) return { ok: false, error: "file_input_not_found", attached: false };
+      const dataTransfer = new DataTransfer();
+      for (const fileData of files) {
+        const file = new File([decodeBase64(fileData.contentBase64)], fileData.fileName || "codex-output", {
+          type: fileData.mimeType || "application/octet-stream",
+        });
+        dataTransfer.items.add(file);
+      }
+      fileInput.files = dataTransfer.files;
+      fileInput.dispatchEvent(new Event("input", { bubbles: true }));
+      fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+      await sleep(1200);
+
+      const composer = await waitFor(() => (
+        document.querySelector("#prompt-textarea") ||
+        document.querySelector('textarea[data-testid="prompt-textarea"]') ||
+        [...document.querySelectorAll('[contenteditable="true"]')].find(visible)
+      ), 10000);
+      if (!composer) return { ok: false, error: "composer_not_found", attached: true };
+
+      composer.focus();
+      if (composer instanceof HTMLTextAreaElement || composer instanceof HTMLInputElement) {
+        const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(composer), "value")?.set;
+        if (setter) setter.call(composer, payload.promptText || "");
+        else composer.value = payload.promptText || "";
+        composer.dispatchEvent(new Event("input", { bubbles: true }));
+        composer.dispatchEvent(new Event("change", { bubbles: true }));
+      } else {
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(composer);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        document.execCommand("insertText", false, payload.promptText || "");
+        if (!String(composer.textContent || "").includes(payload.promptText || "")) {
+          composer.textContent = payload.promptText || "";
+          composer.dispatchEvent(new InputEvent("input", {
+            bubbles: true,
+            inputType: "insertText",
+            data: payload.promptText || "",
+          }));
+        }
+      }
+
+      const findSendButton = () => {
+        const preferred = document.querySelector('[data-testid="send-button"], button[aria-label="Send prompt"], button[aria-label="Send message"]');
+        if (preferred) return preferred;
+        return [...document.querySelectorAll("button")].find((button) => {
+          const label = [button.getAttribute("aria-label"), button.title, button.textContent].filter(Boolean).join(" ");
+          return /\\bsend\\b/i.test(label);
+        }) || null;
+      };
+      const sendButton = await waitFor(() => {
+        const button = findSendButton();
+        if (!button || !visible(button)) return null;
+        if (button.disabled || button.getAttribute("aria-disabled") === "true") return null;
+        return button;
+      }, 30000);
+      if (!sendButton) return { ok: false, error: "send_button_unavailable", attached: true };
+      sendButton.click();
+      return { ok: true, attached: true, submitted: true, fileCount: files.length };
+    })();
+  `;
+}
+
+function workspaceDisplayPath(project, relPath) {
+  const rootPath = workspaceRoot(project, repoRoot).replace(/[\\/]+$/, "");
+  const cleanRel = normalizeString(relPath, "").replace(/\\/g, "/").replace(/^\/+/, "");
+  return cleanRel ? `${rootPath}/${cleanRel}` : rootPath;
+}
+
+async function importChatgptDownload(project, macro, hostPath, fileName) {
+  const contentBase64 = await fs.readFile(hostPath, { encoding: "base64" });
+  const result = await requestWorkspace(project, "importFile", {
+    relDir: macro.workspaceRelDir,
+    fileName,
+    contentBase64,
+  }, 90_000);
+  return result;
+}
+
+async function resolveProjectFileReference(projectId, relPath) {
+  const project = await getProjectById(projectId);
+  const requestedRelPath = normalizeString(relPath, "").replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!requestedRelPath) throw new Error("File reference is empty.");
+  const result = await requestWorkspace(project, "resolvePath", { relPath: requestedRelPath }, 10_000);
+  if (!result?.isFile) throw new Error("Selected reference is not a workspace file.");
+  return {
+    project,
+    relPath: normalizeString(result.relPath, requestedRelPath),
+    resolved: result,
+  };
+}
+
+function isMissingFileReferenceError(error) {
+  return /ENOENT|no such file|not found|cannot find/i.test(error?.message || error || "");
+}
+
+function errorMessageText(error, fallback = "unknown error") {
+  const value = error?.message || (typeof error === "string" ? error : error ? String(error) : "");
+  return normalizeString(value, fallback);
+}
+
+async function resolveProjectFileReferenceWithFallback(projectId, relPath, fallbackRelPath = "") {
+  try {
+    return await resolveProjectFileReference(projectId, relPath);
+  } catch (error) {
+    const fallback = normalizeString(fallbackRelPath, "").replace(/\\/g, "/").replace(/^\/+/, "");
+    if (!fallback || !isMissingFileReferenceError(error)) throw error;
+    return resolveProjectFileReference(projectId, fallback);
+  }
+}
+
+async function submitCodexFileBundleToChatgpt(fileTransfers, promptText = "review codex output") {
+  if (!chatgptView || chatgptView.webContents.isDestroyed()) {
+    throw new Error("ChatGPT surface is unavailable.");
+  }
+  const transfers = Array.isArray(fileTransfers) ? fileTransfers : [fileTransfers].filter(Boolean);
+  if (!transfers.length) throw new Error("No files are available to send to ChatGPT.");
+  let currentUrl = null;
+  try {
+    currentUrl = new URL(chatgptView.webContents.getURL() || "");
+  } catch {
+    throw new Error("ChatGPT surface URL is unavailable.");
+  }
+  if (!trustedChatgptPageUrl(currentUrl.toString())) {
+    throw new Error("ChatGPT file handoff is restricted to trusted ChatGPT/OpenAI origins.");
+  }
+  const result = await chatgptView.webContents.executeJavaScript(chatgptCodexFileReviewScript({
+    files: transfers.map((fileTransfer) => ({
+      fileName: normalizeString(fileTransfer?.fileName, "codex-output"),
+      mimeType: normalizeString(fileTransfer?.mimeType, "application/octet-stream"),
+      contentBase64: normalizeString(fileTransfer?.contentBase64, ""),
+    })),
+    promptText: normalizeString(promptText, "review codex output"),
+  }), true);
+  if (!result?.ok) {
+    throw new Error(`ChatGPT review submit failed: ${normalizeString(result?.error, "unknown_error")}`);
+  }
+  return result;
+}
+
+async function submitCodexFileReviewToChatgpt(fileTransfer) {
+  return submitCodexFileBundleToChatgpt([fileTransfer], "review codex output");
+}
+
+async function sendCodexFileToLinkedChatgpt(projectId, codexThreadId, relPath) {
+  const threadId = normalizeString(codexThreadId, "");
+  if (!threadId) throw new Error("Codex thread id is unavailable.");
+  const { project, relPath: resolvedRelPath } = await resolveProjectFileReference(projectId, relPath);
+  const matches = bindingsForCodexThread(project, threadId);
+  if (matches.length < 1) throw new Error("No linked ChatGPT thread was found for this Codex thread.");
+  if (matches.length > 1) throw new Error("More than one linked ChatGPT thread was found for this Codex thread.");
+  const { chatThread } = matches[0];
+  const transfer = await requestWorkspace(project, "readFileTransfer", { relPath: resolvedRelPath }, 90_000);
+  const surfaceResult = await ensureChatgptThreadDisplayed(project, chatThread);
+  const submitResult = await submitCodexFileReviewToChatgpt(transfer);
+  return {
+    ok: true,
+    projectId: project.id,
+    codexThreadId: threadId,
+    chatThreadId: chatThread.id,
+    chatThreadTitle: normalizeString(chatThread.title, chatThread.id),
+    relPath: normalizeString(transfer.relPath, resolvedRelPath),
+    surfaceResult,
+    submitResult,
+  };
+}
+
+function linkedChatgptTargetForProjectStash(project, files) {
+  const threadIds = [...new Set(files
+    .map((file) => normalizeString(file?.codexThreadId, ""))
+    .filter(Boolean))];
+  if (threadIds.length > 1) {
+    throw new Error("Stashed files belong to more than one Codex thread.");
+  }
+  if (threadIds.length === 1) {
+    const matches = bindingsForCodexThread(project, threadIds[0]);
+    if (matches.length < 1) throw new Error("No linked ChatGPT thread was found for this Codex thread.");
+    if (matches.length > 1) throw new Error("More than one linked ChatGPT thread was found for this Codex thread.");
+    return { ...matches[0], codexThreadId: threadIds[0] };
+  }
+  const binding = projectActivationBinding(project);
+  const fallbackThread = primaryReviewThread(project);
+  const chatThread = binding?.chatThreadId
+    ? (project.chatThreads || []).find((thread) => thread.id === binding.chatThreadId && !thread.archived)
+    : (fallbackThread && !fallbackThread.archived ? fallbackThread : null);
+  if (!chatThread) throw new Error("No active linked ChatGPT thread was found for this project.");
+  return {
+    binding: binding || null,
+    chatThread,
+    codexThreadId: normalizeString(binding?.codexThreadRef?.threadId, ""),
+  };
+}
+
+async function sendProjectStashToLinkedChatgpt(payload = {}) {
+  const projectId = normalizeString(payload.projectId, "");
+  const project = await getProjectById(projectId);
+  const files = Array.isArray(payload.files)
+    ? payload.files
+      .map((file) => ({
+        relPath: normalizeString(file?.relPath, "").replace(/\\/g, "/").replace(/^\/+/, ""),
+        codexThreadId: normalizeString(file?.codexThreadId, ""),
+      }))
+      .filter((file) => file.relPath)
+    : [];
+  if (!files.length) throw new Error("Project stash is empty.");
+  if (files.length > 12) throw new Error("Project stash is limited to 12 files per GPT handoff.");
+
+  const seen = new Set();
+  const uniqueFiles = [];
+  for (const file of files) {
+    const dedupeKey = `${file.codexThreadId}::${file.relPath}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    uniqueFiles.push(file);
+  }
+  const transfers = await Promise.all(uniqueFiles.map(async (file) => {
+    const { relPath: resolvedRelPath } = await resolveProjectFileReference(project.id, file.relPath);
+    const transfer = await requestWorkspace(project, "readFileTransfer", { relPath: resolvedRelPath }, 90_000);
+    return {
+      ...transfer,
+      codexThreadId: file.codexThreadId,
+      relPath: normalizeString(transfer.relPath, resolvedRelPath),
+    };
+  }));
+  if (!transfers.length) throw new Error("No stashed files could be read from the workspace.");
+
+  const target = linkedChatgptTargetForProjectStash(project, files);
+  const surfaceResult = await ensureChatgptThreadDisplayed(project, target.chatThread);
+  const submitResult = await submitCodexFileBundleToChatgpt(transfers, payload.message);
+  return {
+    ok: true,
+    projectId: project.id,
+    codexThreadId: target.codexThreadId,
+    chatThreadId: target.chatThread.id,
+    chatThreadTitle: normalizeString(target.chatThread.title, target.chatThread.id),
+    fileCount: transfers.length,
+    relPaths: transfers.map((transfer) => transfer.relPath),
+    surfaceResult,
+    submitResult,
+  };
+}
+
+function sendChatgptDownloadMessageToCodex(project, binding, macro, importResult, fileName) {
+  if (!codexView || codexView.webContents.isDestroyed()) {
+    return { ok: false, error: "Codex surface is unavailable." };
+  }
+  const ref = binding?.codexThreadRef || {};
+  const relPath = normalizeString(importResult?.relPath, "");
+  const text = renderDownloadMacroMessage(macro.messageTemplate, {
+    workspacePath: workspaceDisplayPath(project, relPath),
+    relPath,
+    fileName,
+  });
+  codexView.webContents.send("codex-surface:event", {
+    type: "external-composer-message",
+    source: "chatgpt-download",
+    projectId: project.id,
+    threadId: normalizeString(ref.threadId, ""),
+    sourceHome: normalizeString(ref.sourceHome, ""),
+    sessionFilePath: normalizeString(ref.sessionFilePath, ""),
+    title: normalizeString(ref.titleSnapshot, ""),
+    text,
+    activeTurnDisposition: macro.activeTurnDisposition || "queue",
+    at: nowIso(),
+  });
+  return { ok: true };
+}
+
+async function runChatgptDownloadMacro(savePath, fileName, downloadContext = null, options = {}) {
+  const context = downloadContext || activeChatgptContext || {};
+  if (!context.projectId || !context.threadId) return { activated: false, reason: "unbound_chatgpt_thread" };
+  const project = await getProjectById(context.projectId);
+  const activeThread = (project.chatThreads || []).find((thread) => thread.id === context.threadId && !thread.archived);
+  if (!activeThread) return { activated: false, reason: "chatgpt_thread_not_found" };
+  const binding = bindingForChatThread(project, activeThread.id);
+  if (!binding) return { activated: false, reason: "no_linked_codex_thread" };
+  const macro = normalizeDownloadMacroConfig(project.surfaceBinding?.chatgpt?.downloadMacro);
+  if (!macro.enabled) return { activated: false, reason: "project_macro_disabled" };
+  const importResult = await importChatgptDownload(project, macro, savePath, fileName);
+  let notifyResult = { ok: false, skipped: true };
+  const shouldNotifyCodex = Object.prototype.hasOwnProperty.call(options, "notifyCodex")
+    ? Boolean(options.notifyCodex)
+    : macro.notifyCodex;
+  if (shouldNotifyCodex) {
+    notifyResult = sendChatgptDownloadMessageToCodex(project, binding, macro, importResult, fileName);
+  }
+  return {
+    activated: true,
+    projectId: project.id,
+    chatThreadId: activeThread.id,
+    chatThreadTitle: activeThread.title || "",
+    codexThreadId: binding.codexThreadRef.threadId,
+    importedRelPath: importResult.relPath,
+    notifyResult,
+  };
+}
+
+async function chatgptDownloadMacroAvailability(downloadContext = null) {
+  let context = downloadContext || activeChatgptContext || {};
+  if ((!context.projectId || !context.threadId) && chatgptView && !chatgptView.webContents.isDestroyed()) {
+    context = await resolveChatgptContextForUrl(chatgptView.webContents.getURL() || "");
+  }
+  if (!context.projectId || !context.threadId) return { ok: false, reason: "No linked ChatGPT thread is active." };
+  const project = await getProjectById(context.projectId);
+  const activeThread = (project.chatThreads || []).find((thread) => thread.id === context.threadId && !thread.archived);
+  if (!activeThread) return { ok: false, reason: "Active ChatGPT thread is not configured for this project." };
+  const binding = bindingForChatThread(project, activeThread.id);
+  if (!binding) return { ok: false, reason: "Active ChatGPT thread is not linked to a Codex thread." };
+  const config = configCache || await loadConfig();
+  const downloads = normalizeChatgptDownloadsConfig(config.chatgptDownloads);
+  if (!downloads.enabled) return { ok: false, reason: "ChatGPT download bridge is disabled." };
+  const macro = normalizeDownloadMacroConfig(project.surfaceBinding?.chatgpt?.downloadMacro);
+  if (!macro.enabled) return { ok: false, reason: "Project download macro is disabled." };
+  return {
+    ok: true,
+    project,
+    activeThread,
+    binding,
+    context: { ...context },
+  };
+}
+
+function chatgptElementFromPointClickScript(params = {}) {
+  const x = Math.max(0, Math.round(Number(params.x) || 0));
+  const y = Math.max(0, Math.round(Number(params.y) || 0));
+  return `
+    (() => {
+      const start = document.elementFromPoint(${x}, ${y});
+      if (!start) return { ok: false, error: "no_element_at_pointer" };
+      const candidates = [];
+      const pushCandidate = (node) => {
+        if (!node || candidates.includes(node)) return;
+        candidates.push(node);
+      };
+      pushCandidate(start.closest?.("a[href]"));
+      pushCandidate(start.closest?.("button"));
+      pushCandidate(start.closest?.('[role="button"]'));
+      pushCandidate(start.querySelector?.("a[href]"));
+      pushCandidate(start.querySelector?.("button"));
+      pushCandidate(start.querySelector?.('[role="button"]'));
+      for (let node = start; node && candidates.length < 12; node = node.parentElement) {
+        pushCandidate(node.closest?.("a[href]"));
+        pushCandidate(node.closest?.("button"));
+        pushCandidate(node.closest?.('[role="button"]'));
+        pushCandidate(node.querySelector?.("a[href]"));
+        pushCandidate(node.querySelector?.("button"));
+        pushCandidate(node.querySelector?.('[role="button"]'));
+      }
+      const target = candidates.find((node) => {
+        if (!node) return false;
+        const style = window.getComputedStyle(node);
+        const rect = node.getBoundingClientRect();
+        return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+      });
+      if (!target) return { ok: false, error: "no_clickable_download_target" };
+      const href = target.href || target.getAttribute?.("href") || "";
+      const PointerEventClass = window.PointerEvent || MouseEvent;
+      target.dispatchEvent(new PointerEventClass("pointerdown", { bubbles: true, cancelable: true, view: window }));
+      target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
+      target.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
+      target.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+      return {
+        ok: true,
+        href: href ? new URL(href, location.href).toString() : "",
+        tagName: target.tagName || "",
+        text: String(target.textContent || "").trim().slice(0, 120),
+      };
+    })();
+  `;
+}
+
+async function clickChatgptDownloadTarget(params = {}) {
+  if (!chatgptView || chatgptView.webContents.isDestroyed()) throw new Error("ChatGPT surface is unavailable.");
+  if (!trustedChatgptPageUrl(chatgptView.webContents.getURL() || "")) throw new Error("ChatGPT download action is restricted to trusted ChatGPT/OpenAI origins.");
+  return chatgptView.webContents.executeJavaScript(chatgptElementFromPointClickScript(params), true);
+}
+
+async function startChatgptDownloadMacroFromContext(url, params = {}) {
+  if (!chatgptView || chatgptView.webContents.isDestroyed()) throw new Error("ChatGPT surface is unavailable.");
+  const targetUrl = safeDownloadLinkUrl(url);
+  if (!targetUrl) throw new Error("Download macro requires a safe HTTPS link.");
+  const context = activeChatgptContext || await resolveChatgptContextForUrl(chatgptView.webContents.getURL() || "");
+  const availability = await chatgptDownloadMacroAvailability(context);
+  if (!availability.ok) throw new Error(availability.reason);
+  const request = enqueueChatgptDownloadMacroRequest(targetUrl, availability.context);
+  try {
+    const clickResult = await clickChatgptDownloadTarget(params);
+    if (!clickResult?.ok) throw new Error(clickResult?.error || "download_target_click_failed");
+  } catch (error) {
+    removePendingChatgptDownloadMacroRequest(request.id);
+    throw error;
+  }
+  return {
+    ok: true,
+    url: targetUrl,
+    projectId: availability.project.id,
+    chatThreadId: availability.activeThread.id,
+    codexThreadId: availability.binding.codexThreadRef.threadId,
+  };
+}
+
+async function handleCompletedChatgptDownload(savePath, fileName, downloadContext = null) {
+  try {
+    const macroResult = await runChatgptDownloadMacro(savePath, fileName, downloadContext);
+    emitShellEvent({
+      type: "chatgpt-download-completed",
+      fileName,
+      savePath,
+      macro: macroResult,
+      at: nowIso(),
+    });
+  } catch (error) {
+    emitShellEvent({
+      type: "chatgpt-download-completed",
+      fileName,
+      savePath,
+      macro: { activated: false, error: error.message },
+      at: nowIso(),
+    });
+  }
+}
+
+async function handleCompletedChatgptDownloadForFileView(savePath, fileName, downloadContext = null) {
+  let macroResult = { activated: false, reason: "normal_download" };
+  try {
+    macroResult = await runChatgptDownloadMacro(savePath, fileName, downloadContext, { notifyCodex: false });
+    if (macroResult?.activated && macroResult.importedRelPath && macroResult.projectId) {
+      await openProjectFileInMiddle({
+        projectId: macroResult.projectId,
+        relPath: macroResult.importedRelPath,
+        sourceKind: "chatgpt_download",
+        source: {
+          surface: "chatgpt",
+          threadId: macroResult.chatThreadId || "",
+          threadTitle: macroResult.chatThreadTitle || "",
+        },
+      });
+    } else {
+      await openHostFileInMiddle(savePath, {
+        displayName: fileName,
+        sourceKind: "chatgpt_download_host",
+        source: { surface: "chatgpt" },
+      });
+    }
+    emitShellEvent({
+      type: "chatgpt-download-completed",
+      fileName,
+      savePath,
+      macro: macroResult,
+      fileView: { opened: true },
+      at: nowIso(),
+    });
+  } catch (error) {
+    const fallbackResult = await openHostFileInMiddle(savePath, {
+      displayName: fileName,
+      sourceKind: "chatgpt_download_host",
+      source: { surface: "chatgpt" },
+    }).catch((fallbackError) => ({ ok: false, error: fallbackError.message }));
+    emitShellEvent({
+      type: "chatgpt-download-completed",
+      fileName,
+      savePath,
+      macro: { ...macroResult, activated: false, error: error.message },
+      fileView: { opened: Boolean(fallbackResult?.ok), fallback: "host_file", error: fallbackResult?.error || "" },
+      at: nowIso(),
+    });
+  }
+}
+
+function prepareChatgptDownload(item, options = {}) {
+  const config = configCache || normalizeConfig(defaultConfig());
+  const downloads = normalizeChatgptDownloadsConfig(config.chatgptDownloads);
+  if (!downloads.enabled) return null;
+  const macroRequest = options.macroRequest || null;
+  const downloadContext = macroRequest?.context || activeChatgptContext || null;
+  const fileName = safeHostDownloadFileName(item.getFilename?.() || "download");
+  const savePath = uniqueHostDownloadPathSync(chatgptWindowsDownloadDir({ chatgptDownloads: downloads }), fileName);
+  item.setSavePath(savePath);
+  item.once("done", (_event, state) => {
+    const completedPath = savePath || item.getSavePath?.() || "";
+    if (state !== "completed") {
+      try {
+        if (completedPath) {
+          const stat = fsSync.statSync(completedPath);
+          if (stat.size === 0) fsSync.unlinkSync(completedPath);
+        }
+      } catch {}
+      emitShellEvent({
+        type: "chatgpt-download-failed",
+        fileName,
+        savePath: completedPath,
+        state,
+        at: nowIso(),
+      });
+      return;
+    }
+    if (macroRequest) {
+      handleCompletedChatgptDownload(completedPath, path.basename(completedPath), downloadContext).catch(() => {});
+      return;
+    }
+    handleCompletedChatgptDownloadForFileView(completedPath, path.basename(completedPath), downloadContext).catch(() => {});
+  });
+  emitShellEvent({
+    type: "chatgpt-download-started",
+    fileName,
+    savePath,
+    at: nowIso(),
+  });
+  return { fileName, savePath };
+}
+
+async function resolveChatgptContextMenuLink(params = {}) {
+  const directUrl = safeDownloadLinkUrl(params.linkURL || params.srcURL || "");
+  if (directUrl) return directUrl;
+  if (!chatgptView || chatgptView.webContents.isDestroyed()) return "";
+  if (!trustedChatgptPageUrl(chatgptView.webContents.getURL() || "")) return "";
+  const x = Math.max(0, Math.round(Number(params.x) || 0));
+  const y = Math.max(0, Math.round(Number(params.y) || 0));
+  const script = `
+    (() => {
+      const safeHref = (value) => {
+        try {
+          const url = new URL(String(value || ""), location.href);
+          if (url.protocol !== "https:" || url.username || url.password) return "";
+          return url.toString();
+        } catch {
+          return "";
+        }
+      };
+      const start = document.elementFromPoint(${x}, ${y});
+      if (!start) return "";
+      const candidates = [];
+      const pushCandidate = (node) => {
+        if (!node || candidates.includes(node)) return;
+        candidates.push(node);
+      };
+      pushCandidate(start.closest?.("a[href]"));
+      pushCandidate(start.querySelector?.("a[href]"));
+      for (let node = start; node && candidates.length < 8; node = node.parentElement) {
+        pushCandidate(node.closest?.("a[href]"));
+        pushCandidate(node.querySelector?.("a[href]"));
+      }
+      for (const candidate of candidates) {
+        const href = safeHref(candidate?.href || candidate?.getAttribute?.("href"));
+        if (href) return href;
+      }
+      return "";
+    })();
+  `;
+  try {
+    return safeDownloadLinkUrl(await chatgptView.webContents.executeJavaScript(script, true));
+  } catch {
+    return "";
+  }
+}
+
+async function openChatgptContextMenu(params = {}) {
+  const template = [];
+  const selectionText = normalizeString(params.selectionText, "");
+  const linkUrl = await resolveChatgptContextMenuLink(params);
+  if (selectionText) template.push({ role: "copy", label: "Copy selected text" });
+  if (linkUrl) {
+    if (template.length) template.push({ type: "separator" });
+    template.push({
+      label: "Download file",
+      click: async () => {
+        try {
+          const result = await clickChatgptDownloadTarget(params);
+          if (!result?.ok) throw new Error(result?.error || "download_target_click_failed");
+        } catch (error) {
+          emitShellEvent({ type: "chatgpt-download-failed", fileName: "download", state: "start-failed", error: error.message, at: nowIso() });
+        }
+      },
+    });
+    let availability = { ok: false, reason: "Unable to resolve linked Codex thread." };
+    try {
+      availability = await chatgptDownloadMacroAvailability();
+    } catch (error) {
+      availability = { ok: false, reason: error.message };
+    }
+    template.push({
+      label: availability.ok ? "Download and send to linked Codex" : `Send to Codex unavailable: ${availability.reason}`,
+      enabled: availability.ok,
+      click: async () => {
+        try {
+          await startChatgptDownloadMacroFromContext(linkUrl, params);
+        } catch (error) {
+          emitShellEvent({
+            type: "chatgpt-download-failed",
+            fileName: path.basename(new URL(linkUrl).pathname) || "download",
+            state: "macro-start-failed",
+            error: error.message,
+            at: nowIso(),
+          });
+        }
+      },
+    });
+    template.push({ label: "Copy link URL", click: () => clipboard.writeText(linkUrl) });
+  }
+  if (params.isEditable) {
+    if (template.length) template.push({ type: "separator" });
+    template.push({ role: "paste", label: "Paste" });
+  }
+  if (!template.length) {
+    template.push({ label: "No ChatGPT actions available here", enabled: false });
+  }
+  Menu.buildFromTemplate(template).popup();
+  return true;
 }
 
 function chatgptRecentThreadsScript(limit = 40) {
@@ -3142,6 +4335,38 @@ function chatgptRecentThreadsScript(limit = 40) {
       const origin = location.origin || "https://chatgpt.com";
       const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
       const normalizeText = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+      const optionalProjectRank = (value) => {
+        if (value === null || value === undefined || value === "") return null;
+        const rank = Number(value);
+        return Number.isFinite(rank) ? rank : null;
+      };
+      const monthIndex = {
+        jan: 0,
+        january: 0,
+        feb: 1,
+        february: 1,
+        mar: 2,
+        march: 2,
+        apr: 3,
+        april: 3,
+        may: 4,
+        jun: 5,
+        june: 5,
+        jul: 6,
+        july: 6,
+        aug: 7,
+        august: 7,
+        sep: 8,
+        sept: 8,
+        september: 8,
+        oct: 9,
+        october: 9,
+        nov: 10,
+        november: 10,
+        dec: 11,
+        december: 11,
+      };
+      const displayedDateCandidatePattern = /\\b(today|yesterday|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\b(?:\\s+\\d{1,2}(?:,\\s*\\d{4})?)?/i;
       const visible = (element) => {
         if (!element) return false;
         const style = window.getComputedStyle(element);
@@ -3151,11 +4376,89 @@ function chatgptRecentThreadsScript(limit = 40) {
       const click = (element) => {
         if (!element) return false;
         element.scrollIntoView?.({ block: "center", inline: "center" });
-        element.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, view: window }));
+        const PointerEventClass = window.PointerEvent || MouseEvent;
+        element.dispatchEvent(new PointerEventClass("pointerdown", { bubbles: true, cancelable: true, view: window }));
         element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
         element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
         element.click();
         return true;
+      };
+      const isoDateForLocalDay = (date) => {
+        if (!(date instanceof Date) || Number.isNaN(date.getTime())) return "";
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, "0");
+        const day = String(date.getDate()).padStart(2, "0");
+        return year + "-" + month + "-" + day + "T12:00:00.000Z";
+      };
+      const parseDisplayedThreadDate = (value) => {
+        const label = normalizeText(value);
+        if (!label) return "";
+        const now = new Date();
+        if (/^today$/i.test(label)) return isoDateForLocalDay(now);
+        if (/^yesterday$/i.test(label)) {
+          const yesterday = new Date(now);
+          yesterday.setDate(yesterday.getDate() - 1);
+          return isoDateForLocalDay(yesterday);
+        }
+        const match = label.match(/^([A-Za-z]{3,9})\\s+(\\d{1,2})(?:,\\s*(\\d{4}))?$/);
+        if (!match) return "";
+        const month = monthIndex[match[1].toLowerCase()];
+        const day = Number(match[2]);
+        if (!Number.isInteger(month) || !Number.isFinite(day) || day < 1 || day > 31) return "";
+        let year = match[3] ? Number(match[3]) : now.getFullYear();
+        let parsed = new Date(year, month, day, 12, 0, 0, 0);
+        if (!match[3] && parsed.getTime() - now.getTime() > 36 * 60 * 60 * 1000) {
+          year -= 1;
+          parsed = new Date(year, month, day, 12, 0, 0, 0);
+        }
+        return isoDateForLocalDay(parsed);
+      };
+      const directText = (element) =>
+        Array.from(element?.childNodes || [])
+          .filter((node) => node.nodeType === Node.TEXT_NODE)
+          .map((node) => normalizeText(node.textContent))
+          .filter(Boolean)
+          .join(" ");
+      const threadRowForLink = (link) => {
+        let node = link;
+        let compactFallback = link;
+        for (let depth = 0; node && depth < 7; depth += 1, node = node.parentElement) {
+          const anchors = node.querySelectorAll ? Array.from(node.querySelectorAll('a[href*="/c/"]')) : [];
+          const text = normalizeText(node.textContent);
+          if (anchors.length > 2 || text.length > 1200) continue;
+          compactFallback = node;
+          if (node.querySelector?.("time,[datetime]") || displayedDateCandidatePattern.test(text)) return node;
+        }
+        return compactFallback;
+      };
+      const displayedDateFromThreadRow = (row) => {
+        if (!row) return { label: "", iso: "" };
+        for (const element of Array.from(row.querySelectorAll?.("time,[datetime]") || [])) {
+          const datetime = normalizeText(element.getAttribute("datetime"));
+          if (datetime) {
+            const parsed = new Date(datetime);
+            if (!Number.isNaN(parsed.getTime())) return { label: normalizeText(element.textContent) || datetime, iso: parsed.toISOString() };
+          }
+        }
+        const datePattern = new RegExp(displayedDateCandidatePattern.source, "gi");
+        const candidates = [];
+        for (const element of Array.from(row.querySelectorAll?.("*") || [])) {
+          const pieces = [directText(element), element.getAttribute("aria-label"), element.getAttribute("title")]
+            .map(normalizeText)
+            .filter(Boolean);
+          for (const piece of pieces) {
+            for (const match of piece.matchAll(datePattern)) candidates.push(match[0]);
+          }
+        }
+        if (!candidates.length) {
+          for (const match of normalizeText(row.textContent).matchAll(datePattern)) candidates.push(match[0]);
+        }
+        for (let index = candidates.length - 1; index >= 0; index -= 1) {
+          const label = normalizeText(candidates[index]);
+          const iso = parseDisplayedThreadDate(label);
+          if (iso) return { label, iso };
+        }
+        return { label: "", iso: "" };
       };
 
       const normalizeEntry = (item, extra = {}) => {
@@ -3171,10 +4474,12 @@ function chatgptRecentThreadsScript(limit = 40) {
           externalId,
           title: String(item.title || "Untitled ChatGPT thread"),
           url: externalId ? origin.replace(/\\/$/, "") + "/c/" + encodeURIComponent(externalId) : "",
-          updatedAt: String(item.update_time || ""),
+          updatedAt: String(item.update_time || extra.updatedAt || ""),
           createdAt: String(item.create_time || ""),
           archived: Boolean(item.is_archived),
           snippet: typeof item.snippet === "string" ? item.snippet : "",
+          displayDate: String(extra.displayDate || ""),
+          projectRank: optionalProjectRank(extra.projectRank),
           projectName,
           workspaceId,
           sourceKind,
@@ -3186,6 +4491,9 @@ function chatgptRecentThreadsScript(limit = 40) {
         if (!current) return incoming;
         const incomingUpdated = String(incoming.updatedAt || "");
         const currentUpdated = String(current.updatedAt || "");
+        const incomingWinsUpdatedAt = Boolean(incomingUpdated && incomingUpdated >= currentUpdated);
+        const incomingRank = optionalProjectRank(incoming.projectRank);
+        const currentRank = optionalProjectRank(current.projectRank);
         const merged = {
           ...current,
           ...incoming,
@@ -3194,10 +4502,14 @@ function chatgptRecentThreadsScript(limit = 40) {
               ? incoming.title
               : current.title || incoming.title || "Untitled ChatGPT thread",
           url: incoming.url || current.url,
-          updatedAt: incomingUpdated > currentUpdated ? incomingUpdated : currentUpdated,
+          updatedAt: incomingWinsUpdatedAt ? incomingUpdated : currentUpdated,
           createdAt: current.createdAt || incoming.createdAt || "",
           archived: Boolean(current.archived && incoming.archived),
           snippet: current.snippet || incoming.snippet || "",
+          displayDate: incomingWinsUpdatedAt
+            ? incoming.displayDate || current.displayDate || ""
+            : current.displayDate || incoming.displayDate || "",
+          projectRank: incomingRank !== null ? incomingRank : currentRank,
           projectName: incoming.projectName || current.projectName || "",
           workspaceId: incoming.workspaceId || current.workspaceId || "",
           sourceKind:
@@ -3221,9 +4533,14 @@ function chatgptRecentThreadsScript(limit = 40) {
           if (!item || !item.externalId) continue;
           byId.set(item.externalId, mergeEntries(byId.get(item.externalId), item));
         }
-        const entries = Array.from(byId.values()).sort((a, b) =>
-          String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""))
-        );
+        const entries = Array.from(byId.values()).sort((a, b) => {
+          const updatedDelta = String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""));
+          if (updatedDelta !== 0) return updatedDelta;
+          const aRank = optionalProjectRank(a.projectRank) ?? Number.POSITIVE_INFINITY;
+          const bRank = optionalProjectRank(b.projectRank) ?? Number.POSITIVE_INFINITY;
+          if (aRank !== bRank) return aRank - bRank;
+          return String(a.title || "").localeCompare(String(b.title || ""));
+        });
         const projectEntries = entries.filter((entry) => entry.sourceKind === "project");
         const otherEntries = entries.filter((entry) => entry.sourceKind !== "project");
         return [...projectEntries, ...otherEntries].slice(0, limit);
@@ -3250,7 +4567,7 @@ function chatgptRecentThreadsScript(limit = 40) {
         return dedupe(items);
       };
 
-      const parseLinkEntry = (link, fallbackKind, source, forcedProjectName = "") => {
+      const parseLinkEntry = (link, fallbackKind, source, forcedProjectName = "", extra = {}) => {
         try {
           const url = new URL(link.href, origin);
           const match = url.pathname.match(/\\/c\\/([^/?#]+)/);
@@ -3269,10 +4586,12 @@ function chatgptRecentThreadsScript(limit = 40) {
             externalId: match[1],
             title,
             url: url.toString(),
-            updatedAt: "",
+            updatedAt: String(extra.updatedAt || ""),
             createdAt: "",
             archived: false,
             snippet: "",
+            displayDate: String(extra.displayDate || ""),
+            projectRank: optionalProjectRank(extra.projectRank),
             projectName,
             workspaceId: "",
             sourceKind,
@@ -3340,6 +4659,13 @@ function chatgptRecentThreadsScript(limit = 40) {
         } catch {
           return "";
         }
+      };
+      const projectMatchesEntry = (project, entry) => {
+        if (!project || !entry) return false;
+        const entryProjectKey = projectKeyFromThreadUrl(entry.url);
+        if (project.projectId && entryProjectKey === project.projectId) return true;
+        const projectNameKey = normalizeText(project.projectName).toLowerCase();
+        return Boolean(projectNameKey && normalizeText(entry.projectName).toLowerCase() === projectNameKey);
       };
 
       const ensureSidebarVisible = async () => {
@@ -3429,10 +4755,16 @@ function chatgptRecentThreadsScript(limit = 40) {
                   }
                 }
                 if (!include) continue;
-                const parsed = parseLinkEntry(link, "project", "project-iframe", project.projectName || "");
+                const row = threadRowForLink(link);
+                const displayedDate = displayedDateFromThreadRow(row);
+                const parsed = parseLinkEntry(link, "project", "project-iframe", project.projectName || "", {
+                  updatedAt: displayedDate.iso,
+                  displayDate: displayedDate.label,
+                  projectRank: scopedEntries.length,
+                });
                 if (parsed) scopedEntries.push(parsed);
               }
-              for (const entry of scopedEntries.slice(0, 5)) items.push(entry);
+              for (const entry of scopedEntries.slice(0, 10)) items.push(entry);
             }
           } catch {}
           frame.remove();
@@ -3491,7 +4823,9 @@ function chatgptRecentThreadsScript(limit = 40) {
         const projectNameKey = normalizeText(project.projectName).toLowerCase();
         const knownById = project.projectId && discoveredProjectKeys.has(project.projectId);
         const knownByName = projectNameKey && discoveredProjectNames.has(projectNameKey);
-        return !(knownById || knownByName);
+        const knownRows = baselineProjects.filter((entry) => projectMatchesEntry(project, entry));
+        const needsDisplayedDateRefresh = knownRows.some((entry) => !entry.updatedAt);
+        return !(knownById || knownByName) || needsDisplayedDateRefresh;
       });
       const iframeProjects = missingSidebarProjects.length ? await fromProjectIframes(missingSidebarProjects) : [];
       const combined = dedupe([...baseline, ...iframeProjects]);
@@ -3682,6 +5016,12 @@ function configureGuestSurface(surfaceName, view) {
       });
       return { action: "deny" };
     }
+    if (surfaceName === "chatgpt" && isLikelyDownloadUrl(url)) {
+      setImmediate(() => {
+        if (!contents.isDestroyed()) contents.downloadURL(url);
+      });
+      return { action: "deny" };
+    }
     if (url.startsWith("http://") || url.startsWith("https://")) {
       ensureMiddleWebHost().openLink({
         url,
@@ -3698,7 +5038,26 @@ function configureGuestSurface(surfaceName, view) {
     }
     return { action: "deny" };
   });
+  if (surfaceName === "chatgpt") {
+    contents.on("context-menu", (event, params) => {
+      event.preventDefault();
+      openChatgptContextMenu(params).catch((error) => {
+        emitShellEvent({
+          type: "chatgpt-download-failed",
+          fileName: "download",
+          state: "context-menu-failed",
+          error: error.message,
+          at: nowIso(),
+        });
+      });
+    });
+  }
   contents.on("will-navigate", (event, url) => {
+    if (surfaceName === "chatgpt" && isLikelyDownloadUrl(url)) {
+      event.preventDefault();
+      contents.downloadURL(url);
+      return;
+    }
     if (!isPermittedNavigationUrl(url, surfaceName)) {
       event.preventDefault();
       emitToShell("surface:event", {
@@ -3718,6 +5077,13 @@ function configureGuestSurface(surfaceName, view) {
     });
   });
   contents.on("did-stop-loading", () => {
+    if (surfaceName === "chatgpt") {
+      resolveChatgptContextForUrl(contents.getURL() || "")
+        .then((context) => {
+          activeChatgptContext = context;
+        })
+        .catch(() => {});
+    }
     emitToShell("surface:event", {
       surface: surfaceName,
       type: "loaded",
@@ -3759,6 +5125,31 @@ function configureGuestSurface(surfaceName, view) {
       at: nowIso(),
     });
   });
+}
+
+function configureChatgptDownloadBridge() {
+  if (!chatgptView || chatgptView.webContents.isDestroyed()) return;
+  const webSession = chatgptView.webContents.session;
+  if (!webSession) return;
+  if (chatgptDownloadHandler) {
+    webSession.removeListener("will-download", chatgptDownloadHandler);
+    chatgptDownloadHandler = null;
+  }
+  chatgptDownloadHandler = (event, item) => {
+    try {
+      prepareChatgptDownload(item, { macroRequest: consumeChatgptDownloadMacroRequest(item) });
+    } catch (error) {
+      event.preventDefault();
+      emitShellEvent({
+        type: "chatgpt-download-failed",
+        fileName: item?.getFilename?.() || "download",
+        state: "prepare-failed",
+        error: error.message,
+        at: nowIso(),
+      });
+    }
+  };
+  webSession.on("will-download", chatgptDownloadHandler);
 }
 
 function setShellBoundsToWindow() {
@@ -3810,6 +5201,123 @@ async function readProjectFile(projectId, relPath) {
     workspace: project.workspace,
     workspaceLabel: workspaceLabel(project, repoRoot),
   };
+}
+
+async function openProjectFileInMiddle(payload = {}) {
+  const projectId = normalizeString(payload.projectId, "");
+  const requestedRelPath = normalizeString(payload.relPath, "").replace(/^<|>$/g, "");
+  const displayName = path.basename(requestedRelPath.replace(/\\/g, "/")) || "file";
+  const source = normalizeMiddleFileSource(payload);
+  emitShellEvent({ type: "middle-file-open-requested", at: nowIso() });
+  emitMiddleFileState({
+    fileEventType: "loading",
+    status: "loading",
+    sourceKind: normalizeString(payload.sourceKind, "project_file"),
+    projectId,
+    relPath: requestedRelPath,
+    displayName,
+    source,
+  });
+  try {
+    const project = await getProjectById(projectId);
+    const normalizedRelPath = normalizeProjectFileViewRelPath(project, requestedRelPath);
+    const result = await requestWorkspace(project, "readFile", { relPath: normalizedRelPath });
+    const relPath = normalizeString(result.relPath, requestedRelPath);
+    const binary = Boolean(result.binary);
+    emitMiddleFileState({
+      fileEventType: "loaded",
+      status: binary ? "unsupported" : "ready",
+      sourceKind: normalizeString(payload.sourceKind, "project_file"),
+      projectId,
+      relPath,
+      displayName: path.basename(relPath.replace(/\\/g, "/")) || displayName,
+      mimeType: fileViewMimeType(relPath),
+      size: Number(result.size) || 0,
+      truncated: Boolean(result.truncated),
+      limit: Number(result.limit) || PREVIEW_LIMIT_BYTES,
+      binary,
+      text: binary ? "" : String(result.text || ""),
+      workspaceLabel: workspaceLabel(project, repoRoot),
+      source,
+      openedAt: nowIso(),
+    });
+    return { ok: true, status: binary ? "unsupported" : "ready", projectId, relPath };
+  } catch (error) {
+    emitMiddleFileState({
+      fileEventType: "failed",
+      status: "failed",
+      sourceKind: normalizeString(payload.sourceKind, "project_file"),
+      projectId,
+      relPath: requestedRelPath,
+      displayName,
+      error: error.message || "Unable to open file.",
+      source,
+    });
+    return { ok: false, error: error.message || "Unable to open file." };
+  }
+}
+
+async function readHostFilePreview(hostPath) {
+  const stat = await fs.lstat(hostPath);
+  if (!stat.isFile()) throw new Error("Selected download is not a file.");
+  const byteCount = Math.min(stat.size, PREVIEW_LIMIT_BYTES);
+  const handle = await fs.open(hostPath, "r");
+  try {
+    const buffer = Buffer.alloc(byteCount);
+    const result = await handle.read(buffer, 0, byteCount, 0);
+    const slice = buffer.subarray(0, result.bytesRead);
+    const binary = isProbablyBinaryBuffer(slice);
+    return {
+      size: stat.size,
+      truncated: stat.size > PREVIEW_LIMIT_BYTES,
+      limit: PREVIEW_LIMIT_BYTES,
+      binary,
+      text: binary ? "" : slice.toString("utf8"),
+    };
+  } finally {
+    await handle.close();
+  }
+}
+
+async function openHostFileInMiddle(hostPath, options = {}) {
+  const displayName = safeHostDownloadFileName(options.displayName || path.basename(hostPath));
+  const source = normalizeMiddleFileSource(options);
+  emitShellEvent({ type: "middle-file-open-requested", at: nowIso() });
+  emitMiddleFileState({
+    fileEventType: "loading",
+    status: "loading",
+    sourceKind: normalizeString(options.sourceKind, "host_file"),
+    displayName,
+    source,
+  });
+  try {
+    const preview = await readHostFilePreview(hostPath);
+    emitMiddleFileState({
+      fileEventType: "loaded",
+      status: preview.binary ? "unsupported" : "ready",
+      sourceKind: normalizeString(options.sourceKind, "host_file"),
+      displayName,
+      mimeType: fileViewMimeType(displayName),
+      size: preview.size,
+      truncated: preview.truncated,
+      limit: preview.limit,
+      binary: preview.binary,
+      text: preview.text,
+      source,
+      openedAt: nowIso(),
+    });
+    return { ok: true, status: preview.binary ? "unsupported" : "ready", displayName };
+  } catch (error) {
+    emitMiddleFileState({
+      fileEventType: "failed",
+      status: "failed",
+      sourceKind: normalizeString(options.sourceKind, "host_file"),
+      displayName,
+      error: error.message || "Unable to open downloaded file.",
+      source,
+    });
+    return { ok: false, error: error.message || "Unable to open downloaded file." };
+  }
 }
 
 
@@ -3941,7 +5449,8 @@ async function listThreadAnalytics(projectId, options = {}) {
     projectId: project.id,
     entries,
     analyzerVersion: THREAD_ANALYTICS_ANALYZER_VERSION,
-    dbPath: threadAnalyticsDbPath(),
+    dbPathLabel: THREAD_ANALYTICS_DB_FILE_NAME,
+    dbPathEvidenceKey: stableEvidenceKey("thread-analytics-db", threadAnalyticsDbPath()),
   };
 }
 
@@ -4087,9 +5596,314 @@ async function revealProjectFile(projectId, relPath) {
   return { ...result, opened: false, method: "copied-path" };
 }
 
-async function runWorkspaceCommand(projectId, commandPayload) {
+async function chooseAttachmentFiles(projectId) {
   const project = await getProjectById(projectId);
-  return requestWorkspace(project, "runCommand", commandPayload, 60_000);
+  const result = await dialog.showOpenDialog({
+    title: "Attach files to Codex prompt",
+    properties: ["openFile", "multiSelections"],
+    filters: [
+      { name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"] },
+      { name: "All files", extensions: ["*"] },
+    ],
+  });
+  if (result.canceled || !result.filePaths?.length) return { ok: true, attachments: [], diagnostics: [] };
+  return stageAttachmentPaths(project, result.filePaths, "file_picker", requestWorkspace);
+}
+
+async function stageDroppedAttachments(projectId, paths) {
+  const project = await getProjectById(projectId);
+  return stageAttachmentPaths(project, paths, "drag_drop", requestWorkspace);
+}
+
+async function pasteClipboardImageAttachment(projectId) {
+  const project = await getProjectById(projectId);
+  const image = clipboard.readImage();
+  if (image.isEmpty()) throw new Error("Clipboard does not contain an image.");
+  return stageClipboardImage(project, image.toPNG(), image.getSize(), requestWorkspace);
+}
+
+async function removeComposerAttachmentDraft(projectId, draftId) {
+  const project = await getProjectById(projectId);
+  return removeAttachmentDraft(project, draftId, requestWorkspace);
+}
+
+function safeContextUrl(value) {
+  try {
+    const parsed = new URL(normalizeString(value, ""));
+    if (!["http:", "https:"].includes(parsed.protocol)) return "";
+    if (parsed.username || parsed.password) return "";
+    return parsed.toString();
+  } catch {
+    return "";
+  }
+}
+
+function normalizeContextFileRef(value) {
+  if (!value || typeof value !== "object") return null;
+  const relPath = normalizeString(value.relPath || value.path || value.displayPath, "").replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!relPath) return null;
+  return {
+    relPath,
+    fallbackRelPath: normalizeString(value.fallbackRelPath || value.fallbackPath || "", "").replace(/\\/g, "/").replace(/^\/+/, ""),
+    displayPath: normalizeString(value.displayPath || relPath, ""),
+  };
+}
+
+function selectedContextFileRefs(request = {}) {
+  const refs = Array.isArray(request.selectedFileRefs) ? request.selectedFileRefs : [];
+  const selected = [];
+  const seen = new Set();
+  for (const raw of refs.slice(0, 50)) {
+    const ref = normalizeContextFileRef(raw);
+    if (!ref || seen.has(ref.relPath)) continue;
+    seen.add(ref.relPath);
+    selected.push(ref);
+  }
+  return selected;
+}
+
+function sendContextMenuActionResult(sender, result = {}) {
+  if (!sender || sender.isDestroyed()) return;
+  const authority = senderAuthority(sender);
+  const payload = {
+    type: "context-menu-action-result",
+    schemaVersion: 1,
+    requestId: normalizeString(result.requestId, ""),
+    actionId: normalizeString(result.actionId || result.requestId, ""),
+    actionType: normalizeString(result.actionType, "unknown"),
+    status: normalizeString(result.status, "unknown"),
+    reason: normalizeString(result.reason, ""),
+    mutatedDraftState: Boolean(result.mutatedDraftState),
+    mutatedProjectFiles: false,
+    approvedCodexRequest: false,
+    providerTransportCalls: Number(result.providerTransportCalls) || 0,
+    appServerMutationCalls: 0,
+    codexApprovalCalls: 0,
+    patchApplyCalls: 0,
+    commandRunCalls: 0,
+    rightPaneMutated: Boolean(result.rightPaneMutated),
+    handoffMutationCalls: Number(result.handoffMutationCalls) || 0,
+    attachmentStagingWrites: Number(result.attachmentStagingWrites) || 0,
+    at: nowIso(),
+  };
+  if (authority.surfaceRole === SURFACE_ROLES.TRUSTED_CODEX_SURFACE) {
+    sender.send("codex-surface:event", payload);
+    return;
+  }
+  sender.send("surface:event", { surface: "shell", ...payload });
+}
+
+function sendCodexSurfaceDiagnostic(sender, message) {
+  if (!sender || sender.isDestroyed()) return;
+  const text = typeof message === "string" ? message.trim() : errorMessageText(message);
+  if (!text) return;
+  const authority = senderAuthority(sender);
+  if (authority.surfaceRole === SURFACE_ROLES.TRUSTED_CODEX_SURFACE) {
+    sender.send("codex-surface:event", { type: "attachment-diagnostic", message: text });
+  } else {
+    sender.send("surface:event", { surface: "shell", type: "context-menu-diagnostic", message: text, at: nowIso() });
+  }
+}
+
+function runContextMenuAction(sender, requestId, actionType, options = {}, action) {
+  Promise.resolve()
+    .then(() => action())
+    .then((result = {}) => {
+      sendContextMenuActionResult(sender, {
+        requestId,
+        actionType,
+        status: "completed",
+        ...options,
+        ...result,
+      });
+    })
+    .catch((error) => {
+      if (typeof options.diagnostic === "function") {
+        try {
+          sendCodexSurfaceDiagnostic(sender, options.diagnostic(error));
+        } catch {
+          sendCodexSurfaceDiagnostic(sender, error);
+        }
+      }
+      sendContextMenuActionResult(sender, {
+        requestId,
+        actionType,
+        status: "failed",
+        reason: errorMessageText(error),
+      });
+    });
+}
+
+async function openContextMenu(event, request = {}) {
+  const sender = event.sender;
+  const requestId = normalizeString(request.requestId, "") || crypto.randomUUID();
+  const projectId = normalizeString(request.projectId, "");
+  const targetKind = normalizeString(request.targetKind, "unknown");
+  const selectedTextLength = Math.max(0, Number(request.selectedTextLength) || 0);
+  const selectedTextPreview = normalizeString(request.selectedTextPreview, "").slice(0, 1000);
+  const rawFileRef = normalizeContextFileRef(request.targetFileRef);
+  const fileRef = rawFileRef?.relPath || "";
+  const fallbackFileRef = rawFileRef?.fallbackRelPath || "";
+  const selectedFileRefs = selectedContextFileRefs(request);
+  const stashFileRefs = selectedFileRefs.length > 1
+    ? selectedFileRefs
+    : rawFileRef ? [rawFileRef] : selectedFileRefs;
+  const href = safeContextUrl(request.targetHrefDisplay);
+  const threadId = normalizeString(request.targetThreadId || request.threadId, "");
+  const template = [];
+
+  if (selectedTextLength > 0 || selectedTextPreview) {
+    template.push({ role: "copy", label: "Copy selected text" });
+  } else {
+    template.push({ role: "copy", label: "Copy" });
+  }
+  if (targetKind === "composer") {
+    template.push({ role: "paste", label: "Paste text" });
+    template.push({
+      label: "Paste image",
+      click: () => runContextMenuAction(
+        sender,
+        requestId,
+        "paste_image_into_composer",
+        { mutatedDraftState: true, attachmentStagingWrites: 1, diagnostic: (error) => errorMessageText(error) },
+        async () => {
+          const result = await pasteClipboardImageAttachment(projectId);
+          sender.send("codex-surface:event", { type: "attachment-drafts", action: "add", ...result });
+          return { attachmentStagingWrites: Array.isArray(result?.drafts) ? result.drafts.length : 1 };
+        },
+      ),
+    });
+  }
+  if (href) {
+    template.push({ type: "separator" });
+    template.push({
+      label: "Copy link URL",
+      click: () => runContextMenuAction(sender, requestId, "copy_link_url", {}, async () => {
+        clipboard.writeText(href);
+      }),
+    });
+  }
+  if (targetKind === "thread_title" && threadId) {
+    template.push({ type: "separator" });
+    template.push({
+      label: "Copy thread ID",
+      click: () => runContextMenuAction(sender, requestId, "copy_thread_id", {}, async () => {
+        clipboard.writeText(threadId);
+      }),
+    });
+  }
+  if ((fileRef || stashFileRefs.length) && projectId) {
+    template.push({ type: "separator" });
+    if (fileRef) {
+      template.push({
+        label: "Copy file reference",
+        click: () => runContextMenuAction(sender, requestId, "copy_file_ref", {}, async () => {
+          try {
+            const resolved = await resolveProjectFileReferenceWithFallback(projectId, fileRef, fallbackFileRef);
+            await clipboard.writeText(resolved.relPath || fileRef);
+          } catch (error) {
+            await clipboard.writeText(fileRef);
+            sendCodexSurfaceDiagnostic(sender, `Copied unresolved file reference: ${errorMessageText(error)}`);
+          }
+        }),
+      });
+      template.push({
+        label: "Reveal file",
+        click: () => runContextMenuAction(
+          sender,
+          requestId,
+          "reveal_project_file",
+          { diagnostic: (error) => `Reveal failed: ${errorMessageText(error)}` },
+          async () => {
+            const resolved = await resolveProjectFileReferenceWithFallback(projectId, fileRef, fallbackFileRef);
+            await revealProjectFile(projectId, resolved.relPath || fileRef);
+          },
+        ),
+      });
+    }
+    template.push({
+      label: stashFileRefs.length > 1 ? `Add ${stashFileRefs.length} selected files to Project stash` : "Add to Project stash",
+      click: () => runContextMenuAction(
+        sender,
+        requestId,
+        "add_to_project_stash",
+        { rightPaneMutated: true, diagnostic: (error) => `Project stash add failed: ${errorMessageText(error)}` },
+        async () => {
+          let added = 0;
+          const failed = [];
+          for (const ref of stashFileRefs) {
+            try {
+              const resolved = await resolveProjectFileReferenceWithFallback(projectId, ref.relPath, ref.fallbackRelPath);
+              emitShellEvent({
+                type: "project-stash-add-file",
+                projectId,
+                codexThreadId: threadId,
+                relPath: resolved.relPath || ref.relPath,
+                label: resolved.relPath || ref.relPath,
+                source: stashFileRefs.length > 1 ? "codex-selection-context-menu" : "codex-file-context-menu",
+                at: nowIso(),
+              });
+              added += 1;
+            } catch (error) {
+              failed.push(`${ref.relPath}: ${errorMessageText(error)}`);
+            }
+          }
+          sendCodexSurfaceDiagnostic(
+            sender,
+            failed.length
+              ? `Added ${added} file${added === 1 ? "" : "s"} to Project stash; ${failed.length} failed.`
+              : `Added ${added} file${added === 1 ? "" : "s"} to Project stash.`,
+          );
+          return {
+            status: failed.length ? (added ? "partial" : "failed") : "completed",
+            rightPaneMutated: added > 0,
+            reason: failed.length ? `${failed.length} file(s) failed` : "",
+          };
+        },
+      ),
+    });
+    if (threadId && fileRef) {
+      try {
+        const project = await getProjectById(projectId);
+        const matches = bindingsForCodexThread(project, threadId);
+        if (matches.length === 1) {
+          const targetTitle = normalizeString(matches[0].chatThread?.title, "linked ChatGPT");
+          template.push({
+            label: `Send to ${targetTitle} for review`,
+            click: () => runContextMenuAction(
+              sender,
+              requestId,
+              "send_file_to_linked_chatgpt",
+              { handoffMutationCalls: 1, rightPaneMutated: true, diagnostic: (error) => `ChatGPT review send failed: ${errorMessageText(error)}` },
+              async () => {
+                const resolved = await resolveProjectFileReferenceWithFallback(projectId, fileRef, fallbackFileRef);
+                const result = await sendCodexFileToLinkedChatgpt(projectId, threadId, resolved.relPath || fileRef);
+                sendCodexSurfaceDiagnostic(sender, `Sent ${result.relPath} to linked ChatGPT thread "${result.chatThreadTitle}".`);
+              },
+            ),
+          });
+        } else {
+          template.push({
+            label: matches.length ? "Send to ChatGPT unavailable: multiple linked threads" : "Send to ChatGPT unavailable: no linked thread",
+            enabled: false,
+          });
+        }
+      } catch {
+        template.push({ label: "Send to ChatGPT unavailable: project not found", enabled: false });
+      }
+    }
+  }
+  if (!template.length) return { ok: false, status: "blocked", reason: "No menu items available." };
+  Menu.buildFromTemplate(template).popup();
+  return {
+    ok: true,
+    schemaVersion: 1,
+    type: "context-menu-open-result",
+    requestId,
+    status: "menu_opened",
+    itemCount: template.length,
+    actionResultDelivery: "async_context_menu_action_result_event",
+  };
 }
 
 async function getWorkspaceStatus(projectId) {
@@ -4116,7 +5930,8 @@ function openChatgptSettingsScript() {
       const click = (element) => {
         if (!element) return false;
         element.scrollIntoView?.({ block: "center", inline: "center" });
-        element.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true, view: window }));
+        const PointerEventClass = window.PointerEvent || MouseEvent;
+        element.dispatchEvent(new PointerEventClass("pointerdown", { bubbles: true, cancelable: true, view: window }));
         element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, view: window }));
         element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, view: window }));
         element.click();
@@ -4367,6 +6182,24 @@ async function createWindow() {
     },
   });
 
+  registerWebContentsAuthority(shellView, {
+    surfaceName: "shell",
+    surfaceRole: SURFACE_ROLES.SHELL_RENDERER,
+    reason: "shell-preload",
+  });
+  registerWebContentsAuthority(codexView, {
+    surfaceName: "codex",
+    surfaceRole: SURFACE_ROLES.EXTERNAL_CODEX_URL,
+    codexTrustProfile: CODEX_SURFACE_TRUST_PROFILES.UNKNOWN,
+    codexBridgeProfile: CODEX_SURFACE_BRIDGE_PROFILES.NONE,
+    reason: "codex-surface-not-loaded",
+  });
+  registerWebContentsAuthority(chatgptView, {
+    surfaceName: "chatgpt",
+    surfaceRole: SURFACE_ROLES.CHATGPT_WEB,
+    reason: "chatgpt-webcontents",
+  });
+
   mainWindow.contentView.addChildView(shellView);
   mainWindow.contentView.addChildView(codexView);
   mainWindow.contentView.addChildView(chatgptView);
@@ -4376,6 +6209,7 @@ async function createWindow() {
 
   configureGuestSurface("codex", codexView);
   configureGuestSurface("chatgpt", chatgptView);
+  configureChatgptDownloadBridge();
 
   for (const eventName of ["resize", "resized", "maximize", "unmaximize", "enter-full-screen", "leave-full-screen", "restore"]) {
     mainWindow.on(eventName, () => {
@@ -4414,6 +6248,11 @@ async function createWindow() {
     directSessionStore = null;
     middleWebHost?.dispose();
     middleWebHost = null;
+    if (chatgptDownloadHandler && chatgptView?.webContents && !chatgptView.webContents.isDestroyed()) {
+      chatgptView.webContents.session?.removeListener("will-download", chatgptDownloadHandler);
+    }
+    chatgptDownloadHandler = null;
+    activeChatgptContext = null;
     closeView(codexView);
     closeView(chatgptView);
     closeView(shellView);
@@ -4511,21 +6350,26 @@ ipcMain.handle("codex:reload-runtime", async (_event, options) => {
 });
 
 ipcMain.handle("codex-surface:connect", async (event, payload) => {
+  requireFullCodexSurfaceBridge(event.sender, "codex-surface:connect");
   const requestedConnection = payload?.connection || null;
-  const connection =
-    activeCodexSurfaceConnection &&
-    requestedConnection &&
-    (
-      String(activeCodexSurfaceConnection.wsUrl || "") === String(requestedConnection.wsUrl || "") ||
-      (
-        [DIRECT_FIXTURE_SURFACE_TRANSPORT, DIRECT_LIVE_TEXT_SURFACE_TRANSPORT].includes(normalizeString(activeCodexSurfaceConnection.transport, "")) &&
-        normalizeString(activeCodexSurfaceConnection.transport, "") === normalizeString(requestedConnection.transport, "")
+  const activeTransport = normalizeString(activeCodexSurfaceConnection?.transport, "");
+  const requestedTransport = normalizeString(requestedConnection?.transport, "");
+  const directTransport =
+    activeTransport === DIRECT_FIXTURE_SURFACE_TRANSPORT ||
+    activeTransport === DIRECT_LIVE_TEXT_SURFACE_TRANSPORT;
+  const connection = directTransport
+    ? (
+        requestedTransport === activeTransport
+          ? { ...activeCodexSurfaceConnection, remoteAuth: activeCodexSurfaceConnection.remoteAuth || { mode: "none" } }
+          : null
       )
-    )
-      ? { ...requestedConnection, remoteAuth: activeCodexSurfaceConnection.remoteAuth || { mode: "none" } }
-      : requestedConnection;
+    : {
+        ...validateCodexSurfaceConnectionRequest(activeCodexSurfaceConnection, requestedConnection),
+        remoteAuth: activeCodexSurfaceConnection.remoteAuth || { mode: "none" },
+      };
+  if (!connection) throw new Error("Renderer-supplied direct Codex connection ref is stale or invalid.");
   const session = codexSurfaceSessionFor(event.sender, { connection });
-  const connectionWithProviders = [DIRECT_FIXTURE_SURFACE_TRANSPORT, DIRECT_LIVE_TEXT_SURFACE_TRANSPORT].includes(session.transportKind)
+  const connectionWithProviders = directTransport
     ? connection
     : {
         ...connection,
@@ -4535,18 +6379,29 @@ ipcMain.handle("codex-surface:connect", async (event, payload) => {
         }),
       };
   const connected = await session.connect(connectionWithProviders);
-  return { ...connected, directAuth: { attached: false, reason: "pending_initialize" } };
+  return {
+    connected: true,
+    connection: directTransport ? connected?.connection || connection : publicCodexSurfaceConnection(connection),
+    connectionId: connected?.connectionId || connection.connectionRef,
+    directAuth: directTransport ? { attached: false, reason: "not_app_server_transport" } : { attached: false, reason: "pending_initialize" },
+  };
 });
 
 ipcMain.handle("codex-surface:disconnect", async (event) => {
+  requireFullCodexSurfaceBridge(event.sender, "codex-surface:disconnect");
   const session = codexSurfaceSessionFor(event.sender);
   await session.dispose({ reason: "Renderer requested disconnect." });
   return true;
 });
 
 ipcMain.handle("codex-surface:request", async (event, payload) => {
+  requireFullCodexSurfaceBridge(event.sender, "codex-surface:request");
+  const method = normalizeString(payload?.method, "");
+  const decision = codexClientRequestDecision(method, activeCodexSurfaceConnection?.capabilities || {});
+  if (!decision.ok) {
+    throw new Error(`Codex app-server request method is not authorized: ${method || "<empty>"} (${decision.reason})`);
+  }
   const session = codexSurfaceSessionFor(event.sender);
-  const method = payload?.method;
   const result = await session.request(method, payload?.params || {});
   if (
     method === "initialize" &&
@@ -4558,16 +6413,29 @@ ipcMain.handle("codex-surface:request", async (event, payload) => {
 });
 
 ipcMain.handle("codex-surface:notify", async (event, payload) => {
+  requireFullCodexSurfaceBridge(event.sender, "codex-surface:notify");
+  const method = normalizeString(payload?.method, "");
+  const decision = codexClientNotificationDecision(method, activeCodexSurfaceConnection?.capabilities || {});
+  if (!decision.ok) {
+    throw new Error(`Codex app-server notification method is not authorized: ${method || "<empty>"} (${decision.reason})`);
+  }
   const session = codexSurfaceSessionFor(event.sender);
-  return session.notify(payload?.method, payload?.params || {});
+  return session.notify(method, payload?.params || {});
 });
 
 ipcMain.handle("codex-surface:respond", async (event, payload) => {
+  requireFullCodexSurfaceBridge(event.sender, "codex-surface:respond");
   const session = codexSurfaceSessionFor(event.sender);
-  return session.respond(payload?.key || payload?.id, payload?.result || {});
+  const requestKey = payload?.key || payload?.id || "";
+  const record = session.findServerRequest(requestKey);
+  if (record && CODEX_SURFACE_SENSITIVE_RESPONSE_RISKS.has(record.riskCategory)) {
+    throw new Error("Sensitive Codex requests must be answered from the shell control plane.");
+  }
+  return session.respondServerRequest(requestKey, payload?.result || {});
 });
 
 ipcMain.handle("codex-surface:thread-state", async (event, payload) => {
+  requireFullCodexSurfaceBridge(event.sender, "codex-surface:thread-state");
   if (isStaleSurfaceActivationEpoch(payload?.activationEpoch)) return { ok: false, stale: true };
   const session = codexSurfaceSessionFor(event.sender);
   const state = {
@@ -4628,6 +6496,7 @@ ipcMain.handle("codex-surface:context-management-evidence", async (event, payloa
 });
 
 ipcMain.handle("codex-surface:agent-graph", async (event, payload) => {
+  requireFullCodexSurfaceBridge(event.sender, "codex-surface:agent-graph");
   if (isStaleSurfaceActivationEpoch(payload?.activationEpoch)) return { ok: false, stale: true };
   const session = codexSurfaceSessionFor(event.sender);
   const state = {
@@ -4650,7 +6519,8 @@ ipcMain.handle("codex-surface:agent-graph", async (event, payload) => {
   return { ok: true };
 });
 
-ipcMain.handle("codex-surface:focus-sub-agent", async (_event, payload) => {
+ipcMain.handle("codex-surface:focus-sub-agent", async (event, payload) => {
+  requireFullCodexSurfaceBridge(event.sender, "codex-surface:focus-sub-agent");
   if (isStaleSurfaceActivationEpoch(payload?.activationEpoch)) return { ok: false, stale: true };
   const state = {
     surface: "codex",
@@ -4670,12 +6540,14 @@ ipcMain.handle("codex-surface:focus-sub-agent", async (_event, payload) => {
   return { ok: true };
 });
 
-ipcMain.handle("codex-runtime-preferences:get", async (_event, payload) => {
+ipcMain.handle("codex-runtime-preferences:get", async (event, payload) => {
+  requireFullCodexSurfaceBridge(event.sender, "codex-runtime-preferences:get");
   const config = await loadConfig();
   return { ok: true, ...codexRuntimePreferenceLookup(config, payload || {}) };
 });
 
-ipcMain.handle("codex-runtime-preferences:update", async (_event, payload) => {
+ipcMain.handle("codex-runtime-preferences:update", async (event, payload) => {
+  requireFullCodexSurfaceBridge(event.sender, "codex-runtime-preferences:update");
   return updateCodexRuntimePreferences(payload || {});
 });
 
@@ -4709,12 +6581,14 @@ ipcMain.handle("surface:open-external", async (_event, surfaceName) => {
   const view = surfaceName === "chatgpt" ? chatgptView : codexView;
   if (!view || view.webContents.isDestroyed()) return false;
   const url = view.webContents.getURL();
-  if (!url || url.startsWith("file://")) return false;
-  await shell.openExternal(url);
+  const decision = externalNavigationDecision(url);
+  if (decision.action !== "allow") return false;
+  await shell.openExternal(decision.normalizedUrl);
   return true;
 });
 
-ipcMain.handle("link:open", async (_event, payload) => {
+ipcMain.handle("link:open", async (event, payload) => {
+  requireShellOrTrustedCodex(event.sender, "link:open");
   return ensureMiddleWebHost().openLink(payload || {});
 });
 
@@ -4736,6 +6610,18 @@ ipcMain.handle("middle-web:copy-url", async () => ensureMiddleWebHost().copyUrl(
 
 ipcMain.handle("middle-web:snapshot", async () => ensureMiddleWebHost().snapshot());
 
+ipcMain.handle("middle-web:history", async () => {
+  return { ok: true, entries: ensureMiddleWebHost().history() };
+});
+
+ipcMain.handle("middle-web:open-history-entry", async (_event, payload) => {
+  return ensureMiddleWebHost().openHistoryEntry(payload || {});
+});
+
+ipcMain.handle("middle-web:prune-history", async (_event, payload) => {
+  return ensureMiddleWebHost().pruneHistory(payload || {});
+});
+
 ipcMain.handle("plane-zoom:adjust", async (_event, payload) => {
   return adjustPlaneZoom(normalizeString(payload?.plane, "middle"), payload?.direction);
 });
@@ -4746,21 +6632,15 @@ ipcMain.handle("plane-zoom:set", async (_event, payload) => {
   return setNativePlaneZoom(plane, payload?.zoomFactor);
 });
 
-ipcMain.handle("external:open-url", async (_event, payload) => {
+ipcMain.handle("external:open-url", async (event, payload) => {
+  requireShellOrTrustedCodex(event.sender, "external:open-url");
   const rawUrl = normalizeString(payload?.url, "");
-  try {
-    const parsed = new URL(rawUrl);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      return { ok: false, error: "Only http and https URLs can be opened externally." };
-    }
-    if (parsed.username || parsed.password) {
-      return { ok: false, error: "URLs with embedded credentials cannot be opened externally." };
-    }
-    await shell.openExternal(parsed.toString());
-    return { ok: true, url: parsed.toString() };
-  } catch (error) {
-    return { ok: false, error: error.message || "Invalid URL." };
+  const decision = externalNavigationDecision(rawUrl);
+  if (decision.action !== "allow") {
+    return { ok: false, error: externalNavigationBlockedMessage(decision.reason), reason: decision.reason };
   }
+  await shell.openExternal(decision.normalizedUrl);
+  return { ok: true, url: decision.displayUrl };
 });
 
 ipcMain.handle("clipboard:write-text", async (_event, text) => {
@@ -4776,6 +6656,11 @@ ipcMain.handle("worktree:read-file", async (_event, payload) => {
   return readProjectFile(payload?.projectId, payload?.relPath);
 });
 
+ipcMain.handle("file-view:open-project-file", async (event, payload) => {
+  requireShellOrTrustedCodex(event.sender, "file-view:open-project-file");
+  return openProjectFileInMiddle(payload || {});
+});
+
 
 ipcMain.handle("worktree:list-watched", async (_event, payload) => {
   return listWatchedArtifacts(payload?.projectId);
@@ -4785,7 +6670,8 @@ ipcMain.handle("codex-threads:list", async (_event, payload) => {
   return listCodexThreads(payload?.projectId);
 });
 
-ipcMain.handle("codex-thread:transcript", async (_event, payload) => {
+ipcMain.handle("codex-thread:transcript", async (event, payload) => {
+  requireFullCodexSurfaceBridge(event.sender, "codex-thread:transcript");
   return readCodexThreadTranscript(
     payload?.projectId,
     payload?.threadId,
@@ -4816,8 +6702,38 @@ ipcMain.handle("thread-analytics:detail", async (_event, payload) => {
   return getThreadAnalyticsDashboard(payload?.projectId, payload?.threadKey);
 });
 
-ipcMain.handle("worktree:reveal-file", async (_event, payload) => {
+ipcMain.handle("worktree:reveal-file", async (event, payload) => {
+  requireShellOrTrustedCodex(event.sender, "worktree:reveal-file");
   return revealProjectFile(payload?.projectId, payload?.relPath);
+});
+
+ipcMain.handle("attachments:choose-files", async (event, payload) => {
+  requireShellOrTrustedCodex(event.sender, "attachments:choose-files");
+  return chooseAttachmentFiles(payload?.projectId);
+});
+
+ipcMain.handle("attachments:stage-drop", async (event, payload) => {
+  requireShellOrTrustedCodex(event.sender, "attachments:stage-drop");
+  return stageDroppedAttachments(payload?.projectId, payload?.paths);
+});
+
+ipcMain.handle("attachments:paste-image", async (event, payload) => {
+  requireShellOrTrustedCodex(event.sender, "attachments:paste-image");
+  return pasteClipboardImageAttachment(payload?.projectId);
+});
+
+ipcMain.handle("attachments:remove-draft", async (event, payload) => {
+  requireShellOrTrustedCodex(event.sender, "attachments:remove-draft");
+  return removeComposerAttachmentDraft(payload?.projectId, payload?.draftId);
+});
+
+ipcMain.handle("context-menu:open", async (event, payload) => {
+  requireShellOrTrustedCodex(event.sender, "context-menu:open");
+  return openContextMenu(event, payload || {});
+});
+
+ipcMain.handle("project-stash:send-to-chatgpt", async (_event, payload) => {
+  return sendProjectStashToLinkedChatgpt(payload || {});
 });
 
 ipcMain.handle("chatgpt:select-thread", async (_event, payload) => {
