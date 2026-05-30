@@ -53,7 +53,7 @@ function validateSourceRefs(refs = []) {
 }
 
 function validateMetaSession(value) {
-  return isPlainObject(value)
+  return Boolean(isPlainObject(value)
     && value.schemaVersion === DIRECT_META_SESSION_SCHEMA
     && normalizeString(value.metaSessionId, "")
     && DIRECT_META_SESSION_STATUSES.includes(value.status)
@@ -61,11 +61,11 @@ function validateMetaSession(value) {
     && value.sessionEpoch >= 1
     && validateSourceRefs(value.sourceRefs)
     && value.rawTextIncluded === false
-    && hasDigest(value);
+    && hasDigest(value));
 }
 
 function validateExecutionContextRegistry(value) {
-  return isPlainObject(value)
+  return Boolean(isPlainObject(value)
     && value.schemaVersion === DIRECT_EXECUTION_CONTEXT_REGISTRY_SCHEMA
     && normalizeString(value.registryId, "")
     && normalizeString(value.metaSessionId, "")
@@ -79,11 +79,11 @@ function validateExecutionContextRegistry(value) {
       && context.rawPathIncluded === false
       && context.rawChatGptUrlIncluded === false)
     && normalizeString(value.sourceDigest, "").startsWith("sha256:")
-    && hasDigest(value);
+    && hasDigest(value));
 }
 
 function validateRunContract(value) {
-  return isPlainObject(value)
+  return Boolean(isPlainObject(value)
     && value.schemaVersion === DIRECT_RUN_CONTRACT_SCHEMA
     && normalizeString(value.contractId, "")
     && normalizeString(value.metaSessionId, "")
@@ -100,11 +100,11 @@ function validateRunContract(value) {
     && isPlainObject(value.evidencePolicy)
     && validateSourceRefs(value.sourceRefs)
     && value.rawTextIncluded === false
-    && hasDigest(value);
+    && hasDigest(value));
 }
 
 function validateStateObjectDescriptor(value) {
-  return isPlainObject(value)
+  return Boolean(isPlainObject(value)
     && value.schemaVersion === DIRECT_META_STATE_OBJECT_DESCRIPTOR_SCHEMA
     && normalizeString(value.id, "")
     && DIRECT_META_OWNER_KINDS.includes(value.ownerKind)
@@ -125,11 +125,11 @@ function validateStateObjectDescriptor(value) {
     && Array.isArray(value.mutationRoutes)
     && Array.isArray(value.validationRefs)
     && value.rawTextIncluded === false
-    && hasDigest(value);
+    && hasDigest(value));
 }
 
 function validateHobObligationStatus(value) {
-  return isPlainObject(value)
+  return Boolean(isPlainObject(value)
     && value.schemaVersion === DIRECT_HOB_OBLIGATION_STATUS_SCHEMA
     && normalizeString(value.rowId, "")
     && normalizeString(value.ownerStateObjectId, "")
@@ -141,11 +141,11 @@ function validateHobObligationStatus(value) {
     && DIRECT_HOB_READINESS_POSTURES.includes(value.readinessPosture)
     && normalizeString(value.rendererSafeSummary, "")
     && value.rawTextIncluded === false
-    && hasDigest(value);
+    && hasDigest(value));
 }
 
 function validateTransitionClaim(value) {
-  return isPlainObject(value)
+  return Boolean(isPlainObject(value)
     && value.schemaVersion === DIRECT_TRANSITION_CLAIM_SCHEMA
     && normalizeString(value.transitionClaimId, "")
     && normalizeString(value.metaSessionId, "")
@@ -174,11 +174,11 @@ function validateTransitionClaim(value) {
     && Array.isArray(value.useBridge.forbiddenPromotions)
     && value.enforceableInThisPr === false
     && value.rawTextIncluded === false
-    && hasDigest(value);
+    && hasDigest(value));
 }
 
 function validateUpstreamDiscriminatorRow(value) {
-  return isPlainObject(value)
+  return Boolean(isPlainObject(value)
     && value.schemaVersion === DIRECT_UPSTREAM_DISCRIMINATOR_ROW_SCHEMA
     && normalizeString(value.rowId, "")
     && normalizeString(value.ownerStateObjectId, "")
@@ -189,11 +189,11 @@ function validateUpstreamDiscriminatorRow(value) {
     && Array.isArray(value.counterfactualProbeRefs)
     && ["proposed", "observed", "specified_by_contract", "rejected", "blocked"].includes(value.status)
     && value.rawTextIncluded === false
-    && hasDigest(value);
+    && hasDigest(value));
 }
 
 function validateBrlReplayLockManifest(value) {
-  return isPlainObject(value)
+  return Boolean(isPlainObject(value)
     && value.schemaVersion === DIRECT_BRL_REPLAY_LOCK_MANIFEST_SCHEMA
     && normalizeString(value.lockId, "")
     && normalizeString(value.ownerSurface, "")
@@ -208,32 +208,32 @@ function validateBrlReplayLockManifest(value) {
     && value.failureMeaning === "protected_projection_changed_not_product_truth"
     && (!value.validationCommandRef || value.validationCommandRef.rawCommandIncluded === false)
     && value.rawTextIncluded === false
-    && hasDigest(value);
+    && hasDigest(value));
 }
 
 function validateCurrentPointerSet(value) {
-  return isPlainObject(value)
+  return Boolean(isPlainObject(value)
     && value.schemaVersion === DIRECT_META_CURRENT_POINTER_SET_SCHEMA
     && normalizeString(value.pointerSetId, "")
     && ["global", "surface", "meta_session", "execution_context"].includes(value.scopeKind)
     && normalizeString(value.scopeId, "")
     && (!value.currentLedgerHead || normalizeString(value.currentLedgerHead, "").startsWith("sha256:"))
-    && hasDigest(value, "pointerSetDigest");
+    && hasDigest(value, "pointerSetDigest"));
 }
 
 function validateAttemptFailure(value) {
-  return isPlainObject(value)
+  return Boolean(isPlainObject(value)
     && value.schemaVersion === DIRECT_META_ATTEMPT_FAILURE_SCHEMA
     && normalizeString(value.attemptId, "")
     && DIRECT_META_ATTEMPT_KINDS.includes(value.attemptKind)
     && isMetaSessionBlockerCode(value.blockerCode)
     && value.currentPointersChanged === false
     && value.rawTextIncluded === false
-    && hasDigest(value);
+    && hasDigest(value));
 }
 
 function validateLedgerEvent(value) {
-  return isPlainObject(value)
+  return Boolean(isPlainObject(value)
     && value.schemaVersion === DIRECT_META_SESSION_EVENT_SCHEMA
     && normalizeString(value.eventId, "")
     && Number.isInteger(value.sequence)
@@ -243,29 +243,29 @@ function validateLedgerEvent(value) {
     && validateArtifactRefs(value.artifactRefs)
     && normalizeString(value.eventBodyDigest, "").startsWith("sha256:")
     && normalizeString(value.eventDigest, "").startsWith("sha256:")
-    && normalizeString(value.ledgerHeadDigest, "").startsWith("sha256:");
+    && normalizeString(value.ledgerHeadDigest, "").startsWith("sha256:"));
 }
 
 function validateLedgerManifest(value) {
-  return isPlainObject(value)
+  return Boolean(isPlainObject(value)
     && value.schemaVersion === DIRECT_META_SESSION_EVENT_LEDGER_MANIFEST_SCHEMA
     && normalizeString(value.metaSessionId, "")
     && Number.isInteger(value.eventCount)
     && Number.isInteger(value.lastSequence)
     && typeof value.corrupted === "boolean"
-    && hasDigest(value);
+    && hasDigest(value));
 }
 
 function validateIndex(value) {
-  return isPlainObject(value)
+  return Boolean(isPlainObject(value)
     && value.schemaVersion === DIRECT_META_SESSION_INDEX_SCHEMA
     && Array.isArray(value.sessionRefs)
     && validateArtifactRefs(value.sessionRefs)
-    && hasDigest(value);
+    && hasDigest(value));
 }
 
 function validateStatusProjection(value) {
-  return isPlainObject(value)
+  return Boolean(isPlainObject(value)
     && value.schemaVersion === DIRECT_META_STATUS_PROJECTION_SCHEMA
     && normalizeString(value.projectionId, "")
     && normalizeString(value.sourceDigest, "").startsWith("sha256:")
@@ -279,7 +279,7 @@ function validateStatusProjection(value) {
     && value.rawTranscriptIncluded === false
     && value.rawPathIncluded === false
     && value.rawChatGptUrlIncluded === false
-    && value.rawProviderPayloadIncluded === false;
+    && value.rawProviderPayloadIncluded === false);
 }
 
 function validateDirectMetaSessionArtifact(value) {

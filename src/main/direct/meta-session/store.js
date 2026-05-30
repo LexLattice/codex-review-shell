@@ -65,9 +65,19 @@ function normalizePolicy(value, name) {
   return isPlainObject(value) ? value : { policyId: `${name}@fixture`, mode: "diagnostic" };
 }
 
+function defaultMetaSessionRootDir() {
+  try {
+    const electron = require("electron");
+    if (electron?.app && typeof electron.app.getPath === "function") {
+      return path.join(electron.app.getPath("userData"), ".direct-meta-session");
+    }
+  } catch {}
+  return path.join(process.cwd(), ".direct-meta-session");
+}
+
 class DirectMetaSessionStore {
   constructor(options = {}) {
-    this.rootDir = path.resolve(options.rootDir || path.join(process.cwd(), ".direct-meta-session"));
+    this.rootDir = path.resolve(options.rootDir || defaultMetaSessionRootDir());
     this.now = options.now || Date.now;
     this.randomId = options.randomId || normalizeId;
     this.ensureRoot();
@@ -139,6 +149,13 @@ class DirectMetaSessionStore {
   }
 
   writeValidatedArtifact(metaSessionId, artifactKind, folder, id, artifact, eventKind, options = {}) {
+    if (!options.sessionFile && !this.readMetaSession(metaSessionId)) {
+      return this.recordAttemptFailure(metaSessionId, {
+        attemptKind: options.attemptKind || artifactKind,
+        blockerCode: "session_missing",
+        rendererSafeSummary: `${artifactKind} write blocked: session missing`,
+      });
+    }
     try {
       assertMetaSessionRendererSafe(artifact);
       if (!validateDirectMetaSessionArtifact(artifact)) throw Object.assign(new Error("schema_invalid"), { code: "schema_invalid" });
@@ -346,22 +363,25 @@ class DirectMetaSessionStore {
     if (contract.status !== "locked") return this.recordAttemptFailure(metaSessionId, { attemptKind: "contract", blockerCode: "transition_not_allowed", rendererSafeSummary: "Only locked contracts may activate." });
     const nextEpoch = Number(session.sessionEpoch || 1) + 1;
     const active = withArtifactDigest("run_contract", { ...contract, status: "active", sessionEpoch: nextEpoch, activatedAt: nowIso(this.now) });
-    const updatedSession = withArtifactDigest("meta_session", {
-      ...session,
-      activeContractId: contractId,
-      activeContractVersion: active.contractVersion,
-      sessionEpoch: nextEpoch,
-      updatedAt: nowIso(this.now),
-    });
-    writeJsonAtomic(this.sessionPath(metaSessionId), updatedSession);
-    return this.writeValidatedArtifact(metaSessionId, "contract", ARTIFACT_FOLDERS.contract, contractId, active, "run_contract_activated", {
+    const result = this.writeValidatedArtifact(metaSessionId, "contract", ARTIFACT_FOLDERS.contract, contractId, active, "run_contract_activated", {
       updatePointers: true,
       currentContractId: contractId,
       currentContractVersion: active.contractVersion,
       currentSessionEpoch: nextEpoch,
-      currentContextRegistryId: updatedSession.contextRegistryId,
+      currentContextRegistryId: session.contextRegistryId,
       attemptKind: "contract",
     });
+    if (result.ok) {
+      const updatedSession = withArtifactDigest("meta_session", {
+        ...session,
+        activeContractId: contractId,
+        activeContractVersion: active.contractVersion,
+        sessionEpoch: nextEpoch,
+        updatedAt: nowIso(this.now),
+      });
+      writeJsonAtomic(this.sessionPath(metaSessionId), updatedSession);
+    }
+    return result;
   }
 
   recordHobObligationStatus(metaSessionId, input = {}) {

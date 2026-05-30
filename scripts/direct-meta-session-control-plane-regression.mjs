@@ -20,6 +20,7 @@ const {
   genericDigest,
   scanMetaSessionRawExposure,
   validateDirectMetaSessionArtifact,
+  validateMetaSession,
 } = require("../src/main/direct/meta-session");
 
 function assert(condition, message) {
@@ -293,6 +294,26 @@ await runCase("session_epoch_law_is_stable", () => {
   assert(session.sessionEpoch === 2 && session.activeContractId === contractId, "epoch law drifted");
 });
 
+await runCase("activation_failure_does_not_update_session_file", () => {
+  const txn = store.createMetaSession({ metaSessionId: "meta_session_activation_txn" });
+  const draft = store.draftRunContract(txn.artifact.metaSessionId, { contractId: "contract_activation_txn" });
+  const lock = store.lockRunContract(txn.artifact.metaSessionId, draft.artifact.contractId);
+  const contractPath = path.join(rootDir, "sessions", txn.artifact.metaSessionId, "artifacts", "run-contracts", `${lock.artifact.contractId}.json`);
+  const poisoned = readJson(contractPath);
+  poisoned.rawProviderPayloadIncluded = true;
+  writeJson(contractPath, poisoned);
+  const activation = store.activateRunContract(txn.artifact.metaSessionId, lock.artifact.contractId);
+  const session = store.readMetaSession(txn.artifact.metaSessionId);
+  assert(!activation.ok && activation.blockerCode === "raw_exposure_blocked", "poisoned activation should block");
+  assert(!session.activeContractId && session.sessionEpoch === 1, "session file changed after failed activation");
+});
+
+await runCase("missing_session_writer_returns_session_missing_without_orphan", () => {
+  const missing = store.draftRunContract("missing_meta_session", { contractId: "orphan_contract" });
+  assert(!missing.ok && missing.blockerCode === "session_missing", "missing session did not block");
+  assert(!fs.existsSync(path.join(rootDir, "sessions", "missing_meta_session")), "orphan session directory was created");
+});
+
 await runCase("transition_claim_recorded_before_mutation_routes", () => {
   const result = store.recordTransitionClaim(metaSessionId, validTransitionClaimInput());
   assert(result.ok && result.artifact.enforceableInThisPr === false, "transition claim failed");
@@ -431,6 +452,18 @@ await runCase("ledger_hash_chain_corruption_blocks_pointer_advance", () => {
   assert(projection.health === "ledger_corrupt", "corrupt ledger did not degrade projection");
 });
 
+await runCase("malformed_ledger_json_degrades_without_throwing", () => {
+  const corruptRoot = createTempRoot();
+  const corruptStore = makeStore(corruptRoot, { now: Date.UTC(2026, 4, 30, 13, 10, 0) });
+  const corruptCreated = corruptStore.createMetaSession({ metaSessionId: "meta_session_malformed" });
+  assert(corruptCreated.ok, "malformed fixture setup failed");
+  fs.writeFileSync(firstEventPath(corruptRoot, "meta_session_malformed"), "{not json", "utf8");
+  const verification = corruptStore.verifyLedger("meta_session_malformed");
+  assert(!verification.ok, "malformed ledger verified");
+  const projection = corruptStore.buildStatusProjection("meta_session_malformed");
+  assert(projection.health === "ledger_corrupt", "malformed ledger did not degrade projection");
+});
+
 await runCase("ledger_head_digest_chain_detects_reordered_events", () => {
   const verification = store.verifyLedger(metaSessionId);
   assert(verification.ok && verification.events.length > 2, "ledger setup insufficient");
@@ -459,6 +492,11 @@ await runCase("node_check_covers_every_new_meta_session_file", () => {
     assert(syntax.includes(`src/main/direct/meta-session/${file}`), `syntax missing ${file}`);
   }
   assert(packageJson.scripts["check:script-syntax"].includes("scripts/direct-meta-session-control-plane-regression.mjs"), "script syntax missing regression");
+});
+
+await runCase("validators_return_strict_booleans", () => {
+  assert(validateMetaSession({}) === false, "validator did not return strict false");
+  assert(validateMetaSession(created.artifact) === true, "validator did not return strict true");
 });
 
 await runCase("no_ipc_modules_touched_in_phase_1a", () => {

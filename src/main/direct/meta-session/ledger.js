@@ -36,7 +36,7 @@ function readJsonFile(filePath) {
   try {
     return JSON.parse(fs.readFileSync(filePath, "utf8"));
   } catch (error) {
-    if (error?.code === "ENOENT") return null;
+    if (error?.code === "ENOENT" || error instanceof SyntaxError) return null;
     throw error;
   }
 }
