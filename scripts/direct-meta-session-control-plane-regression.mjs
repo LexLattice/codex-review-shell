@@ -863,6 +863,23 @@ await runCase("read_only_latest_status_does_not_create_missing_store", () => {
   assert(!fs.existsSync(missingRoot), "read-only status created a store root");
 });
 
+await runCase("status_projection_reader_limits_artifact_hydration", () => {
+  const entries = store.readArtifactList(metaSessionId, "attempts", 2);
+  assert(entries.length <= 2, "bounded artifact reader ignored limit");
+  assert(store.artifactFileCount(metaSessionId, "attempts") >= entries.length, "artifact count below bounded read length");
+});
+
+await runCase("available_meta_session_summaries_tolerate_malformed_refs", () => {
+  const summaries = store.availableMetaSessionSummaries({
+    sessionRefs: [
+      null,
+      {},
+      { artifactId: "meta_session_safe_summary", artifactDigest: genericDigest({ ok: true }) },
+    ],
+  });
+  assert(summaries.length === 1 && summaries[0].metaSessionId === "meta_session_safe_summary", "malformed refs were not ignored safely");
+});
+
 await runCase("status_projection_actionability_false", () => {
   const projection = store.buildStatusProjection(metaSessionId);
   assert(projection.actionability.actionable === false && projection.actionability.allowedActions.length === 0, "projection actionable");
@@ -903,6 +920,7 @@ await runCase("phase_1e_ui_and_ipc_are_readonly_status_only", () => {
   }
   assert(preload.includes("getDirectMetaSessionStatus"), "preload missing read-only meta-session status bridge");
   assert(main.includes("direct-meta-session:status"), "main missing read-only meta-session status handler");
+  assert(main.includes("meta_session_status_unavailable"), "main missing degraded startup fallback");
   assert(!main.includes("direct-meta-session:dispatch") && !preload.includes("dispatchDirectMetaSession"), "mutation-capable meta-session IPC exposed");
   assert(renderer.includes("actionability=false"), "renderer status text does not expose non-actionability");
 });

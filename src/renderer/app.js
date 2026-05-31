@@ -2857,10 +2857,10 @@ function renderDirectMetaSessionStatus() {
   if (els.directMetaSessionRoutes) {
     els.directMetaSessionRoutes.textContent = "";
     const routes = status.routeSummary || {};
-    appendMetaSessionMetric(els.directMetaSessionRoutes, "Proposed", String(routes.proposed || 0), "route proposal artifacts");
-    appendMetaSessionMetric(els.directMetaSessionRoutes, "Accepted", String(routes.accepted || 0), "human-approved route artifacts");
-    appendMetaSessionMetric(els.directMetaSessionRoutes, "Dispatched", String(routes.dispatched || 0), "recorded dispatch artifacts; no runtime authority");
-    appendMetaSessionMetric(els.directMetaSessionRoutes, "Blocked", String(routes.dispatchBlocked || 0), "stale dispatch blockers");
+    appendMetaSessionMetric(els.directMetaSessionRoutes, "Recent proposed", String(routes.proposed || 0), "recent route proposal artifacts");
+    appendMetaSessionMetric(els.directMetaSessionRoutes, "Recent accepted", String(routes.accepted || 0), "recent human-approved route artifacts");
+    appendMetaSessionMetric(els.directMetaSessionRoutes, "Recent dispatched", String(routes.dispatched || 0), "recent dispatch artifacts; no runtime authority");
+    appendMetaSessionMetric(els.directMetaSessionRoutes, "Recent blocked", String(routes.dispatchBlocked || 0), "recent stale dispatch blockers");
   }
   if (els.directMetaSessionEvidence) {
     const selected = status.selectedMetaSession?.metaSessionId || "none";

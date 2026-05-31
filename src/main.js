@@ -31,7 +31,11 @@ const { DirectSessionStore } = require("./main/direct/session/session-store");
 const { DirectThreadStore } = require("./main/direct/thread/thread-store");
 const { DirectThreadWorkbenchController } = require("./main/direct/thread/thread-workbench-controller");
 const { DirectImportController } = require("./main/direct/import/import-controller");
-const { DirectMetaSessionStore, assertMetaSessionRendererSafe } = require("./main/direct/meta-session");
+const {
+  DirectMetaSessionStore,
+  assertMetaSessionRendererSafe,
+  buildDirectMetaSessionStatusProjection,
+} = require("./main/direct/meta-session");
 const {
   DIRECT_IMPLEMENTATION_PROOF_RUNS_ROOT_NAME,
   DirectImplementationProofEvidenceStore,
@@ -1870,23 +1874,57 @@ function ensureDirectMetaSessionStore() {
 }
 
 function buildDirectMetaSessionStatusForProject(project, options = {}) {
-  const projection = ensureDirectMetaSessionStore().readLatestStatusProjection({
-    metaSessionId: options?.metaSessionId,
-  });
-  const status = {
-    ...projection,
-    projectId: normalizeString(project?.id, ""),
-    projectBindingDigest: project ? stableDigest({
-      projectId: project.id,
-      codexBinding: project.surfaceBinding?.codex || {},
-    }) : "",
-    actionability: {
-      actionable: false,
-      allowedActions: [],
-    },
-  };
-  assertMetaSessionRendererSafe(status);
-  return status;
+  const projectId = normalizeString(project?.id, "");
+  const projectBindingDigest = project ? stableDigest({
+    projectId: project.id,
+    codexBinding: project.surfaceBinding?.codex || {},
+  }) : "";
+  try {
+    const projection = ensureDirectMetaSessionStore().readLatestStatusProjection({
+      metaSessionId: options?.metaSessionId,
+    });
+    const status = {
+      ...projection,
+      projectId,
+      projectBindingDigest,
+      actionability: {
+        actionable: false,
+        allowedActions: [],
+      },
+    };
+    assertMetaSessionRendererSafe(status);
+    return status;
+  } catch {
+    const status = {
+      ...buildDirectMetaSessionStatusProjection({
+        metaSessionId: normalizeString(options?.metaSessionId, ""),
+        health: "degraded",
+        ledgerStatus: { ok: false, ledgerHeadDigest: "", events: [] },
+        currentPointers: null,
+        sessionDir: "",
+        details: {
+          summaryRows: [
+            { label: "Session", value: "unavailable", state: "missing" },
+            { label: "Status", value: "read-only", state: "ok" },
+          ],
+          routeSummary: { total: 0, recentWindowCount: 0, proposed: 0, accepted: 0, dispatched: 0, dispatchBlocked: 0, latest: [] },
+          guardDecisionSummary: { total: 0, recentWindowCount: 0, allowShadow: 0, denyShadow: 0, askHumanShadow: 0, reclassifyShadow: 0, stopShadow: 0 },
+          attemptFailureSummary: { total: 0, recentWindowCount: 0, latestBlockerCodes: ["status_projection_unavailable"] },
+          availableMetaSessions: [],
+          rendererSafe: true,
+        },
+      }),
+      projectId,
+      projectBindingDigest,
+      unavailableReason: "meta_session_status_unavailable",
+      actionability: {
+        actionable: false,
+        allowedActions: [],
+      },
+    };
+    assertMetaSessionRendererSafe(status);
+    return status;
+  }
 }
 
 function directThreadStoreStatus() {
