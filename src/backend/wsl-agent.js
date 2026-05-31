@@ -96,23 +96,28 @@ function isClosedPipeError(error) {
   return ["EPIPE", "ERR_STREAM_DESTROYED", "ERR_STREAM_WRITE_AFTER_END"].includes(error?.code);
 }
 
+function requestExitCode(code = 0) {
+  if (code !== 0 || process.exitCode === undefined) process.exitCode = code;
+}
+
 function scheduleProcessExit(code = 0, delayMs = STDIN_CLOSE_EXIT_GRACE_MS) {
+  requestExitCode(code);
   if (shutdownTimer) return;
-  process.exitCode = code;
   shutdownTimer = setTimeout(() => {
-    process.exit(code);
+    process.exit(process.exitCode ?? code);
   }, delayMs);
   shutdownTimer.unref?.();
 }
 
 function requestShutdown(code = 0) {
   stdinClosed = true;
+  requestExitCode(code);
   for (const child of activeChildProcesses) {
     terminateChild(child);
   }
   if (!forceShutdownTimer) {
     forceShutdownTimer = setTimeout(() => {
-      process.exit(process.exitCode || code);
+      process.exit(process.exitCode ?? code);
     }, STDIN_CLOSE_FORCE_EXIT_MS);
     forceShutdownTimer.unref?.();
   }
@@ -2541,11 +2546,13 @@ async function main() {
 }
 
 process.on("uncaughtException", (error) => {
-  if (!sendEvent("uncaught-exception", { error: error.message, stack: error.stack })) process.exit(1);
+  sendEvent("uncaught-exception", { error: error.message, stack: error.stack });
+  requestShutdown(1);
 });
 
 process.on("unhandledRejection", (error) => {
-  if (!sendEvent("unhandled-rejection", { error: error?.message || String(error), stack: error?.stack })) process.exit(1);
+  sendEvent("unhandled-rejection", { error: error?.message || String(error), stack: error?.stack });
+  requestShutdown(1);
 });
 
 main().catch((error) => {
