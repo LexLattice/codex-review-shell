@@ -81,13 +81,66 @@ const root = path.resolve(argv.root || process.cwd());
 const workspaceKind = argv["workspace-kind"] || "local";
 const projectId = argv["project-id"] || "unknown-project";
 const sessionId = `agent_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`;
+const STDIN_CLOSE_EXIT_GRACE_MS = 250;
+const STDIN_CLOSE_FORCE_EXIT_MS = 2000;
+
+let activeRequests = 0;
+let stdinClosed = false;
+let outputClosed = false;
+let shutdownTimer = null;
+let forceShutdownTimer = null;
+
+function isClosedPipeError(error) {
+  return ["EPIPE", "ERR_STREAM_DESTROYED", "ERR_STREAM_WRITE_AFTER_END"].includes(error?.code);
+}
+
+function scheduleProcessExit(code = 0, delayMs = STDIN_CLOSE_EXIT_GRACE_MS) {
+  if (shutdownTimer) return;
+  process.exitCode = code;
+  shutdownTimer = setTimeout(() => {
+    process.exit(code);
+  }, delayMs);
+  shutdownTimer.unref?.();
+}
+
+function requestShutdown(code = 0) {
+  stdinClosed = true;
+  if (!forceShutdownTimer) {
+    forceShutdownTimer = setTimeout(() => {
+      process.exit(process.exitCode || code);
+    }, STDIN_CLOSE_FORCE_EXIT_MS);
+    forceShutdownTimer.unref?.();
+  }
+  if (activeRequests === 0) scheduleProcessExit(code);
+}
+
+process.stdout.on("error", (error) => {
+  outputClosed = true;
+  requestShutdown(isClosedPipeError(error) ? 0 : 1);
+});
+
+process.stderr.on("error", (error) => {
+  requestShutdown(isClosedPipeError(error) ? 0 : 1);
+});
 
 function send(message) {
-  process.stdout.write(`${JSON.stringify(message)}\n`);
+  if (outputClosed) return false;
+  try {
+    process.stdout.write(`${JSON.stringify(message)}\n`, (error) => {
+      if (!error) return;
+      outputClosed = true;
+      requestShutdown(isClosedPipeError(error) ? 0 : 1);
+    });
+    return true;
+  } catch (error) {
+    outputClosed = true;
+    requestShutdown(isClosedPipeError(error) ? 0 : 1);
+    return false;
+  }
 }
 
 function sendEvent(type, payload = {}) {
-  send({ event: type, sessionId, at: new Date().toISOString(), ...payload });
+  return send({ event: type, sessionId, at: new Date().toISOString(), ...payload });
 }
 
 function normalizeRelPath(relPath) {
@@ -2408,12 +2461,16 @@ async function handleRequest(method, params = {}) {
 }
 
 async function handleLine(line) {
+  if (stdinClosed) return;
   if (!line.trim()) return;
+  activeRequests += 1;
   let request;
   try {
     request = JSON.parse(line);
   } catch (error) {
     send({ error: { message: `Invalid JSON: ${error.message}` } });
+    activeRequests -= 1;
+    if (stdinClosed && activeRequests === 0) requestShutdown();
     return;
   }
   const id = request.id;
@@ -2422,6 +2479,9 @@ async function handleLine(line) {
     send({ id, result });
   } catch (error) {
     send({ id, error: { message: error.message, stack: error.stack } });
+  } finally {
+    activeRequests -= 1;
+    if (stdinClosed && activeRequests === 0) requestShutdown();
   }
 }
 
@@ -2451,19 +2511,19 @@ async function main() {
     });
   });
   rl.on("close", () => {
-    // Do not force-exit immediately; allow in-flight async handlers to flush replies.
+    requestShutdown();
   });
 }
 
 process.on("uncaughtException", (error) => {
-  sendEvent("uncaught-exception", { error: error.message, stack: error.stack });
+  if (!sendEvent("uncaught-exception", { error: error.message, stack: error.stack })) process.exit(1);
 });
 
 process.on("unhandledRejection", (error) => {
-  sendEvent("unhandled-rejection", { error: error?.message || String(error), stack: error?.stack });
+  if (!sendEvent("unhandled-rejection", { error: error?.message || String(error), stack: error?.stack })) process.exit(1);
 });
 
 main().catch((error) => {
-  sendEvent("fatal", { error: error.message, stack: error.stack });
+  if (!sendEvent("fatal", { error: error.message, stack: error.stack })) process.exit(1);
   process.exit(1);
 });

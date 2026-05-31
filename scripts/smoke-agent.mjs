@@ -82,4 +82,55 @@ if (!matches.some((entry) => entry.relPath === "README.md")) {
 }
 
 if (failed) process.exit(1);
+
+const brokenPipeChild = spawn(process.execPath, [agentPath, "--root", appRoot, "--workspace-kind", "local", "--project-id", "smoke-broken-stdout"], {
+  cwd: appRoot,
+  stdio: ["pipe", "pipe", "pipe"],
+});
+let brokenPipeBuffer = "";
+let brokenPipeReady = false;
+const brokenPipeReadyPromise = new Promise((resolve) => {
+  brokenPipeChild.stdout.setEncoding("utf8");
+  brokenPipeChild.stdout.on("data", (chunk) => {
+    brokenPipeBuffer += chunk;
+    let index = brokenPipeBuffer.indexOf("\n");
+    while (index >= 0) {
+      const line = brokenPipeBuffer.slice(0, index).trim();
+      brokenPipeBuffer = brokenPipeBuffer.slice(index + 1);
+      if (line) {
+        const message = JSON.parse(line);
+        if (message.event === "ready") {
+          brokenPipeReady = true;
+          resolve();
+        }
+      }
+      index = brokenPipeBuffer.indexOf("\n");
+    }
+  });
+});
+brokenPipeChild.stderr.resume();
+await Promise.race([
+  brokenPipeReadyPromise,
+  new Promise((resolve) => setTimeout(resolve, 2000)),
+]);
+if (!brokenPipeReady) {
+  failed = true;
+  brokenPipeChild.kill();
+  console.error("Broken-stdout lifecycle smoke did not observe ready event.");
+} else {
+  brokenPipeChild.stdout.destroy();
+  brokenPipeChild.stdin.write("{not-json}\n");
+  brokenPipeChild.stdin.end();
+  const exited = await Promise.race([
+    once(brokenPipeChild, "exit").then(() => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), 3000)),
+  ]);
+  if (!exited) {
+    failed = true;
+    brokenPipeChild.kill();
+    console.error("Agent did not exit after stdout reader closed and stdin ended.");
+  }
+}
+
+if (failed) process.exit(1);
 console.log("Workspace backend agent smoke passed.");
