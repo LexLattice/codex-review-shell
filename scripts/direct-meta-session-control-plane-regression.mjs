@@ -526,6 +526,44 @@ await runCase("transition_guard_context_digest_mismatch_denies_shadow", () => {
   assert(result.artifact.blockerCodes.includes("context_digest_mismatch"), "context mismatch blocker missing");
 });
 
+await runCase("transition_guard_stale_instruction_package_digest_asks_human_shadow", () => {
+  const rewrite = store.recordInstructionPackage(metaSessionId, {
+    packageId: instructionPackageId,
+    roleId: "worker_adversarial_phase",
+    targetContextId: "context_a",
+    omissionLedgerIds: [omissionLedgerId],
+    authoritySummary: ["rewritten package with same id"],
+    forbiddenActions: ["worker_launch", "provider_transport", "runtime_enforce", "new_forbidden_action"],
+    outputArtifactSchemaRef: "phase_worker_artifact@1",
+  });
+  assert(rewrite.ok, "instruction package rewrite fixture failed");
+  const result = store.recordTransitionGuardDecision(metaSessionId, {
+    guardInputId,
+    guardDecisionId: "transition_guard_decision_stale_package_digest",
+  });
+  assert(result.ok, "stale package digest decision should record");
+  assert(result.artifact.decision === "ask_human_shadow", "stale package digest did not ask human in shadow");
+  assert(result.artifact.reasonCodes.includes("instruction_package_digest_mismatch"), "stale package digest reason missing");
+  assert(result.artifact.blockerCodes.includes("required_evidence_missing"), "stale package digest blocker missing");
+});
+
+await runCase("transition_guard_input_rejects_invalid_instruction_package", () => {
+  const packagePath = path.join(rootDir, "sessions", metaSessionId, "artifacts", "instruction-packages", `${instructionPackageId}.json`);
+  const corrupted = readJson(packagePath);
+  corrupted.rawCompiledPromptIncluded = true;
+  writeJson(packagePath, corrupted);
+  const result = store.recordTransitionGuardInput(metaSessionId, {
+    guardInputId: "transition_guard_input_invalid_package",
+    transitionKind: "cross_context_route",
+    contextRegistryId: "context_registry_fixture",
+    sourceContextId: "context_a",
+    targetContextId: "context_b",
+    instructionPackageId,
+    transitionClaimIds: [guardTransitionClaimId],
+  });
+  assert(!result.ok && result.blockerCode === "schema_invalid", "invalid instruction package should block guard input");
+});
+
 await runCase("transition_guard_missing_instruction_package_asks_human_shadow", () => {
   const missingPackageRoot = createTempRoot();
   const missingPackageStore = makeStore(missingPackageRoot, { now: Date.UTC(2026, 4, 30, 12, 30, 0) });

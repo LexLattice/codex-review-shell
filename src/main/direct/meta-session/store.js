@@ -522,9 +522,11 @@ class DirectMetaSessionStore {
     const contractId = normalizeString(input.contractId, session.activeContractId);
     const contract = contractId ? this.readContract(metaSessionId, contractId) : null;
     if (!contract) return this.recordAttemptFailure(metaSessionId, { attemptKind: "transition_guard", blockerCode: "contract_missing", rendererSafeSummary: "Transition guard input requires a contract." });
+    if (!validateDirectMetaSessionArtifact(contract)) return this.recordAttemptFailure(metaSessionId, { attemptKind: "transition_guard", blockerCode: "schema_invalid", rendererSafeSummary: "Transition guard input contract invalid." });
     const contextRegistryId = normalizeString(input.contextRegistryId, session.contextRegistryId);
     const contextRegistry = contextRegistryId ? this.readContextRegistry(metaSessionId, contextRegistryId) : null;
     if (!contextRegistry) return this.recordAttemptFailure(metaSessionId, { attemptKind: "transition_guard", blockerCode: "context_missing", rendererSafeSummary: "Transition guard input requires a context registry." });
+    if (!validateDirectMetaSessionArtifact(contextRegistry)) return this.recordAttemptFailure(metaSessionId, { attemptKind: "transition_guard", blockerCode: "schema_invalid", rendererSafeSummary: "Transition guard input context registry invalid." });
     const sourceContextId = normalizeString(input.sourceContextId, "");
     const targetContextId = normalizeString(input.targetContextId, "");
     const sourceContext = contextRegistry.contexts?.find((context) => context.contextId === sourceContextId);
@@ -533,15 +535,17 @@ class DirectMetaSessionStore {
     const packageId = normalizeString(input.instructionPackageId, "");
     const instructionPackage = packageId ? this.readInstructionPackage(metaSessionId, packageId) : null;
     if (!instructionPackage) return this.recordAttemptFailure(metaSessionId, { attemptKind: "transition_guard", blockerCode: "required_evidence_missing", rendererSafeSummary: "Transition guard input requires an instruction package." });
+    if (!validateDirectMetaSessionArtifact(instructionPackage)) return this.recordAttemptFailure(metaSessionId, { attemptKind: "transition_guard", blockerCode: "schema_invalid", rendererSafeSummary: "Transition guard input instruction package invalid." });
     const transitionClaimRefs = [];
     for (const claimId of Array.isArray(input.transitionClaimIds) ? input.transitionClaimIds : []) {
       const claim = readJsonFile(this.artifactPath(metaSessionId, ARTIFACT_FOLDERS.transition_claim, claimId));
       if (!claim) return this.recordAttemptFailure(metaSessionId, { attemptKind: "transition_guard", blockerCode: "required_evidence_missing", rendererSafeSummary: "Transition guard input transition claim missing." });
+      if (!validateDirectMetaSessionArtifact(claim)) return this.recordAttemptFailure(metaSessionId, { attemptKind: "transition_guard", blockerCode: "schema_invalid", rendererSafeSummary: "Transition guard input transition claim invalid." });
       transitionClaimRefs.push(artifactRefFromArtifact("transition_claim", claim, this.artifactSlot(metaSessionId, ARTIFACT_FOLDERS.transition_claim, claimId)));
     }
     const guardInputId = normalizeId(input.guardInputId, "transition_guard_input");
-    const expectedContractVersion = Number(input.expectedContractVersion || contract.contractVersion);
-    const expectedSessionEpoch = Number(input.expectedSessionEpoch || contract.sessionEpoch);
+    const expectedContractVersion = Number(input.expectedContractVersion ?? contract.contractVersion);
+    const expectedSessionEpoch = Number(input.expectedSessionEpoch ?? contract.sessionEpoch);
     const expectedSourceDigest = normalizeString(input.expectedSourceContextDigest, sourceContext.contextDigest);
     const expectedTargetDigest = normalizeString(input.expectedTargetContextDigest, targetContext.contextDigest);
     const contractRef = artifactRefFromArtifact("contract", contract, this.artifactSlot(metaSessionId, ARTIFACT_FOLDERS.contract, contractId));
@@ -599,11 +603,16 @@ class DirectMetaSessionStore {
     const blockerCodes = [];
     const evidenceRefs = [artifactRefFromArtifact("transition_guard_input", guardInput, this.artifactSlot(metaSessionId, ARTIFACT_FOLDERS.transition_guard_input, guardInputId))];
     const contract = this.readContract(metaSessionId, guardInput.contractRef.artifactId);
-    if (!contract || !validateDirectMetaSessionArtifact(contract)) {
+    const isContractValid = Boolean(contract && validateDirectMetaSessionArtifact(contract));
+    if (!isContractValid) {
       reasons.push("contract_missing_or_invalid");
       blockerCodes.push("contract_missing");
     } else {
       evidenceRefs.push(artifactRefFromArtifact("contract", contract, this.artifactSlot(metaSessionId, ARTIFACT_FOLDERS.contract, contract.contractId)));
+      if (contract.digest !== guardInput.contractRef.artifactDigest) {
+        reasons.push("contract_digest_mismatch");
+        blockerCodes.push("contract_digest_mismatch");
+      }
       if (contract.status !== "active" || session.activeContractId !== contract.contractId) {
         reasons.push("contract_not_active");
         blockerCodes.push("contract_digest_mismatch");
@@ -620,6 +629,10 @@ class DirectMetaSessionStore {
       blockerCodes.push("context_missing");
     } else {
       evidenceRefs.push(artifactRefFromArtifact("context_registry", contextRegistry, this.artifactSlot(metaSessionId, ARTIFACT_FOLDERS.context_registry, contextRegistry.registryId)));
+      if (contextRegistry.digest !== guardInput.contextRegistryRef.artifactDigest) {
+        reasons.push("context_registry_digest_mismatch");
+        blockerCodes.push("context_digest_mismatch");
+      }
       const sourceContext = contextRegistry.contexts.find((context) => context.contextId === guardInput.sourceContext.contextId);
       const targetContext = contextRegistry.contexts.find((context) => context.contextId === guardInput.targetContext.contextId);
       if (!sourceContext || !targetContext) {
@@ -637,7 +650,11 @@ class DirectMetaSessionStore {
       blockerCodes.push("required_evidence_missing");
     } else {
       evidenceRefs.push(artifactRefFromArtifact("instruction_package", instructionPackage, this.artifactSlot(metaSessionId, ARTIFACT_FOLDERS.instruction_package, instructionPackage.packageId)));
-      if (contract && (instructionPackage.contractId !== contract.contractId || Number(instructionPackage.sessionEpoch) !== Number(contract.sessionEpoch))) {
+      if (instructionPackage.digest !== guardInput.instructionPackageRef.artifactDigest) {
+        reasons.push("instruction_package_digest_mismatch");
+        blockerCodes.push("required_evidence_missing");
+      }
+      if (isContractValid && (instructionPackage.contractId !== contract.contractId || Number(instructionPackage.sessionEpoch) !== Number(contract.sessionEpoch))) {
         reasons.push("instruction_package_contract_mismatch");
         blockerCodes.push("required_evidence_missing");
       }
