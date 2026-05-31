@@ -32,6 +32,11 @@ const { DirectThreadStore } = require("./main/direct/thread/thread-store");
 const { DirectThreadWorkbenchController } = require("./main/direct/thread/thread-workbench-controller");
 const { DirectImportController } = require("./main/direct/import/import-controller");
 const {
+  DirectMetaSessionStore,
+  assertMetaSessionRendererSafe,
+  buildDirectMetaSessionStatusProjection,
+} = require("./main/direct/meta-session");
+const {
   DIRECT_IMPLEMENTATION_PROOF_RUNS_ROOT_NAME,
   DirectImplementationProofEvidenceStore,
 } = require("./main/direct/probes/implementation-proof-evidence-store");
@@ -249,6 +254,7 @@ let directSessionStore = null;
 let directThreadStore = null;
 let directThreadWorkbenchController = null;
 let directImportController = null;
+let directMetaSessionStore = null;
 let directLiveProbeEvidenceStore = null;
 let directImplementationProofEvidenceStore = null;
 let directFixtureController = null;
@@ -337,6 +343,10 @@ function directLiveProbeEvidenceRootDir() {
 
 function directImplementationProofRunsRootDir() {
   return path.join(app.getPath("userData"), DIRECT_IMPLEMENTATION_PROOF_RUNS_ROOT_NAME);
+}
+
+function directMetaSessionRootDir() {
+  return path.join(app.getPath("userData"), ".direct-meta-session");
 }
 
 function tempFilePath(targetPath) {
@@ -1852,6 +1862,69 @@ function ensureDirectThreadWorkbenchController() {
     liveTextController: () => ensureDirectLiveTextController(),
   });
   return directThreadWorkbenchController;
+}
+
+function ensureDirectMetaSessionStore() {
+  if (directMetaSessionStore) return directMetaSessionStore;
+  directMetaSessionStore = new DirectMetaSessionStore({
+    rootDir: directMetaSessionRootDir(),
+    ensureRoot: false,
+  });
+  return directMetaSessionStore;
+}
+
+function buildDirectMetaSessionStatusForProject(project, options = {}) {
+  const projectId = normalizeString(project?.id, "");
+  const projectBindingDigest = project ? stableDigest({
+    projectId: project.id,
+    codexBinding: project.surfaceBinding?.codex || {},
+  }) : "";
+  try {
+    const projection = ensureDirectMetaSessionStore().readLatestStatusProjection({
+      metaSessionId: options?.metaSessionId,
+    });
+    const status = {
+      ...projection,
+      projectId,
+      projectBindingDigest,
+      actionability: {
+        actionable: false,
+        allowedActions: [],
+      },
+    };
+    assertMetaSessionRendererSafe(status);
+    return status;
+  } catch {
+    const status = {
+      ...buildDirectMetaSessionStatusProjection({
+        metaSessionId: normalizeString(options?.metaSessionId, ""),
+        health: "degraded",
+        ledgerStatus: { ok: false, ledgerHeadDigest: "", events: [] },
+        currentPointers: null,
+        sessionDir: "",
+        details: {
+          summaryRows: [
+            { label: "Session", value: "unavailable", state: "missing" },
+            { label: "Status", value: "read-only", state: "ok" },
+          ],
+          routeSummary: { total: 0, recentWindowCount: 0, proposed: 0, accepted: 0, dispatched: 0, dispatchBlocked: 0, latest: [] },
+          guardDecisionSummary: { total: 0, recentWindowCount: 0, allowShadow: 0, denyShadow: 0, askHumanShadow: 0, reclassifyShadow: 0, stopShadow: 0 },
+          attemptFailureSummary: { total: 0, recentWindowCount: 0, latestBlockerCodes: ["status_projection_unavailable"] },
+          availableMetaSessions: [],
+          rendererSafe: true,
+        },
+      }),
+      projectId,
+      projectBindingDigest,
+      unavailableReason: "meta_session_status_unavailable",
+      actionability: {
+        actionable: false,
+        allowedActions: [],
+      },
+    };
+    assertMetaSessionRendererSafe(status);
+    return status;
+  }
 }
 
 function directThreadStoreStatus() {
@@ -6284,6 +6357,7 @@ ipcMain.handle("config:load", async () => {
     defaultWorkspace,
     defaultCodexRuntime: defaultCodexRuntimeForWorkspace(defaultWorkspace),
     directRuntimeStatus: selectedProject ? buildDirectRuntimeStatusForProject(selectedProject) : null,
+    directMetaSessionStatus: selectedProject ? buildDirectMetaSessionStatusForProject(selectedProject) : null,
     allowNonChatgptUrls: allowNonChatgptUrls(),
   };
 });
@@ -6825,6 +6899,11 @@ ipcMain.handle("direct-ui:policy-readonly-view", async (_event, payload) => {
   const project = await getProjectById(payload?.projectId);
   const runtimeStatus = buildDirectRuntimeStatusForProject(project);
   return buildDirectPolicyReadOnlyView({ project, runtimeStatus });
+});
+
+ipcMain.handle("direct-meta-session:status", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return buildDirectMetaSessionStatusForProject(project, payload || {});
 });
 
 ipcMain.handle("direct-runtime:select-text-only", async (_event, payload) => {

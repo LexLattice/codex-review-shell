@@ -85,6 +85,8 @@ contextBridge.exposeInMainWorld("workspaceShell", {
   readDirectImplementationOperationHistory: (projectId, options = {}) =>
     ipcRenderer.invoke("direct-ui:operation-history", { ...options, projectId }),
   getDirectImplementationPolicyView: (projectId) => ipcRenderer.invoke("direct-ui:policy-readonly-view", { projectId }),
+  getDirectMetaSessionStatus: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-meta-session:status", { ...options, projectId }),
   setDirectRuntimePath: (projectId, runtimePath, options = {}) =>
     ipcRenderer.invoke("direct-runtime:set-path", { ...options, projectId, runtimePath }),
   selectDirectTextOnlyRuntime: (projectId, options = {}) =>

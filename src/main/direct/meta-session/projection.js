@@ -20,6 +20,7 @@ function countJsonFiles(directory) {
 }
 
 function artifactCount(sessionDir, child) {
+  if (!sessionDir) return 0;
   return countJsonFiles(path.join(sessionDir, "artifacts", child));
 }
 
@@ -27,6 +28,7 @@ function buildDirectMetaSessionStatusProjection(input = {}) {
   const sessionDir = input.sessionDir || "";
   const currentPointers = input.currentPointers || null;
   const ledgerStatus = input.ledgerStatus || {};
+  const details = input.details || {};
   const counts = {
     contexts: artifactCount(sessionDir, "execution-context-registries"),
     contracts: artifactCount(sessionDir, "run-contracts"),
@@ -48,6 +50,7 @@ function buildDirectMetaSessionStatusProjection(input = {}) {
     currentPointerDigest: currentPointers?.pointerSetDigest || "",
     ledgerHeadDigest: ledgerStatus.ledgerHeadDigest || "",
     counts,
+    details,
   });
   const projection = {
     schemaVersion: DIRECT_META_STATUS_PROJECTION_SCHEMA,
@@ -56,9 +59,15 @@ function buildDirectMetaSessionStatusProjection(input = {}) {
     generatedAt: nowIso(input.now || Date.now),
     sourceDigest,
     ledgerHeadDigest: normalizeString(ledgerStatus.ledgerHeadDigest, ""),
-    health: ledgerStatus.ok === false ? "ledger_corrupt" : "ok",
+    health: input.health || (ledgerStatus.ok === false ? "ledger_corrupt" : "ok"),
     currentPointers: currentPointers || undefined,
     counts,
+    summaryRows: Array.isArray(details.summaryRows) ? details.summaryRows : [],
+    selectedMetaSession: details.selectedMetaSession || undefined,
+    routeSummary: details.routeSummary || undefined,
+    guardDecisionSummary: details.guardDecisionSummary || undefined,
+    attemptFailureSummary: details.attemptFailureSummary || undefined,
+    availableMetaSessions: details.availableMetaSessions || undefined,
     capabilities: {
       statusRead: true,
       mutationIpcAvailable: false,

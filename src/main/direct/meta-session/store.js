@@ -85,12 +85,21 @@ function defaultMetaSessionRootDir() {
   return path.join(process.cwd(), ".direct-meta-session");
 }
 
+function countBy(items = [], field) {
+  const counts = {};
+  for (const item of items) {
+    const key = normalizeString(item?.[field], "unknown");
+    counts[key] = Number(counts[key] || 0) + 1;
+  }
+  return counts;
+}
+
 class DirectMetaSessionStore {
   constructor(options = {}) {
     this.rootDir = path.resolve(options.rootDir || defaultMetaSessionRootDir());
     this.now = options.now || Date.now;
     this.randomId = options.randomId || normalizeId;
-    this.ensureRoot();
+    if (options.ensureRoot !== false) this.ensureRoot();
   }
 
   ensureRoot() {
@@ -140,6 +149,42 @@ class DirectMetaSessionStore {
 
   artifactPath(metaSessionId, folder, id) {
     return path.join(this.sessionDir(metaSessionId), "artifacts", folder, `${safeSlotPart(id)}.json`);
+  }
+
+  artifactDir(metaSessionId, folder) {
+    return path.join(this.sessionDir(metaSessionId), "artifacts", folder);
+  }
+
+  artifactFileEntries(metaSessionId, folder) {
+    try {
+      const directory = this.artifactDir(metaSessionId, folder);
+      return fs.readdirSync(directory, { withFileTypes: true })
+        .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+        .map((entry) => {
+          let mtimeMs = 0;
+          try {
+            mtimeMs = fs.statSync(path.join(directory, entry.name)).mtimeMs;
+          } catch {}
+          return { name: entry.name, mtimeMs };
+        })
+        .sort((a, b) => a.mtimeMs - b.mtimeMs || a.name.localeCompare(b.name));
+    } catch (error) {
+      if (error?.code === "ENOENT") return [];
+      throw error;
+    }
+  }
+
+  artifactFileCount(metaSessionId, folder) {
+    return this.artifactFileEntries(metaSessionId, folder).length;
+  }
+
+  readArtifactList(metaSessionId, folder, limit = null) {
+    const max = Number.isInteger(limit) && limit > 0 ? limit : null;
+    const entries = this.artifactFileEntries(metaSessionId, folder);
+    const selected = max ? entries.slice(-max) : entries;
+    return selected
+      .map((entry) => readJsonFile(path.join(this.artifactDir(metaSessionId, folder), entry.name)))
+      .filter(Boolean);
   }
 
   readMetaSession(metaSessionId) {
@@ -1010,7 +1055,128 @@ class DirectMetaSessionStore {
     };
   }
 
-  buildStatusProjection(metaSessionId) {
+  availableMetaSessionSummaries(index = this.readIndex()) {
+    const refs = Array.isArray(index?.sessionRefs) ? index.sessionRefs : [];
+    return refs.slice(-8)
+      .map((ref) => ({
+        metaSessionId: normalizeString(ref?.artifactId, ""),
+        artifactDigest: normalizeString(ref?.artifactDigest, ""),
+        rendererSafeLabel: normalizeString(ref?.artifactId, "unknown"),
+      }))
+      .filter((ref) => ref.metaSessionId);
+  }
+
+  statusDetails(metaSessionId, input = {}) {
+    const index = input.index || this.readIndex();
+    const session = this.readMetaSession(metaSessionId);
+    const contextRegistry = session?.contextRegistryId ? this.readContextRegistry(metaSessionId, session.contextRegistryId) : null;
+    const guardDecisionTotal = this.artifactFileCount(metaSessionId, ARTIFACT_FOLDERS.transition_guard_decision);
+    const routeTotal = this.artifactFileCount(metaSessionId, ARTIFACT_FOLDERS.cross_context_route);
+    const attemptTotal = this.artifactFileCount(metaSessionId, ARTIFACT_FOLDERS.attempt);
+    const activeContract = session?.activeContractId ? this.readContract(metaSessionId, session.activeContractId) : null;
+    const guardDecisions = this.readArtifactList(metaSessionId, ARTIFACT_FOLDERS.transition_guard_decision, 32);
+    const routes = this.readArtifactList(metaSessionId, ARTIFACT_FOLDERS.cross_context_route, 32);
+    const attempts = this.readArtifactList(metaSessionId, ARTIFACT_FOLDERS.attempt, 32);
+    const routeLifecycleCounts = countBy(routes, "lifecycleState");
+    const guardDecisionCounts = countBy(guardDecisions, "decision");
+    const latestAttemptBlockers = attempts
+      .map((attempt) => attempt.blockerCode)
+      .filter(Boolean)
+      .slice(-5);
+    const selectedMetaSession = session ? {
+      metaSessionId: session.metaSessionId,
+      status: session.status,
+      sessionEpoch: Number(session.sessionEpoch),
+      activeContractId: normalizeString(session.activeContractId, ""),
+      activeContractVersion: Number.isInteger(session.activeContractVersion) ? session.activeContractVersion : undefined,
+      contextRegistryId: normalizeString(session.contextRegistryId, ""),
+      rawTextIncluded: false,
+    } : undefined;
+    const routeSummary = {
+      total: routeTotal,
+      recentWindowCount: routes.length,
+      proposed: Number(routeLifecycleCounts.proposed || 0),
+      accepted: Number(routeLifecycleCounts.accepted || 0),
+      dispatched: Number(routeLifecycleCounts.dispatched || 0),
+      dispatchBlocked: Number(routeLifecycleCounts.dispatch_blocked || 0),
+      latest: routes.slice(-5).map((route) => ({
+        routeId: route.routeId,
+        lifecycleState: route.lifecycleState,
+        routeKind: route.routeKind,
+        staleBlockerCode: route.staleBlockerCode || "",
+        runtimeMutationAuthority: false,
+        workerLaunchAuthority: false,
+        providerTransportAuthority: false,
+      })),
+    };
+    const guardDecisionSummary = {
+      total: guardDecisionTotal,
+      recentWindowCount: guardDecisions.length,
+      allowShadow: Number(guardDecisionCounts.allow_shadow || 0),
+      denyShadow: Number(guardDecisionCounts.deny_shadow || 0),
+      askHumanShadow: Number(guardDecisionCounts.ask_human_shadow || 0),
+      reclassifyShadow: Number(guardDecisionCounts.reclassify_shadow || 0),
+      stopShadow: Number(guardDecisionCounts.stop_shadow || 0),
+    };
+    const attemptFailureSummary = {
+      total: attemptTotal,
+      recentWindowCount: attempts.length,
+      latestBlockerCodes: latestAttemptBlockers,
+    };
+    const summaryRows = [
+      { label: "Session", value: session ? session.status : "missing", state: session ? "ok" : "missing" },
+      { label: "Epoch", value: session ? String(session.sessionEpoch) : "none", state: session ? "ok" : "missing" },
+      { label: "Active contract", value: activeContract ? activeContract.status : "missing", state: activeContract ? "ok" : "missing" },
+      { label: "Contexts", value: String(Array.isArray(contextRegistry?.contexts) ? contextRegistry.contexts.length : 0), state: contextRegistry ? "ok" : "missing" },
+      { label: "Guard decisions", value: String(guardDecisionTotal), state: guardDecisionTotal ? "ok" : "missing" },
+      { label: "Routes", value: String(routeTotal), state: routeTotal ? "ok" : "missing" },
+      { label: "Dispatch blocked", value: String(routeSummary.dispatchBlocked), state: routeSummary.dispatchBlocked ? "blocked" : "ok" },
+      { label: "Attempt failures", value: String(attemptTotal), state: attemptTotal ? "blocked" : "ok" },
+    ];
+    return {
+      selectedMetaSession,
+      availableMetaSessions: this.availableMetaSessionSummaries(index),
+      routeSummary,
+      guardDecisionSummary,
+      attemptFailureSummary,
+      summaryRows,
+      requestedMetaSessionId: normalizeString(input.requestedMetaSessionId, ""),
+      rendererSafe: true,
+    };
+  }
+
+  readLatestStatusProjection(input = {}) {
+    const index = this.readIndex();
+    const refs = Array.isArray(index?.sessionRefs) ? index.sessionRefs : [];
+    const requestedMetaSessionId = normalizeString(input.metaSessionId, "");
+    const selectedMetaSessionId = requestedMetaSessionId || refs[refs.length - 1]?.artifactId || "";
+    if (!selectedMetaSessionId || !this.readMetaSession(selectedMetaSessionId)) {
+      return buildDirectMetaSessionStatusProjection({
+        metaSessionId: selectedMetaSessionId,
+        sessionDir: "",
+        currentPointers: null,
+        ledgerStatus: { ok: true, ledgerHeadDigest: "", events: [] },
+        health: "missing",
+        now: this.now,
+        details: {
+          selectedMetaSession: undefined,
+          availableMetaSessions: this.availableMetaSessionSummaries(index),
+          routeSummary: { total: 0, proposed: 0, accepted: 0, dispatched: 0, dispatchBlocked: 0, latest: [] },
+          guardDecisionSummary: { total: 0, allowShadow: 0, denyShadow: 0, askHumanShadow: 0, reclassifyShadow: 0, stopShadow: 0 },
+          attemptFailureSummary: { total: 0, latestBlockerCodes: [] },
+          summaryRows: [
+            { label: "Session", value: "missing", state: "missing" },
+            { label: "Status", value: "read-only", state: "ok" },
+          ],
+          requestedMetaSessionId,
+          rendererSafe: true,
+        },
+      });
+    }
+    return this.buildStatusProjection(selectedMetaSessionId, { index, requestedMetaSessionId });
+  }
+
+  buildStatusProjection(metaSessionId, options = {}) {
     const ledgerStatus = verifyDirectMetaSessionLedger(this.ledgerDir(metaSessionId), metaSessionId);
     const currentPointers = this.readCurrentPointers(metaSessionId);
     return buildDirectMetaSessionStatusProjection({
@@ -1018,6 +1184,7 @@ class DirectMetaSessionStore {
       sessionDir: this.sessionDir(metaSessionId),
       currentPointers,
       ledgerStatus,
+      details: this.statusDetails(metaSessionId, options),
       now: this.now,
     });
   }

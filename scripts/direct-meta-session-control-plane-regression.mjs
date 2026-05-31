@@ -843,6 +843,43 @@ await runCase("status_projection_is_renderer_safe", () => {
   assert(scanMetaSessionRawExposure(projection).length === 0, "projection raw exposure");
 });
 
+await runCase("status_projection_exposes_phase_1e_readonly_details", () => {
+  const projection = store.buildStatusProjection(metaSessionId);
+  assert(Array.isArray(projection.summaryRows) && projection.summaryRows.length >= 4, "status summary rows missing");
+  assert(projection.selectedMetaSession?.metaSessionId === metaSessionId, "selected meta-session missing");
+  assert(projection.routeSummary?.dispatchBlocked >= 1, "route blocked summary missing");
+  assert(projection.guardDecisionSummary?.allowShadow >= 1, "guard decision summary missing");
+  assert(projection.attemptFailureSummary?.total >= 1, "attempt failure summary missing");
+  assert(projection.actionability.actionable === false, "status projection became actionable");
+});
+
+await runCase("read_only_latest_status_does_not_create_missing_store", () => {
+  const parent = createTempRoot();
+  const missingRoot = path.join(parent, "missing-meta-session-root");
+  const readOnlyStore = new DirectMetaSessionStore({ rootDir: missingRoot, ensureRoot: false });
+  const projection = readOnlyStore.readLatestStatusProjection();
+  assert(projection.health === "missing", "missing read-only store did not report missing");
+  assert(projection.actionability.actionable === false, "missing status projection became actionable");
+  assert(!fs.existsSync(missingRoot), "read-only status created a store root");
+});
+
+await runCase("status_projection_reader_limits_artifact_hydration", () => {
+  const entries = store.readArtifactList(metaSessionId, "attempts", 2);
+  assert(entries.length <= 2, "bounded artifact reader ignored limit");
+  assert(store.artifactFileCount(metaSessionId, "attempts") >= entries.length, "artifact count below bounded read length");
+});
+
+await runCase("available_meta_session_summaries_tolerate_malformed_refs", () => {
+  const summaries = store.availableMetaSessionSummaries({
+    sessionRefs: [
+      null,
+      {},
+      { artifactId: "meta_session_safe_summary", artifactDigest: genericDigest({ ok: true }) },
+    ],
+  });
+  assert(summaries.length === 1 && summaries[0].metaSessionId === "meta_session_safe_summary", "malformed refs were not ignored safely");
+});
+
 await runCase("status_projection_actionability_false", () => {
   const projection = store.buildStatusProjection(metaSessionId);
   assert(projection.actionability.actionable === false && projection.actionability.allowedActions.length === 0, "projection actionable");
@@ -871,6 +908,21 @@ await runCase("phase_1a_capabilities_all_non_authority", () => {
   assert(projection.capabilities.workerSpawnAvailable === false, "worker spawn exposed");
   assert(projection.capabilities.routeDispatchAvailable === false, "route dispatch exposed");
   assert(projection.capabilities.transitionEnforceAvailable === false, "transition enforce exposed");
+});
+
+await runCase("phase_1e_ui_and_ipc_are_readonly_status_only", () => {
+  const html = fs.readFileSync(path.join(repoRoot, "src", "renderer", "index.html"), "utf8");
+  const preload = fs.readFileSync(path.join(repoRoot, "src", "preload.js"), "utf8");
+  const renderer = fs.readFileSync(path.join(repoRoot, "src", "renderer", "app.js"), "utf8");
+  const main = fs.readFileSync(path.join(repoRoot, "src", "main.js"), "utf8");
+  for (const id of ["directMetaSessionHealthBadge", "directMetaSessionSummary", "directMetaSessionRoutes", "directMetaSessionEvidence"]) {
+    assert(html.includes(id), `meta-session status surface missing ${id}`);
+  }
+  assert(preload.includes("getDirectMetaSessionStatus"), "preload missing read-only meta-session status bridge");
+  assert(main.includes("direct-meta-session:status"), "main missing read-only meta-session status handler");
+  assert(main.includes("meta_session_status_unavailable"), "main missing degraded startup fallback");
+  assert(!main.includes("direct-meta-session:dispatch") && !preload.includes("dispatchDirectMetaSession"), "mutation-capable meta-session IPC exposed");
+  assert(renderer.includes("actionability=false"), "renderer status text does not expose non-actionability");
 });
 
 await runCase("ledger_hash_chain_corruption_blocks_pointer_advance", () => {

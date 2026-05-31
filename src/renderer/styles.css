@@ -1413,6 +1413,46 @@ button:active {
   line-height: 1.45;
 }
 
+.direct-meta-session-card {
+  display: grid;
+  gap: 10px;
+}
+
+.direct-meta-session-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.direct-meta-session-summary > div,
+.direct-meta-session-routes {
+  display: grid;
+  gap: 5px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+  padding: 8px;
+  min-width: 0;
+}
+
+.direct-meta-session-summary span,
+.direct-meta-session-routes span {
+  color: var(--muted-2);
+  font-size: 9px;
+  text-transform: uppercase;
+  font-weight: 800;
+}
+
+.direct-meta-session-summary strong,
+.direct-meta-session-routes strong {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.direct-meta-session-routes {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .section-heading {
   display: flex;
   align-items: flex-start;
