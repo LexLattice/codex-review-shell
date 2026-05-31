@@ -441,6 +441,180 @@ await runCase("instruction_package_excludes_raw_prompt_and_launch_authority", ()
   assert(artifact.workerLaunchAuthority === false, "worker launch authority granted");
 });
 
+let guardTransitionClaimId = "";
+let guardInputId = "";
+await runCase("transition_guard_input_cites_contract_context_package_and_claim", () => {
+  const claim = store.recordTransitionClaim(metaSessionId, validTransitionClaimInput({
+    transitionClaimId: "transition_claim_guard_fixture",
+    fromPhase: "instruction_package_recorded",
+    toPhase: "cross_context_route_proposed",
+    claimedTransitionKind: "ProposeCrossContextRoute",
+  }));
+  assert(claim.ok, "guard transition claim failed");
+  guardTransitionClaimId = claim.artifact.transitionClaimId;
+  const result = store.recordTransitionGuardInput(metaSessionId, {
+    guardInputId: "transition_guard_input_fixture",
+    transitionKind: "cross_context_route",
+    contextRegistryId: "context_registry_fixture",
+    sourceContextId: "context_a",
+    targetContextId: "context_b",
+    instructionPackageId,
+    transitionClaimIds: [guardTransitionClaimId],
+  });
+  assert(result.ok, "transition guard input should pass");
+  guardInputId = result.artifact.guardInputId;
+  assert(result.artifact.contractRef.artifactId === contractId, "contract ref missing");
+  assert(result.artifact.instructionPackageRef.artifactId === instructionPackageId, "package ref missing");
+  assert(result.artifact.transitionClaimRefs.length === 1, "claim ref missing");
+  assert(result.artifact.enforcementAvailableInThisPr === false, "guard input enabled enforcement");
+});
+
+await runCase("transition_guard_decision_allows_valid_evidence_in_shadow_only", () => {
+  const result = store.recordTransitionGuardDecision(metaSessionId, {
+    guardInputId,
+    guardDecisionId: "transition_guard_decision_allow_fixture",
+  });
+  assert(result.ok, "transition guard decision should pass");
+  assert(result.artifact.decision === "allow_shadow", "valid evidence did not allow in shadow");
+  assert(result.artifact.shadowOnly === true, "decision was not shadow only");
+  assert(result.artifact.enforceableInThisPr === false, "decision became enforceable");
+  assert(result.artifact.runtimeBlocked === false, "shadow decision blocked runtime");
+  assert(result.artifact.routeDispatched === false, "shadow decision dispatched route");
+  assert(result.artifact.workerLaunchAuthority === false, "shadow decision granted worker authority");
+});
+
+await runCase("transition_guard_stale_contract_epoch_denies_shadow", () => {
+  const stale = store.recordTransitionGuardInput(metaSessionId, {
+    guardInputId: "transition_guard_input_stale_epoch",
+    transitionKind: "cross_context_route",
+    contextRegistryId: "context_registry_fixture",
+    sourceContextId: "context_a",
+    targetContextId: "context_b",
+    instructionPackageId,
+    transitionClaimIds: [guardTransitionClaimId],
+    expectedSessionEpoch: 99,
+  });
+  assert(stale.ok, "stale epoch guard input setup failed");
+  const result = store.recordTransitionGuardDecision(metaSessionId, {
+    guardInputId: stale.artifact.guardInputId,
+    guardDecisionId: "transition_guard_decision_stale_epoch",
+  });
+  assert(result.ok, "stale epoch decision should record");
+  assert(result.artifact.decision === "deny_shadow", "stale epoch did not deny in shadow");
+  assert(result.artifact.blockerCodes.includes("contract_epoch_stale"), "stale epoch blocker missing");
+  assert(result.artifact.runtimeBlocked === false, "shadow denial blocked runtime");
+});
+
+await runCase("transition_guard_context_digest_mismatch_denies_shadow", () => {
+  const stale = store.recordTransitionGuardInput(metaSessionId, {
+    guardInputId: "transition_guard_input_stale_context",
+    transitionKind: "cross_context_route",
+    contextRegistryId: "context_registry_fixture",
+    sourceContextId: "context_a",
+    targetContextId: "context_b",
+    instructionPackageId,
+    transitionClaimIds: [guardTransitionClaimId],
+    expectedTargetContextDigest: genericDigest({ stale: "context_b" }),
+  });
+  assert(stale.ok, "stale context guard input setup failed");
+  const result = store.recordTransitionGuardDecision(metaSessionId, {
+    guardInputId: stale.artifact.guardInputId,
+    guardDecisionId: "transition_guard_decision_stale_context",
+  });
+  assert(result.ok, "stale context decision should record");
+  assert(result.artifact.decision === "deny_shadow", "context mismatch did not deny in shadow");
+  assert(result.artifact.blockerCodes.includes("context_digest_mismatch"), "context mismatch blocker missing");
+});
+
+await runCase("transition_guard_stale_instruction_package_digest_asks_human_shadow", () => {
+  const rewrite = store.recordInstructionPackage(metaSessionId, {
+    packageId: instructionPackageId,
+    roleId: "worker_adversarial_phase",
+    targetContextId: "context_a",
+    omissionLedgerIds: [omissionLedgerId],
+    authoritySummary: ["rewritten package with same id"],
+    forbiddenActions: ["worker_launch", "provider_transport", "runtime_enforce", "new_forbidden_action"],
+    outputArtifactSchemaRef: "phase_worker_artifact@1",
+  });
+  assert(rewrite.ok, "instruction package rewrite fixture failed");
+  const result = store.recordTransitionGuardDecision(metaSessionId, {
+    guardInputId,
+    guardDecisionId: "transition_guard_decision_stale_package_digest",
+  });
+  assert(result.ok, "stale package digest decision should record");
+  assert(result.artifact.decision === "ask_human_shadow", "stale package digest did not ask human in shadow");
+  assert(result.artifact.reasonCodes.includes("instruction_package_digest_mismatch"), "stale package digest reason missing");
+  assert(result.artifact.blockerCodes.includes("required_evidence_missing"), "stale package digest blocker missing");
+});
+
+await runCase("transition_guard_input_rejects_invalid_instruction_package", () => {
+  const packagePath = path.join(rootDir, "sessions", metaSessionId, "artifacts", "instruction-packages", `${instructionPackageId}.json`);
+  const corrupted = readJson(packagePath);
+  corrupted.rawCompiledPromptIncluded = true;
+  writeJson(packagePath, corrupted);
+  const result = store.recordTransitionGuardInput(metaSessionId, {
+    guardInputId: "transition_guard_input_invalid_package",
+    transitionKind: "cross_context_route",
+    contextRegistryId: "context_registry_fixture",
+    sourceContextId: "context_a",
+    targetContextId: "context_b",
+    instructionPackageId,
+    transitionClaimIds: [guardTransitionClaimId],
+  });
+  assert(!result.ok && result.blockerCode === "schema_invalid", "invalid instruction package should block guard input");
+});
+
+await runCase("transition_guard_missing_instruction_package_asks_human_shadow", () => {
+  const missingPackageRoot = createTempRoot();
+  const missingPackageStore = makeStore(missingPackageRoot, { now: Date.UTC(2026, 4, 30, 12, 30, 0) });
+  const createdMissing = missingPackageStore.createMetaSession({ metaSessionId: "meta_session_missing_package_guard" });
+  assert(createdMissing.ok, "missing package session setup failed");
+  const registry = missingPackageStore.recordExecutionContextRegistry(createdMissing.artifact.metaSessionId, {
+    registryId: "context_registry_missing_package_guard",
+    contexts: [
+      { contextId: "context_a", displayLabel: "A", jurisdiction: "A", runtimeSourceClass: "direct" },
+      { contextId: "context_b", displayLabel: "B", jurisdiction: "B", runtimeSourceClass: "direct" },
+    ],
+  });
+  assert(registry.ok, "missing package context setup failed");
+  const draft = missingPackageStore.draftRunContract(createdMissing.artifact.metaSessionId, { contractId: "contract_missing_package_guard" });
+  assert(draft.ok, "missing package contract draft failed");
+  assert(missingPackageStore.lockRunContract(createdMissing.artifact.metaSessionId, draft.artifact.contractId).ok, "missing package contract lock failed");
+  assert(missingPackageStore.activateRunContract(createdMissing.artifact.metaSessionId, draft.artifact.contractId).ok, "missing package contract activation failed");
+  const ledger = missingPackageStore.recordInstructionOmissionLedger(createdMissing.artifact.metaSessionId, {
+    ledgerId: "omission_missing_package_guard",
+    roleId: "worker",
+    targetContextId: "context_a",
+    omissions: [],
+  });
+  assert(ledger.ok, "missing package omission ledger failed");
+  const pkg = missingPackageStore.recordInstructionPackage(createdMissing.artifact.metaSessionId, {
+    packageId: "instruction_package_deleted_before_guard",
+    roleId: "worker",
+    targetContextId: "context_a",
+    omissionLedgerIds: [ledger.artifact.ledgerId],
+  });
+  assert(pkg.ok, "missing package setup package failed");
+  const claim = missingPackageStore.recordTransitionClaim(createdMissing.artifact.metaSessionId, validTransitionClaimInput({ transitionClaimId: "claim_missing_package_guard" }));
+  assert(claim.ok, "missing package claim setup failed");
+  const guard = missingPackageStore.recordTransitionGuardInput(createdMissing.artifact.metaSessionId, {
+    guardInputId: "guard_input_missing_package",
+    sourceContextId: "context_a",
+    targetContextId: "context_b",
+    instructionPackageId: pkg.artifact.packageId,
+    transitionClaimIds: [claim.artifact.transitionClaimId],
+  });
+  assert(guard.ok, "missing package guard input setup failed");
+  fs.rmSync(path.join(missingPackageRoot, "sessions", createdMissing.artifact.metaSessionId, "artifacts", "instruction-packages", `${pkg.artifact.packageId}.json`));
+  const result = missingPackageStore.recordTransitionGuardDecision(createdMissing.artifact.metaSessionId, {
+    guardInputId: guard.artifact.guardInputId,
+    guardDecisionId: "guard_decision_missing_package",
+  });
+  assert(result.ok, "missing package guard decision should record");
+  assert(result.artifact.decision === "ask_human_shadow", "missing package did not ask human in shadow");
+  assert(result.artifact.blockerCodes.includes("required_evidence_missing"), "missing package blocker missing");
+});
+
 await runCase("activation_failure_does_not_update_session_file", () => {
   const txn = store.createMetaSession({ metaSessionId: "meta_session_activation_txn" });
   const draft = store.draftRunContract(txn.artifact.metaSessionId, { contractId: "contract_activation_txn" });
@@ -580,6 +754,12 @@ await runCase("status_projection_counts_instruction_artifacts", () => {
   const projection = store.buildStatusProjection(metaSessionId);
   assert(projection.counts.omissionLedgers >= 1, "omission ledger count missing");
   assert(projection.counts.instructionPackages >= 1, "instruction package count missing");
+});
+
+await runCase("status_projection_counts_transition_guard_artifacts", () => {
+  const projection = store.buildStatusProjection(metaSessionId);
+  assert(projection.counts.transitionGuardInputs >= 1, "transition guard input count missing");
+  assert(projection.counts.transitionGuardDecisions >= 1, "transition guard decision count missing");
 });
 
 await runCase("phase_1a_capabilities_all_non_authority", () => {

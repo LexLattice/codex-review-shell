@@ -13,6 +13,8 @@ const {
   DIRECT_META_STATE_OBJECT_DESCRIPTOR_SCHEMA,
   DIRECT_HOB_OBLIGATION_STATUS_SCHEMA,
   DIRECT_RUN_CONTRACT_SCHEMA,
+  DIRECT_TRANSITION_GUARD_DECISION_SCHEMA,
+  DIRECT_TRANSITION_GUARD_INPUT_SCHEMA,
   DIRECT_TRANSITION_CLAIM_SCHEMA,
   DIRECT_UPSTREAM_DISCRIMINATOR_ROW_SCHEMA,
 } = require("./constants");
@@ -37,6 +39,8 @@ const ARTIFACT_FOLDERS = Object.freeze({
   contract: "run-contracts",
   omission_ledger: "instruction-omission-ledgers",
   instruction_package: "instruction-packages",
+  transition_guard_input: "transition-guard-inputs",
+  transition_guard_decision: "transition-guard-decisions",
   hob: "hob-obligation-status",
   transition_claim: "transition-claims",
   upstream_discriminator: "upstream-discriminators",
@@ -349,12 +353,36 @@ class DirectMetaSessionStore {
     return readJsonFile(this.contractPath(metaSessionId, contractId));
   }
 
+  contextRegistryPath(metaSessionId, registryId) {
+    return this.artifactPath(metaSessionId, ARTIFACT_FOLDERS.context_registry, registryId);
+  }
+
+  readContextRegistry(metaSessionId, registryId) {
+    return readJsonFile(this.contextRegistryPath(metaSessionId, registryId));
+  }
+
   omissionLedgerPath(metaSessionId, ledgerId) {
     return this.artifactPath(metaSessionId, ARTIFACT_FOLDERS.omission_ledger, ledgerId);
   }
 
   readOmissionLedger(metaSessionId, ledgerId) {
     return readJsonFile(this.omissionLedgerPath(metaSessionId, ledgerId));
+  }
+
+  instructionPackagePath(metaSessionId, packageId) {
+    return this.artifactPath(metaSessionId, ARTIFACT_FOLDERS.instruction_package, packageId);
+  }
+
+  readInstructionPackage(metaSessionId, packageId) {
+    return readJsonFile(this.instructionPackagePath(metaSessionId, packageId));
+  }
+
+  transitionGuardInputPath(metaSessionId, guardInputId) {
+    return this.artifactPath(metaSessionId, ARTIFACT_FOLDERS.transition_guard_input, guardInputId);
+  }
+
+  readTransitionGuardInput(metaSessionId, guardInputId) {
+    return readJsonFile(this.transitionGuardInputPath(metaSessionId, guardInputId));
   }
 
   lockRunContract(metaSessionId, contractId) {
@@ -485,6 +513,189 @@ class DirectMetaSessionStore {
     });
     return this.writeValidatedArtifact(metaSessionId, "instruction_package", ARTIFACT_FOLDERS.instruction_package, packageId, instructionPackage, "instruction_package_recorded", {
       attemptKind: "instruction_package",
+    });
+  }
+
+  recordTransitionGuardInput(metaSessionId, input = {}) {
+    const session = this.readMetaSession(metaSessionId);
+    if (!session) return this.recordAttemptFailure(metaSessionId, { attemptKind: "transition_guard", blockerCode: "session_missing", rendererSafeSummary: "Session missing." });
+    const contractId = normalizeString(input.contractId, session.activeContractId);
+    const contract = contractId ? this.readContract(metaSessionId, contractId) : null;
+    if (!contract) return this.recordAttemptFailure(metaSessionId, { attemptKind: "transition_guard", blockerCode: "contract_missing", rendererSafeSummary: "Transition guard input requires a contract." });
+    if (!validateDirectMetaSessionArtifact(contract)) return this.recordAttemptFailure(metaSessionId, { attemptKind: "transition_guard", blockerCode: "schema_invalid", rendererSafeSummary: "Transition guard input contract invalid." });
+    const contextRegistryId = normalizeString(input.contextRegistryId, session.contextRegistryId);
+    const contextRegistry = contextRegistryId ? this.readContextRegistry(metaSessionId, contextRegistryId) : null;
+    if (!contextRegistry) return this.recordAttemptFailure(metaSessionId, { attemptKind: "transition_guard", blockerCode: "context_missing", rendererSafeSummary: "Transition guard input requires a context registry." });
+    if (!validateDirectMetaSessionArtifact(contextRegistry)) return this.recordAttemptFailure(metaSessionId, { attemptKind: "transition_guard", blockerCode: "schema_invalid", rendererSafeSummary: "Transition guard input context registry invalid." });
+    const sourceContextId = normalizeString(input.sourceContextId, "");
+    const targetContextId = normalizeString(input.targetContextId, "");
+    const sourceContext = contextRegistry.contexts?.find((context) => context.contextId === sourceContextId);
+    const targetContext = contextRegistry.contexts?.find((context) => context.contextId === targetContextId);
+    if (!sourceContext || !targetContext) return this.recordAttemptFailure(metaSessionId, { attemptKind: "transition_guard", blockerCode: "context_missing", rendererSafeSummary: "Transition guard input requires source and target contexts." });
+    const packageId = normalizeString(input.instructionPackageId, "");
+    const instructionPackage = packageId ? this.readInstructionPackage(metaSessionId, packageId) : null;
+    if (!instructionPackage) return this.recordAttemptFailure(metaSessionId, { attemptKind: "transition_guard", blockerCode: "required_evidence_missing", rendererSafeSummary: "Transition guard input requires an instruction package." });
+    if (!validateDirectMetaSessionArtifact(instructionPackage)) return this.recordAttemptFailure(metaSessionId, { attemptKind: "transition_guard", blockerCode: "schema_invalid", rendererSafeSummary: "Transition guard input instruction package invalid." });
+    const transitionClaimRefs = [];
+    for (const claimId of Array.isArray(input.transitionClaimIds) ? input.transitionClaimIds : []) {
+      const claim = readJsonFile(this.artifactPath(metaSessionId, ARTIFACT_FOLDERS.transition_claim, claimId));
+      if (!claim) return this.recordAttemptFailure(metaSessionId, { attemptKind: "transition_guard", blockerCode: "required_evidence_missing", rendererSafeSummary: "Transition guard input transition claim missing." });
+      if (!validateDirectMetaSessionArtifact(claim)) return this.recordAttemptFailure(metaSessionId, { attemptKind: "transition_guard", blockerCode: "schema_invalid", rendererSafeSummary: "Transition guard input transition claim invalid." });
+      transitionClaimRefs.push(artifactRefFromArtifact("transition_claim", claim, this.artifactSlot(metaSessionId, ARTIFACT_FOLDERS.transition_claim, claimId)));
+    }
+    const guardInputId = normalizeId(input.guardInputId, "transition_guard_input");
+    const expectedContractVersion = Number(input.expectedContractVersion ?? contract.contractVersion);
+    const expectedSessionEpoch = Number(input.expectedSessionEpoch ?? contract.sessionEpoch);
+    const expectedSourceDigest = normalizeString(input.expectedSourceContextDigest, sourceContext.contextDigest);
+    const expectedTargetDigest = normalizeString(input.expectedTargetContextDigest, targetContext.contextDigest);
+    const contractRef = artifactRefFromArtifact("contract", contract, this.artifactSlot(metaSessionId, ARTIFACT_FOLDERS.contract, contractId));
+    const contextRegistryRef = artifactRefFromArtifact("context_registry", contextRegistry, this.artifactSlot(metaSessionId, ARTIFACT_FOLDERS.context_registry, contextRegistryId));
+    const instructionPackageRef = artifactRefFromArtifact("instruction_package", instructionPackage, this.artifactSlot(metaSessionId, ARTIFACT_FOLDERS.instruction_package, packageId));
+    const guardInput = withArtifactDigest("transition_guard_input", {
+      schemaVersion: DIRECT_TRANSITION_GUARD_INPUT_SCHEMA,
+      guardInputId,
+      metaSessionId,
+      transitionKind: normalizeString(input.transitionKind, "cross_context_route"),
+      contractRef,
+      expectedContractVersion,
+      expectedSessionEpoch,
+      contextRegistryRef,
+      sourceContext: {
+        contextId: sourceContext.contextId,
+        contextDigest: expectedSourceDigest,
+      },
+      targetContext: {
+        contextId: targetContext.contextId,
+        contextDigest: expectedTargetDigest,
+      },
+      instructionPackageRef,
+      transitionClaimRefs,
+      inputDigest: genericDigest({
+        transitionKind: normalizeString(input.transitionKind, "cross_context_route"),
+        contractDigest: contract.digest,
+        expectedContractVersion,
+        expectedSessionEpoch,
+        sourceContextId: sourceContext.contextId,
+        sourceContextDigest: expectedSourceDigest,
+        targetContextId: targetContext.contextId,
+        targetContextDigest: expectedTargetDigest,
+        instructionPackageDigest: instructionPackage.digest,
+        transitionClaimDigests: transitionClaimRefs.map((ref) => ref.artifactDigest),
+      }),
+      enforcementAvailableInThisPr: false,
+      runtimeMutationAuthority: false,
+      rawTextIncluded: false,
+    });
+    return this.writeValidatedArtifact(metaSessionId, "transition_guard_input", ARTIFACT_FOLDERS.transition_guard_input, guardInputId, guardInput, "transition_guard_input_recorded", {
+      attemptKind: "transition_guard",
+    });
+  }
+
+  recordTransitionGuardDecision(metaSessionId, input = {}) {
+    const session = this.readMetaSession(metaSessionId);
+    if (!session) return this.recordAttemptFailure(metaSessionId, { attemptKind: "transition_guard", blockerCode: "session_missing", rendererSafeSummary: "Session missing." });
+    const guardInputId = normalizeString(input.guardInputId, "");
+    const guardInput = guardInputId ? this.readTransitionGuardInput(metaSessionId, guardInputId) : null;
+    if (!guardInput) return this.recordAttemptFailure(metaSessionId, { attemptKind: "transition_guard", blockerCode: "required_evidence_missing", rendererSafeSummary: "Transition guard input missing." });
+    if (!validateDirectMetaSessionArtifact(guardInput)) return this.recordAttemptFailure(metaSessionId, { attemptKind: "transition_guard", blockerCode: "schema_invalid", rendererSafeSummary: "Transition guard input invalid." });
+
+    const reasons = [];
+    const blockerCodes = [];
+    const evidenceRefs = [artifactRefFromArtifact("transition_guard_input", guardInput, this.artifactSlot(metaSessionId, ARTIFACT_FOLDERS.transition_guard_input, guardInputId))];
+    const contract = this.readContract(metaSessionId, guardInput.contractRef.artifactId);
+    const isContractValid = Boolean(contract && validateDirectMetaSessionArtifact(contract));
+    if (!isContractValid) {
+      reasons.push("contract_missing_or_invalid");
+      blockerCodes.push("contract_missing");
+    } else {
+      evidenceRefs.push(artifactRefFromArtifact("contract", contract, this.artifactSlot(metaSessionId, ARTIFACT_FOLDERS.contract, contract.contractId)));
+      if (contract.digest !== guardInput.contractRef.artifactDigest) {
+        reasons.push("contract_digest_mismatch");
+        blockerCodes.push("contract_digest_mismatch");
+      }
+      if (contract.status !== "active" || session.activeContractId !== contract.contractId) {
+        reasons.push("contract_not_active");
+        blockerCodes.push("contract_digest_mismatch");
+      }
+      if (Number(contract.contractVersion) !== Number(guardInput.expectedContractVersion) || Number(contract.sessionEpoch) !== Number(guardInput.expectedSessionEpoch) || Number(session.sessionEpoch) !== Number(guardInput.expectedSessionEpoch)) {
+        reasons.push("contract_epoch_stale");
+        blockerCodes.push("contract_epoch_stale");
+      }
+    }
+
+    const contextRegistry = this.readContextRegistry(metaSessionId, guardInput.contextRegistryRef.artifactId);
+    if (!contextRegistry || !validateDirectMetaSessionArtifact(contextRegistry)) {
+      reasons.push("context_registry_missing_or_invalid");
+      blockerCodes.push("context_missing");
+    } else {
+      evidenceRefs.push(artifactRefFromArtifact("context_registry", contextRegistry, this.artifactSlot(metaSessionId, ARTIFACT_FOLDERS.context_registry, contextRegistry.registryId)));
+      if (contextRegistry.digest !== guardInput.contextRegistryRef.artifactDigest) {
+        reasons.push("context_registry_digest_mismatch");
+        blockerCodes.push("context_digest_mismatch");
+      }
+      const sourceContext = contextRegistry.contexts.find((context) => context.contextId === guardInput.sourceContext.contextId);
+      const targetContext = contextRegistry.contexts.find((context) => context.contextId === guardInput.targetContext.contextId);
+      if (!sourceContext || !targetContext) {
+        reasons.push("context_missing");
+        blockerCodes.push("context_missing");
+      } else if (sourceContext.contextDigest !== guardInput.sourceContext.contextDigest || targetContext.contextDigest !== guardInput.targetContext.contextDigest) {
+        reasons.push("context_digest_mismatch");
+        blockerCodes.push("context_digest_mismatch");
+      }
+    }
+
+    const instructionPackage = this.readInstructionPackage(metaSessionId, guardInput.instructionPackageRef.artifactId);
+    if (!instructionPackage || !validateDirectMetaSessionArtifact(instructionPackage)) {
+      reasons.push("instruction_package_missing_or_invalid");
+      blockerCodes.push("required_evidence_missing");
+    } else {
+      evidenceRefs.push(artifactRefFromArtifact("instruction_package", instructionPackage, this.artifactSlot(metaSessionId, ARTIFACT_FOLDERS.instruction_package, instructionPackage.packageId)));
+      if (instructionPackage.digest !== guardInput.instructionPackageRef.artifactDigest) {
+        reasons.push("instruction_package_digest_mismatch");
+        blockerCodes.push("required_evidence_missing");
+      }
+      if (isContractValid && (instructionPackage.contractId !== contract.contractId || Number(instructionPackage.sessionEpoch) !== Number(contract.sessionEpoch))) {
+        reasons.push("instruction_package_contract_mismatch");
+        blockerCodes.push("required_evidence_missing");
+      }
+    }
+
+    if (!guardInput.transitionClaimRefs.length) {
+      reasons.push("transition_claim_missing");
+      blockerCodes.push("required_evidence_missing");
+    } else {
+      evidenceRefs.push(...guardInput.transitionClaimRefs);
+    }
+
+    const uniqueBlockers = [...new Set(blockerCodes)];
+    const decision = uniqueBlockers.includes("context_digest_mismatch") || uniqueBlockers.includes("contract_epoch_stale") || uniqueBlockers.includes("contract_digest_mismatch")
+      ? "deny_shadow"
+      : uniqueBlockers.includes("required_evidence_missing")
+        ? "ask_human_shadow"
+        : uniqueBlockers.length
+          ? "reclassify_shadow"
+          : "allow_shadow";
+    const guardDecisionId = normalizeId(input.guardDecisionId, "transition_guard_decision");
+    const guardDecision = withArtifactDigest("transition_guard_decision", {
+      schemaVersion: DIRECT_TRANSITION_GUARD_DECISION_SCHEMA,
+      guardDecisionId,
+      metaSessionId,
+      guardInputRef: artifactRefFromArtifact("transition_guard_input", guardInput, this.artifactSlot(metaSessionId, ARTIFACT_FOLDERS.transition_guard_input, guardInputId)),
+      decision,
+      reasonCodes: reasons.length ? [...new Set(reasons)] : ["shadow_evidence_valid"],
+      blockerCodes: uniqueBlockers,
+      evidenceRefs,
+      wouldBlockInFutureEnforceMode: decision !== "allow_shadow",
+      shadowOnly: true,
+      enforceableInThisPr: false,
+      runtimeBlocked: false,
+      routeDispatched: false,
+      workerLaunchAuthority: false,
+      providerTransportAuthority: false,
+      rawTextIncluded: false,
+    });
+    return this.writeValidatedArtifact(metaSessionId, "transition_guard_decision", ARTIFACT_FOLDERS.transition_guard_decision, guardDecisionId, guardDecision, "transition_guard_decision_recorded", {
+      attemptKind: "transition_guard",
     });
   }
 

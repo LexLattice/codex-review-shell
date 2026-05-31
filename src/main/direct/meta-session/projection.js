@@ -32,6 +32,8 @@ function buildDirectMetaSessionStatusProjection(input = {}) {
     contracts: artifactCount(sessionDir, "run-contracts"),
     instructionPackages: artifactCount(sessionDir, "instruction-packages"),
     omissionLedgers: artifactCount(sessionDir, "instruction-omission-ledgers"),
+    transitionGuardInputs: artifactCount(sessionDir, "transition-guard-inputs"),
+    transitionGuardDecisions: artifactCount(sessionDir, "transition-guard-decisions"),
     descriptors: artifactCount(sessionDir, "state-object-descriptors"),
     hobRows: artifactCount(sessionDir, "hob-obligation-status"),
     transitionClaims: artifactCount(sessionDir, "transition-claims"),

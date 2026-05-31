@@ -50,11 +50,33 @@ function buildArtifactRef(input = {}) {
 }
 
 function artifactRefFromArtifact(artifactKind, artifact, storageSlot = "") {
-  const artifactId = artifact?.metaSessionId
+  const artifactIdByKind = {
+    meta_session: artifact?.metaSessionId,
+    meta_session_index: artifact?.currentGlobalPointerSetId || "index",
+    context_registry: artifact?.registryId,
+    contract: artifact?.contractId,
+    instruction_omission_ledger: artifact?.ledgerId,
+    instruction_package: artifact?.packageId,
+    transition_guard_input: artifact?.guardInputId,
+    transition_guard_decision: artifact?.guardDecisionId,
+    descriptor: artifact?.id,
+    hob: artifact?.rowId,
+    transition_claim: artifact?.transitionClaimId,
+    upstream_discriminator: artifact?.rowId,
+    brl: artifact?.lockId,
+    attempt_failure: artifact?.attemptId,
+    projection: artifact?.projectionId,
+    pointer: artifact?.pointerSetId,
+    ledger_event: artifact?.eventId,
+    source_ref: artifact?.sourceRefId,
+  };
+  const artifactId = artifactIdByKind[artifactKind]
     || artifact?.registryId
     || artifact?.contractId
     || artifact?.ledgerId
     || artifact?.packageId
+    || artifact?.guardInputId
+    || artifact?.guardDecisionId
     || artifact?.id
     || artifact?.rowId
     || artifact?.transitionClaimId
@@ -64,6 +86,7 @@ function artifactRefFromArtifact(artifactKind, artifact, storageSlot = "") {
     || artifact?.pointerSetId
     || artifact?.eventId
     || artifact?.sourceRefId
+    || artifact?.metaSessionId
     || "unknown";
   return buildArtifactRef({
     artifactKind,
