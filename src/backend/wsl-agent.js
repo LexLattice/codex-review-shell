@@ -89,6 +89,8 @@ let stdinClosed = false;
 let outputClosed = false;
 let shutdownTimer = null;
 let forceShutdownTimer = null;
+const activeChildProcesses = new Set();
+const terminatingChildProcesses = new WeakSet();
 
 function isClosedPipeError(error) {
   return ["EPIPE", "ERR_STREAM_DESTROYED", "ERR_STREAM_WRITE_AFTER_END"].includes(error?.code);
@@ -105,6 +107,9 @@ function scheduleProcessExit(code = 0, delayMs = STDIN_CLOSE_EXIT_GRACE_MS) {
 
 function requestShutdown(code = 0) {
   stdinClosed = true;
+  for (const child of activeChildProcesses) {
+    terminateChild(child);
+  }
   if (!forceShutdownTimer) {
     forceShutdownTimer = setTimeout(() => {
       process.exit(process.exitCode || code);
@@ -112,6 +117,32 @@ function requestShutdown(code = 0) {
     forceShutdownTimer.unref?.();
   }
   if (activeRequests === 0) scheduleProcessExit(code);
+}
+
+function terminateChild(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  if (terminatingChildProcesses.has(child)) return;
+  terminatingChildProcesses.add(child);
+  try {
+    child.kill("SIGTERM");
+  } catch {}
+  const timer = setTimeout(() => {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    try {
+      child.kill("SIGKILL");
+    } catch {}
+  }, 1200);
+  timer.unref?.();
+  child.once("close", () => clearTimeout(timer));
+}
+
+function trackChildProcess(child) {
+  activeChildProcesses.add(child);
+  child.once("close", () => {
+    activeChildProcesses.delete(child);
+  });
+  if (stdinClosed) terminateChild(child);
+  return child;
 }
 
 process.stdout.on("error", (error) => {
@@ -585,12 +616,12 @@ async function runCommand(params = {}) {
 
   return new Promise((resolve, reject) => {
     const startedAt = Date.now();
-    const child = spawn(command, args, {
+    const child = trackChildProcess(spawn(command, args, {
       cwd: fullPath,
       env: { ...process.env, ...(params.env && typeof params.env === "object" ? params.env : {}) },
       shell: false,
       windowsHide: true,
-    });
+    }));
 
     const stdoutChunks = [];
     const stderrChunks = [];
@@ -599,10 +630,7 @@ async function runCommand(params = {}) {
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
-      child.kill("SIGTERM");
-      setTimeout(() => {
-        if (!settled) child.kill("SIGKILL");
-      }, 1200);
+      terminateChild(child);
     }, timeoutMs);
 
     child.stdout.on("data", (chunk) => {
@@ -639,21 +667,18 @@ async function runCommand(params = {}) {
 function captureProcess(command, args, options = {}) {
   const timeoutMs = Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : DEFAULT_COMMAND_TIMEOUT_MS;
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const child = trackChildProcess(spawn(command, args, {
       cwd: options.cwd || root,
       env: { ...process.env, ...(options.env && typeof options.env === "object" ? options.env : {}) },
       shell: false,
       windowsHide: true,
-    });
+    }));
     const stdoutChunks = [];
     const stderrChunks = [];
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
-      child.kill("SIGTERM");
-      setTimeout(() => {
-        if (!settled) child.kill("SIGKILL");
-      }, 1200);
+      terminateChild(child);
     }, timeoutMs);
     child.stdout.on("data", (chunk) => stdoutChunks.push(Buffer.from(chunk)));
     child.stderr.on("data", (chunk) => stderrChunks.push(Buffer.from(chunk)));
