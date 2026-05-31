@@ -169,6 +169,9 @@ const state = {
   directRuntimeStatus: null,
   directRuntimeLoading: false,
   directRuntimeError: "",
+  directMetaSessionStatus: null,
+  directMetaSessionLoading: false,
+  directMetaSessionError: "",
   selectedCodexThreadId: "",
   openedCodexProjectId: "",
   openedCodexThreadId: "",
@@ -188,6 +191,7 @@ const state = {
     directImportOperation: 0,
     directThreadWorkbench: 0,
     directThreadWorkbenchOperation: 0,
+    directMetaSessionStatus: 0,
     analyticsThreads: 0,
     analyticsDetail: 0,
     workTree: 0,
@@ -271,6 +275,11 @@ const els = {
   directRuntimeModeBadge: document.getElementById("directRuntimeModeBadge"),
   directRuntimeStatusBadge: document.getElementById("directRuntimeStatusBadge"),
   directModelSourceBadge: document.getElementById("directModelSourceBadge"),
+  directMetaSessionHealthBadge: document.getElementById("directMetaSessionHealthBadge"),
+  directMetaSessionRefreshButton: document.getElementById("directMetaSessionRefreshButton"),
+  directMetaSessionSummary: document.getElementById("directMetaSessionSummary"),
+  directMetaSessionRoutes: document.getElementById("directMetaSessionRoutes"),
+  directMetaSessionEvidence: document.getElementById("directMetaSessionEvidence"),
   promptRoleLabel: document.getElementById("promptRoleLabel"),
   activePromptPreview: document.getElementById("activePromptPreview"),
   handoffTargetThreadSelect: document.getElementById("handoffTargetThreadSelect"),
@@ -2809,6 +2818,60 @@ function renderDirectRuntimeStatus() {
   }
 }
 
+function metaSessionHealthLabel(status = {}) {
+  const health = String(status.health || "missing").replace(/_/g, " ");
+  return state.directMetaSessionLoading ? "loading" : health;
+}
+
+function appendMetaSessionMetric(container, label, value, stateLabel = "") {
+  const item = document.createElement("div");
+  const title = document.createElement("span");
+  title.textContent = label;
+  const strong = document.createElement("strong");
+  strong.textContent = value || "0";
+  if (stateLabel) strong.title = stateLabel;
+  item.append(title, strong);
+  container.appendChild(item);
+}
+
+function renderDirectMetaSessionStatus() {
+  if (!els.directMetaSessionHealthBadge) return;
+  const status = state.directMetaSessionStatus || {};
+  const healthLabel = metaSessionHealthLabel(status);
+  els.directMetaSessionHealthBadge.textContent = healthLabel;
+  els.directMetaSessionHealthBadge.title = state.directMetaSessionError || status.sourceDigest || healthLabel;
+  if (els.directMetaSessionRefreshButton) {
+    els.directMetaSessionRefreshButton.disabled = state.directMetaSessionLoading || !bridge.getDirectMetaSessionStatus;
+    els.directMetaSessionRefreshButton.title = "Refresh the renderer-safe meta-session status projection.";
+  }
+  if (els.directMetaSessionSummary) {
+    els.directMetaSessionSummary.textContent = "";
+    const rows = Array.isArray(status.summaryRows) ? status.summaryRows.slice(0, 8) : [];
+    if (!rows.length) {
+      appendMetaSessionMetric(els.directMetaSessionSummary, "Session", "not loaded", "missing");
+      appendMetaSessionMetric(els.directMetaSessionSummary, "Authority", "read-only", "non-authority projection");
+    } else {
+      for (const row of rows) appendMetaSessionMetric(els.directMetaSessionSummary, row.label || "State", row.value || "0", row.state || "");
+    }
+  }
+  if (els.directMetaSessionRoutes) {
+    els.directMetaSessionRoutes.textContent = "";
+    const routes = status.routeSummary || {};
+    appendMetaSessionMetric(els.directMetaSessionRoutes, "Proposed", String(routes.proposed || 0), "route proposal artifacts");
+    appendMetaSessionMetric(els.directMetaSessionRoutes, "Accepted", String(routes.accepted || 0), "human-approved route artifacts");
+    appendMetaSessionMetric(els.directMetaSessionRoutes, "Dispatched", String(routes.dispatched || 0), "recorded dispatch artifacts; no runtime authority");
+    appendMetaSessionMetric(els.directMetaSessionRoutes, "Blocked", String(routes.dispatchBlocked || 0), "stale dispatch blockers");
+  }
+  if (els.directMetaSessionEvidence) {
+    const selected = status.selectedMetaSession?.metaSessionId || "none";
+    const counts = status.counts || {};
+    const blockers = status.attemptFailureSummary?.latestBlockerCodes || [];
+    els.directMetaSessionEvidence.textContent = state.directMetaSessionError
+      ? `Meta-session status unavailable: ${state.directMetaSessionError}`
+      : `Projection ${selected} · ledger events ${counts.ledgerEvents || 0} · attempts ${counts.attemptFailures || 0} · latest blockers ${blockers.length ? blockers.join(", ") : "none"} · actionability=false.`;
+  }
+}
+
 function renderDirectAuthControls() {
   if (!els.directAuthState) return;
   const settings = state.directAuthSettings || {};
@@ -2857,6 +2920,7 @@ function renderDirectAuthControls() {
     ? "Direct auth status unavailable. No raw tokens or paths exposed to renderer."
     : `Codex lane: ${codexLane} · renderer sees redacted auth only · tokens exposed: ${status?.rawTokensExposed ? "yes" : "no"} · paths exposed: ${settings.storagePathExposed ? "yes" : "no"}`;
   renderDirectRuntimeStatus();
+  renderDirectMetaSessionStatus();
 }
 
 function agentStatusLabel(agent = {}) {
@@ -5102,6 +5166,7 @@ function render() {
   renderCodexRequests();
   renderWatchedArtifacts();
   renderDirectAuthControls();
+  renderDirectMetaSessionStatus();
   renderStatus();
   renderRightPlaneTabs();
   scheduleResizeBurst();
@@ -5900,6 +5965,28 @@ async function refreshDirectRuntimeStatus(projectId = activeProject()?.id || "")
   }
 }
 
+async function refreshDirectMetaSessionStatus(projectId = activeProject()?.id || "") {
+  if (!bridge.getDirectMetaSessionStatus || !projectId) return;
+  const requestVersion = nextRequestVersion("directMetaSessionStatus");
+  const snapshot = { projectId, projectVersion: Number(state.requestVersions.project || 0) };
+  state.directMetaSessionLoading = true;
+  state.directMetaSessionError = "";
+  renderDirectMetaSessionStatus();
+  try {
+    const status = await bridge.getDirectMetaSessionStatus(projectId);
+    if (isRequestStale("directMetaSessionStatus", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directMetaSessionStatus = status;
+  } catch (error) {
+    if (isRequestStale("directMetaSessionStatus", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directMetaSessionError = error.message || "Meta-session status failed.";
+  } finally {
+    if (!isRequestStale("directMetaSessionStatus", requestVersion)) {
+      state.directMetaSessionLoading = false;
+      renderDirectMetaSessionStatus();
+    }
+  }
+}
+
 function directActivationClientId(prefix) {
   const random = Math.random().toString(36).slice(2, 10);
   return `${prefix}_${Date.now().toString(36)}_${random}`;
@@ -6177,6 +6264,7 @@ async function selectProject(projectId) {
   nextRequestVersion("directImportOperation");
   nextRequestVersion("directThreadWorkbench");
   nextRequestVersion("directThreadWorkbenchOperation");
+  nextRequestVersion("directMetaSessionStatus");
   nextRequestVersion("analyticsThreads");
   nextRequestVersion("analyticsDetail");
   nextRequestVersion("workTree");
@@ -6210,6 +6298,9 @@ async function selectProject(projectId) {
   state.analyticsDashboardStatus = "idle";
   resetDirectImportWorkbench(projectId);
   resetDirectThreadWorkbench(projectId);
+  state.directMetaSessionStatus = null;
+  state.directMetaSessionError = "";
+  state.directMetaSessionLoading = false;
   state.activeChatgptThreadBrowserTab = "project";
   state.subAgentGraph = null;
   state.selectedSubAgentThreadId = "";
@@ -6220,6 +6311,7 @@ async function selectProject(projectId) {
   const project = activeProject();
   if (!project || project.id !== projectId || isRequestStale("project", projectVersion)) return;
   await refreshDirectRuntimeStatus(project.id);
+  await refreshDirectMetaSessionStatus(project.id);
   if (state.activeMiddleTab === "imports") {
     await loadDirectImports({ refresh: false });
   }
@@ -7554,6 +7646,7 @@ function bindEvents() {
   els.directAuthLogoutButton.addEventListener("click", logoutDirectAuth);
   els.directRuntimePathSelect?.addEventListener("change", renderDirectRuntimeStatus);
   els.directRuntimePathApplyButton?.addEventListener("click", setDirectRuntimePathFromControl);
+  els.directMetaSessionRefreshButton?.addEventListener("click", () => refreshDirectMetaSessionStatus().catch((error) => setLastEvent(`Meta-session status refresh failed: ${error.message}`)));
   els.directTextOnlyEnableButton?.addEventListener("click", selectDirectTextOnlyRuntime);
   els.directExperimentalEnableButton?.addEventListener("click", enableDirectExperimentalRuntime);
   els.directExperimentalRollbackButton?.addEventListener("click", rollbackDirectExperimentalRuntime);
@@ -7755,6 +7848,7 @@ async function init() {
   state.defaultWorkspace = result.defaultWorkspace || null;
   state.defaultCodexRuntime = result.defaultCodexRuntime || "auto";
   state.directRuntimeStatus = result.directRuntimeStatus || null;
+  state.directMetaSessionStatus = result.directMetaSessionStatus || null;
   state.allowNonChatgptUrls = Boolean(result.allowNonChatgptUrls);
   render();
   await loadDirectAuthSettings();

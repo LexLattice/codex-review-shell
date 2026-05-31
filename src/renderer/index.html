@@ -179,6 +179,22 @@
             <p id="directAuthEvidence" class="muted direct-auth-evidence">No raw tokens exposed to renderer.</p>
           </section>
 
+          <section class="control-card direct-meta-session-card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Meta-session control</p>
+                <h3>Read-only status</h3>
+              </div>
+              <div class="heading-actions">
+                <span id="directMetaSessionHealthBadge" class="counter">not loaded</span>
+                <button class="ghost small" id="directMetaSessionRefreshButton" type="button">Refresh</button>
+              </div>
+            </div>
+            <div class="direct-meta-session-summary" id="directMetaSessionSummary"></div>
+            <div class="direct-meta-session-routes" id="directMetaSessionRoutes"></div>
+            <p id="directMetaSessionEvidence" class="muted direct-auth-evidence">Status projection is read-only.</p>
+          </section>
+
           <section class="control-card codex-request-card">
             <div class="section-heading">
               <div>
