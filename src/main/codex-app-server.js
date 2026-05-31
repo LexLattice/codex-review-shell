@@ -499,12 +499,14 @@ class CodexAppServerManager extends EventEmitter {
     this.session.status = "disposed";
     this.emitStatus();
     this.session = null;
-    if (!child || child.killed) return;
+    if (!child || child.exitCode !== null || child.signalCode !== null) return;
     child.kill("SIGTERM");
     await new Promise((resolve) => {
       const timer = setTimeout(() => {
-        if (!child.killed) child.kill("SIGKILL");
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        child.kill("SIGKILL");
       }, 1200);
+      timer.unref?.();
       child.once("exit", () => {
         clearTimeout(timer);
         resolve();
