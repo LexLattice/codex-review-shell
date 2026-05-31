@@ -743,6 +743,30 @@ class DirectMetaSessionStore {
     if (!guardDecision || !validateDirectMetaSessionArtifact(guardDecision)) {
       return this.recordAttemptFailure(metaSessionId, { attemptKind: "cross_context_route", blockerCode: "required_evidence_missing", rendererSafeSummary: "Cross-context route requires a transition guard decision." });
     }
+    if (guardDecision.metaSessionId !== metaSessionId) {
+      return this.recordAttemptFailure(metaSessionId, { attemptKind: "cross_context_route", blockerCode: "required_evidence_missing", rendererSafeSummary: "Cross-context route guard decision session mismatch." });
+    }
+    if (guardDecision.decision !== "allow_shadow") {
+      return this.recordAttemptFailure(metaSessionId, { attemptKind: "cross_context_route", blockerCode: "required_evidence_missing", rendererSafeSummary: "Cross-context route requires an allow-shadow guard decision." });
+    }
+    const guardInput = this.readTransitionGuardInput(metaSessionId, guardDecision.guardInputRef.artifactId);
+    if (!guardInput || !validateDirectMetaSessionArtifact(guardInput) || guardInput.metaSessionId !== metaSessionId) {
+      return this.recordAttemptFailure(metaSessionId, { attemptKind: "cross_context_route", blockerCode: "required_evidence_missing", rendererSafeSummary: "Cross-context route guard input missing or invalid." });
+    }
+    const guardedTargetContextId = guardInput.targetContext.contextId;
+    if (guardDecision.guardInputRef.artifactDigest !== guardInput.digest
+      || guardInput.transitionKind !== "cross_context_route"
+      || guardInput.contractRef.artifactId !== contract.contractId
+      || guardInput.contractRef.artifactDigest !== contract.digest
+      || Number(guardInput.expectedContractVersion) !== Number(contract.contractVersion)
+      || Number(guardInput.expectedSessionEpoch) !== Number(contract.sessionEpoch)
+      || guardInput.contextRegistryRef.artifactId !== contextRegistry.registryId
+      || guardInput.contextRegistryRef.artifactDigest !== contextRegistry.digest
+      || targetContextIds.length !== 1
+      || guardedTargetContextId !== targetContextIds[0]
+      || guardInput.targetContext.contextDigest !== observedContextDigestsAtProposal[guardedTargetContextId]) {
+      return this.recordAttemptFailure(metaSessionId, { attemptKind: "cross_context_route", blockerCode: "required_evidence_missing", rendererSafeSummary: "Cross-context route guard decision scope mismatch." });
+    }
     const ledgerStatus = this.verifyLedger(metaSessionId);
     if (!ledgerStatus.ok) return this.recordAttemptFailure(metaSessionId, { attemptKind: "cross_context_route", blockerCode: "ledger_corrupt", rendererSafeSummary: "Cross-context route requires a valid ledger." });
     const routeId = normalizeId(input.routeId, "cross_context_route");
@@ -792,6 +816,7 @@ class DirectMetaSessionStore {
   acceptCrossContextRoute(metaSessionId, routeId, input = {}) {
     const route = this.readCrossContextRoute(metaSessionId, routeId);
     if (!route || !validateDirectMetaSessionArtifact(route)) return this.recordAttemptFailure(metaSessionId, { attemptKind: "cross_context_route", blockerCode: "required_evidence_missing", rendererSafeSummary: "Cross-context route missing." });
+    if (route.metaSessionId !== metaSessionId) return this.recordAttemptFailure(metaSessionId, { attemptKind: "cross_context_route", blockerCode: "required_evidence_missing", rendererSafeSummary: "Cross-context route session mismatch." });
     if (route.lifecycleState !== "proposed") return this.recordAttemptFailure(metaSessionId, { attemptKind: "cross_context_route", blockerCode: "transition_not_allowed", rendererSafeSummary: "Only proposed routes may be accepted." });
     if (input.humanApproved !== true) return this.recordAttemptFailure(metaSessionId, { attemptKind: "cross_context_route", blockerCode: "human_approval_required", rendererSafeSummary: "Cross-context route acceptance requires human approval." });
     const accepted = withArtifactDigest("cross_context_route", {
@@ -811,6 +836,7 @@ class DirectMetaSessionStore {
   dispatchCrossContextRoute(metaSessionId, routeId) {
     const route = this.readCrossContextRoute(metaSessionId, routeId);
     if (!route || !validateDirectMetaSessionArtifact(route)) return this.recordAttemptFailure(metaSessionId, { attemptKind: "cross_context_route", blockerCode: "required_evidence_missing", rendererSafeSummary: "Cross-context route missing." });
+    if (route.metaSessionId !== metaSessionId) return this.recordAttemptFailure(metaSessionId, { attemptKind: "cross_context_route", blockerCode: "required_evidence_missing", rendererSafeSummary: "Cross-context route session mismatch." });
     if (route.lifecycleState !== "accepted") return this.recordAttemptFailure(metaSessionId, { attemptKind: "cross_context_route", blockerCode: "transition_not_allowed", rendererSafeSummary: "Only accepted routes may be dispatched." });
     const contextRegistry = this.readContextRegistry(metaSessionId, route.contextRegistryRef.artifactId);
     if (!contextRegistry || !validateDirectMetaSessionArtifact(contextRegistry)) return this.recordAttemptFailure(metaSessionId, { attemptKind: "cross_context_route", blockerCode: "context_missing", rendererSafeSummary: "Cross-context route context registry missing." });
@@ -841,6 +867,7 @@ class DirectMetaSessionStore {
     const result = this.writeValidatedArtifact(metaSessionId, "cross_context_route", ARTIFACT_FOLDERS.cross_context_route, route.routeId, next, routeStale ? "cross_context_route_dispatch_blocked" : "cross_context_route_dispatched", {
       attemptKind: "cross_context_route",
     });
+    if (!result.ok) return result;
     if (!routeStale) return result;
     const failure = this.recordAttemptFailure(metaSessionId, {
       attemptKind: "cross_context_route",

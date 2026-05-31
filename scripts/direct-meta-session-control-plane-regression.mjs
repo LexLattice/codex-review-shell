@@ -618,6 +618,30 @@ await runCase("transition_guard_missing_instruction_package_asks_human_shadow", 
 });
 
 let routeId = "";
+await runCase("cross_context_route_proposal_rejects_non_allow_guard_decision", () => {
+  const result = store.recordCrossContextRouteProposal(metaSessionId, {
+    routeId: "cross_context_route_denied_guard_fixture",
+    sourceSurface: "meta_session_chat",
+    targetContextIds: ["context_b"],
+    contextRegistryId: "context_registry_fixture",
+    guardDecisionId: "transition_guard_decision_stale_context",
+    routeKind: "dispatch",
+  });
+  assert(!result.ok && result.blockerCode === "required_evidence_missing", "route proposal accepted a non-allow guard decision");
+});
+
+await runCase("cross_context_route_proposal_rejects_guard_target_mismatch", () => {
+  const result = store.recordCrossContextRouteProposal(metaSessionId, {
+    routeId: "cross_context_route_wrong_guard_target_fixture",
+    sourceSurface: "meta_session_chat",
+    targetContextIds: ["context_a"],
+    contextRegistryId: "context_registry_fixture",
+    guardDecisionId,
+    routeKind: "dispatch",
+  });
+  assert(!result.ok && result.blockerCode === "required_evidence_missing", "route proposal accepted a mismatched guard target");
+});
+
 await runCase("cross_context_route_proposal_cites_guard_and_context_state", () => {
   const result = store.recordCrossContextRouteProposal(metaSessionId, {
     routeId: "cross_context_route_fixture",
