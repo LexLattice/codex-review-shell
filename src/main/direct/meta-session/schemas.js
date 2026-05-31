@@ -23,6 +23,8 @@ const {
   DIRECT_META_STATUS_PROJECTION_SCHEMA,
   DIRECT_RUN_CONTRACT_SCHEMA,
   DIRECT_RUN_CONTRACT_STATUSES,
+  DIRECT_TRANSITION_GUARD_DECISION_SCHEMA,
+  DIRECT_TRANSITION_GUARD_INPUT_SCHEMA,
   DIRECT_TRANSITION_CLAIM_SCHEMA,
   DIRECT_UPSTREAM_DISCRIMINATOR_ROW_SCHEMA,
 } = require("./constants");
@@ -148,6 +150,58 @@ function validateInstructionPackage(value) {
     && value.rawCompiledPromptIncluded === false
     && value.launchEnvelopePersisted === false
     && value.workerLaunchAuthority === false
+    && hasDigest(value));
+}
+
+function validateGuardContextSnapshot(value) {
+  return Boolean(isPlainObject(value)
+    && normalizeString(value.contextId, "")
+    && normalizeString(value.contextDigest, "").startsWith("sha256:"));
+}
+
+function validateTransitionGuardInput(value) {
+  return Boolean(isPlainObject(value)
+    && value.schemaVersion === DIRECT_TRANSITION_GUARD_INPUT_SCHEMA
+    && normalizeString(value.guardInputId, "")
+    && normalizeString(value.metaSessionId, "")
+    && normalizeString(value.transitionKind, "")
+    && Number.isInteger(value.expectedContractVersion)
+    && value.expectedContractVersion >= 1
+    && Number.isInteger(value.expectedSessionEpoch)
+    && value.expectedSessionEpoch >= 1
+    && validateArtifactRefs([value.contractRef])
+    && validateArtifactRefs([value.contextRegistryRef])
+    && validateArtifactRefs([value.instructionPackageRef])
+    && validateArtifactRefs(value.transitionClaimRefs)
+    && validateGuardContextSnapshot(value.sourceContext)
+    && validateGuardContextSnapshot(value.targetContext)
+    && normalizeString(value.inputDigest, "").startsWith("sha256:")
+    && value.enforcementAvailableInThisPr === false
+    && value.runtimeMutationAuthority === false
+    && value.rawTextIncluded === false
+    && hasDigest(value));
+}
+
+function validateTransitionGuardDecision(value) {
+  return Boolean(isPlainObject(value)
+    && value.schemaVersion === DIRECT_TRANSITION_GUARD_DECISION_SCHEMA
+    && normalizeString(value.guardDecisionId, "")
+    && normalizeString(value.metaSessionId, "")
+    && validateArtifactRefs([value.guardInputRef])
+    && ["allow_shadow", "deny_shadow", "ask_human_shadow", "reclassify_shadow", "stop_shadow"].includes(value.decision)
+    && Array.isArray(value.reasonCodes)
+    && value.reasonCodes.every((reason) => normalizeString(reason, ""))
+    && Array.isArray(value.blockerCodes)
+    && value.blockerCodes.every((code) => isMetaSessionBlockerCode(code))
+    && validateArtifactRefs(value.evidenceRefs)
+    && typeof value.wouldBlockInFutureEnforceMode === "boolean"
+    && value.shadowOnly === true
+    && value.enforceableInThisPr === false
+    && value.runtimeBlocked === false
+    && value.routeDispatched === false
+    && value.workerLaunchAuthority === false
+    && value.providerTransportAuthority === false
+    && value.rawTextIncluded === false
     && hasDigest(value));
 }
 
@@ -338,6 +392,8 @@ function validateDirectMetaSessionArtifact(value) {
     case DIRECT_RUN_CONTRACT_SCHEMA: return validateRunContract(value);
     case DIRECT_INSTRUCTION_OMISSION_LEDGER_SCHEMA: return validateInstructionOmissionLedger(value);
     case DIRECT_INSTRUCTION_PACKAGE_SCHEMA: return validateInstructionPackage(value);
+    case DIRECT_TRANSITION_GUARD_INPUT_SCHEMA: return validateTransitionGuardInput(value);
+    case DIRECT_TRANSITION_GUARD_DECISION_SCHEMA: return validateTransitionGuardDecision(value);
     case DIRECT_META_STATE_OBJECT_DESCRIPTOR_SCHEMA: return validateStateObjectDescriptor(value);
     case DIRECT_HOB_OBLIGATION_STATUS_SCHEMA: return validateHobObligationStatus(value);
     case DIRECT_TRANSITION_CLAIM_SCHEMA: return validateTransitionClaim(value);
@@ -364,6 +420,8 @@ module.exports = {
   validateIndex,
   validateInstructionOmissionLedger,
   validateInstructionPackage,
+  validateTransitionGuardDecision,
+  validateTransitionGuardInput,
   validateLedgerEvent,
   validateLedgerManifest,
   validateMetaSession,
