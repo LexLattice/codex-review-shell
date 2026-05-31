@@ -294,6 +294,153 @@ await runCase("session_epoch_law_is_stable", () => {
   assert(session.sessionEpoch === 2 && session.activeContractId === contractId, "epoch law drifted");
 });
 
+let omissionLedgerId = "";
+let instructionPackageId = "";
+await runCase("instruction_omission_ledger_records_omission_truth", () => {
+  const omittedSource = fixtureSourceRef("omitted release workflow");
+  const result = store.recordInstructionOmissionLedger(metaSessionId, {
+    ledgerId: "instruction_omission_ledger_fixture",
+    packageId: "instruction_package_fixture",
+    roleId: "worker_adversarial_phase",
+    targetContextId: "context_a",
+    omissions: [{
+      omissionId: "omit_release_workflow",
+      sourceRef: omittedSource,
+      reason: "irrelevant_to_role",
+      inheritedObligationStatus: "proved_irrelevant",
+      rendererSafeSummary: "Release workflow omitted for bounded phase worker",
+    }],
+  });
+  assert(result.ok, "omission ledger should pass");
+  omissionLedgerId = result.artifact.ledgerId;
+  assert(result.artifact.omissionCount === 1, "omission count mismatch");
+  assert(result.artifact.rawCompiledPromptIncluded === false, "raw compiled prompt leaked into omission ledger");
+});
+
+await runCase("instruction_omission_ledger_source_digest_uses_normalized_scope", () => {
+  const result = store.recordInstructionOmissionLedger(metaSessionId, {
+    ledgerId: "instruction_omission_default_scope",
+    omissions: [],
+  });
+  assert(result.ok, "default-scope omission ledger should pass");
+  const expected = genericDigest({
+    omissions: [],
+    roleId: result.artifact.roleId,
+    targetContextId: result.artifact.targetContextId,
+  });
+  assert(result.artifact.roleId === "worker", "default role not normalized");
+  assert(result.artifact.targetContextId === "context_fixture", "default target context not normalized");
+  assert(result.artifact.sourceDigest === expected, "source digest did not use normalized scope");
+});
+
+await runCase("instruction_omission_ledger_blocks_raw_omission_summary", () => {
+  const result = store.recordInstructionOmissionLedger(metaSessionId, {
+    ledgerId: "instruction_omission_raw_fixture",
+    roleId: "worker",
+    targetContextId: "context_a",
+    omissions: [{
+      sourceRef: fixtureSourceRef("raw omission"),
+      reason: "scope_excluded",
+      rendererSafeSummary: "omit /home/rose/private/context",
+    }],
+  });
+  assert(!result.ok && result.blockerCode === "raw_exposure_blocked", "raw omission summary should block");
+});
+
+await runCase("instruction_package_requires_active_contract", () => {
+  const separate = store.createMetaSession({ metaSessionId: "meta_session_no_active_contract" });
+  const result = store.recordInstructionPackage(separate.artifact.metaSessionId, {
+    packageId: "instruction_package_no_contract",
+    roleId: "worker",
+    targetContextId: "context_a",
+    omissionLedgerIds: ["missing_ledger"],
+  });
+  assert(!result.ok && result.blockerCode === "contract_missing", "package without active contract should block");
+});
+
+await runCase("instruction_package_requires_omission_ledger", () => {
+  const result = store.recordInstructionPackage(metaSessionId, {
+    packageId: "instruction_package_missing_ledger",
+    roleId: "worker",
+    targetContextId: "context_a",
+    omissionLedgerIds: [],
+  });
+  assert(!result.ok && result.blockerCode === "required_evidence_missing", "package without omission ledger should block");
+});
+
+await runCase("instruction_package_rejects_mismatched_omission_ledger_scope", () => {
+  const mismatch = store.recordInstructionOmissionLedger(metaSessionId, {
+    ledgerId: "instruction_omission_ledger_mismatch",
+    roleId: "different_worker",
+    targetContextId: "context_a",
+    omissions: [{
+      sourceRef: fixtureSourceRef("mismatched omission"),
+      reason: "scope_excluded",
+      rendererSafeSummary: "Mismatched worker omission",
+    }],
+  });
+  assert(mismatch.ok, "mismatched omission ledger fixture failed");
+  const result = store.recordInstructionPackage(metaSessionId, {
+    packageId: "instruction_package_mismatch",
+    roleId: "worker_adversarial_phase",
+    targetContextId: "context_a",
+    omissionLedgerIds: [mismatch.artifact.ledgerId],
+  });
+  assert(!result.ok && result.blockerCode === "required_evidence_missing", "package accepted mismatched omission ledger");
+});
+
+await runCase("instruction_package_rejects_non_active_contract_id", () => {
+  const draft = store.draftRunContract(metaSessionId, { contractId: "contract_not_active_for_package" });
+  assert(draft.ok, "non-active contract fixture failed");
+  const result = store.recordInstructionPackage(metaSessionId, {
+    packageId: "instruction_package_wrong_contract",
+    contractId: draft.artifact.contractId,
+    roleId: "worker_adversarial_phase",
+    targetContextId: "context_a",
+    omissionLedgerIds: [omissionLedgerId],
+  });
+  assert(!result.ok && result.blockerCode === "contract_digest_mismatch", "package accepted non-active contract id");
+});
+
+await runCase("instruction_package_ignores_caller_epoch_and_version_overrides", () => {
+  const result = store.recordInstructionPackage(metaSessionId, {
+    packageId: "instruction_package_epoch_override",
+    contractVersion: 99,
+    sessionEpoch: 99,
+    roleId: "worker_adversarial_phase",
+    targetContextId: "context_a",
+    omissionLedgerIds: [omissionLedgerId],
+  });
+  assert(result.ok, "instruction package with ignored override should pass");
+  assert(result.artifact.contractVersion === 1, "caller contract version override was persisted");
+  assert(result.artifact.sessionEpoch === 2, "caller session epoch override was persisted");
+});
+
+await runCase("instruction_package_cites_contract_epoch_and_omission_ledger", () => {
+  const result = store.recordInstructionPackage(metaSessionId, {
+    packageId: "instruction_package_fixture",
+    roleId: "worker_adversarial_phase",
+    targetContextId: "context_a",
+    omissionLedgerIds: [omissionLedgerId],
+    authoritySummary: ["bounded worker instruction package"],
+    forbiddenActions: ["worker_launch", "provider_transport", "runtime_enforce"],
+    outputArtifactSchemaRef: "phase_worker_artifact@1",
+  });
+  assert(result.ok, "instruction package should pass");
+  instructionPackageId = result.artifact.packageId;
+  assert(result.artifact.contractId === contractId, "contract id not cited");
+  assert(result.artifact.sessionEpoch === 2, "session epoch not cited");
+  assert(result.artifact.omissionLedgerRefs.length === 1, "omission ledger ref missing");
+});
+
+await runCase("instruction_package_excludes_raw_prompt_and_launch_authority", () => {
+  const packagePath = path.join(rootDir, "sessions", metaSessionId, "artifacts", "instruction-packages", `${instructionPackageId}.json`);
+  const artifact = readJson(packagePath);
+  assert(artifact.rawCompiledPromptIncluded === false, "raw compiled prompt flag wrong");
+  assert(artifact.launchEnvelopePersisted === false, "launch envelope persisted");
+  assert(artifact.workerLaunchAuthority === false, "worker launch authority granted");
+});
+
 await runCase("activation_failure_does_not_update_session_file", () => {
   const txn = store.createMetaSession({ metaSessionId: "meta_session_activation_txn" });
   const draft = store.draftRunContract(txn.artifact.metaSessionId, { contractId: "contract_activation_txn" });
@@ -427,6 +574,12 @@ await runCase("status_projection_is_renderer_safe", () => {
 await runCase("status_projection_actionability_false", () => {
   const projection = store.buildStatusProjection(metaSessionId);
   assert(projection.actionability.actionable === false && projection.actionability.allowedActions.length === 0, "projection actionable");
+});
+
+await runCase("status_projection_counts_instruction_artifacts", () => {
+  const projection = store.buildStatusProjection(metaSessionId);
+  assert(projection.counts.omissionLedgers >= 1, "omission ledger count missing");
+  assert(projection.counts.instructionPackages >= 1, "instruction package count missing");
 });
 
 await runCase("phase_1a_capabilities_all_non_authority", () => {
