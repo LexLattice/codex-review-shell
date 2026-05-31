@@ -2,6 +2,7 @@
 
 const {
   DIRECT_BRL_REPLAY_LOCK_MANIFEST_SCHEMA,
+  DIRECT_CROSS_CONTEXT_ROUTE_SCHEMA,
   DIRECT_EXECUTION_CONTEXT_REGISTRY_SCHEMA,
   DIRECT_HOB_COVERAGE_KINDS,
   DIRECT_HOB_OBLIGATION_STATUSES,
@@ -205,6 +206,46 @@ function validateTransitionGuardDecision(value) {
     && hasDigest(value));
 }
 
+function validateContextDigestMap(value) {
+  return Boolean(isPlainObject(value)
+    && Object.keys(value).every((key) => normalizeString(key, "")
+      && normalizeString(value[key], "").startsWith("sha256:")));
+}
+
+function validateCrossContextRoute(value) {
+  return Boolean(isPlainObject(value)
+    && value.schemaVersion === DIRECT_CROSS_CONTEXT_ROUTE_SCHEMA
+    && normalizeString(value.routeId, "")
+    && normalizeString(value.metaSessionId, "")
+    && ["proposed", "accepted", "dispatched", "dispatch_blocked"].includes(value.lifecycleState)
+    && validateArtifactRefs([value.contractRef])
+    && Number.isInteger(value.contractVersion)
+    && value.contractVersion >= 1
+    && Number.isInteger(value.sessionEpoch)
+    && value.sessionEpoch >= 1
+    && ["meta_session_chat", "local_thread", "ui_action"].includes(value.sourceSurface)
+    && validateArtifactRefs([value.contextRegistryRef])
+    && Array.isArray(value.targetContextIds)
+    && value.targetContextIds.length > 0
+    && value.targetContextIds.every((contextId) => normalizeString(contextId, ""))
+    && validateContextDigestMap(value.observedContextDigestsAtProposal)
+    && (!value.observedContextDigestsAtDispatch || validateContextDigestMap(value.observedContextDigestsAtDispatch))
+    && normalizeString(value.observedLedgerHeadAtProposal, "").startsWith("sha256:")
+    && (!value.observedLedgerHeadAtDispatch || normalizeString(value.observedLedgerHeadAtDispatch, "").startsWith("sha256:"))
+    && normalizeString(value.routeProposalDigest, "").startsWith("sha256:")
+    && ["dispatch", "status_request", "question", "handoff", "broadcast"].includes(value.routeKind)
+    && ["high", "medium", "low"].includes(value.confidence)
+    && Array.isArray(value.ambiguity)
+    && typeof value.humanApproved === "boolean"
+    && (!value.guardDecisionRef || validateArtifactRefs([value.guardDecisionRef]))
+    && (!value.staleBlockerCode || isMetaSessionBlockerCode(value.staleBlockerCode))
+    && value.runtimeMutationAuthority === false
+    && value.workerLaunchAuthority === false
+    && value.providerTransportAuthority === false
+    && value.rawTextIncluded === false
+    && hasDigest(value));
+}
+
 function validateStateObjectDescriptor(value) {
   return Boolean(isPlainObject(value)
     && value.schemaVersion === DIRECT_META_STATE_OBJECT_DESCRIPTOR_SCHEMA
@@ -394,6 +435,7 @@ function validateDirectMetaSessionArtifact(value) {
     case DIRECT_INSTRUCTION_PACKAGE_SCHEMA: return validateInstructionPackage(value);
     case DIRECT_TRANSITION_GUARD_INPUT_SCHEMA: return validateTransitionGuardInput(value);
     case DIRECT_TRANSITION_GUARD_DECISION_SCHEMA: return validateTransitionGuardDecision(value);
+    case DIRECT_CROSS_CONTEXT_ROUTE_SCHEMA: return validateCrossContextRoute(value);
     case DIRECT_META_STATE_OBJECT_DESCRIPTOR_SCHEMA: return validateStateObjectDescriptor(value);
     case DIRECT_HOB_OBLIGATION_STATUS_SCHEMA: return validateHobObligationStatus(value);
     case DIRECT_TRANSITION_CLAIM_SCHEMA: return validateTransitionClaim(value);
@@ -413,6 +455,7 @@ module.exports = {
   validateArtifactRefs,
   validateAttemptFailure,
   validateBrlReplayLockManifest,
+  validateCrossContextRoute,
   validateCurrentPointerSet,
   validateDirectMetaSessionArtifact,
   validateExecutionContextRegistry,

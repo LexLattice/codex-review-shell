@@ -34,6 +34,7 @@ function buildDirectMetaSessionStatusProjection(input = {}) {
     omissionLedgers: artifactCount(sessionDir, "instruction-omission-ledgers"),
     transitionGuardInputs: artifactCount(sessionDir, "transition-guard-inputs"),
     transitionGuardDecisions: artifactCount(sessionDir, "transition-guard-decisions"),
+    crossContextRoutes: artifactCount(sessionDir, "cross-context-routes"),
     descriptors: artifactCount(sessionDir, "state-object-descriptors"),
     hobRows: artifactCount(sessionDir, "hob-obligation-status"),
     transitionClaims: artifactCount(sessionDir, "transition-claims"),
