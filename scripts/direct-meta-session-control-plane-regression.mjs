@@ -443,6 +443,7 @@ await runCase("instruction_package_excludes_raw_prompt_and_launch_authority", ()
 
 let guardTransitionClaimId = "";
 let guardInputId = "";
+let guardDecisionId = "";
 await runCase("transition_guard_input_cites_contract_context_package_and_claim", () => {
   const claim = store.recordTransitionClaim(metaSessionId, validTransitionClaimInput({
     transitionClaimId: "transition_claim_guard_fixture",
@@ -475,6 +476,7 @@ await runCase("transition_guard_decision_allows_valid_evidence_in_shadow_only", 
     guardDecisionId: "transition_guard_decision_allow_fixture",
   });
   assert(result.ok, "transition guard decision should pass");
+  guardDecisionId = result.artifact.guardDecisionId;
   assert(result.artifact.decision === "allow_shadow", "valid evidence did not allow in shadow");
   assert(result.artifact.shadowOnly === true, "decision was not shadow only");
   assert(result.artifact.enforceableInThisPr === false, "decision became enforceable");
@@ -613,6 +615,102 @@ await runCase("transition_guard_missing_instruction_package_asks_human_shadow", 
   assert(result.ok, "missing package guard decision should record");
   assert(result.artifact.decision === "ask_human_shadow", "missing package did not ask human in shadow");
   assert(result.artifact.blockerCodes.includes("required_evidence_missing"), "missing package blocker missing");
+});
+
+let routeId = "";
+await runCase("cross_context_route_proposal_rejects_non_allow_guard_decision", () => {
+  const result = store.recordCrossContextRouteProposal(metaSessionId, {
+    routeId: "cross_context_route_denied_guard_fixture",
+    sourceSurface: "meta_session_chat",
+    targetContextIds: ["context_b"],
+    contextRegistryId: "context_registry_fixture",
+    guardDecisionId: "transition_guard_decision_stale_context",
+    routeKind: "dispatch",
+  });
+  assert(!result.ok && result.blockerCode === "required_evidence_missing", "route proposal accepted a non-allow guard decision");
+});
+
+await runCase("cross_context_route_proposal_rejects_guard_target_mismatch", () => {
+  const result = store.recordCrossContextRouteProposal(metaSessionId, {
+    routeId: "cross_context_route_wrong_guard_target_fixture",
+    sourceSurface: "meta_session_chat",
+    targetContextIds: ["context_a"],
+    contextRegistryId: "context_registry_fixture",
+    guardDecisionId,
+    routeKind: "dispatch",
+  });
+  assert(!result.ok && result.blockerCode === "required_evidence_missing", "route proposal accepted a mismatched guard target");
+});
+
+await runCase("cross_context_route_proposal_cites_guard_and_context_state", () => {
+  const result = store.recordCrossContextRouteProposal(metaSessionId, {
+    routeId: "cross_context_route_fixture",
+    sourceSurface: "meta_session_chat",
+    targetContextIds: ["context_b"],
+    contextRegistryId: "context_registry_fixture",
+    guardDecisionId,
+    routeKind: "dispatch",
+    confidence: "high",
+    ambiguity: ["target context selected by fixture"],
+  });
+  assert(result.ok, "cross-context route proposal should pass");
+  routeId = result.artifact.routeId;
+  assert(result.artifact.lifecycleState === "proposed", "route was not proposed");
+  assert(result.artifact.guardDecisionRef.artifactId === guardDecisionId, "guard decision ref missing");
+  assert(result.artifact.targetContextIds.includes("context_b"), "target context missing");
+  assert(result.artifact.observedContextDigestsAtProposal.context_b?.startsWith("sha256:"), "proposal context digest missing");
+  assert(result.artifact.runtimeMutationAuthority === false, "route proposal granted runtime mutation");
+});
+
+await runCase("cross_context_route_accept_requires_human_approval", () => {
+  const result = store.acceptCrossContextRoute(metaSessionId, routeId, {});
+  assert(!result.ok && result.blockerCode === "human_approval_required", "route accepted without human approval");
+});
+
+await runCase("cross_context_route_accept_records_human_approved_state", () => {
+  const result = store.acceptCrossContextRoute(metaSessionId, routeId, { humanApproved: true });
+  assert(result.ok, "route accept should pass");
+  assert(result.artifact.lifecycleState === "accepted", "route was not accepted");
+  assert(result.artifact.humanApproved === true, "human approval not recorded");
+});
+
+await runCase("cross_context_route_dispatch_records_no_runtime_authority", () => {
+  const result = store.dispatchCrossContextRoute(metaSessionId, routeId);
+  assert(result.ok, "route dispatch should record");
+  assert(result.artifact.lifecycleState === "dispatched", "route was not marked dispatched");
+  assert(result.artifact.observedContextDigestsAtDispatch.context_b === result.artifact.observedContextDigestsAtProposal.context_b, "dispatch digest mismatch");
+  assert(result.artifact.runtimeMutationAuthority === false, "route dispatch granted runtime mutation");
+  assert(result.artifact.workerLaunchAuthority === false, "route dispatch granted worker launch");
+  assert(result.artifact.providerTransportAuthority === false, "route dispatch granted provider transport");
+});
+
+await runCase("cross_context_route_stale_dispatch_blocks_and_preserves_pointers", () => {
+  const proposed = store.recordCrossContextRouteProposal(metaSessionId, {
+    routeId: "cross_context_route_stale_fixture",
+    sourceSurface: "meta_session_chat",
+    targetContextIds: ["context_b"],
+    contextRegistryId: "context_registry_fixture",
+    guardDecisionId,
+    routeKind: "dispatch",
+  });
+  assert(proposed.ok, "stale route proposal setup failed");
+  const accepted = store.acceptCrossContextRoute(metaSessionId, proposed.artifact.routeId, { humanApproved: true });
+  assert(accepted.ok, "stale route accept setup failed");
+  const changed = store.recordExecutionContextRegistry(metaSessionId, {
+    registryId: "context_registry_fixture",
+    contexts: [
+      { contextId: "context_a", displayLabel: "Same label", jurisdiction: "direct harness", runtimeSourceClass: "direct" },
+      { contextId: "context_b", displayLabel: "Same label", jurisdiction: "changed target jurisdiction", runtimeSourceClass: "app_server" },
+    ],
+  });
+  assert(changed.ok, "context change setup failed");
+  const beforePointers = store.readCurrentPointers(metaSessionId).pointerSetDigest;
+  const result = store.dispatchCrossContextRoute(metaSessionId, proposed.artifact.routeId);
+  const afterPointers = store.readCurrentPointers(metaSessionId).pointerSetDigest;
+  assert(!result.ok && result.blockerCode === "route_stale", "stale route dispatch did not block");
+  assert(result.artifact.lifecycleState === "dispatch_blocked", "stale route did not record blocked lifecycle");
+  assert(result.artifact.staleBlockerCode === "route_stale", "stale blocker missing");
+  assert(beforePointers === afterPointers, "stale route dispatch changed pointers");
 });
 
 await runCase("activation_failure_does_not_update_session_file", () => {
@@ -760,6 +858,11 @@ await runCase("status_projection_counts_transition_guard_artifacts", () => {
   const projection = store.buildStatusProjection(metaSessionId);
   assert(projection.counts.transitionGuardInputs >= 1, "transition guard input count missing");
   assert(projection.counts.transitionGuardDecisions >= 1, "transition guard decision count missing");
+});
+
+await runCase("status_projection_counts_cross_context_routes", () => {
+  const projection = store.buildStatusProjection(metaSessionId);
+  assert(projection.counts.crossContextRoutes >= 1, "cross-context route count missing");
 });
 
 await runCase("phase_1a_capabilities_all_non_authority", () => {

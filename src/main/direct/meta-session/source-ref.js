@@ -59,6 +59,7 @@ function artifactRefFromArtifact(artifactKind, artifact, storageSlot = "") {
     instruction_package: artifact?.packageId,
     transition_guard_input: artifact?.guardInputId,
     transition_guard_decision: artifact?.guardDecisionId,
+    cross_context_route: artifact?.routeId,
     descriptor: artifact?.id,
     hob: artifact?.rowId,
     transition_claim: artifact?.transitionClaimId,
@@ -77,6 +78,7 @@ function artifactRefFromArtifact(artifactKind, artifact, storageSlot = "") {
     || artifact?.packageId
     || artifact?.guardInputId
     || artifact?.guardDecisionId
+    || artifact?.routeId
     || artifact?.id
     || artifact?.rowId
     || artifact?.transitionClaimId
