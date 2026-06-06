@@ -58,17 +58,27 @@ function normalizeBinaryCommand(binaryPath, runtime) {
   return text;
 }
 
+function hostReadablePathForWslMountPath(linuxPath) {
+  const text = normalizeString(linuxPath, "");
+  if (process.platform !== "win32") return text;
+  const match = text.match(/^\/mnt\/([a-z])\/(.+)$/i);
+  if (!match) return text;
+  return `${match[1].toUpperCase()}:\\${match[2].replace(/\//g, "\\")}`;
+}
+
 function bundledWslCodexForHome(codexHome) {
   const home = normalizeString(codexHome, "");
   if (!/^\/mnt\/[a-z]\/.+\/\.codex$/i.test(home)) return "";
   const wslBinRoot = `${home}/bin/wsl`;
+  const hostBinRoot = hostReadablePathForWslMountPath(wslBinRoot);
   try {
-    const candidates = fs.readdirSync(wslBinRoot, { withFileTypes: true })
+    const candidates = fs.readdirSync(hostBinRoot, { withFileTypes: true })
       .filter((entry) => entry.isDirectory())
       .map((entry) => {
         const fullPath = `${wslBinRoot}/${entry.name}/codex`;
+        const hostPath = hostReadablePathForWslMountPath(fullPath);
         try {
-          const stat = fs.statSync(fullPath);
+          const stat = fs.statSync(hostPath);
           return stat.isFile() ? { fullPath, mtimeMs: stat.mtimeMs } : null;
         } catch {
           return null;
@@ -78,7 +88,7 @@ function bundledWslCodexForHome(codexHome) {
       .sort((left, right) => right.mtimeMs - left.mtimeMs);
     if (candidates[0]?.fullPath) return candidates[0].fullPath;
     const legacyPath = `${wslBinRoot}/codex`;
-    return fs.existsSync(legacyPath) ? legacyPath : "";
+    return fs.statSync(hostReadablePathForWslMountPath(legacyPath)).isFile() ? legacyPath : "";
   } catch {
     return "";
   }
