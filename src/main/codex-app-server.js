@@ -1,6 +1,7 @@
 "use strict";
 
 const { EventEmitter } = require("node:events");
+const fs = require("node:fs");
 const { spawn } = require("node:child_process");
 const net = require("node:net");
 const {
@@ -55,6 +56,42 @@ function normalizeBinaryCommand(binaryPath, runtime) {
     return `${text}.cmd`;
   }
   return text;
+}
+
+function hostReadablePathForWslMountPath(linuxPath) {
+  const text = normalizeString(linuxPath, "");
+  if (process.platform !== "win32") return text;
+  const match = text.match(/^\/mnt\/([a-z])\/(.+)$/i);
+  if (!match) return text;
+  return `${match[1].toUpperCase()}:\\${match[2].replace(/\//g, "\\")}`;
+}
+
+function bundledWslCodexForHome(codexHome) {
+  const home = normalizeString(codexHome, "");
+  if (!/^\/mnt\/[a-z]\/.+\/\.codex$/i.test(home)) return "";
+  const wslBinRoot = `${home}/bin/wsl`;
+  const hostBinRoot = hostReadablePathForWslMountPath(wslBinRoot);
+  try {
+    const candidates = fs.readdirSync(hostBinRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => {
+        const fullPath = `${wslBinRoot}/${entry.name}/codex`;
+        const hostPath = hostReadablePathForWslMountPath(fullPath);
+        try {
+          const stat = fs.statSync(hostPath);
+          return stat.isFile() ? { fullPath, mtimeMs: stat.mtimeMs } : null;
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean)
+      .sort((left, right) => right.mtimeMs - left.mtimeMs);
+    if (candidates[0]?.fullPath) return candidates[0].fullPath;
+    const legacyPath = `${wslBinRoot}/codex`;
+    return fs.statSync(hostReadablePathForWslMountPath(legacyPath)).isFile() ? legacyPath : "";
+  } catch {
+    return "";
+  }
 }
 
 async function allocatePort() {
@@ -255,8 +292,11 @@ function buildDescriptor(project, codex, port, options = {}) {
   const runtime = resolveRuntime(project, codex);
   const wsUrl = `ws://127.0.0.1:${port}`;
   const readyUrl = `http://127.0.0.1:${port}/readyz`;
-  const binaryPath = normalizeBinaryCommand(codex.binaryPath, runtime);
   const codexHome = normalizeString(options.codexHome, "");
+  const configuredBinaryPath = normalizeBinaryCommand(codex.binaryPath, runtime);
+  const binaryPath = runtime === "wsl" && configuredBinaryPath === "codex"
+    ? bundledWslCodexForHome(codexHome) || configuredBinaryPath
+    : configuredBinaryPath;
   const workspace = project?.workspace || { kind: "local", localPath: project?.repoPath || process.cwd() };
   const provider = normalizeRuntimeProviderConfig(codex);
   if (provider.kind === "direct_oai") {
