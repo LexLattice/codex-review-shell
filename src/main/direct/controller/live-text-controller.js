@@ -595,6 +595,7 @@ function parentResponseSourceForToolStep(obligation = {}) {
 }
 
 function turnSnapshot(turn = {}) {
+  const attribution = isPlainObject(turn.usageAttribution) ? turn.usageAttribution : null;
   return {
     id: turn.turnId,
     status: terminalStatusForState(turn.state),
@@ -603,6 +604,19 @@ function turnSnapshot(turn = {}) {
     completedAt: turn.completedAt ? Date.parse(turn.completedAt) / 1000 : 0,
     error: turn.error || null,
     clientTurnRequestId: normalizeString(turn.clientTurnRequestId, ""),
+    usageAttribution: attribution ? {
+      schema: attribution.schema,
+      attributionId: normalizeString(attribution.attributionId, ""),
+      status: normalizeString(attribution.status, ""),
+      agentKind: normalizeString(attribution.agentScope?.agentKind, ""),
+      agentThreadId: normalizeString(attribution.agentScope?.agentThreadId, ""),
+      parentThreadId: normalizeString(attribution.agentScope?.parentThreadId, ""),
+      rowCount: Number(attribution.rows?.length || 0),
+      totals: attribution.totals || {},
+      billingGrade: attribution.privacy?.billingGrade === true,
+      rawPromptIncluded: attribution.privacy?.rawPromptIncluded === true,
+      rawResponseIncluded: attribution.privacy?.rawResponseIncluded === true,
+    } : null,
   };
 }
 
