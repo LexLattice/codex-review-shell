@@ -123,6 +123,7 @@ const state = {
   directThreadList: [],
   directThreadListStatus: "idle",
   directThreadListError: "",
+  directThreadOpenRequestId: 0,
   composerMenu: "",
   composerAttachments: [],
   composerAttachmentGeneration: 0,
@@ -4009,11 +4010,12 @@ function directThreadTimeLabel(value) {
   const date = new Date(parsed);
   const now = new Date();
   const sameDay = date.toDateString() === now.toDateString();
-  if (sameDay) return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  return date.toLocaleDateString([], { month: "short", day: "numeric" });
+  if (sameDay) return date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 function directThreadStateLabel(entry = {}) {
+  if (!entry) return "unknown";
   if (Number(entry.activeTurnCount || 0) > 0) return "running";
   const lastTurnState = String(entry.lastTurnState || "").trim();
   if (lastTurnState) return lastTurnState.replace(/_/g, " ");
@@ -4039,12 +4041,13 @@ function renderDirectThreadList() {
   } else if (!threads.length) {
     els.directThreadStatus.textContent = "No direct sessions for this project yet.";
   } else {
-    const activeCount = threads.filter((entry) => Number(entry.activeTurnCount || 0) > 0).length;
+    const activeCount = threads.filter((entry) => entry && Number(entry.activeTurnCount || 0) > 0).length;
     els.directThreadStatus.textContent = `${threads.length} direct session${threads.length === 1 ? "" : "s"}${activeCount ? ` · ${activeCount} running` : ""}`;
   }
 
   els.directThreadList.replaceChildren();
   for (const entry of threads) {
+    if (!entry) continue;
     const threadId = String(entry.threadId || entry.id || "").trim();
     if (!threadId) continue;
     const isActive = threadId === String(state.threadId || "");
@@ -4088,8 +4091,8 @@ async function refreshDirectThreadList(options = {}) {
   state.directThreadListError = "";
   renderDirectThreadList();
   try {
-    const result = await rpc("thread/list", { projectId: project?.id || "", limit: options.limit || 40 });
-    state.directThreadList = Array.isArray(result?.threads) ? result.threads : [];
+    const result = await rpc("thread/list", { limit: options.limit || 40 });
+    state.directThreadList = Array.isArray(result?.threads) ? result.threads.filter(Boolean) : [];
     state.directThreadListStatus = "ready";
     state.directThreadListError = "";
   } catch (error) {
@@ -4104,7 +4107,10 @@ async function openDirectThread(threadId) {
   const requestedThreadId = String(threadId || "").trim();
   if (!requestedThreadId) throw new Error("Missing direct thread id.");
   if (requestedThreadId === String(state.threadId || "") && state.liveAttached) return;
+  const openRequestId = state.directThreadOpenRequestId + 1;
+  state.directThreadOpenRequestId = openRequestId;
   const result = await readThreadById(requestedThreadId);
+  if (state.directThreadOpenRequestId !== openRequestId) return;
   clearRenderedThreadState();
   state.sourceHome = "";
   state.sessionFilePath = "";
@@ -5142,11 +5148,19 @@ function renderStoredTranscript(snapshot, threadId, options = {}) {
 async function loadExistingThreadOrStartNew() {
   if (isDirectLiveTextSurface() && hasCapability("threads", "canList")) {
     await refreshDirectThreadList({ showErrors: false });
-    const latest = state.directThreadList.find((entry) => String(entry?.threadId || entry?.id || "").trim());
-    const latestThreadId = String(latest?.threadId || latest?.id || "").trim();
-    if (latestThreadId) {
-      await openDirectThread(latestThreadId);
-      return;
+    let lastOpenError = null;
+    for (const entry of state.directThreadList) {
+      const threadId = String(entry?.threadId || entry?.id || "").trim();
+      if (!threadId) continue;
+      try {
+        await openDirectThread(threadId);
+        return;
+      } catch (error) {
+        lastOpenError = error;
+      }
+    }
+    if (lastOpenError) {
+      addSystemMessage(`Unable to restore existing direct thread: ${lastOpenError.message}. Starting a new thread instead.`);
     }
   }
   setNotice("Preparing Codex session…", "Starting a fresh Codex thread for this workspace.", { showNewThread: true });
@@ -6608,6 +6622,7 @@ async function startNewThread() {
   if (!hasCapability("threads", "canStart")) {
     throw new Error("Active Codex runtime does not expose thread/start capability.");
   }
+  if (isDirectLiveTextSurface()) state.directThreadOpenRequestId += 1;
   const cwd = workspaceRootText();
   const params = {
     cwd,

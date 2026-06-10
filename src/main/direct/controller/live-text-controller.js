@@ -584,7 +584,7 @@ function threadListEntryFromIndexEntry(entry = {}) {
 function sessionMatchesProject(session = {}, projectId = "") {
   const scopedProjectId = normalizeString(projectId, "");
   if (!scopedProjectId) return true;
-  return normalizeString(session.projectId, "") === scopedProjectId;
+  return normalizeString(session?.projectId, "") === scopedProjectId;
 }
 
 function terminalStatusForState(state) {
@@ -966,7 +966,7 @@ class DirectLiveTextController {
     };
     const threads = sessions
       .filter((entry) => {
-        return sessionMatchesProject(entry, projectId);
+        return entry && sessionMatchesProject(entry, projectId);
       })
       .sort((left, right) => updatedMs(right) - updatedMs(left))
       .slice(0, limit)

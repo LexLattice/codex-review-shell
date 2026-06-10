@@ -55,6 +55,11 @@ try {
   assert.equal(result.threads.some((thread) => thread.title === "Other project session"), false);
   assert.equal(result.storeStatus.sessionCount, 2);
 
+  sessionStore.readIndex().sessions.push(null);
+  const malformedIndexResult = controller.listThreads({ limit: 10 }, { project: { id: "project-a" } });
+  assert.equal(malformedIndexResult.count, 2);
+  assert.equal(malformedIndexResult.storeStatus.sessionCount, 2);
+
   const ignoredProjectParam = controller.listThreads({ projectId: "project-b", limit: 10 }, { project: { id: "project-a" } });
   assert.deepEqual(ignoredProjectParam.threads.map((thread) => thread.id), [newer.sessionId, older.sessionId]);
 
