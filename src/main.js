@@ -2487,6 +2487,7 @@ function downloadPendingChatgptMacroNavigation(contents, request, url) {
   const targetUrl = safeDownloadLinkUrl(url);
   if (!targetUrl) {
     emitChatgptDownloadNavigationBlocked(request, url);
+    if (request?.id) removePendingChatgptDownloadMacroRequest(request.id);
     return false;
   }
   try {
@@ -2501,6 +2502,7 @@ function downloadPendingChatgptMacroNavigation(contents, request, url) {
       url: targetUrl,
       at: nowIso(),
     });
+    if (request?.id) removePendingChatgptDownloadMacroRequest(request.id);
     return false;
   }
 }
@@ -2937,10 +2939,10 @@ async function sendProjectStashToLinkedCodex(payload = {}) {
   const seen = new Set();
   const uniqueFiles = [];
   for (const file of files) {
-    const dedupeKey = `${file.codexThreadId}::${file.relPath}`;
+    const { relPath: resolvedRelPath } = await resolveProjectFileReference(project.id, file.relPath);
+    const dedupeKey = `${file.codexThreadId}::${resolvedRelPath}`;
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
-    const { relPath: resolvedRelPath } = await resolveProjectFileReference(project.id, file.relPath);
     uniqueFiles.push({ ...file, relPath: resolvedRelPath });
   }
   const target = codexTargetForProjectStash(project, uniqueFiles);
@@ -3070,7 +3072,9 @@ function chatgptElementFromPointClickScript(params = {}) {
           const url = new URL(String(value || ""), location.href);
           if (url.protocol !== "https:" || url.username || url.password) return "";
           url.hash = "";
-          return url.toString().replace(/\\/+$/, "");
+          let normalized = url.toString();
+          while (normalized.endsWith("/")) normalized = normalized.slice(0, -1);
+          return normalized;
         } catch {
           return "";
         }
