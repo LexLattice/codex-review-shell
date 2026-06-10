@@ -4,6 +4,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { assertFixtureRedacted } = require("../fixtures/redaction");
+const { updateDirectTurnUsageAttribution } = require("../usage/turn-attribution");
 
 const DIRECT_SESSION_INDEX_SCHEMA = "direct_codex_session_index@1";
 const DIRECT_SESSION_SCHEMA = "direct_codex_session@1";
@@ -790,6 +791,13 @@ class DirectSessionStore {
       createdAt: normalizeString(input.createdAt, now),
       updatedAt: normalizeString(input.updatedAt, now),
       model: normalizeString(input.model, ""),
+      reasoningEffort: normalizeString(input.reasoningEffort, ""),
+      agentKind: normalizeString(input.agentKind, ""),
+      agentThreadId: normalizeString(input.agentThreadId, sessionId),
+      parentThreadId: normalizeString(input.parentThreadId, ""),
+      primaryThreadId: normalizeString(input.primaryThreadId, input.parentThreadId || sessionId),
+      agentLabel: normalizeString(input.agentLabel, ""),
+      agentRole: normalizeString(input.agentRole, ""),
       runtimeMode: normalizeString(input.runtimeMode, ""),
       directTransport: normalizeString(input.directTransport, ""),
       workspaceDisplayPath: normalizeString(input.workspaceDisplayPath, ""),
@@ -853,6 +861,7 @@ class DirectSessionStore {
       createdAt: normalizeString(input.createdAt, now),
       updatedAt: normalizeString(input.updatedAt, now),
       model: normalizeString(input.model, session.model),
+      reasoningEffort: normalizeString(input.reasoningEffort, session.reasoningEffort),
       profileSnapshotId: normalizeString(input.profileSnapshotId, session.profileSnapshotId),
       clientTurnRequestId: normalizeString(input.clientTurnRequestId, ""),
       requestBuiltAt: "",
@@ -869,7 +878,13 @@ class DirectSessionStore {
       unresolvedObligations: Array.isArray(input.unresolvedObligations) ? input.unresolvedObligations : [],
       toolResults: Array.isArray(input.toolResults) ? input.toolResults : [],
       continuationRequests: Array.isArray(input.continuationRequests) ? input.continuationRequests : [],
+      usageAttribution: isPlainObject(input.usageAttribution) ? input.usageAttribution : null,
       error: isPlainObject(input.error) ? input.error : null,
+      agentKind: normalizeString(input.agentKind, session.agentKind),
+      agentThreadId: normalizeString(input.agentThreadId, session.agentThreadId || session.sessionId),
+      parentThreadId: normalizeString(input.parentThreadId, session.parentThreadId),
+      agentLabel: normalizeString(input.agentLabel, session.agentLabel),
+      agentRole: normalizeString(input.agentRole, session.agentRole),
       sourceClass: normalizeString(input.sourceClass, ""),
       nativeDirectSession: input.nativeDirectSession === true,
       parentImportLineage: isPlainObject(input.parentImportLineage) ? input.parentImportLineage : null,
@@ -902,7 +917,13 @@ class DirectSessionStore {
           createdAt: turn.createdAt,
           updatedAt: turn.updatedAt,
           model: turn.model,
+          reasoningEffort: turn.reasoningEffort,
           normalizedEventCount: 0,
+          usageAttributionStatus: normalizeString(turn.usageAttribution?.status, ""),
+          usageTotalTokensKnown: Number(turn.usageAttribution?.totals?.totalTokensKnown || 0),
+          agentKind: normalizeString(turn.agentKind, ""),
+          agentThreadId: normalizeString(turn.agentThreadId, ""),
+          parentThreadId: normalizeString(turn.parentThreadId, ""),
           sourceClass: normalizeString(turn.sourceClass, ""),
           checkpointContinuationId: normalizeString(turn.checkpointContinuationId, ""),
           checkpointSeedId: normalizeString(turn.checkpointSeedId, ""),
@@ -934,13 +955,24 @@ class DirectSessionStore {
     this.writeTurn(nextTurn);
     const session = this.readSession(sessionId);
     if (session) {
+      const usageTotals = isPlainObject(nextTurn.usageAttribution?.totals) ? nextTurn.usageAttribution.totals : {};
       const nextSession = {
         ...session,
         updatedAt: now,
         status: state,
         turns: session.turns.map((summary) =>
           summary.turnId === turnId
-            ? { ...summary, state, updatedAt: now, normalizedEventCount: nextTurn.normalizedEventCount }
+            ? {
+              ...summary,
+              state,
+              updatedAt: now,
+              normalizedEventCount: nextTurn.normalizedEventCount,
+              usageAttributionStatus: normalizeString(nextTurn.usageAttribution?.status, summary.usageAttributionStatus || ""),
+              usageTotalTokensKnown: Number(usageTotals.totalTokensKnown ?? summary.usageTotalTokensKnown ?? 0),
+              agentKind: normalizeString(nextTurn.agentKind, summary.agentKind || ""),
+              agentThreadId: normalizeString(nextTurn.agentThreadId, summary.agentThreadId || ""),
+              parentThreadId: normalizeString(nextTurn.parentThreadId, summary.parentThreadId || ""),
+            }
             : summary,
         ),
       };
@@ -1171,8 +1203,20 @@ class DirectSessionStore {
     const lines = normalizedEvents.map((event) => JSON.stringify({ at, event })).join("\n");
     ensureDirectory(path.dirname(this.eventPath(sessionId, turnId)));
     fs.appendFileSync(this.eventPath(sessionId, turnId), `${lines}\n`, "utf8");
+    const session = this.readSession(sessionId);
+    const usageAttribution = updateDirectTurnUsageAttribution({
+      existing: turn.usageAttribution,
+      session,
+      turn,
+      events: normalizedEvents,
+      observedAt: at,
+      projectId: session?.projectId,
+      model: turn.model,
+      reasoningEffort: turn.reasoningEffort,
+    });
     return this.updateTurnState(sessionId, turnId, turn.state, {
       normalizedEventCount: turn.normalizedEventCount + normalizedEvents.length,
+      usageAttribution,
     }, options);
   }
 
