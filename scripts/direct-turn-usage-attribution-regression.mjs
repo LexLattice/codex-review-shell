@@ -86,10 +86,10 @@ function run() {
     agentKind: "sub_worker",
     agentThreadId: "agent_worker_1",
     parentThreadId: "session_main",
-    primaryThreadId: "session_main",
     agentLabel: "Worker",
     agentRole: "reviewer",
   });
+  assert(workerSession.primaryThreadId === "session_main", "Expected worker primary thread to default to parent thread.", workerSession);
   const workerTurn = store.createTurn(workerSession.sessionId, {
     turnId: "turn_worker",
     input: [{ role: "user", text: "worker turn" }],
@@ -103,6 +103,7 @@ function run() {
   const persistedWorkerTurn = store.readTurn(workerSession.sessionId, workerTurn.turnId);
   assert(persistedWorkerTurn.usageAttribution.agentScope.agentKind === "sub_worker", "Expected worker turn to be attributed to sub-worker.", persistedWorkerTurn.usageAttribution.agentScope);
   assert(persistedWorkerTurn.usageAttribution.agentScope.parentThreadId === "session_main", "Expected worker parent thread to be preserved.", persistedWorkerTurn.usageAttribution.agentScope);
+  assert(persistedWorkerTurn.usageAttribution.agentScope.primaryThreadId === "session_main", "Expected worker primary thread to be preserved.", persistedWorkerTurn.usageAttribution.agentScope);
   assert(persistedWorkerTurn.usageAttribution.model === "gpt-5.4-mini", "Expected worker model to be preserved.", persistedWorkerTurn.usageAttribution);
   assert(persistedWorkerTurn.usageAttribution.reasoningEffort === "medium", "Expected worker effort to be preserved.", persistedWorkerTurn.usageAttribution);
 
@@ -118,6 +119,38 @@ function run() {
   assert(persistedMissingTurn.usageAttribution.status === "usage_missing", "Expected terminal turn without usage to be marked missing.", persistedMissingTurn.usageAttribution);
   assert(persistedMissingTurn.usageAttribution.totals.totalTokensKnown === 0, "Missing usage can have zero known total, but only with missing status.", persistedMissingTurn.usageAttribution.totals);
   assert(persistedMissingTurn.usageAttribution.totals.missingUsageRowCount === 1, "Expected one missing usage row.", persistedMissingTurn.usageAttribution.totals);
+
+  const partialTurn = store.createTurn(mainSession.sessionId, {
+    turnId: "turn_partial_missing",
+    input: [{ role: "user", text: "partial missing usage turn" }],
+  });
+  store.appendNormalizedEvents(mainSession.sessionId, partialTurn.turnId, [
+    ...usageEvents("resp_partial_observed", 1, { inputTokens: 5, outputTokens: 5, totalTokens: 10 }),
+    { type: "message_delta", sequence: 3, text: "still working" },
+    { type: "response_completed", sequence: 4, responseId: "resp_partial_missing", stopReason: "completed" },
+  ]);
+  const persistedPartialTurn = store.readTurn(mainSession.sessionId, partialTurn.turnId);
+  assert(persistedPartialTurn.usageAttribution.status === "usage_observed", "Expected partial turn to keep observed status while recording missing row.", persistedPartialTurn.usageAttribution);
+  assert(persistedPartialTurn.usageAttribution.rows.length === 2, "Expected one observed and one missing usage row.", persistedPartialTurn.usageAttribution.rows);
+  assert(persistedPartialTurn.usageAttribution.totals.totalTokensKnown === 10, "Expected observed usage to remain counted.", persistedPartialTurn.usageAttribution.totals);
+  assert(persistedPartialTurn.usageAttribution.totals.missingUsageRowCount === 1, "Expected missing terminal response to be counted.", persistedPartialTurn.usageAttribution.totals);
+
+  const overwriteTurn = store.createTurn(mainSession.sessionId, {
+    turnId: "turn_missing_then_observed",
+    input: [{ role: "user", text: "late usage" }],
+  });
+  store.appendNormalizedEvents(mainSession.sessionId, overwriteTurn.turnId, [
+    { type: "response_completed", sequence: 1, responseId: "resp_late_usage", stopReason: "completed" },
+  ]);
+  store.appendNormalizedEvents(mainSession.sessionId, overwriteTurn.turnId, usageEvents("resp_late_usage", 2, {
+    inputTokens: 2,
+    outputTokens: 3,
+    totalTokens: 5,
+  }));
+  const persistedOverwriteTurn = store.readTurn(mainSession.sessionId, overwriteTurn.turnId);
+  assert(persistedOverwriteTurn.usageAttribution.rows.length === 1, "Expected later observed usage to dedupe the earlier missing row.", persistedOverwriteTurn.usageAttribution.rows);
+  assert(persistedOverwriteTurn.usageAttribution.rows[0].usageRecordKind === "terminal", "Expected terminal usage to win over missing row.", persistedOverwriteTurn.usageAttribution.rows);
+  assert(persistedOverwriteTurn.usageAttribution.totals.missingUsageRowCount === 0, "Expected missing count to clear after observed usage arrives.", persistedOverwriteTurn.usageAttribution.totals);
 
   const graphAttribution = buildDirectTurnUsageAttribution({
     session: { sessionId: "agent_graph_worker", projectId: "project_usage_attr", model: "gpt-5.3" },
@@ -150,6 +183,8 @@ function run() {
       "main_agent_usage_rows_sum",
       "sub_worker_metadata_attribution",
       "missing_usage_not_zeroed",
+      "partial_missing_usage_recorded",
+      "late_usage_overwrites_missing",
       "agent_graph_scope_attribution",
     ],
     rootDir,

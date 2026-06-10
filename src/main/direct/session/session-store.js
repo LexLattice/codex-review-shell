@@ -795,7 +795,7 @@ class DirectSessionStore {
       agentKind: normalizeString(input.agentKind, ""),
       agentThreadId: normalizeString(input.agentThreadId, sessionId),
       parentThreadId: normalizeString(input.parentThreadId, ""),
-      primaryThreadId: normalizeString(input.primaryThreadId, input.parentThreadId ? "" : sessionId),
+      primaryThreadId: normalizeString(input.primaryThreadId, input.parentThreadId || sessionId),
       agentLabel: normalizeString(input.agentLabel, ""),
       agentRole: normalizeString(input.agentRole, ""),
       runtimeMode: normalizeString(input.runtimeMode, ""),

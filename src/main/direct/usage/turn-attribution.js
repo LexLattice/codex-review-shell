@@ -174,6 +174,34 @@ function responseTerminalEvents(events = []) {
   return events.filter((event) => ["response_completed", "response_failed", "response_incomplete"].includes(event?.type));
 }
 
+function usageRowCore(input = {}) {
+  return {
+    rowId: `turn_usage_${sha256(input.dedupeKey).slice(0, 20)}`,
+    dedupeKey: input.dedupeKey,
+    sessionId: input.sessionId,
+    threadId: input.sessionId,
+    turnId: input.turnId,
+    agentKind: input.scope.agentKind,
+    agentThreadId: input.scope.agentThreadId,
+    primaryThreadId: input.scope.primaryThreadId,
+    parentThreadId: input.scope.parentThreadId,
+    agentLabel: input.scope.agentLabel,
+    agentRole: input.scope.agentRole,
+    attributionSource: input.scope.attributionSource,
+    responseId: normalizeString(input.responseId, ""),
+    sourceEventSequence: numberValue(input.sourceEventSequence, 0),
+    observedAt: input.observedAt,
+    model: input.model,
+    reasoningEffort: input.reasoningEffort,
+    requestKind: input.requestKind,
+    requestManifestId: input.requestManifestId,
+    contextBuildId: input.contextBuildId,
+    rawTokenDetailsIncluded: false,
+    rawPromptIncluded: false,
+    rawResponseIncluded: false,
+  };
+}
+
 function usageRowsFromEvents(input = {}) {
   const events = Array.isArray(input.events) ? input.events : [];
   const session = isPlainObject(input.session) ? input.session : {};
@@ -197,26 +225,20 @@ function usageRowsFromEvents(input = {}) {
       ? `${sessionId}:${turnId}:response:${responseId}:usage`
       : `${sessionId}:${turnId}:usage-seq:${sourceEventSequence}`;
     const core = {
-      rowId: `turn_usage_${sha256(dedupeKey).slice(0, 20)}`,
-      dedupeKey,
-      sessionId,
-      threadId: sessionId,
-      turnId,
-      agentKind: scope.agentKind,
-      agentThreadId: scope.agentThreadId,
-      primaryThreadId: scope.primaryThreadId,
-      parentThreadId: scope.parentThreadId,
-      agentLabel: scope.agentLabel,
-      agentRole: scope.agentRole,
-      attributionSource: scope.attributionSource,
-      responseId,
-      sourceEventSequence,
-      observedAt,
-      model,
-      reasoningEffort,
-      requestKind,
-      requestManifestId,
-      contextBuildId,
+      ...usageRowCore({
+        dedupeKey,
+        sessionId,
+        turnId,
+        scope,
+        responseId,
+        sourceEventSequence,
+        observedAt,
+        model,
+        reasoningEffort,
+        requestKind,
+        requestManifestId,
+        contextBuildId,
+      }),
       usageSource: "response_completed_usage",
       usageRecordKind: "terminal",
       ...tokens,
@@ -237,34 +259,32 @@ function usageRowsFromEvents(input = {}) {
       rowDigest: artifactDigest(core),
     };
   });
-  if (!rows.length && responseTerminalEvents(events).length) {
-    const terminal = responseTerminalEvents(events)[0];
+  const terminalEvents = responseTerminalEvents(events);
+  for (const terminal of terminalEvents) {
     const responseId = normalizeString(terminal.responseId, "");
+    const hasUsage = responseId
+      ? rows.some((row) => row.responseId === responseId)
+      : rows.some((row) => numberValue(row.sourceEventSequence, -1) <= numberValue(terminal.sequence, -2));
+    if (hasUsage) continue;
     const sourceEventSequence = numberValue(terminal.sequence, 0);
     const dedupeKey = responseId
-      ? `${sessionId}:${turnId}:response:${responseId}:usage-missing`
+      ? `${sessionId}:${turnId}:response:${responseId}:usage`
       : `${sessionId}:${turnId}:terminal-seq:${sourceEventSequence}:usage-missing`;
     const core = {
-      rowId: `turn_usage_${sha256(dedupeKey).slice(0, 20)}`,
-      dedupeKey,
-      sessionId,
-      threadId: sessionId,
-      turnId,
-      agentKind: scope.agentKind,
-      agentThreadId: scope.agentThreadId,
-      primaryThreadId: scope.primaryThreadId,
-      parentThreadId: scope.parentThreadId,
-      agentLabel: scope.agentLabel,
-      agentRole: scope.agentRole,
-      attributionSource: scope.attributionSource,
-      responseId,
-      sourceEventSequence,
-      observedAt,
-      model,
-      reasoningEffort,
-      requestKind,
-      requestManifestId,
-      contextBuildId,
+      ...usageRowCore({
+        dedupeKey,
+        sessionId,
+        turnId,
+        scope,
+        responseId,
+        sourceEventSequence,
+        observedAt,
+        model,
+        reasoningEffort,
+        requestKind,
+        requestManifestId,
+        contextBuildId,
+      }),
       usageSource: "missing",
       usageRecordKind: "missing",
       usageMissingReason: "provider_did_not_emit_usage",
