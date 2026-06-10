@@ -120,6 +120,9 @@ const state = {
   directUiStatusError: "",
   directUiOperationHistory: null,
   directUiPolicyView: null,
+  directThreadList: [],
+  directThreadListStatus: "idle",
+  directThreadListError: "",
   composerMenu: "",
   composerAttachments: [],
   composerAttachmentGeneration: 0,
@@ -459,6 +462,11 @@ const els = {
   runtimeDrawerClose: document.getElementById("runtimeDrawerClose"),
   runtimeDrawerTabs: document.getElementById("runtimeDrawerTabs"),
   runtimeDrawerBody: document.getElementById("runtimeDrawerBody"),
+  directThreadStrip: document.getElementById("directThreadStrip"),
+  directThreadStatus: document.getElementById("directThreadStatus"),
+  directThreadList: document.getElementById("directThreadList"),
+  directThreadRefreshButton: document.getElementById("directThreadRefreshButton"),
+  directThreadNewButton: document.getElementById("directThreadNewButton"),
   transcript: document.getElementById("transcript"),
   composerForm: document.getElementById("composerForm"),
   composerInput: document.getElementById("composerInput"),
@@ -3991,6 +3999,129 @@ function rpc(method, params = {}) {
   return bridge.request(method, params);
 }
 
+function isDirectLiveTextSurface() {
+  return connection?.transport === DIRECT_LIVE_TEXT_TRANSPORT;
+}
+
+function directThreadTimeLabel(value) {
+  const parsed = Date.parse(String(value || ""));
+  if (!Number.isFinite(parsed)) return "time unknown";
+  const date = new Date(parsed);
+  const now = new Date();
+  const sameDay = date.toDateString() === now.toDateString();
+  if (sameDay) return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return date.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+function directThreadStateLabel(entry = {}) {
+  if (Number(entry.activeTurnCount || 0) > 0) return "running";
+  const lastTurnState = String(entry.lastTurnState || "").trim();
+  if (lastTurnState) return lastTurnState.replace(/_/g, " ");
+  return String(entry.status || "created").replace(/_/g, " ");
+}
+
+function renderDirectThreadList() {
+  if (!els.directThreadStrip || !els.directThreadList || !els.directThreadStatus) return;
+  const enabled = isDirectLiveTextSurface();
+  els.directThreadStrip.hidden = !enabled;
+  if (!enabled) return;
+
+  const loading = state.directThreadListStatus === "loading";
+  const error = state.directThreadListStatus === "error";
+  if (els.directThreadRefreshButton) els.directThreadRefreshButton.disabled = loading;
+  if (els.directThreadNewButton) els.directThreadNewButton.disabled = !state.connected || !hasCapability("threads", "canStart");
+
+  const threads = Array.isArray(state.directThreadList) ? state.directThreadList : [];
+  if (loading) {
+    els.directThreadStatus.textContent = "Refreshing direct sessions…";
+  } else if (error) {
+    els.directThreadStatus.textContent = `Thread list unavailable: ${state.directThreadListError || "unknown error"}`;
+  } else if (!threads.length) {
+    els.directThreadStatus.textContent = "No direct sessions for this project yet.";
+  } else {
+    const activeCount = threads.filter((entry) => Number(entry.activeTurnCount || 0) > 0).length;
+    els.directThreadStatus.textContent = `${threads.length} direct session${threads.length === 1 ? "" : "s"}${activeCount ? ` · ${activeCount} running` : ""}`;
+  }
+
+  els.directThreadList.replaceChildren();
+  for (const entry of threads) {
+    const threadId = String(entry.threadId || entry.id || "").trim();
+    if (!threadId) continue;
+    const isActive = threadId === String(state.threadId || "");
+    const isRunning = Number(entry.activeTurnCount || 0) > 0;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = `direct-thread-pill${isActive ? " active" : ""}${isRunning ? " running" : ""}`;
+    button.dataset.threadId = threadId;
+    button.title = `${entry.title || threadId}\n${threadId}`;
+    const title = document.createElement("span");
+    title.className = "direct-thread-pill-title";
+    title.textContent = entry.title || threadId;
+    const status = document.createElement("span");
+    status.className = "direct-thread-pill-state";
+    status.textContent = directThreadStateLabel(entry);
+    const meta = document.createElement("span");
+    meta.className = "direct-thread-pill-meta";
+    const model = String(entry.model || state.activeModel || "").trim();
+    meta.textContent = [
+      model || "model unknown",
+      `${Number(entry.turnCount || 0)} turn${Number(entry.turnCount || 0) === 1 ? "" : "s"}`,
+      directThreadTimeLabel(entry.updatedAt || entry.createdAt),
+    ].filter(Boolean).join(" · ");
+    button.append(title, status, meta);
+    button.addEventListener("click", () => {
+      openDirectThread(threadId).catch((openError) => addSystemMessage(`Unable to open direct thread: ${openError.message}`));
+    });
+    els.directThreadList.appendChild(button);
+  }
+}
+
+async function refreshDirectThreadList(options = {}) {
+  if (!isDirectLiveTextSurface() || !state.connected || !hasCapability("threads", "canList")) {
+    state.directThreadList = [];
+    state.directThreadListStatus = isDirectLiveTextSurface() ? "unavailable" : "hidden";
+    state.directThreadListError = "";
+    renderDirectThreadList();
+    return;
+  }
+  state.directThreadListStatus = "loading";
+  state.directThreadListError = "";
+  renderDirectThreadList();
+  try {
+    const result = await rpc("thread/list", { projectId: project?.id || "", limit: options.limit || 40 });
+    state.directThreadList = Array.isArray(result?.threads) ? result.threads : [];
+    state.directThreadListStatus = "ready";
+    state.directThreadListError = "";
+  } catch (error) {
+    state.directThreadListStatus = "error";
+    state.directThreadListError = error.message || "unknown error";
+    if (options.showErrors !== false) addSystemMessage(`Direct thread list failed: ${state.directThreadListError}`);
+  }
+  renderDirectThreadList();
+}
+
+async function openDirectThread(threadId) {
+  const requestedThreadId = String(threadId || "").trim();
+  if (!requestedThreadId) throw new Error("Missing direct thread id.");
+  if (requestedThreadId === String(state.threadId || "") && state.liveAttached) return;
+  const result = await readThreadById(requestedThreadId);
+  clearRenderedThreadState();
+  state.sourceHome = "";
+  state.sessionFilePath = "";
+  applyLiveThreadResult(result);
+  await reportThreadState("attached_live", {
+    threadId: requestedThreadId,
+    title: result?.thread?.title || requestedThreadId,
+    evidence: "direct-thread-strip-open",
+  });
+  renderDirectThreadList();
+}
+
+async function createDirectThreadFromStrip() {
+  await startNewThread();
+  await refreshDirectThreadList({ showErrors: false });
+}
+
 async function refreshModelList(showErrors = false) {
   const settingsProjection = providerSettingsProjection();
   if (settingsProjection.model?.canList !== true && !hasCapabilityForMutation("model", "canList")) {
@@ -5009,6 +5140,15 @@ function renderStoredTranscript(snapshot, threadId, options = {}) {
 }
 
 async function loadExistingThreadOrStartNew() {
+  if (isDirectLiveTextSurface() && hasCapability("threads", "canList")) {
+    await refreshDirectThreadList({ showErrors: false });
+    const latest = state.directThreadList.find((entry) => String(entry?.threadId || entry?.id || "").trim());
+    const latestThreadId = String(latest?.threadId || latest?.id || "").trim();
+    if (latestThreadId) {
+      await openDirectThread(latestThreadId);
+      return;
+    }
+  }
   setNotice("Preparing Codex session…", "Starting a fresh Codex thread for this workspace.", { showNewThread: true });
   await startNewThread();
 }
@@ -5230,6 +5370,7 @@ function bindThread(thread, modelName = "", options = {}) {
     { success: true, showNewThread: true },
   );
   reconcileTurnStateFromLiveThread(thread);
+  renderDirectThreadList();
 }
 
 function isThoughtItem(item) {
@@ -6483,6 +6624,7 @@ async function startNewThread() {
   state.sessionFilePath = "";
   bindThread(result.thread, result.model);
   await persistRuntimePreferences("thread-model");
+  await refreshDirectThreadList({ showErrors: false });
 }
 
 async function startCodexTurn(text, options = {}) {
@@ -6857,6 +6999,7 @@ function handleNotification(method, params) {
       collapseThoughtProcess(completedTurnId);
       finalizeTurnMessages(completedTurnId);
       renderTurnCompletionNotice(completedTurnId, params?.turn || {});
+      refreshDirectThreadList({ showErrors: false }).catch(() => {});
       scheduleQueuedPromptDrain("turn-completed");
     }
     return;
@@ -6898,6 +7041,7 @@ function handleBridgeEvent(event) {
       state.connected = true;
       state.connectionStatus = "connected";
       renderRuntimeConstitution();
+      renderDirectThreadList();
       if (state.threadId && !state.liveAttached) {
         const expectedThreadId = state.threadId;
         const expectedSourceHome = state.sourceHome;
@@ -6923,6 +7067,7 @@ function handleBridgeEvent(event) {
       state.connectionStatus = "connecting";
       setComposerEnabled(false, "Connecting Codex app-server…");
       renderRuntimeConstitution();
+      renderDirectThreadList();
       return;
     }
     if (event.status === "error") {
@@ -6931,6 +7076,7 @@ function handleBridgeEvent(event) {
       state.connectionStatus = "error";
       setComposerEnabled(false, "Codex connection error.");
       renderRuntimeConstitution();
+      renderDirectThreadList();
       if (event.error) addSystemMessage(`Codex connection failed: ${event.error}`);
       return;
     }
@@ -6940,6 +7086,7 @@ function handleBridgeEvent(event) {
       state.connectionStatus = "disconnected";
       setComposerEnabled(false, "Codex disconnected.");
       renderRuntimeConstitution();
+      renderDirectThreadList();
       if (event.error && !String(event.error).toLowerCase().includes("renderer requested disconnect")) {
         addSystemMessage(`Codex disconnected: ${event.error}`);
       }
@@ -7080,11 +7227,13 @@ async function connect() {
   setBadge(els.connectionBadge, "connecting", "warning");
   state.connectionStatus = "connecting";
   renderRuntimeConstitution();
+  renderDirectThreadList();
   const connectedSession = await bridge.connect(connection);
   if (connectedSession?.connection) connection = { ...connection, ...connectedSession.connection };
   state.connected = true;
   state.connectionStatus = "connected";
   renderRuntimeConstitution();
+  renderDirectThreadList();
   try {
     await initializeBridgeSession();
     state.readyForThreadOpen = true;
@@ -7159,6 +7308,12 @@ els.composerInput?.addEventListener("input", () => {
 
 els.composerAccessButton?.addEventListener("click", () => toggleComposerMenu("access"));
 els.composerModelButton?.addEventListener("click", () => toggleComposerMenu("model"));
+els.directThreadRefreshButton?.addEventListener("click", () => {
+  refreshDirectThreadList({ showErrors: true }).catch((error) => addSystemMessage(`Direct thread refresh failed: ${error.message}`));
+});
+els.directThreadNewButton?.addEventListener("click", () => {
+  createDirectThreadFromStrip().catch((error) => addSystemMessage(`New direct thread failed: ${error.message}`));
+});
 els.chooseAttachmentButton?.addEventListener("click", async () => {
   if (!bridge?.chooseAttachmentFiles || !project?.id) {
     addSystemMessage("Attachment picker is unavailable.");

@@ -49,6 +49,20 @@
         <section id="runtimeDrawerBody" class="runtime-drawer-body"></section>
       </aside>
 
+      <section id="directThreadStrip" class="direct-thread-strip" hidden aria-label="Direct live text thread controls" data-morphic-region="direct-thread-lifecycle">
+        <div class="direct-thread-strip-header">
+          <div>
+            <p class="eyebrow">Direct threads</p>
+            <p id="directThreadStatus" class="direct-thread-status">No direct sessions loaded.</p>
+          </div>
+          <div class="direct-thread-actions">
+            <button id="directThreadRefreshButton" class="direct-thread-action" type="button">Refresh</button>
+            <button id="directThreadNewButton" class="direct-thread-action primary" type="button">New thread</button>
+          </div>
+        </div>
+        <div id="directThreadList" class="direct-thread-list" aria-label="Direct live text sessions"></div>
+      </section>
+
       <section class="transcript" id="transcript" aria-label="Codex transcript"></section>
 
       <form id="composerForm" class="composer-shell">
