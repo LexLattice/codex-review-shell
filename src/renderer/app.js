@@ -56,6 +56,7 @@ const state = {
   activeMiddleTab: "overview",
   projectStash: {
     projectId: "",
+    targetSurface: "chatgpt",
     files: [],
     message: "review codex output",
     status: "idle",
@@ -174,6 +175,7 @@ const els = {
   filesTabPanel: document.getElementById("filesTabPanel"),
   webTabPanel: document.getElementById("webTabPanel"),
   projectStashCount: document.getElementById("projectStashCount"),
+  projectStashTitle: document.getElementById("projectStashTitle"),
   projectStashHint: document.getElementById("projectStashHint"),
   projectStashList: document.getElementById("projectStashList"),
   projectStashMessageInput: document.getElementById("projectStashMessageInput"),
@@ -1129,6 +1131,7 @@ function ensureProjectStash(projectId = activeProject()?.id || "") {
   if (state.projectStash.projectId === targetProjectId) return state.projectStash;
   state.projectStash = {
     projectId: targetProjectId,
+    targetSurface: "chatgpt",
     files: [],
     message: "review codex output",
     status: "idle",
@@ -1141,6 +1144,7 @@ function ensureProjectStash(projectId = activeProject()?.id || "") {
 function projectStashFileKey(file) {
   return [
     String(file?.projectId || ""),
+    String(file?.targetSurface || "chatgpt"),
     String(file?.codexThreadId || ""),
     String(file?.relPath || ""),
   ].join("::");
@@ -1149,6 +1153,17 @@ function projectStashFileKey(file) {
 function projectStashDisplayName(file) {
   const relPath = String(file?.relPath || "");
   return relPath.split("/").filter(Boolean).pop() || relPath || "workspace file";
+}
+
+function projectStashDefaultMessage(targetSurface) {
+  return targetSurface === "codex" ? "review gpt output" : "review codex output";
+}
+
+function projectStashTargetFromEvent(event) {
+  const explicit = String(event?.targetSurface || event?.target || "").trim().toLowerCase();
+  if (explicit === "codex" || explicit === "chatgpt") return explicit;
+  const source = String(event?.source || "").toLowerCase();
+  return source.includes("chatgpt") ? "codex" : "chatgpt";
 }
 
 function addProjectStashFile(event) {
@@ -1164,11 +1179,23 @@ function addProjectStashFile(event) {
     return;
   }
   const stash = ensureProjectStash(projectId);
+  const targetSurface = projectStashTargetFromEvent(event);
+  if (stash.files.length && stash.targetSurface !== targetSurface) {
+    setLastEvent(`Project stash add ignored: clear ${stash.targetSurface === "codex" ? "Codex" : "GPT"} handoff files before switching target.`);
+    return;
+  }
+  if (!stash.files.length && stash.targetSurface !== targetSurface) {
+    stash.targetSurface = targetSurface;
+    stash.message = projectStashDefaultMessage(targetSurface);
+  }
   const file = {
     id: createId("stash_file"),
     projectId,
+    targetSurface,
     codexThreadId: String(event?.codexThreadId || event?.threadId || ""),
     codexThreadTitle: String(event?.codexThreadTitle || ""),
+    chatThreadId: String(event?.chatThreadId || ""),
+    chatThreadTitle: String(event?.chatThreadTitle || ""),
     relPath,
     label: String(event?.label || relPath),
     source: String(event?.source || "codex-file-context-menu"),
@@ -1180,9 +1207,9 @@ function addProjectStashFile(event) {
     stash.status = "ready";
     stash.lastError = "";
     stash.generation += 1;
-    setLastEvent(`Added to GPT stash: ${relPath}.`);
+    setLastEvent(`Added to ${targetSurface === "codex" ? "Codex" : "GPT"} stash: ${relPath}.`);
   } else {
-    setLastEvent(`Already in GPT stash: ${relPath}.`);
+    setLastEvent(`Already in ${targetSurface === "codex" ? "Codex" : "GPT"} stash: ${relPath}.`);
   }
   setMiddleTab("project");
   renderProjectStash();
@@ -1202,6 +1229,8 @@ function removeProjectStashFile(fileId) {
 function clearProjectStash() {
   const stash = ensureProjectStash();
   stash.files = [];
+  stash.targetSurface = "chatgpt";
+  stash.message = projectStashDefaultMessage(stash.targetSurface);
   stash.status = "idle";
   stash.lastError = "";
   stash.generation += 1;
@@ -1210,28 +1239,36 @@ function clearProjectStash() {
 }
 
 function projectStashStatusText(stash) {
-  if (stash.status === "sending") return "Sending bundle to linked ChatGPT thread…";
-  if (stash.status === "sent") return "Bundle sent to linked ChatGPT thread.";
+  const targetLabel = stash.targetSurface === "codex" ? "linked Codex thread" : "linked ChatGPT thread";
+  if (stash.status === "sending") return `Sending bundle to ${targetLabel}…`;
+  if (stash.status === "sent") return `Bundle sent to ${targetLabel}.`;
   if (stash.status === "failed") return stash.lastError || "Bundle send failed.";
   if (!stash.files.length) return "No files stashed.";
   const distinctThreads = new Set(stash.files.map((file) => String(file.codexThreadId || "")).filter(Boolean));
-  if (distinctThreads.size > 1) return "Stash has files from multiple Codex threads; send is blocked until only one target remains.";
-  return `${stash.files.length} file${stash.files.length === 1 ? "" : "s"} ready for GPT handoff.`;
+  if (distinctThreads.size > 1) return "Stash has files targeting multiple Codex threads; send is blocked until only one target remains.";
+  return `${stash.files.length} file${stash.files.length === 1 ? "" : "s"} ready for ${stash.targetSurface === "codex" ? "Codex" : "GPT"} handoff.`;
 }
 
 function renderProjectStash() {
   if (!els.projectStashList) return;
   const project = activeProject();
   const stash = ensureProjectStash(project?.id || "");
+  const targetIsCodex = stash.targetSurface === "codex";
+  if (els.projectStashTitle) els.projectStashTitle.textContent = targetIsCodex ? "Codex handoff stash" : "GPT handoff stash";
+  if (els.projectStashHint) {
+    els.projectStashHint.textContent = targetIsCodex
+      ? "Right-click ChatGPT file links and add them here, then send one workspace-file bundle to the linked Codex thread."
+      : "Right-click Codex file references and add them here, then send one bundle to the linked ChatGPT thread.";
+  }
   els.projectStashCount.textContent = String(stash.files.length);
   if (document.activeElement !== els.projectStashMessageInput) {
-    els.projectStashMessageInput.value = stash.message || "review codex output";
+    els.projectStashMessageInput.value = stash.message || projectStashDefaultMessage(stash.targetSurface);
   }
   els.projectStashList.innerHTML = "";
   if (!stash.files.length) {
     const empty = document.createElement("div");
     empty.className = "empty-state";
-    empty.textContent = "No files stashed yet. Use “Add to Project stash” from a Codex file context menu.";
+    empty.textContent = "No files stashed yet. Use “Add to Project stash” from a Codex file or ChatGPT download context menu.";
     els.projectStashList.appendChild(empty);
   } else {
     for (const file of stash.files) {
@@ -1262,13 +1299,14 @@ function renderProjectStash() {
   els.projectStashStatus.classList.toggle("project-stash-error", stash.status === "failed" || distinctThreads.size > 1);
   els.clearProjectStashButton.disabled = sending || stash.files.length === 0;
   els.sendProjectStashButton.disabled = sending || stash.files.length === 0 || distinctThreads.size > 1;
+  els.sendProjectStashButton.textContent = targetIsCodex ? "Send to Codex" : "Send to GPT";
 }
 
-async function sendProjectStashToChatgpt() {
+async function sendProjectStash() {
   const project = activeProject();
   const stash = ensureProjectStash(project?.id || "");
   if (!project || !stash.files.length) return;
-  stash.message = String(els.projectStashMessageInput?.value || "").trim() || "review codex output";
+  stash.message = String(els.projectStashMessageInput?.value || "").trim() || projectStashDefaultMessage(stash.targetSurface);
   const sendGeneration = stash.generation;
   const filesToSend = stash.files.slice();
   const sentFileKeys = new Set(filesToSend.map(projectStashFileKey));
@@ -1276,12 +1314,14 @@ async function sendProjectStashToChatgpt() {
   stash.lastError = "";
   renderProjectStash();
   try {
-    const result = await bridge.sendProjectStashToChatgpt({
+    const result = await (bridge.sendProjectStash || bridge.sendProjectStashToChatgpt)({
       projectId: project.id,
+      targetSurface: stash.targetSurface,
       message: stash.message,
       files: filesToSend.map((file) => ({
         relPath: file.relPath,
         codexThreadId: file.codexThreadId,
+        chatThreadId: file.chatThreadId,
       })),
       generation: sendGeneration,
     });
@@ -1291,7 +1331,10 @@ async function sendProjectStashToChatgpt() {
     stash.status = stash.files.length ? "ready" : "sent";
     stash.generation += 1;
     renderProjectStash();
-    setLastEvent(`Sent ${result.fileCount || 0} stashed file${result.fileCount === 1 ? "" : "s"} to ${result.chatThreadTitle || "linked ChatGPT"}.`);
+    const targetLabel = stash.targetSurface === "codex"
+      ? result.codexThreadTitle || "linked Codex"
+      : result.chatThreadTitle || "linked ChatGPT";
+    setLastEvent(`Sent ${result.fileCount || 0} stashed file${result.fileCount === 1 ? "" : "s"} to ${targetLabel}.`);
   } catch (error) {
     stash.status = "failed";
     stash.lastError = error.message || "Project stash send failed.";
@@ -5540,7 +5583,7 @@ function bindEvents() {
   });
   els.clearProjectStashButton.addEventListener("click", clearProjectStash);
   els.sendProjectStashButton.addEventListener("click", () => {
-    sendProjectStashToChatgpt().catch((error) => {
+    sendProjectStash().catch((error) => {
       const stash = ensureProjectStash();
       stash.status = "failed";
       stash.lastError = error.message || "Project stash send failed.";
@@ -5753,7 +5796,9 @@ function bindEvents() {
     }
     if (event.type === "chatgpt-download-completed") {
       const macro = event.macro || {};
-      if (macro.activated) {
+      if (event.stash?.added) {
+        setLastEvent(`ChatGPT download added to Project stash: ${macro.importedRelPath || event.fileName || "download"}.`);
+      } else if (macro.activated) {
         setLastEvent(`ChatGPT download imported: ${macro.importedRelPath || event.fileName || "download"}.`);
       } else {
         setLastEvent(`ChatGPT download saved: ${event.fileName || "download"}.`);
@@ -5761,6 +5806,9 @@ function bindEvents() {
     }
     if (event.type === "chatgpt-download-failed") {
       setLastEvent(`ChatGPT download failed: ${event.error || event.state || "unknown error"}.`);
+    }
+    if (event.type === "context-menu-diagnostic") {
+      setLastEvent(event.message || "Context menu action completed.");
     }
     if (event.type === "codex-runtime-status") {
       const status = event.session?.status || "unknown";
