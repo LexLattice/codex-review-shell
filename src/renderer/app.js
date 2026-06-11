@@ -287,6 +287,15 @@ const els = {
   directMetaSessionSummary: document.getElementById("directMetaSessionSummary"),
   directMetaSessionRoutes: document.getElementById("directMetaSessionRoutes"),
   directMetaSessionEvidence: document.getElementById("directMetaSessionEvidence"),
+  directDiagnosticsStatusBadge: document.getElementById("directDiagnosticsStatusBadge"),
+  directDiagnosticsContextGrid: document.getElementById("directDiagnosticsContextGrid"),
+  directDiagnosticsArtifactList: document.getElementById("directDiagnosticsArtifactList"),
+  directDiagnosticsRecoveryList: document.getElementById("directDiagnosticsRecoveryList"),
+  directDiagnosticsGovernanceList: document.getElementById("directDiagnosticsGovernanceList"),
+  directDiagnosticsBrokerList: document.getElementById("directDiagnosticsBrokerList"),
+  directDiagnosticsTransitionList: document.getElementById("directDiagnosticsTransitionList"),
+  directDiagnosticsSubAgentList: document.getElementById("directDiagnosticsSubAgentList"),
+  directDiagnosticsEvidence: document.getElementById("directDiagnosticsEvidence"),
   promptRoleLabel: document.getElementById("promptRoleLabel"),
   activePromptPreview: document.getElementById("activePromptPreview"),
   handoffTargetThreadSelect: document.getElementById("handoffTargetThreadSelect"),
@@ -2797,6 +2806,260 @@ function formatDirectContextBlockers(blockers = []) {
     .join(", ");
 }
 
+function directDiagnosticsObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function directDiagnosticsArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function directDiagnosticsFirstObject(...values) {
+  return values.find((value) => value && typeof value === "object" && !Array.isArray(value)) || {};
+}
+
+function directDiagnosticsValue(value, fallback = "missing") {
+  if (value === true) return "yes";
+  if (value === false) return "no";
+  if (value === null || value === undefined || value === "") return fallback;
+  if (typeof value === "number") return Number.isFinite(value) ? String(value) : fallback;
+  return String(value).replace(/_/g, " ");
+}
+
+function directDiagnosticsShortId(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (text.length <= 18) return text;
+  return `${text.slice(0, 8)}…${text.slice(-6)}`;
+}
+
+function directDiagnosticsContextInput(status = state.directRuntimeStatus) {
+  return directDiagnosticsFirstObject(
+    status?.directContextMaintenance,
+    status?.contextMaintenance,
+    status?.directImplementationLane?.contextMaintenance,
+  );
+}
+
+function directDiagnosticsEvidenceKeys(...sources) {
+  const keys = [];
+  for (const source of sources) {
+    if (!source) continue;
+    if (Array.isArray(source)) {
+      for (const item of source) {
+        const key = typeof item === "string" ? item : item?.evidenceKey || item?.id || item?.ref || "";
+        if (key) keys.push(String(key));
+      }
+      continue;
+    }
+    if (typeof source === "string") keys.push(source);
+    if (typeof source === "object") {
+      for (const key of ["evidenceKey", "evidenceId", "sourceDigest", "projectionDigest", "artifactDigest", "schema"]) {
+        if (source[key]) keys.push(String(source[key]));
+      }
+      if (Array.isArray(source.evidenceKeys)) keys.push(...source.evidenceKeys.map(String));
+      if (Array.isArray(source.evidenceRefs)) {
+        keys.push(...source.evidenceRefs.map((ref) => ref?.evidenceKey || ref?.id || ref?.ref || "").filter(Boolean).map(String));
+      }
+    }
+  }
+  return [...new Set(keys.filter(Boolean))];
+}
+
+function directDiagnosticsSubAgentEntries(source = {}) {
+  const safeSource = directDiagnosticsObject(source);
+  const graph = directDiagnosticsObject(safeSource.agentGraph || safeSource.graph || safeSource);
+  const candidates = [
+    safeSource.agents,
+    safeSource.agentRows,
+    safeSource.threads,
+    safeSource.nodes,
+    graph.agents,
+    graph.nodes,
+    safeSource.progressRegistry?.entries,
+    safeSource.progressEntries,
+  ];
+  for (const value of candidates) {
+    if (Array.isArray(value) && value.length) return value;
+  }
+  return [];
+}
+
+function directDiagnosticsSubAgentLabel(agent = {}, index = 0) {
+  const safeAgent = directDiagnosticsObject(agent);
+  return safeAgent.displayLabel ||
+    safeAgent.nickname ||
+    safeAgent.agentNickname ||
+    safeAgent.agentRole ||
+    safeAgent.role ||
+    directDiagnosticsShortId(safeAgent.agentThreadId || safeAgent.threadId || safeAgent.id) ||
+    `agent ${index + 1}`;
+}
+
+function directDiagnosticsRow(label, value, stateLabel = "diagnostic", title = "") {
+  return { label, value: directDiagnosticsValue(value), stateLabel, title };
+}
+
+function renderDirectDiagnosticsRows(container, rows = [], emptyText = "No diagnostic evidence exposed.") {
+  if (!container) return;
+  container.textContent = "";
+  const visibleRows = rows.filter(Boolean);
+  if (!visibleRows.length) {
+    const empty = document.createElement("div");
+    empty.className = "direct-diagnostics-empty";
+    empty.textContent = emptyText;
+    container.appendChild(empty);
+    return;
+  }
+  for (const row of visibleRows) {
+    const item = document.createElement("div");
+    item.className = `direct-diagnostics-row state-${String(row.stateLabel || "diagnostic").replace(/[^a-z0-9_-]/gi, "-")}`;
+    if (row.title) item.title = row.title;
+    const label = document.createElement("span");
+    label.textContent = row.label || "Status";
+    const value = document.createElement("strong");
+    value.textContent = row.value || "missing";
+    item.append(label, value);
+    container.appendChild(item);
+  }
+}
+
+function directDiagnosticsProjection(status = state.directRuntimeStatus) {
+  const runtimeStatus = directDiagnosticsObject(status);
+  const implementationLane = directDiagnosticsObject(runtimeStatus.directImplementationLane);
+  const contextInput = directDiagnosticsContextInput(runtimeStatus);
+  const contextMaintenance = directContextMaintenanceStatus(runtimeStatus);
+  const statusProjection = directDiagnosticsObject(contextInput.statusProjection);
+  const providerCompact = directDiagnosticsObject(contextInput.providerCompact);
+  const metaSession = directDiagnosticsObject(state.directMetaSessionStatus);
+  const governance = directDiagnosticsFirstObject(
+    runtimeStatus.governance,
+    runtimeStatus.directGovernance,
+    implementationLane.governance,
+    implementationLane.governancePacket,
+    metaSession.governance,
+  );
+  const broker = directDiagnosticsFirstObject(
+    runtimeStatus.semanticBroker,
+    runtimeStatus.directSemanticBroker,
+    implementationLane.semanticBroker,
+    implementationLane.broker,
+    metaSession.semanticBroker,
+    metaSession.routeSummary,
+  );
+  const transitionGraph = directDiagnosticsFirstObject(
+    runtimeStatus.transitionGraph,
+    runtimeStatus.directTransitionGraph,
+    implementationLane.transitionGraph,
+    metaSession.transitionGraph,
+  );
+  const subAgentSource = directDiagnosticsFirstObject(
+    runtimeStatus.directSubAgentObservability,
+    runtimeStatus.subAgentObservability,
+    runtimeStatus.subAgents,
+    implementationLane.subAgentObservability,
+    implementationLane.agentGraph,
+  );
+  const subAgentEntries = directDiagnosticsSubAgentEntries(subAgentSource).filter((agent) => agent && typeof agent === "object");
+  const actionFlags = [
+    contextMaintenance.compactActionAllowed ? "compact" : "",
+    contextMaintenance.maintenanceExecutionAllowed ? "maintenance" : "",
+    contextMaintenance.memoryEditorAllowed ? "memory edit" : "",
+    contextMaintenance.memoryResetAllowed ? "memory reset" : "",
+    contextMaintenance.providerTransportAllowed ? "provider compact" : "",
+  ].filter(Boolean);
+  const blockers = directDiagnosticsArray(contextMaintenance.blockers);
+  const evidenceKeys = directDiagnosticsEvidenceKeys(
+    contextMaintenance.evidenceKeys,
+    contextInput,
+    statusProjection,
+    providerCompact,
+    governance,
+    broker,
+    transitionGraph,
+    subAgentSource,
+  );
+  const routeSummary = directDiagnosticsObject(metaSession.routeSummary);
+  const brokerCandidates = directDiagnosticsArray(broker.candidates || broker.candidateRoutes || broker.routes);
+  const transitions = directDiagnosticsArray(transitionGraph.edges || transitionGraph.transitions || implementationLane.transitions);
+  const activeRuntime = selectedDirectRuntimePath();
+  return {
+    badge: state.directRuntimeLoading
+      ? "loading"
+      : runtimeStatus.status || directRuntimeStatusLabel(runtimeStatus),
+    contextRows: [
+      directDiagnosticsRow("Pressure", contextMaintenance.pressureState, contextMaintenance.pressureState === "unknown" ? "unknown" : "diagnostic"),
+      directDiagnosticsRow("Route", contextMaintenance.routeKind, contextMaintenance.routeBlocked ? "blocked" : "diagnostic"),
+      directDiagnosticsRow("Memory", contextMaintenance.memoryPointerState !== "none" ? contextMaintenance.memoryPointerState : contextMaintenance.memoryState),
+      directDiagnosticsRow("Baton", contextMaintenance.batonState),
+      directDiagnosticsRow("Omission", contextMaintenance.omissionState),
+      directDiagnosticsRow("Provider compact", contextMaintenance.providerCompactState, contextMaintenance.providerCompactEvidenceState === "missing" ? "unknown" : "diagnostic"),
+    ],
+    artifactRows: [
+      directDiagnosticsRow("Status projection", statusProjection.projectionDigest || statusProjection.sourceDigest || "not exposed", statusProjection.projectionDigest || statusProjection.sourceDigest ? "diagnostic" : "missing"),
+      directDiagnosticsRow("Provider compact evidence", providerCompact.evidenceState || contextMaintenance.providerCompactEvidenceState, providerCompact.evidenceState === "missing" ? "missing" : "diagnostic"),
+      directDiagnosticsRow("Evidence keys", evidenceKeys.length, evidenceKeys.length ? "diagnostic" : "missing", evidenceKeys.slice(0, 8).join("\n")),
+      directDiagnosticsRow("Sibling compact rows", contextMaintenance.contextCompactionCount),
+      directDiagnosticsRow("Sibling memory rows", contextMaintenance.memoryCitationCount),
+    ],
+    recoveryRows: [
+      directDiagnosticsRow("Blockers", blockers.length ? formatDirectContextBlockers(blockers) : "none", blockers.length ? "blocked" : "ok"),
+      directDiagnosticsRow("Unexpected actions", actionFlags.length ? actionFlags.join(", ") : "none", actionFlags.length ? "blocked" : "ok"),
+      directDiagnosticsRow("Recovery posture", implementationLane.recoveryState || runtimeStatus.recoveryState || "status only"),
+      directDiagnosticsRow("Provider transport", contextMaintenance.providerTransportAllowed, contextMaintenance.providerTransportAllowed ? "blocked" : "ok"),
+    ],
+    governanceRows: [
+      directDiagnosticsRow("Packet", governance.schema || governance.packetSchema || "not exposed", governance.schema || governance.packetSchema ? "diagnostic" : "missing"),
+      directDiagnosticsRow("Mode", governance.mode || governance.enforcementMode || "shadow only"),
+      directDiagnosticsRow("Layer count", directDiagnosticsArray(governance.layers || governance.rows).length),
+      directDiagnosticsRow("Authority", governance.enforced === true ? "unexpected enforce" : "not enforced", governance.enforced === true ? "blocked" : "ok"),
+      directDiagnosticsRow("Raw payload", "excluded", "ok"),
+    ],
+    brokerRows: [
+      directDiagnosticsRow("Packet", broker.schema || broker.packetSchema || "not exposed", broker.schema || broker.packetSchema ? "diagnostic" : "missing"),
+      directDiagnosticsRow("Selected route", broker.selectedRoute || broker.selectedRouteId || broker.selected || "none"),
+      directDiagnosticsRow("Candidates", brokerCandidates.length || routeSummary.proposed || 0),
+      directDiagnosticsRow("Blocked dispatches", routeSummary.dispatchBlocked || broker.blocked || 0),
+      directDiagnosticsRow("Auto reroute", "disabled", "ok"),
+    ],
+    transitionRows: [
+      directDiagnosticsRow("Current path", activeRuntime),
+      directDiagnosticsRow("Runtime label", directRuntimeStatusLabel(runtimeStatus)),
+      directDiagnosticsRow("Known transitions", transitions.length || "not exposed", transitions.length ? "diagnostic" : "missing"),
+      directDiagnosticsRow("Start turn", activeRuntime === "app-server" ? "legacy bridge" : "gated by direct lane", "diagnostic"),
+      directDiagnosticsRow("Mutation authority", "not granted here", "ok"),
+    ],
+    subAgentRows: [
+      directDiagnosticsRow("Store", subAgentSource.schema || subAgentSource.observabilityId || subAgentSource.agentGraphId ? "available" : "not exposed", subAgentSource.schema || subAgentSource.observabilityId || subAgentSource.agentGraphId ? "diagnostic" : "missing"),
+      directDiagnosticsRow("Agents", subAgentEntries.length),
+      ...subAgentEntries.slice(0, 6).map((agent, index) => directDiagnosticsRow(
+        directDiagnosticsSubAgentLabel(agent, index),
+        agent.lifecycleState || agent.activityState || agent.status || agent.attentionState || "observed",
+        agent.lifecycleState === "failed" || agent.status === "failed" ? "blocked" : "diagnostic",
+      )),
+      directDiagnosticsRow("Controls", "read-only", "ok"),
+    ],
+    evidenceText: evidenceKeys.length
+      ? `Status-only diagnostics · evidence ${evidenceKeys.slice(0, 5).join(", ")}${evidenceKeys.length > 5 ? "…" : ""} · no maintenance, governance, broker, or sub-agent action is exposed.`
+      : "Status-only diagnostics · no evidence keys exposed yet · no maintenance, governance, broker, or sub-agent action is exposed.",
+  };
+}
+
+function renderDirectDiagnosticsStatus(status = state.directRuntimeStatus) {
+  if (!els.directDiagnosticsStatusBadge) return;
+  const projection = directDiagnosticsProjection(status);
+  els.directDiagnosticsStatusBadge.textContent = projection.badge;
+  els.directDiagnosticsStatusBadge.title = "Renderer-safe direct diagnostics; all rows are display-only.";
+  renderDirectDiagnosticsRows(els.directDiagnosticsContextGrid, projection.contextRows);
+  renderDirectDiagnosticsRows(els.directDiagnosticsArtifactList, projection.artifactRows);
+  renderDirectDiagnosticsRows(els.directDiagnosticsRecoveryList, projection.recoveryRows);
+  renderDirectDiagnosticsRows(els.directDiagnosticsGovernanceList, projection.governanceRows);
+  renderDirectDiagnosticsRows(els.directDiagnosticsBrokerList, projection.brokerRows);
+  renderDirectDiagnosticsRows(els.directDiagnosticsTransitionList, projection.transitionRows);
+  renderDirectDiagnosticsRows(els.directDiagnosticsSubAgentList, projection.subAgentRows);
+  if (els.directDiagnosticsEvidence) els.directDiagnosticsEvidence.textContent = projection.evidenceText;
+}
+
 function renderDirectRuntimeStatus() {
   if (!els.directRuntimeModeBadge) return;
   const status = state.directRuntimeStatus || {};
@@ -2915,6 +3178,7 @@ function renderDirectRuntimeStatus() {
       els.directContextEvidence.textContent = "Context maintenance is status-only; no compact, memory reset, memory edit, provider compact, or hidden maintenance action is exposed.";
     }
   }
+  renderDirectDiagnosticsStatus(status);
 }
 
 function metaSessionHealthLabel(status = {}) {
@@ -2969,6 +3233,7 @@ function renderDirectMetaSessionStatus() {
       ? `Meta-session status unavailable: ${state.directMetaSessionError}`
       : `Projection ${selected} · ledger events ${counts.ledgerEvents || 0} · attempts ${counts.attemptFailures || 0} · latest blockers ${blockers.length ? blockers.join(", ") : "none"} · actionability=false.`;
   }
+  renderDirectDiagnosticsStatus(state.directRuntimeStatus);
 }
 
 function renderDirectAuthControls() {
