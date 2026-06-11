@@ -5350,8 +5350,8 @@ async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "",
       });
       throw error;
     }
-    addSystemMessage(`Live attach failed for ${requestedThreadId}: ${message}`);
-    await reportThreadState("failed", {
+    addSystemMessage(`Stored transcript rendered. Live attach unavailable for ${requestedThreadId}: ${message}`);
+    await reportThreadState("rendered_stored", {
       threadId: requestedThreadId,
       sourceHome: state.sourceHome,
       sessionFilePath: state.sessionFilePath,
@@ -5359,7 +5359,7 @@ async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "",
       evidence: "live-attach-after-stored-render",
       errorDescription: message,
     });
-    setComposerEnabled(false, "Live Codex attach failed for this thread. Select another thread or retry.");
+    setComposerEnabled(false, "Stored transcript rendered read-only. Live Codex attach is unavailable for this thread.");
   }
 }
 

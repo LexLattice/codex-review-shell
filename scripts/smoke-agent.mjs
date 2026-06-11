@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs";
-import { fileURLToPath } from "node:url";
+import fsp from "node:fs/promises";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 import process from "node:process";
 
@@ -170,6 +171,146 @@ try {
 } finally {
   fs.rmSync(patchRoot, { recursive: true, force: true });
 }
+
+if (failed) process.exit(1);
+
+function parseAgentLines(childProcess, onMessage) {
+  let lineBuffer = "";
+  childProcess.stdout.setEncoding("utf8");
+  childProcess.stdout.on("data", (chunk) => {
+    lineBuffer += chunk;
+    let index = lineBuffer.indexOf("\n");
+    while (index >= 0) {
+      const line = lineBuffer.slice(0, index).trim();
+      lineBuffer = lineBuffer.slice(index + 1);
+      if (line) onMessage(JSON.parse(line));
+      index = lineBuffer.indexOf("\n");
+    }
+  });
+}
+
+const brokenPipeChild = spawn(process.execPath, [agentPath, "--root", appRoot, "--workspace-kind", "local", "--project-id", "smoke-broken-stdout"], {
+  cwd: appRoot,
+  stdio: ["pipe", "pipe", "pipe"],
+});
+let brokenPipeReady = false;
+const brokenPipeReadyPromise = new Promise((resolve) => {
+  parseAgentLines(brokenPipeChild, (message) => {
+    if (message.event === "ready") {
+      brokenPipeReady = true;
+      resolve();
+    }
+  });
+});
+brokenPipeChild.stderr.resume();
+await Promise.race([
+  brokenPipeReadyPromise,
+  new Promise((resolve) => setTimeout(resolve, 2000)),
+]);
+if (!brokenPipeReady) {
+  failed = true;
+  brokenPipeChild.kill();
+  console.error("Broken-stdout lifecycle smoke did not observe ready event.");
+} else {
+  brokenPipeChild.stdout.destroy();
+  brokenPipeChild.stdin.write("{not-json}\n");
+  brokenPipeChild.stdin.end();
+  const exited = await Promise.race([
+    once(brokenPipeChild, "exit").then(() => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), 3000)),
+  ]);
+  if (!exited) {
+    failed = true;
+    brokenPipeChild.kill();
+    console.error("Agent did not exit after stdout reader closed and stdin ended.");
+  }
+}
+
+if (failed) process.exit(1);
+
+const commandPidPath = path.join(os.tmpdir(), `codex-review-shell-agent-child-${process.pid}.pid`);
+await fsp.rm(commandPidPath, { force: true });
+const childTrackingAgent = spawn(process.execPath, [agentPath, "--root", appRoot, "--workspace-kind", "local", "--project-id", "smoke-child-tracking"], {
+  cwd: appRoot,
+  stdio: ["pipe", "pipe", "pipe"],
+});
+let childTrackingReady = false;
+const childTrackingReadyPromise = new Promise((resolve) => {
+  parseAgentLines(childTrackingAgent, (message) => {
+    if (message.event === "ready") {
+      childTrackingReady = true;
+      resolve();
+    }
+  });
+});
+childTrackingAgent.stderr.resume();
+await Promise.race([
+  childTrackingReadyPromise,
+  new Promise((resolve) => setTimeout(resolve, 2000)),
+]);
+if (!childTrackingReady) {
+  failed = true;
+  childTrackingAgent.kill();
+  console.error("Child-process lifecycle smoke did not observe ready event.");
+} else {
+  childTrackingAgent.stdin.write(`${JSON.stringify({
+    id: "long-command",
+    method: "runCommand",
+    params: {
+      command: process.execPath,
+      args: [
+        "-e",
+        `require("node:fs").writeFileSync(${JSON.stringify(commandPidPath)}, String(process.pid)); setInterval(() => {}, 1000);`,
+      ],
+      timeoutMs: 600000,
+    },
+  })}\n`);
+  let commandPid = 0;
+  const pidObserved = await Promise.race([
+    (async () => {
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        try {
+          commandPid = Number((await fsp.readFile(commandPidPath, "utf8")).trim()) || 0;
+          if (commandPid > 0) return true;
+        } catch {}
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      return false;
+    })(),
+    new Promise((resolve) => setTimeout(() => resolve(false), 4000)),
+  ]);
+  if (!pidObserved) {
+    failed = true;
+    childTrackingAgent.kill();
+    console.error("Child-process lifecycle smoke did not observe spawned command pid.");
+  } else {
+    childTrackingAgent.stdin.end();
+    const exited = await Promise.race([
+      once(childTrackingAgent, "exit").then(() => true),
+      new Promise((resolve) => setTimeout(() => resolve(false), 5000)),
+    ]);
+    if (!exited) {
+      failed = true;
+      childTrackingAgent.kill();
+      console.error("Agent did not exit after stdin closed with active child command.");
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    let commandAlive = false;
+    try {
+      process.kill(commandPid, 0);
+      commandAlive = true;
+    } catch {}
+    if (commandAlive) {
+      failed = true;
+      try {
+        process.kill(commandPid, "SIGKILL");
+      } catch {}
+      console.error("Agent child command survived backend shutdown.");
+    }
+  }
+}
+
+await fsp.rm(commandPidPath, { force: true });
 
 if (failed) process.exit(1);
 console.log("Workspace backend agent smoke passed.");

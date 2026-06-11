@@ -224,9 +224,14 @@ class NdjsonTransport extends EventEmitter {
     try {
       this.child.stdin.end();
     } catch {}
-    if (!this.child.killed) {
-      this.child.kill();
-    }
+    if (this.child.exitCode !== null || this.child.signalCode !== null) return;
+    this.child.kill("SIGTERM");
+    const timer = setTimeout(() => {
+      if (this.child.exitCode !== null || this.child.signalCode !== null) return;
+      this.child.kill("SIGKILL");
+    }, 1500);
+    timer.unref?.();
+    this.child.once("exit", () => clearTimeout(timer));
   }
 }
 

@@ -50,6 +50,7 @@ contextBridge.exposeInMainWorld("workspaceShell", {
   pasteImageAttachment: (projectId) => ipcRenderer.invoke("attachments:paste-image", { projectId }),
   removeAttachmentDraft: (projectId, draftId) => ipcRenderer.invoke("attachments:remove-draft", { projectId, draftId }),
   openContextMenu: (request) => ipcRenderer.invoke("context-menu:open", request || {}),
+  sendProjectStash: (payload) => ipcRenderer.invoke("project-stash:send", payload || {}),
   sendProjectStashToChatgpt: (payload) => ipcRenderer.invoke("project-stash:send-to-chatgpt", payload || {}),
   listWorkTree: (projectId, relPath) => ipcRenderer.invoke("worktree:list", { projectId, relPath }),
   readProjectFile: (projectId, relPath) => ipcRenderer.invoke("worktree:read-file", { projectId, relPath }),

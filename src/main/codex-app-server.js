@@ -1,9 +1,9 @@
 "use strict";
 
 const { EventEmitter } = require("node:events");
+const fs = require("node:fs");
 const { spawn } = require("node:child_process");
 const net = require("node:net");
-const fs = require("node:fs");
 const {
   SUPPORTED_SERVER_REQUEST_METHODS,
   AUTO_UNSUPPORTED_SERVER_REQUEST_METHODS,
@@ -74,6 +74,42 @@ function defaultCodexHomeForRuntime(runtime) {
     process.env.CODEX_REVIEW_SHELL_DEFAULT_HOST_CODEX_HOME,
     normalizeString(process.env.CODEX_REVIEW_SHELL_DEFAULT_CODEX_HOME, ""),
   );
+}
+
+function hostReadablePathForWslMountPath(linuxPath) {
+  const text = normalizeString(linuxPath, "");
+  if (process.platform !== "win32") return text;
+  const match = text.match(/^\/mnt\/([a-z])\/(.+)$/i);
+  if (!match) return text;
+  return `${match[1].toUpperCase()}:\\${match[2].replace(/\//g, "\\")}`;
+}
+
+function bundledWslCodexForHome(codexHome) {
+  const home = normalizeString(codexHome, "");
+  if (!/^\/mnt\/[a-z]\/.+\/\.codex$/i.test(home)) return "";
+  const wslBinRoot = `${home}/bin/wsl`;
+  const hostBinRoot = hostReadablePathForWslMountPath(wslBinRoot);
+  try {
+    const candidates = fs.readdirSync(hostBinRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => {
+        const fullPath = `${wslBinRoot}/${entry.name}/codex`;
+        const hostPath = hostReadablePathForWslMountPath(fullPath);
+        try {
+          const stat = fs.statSync(hostPath);
+          return stat.isFile() ? { fullPath, mtimeMs: stat.mtimeMs } : null;
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean)
+      .sort((left, right) => right.mtimeMs - left.mtimeMs);
+    if (candidates[0]?.fullPath) return candidates[0].fullPath;
+    const legacyPath = `${wslBinRoot}/codex`;
+    return fs.statSync(hostReadablePathForWslMountPath(legacyPath)).isFile() ? legacyPath : "";
+  } catch {
+    return "";
+  }
 }
 
 async function allocatePort() {
@@ -274,8 +310,11 @@ function buildDescriptor(project, codex, port, options = {}) {
   const runtime = resolveRuntime(project, codex);
   const wsUrl = `ws://127.0.0.1:${port}`;
   const readyUrl = `http://127.0.0.1:${port}/readyz`;
-  const binaryPath = normalizeBinaryCommand(codex.binaryPath, runtime);
+  const configuredBinaryPath = normalizeBinaryCommand(codex.binaryPath, runtime);
   const codexHome = normalizeString(options.codexHome, "") || defaultCodexHomeForRuntime(runtime);
+  const binaryPath = runtime === "wsl" && configuredBinaryPath === "codex"
+    ? bundledWslCodexForHome(codexHome) || configuredBinaryPath
+    : configuredBinaryPath;
   const workspace = project?.workspace || { kind: "local", localPath: project?.repoPath || process.cwd() };
   const provider = normalizeRuntimeProviderConfig(codex);
   if (provider.kind === "direct_oai") {
@@ -522,12 +561,14 @@ class CodexAppServerManager extends EventEmitter {
     this.session.status = "disposed";
     this.emitStatus();
     this.session = null;
-    if (!child || child.killed) return;
+    if (!child || child.exitCode !== null || child.signalCode !== null) return;
     child.kill("SIGTERM");
     await new Promise((resolve) => {
       const timer = setTimeout(() => {
-        if (!child.killed) child.kill("SIGKILL");
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        child.kill("SIGKILL");
       }, 1200);
+      timer.unref?.();
       child.once("exit", () => {
         clearTimeout(timer);
         resolve();
