@@ -1399,6 +1399,25 @@ button:active {
   align-items: flex-start;
 }
 
+.direct-context-status {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.direct-context-status .pill {
+  justify-content: center;
+  min-width: 0;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .direct-auth-actions {
   justify-content: flex-end;
 }
@@ -2441,6 +2460,7 @@ body.dragging {
 
   .button-grid,
   .compact-actions,
+  .direct-context-status,
   .direct-auth-grid,
   .form-grid,
   .threads-lane-editor,

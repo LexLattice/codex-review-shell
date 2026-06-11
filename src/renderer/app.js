@@ -275,6 +275,13 @@ const els = {
   directRuntimeModeBadge: document.getElementById("directRuntimeModeBadge"),
   directRuntimeStatusBadge: document.getElementById("directRuntimeStatusBadge"),
   directModelSourceBadge: document.getElementById("directModelSourceBadge"),
+  directContextPressureBadge: document.getElementById("directContextPressureBadge"),
+  directContextRouteBadge: document.getElementById("directContextRouteBadge"),
+  directContextMemoryBadge: document.getElementById("directContextMemoryBadge"),
+  directContextBatonBadge: document.getElementById("directContextBatonBadge"),
+  directContextOmissionBadge: document.getElementById("directContextOmissionBadge"),
+  directContextProviderCompactBadge: document.getElementById("directContextProviderCompactBadge"),
+  directContextEvidence: document.getElementById("directContextEvidence"),
   directMetaSessionHealthBadge: document.getElementById("directMetaSessionHealthBadge"),
   directMetaSessionRefreshButton: document.getElementById("directMetaSessionRefreshButton"),
   directMetaSessionSummary: document.getElementById("directMetaSessionSummary"),
@@ -2744,6 +2751,52 @@ function directTextOnlyBlockedDetail(status = state.directRuntimeStatus) {
   return textOnly.labels?.detail || "Direct text-only gates are missing.";
 }
 
+function directContextMaintenanceStatus(status = state.directRuntimeStatus) {
+  const value = status?.directContextMaintenance || status?.contextMaintenance || status?.directImplementationLane?.contextMaintenance || {};
+  const projection = value.statusProjection || {};
+  const sibling = value.appServerSibling || {};
+  const providerCompact = value.providerCompact || {};
+  return {
+    pressureState: String(value.pressureState || projection.pressureState || "unknown"),
+    routeKind: String(value.routeKind || value.currentRouteKind || projection.routeKind || projection.currentRouteId || "none"),
+    routeBlocked: value.routeBlocked === true || (Array.isArray(value.blockers) && value.blockers.length > 0),
+    memoryState: String(value.memoryState || projection.memoryState || "none"),
+    memoryPointerState: String(value.memoryPointerState || projection.memoryPointerState || "none"),
+    batonState: String(value.batonState || projection.batonState || "not_required"),
+    batonRequirement: String(value.batonRequirement || projection.batonRequirement || "not_required"),
+    omissionState: String(value.omissionState || projection.omissionState || "none"),
+    providerCompactState: String(providerCompact.state || value.providerCompactState || value.providerCompactionState || "not_proven"),
+    providerCompactEvidenceState: String(providerCompact.evidenceState || value.providerCompactionEvidenceState || "missing"),
+    appServerSibling,
+    contextCompactionCount: Number(sibling.contextCompactionCount || 0),
+    memoryCitationCount: Number(sibling.memoryCitationCount || 0),
+    memoryModeObserved: sibling.memoryModeObserved === true,
+    memoryResetObserved: sibling.memoryResetObserved === true,
+    compactActionAllowed: value.compactActionAllowed === true,
+    maintenanceExecutionAllowed: value.maintenanceExecutionAllowed === true,
+    memoryEditorAllowed: value.memoryEditorAllowed === true,
+    memoryResetAllowed: value.memoryResetAllowed === true,
+    providerTransportAllowed: value.providerTransportAllowed === true,
+    evidenceKeys: Array.isArray(value.evidenceKeys) ? value.evidenceKeys : [],
+    blockers: Array.isArray(value.blockers) ? value.blockers : [],
+  };
+}
+
+function formatDirectContextState(value) {
+  return String(value || "unknown").replace(/_/g, " ");
+}
+
+function formatDirectContextBlockers(blockers = []) {
+  return blockers
+    .slice(0, 4)
+    .map((blocker) => {
+      if (blocker && typeof blocker === "object") return blocker.label || blocker.id || blocker.blockerCode || blocker.code || "blocked";
+      return String(blocker || "").trim();
+    })
+    .filter(Boolean)
+    .join(", ");
+}
+
 function renderDirectRuntimeStatus() {
   if (!els.directRuntimeModeBadge) return;
   const status = state.directRuntimeStatus || {};
@@ -2762,6 +2815,36 @@ function renderDirectRuntimeStatus() {
     directRuntimeStatusLabel(status);
   els.directModelSourceBadge.textContent = `models: ${modelSource}`;
   els.directModelSourceBadge.title = profileId ? `Profile: ${profileId}` : "Model source is not available.";
+  const contextMaintenance = directContextMaintenanceStatus(status);
+  if (els.directContextPressureBadge) {
+    els.directContextPressureBadge.textContent = `context ${formatDirectContextState(contextMaintenance.pressureState)}`;
+    els.directContextPressureBadge.title = `Direct context pressure is status-only. Evidence: ${contextMaintenance.evidenceKeys[0] || "none"}.`;
+  }
+  if (els.directContextRouteBadge) {
+    els.directContextRouteBadge.textContent = `route ${formatDirectContextState(contextMaintenance.routeKind)}`;
+    els.directContextRouteBadge.title = contextMaintenance.routeBlocked
+      ? `Route blocked by: ${formatDirectContextBlockers(contextMaintenance.blockers) || "missing/stale required artifact"}.`
+      : "Route status is diagnostic only; no maintenance action is executed from this surface.";
+  }
+  if (els.directContextMemoryBadge) {
+    const memoryDisplayState = contextMaintenance.memoryPointerState !== "none"
+      ? contextMaintenance.memoryPointerState
+      : contextMaintenance.memoryState;
+    els.directContextMemoryBadge.textContent = `memory ${formatDirectContextState(memoryDisplayState)}`;
+    els.directContextMemoryBadge.title = `Direct memory is app-private status. App-server memory citations observed: ${contextMaintenance.memoryCitationCount}; mode control observed: ${contextMaintenance.memoryModeObserved ? "yes" : "no"}.`;
+  }
+  if (els.directContextBatonBadge) {
+    els.directContextBatonBadge.textContent = `baton ${formatDirectContextState(contextMaintenance.batonState)}`;
+    els.directContextBatonBadge.title = `Baton requirement: ${formatDirectContextState(contextMaintenance.batonRequirement)}. Batons do not grant replay, approval, or continuation authority.`;
+  }
+  if (els.directContextOmissionBadge) {
+    els.directContextOmissionBadge.textContent = `omission ${formatDirectContextState(contextMaintenance.omissionState)}`;
+    els.directContextOmissionBadge.title = "Omission ledger status is display-only; missing required omission evidence blocks context rather than trimming silently.";
+  }
+  if (els.directContextProviderCompactBadge) {
+    els.directContextProviderCompactBadge.textContent = `compact ${formatDirectContextState(contextMaintenance.providerCompactState)}`;
+    els.directContextProviderCompactBadge.title = `Provider compact evidence: ${formatDirectContextState(contextMaintenance.providerCompactEvidenceState)}. Provider transport allowed: ${contextMaintenance.providerTransportAllowed ? "yes" : "no"}.`;
+  }
   if (els.directRuntimePathSelect) {
     const currentPath = selectedDirectRuntimePath();
     const textOnlyReady = status.directTextOnly?.status === "eligible" || status.directTextOnly?.status === "enabled";
@@ -2815,6 +2898,22 @@ function renderDirectRuntimeStatus() {
     els.directExperimentalRollbackButton.title = canRollback
       ? "Rollback this project to its previous Codex binding or legacy app-server."
       : "Direct experimental rollback is not available.";
+  }
+  if (els.directContextEvidence) {
+    const actionFlags = [
+      contextMaintenance.compactActionAllowed ? "compact action" : "",
+      contextMaintenance.maintenanceExecutionAllowed ? "maintenance execution" : "",
+      contextMaintenance.memoryEditorAllowed ? "memory editor" : "",
+      contextMaintenance.memoryResetAllowed ? "memory reset" : "",
+      contextMaintenance.providerTransportAllowed ? "provider compact transport" : "",
+    ].filter(Boolean);
+    if (actionFlags.length) {
+      els.directContextEvidence.textContent = `WARNING: unexpected Direct context actionability exposed (${actionFlags.join(", ")}).`;
+    } else if (contextMaintenance.contextCompactionCount || contextMaintenance.memoryCitationCount) {
+      els.directContextEvidence.textContent = `Display-only; app-server sibling evidence observed (${contextMaintenance.contextCompactionCount} compaction, ${contextMaintenance.memoryCitationCount} memory).`;
+    } else {
+      els.directContextEvidence.textContent = "Context maintenance is status-only; no compact, memory reset, memory edit, provider compact, or hidden maintenance action is exposed.";
+    }
   }
 }
 
