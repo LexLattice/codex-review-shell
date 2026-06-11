@@ -3963,7 +3963,7 @@ function selectedDirectWorkbenchThread() {
 }
 
 function canOpenDirectWorkbenchThreadInCodexPlane(thread = {}) {
-  const sourceClass = String(thread.sourceClass || "").trim();
+  const sourceClass = String(thread.sourceClass || "direct-native").trim();
   const lifecycleState = String(thread.lifecycle?.state || thread.lifecycleState || "active").trim();
   const projection = thread.rendererProjection || {};
   if (!thread.threadId || lifecycleState === "soft_deleted" || projection.unsafeForRenderer === true) return false;
@@ -3973,7 +3973,7 @@ function canOpenDirectWorkbenchThreadInCodexPlane(thread = {}) {
     "forked-direct-native",
     "import-checkpoint-continuation",
     "direct-import-checkpoint-continuation",
-  ].includes(sourceClass || "direct-native");
+  ].includes(sourceClass);
 }
 
 function directThreadWorkbenchExpectedInput(extra = {}) {
@@ -5575,11 +5575,6 @@ async function openDirectWorkbenchThreadInCodexPlane(threadId) {
       return;
     }
     state.selectedCodexThreadId = id;
-    state.openedCodexProjectId = project.id;
-    state.openedCodexThreadId = id;
-    state.openedCodexThreadTitle = thread?.title || id;
-    state.openedCodexSourceHome = "";
-    state.openedCodexSessionFilePath = "";
     if (result.warning) {
       setLastEvent(`Requested direct thread in Codex plane with warning: ${result.warning}`);
     } else {
