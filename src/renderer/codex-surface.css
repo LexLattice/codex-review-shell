@@ -45,7 +45,7 @@ textarea {
   height: 100%;
   min-height: 100%;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   background:
     radial-gradient(circle at 30% -10%, rgba(121, 184, 255, 0.14), transparent 28%),
     linear-gradient(180deg, #0a0f16, #0b0f16);
@@ -79,6 +79,129 @@ textarea {
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.015)),
     rgba(17, 23, 34, 0.72);
+}
+
+.direct-thread-strip {
+  display: grid;
+  gap: 8px;
+  padding: 9px 14px 10px;
+  border-bottom: 1px solid rgba(121, 184, 255, 0.14);
+  background:
+    linear-gradient(90deg, rgba(121, 184, 255, 0.09), rgba(121, 184, 255, 0.02)),
+    rgba(9, 14, 21, 0.92);
+  z-index: 1;
+}
+
+.direct-thread-strip-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.direct-thread-status {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.direct-thread-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.direct-thread-action,
+.direct-thread-pill {
+  border: 1px solid rgba(121, 184, 255, 0.18);
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--text);
+  border-radius: 999px;
+}
+
+.direct-thread-action {
+  min-height: 28px;
+  padding: 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.direct-thread-action.primary {
+  border-color: rgba(111, 222, 165, 0.28);
+  background: rgba(111, 222, 165, 0.1);
+  color: #baf4ce;
+}
+
+.direct-thread-list {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+}
+
+.direct-thread-pill {
+  display: grid;
+  grid-template-columns: minmax(0, auto) auto;
+  grid-template-areas:
+    "title status"
+    "meta meta";
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 2px;
+  flex: 0 0 auto;
+  max-width: min(360px, 72vw);
+  min-height: 38px;
+  padding: 7px 10px;
+  text-align: left;
+}
+
+.direct-thread-pill:hover,
+.direct-thread-pill:focus-visible {
+  border-color: rgba(121, 184, 255, 0.42);
+  background: rgba(121, 184, 255, 0.09);
+}
+
+.direct-thread-pill.active {
+  border-color: rgba(121, 184, 255, 0.58);
+  background: rgba(121, 184, 255, 0.14);
+}
+
+.direct-thread-pill.running {
+  border-color: rgba(240, 191, 116, 0.34);
+}
+
+.direct-thread-pill-title {
+  grid-area: title;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.direct-thread-pill-state {
+  grid-area: status;
+  color: var(--success);
+  font-size: 11px;
+  text-transform: lowercase;
+}
+
+.direct-thread-pill.running .direct-thread-pill-state {
+  color: var(--warning);
+}
+
+.direct-thread-pill-meta {
+  grid-area: meta;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .title-block h1 {

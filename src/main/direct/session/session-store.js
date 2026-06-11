@@ -1237,9 +1237,10 @@ class DirectSessionStore {
   status(options = {}) {
     const index = this.ensure();
     const projectId = normalizeString(options.projectId, "");
+    const indexedSessions = Array.isArray(index.sessions) ? index.sessions.filter(Boolean) : [];
     const sessions = projectId
-      ? index.sessions.filter((session) => normalizeString(session.projectId, "") === projectId)
-      : index.sessions;
+      ? indexedSessions.filter((session) => normalizeString(session.projectId, "") === projectId)
+      : indexedSessions;
     const updatedMs = (session) => {
       const parsed = Date.parse(normalizeString(session?.updatedAt, ""));
       return Number.isFinite(parsed) ? parsed : 0;

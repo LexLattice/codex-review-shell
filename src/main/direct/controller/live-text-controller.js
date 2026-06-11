@@ -447,7 +447,7 @@ function buildDirectLiveTextCapabilities(status = {}) {
       canStart: ready,
       canRead: true,
       canResume: false,
-      canList: false,
+      canList: true,
       canFork: false,
       canPersistExtendedHistory: true,
     },
@@ -539,13 +539,52 @@ function implementationContextInstructions(contextInstructions = "") {
 }
 
 function threadSnapshotFromSession(session = {}) {
+  const turns = Array.isArray(session.turns) ? session.turns : [];
   return {
     id: session.sessionId,
+    threadId: session.sessionId,
     title: normalizeString(session.title, "Direct live text session"),
     preview: normalizeString(session.title, "Direct live text session"),
     turns: Array.isArray(session.messages) ? session.messages : [],
     model: normalizeString(session.model, ""),
+    createdAt: normalizeString(session.createdAt, ""),
+    updatedAt: normalizeString(session.updatedAt, ""),
+    status: normalizeString(session.status, "created"),
+    runtimeMode: normalizeString(session.runtimeMode, ""),
+    directTransport: normalizeString(session.directTransport, DIRECT_LIVE_TEXT_SURFACE_TRANSPORT),
+    turnCount: turns.length,
+    activeTurnCount: turns.filter((turn) => ACTIVE_TURN_STATES.has(normalizeString(turn?.state, ""))).length,
+    lastTurnState: normalizeString(turns[turns.length - 1]?.state, ""),
+    rawPathExposed: false,
   };
+}
+
+function threadListEntryFromIndexEntry(entry = {}) {
+  const sessionId = normalizeString(entry.sessionId, "");
+  return {
+    id: sessionId,
+    threadId: sessionId,
+    title: normalizeString(entry.title, "Direct live text session"),
+    preview: normalizeString(entry.title, "Direct live text session"),
+    createdAt: normalizeString(entry.createdAt, ""),
+    updatedAt: normalizeString(entry.updatedAt, ""),
+    status: normalizeString(entry.status, "created"),
+    model: normalizeString(entry.model, ""),
+    runtimeMode: normalizeString(entry.runtimeMode, ""),
+    directTransport: normalizeString(entry.directTransport, DIRECT_LIVE_TEXT_SURFACE_TRANSPORT),
+    turnCount: Number(entry.turnCount || 0),
+    activeTurnCount: Number(entry.activeTurnCount || 0),
+    lastTurnState: normalizeString(entry.lastTurnState, ""),
+    activeToolLoopId: normalizeString(entry.activeToolLoopId, ""),
+    sourceClass: "direct-native",
+    rawPathExposed: false,
+  };
+}
+
+function sessionMatchesProject(session = {}, projectId = "") {
+  const scopedProjectId = normalizeString(projectId, "");
+  if (!scopedProjectId) return true;
+  return normalizeString(session?.projectId, "") === scopedProjectId;
 }
 
 function terminalStatusForState(state) {
@@ -879,14 +918,20 @@ class DirectLiveTextController {
 
   startThread(params = {}, context = {}) {
     const project = context.project || {};
+    const projectId = normalizeString(project.id, "");
     const status = this.assertReady(project);
     const requestedSessionId = normalizeString(params.sessionId || params.threadId, "");
     if (requestedSessionId) {
       const existing = this.sessionStore.readSession(requestedSessionId);
-      if (existing) return { thread: threadSnapshotFromSession(existing), model: existing.model };
+      if (existing) {
+        if (!sessionMatchesProject(existing, projectId)) {
+          throw new Error("Direct live text session does not belong to the active project.");
+        }
+        return { thread: threadSnapshotFromSession(existing), model: existing.model };
+      }
     }
     const session = this.sessionStore.createSession({
-      projectId: normalizeString(project.id, ""),
+      projectId,
       workspace: isPlainObject(project.workspace) ? project.workspace : {},
       workspaceDisplayPath: workspaceDisplayPath(project),
       title: `${normalizeString(project.name, "Direct")} live text session`,
@@ -905,6 +950,37 @@ class DirectLiveTextController {
     return {
       thread: threadSnapshotFromSession(session),
       model: session.model,
+    };
+  }
+
+  listThreads(params = {}, context = {}) {
+    const project = context.project || {};
+    const projectId = normalizeString(project.id, "");
+    const requestedLimit = Number(params.limit || 40);
+    const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(200, requestedLimit)) : 40;
+    const index = this.sessionStore.ensure();
+    const sessions = Array.isArray(index?.sessions) ? index.sessions : [];
+    const updatedMs = (entry) => {
+      const parsed = Date.parse(normalizeString(entry?.updatedAt, ""));
+      return Number.isFinite(parsed) ? parsed : 0;
+    };
+    const threads = sessions
+      .filter((entry) => {
+        return entry && sessionMatchesProject(entry, projectId);
+      })
+      .sort((left, right) => updatedMs(right) - updatedMs(left))
+      .slice(0, limit)
+      .map(threadListEntryFromIndexEntry);
+    const storeStatus = this.sessionStore.status({ projectId });
+    return {
+      schema: "direct_thread_list@1",
+      runtime: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
+      projectId,
+      threads,
+      count: threads.length,
+      limit,
+      storeStatus,
+      rawPathsExposed: false,
     };
   }
 
@@ -4173,10 +4249,14 @@ class DirectLiveTextController {
     };
   }
 
-  readThread(params = {}) {
+  readThread(params = {}, context = {}) {
+    const projectId = normalizeString(context.project?.id, "");
     const sessionId = normalizeString(params.sessionId || params.threadId, "");
     const session = this.sessionStore.readSession(sessionId);
     if (!session) throw new Error(`Direct live text session not found: ${sessionId}`);
+    if (!sessionMatchesProject(session, projectId)) {
+      throw new Error("Direct live text session does not belong to the active project.");
+    }
     return {
       thread: threadSnapshotFromSession(session),
       model: session.model,
@@ -4206,6 +4286,7 @@ class DirectLiveTextController {
     if (method === "initialize") return this.initialize(params, context);
     if (method === "account/read") return this.accountRead(params, context);
     if (method === "thread/start") return this.startThread(params, context);
+    if (method === "thread/list") return this.listThreads(params, context);
     if (method === "thread/read") return this.readThread(params, context);
     if (method === "turn/start") return this.startTurn(params, context);
     if (method === "turn/interrupt" || method === "turn/abort") return this.interruptTurn(params, context);
