@@ -3962,6 +3962,20 @@ function selectedDirectWorkbenchThread() {
   return threads.find((thread) => thread.threadId === state.directThreadWorkbench.selectedThreadId) || null;
 }
 
+function canOpenDirectWorkbenchThreadInCodexPlane(thread = {}) {
+  const sourceClass = String(thread.sourceClass || "direct-native").trim();
+  const lifecycleState = String(thread.lifecycle?.state || thread.lifecycleState || "active").trim();
+  const projection = thread.rendererProjection || {};
+  if (!thread.threadId || lifecycleState === "soft_deleted" || projection.unsafeForRenderer === true) return false;
+  return [
+    "direct",
+    "direct-native",
+    "forked-direct-native",
+    "import-checkpoint-continuation",
+    "direct-import-checkpoint-continuation",
+  ].includes(sourceClass);
+}
+
 function directThreadWorkbenchExpectedInput(extra = {}) {
   const snapshot = state.directThreadWorkbench.snapshot || {};
   const projection = state.directThreadWorkbench.evidenceProjection || {};
@@ -4041,6 +4055,19 @@ function renderDirectThreadProjectionDetail() {
   title.querySelector("h4").textContent = thread.title || thread.threadId;
   const actions = document.createElement("div");
   actions.className = "heading-actions direct-thread-actions";
+  const openButton = document.createElement("button");
+  const canOpenInCodexPlane = canOpenDirectWorkbenchThreadInCodexPlane(thread);
+  openButton.type = "button";
+  openButton.className = "primary small";
+  openButton.textContent = "Open in Codex plane";
+  openButton.disabled = state.directThreadWorkbench.status === "working" || !bridge.selectCodexThread || !canOpenInCodexPlane;
+  openButton.title = canOpenInCodexPlane
+    ? "Open this direct-owned thread in the left Codex plane without promoting derived previews."
+    : "Only direct-native runtime sessions can be opened in the Codex plane; imported or derived evidence remains non-runnable.";
+  openButton.addEventListener("click", () => {
+    openDirectWorkbenchThreadInCodexPlane(thread.threadId).catch((error) => setLastEvent(`Direct thread open failed: ${error.message}`));
+  });
+  actions.appendChild(openButton);
   const actionSpecs = [
     ["hide", "Hide"],
     ["unhide", "Unhide"],
@@ -5521,6 +5548,46 @@ async function selectDirectWorkbenchThread(threadId) {
     setLastEvent(state.directThreadWorkbench.lastError);
   }
   if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+  renderDirectThreadWorkbench();
+}
+
+async function openDirectWorkbenchThreadInCodexPlane(threadId) {
+  const project = activeProject();
+  const id = String(threadId || "").trim();
+  if (!project || !id || !bridge.selectCodexThread) return;
+  const thread = selectedDirectWorkbenchThread();
+  if (!thread || thread.threadId !== id || !canOpenDirectWorkbenchThreadInCodexPlane(thread)) {
+    setLastEvent("Direct thread open skipped: selected workbench item is not a runnable direct session.");
+    renderDirectThreadWorkbench();
+    return;
+  }
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  const requestVersion = nextRequestVersion("directThreadWorkbenchOperation");
+  state.directThreadWorkbench.status = "working";
+  renderDirectThreadWorkbench();
+  try {
+    const result = await bridge.selectCodexThread(project.id, id, "", "");
+    if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directThreadWorkbench.status = "loaded";
+    if (!result?.ok) {
+      setLastEvent(`Direct thread open skipped: ${result?.error || "unknown reason"}`);
+      renderDirectThreadWorkbench();
+      return;
+    }
+    state.selectedCodexThreadId = id;
+    if (result.warning) {
+      setLastEvent(`Requested direct thread in Codex plane with warning: ${result.warning}`);
+    } else {
+      setLastEvent(`Requested direct thread in Codex plane: ${thread?.title || id}.`);
+    }
+  } catch (error) {
+    if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directThreadWorkbench.status = "error";
+    state.directThreadWorkbench.lastError = `Direct thread open failed: ${error.message}`;
+    setLastEvent(state.directThreadWorkbench.lastError);
+  }
+  if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+  renderSelectedProject();
   renderDirectThreadWorkbench();
 }
 
