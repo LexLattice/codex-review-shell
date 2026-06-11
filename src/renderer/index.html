@@ -204,6 +204,47 @@
             <p id="directMetaSessionEvidence" class="muted direct-auth-evidence">Status projection is read-only.</p>
           </section>
 
+          <section class="control-card direct-diagnostics-card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Direct diagnostics</p>
+                <h3>Status-only workbench</h3>
+              </div>
+              <span id="directDiagnosticsStatusBadge" class="counter">not loaded</span>
+            </div>
+            <div class="direct-diagnostics-grid">
+              <section class="direct-diagnostics-panel">
+                <h4>Context detail</h4>
+                <div id="directDiagnosticsContextGrid" class="direct-diagnostics-list"></div>
+              </section>
+              <section class="direct-diagnostics-panel">
+                <h4>Artifact inspector</h4>
+                <div id="directDiagnosticsArtifactList" class="direct-diagnostics-list"></div>
+              </section>
+              <section class="direct-diagnostics-panel">
+                <h4>Recovery status</h4>
+                <div id="directDiagnosticsRecoveryList" class="direct-diagnostics-list"></div>
+              </section>
+              <section class="direct-diagnostics-panel">
+                <h4>Governance shadow</h4>
+                <div id="directDiagnosticsGovernanceList" class="direct-diagnostics-list"></div>
+              </section>
+              <section class="direct-diagnostics-panel">
+                <h4>Broker packet</h4>
+                <div id="directDiagnosticsBrokerList" class="direct-diagnostics-list"></div>
+              </section>
+              <section class="direct-diagnostics-panel">
+                <h4>Transition graph</h4>
+                <div id="directDiagnosticsTransitionList" class="direct-diagnostics-list"></div>
+              </section>
+              <section class="direct-diagnostics-panel span-2">
+                <h4>Sub-agent observability</h4>
+                <div id="directDiagnosticsSubAgentList" class="direct-diagnostics-list"></div>
+              </section>
+            </div>
+            <p id="directDiagnosticsEvidence" class="muted direct-auth-evidence">Direct diagnostics are renderer-safe status projections only.</p>
+          </section>
+
           <section class="control-card codex-request-card">
             <div class="section-heading">
               <div>
