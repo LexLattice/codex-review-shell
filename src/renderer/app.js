@@ -2758,7 +2758,7 @@ function directContextMaintenanceStatus(status = state.directRuntimeStatus) {
   const providerCompact = value.providerCompact || {};
   return {
     pressureState: String(value.pressureState || projection.pressureState || "unknown"),
-    routeKind: String(value.routeKind || value.currentRouteKind || projection.routeKind || "none"),
+    routeKind: String(value.routeKind || value.currentRouteKind || projection.routeKind || projection.currentRouteId || "none"),
     routeBlocked: value.routeBlocked === true || (Array.isArray(value.blockers) && value.blockers.length > 0),
     memoryState: String(value.memoryState || projection.memoryState || "none"),
     memoryPointerState: String(value.memoryPointerState || projection.memoryPointerState || "none"),
@@ -2784,6 +2784,17 @@ function directContextMaintenanceStatus(status = state.directRuntimeStatus) {
 
 function formatDirectContextState(value) {
   return String(value || "unknown").replace(/_/g, " ");
+}
+
+function formatDirectContextBlockers(blockers = []) {
+  return blockers
+    .slice(0, 4)
+    .map((blocker) => {
+      if (blocker && typeof blocker === "object") return blocker.label || blocker.id || blocker.blockerCode || blocker.code || "blocked";
+      return String(blocker || "").trim();
+    })
+    .filter(Boolean)
+    .join(", ");
 }
 
 function renderDirectRuntimeStatus() {
@@ -2812,11 +2823,14 @@ function renderDirectRuntimeStatus() {
   if (els.directContextRouteBadge) {
     els.directContextRouteBadge.textContent = `route ${formatDirectContextState(contextMaintenance.routeKind)}`;
     els.directContextRouteBadge.title = contextMaintenance.routeBlocked
-      ? `Route blocked by: ${contextMaintenance.blockers.slice(0, 4).join(", ") || "missing/stale required artifact"}.`
+      ? `Route blocked by: ${formatDirectContextBlockers(contextMaintenance.blockers) || "missing/stale required artifact"}.`
       : "Route status is diagnostic only; no maintenance action is executed from this surface.";
   }
   if (els.directContextMemoryBadge) {
-    els.directContextMemoryBadge.textContent = `memory ${formatDirectContextState(contextMaintenance.memoryPointerState || contextMaintenance.memoryState)}`;
+    const memoryDisplayState = contextMaintenance.memoryPointerState !== "none"
+      ? contextMaintenance.memoryPointerState
+      : contextMaintenance.memoryState;
+    els.directContextMemoryBadge.textContent = `memory ${formatDirectContextState(memoryDisplayState)}`;
     els.directContextMemoryBadge.title = `Direct memory is app-private status. App-server memory citations observed: ${contextMaintenance.memoryCitationCount}; mode control observed: ${contextMaintenance.memoryModeObserved ? "yes" : "no"}.`;
   }
   if (els.directContextBatonBadge) {

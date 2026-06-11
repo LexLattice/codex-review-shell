@@ -1412,6 +1412,7 @@ button:active {
 .direct-context-status .pill {
   justify-content: center;
   min-width: 0;
+  width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
