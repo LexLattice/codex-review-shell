@@ -96,11 +96,12 @@ function explicitCodexAuthFileCandidates(options = {}) {
 function defaultCodexAuthFileCandidates(options = {}) {
   const explicit = explicitCodexAuthFileCandidates(options);
   if (explicit.length) return explicit;
-  const homes = [
+  const userHome = normalizeString(os.homedir(), "");
+  const homes = uniquePaths([
     process.env.CODEX_HOME,
-    path.join(os.homedir(), ".codex"),
+    userHome ? path.join(userHome, ".codex") : "",
     ...windowsHomeCandidates().map((home) => path.join(home, ".codex")),
-  ];
+  ]);
   return uniquePaths(homes.map((home) => path.join(home, "auth.json")));
 }
 

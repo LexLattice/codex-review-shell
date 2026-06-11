@@ -2776,7 +2776,7 @@ function directContextMaintenanceStatus(status = state.directRuntimeStatus) {
     omissionState: String(value.omissionState || projection.omissionState || "none"),
     providerCompactState: String(providerCompact.state || value.providerCompactState || value.providerCompactionState || "not_proven"),
     providerCompactEvidenceState: String(providerCompact.evidenceState || value.providerCompactionEvidenceState || "missing"),
-    appServerSibling,
+    appServerSibling: sibling,
     contextCompactionCount: Number(sibling.contextCompactionCount || 0),
     memoryCitationCount: Number(sibling.memoryCitationCount || 0),
     memoryModeObserved: sibling.memoryModeObserved === true,

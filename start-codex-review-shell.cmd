@@ -25,13 +25,14 @@ echo Root: %ROOT_DIR% >> "%LAUNCHER_STDOUT%"
 echo WSL distro: %CODEX_REVIEW_SHELL_DEFAULT_WSL_DISTRO% >> "%LAUNCHER_STDOUT%"
 echo WSL path: %CODEX_REVIEW_SHELL_DEFAULT_WSL_PATH% >> "%LAUNCHER_STDOUT%"
 
-call "%POWERSHELL%" -NoProfile -Command ^
-  "$targets = Get-CimInstance Win32_Process | Where-Object { " ^
-  "($_.Name -eq 'node.exe' -and $_.CommandLine -like '*scripts\\run-electron.mjs*' -and $_.CommandLine -like '*codex-review-shell-direct*') -or " ^
-  "($_.Name -eq 'electron.exe' -and $_.CommandLine -like '*codex-review-shell-direct*')" ^
-  "}; " ^
-  "if ($targets) { $targets | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } }" ^
-  >> "%LAUNCHER_STDOUT%" 2>> "%LAUNCHER_STDERR%"
+set "KILL_SCRIPT=%TEMP%\codex-review-shell-direct-kill-%RANDOM%.ps1"
+> "%KILL_SCRIPT%" echo $targets = Get-CimInstance Win32_Process ^| Where-Object {
+>> "%KILL_SCRIPT%" echo   ($_.Name -eq 'node.exe' -and $_.CommandLine -like '*scripts\run-electron.mjs*' -and $_.CommandLine -like '*codex-review-shell-direct*') -or
+>> "%KILL_SCRIPT%" echo   ($_.Name -eq 'electron.exe' -and $_.CommandLine -like '*codex-review-shell-direct*')
+>> "%KILL_SCRIPT%" echo }
+>> "%KILL_SCRIPT%" echo if ($targets) { $targets ^| ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } }
+call "%POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -File "%KILL_SCRIPT%" >> "%LAUNCHER_STDOUT%" 2>> "%LAUNCHER_STDERR%"
+if exist "%KILL_SCRIPT%" del "%KILL_SCRIPT%" >nul 2>nul
 
 echo Existing WSL Codex app-server processes before launch: >> "%LAUNCHER_STDOUT%"
 "%SystemRoot%\System32\wsl.exe" -d "%CODEX_REVIEW_SHELL_DEFAULT_WSL_DISTRO%" -- bash -lc "pgrep -af 'codex app-server --listen ws://127[.]0[.]0[.]1:' || true" >> "%LAUNCHER_STDOUT%" 2>> "%LAUNCHER_STDERR%"
