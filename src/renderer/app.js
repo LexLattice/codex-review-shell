@@ -2867,16 +2867,17 @@ function directDiagnosticsEvidenceKeys(...sources) {
 }
 
 function directDiagnosticsSubAgentEntries(source = {}) {
-  const graph = directDiagnosticsObject(source.agentGraph || source.graph || source);
+  const safeSource = directDiagnosticsObject(source);
+  const graph = directDiagnosticsObject(safeSource.agentGraph || safeSource.graph || safeSource);
   const candidates = [
-    source.agents,
-    source.agentRows,
-    source.threads,
-    source.nodes,
+    safeSource.agents,
+    safeSource.agentRows,
+    safeSource.threads,
+    safeSource.nodes,
     graph.agents,
     graph.nodes,
-    source.progressRegistry?.entries,
-    source.progressEntries,
+    safeSource.progressRegistry?.entries,
+    safeSource.progressEntries,
   ];
   for (const value of candidates) {
     if (Array.isArray(value) && value.length) return value;
@@ -2885,12 +2886,13 @@ function directDiagnosticsSubAgentEntries(source = {}) {
 }
 
 function directDiagnosticsSubAgentLabel(agent = {}, index = 0) {
-  return agent.displayLabel ||
-    agent.nickname ||
-    agent.agentNickname ||
-    agent.agentRole ||
-    agent.role ||
-    directDiagnosticsShortId(agent.agentThreadId || agent.threadId || agent.id) ||
+  const safeAgent = directDiagnosticsObject(agent);
+  return safeAgent.displayLabel ||
+    safeAgent.nickname ||
+    safeAgent.agentNickname ||
+    safeAgent.agentRole ||
+    safeAgent.role ||
+    directDiagnosticsShortId(safeAgent.agentThreadId || safeAgent.threadId || safeAgent.id) ||
     `agent ${index + 1}`;
 }
 
@@ -2958,7 +2960,7 @@ function directDiagnosticsProjection(status = state.directRuntimeStatus) {
     implementationLane.subAgentObservability,
     implementationLane.agentGraph,
   );
-  const subAgentEntries = directDiagnosticsSubAgentEntries(subAgentSource);
+  const subAgentEntries = directDiagnosticsSubAgentEntries(subAgentSource).filter((agent) => agent && typeof agent === "object");
   const actionFlags = [
     contextMaintenance.compactActionAllowed ? "compact" : "",
     contextMaintenance.maintenanceExecutionAllowed ? "maintenance" : "",
@@ -3231,6 +3233,7 @@ function renderDirectMetaSessionStatus() {
       ? `Meta-session status unavailable: ${state.directMetaSessionError}`
       : `Projection ${selected} · ledger events ${counts.ledgerEvents || 0} · attempts ${counts.attemptFailures || 0} · latest blockers ${blockers.length ? blockers.join(", ") : "none"} · actionability=false.`;
   }
+  renderDirectDiagnosticsStatus(state.directRuntimeStatus);
 }
 
 function renderDirectAuthControls() {
