@@ -4194,17 +4194,44 @@ function renderDirectThreadWorkbenchSide() {
     badge.textContent = `${preview.projectionKind} · ${preview.status} · non-runnable`;
     previewBody.appendChild(badge);
     if (["fork_preview", "merge_preview", "prune_preview"].includes(preview.projectionKind) && preview.status === "valid") {
+      const isDerivedPreview = preview.projectionKind === "merge_preview" || preview.projectionKind === "prune_preview";
+      const bridgeReady = isDerivedPreview
+        ? Boolean(bridge.prepareDirectThreadDerivedPreviewForkStart && bridge.startDirectThreadForkFromDerivedPreview)
+        : Boolean(bridge.prepareDirectThreadForkStart && bridge.startDirectThreadForkFromPreview);
       const forkForm = document.createElement("div");
       forkForm.className = "direct-fork-start-form";
+      const intentLabel = document.createElement("label");
+      intentLabel.className = "direct-fork-start-label";
+      intentLabel.textContent = "Fresh fork intent";
+      const intentInput = document.createElement("textarea");
+      intentInput.className = "direct-fork-start-input";
+      intentInput.rows = 4;
+      intentInput.placeholder = "Tell the new direct session what to do with this preview evidence...";
+      intentInput.value = state.directThreadWorkbench.forkStartPrompt || "";
       const button = document.createElement("button");
       button.type = "button";
-      button.className = "ghost small";
-      button.textContent = "Preview only";
-      button.disabled = true;
+      button.className = "primary small";
+      button.textContent = "Start fresh fork";
+      const updateButtonDisabled = () => {
+        button.disabled = state.directThreadWorkbench.status === "working" || !bridgeReady || !String(intentInput.value || "").trim();
+      };
+      updateButtonDisabled();
+      button.title = bridgeReady
+        ? "Create a fresh direct-native session from quoted preview evidence. This does not resume provider state."
+        : "Fork-start bridge is unavailable for this preview kind.";
+      button.addEventListener("click", () => {
+        startDirectThreadForkFromSelectedPreview().catch((error) => setLastEvent(`Start fresh fork failed: ${error.message}`));
+      });
+      intentInput.addEventListener("input", () => {
+        state.directThreadWorkbench.forkStartPrompt = intentInput.value;
+        updateButtonDisabled();
+      });
       const note = document.createElement("p");
       note.className = "muted";
-      note.textContent = "Fresh fork execution is outside this evidence workbench view; previews do not build context packs, request manifests, or sessions here.";
-      forkForm.append(button, note);
+      note.textContent = isDerivedPreview
+        ? "Starts a fresh direct session from quoted merge/prune preview evidence. Source previews remain non-runnable and no provider continuity is reused."
+        : "Starts a fresh direct session from fork-preview seed metadata. Source thread state is not resumed.";
+      forkForm.append(intentLabel, intentInput, button, note);
       previewBody.appendChild(forkForm);
     }
     for (const item of (preview.items || []).slice(0, 8)) {
@@ -5512,6 +5539,9 @@ async function loadDirectThreadWorkbench(options = {}) {
     if (state.directThreadWorkbench.selectedThreadId && !threads.find((thread) => thread.threadId === state.directThreadWorkbench.selectedThreadId)) {
       state.directThreadWorkbench.selectedThreadId = "";
       state.directThreadWorkbench.selectedProjection = null;
+      state.directThreadWorkbench.selectedPreviewId = "";
+      state.directThreadWorkbench.selectedPreview = null;
+      state.directThreadWorkbench.forkStartPrompt = "";
     }
   } catch (error) {
     if (isRequestStale("directThreadWorkbench", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
@@ -5527,8 +5557,14 @@ async function selectDirectWorkbenchThread(threadId) {
   const project = activeProject();
   const id = String(threadId || "").trim();
   if (!project || !id || !bridge.readDirectThreadWorkbenchThreadProjection) return;
+  const threadChanged = state.directThreadWorkbench.selectedThreadId !== id;
   state.directThreadWorkbench.selectedThreadId = id;
   state.directThreadWorkbench.selectedProjection = null;
+  if (threadChanged) {
+    state.directThreadWorkbench.selectedPreviewId = "";
+    state.directThreadWorkbench.selectedPreview = null;
+    state.directThreadWorkbench.forkStartPrompt = "";
+  }
   state.directThreadWorkbench.status = "working";
   renderDirectThreadWorkbench();
   const requestVersion = nextRequestVersion("directThreadWorkbenchOperation");
