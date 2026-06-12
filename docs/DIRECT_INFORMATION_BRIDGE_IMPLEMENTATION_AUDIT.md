@@ -76,15 +76,14 @@ governance/observability:
   usage/quota/model readiness
 ```
 
-The biggest missing abstraction is still:
+The first version of the key abstraction now exists as a shadow substrate:
 
 ```text
 WorkThread
 ```
 
-The current code knows about project, repo/workspace, Codex thread, direct
-session, meta-session, and runtime path. It does not yet have one canonical
-object for:
+Earlier code knew about project, repo/workspace, Codex thread, direct session,
+meta-session, and runtime path. The new v0 object records:
 
 ```text
 active work thread
@@ -121,7 +120,7 @@ The executable registry currently tracks these bridge rows:
 | `ic9.direct-runtime-selection` | governance/routing | partial | keep and simplify UI |
 | `ic10.retained-appserver-path` | observability surface | inherited | retain when aligned |
 | `ic11.inherited-shell-ux` | observability surface | inherited | retain when aligned |
-| `ic12.work-thread-registry` | governance/routing | missing | build next |
+| `ic12.work-thread-registry` | governance/routing | partial | keep shadow |
 | `ic13.bridge-information-registry` | governance/routing | partial | bootstrap now |
 | `ic14.skills-hooks-apps` | governance/routing | missing | design before build |
 | `ic15.direct-settings-surface` | observability surface | missing | build after registry |
@@ -144,7 +143,7 @@ Realignment needed:
 
 - Add registry ids to emitted artifacts so context/recovery/governance can cite information classes directly.
 - Normalize read, patch, command, and future actions under a shared `AuthorityBearingTransition` envelope.
-- Separate Codex thread/session identity from future `WorkThread` identity.
+- Separate Codex thread/session identity from `WorkThread` identity in context and authority flows.
 - Promote context maintenance, durable memory, omission ledger, and frontier baton from diagnostics into governed transitions when ready.
 - Keep governance/broker in shadow mode until a `WorkThread` router exists.
 - Tie sub-agent nodes to future `AgentClassSpec` and `WorkThread` scope.
@@ -154,7 +153,7 @@ Realignment needed:
 
 Not built yet:
 
-- First-class `WorkThread` registry and broker.
+- Enforced `WorkThread` broker and mutation routing.
 - Work-target resolution from messy user utterance to active work-thread ontology.
 - Direct-native skills/hooks/apps bridge rows and authority law.
 - Direct settings surface for runtime/profile/registry/context/memory/skills.
@@ -178,9 +177,17 @@ Direct replacements should be created only when inherited behavior encodes the
 wrong abstraction, for example treating repo/folder/chat/session as the work
 unit instead of `WorkThread`.
 
-## Next Practical Step
+## WorkThread Foundation
 
-Build `WorkThread` next, but as a small canonical registry first:
+The WorkThread v0 substrate is implemented by:
+
+```text
+src/main/direct/bridge/work-thread-registry.js
+scripts/direct-workthread-foundation-regression.mjs
+docs/DIRECT_WORK_THREAD_FOUNDATION_SPEC.md
+```
+
+It provides:
 
 ```text
 WorkThread
@@ -201,7 +208,7 @@ WorkThread
   evidenceRefs
 ```
 
-Then add a read-only work-target resolution report:
+and a read-only work-target resolution report:
 
 ```text
 incoming user request
@@ -211,5 +218,20 @@ incoming user request
   -> no workspace mutation until resolved
 ```
 
-That is the correct next layer above the already implemented session/thread/tool
-substrate.
+The resolver is shadow-only. It does not route provider calls, mutate workspaces,
+or enforce delegation.
+
+## Next Practical Step
+
+Align context and authority with `WorkThread`:
+
+```text
+ContextPack / RequestManifest
+  -> cite workThreadId
+  -> cite authorityBoundary
+  -> cite openObligations
+  -> cite bridge information class refs
+
+read / patch / command transitions
+  -> wrap existing plans/results/continuations in AuthorityBearingTransition
+```
