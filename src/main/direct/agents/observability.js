@@ -11,6 +11,7 @@ const DIRECT_SUB_AGENT_TRANSCRIPT_PROJECTION_SCHEMA = "direct_sub_agent_transcri
 const DIRECT_AGENT_ATTENTION_PROJECTION_SCHEMA = "direct_agent_attention_projection@1";
 const DIRECT_SUB_AGENT_OBSERVABILITY_REPORT_SCHEMA = "direct_sub_agent_observability_report@1";
 const DIRECT_AGENT_OBSERVABILITY_VERSION = "direct-sub-agent-observability@1";
+const DIRECT_WORKER_GRAPH_ALIGNMENT_SCHEMA = "direct_worker_graph_alignment@1";
 
 const RUNTIME_SOURCE_CLASSES = new Set([
   "codex_app_server_collab",
@@ -46,6 +47,18 @@ const PROGRESS_PHASES = new Set(["discovered", "created", "input_sent", "running
 const ATTENTION_STATES = new Set(["none", "unread", "active", "blocked", "failed", "stale", "unknown"]);
 const ATTENTION_PROJECTION_STATES = new Set(["none", "unread", "active", "failed", "blocked", "stale"]);
 const MODEL_SAFE_USES = new Set(["future_tool_candidate_only", "diagnostic_only", "blocked"]);
+const AGENT_CLASS_KINDS = new Set([
+  "primary_agent",
+  "implementation_worker",
+  "audit_worker",
+  "fix_worker",
+  "closeout_worker",
+  "meta_orchestrator",
+  "work_thread_broker",
+  "memory_compaction_worker",
+  "governance_broker",
+  "sub_agent_worker",
+]);
 
 const PROGRESS_TRANSITIONS = {
   discovered: new Set(["created", "running", "unknown"]),
@@ -182,6 +195,10 @@ function normalizeGraphNode(input = {}, index = 0, duplicateLabelSet = new Set()
     role: normalizeString(input.role, ""),
     nickname: normalizeString(input.nickname, ""),
     displayLabel,
+    model: normalizeString(input.model || input.runtime?.model, ""),
+    reasoningEffort: normalizeString(input.reasoningEffort || input.runtime?.reasoningEffort, ""),
+    serviceTier: normalizeString(input.serviceTier || input.runtime?.serviceTier, ""),
+    agentClassKind: AGENT_CLASS_KINDS.has(input.agentClassKind) ? input.agentClassKind : "",
     identityResolution: buildAgentIdentityResolution({ ...suppliedIdentity, agentThreadId, collisionState }),
     labelConfidence: ["thread_metadata", "collab_tool_call", "harness_record", "fixture", "unknown"].includes(input.labelConfidence) ? input.labelConfidence : "unknown",
     lifecycleState: LIFECYCLE_STATES.has(input.lifecycleState) ? input.lifecycleState : "discovered",
@@ -689,6 +706,151 @@ function buildSelectedAgentTabState(input = {}) {
   };
 }
 
+function normalizeWorkThreadRef(input = {}) {
+  return {
+    workThreadId: normalizeString(input.workThreadId, ""),
+    workThreadDigest: normalizeString(input.digest || input.workThreadDigest || input.integrity?.artifactDigest, ""),
+    projectId: normalizeString(input.projectId, ""),
+    title: clipText(input.title || input.objective?.summary || "", 180),
+    evidenceRefs: normalizeEvidenceRefs(input.evidenceRefs),
+  };
+}
+
+function normalizeAgentClassRegistryRef(input = {}) {
+  const specs = arrayValue(input.specs);
+  return {
+    registryId: normalizeString(input.registryId, ""),
+    registryDigest: normalizeString(input.registryDigest || input.integrity?.artifactDigest, ""),
+    registrySourceDigest: normalizeString(input.registrySourceDigest, ""),
+    specCount: finiteNumber(input.specCount, specs.length),
+    specsByKind: new Map(specs
+      .filter((spec) => AGENT_CLASS_KINDS.has(spec.agentClassKind))
+      .map((spec) => [spec.agentClassKind, spec])),
+  };
+}
+
+function resolveAgentClassForNode(node = {}, registryRef = {}) {
+  const specsByKind = registryRef.specsByKind instanceof Map ? registryRef.specsByKind : new Map();
+  const explicit = AGENT_CLASS_KINDS.has(node.agentClassKind) ? node.agentClassKind : "";
+  const roleExact = AGENT_CLASS_KINDS.has(node.role) ? node.role : "";
+  const agentClassKind = explicit || roleExact || "sub_agent_worker";
+  const spec = specsByKind.get(agentClassKind) || specsByKind.get("sub_agent_worker") || {};
+  return {
+    agentClassKind,
+    agentClassId: normalizeString(spec.agentClassId, agentClassKind),
+    agentClassSpecDigest: normalizeString(spec.specDigest, ""),
+    mappingSource: explicit ? "agent_metadata" : roleExact ? "role_exact" : "default_sub_agent_worker",
+    mappingConfidence: explicit || roleExact ? "accepted" : "diagnostic",
+  };
+}
+
+function buildWorkerGraphAlignment(input = {}) {
+  const graph = input.agentGraph || {};
+  const workThreadRef = normalizeWorkThreadRef(input.workThread || input.workThreadRef || {
+    workThreadId: input.workThreadId,
+    projectId: input.projectId || graph.projectId,
+  });
+  const registryRef = normalizeAgentClassRegistryRef(input.agentClassRegistry || input.agentClassRegistryRef);
+  const graphDigest = normalizeString(graph.integrity?.artifactDigest || graph.sourceDigest, "");
+  const nodes = arrayValue(graph.nodes).map((node, index) => {
+    const mapping = resolveAgentClassForNode(node, registryRef);
+    return {
+      workerNodeId: normalizeString(node.agentNodeId, graphNodeId(node.agentThreadId, index)),
+      workThreadId: workThreadRef.workThreadId,
+      providerThreadId: normalizeString(node.agentThreadId, ""),
+      parentProviderThreadId: normalizeString(node.parentThreadId, ""),
+      depth: finiteNumber(node.depth, 0),
+      displayLabel: clipText(node.displayLabel || displayLabelForNode(node, index), 160),
+      role: clipText(node.role, 120),
+      nickname: clipText(node.nickname, 120),
+      model: normalizeString(node.model, ""),
+      reasoningEffort: normalizeString(node.reasoningEffort, ""),
+      serviceTier: normalizeString(node.serviceTier, ""),
+      lifecycleState: LIFECYCLE_STATES.has(node.lifecycleState) ? node.lifecycleState : "unknown",
+      activityState: ACTIVITY_STATES.has(node.activityState) ? node.activityState : "unknown",
+      agentClassKind: mapping.agentClassKind,
+      agentClassId: mapping.agentClassId,
+      agentClassSpecDigest: mapping.agentClassSpecDigest,
+      agentClassMappingSource: mapping.mappingSource,
+      agentClassMappingConfidence: mapping.mappingConfidence,
+      transcriptProjectionId: normalizeString(node.transcriptProjectionId, ""),
+      progressWitnessId: normalizeString(node.progressWitnessId, ""),
+      childDialogueFlattenedIntoPrimary: false,
+      outputPromotionAuthority: false,
+      routingEnabledInThisPr: false,
+      spawnEnabledInThisPr: false,
+      evidenceRefs: normalizeEvidenceRefs(node.evidenceRefs),
+    };
+  });
+  const edges = arrayValue(graph.edges).map((edge) => ({
+    edgeId: normalizeString(edge.edgeId, ""),
+    workThreadId: workThreadRef.workThreadId,
+    edgeKind: EDGE_KINDS.has(edge.edgeKind) ? edge.edgeKind : "derived_from_fixture",
+    sourceWorkerNodeId: normalizeString(edge.sourceAgentNodeId, ""),
+    targetWorkerNodeId: normalizeString(edge.targetAgentNodeId, ""),
+    parentProviderThreadId: normalizeString(edge.parentThreadId, ""),
+    childProviderThreadId: normalizeString(edge.childThreadId, ""),
+    status: EDGE_STATUS.has(edge.status) ? edge.status : "unknown",
+    sourceCallId: normalizeString(edge.sourceCallId, ""),
+    routingAuthority: false,
+    evidenceRefs: normalizeEvidenceRefs(edge.evidenceRefs),
+  }));
+  const sourceDigest = normalizeString(input.sourceDigest, sha256(stableStringify({
+    graphDigest,
+    workThreadDigest: workThreadRef.workThreadDigest,
+    agentClassRegistryDigest: registryRef.registryDigest,
+    nodes: nodes.map((node) => ({
+      providerThreadId: node.providerThreadId,
+      agentClassKind: node.agentClassKind,
+      model: node.model,
+      reasoningEffort: node.reasoningEffort,
+      lifecycleState: node.lifecycleState,
+      activityState: node.activityState,
+    })),
+    edges: edges.map((edge) => ({
+      edgeKind: edge.edgeKind,
+      parentProviderThreadId: edge.parentProviderThreadId,
+      childProviderThreadId: edge.childProviderThreadId,
+      status: edge.status,
+    })),
+  })));
+  const alignment = {
+    schema: DIRECT_WORKER_GRAPH_ALIGNMENT_SCHEMA,
+    alignmentId: normalizeString(input.alignmentId, `worker_graph_alignment_${sourceDigest.slice(0, 24)}`),
+    projectId: normalizeString(input.projectId, workThreadRef.projectId || graph.projectId || ""),
+    workThreadId: workThreadRef.workThreadId,
+    workThreadDigest: workThreadRef.workThreadDigest,
+    primaryThreadId: normalizeString(input.primaryThreadId, graph.primaryThreadId || ""),
+    agentGraphId: normalizeString(input.agentGraphId, graph.agentGraphId || ""),
+    agentGraphDigest: graphDigest,
+    graphRevision: finiteNumber(input.graphRevision, graph.graphRevision || 0),
+    activationEpoch: finiteNumber(input.activationEpoch, graph.activationEpoch || 0),
+    agentClassRegistryId: registryRef.registryId,
+    agentClassRegistryDigest: registryRef.registryDigest,
+    agentClassRegistrySourceDigest: registryRef.registrySourceDigest,
+    workerCount: nodes.length,
+    nodes,
+    edges,
+    counts: graphCounts(nodes.map((node) => ({
+      lifecycleState: node.lifecycleState,
+      activityState: node.activityState,
+    }))),
+    rendererSafeSummary: normalizeString(input.rendererSafeSummary, nodes.length
+      ? `Aligned ${nodes.length} worker node(s) to WorkThread and AgentClassSpec evidence.`
+      : "No worker graph evidence is available to align."),
+    childDialogueFlattenedIntoPrimary: false,
+    workerOutputPromotionEnabledInThisPr: false,
+    workThreadRoutingEnabledInThisPr: false,
+    subAgentSpawnEnabledInThisPr: false,
+    providerTransportEnabledInThisPr: false,
+    rawTranscriptIncluded: false,
+    rawPromptIncluded: false,
+    rawProviderFrameIncluded: false,
+    integrity: { algorithm: "sha256", sourceDigest, artifactDigest: "" },
+  };
+  return finalizeArtifact(alignment);
+}
+
 function agentObservabilityRecoveryState(input = {}) {
   if (input.rawExposureBlocked === true) return "raw_exposure_blocked";
   if (input.graphCorrupt === true) return "graph_corrupt";
@@ -765,6 +927,34 @@ function validateSubAgentObservabilityReport(report = {}) {
   return true;
 }
 
+function validateWorkerGraphAlignment(alignment = {}) {
+  if (alignment.schema !== DIRECT_WORKER_GRAPH_ALIGNMENT_SCHEMA) {
+    throw new Error("direct_worker_graph_alignment_schema_mismatch");
+  }
+  if (!alignment.workThreadId) throw new Error("direct_worker_graph_alignment_missing_work_thread");
+  if (alignment.childDialogueFlattenedIntoPrimary !== false || alignment.workerOutputPromotionEnabledInThisPr !== false) {
+    throw new Error("direct_worker_graph_alignment_promotes_child_dialogue");
+  }
+  for (const key of [
+    "workThreadRoutingEnabledInThisPr",
+    "subAgentSpawnEnabledInThisPr",
+    "providerTransportEnabledInThisPr",
+    "rawTranscriptIncluded",
+    "rawPromptIncluded",
+    "rawProviderFrameIncluded",
+  ]) {
+    if (alignment[key] !== false) throw new Error(`direct_worker_graph_alignment_authority_leak:${key}`);
+  }
+  for (const node of arrayValue(alignment.nodes)) {
+    if (node.workThreadId !== alignment.workThreadId) throw new Error(`direct_worker_graph_alignment_node_scope_mismatch:${node.providerThreadId || ""}`);
+    if (!AGENT_CLASS_KINDS.has(node.agentClassKind)) throw new Error(`direct_worker_graph_alignment_agent_class_invalid:${node.agentClassKind || ""}`);
+    if (node.childDialogueFlattenedIntoPrimary !== false || node.outputPromotionAuthority !== false) {
+      throw new Error(`direct_worker_graph_alignment_node_promotes_output:${node.providerThreadId || ""}`);
+    }
+  }
+  return true;
+}
+
 module.exports = {
   DIRECT_AGENT_ATTENTION_PROJECTION_SCHEMA,
   DIRECT_AGENT_CONTAINMENT_PROFILE_SCHEMA,
@@ -775,6 +965,7 @@ module.exports = {
   DIRECT_AGENT_PROGRESS_WITNESS_SCHEMA,
   DIRECT_SUB_AGENT_OBSERVABILITY_REPORT_SCHEMA,
   DIRECT_SUB_AGENT_TRANSCRIPT_PROJECTION_SCHEMA,
+  DIRECT_WORKER_GRAPH_ALIGNMENT_SCHEMA,
   agentObservabilityRecoveryState,
   buildActivityTag,
   buildAgentGraph,
@@ -787,10 +978,12 @@ module.exports = {
   buildProgressWitness,
   buildSelectedAgentTabState,
   buildSubAgentTranscriptProjection,
+  buildWorkerGraphAlignment,
   normalizeEvidenceRef,
   progressTransitionState,
   sha256,
   stableStringify,
   validateSentinelCounters,
   validateSubAgentObservabilityReport,
+  validateWorkerGraphAlignment,
 };

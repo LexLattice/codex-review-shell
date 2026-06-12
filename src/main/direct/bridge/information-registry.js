@@ -215,13 +215,13 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     role: "observability_surface",
     implementationState: "partial",
     directPathPosture: "keep_and_align",
-    sourceFiles: ["src/main/direct/agents/observability.js", "src/renderer/codex-surface.js"],
-    ontology: ontologyShape(["direct_agent_graph", "agent_progress_witness", "sub_agent_transcript_projection"], "sub_agent", {
-      identityFields: ["projectId", "parentThreadId", "agentThreadId", "agentNodeId"],
+    sourceFiles: ["src/main/direct/agents/observability.js", "src/main/direct/bridge/agent-class-spec.js", "src/main/direct/bridge/work-thread-registry.js", "src/renderer/codex-surface.js"],
+    ontology: ontologyShape(["direct_agent_graph", "agent_progress_witness", "sub_agent_transcript_projection", "direct_worker_graph_alignment"], "sub_agent", {
+      identityFields: ["projectId", "workThreadId", "parentThreadId", "agentThreadId", "agentNodeId"],
       schema: "direct_agent_graph@1",
     }),
-    bridgeFit: "Provides agent identity, progress, containment, transcript, and attention projections without collapsing child agents into operator/Codex roles.",
-    realignment: "Tie agent nodes to AgentClassSpec and WorkThread scope so direct-native multi-agent runs are not merely UI projections.",
+    bridgeFit: "Provides agent identity, progress, containment, transcript, attention, and WorkThread-scoped worker graph projections without collapsing child agents into operator/Codex roles.",
+    realignment: "Worker graph alignment now maps observed agent nodes to AgentClassSpec and WorkThread evidence while keeping routing/spawn/output-promotion authority disabled.",
   },
   {
     id: "ic8.usage-quota-readiness",

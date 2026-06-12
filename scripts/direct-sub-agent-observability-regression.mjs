@@ -10,6 +10,12 @@ const require = createRequire(import.meta.url);
 const { scanFixtureForSecrets } = require("../src/main/direct/fixtures/redaction");
 const { writeJsonAtomic } = require("../src/main/direct/session/session-store");
 const {
+  buildAgentClassRegistry,
+} = require("../src/main/direct/bridge/agent-class-spec");
+const {
+  buildWorkThread,
+} = require("../src/main/direct/bridge/work-thread-registry");
+const {
   DIRECT_SUB_AGENT_OBSERVABILITY_REPORT_SCHEMA,
   agentObservabilityRecoveryState,
   buildActivityTag,
@@ -22,10 +28,12 @@ const {
   buildProgressWitness,
   buildSelectedAgentTabState,
   buildSubAgentTranscriptProjection,
+  buildWorkerGraphAlignment,
   progressTransitionState,
   sha256,
   stableStringify,
   validateSubAgentObservabilityReport,
+  validateWorkerGraphAlignment,
 } = require("../src/main/direct/agents/observability");
 
 const USER_DATA_ROOT_ENV_VAR = "CODEX_REVIEW_SHELL_USER_DATA_ROOT";
@@ -144,6 +152,10 @@ function fixtureArtifacts() {
         parentThreadId: primaryThreadId,
         nickname: "Scout",
         role: "explorer",
+        model: "gpt-5.4-mini",
+        reasoningEffort: "medium",
+        serviceTier: "standard",
+        agentClassKind: "implementation_worker",
         depth: 1,
         labelConfidence: "collab_tool_call",
         lifecycleState: "running",
@@ -156,6 +168,10 @@ function fixtureArtifacts() {
         parentThreadId: primaryThreadId,
         nickname: "Scout",
         role: "reviewer",
+        model: "gpt-5.4-mini",
+        reasoningEffort: "high",
+        serviceTier: "standard",
+        agentClassKind: "audit_worker",
         depth: 1,
         labelConfidence: "collab_tool_call",
         lifecycleState: "failed",
@@ -168,6 +184,8 @@ function fixtureArtifacts() {
         parentThreadId: "agent_scout",
         nickname: "Scout",
         role: "worker",
+        model: "gpt-5.3-spark",
+        reasoningEffort: "low",
         depth: 2,
         labelConfidence: "session_metadata",
         lifecycleState: "completed",
@@ -305,6 +323,25 @@ function fixtureArtifacts() {
     rendererSafeLabel: "Created Scout",
     progressWitnessId: witnesses[0].witnessId,
   });
+  const workThread = buildWorkThread({
+    projectId,
+    workThreadId: "work_thread_sub_agent_fixture",
+    title: "Sub-agent fixture work thread",
+    activeRuntimePath: "direct-implementation",
+    linkedCodexThreads: [{ threadId: primaryThreadId, title: "Primary fixture thread" }],
+    evidenceRefs: [{ kind: "fixture", id: "work_thread_fixture", digest: sha256("work_thread_fixture"), label: "WorkThread fixture" }],
+  }, { nowMs: 0 });
+  const agentClassRegistry = buildAgentClassRegistry({
+    projectId,
+    workThreadId: workThread.workThreadId,
+    nowMs: 0,
+  });
+  const workerGraphAlignment = buildWorkerGraphAlignment({
+    agentGraph: graph,
+    workThread,
+    agentClassRegistry,
+  });
+  validateWorkerGraphAlignment(workerGraphAlignment);
 
   return {
     projectId,
@@ -326,6 +363,9 @@ function fixtureArtifacts() {
     selectedTab,
     staleSelectedTab,
     activityTag,
+    workThread,
+    agentClassRegistry,
+    workerGraphAlignment,
   };
 }
 
@@ -339,6 +379,9 @@ function buildReport() {
   const invalidEntry = artifacts.progressRegistry.entries.find((entry) => entry.agentThreadId === "agent_nested");
   const blockedNoWitnessAgent = artifacts.blockedNoWitnessAttention.perAgent.find((entry) => entry.agentThreadId === "agent_blocked_no_witness");
   const sparseArrayJson = stableStringify([1, , 3]);
+  const scoutWorker = artifacts.workerGraphAlignment.nodes.find((node) => node.providerThreadId === "agent_scout");
+  const reviewerWorker = artifacts.workerGraphAlignment.nodes.find((node) => node.providerThreadId === "agent_reviewer");
+  const nestedWorker = artifacts.workerGraphAlignment.nodes.find((node) => node.providerThreadId === "agent_nested");
   const zeroSentinels = {
     providerTransportCalls: 0,
     appServerMutationCalls: 0,
@@ -376,6 +419,10 @@ function buildReport() {
     baseCase({ caseId: "nested_child_label_not_primary", proofOutcome: "nested_label_preserved" }),
     baseCase({ caseId: "collab_activity_tag_not_thought_body", proofOutcome: artifacts.activityTag.actionability.actionable === false ? "activity_tag_read_only" : "failed" }),
     baseCase({ caseId: "right_sub_agents_tab_single_selected_child", proofOutcome: artifacts.selectedTab.selectionState === "valid" ? "selected_agent_valid" : "failed" }),
+    baseCase({ caseId: "worker_graph_scoped_to_workthread", proofOutcome: artifacts.workerGraphAlignment.nodes.every((node) => node.workThreadId === artifacts.workThread.workThreadId) ? "work_thread_scope_preserved" : "failed" }),
+    baseCase({ caseId: "worker_graph_maps_agent_class_specs", proofOutcome: scoutWorker?.agentClassKind === "implementation_worker" && reviewerWorker?.agentClassKind === "audit_worker" && nestedWorker?.agentClassKind === "sub_agent_worker" ? "agent_class_mapping_preserved" : "failed" }),
+    baseCase({ caseId: "worker_graph_preserves_runtime_metadata", proofOutcome: scoutWorker?.model === "gpt-5.4-mini" && scoutWorker?.reasoningEffort === "medium" && reviewerWorker?.reasoningEffort === "high" ? "model_effort_preserved" : "failed" }),
+    baseCase({ caseId: "worker_graph_no_child_output_promotion", proofOutcome: artifacts.workerGraphAlignment.childDialogueFlattenedIntoPrimary === false && artifacts.workerGraphAlignment.nodes.every((node) => node.outputPromotionAuthority === false) ? "child_output_not_promoted" : "failed" }),
     baseCase({ caseId: "agent_chip_focus_rejects_stale_graph", proofOutcome: "renderer_projection_stale" }),
     baseCase({ caseId: "selected_agent_tab_activation_epoch_rejected", proofOutcome: artifacts.staleSelectedTab.selectionState === "stale_graph" ? "stale_selection_rejected" : "failed" }),
     baseCase({ caseId: "attention_badge_failed_child", proofOutcome: artifacts.attentionProjection.tabBadge.failed === 1 ? "failed_badge_recorded" : "failed" }),
@@ -431,6 +478,7 @@ function buildReport() {
       "direct_agent_progress_registry@1",
       "agent_progress_witness@1",
       "sub-agent transcript projections",
+      "direct_worker_graph_alignment@1",
       "status/operation-history UI projections",
     ],
     nonAuthorityProof: {
@@ -448,6 +496,7 @@ function buildReport() {
       containmentProfileId: artifacts.containmentProfile.containmentProfileId,
       transcriptProjectionId: artifacts.transcriptProjection.transcriptProjectionId,
       attentionProjectionId: artifacts.attentionProjection.attentionProjectionId,
+      workerGraphAlignmentId: artifacts.workerGraphAlignment.alignmentId,
     },
     sentinelCounters: zeroSentinels,
     rawExposureScan: "passed",
