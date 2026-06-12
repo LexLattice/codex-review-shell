@@ -15,7 +15,9 @@ const RESOLUTION_STATES = new Set(["selected", "ambiguous", "unresolved"]);
 const RUNTIME_PATHS = new Set(["app-server", "direct-text", "direct-implementation", "unknown"]);
 
 function isPlainObject(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === null || proto === Object.prototype;
 }
 
 function normalizeString(value, fallback = "") {
@@ -112,16 +114,22 @@ function normalizeRef(input = {}, fallbackKind = "unknown") {
 function normalizeRefList(values, fallbackKind = "unknown") {
   return (Array.isArray(values) ? values : [])
     .map((value) => normalizeRef(value, fallbackKind))
-    .filter((ref) => ref.kind || ref.id || ref.digest);
+    .filter((ref) => ref.id || ref.digest);
 }
 
-function normalizeIdentity(input = {}, defaults = {}) {
+function normalizeIdentity(input = {}, defaults = {}, allowedKeys = []) {
   const source = isPlainObject(input) ? input : {};
+  const identity = { ...defaults };
+  for (const key of allowedKeys) {
+    if (source[key] === undefined) continue;
+    const value = boundedPreview(source[key], 240);
+    if (value) identity[key] = value;
+  }
   return {
-    ...defaults,
-    ...source,
+    ...identity,
     rawPathIncluded: false,
     rawUrlIncluded: false,
+    rawTextIncluded: false,
   };
 }
 
@@ -186,11 +194,11 @@ function buildWorkThread(input = {}, options = {}) {
     workspaceIdentity: normalizeIdentity(input.workspaceIdentity, {
       workspaceKind: normalizeString(input.workspaceKind, "unknown"),
       workspaceEvidenceKey: normalizeString(input.workspaceEvidenceKey, ""),
-    }),
+    }, ["workspaceKind", "workspaceEvidenceKey", "workspaceLabel", "workspaceDigest", "confidence"]),
     branchIdentity: normalizeIdentity(input.branchIdentity, {
       branchName: normalizeString(input.branchName, ""),
       branchEvidenceKey: normalizeString(input.branchEvidenceKey, ""),
-    }),
+    }, ["branchName", "branchEvidenceKey", "branchDigest", "confidence"]),
     objective: {
       summary: objectiveSummary,
       currentObjective: boundedPreview(input.objective?.currentObjective || input.currentObjective || objectiveSummary, 500),

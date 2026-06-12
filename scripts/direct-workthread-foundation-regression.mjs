@@ -67,61 +67,89 @@ function seedRegistry(store) {
 
 function main() {
   const rootDir = mkTempRoot();
-  const store = new DirectWorkThreadRegistryStore({
-    rootDir,
-    now: () => new Date("2026-06-12T12:00:00.000Z").getTime(),
-  });
-  const seeded = seedRegistry(store);
-  const projection = store.buildProjection({ projectId: "codex-review-shell-direct" });
-  assert(projection.schema === "direct_work_thread_projection@1", "projection schema mismatch");
-  assert(projection.rowCount === 2, `expected 2 project rows, got ${projection.rowCount}`);
-  assert(projection.activeCount === 2, `expected 2 active rows, got ${projection.activeCount}`);
-  assert(projection.rows.every((row) => row.workThreadId && row.digest), "projection rows must carry identity and digest");
+  try {
+    const store = new DirectWorkThreadRegistryStore({
+      rootDir,
+      now: () => new Date("2026-06-12T12:00:00.000Z").getTime(),
+    });
+    const seeded = seedRegistry(store);
+    const projection = store.buildProjection({ projectId: "codex-review-shell-direct" });
+    assert(projection.schema === "direct_work_thread_projection@1", "projection schema mismatch");
+    assert(projection.rowCount === 2, `expected 2 project rows, got ${projection.rowCount}`);
+    assert(projection.activeCount === 2, `expected 2 active rows, got ${projection.activeCount}`);
+    assert(projection.rows.every((row) => row.workThreadId && row.digest), "projection rows must carry identity and digest");
 
-  const selected = store.resolveWorkTarget({
-    projectId: "codex-review-shell-direct",
-    branchName: "codex/direct-chatgpt-harness",
-    activeRuntimePath: "direct-implementation",
-    userRequest: "continue the direct information bridge WorkThread registry implementation",
-  });
-  assert(selected.schema === "direct_work_target_resolution@1", "resolution schema mismatch");
-  assert(selected.resolutionState === "selected", `expected selected, got ${selected.resolutionState}`);
-  assert(selected.selectedWorkThreadId === seeded.direct.workThreadId, "selected wrong WorkThread");
-  assert(selected.transitionLaw.mutationAllowed === false, "shadow resolver must not authorize mutation");
-  assert(selected.transitionLaw.providerCallAllowed === false, "shadow resolver must not authorize provider calls");
-  assert(selected.requestRawTextIncluded === false, "resolution must not store raw request text");
+    const selected = store.resolveWorkTarget({
+      projectId: "codex-review-shell-direct",
+      branchName: "codex/direct-chatgpt-harness",
+      activeRuntimePath: "direct-implementation",
+      userRequest: "continue the direct information bridge WorkThread registry implementation",
+    });
+    assert(selected.schema === "direct_work_target_resolution@1", "resolution schema mismatch");
+    assert(selected.resolutionState === "selected", `expected selected, got ${selected.resolutionState}`);
+    assert(selected.selectedWorkThreadId === seeded.direct.workThreadId, "selected wrong WorkThread");
+    assert(selected.transitionLaw.mutationAllowed === false, "shadow resolver must not authorize mutation");
+    assert(selected.transitionLaw.providerCallAllowed === false, "shadow resolver must not authorize provider calls");
+    assert(selected.requestRawTextIncluded === false, "resolution must not store raw request text");
 
-  const ambiguous = store.resolveWorkTarget({
-    projectId: "codex-review-shell-direct",
-    userRequest: "continue direct work",
-  });
-  assert(["ambiguous", "unresolved"].includes(ambiguous.resolutionState), "low-specificity request should not be confidently selected");
-  assert(ambiguous.selectedWorkThreadId === "", "ambiguous/unresolved request must not select a thread");
+    const ambiguous = store.resolveWorkTarget({
+      projectId: "codex-review-shell-direct",
+      userRequest: "continue direct work",
+    });
+    assert(["ambiguous", "unresolved"].includes(ambiguous.resolutionState), "low-specificity request should not be confidently selected");
+    assert(ambiguous.selectedWorkThreadId === "", "ambiguous/unresolved request must not select a thread");
 
-  const noCandidate = store.resolveWorkTarget({
-    projectId: "unknown-project",
-    userRequest: "continue direct work",
-  });
-  assert(noCandidate.resolutionState === "unresolved", "unknown project should be unresolved");
-  assert(noCandidate.ambiguityBlockers.includes("no_candidate_work_thread"), "missing no-candidate blocker");
+    const noCandidate = store.resolveWorkTarget({
+      projectId: "unknown-project",
+      userRequest: "continue direct work",
+    });
+    assert(noCandidate.resolutionState === "unresolved", "unknown project should be unresolved");
+    assert(noCandidate.ambiguityBlockers.includes("no_candidate_work_thread"), "missing no-candidate blocker");
 
-  const directRaw = store.readWorkThread(seeded.direct.workThreadId);
-  assert(directRaw.rawPathIncluded === false, "work thread must not expose raw paths");
-  assert(directRaw.authorityBoundary.mutationAllowedBeforeResolution === false, "mutation must be blocked before resolution");
+    const directRaw = store.readWorkThread(seeded.direct.workThreadId);
+    assert(directRaw.rawPathIncluded === false, "work thread must not expose raw paths");
+    assert(directRaw.authorityBoundary.mutationAllowedBeforeResolution === false, "mutation must be blocked before resolution");
 
-  const built = buildWorkThread({ title: "Minimal", projectId: "p" });
-  assert(built.ontologyProfileRef.rawPathIncluded === false, "refs must be renderer-safe");
-  const standaloneResolution = buildWorkTargetResolution({ projectId: "p", userRequest: "minimal" }, [built]);
-  assert(standaloneResolution.transitionLaw.routingEnforced === false, "standalone resolver must remain shadow-only");
+    const unsafe = buildWorkThread({
+      title: "Unsafe identity input",
+      projectId: "p",
+      workspaceIdentity: {
+        workspaceKind: "wsl",
+        workspaceEvidenceKey: "workspace_safe",
+        workspaceRoot: "/home/rose/private/repo",
+        repoPath: "/home/rose/private/repo",
+        sourceUrl: "https://example.test/private",
+      },
+      branchIdentity: {
+        branchName: "codex/direct-chatgpt-harness",
+        branchEvidenceKey: "branch_safe",
+        repoPath: "/home/rose/private/repo",
+      },
+      evidenceRefs: [{ kind: "empty" }, {}, { kind: "audit", id: "audit_ref" }],
+    });
+    assert(unsafe.workspaceIdentity.workspaceEvidenceKey === "workspace_safe", "workspace evidence key should be retained");
+    assert(!("workspaceRoot" in unsafe.workspaceIdentity), "workspace root must not be stored");
+    assert(!("repoPath" in unsafe.workspaceIdentity), "workspace repo path must not be stored");
+    assert(!("sourceUrl" in unsafe.workspaceIdentity), "workspace URL must not be stored");
+    assert(!("repoPath" in unsafe.branchIdentity), "branch repo path must not be stored");
+    assert(unsafe.evidenceRefs.length === 1, "empty evidence refs must be filtered");
 
-  console.log(JSON.stringify({
-    ok: true,
-    rootDirExposed: false,
-    projectionRows: projection.rowCount,
-    selected: selected.selectedWorkThreadId,
-    ambiguousState: ambiguous.resolutionState,
-    noCandidateState: noCandidate.resolutionState,
-  }, null, 2));
+    const built = buildWorkThread({ title: "Minimal", projectId: "p" });
+    assert(built.ontologyProfileRef.rawPathIncluded === false, "refs must be renderer-safe");
+    const standaloneResolution = buildWorkTargetResolution({ projectId: "p", userRequest: "minimal" }, [built]);
+    assert(standaloneResolution.transitionLaw.routingEnforced === false, "standalone resolver must remain shadow-only");
+
+    console.log(JSON.stringify({
+      ok: true,
+      rootDirExposed: false,
+      projectionRows: projection.rowCount,
+      selected: selected.selectedWorkThreadId,
+      ambiguousState: ambiguous.resolutionState,
+      noCandidateState: noCandidate.resolutionState,
+    }, null, 2));
+  } finally {
+    fs.rmSync(rootDir, { recursive: true, force: true });
+  }
 }
 
 main();
