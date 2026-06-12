@@ -590,10 +590,11 @@ function workTargetReportDigest(report = {}) {
 
 function normalizeAgentClassRef(input = {}) {
   const source = isPlainObject(input) ? input : {};
+  const agentClassKind = normalizeString(source.agentClassKind || source.kind, "");
   return {
     agentClassId: normalizeString(source.agentClassId || source.id, ""),
-    agentClassKind: normalizeString(source.agentClassKind || source.kind, ""),
-    displayName: normalizeString(source.displayName || source.name || source.agentClassKind, ""),
+    agentClassKind,
+    displayName: normalizeString(source.displayName || source.name || agentClassKind, ""),
     specDigest: normalizeString(source.specDigest || source.digest, ""),
     mayRecommendWorkflowTransition: source.authorityContract?.mayRecommendWorkflowTransition === true,
     mayResolveWorkTarget: source.authorityContract?.mayResolveWorkTarget === true,
@@ -605,10 +606,13 @@ function normalizeAgentClassRef(input = {}) {
 
 function normalizePreflightRef(input = {}, fallbackKind = "unknown") {
   if (!input) return null;
+  const artifactId = normalizeString(input.artifactId || input.id || input.refId, "");
+  const artifactDigest = normalizeString(input.artifactDigest || input.digest || input.refDigest, "");
+  if (!artifactId && !artifactDigest) return null;
   return normalizeSourceRef({
     kind: input.kind || fallbackKind,
-    artifactId: input.artifactId || input.id || input.refId,
-    artifactDigest: input.artifactDigest || input.digest || input.refDigest,
+    artifactId,
+    artifactDigest,
     sourceConfidence: input.sourceConfidence || input.confidence || "diagnostic",
     rendererSafeLabel: input.rendererSafeLabel || input.label || fallbackKind,
   });
@@ -653,13 +657,15 @@ function buildSemanticBrokerPreflight(input = {}) {
   const requestRefs = normalizePreflightRefs(source.requestRefs, "request_manifest");
   const authorityTransitionRefs = normalizePreflightRefs(source.authorityTransitionRefs, "authority_transition");
   const evidenceRefs = [
-    normalizePreflightRef({
-      kind: "semantic_registry",
-      artifactId: brokerPacket?.semanticBrokerPacketId || "",
-      artifactDigest: actualBrokerPacketDigest,
-      sourceConfidence: "exact",
-      rendererSafeLabel: "Semantic broker packet",
-    }, "semantic_registry"),
+    brokerPacket
+      ? normalizePreflightRef({
+          kind: "semantic_registry",
+          artifactId: brokerPacket.semanticBrokerPacketId,
+          artifactDigest: actualBrokerPacketDigest,
+          sourceConfidence: "exact",
+          rendererSafeLabel: "Semantic broker packet",
+        }, "semantic_registry")
+      : null,
     workTargetResolutionReport
       ? normalizePreflightRef({
           kind: "work_thread_binding",
@@ -682,14 +688,17 @@ function buildSemanticBrokerPreflight(input = {}) {
     ...requestRefs,
     ...authorityTransitionRefs,
   ].filter(Boolean);
-  const blockerCodes = [
+  const rawBlockerCodes = [
     ...((Array.isArray(workTargetResolutionReport?.blockerCodes) ? workTargetResolutionReport.blockerCodes : []).map((code) => normalizeString(code, "")).filter(Boolean)),
     ...((Array.isArray(candidate?.missingEvidenceCodes) ? candidate.missingEvidenceCodes : []).map((code) => normalizeString(code, "")).filter(Boolean)),
   ];
-  if (!brokerPacket) blockerCodes.push("semantic_broker_packet_missing");
-  if (workTargetResolutionReport && workTargetResolutionReport.routingGateState !== "selected_ready") {
-    blockerCodes.push(`work_target_gate_${normalizeString(workTargetResolutionReport.routingGateState, "unknown")}`);
+  if (!brokerPacket) rawBlockerCodes.push("semantic_broker_packet_missing");
+  if (!workTargetResolutionReport) {
+    rawBlockerCodes.push("work_target_resolution_report_missing");
+  } else if (workTargetResolutionReport.routingGateState !== "selected_ready") {
+    rawBlockerCodes.push(`work_target_gate_${normalizeString(workTargetResolutionReport.routingGateState, "unknown")}`);
   }
+  const blockerCodes = [...new Set(rawBlockerCodes)];
   const recommendationClass = recommendationForPreflight({
     brokerPacket,
     workTargetResolutionReport,
@@ -732,7 +741,7 @@ function buildSemanticBrokerPreflight(input = {}) {
     contextRefs,
     requestRefs,
     authorityTransitionRefs,
-    blockerCodes: [...new Set(blockerCodes)],
+    blockerCodes,
     staleInputCodes,
     stale: staleInputCodes.length > 0 || workTargetResolutionReport?.stale === true,
     clarificationRequired: recommendationClass === "clarify",
@@ -788,8 +797,14 @@ function validateSemanticBrokerPreflight(preflight = {}) {
   if (preflight.rawTextIncluded !== false || preflight.rawPathIncluded !== false || preflight.rawSecretIncluded !== false) {
     throw new Error("direct_semantic_broker_preflight_raw_exposure");
   }
+  if (!normalizeString(preflight.projectId, "")) {
+    throw new Error("direct_semantic_broker_preflight_missing_project_id");
+  }
   if (preflight.recommendationClass === "stale" && preflight.selectedWorkThreadId) {
     throw new Error("direct_semantic_broker_preflight_stale_selected_target");
+  }
+  if (["allow", "route_to_role"].includes(preflight.recommendationClass) && !normalizeString(preflight.selectedWorkThreadId, "")) {
+    throw new Error("direct_semantic_broker_preflight_missing_selected_target");
   }
   return true;
 }

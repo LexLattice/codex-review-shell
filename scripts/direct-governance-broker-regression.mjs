@@ -438,9 +438,73 @@ function buildFixtureArtifacts() {
     workTargetResolutionReport,
     agentClassSpec: implementationWorkerSpec,
   });
-  for (const preflight of [allowPreflight, clarifyPreflight, stalePreflight, blockPreflight, routeToRolePreflight]) {
+  const missingTargetReportPreflight = buildSemanticBrokerPreflight({
+    projectId,
+    threadId,
+    turnId,
+    semanticBrokerPacket: brokerPacket,
+    agentClassSpec: primaryAgentSpec,
+  });
+  const missingBrokerPacketPreflight = buildSemanticBrokerPreflight({
+    projectId,
+    threadId,
+    turnId,
+    workTargetResolutionReport,
+    agentClassSpec: primaryAgentSpec,
+  });
+  const kindOnlyAgentPreflight = buildSemanticBrokerPreflight({
+    projectId,
+    threadId,
+    turnId,
+    semanticBrokerPacket: brokerPacket,
+    workTargetResolutionReport,
+    agentClassRef: { id: "agent_kind_only", kind: "implementation_worker" },
+  });
+  const duplicateBlockerPreflight = buildSemanticBrokerPreflight({
+    projectId,
+    threadId,
+    turnId,
+    semanticBrokerPacket: buildSemanticBrokerPacket({
+      projectId,
+      threadId,
+      turnId,
+      registrySnapshot: registry,
+      inputSnapshot: brokerInput,
+      candidates: [
+        candidateFromRoute(registry.routes.find((route) => route.routeKind === "implementation_lane_read"), {
+          confidence: "medium",
+          missingEvidenceCodes: ["tool_policy_missing", "tool_policy_missing"],
+          reasonCodes: ["missing_tool_policy"],
+        }),
+      ],
+    }),
+    workTargetResolutionReport: {
+      ...workTargetResolutionReport,
+      blockerCodes: ["tool_policy_missing", "tool_policy_missing"],
+    },
+    agentClassSpec: implementationWorkerSpec,
+  });
+  for (const preflight of [
+    allowPreflight,
+    clarifyPreflight,
+    stalePreflight,
+    blockPreflight,
+    routeToRolePreflight,
+    missingTargetReportPreflight,
+    missingBrokerPacketPreflight,
+    kindOnlyAgentPreflight,
+    duplicateBlockerPreflight,
+  ]) {
     validateSemanticBrokerPreflight(preflight);
   }
+  const invalidAllowWithoutTargetBlocked = throwsCode(
+    () => validateSemanticBrokerPreflight({ ...allowPreflight, selectedWorkThreadId: "" }),
+    "direct_semantic_broker_preflight_missing_selected_target",
+  );
+  const invalidMissingProjectBlocked = throwsCode(
+    () => validateSemanticBrokerPreflight({ ...allowPreflight, projectId: "" }),
+    "direct_semantic_broker_preflight_missing_project_id",
+  );
   const shadowReport = buildGovernanceShadowReport({
     governancePacket,
     compiledPromptLayers: compiledLayers,
@@ -519,6 +583,12 @@ function buildFixtureArtifacts() {
     stalePreflight,
     blockPreflight,
     routeToRolePreflight,
+    missingTargetReportPreflight,
+    missingBrokerPacketPreflight,
+    kindOnlyAgentPreflight,
+    duplicateBlockerPreflight,
+    invalidAllowWithoutTargetBlocked,
+    invalidMissingProjectBlocked,
     shadowReport,
     governanceRefs,
     contextPackWithoutGovernance,
@@ -708,6 +778,45 @@ function buildReport() {
         ? "role_handoff_recommended_not_executed"
         : "failed",
       artifacts: { preflightId: artifacts.routeToRolePreflight.preflightId },
+    }),
+    baseCase({
+      caseId: "semantic_broker_preflight_missing_target_report_blocks",
+      proofOutcome: artifacts.missingTargetReportPreflight.recommendationClass === "block" &&
+        artifacts.missingTargetReportPreflight.selectedWorkThreadId === "" &&
+        artifacts.missingTargetReportPreflight.blockerCodes.includes("work_target_resolution_report_missing")
+        ? "missing_target_report_blocks_route"
+        : "failed",
+      artifacts: { preflightId: artifacts.missingTargetReportPreflight.preflightId },
+    }),
+    baseCase({
+      caseId: "semantic_broker_preflight_missing_broker_ref_omitted",
+      proofOutcome: artifacts.missingBrokerPacketPreflight.recommendationClass === "block" &&
+        artifacts.missingBrokerPacketPreflight.blockerCodes.includes("semantic_broker_packet_missing") &&
+        artifacts.missingBrokerPacketPreflight.evidenceRefs.every((ref) => ref.artifactId || ref.artifactDigest)
+        ? "missing_broker_packet_blocks_without_empty_ref"
+        : "failed",
+      artifacts: { preflightId: artifacts.missingBrokerPacketPreflight.preflightId },
+    }),
+    baseCase({
+      caseId: "semantic_broker_preflight_agent_kind_display_fallback",
+      proofOutcome: artifacts.kindOnlyAgentPreflight.recommendedAgentClass.displayName === "implementation_worker"
+        ? "kind_fallback_used_for_display_name"
+        : "failed",
+      artifacts: { preflightId: artifacts.kindOnlyAgentPreflight.preflightId },
+    }),
+    baseCase({
+      caseId: "semantic_broker_preflight_blocker_codes_deduped_before_digest",
+      proofOutcome: artifacts.duplicateBlockerPreflight.blockerCodes.length === new Set(artifacts.duplicateBlockerPreflight.blockerCodes).size &&
+        artifacts.duplicateBlockerPreflight.blockerCodes.includes("tool_policy_missing")
+        ? "blocker_codes_deduped"
+        : "failed",
+      artifacts: { preflightId: artifacts.duplicateBlockerPreflight.preflightId },
+    }),
+    baseCase({
+      caseId: "semantic_broker_preflight_validator_requires_project_and_target",
+      proofOutcome: artifacts.invalidAllowWithoutTargetBlocked && artifacts.invalidMissingProjectBlocked
+        ? "required_identity_validation_blocks_invalid_preflight"
+        : "failed",
     }),
     baseCase({
       caseId: "governance_request_refs_nested_raw_exposure_blocked",
