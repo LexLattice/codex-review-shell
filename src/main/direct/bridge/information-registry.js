@@ -206,8 +206,8 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
       identityFields: ["projectId", "threadId", "turnId", "packetId"],
       schema: "governance_packet@1",
     }),
-    bridgeFit: "Builds shadow governance packets and semantic broker diagnostics with source refs and non-enforced routing claims.",
-    realignment: "Introduce first-class work-thread routing before any enforce-mode broker mutation is allowed.",
+    bridgeFit: "Builds shadow governance packets and semantic broker diagnostics with source refs, WorkThread binding citations, AuthorityBearingTransition citations, and non-enforced routing claims.",
+    realignment: "Keep WorkThread and authority-transition citations diagnostic-only until explicit promotion criteria introduce enforce-mode broker routing.",
   },
   {
     id: "ic7.sub-agent-observability",

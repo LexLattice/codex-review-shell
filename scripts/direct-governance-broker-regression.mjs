@@ -39,6 +39,13 @@ const {
   buildContextPack,
   buildRequestManifest,
 } = require("../src/main/direct/thread/context-pack");
+const {
+  buildAuthorityBearingTransition,
+  buildWorkThreadContextBinding,
+} = require("../src/main/direct/bridge/work-thread-alignment");
+const {
+  buildWorkThread,
+} = require("../src/main/direct/bridge/work-thread-registry");
 
 const USER_DATA_ROOT_ENV_VAR = "CODEX_REVIEW_SHELL_USER_DATA_ROOT";
 
@@ -138,6 +145,53 @@ function buildFixtureArtifacts() {
     sourceConfidence: "exact",
     rendererSafeLabel: "Current user intent",
   });
+  const workThread = buildWorkThread({
+    workThreadId: "work_thread_governance_fixture",
+    projectId,
+    title: "Governance fixture WorkThread",
+    authorityBoundary: {
+      mutationAllowedBeforeResolution: false,
+      allowedActions: ["read_file_after_approval"],
+      forbiddenActions: ["workspace_mutation_before_target_resolution"],
+      summary: "Governance may cite but not enforce WorkThread routing in this slice.",
+    },
+    openObligations: [
+      { obligationId: "obl_governance_shadow", kind: "governance", status: "open", summary: "Keep WorkThread governance shadow-only." },
+    ],
+    activeRuntimePath: "direct-implementation",
+  });
+  const workThreadBinding = buildWorkThreadContextBinding({
+    workThread,
+    bridgeInformationRefs: [
+      { classId: "ic12.work-thread-registry", role: "governance_routing", artifactKind: "work_thread", artifactId: workThread.workThreadId },
+      { classId: "ic6.semantic-governance-broker", role: "governance_routing", artifactKind: "governance_packet", artifactId: "fixture_governance_packet" },
+    ],
+  });
+  const authorityTransition = buildAuthorityBearingTransition({
+    transitionKind: "read_file",
+    transitionPhase: "decision",
+    projectId,
+    threadId,
+    turnId,
+    obligationId: "obl_governance_shadow",
+    status: "diagnostic",
+    workThreadBinding,
+    sourceArtifact: { classId: "ic4.read-file-authority", artifactKind: "readonly_tool_authority_decision", artifactId: "decision_fixture" },
+  });
+  const workThreadBindingRef = {
+    kind: "work_thread_binding",
+    artifactId: workThreadBinding.workThreadId,
+    artifactDigest: workThreadBinding.bindingDigest,
+    sourceConfidence: "exact",
+    rendererSafeLabel: "WorkThread binding",
+  };
+  const authorityTransitionRef = {
+    kind: "authority_transition",
+    artifactId: authorityTransition.transitionId,
+    artifactDigest: authorityTransition.transitionDigest,
+    sourceConfidence: "exact",
+    rendererSafeLabel: "Authority transition",
+  };
   const modeSnapshot = buildGovernanceModeSnapshot({
     effectiveMode: "shadow",
     effectiveSource: "default",
@@ -156,6 +210,8 @@ function buildFixtureArtifacts() {
       sourceConfidence: "accepted",
       rendererSafeLabel: "Context pack",
     },
+    workThreadBindingRef,
+    authorityTransitionRefs: [authorityTransitionRef],
   });
   const graph = buildWorkflowTransitionGraph({
     projectId,
@@ -181,6 +237,7 @@ function buildFixtureArtifacts() {
     diagnostics: [
       { code: "memory_layer_not_instruction_authority", severity: "info", rendererSafeSummary: "Memory is evidence only." },
       { code: "baton_layer_not_replay_authority", severity: "info", rendererSafeSummary: "Baton cannot replay tools." },
+      { code: "workthread_binding_shadow_only", severity: "info", rendererSafeSummary: "WorkThread binding is diagnostic only." },
     ],
   });
   const compiledLayers = buildCompiledPromptLayers({
@@ -206,6 +263,8 @@ function buildFixtureArtifacts() {
       sourceConfidence: "exact",
       rendererSafeLabel: "Governance packet",
     },
+    workThreadBindingRef,
+    authorityTransitionRefs: [authorityTransitionRef],
   });
   const textOnlyRoute = registry.routes.find((route) => route.routeKind === "text_only");
   const brokerPacket = buildSemanticBrokerPacket({
@@ -331,6 +390,9 @@ function buildFixtureArtifacts() {
     projectId,
     threadId,
     turnId,
+    workThread,
+    workThreadBinding,
+    authorityTransition,
     modeSnapshot,
     inputSnapshot,
     graph,
@@ -392,6 +454,38 @@ function buildReport() {
     baseCase({
       caseId: "governance_packet_shadow_happy_path",
       artifacts: { governancePacketId: artifacts.governancePacket.governancePacketId },
+    }),
+    baseCase({
+      caseId: "governance_packet_cites_workthread_binding",
+      proofOutcome: artifacts.governancePacket.workThreadBindingDigest === artifacts.workThreadBinding.bindingDigest &&
+        artifacts.governancePacket.workThreadRoutingEnforced === false
+        ? "workthread_binding_cited_shadow_only"
+        : "failed",
+      artifacts: {
+        governancePacketId: artifacts.governancePacket.governancePacketId,
+        workThreadId: artifacts.workThread.workThreadId,
+      },
+    }),
+    baseCase({
+      caseId: "governance_packet_cites_authority_transition_without_enforcement",
+      proofOutcome: artifacts.governancePacket.authorityTransitionsDigest &&
+        artifacts.governancePacket.authorityTransitionRoutingEnforced === false &&
+        artifacts.governancePacket.mutationAllowedByGovernance === false &&
+        artifacts.governancePacket.providerCallAllowedByGovernance === false
+        ? "authority_transition_cited_shadow_only"
+        : "failed",
+      artifacts: {
+        transitionId: artifacts.authorityTransition.transitionId,
+        transitionDigest: artifacts.authorityTransition.transitionDigest,
+      },
+    }),
+    baseCase({
+      caseId: "semantic_broker_input_cites_workthread_without_auto_route",
+      proofOutcome: artifacts.brokerInput.workThreadBindingRef?.artifactDigest === artifacts.workThreadBinding.bindingDigest &&
+        artifacts.brokerInput.authorityTransitionRefs?.[0]?.artifactDigest === artifacts.authorityTransition.transitionDigest &&
+        artifacts.brokerPacket.adjudication.autoRouteApplied === false
+        ? "broker_citation_non_authority"
+        : "failed",
     }),
     baseCase({
       caseId: "compiled_prompt_layers_happy_path",
@@ -500,6 +594,8 @@ function buildReport() {
           governancePacketId: artifacts.governancePacket.governancePacketId,
           semanticBrokerPacketId: artifacts.brokerPacket.semanticBrokerPacketId,
           transitionGraphId: artifacts.graph.transitionGraphId,
+          workThreadBindingState: "valid",
+          authorityTransitionState: "valid",
           rendererSafeSummary: "Governance status is display-only.",
         }).projectionDigest,
       },

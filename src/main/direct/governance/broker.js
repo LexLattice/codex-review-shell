@@ -39,6 +39,9 @@ const SOURCE_REF_KINDS = new Set([
   "recovery_report",
   "thread_workbench_preview",
   "fresh_fork_seed",
+  "work_thread",
+  "work_thread_binding",
+  "authority_transition",
   "policy_snapshot",
   "model_evidence",
   "semantic_registry",
@@ -189,6 +192,8 @@ function buildGovernanceInputSnapshot(input = {}) {
     workspaceEffectRefs: normalizeSourceRefs(input.workspaceEffectRefs),
     recoveryStateRef: input.recoveryStateRef ? normalizeSourceRef(input.recoveryStateRef) : null,
     threadWorkbenchRefs: normalizeSourceRefs(input.threadWorkbenchRefs),
+    workThreadBindingRef: input.workThreadBindingRef ? normalizeSourceRef(input.workThreadBindingRef) : null,
+    authorityTransitionRefs: normalizeSourceRefs(input.authorityTransitionRefs),
   };
   const sourceDigest = normalizeString(input.sourceDigest, sha256(stableStringify(sourceRefs)));
   const snapshot = {
@@ -212,6 +217,7 @@ function buildGovernancePacket(input = {}) {
   const inputSnapshot = isPlainObject(input.inputSnapshot) ? input.inputSnapshot : buildGovernanceInputSnapshot(input);
   const modeSnapshot = isPlainObject(input.modeSnapshot) ? input.modeSnapshot : buildGovernanceModeSnapshot(input);
   const diagnostics = Array.isArray(input.diagnostics) ? input.diagnostics : [];
+  const authorityTransitionRefs = Array.isArray(inputSnapshot.authorityTransitionRefs) ? inputSnapshot.authorityTransitionRefs : [];
   const sourceDigest = sha256(stableStringify({
     inputSnapshotDigest: inputSnapshot.integrity?.artifactDigest || inputSnapshot.sourceDigest,
     modeSnapshotDigest: modeSnapshot.integrity?.artifactDigest || modeSnapshot.sourceDigest,
@@ -234,6 +240,8 @@ function buildGovernancePacket(input = {}) {
     maintenanceRefsDigest: normalizeString(input.maintenanceRefsDigest, ""),
     toolPolicyDigest: normalizeString(input.toolPolicyDigest, ""),
     workspacePolicyDigest: normalizeString(input.workspacePolicyDigest, ""),
+    workThreadBindingDigest: normalizeString(input.workThreadBindingDigest, inputSnapshot.workThreadBindingRef?.artifactDigest || ""),
+    authorityTransitionsDigest: normalizeString(input.authorityTransitionsDigest, authorityTransitionRefs.length ? sha256(stableStringify(authorityTransitionRefs)) : ""),
     transitionGraphDigest: normalizeString(input.transitionGraphDigest, ""),
     semanticBrokerPolicyDigest: normalizeString(input.semanticBrokerPolicyDigest, sha256(DIRECT_SEMANTIC_BROKER_POLICY_VERSION)),
     layers: Array.isArray(input.layers) ? input.layers : [],
@@ -241,6 +249,10 @@ function buildGovernancePacket(input = {}) {
     rendererSafeSummary: normalizeString(input.rendererSafeSummary, "Governance packet compiled in diagnostic shadow mode."),
     editableInThisPr: false,
     enforceableInThisPr: false,
+    workThreadRoutingEnforced: false,
+    authorityTransitionRoutingEnforced: false,
+    mutationAllowedByGovernance: false,
+    providerCallAllowedByGovernance: false,
     rawTextIncluded: false,
     rawRequestBodyIncluded: false,
     rawProviderFrameIncluded: false,
@@ -435,6 +447,8 @@ function buildSemanticBrokerInputSnapshot(input = {}) {
     toolPolicyRefs: normalizeSourceRefs(input.toolPolicyRefs),
     workspacePolicyRef: input.workspacePolicyRef ? normalizeSourceRef(input.workspacePolicyRef) : null,
     evidenceStatusRefs: normalizeSourceRefs(input.evidenceStatusRefs),
+    workThreadBindingRef: input.workThreadBindingRef ? normalizeSourceRef(input.workThreadBindingRef) : null,
+    authorityTransitionRefs: normalizeSourceRefs(input.authorityTransitionRefs),
   };
   const sourceDigest = normalizeString(input.sourceDigest, sha256(stableStringify(refs)));
   const snapshot = {
@@ -661,6 +675,8 @@ function buildGovernanceStatusProjection(input = {}) {
     packet: input.governancePacketId,
     broker: input.semanticBrokerPacketId,
     graph: input.transitionGraphId,
+    workThreadBindingState: input.workThreadBindingState,
+    authorityTransitionState: input.authorityTransitionState,
   })));
   return {
     schema: "direct_governance_status_projection@1",
@@ -674,6 +690,10 @@ function buildGovernanceStatusProjection(input = {}) {
     packetState: normalizeString(input.packetState, "valid"),
     brokerState: normalizeString(input.brokerState, "valid"),
     transitionGraphState: normalizeString(input.transitionGraphState, "valid"),
+    workThreadBindingState: normalizeString(input.workThreadBindingState, "not_built"),
+    authorityTransitionState: normalizeString(input.authorityTransitionState, "not_built"),
+    workThreadRoutingEnforced: false,
+    authorityTransitionRoutingEnforced: false,
     rendererSafeSummary: normalizeString(input.rendererSafeSummary, "Governance diagnostics are display-only."),
     actionable: false,
     rawTextIncluded: false,
