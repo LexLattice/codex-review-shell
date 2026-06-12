@@ -27,8 +27,10 @@ const {
   buildContextContinuityStatusProjection,
   buildContextContinuityTransition,
   buildContextLossWitness,
+  buildCompactionWorkflowGate,
   buildDurableThreadMemory,
   buildFrontierBaton,
+  buildLocalCompactionPlan,
   buildOmissionLedger,
   buildPressureEstimate,
   buildRawWindowTrimPolicy,
@@ -116,6 +118,17 @@ function buildContinuityFixture(projectId, workThreadId) {
     omissionLedger,
     nowMs: 0,
   });
+  const localCompactionPlan = buildLocalCompactionPlan({
+    contextLossWitness: lossWitness,
+    workThreadId,
+    nowMs: 0,
+  });
+  const compactionWorkflowGate = buildCompactionWorkflowGate({
+    localCompactionPlan,
+    contextLossWitness: lossWitness,
+    manualCompactRequested: true,
+    nowMs: 0,
+  });
   const transition = buildContextContinuityTransition({
     workThreadId,
     route,
@@ -131,6 +144,8 @@ function buildContinuityFixture(projectId, workThreadId) {
     workThreadId,
     transition,
     contextLossWitness: lossWitness,
+    localCompactionPlan,
+    compactionWorkflowGate,
     memoryReviewPacket,
     memoryRefreshProposal,
     memoryResetPolicy,
@@ -249,12 +264,17 @@ function main() {
   assert(projection.sections.governance.semanticBrokerEnforced === false, "semantic broker must not be enforced");
   assert(projection.sections.modules.executionAllowedInThisPr === false, "module execution must be disabled");
   assert(projection.sections.continuity.providerTransportAllowed === false, "provider transport must be disabled");
+  assert(projection.sections.continuity.manualCompactActionAllowed === false, "manual compact action must be disabled");
   assert(projection.sections.continuity.memoryEditorAllowed === false, "memory editing must be disabled");
   assert(projection.sections.continuity.memoryResetAllowed === false, "memory reset must be disabled");
   assert(projection.sections.continuity.memoryReviewState === "current", "memory review state should be visible");
   assert(projection.sections.continuity.memoryRefreshProposalState === "proposed", "memory refresh proposal state should be visible");
   assert(projection.sections.continuity.memoryResetPolicyState === "disabled", "memory reset policy state should be visible");
   assert(projection.sections.continuity.memoryResetConfirmationState === "not_requested", "memory reset confirmation state should be visible");
+  assert(projection.sections.continuity.localCompactionPlanState === "preview_ready", "local compaction plan state should be visible");
+  assert(projection.sections.continuity.manualCompactGateState === "manual_ready", "manual compact gate state should be visible");
+  assert(projection.sections.continuity.compactionSourceSpanCount === 0, "compaction source span count should be visible");
+  assert(projection.sections.continuity.compactionResidualRiskCount === 0, "compaction residual risk count should be visible");
   assert(projection.rows.runtime.length >= 4, "runtime rows should render");
   assert(projection.rows.registry.length >= 4, "registry rows should render");
   assert(projection.rows.workThreads.length >= 4, "WorkThread rows should render");
@@ -265,6 +285,9 @@ function main() {
   assert(projection.rows.continuity.some((row) => row.label === "Memory refresh" && row.value === "proposed"), "continuity rows should include memory refresh");
   assert(projection.rows.continuity.some((row) => row.label === "Memory reset" && row.value === "disabled"), "continuity rows should include memory reset");
   assert(projection.rows.continuity.some((row) => row.label === "Memory reset confirmation" && row.value === "not_requested"), "continuity rows should include memory reset confirmation");
+  assert(projection.rows.continuity.some((row) => row.label === "Local compact plan" && row.value === "preview_ready"), "continuity rows should include local compact plan");
+  assert(projection.rows.continuity.some((row) => row.label === "Manual compact gate" && row.value === "manual_ready"), "continuity rows should include manual compact gate");
+  assert(projection.rows.continuity.some((row) => row.label === "Compact spans/risks" && row.value === "0/0"), "continuity rows should include compact spans and risks");
   assert(projection.rawTextIncluded === false, "raw text must be excluded");
   assert(projection.rawPathIncluded === false, "raw paths must be excluded");
   assert(projection.rawSecretIncluded === false, "raw secrets must be excluded");

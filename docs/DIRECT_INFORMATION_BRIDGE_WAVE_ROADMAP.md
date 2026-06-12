@@ -381,7 +381,7 @@ Work-target resolver and agent class specs exist.
 
 ### PR 11: Direct-Native Memory Workflow
 
-Status: in progress.
+Status: merged.
 
 Branch:
 
@@ -434,7 +434,13 @@ memory state.
 
 ### PR 12: Direct-Native Compaction Workflow Gate
 
-Status: planned.
+Status: in progress.
+
+Branch:
+
+```text
+codex/direct-compaction-gate
+```
 
 Purpose:
 
@@ -450,6 +456,17 @@ Scope:
 - Expose manual compact gate state.
 - Keep provider compaction blocked unless runtime evidence proves support.
 - Add residual-risk and source-span witnesses.
+
+Implemented in the first slice:
+
+- `direct_context_compaction_plan@1`
+- `direct_context_compaction_gate@1`
+- Source-span and residual-risk witnesses on local compaction preview.
+- Continuity/settings projection fields for local plan state, manual gate
+  state, compacted-context eligibility, source-span count, and residual-risk
+  count.
+- Regression coverage proving manual compaction/provider compaction remain
+  disabled without separate authority.
 
 Non-goals:
 

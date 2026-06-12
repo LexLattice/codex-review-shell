@@ -131,13 +131,13 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     role: "memory_continuity",
     implementationState: "partial",
     directPathPosture: "keep_and_align",
-    sourceFiles: ["src/main/direct/context/maintenance.js", "scripts/direct-memory-baton-compaction-productization-regression.mjs", "src/main.js"],
-    ontology: ontologyShape(["context_pressure_estimate", "context_omission_ledger", "context_loss_witness", "context_continuity_transition", "durable_thread_memory", "thread_memory_review_packet", "thread_memory_refresh_proposal", "thread_memory_reset_policy", "thread_memory_reset_confirmation", "frontier_baton"], "harness", {
+    sourceFiles: ["src/main/direct/context/maintenance.js", "scripts/direct-memory-baton-compaction-productization-regression.mjs", "scripts/direct-compaction-workflow-gate-regression.mjs", "src/main.js"],
+    ontology: ontologyShape(["context_pressure_estimate", "context_omission_ledger", "context_loss_witness", "context_compaction_plan", "context_compaction_gate", "context_continuity_transition", "durable_thread_memory", "thread_memory_review_packet", "thread_memory_refresh_proposal", "thread_memory_reset_policy", "thread_memory_reset_confirmation", "frontier_baton"], "harness", {
       identityFields: ["projectId", "threadId", "artifactId", "sourceDigest"],
       schema: "context_maintenance_manifest@1",
     }),
-    bridgeFit: "Defines pressure, omission, memory, memory review/refresh/reset workflow, baton, context-loss, and continuity transition artifacts with display-only app-server sibling evidence.",
-    realignment: "Memory workflow now has review, proposal, and reset-policy witnesses; actual memory mutation/reset, provider compaction, and replay authority remain gated until separate live evidence and authority controls exist.",
+    bridgeFit: "Defines pressure, omission, compaction planning/gates, memory review/refresh/reset workflow, baton, context-loss, and continuity transition artifacts with display-only app-server sibling evidence.",
+    realignment: "Compaction now has local plan and manual-gate witnesses; actual compact execution, memory mutation/reset, provider compaction, and replay authority remain gated until separate live evidence and authority controls exist.",
   },
   {
     id: "ic4.read-file-authority",
