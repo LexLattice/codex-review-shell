@@ -6,8 +6,8 @@ Status: root architecture doctrine for the long-lived
 Source inputs:
 
 - User/GPT synthesis pasted in-thread on unified information bridge.
-- Attached GPT synthesis:
-  `/mnt/c/Users/Rose/.codex/attachments/747c8eb5-b098-4938-9070-3fc11d897bf6/pasted-text.txt`
+- Attached GPT synthesis, captured in-thread from a local Codex attachment:
+  `~/.codex/attachments/<attachment-id>/pasted-text.txt`
 - Existing direct storage, context, recovery, mutation, memory/frontier, and
   meta-session specs.
 

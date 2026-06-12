@@ -16,6 +16,7 @@ function gitBranch() {
       cwd: repoRoot,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
+      timeout: 5000,
     }).trim();
   } catch {
     return "";
