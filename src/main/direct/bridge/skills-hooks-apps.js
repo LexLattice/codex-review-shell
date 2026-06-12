@@ -7,6 +7,10 @@ const DIRECT_BRIDGE_MODULE_SCHEMA = "direct_bridge_module@1";
 const DIRECT_BRIDGE_MODULE_CAPABILITY_SCHEMA = "direct_bridge_module_capability@1";
 const DIRECT_BRIDGE_MODULE_AUTHORITY_REPORT_SCHEMA = "direct_bridge_module_authority_report@1";
 const DIRECT_BRIDGE_MODULE_STATUS_PROJECTION_SCHEMA = "direct_bridge_module_status_projection@1";
+const DIRECT_BRIDGE_CONTEXT_CONTRIBUTION_SCHEMA = "direct_bridge_context_contribution@1";
+const DIRECT_BRIDGE_EVIDENCE_IMPORT_ROW_SCHEMA = "direct_bridge_evidence_import_row@1";
+const DIRECT_BRIDGE_HOOK_PROPOSAL_SCHEMA = "direct_bridge_hook_proposal@1";
+const DIRECT_BRIDGE_EXECUTION_GATE_SCHEMA = "direct_bridge_execution_gate@1";
 
 const MODULE_KINDS = new Set(["skill", "hook", "connector", "tool_adapter"]);
 const MODULE_AUTHORITY_POSTURES = new Set([
@@ -34,6 +38,16 @@ const SIDE_EFFECT_SCOPES = new Set([
   "external_service",
   "provider_request",
   "ui_only",
+]);
+const CONTRIBUTION_STATES = new Set(["accepted_context_ref", "blocked_not_context_module", "blocked_raw_text", "blocked_stale_scope"]);
+const EVIDENCE_IMPORT_STATES = new Set(["accepted_evidence_row", "blocked_not_connector", "blocked_raw_payload", "blocked_missing_source"]);
+const HOOK_PROPOSAL_STATES = new Set(["proposed", "blocked_not_hook", "blocked_side_effect", "blocked_raw_payload"]);
+const EXECUTION_GATE_STATES = new Set([
+  "not_requested",
+  "proposal_only",
+  "blocked_missing_authority_transition",
+  "authority_cited_not_enabled",
+  "blocked_module_not_gate_required",
 ]);
 
 function isPlainObject(value) {
@@ -95,6 +109,22 @@ function normalizeEvidenceRef(input = {}, fallbackKind = "bridge_module") {
 function normalizeEvidenceRefs(values, fallbackKind = "bridge_module") {
   if (!Array.isArray(values)) return [];
   return values.map((value) => normalizeEvidenceRef(value, fallbackKind));
+}
+
+function moduleDigestFor(module = {}) {
+  return normalizeString(module.moduleDigest || module.integrity?.artifactDigest || module.capabilityDigest, "");
+}
+
+function normalizeModuleRef(module = {}, fallbackKind = "bridge_module") {
+  const moduleKind = normalizeModuleKind(module.moduleKind || module.kind || fallbackKind);
+  return {
+    moduleId: normalizeString(module.moduleId || module.id, ""),
+    capabilityId: normalizeString(module.capabilityId, ""),
+    moduleKind,
+    authorityPosture: normalizeAuthorityPosture(module.authorityPosture, moduleKind),
+    moduleDigest: moduleDigestFor(module),
+    rawTextIncluded: false,
+  };
 }
 
 function normalizeModuleKind(value) {
@@ -280,12 +310,184 @@ function buildBridgeModuleAuthorityReport(input = {}) {
   return report;
 }
 
+function buildBridgeContextContribution(input = {}) {
+  const module = isPlainObject(input.module) ? input.module : {};
+  const moduleRef = normalizeModuleRef(module, "skill");
+  const requestedState = normalizeString(input.contributionState || input.status, "");
+  const contextAllowed = module.mayContributeContext === true &&
+    moduleRef.authorityPosture === "context_only" &&
+    moduleRef.moduleKind === "skill";
+  const contributionState = CONTRIBUTION_STATES.has(requestedState) && requestedState.startsWith("blocked")
+    ? requestedState
+    : contextAllowed ? "accepted_context_ref" : "blocked_not_context_module";
+  const refs = normalizeEvidenceRefs(input.contextRefs || input.evidenceRefs, "skill_context_ref");
+  const contribution = {
+    schema: DIRECT_BRIDGE_CONTEXT_CONTRIBUTION_SCHEMA,
+    contributionId: normalizeString(input.contributionId, `bridge_context_contribution_${digestFor("bridge-context-contribution-source@1", { moduleRef, refs, contributionState }).slice(0, 24)}`),
+    projectId: normalizeString(input.projectId, ""),
+    workThreadId: normalizeString(input.workThreadId, ""),
+    contextPackId: normalizeString(input.contextPackId, ""),
+    moduleRef,
+    contributionState,
+    contributionKind: normalizeString(input.contributionKind, "procedural_context"),
+    contextRefs: refs,
+    providerInputEligible: contributionState === "accepted_context_ref",
+    contextPackRefOnly: true,
+    instructionAuthorityGranted: false,
+    executionAllowedInThisPr: false,
+    mutationAllowedInThisPr: false,
+    providerCallAllowedInThisPr: false,
+    rawTextIncluded: false,
+    rawSecretIncluded: false,
+    rendererSafeSummary: boundedString(
+      input.rendererSafeSummary || "Skill contribution is represented as context-pack refs only.",
+      320,
+    ),
+    createdAt: normalizeString(input.createdAt, nowIso(input.nowMs)),
+  };
+  contribution.contributionDigest = digestFor("direct-bridge-context-contribution@1", contribution);
+  return contribution;
+}
+
+function buildBridgeEvidenceImportRow(input = {}) {
+  const module = isPlainObject(input.module) ? input.module : {};
+  const moduleRef = normalizeModuleRef(module, "connector");
+  const sourceRefs = normalizeEvidenceRefs(input.sourceRefs || input.evidenceRefs, "connector_evidence_source");
+  const requestedState = normalizeString(input.importState || input.status, "");
+  const importAllowed = module.mayImportEvidence === true &&
+    moduleRef.authorityPosture === "evidence_import" &&
+    moduleRef.moduleKind === "connector" &&
+    sourceRefs.length > 0;
+  const importState = EVIDENCE_IMPORT_STATES.has(requestedState) && requestedState.startsWith("blocked")
+    ? requestedState
+    : importAllowed ? "accepted_evidence_row" : sourceRefs.length ? "blocked_not_connector" : "blocked_missing_source";
+  const row = {
+    schema: DIRECT_BRIDGE_EVIDENCE_IMPORT_ROW_SCHEMA,
+    evidenceImportRowId: normalizeString(input.evidenceImportRowId, `bridge_evidence_import_${digestFor("bridge-evidence-import-source@1", { moduleRef, sourceRefs, importState }).slice(0, 24)}`),
+    projectId: normalizeString(input.projectId, ""),
+    workThreadId: normalizeString(input.workThreadId, ""),
+    moduleRef,
+    importState,
+    sourceRefs,
+    evidenceAuthority: normalizeString(input.evidenceAuthority, "external_evidence_unverified"),
+    evidenceImported: importState === "accepted_evidence_row",
+    connectorTransportUsedInThisPr: false,
+    executionAllowedInThisPr: false,
+    providerCallAllowedInThisPr: false,
+    mutationAllowedInThisPr: false,
+    rawConnectorPayloadIncluded: false,
+    rawTextIncluded: false,
+    rawSecretIncluded: false,
+    rendererSafeSummary: boundedString(
+      input.rendererSafeSummary || "Connector evidence is represented as an explicit evidence row without connector action authority.",
+      320,
+    ),
+    createdAt: normalizeString(input.createdAt, nowIso(input.nowMs)),
+  };
+  row.rowDigest = digestFor("direct-bridge-evidence-import-row@1", row);
+  return row;
+}
+
+function buildBridgeHookProposal(input = {}) {
+  const module = isPlainObject(input.module) ? input.module : {};
+  const moduleRef = normalizeModuleRef(module, "hook");
+  const sourceRefs = normalizeEvidenceRefs(input.sourceRefs || input.evidenceRefs, "hook_proposal_source");
+  const requestedState = normalizeString(input.proposalState || input.status, "");
+  const proposalAllowed = module.mayProposeAction === true &&
+    moduleRef.moduleKind === "hook" &&
+    (moduleRef.authorityPosture === "action_proposal" || moduleRef.authorityPosture === "execution_requires_gate");
+  const proposalState = HOOK_PROPOSAL_STATES.has(requestedState) && requestedState.startsWith("blocked")
+    ? requestedState
+    : proposalAllowed ? "proposed" : "blocked_not_hook";
+  const proposal = {
+    schema: DIRECT_BRIDGE_HOOK_PROPOSAL_SCHEMA,
+    hookProposalId: normalizeString(input.hookProposalId, `bridge_hook_proposal_${digestFor("bridge-hook-proposal-source@1", { moduleRef, sourceRefs, proposalState }).slice(0, 24)}`),
+    projectId: normalizeString(input.projectId, ""),
+    workThreadId: normalizeString(input.workThreadId, ""),
+    moduleRef,
+    proposalState,
+    proposedActionKind: normalizeString(input.proposedActionKind, "context_transform"),
+    sourceRefs,
+    actionProposalVisible: proposalState === "proposed",
+    executionGateRequired: moduleRef.authorityPosture === "execution_requires_gate",
+    executionAllowedInThisPr: false,
+    mutationAllowedInThisPr: false,
+    providerCallAllowedInThisPr: false,
+    workspaceMutationAllowedInThisPr: false,
+    rawPayloadIncluded: false,
+    rawTextIncluded: false,
+    rawSecretIncluded: false,
+    rendererSafeSummary: boundedString(
+      input.rendererSafeSummary || "Hook proposal is visible as a proposal only; execution is gated separately.",
+      320,
+    ),
+    createdAt: normalizeString(input.createdAt, nowIso(input.nowMs)),
+  };
+  proposal.proposalDigest = digestFor("direct-bridge-hook-proposal@1", proposal);
+  return proposal;
+}
+
+function buildBridgeExecutionGate(input = {}) {
+  const module = isPlainObject(input.module) ? input.module : {};
+  const hookProposal = isPlainObject(input.hookProposal) ? input.hookProposal : null;
+  const authorityTransition = isPlainObject(input.authorityTransition) ? input.authorityTransition : null;
+  const moduleRef = normalizeModuleRef((module.moduleId || module.id) ? module : hookProposal?.moduleRef || {}, "hook");
+  const requested = input.executionRequested === true || Boolean(hookProposal);
+  let gateState = "not_requested";
+  if (requested) {
+    if (moduleRef.authorityPosture !== "execution_requires_gate") {
+      gateState = "blocked_module_not_gate_required";
+    } else if (!authorityTransition) {
+      gateState = "blocked_missing_authority_transition";
+    } else {
+      gateState = "authority_cited_not_enabled";
+    }
+  }
+  const gate = {
+    schema: DIRECT_BRIDGE_EXECUTION_GATE_SCHEMA,
+    executionGateId: normalizeString(input.executionGateId, `bridge_execution_gate_${digestFor("bridge-execution-gate-source@1", { moduleRef, proposalDigest: hookProposal?.proposalDigest || "", authorityDigest: authorityTransition?.transitionDigest || "", gateState }).slice(0, 24)}`),
+    projectId: normalizeString(input.projectId, hookProposal?.projectId || authorityTransition?.projectId || ""),
+    workThreadId: normalizeString(input.workThreadId, hookProposal?.workThreadId || authorityTransition?.workThreadId || ""),
+    moduleRef,
+    hookProposalId: normalizeString(hookProposal?.hookProposalId, ""),
+    hookProposalDigest: normalizeString(hookProposal?.proposalDigest, ""),
+    authorityTransitionId: normalizeString(authorityTransition?.transitionId, ""),
+    authorityTransitionDigest: normalizeString(authorityTransition?.transitionDigest, ""),
+    gateState,
+    executionAllowedInThisPr: false,
+    mutationAllowedInThisPr: false,
+    providerCallAllowedInThisPr: false,
+    workspaceMutationAllowedInThisPr: false,
+    connectorActionAllowedInThisPr: false,
+    hookActionAllowedInThisPr: false,
+    autoInvocationAllowedInThisPr: false,
+    rawPayloadIncluded: false,
+    rawTextIncluded: false,
+    rawSecretIncluded: false,
+    rendererSafeSummary: boundedString(
+      input.rendererSafeSummary || "Execution gate records future action eligibility without enabling execution.",
+      320,
+    ),
+    createdAt: normalizeString(input.createdAt, nowIso(input.nowMs)),
+  };
+  gate.gateDigest = digestFor("direct-bridge-execution-gate@1", gate);
+  return gate;
+}
+
 function buildBridgeModuleStatusProjection(input = {}) {
   const registry = isPlainObject(input.registry) ? input.registry : null;
   const report = isPlainObject(input.report) ? input.report : null;
+  const contextContributions = Array.isArray(input.contextContributions) ? input.contextContributions : [];
+  const evidenceImportRows = Array.isArray(input.evidenceImportRows) ? input.evidenceImportRows : [];
+  const hookProposals = Array.isArray(input.hookProposals) ? input.hookProposals : [];
+  const executionGates = Array.isArray(input.executionGates) ? input.executionGates : [];
   const sourceDigest = digestFor("direct-bridge-module-status-source@1", {
     registryDigest: registry?.integrity?.artifactDigest || registry?.registryDigest || "",
     reportDigest: report?.reportDigest || "",
+    contextContributionDigests: contextContributions.map((entry) => entry?.contributionDigest || ""),
+    evidenceImportDigests: evidenceImportRows.map((entry) => entry?.rowDigest || ""),
+    hookProposalDigests: hookProposals.map((entry) => entry?.proposalDigest || ""),
+    executionGateDigests: executionGates.map((entry) => entry?.gateDigest || ""),
   });
   const projection = {
     schema: DIRECT_BRIDGE_MODULE_STATUS_PROJECTION_SCHEMA,
@@ -298,6 +500,11 @@ function buildBridgeModuleStatusProjection(input = {}) {
     contextContributorCount: Number(report?.contextContributorCount || 0),
     evidenceImporterCount: Number(report?.evidenceImporterCount || 0),
     actionProposalCount: Number(report?.actionProposalCount || 0),
+    contextContributionCount: contextContributions.filter((entry) => entry?.contributionState === "accepted_context_ref").length,
+    evidenceImportRowCount: evidenceImportRows.filter((entry) => entry?.importState === "accepted_evidence_row").length,
+    hookProposalCount: hookProposals.filter((entry) => entry?.proposalState === "proposed").length,
+    executionGateCount: executionGates.length,
+    executionGateStates: [...new Set(executionGates.map((entry) => normalizeString(entry?.gateState, "not_requested")))].sort(),
     executionAllowedInThisPr: false,
     actionable: false,
     rendererSafeSummary: normalizeString(input.rendererSafeSummary, "Skills, hooks, and apps are classified but not executable in Direct bridge mode."),
@@ -308,10 +515,78 @@ function buildBridgeModuleStatusProjection(input = {}) {
   return projection;
 }
 
+function validateBridgeModuleExecutionWorkflow(input = {}) {
+  const contextContributions = Array.isArray(input.contextContributions) ? input.contextContributions : [];
+  const evidenceImportRows = Array.isArray(input.evidenceImportRows) ? input.evidenceImportRows : [];
+  const hookProposals = Array.isArray(input.hookProposals) ? input.hookProposals : [];
+  const executionGates = Array.isArray(input.executionGates) ? input.executionGates : [];
+  const artifacts = [...contextContributions, ...evidenceImportRows, ...hookProposals, ...executionGates];
+  for (const artifact of artifacts) {
+    if (!isPlainObject(artifact)) throw new Error("bridge_module_execution_artifact_invalid");
+    if (artifact.rawTextIncluded !== false || artifact.rawSecretIncluded !== false) {
+      throw new Error("bridge_module_execution_raw_exposure_leak");
+    }
+    if (
+      artifact.executionAllowedInThisPr !== false ||
+      artifact.mutationAllowedInThisPr !== false ||
+      artifact.providerCallAllowedInThisPr !== false
+    ) {
+      throw new Error("bridge_module_execution_authority_leak");
+    }
+  }
+  for (const artifact of contextContributions) {
+    if (artifact.schema !== DIRECT_BRIDGE_CONTEXT_CONTRIBUTION_SCHEMA) throw new Error("bridge_context_contribution_schema_mismatch");
+    if (artifact.contributionState === "accepted_context_ref" && artifact.moduleRef?.authorityPosture !== "context_only") {
+      throw new Error("bridge_context_contribution_wrong_authority");
+    }
+    if (artifact.instructionAuthorityGranted !== false || artifact.contextPackRefOnly !== true) {
+      throw new Error("bridge_context_contribution_authority_leak");
+    }
+  }
+  for (const artifact of evidenceImportRows) {
+    if (artifact.schema !== DIRECT_BRIDGE_EVIDENCE_IMPORT_ROW_SCHEMA) throw new Error("bridge_evidence_import_row_schema_mismatch");
+    if (artifact.importState === "accepted_evidence_row" && artifact.moduleRef?.authorityPosture !== "evidence_import") {
+      throw new Error("bridge_evidence_import_wrong_authority");
+    }
+    if (artifact.rawConnectorPayloadIncluded !== false || artifact.connectorTransportUsedInThisPr !== false) {
+      throw new Error("bridge_evidence_import_payload_or_transport_leak");
+    }
+  }
+  for (const artifact of hookProposals) {
+    if (artifact.schema !== DIRECT_BRIDGE_HOOK_PROPOSAL_SCHEMA) throw new Error("bridge_hook_proposal_schema_mismatch");
+    if (artifact.proposalState === "proposed" && artifact.moduleRef?.moduleKind !== "hook") {
+      throw new Error("bridge_hook_proposal_wrong_module");
+    }
+    if (artifact.rawPayloadIncluded !== false || artifact.workspaceMutationAllowedInThisPr !== false) {
+      throw new Error("bridge_hook_proposal_payload_or_workspace_leak");
+    }
+  }
+  for (const artifact of executionGates) {
+    if (artifact.schema !== DIRECT_BRIDGE_EXECUTION_GATE_SCHEMA) throw new Error("bridge_execution_gate_schema_mismatch");
+    if (
+      artifact.rawPayloadIncluded !== false ||
+      artifact.workspaceMutationAllowedInThisPr !== false ||
+      artifact.connectorActionAllowedInThisPr !== false ||
+      artifact.hookActionAllowedInThisPr !== false ||
+      artifact.autoInvocationAllowedInThisPr !== false
+    ) {
+      throw new Error("bridge_execution_gate_authority_leak");
+    }
+    if (artifact.gateState === "authority_cited_not_enabled" && !artifact.authorityTransitionId) {
+      throw new Error("bridge_execution_gate_missing_authority_transition");
+    }
+  }
+  return true;
+}
+
 module.exports = {
   CAPABILITY_KINDS,
   DIRECT_BRIDGE_MODULE_AUTHORITY_REPORT_SCHEMA,
   DIRECT_BRIDGE_MODULE_CAPABILITY_SCHEMA,
+  DIRECT_BRIDGE_CONTEXT_CONTRIBUTION_SCHEMA,
+  DIRECT_BRIDGE_EVIDENCE_IMPORT_ROW_SCHEMA,
+  DIRECT_BRIDGE_EXECUTION_GATE_SCHEMA,
+  DIRECT_BRIDGE_HOOK_PROPOSAL_SCHEMA,
   DIRECT_BRIDGE_MODULE_REGISTRY_SCHEMA,
   DIRECT_BRIDGE_MODULE_SCHEMA,
   DIRECT_BRIDGE_MODULE_STATUS_PROJECTION_SCHEMA,
@@ -321,8 +596,13 @@ module.exports = {
   buildBridgeModule,
   buildBridgeModuleAuthorityReport,
   buildBridgeModuleCapability,
+  buildBridgeContextContribution,
+  buildBridgeEvidenceImportRow,
+  buildBridgeExecutionGate,
+  buildBridgeHookProposal,
   buildBridgeModuleRegistry,
   buildBridgeModuleStatusProjection,
   sha256,
   stableStringify,
+  validateBridgeModuleExecutionWorkflow,
 };

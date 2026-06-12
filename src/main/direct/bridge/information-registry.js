@@ -313,13 +313,13 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     role: "governance_routing",
     implementationState: "partial",
     directPathPosture: "keep_shadow",
-    sourceFiles: ["src/main/direct/bridge/skills-hooks-apps.js", "scripts/direct-skills-hooks-apps-bridge-regression.mjs"],
-    ontology: ontologyShape(["skill_module", "hook_contract", "connector_capability", "capability_context_law"], "connector", {
+    sourceFiles: ["src/main/direct/bridge/skills-hooks-apps.js", "scripts/direct-skills-hooks-apps-bridge-regression.mjs", "scripts/direct-module-execution-gates-regression.mjs"],
+    ontology: ontologyShape(["skill_module", "hook_contract", "connector_capability", "capability_context_law", "bridge_context_contribution", "bridge_evidence_import_row", "bridge_hook_proposal", "bridge_execution_gate"], "connector", {
       identityFields: ["moduleId", "connectorId", "capabilityId"],
       schema: "bridge_skill_module@1",
     }),
-    bridgeFit: "Classifies skills, hooks, apps, and connector capabilities as bridge modules with context/evidence/action-proposal posture before any execution runner exists.",
-    realignment: "Keep module execution, auto-invocation, workspace mutation, provider calls, and WorkThread routing disabled until separate authority gates are implemented.",
+    bridgeFit: "Classifies skills, hooks, apps, and connector capabilities as bridge modules with context/evidence/action-proposal posture, then projects contribution/import/proposal/gate artifacts before any execution runner exists.",
+    realignment: "Context-only skill refs, connector evidence rows, hook proposals, and execution gates are visible; module execution, auto-invocation, workspace mutation, provider calls, and WorkThread routing remain disabled.",
   },
   {
     id: "ic15.direct-settings-surface",
