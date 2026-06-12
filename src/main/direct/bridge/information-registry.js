@@ -285,13 +285,13 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     role: "governance_routing",
     implementationState: "partial",
     directPathPosture: "keep_shadow",
-    sourceFiles: ["src/main/direct/bridge/work-thread-registry.js", "scripts/direct-workthread-foundation-regression.mjs"],
-    ontology: ontologyShape(["work_thread", "work_target_resolution", "context_packet_ref", "authority_boundary"], "harness", {
+    sourceFiles: ["src/main/direct/bridge/work-thread-registry.js", "src/main/direct/ui/settings-surface.js", "scripts/direct-workthread-foundation-regression.mjs"],
+    ontology: ontologyShape(["work_thread", "work_target_resolution", "work_target_resolution_report", "context_packet_ref", "authority_boundary"], "harness", {
       identityFields: ["workThreadId", "projectId", "ontologyProfileRef"],
       schema: "work_thread@1",
     }),
-    bridgeFit: "Adds the canonical WorkThread object/store plus read-only projection and shadow WorkTargetResolution reports.",
-    realignment: "Wire WorkThread into context packs, authority transitions, and UI only after the shadow resolver proves stable.",
+    bridgeFit: "Adds the canonical WorkThread object/store plus read-only projection, WorkTargetResolution, and productized target-gate report with stale and ambiguity blockers.",
+    realignment: "Resolver reports are operator-visible and block ambiguous/stale target routing, but still grant no mutation/provider authority until explicit enforcement is implemented.",
   },
   {
     id: "ic13.bridge-information-registry",

@@ -14,6 +14,7 @@ const {
 } = require("../src/main/direct/bridge/information-registry");
 const {
   buildWorkTargetResolution,
+  buildWorkTargetResolutionReport,
   buildWorkThread,
   buildWorkThreadProjection,
 } = require("../src/main/direct/bridge/work-thread-registry");
@@ -154,6 +155,10 @@ function main() {
     userRequest: "inspect settings bridge surface",
     activeRuntimePath: "direct-implementation",
   }, [workThread], { nowMs: 0 });
+  const workTargetResolutionReport = buildWorkTargetResolutionReport({
+    projectId,
+    resolution: workTargetResolution,
+  }, { nowMs: 0 });
   const moduleStatus = buildModuleStatusFixture(projectId, workThread.workThreadId);
   const continuityStatus = buildContinuityFixture(projectId, workThread.workThreadId);
   const runtimeStatus = {
@@ -186,6 +191,7 @@ function main() {
       status: { available: true, workThreadCount: 1, activeCount: 1, projectionDigest: workThreadProjection.projectionDigest },
       projection: workThreadProjection,
       resolution: workTargetResolution,
+      resolutionReport: workTargetResolutionReport,
     },
     governanceStatus: {
       schema: "governance_packet@1",
@@ -209,6 +215,10 @@ function main() {
   assert(projection.sections.registry.settingsSurfaceState === "partial", "registry should classify ic15 as partial");
   assert(projection.sections.workThreads.available === true, "fixture WorkThread projection should be available");
   assert(projection.sections.workThreads.routingEnforced === false, "WorkThread routing must remain shadow-only");
+  assert(projection.sections.workThreads.routingGateState === "selected_ready", "selected WorkThread report should be visible");
+  assert(projection.sections.workThreads.mutationAllowed === false, "settings surface must not grant WorkThread mutation");
+  assert(projection.sections.workThreads.mutationBlocked === false, "selected target should not be target-blocked");
+  assert(projection.sections.workThreads.resolutionReportDigest === workTargetResolutionReport.reportDigest, "settings should cite resolver report digest");
   assert(projection.sections.governance.governanceEnforced === false, "governance must not be enforced");
   assert(projection.sections.governance.semanticBrokerEnforced === false, "semantic broker must not be enforced");
   assert(projection.sections.modules.executionAllowedInThisPr === false, "module execution must be disabled");
@@ -218,10 +228,52 @@ function main() {
   assert(projection.rows.runtime.length >= 4, "runtime rows should render");
   assert(projection.rows.registry.length >= 4, "registry rows should render");
   assert(projection.rows.workThreads.length >= 4, "WorkThread rows should render");
+  assert(projection.rows.workThreads.some((row) => row.label === "Target gate" && row.value === "selected_ready"), "WorkThread rows should include target gate");
+  assert(projection.rows.workThreads.some((row) => row.label === "Mutation" && row.value === "not granted"), "WorkThread rows should keep mutation not granted");
   assert(projection.rows.modules.length >= 4, "module rows should render");
   assert(projection.rawTextIncluded === false, "raw text must be excluded");
   assert(projection.rawPathIncluded === false, "raw paths must be excluded");
   assert(projection.rawSecretIncluded === false, "raw secrets must be excluded");
+
+  const staleWorkTargetResolutionReport = buildWorkTargetResolutionReport({
+    projectId,
+    resolution: workTargetResolution,
+    expectedResolutionDigest: "sha256:stale",
+  }, { nowMs: 0 });
+  const staleProjection = buildDirectSettingsSurfaceProjection({
+    projectId,
+    workThreads: {
+      status: { available: true, workThreadCount: 1, activeCount: 1, projectionDigest: workThreadProjection.projectionDigest },
+      projection: workThreadProjection,
+      resolution: workTargetResolution,
+      resolutionReport: staleWorkTargetResolutionReport,
+    },
+    nowMs: 0,
+  });
+  assert(staleProjection.sections.workThreads.routingGateState === "stale_blocked", "stale report should own the settings gate state");
+  assert(staleProjection.sections.workThreads.selectedWorkThreadId === "", "stale report must not fall back to raw selected target");
+  assert(staleProjection.sections.workThreads.mutationBlocked === true, "stale report should keep mutation blocked");
+  assert(staleProjection.sections.workThreads.ambiguityBlockers.includes("resolution_digest_mismatch"), "stale report blockers should be visible");
+
+  const zeroCandidateProjection = buildDirectSettingsSurfaceProjection({
+    projectId,
+    workThreads: {
+      projection: workThreadProjection,
+      resolution: {
+        ...workTargetResolution,
+        candidates: [{ workThreadId: "raw_candidate_should_not_win" }],
+      },
+      resolutionReport: {
+        ...workTargetResolutionReport,
+        candidateCount: 0,
+        candidates: [],
+        selectedWorkThreadId: "",
+      },
+    },
+    nowMs: 0,
+  });
+  assert(zeroCandidateProjection.sections.workThreads.candidateCount === 0, "explicit report candidate count should be preserved");
+  assert(zeroCandidateProjection.sections.workThreads.selectedWorkThreadId === "", "explicit report selected target should be preserved");
 
   const nullProjection = buildDirectSettingsSurfaceProjection(null);
   assert(nullProjection.schema === DIRECT_SETTINGS_SURFACE_PROJECTION_SCHEMA, "null input should produce a safe empty projection");

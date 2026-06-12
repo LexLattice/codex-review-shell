@@ -8,10 +8,12 @@ const DIRECT_WORK_THREAD_REGISTRY_SCHEMA = "direct_work_thread_registry@1";
 const DIRECT_WORK_THREAD_SCHEMA = "direct_work_thread@1";
 const DIRECT_WORK_THREAD_PROJECTION_SCHEMA = "direct_work_thread_projection@1";
 const DIRECT_WORK_TARGET_RESOLUTION_SCHEMA = "direct_work_target_resolution@1";
+const DIRECT_WORK_TARGET_RESOLUTION_REPORT_SCHEMA = "direct_work_target_resolution_report@1";
 const DIRECT_WORK_THREAD_STORE_STATUS_SCHEMA = "direct_work_thread_store_status@1";
 
 const LIFECYCLE_STATES = new Set(["active", "paused", "completed", "archived", "stale", "unknown"]);
 const RESOLUTION_STATES = new Set(["selected", "ambiguous", "unresolved"]);
+const ROUTING_GATE_STATES = new Set(["selected_ready", "clarification_required", "stale_blocked", "unresolved_blocked"]);
 const RUNTIME_PATHS = new Set(["app-server", "direct-text", "direct-implementation", "unknown"]);
 
 function isPlainObject(value) {
@@ -88,6 +90,13 @@ function readJsonFile(filePath) {
     if (error?.code === "ENOENT" || error instanceof SyntaxError) return null;
     throw error;
   }
+}
+
+function parseTimeMs(value) {
+  const text = normalizeString(value, "");
+  if (!text) return null;
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function boundedPreview(value, maxChars = 220) {
@@ -415,6 +424,120 @@ function buildWorkTargetResolution(input = {}, workThreads = [], options = {}) {
   return resolution;
 }
 
+function candidateSummaries(candidates = []) {
+  return (Array.isArray(candidates) ? candidates : []).slice(0, 8).map((candidate) => ({
+    workThreadId: normalizeString(candidate.workThreadId, ""),
+    title: boundedPreview(candidate.title, 180),
+    projectId: normalizeString(candidate.projectId, ""),
+    lifecycleState: normalizeLifecycleState(candidate.lifecycleState),
+    score: Number(candidate.score || 0),
+    reasons: Array.isArray(candidate.reasons) ? candidate.reasons.map((item) => boundedPreview(item, 80)).filter(Boolean).slice(0, 8) : [],
+    digest: normalizeString(candidate.digest, ""),
+  }));
+}
+
+function buildWorkTargetResolutionReport(input = {}, options = {}) {
+  const source = isPlainObject(input) ? input : {};
+  const resolution = isPlainObject(source.resolution) ? source.resolution : buildWorkTargetResolution(source.request || source, source.workThreads || [], options);
+  const generatedAt = normalizeString(source.generatedAt, nowIso(options.nowMs));
+  const parsedMaxAgeMs = Number(source.maxAgeMs ?? options.maxAgeMs ?? 120000);
+  const maxAgeMs = Number.isFinite(parsedMaxAgeMs) ? Math.max(0, parsedMaxAgeMs) : 120000;
+  const expectedProjectId = normalizeString(source.expectedProjectId || source.projectId, "");
+  const expectedRequestDigest = normalizeString(source.expectedRequestDigest, "");
+  const expectedResolutionDigest = normalizeString(source.expectedResolutionDigest, "");
+  const staleBlockers = [];
+  const createdAtMs = parseTimeMs(resolution.createdAt);
+  const generatedAtMs = parseTimeMs(generatedAt);
+  if (maxAgeMs && createdAtMs !== null && generatedAtMs !== null && generatedAtMs - createdAtMs > maxAgeMs) staleBlockers.push("resolution_age_exceeded");
+  if (expectedProjectId && normalizeString(resolution.projectId, "") !== expectedProjectId) staleBlockers.push("project_mismatch");
+  if (expectedRequestDigest && normalizeString(resolution.requestDigest, "") !== expectedRequestDigest) staleBlockers.push("request_digest_mismatch");
+  if (expectedResolutionDigest && normalizeString(resolution.resolutionDigest, "") !== expectedResolutionDigest) staleBlockers.push("resolution_digest_mismatch");
+  const stale = staleBlockers.length > 0;
+  const resolutionState = RESOLUTION_STATES.has(resolution.resolutionState) ? resolution.resolutionState : "unresolved";
+  const selected = resolutionState === "selected" && !stale && normalizeString(resolution.selectedWorkThreadId, "");
+  let gateState = "unresolved_blocked";
+  if (stale) gateState = "stale_blocked";
+  else if (resolutionState === "selected") gateState = "selected_ready";
+  else if (resolutionState === "ambiguous") gateState = "clarification_required";
+  if (!ROUTING_GATE_STATES.has(gateState)) gateState = "unresolved_blocked";
+  const blockerCodes = [
+    ...((Array.isArray(resolution.ambiguityBlockers) ? resolution.ambiguityBlockers : []).map((item) => normalizeString(item, "")).filter(Boolean)),
+    ...staleBlockers,
+  ];
+  if (resolutionState === "ambiguous" && !blockerCodes.includes("target_resolution_ambiguous")) blockerCodes.push("target_resolution_ambiguous");
+  if (resolutionState === "unresolved" && !blockerCodes.includes("target_resolution_unresolved")) blockerCodes.push("target_resolution_unresolved");
+  const sourceDigest = digestValue("direct-work-target-resolution-report-source@1", {
+    resolutionDigest: resolution.resolutionDigest,
+    generatedAt,
+    maxAgeMs,
+    expectedProjectId,
+    expectedRequestDigest,
+    expectedResolutionDigest,
+    blockerCodes,
+  });
+  const report = {
+    schema: DIRECT_WORK_TARGET_RESOLUTION_REPORT_SCHEMA,
+    reportId: normalizeString(source.reportId, `work_target_resolution_report_${sourceDigest.slice(7, 31)}`),
+    projectId: normalizeString(source.projectId, resolution.projectId || ""),
+    generatedAt,
+    uiProjectionGeneration: Number(source.uiProjectionGeneration || 1),
+    resolutionId: normalizeString(resolution.resolutionId, ""),
+    resolutionDigest: normalizeString(resolution.resolutionDigest, ""),
+    requestDigest: normalizeString(resolution.requestDigest, ""),
+    requestPreview: boundedPreview(resolution.requestPreview, 220),
+    requestRawTextIncluded: false,
+    resolutionState,
+    routingGateState: gateState,
+    selectedWorkThreadId: selected ? resolution.selectedWorkThreadId : "",
+    candidateCount: Array.isArray(resolution.candidates) ? resolution.candidates.length : 0,
+    candidates: candidateSummaries(resolution.candidates),
+    blockerCodes,
+    stale,
+    staleBlockers,
+    maxAgeMs,
+    targetResolved: Boolean(selected),
+    clarificationRequired: resolutionState === "ambiguous" || resolutionState === "unresolved" || stale,
+    nonTargetPreservationRequired: resolutionState !== "selected" || stale,
+    mutationBlocked: resolutionState !== "selected" || stale,
+    providerCallBlocked: resolutionState !== "selected" || stale,
+    mutationAuthorityGranted: false,
+    providerCallAuthorityGranted: false,
+    routingEnforced: false,
+    workspaceMutationAllowed: false,
+    providerTransportAllowed: false,
+    rendererSafeSummary: stale
+      ? "Work-target resolution is stale and cannot route mutation."
+      : resolutionState === "selected"
+        ? "Work target is selected; this report grants no mutation authority."
+        : "Work target is not selected; clarification is required before mutation.",
+    sourceDigest,
+    rawTextIncluded: false,
+    rawPathIncluded: false,
+    rawSecretIncluded: false,
+  };
+  report.reportDigest = digestValue("direct-work-target-resolution-report@1", report);
+  return report;
+}
+
+function assertWorkTargetResolutionReportSafe(report = {}) {
+  if (!isPlainObject(report) || report.schema !== DIRECT_WORK_TARGET_RESOLUTION_REPORT_SCHEMA) {
+    throw new Error("direct_work_target_resolution_report_schema_mismatch");
+  }
+  if (report.rawTextIncluded !== false || report.rawPathIncluded !== false || report.rawSecretIncluded !== false) {
+    throw new Error("direct_work_target_resolution_report_raw_exposure");
+  }
+  if (report.mutationAuthorityGranted !== false || report.providerCallAuthorityGranted !== false || report.routingEnforced !== false) {
+    throw new Error("direct_work_target_resolution_report_authority_leak");
+  }
+  if (report.resolutionState !== "selected" && report.selectedWorkThreadId) {
+    throw new Error("direct_work_target_resolution_report_selected_when_not_selected");
+  }
+  if (report.stale === true && report.routingGateState !== "stale_blocked") {
+    throw new Error("direct_work_target_resolution_report_stale_not_blocked");
+  }
+  return true;
+}
+
 class DirectWorkThreadRegistryStore {
   constructor(options = {}) {
     this.rootDir = path.resolve(options.rootDir || path.join(process.cwd(), ".direct-work-threads"));
@@ -519,6 +642,18 @@ class DirectWorkThreadRegistryStore {
     });
   }
 
+  resolveWorkTargetReport(input = {}) {
+    const resolution = this.resolveWorkTarget(input);
+    return buildWorkTargetResolutionReport({
+      ...input,
+      resolution,
+      projectId: input.projectId,
+    }, {
+      nowMs: this.now(),
+      maxAgeMs: input.maxAgeMs,
+    });
+  }
+
   status(options = {}) {
     const projection = this.buildProjection(options);
     return {
@@ -535,12 +670,15 @@ class DirectWorkThreadRegistryStore {
 }
 
 module.exports = {
+  DIRECT_WORK_TARGET_RESOLUTION_REPORT_SCHEMA,
   DIRECT_WORK_TARGET_RESOLUTION_SCHEMA,
   DIRECT_WORK_THREAD_PROJECTION_SCHEMA,
   DIRECT_WORK_THREAD_REGISTRY_SCHEMA,
   DIRECT_WORK_THREAD_SCHEMA,
   DIRECT_WORK_THREAD_STORE_STATUS_SCHEMA,
   DirectWorkThreadRegistryStore,
+  assertWorkTargetResolutionReportSafe,
+  buildWorkTargetResolutionReport,
   buildWorkTargetResolution,
   buildWorkThread,
   buildWorkThreadProjection,
