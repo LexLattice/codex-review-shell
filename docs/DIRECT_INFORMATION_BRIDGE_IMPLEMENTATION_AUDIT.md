@@ -262,14 +262,33 @@ authority artifacts now carry the shared transition envelope.
 This remains non-enforcing. The binding and transition envelopes are evidence
 and alignment witnesses, not mutation or provider-call authority.
 
-## Next Practical Step
+## Governance Consumption Slice
 
-Begin consuming WorkThread-aligned artifacts in governance:
+Governance/broker diagnostics now consume WorkThread-aligned artifacts without
+promotion to enforcement:
 
 ```text
-semantic broker / governance packet
+governance input snapshot
   -> cite WorkThreadContextBinding
-  -> cite AuthorityBearingTransition
-  -> classify target and authority scope
-  -> remain shadow-only until promotion criteria are met
+  -> cite AuthorityBearingTransition refs
+  -> governance packet shadow diagnostics
+  -> semantic broker input snapshot
+  -> request manifest refs remain id/digest-only
 ```
+
+Implemented by:
+
+```text
+src/main/direct/governance/broker.js
+scripts/direct-governance-broker-regression.mjs
+```
+
+This slice does not route, mutate, call providers, approve tools, or enforce
+WorkThread scope. It only makes the governance artifacts aware of the aligned
+evidence classes.
+
+## Next Practical Step
+
+Define direct-native skills/hooks/apps bridge rows and authority law, or begin
+the direct settings surface that can expose runtime/profile/registry/context
+state without occupying the Codex transcript lane.
