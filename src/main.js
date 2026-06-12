@@ -84,6 +84,10 @@ const {
   buildBridgeModuleStatusProjection,
 } = require("./main/direct/bridge/skills-hooks-apps");
 const {
+  buildAgentClassRegistry,
+  buildAgentClassStatusProjection,
+} = require("./main/direct/bridge/agent-class-spec");
+const {
   buildVanillaSiblingContextEvidence,
 } = require("./main/direct/context/maintenance");
 const {
@@ -2323,6 +2327,15 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     status: "shadow_only",
     rendererSafeSummary: "Skills, hooks, and apps are classified by the bridge module contract; no execution runner is enabled.",
   });
+  const agentClassRegistry = buildAgentClassRegistry({
+    projectId,
+    mode: "shadow",
+  });
+  const agentClassStatus = buildAgentClassStatusProjection({
+    projectId,
+    registry: agentClassRegistry,
+    status: "shadow_only",
+  });
   const projection = buildDirectSettingsSurfaceProjection({
     projectId,
     runtimeStatus,
@@ -2351,6 +2364,7 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     },
     metaSessionStatus,
     moduleStatus,
+    agentClassStatus,
     continuityStatus: runtimeStatus.directContextMaintenance,
   });
   assertDirectSettingsSurfaceRendererSafe(projection);

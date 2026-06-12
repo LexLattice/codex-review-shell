@@ -169,6 +169,7 @@ The executable registry currently tracks these bridge rows:
 | `ic13.bridge-information-registry` | governance/routing | partial | bootstrap now |
 | `ic14.skills-hooks-apps` | governance/routing | partial | keep shadow |
 | `ic15.direct-settings-surface` | observability surface | partial | keep shadow |
+| `ic16.agent-class-spec-registry` | governance/routing | partial | keep shadow |
 
 ## Keep
 
@@ -202,7 +203,7 @@ Not built yet:
 - Full direct settings workflows for editing/resetting memory, provider compaction, module execution, and enforced routing.
 - Enforced semantic broker routing.
 - Full direct-native memory/compaction/frontier workflow with live scheduler and UI controls.
-- Agent class execution contracts for worker/auditor/meta-orchestrator beyond diagnostics.
+- Agent execution contracts for worker/auditor/meta-orchestrator beyond declared role specs.
 
 ## Remaining Work Ledger
 
@@ -214,8 +215,9 @@ The remaining direct-path work should proceed in dependency order:
    user-authorized edit/reset actions.
 
 2. Agent-class specification:
-   define main agent, worker, auditor, meta-orchestrator, and sub-agent role
-   contracts as bridge artifacts before adding execution behavior.
+   the first role-contract registry is implemented. Remaining work is binding
+   these contracts to worker graphs, WorkThread routing, and concrete execution
+   gates.
 
 3. Work-target broker:
    convert shadow `WorkTargetResolution` into a user-visible routing gate for
@@ -448,3 +450,28 @@ Explicitly still out of scope:
 - Memory editing/reset.
 - Provider compaction or provider transport.
 - Creating a live WorkThread registry store from the settings read path.
+
+## AgentClassSpec Registry Slice
+
+Implemented in the PR 7 slice:
+
+- `src/main/direct/bridge/agent-class-spec.js` builds
+  `direct_agent_class_registry@1`, `direct_agent_class_spec@1`, and
+  `direct_agent_class_status_projection@1`.
+- Default role contracts exist for primary agent, implementation worker, audit
+  worker, fix worker, closeout worker, meta-orchestrator, work-thread broker,
+  memory/compaction worker, governance broker, and sub-agent worker.
+- Each role declares consumed context families, produced artifact families,
+  authority contract posture, and forbidden conflations.
+- The Direct bridge settings surface displays agent-class status rows.
+- `scripts/direct-agent-class-spec-regression.mjs` asserts role-boundary and
+  no-authority invariants.
+
+Explicitly still out of scope:
+
+- Worker spawning or routing.
+- Sub-agent execution enforcement.
+- Object-level audit automation.
+- WorkThread router promotion.
+- Provider calls, workspace mutation, memory mutation, or provider compaction
+  from role specs.
