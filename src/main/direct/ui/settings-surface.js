@@ -108,6 +108,8 @@ function summarizeRuntime(runtimeStatus = {}) {
   const runtime = objectOrEmpty(runtimeStatus);
   const activation = objectOrEmpty(runtime.activation);
   const context = objectOrEmpty(runtime.directContextMaintenance || runtime.contextMaintenance);
+  const memoryPointerState = normalizeString(context.memoryPointerState, "none");
+  const memoryState = normalizeString(context.memoryState, "none");
   return {
     currentPath: directRuntimePath(runtime),
     lane: normalizeString(runtime.currentCodexLane, runtimeLabel(runtime)),
@@ -117,7 +119,7 @@ function summarizeRuntime(runtimeStatus = {}) {
     implementationLaneStatus: normalizeString(runtime.directImplementationLane?.status, "unknown"),
     contextPressure: normalizeString(context.pressureState, "unknown"),
     contextRoute: normalizeString(context.routeKind, "unknown"),
-    memoryState: normalizeString(context.memoryPointerState !== "none" ? context.memoryPointerState : context.memoryState, "none"),
+    memoryState: memoryPointerState !== "none" ? memoryPointerState : memoryState,
     batonState: normalizeString(context.batonState, "not_required"),
     omissionState: normalizeString(context.omissionState, "none"),
     providerCompactState: normalizeString(context.providerCompactState, "not_proven"),
@@ -257,6 +259,7 @@ function buildRows(sections) {
 }
 
 function buildDirectSettingsSurfaceProjection(input = {}) {
+  if (!isPlainObject(input)) input = {};
   const runtime = summarizeRuntime(input.runtimeStatus);
   const registry = summarizeRegistry(input.registryAudit);
   const workThreads = summarizeWorkThreads(input.workThreads || input);

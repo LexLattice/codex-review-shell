@@ -222,6 +222,20 @@ function main() {
   assert(projection.rawTextIncluded === false, "raw text must be excluded");
   assert(projection.rawPathIncluded === false, "raw paths must be excluded");
   assert(projection.rawSecretIncluded === false, "raw secrets must be excluded");
+
+  const nullProjection = buildDirectSettingsSurfaceProjection(null);
+  assert(nullProjection.schema === DIRECT_SETTINGS_SURFACE_PROJECTION_SCHEMA, "null input should produce a safe empty projection");
+  assertDirectSettingsSurfaceRendererSafe(nullProjection);
+
+  const memoryFallbackProjection = buildDirectSettingsSurfaceProjection({
+    projectId,
+    runtimeStatus: {
+      directContextMaintenance: {
+        memoryState: "present",
+      },
+    },
+  });
+  assert(memoryFallbackProjection.sections.runtime.memoryState === "present", "memoryState should be preserved when memoryPointerState is absent");
   console.log(JSON.stringify({
     ok: true,
     schema: projection.schema,

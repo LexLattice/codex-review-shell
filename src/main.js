@@ -2314,10 +2314,10 @@ function buildDirectRuntimeStatusForProject(project, options = {}) {
   return runtimeStatus;
 }
 
-function buildDirectSettingsSurfaceStatusForProject(project, options = {}) {
+function buildDirectSettingsSurfaceStatusForProject(project) {
   const projectId = normalizeString(project?.id, "");
-  const runtimeStatus = options.runtimeStatus || buildDirectRuntimeStatusForProject(project);
-  const metaSessionStatus = options.metaSessionStatus || buildDirectMetaSessionStatusForProject(project, {});
+  const runtimeStatus = buildDirectRuntimeStatusForProject(project);
+  const metaSessionStatus = buildDirectMetaSessionStatusForProject(project, {});
   const moduleStatus = buildBridgeModuleStatusProjection({
     projectId,
     status: "shadow_only",
@@ -7219,7 +7219,7 @@ ipcMain.handle("direct-meta-session:status", async (_event, payload) => {
 
 ipcMain.handle("direct-settings:bridge-status", async (_event, payload) => {
   const project = await getProjectById(payload?.projectId);
-  return buildDirectSettingsSurfaceStatusForProject(project, payload || {});
+  return buildDirectSettingsSurfaceStatusForProject(project);
 });
 
 ipcMain.handle("direct-runtime:select-text-only", async (_event, payload) => {
