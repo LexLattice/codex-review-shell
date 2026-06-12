@@ -1,6 +1,9 @@
 "use strict";
 
 const crypto = require("node:crypto");
+const {
+  buildAuthorityBearingTransition,
+} = require("../bridge/work-thread-alignment");
 
 const DIRECT_READONLY_TOOL_AUTHORITY_DECISION_SCHEMA = "direct_codex_readonly_tool_authority_decision@1";
 const DIRECT_READONLY_TOOL_CONTINUATION_REQUEST_SCHEMA = "direct_codex_readonly_tool_continuation_request@1";
@@ -243,7 +246,7 @@ function assertReadFileObligation(obligation = {}) {
   };
 }
 
-function projectReadResult(raw = {}, obligation = {}, approvedAt = "", nowMs) {
+function projectReadResult(raw = {}, obligation = {}, approvedAt = "", nowMs, transitionOptions = {}) {
   const result = isPlainObject(raw) ? raw : {};
   const text = exactString(result.text, "");
   const binary = Boolean(result.binary);
@@ -287,9 +290,10 @@ function projectReadResult(raw = {}, obligation = {}, approvedAt = "", nowMs) {
       : "",
   };
   const providerOutputText = JSON.stringify(providerEnvelope);
+  const resultId = resultIdForObligation(obligation.obligationId);
   return {
     schema: DIRECT_READONLY_TOOL_RESULT_SCHEMA,
-    resultId: resultIdForObligation(obligation.obligationId),
+    resultId,
     obligationId: obligation.obligationId,
     toolLoopId: canonicalToolLoopId(obligation),
     stepId: canonicalToolStepId(obligation),
@@ -311,6 +315,25 @@ function projectReadResult(raw = {}, obligation = {}, approvedAt = "", nowMs) {
     approvedAt,
     recordedAt: nowIso(nowMs),
     sideEffectExecuted: false,
+    authorityTransition: buildAuthorityBearingTransition({
+      transitionKind: "read_file",
+      transitionPhase: "result",
+      projectId: normalizeString(obligation.projectId || transitionOptions.projectId, ""),
+      threadId: normalizeString(obligation.sessionId, ""),
+      turnId: normalizeString(obligation.turnId, ""),
+      obligationId: normalizeString(obligation.obligationId, ""),
+      status: "completed",
+      workThreadBinding: transitionOptions.workThreadBinding,
+      workThreadId: transitionOptions.workThreadId,
+      authorityBoundary: transitionOptions.authorityBoundary,
+      sourceArtifact: {
+        classId: "ic4.read-file-authority",
+        artifactKind: "readonly_tool_result",
+        artifactId: resultId,
+      },
+      sideEffectExecuted: false,
+      createdAt: nowIso(nowMs),
+    }),
     rawWorkspacePathExposed: false,
   };
 }
@@ -399,6 +422,25 @@ function projectReadOnlyAuthorityDecision(obligation = {}, decision = "declined"
     executionAllowed: false,
     continuationAllowed: false,
     sideEffectExecuted: false,
+    authorityTransition: buildAuthorityBearingTransition({
+      transitionKind: "read_file",
+      transitionPhase: "decision",
+      projectId: normalizeString(obligation.projectId || options.projectId, ""),
+      threadId: normalizeString(obligation.sessionId, ""),
+      turnId: normalizeString(obligation.turnId, ""),
+      obligationId: normalizeString(obligation.obligationId, ""),
+      status: normalizedDecision,
+      workThreadBinding: options.workThreadBinding,
+      workThreadId: options.workThreadId,
+      authorityBoundary: options.authorityBoundary,
+      sourceArtifact: {
+        classId: "ic4.read-file-authority",
+        artifactKind: "readonly_tool_authority_decision",
+        artifactId: `${normalizeString(obligation.obligationId, "obligation")}:${normalizedDecision}`,
+      },
+      sideEffectExecuted: false,
+      createdAt: decidedAt,
+    }),
   };
 }
 
@@ -506,7 +548,7 @@ async function executeApprovedReadOnlyToolObligation(options = {}) {
     maxBytes: MAX_READ_FILE_BYTES,
     rejectSensitive: true,
   });
-  const result = projectReadResult(workspaceResult, obligation, obligation.approvedAt || "", options.nowMs);
+  const result = projectReadResult(workspaceResult, obligation, obligation.approvedAt || "", options.nowMs, options);
   const updated = sessionStore.updateToolObligation(options.sessionId, options.turnId, obligation.obligationId, {
     status: "result_recorded",
     authorityState: "result_recorded",
@@ -611,6 +653,26 @@ function buildReadOnlyToolContinuationRequest(options = {}) {
     rawAuthHeadersExposed: false,
     rawBackendRequestsExposed: false,
     rawBackendFramesExposed: false,
+    authorityTransition: buildAuthorityBearingTransition({
+      transitionKind: "read_file",
+      transitionPhase: "continuation",
+      projectId: normalizeString(obligation.projectId || options.projectId, ""),
+      threadId: normalizeString(options.sessionId, obligation.sessionId),
+      turnId: normalizeString(options.turnId, obligation.turnId),
+      obligationId: normalizeString(obligation.obligationId, ""),
+      status: "continuation_built",
+      workThreadBinding: options.workThreadBinding,
+      workThreadId: options.workThreadId,
+      authorityBoundary: options.authorityBoundary,
+      sourceArtifact: {
+        classId: "ic4.read-file-authority",
+        artifactKind: "readonly_tool_continuation_request",
+        artifactId: continuationIdForResult(obligation.obligationId, result.resultId),
+      },
+      sideEffectExecuted: false,
+      providerContinuationSent: false,
+      createdAt: nowIso(options.nowMs),
+    }),
   };
 }
 

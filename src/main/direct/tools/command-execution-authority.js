@@ -3,6 +3,9 @@
 const crypto = require("node:crypto");
 const { scanTextForRawExposure } = require("../thread/renderer-transcript-projection");
 const {
+  buildAuthorityBearingTransition,
+} = require("../bridge/work-thread-alignment");
+const {
   buildCommandWorkspaceEffectSummary,
   postSideEffectPolicyViolation,
   providerEnvelopeForEffectSummary,
@@ -338,7 +341,7 @@ async function readPackageScriptEvidence(workspaceRequest, parsed) {
   };
 }
 
-function projectCommandPlan(obligation = {}, parsed = {}, scriptEvidence = {}, nowMs) {
+function projectCommandPlan(obligation = {}, parsed = {}, scriptEvidence = {}, nowMs, transitionOptions = {}) {
   const commandShape = {
     command: parsed.command,
     args: parsed.args,
@@ -407,6 +410,25 @@ function projectCommandPlan(obligation = {}, parsed = {}, scriptEvidence = {}, n
     },
     status: "planned",
     blockerCode: "",
+    authorityTransition: buildAuthorityBearingTransition({
+      transitionKind: "run_command",
+      transitionPhase: "plan",
+      projectId: normalizeString(obligation.projectId || transitionOptions.projectId, ""),
+      threadId: normalizeString(obligation.sessionId, ""),
+      turnId: normalizeString(obligation.turnId, ""),
+      obligationId: normalizeString(obligation.obligationId, ""),
+      status: "planned",
+      workThreadBinding: transitionOptions.workThreadBinding,
+      workThreadId: transitionOptions.workThreadId,
+      authorityBoundary: transitionOptions.authorityBoundary,
+      sourceArtifact: {
+        classId: "ic4.command-authority",
+        artifactKind: "command_execution_plan",
+        artifactId: commandPlanId,
+      },
+      sideEffectExecuted: false,
+      createdAt: nowIso(nowMs),
+    }),
   };
   return plan;
 }
@@ -421,7 +443,7 @@ async function planCommandExecutionObligation(options = {}) {
   }
   const parsed = assertCommandObligation(obligation);
   const scriptEvidence = await readPackageScriptEvidence(options.workspaceRequest, parsed);
-  const commandPlan = projectCommandPlan(obligation, parsed, scriptEvidence, options.nowMs);
+  const commandPlan = projectCommandPlan(obligation, parsed, scriptEvidence, options.nowMs, options);
   const updated = sessionStore.updateToolObligation(options.sessionId, options.turnId, obligation.obligationId, {
     status: "command_planned",
     authorityState: "command_waiting_for_approval",
@@ -475,24 +497,45 @@ function decideCommandExecutionObligation(options = {}) {
   const decision = options.decision === "canceled" ? "command_canceled" : "command_declined";
   if (COMMAND_TERMINAL_STATUSES.has(normalizeString(obligation.status, ""))) return { turn, obligation };
   const decidedAt = nowIso(options.nowMs);
+  const authorityDecision = {
+    schema: "direct_codex_command_authority_decision@1",
+    decision,
+    obligationId: obligation.obligationId,
+    tool: "run_command",
+    decidedAt,
+    decidedBy: normalizeString(options.decidedBy, "local-user"),
+    reason: normalizeString(options.reason, decision === "command_canceled" ? "User canceled command execution." : "User declined command execution."),
+    executionAllowed: false,
+    sideEffectExecuted: false,
+    providerContinuationSent: false,
+    authorityTransition: buildAuthorityBearingTransition({
+      transitionKind: "run_command",
+      transitionPhase: "decision",
+      projectId: normalizeString(obligation.projectId || options.projectId, ""),
+      threadId: normalizeString(obligation.sessionId, ""),
+      turnId: normalizeString(obligation.turnId, ""),
+      obligationId: normalizeString(obligation.obligationId, ""),
+      status: decision,
+      workThreadBinding: options.workThreadBinding,
+      workThreadId: options.workThreadId,
+      authorityBoundary: options.authorityBoundary,
+      sourceArtifact: {
+        classId: "ic4.command-authority",
+        artifactKind: "command_authority_decision",
+        artifactId: `${normalizeString(obligation.obligationId, "obligation")}:${decision}`,
+      },
+      sideEffectExecuted: false,
+      providerContinuationSent: false,
+      createdAt: decidedAt,
+    }),
+  };
   return sessionStore.updateToolObligation(options.sessionId, options.turnId, obligation.obligationId, {
     status: decision,
     authorityState: decision,
     executionAllowed: false,
     continuationAllowed: false,
     approvalAvailable: false,
-    authorityDecision: {
-      schema: "direct_codex_command_authority_decision@1",
-      decision,
-      obligationId: obligation.obligationId,
-      tool: "run_command",
-      decidedAt,
-      decidedBy: normalizeString(options.decidedBy, "local-user"),
-      reason: normalizeString(options.reason, decision === "command_canceled" ? "User canceled command execution." : "User declined command execution."),
-      executionAllowed: false,
-      sideEffectExecuted: false,
-      providerContinuationSent: false,
-    },
+    authorityDecision,
     sideEffectExecuted: false,
   }, {
     ...options,
@@ -727,6 +770,25 @@ async function executeApprovedCommandExecutionObligation(options = {}) {
       ? (providerContinuationBlockedByPolicy ? "completed_with_policy_blocked_workspace_changes" : status)
       : "redaction_blocked",
     commandContinuationState: redaction.providerOutputAllowed && !providerContinuationBlockedByPolicy ? "not_built" : "blocked",
+    authorityTransition: buildAuthorityBearingTransition({
+      transitionKind: "run_command",
+      transitionPhase: "result",
+      projectId: normalizeString(obligation.projectId || options.projectId, ""),
+      threadId: normalizeString(obligation.sessionId, ""),
+      turnId: normalizeString(obligation.turnId, ""),
+      obligationId: normalizeString(obligation.obligationId, ""),
+      status: redaction.providerOutputAllowed ? status : "command_output_redaction_blocked",
+      workThreadBinding: options.workThreadBinding,
+      workThreadId: options.workThreadId,
+      authorityBoundary: options.authorityBoundary,
+      sourceArtifact: {
+        classId: "ic4.command-authority",
+        artifactKind: "command_execution_result",
+        artifactId: resultId,
+      },
+      sideEffectExecuted: true,
+      createdAt: nowIso(options.nowMs),
+    }),
     rawWorkspacePathExposed: false,
     rawCommandOutputHashExposed: false,
   };
@@ -820,6 +882,26 @@ function buildCommandExecutionContinuationRequest(options = {}) {
     rawAuthHeadersExposed: false,
     rawBackendRequestsExposed: false,
     rawBackendFramesExposed: false,
+    authorityTransition: buildAuthorityBearingTransition({
+      transitionKind: "run_command",
+      transitionPhase: "continuation",
+      projectId: normalizeString(obligation.projectId || options.projectId, ""),
+      threadId: normalizeString(options.sessionId, obligation.sessionId),
+      turnId: normalizeString(options.turnId, obligation.turnId),
+      obligationId: normalizeString(obligation.obligationId, ""),
+      status: "continuation_built",
+      workThreadBinding: options.workThreadBinding,
+      workThreadId: options.workThreadId,
+      authorityBoundary: options.authorityBoundary,
+      sourceArtifact: {
+        classId: "ic4.command-authority",
+        artifactKind: "command_execution_continuation_request",
+        artifactId: commandContinuationIdFor(obligation.obligationId, obligation.result.resultId),
+      },
+      sideEffectExecuted: true,
+      providerContinuationSent: false,
+      createdAt: nowIso(options.nowMs),
+    }),
   };
 }
 
