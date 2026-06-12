@@ -59,6 +59,23 @@ const AGENT_CLASS_KINDS = new Set([
   "governance_broker",
   "sub_agent_worker",
 ]);
+const ROLE_AGENT_CLASS_KIND_ALIASES = new Map([
+  ["audit", "audit_worker"],
+  ["auditor", "audit_worker"],
+  ["review", "audit_worker"],
+  ["reviewer", "audit_worker"],
+  ["fix", "fix_worker"],
+  ["fixer", "fix_worker"],
+  ["repair", "fix_worker"],
+  ["closeout", "closeout_worker"],
+  ["closer", "closeout_worker"],
+  ["implementation", "implementation_worker"],
+  ["implementer", "implementation_worker"],
+  ["exploration", "implementation_worker"],
+  ["explorer", "implementation_worker"],
+  ["reconstruction", "implementation_worker"],
+  ["worker", "sub_agent_worker"],
+]);
 
 const PROGRESS_TRANSITIONS = {
   discovered: new Set(["created", "running", "unknown"]),
@@ -110,6 +127,10 @@ function nowIso(nowMs = Date.now()) {
 
 function arrayValue(value) {
   return Array.isArray(value) ? value : [];
+}
+
+function objectValue(value) {
+  return isPlainObject(value) ? value : {};
 }
 
 function clipText(value, max = 240) {
@@ -707,52 +728,63 @@ function buildSelectedAgentTabState(input = {}) {
 }
 
 function normalizeWorkThreadRef(input = {}) {
+  const source = objectValue(input);
   return {
-    workThreadId: normalizeString(input.workThreadId, ""),
-    workThreadDigest: normalizeString(input.digest || input.workThreadDigest || input.integrity?.artifactDigest, ""),
-    projectId: normalizeString(input.projectId, ""),
-    title: clipText(input.title || input.objective?.summary || "", 180),
-    evidenceRefs: normalizeEvidenceRefs(input.evidenceRefs),
+    workThreadId: normalizeString(source.workThreadId, ""),
+    workThreadDigest: normalizeString(source.digest || source.workThreadDigest || source.integrity?.artifactDigest, ""),
+    projectId: normalizeString(source.projectId, ""),
+    title: clipText(source.title || source.objective?.summary || "", 180),
+    evidenceRefs: normalizeEvidenceRefs(source.evidenceRefs),
   };
 }
 
 function normalizeAgentClassRegistryRef(input = {}) {
-  const specs = arrayValue(input.specs);
+  const source = objectValue(input);
+  const specs = arrayValue(source.specs).filter(isPlainObject);
   return {
-    registryId: normalizeString(input.registryId, ""),
-    registryDigest: normalizeString(input.registryDigest || input.integrity?.artifactDigest, ""),
-    registrySourceDigest: normalizeString(input.registrySourceDigest, ""),
-    specCount: finiteNumber(input.specCount, specs.length),
+    registryId: normalizeString(source.registryId, ""),
+    registryDigest: normalizeString(source.registryDigest || source.integrity?.artifactDigest, ""),
+    registrySourceDigest: normalizeString(source.registrySourceDigest, ""),
+    specCount: finiteNumber(source.specCount, specs.length),
     specsByKind: new Map(specs
       .filter((spec) => AGENT_CLASS_KINDS.has(spec.agentClassKind))
       .map((spec) => [spec.agentClassKind, spec])),
   };
 }
 
+function agentClassKindForRole(role) {
+  const normalized = normalizeString(role, "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  if (AGENT_CLASS_KINDS.has(normalized)) return normalized;
+  return ROLE_AGENT_CLASS_KIND_ALIASES.get(normalized) || "";
+}
+
 function resolveAgentClassForNode(node = {}, registryRef = {}) {
-  const specsByKind = registryRef.specsByKind instanceof Map ? registryRef.specsByKind : new Map();
-  const explicit = AGENT_CLASS_KINDS.has(node.agentClassKind) ? node.agentClassKind : "";
-  const roleExact = AGENT_CLASS_KINDS.has(node.role) ? node.role : "";
-  const agentClassKind = explicit || roleExact || "sub_agent_worker";
+  const source = objectValue(node);
+  const safeRegistryRef = objectValue(registryRef);
+  const specsByKind = safeRegistryRef.specsByKind instanceof Map ? safeRegistryRef.specsByKind : new Map();
+  const explicit = AGENT_CLASS_KINDS.has(source.agentClassKind) ? source.agentClassKind : "";
+  const roleMapped = agentClassKindForRole(source.role);
+  const agentClassKind = explicit || roleMapped || "sub_agent_worker";
   const spec = specsByKind.get(agentClassKind) || specsByKind.get("sub_agent_worker") || {};
   return {
     agentClassKind,
     agentClassId: normalizeString(spec.agentClassId, agentClassKind),
     agentClassSpecDigest: normalizeString(spec.specDigest, ""),
-    mappingSource: explicit ? "agent_metadata" : roleExact ? "role_exact" : "default_sub_agent_worker",
-    mappingConfidence: explicit || roleExact ? "accepted" : "diagnostic",
+    mappingSource: explicit ? "agent_metadata" : roleMapped ? "role_alias" : "default_sub_agent_worker",
+    mappingConfidence: explicit || roleMapped ? "accepted" : "diagnostic",
   };
 }
 
 function buildWorkerGraphAlignment(input = {}) {
-  const graph = input.agentGraph || {};
-  const workThreadRef = normalizeWorkThreadRef(input.workThread || input.workThreadRef || {
-    workThreadId: input.workThreadId,
-    projectId: input.projectId || graph.projectId,
+  const source = objectValue(input);
+  const graph = objectValue(source.agentGraph);
+  const workThreadRef = normalizeWorkThreadRef(source.workThread || source.workThreadRef || {
+    workThreadId: source.workThreadId,
+    projectId: source.projectId || graph.projectId,
   });
-  const registryRef = normalizeAgentClassRegistryRef(input.agentClassRegistry || input.agentClassRegistryRef);
+  const registryRef = normalizeAgentClassRegistryRef(source.agentClassRegistry || source.agentClassRegistryRef);
   const graphDigest = normalizeString(graph.integrity?.artifactDigest || graph.sourceDigest, "");
-  const nodes = arrayValue(graph.nodes).map((node, index) => {
+  const nodes = arrayValue(graph.nodes).filter(isPlainObject).map((node, index) => {
     const mapping = resolveAgentClassForNode(node, registryRef);
     return {
       workerNodeId: normalizeString(node.agentNodeId, graphNodeId(node.agentThreadId, index)),
@@ -782,7 +814,7 @@ function buildWorkerGraphAlignment(input = {}) {
       evidenceRefs: normalizeEvidenceRefs(node.evidenceRefs),
     };
   });
-  const edges = arrayValue(graph.edges).map((edge) => ({
+  const edges = arrayValue(graph.edges).filter(isPlainObject).map((edge) => ({
     edgeId: normalizeString(edge.edgeId, ""),
     workThreadId: workThreadRef.workThreadId,
     edgeKind: EDGE_KINDS.has(edge.edgeKind) ? edge.edgeKind : "derived_from_fixture",
@@ -795,7 +827,7 @@ function buildWorkerGraphAlignment(input = {}) {
     routingAuthority: false,
     evidenceRefs: normalizeEvidenceRefs(edge.evidenceRefs),
   }));
-  const sourceDigest = normalizeString(input.sourceDigest, sha256(stableStringify({
+  const sourceDigest = normalizeString(source.sourceDigest, sha256(stableStringify({
     graphDigest,
     workThreadDigest: workThreadRef.workThreadDigest,
     agentClassRegistryDigest: registryRef.registryDigest,
@@ -816,15 +848,15 @@ function buildWorkerGraphAlignment(input = {}) {
   })));
   const alignment = {
     schema: DIRECT_WORKER_GRAPH_ALIGNMENT_SCHEMA,
-    alignmentId: normalizeString(input.alignmentId, `worker_graph_alignment_${sourceDigest.slice(0, 24)}`),
-    projectId: normalizeString(input.projectId, workThreadRef.projectId || graph.projectId || ""),
+    alignmentId: normalizeString(source.alignmentId, `worker_graph_alignment_${sourceDigest.slice(0, 24)}`),
+    projectId: normalizeString(source.projectId, workThreadRef.projectId || graph.projectId || ""),
     workThreadId: workThreadRef.workThreadId,
     workThreadDigest: workThreadRef.workThreadDigest,
-    primaryThreadId: normalizeString(input.primaryThreadId, graph.primaryThreadId || ""),
-    agentGraphId: normalizeString(input.agentGraphId, graph.agentGraphId || ""),
+    primaryThreadId: normalizeString(source.primaryThreadId, graph.primaryThreadId || ""),
+    agentGraphId: normalizeString(source.agentGraphId, graph.agentGraphId || ""),
     agentGraphDigest: graphDigest,
-    graphRevision: finiteNumber(input.graphRevision, graph.graphRevision || 0),
-    activationEpoch: finiteNumber(input.activationEpoch, graph.activationEpoch || 0),
+    graphRevision: finiteNumber(source.graphRevision, graph.graphRevision || 0),
+    activationEpoch: finiteNumber(source.activationEpoch, graph.activationEpoch || 0),
     agentClassRegistryId: registryRef.registryId,
     agentClassRegistryDigest: registryRef.registryDigest,
     agentClassRegistrySourceDigest: registryRef.registrySourceDigest,
@@ -835,7 +867,7 @@ function buildWorkerGraphAlignment(input = {}) {
       lifecycleState: node.lifecycleState,
       activityState: node.activityState,
     }))),
-    rendererSafeSummary: normalizeString(input.rendererSafeSummary, nodes.length
+    rendererSafeSummary: normalizeString(source.rendererSafeSummary, nodes.length
       ? `Aligned ${nodes.length} worker node(s) to WorkThread and AgentClassSpec evidence.`
       : "No worker graph evidence is available to align."),
     childDialogueFlattenedIntoPrimary: false,
@@ -928,11 +960,12 @@ function validateSubAgentObservabilityReport(report = {}) {
 }
 
 function validateWorkerGraphAlignment(alignment = {}) {
-  if (alignment.schema !== DIRECT_WORKER_GRAPH_ALIGNMENT_SCHEMA) {
+  const source = objectValue(alignment);
+  if (source.schema !== DIRECT_WORKER_GRAPH_ALIGNMENT_SCHEMA) {
     throw new Error("direct_worker_graph_alignment_schema_mismatch");
   }
-  if (!alignment.workThreadId) throw new Error("direct_worker_graph_alignment_missing_work_thread");
-  if (alignment.childDialogueFlattenedIntoPrimary !== false || alignment.workerOutputPromotionEnabledInThisPr !== false) {
+  if (!source.workThreadId) throw new Error("direct_worker_graph_alignment_missing_work_thread");
+  if (source.childDialogueFlattenedIntoPrimary !== false || source.workerOutputPromotionEnabledInThisPr !== false) {
     throw new Error("direct_worker_graph_alignment_promotes_child_dialogue");
   }
   for (const key of [
@@ -943,10 +976,11 @@ function validateWorkerGraphAlignment(alignment = {}) {
     "rawPromptIncluded",
     "rawProviderFrameIncluded",
   ]) {
-    if (alignment[key] !== false) throw new Error(`direct_worker_graph_alignment_authority_leak:${key}`);
+    if (source[key] !== false) throw new Error(`direct_worker_graph_alignment_authority_leak:${key}`);
   }
-  for (const node of arrayValue(alignment.nodes)) {
-    if (node.workThreadId !== alignment.workThreadId) throw new Error(`direct_worker_graph_alignment_node_scope_mismatch:${node.providerThreadId || ""}`);
+  for (const node of arrayValue(source.nodes)) {
+    if (!isPlainObject(node)) throw new Error("direct_worker_graph_alignment_node_invalid");
+    if (node.workThreadId !== source.workThreadId) throw new Error(`direct_worker_graph_alignment_node_scope_mismatch:${node.providerThreadId || ""}`);
     if (!AGENT_CLASS_KINDS.has(node.agentClassKind)) throw new Error(`direct_worker_graph_alignment_agent_class_invalid:${node.agentClassKind || ""}`);
     if (node.childDialogueFlattenedIntoPrimary !== false || node.outputPromotionAuthority !== false) {
       throw new Error(`direct_worker_graph_alignment_node_promotes_output:${node.providerThreadId || ""}`);
