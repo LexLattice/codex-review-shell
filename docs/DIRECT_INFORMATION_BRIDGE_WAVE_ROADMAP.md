@@ -173,7 +173,7 @@ Wave 1 registry/projection artifacts must remain renderer-safe and display-only.
 
 ### PR 7: AgentClassSpec Registry
 
-Status: in progress.
+Status: merged.
 
 Branch:
 
@@ -226,7 +226,13 @@ disabled until later authority gates exist.
 
 ### PR 8: Sub-Agent / Worker Graph Alignment
 
-Status: planned.
+Status: in progress.
+
+Branch:
+
+```text
+codex/direct-worker-graph-alignment
+```
 
 Purpose:
 
@@ -242,6 +248,20 @@ Scope:
 - Preserve model/effort, lifecycle, activity, parent/child edges.
 - Keep primary transcript free of child dialogue flattening.
 - Keep right-pane worker display aligned with role/WorkThread identity.
+
+Implemented in the first slice:
+
+- `direct_worker_graph_alignment@1` support artifact.
+- Worker nodes cite `workThreadId`, provider thread id, runtime model/effort,
+  lifecycle/activity, parent edge data, and mapped `AgentClassSpec`.
+- Regression coverage for WorkThread scoping, role/spec mapping, runtime
+  metadata preservation, and no child-output promotion.
+
+Still deferred:
+
+- Live right-pane rendering changes that consume the worker alignment artifact.
+- Binding worker alignment to executable sub-agent controls.
+- Enforced WorkThread routing by role.
 
 Non-goals:
 
