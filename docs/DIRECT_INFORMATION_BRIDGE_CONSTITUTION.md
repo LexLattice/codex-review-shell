@@ -13,6 +13,7 @@ Source inputs:
 
 Related docs:
 
+- [DIRECT_INFORMATION_BRIDGE_REGISTRY_SPEC.md](./DIRECT_INFORMATION_BRIDGE_REGISTRY_SPEC.md)
 - [DIRECT_THREAD_LOG_AND_PROJECTION_STORE_SPEC.md](./DIRECT_THREAD_LOG_AND_PROJECTION_STORE_SPEC.md)
 - [DIRECT_CONTEXT_POLICY_AND_PACK_SPEC.md](./DIRECT_CONTEXT_POLICY_AND_PACK_SPEC.md)
 - [DIRECT_CONTEXT_MAINTENANCE_MEMORY_FRONTIER_BATON_SPEC.md](./DIRECT_CONTEXT_MAINTENANCE_MEMORY_FRONTIER_BATON_SPEC.md)
@@ -610,6 +611,11 @@ Any direct-path feature spec should include:
 - work-thread routing implication;
 - raw-exposure and privacy constraints.
 
+The operational registry gate is defined in
+[DIRECT_INFORMATION_BRIDGE_REGISTRY_SPEC.md](./DIRECT_INFORMATION_BRIDGE_REGISTRY_SPEC.md).
+Feature specs should instantiate that gate before selecting storage, context,
+UI, agent, hook, skill, or action implementation.
+
 Passing a feature spec should mean:
 
 ```text
@@ -623,4 +629,3 @@ It should not mean:
 The feature can store, summarize, route, expose, or act on information merely
 because it is convenient.
 ```
-
