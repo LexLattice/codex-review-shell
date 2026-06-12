@@ -206,8 +206,8 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
       identityFields: ["projectId", "threadId", "turnId", "packetId"],
       schema: "governance_packet@1",
     }),
-    bridgeFit: "Builds shadow governance packets and semantic broker diagnostics with source refs, WorkThread binding citations, AuthorityBearingTransition citations, and non-enforced routing claims.",
-    realignment: "Keep WorkThread and authority-transition citations diagnostic-only until explicit promotion criteria introduce enforce-mode broker routing.",
+    bridgeFit: "Builds shadow governance packets, semantic broker diagnostics, and preflight recommendation classes with source refs, WorkThread resolution reports, AgentClassSpec citations, and AuthorityBearingTransition citations.",
+    realignment: "Preflight can classify allow/block/clarify/route-to-role/stale outcomes, but execution, provider calls, mutation, and object-level audit remain disabled until explicit controlled-routing promotion.",
   },
   {
     id: "ic7.sub-agent-observability",

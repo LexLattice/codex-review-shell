@@ -11,6 +11,7 @@ const DIRECT_SEMANTIC_BROKER_REGISTRY_SNAPSHOT_SCHEMA = "semantic_broker_registr
 const DIRECT_SEMANTIC_BROKER_INPUT_SNAPSHOT_SCHEMA = "semantic_broker_input_snapshot@1";
 const DIRECT_SEMANTIC_BROKER_PACKET_SCHEMA = "semantic_broker_packet@1";
 const DIRECT_SEMANTIC_BROKER_FALLBACK_SCHEMA = "semantic_broker_fallback@1";
+const DIRECT_SEMANTIC_BROKER_PREFLIGHT_SCHEMA = "semantic_broker_preflight@1";
 const DIRECT_GOVERNANCE_MODE_SNAPSHOT_SCHEMA = "governance_mode_snapshot@1";
 const DIRECT_GOVERNANCE_ATTEMPT_RECORD_SCHEMA = "governance_attempt_record@1";
 const DIRECT_GOVERNANCE_REQUEST_REFS_SCHEMA = "direct_governance_request_refs@1";
@@ -21,6 +22,7 @@ const DIRECT_SEMANTIC_BROKER_POLICY_VERSION = "direct-semantic-broker-diagnostic
 const DIRECT_WORKFLOW_GRAPH_VERSION = "direct-workflow-transition-graph@1";
 const DIRECT_GOVERNANCE_COMPILER_VERSION = "direct-governance-shadow-compiler@1";
 const DIRECT_SEMANTIC_BROKER_VERSION = "direct-semantic-broker-diagnostic@1";
+const DIRECT_SEMANTIC_BROKER_PREFLIGHT_VERSION = "direct-semantic-broker-preflight@1";
 
 const SOURCE_REF_KINDS = new Set([
   "runtime_tier",
@@ -90,6 +92,7 @@ const BLOCKED_TRANSITION_REASONS = new Set([
   "enforce_mode_unavailable",
   "unsupported_transition",
 ]);
+const BROKER_PREFLIGHT_RECOMMENDATIONS = new Set(["allow", "block", "clarify", "route_to_role", "stale"]);
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -577,6 +580,235 @@ function buildSemanticBrokerPacket(input = {}) {
   return packet;
 }
 
+function brokerPacketDigest(packet = {}) {
+  return normalizeString(packet.integrity?.artifactDigest || packet.packetDigest || packet.semanticBrokerPacketDigest, "");
+}
+
+function workTargetReportDigest(report = {}) {
+  return normalizeString(report.reportDigest || report.integrity?.artifactDigest || report.resolutionDigest, "");
+}
+
+function normalizeAgentClassRef(input = {}) {
+  const source = isPlainObject(input) ? input : {};
+  const agentClassKind = normalizeString(source.agentClassKind || source.kind, "");
+  return {
+    agentClassId: normalizeString(source.agentClassId || source.id, ""),
+    agentClassKind,
+    displayName: normalizeString(source.displayName || source.name || agentClassKind, ""),
+    specDigest: normalizeString(source.specDigest || source.digest, ""),
+    mayRecommendWorkflowTransition: source.authorityContract?.mayRecommendWorkflowTransition === true,
+    mayResolveWorkTarget: source.authorityContract?.mayResolveWorkTarget === true,
+    mayClassifyGovernance: source.authorityContract?.mayClassifyGovernance === true,
+    rawTextIncluded: false,
+    rawSecretIncluded: false,
+  };
+}
+
+function normalizePreflightRef(input = {}, fallbackKind = "unknown") {
+  if (!input) return null;
+  const artifactId = normalizeString(input.artifactId || input.id || input.refId, "");
+  const artifactDigest = normalizeString(input.artifactDigest || input.digest || input.refDigest, "");
+  if (!artifactId && !artifactDigest) return null;
+  return normalizeSourceRef({
+    kind: input.kind || fallbackKind,
+    artifactId,
+    artifactDigest,
+    sourceConfidence: input.sourceConfidence || input.confidence || "diagnostic",
+    rendererSafeLabel: input.rendererSafeLabel || input.label || fallbackKind,
+  });
+}
+
+function normalizePreflightRefs(values, fallbackKind = "unknown") {
+  if (!Array.isArray(values)) return [];
+  return values.map((value) => normalizePreflightRef(value, fallbackKind)).filter(Boolean);
+}
+
+function selectedBrokerCandidate(packet = {}) {
+  const candidates = Array.isArray(packet.candidates) ? packet.candidates : [];
+  const selectedId = normalizeString(packet.adjudication?.selectedCandidateId, "");
+  return candidates.find((candidate) => candidate.candidateId === selectedId) || (candidates.length === 1 ? candidates[0] : null);
+}
+
+function recommendationForPreflight({ brokerPacket, workTargetResolutionReport, candidate, agentClassRef, staleInputCodes, blockerCodes }) {
+  if (staleInputCodes.length || workTargetResolutionReport?.stale === true || workTargetResolutionReport?.routingGateState === "stale_blocked") return "stale";
+  if (workTargetResolutionReport && workTargetResolutionReport.routingGateState !== "selected_ready") return "clarify";
+  if (!brokerPacket || brokerPacket.schema !== DIRECT_SEMANTIC_BROKER_PACKET_SCHEMA) return "block";
+  if (brokerPacket.adjudication?.status === "ambiguous" || brokerPacket.fallbackState) return "clarify";
+  if (!candidate) return "block";
+  if (blockerCodes.length || (Array.isArray(candidate.missingEvidenceCodes) && candidate.missingEvidenceCodes.length)) return "block";
+  if (agentClassRef.agentClassId && agentClassRef.agentClassKind && agentClassRef.agentClassKind !== "primary_agent") return "route_to_role";
+  return "allow";
+}
+
+function buildSemanticBrokerPreflight(input = {}) {
+  const source = isPlainObject(input) ? input : {};
+  const brokerPacket = isPlainObject(source.semanticBrokerPacket) ? source.semanticBrokerPacket : null;
+  const workTargetResolutionReport = isPlainObject(source.workTargetResolutionReport) ? source.workTargetResolutionReport : null;
+  const agentClassRef = normalizeAgentClassRef(source.agentClassSpec || source.agentClassRef || {});
+  const candidate = selectedBrokerCandidate(brokerPacket || {});
+  const staleInputCodes = [];
+  const expectedBrokerPacketDigest = normalizeString(source.expectedBrokerPacketDigest, "");
+  const actualBrokerPacketDigest = brokerPacketDigest(brokerPacket || {});
+  if (expectedBrokerPacketDigest && actualBrokerPacketDigest !== expectedBrokerPacketDigest) staleInputCodes.push("broker_packet_digest_mismatch");
+  const expectedWorkTargetReportDigest = normalizeString(source.expectedWorkTargetReportDigest, "");
+  const actualWorkTargetReportDigest = workTargetReportDigest(workTargetResolutionReport || {});
+  if (expectedWorkTargetReportDigest && actualWorkTargetReportDigest !== expectedWorkTargetReportDigest) staleInputCodes.push("work_target_report_digest_mismatch");
+  const contextRefs = normalizePreflightRefs(source.contextRefs, "context_pack");
+  const requestRefs = normalizePreflightRefs(source.requestRefs, "request_manifest");
+  const authorityTransitionRefs = normalizePreflightRefs(source.authorityTransitionRefs, "authority_transition");
+  const evidenceRefs = [
+    brokerPacket
+      ? normalizePreflightRef({
+          kind: "semantic_registry",
+          artifactId: brokerPacket.semanticBrokerPacketId,
+          artifactDigest: actualBrokerPacketDigest,
+          sourceConfidence: "exact",
+          rendererSafeLabel: "Semantic broker packet",
+        }, "semantic_registry")
+      : null,
+    workTargetResolutionReport
+      ? normalizePreflightRef({
+          kind: "work_thread_binding",
+          artifactId: workTargetResolutionReport.reportId || workTargetResolutionReport.resolutionId,
+          artifactDigest: actualWorkTargetReportDigest,
+          sourceConfidence: workTargetResolutionReport.stale ? "diagnostic" : "accepted",
+          rendererSafeLabel: "Work-target resolution report",
+        }, "work_thread_binding")
+      : null,
+    agentClassRef.agentClassId
+      ? normalizePreflightRef({
+          kind: "semantic_registry",
+          artifactId: agentClassRef.agentClassId,
+          artifactDigest: agentClassRef.specDigest,
+          sourceConfidence: "accepted",
+          rendererSafeLabel: "Agent class spec",
+        }, "semantic_registry")
+      : null,
+    ...contextRefs,
+    ...requestRefs,
+    ...authorityTransitionRefs,
+  ].filter(Boolean);
+  const rawBlockerCodes = [
+    ...((Array.isArray(workTargetResolutionReport?.blockerCodes) ? workTargetResolutionReport.blockerCodes : []).map((code) => normalizeString(code, "")).filter(Boolean)),
+    ...((Array.isArray(candidate?.missingEvidenceCodes) ? candidate.missingEvidenceCodes : []).map((code) => normalizeString(code, "")).filter(Boolean)),
+  ];
+  if (!brokerPacket) rawBlockerCodes.push("semantic_broker_packet_missing");
+  if (!workTargetResolutionReport) {
+    rawBlockerCodes.push("work_target_resolution_report_missing");
+  } else if (workTargetResolutionReport.routingGateState !== "selected_ready") {
+    rawBlockerCodes.push(`work_target_gate_${normalizeString(workTargetResolutionReport.routingGateState, "unknown")}`);
+  }
+  const blockerCodes = [...new Set(rawBlockerCodes)];
+  const recommendationClass = recommendationForPreflight({
+    brokerPacket,
+    workTargetResolutionReport,
+    candidate,
+    agentClassRef,
+    staleInputCodes,
+    blockerCodes,
+  });
+  const sourceDigest = sha256(stableStringify({
+    brokerPacketDigest: actualBrokerPacketDigest,
+    workTargetReportDigest: actualWorkTargetReportDigest,
+    agentClassRef,
+    candidateId: candidate?.candidateId || "",
+    contextRefs,
+    requestRefs,
+    authorityTransitionRefs,
+    blockerCodes,
+    staleInputCodes,
+    version: DIRECT_SEMANTIC_BROKER_PREFLIGHT_VERSION,
+  }));
+  const preflight = {
+    schema: DIRECT_SEMANTIC_BROKER_PREFLIGHT_SCHEMA,
+    preflightId: normalizeString(source.preflightId, `broker_preflight_${sourceDigest.slice(0, 24)}`),
+    projectId: normalizeString(source.projectId, brokerPacket?.projectId || workTargetResolutionReport?.projectId || ""),
+    threadId: normalizeString(source.threadId, brokerPacket?.threadId || ""),
+    turnId: normalizeString(source.turnId, brokerPacket?.turnId || ""),
+    version: DIRECT_SEMANTIC_BROKER_PREFLIGHT_VERSION,
+    semanticBrokerPacketId: normalizeString(brokerPacket?.semanticBrokerPacketId, ""),
+    semanticBrokerPacketDigest: actualBrokerPacketDigest,
+    workTargetReportId: normalizeString(workTargetResolutionReport?.reportId, ""),
+    workTargetReportDigest: actualWorkTargetReportDigest,
+    selectedWorkThreadId: recommendationClass === "stale" ? "" : normalizeString(workTargetResolutionReport?.selectedWorkThreadId, ""),
+    recommendationClass: BROKER_PREFLIGHT_RECOMMENDATIONS.has(recommendationClass) ? recommendationClass : "block",
+    selectedRouteKind: normalizeString(candidate?.routeKind, ""),
+    selectedCandidateId: normalizeString(candidate?.candidateId, ""),
+    selectedToolSurface: normalizeString(candidate?.toolSurface, "none"),
+    recommendedAgentClass: agentClassRef,
+    evidenceRefs,
+    evidenceRefCount: evidenceRefs.length,
+    contextRefs,
+    requestRefs,
+    authorityTransitionRefs,
+    blockerCodes,
+    staleInputCodes,
+    stale: staleInputCodes.length > 0 || workTargetResolutionReport?.stale === true,
+    clarificationRequired: recommendationClass === "clarify",
+    routeToRoleRecommended: recommendationClass === "route_to_role",
+    mayRouteToRoleInThisPr: false,
+    mayAutoApplyInThisPr: false,
+    autoRouteApplied: false,
+    routingEnforced: false,
+    providerCallAllowed: false,
+    mutationAllowed: false,
+    workspaceMutationAllowed: false,
+    objectAuditPerformed: false,
+    brokerPerformedWorkerTask: false,
+    rendererSafeSummary: recommendationClass === "stale"
+      ? "Semantic broker preflight input is stale; route is blocked pending refresh."
+      : recommendationClass === "clarify"
+        ? "Semantic broker preflight requires operator clarification."
+        : recommendationClass === "route_to_role"
+          ? "Semantic broker preflight recommends a role handoff without executing it."
+          : recommendationClass === "allow"
+            ? "Semantic broker preflight allows the diagnostic route without granting execution authority."
+            : "Semantic broker preflight blocks the diagnostic route.",
+    sourceDigest,
+    rawTextIncluded: false,
+    rawPathIncluded: false,
+    rawSecretIncluded: false,
+  };
+  preflight.integrity = makeIntegrity(sourceDigest);
+  preflight.integrity.artifactDigest = artifactDigest({ ...preflight, integrity: { ...preflight.integrity, artifactDigest: "" } });
+  return preflight;
+}
+
+function validateSemanticBrokerPreflight(preflight = {}) {
+  if (!isPlainObject(preflight) || preflight.schema !== DIRECT_SEMANTIC_BROKER_PREFLIGHT_SCHEMA) {
+    throw new Error("direct_semantic_broker_preflight_schema_mismatch");
+  }
+  if (!BROKER_PREFLIGHT_RECOMMENDATIONS.has(preflight.recommendationClass)) {
+    throw new Error(`direct_semantic_broker_preflight_recommendation_invalid:${preflight.recommendationClass || ""}`);
+  }
+  for (const flag of [
+    "mayRouteToRoleInThisPr",
+    "mayAutoApplyInThisPr",
+    "autoRouteApplied",
+    "routingEnforced",
+    "providerCallAllowed",
+    "mutationAllowed",
+    "workspaceMutationAllowed",
+    "objectAuditPerformed",
+    "brokerPerformedWorkerTask",
+  ]) {
+    if (preflight[flag] !== false) throw new Error(`direct_semantic_broker_preflight_authority_leak:${flag}`);
+  }
+  if (preflight.rawTextIncluded !== false || preflight.rawPathIncluded !== false || preflight.rawSecretIncluded !== false) {
+    throw new Error("direct_semantic_broker_preflight_raw_exposure");
+  }
+  if (!normalizeString(preflight.projectId, "")) {
+    throw new Error("direct_semantic_broker_preflight_missing_project_id");
+  }
+  if (preflight.recommendationClass === "stale" && preflight.selectedWorkThreadId) {
+    throw new Error("direct_semantic_broker_preflight_stale_selected_target");
+  }
+  if (["allow", "route_to_role"].includes(preflight.recommendationClass) && !normalizeString(preflight.selectedWorkThreadId, "")) {
+    throw new Error("direct_semantic_broker_preflight_missing_selected_target");
+  }
+  return true;
+}
+
 function buildGovernanceShadowReport(input = {}) {
   const status = normalizeString(input.status, "diagnostic_only");
   const sourceDigest = sha256(stableStringify({
@@ -759,6 +991,7 @@ module.exports = {
   DIRECT_SEMANTIC_BROKER_FALLBACK_SCHEMA,
   DIRECT_SEMANTIC_BROKER_INPUT_SNAPSHOT_SCHEMA,
   DIRECT_SEMANTIC_BROKER_PACKET_SCHEMA,
+  DIRECT_SEMANTIC_BROKER_PREFLIGHT_SCHEMA,
   DIRECT_SEMANTIC_BROKER_REGISTRY_SNAPSHOT_SCHEMA,
   DIRECT_WORKFLOW_TRANSITION_GRAPH_SCHEMA,
   PROMPT_LAYER_AUTHORITIES,
@@ -775,6 +1008,7 @@ module.exports = {
   buildSemanticBrokerFallback,
   buildSemanticBrokerInputSnapshot,
   buildSemanticBrokerPacket,
+  buildSemanticBrokerPreflight,
   buildSemanticBrokerRegistrySnapshot,
   buildWorkflowTransitionGraph,
   candidateFromRoute,
@@ -785,4 +1019,5 @@ module.exports = {
   stableStringify,
   validateGovernanceBrokerRegressionReport,
   validateGovernanceRequestRefs,
+  validateSemanticBrokerPreflight,
 };

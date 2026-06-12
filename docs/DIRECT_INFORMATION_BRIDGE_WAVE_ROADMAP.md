@@ -277,7 +277,7 @@ AgentClassSpec registry exists.
 
 ### PR 9: Work-Target Resolver Productization
 
-Status: in progress.
+Status: merged.
 
 Branch:
 
@@ -330,7 +330,13 @@ WorkThread registry exists; settings/control surface can display resolver state.
 
 ### PR 10: Semantic Broker Preflight
 
-Status: planned.
+Status: in progress.
+
+Branch:
+
+```text
+codex/direct-semantic-broker-preflight
+```
 
 Purpose:
 
@@ -345,6 +351,21 @@ Scope:
   and AuthorityBearingTransition envelopes.
 - Emit recommendation classes: allow, block, clarify, route-to-role, stale.
 - Add evidence/provenance requirements and stale-input guards.
+
+Implemented in the first slice:
+
+- `semantic_broker_preflight@1` support artifact.
+- Preflight consumes semantic broker packet, WorkTargetResolution report,
+  AgentClassSpec, context/request refs, and AuthorityBearingTransition refs.
+- Recommendation classes: `allow`, `block`, `clarify`, `route_to_role`,
+  `stale`.
+- Regression coverage for all recommendation classes and non-authority flags.
+
+Still deferred:
+
+- Controller-level enforcement of preflight outcomes.
+- User clarification workflow / target picker.
+- Actual role handoff or worker routing.
 
 Non-goals:
 
