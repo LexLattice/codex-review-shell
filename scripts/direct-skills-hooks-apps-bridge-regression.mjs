@@ -11,6 +11,7 @@ const {
   buildBridgeModuleAuthorityReport,
   buildBridgeModuleRegistry,
   buildBridgeModuleStatusProjection,
+  stableStringify,
 } = require("../src/main/direct/bridge/skills-hooks-apps");
 const {
   buildWorkThread,
@@ -36,6 +37,7 @@ function main() {
   const registry = buildBridgeModuleRegistry({
     projectId: workThread.projectId,
     workThreadId: workThread.workThreadId,
+    nowMs: 0,
     modules: [
       {
         moduleId: "skill_morphic_ux_frontend",
@@ -103,8 +105,10 @@ function main() {
   });
   assert(registry.schema === DIRECT_BRIDGE_MODULE_REGISTRY_SCHEMA, "registry schema mismatch");
   assert(registry.moduleCount === 3, "expected three bridge modules");
+  assert(registry.createdAt === "1970-01-01T00:00:00.000Z", "epoch-zero timestamp should be preserved");
   assert(registry.executableInThisPr === false, "registry must not enable execution");
   assert(registry.routingEnforcedInThisPr === false, "registry must not enforce routing");
+  assert(stableStringify({ at: new Date(0) }) === "{\"at\":\"1970-01-01T00:00:00.000Z\"}", "stableStringify should honor toJSON");
 
   const skill = registry.modules.find((module) => module.moduleKind === "skill");
   const hook = registry.modules.find((module) => module.moduleKind === "hook");
@@ -139,6 +143,22 @@ function main() {
   assert(report.routingAllowedInThisPr === false, "report must not enable routing");
   assert(report.autoInvocationAllowedInThisPr === false, "report must not enable auto invocation");
   assert(report.attemptedAuthorityInflationBlocked === true, "authority inflation should be blocked");
+
+  const sparseReport = buildBridgeModuleAuthorityReport({
+    registry: {
+      registryId: "sparse_external_registry",
+      registryDigest: "sparse_digest",
+      modules: [
+        {
+          moduleId: "sparse_module_without_capabilities",
+          mayContributeContext: true,
+          authorityInflationAttempted: false,
+        },
+      ],
+    },
+  });
+  assert(sparseReport.moduleCount === 1, "sparse external registry should still produce a report");
+  assert(sparseReport.gateRequiredCapabilityCount === 0, "missing capabilities should be treated as empty");
 
   const status = buildBridgeModuleStatusProjection({ registry, report });
   assert(status.schema === DIRECT_BRIDGE_MODULE_STATUS_PROJECTION_SCHEMA, "status projection schema mismatch");

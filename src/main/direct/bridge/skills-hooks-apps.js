@@ -37,7 +37,9 @@ const SIDE_EFFECT_SCOPES = new Set([
 ]);
 
 function isPlainObject(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === null || proto === Object.prototype;
 }
 
 function normalizeString(value, fallback = "") {
@@ -50,6 +52,9 @@ function boundedString(value, maxLength = 240) {
 }
 
 function stableStringify(value) {
+  if (value && typeof value.toJSON === "function") {
+    return stableStringify(value.toJSON());
+  }
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) {
     return `[${value.map((entry) => (entry === undefined ? "null" : stableStringify(entry))).join(",")}]`;
@@ -65,8 +70,9 @@ function sha256(value) {
   return crypto.createHash("sha256").update(String(value || "")).digest("hex");
 }
 
-function nowIso(nowMs = Date.now()) {
-  return new Date(Number(nowMs) || Date.now()).toISOString();
+function nowIso(nowMs) {
+  const ms = typeof nowMs === "number" && !Number.isNaN(nowMs) ? nowMs : Date.now();
+  return new Date(ms).toISOString();
 }
 
 function digestFor(domain, value) {
@@ -243,7 +249,9 @@ function buildBridgeModuleAuthorityReport(input = {}) {
   const capabilities = modules.flatMap((module) => Array.isArray(module.capabilities) ? module.capabilities : []);
   const authorityInflationAttempts = modules.flatMap((module) => [
     module.authorityInflationAttempted,
-    ...module.capabilities.map((capability) => capability.authorityInflationAttempted),
+    ...(Array.isArray(module.capabilities)
+      ? module.capabilities.map((capability) => capability.authorityInflationAttempted)
+      : []),
   ]);
   const report = {
     schema: DIRECT_BRIDGE_MODULE_AUTHORITY_REPORT_SCHEMA,
