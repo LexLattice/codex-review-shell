@@ -999,6 +999,7 @@ function buildContextPack({
       ["workflow_transition_graph", "transitionGraphId", "transitionGraphDigest"],
       ["semantic_broker_packet", "semanticBrokerPacketId", "semanticBrokerPacketDigest"],
       ["semantic_broker_fallback", "brokerFallbackId", "brokerFallbackDigest"],
+      ["controlled_routing_slice", "controlledRoutingSliceId", "controlledRoutingSliceDigest"],
     ]) {
       if (governanceRefs[artifactIdKey]) {
         sourceArtifacts.push({
@@ -1280,6 +1281,7 @@ function buildRequestManifest({
       compiledPromptLayersDigest: normalizeString(contextPack.governanceRefs.compiledPromptLayersDigest, ""),
       governancePacketDigest: normalizeString(contextPack.governanceRefs.governancePacketDigest, ""),
       semanticBrokerPacketDigest: normalizeString(contextPack.governanceRefs.semanticBrokerPacketDigest, ""),
+      controlledRoutingSliceDigest: normalizeString(contextPack.governanceRefs.controlledRoutingSliceDigest, ""),
       rawCompiledTextIncluded: false,
       rawBrokerPromptIncluded: false,
     } : null,

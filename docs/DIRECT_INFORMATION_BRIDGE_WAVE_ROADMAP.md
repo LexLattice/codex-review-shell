@@ -528,7 +528,7 @@ Semantic broker preflight and AuthorityBearingTransition envelopes exist.
 
 ### PR 14: First Controlled Routing Slice
 
-Status: planned after PRs 6-13.
+Status: implemented in branch `codex/direct-controlled-routing-slice`.
 
 Purpose:
 
@@ -547,11 +547,25 @@ operator request
   -> existing direct text turn
 ```
 
+Implemented in the first slice:
+
+- `direct_controlled_routing_slice@1` composes WorkTargetResolution,
+  semantic broker preflight, primary AgentClassSpec, WorkThread binding, and
+  context-pack/request-manifest refs.
+- Direct text `turn/start` builds and persists the route artifact when
+  WorkThread routing evidence is supplied.
+- Context packs and request manifests cite the controlled route digest as
+  sanitized governance evidence.
+- Regression coverage proves the route can permit only the existing direct text
+  turn provider call scope and cannot enable workspace mutation, tool execution,
+  autonomous routing, multi-agent orchestration, or app-server replacement.
+
 Non-goals:
 
 - No multi-agent orchestration loop.
 - No autonomous tool execution expansion.
 - No direct replacement of vanilla app-server path.
+- No route-to-role execution; non-primary-agent recommendations remain blocked.
 
 Dependency:
 

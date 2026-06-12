@@ -38,6 +38,10 @@ const {
   buildDirectObligationsProjection,
   buildToolContinuationContextProjection,
 } = require("./obligation-projection");
+const {
+  buildControlledRoutingSlice,
+  validateControlledRoutingSlice,
+} = require("../bridge/controlled-routing");
 
 const DIRECT_THREAD_STORE_STATUS_SCHEMA = "direct_thread_store_status@1";
 const DIRECT_THREAD_OPERATION_EVENT_SCHEMA = "direct_thread_operation_event@1";
@@ -2186,6 +2190,21 @@ class DirectThreadStore {
     const targetPath = this.governanceArtifactPath(projectId, threadId, artifactName);
     if (!fs.existsSync(targetPath)) return null;
     return readJsonFile(targetPath);
+  }
+
+  buildAndPersistControlledRoutingForTextTurn(input = {}, options = {}) {
+    const routeResult = buildControlledRoutingSlice(input, options);
+    validateControlledRoutingSlice(routeResult.route);
+    if (input.requireControlledRouting === true && routeResult.route.gateState !== "ready_for_direct_text_turn") {
+      const error = new Error("Direct controlled routing blocked the text turn.");
+      error.code = "controlled_routing_blocked";
+      error.blockerCodes = routeResult.route.blockerCodes || [];
+      throw error;
+    }
+    this.writeGovernanceArtifact(routeResult.route.projectId, routeResult.route.threadId, `${routeResult.route.routeId}.json`, routeResult.route);
+    this.writeGovernanceArtifact(routeResult.route.projectId, routeResult.route.threadId, `${routeResult.semanticBrokerPreflight.preflightId}.json`, routeResult.semanticBrokerPreflight);
+    this.writeGovernanceArtifact(routeResult.route.projectId, routeResult.route.threadId, `${routeResult.workTargetResolutionReport.reportId}.json`, routeResult.workTargetResolutionReport);
+    return routeResult;
   }
 
   writeContextMaintenanceArtifact(projectId, threadId, artifactName, value) {
