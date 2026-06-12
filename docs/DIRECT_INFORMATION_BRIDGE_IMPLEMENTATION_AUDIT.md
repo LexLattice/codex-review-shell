@@ -144,7 +144,6 @@ Realignment needed:
 - Add registry ids to emitted artifacts so context/recovery/governance can cite information classes directly.
 - Normalize read, patch, command, and future actions under a shared `AuthorityBearingTransition` envelope.
 - Separate Codex thread/session identity from `WorkThread` identity in context and authority flows.
-- Promote context maintenance, durable memory, omission ledger, and frontier baton from diagnostics into governed transitions when ready.
 - Keep governance/broker in shadow mode until a `WorkThread` router exists.
 - Tie sub-agent nodes to future `AgentClassSpec` and `WorkThread` scope.
 - Move detailed direct diagnostics out of the Codex transcript lane into a settings/control surface.
@@ -157,7 +156,7 @@ Not built yet:
 - Work-target resolution from messy user utterance to active work-thread ontology.
 - Direct settings surface for runtime/profile/registry/context/memory/skills.
 - Enforced semantic broker routing.
-- Full direct-native memory/compaction/frontier workflow.
+- Full direct-native memory/compaction/frontier workflow with live scheduler and UI controls.
 - Agent class execution contracts for worker/auditor/meta-orchestrator beyond diagnostics.
 
 ## Inherited
@@ -310,6 +309,42 @@ scripts/direct-skills-hooks-apps-bridge-regression.mjs
 This slice does not execute modules, auto-invoke hooks, call connectors, mutate
 workspace state, call providers, or route WorkThreads. It only classifies module
 authority posture and strips caller-supplied execution flags.
+
+## Memory, Baton, Compaction Productization Slice
+
+Context maintenance now has a user-visible bridge layer over the existing
+diagnostic artifacts:
+
+```text
+pressure / route / trim / memory / baton primitives
+  -> ContextLossWitness
+  -> ContextContinuityTransition
+  -> ContextContinuityStatusProjection
+```
+
+Implemented by:
+
+```text
+src/main/direct/context/maintenance.js
+scripts/direct-memory-baton-compaction-productization-regression.mjs
+```
+
+This slice makes omissions, durable memory presence, frontier baton presence,
+and provider-compaction gate state inspectable without changing runtime
+authority. It explicitly preserves:
+
+```text
+memory editing disabled
+memory reset disabled
+provider compaction disabled
+provider transport disabled
+baton replay authority disabled
+hidden context loss disabled
+```
+
+The productized transition is therefore suitable for a future settings/control
+surface, but it is not a scheduler, provider compact runner, memory editor, or
+continuation authority.
 
 ## Next Practical Step
 

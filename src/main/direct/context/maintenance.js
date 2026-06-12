@@ -12,6 +12,9 @@ const DIRECT_CONTEXT_OMISSION_LEDGER_SCHEMA = "context_omission_ledger@1";
 const DIRECT_DURABLE_THREAD_MEMORY_SCHEMA = "durable_thread_memory@1";
 const DIRECT_THREAD_MEMORY_REFRESH_SCHEMA = "thread_memory_refresh@1";
 const DIRECT_FRONTIER_BATON_SCHEMA = "frontier_baton@1";
+const DIRECT_CONTEXT_LOSS_WITNESS_SCHEMA = "direct_context_loss_witness@1";
+const DIRECT_CONTEXT_CONTINUITY_TRANSITION_SCHEMA = "direct_context_continuity_transition@1";
+const DIRECT_CONTEXT_CONTINUITY_STATUS_PROJECTION_SCHEMA = "direct_context_continuity_status_projection@1";
 const DIRECT_VANILLA_SIBLING_CONTEXT_EVIDENCE_SCHEMA = "direct_vanilla_sibling_context_evidence@1";
 const DIRECT_CONTEXT_MAINTENANCE_STATUS_PROJECTION_SCHEMA = "direct_context_maintenance_status_projection@1";
 const DIRECT_CONTEXT_MAINTENANCE_REGRESSION_REPORT_SCHEMA = "direct_context_maintenance_regression_report@1";
@@ -634,6 +637,260 @@ function buildStatusProjection(input = {}) {
   return projection;
 }
 
+function contextLossTotalsFrom(input = {}) {
+  const entries = Array.isArray(input.omissionLedger?.entries)
+    ? input.omissionLedger.entries
+    : (Array.isArray(input.trimPlan?.candidateOmissions) ? input.trimPlan.candidateOmissions : []);
+  const ledgerTotals = input.omissionLedger?.totals;
+  if (isPlainObject(ledgerTotals)) {
+    return {
+      omittedItemCount: Number(ledgerTotals.omittedItemCount || 0),
+      omittedTurnCount: Number(ledgerTotals.omittedTurnCount || 0),
+      omittedCharCount: Number(ledgerTotals.omittedCharCount || 0),
+      omittedTokenEstimate: Number(ledgerTotals.omittedTokenEstimate || 0),
+    };
+  }
+  return entries.reduce((acc, entry) => ({
+    omittedItemCount: acc.omittedItemCount + Number(entry.omittedItemCount || 0),
+    omittedTurnCount: acc.omittedTurnCount + Number(entry.omittedTurnCount || 0),
+    omittedCharCount: acc.omittedCharCount + Number(entry.omittedCharCount || 0),
+    omittedTokenEstimate: acc.omittedTokenEstimate + Number(entry.omittedTokenEstimate || 0),
+  }), { omittedItemCount: 0, omittedTurnCount: 0, omittedCharCount: 0, omittedTokenEstimate: 0 });
+}
+
+function buildContextLossWitness(input = {}) {
+  const route = isPlainObject(input.route) ? input.route : null;
+  const trimPlan = isPlainObject(input.trimPlan) ? input.trimPlan : null;
+  const omissionLedger = isPlainObject(input.omissionLedger) ? input.omissionLedger : null;
+  const pressureEstimate = isPlainObject(input.pressureEstimate) ? input.pressureEstimate : null;
+  const totals = contextLossTotalsFrom({ omissionLedger, trimPlan });
+  let lossState = normalizeString(input.lossState, "");
+  if (!lossState) {
+    if (route?.blocked === true && route.reasonCode === "context_budget_required_artifact_at_risk") {
+      lossState = "blocked_required_context";
+    } else if (totals.omittedItemCount > 0 && omissionLedger) {
+      lossState = "represented";
+    } else if (totals.omittedItemCount > 0 && !omissionLedger) {
+      lossState = "unrepresented_blocked";
+    } else {
+      lossState = "none";
+    }
+  }
+  const entries = Array.isArray(omissionLedger?.entries)
+    ? omissionLedger.entries
+    : (Array.isArray(trimPlan?.candidateOmissions) ? trimPlan.candidateOmissions : []);
+  const sourceDigest = sha256(stableStringify({
+    routeDigest: route?.integrity?.artifactDigest || route?.routeDigest || "",
+    trimPlanDigest: trimPlan?.integrity?.artifactDigest || trimPlan?.planDigest || "",
+    omissionLedgerDigest: omissionLedger?.integrity?.artifactDigest || "",
+    totals,
+    lossState,
+  }));
+  const witness = {
+    schema: DIRECT_CONTEXT_LOSS_WITNESS_SCHEMA,
+    contextLossWitnessId: normalizeString(input.contextLossWitnessId, `context_loss_${sha256(`${input.projectId || route?.projectId || ""}:${input.threadId || route?.threadId || ""}:${sourceDigest}`).slice(0, 24)}`),
+    projectId: normalizeString(input.projectId, route?.projectId || trimPlan?.projectId || omissionLedger?.projectId || pressureEstimate?.projectId || ""),
+    threadId: normalizeString(input.threadId, route?.threadId || trimPlan?.threadId || omissionLedger?.threadId || pressureEstimate?.threadId || ""),
+    routeId: normalizeString(route?.routeId, trimPlan?.routeId || omissionLedger?.routeId || ""),
+    trimPlanId: normalizeString(trimPlan?.trimPlanId, omissionLedger?.trimPlanId || ""),
+    omissionLedgerId: normalizeString(omissionLedger?.omissionLedgerId, ""),
+    pressureEstimateId: normalizeString(pressureEstimate?.pressureEstimateId, ""),
+    lossState,
+    totals,
+    omittedSources: entries.map((entry, index) => ({
+      witnessEntryId: normalizeString(entry.omissionId || entry.omissionCandidateId, `context_loss_entry_${index + 1}`),
+      sourceArtifactKind: normalizeString(entry.sourceArtifactKind, "context_recent_dialogue"),
+      sourceArtifactId: normalizeString(entry.sourceArtifactId, ""),
+      sourceDigest: normalizeString(entry.sourceDigest, trimPlan?.sourceContextProjectionDigest || ""),
+      sourceStableKeys: Array.isArray(entry.sourceStableKeys) ? entry.sourceStableKeys.map((key) => normalizeString(key, "")).filter(Boolean) : [],
+      omittedItemCount: Number(entry.omittedItemCount || 0),
+      omittedTurnCount: Number(entry.omittedTurnCount || 0),
+      omittedTokenEstimate: Number(entry.omittedTokenEstimate || 0),
+      reason: normalizeString(entry.reason, "context_maintenance"),
+      rendererSafeSummary: normalizeString(entry.rendererSafeSummary, "Context was omitted with a visible witness."),
+      rawTextIncluded: false,
+    })),
+    contextLossVisible: lossState !== "none",
+    hiddenContextLossAllowed: false,
+    providerCompactionOutputOpaque: input.providerCompactionOutputOpaque !== false,
+    rawTextIncluded: false,
+    createdAt: normalizeString(input.createdAt, nowIso(input.nowMs)),
+  };
+  witness.integrity = makeIntegrity(sourceDigest);
+  witness.integrity.artifactDigest = artifactDigest({ ...witness, integrity: { ...witness.integrity, artifactDigest: "" } });
+  return witness;
+}
+
+function providerCompactionGateFor(input = {}) {
+  const route = isPlainObject(input.route) ? input.route : null;
+  const requested = input.providerCompactionRequested === true ||
+    ["remote_compaction", "hybrid_compaction"].includes(normalizeString(route?.routeKind, ""));
+  const siblingEvidenceObserved = input.vanillaSiblingEvidenceObserved === true || isPlainObject(input.vanillaSiblingEvidence);
+  if (!requested && !siblingEvidenceObserved) {
+    return {
+      state: "not_requested",
+      providerCompactionAllowed: false,
+      providerTransportAllowed: false,
+      evidenceRefs: [],
+    };
+  }
+  if (siblingEvidenceObserved && input.providerCompactionEvidenceAvailable !== true) {
+    return {
+      state: "sibling_evidence_display_only",
+      providerCompactionAllowed: false,
+      providerTransportAllowed: false,
+      evidenceRefs: Array.isArray(input.evidenceRefs) ? input.evidenceRefs : [],
+    };
+  }
+  if (input.providerCompactionEvidenceAvailable !== true) {
+    return {
+      state: "blocked_missing_evidence",
+      providerCompactionAllowed: false,
+      providerTransportAllowed: false,
+      evidenceRefs: Array.isArray(input.evidenceRefs) ? input.evidenceRefs : [],
+    };
+  }
+  return {
+    state: "evidence_available_not_enabled",
+    providerCompactionAllowed: false,
+    providerTransportAllowed: false,
+    evidenceRefs: Array.isArray(input.evidenceRefs) ? input.evidenceRefs : [],
+  };
+}
+
+function buildContextContinuityTransition(input = {}) {
+  const route = isPlainObject(input.route) ? input.route : null;
+  const maintenanceManifest = isPlainObject(input.maintenanceManifest) ? input.maintenanceManifest : null;
+  const memory = isPlainObject(input.memory) ? input.memory : null;
+  const memoryRefresh = isPlainObject(input.memoryRefresh) ? input.memoryRefresh : null;
+  const baton = isPlainObject(input.baton) ? input.baton : null;
+  const omissionLedger = isPlainObject(input.omissionLedger) ? input.omissionLedger : null;
+  const contextLossWitness = isPlainObject(input.contextLossWitness)
+    ? input.contextLossWitness
+    : buildContextLossWitness(input);
+  const providerCompactionGate = providerCompactionGateFor(input);
+  const transitionKind = normalizeString(
+    input.transitionKind,
+    memoryRefresh ? "memory_refresh"
+      : baton ? "frontier_baton"
+        : omissionLedger ? "context_omission"
+          : providerCompactionGate.state === "not_requested" ? "status_only" : "provider_compaction_gate",
+  );
+  const status = normalizeString(input.status, route?.blocked ? "blocked" : "completed");
+  const sourceDigest = sha256(stableStringify({
+    routeDigest: route?.integrity?.artifactDigest || route?.routeDigest || "",
+    manifestDigest: maintenanceManifest?.integrity?.artifactDigest || "",
+    memoryDigest: memory?.integrity?.artifactDigest || memory?.memoryDigest || "",
+    memoryRefreshDigest: memoryRefresh?.integrity?.artifactDigest || "",
+    batonDigest: baton?.integrity?.artifactDigest || "",
+    omissionLedgerDigest: omissionLedger?.integrity?.artifactDigest || "",
+    contextLossDigest: contextLossWitness?.integrity?.artifactDigest || "",
+    providerCompactionGate,
+    transitionKind,
+    status,
+  }));
+  const transition = {
+    schema: DIRECT_CONTEXT_CONTINUITY_TRANSITION_SCHEMA,
+    transitionId: normalizeString(input.transitionId, `context_continuity_${sha256(`${input.projectId || route?.projectId || ""}:${input.threadId || route?.threadId || ""}:${sourceDigest}`).slice(0, 24)}`),
+    projectId: normalizeString(input.projectId, route?.projectId || maintenanceManifest?.projectId || memory?.projectId || baton?.projectId || ""),
+    threadId: normalizeString(input.threadId, route?.threadId || maintenanceManifest?.threadId || memory?.threadId || baton?.threadId || ""),
+    workThreadId: normalizeString(input.workThreadId, ""),
+    transitionKind,
+    status,
+    routeId: normalizeString(route?.routeId, ""),
+    maintenanceManifestId: normalizeString(maintenanceManifest?.maintenanceManifestId, ""),
+    contextLossWitnessId: normalizeString(contextLossWitness?.contextLossWitnessId, ""),
+    contextLossWitnessDigest: normalizeString(contextLossWitness?.integrity?.artifactDigest, ""),
+    memoryId: normalizeString(memory?.memoryId, ""),
+    memoryRefreshId: normalizeString(memoryRefresh?.memoryRefreshId, ""),
+    batonId: normalizeString(baton?.batonId, ""),
+    omissionLedgerId: normalizeString(omissionLedger?.omissionLedgerId, ""),
+    productizedForOperator: true,
+    userVisibleTransition: true,
+    memoryEditableInThisPr: false,
+    memoryResetAllowedInThisPr: false,
+    providerCompactionGate,
+    providerTransportUsed: false,
+    providerCompactionAllowedInThisPr: false,
+    replayAuthority: false,
+    approvalAuthority: false,
+    continuationAuthority: false,
+    hiddenContextLossAllowed: false,
+    rawTextIncluded: false,
+    createdAt: normalizeString(input.createdAt, nowIso(input.nowMs)),
+  };
+  transition.integrity = makeIntegrity(sourceDigest);
+  transition.integrity.artifactDigest = artifactDigest({ ...transition, integrity: { ...transition.integrity, artifactDigest: "" } });
+  return transition;
+}
+
+function buildContextContinuityStatusProjection(input = {}) {
+  const transition = isPlainObject(input.transition) ? input.transition : null;
+  const contextLossWitness = isPlainObject(input.contextLossWitness) ? input.contextLossWitness : null;
+  const sourceDigest = sha256(stableStringify({
+    transitionDigest: transition?.integrity?.artifactDigest || "",
+    contextLossDigest: contextLossWitness?.integrity?.artifactDigest || transition?.contextLossWitnessDigest || "",
+  }));
+  const projection = {
+    schema: DIRECT_CONTEXT_CONTINUITY_STATUS_PROJECTION_SCHEMA,
+    projectId: normalizeString(input.projectId, transition?.projectId || contextLossWitness?.projectId || ""),
+    threadId: normalizeString(input.threadId, transition?.threadId || contextLossWitness?.threadId || ""),
+    workThreadId: normalizeString(input.workThreadId, transition?.workThreadId || ""),
+    uiProjectionGeneration: Number(input.uiProjectionGeneration || 1),
+    sourceDigest,
+    transitionId: normalizeString(transition?.transitionId, ""),
+    transitionKind: normalizeString(transition?.transitionKind, "unknown"),
+    transitionStatus: normalizeString(transition?.status, "unknown"),
+    contextLossState: normalizeString(contextLossWitness?.lossState, "unknown"),
+    omittedItemCount: Number(contextLossWitness?.totals?.omittedItemCount || 0),
+    omittedTokenEstimate: Number(contextLossWitness?.totals?.omittedTokenEstimate || 0),
+    memoryState: transition?.memoryId ? "present" : "none",
+    batonState: transition?.batonId ? "present" : "none",
+    omissionState: transition?.omissionLedgerId ? "represented" : "none",
+    providerCompactionState: normalizeString(transition?.providerCompactionGate?.state, "not_requested"),
+    displayOnly: true,
+    inspectAllowed: true,
+    compactActionAllowed: false,
+    memoryEditorAllowed: false,
+    memoryResetAllowed: false,
+    providerTransportAllowed: false,
+    hiddenContextLossAllowed: false,
+    rendererSafeSummary: normalizeString(
+      input.rendererSafeSummary,
+      "Memory, baton, omission, and compaction state are visible as governed continuity evidence.",
+    ),
+    rawTextIncluded: false,
+  };
+  projection.projectionDigest = sha256(stableStringify(projection));
+  return projection;
+}
+
+function validateContextContinuityProductization(input = {}) {
+  const transition = isPlainObject(input.transition) ? input.transition : null;
+  const projection = isPlainObject(input.projection) ? input.projection : null;
+  if (!transition || transition.schema !== DIRECT_CONTEXT_CONTINUITY_TRANSITION_SCHEMA) {
+    throw new Error("context_continuity_transition_schema_mismatch");
+  }
+  if (transition.providerTransportUsed !== false || transition.providerCompactionAllowedInThisPr !== false) {
+    throw new Error("context_continuity_provider_authority_leak");
+  }
+  if (transition.memoryEditableInThisPr !== false || transition.memoryResetAllowedInThisPr !== false) {
+    throw new Error("context_continuity_memory_authority_leak");
+  }
+  if (transition.hiddenContextLossAllowed !== false || transition.rawTextIncluded !== false) {
+    throw new Error("context_continuity_visibility_or_raw_text_violation");
+  }
+  if (projection) {
+    if (projection.schema !== DIRECT_CONTEXT_CONTINUITY_STATUS_PROJECTION_SCHEMA) {
+      throw new Error("context_continuity_projection_schema_mismatch");
+    }
+    if (projection.displayOnly !== true || projection.providerTransportAllowed !== false || projection.compactActionAllowed !== false) {
+      throw new Error("context_continuity_projection_authority_leak");
+    }
+  }
+  return true;
+}
+
 function makeStatusActionError(code, extra = {}) {
   const error = new Error(code);
   error.code = code;
@@ -848,6 +1105,9 @@ module.exports = {
   DIRECT_CONTEXT_MAINTENANCE_ROUTE_INPUT_SCHEMA,
   DIRECT_CONTEXT_MAINTENANCE_ROUTE_SCHEMA,
   DIRECT_CONTEXT_MAINTENANCE_STATUS_PROJECTION_SCHEMA,
+  DIRECT_CONTEXT_CONTINUITY_STATUS_PROJECTION_SCHEMA,
+  DIRECT_CONTEXT_CONTINUITY_TRANSITION_SCHEMA,
+  DIRECT_CONTEXT_LOSS_WITNESS_SCHEMA,
   DIRECT_CONTEXT_OMISSION_LEDGER_SCHEMA,
   DIRECT_CONTEXT_PRESSURE_ESTIMATE_SCHEMA,
   DIRECT_CONTEXT_ROUTE_SELECTOR_VERSION,
@@ -864,6 +1124,9 @@ module.exports = {
   assertOmissionParity,
   buildDurableThreadMemory,
   buildFrontierBaton,
+  buildContextContinuityStatusProjection,
+  buildContextContinuityTransition,
+  buildContextLossWitness,
   buildMaintenanceManifest,
   buildMemoryRefreshManifest,
   buildOmissionLedger,
@@ -879,6 +1142,7 @@ module.exports = {
   sha256,
   stableStringify,
   validateStatusProjectionAction,
+  validateContextContinuityProductization,
   validateContextMaintenanceReport,
   validateMaintenanceRefs,
 };
