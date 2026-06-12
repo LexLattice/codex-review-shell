@@ -161,31 +161,37 @@ function buildAuthorityBearingTransition(input = {}) {
   const workThreadBinding = isPlainObject(input.workThreadBinding)
     ? buildWorkThreadContextBinding(input.workThreadBinding)
     : buildWorkThreadContextBinding({
+        workThread: input.workThread,
         workThreadId: input.workThreadId,
         projectId: input.projectId,
         authorityBoundary: input.authorityBoundary,
         openObligations: input.openObligations,
+        bridgeInformationRefs: input.bridgeInformationRefs,
       });
   const sourceArtifact = normalizeBridgeInformationRef(input.sourceArtifact, "");
   const transitionKind = normalizeTransitionKind(input.transitionKind || input.kind);
   const transitionPhase = normalizeTransitionPhase(input.transitionPhase || input.phase);
+  const projectId = normalizeString(input.projectId || workThreadBinding.projectId, "");
+  const threadId = normalizeString(input.threadId, "");
+  const turnId = normalizeString(input.turnId, "");
+  const obligationId = normalizeString(input.obligationId, "");
   const transition = {
     schema: DIRECT_AUTHORITY_BEARING_TRANSITION_SCHEMA,
     transitionId: normalizeString(input.transitionId, `authority_transition_${sha256(stableStringify({
       transitionKind,
       transitionPhase,
-      projectId: input.projectId,
-      threadId: input.threadId,
-      turnId: input.turnId,
-      obligationId: input.obligationId,
+      projectId,
+      threadId,
+      turnId,
+      obligationId,
       sourceArtifact,
     })).slice(0, 24)}`),
     transitionKind,
     transitionPhase,
-    projectId: normalizeString(input.projectId || workThreadBinding.projectId, ""),
-    threadId: normalizeString(input.threadId, ""),
-    turnId: normalizeString(input.turnId, ""),
-    obligationId: normalizeString(input.obligationId, ""),
+    projectId,
+    threadId,
+    turnId,
+    obligationId,
     status: normalizeString(input.status, "unknown"),
     workThreadBinding,
     workThreadId: workThreadBinding.workThreadId,

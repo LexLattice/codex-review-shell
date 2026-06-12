@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   buildAuthorityBearingTransition,
   buildWorkThreadContextBinding,
@@ -24,6 +27,12 @@ import {
 import {
   buildCommandExecutionContinuationRequest,
 } from "../src/main/direct/tools/command-execution-authority.js";
+import {
+  DirectSessionStore,
+} from "../src/main/direct/session/session-store.js";
+import {
+  DirectThreadStore,
+} from "../src/main/direct/thread/thread-store.js";
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -93,6 +102,66 @@ function main() {
   const summary = rendererSafeContextSummary(contextPack, requestManifest);
   assert(summary.workThreadBindingPresent === true, "renderer summary should witness binding presence");
   assert(summary.rawPathExposed === false, "renderer summary must remain raw-path safe");
+
+  const fallbackTransition = buildAuthorityBearingTransition({
+    transitionKind: "read_file",
+    transitionPhase: "decision",
+    threadId: "thread_context_authority",
+    turnId: "turn_1",
+    obligationId: "obl_read",
+    workThread,
+    bridgeInformationRefs: [
+      { classId: "ic4.read-file-authority", role: "authority_decision", artifactKind: "readonly_tool_authority_decision", artifactId: "decision_fallback" },
+    ],
+    sourceArtifact: { classId: "ic4.read-file-authority", artifactKind: "readonly_tool_authority_decision", artifactId: "decision_fallback" },
+  });
+  assert(fallbackTransition.projectId === workThread.projectId, "fallback transition should derive normalized project id from WorkThread");
+  assert(fallbackTransition.workThreadId === workThread.workThreadId, "fallback transition should derive WorkThread id from WorkThread");
+  assert(
+    fallbackTransition.workThreadBinding.bridgeInformationRefs.some((ref) => ref.classId === "ic4.read-file-authority"),
+    "fallback transition binding must preserve bridge information refs",
+  );
+
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "direct-workthread-context-authority-"));
+  try {
+    const sessionStore = new DirectSessionStore({ rootDir: path.join(tempRoot, "sessions") });
+    const threadStore = new DirectThreadStore({ rootDir: path.join(tempRoot, "threads") });
+    const session = sessionStore.createSession({
+      sessionId: "thread_context_authority",
+      projectId: workThread.projectId,
+      title: "Direct bridge context authority alignment",
+      model: "gpt-5.3",
+    }, { nowMs });
+    const turn = sessionStore.createTurn(session.sessionId, {
+      turnId: "turn_store_context",
+      input: [{ role: "user", text: "Continue the direct information bridge alignment." }],
+      model: "gpt-5.3",
+    }, { nowMs });
+    threadStore.indexSessionArtifacts(sessionStore, sessionStore.readSession(session.sessionId), [
+      sessionStore.readTurn(session.sessionId, turn.turnId),
+    ], { nowMs });
+    const persisted = threadStore.buildAndPersistContextForTextTurn({
+      session,
+      projectId: workThread.projectId,
+      threadId: session.sessionId,
+      turnId: turn.turnId,
+      currentUserPrompt: "Continue the direct information bridge alignment.",
+      useRecentDialogue: false,
+      model: "gpt-5.3",
+      requestShape: { requestShapeClass: "direct_text_turn_empty_context@1" },
+      endpointClass: "chatgpt-codex-responses",
+      endpointHash: "endpoint_hash_fixture",
+      modelEvidenceRef: "model_evidence_fixture",
+      requestShapeEvidenceRef: "direct_text_turn_empty_context@1",
+      endpointEvidenceRef: "endpoint_fixture",
+      workThreadBinding: binding,
+    }, { nowMs });
+    assert(persisted.contextPack.workThreadBinding.bindingDigest === binding.bindingDigest, "persisted text context pack must retain WorkThread binding");
+    assert(persisted.requestManifest.capabilityEvidence.workThreadBindingDigest === binding.bindingDigest, "persisted request manifest must retain WorkThread binding digest");
+    assert(persisted.rendererSafeSummary.workThreadBindingPresent === true, "persisted renderer summary must witness WorkThread binding");
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 
   const readObligation = {
     projectId: workThread.projectId,

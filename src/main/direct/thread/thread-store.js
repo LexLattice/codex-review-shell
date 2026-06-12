@@ -202,6 +202,17 @@ function preserveString(value) {
   return typeof value === "string" ? value : "";
 }
 
+function workThreadContextCarrier(input = {}) {
+  return {
+    workThread: isPlainObject(input.workThread) ? input.workThread : null,
+    workThreadId: normalizeString(input.workThreadId, ""),
+    workThreadBinding: isPlainObject(input.workThreadBinding) ? input.workThreadBinding : null,
+    authorityBoundary: isPlainObject(input.authorityBoundary) ? input.authorityBoundary : null,
+    openObligations: Array.isArray(input.openObligations) ? input.openObligations : [],
+    bridgeInformationRefs: Array.isArray(input.bridgeInformationRefs) ? input.bridgeInformationRefs : [],
+  };
+}
+
 function normalizeNumber(value, fallback = 0) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : fallback;
@@ -2285,6 +2296,7 @@ class DirectThreadStore {
       governanceRefs: input.governanceRefs,
       maintenanceRefs: input.maintenanceRefs,
       maintenanceArtifacts: input.maintenanceArtifacts,
+      ...workThreadContextCarrier(input),
       nowMs: options.nowMs,
     });
     this.writeContextPack(contextPack, options);
@@ -2339,6 +2351,7 @@ class DirectThreadStore {
       governanceRefs: input.governanceRefs,
       maintenanceRefs: input.maintenanceRefs,
       maintenanceArtifacts: input.maintenanceArtifacts,
+      ...workThreadContextCarrier(input),
       nowMs: options.nowMs,
     });
     this.writeContextPack(contextPack, options);
@@ -2418,6 +2431,7 @@ class DirectThreadStore {
       governanceRefs: input.governanceRefs,
       maintenanceRefs: input.maintenanceRefs,
       maintenanceArtifacts: input.maintenanceArtifacts,
+      ...workThreadContextCarrier(input),
       nowMs: options.nowMs,
     });
     this.writeContextPack(contextPack, options);
