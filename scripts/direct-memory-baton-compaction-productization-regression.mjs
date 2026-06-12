@@ -136,6 +136,15 @@ function buildFixture() {
     trimPlan,
     omissionLedger,
   });
+  const explicitLossWitness = buildContextLossWitness({
+    projectId: workThread.projectId,
+    threadId: pressure.threadId,
+    route,
+    pressureEstimate: pressure,
+    trimPlan,
+    omissionLedger,
+  });
+  assert(lossWitness.contextLossWitnessId === explicitLossWitness.contextLossWitnessId, "loss witness id should use resolved project/thread fields");
   const transition = buildContextContinuityTransition({
     workThreadId: workThread.workThreadId,
     route,
@@ -146,6 +155,19 @@ function buildFixture() {
     baton,
     contextLossWitness: lossWitness,
   });
+  const explicitTransition = buildContextContinuityTransition({
+    projectId: workThread.projectId,
+    threadId: pressure.threadId,
+    workThreadId: workThread.workThreadId,
+    route,
+    maintenanceManifest: manifest,
+    omissionLedger,
+    memory,
+    memoryRefresh,
+    baton,
+    contextLossWitness: lossWitness,
+  });
+  assert(transition.transitionId === explicitTransition.transitionId, "transition id should use resolved project/thread fields");
   const projection = buildContextContinuityStatusProjection({
     transition,
     contextLossWitness: lossWitness,
@@ -200,6 +222,16 @@ function main() {
   assert(providerGateTransition.providerCompactionGate.state === "blocked_missing_evidence", "provider compaction should fail closed without evidence");
   assert(providerGateTransition.providerCompactionGate.providerTransportAllowed === false, "provider gate must not allow transport");
   validateContextContinuityProductization({ transition: providerGateTransition });
+
+  const { route: routeOnlyProviderCompactionBlock } = selectMaintenanceRoute({
+    pressureEstimate: fixture.pressure,
+    providerCompactionRequested: true,
+    providerCompactionEvidenceAvailable: false,
+  });
+  const routeOnlyProviderGateTransition = buildContextContinuityTransition({
+    route: routeOnlyProviderCompactionBlock,
+  });
+  assert(routeOnlyProviderGateTransition.providerCompactionGate.state === "blocked_missing_evidence", "route-only provider compaction request should stay blocked");
 
   const hostileTransition = { ...fixture.transition, providerCompactionAllowedInThisPr: true };
   let blocked = false;

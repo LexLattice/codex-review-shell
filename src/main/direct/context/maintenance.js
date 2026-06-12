@@ -686,11 +686,13 @@ function buildContextLossWitness(input = {}) {
     totals,
     lossState,
   }));
+  const projectId = normalizeString(input.projectId, route?.projectId || trimPlan?.projectId || omissionLedger?.projectId || pressureEstimate?.projectId || "");
+  const threadId = normalizeString(input.threadId, route?.threadId || trimPlan?.threadId || omissionLedger?.threadId || pressureEstimate?.threadId || "");
   const witness = {
     schema: DIRECT_CONTEXT_LOSS_WITNESS_SCHEMA,
-    contextLossWitnessId: normalizeString(input.contextLossWitnessId, `context_loss_${sha256(`${input.projectId || route?.projectId || ""}:${input.threadId || route?.threadId || ""}:${sourceDigest}`).slice(0, 24)}`),
-    projectId: normalizeString(input.projectId, route?.projectId || trimPlan?.projectId || omissionLedger?.projectId || pressureEstimate?.projectId || ""),
-    threadId: normalizeString(input.threadId, route?.threadId || trimPlan?.threadId || omissionLedger?.threadId || pressureEstimate?.threadId || ""),
+    contextLossWitnessId: normalizeString(input.contextLossWitnessId, `context_loss_${sha256(`${projectId}:${threadId}:${sourceDigest}`).slice(0, 24)}`),
+    projectId,
+    threadId,
     routeId: normalizeString(route?.routeId, trimPlan?.routeId || omissionLedger?.routeId || ""),
     trimPlanId: normalizeString(trimPlan?.trimPlanId, omissionLedger?.trimPlanId || ""),
     omissionLedgerId: normalizeString(omissionLedger?.omissionLedgerId, ""),
@@ -723,8 +725,12 @@ function buildContextLossWitness(input = {}) {
 
 function providerCompactionGateFor(input = {}) {
   const route = isPlainObject(input.route) ? input.route : null;
+  const routeFlags = isPlainObject(route?.routeInput?.flags) ? route.routeInput.flags : {};
   const requested = input.providerCompactionRequested === true ||
+    routeFlags.providerCompactionRequested === true ||
     ["remote_compaction", "hybrid_compaction"].includes(normalizeString(route?.routeKind, ""));
+  const evidenceAvailable = input.providerCompactionEvidenceAvailable === true ||
+    routeFlags.providerCompactionEvidenceAvailable === true;
   const siblingEvidenceObserved = input.vanillaSiblingEvidenceObserved === true || isPlainObject(input.vanillaSiblingEvidence);
   if (!requested && !siblingEvidenceObserved) {
     return {
@@ -734,17 +740,17 @@ function providerCompactionGateFor(input = {}) {
       evidenceRefs: [],
     };
   }
-  if (siblingEvidenceObserved && input.providerCompactionEvidenceAvailable !== true) {
+  if (requested && evidenceAvailable !== true) {
     return {
-      state: "sibling_evidence_display_only",
+      state: "blocked_missing_evidence",
       providerCompactionAllowed: false,
       providerTransportAllowed: false,
       evidenceRefs: Array.isArray(input.evidenceRefs) ? input.evidenceRefs : [],
     };
   }
-  if (input.providerCompactionEvidenceAvailable !== true) {
+  if (siblingEvidenceObserved && evidenceAvailable !== true) {
     return {
-      state: "blocked_missing_evidence",
+      state: "sibling_evidence_display_only",
       providerCompactionAllowed: false,
       providerTransportAllowed: false,
       evidenceRefs: Array.isArray(input.evidenceRefs) ? input.evidenceRefs : [],
@@ -789,11 +795,13 @@ function buildContextContinuityTransition(input = {}) {
     transitionKind,
     status,
   }));
+  const projectId = normalizeString(input.projectId, route?.projectId || maintenanceManifest?.projectId || memory?.projectId || baton?.projectId || "");
+  const threadId = normalizeString(input.threadId, route?.threadId || maintenanceManifest?.threadId || memory?.threadId || baton?.threadId || "");
   const transition = {
     schema: DIRECT_CONTEXT_CONTINUITY_TRANSITION_SCHEMA,
-    transitionId: normalizeString(input.transitionId, `context_continuity_${sha256(`${input.projectId || route?.projectId || ""}:${input.threadId || route?.threadId || ""}:${sourceDigest}`).slice(0, 24)}`),
-    projectId: normalizeString(input.projectId, route?.projectId || maintenanceManifest?.projectId || memory?.projectId || baton?.projectId || ""),
-    threadId: normalizeString(input.threadId, route?.threadId || maintenanceManifest?.threadId || memory?.threadId || baton?.threadId || ""),
+    transitionId: normalizeString(input.transitionId, `context_continuity_${sha256(`${projectId}:${threadId}:${sourceDigest}`).slice(0, 24)}`),
+    projectId,
+    threadId,
     workThreadId: normalizeString(input.workThreadId, ""),
     transitionKind,
     status,
