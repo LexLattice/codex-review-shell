@@ -184,6 +184,27 @@ function summarizeModules(moduleStatus = {}) {
   };
 }
 
+function summarizeAgentClasses(agentClassStatus = {}) {
+  const status = objectOrEmpty(agentClassStatus);
+  return {
+    schema: normalizeString(status.schema, ""),
+    status: normalizeString(status.status, "shadow_only"),
+    specCount: Number(status.specCount || 0),
+    registryId: normalizeString(status.registryId, ""),
+    registryDigest: normalizeString(status.registryDigest, ""),
+    executionEnabledInThisPr: status.executionEnabledInThisPr === true,
+    routingEnabledInThisPr: status.routingEnabledInThisPr === true,
+    providerCallEnabledInThisPr: status.providerCallEnabledInThisPr === true,
+    workspaceMutationEnabledInThisPr: status.workspaceMutationEnabledInThisPr === true,
+    objectAuditAutomationEnabledInThisPr: status.objectAuditAutomationEnabledInThisPr === true,
+    subAgentSpawnEnabledInThisPr: status.subAgentSpawnEnabledInThisPr === true,
+    memoryMutationEnabledInThisPr: status.memoryMutationEnabledInThisPr === true,
+    providerCompactionEnabledInThisPr: status.providerCompactionEnabledInThisPr === true,
+    actionable: status.actionable === true,
+    rendererSafeSummary: boundedString(status.rendererSafeSummary || "Agent classes are declared as role contracts only.", 320),
+  };
+}
+
 function summarizeContinuity(input = {}) {
   const continuity = objectOrEmpty(input.continuityStatus || input.contextContinuityStatus);
   const runtimeContext = objectOrEmpty(input.runtimeStatus?.directContextMaintenance || input.runtimeStatus?.contextMaintenance);
@@ -211,6 +232,7 @@ function buildRows(sections) {
   const workThreads = sections.workThreads;
   const governance = sections.governance;
   const modules = sections.modules;
+  const agentClasses = sections.agentClasses;
   const continuity = sections.continuity;
   return {
     runtime: [
@@ -248,6 +270,13 @@ function buildRows(sections) {
       statusRow("Evidence import", modules.evidenceImporterCount),
       statusRow("Execution", modules.executionAllowedInThisPr ? "unexpected enabled" : "disabled", modules.executionAllowedInThisPr ? "blocked" : "ok"),
     ],
+    agentClasses: [
+      statusRow("Status", agentClasses.status),
+      statusRow("Specs", agentClasses.specCount),
+      statusRow("Execution", agentClasses.executionEnabledInThisPr ? "unexpected enabled" : "disabled", agentClasses.executionEnabledInThisPr ? "blocked" : "ok"),
+      statusRow("Routing", agentClasses.routingEnabledInThisPr ? "unexpected enabled" : "shadow only", agentClasses.routingEnabledInThisPr ? "blocked" : "ok"),
+      statusRow("Audit automation", agentClasses.objectAuditAutomationEnabledInThisPr ? "unexpected enabled" : "disabled", agentClasses.objectAuditAutomationEnabledInThisPr ? "blocked" : "ok"),
+    ],
     continuity: [
       statusRow("Transition", continuity.transitionStatus),
       statusRow("Context loss", continuity.contextLossState),
@@ -265,6 +294,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
   const workThreads = summarizeWorkThreads(input.workThreads || input);
   const governance = summarizeGovernance(input);
   const modules = summarizeModules(input.moduleStatus);
+  const agentClasses = summarizeAgentClasses(input.agentClassStatus);
   const continuity = summarizeContinuity(input);
   const generatedAt = normalizeString(input.generatedAt, nowIso(input.nowMs));
   const authority = {
@@ -283,7 +313,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
     rawPathIncluded: false,
     rawSecretIncluded: false,
   };
-  const sections = { runtime, registry, workThreads, governance, modules, continuity };
+  const sections = { runtime, registry, workThreads, governance, modules, agentClasses, continuity };
   const sourceDigest = digestFor("direct-settings-surface-source@1", sections);
   const projection = {
     schema: DIRECT_SETTINGS_SURFACE_PROJECTION_SCHEMA,
@@ -298,6 +328,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       "work_thread",
       "governance",
       "skills_hooks_apps",
+      "agent_class_specs",
       "memory_baton_omission_compaction",
     ],
     sections,
@@ -313,6 +344,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       { kind: "runtime_status", digest: normalizeString(input.runtimeStatus?.sourceDigest || input.runtimeStatus?.statusDigest, ""), label: "Direct runtime status" },
       { kind: "work_thread_projection", digest: normalizeString(workThreads.projectionDigest, ""), label: "WorkThread projection" },
       { kind: "module_status", digest: normalizeString(input.moduleStatus?.projectionDigest, ""), label: "Bridge module status" },
+      { kind: "agent_class_status", digest: normalizeString(input.agentClassStatus?.projectionDigest, ""), label: "Agent class status" },
       { kind: "continuity_status", digest: normalizeString(input.continuityStatus?.projectionDigest, ""), label: "Continuity status" },
     ].filter((ref) => ref.digest || ref.kind === "registry_audit"),
     sourceDigest,

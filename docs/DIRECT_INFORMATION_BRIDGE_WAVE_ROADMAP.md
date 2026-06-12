@@ -119,7 +119,7 @@ toward controlled routing without collapsing broker, worker, and auditor roles.
 
 ### PR 6: Direct Settings / Bridge Status Surface
 
-Status: in progress.
+Status: merged.
 
 Branch:
 
@@ -173,7 +173,13 @@ Wave 1 registry/projection artifacts must remain renderer-safe and display-only.
 
 ### PR 7: AgentClassSpec Registry
 
-Status: planned.
+Status: in progress.
+
+Branch:
+
+```text
+codex/direct-agent-class-spec-registry
+```
 
 Purpose:
 
@@ -190,6 +196,20 @@ Scope:
 - For each class, define consumed context families, produced artifact families,
   allowed authority, and forbidden conflations.
 - Add fixture/regression coverage for role boundaries.
+
+Implemented in the first slice:
+
+- `direct_agent_class_registry@1`, `direct_agent_class_spec@1`, and
+  `direct_agent_class_status_projection@1`.
+- Default role contracts for the ten planned agent classes.
+- Direct settings status rows for agent-class registry posture.
+- Regression coverage for forbidden conflations and non-authority flags.
+
+Still deferred:
+
+- Binding role specs to sub-agent/worker graph execution.
+- Enforced WorkThread routing by role.
+- Any object-level audit automation.
 
 Non-goals:
 

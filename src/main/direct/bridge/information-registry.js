@@ -335,6 +335,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     bridgeFit: "Builds a renderer-safe, display-only settings projection over runtime/profile, registry, WorkThread, governance, module, and continuity status.",
     realignment: "Full settings workflows remain future work; this surface exposes status without enabling routing, mutation, module execution, memory editing, or provider compaction.",
   },
+  {
+    id: "ic16.agent-class-spec-registry",
+    name: "Agent class role contract registry",
+    role: "governance_routing",
+    implementationState: "partial",
+    directPathPosture: "keep_shadow",
+    sourceFiles: ["src/main/direct/bridge/agent-class-spec.js", "scripts/direct-agent-class-spec-regression.mjs", "src/main/direct/ui/settings-surface.js", "src/main.js"],
+    ontology: ontologyShape(["agent_class_spec", "agent_role_contract", "agent_class_status_projection"], "harness", {
+      identityFields: ["agentClassId", "agentClassKind", "contractVersion"],
+      schema: "direct_agent_class_spec@1",
+    }),
+    bridgeFit: "Declares role contracts for primary, worker, auditor, broker, orchestrator, memory, governance, closeout, fix, and sub-agent classes before execution routing exists.",
+    realignment: "Keep role contracts display-only until later PRs bind worker graphs, WorkThread routing, and authority gates to concrete execution surfaces.",
+  },
 ]);
 
 function isPlainObject(value) {
