@@ -99,16 +99,16 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
   },
   {
     id: "ic2.thread-workbench-projections",
-    name: "Thread workbench projections",
+    name: "Thread workbench and deck projections",
     role: "derived_projection",
     implementationState: "implemented",
     directPathPosture: "keep",
-    sourceFiles: ["src/main/direct/thread/thread-evidence-workbench.js", "src/main/direct/thread/thread-workbench-controller.js"],
-    ontology: ontologyShape(["thread_lifecycle", "thread_graph", "merge_preview", "prune_preview", "fork_preview"], "derived", {
+    sourceFiles: ["src/main/direct/thread/thread-deck.js", "src/main/direct/thread/thread-evidence-workbench.js", "src/main/direct/thread/thread-workbench-controller.js"],
+    ontology: ontologyShape(["direct_thread_deck_projection", "thread_lifecycle", "thread_graph", "merge_preview", "prune_preview", "fork_preview"], "derived", {
       identityFields: ["projectId", "threadId", "projectionKind", "projectionId"],
-      schema: "thread_lifecycle@1",
+      schema: "direct_thread_deck_projection@1",
     }),
-    bridgeFit: "Materializes lifecycle, graph, evidence, merge, prune, and fork views for inspection and controlled fresh starts.",
+    bridgeFit: "Materializes the direct-native thread deck plus lifecycle, graph, evidence, merge, prune, and fork views for inspection and controlled fresh starts.",
     realignment: "Make all previews cite whether they are context-eligible, runnable, or display-only under the registry law.",
   },
   {
