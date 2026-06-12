@@ -50,6 +50,7 @@
     "direct:electron-read-approval": "node ./scripts/direct-electron-read-approval-regression.mjs",
     "direct:matrix-eprobe": "node ./scripts/direct-matrix-eprobe-conformance.mjs",
     "direct:evidence-ledger": "node ./scripts/direct-real-usage-evidence-ledger.mjs",
+    "direct:information-bridge-audit": "node ./scripts/direct-information-bridge-audit.mjs",
     "codex:real-turn": "node ./scripts/codex-real-turn.mjs",
     "validate": "npm run check:syntax && npm run authority:smoke && npm run navigation:smoke && npm run migration:smoke && npm run usage-ledger:smoke && npm run attachments:smoke && npm run typed-markdown:smoke && npm run agent:smoke && npm run direct:smoke",
     "authority:smoke": "node ./scripts/smoke-authority-catalog.mjs",
