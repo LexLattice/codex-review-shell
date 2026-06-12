@@ -74,6 +74,16 @@ const {
   projectOperationHistoryPage,
 } = require("./main/direct/ui/implementation-lane-ui");
 const {
+  assertDirectSettingsSurfaceRendererSafe,
+  buildDirectSettingsSurfaceProjection,
+} = require("./main/direct/ui/settings-surface");
+const {
+  buildDirectInformationBridgeAudit,
+} = require("./main/direct/bridge/information-registry");
+const {
+  buildBridgeModuleStatusProjection,
+} = require("./main/direct/bridge/skills-hooks-apps");
+const {
   buildVanillaSiblingContextEvidence,
 } = require("./main/direct/context/maintenance");
 const {
@@ -2302,6 +2312,49 @@ function buildDirectRuntimeStatusForProject(project, options = {}) {
   } catch {}
   runtimeStatus.directContextMaintenance = buildDirectContextMaintenanceRuntimeStatus(project, sessionStore, threadStoreForContext);
   return runtimeStatus;
+}
+
+function buildDirectSettingsSurfaceStatusForProject(project) {
+  const projectId = normalizeString(project?.id, "");
+  const runtimeStatus = buildDirectRuntimeStatusForProject(project);
+  const metaSessionStatus = buildDirectMetaSessionStatusForProject(project, {});
+  const moduleStatus = buildBridgeModuleStatusProjection({
+    projectId,
+    status: "shadow_only",
+    rendererSafeSummary: "Skills, hooks, and apps are classified by the bridge module contract; no execution runner is enabled.",
+  });
+  const projection = buildDirectSettingsSurfaceProjection({
+    projectId,
+    runtimeStatus,
+    registryAudit: buildDirectInformationBridgeAudit({
+      branch: "codex/direct-chatgpt-harness",
+      generatedAt: nowIso(),
+    }),
+    workThreads: {
+      status: {
+        available: false,
+        reason: "work_thread_registry_store_not_wired_to_main_process",
+        workThreadCount: 0,
+        activeCount: 0,
+      },
+      resolution: {
+        resolutionState: "unavailable",
+        candidates: [],
+        ambiguityBlockers: ["work_thread_registry_store_not_wired_to_main_process"],
+        transitionLaw: {
+          mutationAllowed: false,
+          providerCallAllowed: false,
+          routingEnforced: false,
+          reason: "settings_surface_status_only",
+        },
+      },
+    },
+    metaSessionStatus,
+    moduleStatus,
+    continuityStatus: runtimeStatus.directContextMaintenance,
+  });
+  assertDirectSettingsSurfaceRendererSafe(projection);
+  return projection;
 }
 
 function emitDirectRuntimeStatus(project = currentProject) {
@@ -7162,6 +7215,11 @@ ipcMain.handle("direct-ui:policy-readonly-view", async (_event, payload) => {
 ipcMain.handle("direct-meta-session:status", async (_event, payload) => {
   const project = await getProjectById(payload?.projectId);
   return buildDirectMetaSessionStatusForProject(project, payload || {});
+});
+
+ipcMain.handle("direct-settings:bridge-status", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  return buildDirectSettingsSurfaceStatusForProject(project);
 });
 
 ipcMain.handle("direct-runtime:select-text-only", async (_event, payload) => {
