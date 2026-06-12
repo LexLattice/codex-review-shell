@@ -325,15 +325,15 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     id: "ic15.direct-settings-surface",
     name: "Direct settings and bridge status surface",
     role: "observability_surface",
-    implementationState: "missing",
-    directPathPosture: "build_after_registry",
-    sourceFiles: [],
+    implementationState: "partial",
+    directPathPosture: "keep_shadow",
+    sourceFiles: ["src/main/direct/ui/settings-surface.js", "scripts/direct-settings-bridge-status-regression.mjs", "src/main.js", "src/preload.js", "src/renderer/app.js"],
     ontology: ontologyShape(["settings_surface", "runtime_profile_view", "bridge_registry_view"], "human_interface", {
       identityFields: ["projectId", "settingsSurfaceId", "profileId"],
       schema: "direct_settings_surface@1",
     }),
-    bridgeFit: "Current diagnostics occupy too much runtime space; direct settings should expose profile, registry, context, memory, skills, and runtime choices lawfully.",
-    realignment: "Move detailed diagnostics out of the Codex transcript lane and into a settings/control surface.",
+    bridgeFit: "Builds a renderer-safe, display-only settings projection over runtime/profile, registry, WorkThread, governance, module, and continuity status.",
+    realignment: "Full settings workflows remain future work; this surface exposes status without enabling routing, mutation, module execution, memory editing, or provider compaction.",
   },
 ]);
 

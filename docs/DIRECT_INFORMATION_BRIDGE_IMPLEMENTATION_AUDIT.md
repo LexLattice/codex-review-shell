@@ -168,7 +168,7 @@ The executable registry currently tracks these bridge rows:
 | `ic12.work-thread-registry` | governance/routing | partial | keep shadow |
 | `ic13.bridge-information-registry` | governance/routing | partial | bootstrap now |
 | `ic14.skills-hooks-apps` | governance/routing | partial | keep shadow |
-| `ic15.direct-settings-surface` | observability surface | missing | build after registry |
+| `ic15.direct-settings-surface` | observability surface | partial | keep shadow |
 
 ## Keep
 
@@ -191,7 +191,7 @@ Realignment needed:
 - Preserve the distinction between Codex thread/session identity and `WorkThread` identity as routing becomes real.
 - Keep governance/broker in shadow mode until a `WorkThread` router exists.
 - Tie sub-agent nodes to future `AgentClassSpec` and `WorkThread` scope.
-- Move detailed direct diagnostics out of the Codex transcript lane into a settings/control surface.
+- Continue moving detailed direct diagnostics out of the Codex transcript lane into settings/control surfaces.
 
 ## Missing
 
@@ -199,7 +199,7 @@ Not built yet:
 
 - Enforced `WorkThread` broker and mutation routing.
 - Work-target resolution from messy user utterance to active work-thread ontology.
-- Direct settings surface for runtime/profile/registry/context/memory/skills.
+- Full direct settings workflows for editing/resetting memory, provider compaction, module execution, and enforced routing.
 - Enforced semantic broker routing.
 - Full direct-native memory/compaction/frontier workflow with live scheduler and UI controls.
 - Agent class execution contracts for worker/auditor/meta-orchestrator beyond diagnostics.
@@ -209,8 +209,9 @@ Not built yet:
 The remaining direct-path work should proceed in dependency order:
 
 1. Direct settings/control surface:
-   expose runtime/profile/registry, WorkThread, governance, bridge-module, and
-   continuity state outside the Codex transcript lane.
+   the first display-only status projection is implemented. Remaining work is
+   full settings workflow design, live WorkThread store wiring, and any future
+   user-authorized edit/reset actions.
 
 2. Agent-class specification:
    define main agent, worker, auditor, meta-orchestrator, and sub-agent role
@@ -429,6 +430,21 @@ continuation authority.
 
 ## Next Practical Step
 
-Begin the direct settings surface that can expose runtime/profile/registry,
-context, memory, WorkThread, governance, and bridge-module state without
-occupying the Codex transcript lane.
+## Direct Settings / Bridge Status Surface Slice
+
+Implemented in the PR 6 slice:
+
+- `src/main/direct/ui/settings-surface.js` builds `direct_settings_surface_projection@1`.
+- `direct-settings:bridge-status` exposes a renderer-safe, display-only IPC projection.
+- The Project tab renders runtime/profile, registry, WorkThread, governance/broker,
+  skills/hooks/apps, and continuity status rows.
+- `scripts/direct-settings-bridge-status-regression.mjs` asserts authority flags remain false.
+
+Explicitly still out of scope:
+
+- WorkThread routing enforcement.
+- Semantic broker enforcement.
+- Module execution or connector calls.
+- Memory editing/reset.
+- Provider compaction or provider transport.
+- Creating a live WorkThread registry store from the settings read path.

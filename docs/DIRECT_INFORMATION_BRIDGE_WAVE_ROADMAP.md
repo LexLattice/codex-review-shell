@@ -102,7 +102,7 @@ Still intentionally not authority:
   provider compaction
   memory editing/reset
   baton replay/continuation
-  direct settings/control UI
+  full direct settings/control workflows
   agent-class execution contracts
 ```
 
@@ -119,7 +119,13 @@ toward controlled routing without collapsing broker, worker, and auditor roles.
 
 ### PR 6: Direct Settings / Bridge Status Surface
 
-Status: next planned.
+Status: in progress.
+
+Branch:
+
+```text
+codex/direct-settings-bridge-status-surface
+```
 
 Purpose:
 
@@ -137,6 +143,19 @@ Scope:
 - Expose skills/hooks/apps module status.
 - Expose memory/baton/omission/compaction continuity status.
 - Keep inherited runtime switch visible but not noisy.
+
+Implemented in the first slice:
+
+- `direct_settings_surface_projection@1` support artifact.
+- Read-only `direct-settings:bridge-status` IPC/preload projection.
+- Project-tab Direct bridge status card.
+- Regression coverage for non-authority flags and renderer-safe rows.
+
+Still deferred:
+
+- Full settings workflows.
+- Live WorkThread registry store wiring from main-process state.
+- Any authority-bearing action from the settings surface.
 
 Non-goals:
 

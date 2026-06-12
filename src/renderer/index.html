@@ -332,6 +332,48 @@
         </section>
 
         <section class="middle-tab-panel" id="projectTabPanel" data-tab-panel="project" hidden>
+          <section class="control-card direct-bridge-settings-card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Direct bridge settings</p>
+                <h3>Read-only status surface</h3>
+              </div>
+              <div class="heading-actions">
+                <span id="directBridgeSettingsBadge" class="counter">not loaded</span>
+                <button class="ghost small" id="directBridgeSettingsRefreshButton" type="button">Refresh</button>
+              </div>
+            </div>
+            <div class="direct-diagnostics-grid">
+              <section class="direct-diagnostics-panel">
+                <h4>Runtime/profile</h4>
+                <div id="directBridgeSettingsRuntimeList" class="direct-diagnostics-list"></div>
+              </section>
+              <section class="direct-diagnostics-panel">
+                <h4>Registry rows</h4>
+                <div id="directBridgeSettingsRegistryList" class="direct-diagnostics-list"></div>
+              </section>
+              <section class="direct-diagnostics-panel">
+                <h4>WorkThread state</h4>
+                <div id="directBridgeSettingsWorkThreadList" class="direct-diagnostics-list"></div>
+              </section>
+              <section class="direct-diagnostics-panel">
+                <h4>Governance/broker</h4>
+                <div id="directBridgeSettingsGovernanceList" class="direct-diagnostics-list"></div>
+              </section>
+              <section class="direct-diagnostics-panel">
+                <h4>Skills/hooks/apps</h4>
+                <div id="directBridgeSettingsModulesList" class="direct-diagnostics-list"></div>
+              </section>
+              <section class="direct-diagnostics-panel">
+                <h4>Continuity</h4>
+                <div id="directBridgeSettingsContinuityList" class="direct-diagnostics-list"></div>
+              </section>
+            </div>
+            <p id="directBridgeSettingsEvidence" class="muted direct-auth-evidence">
+              Direct bridge settings are display-only; no routing, module execution, memory edit, provider compact, or workspace mutation is exposed.
+            </p>
+          </section>
+
           <section class="control-card project-stash-card">
             <div class="section-heading">
               <div>

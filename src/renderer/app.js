@@ -173,6 +173,9 @@ const state = {
   directMetaSessionStatus: null,
   directMetaSessionLoading: false,
   directMetaSessionError: "",
+  directBridgeSettingsStatus: null,
+  directBridgeSettingsLoading: false,
+  directBridgeSettingsError: "",
   selectedCodexThreadId: "",
   openedCodexProjectId: "",
   openedCodexThreadId: "",
@@ -193,6 +196,7 @@ const state = {
     directThreadWorkbench: 0,
     directThreadWorkbenchOperation: 0,
     directMetaSessionStatus: 0,
+    directBridgeSettingsStatus: 0,
     analyticsThreads: 0,
     analyticsDetail: 0,
     workTree: 0,
@@ -233,6 +237,15 @@ const els = {
   projectStashStatus: document.getElementById("projectStashStatus"),
   clearProjectStashButton: document.getElementById("clearProjectStashButton"),
   sendProjectStashButton: document.getElementById("sendProjectStashButton"),
+  directBridgeSettingsBadge: document.getElementById("directBridgeSettingsBadge"),
+  directBridgeSettingsRefreshButton: document.getElementById("directBridgeSettingsRefreshButton"),
+  directBridgeSettingsRuntimeList: document.getElementById("directBridgeSettingsRuntimeList"),
+  directBridgeSettingsRegistryList: document.getElementById("directBridgeSettingsRegistryList"),
+  directBridgeSettingsWorkThreadList: document.getElementById("directBridgeSettingsWorkThreadList"),
+  directBridgeSettingsGovernanceList: document.getElementById("directBridgeSettingsGovernanceList"),
+  directBridgeSettingsModulesList: document.getElementById("directBridgeSettingsModulesList"),
+  directBridgeSettingsContinuityList: document.getElementById("directBridgeSettingsContinuityList"),
+  directBridgeSettingsEvidence: document.getElementById("directBridgeSettingsEvidence"),
   projectList: document.getElementById("projectList"),
   projectCount: document.getElementById("projectCount"),
   threadDeck: document.getElementById("threadDeck"),
@@ -2967,6 +2980,57 @@ function renderDirectDiagnosticsRows(container, rows = [], emptyText = "No diagn
   }
 }
 
+function directBridgeSettingsRows(sectionName) {
+  const rows = state.directBridgeSettingsStatus?.rows?.[sectionName];
+  return Array.isArray(rows) ? rows : [];
+}
+
+function renderDirectBridgeSettingsStatus() {
+  if (!els.directBridgeSettingsBadge) return;
+  const status = state.directBridgeSettingsStatus || {};
+  const projectionOk = status.schema === "direct_settings_surface_projection@1";
+  const authority = status.authority || {};
+  const blockedAuthority = [
+    authority.runtimeMutationAllowed ? "runtime mutation" : "",
+    authority.routingEnforced ? "routing" : "",
+    authority.semanticBrokerEnforced ? "semantic broker" : "",
+    authority.moduleExecutionAllowed ? "module execution" : "",
+    authority.memoryEditingAllowed ? "memory edit" : "",
+    authority.memoryResetAllowed ? "memory reset" : "",
+    authority.providerCompactionAllowed ? "provider compact" : "",
+    authority.providerTransportAllowed ? "provider transport" : "",
+    authority.workspaceMutationAllowed ? "workspace mutation" : "",
+  ].filter(Boolean);
+  els.directBridgeSettingsBadge.textContent = state.directBridgeSettingsLoading
+    ? "loading"
+    : projectionOk
+      ? "status only"
+      : "not loaded";
+  els.directBridgeSettingsBadge.title = state.directBridgeSettingsError ||
+    (projectionOk ? status.projectionDigest || "Renderer-safe direct bridge settings projection." : "Projection not loaded.");
+  if (els.directBridgeSettingsRefreshButton) {
+    els.directBridgeSettingsRefreshButton.disabled = state.directBridgeSettingsLoading || !bridge.getDirectBridgeSettingsStatus;
+    els.directBridgeSettingsRefreshButton.title = "Refresh the renderer-safe direct bridge status surface.";
+  }
+  renderDirectDiagnosticsRows(els.directBridgeSettingsRuntimeList, directBridgeSettingsRows("runtime"));
+  renderDirectDiagnosticsRows(els.directBridgeSettingsRegistryList, directBridgeSettingsRows("registry"));
+  renderDirectDiagnosticsRows(els.directBridgeSettingsWorkThreadList, directBridgeSettingsRows("workThreads"));
+  renderDirectDiagnosticsRows(els.directBridgeSettingsGovernanceList, directBridgeSettingsRows("governance"));
+  renderDirectDiagnosticsRows(els.directBridgeSettingsModulesList, directBridgeSettingsRows("modules"));
+  renderDirectDiagnosticsRows(els.directBridgeSettingsContinuityList, directBridgeSettingsRows("continuity"));
+  if (els.directBridgeSettingsEvidence) {
+    if (state.directBridgeSettingsError) {
+      els.directBridgeSettingsEvidence.textContent = `Bridge settings status unavailable: ${state.directBridgeSettingsError}`;
+    } else if (blockedAuthority.length) {
+      els.directBridgeSettingsEvidence.textContent = `WARNING: unexpected authority exposed (${blockedAuthority.join(", ")}).`;
+    } else if (projectionOk) {
+      els.directBridgeSettingsEvidence.textContent = "Display-only surface · no routing, module execution, memory edit/reset, provider compact, provider transport, or workspace mutation is exposed.";
+    } else {
+      els.directBridgeSettingsEvidence.textContent = "Direct bridge settings are display-only; no authority is exposed before a projection loads.";
+    }
+  }
+}
+
 function directDiagnosticsProjection(status = state.directRuntimeStatus) {
   const runtimeStatus = directDiagnosticsObject(status);
   const implementationLane = directDiagnosticsObject(runtimeStatus.directImplementationLane);
@@ -5618,6 +5682,7 @@ function render() {
   renderSelectedProject();
   renderThreadDeck();
   renderProjectStash();
+  renderDirectBridgeSettingsStatus();
   renderThreadsWorkbench();
   renderDirectImportWorkbench();
   renderAnalyticsPanel();
@@ -6497,6 +6562,28 @@ async function refreshDirectMetaSessionStatus(projectId = activeProject()?.id ||
   }
 }
 
+async function refreshDirectBridgeSettingsStatus(projectId = activeProject()?.id || "") {
+  if (!bridge.getDirectBridgeSettingsStatus || !projectId) return;
+  const requestVersion = nextRequestVersion("directBridgeSettingsStatus");
+  const snapshot = projectRequestSnapshot(projectId);
+  state.directBridgeSettingsLoading = true;
+  state.directBridgeSettingsError = "";
+  renderDirectBridgeSettingsStatus();
+  try {
+    const status = await bridge.getDirectBridgeSettingsStatus(projectId);
+    if (isRequestStale("directBridgeSettingsStatus", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directBridgeSettingsStatus = status;
+  } catch (error) {
+    if (isRequestStale("directBridgeSettingsStatus", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directBridgeSettingsError = error.message || "Direct bridge settings status failed.";
+  } finally {
+    if (!isRequestStale("directBridgeSettingsStatus", requestVersion)) {
+      state.directBridgeSettingsLoading = false;
+      renderDirectBridgeSettingsStatus();
+    }
+  }
+}
+
 function directActivationClientId(prefix) {
   const random = Math.random().toString(36).slice(2, 10);
   return `${prefix}_${Date.now().toString(36)}_${random}`;
@@ -6775,6 +6862,7 @@ async function selectProject(projectId) {
   nextRequestVersion("directThreadWorkbench");
   nextRequestVersion("directThreadWorkbenchOperation");
   nextRequestVersion("directMetaSessionStatus");
+  nextRequestVersion("directBridgeSettingsStatus");
   nextRequestVersion("analyticsThreads");
   nextRequestVersion("analyticsDetail");
   nextRequestVersion("workTree");
@@ -6811,6 +6899,9 @@ async function selectProject(projectId) {
   state.directMetaSessionStatus = null;
   state.directMetaSessionError = "";
   state.directMetaSessionLoading = false;
+  state.directBridgeSettingsStatus = null;
+  state.directBridgeSettingsError = "";
+  state.directBridgeSettingsLoading = false;
   state.activeChatgptThreadBrowserTab = "project";
   state.subAgentGraph = null;
   state.selectedSubAgentThreadId = "";
@@ -6822,6 +6913,7 @@ async function selectProject(projectId) {
   if (!project || project.id !== projectId || isRequestStale("project", projectVersion)) return;
   await refreshDirectRuntimeStatus(project.id);
   await refreshDirectMetaSessionStatus(project.id);
+  await refreshDirectBridgeSettingsStatus(project.id);
   if (state.activeMiddleTab === "imports") {
     await loadDirectImports({ refresh: false });
   }
@@ -7495,6 +7587,11 @@ function setMiddleTab(tab) {
       setLastEvent(`Analytics list load failed: ${error.message}`);
     });
   }
+  if (state.activeMiddleTab === "project" && !state.directBridgeSettingsStatus && !state.directBridgeSettingsLoading) {
+    refreshDirectBridgeSettingsStatus().catch((error) => {
+      setLastEvent(`Bridge settings status load failed: ${error.message}`);
+    });
+  }
   if (state.activeMiddleTab === "imports" && state.directImportWorkbench.status === "idle") {
     loadDirectImports({ refresh: false }).catch((error) => {
       setLastEvent(`Import list load failed: ${error.message}`);
@@ -8157,6 +8254,7 @@ function bindEvents() {
   els.directRuntimePathSelect?.addEventListener("change", renderDirectRuntimeStatus);
   els.directRuntimePathApplyButton?.addEventListener("click", setDirectRuntimePathFromControl);
   els.directMetaSessionRefreshButton?.addEventListener("click", () => refreshDirectMetaSessionStatus().catch((error) => setLastEvent(`Meta-session status refresh failed: ${error.message}`)));
+  els.directBridgeSettingsRefreshButton?.addEventListener("click", () => refreshDirectBridgeSettingsStatus().catch((error) => setLastEvent(`Bridge settings status refresh failed: ${error.message}`)));
   els.directTextOnlyEnableButton?.addEventListener("click", selectDirectTextOnlyRuntime);
   els.directExperimentalEnableButton?.addEventListener("click", enableDirectExperimentalRuntime);
   els.directExperimentalRollbackButton?.addEventListener("click", rollbackDirectExperimentalRuntime);
