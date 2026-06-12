@@ -235,6 +235,46 @@ function main() {
   assert(projection.rawPathIncluded === false, "raw paths must be excluded");
   assert(projection.rawSecretIncluded === false, "raw secrets must be excluded");
 
+  const staleWorkTargetResolutionReport = buildWorkTargetResolutionReport({
+    projectId,
+    resolution: workTargetResolution,
+    expectedResolutionDigest: "sha256:stale",
+  }, { nowMs: 0 });
+  const staleProjection = buildDirectSettingsSurfaceProjection({
+    projectId,
+    workThreads: {
+      status: { available: true, workThreadCount: 1, activeCount: 1, projectionDigest: workThreadProjection.projectionDigest },
+      projection: workThreadProjection,
+      resolution: workTargetResolution,
+      resolutionReport: staleWorkTargetResolutionReport,
+    },
+    nowMs: 0,
+  });
+  assert(staleProjection.sections.workThreads.routingGateState === "stale_blocked", "stale report should own the settings gate state");
+  assert(staleProjection.sections.workThreads.selectedWorkThreadId === "", "stale report must not fall back to raw selected target");
+  assert(staleProjection.sections.workThreads.mutationBlocked === true, "stale report should keep mutation blocked");
+  assert(staleProjection.sections.workThreads.ambiguityBlockers.includes("resolution_digest_mismatch"), "stale report blockers should be visible");
+
+  const zeroCandidateProjection = buildDirectSettingsSurfaceProjection({
+    projectId,
+    workThreads: {
+      projection: workThreadProjection,
+      resolution: {
+        ...workTargetResolution,
+        candidates: [{ workThreadId: "raw_candidate_should_not_win" }],
+      },
+      resolutionReport: {
+        ...workTargetResolutionReport,
+        candidateCount: 0,
+        candidates: [],
+        selectedWorkThreadId: "",
+      },
+    },
+    nowMs: 0,
+  });
+  assert(zeroCandidateProjection.sections.workThreads.candidateCount === 0, "explicit report candidate count should be preserved");
+  assert(zeroCandidateProjection.sections.workThreads.selectedWorkThreadId === "", "explicit report selected target should be preserved");
+
   const nullProjection = buildDirectSettingsSurfaceProjection(null);
   assert(nullProjection.schema === DIRECT_SETTINGS_SURFACE_PROJECTION_SCHEMA, "null input should produce a safe empty projection");
   assertDirectSettingsSurfaceRendererSafe(nullProjection);

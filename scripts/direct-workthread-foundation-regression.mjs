@@ -134,6 +134,29 @@ function main() {
     assert(staleReport.selectedWorkThreadId === "", "stale report must not retain selected target");
     assert(staleReport.blockerCodes.includes("resolution_digest_mismatch"), "stale report should expose digest mismatch blocker");
 
+    const epochResolution = {
+      ...selected,
+      createdAt: "1970-01-01T00:00:00.000Z",
+    };
+    const epochStaleReport = buildWorkTargetResolutionReport({
+      resolution: epochResolution,
+      projectId: "codex-review-shell-direct",
+      generatedAt: "1970-01-01T00:00:01.001Z",
+      maxAgeMs: 1000,
+    });
+    assertWorkTargetResolutionReportSafe(epochStaleReport);
+    assert(epochStaleReport.stale === true, "epoch timestamp should be valid for age checks");
+    assert(epochStaleReport.blockerCodes.includes("resolution_age_exceeded"), "epoch age check should expose stale blocker");
+
+    const invalidMaxAgeReport = buildWorkTargetResolutionReport({
+      resolution: selected,
+      projectId: "codex-review-shell-direct",
+      maxAgeMs: "not-a-number",
+    }, { nowMs: new Date("2026-06-12T12:00:00.000Z").getTime() });
+    assertWorkTargetResolutionReportSafe(invalidMaxAgeReport);
+    assert(invalidMaxAgeReport.maxAgeMs === 120000, "invalid maxAgeMs should fall back to default");
+    assert(Number.isFinite(invalidMaxAgeReport.maxAgeMs), "maxAgeMs must remain finite");
+
     const directRaw = store.readWorkThread(seeded.direct.workThreadId);
     assert(directRaw.rawPathIncluded === false, "work thread must not expose raw paths");
     assert(directRaw.authorityBoundary.mutationAllowedBeforeResolution === false, "mutation must be blocked before resolution");
@@ -179,6 +202,8 @@ function main() {
       ambiguousGate: ambiguousReport.routingGateState,
       noCandidateState: noCandidate.resolutionState,
       staleGate: staleReport.routingGateState,
+      epochGate: epochStaleReport.routingGateState,
+      invalidMaxAge: invalidMaxAgeReport.maxAgeMs,
     }, null, 2));
   } finally {
     fs.rmSync(rootDir, { recursive: true, force: true });

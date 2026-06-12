@@ -135,27 +135,27 @@ function summarizeWorkThreads(input = {}) {
   const status = objectOrEmpty(input.status || input.workThreadStatus);
   const projection = objectOrEmpty(input.projection || input.workThreadProjection);
   const resolution = objectOrEmpty(input.resolution || input.workTargetResolution);
-  const resolutionReport = objectOrEmpty(input.resolutionReport || input.workTargetResolutionReport);
-  const blockerCodes = arrayOrEmpty(resolutionReport.blockerCodes).length
-    ? arrayOrEmpty(resolutionReport.blockerCodes)
-    : arrayOrEmpty(resolution.ambiguityBlockers);
+  const reportInput = input.resolutionReport || input.workTargetResolutionReport;
+  const hasResolutionReport = isPlainObject(reportInput);
+  const resolutionReport = hasResolutionReport ? objectOrEmpty(reportInput) : {};
+  const blockerCodes = hasResolutionReport ? arrayOrEmpty(resolutionReport.blockerCodes) : arrayOrEmpty(resolution.ambiguityBlockers);
   return {
     available: status.available === true || projection.schema === "direct_work_thread_projection@1",
     availabilityReason: normalizeString(status.reason || input.availabilityReason, status.available === false ? "not_wired" : ""),
     workThreadCount: Number(status.workThreadCount || projection.rowCount || 0),
     activeCount: Number(status.activeCount || projection.activeCount || 0),
     projectionDigest: normalizeString(status.projectionDigest || projection.projectionDigest, ""),
-    resolutionState: normalizeString(resolutionReport.resolutionState || resolution.resolutionState, "unavailable"),
-    routingGateState: normalizeString(resolutionReport.routingGateState, "unavailable"),
-    selectedWorkThreadId: normalizeString(resolutionReport.selectedWorkThreadId || resolution.selectedWorkThreadId, ""),
-    candidateCount: Number(resolutionReport.candidateCount || arrayOrEmpty(resolution.candidates).length),
+    resolutionState: normalizeString(hasResolutionReport ? resolutionReport.resolutionState : resolution.resolutionState, "unavailable"),
+    routingGateState: normalizeString(hasResolutionReport ? resolutionReport.routingGateState : "", "unavailable"),
+    selectedWorkThreadId: normalizeString(hasResolutionReport ? resolutionReport.selectedWorkThreadId : resolution.selectedWorkThreadId, ""),
+    candidateCount: Number(hasResolutionReport ? (resolutionReport.candidateCount ?? 0) : arrayOrEmpty(resolution.candidates).length),
     ambiguityBlockers: blockerCodes.map((item) => normalizeString(item, "")).filter(Boolean),
     stale: resolutionReport.stale === true,
     clarificationRequired: resolutionReport.clarificationRequired === true,
     nonTargetPreservationRequired: resolutionReport.nonTargetPreservationRequired === true,
-    routingEnforced: resolutionReport.routingEnforced === true || resolution.transitionLaw?.routingEnforced === true,
-    mutationAllowed: resolutionReport.mutationAuthorityGranted === true || resolution.transitionLaw?.mutationAllowed === true,
-    providerCallAllowed: resolutionReport.providerCallAuthorityGranted === true || resolution.transitionLaw?.providerCallAllowed === true,
+    routingEnforced: hasResolutionReport ? resolutionReport.routingEnforced === true : resolution.transitionLaw?.routingEnforced === true,
+    mutationAllowed: hasResolutionReport ? resolutionReport.mutationAuthorityGranted === true : resolution.transitionLaw?.mutationAllowed === true,
+    providerCallAllowed: hasResolutionReport ? resolutionReport.providerCallAuthorityGranted === true : resolution.transitionLaw?.providerCallAllowed === true,
     mutationBlocked: resolutionReport.mutationBlocked === true,
     providerCallBlocked: resolutionReport.providerCallBlocked === true,
     resolutionReportDigest: normalizeString(resolutionReport.reportDigest, ""),

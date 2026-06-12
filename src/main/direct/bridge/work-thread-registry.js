@@ -94,9 +94,9 @@ function readJsonFile(filePath) {
 
 function parseTimeMs(value) {
   const text = normalizeString(value, "");
-  if (!text) return 0;
+  if (!text) return null;
   const parsed = Date.parse(text);
-  return Number.isFinite(parsed) ? parsed : 0;
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function boundedPreview(value, maxChars = 220) {
@@ -440,14 +440,15 @@ function buildWorkTargetResolutionReport(input = {}, options = {}) {
   const source = isPlainObject(input) ? input : {};
   const resolution = isPlainObject(source.resolution) ? source.resolution : buildWorkTargetResolution(source.request || source, source.workThreads || [], options);
   const generatedAt = normalizeString(source.generatedAt, nowIso(options.nowMs));
-  const maxAgeMs = Math.max(0, Number(source.maxAgeMs ?? options.maxAgeMs ?? 120000));
+  const parsedMaxAgeMs = Number(source.maxAgeMs ?? options.maxAgeMs ?? 120000);
+  const maxAgeMs = Number.isFinite(parsedMaxAgeMs) ? Math.max(0, parsedMaxAgeMs) : 120000;
   const expectedProjectId = normalizeString(source.expectedProjectId || source.projectId, "");
   const expectedRequestDigest = normalizeString(source.expectedRequestDigest, "");
   const expectedResolutionDigest = normalizeString(source.expectedResolutionDigest, "");
   const staleBlockers = [];
   const createdAtMs = parseTimeMs(resolution.createdAt);
   const generatedAtMs = parseTimeMs(generatedAt);
-  if (maxAgeMs && createdAtMs && generatedAtMs && generatedAtMs - createdAtMs > maxAgeMs) staleBlockers.push("resolution_age_exceeded");
+  if (maxAgeMs && createdAtMs !== null && generatedAtMs !== null && generatedAtMs - createdAtMs > maxAgeMs) staleBlockers.push("resolution_age_exceeded");
   if (expectedProjectId && normalizeString(resolution.projectId, "") !== expectedProjectId) staleBlockers.push("project_mismatch");
   if (expectedRequestDigest && normalizeString(resolution.requestDigest, "") !== expectedRequestDigest) staleBlockers.push("request_digest_mismatch");
   if (expectedResolutionDigest && normalizeString(resolution.resolutionDigest, "") !== expectedResolutionDigest) staleBlockers.push("resolution_digest_mismatch");
