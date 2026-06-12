@@ -122,7 +122,7 @@ The executable registry currently tracks these bridge rows:
 | `ic11.inherited-shell-ux` | observability surface | inherited | retain when aligned |
 | `ic12.work-thread-registry` | governance/routing | partial | keep shadow |
 | `ic13.bridge-information-registry` | governance/routing | partial | bootstrap now |
-| `ic14.skills-hooks-apps` | governance/routing | missing | design before build |
+| `ic14.skills-hooks-apps` | governance/routing | partial | keep shadow |
 | `ic15.direct-settings-surface` | observability surface | missing | build after registry |
 
 ## Keep
@@ -155,7 +155,6 @@ Not built yet:
 
 - Enforced `WorkThread` broker and mutation routing.
 - Work-target resolution from messy user utterance to active work-thread ontology.
-- Direct-native skills/hooks/apps bridge rows and authority law.
 - Direct settings surface for runtime/profile/registry/context/memory/skills.
 - Enforced semantic broker routing.
 - Full direct-native memory/compaction/frontier workflow.
@@ -287,8 +286,33 @@ This slice does not route, mutate, call providers, approve tools, or enforce
 WorkThread scope. It only makes the governance artifacts aware of the aligned
 evidence classes.
 
+## Skills, Hooks, Apps Bridge Module Slice
+
+Skills, hooks, apps, and connector capabilities are now represented as bridge
+modules before any direct-native runner exists:
+
+```text
+bridge module registry
+  -> skill/context-only module
+  -> hook/action-proposal module
+  -> connector/evidence-import module
+  -> authority report
+  -> display-only status projection
+```
+
+Implemented by:
+
+```text
+src/main/direct/bridge/skills-hooks-apps.js
+scripts/direct-skills-hooks-apps-bridge-regression.mjs
+```
+
+This slice does not execute modules, auto-invoke hooks, call connectors, mutate
+workspace state, call providers, or route WorkThreads. It only classifies module
+authority posture and strips caller-supplied execution flags.
+
 ## Next Practical Step
 
-Define direct-native skills/hooks/apps bridge rows and authority law, or begin
-the direct settings surface that can expose runtime/profile/registry/context
-state without occupying the Codex transcript lane.
+Begin the direct settings surface that can expose runtime/profile/registry,
+context, memory, WorkThread, governance, and bridge-module state without
+occupying the Codex transcript lane.
