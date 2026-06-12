@@ -16,6 +16,8 @@ const DIRECT_THREAD_MEMORY_REFRESH_PROPOSAL_SCHEMA = "thread_memory_refresh_prop
 const DIRECT_THREAD_MEMORY_RESET_POLICY_SCHEMA = "thread_memory_reset_policy@1";
 const DIRECT_THREAD_MEMORY_RESET_CONFIRMATION_SCHEMA = "thread_memory_reset_confirmation@1";
 const DIRECT_FRONTIER_BATON_SCHEMA = "frontier_baton@1";
+const DIRECT_CONTEXT_COMPACTION_PLAN_SCHEMA = "direct_context_compaction_plan@1";
+const DIRECT_CONTEXT_COMPACTION_GATE_SCHEMA = "direct_context_compaction_gate@1";
 const DIRECT_CONTEXT_LOSS_WITNESS_SCHEMA = "direct_context_loss_witness@1";
 const DIRECT_CONTEXT_CONTINUITY_TRANSITION_SCHEMA = "direct_context_continuity_transition@1";
 const DIRECT_CONTEXT_CONTINUITY_STATUS_PROJECTION_SCHEMA = "direct_context_continuity_status_projection@1";
@@ -64,6 +66,23 @@ const MEMORY_REVIEW_STATES = new Set(["current", "review_required", "stale", "co
 const MEMORY_REFRESH_PROPOSAL_STATES = new Set(["proposed", "accepted", "rejected", "blocked"]);
 const MEMORY_RESET_POLICY_STATES = new Set(["disabled", "available_with_confirmation", "blocked"]);
 const MEMORY_RESET_CONFIRMATION_STATES = new Set(["not_requested", "confirmed_noop", "rejected", "blocked"]);
+const COMPACTION_PLAN_STATES = new Set([
+  "preview_ready",
+  "blocked_missing_context_loss_witness",
+  "blocked_unrepresented_omission",
+  "blocked_required_context",
+  "blocked_no_source_spans",
+]);
+const COMPACTION_GATE_STATES = new Set([
+  "not_requested",
+  "manual_ready",
+  "blocked_missing_context_loss_witness",
+  "blocked_unrepresented_omission",
+  "blocked_required_context",
+  "blocked_no_source_spans",
+  "blocked_provider_evidence",
+  "blocked_plan",
+]);
 
 function isPlainObject(value) {
   return Object.prototype.toString.call(value) === "[object Object]";
@@ -802,6 +821,10 @@ function maintenanceRefsFromArtifacts(input = {}) {
     trimPlanDigest: normalizeString(input.trimPlan?.integrity?.artifactDigest || input.trimPlan?.planDigest, ""),
     omissionLedgerId: normalizeString(input.omissionLedger?.omissionLedgerId, ""),
     omissionLedgerDigest: normalizeString(input.omissionLedger?.integrity?.artifactDigest, ""),
+    compactionPlanId: normalizeString(input.localCompactionPlan?.compactionPlanId || input.compactionPlan?.compactionPlanId, ""),
+    compactionPlanDigest: normalizeString(input.localCompactionPlan?.integrity?.artifactDigest || input.compactionPlan?.integrity?.artifactDigest, ""),
+    compactionGateId: normalizeString(input.compactionWorkflowGate?.compactionGateId || input.compactionGate?.compactionGateId, ""),
+    compactionGateDigest: normalizeString(input.compactionWorkflowGate?.integrity?.artifactDigest || input.compactionGate?.integrity?.artifactDigest, ""),
     memoryId: normalizeString(input.memory?.memoryId, ""),
     memoryDigest: normalizeString(input.memory?.integrity?.artifactDigest || input.memory?.memoryDigest, ""),
     memoryRefreshId: normalizeString(input.memoryRefresh?.memoryRefreshId, ""),
@@ -960,6 +983,108 @@ function buildContextLossWitness(input = {}) {
   return witness;
 }
 
+function normalizeCompactionSourceSpans(values, contextLossWitness = null) {
+  const sourceValues = Array.isArray(values) && values.length
+    ? values
+    : (Array.isArray(contextLossWitness?.omittedSources) ? contextLossWitness.omittedSources : []);
+  return sourceValues.map((span, index) => {
+    const item = isPlainObject(span) ? span : {};
+    const sourceStableKeys = Array.isArray(item.sourceStableKeys) ? item.sourceStableKeys.map((key) => normalizeString(key, "")).filter(Boolean) : [];
+    return {
+      sourceSpanId: normalizeString(item.sourceSpanId || item.witnessEntryId, `compaction_source_span_${index + 1}`),
+      sourceArtifactKind: normalizeString(item.sourceArtifactKind, "context_recent_dialogue"),
+      sourceArtifactId: normalizeString(item.sourceArtifactId, ""),
+      sourceDigest: normalizeString(item.sourceDigest, ""),
+      sourceStableKeys,
+      startKey: normalizeString(item.startKey || sourceStableKeys[0], ""),
+      endKey: normalizeString(item.endKey || sourceStableKeys[sourceStableKeys.length - 1], ""),
+      itemCount: Number(item.itemCount || item.omittedItemCount || 0),
+      turnCount: Number(item.turnCount || item.omittedTurnCount || 0),
+      tokenEstimate: Number(item.tokenEstimate || item.omittedTokenEstimate || 0),
+      rendererSafeSummary: normalizeString(item.rendererSafeSummary, "Source span is represented for local compaction planning."),
+      rawTextIncluded: false,
+    };
+  });
+}
+
+function normalizeCompactionResidualRisks(values) {
+  return (Array.isArray(values) ? values : []).map((risk, index) => {
+    const item = isPlainObject(risk) ? risk : {};
+    return {
+      residualRiskId: normalizeString(item.residualRiskId, `compaction_residual_risk_${index + 1}`),
+      riskKind: normalizeString(item.riskKind, "summary_loss"),
+      severity: normalizeString(item.severity, "medium"),
+      sourceSpanId: normalizeString(item.sourceSpanId, ""),
+      mitigationState: normalizeString(item.mitigationState, "visible_for_operator_review"),
+      rendererSafeSummary: normalizeString(item.rendererSafeSummary, "Compaction may omit nuance; source span witness remains available."),
+      rawTextIncluded: false,
+    };
+  });
+}
+
+function compactionPlanStateFor({ contextLossWitness, sourceSpans } = {}) {
+  if (!contextLossWitness || contextLossWitness.schema !== DIRECT_CONTEXT_LOSS_WITNESS_SCHEMA) {
+    return "blocked_missing_context_loss_witness";
+  }
+  if (contextLossWitness.lossState === "unrepresented_blocked") return "blocked_unrepresented_omission";
+  if (contextLossWitness.lossState === "blocked_required_context") return "blocked_required_context";
+  const spans = Array.isArray(sourceSpans) ? sourceSpans : [];
+  if (contextLossWitness.lossState !== "none" && spans.length === 0) return "blocked_no_source_spans";
+  return "preview_ready";
+}
+
+function buildLocalCompactionPlan(input = {}) {
+  const contextLossWitness = isPlainObject(input.contextLossWitness) ? input.contextLossWitness : null;
+  const sourceSpans = normalizeCompactionSourceSpans(input.sourceSpanWitnesses || input.sourceSpans, contextLossWitness);
+  const residualRiskWitnesses = normalizeCompactionResidualRisks(input.residualRiskWitnesses || input.residualRisks);
+  const requestedState = normalizeString(input.planState || input.status, "");
+  const derivedState = compactionPlanStateFor({ contextLossWitness, sourceSpans });
+  const planState = COMPACTION_PLAN_STATES.has(requestedState) && requestedState.startsWith("blocked")
+    ? requestedState
+    : derivedState;
+  const sourceDigest = sha256(stableStringify({
+    contextLossWitnessDigest: contextLossWitness?.integrity?.artifactDigest || "",
+    sourceSpans,
+    residualRiskWitnesses,
+    planState,
+  }));
+  const plan = {
+    schema: DIRECT_CONTEXT_COMPACTION_PLAN_SCHEMA,
+    compactionPlanId: normalizeString(input.compactionPlanId, `context_compaction_plan_${sourceDigest.slice(0, 24)}`),
+    projectId: normalizeString(input.projectId, contextLossWitness?.projectId || ""),
+    threadId: normalizeString(input.threadId, contextLossWitness?.threadId || ""),
+    workThreadId: normalizeString(input.workThreadId, ""),
+    contextLossWitnessId: normalizeString(contextLossWitness?.contextLossWitnessId, ""),
+    contextLossWitnessDigest: normalizeString(contextLossWitness?.integrity?.artifactDigest, ""),
+    omissionLedgerId: normalizeString(contextLossWitness?.omissionLedgerId, ""),
+    routeId: normalizeString(contextLossWitness?.routeId, ""),
+    planState,
+    sourceSpanWitnesses: sourceSpans,
+    residualRiskWitnesses,
+    sourceSpanCount: sourceSpans.length,
+    residualRiskCount: residualRiskWitnesses.length,
+    compactedContextEligible: planState === "preview_ready" && contextLossWitness?.hiddenContextLossAllowed === false,
+    previewOnly: true,
+    localCompactionOnly: true,
+    materializedInThisPr: false,
+    contextMutationAllowedInThisPr: false,
+    providerCompactionUsed: false,
+    providerCompactionOutputAcceptedAsTruth: false,
+    hiddenOmissionAllowed: false,
+    rendererSafeSummary: normalizeString(
+      input.rendererSafeSummary,
+      planState === "preview_ready"
+        ? "Local compaction preview is eligible because source spans and omission witnesses are visible."
+        : "Local compaction preview is blocked until omission evidence is complete.",
+    ),
+    rawTextIncluded: false,
+    createdAt: normalizeString(input.createdAt, nowIso(input.nowMs)),
+  };
+  plan.integrity = makeIntegrity(sourceDigest);
+  plan.integrity.artifactDigest = artifactDigest({ ...plan, integrity: { ...plan.integrity, artifactDigest: "" } });
+  return plan;
+}
+
 function providerCompactionGateFor(input = {}) {
   const route = isPlainObject(input.route) ? input.route : null;
   const routeFlags = isPlainObject(route?.routeInput?.flags) ? route.routeInput.flags : {};
@@ -999,6 +1124,62 @@ function providerCompactionGateFor(input = {}) {
     providerTransportAllowed: false,
     evidenceRefs: Array.isArray(input.evidenceRefs) ? input.evidenceRefs : [],
   };
+}
+
+function buildCompactionWorkflowGate(input = {}) {
+  const localCompactionPlan = isPlainObject(input.localCompactionPlan || input.compactionPlan) ? (input.localCompactionPlan || input.compactionPlan) : null;
+  const contextLossWitness = isPlainObject(input.contextLossWitness) ? input.contextLossWitness : null;
+  const providerCompactionGate = isPlainObject(input.providerCompactionGate)
+    ? input.providerCompactionGate
+    : providerCompactionGateFor(input);
+  const manualCompactRequested = input.manualCompactRequested === true || input.compactRequested === true || Boolean(localCompactionPlan);
+  const planState = normalizeString(localCompactionPlan?.planState, "blocked_missing_context_loss_witness");
+  let manualCompactGateState = "not_requested";
+  if (manualCompactRequested) {
+    if (!localCompactionPlan) manualCompactGateState = "blocked_missing_context_loss_witness";
+    else if (planState === "preview_ready") manualCompactGateState = "manual_ready";
+    else if (COMPACTION_GATE_STATES.has(planState)) manualCompactGateState = planState;
+    else manualCompactGateState = "blocked_plan";
+  }
+  const sourceDigest = sha256(stableStringify({
+    planDigest: localCompactionPlan?.integrity?.artifactDigest || "",
+    contextLossDigest: contextLossWitness?.integrity?.artifactDigest || localCompactionPlan?.contextLossWitnessDigest || "",
+    providerCompactionGate,
+    manualCompactGateState,
+  }));
+  const gate = {
+    schema: DIRECT_CONTEXT_COMPACTION_GATE_SCHEMA,
+    compactionGateId: normalizeString(input.compactionGateId, `context_compaction_gate_${sourceDigest.slice(0, 24)}`),
+    projectId: normalizeString(input.projectId, localCompactionPlan?.projectId || contextLossWitness?.projectId || ""),
+    threadId: normalizeString(input.threadId, localCompactionPlan?.threadId || contextLossWitness?.threadId || ""),
+    workThreadId: normalizeString(input.workThreadId, localCompactionPlan?.workThreadId || ""),
+    compactionPlanId: normalizeString(localCompactionPlan?.compactionPlanId, ""),
+    compactionPlanDigest: normalizeString(localCompactionPlan?.integrity?.artifactDigest, ""),
+    contextLossWitnessId: normalizeString(contextLossWitness?.contextLossWitnessId || localCompactionPlan?.contextLossWitnessId, ""),
+    contextLossWitnessDigest: normalizeString(contextLossWitness?.integrity?.artifactDigest || localCompactionPlan?.contextLossWitnessDigest, ""),
+    manualCompactGateState,
+    localCompactionPlanState: planState,
+    sourceSpanCount: Number(localCompactionPlan?.sourceSpanCount || 0),
+    residualRiskCount: Number(localCompactionPlan?.residualRiskCount || 0),
+    compactedContextEligible: localCompactionPlan?.compactedContextEligible === true,
+    providerCompactionGate,
+    manualCompactActionAllowed: false,
+    automaticSchedulerAllowed: false,
+    providerCompactionAllowed: false,
+    providerTransportAllowed: false,
+    hiddenOmissionAllowed: false,
+    rawTextIncluded: false,
+    rendererSafeSummary: normalizeString(
+      input.rendererSafeSummary,
+      manualCompactGateState === "manual_ready"
+        ? "Manual compact gate is evidence-complete, but execution remains disabled in this PR."
+        : "Manual compact gate is blocked or not requested.",
+    ),
+    createdAt: normalizeString(input.createdAt, nowIso(input.nowMs)),
+  };
+  gate.integrity = makeIntegrity(sourceDigest);
+  gate.integrity.artifactDigest = artifactDigest({ ...gate, integrity: { ...gate.integrity, artifactDigest: "" } });
+  return gate;
 }
 
 function buildContextContinuityTransition(input = {}) {
@@ -1072,6 +1253,8 @@ function buildContextContinuityTransition(input = {}) {
 function buildContextContinuityStatusProjection(input = {}) {
   const transition = isPlainObject(input.transition) ? input.transition : null;
   const contextLossWitness = isPlainObject(input.contextLossWitness) ? input.contextLossWitness : null;
+  const localCompactionPlan = isPlainObject(input.localCompactionPlan || input.compactionPlan) ? (input.localCompactionPlan || input.compactionPlan) : null;
+  const compactionWorkflowGate = isPlainObject(input.compactionWorkflowGate || input.compactionGate) ? (input.compactionWorkflowGate || input.compactionGate) : null;
   const memoryReviewPacket = isPlainObject(input.memoryReviewPacket) ? input.memoryReviewPacket : null;
   const memoryRefreshProposal = isPlainObject(input.memoryRefreshProposal) ? input.memoryRefreshProposal : null;
   const memoryResetPolicy = isPlainObject(input.memoryResetPolicy) ? input.memoryResetPolicy : null;
@@ -1079,6 +1262,8 @@ function buildContextContinuityStatusProjection(input = {}) {
   const sourceDigest = sha256(stableStringify({
     transitionDigest: transition?.integrity?.artifactDigest || "",
     contextLossDigest: contextLossWitness?.integrity?.artifactDigest || transition?.contextLossWitnessDigest || "",
+    localCompactionPlanDigest: localCompactionPlan?.integrity?.artifactDigest || "",
+    compactionGateDigest: compactionWorkflowGate?.integrity?.artifactDigest || "",
     memoryReviewDigest: memoryReviewPacket?.integrity?.artifactDigest || "",
     memoryRefreshProposalDigest: memoryRefreshProposal?.integrity?.artifactDigest || "",
     memoryResetPolicyDigest: memoryResetPolicy?.integrity?.artifactDigest || "",
@@ -1097,6 +1282,11 @@ function buildContextContinuityStatusProjection(input = {}) {
     contextLossState: normalizeString(contextLossWitness?.lossState, "unknown"),
     omittedItemCount: Number(contextLossWitness?.totals?.omittedItemCount || 0),
     omittedTokenEstimate: Number(contextLossWitness?.totals?.omittedTokenEstimate || 0),
+    localCompactionPlanState: normalizeString(localCompactionPlan?.planState, "not_built"),
+    manualCompactGateState: normalizeString(compactionWorkflowGate?.manualCompactGateState, "not_requested"),
+    compactionSourceSpanCount: Number(localCompactionPlan?.sourceSpanCount || compactionWorkflowGate?.sourceSpanCount || 0),
+    compactionResidualRiskCount: Number(localCompactionPlan?.residualRiskCount || compactionWorkflowGate?.residualRiskCount || 0),
+    compactedContextEligible: localCompactionPlan?.compactedContextEligible === true || compactionWorkflowGate?.compactedContextEligible === true,
     memoryState: transition?.memoryId ? "present" : "none",
     memoryReviewState: normalizeString(memoryReviewPacket?.reviewState, "not_built"),
     memoryRefreshProposalState: normalizeString(memoryRefreshProposal?.proposalState, "not_built"),
@@ -1110,6 +1300,7 @@ function buildContextContinuityStatusProjection(input = {}) {
     displayOnly: true,
     inspectAllowed: true,
     compactActionAllowed: false,
+    manualCompactActionAllowed: false,
     memoryEditorAllowed: false,
     memoryResetAllowed: false,
     memoryRefreshMaterializationAllowed: false,
@@ -1128,6 +1319,8 @@ function buildContextContinuityStatusProjection(input = {}) {
 function validateContextContinuityProductization(input = {}) {
   const transition = isPlainObject(input.transition) ? input.transition : null;
   const projection = isPlainObject(input.projection) ? input.projection : null;
+  const localCompactionPlan = isPlainObject(input.localCompactionPlan || input.compactionPlan) ? (input.localCompactionPlan || input.compactionPlan) : null;
+  const compactionWorkflowGate = isPlainObject(input.compactionWorkflowGate || input.compactionGate) ? (input.compactionWorkflowGate || input.compactionGate) : null;
   if (!transition || transition.schema !== DIRECT_CONTEXT_CONTINUITY_TRANSITION_SCHEMA) {
     throw new Error("context_continuity_transition_schema_mismatch");
   }
@@ -1144,11 +1337,63 @@ function validateContextContinuityProductization(input = {}) {
     if (projection.schema !== DIRECT_CONTEXT_CONTINUITY_STATUS_PROJECTION_SCHEMA) {
       throw new Error("context_continuity_projection_schema_mismatch");
     }
-    if (projection.displayOnly !== true || projection.providerTransportAllowed !== false || projection.compactActionAllowed !== false) {
+    if (projection.displayOnly !== true || projection.providerTransportAllowed !== false || projection.compactActionAllowed !== false || projection.manualCompactActionAllowed !== false) {
       throw new Error("context_continuity_projection_authority_leak");
     }
     if (projection.memoryEditorAllowed !== false || projection.memoryResetAllowed !== false || projection.memoryRefreshMaterializationAllowed !== false) {
       throw new Error("context_continuity_projection_memory_authority_leak");
+    }
+  }
+  if (localCompactionPlan) validateCompactionWorkflow({ localCompactionPlan });
+  if (compactionWorkflowGate) validateCompactionWorkflow({ localCompactionPlan, compactionWorkflowGate });
+  return true;
+}
+
+function validateCompactionWorkflow(input = {}) {
+  const localCompactionPlan = isPlainObject(input.localCompactionPlan || input.compactionPlan) ? (input.localCompactionPlan || input.compactionPlan) : null;
+  const compactionWorkflowGate = isPlainObject(input.compactionWorkflowGate || input.compactionGate) ? (input.compactionWorkflowGate || input.compactionGate) : null;
+  if (localCompactionPlan) {
+    if (localCompactionPlan.schema !== DIRECT_CONTEXT_COMPACTION_PLAN_SCHEMA) {
+      throw new Error("context_compaction_plan_schema_mismatch");
+    }
+    if (localCompactionPlan.rawTextIncluded !== false || localCompactionPlan.hiddenOmissionAllowed !== false) {
+      throw new Error("context_compaction_plan_visibility_leak");
+    }
+    if (localCompactionPlan.materializedInThisPr !== false || localCompactionPlan.contextMutationAllowedInThisPr !== false) {
+      throw new Error("context_compaction_plan_mutation_authority_leak");
+    }
+    if (localCompactionPlan.providerCompactionUsed !== false || localCompactionPlan.providerCompactionOutputAcceptedAsTruth !== false) {
+      throw new Error("context_compaction_plan_provider_authority_leak");
+    }
+    if (localCompactionPlan.compactedContextEligible === true && !normalizeString(localCompactionPlan.contextLossWitnessId, "")) {
+      throw new Error("context_compaction_plan_eligible_without_context_loss_witness");
+    }
+    if (
+      localCompactionPlan.planState === "preview_ready" &&
+      (!Array.isArray(localCompactionPlan.sourceSpanWitnesses) ||
+        localCompactionPlan.sourceSpanCount !== localCompactionPlan.sourceSpanWitnesses.length)
+    ) {
+      throw new Error("context_compaction_plan_source_span_count_mismatch");
+    }
+  }
+  if (compactionWorkflowGate) {
+    if (compactionWorkflowGate.schema !== DIRECT_CONTEXT_COMPACTION_GATE_SCHEMA) {
+      throw new Error("context_compaction_gate_schema_mismatch");
+    }
+    if (compactionWorkflowGate.rawTextIncluded !== false || compactionWorkflowGate.hiddenOmissionAllowed !== false) {
+      throw new Error("context_compaction_gate_visibility_leak");
+    }
+    if (compactionWorkflowGate.manualCompactActionAllowed !== false || compactionWorkflowGate.automaticSchedulerAllowed !== false) {
+      throw new Error("context_compaction_gate_action_authority_leak");
+    }
+    if (compactionWorkflowGate.providerCompactionAllowed !== false || compactionWorkflowGate.providerTransportAllowed !== false) {
+      throw new Error("context_compaction_gate_provider_authority_leak");
+    }
+    if (compactionWorkflowGate.manualCompactGateState === "manual_ready" && !normalizeString(compactionWorkflowGate.compactionPlanId, "")) {
+      throw new Error("context_compaction_gate_ready_without_plan");
+    }
+    if (compactionWorkflowGate.manualCompactGateState === "manual_ready" && (!localCompactionPlan || localCompactionPlan.compactedContextEligible !== true)) {
+      throw new Error("context_compaction_gate_ready_with_ineligible_plan");
     }
   }
   return true;
@@ -1430,6 +1675,8 @@ module.exports = {
   DIRECT_CONTEXT_MAINTENANCE_ROUTE_INPUT_SCHEMA,
   DIRECT_CONTEXT_MAINTENANCE_ROUTE_SCHEMA,
   DIRECT_CONTEXT_MAINTENANCE_STATUS_PROJECTION_SCHEMA,
+  DIRECT_CONTEXT_COMPACTION_GATE_SCHEMA,
+  DIRECT_CONTEXT_COMPACTION_PLAN_SCHEMA,
   DIRECT_CONTEXT_CONTINUITY_STATUS_PROJECTION_SCHEMA,
   DIRECT_CONTEXT_CONTINUITY_TRANSITION_SCHEMA,
   DIRECT_CONTEXT_LOSS_WITNESS_SCHEMA,
@@ -1456,6 +1703,8 @@ module.exports = {
   buildContextContinuityStatusProjection,
   buildContextContinuityTransition,
   buildContextLossWitness,
+  buildCompactionWorkflowGate,
+  buildLocalCompactionPlan,
   buildMaintenanceManifest,
   buildMemoryRefreshManifest,
   buildOmissionLedger,
@@ -1475,6 +1724,7 @@ module.exports = {
   sha256,
   stableStringify,
   validateStatusProjectionAction,
+  validateCompactionWorkflow,
   validateContextContinuityProductization,
   validateContextMaintenanceReport,
   validateThreadMemoryWorkflow,
