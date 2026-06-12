@@ -430,9 +430,9 @@ The productized transition is therefore suitable for a future settings/control
 surface, but it is not a scheduler, provider compact runner, memory editor, or
 continuation authority.
 
-## Next Practical Step
+## Wave 2 Ledger
 
-## Direct Settings / Bridge Status Surface Slice
+### Direct Settings / Bridge Status Surface Slice
 
 Implemented in the PR 6 slice:
 
@@ -451,7 +451,7 @@ Explicitly still out of scope:
 - Provider compaction or provider transport.
 - Creating a live WorkThread registry store from the settings read path.
 
-## AgentClassSpec Registry Slice
+### AgentClassSpec Registry Slice
 
 Implemented in the PR 7 slice:
 
@@ -476,7 +476,115 @@ Explicitly still out of scope:
 - Provider calls, workspace mutation, memory mutation, or provider compaction
   from role specs.
 
-## First Controlled Routing Slice
+### Sub-Agent / Worker Graph Alignment Slice
+
+Implemented in the PR 8 slice:
+
+- `src/main/direct/agents/observability.js` aligns worker/sub-agent graph
+  evidence with WorkThread and AgentClassSpec identity.
+- Worker nodes can cite WorkThread id, provider thread id, model/effort,
+  lifecycle/activity, parent edge data, and mapped role contract.
+- `scripts/direct-sub-agent-observability-regression.mjs` asserts worker graph
+  containment and no child-output promotion.
+
+Explicitly still out of scope:
+
+- New sub-agent spawning.
+- Autonomous orchestration.
+- Worker result promotion into the primary transcript without projection law.
+- Enforced WorkThread routing by role.
+
+### Work-Target Resolver Productization Slice
+
+Implemented in the PR 9 slice:
+
+- `direct_work_target_resolution_report@1` turns shadow resolution into a
+  renderer-safe target-gate report.
+- Reports include selected target, candidate summaries, stale blockers,
+  ambiguity blockers, and mutation/provider-call posture.
+- Settings bridge status can display resolver state.
+- `scripts/direct-workthread-foundation-regression.mjs` and
+  `scripts/direct-settings-bridge-status-regression.mjs` cover selected,
+  ambiguous, stale, unresolved, and renderer-safe cases.
+
+Explicitly still out of scope:
+
+- User clarification target picker.
+- Full enforcement in every direct action controller.
+- Object-level task execution by the resolver.
+
+### Semantic Broker Preflight Slice
+
+Implemented in the PR 10 slice:
+
+- `semantic_broker_preflight@1` consumes semantic broker packet,
+  WorkTargetResolution report, AgentClassSpec, context/request refs, and
+  AuthorityBearingTransition refs.
+- Recommendation classes are `allow`, `block`, `clarify`, `route_to_role`,
+  and `stale`.
+- `scripts/direct-governance-broker-regression.mjs` covers recommendation
+  classes, stale guards, and non-authority flags.
+
+Explicitly still out of scope:
+
+- Controller-level preflight enforcement except where later controlled-routing
+  slices explicitly opt in.
+- Role handoff execution.
+- Broker object-level audit or worker behavior.
+
+### Direct-Native Memory Workflow Slice
+
+Implemented in the PR 11 slice:
+
+- Memory review, refresh proposal, reset policy, and reset confirmation
+  artifacts are represented as direct-native workflow packets.
+- Continuity/settings projection exposes memory review state, refresh proposal
+  state, stale count, and conflict count.
+- Memory remains evidence and continuity substrate, not policy authority.
+
+Explicitly still out of scope:
+
+- Actual memory rewrite/materialization.
+- Executable memory reset.
+- Provider-side memory claim acceptance.
+
+### Direct-Native Compaction Workflow Gate Slice
+
+Implemented in the PR 12 slice:
+
+- `direct_context_compaction_plan@1` and `direct_context_compaction_gate@1`
+  model local compaction preview and manual gate state.
+- Source-span and residual-risk witnesses keep omission visibility explicit.
+- Provider compaction remains blocked unless runtime/provider evidence later
+  proves support.
+
+Explicitly still out of scope:
+
+- Opaque provider compact output as source truth.
+- Automatic compaction scheduler.
+- Hidden omission.
+
+### Skills / Hooks / Apps Execution Gate Slice
+
+Implemented in the PR 13 slice:
+
+- `direct_bridge_context_contribution@1`
+- `direct_bridge_evidence_import_row@1`
+- `direct_bridge_hook_proposal@1`
+- `direct_bridge_execution_gate@1`
+- Module status/settings projection includes context contribution, evidence
+  import, hook proposal, and execution gate counts.
+- `scripts/direct-module-execution-gates-regression.mjs` proves execution gates
+  do not enable provider calls, workspace mutation, connector action, hook
+  action, or auto invocation.
+
+Explicitly still out of scope:
+
+- Default auto-invocation.
+- Workspace mutation from hooks/apps.
+- Connector calls without an AuthorityBearingTransition.
+
+### First Controlled Routing Slice
 
 Implemented in the PR 14 slice:
 
@@ -499,3 +607,23 @@ Explicitly still out of scope:
 - Workspace mutation.
 - Direct app-server replacement.
 - Object-level audit automation.
+
+## Planned Wave 3
+
+The next roadmap wave is now tracked in:
+
+```text
+docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md
+```
+
+Planned sequence:
+
+```text
+PR 15 direct-native thread deck and new thread UX
+PR 16 operator/project broker resolution surface
+PR 17 direct usage ledger by agent and worker
+PR 18 direct attachment capability and submit semantics
+PR 19 route-to-role handoff packet
+PR 20 explicit worker start V0
+PR 21 meta-orchestrator / auditor loop spec-to-shadow
+```

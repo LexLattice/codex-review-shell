@@ -108,7 +108,7 @@ Still intentionally not authority:
 
 ## Wave 2: Inspectability, Roles, And Controlled Routing
 
-Status: planned.
+Status: merged.
 
 Goal:
 
@@ -482,7 +482,7 @@ Continuity status projection and memory workflow policy exist.
 
 ### PR 13: Skills / Hooks / Apps Execution Gates
 
-Status: in progress.
+Status: merged.
 
 Branch:
 
@@ -528,7 +528,7 @@ Semantic broker preflight and AuthorityBearingTransition envelopes exist.
 
 ### PR 14: First Controlled Routing Slice
 
-Status: implemented in branch `codex/direct-controlled-routing-slice`.
+Status: merged.
 
 Purpose:
 
@@ -574,6 +574,275 @@ Settings, agent class specs, resolver productization, and semantic preflight
 must be implemented and green.
 ```
 
+Wave 2 result:
+
+```text
+Implemented:
+  direct settings / bridge status surface
+  AgentClassSpec role contracts
+  WorkThread-scoped worker graph alignment
+  productized WorkTargetResolution report
+  semantic broker preflight
+  direct-native memory workflow packets
+  direct-native compaction workflow gate
+  skills/hooks/apps contribution/import/proposal/execution gates
+  first controlled routing slice into existing direct text turn
+
+Still intentionally not authority:
+  route-to-role execution
+  multi-agent orchestration loop
+  autonomous tool execution expansion
+  skill/hook/connector execution runner
+  provider-side memory acceptance
+  provider compaction execution
+  direct-native thread deck parity
+  cross-project operator broker enforcement
+  direct provider file/image payload semantics
+```
+
+## Wave 3: Direct-Native Product Surface And Brokered Workflows
+
+Status: planned.
+
+Goal:
+
+```text
+Make the direct path practical for normal daily workflow while keeping the
+information bridge laws explicit: target resolution before mutation, context
+pack before provider request, role contract before delegation, and evidence
+before authority.
+```
+
+### PR 15: Direct-Native Thread Deck And New Thread UX
+
+Status: planned.
+
+Purpose:
+
+```text
+Expose direct-native thread list/start/resume/focus flows with WorkThread-aware
+identity instead of relying on app-server thread UX assumptions.
+```
+
+Scope:
+
+- Add direct thread deck projection for sessions, active turns, and recoverable
+  interrupted turns.
+- Add new direct thread action with explicit project/runtime/default model
+  posture.
+- Add resume/focus actions for existing direct sessions.
+- Keep grouping control-plane invariant: WorkThread/project ontology first,
+  provider/runtime thread id second.
+- Keep app-server path unchanged.
+
+Non-goals:
+
+- No import/migration of vanilla app-server sessions.
+- No multi-panel concurrent direct execution unless already supported by the
+  existing direct controller.
+- No WorkThread creation wizard beyond minimal safe thread start.
+
+Dependency:
+
+```text
+Controlled routing and settings bridge status are merged.
+```
+
+### PR 16: Operator / Project Broker Resolution Surface
+
+Status: planned.
+
+Purpose:
+
+```text
+Turn wrong-thread / compressed user utterance handling into an explicit broker
+resolution artifact before any direct-path mutation or delegation.
+```
+
+Scope:
+
+- Add `operator_broker_resolution@1` over active WorkThreads, branches,
+  workspaces, linked Codex/ChatGPT threads, open obligations, and recent
+  context packet refs.
+- Add candidate/confidence/ambiguity projection in settings or project surface.
+- Add clarification-required state when candidates conflict.
+- Add non-target preservation constraints to downstream route packets.
+
+Non-goals:
+
+- No broker execution of object-level work.
+- No silent target switch when confidence is low.
+- No reliance on chat recency as sole authority.
+
+Dependency:
+
+```text
+WorkTargetResolution report, semantic broker preflight, and controlled routing
+slice exist.
+```
+
+### PR 17: Direct Usage Ledger By Agent And Worker
+
+Status: planned.
+
+Purpose:
+
+```text
+Capture direct-path model/turn usage as neutral evidence, with main-agent and
+sub-worker separation where the direct harness owns the calls.
+```
+
+Scope:
+
+- Add direct usage ledger rows for direct provider requests, responses,
+  streamed usage, turn duration, model, effort, service tier, and context
+  pressure.
+- Attribute rows to primary agent, worker/sub-agent, WorkThread, and route.
+- Expose summary in analytics/settings without treating cost as runtime truth.
+- Keep cost derivation separate and price-snapshot-bound.
+
+Non-goals:
+
+- No attempt to reconstruct exact vanilla app-server sub-agent usage when
+  upstream app-server does not expose it.
+- No billing-grade cost claim without dated pricing evidence.
+- No raw prompt/output payload storage by default.
+
+Dependency:
+
+```text
+AgentClassSpec and worker graph alignment exist; direct transport request path
+is already main-process-owned.
+```
+
+### PR 18: Direct Attachment Capability And Submit Semantics
+
+Status: planned.
+
+Purpose:
+
+```text
+Define how files/images enter direct provider requests, as payloads or governed
+references, without inheriting app-server attachment assumptions.
+```
+
+Scope:
+
+- Add direct provider attachment capability projection.
+- Extend attachment submit packet with direct disposition:
+  provider payload, workspace ref, staged ref, text ref, or unsupported.
+- Add image/file capability gates and blocked-state witnesses.
+- Keep staging manifests, raw-path redaction, and cross-project draft guards.
+
+Non-goals:
+
+- No fake image/file payload support without provider evidence.
+- No directory ingestion.
+- No OCR/image understanding layer.
+- No attachment transcript truth before provider submit/acceptance witness.
+
+Dependency:
+
+```text
+Mainline attachment staging substrate exists; direct runtime capability
+projection is available.
+```
+
+### PR 19: Route-To-Role Handoff Packet
+
+Status: planned.
+
+Purpose:
+
+```text
+Convert semantic broker `route_to_role` recommendations into explicit handoff
+packets without spawning workers or running an orchestration loop.
+```
+
+Scope:
+
+- Add `direct_role_handoff_packet@1`.
+- Cite WorkThread, operator broker/target resolution, semantic preflight,
+  selected AgentClassSpec, authority boundary, context packet refs, and
+  expected output artifact family.
+- Add renderer-safe preview and accept/reject posture.
+- Keep provider call and worker spawn disabled unless a later PR grants it.
+
+Non-goals:
+
+- No automatic worker creation.
+- No object-level audit execution.
+- No route-to-role provider call in this PR.
+
+Dependency:
+
+```text
+Operator broker and controlled routing slice exist.
+```
+
+### PR 20: Explicit Worker Start V0
+
+Status: planned.
+
+Purpose:
+
+```text
+Allow an operator-approved role handoff packet to start one bounded direct
+worker turn, while preserving primary/worker transcript separation.
+```
+
+Scope:
+
+- Add one explicit start-worker transition from an accepted handoff packet.
+- Build worker context packet from cited WorkThread and handoff evidence.
+- Persist worker session/thread identity and link it to worker graph alignment.
+- Render worker activity separately from primary transcript.
+
+Non-goals:
+
+- No autonomous multi-agent loop.
+- No recursive worker spawning.
+- No auditor certification or workflow closure automation.
+
+Dependency:
+
+```text
+Route-to-role handoff packet exists and direct-native thread deck can display
+the worker session.
+```
+
+### PR 21: Meta-Orchestrator / Auditor Loop Spec-To-Shadow
+
+Status: planned.
+
+Purpose:
+
+```text
+Introduce the long-horizon loop as typed institutional events and artifacts
+before enabling autonomous advancement.
+```
+
+Scope:
+
+- Add meta-orchestrator plan pointer, StepStarted/StepFinished events, and
+  typed artifact gates.
+- Add ImplementationEvidenceArtifact and AuditArtifact schema stubs.
+- Add shallow transition-law validation: artifact class, role provenance,
+  refs, declared scope.
+- Keep object-level validity assigned to auditor role, not orchestrator.
+
+Non-goals:
+
+- No autonomous continuation scheduler.
+- No hidden super-auditor behavior.
+- No automatic goal completion judgment by the worker.
+
+Dependency:
+
+```text
+Worker start V0 and role handoff packet exist.
+```
+
 ## Update Rules
 
 After each PR:
@@ -593,10 +862,10 @@ npm run direct:information-bridge-audit
 
 Items that are real but not yet assigned to a wave:
 
-- Cost/usage attribution by main agent and sub-worker for the direct path.
-- Full multi-agent long-horizon orchestrator/auditor loop.
-- Operator/project broker across multiple repos, branches, work folders, and
-  active ontologies.
-- Direct-native replacement for app-server thread listing/start/resume UX.
-- Provider-side direct image/file attachment semantics.
 - Mature skill/hook marketplace or installation UI.
+- Bridge module runner V0 after execution gates, with explicit authority
+  transition and no auto-invocation.
+- Cost/pricing pass over direct usage ledger rows using dated pricing snapshots.
+- Project-scoped persistent web/session policy for future governed browser
+  surfaces.
+- Direct-native import/migration strategy for selected app-server transcripts.
