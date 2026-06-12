@@ -11,6 +11,10 @@ const DIRECT_RAW_WINDOW_TRIM_PLAN_SCHEMA = "raw_window_trim_plan@1";
 const DIRECT_CONTEXT_OMISSION_LEDGER_SCHEMA = "context_omission_ledger@1";
 const DIRECT_DURABLE_THREAD_MEMORY_SCHEMA = "durable_thread_memory@1";
 const DIRECT_THREAD_MEMORY_REFRESH_SCHEMA = "thread_memory_refresh@1";
+const DIRECT_THREAD_MEMORY_REVIEW_PACKET_SCHEMA = "thread_memory_review_packet@1";
+const DIRECT_THREAD_MEMORY_REFRESH_PROPOSAL_SCHEMA = "thread_memory_refresh_proposal@1";
+const DIRECT_THREAD_MEMORY_RESET_POLICY_SCHEMA = "thread_memory_reset_policy@1";
+const DIRECT_THREAD_MEMORY_RESET_CONFIRMATION_SCHEMA = "thread_memory_reset_confirmation@1";
 const DIRECT_FRONTIER_BATON_SCHEMA = "frontier_baton@1";
 const DIRECT_CONTEXT_LOSS_WITNESS_SCHEMA = "direct_context_loss_witness@1";
 const DIRECT_CONTEXT_CONTINUITY_TRANSITION_SCHEMA = "direct_context_continuity_transition@1";
@@ -56,6 +60,10 @@ const MAINTENANCE_ENGINES = new Set([
   "provider_text_summary",
   "none",
 ]);
+const MEMORY_REVIEW_STATES = new Set(["current", "review_required", "stale", "conflicted", "missing", "blocked"]);
+const MEMORY_REFRESH_PROPOSAL_STATES = new Set(["proposed", "accepted", "rejected", "blocked"]);
+const MEMORY_RESET_POLICY_STATES = new Set(["disabled", "available_with_confirmation", "blocked"]);
+const MEMORY_RESET_CONFIRMATION_STATES = new Set(["not_requested", "confirmed_noop", "rejected", "blocked"]);
 
 function isPlainObject(value) {
   return Object.prototype.toString.call(value) === "[object Object]";
@@ -518,6 +526,235 @@ function buildMemoryRefreshManifest(input = {}) {
   return manifest;
 }
 
+function normalizeMemoryWorkflowRef(input = {}, fallbackKind = "memory_source") {
+  if (!isPlainObject(input)) return null;
+  const artifactKind = normalizeString(input.artifactKind || input.kind, fallbackKind);
+  const artifactId = normalizeString(input.artifactId || input.id, "");
+  const artifactDigest = normalizeString(input.artifactDigest || input.digest, "");
+  if (!artifactId && !artifactDigest) return null;
+  return {
+    artifactKind,
+    artifactId,
+    artifactDigest,
+    sourceState: normalizeString(input.sourceState || input.status, "accepted"),
+    rendererSafeLabel: normalizeString(input.rendererSafeLabel || input.label, artifactKind),
+    rawTextIncluded: false,
+  };
+}
+
+function normalizeMemoryWorkflowRefs(values, fallbackKind = "memory_source") {
+  return (Array.isArray(values) ? values : []).map((value) => normalizeMemoryWorkflowRef(value, fallbackKind)).filter(Boolean);
+}
+
+function memoryDigestFor(memory = {}) {
+  return normalizeString(memory.integrity?.artifactDigest || memory.memoryDigest, "");
+}
+
+function memoryWorkflowStateFor(memory = {}) {
+  if (!isPlainObject(memory)) return "missing";
+  const entries = Array.isArray(memory.entries) ? memory.entries : [];
+  const staleCount = entries.filter((entry) => normalizeString(entry.staleness, "current") !== "current").length;
+  const conflictCount = entries.filter((entry) => normalizeString(entry.conflictState, "none") !== "none").length;
+  if (conflictCount) return "conflicted";
+  if (staleCount) return "stale";
+  return "current";
+}
+
+function buildThreadMemoryReviewPacket(input = {}) {
+  const memory = isPlainObject(input.memory) ? input.memory : null;
+  const omissionLedger = isPlainObject(input.omissionLedger) ? input.omissionLedger : null;
+  const entries = Array.isArray(memory?.entries) ? memory.entries : [];
+  const staleEntryCount = entries.filter((entry) => normalizeString(entry.staleness, "current") !== "current").length;
+  const conflictEntryCount = entries.filter((entry) => normalizeString(entry.conflictState, "none") !== "none").length;
+  const sourceRefs = normalizeMemoryWorkflowRefs(input.sourceRefs, "memory_review_source");
+  const omissionRefs = [
+    omissionLedger
+      ? normalizeMemoryWorkflowRef({
+          artifactKind: "context_omission_ledger",
+          artifactId: omissionLedger.omissionLedgerId,
+          artifactDigest: omissionLedger.integrity?.artifactDigest,
+          rendererSafeLabel: "Omission ledger",
+        }, "context_omission_ledger")
+      : null,
+    ...normalizeMemoryWorkflowRefs(input.omissionRefs, "context_omission_ledger"),
+  ].filter(Boolean);
+  const computedReviewState = memoryWorkflowStateFor(memory);
+  const reviewState = MEMORY_REVIEW_STATES.has(input.reviewState) ? input.reviewState : computedReviewState;
+  const sourceDigest = sha256(stableStringify({
+    memoryDigest: memoryDigestFor(memory || {}),
+    sourceRefs,
+    omissionRefs,
+    reviewState,
+    staleEntryCount,
+    conflictEntryCount,
+  }));
+  const packet = {
+    schema: DIRECT_THREAD_MEMORY_REVIEW_PACKET_SCHEMA,
+    memoryReviewPacketId: normalizeString(input.memoryReviewPacketId, `memory_review_${sourceDigest.slice(0, 24)}`),
+    projectId: normalizeString(input.projectId, memory?.projectId || omissionLedger?.projectId || ""),
+    threadId: normalizeString(input.threadId, memory?.threadId || omissionLedger?.threadId || ""),
+    workThreadId: normalizeString(input.workThreadId, ""),
+    currentMemoryId: normalizeString(memory?.memoryId, ""),
+    currentMemoryDigest: memoryDigestFor(memory || {}),
+    memoryPointerState: normalizeString(memory?.memoryPointerState, "missing"),
+    entryCount: entries.length,
+    staleEntryCount,
+    conflictEntryCount,
+    reviewState,
+    sourceRefs,
+    omissionRefs,
+    omissionLedgerId: normalizeString(omissionLedger?.omissionLedgerId, ""),
+    omissionLedgerDigest: normalizeString(omissionLedger?.integrity?.artifactDigest, ""),
+    omissionItemCount: Number(omissionLedger?.totals?.omittedItemCount || 0),
+    refreshProposalAllowed: reviewState !== "blocked" && Boolean(memory),
+    memoryAsPolicyAuthority: false,
+    providerMemoryClaimAccepted: false,
+    rendererSafeSummary: normalizeString(
+      input.rendererSafeSummary,
+      reviewState === "current"
+        ? "Thread memory is current as quoted evidence."
+        : "Thread memory needs review before refresh or reset.",
+    ),
+    rawTextIncluded: false,
+    createdAt: normalizeString(input.createdAt, nowIso(input.nowMs)),
+  };
+  packet.integrity = makeIntegrity(sourceDigest);
+  packet.integrity.artifactDigest = artifactDigest({ ...packet, integrity: { ...packet.integrity, artifactDigest: "" } });
+  return packet;
+}
+
+function buildThreadMemoryRefreshProposal(input = {}) {
+  const reviewPacket = isPlainObject(input.reviewPacket) ? input.reviewPacket : null;
+  const currentMemory = isPlainObject(input.currentMemory) ? input.currentMemory : null;
+  const proposedMemory = isPlainObject(input.proposedMemory || input.nextMemory) ? (input.proposedMemory || input.nextMemory) : null;
+  const sourceRefs = normalizeMemoryWorkflowRefs(input.sourceRefs, "memory_refresh_source");
+  const requestedState = normalizeString(input.proposalState || input.status, "proposed");
+  const reviewState = normalizeString(reviewPacket?.reviewState, reviewPacket ? "unknown" : "missing");
+  const hasProposedMemory = Boolean(normalizeString(proposedMemory?.memoryId, ""));
+  const proposalCanBeReviewed = hasProposedMemory && reviewPacket && reviewState !== "blocked" && reviewState !== "missing";
+  let proposalState = "blocked";
+  if (proposalCanBeReviewed) {
+    proposalState = MEMORY_REFRESH_PROPOSAL_STATES.has(requestedState) ? requestedState : "proposed";
+  }
+  const sourceDigest = sha256(stableStringify({
+    reviewPacketDigest: reviewPacket?.integrity?.artifactDigest || "",
+    currentMemoryDigest: memoryDigestFor(currentMemory || {}),
+    proposedMemoryDigest: memoryDigestFor(proposedMemory || {}),
+    sourceRefs,
+    proposalState,
+  }));
+  const proposal = {
+    schema: DIRECT_THREAD_MEMORY_REFRESH_PROPOSAL_SCHEMA,
+    memoryRefreshProposalId: normalizeString(input.memoryRefreshProposalId, `memory_refresh_proposal_${sourceDigest.slice(0, 24)}`),
+    projectId: normalizeString(input.projectId, reviewPacket?.projectId || proposedMemory?.projectId || currentMemory?.projectId || ""),
+    threadId: normalizeString(input.threadId, reviewPacket?.threadId || proposedMemory?.threadId || currentMemory?.threadId || ""),
+    workThreadId: normalizeString(input.workThreadId, reviewPacket?.workThreadId || ""),
+    memoryReviewPacketId: normalizeString(reviewPacket?.memoryReviewPacketId, ""),
+    currentMemoryId: normalizeString(currentMemory?.memoryId || reviewPacket?.currentMemoryId, ""),
+    proposedMemoryId: normalizeString(proposedMemory?.memoryId, ""),
+    proposalState,
+    sourceRefs,
+    acceptedByOperator: proposalState === "accepted",
+    rejectedByOperator: proposalState === "rejected",
+    currentMemoryRetained: true,
+    materializedInThisPr: false,
+    memoryMutationAllowedInThisPr: false,
+    providerTransportUsed: false,
+    providerMemoryClaimAccepted: false,
+    rendererSafeSummary: normalizeString(
+      input.rendererSafeSummary,
+      proposalState === "accepted"
+        ? "Memory refresh was accepted as a proposal, but no memory mutation is enabled in this PR."
+        : proposalState === "rejected" ? "Memory refresh proposal was rejected."
+          : proposalState === "blocked" ? "Memory refresh is blocked until a concrete proposal and review evidence exist."
+            : "Memory refresh proposal is available for review.",
+    ),
+    rawTextIncluded: false,
+    createdAt: normalizeString(input.createdAt, nowIso(input.nowMs)),
+  };
+  proposal.integrity = makeIntegrity(sourceDigest);
+  proposal.integrity.artifactDigest = artifactDigest({ ...proposal, integrity: { ...proposal.integrity, artifactDigest: "" } });
+  return proposal;
+}
+
+function buildThreadMemoryResetPolicy(input = {}) {
+  const enabled = input.enabled === true;
+  const sourceRefs = normalizeMemoryWorkflowRefs(input.sourceRefs, "memory_reset_policy_source");
+  const policyState = MEMORY_RESET_POLICY_STATES.has(input.policyState)
+    ? input.policyState
+    : enabled ? "available_with_confirmation" : "disabled";
+  const sourceDigest = sha256(stableStringify({
+    projectId: input.projectId,
+    threadId: input.threadId,
+    policyState,
+    sourceRefs,
+  }));
+  const policy = {
+    schema: DIRECT_THREAD_MEMORY_RESET_POLICY_SCHEMA,
+    memoryResetPolicyId: normalizeString(input.memoryResetPolicyId, `memory_reset_policy_${sourceDigest.slice(0, 24)}`),
+    projectId: normalizeString(input.projectId, ""),
+    threadId: normalizeString(input.threadId, ""),
+    workThreadId: normalizeString(input.workThreadId, ""),
+    policyState,
+    confirmationRequired: policyState === "available_with_confirmation",
+    resetWorkflowVisible: policyState !== "disabled",
+    resetAllowedInThisPr: false,
+    memoryMutationAllowedInThisPr: false,
+    sourceRefs,
+    rendererSafeSummary: normalizeString(
+      input.rendererSafeSummary,
+      policyState !== "disabled" ? "Memory reset is visible as a confirmable workflow, but reset execution is disabled in this PR." : "Memory reset is disabled.",
+    ),
+    rawTextIncluded: false,
+    createdAt: normalizeString(input.createdAt, nowIso(input.nowMs)),
+  };
+  policy.integrity = makeIntegrity(sourceDigest);
+  policy.integrity.artifactDigest = artifactDigest({ ...policy, integrity: { ...policy.integrity, artifactDigest: "" } });
+  return policy;
+}
+
+function buildThreadMemoryResetConfirmation(input = {}) {
+  const resetPolicy = isPlainObject(input.resetPolicy) ? input.resetPolicy : null;
+  const requestedState = normalizeString(input.confirmationState, input.confirmedByOperator === true ? "confirmed_noop" : "not_requested");
+  const normalizedRequestedState = MEMORY_RESET_CONFIRMATION_STATES.has(requestedState) ? requestedState : "not_requested";
+  const resetPolicyConfirmable = resetPolicy?.policyState === "available_with_confirmation";
+  const confirmationRequested = normalizedRequestedState === "confirmed_noop" || input.confirmedByOperator === true;
+  let confirmationState = normalizedRequestedState;
+  if (confirmationRequested && !resetPolicyConfirmable) {
+    confirmationState = "blocked";
+  }
+  const sourceDigest = sha256(stableStringify({
+    resetPolicyDigest: resetPolicy?.integrity?.artifactDigest || "",
+    confirmationState,
+    confirmedByOperator: confirmationState === "confirmed_noop",
+  }));
+  const confirmation = {
+    schema: DIRECT_THREAD_MEMORY_RESET_CONFIRMATION_SCHEMA,
+    memoryResetConfirmationId: normalizeString(input.memoryResetConfirmationId, `memory_reset_confirmation_${sourceDigest.slice(0, 24)}`),
+    projectId: normalizeString(input.projectId, resetPolicy?.projectId || ""),
+    threadId: normalizeString(input.threadId, resetPolicy?.threadId || ""),
+    workThreadId: normalizeString(input.workThreadId, resetPolicy?.workThreadId || ""),
+    memoryResetPolicyId: normalizeString(resetPolicy?.memoryResetPolicyId, ""),
+    confirmationState,
+    confirmedByOperator: confirmationState === "confirmed_noop",
+    resetExecuted: false,
+    resetAllowedInThisPr: false,
+    memoryMutationAllowedInThisPr: false,
+    currentMemoryRetained: true,
+    rendererSafeSummary: normalizeString(
+      input.rendererSafeSummary,
+      confirmationState === "confirmed_noop"
+        ? "Memory reset confirmation was recorded as a no-op; memory reset execution is disabled in this PR."
+        : "No memory reset confirmation has been executed.",
+    ),
+    rawTextIncluded: false,
+    createdAt: normalizeString(input.createdAt, nowIso(input.nowMs)),
+  };
+  confirmation.integrity = makeIntegrity(sourceDigest);
+  confirmation.integrity.artifactDigest = artifactDigest({ ...confirmation, integrity: { ...confirmation.integrity, artifactDigest: "" } });
+  return confirmation;
+}
+
 function buildFrontierBaton(input = {}) {
   const frontier = isPlainObject(input.frontier) ? input.frontier : {};
   const baton = {
@@ -835,9 +1072,17 @@ function buildContextContinuityTransition(input = {}) {
 function buildContextContinuityStatusProjection(input = {}) {
   const transition = isPlainObject(input.transition) ? input.transition : null;
   const contextLossWitness = isPlainObject(input.contextLossWitness) ? input.contextLossWitness : null;
+  const memoryReviewPacket = isPlainObject(input.memoryReviewPacket) ? input.memoryReviewPacket : null;
+  const memoryRefreshProposal = isPlainObject(input.memoryRefreshProposal) ? input.memoryRefreshProposal : null;
+  const memoryResetPolicy = isPlainObject(input.memoryResetPolicy) ? input.memoryResetPolicy : null;
+  const memoryResetConfirmation = isPlainObject(input.memoryResetConfirmation) ? input.memoryResetConfirmation : null;
   const sourceDigest = sha256(stableStringify({
     transitionDigest: transition?.integrity?.artifactDigest || "",
     contextLossDigest: contextLossWitness?.integrity?.artifactDigest || transition?.contextLossWitnessDigest || "",
+    memoryReviewDigest: memoryReviewPacket?.integrity?.artifactDigest || "",
+    memoryRefreshProposalDigest: memoryRefreshProposal?.integrity?.artifactDigest || "",
+    memoryResetPolicyDigest: memoryResetPolicy?.integrity?.artifactDigest || "",
+    memoryResetConfirmationDigest: memoryResetConfirmation?.integrity?.artifactDigest || "",
   }));
   const projection = {
     schema: DIRECT_CONTEXT_CONTINUITY_STATUS_PROJECTION_SCHEMA,
@@ -853,6 +1098,12 @@ function buildContextContinuityStatusProjection(input = {}) {
     omittedItemCount: Number(contextLossWitness?.totals?.omittedItemCount || 0),
     omittedTokenEstimate: Number(contextLossWitness?.totals?.omittedTokenEstimate || 0),
     memoryState: transition?.memoryId ? "present" : "none",
+    memoryReviewState: normalizeString(memoryReviewPacket?.reviewState, "not_built"),
+    memoryRefreshProposalState: normalizeString(memoryRefreshProposal?.proposalState, "not_built"),
+    memoryResetPolicyState: normalizeString(memoryResetPolicy?.policyState, "disabled"),
+    memoryResetConfirmationState: normalizeString(memoryResetConfirmation?.confirmationState, "not_requested"),
+    staleMemoryEntryCount: Number(memoryReviewPacket?.staleEntryCount || 0),
+    conflictedMemoryEntryCount: Number(memoryReviewPacket?.conflictEntryCount || 0),
     batonState: transition?.batonId ? "present" : "none",
     omissionState: transition?.omissionLedgerId ? "represented" : "none",
     providerCompactionState: normalizeString(transition?.providerCompactionGate?.state, "not_requested"),
@@ -861,6 +1112,7 @@ function buildContextContinuityStatusProjection(input = {}) {
     compactActionAllowed: false,
     memoryEditorAllowed: false,
     memoryResetAllowed: false,
+    memoryRefreshMaterializationAllowed: false,
     providerTransportAllowed: false,
     hiddenContextLossAllowed: false,
     rendererSafeSummary: normalizeString(
@@ -894,6 +1146,71 @@ function validateContextContinuityProductization(input = {}) {
     }
     if (projection.displayOnly !== true || projection.providerTransportAllowed !== false || projection.compactActionAllowed !== false) {
       throw new Error("context_continuity_projection_authority_leak");
+    }
+    if (projection.memoryEditorAllowed !== false || projection.memoryResetAllowed !== false || projection.memoryRefreshMaterializationAllowed !== false) {
+      throw new Error("context_continuity_projection_memory_authority_leak");
+    }
+  }
+  return true;
+}
+
+function validateThreadMemoryWorkflow(input = {}) {
+  const reviewPacket = isPlainObject(input.reviewPacket) ? input.reviewPacket : null;
+  const refreshProposal = isPlainObject(input.refreshProposal) ? input.refreshProposal : null;
+  const resetPolicy = isPlainObject(input.resetPolicy) ? input.resetPolicy : null;
+  const resetConfirmation = isPlainObject(input.resetConfirmation) ? input.resetConfirmation : null;
+  if (reviewPacket && reviewPacket.schema !== DIRECT_THREAD_MEMORY_REVIEW_PACKET_SCHEMA) {
+    throw new Error("thread_memory_review_packet_schema_mismatch");
+  }
+  if (refreshProposal && refreshProposal.schema !== DIRECT_THREAD_MEMORY_REFRESH_PROPOSAL_SCHEMA) {
+    throw new Error("thread_memory_refresh_proposal_schema_mismatch");
+  }
+  if (resetPolicy && resetPolicy.schema !== DIRECT_THREAD_MEMORY_RESET_POLICY_SCHEMA) {
+    throw new Error("thread_memory_reset_policy_schema_mismatch");
+  }
+  if (resetConfirmation && resetConfirmation.schema !== DIRECT_THREAD_MEMORY_RESET_CONFIRMATION_SCHEMA) {
+    throw new Error("thread_memory_reset_confirmation_schema_mismatch");
+  }
+  for (const artifact of [reviewPacket, refreshProposal, resetPolicy, resetConfirmation].filter(Boolean)) {
+    if (artifact.rawTextIncluded !== false) throw new Error("thread_memory_workflow_raw_text_leak");
+  }
+  if (reviewPacket && (reviewPacket.memoryAsPolicyAuthority !== false || reviewPacket.providerMemoryClaimAccepted !== false)) {
+    throw new Error("thread_memory_review_authority_leak");
+  }
+  if (refreshProposal) {
+    if (refreshProposal.materializedInThisPr !== false || refreshProposal.memoryMutationAllowedInThisPr !== false || refreshProposal.providerTransportUsed !== false) {
+      throw new Error("thread_memory_refresh_authority_leak");
+    }
+    if (refreshProposal.proposalState === "accepted" && !normalizeString(refreshProposal.proposedMemoryId, "")) {
+      throw new Error("thread_memory_refresh_accepted_without_proposal");
+    }
+    if (refreshProposal.proposalState === "accepted" && reviewPacket && (reviewPacket.reviewState === "blocked" || reviewPacket.reviewState === "missing")) {
+      throw new Error("thread_memory_refresh_accepted_with_blocked_review");
+    }
+    if (refreshProposal.acceptedByOperator !== (refreshProposal.proposalState === "accepted")) {
+      throw new Error("thread_memory_refresh_acceptance_state_mismatch");
+    }
+    if (refreshProposal.rejectedByOperator !== (refreshProposal.proposalState === "rejected")) {
+      throw new Error("thread_memory_refresh_rejection_state_mismatch");
+    }
+  }
+  if (resetPolicy) {
+    if (resetPolicy.resetAllowedInThisPr !== false || resetPolicy.memoryMutationAllowedInThisPr !== false) {
+      throw new Error("thread_memory_reset_policy_authority_leak");
+    }
+    if (resetPolicy.resetWorkflowVisible !== (resetPolicy.policyState !== "disabled")) {
+      throw new Error("thread_memory_reset_policy_visibility_mismatch");
+    }
+  }
+  if (resetConfirmation) {
+    if (resetConfirmation.resetExecuted !== false || resetConfirmation.resetAllowedInThisPr !== false || resetConfirmation.currentMemoryRetained !== true) {
+      throw new Error("thread_memory_reset_confirmation_authority_leak");
+    }
+    if (resetConfirmation.confirmedByOperator !== (resetConfirmation.confirmationState === "confirmed_noop")) {
+      throw new Error("thread_memory_reset_confirmation_state_mismatch");
+    }
+    if (resetConfirmation.confirmationState === "confirmed_noop" && resetPolicy?.policyState !== "available_with_confirmation") {
+      throw new Error("thread_memory_reset_confirmation_without_available_policy");
     }
   }
   return true;
@@ -1125,6 +1442,10 @@ module.exports = {
   DIRECT_RAW_WINDOW_TRIM_POLICY_SCHEMA,
   DIRECT_REQUIRED_CONTEXT_ARTIFACT_CLASSES,
   DIRECT_THREAD_MEMORY_REFRESH_SCHEMA,
+  DIRECT_THREAD_MEMORY_REFRESH_PROPOSAL_SCHEMA,
+  DIRECT_THREAD_MEMORY_RESET_CONFIRMATION_SCHEMA,
+  DIRECT_THREAD_MEMORY_RESET_POLICY_SCHEMA,
+  DIRECT_THREAD_MEMORY_REVIEW_PACKET_SCHEMA,
   DIRECT_VANILLA_SIBLING_CONTEXT_EVIDENCE_SCHEMA,
   MAINTENANCE_ENGINES,
   ROUTE_CLASSES,
@@ -1142,6 +1463,10 @@ module.exports = {
   buildRawWindowTrimPolicy,
   buildRouteInput,
   buildStatusProjection,
+  buildThreadMemoryRefreshProposal,
+  buildThreadMemoryResetConfirmation,
+  buildThreadMemoryResetPolicy,
+  buildThreadMemoryReviewPacket,
   buildTrimPlan,
   buildVanillaSiblingContextEvidence,
   maintenanceRecoveryState,
@@ -1152,5 +1477,6 @@ module.exports = {
   validateStatusProjectionAction,
   validateContextContinuityProductization,
   validateContextMaintenanceReport,
+  validateThreadMemoryWorkflow,
   validateMaintenanceRefs,
 };

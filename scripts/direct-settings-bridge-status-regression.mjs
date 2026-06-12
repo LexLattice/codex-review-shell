@@ -32,6 +32,9 @@ const {
   buildOmissionLedger,
   buildPressureEstimate,
   buildRawWindowTrimPolicy,
+  buildThreadMemoryRefreshProposal,
+  buildThreadMemoryResetPolicy,
+  buildThreadMemoryReviewPacket,
   buildTrimPlan,
   selectMaintenanceRoute,
 } = require("../src/main/direct/context/maintenance");
@@ -86,6 +89,26 @@ function buildContinuityFixture(projectId, workThreadId) {
     },
     nowMs: 0,
   });
+  const memoryReviewPacket = buildThreadMemoryReviewPacket({
+    workThreadId,
+    memory,
+    omissionLedger,
+    nowMs: 0,
+  });
+  const memoryRefreshProposal = buildThreadMemoryRefreshProposal({
+    reviewPacket: memoryReviewPacket,
+    currentMemory: memory,
+    proposedMemory: memory,
+    proposalState: "proposed",
+    nowMs: 0,
+  });
+  const memoryResetPolicy = buildThreadMemoryResetPolicy({
+    projectId,
+    threadId: pressure.threadId,
+    workThreadId,
+    enabled: false,
+    nowMs: 0,
+  });
   const lossWitness = buildContextLossWitness({
     route,
     pressureEstimate: pressure,
@@ -108,6 +131,9 @@ function buildContinuityFixture(projectId, workThreadId) {
     workThreadId,
     transition,
     contextLossWitness: lossWitness,
+    memoryReviewPacket,
+    memoryRefreshProposal,
+    memoryResetPolicy,
     nowMs: 0,
   });
 }
@@ -225,12 +251,20 @@ function main() {
   assert(projection.sections.continuity.providerTransportAllowed === false, "provider transport must be disabled");
   assert(projection.sections.continuity.memoryEditorAllowed === false, "memory editing must be disabled");
   assert(projection.sections.continuity.memoryResetAllowed === false, "memory reset must be disabled");
+  assert(projection.sections.continuity.memoryReviewState === "current", "memory review state should be visible");
+  assert(projection.sections.continuity.memoryRefreshProposalState === "proposed", "memory refresh proposal state should be visible");
+  assert(projection.sections.continuity.memoryResetPolicyState === "disabled", "memory reset policy state should be visible");
+  assert(projection.sections.continuity.memoryResetConfirmationState === "not_requested", "memory reset confirmation state should be visible");
   assert(projection.rows.runtime.length >= 4, "runtime rows should render");
   assert(projection.rows.registry.length >= 4, "registry rows should render");
   assert(projection.rows.workThreads.length >= 4, "WorkThread rows should render");
   assert(projection.rows.workThreads.some((row) => row.label === "Target gate" && row.value === "selected_ready"), "WorkThread rows should include target gate");
   assert(projection.rows.workThreads.some((row) => row.label === "Mutation" && row.value === "not granted"), "WorkThread rows should keep mutation not granted");
   assert(projection.rows.modules.length >= 4, "module rows should render");
+  assert(projection.rows.continuity.some((row) => row.label === "Memory review" && row.value === "current"), "continuity rows should include memory review");
+  assert(projection.rows.continuity.some((row) => row.label === "Memory refresh" && row.value === "proposed"), "continuity rows should include memory refresh");
+  assert(projection.rows.continuity.some((row) => row.label === "Memory reset" && row.value === "disabled"), "continuity rows should include memory reset");
+  assert(projection.rows.continuity.some((row) => row.label === "Memory reset confirmation" && row.value === "not_requested"), "continuity rows should include memory reset confirmation");
   assert(projection.rawTextIncluded === false, "raw text must be excluded");
   assert(projection.rawPathIncluded === false, "raw paths must be excluded");
   assert(projection.rawSecretIncluded === false, "raw secrets must be excluded");

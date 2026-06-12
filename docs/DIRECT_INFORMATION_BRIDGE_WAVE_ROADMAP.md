@@ -330,7 +330,7 @@ WorkThread registry exists; settings/control surface can display resolver state.
 
 ### PR 10: Semantic Broker Preflight
 
-Status: in progress.
+Status: merged.
 
 Branch:
 
@@ -381,7 +381,13 @@ Work-target resolver and agent class specs exist.
 
 ### PR 11: Direct-Native Memory Workflow
 
-Status: planned.
+Status: in progress.
+
+Branch:
+
+```text
+codex/direct-memory-workflow
+```
 
 Purpose:
 
@@ -397,6 +403,21 @@ Scope:
 - Add memory staleness/conflict display.
 - Add reset policy and confirmation artifact if reset is enabled.
 - Keep memory source refs and omission refs visible.
+
+Implemented in the first slice:
+
+- `thread_memory_review_packet@1`
+- `thread_memory_refresh_proposal@1`
+- `thread_memory_reset_policy@1`
+- `thread_memory_reset_confirmation@1`
+- Continuity/settings projection fields for memory review, refresh proposal,
+  reset policy, stale count, and conflict count.
+
+Still deferred:
+
+- Actual memory rewrite/materialization.
+- Executable memory reset.
+- Provider-side memory claim acceptance.
 
 Non-goals:
 
