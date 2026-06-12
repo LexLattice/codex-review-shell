@@ -103,11 +103,11 @@ function nowIso(nowMs) {
 
 function normalizeList(values, allowedSet, fallback = "unknown") {
   const source = Array.isArray(values) ? values : [];
-  return [...new Set(source
+  const filtered = [...new Set(source
     .map((value) => normalizeString(value, ""))
     .filter((value) => allowedSet.has(value)))]
-    .sort((a, b) => a.localeCompare(b))
-    .concat(source.length ? [] : [fallback].filter((value) => allowedSet.has(value)));
+    .sort((a, b) => a.localeCompare(b));
+  return filtered.length ? filtered : (allowedSet.has(fallback) ? [fallback] : []);
 }
 
 function normalizeEvidenceRef(input = {}, fallbackKind = "agent_class_spec") {
@@ -172,7 +172,7 @@ function buildAuthorityContract(input = {}) {
     subAgentSpawnEnabledInThisPr: false,
     memoryMutationEnabledInThisPr: false,
     providerCompactionEnabledInThisPr: false,
-    authorityInflationAttempted: requestedExecutionAuthority(input),
+    authorityInflationAttempted: requestedExecutionAuthority(authority),
   };
 }
 
@@ -323,7 +323,7 @@ function buildAgentClassRegistry(input = {}) {
     mode: normalizeString(source.mode, "shadow"),
     specCount: specs.length,
     specs,
-    registryDigest,
+    registrySourceDigest: registryDigest,
     executionEnabledInThisPr: false,
     routingEnabledInThisPr: false,
     providerCallEnabledInThisPr: false,

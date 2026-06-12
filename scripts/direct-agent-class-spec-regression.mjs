@@ -44,6 +44,8 @@ function main() {
   assert(registry.schema === DIRECT_AGENT_CLASS_REGISTRY_SCHEMA, "registry schema mismatch");
   assert(registry.specCount === expectedKinds.length, "default registry should contain all expected agent classes");
   assert(registry.createdAt === "1970-01-01T00:00:00.000Z", "epoch-zero timestamp should be preserved");
+  assert(Boolean(registry.registrySourceDigest), "registry source digest should be preserved");
+  assert(registry.registryDigest !== registry.registrySourceDigest, "registry artifact digest should be distinct from source digest");
   assert(defaults.length === expectedKinds.length, "default input count should match expected role count");
   assert(registry.specs.every((spec) => spec.schema === DIRECT_AGENT_CLASS_SPEC_SCHEMA), "all specs should have schema");
   assert(JSON.stringify(registry.specs.map((spec) => spec.agentClassKind)) === JSON.stringify(expectedKinds), "agent classes should be sorted and complete");
@@ -89,6 +91,22 @@ function main() {
   ]) {
     assert(hostileSpec.authorityContract[flag] === false, `${flag} must remain disabled`);
   }
+
+  const nestedHostileSpec = buildAgentClassSpec({
+    agentClassKind: "audit_worker",
+    displayName: "Nested hostile audit worker",
+    authorityContract: {
+      executionEnabledInThisPr: true,
+      routingEnabledInThisPr: true,
+      providerCallEnabledInThisPr: true,
+      workspaceMutationEnabledInThisPr: true,
+      objectAuditAutomationEnabledInThisPr: true,
+      subAgentSpawnEnabledInThisPr: true,
+      memoryMutationEnabledInThisPr: true,
+      providerCompactionEnabledInThisPr: true,
+    },
+  });
+  assert(nestedHostileSpec.authorityContract.authorityInflationAttempted === true, "nested hostile authority contract should retain blocked authority witness");
 
   const status = buildAgentClassStatusProjection({ registry });
   assert(status.schema === DIRECT_AGENT_CLASS_STATUS_PROJECTION_SCHEMA, "status projection schema mismatch");
