@@ -20,6 +20,10 @@ const {
 } = require("../src/main/direct/bridge/work-thread-registry");
 const {
   buildBridgeModuleAuthorityReport,
+  buildBridgeContextContribution,
+  buildBridgeEvidenceImportRow,
+  buildBridgeExecutionGate,
+  buildBridgeHookProposal,
   buildBridgeModuleRegistry,
   buildBridgeModuleStatusProjection,
 } = require("../src/main/direct/bridge/skills-hooks-apps");
@@ -173,10 +177,57 @@ function buildModuleStatusFixture(projectId, workThreadId) {
         authorityPosture: "evidence_import",
         capabilities: [{ capabilityId: "cap_review_import", capabilityKind: "external_evidence_import" }],
       },
+      {
+        moduleId: "hook_settings_fixture",
+        moduleKind: "hook",
+        displayName: "Settings Fixture Hook",
+        authorityPosture: "execution_requires_gate",
+        capabilities: [{ capabilityId: "cap_settings_hook", capabilityKind: "hook_action", authorityPosture: "execution_requires_gate" }],
+      },
     ],
   });
   const report = buildBridgeModuleAuthorityReport({ registry });
-  return buildBridgeModuleStatusProjection({ registry, report, status: "shadow_only" });
+  const skill = registry.modules.find((module) => module.moduleId === "skill_settings_surface_fixture");
+  const connector = registry.modules.find((module) => module.moduleId === "connector_review_fixture");
+  const hook = registry.modules.find((module) => module.moduleId === "hook_settings_fixture");
+  const contextContribution = buildBridgeContextContribution({
+    projectId,
+    workThreadId,
+    module: skill,
+    contextRefs: [{ kind: "skill_context_ref", artifactId: "settings_skill_context", artifactDigest: "digest_settings_skill_context" }],
+    nowMs: 0,
+  });
+  const evidenceImportRow = buildBridgeEvidenceImportRow({
+    projectId,
+    workThreadId,
+    module: connector,
+    sourceRefs: [{ kind: "review_comment", artifactId: "settings_review_comment", artifactDigest: "digest_settings_review" }],
+    nowMs: 0,
+  });
+  const hookProposal = buildBridgeHookProposal({
+    projectId,
+    workThreadId,
+    module: hook,
+    sourceRefs: [{ kind: "settings_surface", artifactId: "settings_surface_fixture", artifactDigest: "digest_settings_surface" }],
+    nowMs: 0,
+  });
+  const executionGate = buildBridgeExecutionGate({
+    projectId,
+    workThreadId,
+    module: hook,
+    hookProposal,
+    executionRequested: true,
+    nowMs: 0,
+  });
+  return buildBridgeModuleStatusProjection({
+    registry,
+    report,
+    status: "shadow_only",
+    contextContributions: [contextContribution],
+    evidenceImportRows: [evidenceImportRow],
+    hookProposals: [hookProposal],
+    executionGates: [executionGate],
+  });
 }
 
 function main() {
@@ -263,6 +314,10 @@ function main() {
   assert(projection.sections.governance.governanceEnforced === false, "governance must not be enforced");
   assert(projection.sections.governance.semanticBrokerEnforced === false, "semantic broker must not be enforced");
   assert(projection.sections.modules.executionAllowedInThisPr === false, "module execution must be disabled");
+  assert(projection.sections.modules.contextContributionCount === 1, "module context contribution count should be visible");
+  assert(projection.sections.modules.evidenceImportRowCount === 1, "module evidence import row count should be visible");
+  assert(projection.sections.modules.hookProposalCount === 1, "module hook proposal count should be visible");
+  assert(projection.sections.modules.executionGateCount === 1, "module execution gate count should be visible");
   assert(projection.sections.continuity.providerTransportAllowed === false, "provider transport must be disabled");
   assert(projection.sections.continuity.manualCompactActionAllowed === false, "manual compact action must be disabled");
   assert(projection.sections.continuity.memoryEditorAllowed === false, "memory editing must be disabled");
@@ -281,6 +336,10 @@ function main() {
   assert(projection.rows.workThreads.some((row) => row.label === "Target gate" && row.value === "selected_ready"), "WorkThread rows should include target gate");
   assert(projection.rows.workThreads.some((row) => row.label === "Mutation" && row.value === "not granted"), "WorkThread rows should keep mutation not granted");
   assert(projection.rows.modules.length >= 4, "module rows should render");
+  assert(projection.rows.modules.some((row) => row.label === "Context refs" && row.value === "1"), "module rows should include context refs");
+  assert(projection.rows.modules.some((row) => row.label === "Evidence rows" && row.value === "1"), "module rows should include evidence rows");
+  assert(projection.rows.modules.some((row) => row.label === "Hook proposals" && row.value === "1"), "module rows should include hook proposals");
+  assert(projection.rows.modules.some((row) => row.label === "Execution gates" && row.value === "1"), "module rows should include execution gates");
   assert(projection.rows.continuity.some((row) => row.label === "Memory review" && row.value === "current"), "continuity rows should include memory review");
   assert(projection.rows.continuity.some((row) => row.label === "Memory refresh" && row.value === "proposed"), "continuity rows should include memory refresh");
   assert(projection.rows.continuity.some((row) => row.label === "Memory reset" && row.value === "disabled"), "continuity rows should include memory reset");

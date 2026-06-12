@@ -434,7 +434,7 @@ memory state.
 
 ### PR 12: Direct-Native Compaction Workflow Gate
 
-Status: in progress.
+Status: merged.
 
 Branch:
 
@@ -482,7 +482,13 @@ Continuity status projection and memory workflow policy exist.
 
 ### PR 13: Skills / Hooks / Apps Execution Gates
 
-Status: planned.
+Status: in progress.
+
+Branch:
+
+```text
+codex/direct-module-execution-gates
+```
 
 Purpose:
 
@@ -496,6 +502,17 @@ Scope:
 - Allow connector evidence import through explicit evidence rows.
 - Add hook proposal packets.
 - Add execution gate schema for future mutating hooks/connectors.
+
+Implemented in the first slice:
+
+- `direct_bridge_context_contribution@1`
+- `direct_bridge_evidence_import_row@1`
+- `direct_bridge_hook_proposal@1`
+- `direct_bridge_execution_gate@1`
+- Module status/settings projection fields for context contribution, evidence
+  row, hook proposal, and execution gate counts.
+- Regression coverage proving module gates do not enable execution, provider
+  calls, workspace mutation, connector actions, hook actions, or auto invocation.
 
 Non-goals:
 
