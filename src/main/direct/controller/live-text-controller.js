@@ -88,6 +88,32 @@ function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
+function directWorkThreadContextCarrier(...sources) {
+  const carrier = {
+    workThread: null,
+    workThreadId: "",
+    workThreadBinding: null,
+    authorityBoundary: null,
+    openObligations: [],
+    bridgeInformationRefs: [],
+  };
+  const candidates = [];
+  for (const source of sources) {
+    if (!isPlainObject(source)) continue;
+    if (isPlainObject(source.workThreadContext)) candidates.push(source.workThreadContext);
+    candidates.push(source);
+  }
+  for (const source of candidates) {
+    if (!carrier.workThread && isPlainObject(source.workThread)) carrier.workThread = source.workThread;
+    if (!carrier.workThreadBinding && isPlainObject(source.workThreadBinding)) carrier.workThreadBinding = source.workThreadBinding;
+    if (!carrier.authorityBoundary && isPlainObject(source.authorityBoundary)) carrier.authorityBoundary = source.authorityBoundary;
+    if (!carrier.workThreadId) carrier.workThreadId = normalizeString(source.workThreadId, "");
+    if (!carrier.openObligations.length && Array.isArray(source.openObligations)) carrier.openObligations = source.openObligations;
+    if (!carrier.bridgeInformationRefs.length && Array.isArray(source.bridgeInformationRefs)) carrier.bridgeInformationRefs = source.bridgeInformationRefs;
+  }
+  return carrier;
+}
+
 function userPromptTextFromTurn(turn = {}) {
   const input = Array.isArray(turn.input) ? turn.input : [];
   for (const item of input) {
@@ -2837,6 +2863,7 @@ class DirectLiveTextController {
           turnId,
           obligationId,
           clientToolDecisionId,
+          ...directWorkThreadContextCarrier(params, result, context),
         });
       }
       if (canonicalDecision === "cancel") {
@@ -2938,6 +2965,7 @@ class DirectLiveTextController {
           turnId,
           obligationId,
           clientPatchDecisionId,
+          ...directWorkThreadContextCarrier(params, result, context),
         });
       }
       const decided = decidePatchApplyObligation({
@@ -3032,6 +3060,7 @@ class DirectLiveTextController {
           turnId,
           obligationId,
           clientCommandDecisionId,
+          ...directWorkThreadContextCarrier(params, result, context),
         });
       }
       const decided = decideCommandExecutionObligation({
@@ -3241,6 +3270,7 @@ class DirectLiveTextController {
         turnId,
         obligationId,
         continuationLiveSendEnabled: true,
+        ...directWorkThreadContextCarrier(options),
       });
       continuationRequest = {
         ...baseContinuationRequest,
@@ -3306,6 +3336,7 @@ class DirectLiveTextController {
           ? "direct_readonly_tool_loop_continuation@1"
           : "continuation.tool_result",
         endpointEvidenceRef: this.endpoint ? sha256(this.endpoint) : "",
+        ...directWorkThreadContextCarrier(options),
       }, {
         sessionStore: this.sessionStore,
       });
@@ -3442,6 +3473,7 @@ class DirectLiveTextController {
         turnId,
         obligationId,
         continuationLiveSendEnabled: true,
+        ...directWorkThreadContextCarrier(options),
       });
       continuationRequest = {
         ...baseContinuationRequest,
@@ -3498,6 +3530,7 @@ class DirectLiveTextController {
         modelEvidenceRef: normalizeString(this.statusForProject(project).evidenceId, ""),
         requestShapeEvidenceRef: "direct_patch_apply_continuation@1",
         endpointEvidenceRef: this.endpoint ? sha256(this.endpoint) : "",
+        ...directWorkThreadContextCarrier(options),
       }, {
         sessionStore: this.sessionStore,
       });
@@ -3649,6 +3682,7 @@ class DirectLiveTextController {
         turnId,
         obligationId,
         continuationLiveSendEnabled: true,
+        ...directWorkThreadContextCarrier(options),
       });
       continuationRequest = {
         ...baseContinuationRequest,
@@ -3705,6 +3739,7 @@ class DirectLiveTextController {
         modelEvidenceRef: normalizeString(this.statusForProject(project).evidenceId, ""),
         requestShapeEvidenceRef: "direct_command_execution_continuation@1",
         endpointEvidenceRef: this.endpoint ? sha256(this.endpoint) : "",
+        ...directWorkThreadContextCarrier(options),
       }, {
         sessionStore: this.sessionStore,
       });
@@ -3949,6 +3984,7 @@ class DirectLiveTextController {
           ? "direct_implementation_tool_initial@1"
           : useRecentDialogue ? "direct_text_turn_recent_dialogue@1" : "direct_text_turn_empty_context@1",
         endpointEvidenceRef: this.endpoint ? sha256(this.endpoint) : "",
+        ...directWorkThreadContextCarrier(params, context),
       });
       requestBody = implementationTier
         ? buildImplementationToolInitialRequest({

@@ -6,6 +6,9 @@ const {
   inspectPatchJournal,
   providerEnvelopeForEffectSummary,
 } = require("../workspace/mutation-truth");
+const {
+  buildAuthorityBearingTransition,
+} = require("../bridge/work-thread-alignment");
 
 const DIRECT_PATCH_APPLY_PLAN_SCHEMA = "direct_patch_apply_plan@1";
 const DIRECT_PATCH_APPLY_RESULT_SCHEMA = "direct_codex_patch_apply_result@1";
@@ -141,7 +144,7 @@ function patchPreviewFromFiles(files = []) {
     : text;
 }
 
-function projectPatchPlan(workspacePlan = {}, obligation = {}, parsed = {}, nowMs) {
+function projectPatchPlan(workspacePlan = {}, obligation = {}, parsed = {}, nowMs, transitionOptions = {}) {
   const files = Array.isArray(workspacePlan.files) ? workspacePlan.files : [];
   const previewText = patchPreviewFromFiles(files);
   const patchPlanId = patchPlanIdFor(obligation.obligationId, parsed.patchText);
@@ -214,6 +217,25 @@ function projectPatchPlan(workspacePlan = {}, obligation = {}, parsed = {}, nowM
     },
     status: "dry_run_passed",
     blockerCode: "",
+    authorityTransition: buildAuthorityBearingTransition({
+      transitionKind: "apply_patch",
+      transitionPhase: "plan",
+      projectId: normalizeString(obligation.projectId || transitionOptions.projectId, ""),
+      threadId: normalizeString(obligation.sessionId, ""),
+      turnId: normalizeString(obligation.turnId, ""),
+      obligationId: normalizeString(obligation.obligationId, ""),
+      status: "dry_run_passed",
+      workThreadBinding: transitionOptions.workThreadBinding,
+      workThreadId: transitionOptions.workThreadId,
+      authorityBoundary: transitionOptions.authorityBoundary,
+      sourceArtifact: {
+        classId: "ic4.patch-authority",
+        artifactKind: "patch_apply_plan",
+        artifactId: patchPlanId,
+      },
+      sideEffectExecuted: false,
+      createdAt: nowIso(nowMs),
+    }),
   };
   if (plan.preview.truncated) {
     const error = new Error("Patch preview is too large for safe approval.");
@@ -236,7 +258,7 @@ async function planPatchApplyObligation(options = {}) {
     mode: "dryRun",
     patch: parsed.patchText,
   });
-  const patchPlan = projectPatchPlan(workspacePlan, obligation, parsed, options.nowMs);
+  const patchPlan = projectPatchPlan(workspacePlan, obligation, parsed, options.nowMs, options);
   const updated = sessionStore.updateToolObligation(options.sessionId, options.turnId, obligation.obligationId, {
     status: "patch_planned",
     authorityState: "patch_waiting_for_approval",
@@ -290,23 +312,43 @@ function decidePatchApplyObligation(options = {}) {
   const decision = options.decision === "canceled" ? "patch_canceled" : "patch_declined";
   if (PATCH_TERMINAL_STATUSES.has(normalizeString(obligation.status, ""))) return { turn, obligation };
   const decidedAt = nowIso(options.nowMs);
+  const authorityDecision = {
+    schema: "direct_codex_patch_authority_decision@1",
+    decision,
+    obligationId: obligation.obligationId,
+    tool: "apply_patch",
+    decidedAt,
+    decidedBy: normalizeString(options.decidedBy, "local-user"),
+    reason: normalizeString(options.reason, decision === "patch_canceled" ? "User canceled patch apply." : "User declined patch apply."),
+    executionAllowed: false,
+    sideEffectExecuted: false,
+    authorityTransition: buildAuthorityBearingTransition({
+      transitionKind: "apply_patch",
+      transitionPhase: "decision",
+      projectId: normalizeString(obligation.projectId || options.projectId, ""),
+      threadId: normalizeString(obligation.sessionId, ""),
+      turnId: normalizeString(obligation.turnId, ""),
+      obligationId: normalizeString(obligation.obligationId, ""),
+      status: decision,
+      workThreadBinding: options.workThreadBinding,
+      workThreadId: options.workThreadId,
+      authorityBoundary: options.authorityBoundary,
+      sourceArtifact: {
+        classId: "ic4.patch-authority",
+        artifactKind: "patch_authority_decision",
+        artifactId: `${normalizeString(obligation.obligationId, "obligation")}:${decision}`,
+      },
+      sideEffectExecuted: false,
+      createdAt: decidedAt,
+    }),
+  };
   return sessionStore.updateToolObligation(options.sessionId, options.turnId, obligation.obligationId, {
     status: decision,
     authorityState: decision,
     executionAllowed: false,
     continuationAllowed: false,
     approvalAvailable: false,
-    authorityDecision: {
-      schema: "direct_codex_patch_authority_decision@1",
-      decision,
-      obligationId: obligation.obligationId,
-      tool: "apply_patch",
-      decidedAt,
-      decidedBy: normalizeString(options.decidedBy, "local-user"),
-      reason: normalizeString(options.reason, decision === "patch_canceled" ? "User canceled patch apply." : "User declined patch apply."),
-      executionAllowed: false,
-      sideEffectExecuted: false,
-    },
+    authorityDecision,
     sideEffectExecuted: false,
   }, {
     ...options,
@@ -414,6 +456,25 @@ async function executeApprovedPatchApplyObligation(options = {}) {
       journalId: `patch_journal_${sha256(`${obligation.obligationId}:${resultId}`).slice(0, 20)}`,
       status: "applied",
     },
+    authorityTransition: buildAuthorityBearingTransition({
+      transitionKind: "apply_patch",
+      transitionPhase: "result",
+      projectId: normalizeString(obligation.projectId || options.projectId, ""),
+      threadId: normalizeString(obligation.sessionId, ""),
+      turnId: normalizeString(obligation.turnId, ""),
+      obligationId: normalizeString(obligation.obligationId, ""),
+      status: "applied",
+      workThreadBinding: options.workThreadBinding,
+      workThreadId: options.workThreadId,
+      authorityBoundary: options.authorityBoundary,
+      sourceArtifact: {
+        classId: "ic4.patch-authority",
+        artifactKind: "patch_apply_result",
+        artifactId: resultId,
+      },
+      sideEffectExecuted: true,
+      createdAt: nowIso(options.nowMs),
+    }),
   };
   const updated = sessionStore.updateToolObligation(options.sessionId, options.turnId, obligation.obligationId, {
     status: "patch_result_recorded",
@@ -490,6 +551,26 @@ function buildPatchApplyContinuationRequest(options = {}) {
     rawAuthHeadersExposed: false,
     rawBackendRequestsExposed: false,
     rawBackendFramesExposed: false,
+    authorityTransition: buildAuthorityBearingTransition({
+      transitionKind: "apply_patch",
+      transitionPhase: "continuation",
+      projectId: normalizeString(obligation.projectId || options.projectId, ""),
+      threadId: normalizeString(options.sessionId, obligation.sessionId),
+      turnId: normalizeString(options.turnId, obligation.turnId),
+      obligationId: normalizeString(obligation.obligationId, ""),
+      status: "continuation_built",
+      workThreadBinding: options.workThreadBinding,
+      workThreadId: options.workThreadId,
+      authorityBoundary: options.authorityBoundary,
+      sourceArtifact: {
+        classId: "ic4.patch-authority",
+        artifactKind: "patch_apply_continuation_request",
+        artifactId: patchContinuationIdFor(obligation.obligationId, obligation.result.resultId),
+      },
+      sideEffectExecuted: true,
+      providerContinuationSent: false,
+      createdAt: nowIso(options.nowMs),
+    }),
   };
 }
 

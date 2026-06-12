@@ -221,17 +221,55 @@ incoming user request
 The resolver is shadow-only. It does not route provider calls, mutate workspaces,
 or enforce delegation.
 
-## Next Practical Step
+## WorkThread Context And Authority Alignment
 
-Align context and authority with `WorkThread`:
+The first alignment layer is implemented by:
 
 ```text
-ContextPack / RequestManifest
-  -> cite workThreadId
-  -> cite authorityBoundary
-  -> cite openObligations
-  -> cite bridge information class refs
+src/main/direct/bridge/work-thread-alignment.js
+scripts/direct-workthread-context-authority-regression.mjs
+docs/DIRECT_WORK_THREAD_CONTEXT_AUTHORITY_ALIGNMENT_SPEC.md
+```
 
-read / patch / command transitions
-  -> wrap existing plans/results/continuations in AuthorityBearingTransition
+It provides:
+
+```text
+WorkThreadContextBinding
+  workThreadId
+  authorityBoundaryDigest
+  openObligationRefs
+  bridgeInformationRefs
+  mutationAllowed = false
+  providerCallAllowed = false
+  routingEnforced = false
+
+AuthorityBearingTransition
+  transitionKind
+  transitionPhase
+  workThreadBinding
+  sourceArtifact
+  sideEffectExecuted
+  providerContinuationSent
+  mutationAllowedByTransition = false
+  providerCallAllowedByTransition = false
+  routingEnforced = false
+```
+
+`ContextPack` and `RequestManifest` can now cite a WorkThread binding without
+adding WorkThread ids to provider prompt text. Read, patch, and command
+authority artifacts now carry the shared transition envelope.
+
+This remains non-enforcing. The binding and transition envelopes are evidence
+and alignment witnesses, not mutation or provider-call authority.
+
+## Next Practical Step
+
+Begin consuming WorkThread-aligned artifacts in governance:
+
+```text
+semantic broker / governance packet
+  -> cite WorkThreadContextBinding
+  -> cite AuthorityBearingTransition
+  -> classify target and authority scope
+  -> remain shadow-only until promotion criteria are met
 ```

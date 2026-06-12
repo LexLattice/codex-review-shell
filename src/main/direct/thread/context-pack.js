@@ -12,6 +12,9 @@ const {
 const {
   validateMaintenanceRefs,
 } = require("../context/maintenance");
+const {
+  buildWorkThreadContextBinding,
+} = require("../bridge/work-thread-alignment");
 
 const CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND = "context_recent_dialogue";
 const CONTEXT_RECENT_DIALOGUE_PROJECTION_VERSION = "context_recent_dialogue@1";
@@ -588,6 +591,7 @@ function contextPackIntegrity(input) {
     projectId: input.projectId,
     threadId: input.threadId,
     turnId: input.turnId,
+    workThreadBindingDigest: input.workThreadBinding?.bindingDigest || "",
     policyDigest: input.policy?.policyDigest || "",
     shapeHash: input.contextPackShapeHash,
     contentHash: input.contextPackContentHash,
@@ -754,6 +758,12 @@ function buildContextPack({
   governanceRefs = null,
   maintenanceRefs = null,
   maintenanceArtifacts = null,
+  workThread = null,
+  workThreadId = "",
+  workThreadBinding = null,
+  authorityBoundary = null,
+  openObligations = [],
+  bridgeInformationRefs = [],
   nowMs = Date.now(),
 } = {}) {
   const safeProjectId = normalizeString(projectId, "");
@@ -840,6 +850,27 @@ function buildContextPack({
   const omittedCounts = {};
   validateGovernanceRequestRefs(governanceRefs || {});
   validateMaintenanceRefs(maintenanceRefs || {});
+  const hasWorkThreadBinding = isPlainObject(workThreadBinding) ||
+    isPlainObject(workThread) ||
+    Boolean(normalizeString(workThreadId, ""));
+  const effectiveWorkThreadBinding = hasWorkThreadBinding
+    ? buildWorkThreadContextBinding(workThreadBinding || {
+        workThread,
+        workThreadId,
+        projectId: safeProjectId,
+        authorityBoundary,
+        openObligations,
+        bridgeInformationRefs,
+      })
+    : null;
+  if (effectiveWorkThreadBinding?.workThreadId) {
+    sourceArtifacts.push({
+      artifactKind: "work_thread",
+      artifactId: effectiveWorkThreadBinding.workThreadId,
+      artifactDigest: effectiveWorkThreadBinding.bindingDigest,
+      appPrivate: true,
+    });
+  }
   if (contextProjection?.projectionId && contextItems.length) {
     const evidenceText = contextItems.map((item) => {
       const label = `${normalizeString(item.role, "evidence").toUpperCase()} ${normalizeString(item.itemKind, "message")}`;
@@ -1039,6 +1070,7 @@ function buildContextPack({
     derivedForkSeedId: derivedForkSeed?.derivedForkSeedId || "",
     derivedForkSeedShapeHash: derivedForkSeed?.seedShapeHash || "",
     derivedSourcePreviewKind: derivedForkSeed?.sourcePreviewKind || "",
+    workThreadBindingDigest: effectiveWorkThreadBinding?.bindingDigest || "",
     governanceRefsDigest: governanceRefs?.refsDigest || "",
     maintenanceRefsDigest: maintenanceRefs?.refsDigest || "",
     sourceArtifactKinds: sourceArtifacts.map((artifact) => artifact.artifactKind),
@@ -1081,6 +1113,8 @@ function buildContextPack({
         projectionDigest: toolContinuationContext.projectionDigest,
       } : null,
     ].filter(Boolean),
+    workThreadBinding: effectiveWorkThreadBinding,
+    workThreadId: effectiveWorkThreadBinding?.workThreadId || "",
     governanceRefs: isPlainObject(governanceRefs) ? governanceRefs : null,
     maintenanceRefs: isPlainObject(maintenanceRefs) ? maintenanceRefs : null,
     caps: {
@@ -1235,7 +1269,10 @@ function buildRequestManifest({
       requestShapeEvidenceRef: normalizeString(requestShapeEvidenceRef, ""),
       endpointEvidenceRef: normalizeString(endpointEvidenceRef, ""),
       contextPolicyEvidenceRef: contextPack.policy?.policyDigest || "",
+      workThreadBindingDigest: contextPack.workThreadBinding?.bindingDigest || "",
     },
+    workThreadBinding: isPlainObject(contextPack.workThreadBinding) ? contextPack.workThreadBinding : null,
+    workThreadId: normalizeString(contextPack.workThreadId, ""),
     governanceRefs: isPlainObject(contextPack.governanceRefs) ? contextPack.governanceRefs : null,
     maintenanceRefs: isPlainObject(contextPack.maintenanceRefs) ? contextPack.maintenanceRefs : null,
     providerInputProjection: providerInput.projection,
@@ -1275,11 +1312,13 @@ function rendererSafeContextSummary(contextPack = {}, requestManifest = null) {
     policyId: normalizeString(contextPack.policy?.policyId, ""),
     policyVersion: normalizeString(contextPack.policy?.policyVersion, ""),
     purpose: normalizeString(contextPack.purpose, ""),
+    workThreadId: normalizeString(contextPack.workThreadId, ""),
     builtAt: normalizeString(contextPack.builtAt, ""),
     truncated: contextPack.caps?.truncated === true,
     omittedCounts: contextPack.caps?.omittedCounts || {},
     governanceRefsPresent: Boolean(contextPack.governanceRefs),
     maintenanceRefsPresent: Boolean(contextPack.maintenanceRefs),
+    workThreadBindingPresent: Boolean(contextPack.workThreadBinding),
     contextTextExposed: false,
     requestManifestTextExposed: false,
     rawPathExposed: false,
