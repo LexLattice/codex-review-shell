@@ -3938,6 +3938,29 @@ class DirectLiveTextController {
       error.code = "context_store_unhealthy";
       throw error;
     }
+    const workThreadCarrier = directWorkThreadContextCarrier(params, context);
+    const requireControlledRouting = params.requireControlledRouting === true || params.controlledRouting?.required === true;
+    const controlledRoutingRequested = Boolean(
+      workThreadCarrier.workThread ||
+      workThreadCarrier.workThreadBinding ||
+      workThreadCarrier.workThreadId ||
+      (Array.isArray(params.workThreads) && params.workThreads.length) ||
+      requireControlledRouting ||
+      params.controlledRouting?.enabled === true,
+    );
+    if (requireControlledRouting && !textOnlyTier) {
+      const error = new Error("Controlled routing currently supports only direct text-only turns.");
+      error.code = "controlled_routing_text_only_required";
+      throw error;
+    }
+    if (
+      requireControlledRouting &&
+      (!this.directThreadStore || typeof this.directThreadStore.buildAndPersistControlledRoutingForTextTurn !== "function")
+    ) {
+      const error = new Error("Controlled routing is required but the thread store does not support it.");
+      error.code = "controlled_routing_unsupported";
+      throw error;
+    }
     let requestBody = implementationTier
         ? buildImplementationToolInitialRequest({
             profileDoc: this.profileDoc,
@@ -3959,8 +3982,22 @@ class DirectLiveTextController {
     });
     this.rememberClientTurnRequest(session.sessionId, clientTurnRequestId, turn.turnId);
     let contextResult = null;
+    let controlledRoutingResult = null;
     if (this.directThreadStore && typeof this.directThreadStore.buildAndPersistContextForTextTurn === "function") {
       this.indexDirectThreadStoreSession(session.sessionId);
+      const hasControlledRoutingInput = controlledRoutingRequested && textOnlyTier;
+      if (hasControlledRoutingInput && typeof this.directThreadStore.buildAndPersistControlledRoutingForTextTurn === "function") {
+        controlledRoutingResult = this.directThreadStore.buildAndPersistControlledRoutingForTextTurn({
+          session,
+          projectId: session.projectId,
+          threadId: session.sessionId,
+          turnId: turn.turnId,
+          requestPreview: prompt,
+          workThreads: Array.isArray(params.workThreads) ? params.workThreads : [],
+          requireControlledRouting,
+          ...workThreadCarrier,
+        });
+      }
       contextResult = this.directThreadStore.buildAndPersistContextForTextTurn({
         session: this.sessionStore.readSession(session.sessionId) || session,
         projectId: session.projectId,
@@ -3984,7 +4021,16 @@ class DirectLiveTextController {
           ? "direct_implementation_tool_initial@1"
           : useRecentDialogue ? "direct_text_turn_recent_dialogue@1" : "direct_text_turn_empty_context@1",
         endpointEvidenceRef: this.endpoint ? sha256(this.endpoint) : "",
-        ...directWorkThreadContextCarrier(params, context),
+        governanceRefs: controlledRoutingResult?.governanceRefs || params.governanceRefs,
+        workThreadBinding: controlledRoutingResult?.workThreadBinding || workThreadCarrier.workThreadBinding,
+        workThread: workThreadCarrier.workThread,
+        workThreadId: controlledRoutingResult?.route?.selectedWorkThreadId || workThreadCarrier.workThreadId,
+        authorityBoundary: workThreadCarrier.authorityBoundary,
+        openObligations: workThreadCarrier.openObligations,
+        bridgeInformationRefs: [
+          ...(Array.isArray(workThreadCarrier.bridgeInformationRefs) ? workThreadCarrier.bridgeInformationRefs : []),
+          ...(controlledRoutingResult?.route?.bridgeInformationRef ? [controlledRoutingResult.route.bridgeInformationRef] : []),
+        ],
       });
       requestBody = implementationTier
         ? buildImplementationToolInitialRequest({
@@ -4013,6 +4059,12 @@ class DirectLiveTextController {
         rawRequestBodyStored: false,
         previousResponseIdUsed: false,
       } : {}),
+      ...(controlledRoutingResult ? {
+        controlledRoutingSliceId: controlledRoutingResult.route.routeId,
+        controlledRoutingSliceDigest: controlledRoutingResult.route.routeDigest,
+        controlledRoutingGateState: controlledRoutingResult.route.gateState,
+        controlledRoutingProviderScope: controlledRoutingResult.route.providerCallScope,
+      } : {}),
     };
     this.sessionStore.updateTurnState(session.sessionId, turn.turnId, "request_built", {
       requestShape,
@@ -4020,6 +4072,10 @@ class DirectLiveTextController {
         contextBuildId: contextResult.contextPack.contextBuildId,
         requestManifestId: contextResult.requestManifest.requestManifestId,
         contextSummary: contextResult.rendererSafeSummary,
+      } : {}),
+      ...(controlledRoutingResult ? {
+        controlledRoutingSliceId: controlledRoutingResult.route.routeId,
+        controlledRoutingGateState: controlledRoutingResult.route.gateState,
       } : {}),
     });
 

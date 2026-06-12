@@ -475,3 +475,27 @@ Explicitly still out of scope:
 - WorkThread router promotion.
 - Provider calls, workspace mutation, memory mutation, or provider compaction
   from role specs.
+
+## First Controlled Routing Slice
+
+Implemented in the PR 14 slice:
+
+- `src/main/direct/bridge/controlled-routing.js` builds
+  `direct_controlled_routing_slice@1`.
+- Direct text `turn/start` can build and persist the route artifact when
+  WorkThread routing evidence is supplied.
+- The route cites WorkTargetResolution, semantic broker preflight, primary
+  AgentClassSpec, WorkThread binding, context pack, and request-manifest
+  evidence before the existing direct text provider call is sent.
+- `scripts/direct-controlled-routing-slice-regression.mjs` proves the route is
+  accepted only for the primary-agent `text_only` path and is attached to the
+  persisted context/request artifacts.
+
+Explicitly still out of scope:
+
+- Route-to-role execution.
+- Multi-agent orchestration.
+- Autonomous tool execution.
+- Workspace mutation.
+- Direct app-server replacement.
+- Object-level audit automation.

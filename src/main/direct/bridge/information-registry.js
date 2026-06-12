@@ -201,13 +201,13 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     role: "governance_routing",
     implementationState: "partial",
     directPathPosture: "keep_shadow",
-    sourceFiles: ["src/main/direct/governance/broker.js", "src/main/direct/thread/thread-store.js"],
-    ontology: ontologyShape(["governance_packet", "semantic_broker_packet", "workflow_transition_graph"], "harness", {
+    sourceFiles: ["src/main/direct/governance/broker.js", "src/main/direct/bridge/controlled-routing.js", "src/main/direct/thread/thread-store.js"],
+    ontology: ontologyShape(["governance_packet", "semantic_broker_packet", "workflow_transition_graph", "controlled_routing_slice"], "harness", {
       identityFields: ["projectId", "threadId", "turnId", "packetId"],
       schema: "governance_packet@1",
     }),
-    bridgeFit: "Builds shadow governance packets, semantic broker diagnostics, and preflight recommendation classes with source refs, WorkThread resolution reports, AgentClassSpec citations, and AuthorityBearingTransition citations.",
-    realignment: "Preflight can classify allow/block/clarify/route-to-role/stale outcomes, but execution, provider calls, mutation, and object-level audit remain disabled until explicit controlled-routing promotion.",
+    bridgeFit: "Builds shadow governance packets, semantic broker diagnostics, preflight recommendation classes, and one controlled routing slice that can cite WorkTargetResolution, AgentClassSpec, and context-pack evidence before the existing direct text turn path.",
+    realignment: "Controlled routing may permit only the existing direct text turn start scope; workspace mutation, tool execution, autonomous routing, multi-agent orchestration, and object-level audit remain disabled.",
   },
   {
     id: "ic7.sub-agent-observability",
