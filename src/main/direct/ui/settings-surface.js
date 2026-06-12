@@ -135,19 +135,30 @@ function summarizeWorkThreads(input = {}) {
   const status = objectOrEmpty(input.status || input.workThreadStatus);
   const projection = objectOrEmpty(input.projection || input.workThreadProjection);
   const resolution = objectOrEmpty(input.resolution || input.workTargetResolution);
+  const resolutionReport = objectOrEmpty(input.resolutionReport || input.workTargetResolutionReport);
+  const blockerCodes = arrayOrEmpty(resolutionReport.blockerCodes).length
+    ? arrayOrEmpty(resolutionReport.blockerCodes)
+    : arrayOrEmpty(resolution.ambiguityBlockers);
   return {
     available: status.available === true || projection.schema === "direct_work_thread_projection@1",
     availabilityReason: normalizeString(status.reason || input.availabilityReason, status.available === false ? "not_wired" : ""),
     workThreadCount: Number(status.workThreadCount || projection.rowCount || 0),
     activeCount: Number(status.activeCount || projection.activeCount || 0),
     projectionDigest: normalizeString(status.projectionDigest || projection.projectionDigest, ""),
-    resolutionState: normalizeString(resolution.resolutionState, "unavailable"),
-    selectedWorkThreadId: normalizeString(resolution.selectedWorkThreadId, ""),
-    candidateCount: arrayOrEmpty(resolution.candidates).length,
-    ambiguityBlockers: arrayOrEmpty(resolution.ambiguityBlockers).map((item) => normalizeString(item, "")).filter(Boolean),
-    routingEnforced: resolution.transitionLaw?.routingEnforced === true,
-    mutationAllowed: resolution.transitionLaw?.mutationAllowed === true,
-    providerCallAllowed: resolution.transitionLaw?.providerCallAllowed === true,
+    resolutionState: normalizeString(resolutionReport.resolutionState || resolution.resolutionState, "unavailable"),
+    routingGateState: normalizeString(resolutionReport.routingGateState, "unavailable"),
+    selectedWorkThreadId: normalizeString(resolutionReport.selectedWorkThreadId || resolution.selectedWorkThreadId, ""),
+    candidateCount: Number(resolutionReport.candidateCount || arrayOrEmpty(resolution.candidates).length),
+    ambiguityBlockers: blockerCodes.map((item) => normalizeString(item, "")).filter(Boolean),
+    stale: resolutionReport.stale === true,
+    clarificationRequired: resolutionReport.clarificationRequired === true,
+    nonTargetPreservationRequired: resolutionReport.nonTargetPreservationRequired === true,
+    routingEnforced: resolutionReport.routingEnforced === true || resolution.transitionLaw?.routingEnforced === true,
+    mutationAllowed: resolutionReport.mutationAuthorityGranted === true || resolution.transitionLaw?.mutationAllowed === true,
+    providerCallAllowed: resolutionReport.providerCallAuthorityGranted === true || resolution.transitionLaw?.providerCallAllowed === true,
+    mutationBlocked: resolutionReport.mutationBlocked === true,
+    providerCallBlocked: resolutionReport.providerCallBlocked === true,
+    resolutionReportDigest: normalizeString(resolutionReport.reportDigest, ""),
   };
 }
 
@@ -254,6 +265,9 @@ function buildRows(sections) {
       statusRow("WorkThreads", workThreads.workThreadCount),
       statusRow("Active", workThreads.activeCount),
       statusRow("Resolution", workThreads.resolutionState, workThreads.resolutionState === "selected" ? "ok" : "unknown"),
+      statusRow("Target gate", workThreads.routingGateState, workThreads.routingGateState === "selected_ready" ? "diagnostic" : "blocked"),
+      statusRow("Blockers", workThreads.ambiguityBlockers.length ? workThreads.ambiguityBlockers.join(", ") : "none", workThreads.ambiguityBlockers.length ? "blocked" : "ok"),
+      statusRow("Mutation", workThreads.mutationBlocked ? "blocked" : "not granted", workThreads.mutationAllowed ? "blocked" : "ok"),
       statusRow("Routing", workThreads.routingEnforced ? "unexpected enforce" : "shadow only", workThreads.routingEnforced ? "blocked" : "ok"),
     ],
     governance: [

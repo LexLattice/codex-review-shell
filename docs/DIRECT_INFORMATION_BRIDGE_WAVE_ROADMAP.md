@@ -226,7 +226,7 @@ disabled until later authority gates exist.
 
 ### PR 8: Sub-Agent / Worker Graph Alignment
 
-Status: in progress.
+Status: merged.
 
 Branch:
 
@@ -277,7 +277,13 @@ AgentClassSpec registry exists.
 
 ### PR 9: Work-Target Resolver Productization
 
-Status: planned.
+Status: in progress.
+
+Branch:
+
+```text
+codex/direct-work-target-resolver-productization
+```
 
 Purpose:
 
@@ -293,6 +299,22 @@ Scope:
 - Block direct-path mutation when resolution is ambiguous.
 - Preserve non-target workspaces/threads.
 - Add stale-result guards.
+
+Implemented in the first slice:
+
+- `direct_work_target_resolution_report@1` productized resolver report.
+- Stale guards for age, project, request digest, and resolution digest.
+- Target-gate state for selected, clarification-required, stale-blocked, and
+  unresolved-blocked outcomes.
+- Settings-surface rows for target gate, blockers, and mutation posture.
+- Regression coverage for selected, ambiguous/unresolved, stale, and
+  renderer-safe report behavior.
+
+Still deferred:
+
+- Enforced mutation blocking in every direct action controller.
+- User clarification workflow / target picker.
+- Automatic semantic broker routing.
 
 Non-goals:
 

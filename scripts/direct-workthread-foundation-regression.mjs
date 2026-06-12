@@ -5,7 +5,9 @@ import os from "node:os";
 import path from "node:path";
 import {
   DirectWorkThreadRegistryStore,
+  assertWorkTargetResolutionReportSafe,
   buildWorkThread,
+  buildWorkTargetResolutionReport,
   buildWorkTargetResolution,
 } from "../src/main/direct/bridge/work-thread-registry.js";
 
@@ -91,6 +93,17 @@ function main() {
     assert(selected.transitionLaw.mutationAllowed === false, "shadow resolver must not authorize mutation");
     assert(selected.transitionLaw.providerCallAllowed === false, "shadow resolver must not authorize provider calls");
     assert(selected.requestRawTextIncluded === false, "resolution must not store raw request text");
+    const selectedReport = store.resolveWorkTargetReport({
+      projectId: "codex-review-shell-direct",
+      branchName: "codex/direct-chatgpt-harness",
+      activeRuntimePath: "direct-implementation",
+      userRequest: "continue the direct information bridge WorkThread registry implementation",
+    });
+    assertWorkTargetResolutionReportSafe(selectedReport);
+    assert(selectedReport.routingGateState === "selected_ready", "selected resolution should produce selected-ready gate");
+    assert(selectedReport.selectedWorkThreadId === seeded.direct.workThreadId, "selected report should cite selected WorkThread");
+    assert(selectedReport.mutationBlocked === false, "selected non-stale report should not be target-blocked");
+    assert(selectedReport.mutationAuthorityGranted === false, "selected report must not grant mutation authority");
 
     const ambiguous = store.resolveWorkTarget({
       projectId: "codex-review-shell-direct",
@@ -98,6 +111,11 @@ function main() {
     });
     assert(["ambiguous", "unresolved"].includes(ambiguous.resolutionState), "low-specificity request should not be confidently selected");
     assert(ambiguous.selectedWorkThreadId === "", "ambiguous/unresolved request must not select a thread");
+    const ambiguousReport = buildWorkTargetResolutionReport({ resolution: ambiguous, projectId: "codex-review-shell-direct" }, { nowMs: new Date("2026-06-12T12:00:00.000Z").getTime() });
+    assertWorkTargetResolutionReportSafe(ambiguousReport);
+    assert(ambiguousReport.mutationBlocked === true, "ambiguous/unresolved target must block mutation");
+    assert(ambiguousReport.providerCallBlocked === true, "ambiguous/unresolved target must block provider call");
+    assert(ambiguousReport.clarificationRequired === true, "ambiguous/unresolved target should require clarification");
 
     const noCandidate = store.resolveWorkTarget({
       projectId: "unknown-project",
@@ -105,6 +123,16 @@ function main() {
     });
     assert(noCandidate.resolutionState === "unresolved", "unknown project should be unresolved");
     assert(noCandidate.ambiguityBlockers.includes("no_candidate_work_thread"), "missing no-candidate blocker");
+    const staleReport = buildWorkTargetResolutionReport({
+      resolution: selected,
+      projectId: "codex-review-shell-direct",
+      expectedResolutionDigest: "sha256:stale",
+    }, { nowMs: new Date("2026-06-12T12:00:00.000Z").getTime() });
+    assertWorkTargetResolutionReportSafe(staleReport);
+    assert(staleReport.stale === true, "digest mismatch should mark report stale");
+    assert(staleReport.routingGateState === "stale_blocked", "stale report should block routing gate");
+    assert(staleReport.selectedWorkThreadId === "", "stale report must not retain selected target");
+    assert(staleReport.blockerCodes.includes("resolution_digest_mismatch"), "stale report should expose digest mismatch blocker");
 
     const directRaw = store.readWorkThread(seeded.direct.workThreadId);
     assert(directRaw.rawPathIncluded === false, "work thread must not expose raw paths");
@@ -138,14 +166,19 @@ function main() {
     assert(built.ontologyProfileRef.rawPathIncluded === false, "refs must be renderer-safe");
     const standaloneResolution = buildWorkTargetResolution({ projectId: "p", userRequest: "minimal" }, [built]);
     assert(standaloneResolution.transitionLaw.routingEnforced === false, "standalone resolver must remain shadow-only");
+    const standaloneReport = buildWorkTargetResolutionReport({ resolution: standaloneResolution, projectId: "p" });
+    assert(standaloneReport.routingEnforced === false, "productized report must not enforce routing");
 
     console.log(JSON.stringify({
       ok: true,
       rootDirExposed: false,
       projectionRows: projection.rowCount,
       selected: selected.selectedWorkThreadId,
+      selectedGate: selectedReport.routingGateState,
       ambiguousState: ambiguous.resolutionState,
+      ambiguousGate: ambiguousReport.routingGateState,
       noCandidateState: noCandidate.resolutionState,
+      staleGate: staleReport.routingGateState,
     }, null, 2));
   } finally {
     fs.rmSync(rootDir, { recursive: true, force: true });
