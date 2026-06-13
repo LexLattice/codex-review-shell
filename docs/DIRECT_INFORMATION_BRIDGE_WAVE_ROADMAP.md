@@ -1303,7 +1303,7 @@ and should be used before raising matrix rows from B-F to B-R.
 
 ### PR 26: Side-Effect Recovery And Replay Safety
 
-Status: in review.
+Status: merged.
 
 Purpose:
 
@@ -1375,7 +1375,7 @@ transition before any side-effecting operation can be retried or replayed.
 
 ### PR 27: Workspace Authority Maturity V0
 
-Status: planned.
+Status: in review.
 
 Purpose:
 
@@ -1397,6 +1397,23 @@ Scope:
   dirty worktree preservation, symlink escape blocking, generated/vendor
   degraded posture, lockfile explicit policy, and untracked file classification.
 
+Implemented in this slice:
+
+- Workspace mutation policy snapshots now include explicit policy rows for
+  generated, vendor, lockfile, binary, large, symlink, ignored, and external
+  worktree path classes.
+- Workspace effect summaries now include a renderer-safe class projection that
+  separates direct patch effects, command-observed effects, untracked changes,
+  and pre-existing dirty state.
+- Patch effect summaries include a revert-plan preview when before/after
+  evidence is complete, but revert execution remains disabled.
+- Path classification now handles symlink escapes, symlink files, ignored
+  paths, binary files, large files, and external worktree boundaries.
+- Regression fixtures cover dirty prestate preservation, symlink escape
+  blocking, ignored-path degradation, binary/large-file policy, external
+  worktree blocking, generated/vendor/lockfile policy, and untracked change
+  classification.
+
 Non-goals:
 
 - No automatic revert execution.
@@ -1415,6 +1432,14 @@ Promotion criteria:
 The direct implementation lane can state what changed, what may have changed,
 what was already dirty, and what policy blocked, without conflating those
 classes.
+```
+
+Current posture:
+
+```text
+Fixture/local workspace authority maturity proof is implemented in this PR.
+Revert preview is display-only; revert execution and broad VCS policy remain
+future authority transitions.
 ```
 
 Wave 4 expected result:

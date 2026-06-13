@@ -182,6 +182,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "Add registry-level risk classes for network/process/workspace/environment authority before expanding command scope or enforcing routing.",
   },
   {
+    id: "ic4.workspace-mutation-truth",
+    name: "Workspace mutation truth and policy projection",
+    role: "canonical_evidence",
+    implementationState: "implemented",
+    directPathPosture: "keep",
+    sourceFiles: ["src/main/direct/workspace/mutation-truth.js", "scripts/direct-workspace-mutation-regression.mjs"],
+    ontology: ontologyShape(["workspace_effect_summary", "workspace_policy_row", "workspace_effect_class_projection", "revert_plan_preview"], "workspace", {
+      identityFields: ["projectId", "sessionId", "turnId", "effectSummaryId", "policyDigest"],
+      schema: "direct_workspace_effect_summary@1",
+    }),
+    bridgeFit: "Separates direct patch effects, command-observed effects, untracked changes, pre-existing dirty state, and policy-blocked classes without exposing raw paths or granting revert authority.",
+    realignment: "Keep revert preview display-only and require future authority transitions before executing cleanup/revert or broadening generated/vendor/lockfile policy.",
+  },
+  {
     id: "ic5.recovery-and-replay-safety",
     name: "Recovery and replay safety",
     role: "governance_routing",

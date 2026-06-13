@@ -19,6 +19,7 @@ const {
   buildPatchWorkspaceEffectSummary,
   buildPolicySnapshot,
   buildWorkspaceEffectSummary,
+  classifyWorkspaceChange,
   classifyWorkspacePath,
   defaultCapabilities,
   inspectPatchJournal,
@@ -26,6 +27,7 @@ const {
   providerEnvelopeForEffectSummary,
   validateWorkspaceMutationReport,
   workspaceEffectRecoveryState,
+  workspaceMutationPolicyRows,
 } = require("../src/main/direct/workspace/mutation-truth");
 
 const USER_DATA_ROOT_ENV_VAR = "CODEX_REVIEW_SHELL_USER_DATA_ROOT";
@@ -148,6 +150,9 @@ function patchExpectedCase() {
   });
   const ok = effectSummary.expectedChangeCount === 1 &&
     effectSummary.unexpectedChangeCount === 0 &&
+    effectSummary.effectClassProjection.directPatchEffectCount === 1 &&
+    effectSummary.revertPlanPreview.available === true &&
+    effectSummary.revertPlanPreview.revertExecutionAllowed === false &&
     patchJournalInspection.journalState === "applied_verified";
   return baseCase({
     caseId: "patch_expected_changes",
@@ -156,6 +161,23 @@ function patchExpectedCase() {
     effectSummary,
     patchJournalInspection,
     failureCode: ok ? "" : "patch_expected_changes_failed",
+  });
+}
+
+function policyRowsCase() {
+  const rows = workspaceMutationPolicyRows();
+  const snapshot = buildPolicySnapshot();
+  const rowClasses = new Set(rows.map((row) => row.pathClass));
+  const required = ["generated", "vendor", "lockfile", "binary_file", "large_file", "symlink", "ignored_path", "external_worktree"];
+  const ok = required.every((pathClass) => rowClasses.has(pathClass)) &&
+    snapshot.policyRows.length === rows.length &&
+    Boolean(snapshot.policyRowDigest);
+  return baseCase({
+    caseId: "workspace_policy_rows_explicit",
+    status: ok ? "passed" : "failed",
+    proofOutcome: "policy_rows_projected",
+    failureCode: ok ? "" : "policy_rows_missing",
+    notes: rows.map((row) => `${row.pathClass}:${row.decision}`),
   });
 }
 
@@ -368,13 +390,111 @@ function dirtyPrestateCase() {
     ],
   });
   const ok = effectSummary.baselineDirtyState.captured === true &&
-    effectSummary.changes[0].sourceExpectation === "modified_preexisting_dirty";
+    effectSummary.changes[0].sourceExpectation === "modified_preexisting_dirty" &&
+    effectSummary.effectClassProjection.preExistingDirtyPathCount === 1 &&
+    effectSummary.rendererSafeSummary.effectClassCounts.preExistingDirtyPathCount === 1;
   return baseCase({
     caseId: "dirty_prestate",
     status: ok ? "passed" : "failed",
     proofOutcome: "effect_summary_recorded",
     effectSummary,
     failureCode: ok ? "" : "dirty_prestate_misclassified",
+  });
+}
+
+function symlinkEscapeBlockedCase() {
+  const effectSummary = buildWorkspaceEffectSummary({
+    source: "patch_apply",
+    sourceArtifactId: "patch_result_symlink_escape",
+    changes: [
+      { relPath: "src/link-target.ts", changeKind: "modified", sourceExpectation: "expected_patch_change", symlinkEscape: true },
+    ],
+  });
+  const ok = effectSummary.blockedChangeCount === 1 &&
+    effectSummary.symlinkChangeCount === 1 &&
+    effectSummary.changes[0].policyReasonCode === "symlink_escape_blocked";
+  return baseCase({
+    caseId: "symlink_escape_blocked",
+    status: ok ? "blocked" : "failed",
+    proofOutcome: "policy_blocked_before_side_effect",
+    effectSummary,
+    failureCode: ok ? "symlink_escape_blocked" : "symlink_escape_not_blocked",
+  });
+}
+
+function ignoredPathDegradedCase() {
+  const effectSummary = buildWorkspaceEffectSummary({
+    source: "run_command",
+    sourceArtifactId: "command_result_ignored_path",
+    changes: [
+      { relPath: "tmp/cache.txt", changeKind: "ignored", sourceExpectation: "expected_command_change", ignored: true },
+    ],
+  });
+  const ok = effectSummary.ignoredPathChangeCount === 1 &&
+    effectSummary.policyEvaluation.strictestDecision === "degrade_to_read_only" &&
+    effectSummary.changedPathsPreview.length === 1 &&
+    effectSummary.changes[0].rendererPreviewAllowed === false;
+  return baseCase({
+    caseId: "ignored_path_degraded",
+    status: ok ? "degraded" : "failed",
+    proofOutcome: "side_effect_recorded_degraded",
+    effectSummary,
+    failureCode: ok ? "ignored_path_degraded" : "ignored_path_not_degraded",
+  });
+}
+
+function binaryAndLargePolicyCase() {
+  const binaryClassification = classifyWorkspaceChange({ relPath: "assets/archive.zip", isBinary: true });
+  const largeClassification = classifyWorkspaceChange({ relPath: "src/huge.txt", sizeBytes: 2048 }, { maxSingleFileBytes: 1024 });
+  const largeSummary = buildWorkspaceEffectSummary({
+    source: "run_command",
+    sourceArtifactId: "command_result_large_file",
+    caps: { maxSingleFileBytes: 1024 },
+    changes: [
+      { relPath: "src/huge.txt", changeKind: "modified", sourceExpectation: "expected_command_change", sizeBytes: 2048 },
+    ],
+  });
+  const ok = binaryClassification.pathClass === "binary_file" &&
+    binaryClassification.decision === "block" &&
+    largeClassification.pathClass === "large_file" &&
+    largeClassification.decision === "extra_confirmation_required" &&
+    largeSummary.largeFileChangeCount === 1;
+  return baseCase({
+    caseId: "binary_and_large_file_policy",
+    status: ok ? "degraded" : "failed",
+    proofOutcome: "policy_rows_projected",
+    effectSummary: largeSummary,
+    failureCode: ok ? "binary_large_policy" : "binary_large_policy_failed",
+  });
+}
+
+function untrackedClassificationCase() {
+  const effectSummary = buildWorkspaceEffectSummary({
+    source: "run_command",
+    sourceArtifactId: "command_result_untracked",
+    changes: [
+      { relPath: "src/new-file.ts", changeKind: "untracked", sourceExpectation: "expected_command_change", isUntracked: true },
+    ],
+  });
+  const ok = effectSummary.effectClassProjection.untrackedChangeCount === 1 &&
+    effectSummary.rendererSafeSummary.effectClassCounts.untrackedChangeCount === 1;
+  return baseCase({
+    caseId: "untracked_change_classified",
+    status: ok ? "passed" : "failed",
+    proofOutcome: "effect_summary_recorded",
+    effectSummary,
+    failureCode: ok ? "" : "untracked_not_classified",
+  });
+}
+
+function externalWorktreeBlockedCase() {
+  const classification = classifyWorkspaceChange({ relPath: "other-worktree/src/app.ts", workspaceBoundary: "external_worktree" });
+  const ok = classification.pathClass === "external_worktree" && classification.decision === "block";
+  return baseCase({
+    caseId: "external_worktree_blocked",
+    status: ok ? "blocked" : "failed",
+    proofOutcome: "policy_blocked_before_side_effect",
+    failureCode: ok ? "external_worktree" : "external_worktree_not_blocked",
   });
 }
 
@@ -580,6 +700,7 @@ function pathCollisionCase() {
 function runCases() {
   return [
     patchExpectedCase(),
+    policyRowsCase(),
     patchUnexpectedCase(),
     patchMissingExpectedCase(),
     sensitivePreviewFilteredCase(),
@@ -589,6 +710,11 @@ function runCases() {
     commandNoChangesCase(),
     commandWorkspaceChangedCase(),
     dirtyPrestateCase(),
+    symlinkEscapeBlockedCase(),
+    ignoredPathDegradedCase(),
+    binaryAndLargePolicyCase(),
+    untrackedClassificationCase(),
+    externalWorktreeBlockedCase(),
     commandMustNotWriteCase(),
     scanUnsupportedCase(),
     scanFailedCase(),
