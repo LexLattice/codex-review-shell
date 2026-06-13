@@ -778,7 +778,13 @@ is already main-process-owned.
 
 ### PR 18: Direct Attachment Capability And Submit Semantics
 
-Status: planned.
+Status: implemented in branch.
+
+Branch:
+
+```text
+codex/direct-attachment-capability-submit
+```
 
 Purpose:
 
@@ -794,6 +800,22 @@ Scope:
   provider payload, workspace ref, staged ref, text ref, or unsupported.
 - Add image/file capability gates and blocked-state witnesses.
 - Keep staging manifests, raw-path redaction, and cross-project draft guards.
+
+Implemented in this slice:
+
+- `direct_attachment_capability_projection@1` advertises governed
+  workspace/staged/text-reference support while explicitly not claiming direct
+  provider file/image payload support.
+- `direct_attachment_submit_packet@1` classifies each composer draft as
+  `provider_payload`, `workspace_ref`, `staged_ref`, `text_ref`, or
+  `unsupported`.
+- Direct fixture and live-text controllers validate packet safety, block
+  unsupported drafts, and persist safe disposition summaries plus transcript
+  witnesses on the direct turn.
+- The Codex renderer sends draft-safe attachment metadata with direct
+  `turn/start`, including queued follow-up prompts.
+- Regression coverage verifies reference disposition, unsupported blocking,
+  no raw path/payload exposure, and no fake provider payload support.
 
 Non-goals:
 

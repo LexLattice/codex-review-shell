@@ -49,6 +49,13 @@ const {
 } = require("../tools/read-only-authority");
 const { normalizeCodexBinding } = require("../runtime/runtime-status");
 const { buildDirectThreadDeckProjection } = require("../thread/thread-deck");
+const {
+  assertDirectAttachmentCapabilityProjectionSafe,
+  assertDirectAttachmentSubmitPacketSafe,
+  buildDirectAttachmentCapabilityProjection,
+  buildDirectAttachmentProviderPrompt,
+  buildDirectAttachmentSubmitPacket,
+} = require("../attachments/capability");
 
 const DIRECT_LIVE_TEXT_SURFACE_TRANSPORT = "direct-live-text";
 const DIRECT_FORK_PREVIEW_START_REQUEST_SHAPE = "direct_fork_preview_start_live_text@1";
@@ -459,6 +466,10 @@ function buildDirectLiveTextCapabilities(status = {}) {
   if (readOnlyToolReady) toolMethods.push("direct/tool/readOnly/requestApproval");
   if (patchApplyReady) toolMethods.push("direct/tool/patchApply/requestApproval");
   if (commandExecutionReady) toolMethods.push("direct/tool/command/requestApproval");
+  const attachmentCapability = buildDirectAttachmentCapabilityProjection({
+    runtimeKind: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
+    status: ready ? "ready" : "blocked",
+  });
   return {
     version: 1,
     status: ready ? "ready" : "blocked",
@@ -512,6 +523,7 @@ function buildDirectLiveTextCapabilities(status = {}) {
       toolsEnabled: readOnlyToolReady || patchApplyReady || commandExecutionReady,
       rawBackendFramesExposed: false,
     },
+    attachments: attachmentCapability,
   };
 }
 
@@ -3900,6 +3912,40 @@ class DirectLiveTextController {
     return prompt;
   }
 
+  directAttachmentCapability(project = {}, status = {}) {
+    const projection = buildDirectAttachmentCapabilityProjection({
+      projectId: normalizeString(project.id, ""),
+      runtimeKind: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
+      status: status.status === "ready" ? "ready" : "blocked",
+    });
+    assertDirectAttachmentCapabilityProjectionSafe(projection);
+    return projection;
+  }
+
+  directAttachmentSubmitPacket(params = {}, context = {}, prompt = "") {
+    const attachments = Array.isArray(params.attachmentDrafts) ? params.attachmentDrafts : [];
+    const capabilityProjection = this.directAttachmentCapability(context.project || {}, this.statusForProject(context.project || {}));
+    const packet = buildDirectAttachmentSubmitPacket({
+      projectId: normalizeString(context.project?.id, ""),
+      surfaceId: "codex",
+      turnClientId: normalizeString(params.clientTurnRequestId, ""),
+      text: prompt,
+      attachments,
+      capabilityProjection,
+    });
+    assertDirectAttachmentSubmitPacketSafe(packet);
+    if (packet.status === "blocked") {
+      const error = new Error("Direct attachment submit packet contains unsupported attachments.");
+      error.code = "direct_attachment_submit_blocked";
+      error.attachmentSubmitPacket = {
+        packetId: packet.packetId,
+        unsupportedAttachments: packet.unsupportedAttachments,
+      };
+      throw error;
+    }
+    return { capabilityProjection, packet };
+  }
+
   async startTurn(params = {}, context = {}) {
     const project = context.project || {};
     const status = this.assertReady(project);
@@ -3913,11 +3959,23 @@ class DirectLiveTextController {
       error.code = "missing_client_turn_request_id";
       throw error;
     }
+    const rawPrompt = this.textPrompt(params);
+    const attachmentSubmit = this.directAttachmentSubmitPacket(params, context, rawPrompt);
+    const prompt = buildDirectAttachmentProviderPrompt(rawPrompt, attachmentSubmit.packet);
     const duplicate = this.findTurnByClientRequestId(session, clientTurnRequestId);
     if (duplicate) {
-      const prompt = this.textPrompt(params);
       if (turnPromptDigest(duplicate) !== sha256(prompt)) {
         const error = new Error("Direct live text clientTurnRequestId was reused with a different prompt.");
+        error.code = "client_turn_request_id_conflict";
+        throw error;
+      }
+      const requestedAttachmentDraftSetDigest = normalizeString(params.attachmentDraftSetDigest, "");
+      const existingAttachmentDraftSetDigest = normalizeString(duplicate.requestShape?.directAttachmentDraftSetDigest, "");
+      if (
+        existingAttachmentDraftSetDigest &&
+        requestedAttachmentDraftSetDigest !== existingAttachmentDraftSetDigest
+      ) {
+        const error = new Error("Direct live text clientTurnRequestId was reused with a different attachment draft set.");
         error.code = "client_turn_request_id_conflict";
         throw error;
       }
@@ -3935,7 +3993,6 @@ class DirectLiveTextController {
       error.status = activeTurn.state;
       throw error;
     }
-    const prompt = this.textPrompt(params);
     const model = normalizeString(params.model, "") || status.model;
     const reasoningEffort = normalizeString(params.reasoningEffort || params.reasoning_effort || params.effort, session.reasoningEffort);
     const existingTurnIds = this.sessionStore.listTurnIdsFromDisk(session.sessionId);
@@ -4123,6 +4180,13 @@ class DirectLiveTextController {
     }
     const requestShape = {
       ...requestShapeForDiagnostic(requestBody),
+      directAttachmentCapabilityProjectionDigest: attachmentSubmit.capabilityProjection.projectionDigest,
+      directAttachmentSubmitPacketId: attachmentSubmit.packet.packetId,
+      directAttachmentSubmitPacketDigest: attachmentSubmit.packet.packetDigest,
+      directAttachmentDraftSetDigest: normalizeString(params.attachmentDraftSetDigest, ""),
+      directAttachmentDispositionSummary: attachmentSubmit.packet.summary,
+      directAttachmentRawPayloadIncluded: false,
+      directAttachmentRawPathIncluded: false,
       ...(contextResult ? {
         contextBuildId: contextResult.contextPack.contextBuildId,
         contextPackContentHash: contextResult.contextPack.contextPackContentHash,
@@ -4141,6 +4205,8 @@ class DirectLiveTextController {
     };
     this.sessionStore.updateTurnState(session.sessionId, turn.turnId, "request_built", {
       requestShape,
+      directAttachmentSubmitPacket: attachmentSubmit.packet,
+      directAttachmentTranscriptWitnesses: attachmentSubmit.packet.transcriptWitnesses,
       ...(contextResult ? {
         contextBuildId: contextResult.contextPack.contextBuildId,
         requestManifestId: contextResult.requestManifest.requestManifestId,

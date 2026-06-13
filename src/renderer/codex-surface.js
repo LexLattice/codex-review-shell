@@ -18,6 +18,16 @@ function createClientTurnRequestId() {
   return `client_turn_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function stringDigest(value) {
+  const text = String(value ?? "");
+  let hash = 2166136261;
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
 const bridge = window.codexSurfaceBridge;
 const payload = decodePayload() || {};
 const project = payload.project || null;
@@ -573,16 +583,58 @@ function attachmentReferenceBlock() {
   return ["", "Attachments staged as workspace references:", ...lines].join("\n");
 }
 
+function composerAttachmentDraftsForSubmit() {
+  return state.composerAttachments
+    .filter((attachment) => attachment && attachment.status === "ready")
+    .map((attachment) => ({
+      id: attachment.id || "",
+      projectId: attachment.projectId || "",
+      surfaceId: attachment.surfaceId || "codex",
+      status: attachment.status || "",
+      kind: attachment.kind || "file",
+      displayName: attachment.displayName || attachment.originalName || "attachment",
+      originalName: attachment.originalName || "",
+      mimeType: attachment.mimeType || "application/octet-stream",
+      sizeBytes: Number(attachment.sizeBytes || 0),
+      workspaceRelPath: attachment.workspaceRelPath || "",
+      stagedRelPath: attachment.stagedRelPath || "",
+      sourcePathEvidenceKey: attachment.sourcePathEvidenceKey || "",
+      stagedPathEvidenceKey: attachment.stagedPathEvidenceKey || "",
+      workspaceEvidenceKey: attachment.workspaceEvidenceKey || "",
+      provider: {
+        disposition: attachment.provider?.disposition || "",
+        reason: attachment.provider?.reason || "",
+        capabilityEvidenceState: attachment.provider?.capabilityEvidenceState || "",
+        unsupportedReason: attachment.provider?.unsupportedReason || "",
+      },
+      typeEvidence: {
+        risk: attachment.typeEvidence?.risk || "",
+        finalMime: attachment.typeEvidence?.finalMime || attachment.mimeType || "",
+      },
+    }));
+}
+
+function composerAttachmentDraftSetDigest(attachments = []) {
+  try {
+    return `draftset:${stringDigest(JSON.stringify(attachments))}`;
+  } catch {
+    return `draftset:${Date.now().toString(36)}`;
+  }
+}
+
 function composerDraftProjection() {
   const text = String(els.composerInput?.value || "").trim();
   const attachmentBlock = attachmentReferenceBlock();
   const blockers = attachmentSubmitBlockers();
+  const attachments = composerAttachmentDraftsForSubmit();
   if (blockers.length) {
     return {
       ok: false,
       reason: "unsupported_attachments",
       message: "Remove or fix unsupported attachments before sending.",
       text: "",
+      attachments,
+      attachmentDraftSetDigest: composerAttachmentDraftSetDigest(attachments),
       hasContent: Boolean(text || attachmentBlock),
     };
   }
@@ -592,6 +644,8 @@ function composerDraftProjection() {
       reason: "empty",
       message: "",
       text: "",
+      attachments,
+      attachmentDraftSetDigest: composerAttachmentDraftSetDigest(attachments),
       hasContent: false,
     };
   }
@@ -600,6 +654,8 @@ function composerDraftProjection() {
     reason: "",
     message: "",
     text: `${text || "Review the attached files/images."}${attachmentBlock}`,
+    attachments,
+    attachmentDraftSetDigest: composerAttachmentDraftSetDigest(attachments),
     hasContent: true,
   };
 }
@@ -6690,9 +6746,13 @@ async function startCodexTurn(text, options = {}) {
     model: activeModelId() || null,
     effort: requestedReasoningEffort(),
   };
-  if (connection?.transport === DIRECT_LIVE_TEXT_TRANSPORT) {
-    params.clientTurnRequestId = options.clientTurnRequestId || createClientTurnRequestId();
-    params.promptText = text;
+  if (connection?.transport === DIRECT_LIVE_TEXT_TRANSPORT || String(connection?.transport || "").startsWith("direct-")) {
+    if (connection?.transport === DIRECT_LIVE_TEXT_TRANSPORT) {
+      params.clientTurnRequestId = options.clientTurnRequestId || createClientTurnRequestId();
+      params.promptText = text;
+    }
+    params.attachmentDrafts = Array.isArray(options.attachments) ? options.attachments : [];
+    params.attachmentDraftSetDigest = options.attachmentDraftSetDigest || "";
   }
   if (state.runtimeOverrides.approvalPolicy) params.approvalPolicy = state.runtimeOverrides.approvalPolicy;
   if (state.runtimeOverrides.serviceTier) params.serviceTier = state.runtimeOverrides.serviceTier;
@@ -6752,7 +6812,7 @@ async function steerCurrentTurn(text) {
   return result;
 }
 
-function queueComposerMessage(text) {
+function queueComposerMessage(text, options = {}) {
   const threadId = String(state.threadId || "").trim();
   if (!threadId) throw new Error("No active Codex thread is available for queueing.");
   const item = {
@@ -6760,6 +6820,8 @@ function queueComposerMessage(text) {
     threadId,
     projectId: String(project?.id || ""),
     text,
+    attachments: Array.isArray(options.attachments) ? options.attachments : [],
+    attachmentDraftSetDigest: options.attachmentDraftSetDigest || "",
     createdAt: new Date().toISOString(),
   };
   state.queuedComposerMessages.push(item);
@@ -6795,7 +6857,12 @@ async function drainQueuedComposerMessages(reason = "turn-completed") {
   state.queuedPromptDrainInProgress = true;
   renderRuntimeConstitution();
   try {
-    await sendPrompt(next.text, { clearComposer: false, queuedReason: reason });
+    await sendPrompt(next.text, {
+      clearComposer: false,
+      queuedReason: reason,
+      attachments: Array.isArray(next.attachments) ? next.attachments : [],
+      attachmentDraftSetDigest: next.attachmentDraftSetDigest || "",
+    });
   } catch (error) {
     state.queuedComposerMessages.splice(nextIndex, 0, next);
     throw error;
@@ -6818,7 +6885,10 @@ async function submitIdleComposerDraft() {
     reportComposerDraftBlock(draft);
     return;
   }
-  await sendPrompt(draft.text);
+  await sendPrompt(draft.text, {
+    attachments: draft.attachments,
+    attachmentDraftSetDigest: draft.attachmentDraftSetDigest,
+  });
 }
 
 async function submitActiveComposerDraft(disposition) {
@@ -6832,7 +6902,10 @@ async function submitActiveComposerDraft(disposition) {
     return;
   }
   if (disposition === "queue") {
-    queueComposerMessage(draft.text);
+    queueComposerMessage(draft.text, {
+      attachments: draft.attachments,
+      attachmentDraftSetDigest: draft.attachmentDraftSetDigest,
+    });
     return;
   }
   throw new Error(`Unsupported active-turn composer disposition: ${disposition}`);

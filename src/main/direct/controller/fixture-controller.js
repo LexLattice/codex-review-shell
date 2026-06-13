@@ -5,6 +5,13 @@ const path = require("node:path");
 const { EventEmitter } = require("node:events");
 const { loadFixtureFile, NORMALIZED_FIXTURE_DIR } = require("../fixtures/fixture-loader");
 const { toolTranscriptItemFromObligation } = require("../session/session-store");
+const {
+  assertDirectAttachmentCapabilityProjectionSafe,
+  assertDirectAttachmentSubmitPacketSafe,
+  buildDirectAttachmentCapabilityProjection,
+  buildDirectAttachmentProviderPrompt,
+  buildDirectAttachmentSubmitPacket,
+} = require("../attachments/capability");
 
 const DIRECT_FIXTURE_SURFACE_TRANSPORT = "direct-fixture";
 
@@ -37,6 +44,10 @@ function fixtureThreadTitle(project = {}) {
 }
 
 function buildDirectFixtureCapabilities() {
+  const attachmentCapability = buildDirectAttachmentCapabilityProjection({
+    runtimeKind: DIRECT_FIXTURE_SURFACE_TRANSPORT,
+    status: "ready",
+  });
   return {
     version: 1,
     status: "ready",
@@ -81,6 +92,7 @@ function buildDirectFixtureCapabilities() {
       source: "direct-fixture-controller",
       fixtureId: "plain-text-turn",
     },
+    attachments: attachmentCapability,
   };
 }
 
@@ -207,9 +219,34 @@ class DirectFixtureController {
     if (!session) throw new Error(`Direct fixture session not found: ${threadId}`);
     const model = normalizeString(params.model, "") || this.defaultModel(context.project || {});
     const input = Array.isArray(params.input) ? params.input : [];
-    const prompt = firstTextInput(input);
+    const rawPrompt = firstTextInput(input);
+    const capabilityProjection = buildDirectAttachmentCapabilityProjection({
+      projectId: normalizeString(context.project?.id, ""),
+      runtimeKind: DIRECT_FIXTURE_SURFACE_TRANSPORT,
+      status: "ready",
+    });
+    assertDirectAttachmentCapabilityProjectionSafe(capabilityProjection);
+    const attachmentSubmitPacket = buildDirectAttachmentSubmitPacket({
+      projectId: normalizeString(context.project?.id, ""),
+      surfaceId: "codex",
+      turnClientId: normalizeString(params.clientTurnRequestId, ""),
+      text: rawPrompt,
+      attachments: Array.isArray(params.attachmentDrafts) ? params.attachmentDrafts : [],
+      capabilityProjection,
+    });
+    assertDirectAttachmentSubmitPacketSafe(attachmentSubmitPacket);
+    if (attachmentSubmitPacket.status === "blocked") {
+      const error = new Error("Direct fixture attachment submit packet contains unsupported attachments.");
+      error.code = "direct_attachment_submit_blocked";
+      error.attachmentSubmitPacket = {
+        packetId: attachmentSubmitPacket.packetId,
+        unsupportedAttachments: attachmentSubmitPacket.unsupportedAttachments,
+      };
+      throw error;
+    }
+    const prompt = buildDirectAttachmentProviderPrompt(rawPrompt, attachmentSubmitPacket);
     const turn = this.sessionStore.createTurn(session.sessionId, {
-      input,
+      input: prompt ? [{ type: "text", text: prompt, text_elements: [] }] : input,
       model,
     });
     const turnId = turn.turnId;
@@ -237,6 +274,19 @@ class DirectFixtureController {
       threadId: session.sessionId,
       turnId,
       item: userItem,
+    });
+    this.sessionStore.updateTurnState(session.sessionId, turnId, "request_built", {
+      requestShape: {
+        directAttachmentCapabilityProjectionDigest: capabilityProjection.projectionDigest,
+        directAttachmentSubmitPacketId: attachmentSubmitPacket.packetId,
+        directAttachmentSubmitPacketDigest: attachmentSubmitPacket.packetDigest,
+        directAttachmentDraftSetDigest: normalizeString(params.attachmentDraftSetDigest, ""),
+        directAttachmentDispositionSummary: attachmentSubmitPacket.summary,
+        directAttachmentRawPayloadIncluded: false,
+        directAttachmentRawPathIncluded: false,
+      },
+      directAttachmentSubmitPacket: attachmentSubmitPacket,
+      directAttachmentTranscriptWitnesses: attachmentSubmitPacket.transcriptWitnesses,
     });
 
     for (const event of normalizedEvents) {
