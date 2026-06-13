@@ -47,13 +47,19 @@ function stableStringify(value) {
   if (value && typeof value.toJSON === "function") return stableStringify(value.toJSON());
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) {
-    return `[${value.map((entry) => (entry === undefined ? "null" : stableStringify(entry))).join(",")}]`;
+    const entries = value.map((entry) => {
+      const serialized = stableStringify(entry);
+      return serialized === undefined ? "null" : serialized;
+    });
+    return `[${entries.join(",")}]`;
   }
-  return `{${Object.keys(value)
-    .filter((key) => value[key] !== undefined)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
-    .join(",")}}`;
+  const parts = [];
+  for (const key of Object.keys(value).sort()) {
+    if (value[key] === undefined) continue;
+    const serialized = stableStringify(value[key]);
+    if (serialized !== undefined) parts.push(`${JSON.stringify(key)}:${serialized}`);
+  }
+  return `{${parts.join(",")}}`;
 }
 
 function sha256(value) {
@@ -65,6 +71,7 @@ function digestFor(domain, value) {
 }
 
 function isoTimestamp(input) {
+  if (input instanceof Date && !Number.isNaN(input.getTime())) return input.toISOString();
   if (typeof input === "number" && Number.isFinite(input)) return new Date(input).toISOString();
   const parsed = Date.parse(normalizeString(input, ""));
   return Number.isFinite(parsed) ? new Date(parsed).toISOString() : new Date().toISOString();
@@ -195,12 +202,19 @@ function authorityBoundarySummary(input = {}) {
   };
 }
 
-function packetBlockers({ semanticPreflight, agentClassRef, workThreadRef, targetResolutionRef }) {
+function packetBlockers({ semanticPreflight, agentClassRef, workThreadRef, targetResolutionRef, operatorBrokerResolutionRef }) {
   const blockers = [];
   if (semanticPreflight.recommendationClass !== "route_to_role") blockers.push("preflight_not_route_to_role");
   if (semanticPreflight.stale) blockers.push("semantic_preflight_stale");
   if (!semanticPreflight.preflightId) blockers.push("semantic_preflight_missing");
   if (!workThreadRef.workThreadId && !semanticPreflight.selectedWorkThreadId && !targetResolutionRef.selectedWorkThreadId) blockers.push("work_thread_ref_missing");
+  const selectedWorkThreadIds = [
+    workThreadRef.workThreadId,
+    semanticPreflight.selectedWorkThreadId,
+    targetResolutionRef.selectedWorkThreadId,
+    operatorBrokerResolutionRef.brokerResolutionId ? operatorBrokerResolutionRef.selectedWorkThreadId : "",
+  ].map((item) => normalizeString(item, "")).filter(Boolean);
+  if (new Set(selectedWorkThreadIds).size > 1) blockers.push("work_thread_ref_mismatch");
   if (!agentClassRef.agentClassId) blockers.push("agent_class_id_missing");
   if (!agentClassRef.agentClassKind) blockers.push("agent_class_kind_missing");
   if (agentClassRef.agentClassKind === "primary_agent") blockers.push("primary_agent_not_role_handoff");
@@ -219,7 +233,7 @@ function buildDirectRoleHandoffPacket(input = {}, opts = {}) {
   });
   const agentClassRef = agentClassRefFrom(source.agentClassSpec || source.agentClassRef || source.semanticPreflight?.recommendedAgentClass || source.semanticBrokerPreflight?.recommendedAgentClass || {});
   const expectedOutputArtifactFamily = normalizeString(source.expectedOutputArtifactFamily, defaultOutputArtifactFamily(agentClassRef));
-  const blockers = packetBlockers({ semanticPreflight, agentClassRef, workThreadRef, targetResolutionRef });
+  const blockers = packetBlockers({ semanticPreflight, agentClassRef, workThreadRef, targetResolutionRef, operatorBrokerResolutionRef });
   const status = blockers.length ? "blocked" : "operator_review_required";
   const acceptancePosture = status === "operator_review_required" ? "operator_accept_required" : "blocked";
   const contextRefs = normalizeRefs(source.contextRefs, "context_pack");

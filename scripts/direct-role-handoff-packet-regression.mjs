@@ -11,6 +11,7 @@ const {
 const {
   buildDirectRoleHandoffPacket,
   buildDirectRoleHandoffPreview,
+  stableStringify,
   validateDirectRoleHandoffPacket,
   validateDirectRoleHandoffPreview,
 } = require("../src/main/direct/bridge/role-handoff-packet");
@@ -184,6 +185,23 @@ assert.equal(handoffPacket.rawPathIncluded, false);
 assert.equal(handoffPacket.rawSecretIncluded, false);
 assert(handoffPacket.evidenceRefs.some((ref) => ref.kind === "operator_broker_resolution"));
 assert(handoffPacket.evidenceRefs.some((ref) => ref.kind === "semantic_registry" && ref.rendererSafeLabel === "Agent class spec"));
+assert.equal(
+  stableStringify({ keep: true, omit: undefined, nested: { fn: () => "drop" }, arr: [undefined, Symbol("x"), 1] }),
+  "{\"arr\":[null,null,1],\"keep\":true,\"nested\":{}}",
+);
+
+const datePacket = buildDirectRoleHandoffPacket({
+  projectId,
+  threadId,
+  turnId: "turn_role_handoff_date_fixture",
+  semanticPreflight: routeToRolePreflight,
+  operatorBrokerResolution,
+  workTargetResolutionReport,
+  workThread,
+  agentClassSpec: implementationWorker,
+}, { nowMs: new Date(nowMs) });
+validateDirectRoleHandoffPacket(datePacket);
+assert.equal(datePacket.createdAt, "2026-06-13T12:00:00.000Z");
 
 const preview = buildDirectRoleHandoffPreview(handoffPacket);
 validateDirectRoleHandoffPreview(preview);
@@ -221,6 +239,25 @@ assert(blockedPacket.blockerCodes.includes("primary_agent_not_role_handoff"));
 assert.equal(blockedPacket.acceptancePosture, "blocked");
 assert.equal(blockedPacket.providerCallAllowed, false);
 assert.equal(blockedPacket.workerSpawnAllowed, false);
+
+const mismatchedTargetPacket = buildDirectRoleHandoffPacket({
+  projectId,
+  threadId,
+  turnId: "turn_role_handoff_mismatch_fixture",
+  semanticPreflight: routeToRolePreflight,
+  operatorBrokerResolution: {
+    ...operatorBrokerResolution,
+    selectedWorkThreadId: "work_thread_other_fixture",
+  },
+  workTargetResolutionReport,
+  workThread,
+  agentClassSpec: implementationWorker,
+}, { nowMs });
+validateDirectRoleHandoffPacket(mismatchedTargetPacket);
+assert.equal(mismatchedTargetPacket.status, "blocked");
+assert(mismatchedTargetPacket.blockerCodes.includes("work_thread_ref_mismatch"));
+assert.equal(mismatchedTargetPacket.providerCallAllowed, false);
+assert.equal(mismatchedTargetPacket.workerSpawnAllowed, false);
 
 const hostilePacket = {
   ...handoffPacket,
