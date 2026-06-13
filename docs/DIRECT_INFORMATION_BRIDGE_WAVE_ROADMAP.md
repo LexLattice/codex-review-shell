@@ -1904,7 +1904,7 @@ Implemented slice:
 
 ### PR 36: Memory Review Materialization UI V0
 
-Status: planned.
+Status: implemented in PR 36.
 
 Purpose:
 
@@ -1929,6 +1929,20 @@ Promotion criterion:
 Durable memory can be reviewed and locally materialized only through explicit
 operator-gated evidence transitions.
 ```
+
+Implemented slice:
+
+- Added `direct_memory_review_workbench@1` and renderer-safe workbench rows for
+  memory review packets, refresh proposals, reset policy/confirmation,
+  execution-gate transitions, context-loss links, omission impact, and rollback
+  posture.
+- Surfaced accepted/rejected refresh posture, local materialization witnesses,
+  stale/conflict counts, reset visibility, omission impact, and rollback
+  posture in the direct settings/status projection.
+- Registered the artifact as `ic3.memory-review-workbench`.
+- Kept memory mutation, reset execution, provider memory claims, provider
+  compaction, automatic refresh, provider transport, and workspace mutation
+  disabled.
 
 ### PR 37: Module Context Contribution Intake V0
 

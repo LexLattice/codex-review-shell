@@ -154,6 +154,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "This slice is display-only: it grants no request assembly, provider transport, memory mutation, provider compaction, workspace mutation, or preview editing authority.",
   },
   {
+    id: "ic3.memory-review-workbench",
+    name: "Memory review materialization workbench",
+    role: "memory_continuity",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/context/memory-workbench.js", "src/main/direct/ui/settings-surface.js", "scripts/direct-memory-review-workbench-regression.mjs"],
+    ontology: ontologyShape(["direct_memory_review_workbench", "direct_memory_review_workbench_row", "thread_memory_review_packet", "thread_memory_refresh_proposal"], "harness", {
+      identityFields: ["projectId", "workThreadId", "threadId", "workbenchId", "rowId"],
+      schema: "direct_memory_review_workbench@1",
+    }),
+    bridgeFit: "Projects memory review, refresh proposals, reset policy/confirmation, execution-gate witnesses, rollback posture, and omission impact into a renderer-safe operator workbench.",
+    realignment: "This slice remains display-only: local memory mutation can only be represented by existing guarded execution evidence, while provider memory claims, automatic refresh, provider compaction, and reset execution stay disabled.",
+  },
+  {
     id: "ic4.read-file-authority",
     name: "Read-file authority transition",
     role: "authority_gate",
