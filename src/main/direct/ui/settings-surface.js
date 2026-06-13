@@ -196,6 +196,42 @@ function summarizeOperatorBroker(input = {}) {
   };
 }
 
+function summarizeWorkThreadControlDeck(input = {}) {
+  const deck = objectOrEmpty(input.workThreadControlDeck || input.controlDeck || input);
+  const currentPointer = objectOrEmpty(deck.currentPointer);
+  const rows = arrayOrEmpty(deck.rows);
+  const pointerState = normalizeString(deck.pointerState, "unavailable");
+  return {
+    available: normalizeString(deck.schema, "") === "direct_work_thread_control_deck@1",
+    schema: normalizeString(deck.schema, "not_exposed"),
+    pointerState,
+    selectedWorkThreadId: pointerState === "selected"
+      ? normalizeString(deck.selectedWorkThreadId || currentPointer.selectedWorkThreadId, "")
+      : "",
+    selectedProviderLane: normalizeString(currentPointer.selectedProviderLane, "unknown"),
+    activeDirectSessionId: normalizeString(currentPointer.activeDirectSessionId, ""),
+    activeProviderThreadId: normalizeString(currentPointer.activeProviderThreadId, ""),
+    sourceKind: normalizeString(currentPointer.sourceKind, "unknown"),
+    rowCount: Number(deck.rowCount ?? rows.length ?? 0),
+    activeCount: Number(deck.activeCount ?? 0),
+    staleCount: Number(deck.staleCount ?? 0),
+    mismatchCount: Number(deck.mismatchCount ?? 0),
+    blockedCount: Number(deck.blockedCount ?? 0),
+    blockerCodes: arrayOrEmpty(deck.blockerCodes).map((item) => normalizeString(item, "")).filter(Boolean),
+    nonTargetPreservationConstraints: arrayOrEmpty(deck.nonTargetPreservationConstraints).map((item) => normalizeString(item, "")).filter(Boolean),
+    lastContextPackDigest: normalizeString(currentPointer.lastContextPackRef?.digest, ""),
+    lastAuthorityTransitionDigest: normalizeString(currentPointer.lastAuthorityTransitionRef?.digest, ""),
+    lastControlledRouteDigest: normalizeString(currentPointer.lastControlledRouteRef?.digest, ""),
+    selectionTransitionAvailable: deck.selectionTransitionAvailable === true,
+    providerCallAuthorityGranted: deck.providerCallAuthorityGranted === true || currentPointer.providerCallAuthorityGranted === true,
+    workspaceMutationAuthorityGranted: deck.workspaceMutationAuthorityGranted === true || currentPointer.workspaceMutationAuthorityGranted === true,
+    workerSpawnAuthorityGranted: deck.workerSpawnAuthorityGranted === true || currentPointer.workerSpawnAuthorityGranted === true,
+    appServerReplacementAuthorityGranted: deck.appServerReplacementAuthorityGranted === true || currentPointer.appServerReplacementAuthorityGranted === true,
+    controlDeckDigest: normalizeString(deck.controlDeckDigest, ""),
+    pointerDigest: normalizeString(currentPointer.pointerDigest, ""),
+  };
+}
+
 function summarizeGovernance(input = {}) {
   const governance = objectOrEmpty(input.governanceStatus || input.governance || input.metaSessionStatus?.governance);
   const broker = objectOrEmpty(input.brokerStatus || input.broker || input.metaSessionStatus?.routeSummary);
@@ -319,6 +355,7 @@ function buildRows(sections) {
   const runtime = sections.runtime;
   const registry = sections.registry;
   const workThreads = sections.workThreads;
+  const workThreadControl = sections.workThreadControl;
   const operatorBroker = sections.operatorBroker;
   const governance = sections.governance;
   const modules = sections.modules;
@@ -349,6 +386,21 @@ function buildRows(sections) {
       statusRow("Blockers", workThreads.ambiguityBlockers.length ? workThreads.ambiguityBlockers.join(", ") : "none", workThreads.ambiguityBlockers.length ? "blocked" : "ok"),
       statusRow("Mutation", workThreads.mutationBlocked ? "blocked" : "not granted", workThreads.mutationAllowed ? "blocked" : "ok"),
       statusRow("Routing", workThreads.routingEnforced ? "unexpected enforce" : "shadow only", workThreads.routingEnforced ? "blocked" : "ok"),
+    ],
+    workThreadControl: [
+      statusRow("Surface", workThreadControl.available ? "available" : "not exposed", workThreadControl.available ? "diagnostic" : "missing"),
+      statusRow("Pointer", workThreadControl.pointerState, workThreadControl.pointerState === "selected" ? "ok" : "blocked"),
+      statusRow("Selected", workThreadControl.selectedWorkThreadId || "none", workThreadControl.selectedWorkThreadId ? "diagnostic" : "blocked"),
+      statusRow("Provider lane", workThreadControl.selectedProviderLane),
+      statusRow("Direct session", workThreadControl.activeDirectSessionId || "none"),
+      statusRow("Provider thread", workThreadControl.activeProviderThreadId || "none"),
+      statusRow("Rows / active", `${workThreadControl.rowCount}/${workThreadControl.activeCount}`),
+      statusRow("Stale / mismatch", `${workThreadControl.staleCount}/${workThreadControl.mismatchCount}`, workThreadControl.staleCount || workThreadControl.mismatchCount ? "blocked" : "ok"),
+      statusRow("Blocked", workThreadControl.blockedCount, workThreadControl.blockedCount ? "blocked" : "ok"),
+      statusRow("Blockers", workThreadControl.blockerCodes.length ? workThreadControl.blockerCodes.slice(0, 5).join(", ") : "none", workThreadControl.blockerCodes.length ? "blocked" : "ok"),
+      statusRow("Non-target preservation", workThreadControl.nonTargetPreservationConstraints.length ? "required" : "standard", workThreadControl.nonTargetPreservationConstraints.length ? "diagnostic" : "ok"),
+      statusRow("Selection transition", workThreadControl.selectionTransitionAvailable ? "available" : "not available", workThreadControl.selectionTransitionAvailable ? "diagnostic" : "missing"),
+      statusRow("Authority", workThreadControl.providerCallAuthorityGranted || workThreadControl.workspaceMutationAuthorityGranted || workThreadControl.workerSpawnAuthorityGranted || workThreadControl.appServerReplacementAuthorityGranted ? "unexpected grant" : "no grant", workThreadControl.providerCallAuthorityGranted || workThreadControl.workspaceMutationAuthorityGranted || workThreadControl.workerSpawnAuthorityGranted || workThreadControl.appServerReplacementAuthorityGranted ? "blocked" : "ok"),
     ],
     operatorBroker: [
       statusRow("Surface", operatorBroker.available ? "available" : "not exposed", operatorBroker.available ? "diagnostic" : "missing"),
@@ -425,6 +477,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
   const runtime = summarizeRuntime(input.runtimeStatus);
   const registry = summarizeRegistry(input.registryAudit);
   const workThreads = summarizeWorkThreads(input.workThreads || input);
+  const workThreadControl = summarizeWorkThreadControlDeck(input.workThreadControlDeck || input.workThreadControl || input);
   const operatorBroker = summarizeOperatorBroker(input.operatorBroker || input.operatorBrokerResolution || input.operatorBrokerProjection || input);
   const governance = summarizeGovernance(input);
   const modules = summarizeModules(input.moduleStatus);
@@ -449,7 +502,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
     rawPathIncluded: false,
     rawSecretIncluded: false,
   };
-  const sections = { runtime, registry, workThreads, operatorBroker, governance, modules, agentClasses, continuity, agentUsage };
+  const sections = { runtime, registry, workThreads, workThreadControl, operatorBroker, governance, modules, agentClasses, continuity, agentUsage };
   const sourceDigest = digestFor("direct-settings-surface-source@1", sections);
   const projection = {
     schema: DIRECT_SETTINGS_SURFACE_PROJECTION_SCHEMA,
@@ -462,6 +515,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       "runtime",
       "registry",
       "work_thread",
+      "work_thread_control",
       "operator_broker",
       "governance",
       "skills_hooks_apps",
@@ -481,6 +535,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       { kind: "registry_audit", digest: normalizeString(input.registryAudit?.summary?.valid === false ? "" : input.registryAudit?.generatedAt, ""), label: "Direct information bridge registry" },
       { kind: "runtime_status", digest: normalizeString(input.runtimeStatus?.sourceDigest || input.runtimeStatus?.statusDigest, ""), label: "Direct runtime status" },
       { kind: "work_thread_projection", digest: normalizeString(workThreads.projectionDigest, ""), label: "WorkThread projection" },
+      { kind: "work_thread_control_deck", digest: normalizeString(workThreadControl.controlDeckDigest, ""), label: "WorkThread control deck" },
       { kind: "operator_broker_resolution", digest: normalizeString(operatorBroker.brokerResolutionDigest, ""), label: "Operator broker resolution" },
       { kind: "module_status", digest: normalizeString(input.moduleStatus?.projectionDigest, ""), label: "Bridge module status" },
       { kind: "agent_class_status", digest: normalizeString(input.agentClassStatus?.projectionDigest, ""), label: "Agent class status" },
