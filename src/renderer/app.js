@@ -242,6 +242,7 @@ const els = {
   directBridgeSettingsRuntimeList: document.getElementById("directBridgeSettingsRuntimeList"),
   directBridgeSettingsRegistryList: document.getElementById("directBridgeSettingsRegistryList"),
   directBridgeSettingsWorkThreadList: document.getElementById("directBridgeSettingsWorkThreadList"),
+  directBridgeSettingsOperatorBrokerList: document.getElementById("directBridgeSettingsOperatorBrokerList"),
   directBridgeSettingsGovernanceList: document.getElementById("directBridgeSettingsGovernanceList"),
   directBridgeSettingsModulesList: document.getElementById("directBridgeSettingsModulesList"),
   directBridgeSettingsAgentClassList: document.getElementById("directBridgeSettingsAgentClassList"),
@@ -3016,6 +3017,7 @@ function renderDirectBridgeSettingsStatus() {
   renderDirectDiagnosticsRows(els.directBridgeSettingsRuntimeList, directBridgeSettingsRows("runtime"));
   renderDirectDiagnosticsRows(els.directBridgeSettingsRegistryList, directBridgeSettingsRows("registry"));
   renderDirectDiagnosticsRows(els.directBridgeSettingsWorkThreadList, directBridgeSettingsRows("workThreads"));
+  renderDirectDiagnosticsRows(els.directBridgeSettingsOperatorBrokerList, directBridgeSettingsRows("operatorBroker"));
   renderDirectDiagnosticsRows(els.directBridgeSettingsGovernanceList, directBridgeSettingsRows("governance"));
   renderDirectDiagnosticsRows(els.directBridgeSettingsModulesList, directBridgeSettingsRows("modules"));
   renderDirectDiagnosticsRows(els.directBridgeSettingsAgentClassList, directBridgeSettingsRows("agentClasses"));

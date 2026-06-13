@@ -281,17 +281,17 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
   },
   {
     id: "ic12.work-thread-registry",
-    name: "Work-thread registry and broker",
+    name: "Work-thread registry and operator broker",
     role: "governance_routing",
     implementationState: "partial",
     directPathPosture: "keep_shadow",
-    sourceFiles: ["src/main/direct/bridge/work-thread-registry.js", "src/main/direct/ui/settings-surface.js", "scripts/direct-workthread-foundation-regression.mjs"],
-    ontology: ontologyShape(["work_thread", "work_target_resolution", "work_target_resolution_report", "context_packet_ref", "authority_boundary"], "harness", {
+    sourceFiles: ["src/main/direct/bridge/work-thread-registry.js", "src/main/direct/governance/operator-broker-resolution.js", "src/main/direct/ui/settings-surface.js", "scripts/direct-workthread-foundation-regression.mjs", "scripts/direct-operator-broker-resolution-regression.mjs"],
+    ontology: ontologyShape(["work_thread", "work_target_resolution", "work_target_resolution_report", "operator_broker_resolution", "context_packet_ref", "authority_boundary"], "harness", {
       identityFields: ["workThreadId", "projectId", "ontologyProfileRef"],
       schema: "work_thread@1",
     }),
-    bridgeFit: "Adds the canonical WorkThread object/store plus read-only projection, WorkTargetResolution, and productized target-gate report with stale and ambiguity blockers.",
-    realignment: "Resolver reports are operator-visible and block ambiguous/stale target routing, but still grant no mutation/provider authority until explicit enforcement is implemented.",
+    bridgeFit: "Adds the canonical WorkThread object/store plus read-only projection, WorkTargetResolution, productized target-gate report, and operator broker resolution over active work-world inputs.",
+    realignment: "Broker resolutions make candidates, confidence, ambiguity, and non-target preservation constraints visible, but still grant no mutation/provider authority until explicit enforcement is implemented.",
   },
   {
     id: "ic13.bridge-information-registry",
@@ -332,7 +332,7 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
       identityFields: ["projectId", "settingsSurfaceId", "profileId"],
       schema: "direct_settings_surface@1",
     }),
-    bridgeFit: "Builds a renderer-safe, display-only settings projection over runtime/profile, registry, WorkThread, governance, module, and continuity status.",
+    bridgeFit: "Builds a renderer-safe, display-only settings projection over runtime/profile, registry, WorkThread, operator broker, governance, module, and continuity status.",
     realignment: "Full settings workflows remain future work; this surface exposes status without enabling routing, mutation, module execution, memory editing, or provider compaction.",
   },
   {

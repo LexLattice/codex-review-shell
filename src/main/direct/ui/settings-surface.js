@@ -162,6 +162,40 @@ function summarizeWorkThreads(input = {}) {
   };
 }
 
+function summarizeOperatorBroker(input = {}) {
+  const broker = objectOrEmpty(input.operatorBroker || input.operatorBrokerResolution || input.operatorBrokerProjection || input);
+  const constraints = arrayOrEmpty(broker.nonTargetPreservationConstraints || broker.downstreamRoutePacketConstraints?.constraintCodes)
+    .map((item) => normalizeString(item, ""))
+    .filter(Boolean);
+  const blockers = arrayOrEmpty(broker.ambiguityBlockers)
+    .map((item) => normalizeString(item, ""))
+    .filter(Boolean);
+  const workWorld = objectOrEmpty(broker.workWorld || broker.workWorldSnapshot);
+  return {
+    available: normalizeString(broker.schema, "") === "operator_broker_resolution@1" || normalizeString(broker.schema, "") === "operator_broker_resolution_projection@1",
+    schema: normalizeString(broker.schema, "not_exposed"),
+    resolutionState: normalizeString(broker.resolutionState, "unavailable"),
+    routingGateState: normalizeString(broker.routingGateState, "unavailable"),
+    selectedWorkThreadId: normalizeString(broker.selectedWorkThreadId, ""),
+    candidateCount: Number(broker.candidateCount ?? arrayOrEmpty(broker.candidates).length ?? 0),
+    confidenceLabel: normalizeString(broker.confidenceLabel, "none"),
+    clarificationRequired: broker.clarificationRequired === true,
+    nonTargetPreservationRequired: broker.nonTargetPreservationRequired === true,
+    ambiguityBlockers: blockers,
+    nonTargetPreservationConstraints: constraints,
+    linkedCodexThreadCount: Number(workWorld.linkedCodexThreadCount || 0),
+    linkedChatGptThreadCount: Number(workWorld.linkedChatGptThreadCount || 0),
+    openObligationCount: Number(workWorld.openObligationCount || 0),
+    recentContextRefCount: Number(workWorld.recentContextRefCount ?? arrayOrEmpty(workWorld.recentContextRefs).length ?? 0),
+    branchName: normalizeString(workWorld.branchName || workWorld.branchIdentity?.branchName, ""),
+    workspaceKind: normalizeString(workWorld.workspaceKind || workWorld.workspaceIdentity?.workspaceKind, "unknown"),
+    brokerResolutionDigest: normalizeString(broker.brokerResolutionDigest, ""),
+    mutationAllowed: broker.authority?.mutationAuthorityGranted === true || broker.authority?.workspaceMutationAllowed === true,
+    providerCallAllowed: broker.authority?.providerCallAuthorityGranted === true || broker.authority?.providerTransportAllowed === true,
+    routingEnforced: broker.authority?.routingEnforced === true,
+  };
+}
+
 function summarizeGovernance(input = {}) {
   const governance = objectOrEmpty(input.governanceStatus || input.governance || input.metaSessionStatus?.governance);
   const broker = objectOrEmpty(input.brokerStatus || input.broker || input.metaSessionStatus?.routeSummary);
@@ -257,6 +291,7 @@ function buildRows(sections) {
   const runtime = sections.runtime;
   const registry = sections.registry;
   const workThreads = sections.workThreads;
+  const operatorBroker = sections.operatorBroker;
   const governance = sections.governance;
   const modules = sections.modules;
   const agentClasses = sections.agentClasses;
@@ -285,6 +320,20 @@ function buildRows(sections) {
       statusRow("Blockers", workThreads.ambiguityBlockers.length ? workThreads.ambiguityBlockers.join(", ") : "none", workThreads.ambiguityBlockers.length ? "blocked" : "ok"),
       statusRow("Mutation", workThreads.mutationBlocked ? "blocked" : "not granted", workThreads.mutationAllowed ? "blocked" : "ok"),
       statusRow("Routing", workThreads.routingEnforced ? "unexpected enforce" : "shadow only", workThreads.routingEnforced ? "blocked" : "ok"),
+    ],
+    operatorBroker: [
+      statusRow("Surface", operatorBroker.available ? "available" : "not exposed", operatorBroker.available ? "diagnostic" : "missing"),
+      statusRow("Resolution", operatorBroker.resolutionState, operatorBroker.resolutionState === "selected" ? "ok" : "blocked"),
+      statusRow("Target gate", operatorBroker.routingGateState, operatorBroker.routingGateState === "selected_ready" ? "diagnostic" : "blocked"),
+      statusRow("Confidence", operatorBroker.confidenceLabel),
+      statusRow("Candidates", operatorBroker.candidateCount),
+      statusRow("Selected", operatorBroker.selectedWorkThreadId || "none", operatorBroker.selectedWorkThreadId ? "diagnostic" : "blocked"),
+      statusRow("Clarification", operatorBroker.clarificationRequired ? "required" : "not required", operatorBroker.clarificationRequired ? "blocked" : "ok"),
+      statusRow("Non-target preservation", operatorBroker.nonTargetPreservationRequired ? "required" : "standard", operatorBroker.nonTargetPreservationRequired ? "diagnostic" : "ok"),
+      statusRow("Blockers", operatorBroker.ambiguityBlockers.length ? operatorBroker.ambiguityBlockers.join(", ") : "none", operatorBroker.ambiguityBlockers.length ? "blocked" : "ok"),
+      statusRow("Constraints", operatorBroker.nonTargetPreservationConstraints.length ? operatorBroker.nonTargetPreservationConstraints.slice(0, 5).join(", ") : "none"),
+      statusRow("Work-world refs", `codex ${operatorBroker.linkedCodexThreadCount} / gpt ${operatorBroker.linkedChatGptThreadCount} / obligations ${operatorBroker.openObligationCount}`),
+      statusRow("Authority", operatorBroker.mutationAllowed || operatorBroker.providerCallAllowed || operatorBroker.routingEnforced ? "unexpected grant" : "no grant", operatorBroker.mutationAllowed || operatorBroker.providerCallAllowed || operatorBroker.routingEnforced ? "blocked" : "ok"),
     ],
     governance: [
       statusRow("Governance", governance.governanceSchema),
@@ -334,6 +383,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
   const runtime = summarizeRuntime(input.runtimeStatus);
   const registry = summarizeRegistry(input.registryAudit);
   const workThreads = summarizeWorkThreads(input.workThreads || input);
+  const operatorBroker = summarizeOperatorBroker(input.operatorBroker || input.operatorBrokerResolution || input.operatorBrokerProjection || input);
   const governance = summarizeGovernance(input);
   const modules = summarizeModules(input.moduleStatus);
   const agentClasses = summarizeAgentClasses(input.agentClassStatus);
@@ -356,7 +406,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
     rawPathIncluded: false,
     rawSecretIncluded: false,
   };
-  const sections = { runtime, registry, workThreads, governance, modules, agentClasses, continuity };
+  const sections = { runtime, registry, workThreads, operatorBroker, governance, modules, agentClasses, continuity };
   const sourceDigest = digestFor("direct-settings-surface-source@1", sections);
   const projection = {
     schema: DIRECT_SETTINGS_SURFACE_PROJECTION_SCHEMA,
@@ -369,6 +419,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       "runtime",
       "registry",
       "work_thread",
+      "operator_broker",
       "governance",
       "skills_hooks_apps",
       "agent_class_specs",
@@ -386,6 +437,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       { kind: "registry_audit", digest: normalizeString(input.registryAudit?.summary?.valid === false ? "" : input.registryAudit?.generatedAt, ""), label: "Direct information bridge registry" },
       { kind: "runtime_status", digest: normalizeString(input.runtimeStatus?.sourceDigest || input.runtimeStatus?.statusDigest, ""), label: "Direct runtime status" },
       { kind: "work_thread_projection", digest: normalizeString(workThreads.projectionDigest, ""), label: "WorkThread projection" },
+      { kind: "operator_broker_resolution", digest: normalizeString(operatorBroker.brokerResolutionDigest, ""), label: "Operator broker resolution" },
       { kind: "module_status", digest: normalizeString(input.moduleStatus?.projectionDigest, ""), label: "Bridge module status" },
       { kind: "agent_class_status", digest: normalizeString(input.agentClassStatus?.projectionDigest, ""), label: "Agent class status" },
       { kind: "continuity_status", digest: normalizeString(input.continuityStatus?.projectionDigest, ""), label: "Continuity status" },
