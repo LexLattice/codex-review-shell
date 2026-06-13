@@ -229,13 +229,13 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     role: "observability_surface",
     implementationState: "partial",
     directPathPosture: "keep_and_align",
-    sourceFiles: ["src/main/direct/readiness/usage-readiness.js", "src/main/direct/usage/turn-attribution.js"],
-    ontology: ontologyShape(["usage_readiness", "turn_usage_attribution", "model_evidence", "quota_evidence"], "model_provider", {
-      identityFields: ["projectId", "threadId", "turnId", "usageRef", "modelId"],
+    sourceFiles: ["src/main/direct/readiness/usage-readiness.js", "src/main/direct/usage/turn-attribution.js", "src/main/direct/usage/agent-ledger.js", "scripts/direct-agent-usage-ledger-regression.mjs"],
+    ontology: ontologyShape(["usage_readiness", "turn_usage_attribution", "direct_agent_usage_ledger", "direct_agent_usage_summary_projection", "model_evidence", "quota_evidence"], "model_provider", {
+      identityFields: ["projectId", "threadId", "turnId", "agentThreadId", "workThreadId", "usageRef", "modelId"],
       schema: "usage_readiness@1",
     }),
-    bridgeFit: "Tracks model/quota/usage evidence and main/sub-agent attribution postures without claiming exactness where evidence is missing.",
-    realignment: "Do not derive per-agent token truth without direct provider/harness event evidence; keep vanilla app-server totals as inherited evidence only.",
+    bridgeFit: "Tracks model/quota/usage evidence, per-turn attribution, and direct agent/work-thread/route usage summaries without claiming exactness where evidence is missing.",
+    realignment: "Direct agent usage rows are exact only where provider events reported usage; missing rows are explicit, cost remains uncomputed, and vanilla app-server totals stay inherited evidence only.",
   },
   {
     id: "ic9.direct-runtime-selection",

@@ -287,6 +287,34 @@ function summarizeContinuity(input = {}) {
   };
 }
 
+function summarizeAgentUsage(input = {}) {
+  const source = objectOrEmpty(input);
+  const usage = normalizeString(source.schema, "") === "direct_agent_usage_summary_projection@1"
+    ? source
+    : objectOrEmpty(source.agentUsageStatus || source.agentUsageProjection || source.directAgentUsage);
+  const totals = objectOrEmpty(usage.totals);
+  return {
+    available: normalizeString(usage.schema, "") === "direct_agent_usage_summary_projection@1",
+    schema: normalizeString(usage.schema, "not_exposed"),
+    rowCount: Number(usage.rowCount ?? 0),
+    turnCount: Number(totals.turnCount ?? 0),
+    totalTokensKnown: Number(totals.totalTokensKnown ?? 0),
+    inputTokensKnown: Number(totals.inputTokensKnown ?? 0),
+    outputTokensKnown: Number(totals.outputTokensKnown ?? 0),
+    reasoningTokensKnown: Number(totals.reasoningTokensKnown ?? 0),
+    cachedInputTokensKnown: Number(totals.cachedInputTokensKnown ?? 0),
+    missingUsageRowCount: Number(totals.missingUsageRowCount ?? 0),
+    durationMsKnown: Number(totals.durationMsKnown ?? 0),
+    agentCount: arrayOrEmpty(usage.byAgent).length,
+    workThreadCount: arrayOrEmpty(usage.byWorkThread).length,
+    routeCount: arrayOrEmpty(usage.byRoute).length,
+    costComputed: usage.evidencePosture?.costComputed === true,
+    billingGrade: usage.evidencePosture?.billingGrade === true,
+    ledgerDigest: normalizeString(usage.ledgerDigest, ""),
+    projectionDigest: normalizeString(usage.projectionDigest, ""),
+  };
+}
+
 function buildRows(sections) {
   const runtime = sections.runtime;
   const registry = sections.registry;
@@ -296,6 +324,7 @@ function buildRows(sections) {
   const modules = sections.modules;
   const agentClasses = sections.agentClasses;
   const continuity = sections.continuity;
+  const agentUsage = sections.agentUsage;
   return {
     runtime: [
       statusRow("Current path", runtime.currentPath),
@@ -375,6 +404,19 @@ function buildRows(sections) {
       statusRow("Baton", continuity.batonState),
       statusRow("Provider compact", continuity.providerCompactionState),
     ],
+    agentUsage: [
+      statusRow("Surface", agentUsage.available ? "available" : "not exposed", agentUsage.available ? "diagnostic" : "missing"),
+      statusRow("Rows / turns", `${agentUsage.rowCount}/${agentUsage.turnCount}`),
+      statusRow("Known tokens", agentUsage.totalTokensKnown),
+      statusRow("Input/output", `${agentUsage.inputTokensKnown}/${agentUsage.outputTokensKnown}`),
+      statusRow("Reasoning/cached", `${agentUsage.reasoningTokensKnown}/${agentUsage.cachedInputTokensKnown}`),
+      statusRow("Missing rows", agentUsage.missingUsageRowCount, agentUsage.missingUsageRowCount ? "diagnostic" : "ok"),
+      statusRow("Duration", `${agentUsage.durationMsKnown} ms`),
+      statusRow("Agents", agentUsage.agentCount),
+      statusRow("WorkThreads", agentUsage.workThreadCount),
+      statusRow("Routes", agentUsage.routeCount),
+      statusRow("Cost", agentUsage.costComputed || agentUsage.billingGrade ? "unexpected" : "not computed", agentUsage.costComputed || agentUsage.billingGrade ? "blocked" : "ok"),
+    ],
   };
 }
 
@@ -388,6 +430,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
   const modules = summarizeModules(input.moduleStatus);
   const agentClasses = summarizeAgentClasses(input.agentClassStatus);
   const continuity = summarizeContinuity(input);
+  const agentUsage = summarizeAgentUsage(input.agentUsageStatus || input.agentUsageProjection || input.directAgentUsage || input);
   const generatedAt = normalizeString(input.generatedAt, nowIso(input.nowMs));
   const authority = {
     displayOnly: true,
@@ -406,7 +449,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
     rawPathIncluded: false,
     rawSecretIncluded: false,
   };
-  const sections = { runtime, registry, workThreads, operatorBroker, governance, modules, agentClasses, continuity };
+  const sections = { runtime, registry, workThreads, operatorBroker, governance, modules, agentClasses, continuity, agentUsage };
   const sourceDigest = digestFor("direct-settings-surface-source@1", sections);
   const projection = {
     schema: DIRECT_SETTINGS_SURFACE_PROJECTION_SCHEMA,
@@ -424,6 +467,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       "skills_hooks_apps",
       "agent_class_specs",
       "memory_baton_omission_compaction",
+      "direct_agent_usage",
     ],
     sections,
     rows: buildRows(sections),
@@ -441,6 +485,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       { kind: "module_status", digest: normalizeString(input.moduleStatus?.projectionDigest, ""), label: "Bridge module status" },
       { kind: "agent_class_status", digest: normalizeString(input.agentClassStatus?.projectionDigest, ""), label: "Agent class status" },
       { kind: "continuity_status", digest: normalizeString(input.continuityStatus?.projectionDigest, ""), label: "Continuity status" },
+      { kind: "direct_agent_usage", digest: normalizeString(agentUsage.projectionDigest || agentUsage.ledgerDigest, ""), label: "Direct agent usage summary" },
     ].filter((ref) => ref.digest || ref.kind === "registry_audit"),
     sourceDigest,
     rawTextIncluded: false,
