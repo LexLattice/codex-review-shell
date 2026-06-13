@@ -619,6 +619,22 @@ function sessionMatchesProject(session = {}, projectId = "") {
   return normalizeString(session?.projectId, "") === scopedProjectId;
 }
 
+function safeReadDirectSession(sessionStore, sessionId) {
+  try {
+    return sessionStore?.readSession?.(sessionId) || null;
+  } catch {
+    return null;
+  }
+}
+
+function safeReadDirectTurn(sessionStore, sessionId, turnId) {
+  try {
+    return sessionStore?.readTurn?.(sessionId, turnId) || null;
+  } catch {
+    return null;
+  }
+}
+
 function terminalStatusForState(state) {
   if (state === "completed") return "completed";
   if (state === "failed") return "failed";
@@ -1011,10 +1027,12 @@ class DirectLiveTextController {
     const threads = scopedEntries.map(threadListEntryFromIndexEntry);
     const deckThreads = scopedEntries
       .map((entry) => {
-        const session = this.sessionStore.readSession(entry.sessionId) || {};
-        const turns = (Array.isArray(session.turns) ? session.turns : []).map((summary) => {
+        const session = safeReadDirectSession(this.sessionStore, entry.sessionId);
+        const sessionReadFailed = !session && Boolean(entry.sessionId);
+        const safeSession = session || {};
+        const turns = (Array.isArray(safeSession.turns) ? safeSession.turns : []).map((summary) => {
           const turnId = normalizeString(summary?.turnId, "");
-          const turn = turnId ? this.sessionStore.readTurn(entry.sessionId, turnId) : null;
+          const turn = turnId ? safeReadDirectTurn(this.sessionStore, entry.sessionId, turnId) : null;
           return {
             turnId,
             state: normalizeString(turn?.state || summary?.state, ""),
@@ -1034,7 +1052,8 @@ class DirectLiveTextController {
         return {
           ...threadListEntryFromIndexEntry(entry),
           turns,
-          providerContinuityAvailable: session.providerContinuityAvailable === true,
+          storageState: sessionReadFailed ? "session_unreadable" : "available",
+          providerContinuityAvailable: safeSession.providerContinuityAvailable === true,
         };
       });
     const storeStatus = this.sessionStore.status({ projectId });
@@ -3918,6 +3937,7 @@ class DirectLiveTextController {
     }
     const prompt = this.textPrompt(params);
     const model = normalizeString(params.model, "") || status.model;
+    const reasoningEffort = normalizeString(params.reasoningEffort || params.reasoning_effort || params.effort, session.reasoningEffort);
     const existingTurnIds = this.sessionStore.listTurnIdsFromDisk(session.sessionId);
     const existingTurnCount = existingTurnIds.length;
     const summaries = Array.isArray(session.turns) ? session.turns : [];
@@ -4029,6 +4049,7 @@ class DirectLiveTextController {
     const turn = this.sessionStore.createTurn(session.sessionId, {
       input: [{ role: "user", text: prompt }],
       model: requestBody.model,
+      reasoningEffort,
       clientTurnRequestId,
       requestShape: requestShapeForDiagnostic(requestBody),
     });

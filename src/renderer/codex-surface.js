@@ -4112,6 +4112,7 @@ function renderDirectThreadList() {
 async function refreshDirectThreadList(options = {}) {
   if (!isDirectLiveTextSurface() || !state.connected || !hasCapability("threads", "canList")) {
     state.directThreadList = [];
+    state.directThreadDeck = null;
     state.directThreadListStatus = isDirectLiveTextSurface() ? "unavailable" : "hidden";
     state.directThreadListError = "";
     renderDirectThreadList();

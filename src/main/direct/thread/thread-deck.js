@@ -126,6 +126,7 @@ function buildThreadDeckRow(entry = {}, options = {}) {
     updatedAt: normalizeString(entry.updatedAt, ""),
     runtimeMode: normalizeString(entry.runtimeMode, "direct-experimental"),
     directTransport: normalizeString(entry.directTransport, "direct-live-text"),
+    storageState: normalizeString(entry.storageState, "available"),
     model: normalizeString(entry.model, ""),
     reasoningEffort: normalizeString(entry.reasoningEffort, ""),
     turnCount: Number(entry.turnCount || 0),
@@ -140,14 +141,14 @@ function buildThreadDeckRow(entry = {}, options = {}) {
     rawPromptTextExposed: false,
     actions: {},
   };
-  const canFocus = Boolean(threadId);
+  const canFocus = Boolean(threadId) && row.storageState !== "session_unreadable";
   const canResume = canFocus && activeCount === 0 && (row.turnCount === 0 || RESUMABLE_PREVIOUS_TURN_STATES.has(lastTurnState));
   row.actions = {
     focus: actionDescriptor({
       actionKind: "focus_direct_thread",
       label: "Focus",
       enabled: canFocus,
-      reason: "missing_thread_id",
+      reason: row.storageState === "session_unreadable" ? "session_unreadable" : "missing_thread_id",
       method: "thread/read",
       effect: "Open this direct session in the Codex plane without mutating provider state.",
     }),
