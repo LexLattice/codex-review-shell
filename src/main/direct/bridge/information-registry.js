@@ -238,6 +238,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "This slice permits only a single explicit direct worker text turn; recursive worker spawning, workflow closure, object audit certification, and workspace mutation remain disabled.",
   },
   {
+    id: "ic6.direct-meta-orchestrator-shadow",
+    name: "Direct meta-orchestrator and auditor loop shadow",
+    role: "governance_routing",
+    implementationState: "partial",
+    directPathPosture: "keep_shadow",
+    sourceFiles: ["src/main/direct/bridge/meta-orchestrator-shadow.js", "scripts/direct-meta-orchestrator-shadow-regression.mjs", "src/main/direct/bridge/worker-start.js", "src/main/direct/bridge/agent-class-spec.js"],
+    ontology: ontologyShape(["direct_meta_orchestrator_plan_pointer", "direct_meta_orchestrator_step_event", "direct_implementation_evidence_artifact", "direct_audit_artifact", "direct_meta_orchestrator_transition_gate"], "harness", {
+      identityFields: ["projectId", "workThreadId", "planId", "stepId", "artifactId", "gateId"],
+      schema: "direct_meta_orchestrator_transition_gate@1",
+    }),
+    bridgeFit: "Represents the long-horizon loop as typed institutional events and artifacts: worker evidence is structurally routable, auditor artifacts carry object-level certification, and the meta-orchestrator gate applies only shallow transition law.",
+    realignment: "This slice is shadow-only: no autonomous scheduler, no hidden super-auditor behavior, no worker self-completion judgment, no provider calls, and no workflow closure automation.",
+  },
+  {
     id: "ic7.sub-agent-observability",
     name: "Sub-agent observability and containment",
     role: "observability_surface",

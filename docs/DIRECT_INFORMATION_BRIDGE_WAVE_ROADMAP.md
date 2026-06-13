@@ -933,7 +933,7 @@ the worker session.
 
 ### PR 21: Meta-Orchestrator / Auditor Loop Spec-To-Shadow
 
-Status: planned.
+Status: implemented in `codex/direct-meta-orchestrator-shadow`.
 
 Purpose:
 
@@ -950,6 +950,28 @@ Scope:
 - Add shallow transition-law validation: artifact class, role provenance,
   refs, declared scope.
 - Keep object-level validity assigned to auditor role, not orchestrator.
+
+Implemented in this slice:
+
+- `direct_meta_orchestrator_plan_pointer@1` represents the current plan
+  position, expected artifact class, expected producer role, auditor role, and
+  branch-law version.
+- `direct_meta_orchestrator_step_event@1` records typed step events such as
+  implementation step start, evidence submission, audit submission, and
+  transition selection.
+- `direct_implementation_evidence_artifact@1` captures worker status claims,
+  intent-contract refs, changed-file refs, test-evidence refs, declared scope,
+  unresolved issues, and worker notes preview without certifying validity.
+- `direct_audit_artifact@1` captures auditor verdict class, evidence-validity
+  posture, defects, required fixes, residual risks, and advancement
+  recommendation as the object-level certification artifact.
+- `direct_meta_orchestrator_transition_gate@1` performs only shallow checks:
+  artifact class, producer role, step id, presence, shape, provenance, and
+  typed transition-law mapping.
+- Regression coverage verifies worker evidence routes to auditor, audit verdict
+  selects transition, mismatched artifacts block, raw exposure stays false, and
+  the meta-orchestrator never performs object-level audit or autonomous
+  continuation.
 
 Non-goals:
 
