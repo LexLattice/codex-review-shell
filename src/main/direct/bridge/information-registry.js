@@ -447,6 +447,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     bridgeFit: "Surfaces implementation-lane readiness, approval/continuation facets, active turn state, recovery posture, latest tool-result status, operation history, and policy summary as renderer-safe read-only UI projection.",
     realignment: "The UI card grants no approval, replay, recovery, provider transport, handoff, right-pane, or workspace mutation authority; every action still requires the existing main-process authority-bearing transition.",
   },
+  {
+    id: "ic20.context-maintenance-execution-gate",
+    name: "Context maintenance execution gate",
+    role: "memory_continuity",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/context/maintenance.js", "scripts/direct-context-maintenance-execution-gate-regression.mjs"],
+    ontology: ontologyShape(["context_maintenance_execution_packet", "context_maintenance_execution_result", "local_context_artifact_update"], "harness", {
+      identityFields: ["executionPacketId", "executionResultId", "workThreadId", "actionKind"],
+      schema: "direct_context_maintenance_execution_packet@1",
+    }),
+    bridgeFit: "Adds an operator-gated local execution artifact for accepted memory refresh, frontier baton update, omission witness acknowledgement, and context-loss remediation preview.",
+    realignment: "Execution remains local-context-only: provider compaction, provider transport, app-server fallback, automatic scheduling, workspace mutation, and raw text exposure are blocked.",
+  },
 ]);
 
 function isPlainObject(value) {

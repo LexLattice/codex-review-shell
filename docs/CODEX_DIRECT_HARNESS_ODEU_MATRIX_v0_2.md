@@ -674,3 +674,26 @@ authority:
   paths, tool output, or provider payload;
 - operation history rows are read-only;
 - app-server remains selectable and retained as the vanilla lane.
+
+### Wave 5 context maintenance execution update
+
+The direct shell now has a guarded local context-maintenance execution gate:
+
+```text
+direct_context_maintenance_execution_packet@1
+direct_context_maintenance_execution_result@1
+```
+
+The gate can record operator-accepted local transitions for memory refresh
+materialization, frontier baton update, omission witness acknowledgement, and
+context-loss remediation preview. Every packet/result cites work-thread
+identity, source artifact refs, retention law, omission risk, and rollback
+posture.
+
+This remains deliberately narrower than provider compaction:
+
+- provider compaction and provider transport are disabled;
+- app-server fallback and automatic scheduling are disabled;
+- workspace mutation is disabled;
+- stale source/generation packets are blocked;
+- raw text exposure is blocked and recorded as a blocked result.

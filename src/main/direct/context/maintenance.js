@@ -21,6 +21,8 @@ const DIRECT_CONTEXT_COMPACTION_GATE_SCHEMA = "direct_context_compaction_gate@1"
 const DIRECT_CONTEXT_LOSS_WITNESS_SCHEMA = "direct_context_loss_witness@1";
 const DIRECT_CONTEXT_CONTINUITY_TRANSITION_SCHEMA = "direct_context_continuity_transition@1";
 const DIRECT_CONTEXT_CONTINUITY_STATUS_PROJECTION_SCHEMA = "direct_context_continuity_status_projection@1";
+const DIRECT_CONTEXT_MAINTENANCE_EXECUTION_PACKET_SCHEMA = "direct_context_maintenance_execution_packet@1";
+const DIRECT_CONTEXT_MAINTENANCE_EXECUTION_RESULT_SCHEMA = "direct_context_maintenance_execution_result@1";
 const DIRECT_VANILLA_SIBLING_CONTEXT_EVIDENCE_SCHEMA = "direct_vanilla_sibling_context_evidence@1";
 const DIRECT_CONTEXT_MAINTENANCE_STATUS_PROJECTION_SCHEMA = "direct_context_maintenance_status_projection@1";
 const DIRECT_CONTEXT_MAINTENANCE_REGRESSION_REPORT_SCHEMA = "direct_context_maintenance_regression_report@1";
@@ -83,6 +85,13 @@ const COMPACTION_GATE_STATES = new Set([
   "blocked_provider_evidence",
   "blocked_plan",
 ]);
+const CONTEXT_MAINTENANCE_EXECUTION_ACTIONS = new Set([
+  "memory_refresh_materialize",
+  "frontier_baton_update",
+  "omission_witness_acknowledge",
+  "context_loss_remediation_preview",
+]);
+const CONTEXT_MAINTENANCE_OPERATOR_DECISIONS = new Set(["accepted", "rejected", "deferred"]);
 
 function isPlainObject(value) {
   return Object.prototype.toString.call(value) === "[object Object]";
@@ -1461,6 +1470,289 @@ function validateThreadMemoryWorkflow(input = {}) {
   return true;
 }
 
+function normalizeExecutionSourceRef(input = {}, fallbackKind = "context_maintenance_source") {
+  const ref = normalizeMemoryWorkflowRef(input, fallbackKind);
+  if (!ref) return null;
+  return {
+    ...ref,
+    sourceState: normalizeString(ref.sourceState, "accepted"),
+    retentionLaw: normalizeString(input.retentionLaw, "retain_source_ref_digest"),
+    rollbackEligible: input.rollbackEligible !== false,
+  };
+}
+
+function normalizeExecutionSourceRefs(values, fallbackKind = "context_maintenance_source") {
+  return (Array.isArray(values) ? values : []).map((value) => normalizeExecutionSourceRef(value, fallbackKind)).filter(Boolean);
+}
+
+function buildContextMaintenanceExecutionPacket(input = {}) {
+  const actionKind = CONTEXT_MAINTENANCE_EXECUTION_ACTIONS.has(input.actionKind)
+    ? input.actionKind
+    : "context_loss_remediation_preview";
+  const operatorDecision = CONTEXT_MAINTENANCE_OPERATOR_DECISIONS.has(input.operatorDecision)
+    ? input.operatorDecision
+    : "deferred";
+  const sourceArtifactRefs = normalizeExecutionSourceRefs(input.sourceArtifactRefs || input.sourceRefs, actionKind);
+  const projectId = normalizeString(input.projectId, "");
+  const threadId = normalizeString(input.threadId, "");
+  const workThreadId = normalizeString(input.workThreadId, "");
+  const expectedSourceDigest = normalizeString(input.expectedSourceDigest, "");
+  const expectedUiProjectionGeneration = input.expectedUiProjectionGeneration === undefined || input.expectedUiProjectionGeneration === null
+    ? null
+    : Number(input.expectedUiProjectionGeneration);
+  const currentMemoryId = normalizeString(input.currentMemoryId, "");
+  const proposedMemoryId = normalizeString(input.proposedMemoryId, "");
+  const currentBatonId = normalizeString(input.currentBatonId, "");
+  const proposedBatonId = normalizeString(input.proposedBatonId, "");
+  const omissionLedgerId = normalizeString(input.omissionLedgerId, "");
+  const contextLossWitnessId = normalizeString(input.contextLossWitnessId, "");
+  const retentionLaw = normalizeString(input.retentionLaw, "source_refs_and_previous_pointer_retained");
+  const omissionRisk = normalizeString(input.omissionRisk, "visible_operator_acknowledged");
+  const rollbackPosture = normalizeString(input.rollbackPosture, "previous_pointer_retained");
+  const providerCompactionRequested = input.providerCompactionRequested === true;
+  const rawTextIncluded = input.rawTextIncluded === true;
+  const sourceDigest = sha256(stableStringify({
+    projectId,
+    threadId,
+    workThreadId,
+    actionKind,
+    operatorDecision,
+    sourceArtifactRefs,
+    expectedSourceDigest,
+    expectedUiProjectionGeneration,
+    currentMemoryId,
+    proposedMemoryId,
+    currentBatonId,
+    proposedBatonId,
+    omissionLedgerId,
+    contextLossWitnessId,
+    retentionLaw,
+    omissionRisk,
+    rollbackPosture,
+    providerCompactionRequested,
+    rawTextIncluded,
+  }));
+  const packet = {
+    schema: DIRECT_CONTEXT_MAINTENANCE_EXECUTION_PACKET_SCHEMA,
+    executionPacketId: normalizeString(input.executionPacketId, `context_maintenance_exec_${sourceDigest.slice(0, 24)}`),
+    projectId,
+    threadId,
+    workThreadId,
+    actionKind,
+    operatorDecision,
+    sourceArtifactRefs,
+    expectedSourceDigest,
+    expectedUiProjectionGeneration,
+    currentMemoryId,
+    proposedMemoryId,
+    currentBatonId,
+    proposedBatonId,
+    omissionLedgerId,
+    contextLossWitnessId,
+    retentionLaw,
+    omissionRisk,
+    rollbackPosture,
+    providerCompactionRequested,
+    providerCompactionAllowed: false,
+    providerTransportAllowed: false,
+    automaticSchedulerAllowed: false,
+    workspaceMutationAllowed: false,
+    rawTextIncluded,
+    createdAt: normalizeString(input.createdAt, nowIso(input.nowMs)),
+  };
+  packet.integrity = makeIntegrity(sourceDigest);
+  packet.integrity.artifactDigest = artifactDigest({ ...packet, integrity: { ...packet.integrity, artifactDigest: "" } });
+  return packet;
+}
+
+function executionRefForArtifact(kind, artifact = {}, fallbackId = "") {
+  if (!isPlainObject(artifact)) return null;
+  const artifactId = normalizeString(
+    artifact.memoryId ||
+      artifact.batonId ||
+      artifact.omissionLedgerId ||
+      artifact.contextLossWitnessId ||
+      artifact.compactionPlanId ||
+      artifact.memoryRefreshProposalId ||
+      artifact.memoryRefreshId ||
+      artifact.transitionId ||
+      fallbackId,
+    "",
+  );
+  const artifactDigest = normalizeString(artifact.integrity?.artifactDigest || artifact.projectionDigest || artifact.planDigest || artifact.memoryDigest, "");
+  if (!artifactId && !artifactDigest) return null;
+  return {
+    artifactKind: kind,
+    artifactId,
+    artifactDigest,
+    rendererSafeLabel: normalizeString(artifact.rendererSafeSummary, kind),
+    rawTextIncluded: false,
+  };
+}
+
+function contextMaintenanceExecutionBlocker(input = {}) {
+  const packet = isPlainObject(input.packet) ? input.packet : null;
+  if (!packet || packet.schema !== DIRECT_CONTEXT_MAINTENANCE_EXECUTION_PACKET_SCHEMA) return "execution_packet_missing";
+  if (packet.rawTextIncluded === true) return "raw_exposure_blocked";
+  if (packet.providerCompactionRequested === true || packet.providerCompactionAllowed !== false || packet.providerTransportAllowed !== false) {
+    return "provider_compaction_disabled";
+  }
+  if (packet.operatorDecision === "rejected") return "operator_rejected";
+  if (packet.operatorDecision !== "accepted") return "operator_acceptance_required";
+  const currentSourceDigest = normalizeString(input.currentSourceDigest, "");
+  if (packet.expectedSourceDigest && packet.expectedSourceDigest !== currentSourceDigest) return "stale_source_digest";
+  const currentUiProjectionGeneration = input.currentUiProjectionGeneration === undefined || input.currentUiProjectionGeneration === null
+    ? null
+    : Number(input.currentUiProjectionGeneration);
+  if (packet.expectedUiProjectionGeneration !== null && packet.expectedUiProjectionGeneration !== currentUiProjectionGeneration) {
+    return "stale_ui_projection_generation";
+  }
+  return "";
+}
+
+function buildContextMaintenanceExecutionResult(input = {}) {
+  const packet = isPlainObject(input.packet) ? input.packet : buildContextMaintenanceExecutionPacket(input);
+  const memoryRefreshProposal = isPlainObject(input.memoryRefreshProposal || input.refreshProposal) ? (input.memoryRefreshProposal || input.refreshProposal) : null;
+  const proposedMemory = isPlainObject(input.proposedMemory || input.nextMemory) ? (input.proposedMemory || input.nextMemory) : null;
+  const baton = isPlainObject(input.baton || input.proposedBaton) ? (input.baton || input.proposedBaton) : null;
+  const omissionLedger = isPlainObject(input.omissionLedger) ? input.omissionLedger : null;
+  const contextLossWitness = isPlainObject(input.contextLossWitness) ? input.contextLossWitness : null;
+  const localCompactionPlan = isPlainObject(input.localCompactionPlan || input.compactionPlan) ? (input.localCompactionPlan || input.compactionPlan) : null;
+  let blockerCode = contextMaintenanceExecutionBlocker({
+    packet,
+    currentSourceDigest: input.currentSourceDigest,
+    currentUiProjectionGeneration: input.currentUiProjectionGeneration,
+  });
+  const materializedArtifacts = [];
+  const previewArtifacts = [];
+  const retainedArtifacts = [];
+
+  if (!blockerCode) {
+    if (packet.actionKind === "memory_refresh_materialize") {
+      if (!memoryRefreshProposal || memoryRefreshProposal.proposalState !== "accepted") blockerCode = "memory_refresh_proposal_not_accepted";
+      else if (!proposedMemory) blockerCode = "proposed_memory_missing";
+      else materializedArtifacts.push(executionRefForArtifact("durable_thread_memory", proposedMemory));
+      retainedArtifacts.push(executionRefForArtifact("previous_durable_thread_memory", input.currentMemory || { memoryId: packet.currentMemoryId }));
+    } else if (packet.actionKind === "frontier_baton_update") {
+      if (!baton) blockerCode = "frontier_baton_missing";
+      else materializedArtifacts.push(executionRefForArtifact("frontier_baton", baton));
+      retainedArtifacts.push(executionRefForArtifact("previous_frontier_baton", input.currentBaton || { batonId: packet.currentBatonId }));
+    } else if (packet.actionKind === "omission_witness_acknowledge") {
+      if (!omissionLedger && !contextLossWitness) blockerCode = "omission_witness_missing";
+      else {
+        materializedArtifacts.push(
+          executionRefForArtifact("context_omission_ledger", omissionLedger),
+          executionRefForArtifact("context_loss_witness", contextLossWitness),
+        );
+      }
+    } else if (packet.actionKind === "context_loss_remediation_preview") {
+      if (!contextLossWitness && !localCompactionPlan && !baton) blockerCode = "context_loss_remediation_source_missing";
+      else {
+        previewArtifacts.push(
+          executionRefForArtifact("context_loss_witness", contextLossWitness),
+          executionRefForArtifact("local_compaction_plan", localCompactionPlan),
+          executionRefForArtifact("frontier_baton_reinjection_preview", baton),
+        );
+      }
+    }
+  }
+
+  const cleanMaterializedArtifacts = materializedArtifacts.filter(Boolean);
+  const cleanPreviewArtifacts = previewArtifacts.filter(Boolean);
+  const cleanRetainedArtifacts = retainedArtifacts.filter(Boolean);
+  const resultState = blockerCode
+    ? (blockerCode === "operator_rejected" ? "rejected" : "blocked")
+    : cleanPreviewArtifacts.length ? "preview_ready" : "executed";
+  const sourceDigest = sha256(stableStringify({
+    packetDigest: packet.integrity?.artifactDigest || "",
+    blockerCode,
+    resultState,
+    cleanMaterializedArtifacts,
+    cleanPreviewArtifacts,
+    cleanRetainedArtifacts,
+  }));
+  const result = {
+    schema: DIRECT_CONTEXT_MAINTENANCE_EXECUTION_RESULT_SCHEMA,
+    executionResultId: normalizeString(input.executionResultId, `context_maintenance_result_${sourceDigest.slice(0, 24)}`),
+    executionPacketId: normalizeString(packet.executionPacketId, ""),
+    projectId: normalizeString(input.projectId, packet.projectId || proposedMemory?.projectId || baton?.projectId || ""),
+    threadId: normalizeString(input.threadId, packet.threadId || proposedMemory?.threadId || baton?.threadId || ""),
+    workThreadId: normalizeString(input.workThreadId, packet.workThreadId || ""),
+    actionKind: normalizeString(packet.actionKind, ""),
+    resultState,
+    blockerCode,
+    materializedArtifacts: cleanMaterializedArtifacts,
+    previewArtifacts: cleanPreviewArtifacts,
+    retainedArtifacts: cleanRetainedArtifacts,
+    mutationScope: cleanMaterializedArtifacts.length ? "local_context_artifacts" : "none",
+    memoryPointerUpdated: !blockerCode && packet.actionKind === "memory_refresh_materialize" && cleanMaterializedArtifacts.length > 0,
+    batonPointerUpdated: !blockerCode && packet.actionKind === "frontier_baton_update" && cleanMaterializedArtifacts.length > 0,
+    omissionAcknowledged: !blockerCode && packet.actionKind === "omission_witness_acknowledge" && cleanMaterializedArtifacts.length > 0,
+    batonReinjectionPreviewReady: !blockerCode && packet.actionKind === "context_loss_remediation_preview" && cleanPreviewArtifacts.length > 0,
+    rollbackPosture: normalizeString(packet.rollbackPosture, "previous_pointer_retained"),
+    retentionLaw: normalizeString(packet.retentionLaw, "source_refs_and_previous_pointer_retained"),
+    omissionRisk: normalizeString(packet.omissionRisk, "visible_operator_acknowledged"),
+    providerCompactionAllowed: false,
+    providerTransportUsed: false,
+    appServerFallbackUsed: false,
+    automaticSchedulerUsed: false,
+    workspaceMutationUsed: false,
+    rawTextIncluded: false,
+    createdAt: normalizeString(input.createdAt, nowIso(input.nowMs)),
+  };
+  result.integrity = makeIntegrity(sourceDigest);
+  result.integrity.artifactDigest = artifactDigest({ ...result, integrity: { ...result.integrity, artifactDigest: "" } });
+  return result;
+}
+
+function validateContextMaintenanceExecutionGate(input = {}) {
+  const packet = isPlainObject(input.packet) ? input.packet : null;
+  const result = isPlainObject(input.result) ? input.result : null;
+  if (!packet || packet.schema !== DIRECT_CONTEXT_MAINTENANCE_EXECUTION_PACKET_SCHEMA) {
+    throw new Error("context_maintenance_execution_packet_schema_mismatch");
+  }
+  if (!CONTEXT_MAINTENANCE_EXECUTION_ACTIONS.has(packet.actionKind)) {
+    throw new Error("context_maintenance_execution_action_invalid");
+  }
+  if (packet.rawTextIncluded === true && (!result || result.resultState !== "blocked" || result.blockerCode !== "raw_exposure_blocked")) {
+    throw new Error("context_maintenance_execution_packet_raw_exposure_not_blocked");
+  }
+  if (packet.providerCompactionAllowed !== false || packet.providerTransportAllowed !== false) {
+    throw new Error("context_maintenance_execution_packet_authority_leak");
+  }
+  if (packet.workspaceMutationAllowed !== false || packet.automaticSchedulerAllowed !== false) {
+    throw new Error("context_maintenance_execution_packet_mutation_leak");
+  }
+  if (!normalizeString(packet.workThreadId, "")) throw new Error("context_maintenance_execution_work_thread_missing");
+  if (!Array.isArray(packet.sourceArtifactRefs) || packet.sourceArtifactRefs.length === 0) {
+    throw new Error("context_maintenance_execution_source_refs_missing");
+  }
+  if (result) {
+    if (result.schema !== DIRECT_CONTEXT_MAINTENANCE_EXECUTION_RESULT_SCHEMA) {
+      throw new Error("context_maintenance_execution_result_schema_mismatch");
+    }
+    if (result.rawTextIncluded !== false || result.providerCompactionAllowed !== false || result.providerTransportUsed !== false) {
+      throw new Error("context_maintenance_execution_result_provider_or_raw_leak");
+    }
+    if (result.appServerFallbackUsed !== false || result.automaticSchedulerUsed !== false || result.workspaceMutationUsed !== false) {
+      throw new Error("context_maintenance_execution_result_side_effect_leak");
+    }
+    if (result.resultState === "executed" && result.mutationScope !== "local_context_artifacts") {
+      throw new Error("context_maintenance_execution_missing_local_scope");
+    }
+    if (result.resultState === "blocked" && !normalizeString(result.blockerCode, "")) {
+      throw new Error("context_maintenance_execution_blocked_without_reason");
+    }
+    if (result.memoryPointerUpdated === true && result.actionKind !== "memory_refresh_materialize") {
+      throw new Error("context_maintenance_execution_memory_pointer_action_mismatch");
+    }
+    if (result.batonPointerUpdated === true && result.actionKind !== "frontier_baton_update") {
+      throw new Error("context_maintenance_execution_baton_pointer_action_mismatch");
+    }
+  }
+  return true;
+}
+
 function makeStatusActionError(code, extra = {}) {
   const error = new Error(code);
   error.code = code;
@@ -1679,6 +1971,8 @@ module.exports = {
   DIRECT_CONTEXT_COMPACTION_PLAN_SCHEMA,
   DIRECT_CONTEXT_CONTINUITY_STATUS_PROJECTION_SCHEMA,
   DIRECT_CONTEXT_CONTINUITY_TRANSITION_SCHEMA,
+  DIRECT_CONTEXT_MAINTENANCE_EXECUTION_PACKET_SCHEMA,
+  DIRECT_CONTEXT_MAINTENANCE_EXECUTION_RESULT_SCHEMA,
   DIRECT_CONTEXT_LOSS_WITNESS_SCHEMA,
   DIRECT_CONTEXT_OMISSION_LEDGER_SCHEMA,
   DIRECT_CONTEXT_PRESSURE_ESTIMATE_SCHEMA,
@@ -1695,6 +1989,7 @@ module.exports = {
   DIRECT_THREAD_MEMORY_REVIEW_PACKET_SCHEMA,
   DIRECT_VANILLA_SIBLING_CONTEXT_EVIDENCE_SCHEMA,
   MAINTENANCE_ENGINES,
+  CONTEXT_MAINTENANCE_EXECUTION_ACTIONS,
   ROUTE_CLASSES,
   ROUTE_KINDS,
   assertOmissionParity,
@@ -1702,6 +1997,8 @@ module.exports = {
   buildFrontierBaton,
   buildContextContinuityStatusProjection,
   buildContextContinuityTransition,
+  buildContextMaintenanceExecutionPacket,
+  buildContextMaintenanceExecutionResult,
   buildContextLossWitness,
   buildCompactionWorkflowGate,
   buildLocalCompactionPlan,
@@ -1726,6 +2023,7 @@ module.exports = {
   validateStatusProjectionAction,
   validateCompactionWorkflow,
   validateContextContinuityProductization,
+  validateContextMaintenanceExecutionGate,
   validateContextMaintenanceReport,
   validateThreadMemoryWorkflow,
   validateMaintenanceRefs,

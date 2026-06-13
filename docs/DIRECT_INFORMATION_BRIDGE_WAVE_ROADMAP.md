@@ -1596,7 +1596,7 @@ executing, recovering, blocked, or terminal without reading raw ledgers.
 
 ### PR 30: Context Maintenance Execution Gate V0
 
-Status: planned.
+Status: implemented in PR 30.
 
 Purpose:
 
@@ -1614,6 +1614,18 @@ Scope:
   omission risk, and rollback/undo posture.
 - Add fixtures for accepted maintenance, rejected stale proposal, raw-exposure
   block, and baton reinjection preview.
+
+Implemented slice:
+
+- `direct_context_maintenance_execution_packet@1` and
+  `direct_context_maintenance_execution_result@1`.
+- Local-only execution results for accepted memory refresh materialization,
+  frontier baton update, omission witness acknowledgement, and remediation
+  preview.
+- Stale source/generation and raw-exposure blockers.
+- Regression coverage in `direct:context-maintenance-execution-gate`.
+- Provider compaction, provider transport, app-server fallback, automatic
+  scheduling, workspace mutation, and raw text exposure remain blocked.
 
 Promotion criterion:
 
