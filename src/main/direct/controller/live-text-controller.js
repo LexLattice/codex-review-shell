@@ -48,6 +48,11 @@ const {
   MAX_READONLY_TOOL_LOOP_STEPS,
 } = require("../tools/read-only-authority");
 const { normalizeCodexBinding } = require("../runtime/runtime-status");
+const {
+  buildAgentGraph,
+  buildWorkerGraphAlignment,
+  validateWorkerGraphAlignment,
+} = require("../agents/observability");
 const { buildDirectThreadDeckProjection } = require("../thread/thread-deck");
 const {
   assertDirectAttachmentCapabilityProjectionSafe,
@@ -56,6 +61,12 @@ const {
   buildDirectAttachmentProviderPrompt,
   buildDirectAttachmentSubmitPacket,
 } = require("../attachments/capability");
+const {
+  buildDirectWorkerStartResult,
+  buildDirectWorkerStartTransition,
+  validateDirectWorkerStartResult,
+  validateDirectWorkerStartTransition,
+} = require("../bridge/worker-start");
 
 const DIRECT_LIVE_TEXT_SURFACE_TRANSPORT = "direct-live-text";
 const DIRECT_FORK_PREVIEW_START_REQUEST_SHAPE = "direct_fork_preview_start_live_text@1";
@@ -579,6 +590,7 @@ function implementationContextInstructions(contextInstructions = "") {
 
 function threadSnapshotFromSession(session = {}) {
   const turns = Array.isArray(session.turns) ? session.turns : [];
+  const agentKind = normalizeString(session.agentKind, "");
   return {
     id: session.sessionId,
     threadId: session.sessionId,
@@ -592,6 +604,22 @@ function threadSnapshotFromSession(session = {}) {
     runtimeMode: normalizeString(session.runtimeMode, ""),
     directTransport: normalizeString(session.directTransport, DIRECT_LIVE_TEXT_SURFACE_TRANSPORT),
     reasoningEffort: normalizeString(session.reasoningEffort, ""),
+    agentKind,
+    agentThreadId: normalizeString(session.agentThreadId, ""),
+    parentThreadId: normalizeString(session.parentThreadId, ""),
+    primaryThreadId: normalizeString(session.primaryThreadId, ""),
+    agentLabel: normalizeString(session.agentLabel, ""),
+    agentRole: normalizeString(session.agentRole, ""),
+    roleHandoffPacketId: normalizeString(session.roleHandoffPacketId, ""),
+    roleHandoffPacketDigest: normalizeString(session.roleHandoffPacketDigest, ""),
+    workerStartTransitionId: normalizeString(session.workerStartTransitionId, ""),
+    workerStartTransitionDigest: normalizeString(session.workerStartTransitionDigest, ""),
+    workerContextPacketId: normalizeString(session.workerContextPacketId, ""),
+    workerContextPacketDigest: normalizeString(session.workerContextPacketDigest, ""),
+    workerGraphAlignmentId: normalizeString(session.workerGraphAlignmentId, ""),
+    workerGraphAlignmentDigest: normalizeString(session.workerGraphAlignmentDigest, ""),
+    transcriptLane: agentKind ? "worker" : "primary",
+    primaryTranscriptSeparated: Boolean(agentKind),
     workThreadId: normalizeString(session.workThreadId, ""),
     turnCount: turns.length,
     activeTurnCount: turns.filter((turn) => ACTIVE_TURN_STATES.has(normalizeString(turn?.state, ""))).length,
@@ -602,6 +630,7 @@ function threadSnapshotFromSession(session = {}) {
 
 function threadListEntryFromIndexEntry(entry = {}) {
   const sessionId = normalizeString(entry.sessionId, "");
+  const agentKind = normalizeString(entry.agentKind, "");
   return {
     id: sessionId,
     threadId: sessionId,
@@ -612,6 +641,22 @@ function threadListEntryFromIndexEntry(entry = {}) {
     status: normalizeString(entry.status, "created"),
     model: normalizeString(entry.model, ""),
     reasoningEffort: normalizeString(entry.reasoningEffort, ""),
+    agentKind,
+    agentThreadId: normalizeString(entry.agentThreadId, ""),
+    parentThreadId: normalizeString(entry.parentThreadId, ""),
+    primaryThreadId: normalizeString(entry.primaryThreadId, ""),
+    agentLabel: normalizeString(entry.agentLabel, ""),
+    agentRole: normalizeString(entry.agentRole, ""),
+    roleHandoffPacketId: normalizeString(entry.roleHandoffPacketId, ""),
+    roleHandoffPacketDigest: normalizeString(entry.roleHandoffPacketDigest, ""),
+    workerStartTransitionId: normalizeString(entry.workerStartTransitionId, ""),
+    workerStartTransitionDigest: normalizeString(entry.workerStartTransitionDigest, ""),
+    workerContextPacketId: normalizeString(entry.workerContextPacketId, ""),
+    workerContextPacketDigest: normalizeString(entry.workerContextPacketDigest, ""),
+    workerGraphAlignmentId: normalizeString(entry.workerGraphAlignmentId, ""),
+    workerGraphAlignmentDigest: normalizeString(entry.workerGraphAlignmentDigest, ""),
+    transcriptLane: agentKind ? "worker" : "primary",
+    primaryTranscriptSeparated: Boolean(agentKind),
     runtimeMode: normalizeString(entry.runtimeMode, ""),
     directTransport: normalizeString(entry.directTransport, DIRECT_LIVE_TEXT_SURFACE_TRANSPORT),
     workThreadId: normalizeString(entry.workThreadId, ""),
@@ -994,6 +1039,7 @@ class DirectLiveTextController {
     const model = normalizeString(params.model, "") || status.model;
     const reasoningEffort = normalizeString(params.reasoningEffort || params.reasoning_effort, "");
     const session = this.sessionStore.createSession({
+      sessionId: requestedSessionId,
       projectId,
       workspace: isPlainObject(project.workspace) ? project.workspace : {},
       workspaceDisplayPath: workspaceDisplayPath(project),
@@ -1006,6 +1052,20 @@ class DirectLiveTextController {
       modelEvidenceState: status.modelEvidenceState,
       modelEvidenceId: normalizeString(status.evidenceId, ""),
       profileSnapshotId: normalizeString(project.surfaceBinding?.codex?.profileId, ""),
+      agentKind: normalizeString(params.agentKind, ""),
+      agentThreadId: normalizeString(params.agentThreadId, ""),
+      parentThreadId: normalizeString(params.parentThreadId, ""),
+      primaryThreadId: normalizeString(params.primaryThreadId || params.parentThreadId, ""),
+      agentLabel: normalizeString(params.agentLabel, ""),
+      agentRole: normalizeString(params.agentRole, ""),
+      roleHandoffPacketId: normalizeString(params.roleHandoffPacketId, ""),
+      roleHandoffPacketDigest: normalizeString(params.roleHandoffPacketDigest, ""),
+      workerStartTransitionId: normalizeString(params.workerStartTransitionId, ""),
+      workerStartTransitionDigest: normalizeString(params.workerStartTransitionDigest, ""),
+      workerContextPacketId: normalizeString(params.workerContextPacketId, ""),
+      workerContextPacketDigest: normalizeString(params.workerContextPacketDigest, ""),
+      workerGraphAlignmentId: normalizeString(params.workerGraphAlignmentId, ""),
+      workerGraphAlignmentDigest: normalizeString(params.workerGraphAlignmentDigest, ""),
       sourceClass: "direct-native",
       nativeDirectSession: true,
       providerContinuityAvailable: false,
@@ -4271,6 +4331,184 @@ class DirectLiveTextController {
     };
   }
 
+  async startWorkerFromHandoff(params = {}, context = {}) {
+    const project = context.project || {};
+    const handoffPacket = isPlainObject(params.handoffPacket) ? params.handoffPacket : {};
+    const workerPrompt = this.textPrompt({
+      promptText: params.workerPrompt || params.promptText || params.prompt,
+      input: params.input,
+    });
+    const transition = buildDirectWorkerStartTransition({
+      projectId: normalizeString(project.id, handoffPacket.projectId || ""),
+      parentThreadId: normalizeString(params.parentThreadId || handoffPacket.threadId, ""),
+      primaryThreadId: normalizeString(params.primaryThreadId || params.parentThreadId || handoffPacket.threadId, ""),
+      handoffPacket,
+      operatorAcceptance: params.operatorAcceptance,
+      workerPrompt,
+      contextRefs: params.contextRefs,
+    });
+    validateDirectWorkerStartTransition(transition);
+    if (transition.startState !== "ready_to_start") {
+      const error = new Error("Direct worker start blocked.");
+      error.code = "direct_worker_start_blocked";
+      error.blockerCodes = transition.blockerCodes;
+      error.workerStartTransition = transition;
+      throw error;
+    }
+    const clientTurnRequestId = normalizeString(
+      params.clientTurnRequestId,
+      `client_worker_${sha256(`${transition.workerStartTransitionId}:${workerPrompt}`).slice(0, 20)}`,
+    );
+    const workerSessionId = normalizeString(
+      params.workerSessionId || params.sessionId,
+      `direct_worker_${sha256(`${transition.workerStartTransitionId}:${clientTurnRequestId}`).slice(0, 24)}`,
+    );
+    const selectedAgentClass = transition.selectedAgentClass || {};
+    const agentLabel = normalizeString(
+      params.agentLabel,
+      selectedAgentClass.displayName || selectedAgentClass.agentClassKind || "Direct worker",
+    );
+    const startedThread = this.startThread({
+      sessionId: workerSessionId,
+      title: normalizeString(params.title, `${agentLabel} worker`),
+      model: normalizeString(params.model, ""),
+      reasoningEffort: normalizeString(params.reasoningEffort || params.reasoning_effort, ""),
+      agentKind: "direct_worker",
+      agentThreadId: workerSessionId,
+      parentThreadId: transition.parentThreadId,
+      primaryThreadId: transition.primaryThreadId,
+      agentLabel,
+      agentRole: normalizeString(selectedAgentClass.agentClassKind, "implementation_worker"),
+      roleHandoffPacketId: transition.handoffRef.handoffPacketId,
+      roleHandoffPacketDigest: transition.handoffRef.handoffPacketDigest,
+      workerStartTransitionId: transition.workerStartTransitionId,
+      workerStartTransitionDigest: transition.transitionDigest,
+      workerContextPacketId: transition.contextPacket.workerContextPacketId,
+      workerContextPacketDigest: transition.contextPacket.contextPacketDigest,
+      workThreadId: transition.workThreadId,
+    }, context);
+    let workerSession = this.sessionStore.readSession(startedThread.thread.id);
+    const workerGraph = buildAgentGraph({
+      projectId: transition.projectId,
+      primaryThreadId: transition.primaryThreadId,
+      runtimeSourceClass: "direct_harness_agent_run",
+      nodes: [{
+        agentThreadId: startedThread.thread.id,
+        parentThreadId: transition.parentThreadId,
+        depth: 1,
+        displayLabel: agentLabel,
+        role: normalizeString(selectedAgentClass.agentClassKind, "implementation_worker"),
+        model: normalizeString(params.model || workerSession?.model, ""),
+        reasoningEffort: normalizeString(params.reasoningEffort || params.reasoning_effort || workerSession?.reasoningEffort, ""),
+        lifecycleState: "running",
+        activityState: "active",
+        agentClassKind: normalizeString(selectedAgentClass.agentClassKind, "implementation_worker"),
+        evidenceRefs: [{
+          kind: "agent_run_record",
+          artifactId: transition.workerStartTransitionId,
+          artifactDigest: transition.transitionDigest,
+          sourceConfidence: "accepted",
+          rendererSafeLabel: "Direct worker start transition",
+        }],
+      }],
+      edges: [{
+        edgeKind: "spawned_child",
+        parentThreadId: transition.parentThreadId,
+        childThreadId: startedThread.thread.id,
+        status: "in_progress",
+        sourceCallId: transition.workerStartTransitionId,
+        evidenceRefs: [{
+          kind: "agent_run_record",
+          artifactId: transition.handoffRef.handoffPacketId,
+          artifactDigest: transition.handoffRef.handoffPacketDigest,
+          sourceConfidence: "accepted",
+          rendererSafeLabel: "Accepted role handoff packet",
+        }],
+      }],
+    });
+    const workerGraphAlignment = buildWorkerGraphAlignment({
+      projectId: transition.projectId,
+      primaryThreadId: transition.primaryThreadId,
+      workThreadId: transition.workThreadId,
+      workThreadRef: {
+        workThreadId: transition.workThreadId,
+        projectId: transition.projectId,
+        workThreadDigest: normalizeString(handoffPacket.workThreadRef?.sourceDigest, ""),
+      },
+      agentGraph: workerGraph,
+      agentClassRegistryRef: {
+        registryId: normalizeString(params.agentClassRegistryId, ""),
+        registryDigest: normalizeString(params.agentClassRegistryDigest, ""),
+        registrySourceDigest: normalizeString(params.agentClassRegistrySourceDigest, ""),
+        specs: [{
+          agentClassId: normalizeString(selectedAgentClass.agentClassId, ""),
+          agentClassKind: normalizeString(selectedAgentClass.agentClassKind, "implementation_worker"),
+          specDigest: normalizeString(handoffPacket.selectedAgentClass?.specDigest, ""),
+        }],
+      },
+    });
+    validateWorkerGraphAlignment(workerGraphAlignment);
+    workerSession = this.sessionStore.readSession(startedThread.thread.id);
+    if (workerSession) {
+      this.sessionStore.writeSession({
+        ...workerSession,
+        workerGraphAlignmentId: workerGraphAlignment.alignmentId,
+        workerGraphAlignmentDigest: workerGraphAlignment.integrity?.artifactDigest || "",
+      });
+    }
+    this.sessionStore.writeDiagnostic(startedThread.thread.id, "direct_worker_start", {
+      transition,
+      workerGraph,
+      workerGraphAlignment,
+    });
+    if (this.directThreadStore) this.indexDirectThreadStoreSession(startedThread.thread.id);
+    const startAck = await this.startTurn({
+      threadId: startedThread.thread.id,
+      sessionId: startedThread.thread.id,
+      clientTurnRequestId,
+      promptText: workerPrompt,
+      model: normalizeString(params.model, ""),
+      reasoningEffort: normalizeString(params.reasoningEffort || params.reasoning_effort, ""),
+      workThreadId: transition.workThreadId,
+      workThread: isPlainObject(params.workThread) ? params.workThread : handoffPacket.workThreadRef,
+      authorityBoundary: isPlainObject(params.authorityBoundary) ? params.authorityBoundary : handoffPacket.authorityBoundary,
+      bridgeInformationRefs: [{
+        classId: "ic6.direct-worker-start-v0",
+        role: "governance_routing",
+        artifactKind: "direct_worker_start_transition",
+        artifactId: transition.workerStartTransitionId,
+        artifactDigest: transition.transitionDigest,
+      }],
+      governanceRefs: {
+        roleHandoffPacketId: transition.handoffRef.handoffPacketId,
+        roleHandoffPacketDigest: transition.handoffRef.handoffPacketDigest,
+        workerStartTransitionId: transition.workerStartTransitionId,
+        workerStartTransitionDigest: transition.transitionDigest,
+        workerContextPacketId: transition.contextPacket.workerContextPacketId,
+        workerContextPacketDigest: transition.contextPacket.contextPacketDigest,
+      },
+    }, context);
+    const result = buildDirectWorkerStartResult({
+      projectId: transition.projectId,
+      transition,
+      session: this.sessionStore.readSession(startedThread.thread.id) || workerSession || {},
+      turn: startAck.turn,
+      workerGraphAlignment,
+      status: "started",
+    });
+    validateDirectWorkerStartResult(result);
+    this.sessionStore.writeDiagnostic(startedThread.thread.id, "direct_worker_start_result", result);
+    return {
+      schema: "direct_worker_start_response@1",
+      transition,
+      workerGraphAlignment,
+      result,
+      thread: threadSnapshotFromSession(this.sessionStore.readSession(startedThread.thread.id) || {}),
+      turn: startAck.turn,
+      reused: startAck.reused === true,
+    };
+  }
+
   async runTurn(options = {}) {
     const {
       sessionId,
@@ -4520,6 +4758,7 @@ class DirectLiveTextController {
     if (method === "thread/list") return this.listThreads(params, context);
     if (method === "thread/read") return this.readThread(params, context);
     if (method === "turn/start") return this.startTurn(params, context);
+    if (method === "worker/start") return this.startWorkerFromHandoff(params, context);
     if (method === "turn/interrupt" || method === "turn/abort") return this.interruptTurn(params, context);
     throw new Error(`Direct live text controller does not support ${method}.`);
   }

@@ -224,6 +224,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "Packet accept/reject posture is display-only in this slice; provider calls, worker spawning, object-level audit, workspace mutation, and orchestration loops remain disabled until a later authority-bearing transition grants them.",
   },
   {
+    id: "ic6.direct-worker-start-v0",
+    name: "Direct explicit worker start V0",
+    role: "governance_routing",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/bridge/worker-start.js", "src/main/direct/controller/live-text-controller.js", "scripts/direct-worker-start-regression.mjs", "src/main/direct/agents/observability.js"],
+    ontology: ontologyShape(["direct_worker_start_transition", "direct_worker_context_packet", "direct_worker_start_result", "direct_worker_graph_alignment"], "harness", {
+      identityFields: ["projectId", "workerStartTransitionId", "handoffPacketId", "workerSessionId", "workerTurnId"],
+      schema: "direct_worker_start_transition@1",
+    }),
+    bridgeFit: "Converts an operator-accepted role handoff into exactly one direct worker session and worker turn with context, handoff evidence, and worker graph alignment preserved separately from the primary transcript.",
+    realignment: "This slice permits only a single explicit direct worker text turn; recursive worker spawning, workflow closure, object audit certification, and workspace mutation remain disabled.",
+  },
+  {
     id: "ic7.sub-agent-observability",
     name: "Sub-agent observability and containment",
     role: "observability_surface",

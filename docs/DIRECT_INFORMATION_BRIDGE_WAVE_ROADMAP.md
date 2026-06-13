@@ -882,7 +882,7 @@ Operator broker and controlled routing slice exist.
 
 ### PR 20: Explicit Worker Start V0
 
-Status: planned.
+Status: implemented in `codex/direct-worker-start-v0`.
 
 Purpose:
 
@@ -897,6 +897,26 @@ Scope:
 - Build worker context packet from cited WorkThread and handoff evidence.
 - Persist worker session/thread identity and link it to worker graph alignment.
 - Render worker activity separately from primary transcript.
+
+Implemented in this slice:
+
+- `direct_worker_start_transition@1` requires an operator-accepted
+  `direct_role_handoff_packet@1` before enabling a worker start.
+- `direct_worker_context_packet@1` carries the bounded worker prompt digest,
+  handoff refs, context/request refs, WorkThread id, AgentClassSpec id, and
+  expected output artifact family.
+- `worker/start` creates one direct-native worker session and starts one
+  direct live-text worker turn through the existing transport.
+- Worker sessions/turns persist `agentKind`, `agentThreadId`, `parentThreadId`,
+  `primaryThreadId`, `agentLabel`, `agentRole`, handoff ids, worker-start ids,
+  context-packet ids, and worker-graph-alignment ids.
+- Direct thread deck rows expose worker lane fields so worker activity remains
+  separate from the primary transcript.
+- `direct_worker_graph_alignment@1` links the started worker session to the
+  WorkThread and selected AgentClassSpec.
+- Regression coverage verifies accepted worker start, rejected handoff blocking,
+  one provider call only, worker deck separation, graph alignment, and raw
+  exposure guards.
 
 Non-goals:
 
