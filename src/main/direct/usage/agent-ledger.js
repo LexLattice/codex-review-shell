@@ -46,15 +46,16 @@ function stableStringify(value) {
 }
 
 function sha256(value) {
-  return crypto.createHash("sha256").update(String(value || "")).digest("hex");
+  return crypto.createHash("sha256").update(String(value ?? "")).digest("hex");
 }
 
 function digestFor(domain, value) {
   return `sha256:${sha256(`${domain}\0${stableStringify(value)}`)}`;
 }
 
-function nowIso(nowMs = Date.now()) {
-  return new Date(Number(nowMs) || Date.now()).toISOString();
+function nowIso(nowMs) {
+  const ms = typeof nowMs === "number" && Number.isFinite(nowMs) ? nowMs : Date.now();
+  return new Date(ms).toISOString();
 }
 
 function normalizeAgentKind(value) {
@@ -85,6 +86,12 @@ function durationMsForTurn(turn = {}) {
   const started = parseTimeMs(turn.streamStartedAt || turn.requestBuiltAt || turn.createdAt);
   const ended = parseTimeMs(turn.completedAt || turn.failedAt || turn.abortedAt || turn.updatedAt);
   return started && ended && ended >= started ? ended - started : 0;
+}
+
+function isTerminalTurn(turn = {}) {
+  if (normalizeString(turn.completedAt || turn.failedAt || turn.abortedAt, "")) return true;
+  const status = normalizeString(turn.status || turn.lifecycleStatus || turn.state, "").toLowerCase();
+  return ["completed", "complete", "failed", "error", "aborted", "cancelled", "canceled"].includes(status);
 }
 
 function emptyTotals() {
@@ -121,6 +128,7 @@ function normalizeUsageAttributionRows(turn = {}) {
   const attribution = isPlainObject(turn.usageAttribution) ? turn.usageAttribution : null;
   const rows = arrayOrEmpty(attribution?.rows);
   if (rows.length) return rows;
+  if (!isTerminalTurn(turn)) return [];
   return [{
     rowId: `usage_missing_${sha256(`${turn.sessionId || ""}:${turn.turnId || ""}`).slice(0, 18)}`,
     usageSource: "missing",

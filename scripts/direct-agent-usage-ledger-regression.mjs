@@ -10,6 +10,7 @@ const {
   assertDirectAgentUsageProjectionSafe,
   buildDirectAgentUsageLedger,
   buildDirectAgentUsageSummaryProjection,
+  buildUsageRowsForTurn,
 } = require("../src/main/direct/usage/agent-ledger");
 const {
   buildDirectSettingsSurfaceProjection,
@@ -139,10 +140,27 @@ const workerTurn = {
   },
 };
 
+const activeTurnWithoutUsage = {
+  schema: "direct_codex_turn@1",
+  sessionId: primarySession.sessionId,
+  turnId: "turn_active_without_usage",
+  model: "gpt-5.5",
+  reasoningEffort: "xhigh",
+  createdAt: "2026-06-13T10:03:00.000Z",
+  streamStartedAt: "2026-06-13T10:03:01.000Z",
+  status: "streaming",
+};
+
+assert.equal(
+  buildUsageRowsForTurn({ projectId, session: primarySession, turn: activeTurnWithoutUsage }).length,
+  0,
+  "active turns without usage attribution must not be counted as missing usage",
+);
+
 const ledger = buildDirectAgentUsageLedger({
   projectId,
   sessionTurns: [
-    { session: primarySession, turns: [primaryTurn] },
+    { session: primarySession, turns: [primaryTurn, activeTurnWithoutUsage] },
     { session: workerSession, turns: [workerTurn] },
   ],
   generatedAt: "2026-06-13T10:02:00.000Z",

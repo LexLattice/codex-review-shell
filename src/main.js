@@ -2383,13 +2383,13 @@ function buildDirectAgentUsageStatusForProject(projectId) {
     const sessionStore = ensureDirectSessionStore();
     const index = sessionStore.ensure();
     const sessions = (Array.isArray(index.sessions) ? index.sessions : [])
-      .filter((entry) => !safeProjectId || normalizeString(entry.projectId, "") === safeProjectId)
+      .filter((entry) => !safeProjectId || normalizeString(entry?.projectId, "") === safeProjectId)
       .map((entry) => {
-        const session = sessionStore.readSession(entry.sessionId);
+        const session = entry?.sessionId ? sessionStore.readSession(entry.sessionId) : null;
         if (!session) return null;
         const turnIds = new Set([
           ...(Array.isArray(session.turns) ? session.turns.map((turn) => normalizeString(turn?.turnId, "")).filter(Boolean) : []),
-          ...sessionStore.listTurnIdsFromDisk(session.sessionId),
+          ...(sessionStore.listTurnIdsFromDisk(session.sessionId) || []),
         ]);
         const turns = [...turnIds]
           .map((turnId) => sessionStore.readTurn(session.sessionId, turnId))
