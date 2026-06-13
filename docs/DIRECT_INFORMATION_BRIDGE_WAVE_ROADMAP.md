@@ -1375,7 +1375,7 @@ transition before any side-effecting operation can be retried or replayed.
 
 ### PR 27: Workspace Authority Maturity V0
 
-Status: in review.
+Status: merged.
 
 Purpose:
 
@@ -1461,6 +1461,199 @@ Still intentionally not authority:
   broad generated/vendor/lockfile policy finalization
   provider compaction execution
   skill/hook/connector execution runner
+  direct path replacement of the vanilla app-server lane
+```
+
+## Wave 5: Live Promotion And Operator Usability Gate
+
+Status: planned.
+
+Review posture after Wave 4:
+
+```text
+The direct branch now has fixture/local proof for the implementation lane:
+read, patch, command, tool-result continuation, bounded repair, recovery
+classification, and workspace mutation truth.
+
+The remaining confidence gap is no longer "can we model the lane?".
+It is "can we promote the lane under live provider evidence and make it safe
+enough for deliberate operator testing?".
+```
+
+Standing Wave 5 constraints:
+
+- Keep app-server as the retained vanilla lane.
+- Do not enable automatic approval, automatic replay, automatic revert, or
+  recursive worker spawning.
+- Treat live provider proof as opt-in and disposable-workspace scoped.
+- Renderer/UI status is projection, not authority.
+- Any provider/tool action must still pass the existing authority-bearing
+  transition envelope.
+- Do not make context maintenance, governance, or sub-agent control mutate state
+  without an explicit gate and fixture proof.
+
+### PR 28: Live Implementation-Lane Promotion Harness
+
+Status: planned.
+
+Purpose:
+
+```text
+Turn the existing live implementation-proof runner into an explicit promotion
+artifact for provider-originated read/patch/command/tool-result cycles.
+```
+
+Scope:
+
+- Define the live promotion report shape over
+  `direct:implementation-proof -- --mode=live --allow-live-provider-call`.
+- Grade outcomes separately:
+  provider emitted expected tool calls, provider did not emit tool calls,
+  local authority blocked, continuation failed, terminal assistant completed.
+- Require disposable workspace identity, no app-server fallback, no right-pane
+  mutation, no raw exposure, and no non-target workspace mutation.
+- Keep live proof opt-in; normal validation must not call the provider.
+- Add a compact matrix promotion summary that can move selected rows from
+  fixture-only to live-proved when evidence exists.
+
+Promotion criterion:
+
+```text
+A live provider-originated implementation-lane turn can complete a bounded
+read/patch/command flow in a disposable workspace, or produce a typed
+non-promotion reason without weakening fixture proof.
+```
+
+### PR 29: Direct Implementation-Lane UI Readiness
+
+Status: planned.
+
+Purpose:
+
+```text
+Make the direct implementation lane manually testable from the shell without
+burying authority state in logs.
+```
+
+Scope:
+
+- Surface direct implementation-lane status, current operation history,
+  approval cards, continuation state, recovery posture, and workspace effect
+  summaries in renderer-safe UI projections.
+- Add Electron regression coverage for a direct read approval flow and operation
+  history projection.
+- Keep the runtime switch explicit and keep the app-server lane available.
+- Do not add new tool scope, auto-approval, or automatic recovery action.
+
+Promotion criterion:
+
+```text
+An operator can tell whether the direct lane is idle, awaiting approval,
+executing, recovering, blocked, or terminal without reading raw ledgers.
+```
+
+### PR 30: Context Maintenance Execution Gate V0
+
+Status: planned.
+
+Purpose:
+
+```text
+Convert existing context/memory/baton/compaction proposals into guarded,
+operator-visible transitions without automatic provider compaction.
+```
+
+Scope:
+
+- Add context maintenance execution packets for manual memory refresh, baton
+  update, omission witness acknowledgement, and context-loss remediation.
+- Keep provider compaction disabled unless later evidence explicitly grants it.
+- Make every context mutation cite work thread, source artifact, retention law,
+  omission risk, and rollback/undo posture.
+- Add fixtures for accepted maintenance, rejected stale proposal, raw-exposure
+  block, and baton reinjection preview.
+
+Promotion criterion:
+
+```text
+The harness can update its local context-management artifacts through explicit
+operator-gated transitions instead of treating maintenance proposals as inert
+diagnostics.
+```
+
+### PR 31: Governance Enforcement And Clarification V0
+
+Status: planned.
+
+Purpose:
+
+```text
+Promote selected broker/governance checks from shadow reports to guarded
+preconditions for mutation/provider transitions.
+```
+
+Scope:
+
+- Enforce work-target resolution before workspace mutation.
+- Block provider/tool transitions when target confidence is too low or authority
+  boundary is missing.
+- Add a clarification packet for ambiguous requests rather than silently
+  collapsing to chat recency.
+- Keep enforcement narrow; do not make the broker an object-level auditor.
+- Add fixtures for clear target, ambiguous target, wrong-branch target,
+  missing authority boundary, and non-target preservation.
+
+Promotion criterion:
+
+```text
+No direct mutation or tool-provider transition proceeds when the active work
+thread is unresolved or authority evidence is missing.
+```
+
+### PR 32: Sub-Agent Inspect/Wait Containment V0
+
+Status: planned.
+
+Purpose:
+
+```text
+Give the direct path a minimal, contained sub-agent inspection model without
+recursive autonomous choreography.
+```
+
+Scope:
+
+- Add inspect/wait/read-only status packets for direct worker/sub-agent refs.
+- Keep recursive spawn, close, resume, and autonomous schedule disabled.
+- Ensure child transcript/status projections never render as the operator or as
+  primary-agent final answers.
+- Add deadlock/stale-worker diagnostics and attention badges.
+- Add fixtures for one worker, multiple workers, stale worker, failed worker,
+  and unknown child identity.
+
+Promotion criterion:
+
+```text
+The operator can inspect direct worker state and wait/read status without
+granting recursive multi-agent control authority.
+```
+
+Wave 5 expected result:
+
+```text
+Implemented:
+  live implementation-lane promotion report
+  direct implementation-lane UI readiness
+  guarded context maintenance transitions
+  narrow broker/governance enforcement
+  contained sub-agent inspect/wait projection
+
+Still intentionally not authority:
+  automatic approval
+  automatic replay/revert
+  recursive worker orchestration
+  provider compaction execution
+  broad browser/network/MCP tool execution
   direct path replacement of the vanilla app-server lane
 ```
 

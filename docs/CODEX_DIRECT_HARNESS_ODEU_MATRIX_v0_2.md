@@ -142,12 +142,18 @@ Main remaining coverage gaps from the matrix:
 | Mature multi-agent choreography | `H1-H10`, `J9` | Worker start and graph alignment exist; recursive delegation, inspect/wait tools, deadlock prevention, and transcript promotion law remain future work. |
 | Mainline readiness and broad UI proof | `F1-F10`, `I1-I15`, `J1-J12` | Status surfaces and regressions exist; full Electron/UI proof and merge-behind-flag checklist remain later work. |
 
-The next confidence gap remains:
+The next confidence gap is now Wave 5:
 
 ```text
-Real-provider implementation-lane harness for read/patch/command,
+live implementation-lane promotion and operator usability,
 without adding new authority.
 ```
+
+Wave 5 should start with the live promotion report because read/patch/command,
+recovery, repair, and workspace mutation truth are now fixture/local-proved.
+After that, direct UI readiness should come before broader context/governance
+execution so manual testing can inspect status, approvals, operation history,
+recovery posture, and workspace effects without reading raw ledgers.
 
 ## 4. Canonical ODEU Capability Matrix
 
@@ -542,43 +548,55 @@ Bundle rules:
 - Do not split governance packet, transition legality, semantic broker packet, and fallback/ask-human behavior at first. They are one routing/governance diagnostics family.
 - Do not mix implementation-lane tool authority, context maintenance/memory, and sub-agent observability in one PR. They touch different authority surfaces.
 
-Recommended PR order:
+Recommended PR order after Wave 4:
 
 ```text
-1. Real-provider implementation-lane proof
-2. Recovery and replay safety
-3. Iterative implementation repair loop
-4. Workspace mutation truth and policy substrate
-5. Implementation-lane UI and operation history
-6. Thread evidence workbench and derived views
-7. Fresh fork starts from previews
-8. Context maintenance, memory, frontier baton
-9. Governance and semantic broker diagnostics
-10. Sub-agent observability and containment
-11. Usage/quota/model evidence and mainline readiness
+Done:
+  1. Implementation-lane fixture/local proof
+  2. Recovery and replay safety
+  3. Iterative implementation repair loop
+  4. Workspace mutation truth and policy substrate
+
+Wave 5:
+  5. Live implementation-lane promotion report
+  6. Implementation-lane UI and operation history readiness
+  7. Context maintenance, memory, frontier baton execution gates
+  8. Governance and semantic broker enforcement gates
+  9. Sub-agent inspect/wait containment
+
+Later:
+  10. Usage/quota/model readiness hardening
+  11. Mainline merge-behind-flag checklist and broad Electron proof
 ```
 
-There is one acceptable swap: if app usability needs to catch up sooner, bundle 5 may move before bundle 3. Context maintenance, governance, and sub-agent work should not move ahead of real implementation-lane proof and recovery.
+The only acceptable Wave 5 swap is moving direct UI readiness before live
+promotion if manual app testing becomes blocked. Context maintenance,
+governance, and sub-agent work should not move ahead of live promotion and UI
+readiness because they need the same visible operation-state substrate.
 
 ## 9. Immediate Next Spec
 
-The next spec should target Stage 1:
+The next spec should target Wave 5 PR 28:
 
 ```text
-Headless real-provider implementation-lane harness for read_file,
-multi-step read_file, apply_patch, run_command, and workspace-effect scan.
+Live implementation-lane promotion report for provider-originated read,
+patch, command, continuation, and terminal assistant cycles.
 ```
 
 It should not add new authority. It should prove:
 
-1. provider can emit a supported `read_file` call;
-2. harness can approve, read, record result evidence, and continue;
-3. provider can emit a second supported read and the loop remains bounded;
-4. provider can emit a supported `apply_patch` call in a disposable workspace;
-5. harness can plan, dry-run, approve, apply, journal, and continue;
-6. provider can emit a supported `run_command` call;
-7. harness can plan, approve, run, capture, scan, and continue;
-8. reports prove no raw exposure, no app-server fallback inside direct, no right-pane mutation, and no handoff mutation.
+1. the live proof runner emits a stable promotion report shape;
+2. provider-originated tool calls are distinguished from fixture/local tool
+   calls;
+3. non-emission of a provider tool call produces a typed non-promotion result,
+   not a failed local proof;
+4. disposable workspace identity is explicit;
+5. local authority transitions remain mandatory for read, patch, and command;
+6. continuation and terminal assistant evidence is classified;
+7. no app-server fallback, right-pane mutation, raw exposure, non-target
+   workspace mutation, auto-approval, or automatic replay occurs;
+8. selected matrix rows can cite the report as live evidence only when the
+   report has a passing promotion verdict.
 
 It should explicitly not mean:
 
@@ -596,7 +614,11 @@ app-server can be removed
 
 v0.2 keeps the deeper v0.1 coverage while assigning a single owner row to each capability.
 
-The direct branch is now real-green for text. The next confidence gap is implementation-lane real-provider proof. Fork-derived depth should remain visible in the roadmap, but it should enter the direct shell through explicit row-owned specs:
+The direct branch is now real-green for text and fixture/local-green for the
+implementation lane. The next confidence gap is live promotion plus operator
+usability, not another round of fixture-only modeling. Fork-derived depth should
+remain visible in the roadmap, but it should enter the direct shell through
+explicit row-owned specs:
 
 ```text
 context route matrix
@@ -608,4 +630,6 @@ E-witness progress registry
 thread-spawn containment
 ```
 
-Those do not change the immediate next step. They prevent the roadmap from collapsing long-context, governance, routing, and sub-agent observability into vague buckets once the implementation lane starts working.
+Those do not change the immediate Wave 5 order. They prevent the roadmap from
+collapsing long-context, governance, routing, and sub-agent observability into
+vague buckets once the implementation lane is promoted under live evidence.
