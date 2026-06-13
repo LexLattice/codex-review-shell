@@ -137,12 +137,28 @@ function runCommand(command, args, options = {}) {
     }
     const started = Date.now();
     const spawnCommand = process.platform === "win32" && command === "npm" ? "npm.cmd" : command;
-    const child = spawn(spawnCommand, args, {
-      cwd: options.cwd,
-      env,
-      shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    let child;
+    try {
+      child = spawn(spawnCommand, args, {
+        cwd: options.cwd,
+        env,
+        shell: false,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      resolve({
+        exitCode: null,
+        signal: "",
+        stdout: "",
+        stderr: `${error?.message || String(error)}\n`,
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        spawnError: error?.message || String(error),
+        timedOut: false,
+        durationMs: Date.now() - started,
+      });
+      return;
+    }
     const stdout = [];
     const stderr = [];
     let stdoutBytes = 0;
