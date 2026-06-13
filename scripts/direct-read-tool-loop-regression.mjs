@@ -129,6 +129,7 @@ function toolEvent({ itemId, callId, path: relPath, sequence, responseId }) {
 function buildContinuationContext({
   sessionStore,
   threadStore,
+  projectId,
   sessionId,
   turnId,
   obligationId,
@@ -157,7 +158,7 @@ function buildContinuationContext({
   return threadStore.buildAndPersistContextForToolContinuation({
     sessionStore,
     session,
-    projectId: "direct-read-loop-fixture",
+    projectId,
     threadId: sessionId,
     turnId,
     obligationId,
@@ -178,6 +179,7 @@ async function executeStep({
   sessionStore,
   threadStore,
   workspaceRequest,
+  projectId,
   sessionId,
   turnId,
   obligationId,
@@ -189,6 +191,7 @@ async function executeStep({
     turnId,
     obligationId,
     approvedBy: "fixture-operator",
+    projectId,
   });
   const executed = await executeApprovedReadOnlyToolObligation({
     sessionStore,
@@ -196,6 +199,7 @@ async function executeStep({
     turnId,
     obligationId,
     workspaceRequest,
+    projectId,
   });
   const baseContinuation = buildReadOnlyToolContinuationRequest({
     sessionStore,
@@ -203,10 +207,12 @@ async function executeStep({
     turnId,
     obligationId,
     continuationLiveSendEnabled: true,
+    projectId,
   });
   const continuationContext = buildContinuationContext({
     sessionStore,
     threadStore,
+    projectId,
     sessionId,
     turnId,
     obligationId,
@@ -234,6 +240,7 @@ async function executeStep({
     obligationId,
     continuationRequest,
     continuationLiveSendEnabled: true,
+    projectId,
   });
   sessionStore.updateToolObligation(sessionId, turnId, obligationId, {
     status: "continuation_sent",
@@ -255,14 +262,14 @@ async function main() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "direct-read-tool-loop-"));
   const workspaceRoot = path.join(root, "workspace");
   const storeRoot = path.join(root, "store");
-  createWorkspace(workspaceRoot);
-  const beforeDigest = digestTree(workspaceRoot);
-  const counters = { readFileCalls: 0 };
-  const workspaceRequest = workspaceRequestFor(workspaceRoot, counters);
-  const sessionStore = new DirectSessionStore({ rootDir: path.join(storeRoot, "sessions") });
-  const threadStore = new DirectThreadStore({ rootDir: path.join(storeRoot, "threads"), mode: "context_build_required" });
-
+  let threadStore = null;
   try {
+    createWorkspace(workspaceRoot);
+    const beforeDigest = digestTree(workspaceRoot);
+    const counters = { readFileCalls: 0 };
+    const workspaceRequest = workspaceRequestFor(workspaceRoot, counters);
+    const sessionStore = new DirectSessionStore({ rootDir: path.join(storeRoot, "sessions") });
+    threadStore = new DirectThreadStore({ rootDir: path.join(storeRoot, "threads"), mode: "context_build_required" });
     const session = sessionStore.createSession({
       sessionId: "direct_read_loop_thread",
       projectId: "direct-read-loop-fixture",
@@ -305,6 +312,7 @@ async function main() {
       sessionStore,
       threadStore,
       workspaceRequest,
+      projectId: session.projectId,
       sessionId: session.sessionId,
       turnId: turn.turnId,
       obligationId: firstObligations[0].obligationId,
@@ -340,6 +348,7 @@ async function main() {
       sessionStore,
       threadStore,
       workspaceRequest,
+      projectId: session.projectId,
       sessionId: session.sessionId,
       turnId: turn.turnId,
       obligationId: secondObligations[0].obligationId,
@@ -369,6 +378,7 @@ async function main() {
       turnId: turn.turnId,
       obligationId: missingObligations[0].obligationId,
       approvedBy: "fixture-operator",
+      projectId: session.projectId,
     });
     let missingBlocked = false;
     try {
@@ -378,6 +388,7 @@ async function main() {
         turnId: turn.turnId,
         obligationId: missingObligations[0].obligationId,
         workspaceRequest,
+        projectId: session.projectId,
       });
     } catch (error) {
       missingBlocked = error?.code === "ENOENT" || /no such file/i.test(error?.message || "");
@@ -406,6 +417,7 @@ async function main() {
         turnId: turn.turnId,
         obligationId: outsideObligations[0].obligationId,
         approvedBy: "fixture-operator",
+        projectId: session.projectId,
       });
     } catch (error) {
       outsideBlocked = error?.code === "invalid_read_file_path";
@@ -442,9 +454,11 @@ async function main() {
       },
     }, null, 2));
   } finally {
-    try {
-      threadStore.close();
-    } catch {}
+    if (threadStore) {
+      try {
+        threadStore.close();
+      } catch {}
+    }
     fs.rmSync(root, { recursive: true, force: true });
   }
 }
