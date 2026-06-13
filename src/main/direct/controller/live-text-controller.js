@@ -582,6 +582,18 @@ function implementationContinuationToolNames(status = {}, prompt = "") {
   return names;
 }
 
+function commandRepairContinuationToolNames(status = {}, prompt = "") {
+  const names = implementationContinuationToolNames(status, prompt);
+  if (
+    status.readOnlyToolContinuation?.status === "ready" &&
+    names.length > 0 &&
+    !names.includes("read_file")
+  ) {
+    return ["read_file", ...names];
+  }
+  return names;
+}
+
 function implementationContextInstructions(contextInstructions = "") {
   const contextText = normalizeString(contextInstructions, "");
   if (!contextText) return DEFAULT_IMPLEMENTATION_TOOL_INSTRUCTIONS;
@@ -3840,7 +3852,7 @@ class DirectLiveTextController {
     const parentResponseSource = parentResponseSourceForToolStep(currentObligation);
     const stepOrdinal = Number(currentObligation.stepOrdinal || 1) || 1;
     const originalUserIntent = userPromptTextFromTurn(turn);
-    const continuationToolNames = implementationContinuationToolNames(this.statusForProject(project), originalUserIntent);
+    const continuationToolNames = commandRepairContinuationToolNames(this.statusForProject(project || {}), originalUserIntent);
     const continuationTools = directImplementationToolSchemas(continuationToolNames);
     const implementationRepairContinuation = continuationToolNames.some((name) => name === "apply_patch" || name === "run_command");
     let continuationRequest = null;

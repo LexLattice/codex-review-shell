@@ -201,7 +201,25 @@ function runCommand(command, args, options = {}) {
       }
       if (buffer.length > remaining) stderrTruncated = true;
     });
+    let resolved = false;
+    child.on("error", (error) => {
+      if (resolved) return;
+      resolved = true;
+      if (timer) clearTimeout(timer);
+      resolve({
+        exitCode: null,
+        signal: "",
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: `${Buffer.concat(stderr).toString("utf8")}${error?.message || String(error)}\n`,
+        stdoutTruncated,
+        stderrTruncated,
+        timedOut,
+        durationMs: Date.now() - started,
+      });
+    });
     child.on("close", (code, signal) => {
+      if (resolved) return;
+      resolved = true;
       if (timer) clearTimeout(timer);
       resolve({
         exitCode: code,
@@ -715,11 +733,12 @@ async function main() {
       turnId: turn.turnId,
       obligationId: failingCommandObligation.obligationId,
       requestShapeEvidenceRef: "direct_command_execution_loop_continuation@1",
-      continuationToolNames: ["apply_patch", "run_command"],
+      continuationToolNames: ["read_file", "apply_patch", "run_command"],
     });
     steps.push(failingCommand);
     assert(failingCommand.result.exitCode !== 0, "first command must fail to justify repair patch");
     assert(failingCommand.continuationRequest.requestControls.toolDeclarations === true, "failed command continuation must allow bounded repair tools");
+    assert(failingCommand.continuationRequest.requestControls.declaredToolNames.includes("read_file"), "failed command continuation must expose read_file for repair inspection");
     assert(failingCommand.continuationRequest.requestControls.declaredToolNames.includes("apply_patch"), "failed command continuation must expose apply_patch as bounded repair tool");
     sessionStore.updateTurnState(session.sessionId, turn.turnId, "streaming_continuation", {
       responseId: "resp_after_failing_command",
