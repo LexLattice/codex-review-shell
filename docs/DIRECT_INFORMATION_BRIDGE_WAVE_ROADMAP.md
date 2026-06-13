@@ -833,7 +833,7 @@ projection is available.
 
 ### PR 19: Route-To-Role Handoff Packet
 
-Status: planned.
+Status: implemented in `codex/direct-role-handoff-packet`.
 
 Purpose:
 
@@ -850,6 +850,23 @@ Scope:
   expected output artifact family.
 - Add renderer-safe preview and accept/reject posture.
 - Keep provider call and worker spawn disabled unless a later PR grants it.
+
+Implemented in this slice:
+
+- `direct_role_handoff_packet@1` converts a semantic broker
+  `route_to_role` preflight into an explicit handoff packet.
+- `direct_role_handoff_preview@1` exposes the renderer-safe role, target
+  WorkThread, output artifact family, blockers, and accept/reject posture.
+- Packets cite WorkThread, operator broker resolution, WorkTargetResolution,
+  semantic preflight, selected AgentClassSpec, context/request refs, authority
+  transitions, and evidence refs.
+- Non-route or stale/missing inputs produce blocked packets rather than
+  fallback execution.
+- Authority flags remain closed: no provider call, worker spawn, object-level
+  audit, workspace mutation, routing enforcement, or accept/reject transition is
+  enabled in this PR.
+- Regression coverage verifies valid route-to-role handoff projection,
+  non-route blocking, raw-exposure flags, and authority-leak rejection.
 
 Non-goals:
 

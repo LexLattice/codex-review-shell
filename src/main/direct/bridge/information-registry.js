@@ -210,6 +210,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "Controlled routing may permit only the existing direct text turn start scope; workspace mutation, tool execution, autonomous routing, multi-agent orchestration, and object-level audit remain disabled.",
   },
   {
+    id: "ic6.direct-role-handoff-packet",
+    name: "Direct route-to-role handoff packet",
+    role: "governance_routing",
+    implementationState: "partial",
+    directPathPosture: "keep_shadow",
+    sourceFiles: ["src/main/direct/bridge/role-handoff-packet.js", "scripts/direct-role-handoff-packet-regression.mjs", "src/main/direct/governance/broker.js", "src/main/direct/bridge/agent-class-spec.js"],
+    ontology: ontologyShape(["direct_role_handoff_packet", "direct_role_handoff_preview", "semantic_broker_preflight", "agent_class_spec"], "harness", {
+      identityFields: ["projectId", "handoffPacketId", "preflightId", "workThreadId", "agentClassId"],
+      schema: "direct_role_handoff_packet@1",
+    }),
+    bridgeFit: "Turns semantic broker route-to-role recommendations into explicit, renderer-safe handoff packets that cite WorkThread, operator broker, preflight, AgentClassSpec, authority, context, and expected output evidence.",
+    realignment: "Packet accept/reject posture is display-only in this slice; provider calls, worker spawning, object-level audit, workspace mutation, and orchestration loops remain disabled until a later authority-bearing transition grants them.",
+  },
+  {
     id: "ic7.sub-agent-observability",
     name: "Sub-agent observability and containment",
     role: "observability_surface",
