@@ -496,8 +496,8 @@ const CASES = [
   { caseId: "read_loop_step2_no_decision", group: "multi_step_read", toolName: "read_file", stage: "no_decision", stepOrdinal: 2, expect: { recoveryState: "waiting_for_user", responseChainState: "valid" } },
   { caseId: "read_loop_step2_result_no_continuation", group: "multi_step_read", toolName: "read_file", stage: "result_no_context", stepOrdinal: 2, expect: { recoveryState: "result_recorded_no_context", responseChainState: "valid" } },
   { caseId: "read_loop_broken_response_chain", group: "multi_step_read", toolName: "read_file", stage: "manifest_not_sent", stepOrdinal: 2, brokenResponseChain: true, expect: { recoveryState: "corrupt", responseChainState: "parent_response_digest_mismatch" } },
-  { caseId: "patch_plan_no_decision", group: "patch", toolName: "apply_patch", stage: "no_decision", expect: { recoveryState: "waiting_for_user", patchJournalState: "planned_only" } },
-  { caseId: "patch_decision_no_apply", group: "patch", toolName: "apply_patch", stage: "decision_no_result", expect: { recoveryState: "decision_committed_no_result", sideEffectState: "patch_planned_only" } },
+  { caseId: "patch_plan_no_decision", group: "patch", toolName: "apply_patch", stage: "no_decision", expect: { recoveryState: "waiting_for_user", patchJournalState: "planned_only", replaySafetyPosture: "pre_side_effect_manual_resume_possible" } },
+  { caseId: "patch_decision_no_apply", group: "patch", toolName: "apply_patch", stage: "decision_no_result", expect: { recoveryState: "decision_committed_no_result", sideEffectState: "patch_planned_only", replaySafetyPosture: "pre_side_effect_manual_resume_possible" } },
   { caseId: "patch_apply_started_no_terminal", group: "patch", toolName: "apply_patch", stage: "decision_no_result", patchJournalStatus: "applying", expect: { recoveryState: "patch_partial_unknown", sideEffectState: "workspace_patch_partial_unknown", operationLifecycleStage: "execution_started", interruptedTurnClass: "side_effect_unknown" } },
   { caseId: "patch_apply_committed_no_result", group: "patch", toolName: "apply_patch", stage: "decision_no_result", patchJournalStatus: "applied", expect: { recoveryState: "patch_applied_no_result", sideEffectState: "workspace_patch_applied", operationLifecycleStage: "execution_completed", interruptedTurnClass: "needs_operator_review" } },
   { caseId: "patch_result_no_continuation", group: "patch", toolName: "apply_patch", stage: "result_no_context", expect: { recoveryState: "result_recorded_no_context", sideEffectState: "workspace_patch_applied" } },
@@ -523,7 +523,11 @@ const CASES = [
 function checkExpected(caseId, classification, expected = {}) {
   const mismatches = [];
   for (const [key, value] of Object.entries(expected)) {
+    if (key === "replaySafetyPosture") continue;
     if (classification[key] !== value) mismatches.push(`${key}: expected ${value}, got ${classification[key]}`);
+  }
+  if (expected.replaySafetyPosture && classification.replaySafety?.posture !== expected.replaySafetyPosture) {
+    mismatches.push(`replaySafety.posture: expected ${expected.replaySafetyPosture}, got ${classification.replaySafety?.posture}`);
   }
   if (classification.autoRetryAllowed !== false) mismatches.push("autoRetryAllowed must be false");
   if (classification.autoReexecuteAllowed !== false) mismatches.push("autoReexecuteAllowed must be false");

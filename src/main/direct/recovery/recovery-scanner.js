@@ -336,9 +336,13 @@ function interruptedTurnClassFor(classification = {}) {
   return "needs_operator_review";
 }
 
+function sideEffectIsBeforeExecution(sideEffectState) {
+  return sideEffectState === "none" || sideEffectState === "patch_planned_only";
+}
+
 function replaySafetyFor(classification = {}) {
   const sideEffectState = normalizeString(classification.sideEffectState, "");
-  const interruptedTurnClass = interruptedTurnClassFor(classification);
+  const interruptedTurnClass = normalizeString(classification.interruptedTurnClass, "") || interruptedTurnClassFor(classification);
   const providerHandoffState = normalizeString(classification.providerHandoffState, "");
   const recoveryState = normalizeString(classification.recoveryState, "");
   const blockers = [];
@@ -346,7 +350,7 @@ function replaySafetyFor(classification = {}) {
   if (interruptedTurnClass === "healthy") posture = "terminal_no_replay_needed";
   else if (interruptedTurnClass === "corrupt") posture = "corrupt_replay_forbidden";
   else if (providerHandoffState === "sent_no_bytes") posture = "provider_handoff_unknown_replay_forbidden";
-  else if (sideEffectState === "none" && ["waiting_for_user", "collecting_tool_call", "decision_committed_no_result"].includes(recoveryState)) {
+  else if (sideEffectIsBeforeExecution(sideEffectState) && ["waiting_for_user", "collecting_tool_call", "decision_committed_no_result"].includes(recoveryState)) {
     posture = "pre_side_effect_manual_resume_possible";
   }
   if (posture === "corrupt_replay_forbidden") blockers.push("corrupt_recovery_artifacts");
@@ -365,8 +369,8 @@ function replaySafetyFor(classification = {}) {
 }
 
 function projectDirectRecoveryStatus(classification = {}) {
-  const operationLifecycleStage = normalizeString(classification.operationLifecycleStage, operationLifecycleStageFor(classification));
-  const interruptedTurnClass = normalizeString(classification.interruptedTurnClass, interruptedTurnClassFor(classification));
+  const operationLifecycleStage = normalizeString(classification.operationLifecycleStage, "") || operationLifecycleStageFor(classification);
+  const interruptedTurnClass = normalizeString(classification.interruptedTurnClass, "") || interruptedTurnClassFor(classification);
   const replaySafety = isPlainObject(classification.replaySafety) ? classification.replaySafety : replaySafetyFor({ ...classification, interruptedTurnClass });
   return {
     schema: "direct_recovery_status_projection@1",
