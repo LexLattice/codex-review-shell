@@ -188,6 +188,30 @@ assert.equal(workbench.transitions.automaticRefreshAllowed, false);
 assert.equal(workbench.authority.providerTransportAllowed, false);
 assertDirectMemoryReviewWorkbenchSafe(workbench);
 
+const zeroOverrideWorkbench = buildDirectMemoryReviewWorkbench({
+  memoryReviewPacket: {
+    ...reviewPacket,
+    staleEntryCount: 4,
+    conflictEntryCount: 3,
+    omissionItemCount: 2,
+  },
+  contextLossWitness: {
+    ...contextLossWitness,
+    totals: {
+      ...contextLossWitness.totals,
+      omittedItemCount: 8,
+      omittedTokenEstimate: 900,
+    },
+  },
+});
+const zeroReviewRow = zeroOverrideWorkbench.rows.find((row) => row.rowKind === "review_packet");
+const zeroContextLossRow = zeroOverrideWorkbench.rows.find((row) => row.rowKind === "context_loss_link");
+assert.equal(zeroReviewRow.staleCount, 4);
+assert.equal(zeroReviewRow.conflictCount, 3);
+assert.equal(zeroReviewRow.omittedItemCount, 2);
+assert.equal(zeroContextLossRow.omittedItemCount, 8);
+assert.equal(zeroContextLossRow.omittedTokenEstimate, 900);
+
 const unsafeWorkbench = buildDirectMemoryReviewWorkbench({
   memoryReviewPacket: {
     ...reviewPacket,
@@ -201,6 +225,18 @@ assertDirectMemoryReviewWorkbenchSafe(unsafeWorkbench);
 const deterministicWorkbenchA = buildDirectMemoryReviewWorkbench({ nowMs: 0, memoryReviewPacket: reviewPacket });
 const deterministicWorkbenchB = buildDirectMemoryReviewWorkbench({ nowMs: 0, memoryReviewPacket: reviewPacket });
 assert.equal(deterministicWorkbenchA.workbenchDigest, deterministicWorkbenchB.workbenchDigest);
+
+const standaloneExecutionWorkbench = buildDirectMemoryReviewWorkbench({
+  executionPacket,
+  contextLossWitness,
+  omissionLedger,
+});
+assert.equal(standaloneExecutionWorkbench.projectId, projectId, "execution-only workbench should inherit project scope");
+assert.equal(standaloneExecutionWorkbench.threadId, threadId, "execution-only workbench should inherit thread scope");
+assert.equal(standaloneExecutionWorkbench.workThreadId, workThreadId, "execution-only workbench should inherit work-thread scope");
+assert(standaloneExecutionWorkbench.rows.some((row) => row.rowKind === "execution_transition"));
+assert(standaloneExecutionWorkbench.rows.some((row) => row.rowKind === "context_loss_link"));
+assert(standaloneExecutionWorkbench.rows.some((row) => row.rowKind === "omission_impact"));
 
 const settingsProjection = buildDirectSettingsSurfaceProjection({
   projectId,

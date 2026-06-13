@@ -101,10 +101,10 @@ function row(kind, state, artifact, options = {}) {
     artifactDigest: boundedString(rowSource.digest, 96),
     label: boundedString(options.label || source.label || source.rendererSafeLabel || safeKind, 160),
     summary: boundedString(rowSource.summary, 360),
-    staleCount: Number(options.staleCount || source.staleEntryCount || 0),
-    conflictCount: Number(options.conflictCount || source.conflictEntryCount || 0),
-    omittedItemCount: Number(options.omittedItemCount || source.omissionItemCount || source.totals?.omittedItemCount || 0),
-    omittedTokenEstimate: Number(options.omittedTokenEstimate || source.totals?.omittedTokenEstimate || 0),
+    staleCount: Number(options.staleCount ?? source.staleEntryCount ?? 0),
+    conflictCount: Number(options.conflictCount ?? source.conflictEntryCount ?? 0),
+    omittedItemCount: Number(options.omittedItemCount ?? source.omissionItemCount ?? source.totals?.omittedItemCount ?? 0),
+    omittedTokenEstimate: Number(options.omittedTokenEstimate ?? source.totals?.omittedTokenEstimate ?? 0),
     rollbackPosture: boundedString(options.rollbackPosture || source.rollbackPosture || "", 120),
     retentionLaw: boundedString(options.retentionLaw || source.retentionLaw || "", 160),
     omissionRisk: boundedString(options.omissionRisk || source.omissionRisk || "", 160),
@@ -200,6 +200,42 @@ function buildDirectMemoryReviewWorkbench(input = {}) {
   const acceptedRefresh = memoryRefreshProposal.proposalState === "accepted";
   const rejectedRefresh = memoryRefreshProposal.proposalState === "rejected";
   const localMaterialized = executionResult.resultState === "executed" && executionResult.memoryPointerUpdated === true;
+  const scopedProjectId = normalizeString(
+    source.projectId ||
+      memoryReviewPacket.projectId ||
+      memoryRefreshProposal.projectId ||
+      memoryResetPolicy.projectId ||
+      memoryResetConfirmation.projectId ||
+      executionResult.projectId ||
+      executionPacket.projectId ||
+      contextLossWitness.projectId ||
+      omissionLedger.projectId,
+    "",
+  );
+  const scopedThreadId = normalizeString(
+    source.threadId ||
+      memoryReviewPacket.threadId ||
+      memoryRefreshProposal.threadId ||
+      memoryResetPolicy.threadId ||
+      memoryResetConfirmation.threadId ||
+      executionResult.threadId ||
+      executionPacket.threadId ||
+      contextLossWitness.threadId ||
+      omissionLedger.threadId,
+    "",
+  );
+  const scopedWorkThreadId = normalizeString(
+    source.workThreadId ||
+      memoryReviewPacket.workThreadId ||
+      memoryRefreshProposal.workThreadId ||
+      memoryResetPolicy.workThreadId ||
+      memoryResetConfirmation.workThreadId ||
+      executionResult.workThreadId ||
+      executionPacket.workThreadId ||
+      contextLossWitness.workThreadId ||
+      omissionLedger.workThreadId,
+    "",
+  );
   const sourceDigest = digestFor("direct-memory-review-workbench-source@1", {
     memoryReviewDigest: artifactDigestFor(memoryReviewPacket),
     memoryRefreshDigest: artifactDigestFor(memoryRefreshProposal),
@@ -214,9 +250,9 @@ function buildDirectMemoryReviewWorkbench(input = {}) {
   const workbench = {
     schema: DIRECT_MEMORY_REVIEW_WORKBENCH_SCHEMA,
     workbenchId: normalizeString(source.workbenchId, `direct_memory_review_workbench_${sourceDigest.slice(0, 24)}`),
-    projectId: normalizeString(source.projectId, memoryReviewPacket.projectId || memoryRefreshProposal.projectId || executionResult.projectId || ""),
-    threadId: normalizeString(source.threadId, memoryReviewPacket.threadId || memoryRefreshProposal.threadId || executionResult.threadId || ""),
-    workThreadId: normalizeString(source.workThreadId, memoryReviewPacket.workThreadId || memoryRefreshProposal.workThreadId || executionResult.workThreadId || ""),
+    projectId: scopedProjectId,
+    threadId: scopedThreadId,
+    workThreadId: scopedWorkThreadId,
     generatedAt: normalizeString(source.generatedAt, typeof source.nowMs === "number" ? new Date(source.nowMs).toISOString() : new Date().toISOString()),
     workbenchState: rawExposureUnsafeCount ? "blocked_raw_exposure" : rows.length ? "ready" : "empty",
     rows,
