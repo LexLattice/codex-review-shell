@@ -90,26 +90,57 @@ right ChatGPT pane != direct Codex memory
 
 ## 3. Current Descent Summary
 
-| Capability | Direct status | Evidence / note |
-|---|---:|---|
-| App-server baseline turn | `B-R` | `direct_real_usage_post_merge_20260512` |
-| Direct live probe evidence | `B-R` | `runtime_probed`, no unknown raw event types in latest report |
-| Strict direct text-only first turn | `B-R` | Fresh request, empty-context policy |
-| Strict direct recent-dialogue follow-up | `B-R` | Local quoted context, no provider continuity |
-| Opt-in guard | `B-R` | Provider request did not start without opt-in |
-| Text idempotency | `B-R` | Existing report returned without rewrite |
-| Raw-exposure scan | `B-R/B-F` | Text reports proved; tool paths still need expansion |
-| Read-file implementation loop | `B-F/S` | Authority module/spec exists; real provider loop pending |
-| Multi-step read-file loop | `B-F/S` | Designed; real provider loop pending |
-| Patch apply loop | `B-F/S` | Authority module/spec exists; real provider write proof pending |
-| Command execution loop | `B-F/S` | Authority module/spec exists; real provider command proof pending |
-| Workspace-effect scan | `S/B-P` | Needed before command path is trusted |
-| Recovery after side effects | `S/B-P` | Major next layer after real loops |
-| Context maintenance / memory / baton | `S` direct, `FORK-B/FORK-S` exemplars | Track explicitly before long-context direct sessions |
-| Governance / semantic broker | `S` direct, `FORK-B/FORK-S` exemplars | Diagnostic/status first |
-| Sub-agent observability | `S` direct, `FORK-B/FORK-S` exemplars | Display first, choreography later |
+Status snapshot after Wave 3, 2026-06-13:
 
-Immediate next implementation priority:
+```text
+direct information bridge audit: valid
+registry rows: 26
+implemented rows: 9
+partial rows: 15
+inherited rows: 2
+missing source files: 0
+```
+
+This section is a planning projection over the direct implementation registry.
+It does not grant runtime authority by itself.
+
+| Capability family | Direct status | Evidence / note |
+|---|---:|---|
+| App-server baseline turn | `B-R` | Vanilla path retained as inherited runtime where it aligns with bridge law. |
+| Direct text-only first turn | `B-R` | Fresh request, empty-context policy, opt-in guard, and idempotency remain proved. |
+| Direct recent-dialogue follow-up | `B-R` | Local quoted context via context pack; no hidden provider continuity. |
+| Direct session/thread/turn evidence | `B-F/B-R` | Direct session store, thread operation ledger, direct thread deck, and new-thread UX exist; real-provider text path is green. |
+| Renderer/thread workbench projections | `B-F` | Transcript, deck, lifecycle, graph, preview, and workbench projections are implemented as derived projections. |
+| Context pack and request manifest | `B-F/B-R` | Context/request/provider-input artifacts exist and are used by direct text; tool/worker/maintenance paths remain scoped. |
+| Read/patch/command authority substrate | `B-F/S` | Authority modules and transition envelopes exist; live implementation-lane proof remains pending. |
+| Workspace mutation truth | `B-F/S` | Patch/command planning and workspace effect summaries exist; broader live side-effect recovery and revert remain pending. |
+| Recovery and replay safety | `B-F/B-P` | Recovery scanner and repair-loop substrate exist; side-effect crash/replay proof remains a later bundle. |
+| WorkThread identity and target resolution | `B-F` | WorkThread registry, target report, operator broker, stale guards, and non-target preservation constraints exist. |
+| Direct settings / bridge status | `B-F` | Renderer-safe settings/control status surface exists for runtime, registry, WorkThread, broker, modules, and continuity. |
+| AgentClassSpec registry | `B-F` | Main/worker/auditor/fix/closeout/orchestrator/broker/memory/governance/sub-agent role contracts exist. |
+| Worker graph and sub-agent observability | `B-P/B-F` | Worker graph alignment, progress/attention/containment projections exist; mature choreography and inspect/wait tools remain pending. |
+| Direct usage ledger by agent/worker | `B-F` | Direct agent/work-thread/route usage summary projection exists; cost remains separate and price-snapshot-bound. |
+| Direct attachment submit semantics | `B-F` | Direct attachment capability projection and reference-only submit packet semantics exist; provider binary/image payload support is not claimed. |
+| Skills/hooks/apps bridge modules | `B-P/B-F` | Module classification, context contribution, evidence import, hook proposal, and execution gate artifacts exist; no execution runner exists. |
+| Context maintenance / memory / baton | `B-P/B-F` | Omission/loss witnesses, memory review/refresh/reset proposals, compaction plan/gate, and continuity transitions exist; no provider compaction or memory mutation authority. |
+| Governance / semantic broker | `B-P/B-F` | Governance packet, semantic broker preflight, controlled routing slice, route-to-role handoff, and operator broker exist; enforcement is still narrow/shadow. |
+| Explicit direct worker start | `B-P/B-F` | Operator-accepted role handoff can start one bounded direct worker turn; recursive spawning and workflow closure remain disabled. |
+| Meta-orchestrator / auditor loop shadow | `B-P/B-F` | Plan pointer, step events, implementation evidence, audit artifact, and transition gate schemas exist; no autonomous scheduler or super-auditor behavior. |
+
+Main remaining coverage gaps from the matrix:
+
+| Gap | Rows | Why it remains open |
+|---|---|---|
+| Real-provider implementation-lane proof | `I7`, `E3-E15`, `B4-B6`, `F4-F7`, `J3-J7` | Read/patch/command authority exists, but we still need scoped live-provider loops and disposable workspace proof. |
+| Side-effect recovery/replay | `A11`, `C1-C3`, `C11-C12`, `E15`, `I9` | Recovery substrate exists, but crash/restart between tool, patch, command, and continuation states still needs proof. |
+| Iterative repair loop promotion | `E4`, `E14`, `E15`, `F4`, `D18` | Repair-loop substrate exists, but multi-step live read -> patch -> command -> continue cycles are not promoted. |
+| Workspace change authority maturity | `E6-E8`, `E11`, `J4-J7` | Journals/effect summaries exist; generated/vendor/lockfile policy, network-risk truth, and optional revert are not complete. |
+| Actual context maintenance execution | `D1-D14`, `D22-D23`, `A12`, `J11` | Planning/gate/status artifacts exist; compact execution, memory materialization, baton reinjection, and automatic trimming remain gated. |
+| Governance enforcement and semantic fallback | `D15-D21`, `J10` | Shadow/preflight/routing artifacts exist; enforce mode, clarification UX, and fallback branch law remain future work. |
+| Mature multi-agent choreography | `H1-H10`, `J9` | Worker start and graph alignment exist; recursive delegation, inspect/wait tools, deadlock prevention, and transcript promotion law remain future work. |
+| Mainline readiness and broad UI proof | `F1-F10`, `I1-I15`, `J1-J12` | Status surfaces and regressions exist; full Electron/UI proof and merge-behind-flag checklist remain later work. |
+
+The next confidence gap remains:
 
 ```text
 Real-provider implementation-lane harness for read/patch/command,

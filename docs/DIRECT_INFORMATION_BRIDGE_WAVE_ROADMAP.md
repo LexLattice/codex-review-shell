@@ -602,7 +602,7 @@ Still intentionally not authority:
 
 ## Wave 3: Direct-Native Product Surface And Brokered Workflows
 
-Status: in progress.
+Status: merged.
 
 Goal:
 
@@ -723,7 +723,7 @@ slice exist.
 
 ### PR 17: Direct Usage Ledger By Agent And Worker
 
-Status: implemented in branch.
+Status: merged.
 
 Branch:
 
@@ -778,7 +778,7 @@ is already main-process-owned.
 
 ### PR 18: Direct Attachment Capability And Submit Semantics
 
-Status: implemented in branch.
+Status: merged.
 
 Branch:
 
@@ -833,7 +833,7 @@ projection is available.
 
 ### PR 19: Route-To-Role Handoff Packet
 
-Status: implemented in `codex/direct-role-handoff-packet`.
+Status: merged.
 
 Purpose:
 
@@ -882,7 +882,7 @@ Operator broker and controlled routing slice exist.
 
 ### PR 20: Explicit Worker Start V0
 
-Status: implemented in `codex/direct-worker-start-v0`.
+Status: merged.
 
 Purpose:
 
@@ -933,7 +933,7 @@ the worker session.
 
 ### PR 21: Meta-Orchestrator / Auditor Loop Spec-To-Shadow
 
-Status: implemented in `codex/direct-meta-orchestrator-shadow`.
+Status: merged.
 
 Purpose:
 
