@@ -1678,7 +1678,7 @@ thread is unresolved or authority evidence is missing.
 
 ### PR 32: Sub-Agent Inspect/Wait Containment V0
 
-Status: planned.
+Status: implemented in PR 32.
 
 Purpose:
 
@@ -1696,6 +1696,20 @@ Scope:
 - Add deadlock/stale-worker diagnostics and attention badges.
 - Add fixtures for one worker, multiple workers, stale worker, failed worker,
   and unknown child identity.
+
+Implemented slice:
+
+- `direct_sub_agent_inspect_packet@1` for read-only direct worker/sub-agent
+  inspection.
+- `direct_sub_agent_wait_status_packet@1` for read-only wait status without
+  invoking provider wait tools.
+- `direct_sub_agent_contained_tab_projection@1` for a contained right-pane style
+  sub-agent tab projection with attention badges.
+- Stale, failed, deadlock-risk, unknown-identity, model, and reasoning-effort
+  witnesses.
+- Regression coverage in `direct:sub-agent-inspect-wait`.
+- Recursive spawn, send input, resume, close, autonomous scheduling, provider
+  transport, workspace mutation, and child-output promotion remain disabled.
 
 Promotion criterion:
 
