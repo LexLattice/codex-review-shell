@@ -1637,7 +1637,7 @@ diagnostics.
 
 ### PR 31: Governance Enforcement And Clarification V0
 
-Status: planned.
+Status: implemented in PR 31.
 
 Purpose:
 
@@ -1656,6 +1656,18 @@ Scope:
 - Keep enforcement narrow; do not make the broker an object-level auditor.
 - Add fixtures for clear target, ambiguous target, wrong-branch target,
   missing authority boundary, and non-target preservation.
+
+Implemented slice:
+
+- `direct_governance_enforcement_preflight@1` as a fail-closed precondition
+  artifact for provider calls, tool transitions, and workspace mutations.
+- `direct_governance_clarification_packet@1` for unresolved or ambiguous work
+  target routing instead of silently collapsing to chat recency.
+- Branch mismatch, missing authority boundary, operator-broker mismatch,
+  unresolved target, low-confidence target, and stale/ambiguous route blockers.
+- Regression coverage in `direct:governance-enforcement`.
+- The broker still does not perform object-level audit, worker tasks, broad
+  execution authority, autonomous routing, or hidden mutation.
 
 Promotion criterion:
 
