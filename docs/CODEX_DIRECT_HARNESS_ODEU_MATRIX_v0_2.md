@@ -115,7 +115,7 @@ It does not grant runtime authority by itself.
 | Read-only implementation-lane tool loop | `B-F` | Authority module, result evidence, continuation request, context-pack/request-manifest path, sequential read-loop fixture proof, and no-mutation proof exist; opt-in live proof remains available but not promoted here. |
 | Patch implementation-lane tool loop | `B-F` | Patch authority module, dry-run plan, approval, backend apply, workspace-effect evidence, patch journal inspection, continuation request, context-pack/request-manifest path, create/edit fixture proof, blocked outside-workspace proof, failed-patch proof, and no-command sentinel exist; live-provider promotion remains pending. |
 | Command implementation-lane tool loop | `B-F` | Command authority module, package-script evidence read, plan, approval, shell-false backend execution, stdout/stderr capture, exit/timeout status, workspace-effect scan, continuation request, context-pack/request-manifest path, blocked-command proof, and unsafe-cwd proof exist; live-provider promotion remains pending. |
-| Workspace mutation truth | `B-F/S` | Patch planning/application and command-observed workspace effect summaries have fixture proof; broader live side-effect recovery and revert remain pending. |
+| Workspace mutation truth | `B-F/S` | Patch planning/application, command-observed effects, explicit mutation policy rows, class-separated effect projection, dirty/untracked classification, and disabled revert preview have fixture proof; live promotion and revert execution remain pending. |
 | Recovery and replay safety | `B-F/B-P` | Recovery scanner classifies lifecycle stage, interrupted-turn class, renderer-safe status, and replay safety with fixture proof; manual resume/replay authority remains disabled. |
 | WorkThread identity and target resolution | `B-F` | WorkThread registry, target report, operator broker, stale guards, and non-target preservation constraints exist. |
 | Direct settings / bridge status | `B-F` | Renderer-safe settings/control status surface exists for runtime, registry, WorkThread, broker, modules, and continuity. |
@@ -136,7 +136,7 @@ Main remaining coverage gaps from the matrix:
 | Real-provider implementation-lane proof | `I7`, `E3-E15`, `B4-B6`, `F4-F7`, `J3-J7` | Read-only, patch, and command loops now have fixture/local disposable-workspace proof; live-provider promotion remains pending. |
 | Side-effect recovery/replay | `A11`, `C1-C3`, `C11-C12`, `E15`, `I9` | Fixture proof covers interrupted read/patch/command/continuation states and corrupt ledgers; live crash harness and manual resume remain pending. |
 | Iterative repair loop promotion | `E4`, `E14`, `E15`, `F4`, `D18` | Fixture/local read -> patch -> failing command -> repair patch -> passing command proof exists; live-provider promotion remains pending. |
-| Workspace change authority maturity | `E6-E8`, `E11`, `J4-J7` | Patch journals/effect summaries and command-observed effects are fixture-proved; generated/vendor/lockfile policy, network-risk truth, and optional revert are not complete. |
+| Workspace change authority maturity | `E6-E8`, `E11`, `J4-J7` | Generated/vendor/lockfile/binary/large/symlink/ignored/external-worktree policy rows, dirty/untracked separation, classed effect summaries, and disabled revert preview are fixture-proved; live VCS policy breadth, network-risk truth, and revert execution remain future work. |
 | Actual context maintenance execution | `D1-D14`, `D22-D23`, `A12`, `J11` | Planning/gate/status artifacts exist; compact execution, memory materialization, baton reinjection, and automatic trimming remain gated. |
 | Governance enforcement and semantic fallback | `D15-D21`, `J10` | Shadow/preflight/routing artifacts exist; enforce mode, clarification UX, and fallback branch law remain future work. |
 | Mature multi-agent choreography | `H1-H10`, `J9` | Worker start and graph alignment exist; recursive delegation, inspect/wait tools, deadlock prevention, and transcript promotion law remain future work. |
@@ -461,6 +461,15 @@ patch journal inspection
 generated/vendor/lockfile policy
 workspace changed but model did not see contents
 optional revert spec
+```
+
+Status:
+
+```text
+Fixture/local proof exists for explicit workspace mutation policy rows,
+class-separated effect summaries, dirty/untracked evidence, symlink/external
+boundary blocking, and display-only revert preview. Revert execution remains
+disabled.
 ```
 
 ### Stage 5 - Context maintenance, memory, baton

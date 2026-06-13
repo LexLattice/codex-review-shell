@@ -5,8 +5,11 @@ const crypto = require("node:crypto");
 const DIRECT_WORKSPACE_EFFECT_SUMMARY_SCHEMA = "direct_workspace_effect_summary@1";
 const DIRECT_WORKSPACE_POLICY_EVALUATION_SCHEMA = "direct_workspace_policy_evaluation@1";
 const DIRECT_WORKSPACE_MUTATION_POLICY_SNAPSHOT_SCHEMA = "direct_workspace_mutation_policy_snapshot@1";
+const DIRECT_WORKSPACE_MUTATION_POLICY_ROW_SCHEMA = "direct_workspace_mutation_policy_row@1";
 const DIRECT_PATCH_JOURNAL_INSPECTION_SCHEMA = "direct_patch_journal_inspection@1";
 const DIRECT_WORKSPACE_EFFECT_PROVIDER_ENVELOPE_SCHEMA = "direct_workspace_effect_provider_envelope@1";
+const DIRECT_WORKSPACE_EFFECT_CLASS_PROJECTION_SCHEMA = "direct_workspace_effect_class_projection@1";
+const DIRECT_WORKSPACE_REVERT_PLAN_PREVIEW_SCHEMA = "direct_workspace_revert_plan_preview@1";
 const DIRECT_WORKSPACE_MUTATION_REPORT_SCHEMA = "direct_workspace_mutation_regression_report@1";
 const DIRECT_WORKSPACE_MUTATION_POLICY_VERSION = "direct-workspace-mutation-policy@1";
 const DIRECT_WORKSPACE_EFFECT_SCANNER_VERSION = "direct-workspace-effect-scanner@1";
@@ -22,6 +25,7 @@ const DEFAULT_DIRECT_WORKSPACE_MUTATION_CAPS = Object.freeze({
   maxPolicyWarningPaths: 25,
   maxProviderEffectSummaryChars: 16 * 1024,
   maxRendererEffectSummaryChars: 24 * 1024,
+  maxSingleFileBytes: 8 * 1024 * 1024,
 });
 
 const POLICY_DECISION_RANK = Object.freeze({
@@ -160,6 +164,82 @@ function classifyWorkspacePath(relPath) {
   return { pathClass: "source", decision: "allow", reasonCode: "source_path" };
 }
 
+function workspaceMutationPolicyRows(input = {}) {
+  const caps = { ...DEFAULT_DIRECT_WORKSPACE_MUTATION_CAPS, ...(isPlainObject(input.caps) ? input.caps : {}) };
+  const maxSingleFileBytes = caps.maxSingleFileBytes ?? DEFAULT_DIRECT_WORKSPACE_MUTATION_CAPS.maxSingleFileBytes;
+  const rows = [
+    ["generated", "block", "generated_path", "Generated files require explicit operator policy before mutation."],
+    ["vendor", "block", "vendor_path", "Vendor paths require explicit operator policy before mutation."],
+    ["lockfile", "block", "lockfile_path", "Lockfile mutation is blocked in direct v0 unless a later policy grants it."],
+    ["binary_file", "block", "binary_file_path", "Binary file mutation is blocked in direct v0."],
+    ["large_file", "extra_confirmation_required", "large_file_path", `Large file mutation requires explicit confirmation above ${maxSingleFileBytes} bytes.`],
+    ["symlink", "block", "symlink_path", "Symlink mutation is blocked unless canonical containment is proven by a later policy."],
+    ["ignored_path", "degrade_to_read_only", "ignored_path", "Ignored paths are not treated as normal source mutation truth."],
+    ["external_worktree", "block", "external_worktree", "External worktree mutation is outside this workspace authority boundary."],
+  ];
+  return rows.map(([pathClass, decision, reasonCode, summary]) => ({
+    schema: DIRECT_WORKSPACE_MUTATION_POLICY_ROW_SCHEMA,
+    pathClass,
+    decision,
+    reasonCode,
+    summary,
+    source: "direct_workspace_mutation_policy_v0",
+    mutatesProjectSourceTruth: false,
+  }));
+}
+
+function looksBinaryPath(relPath) {
+  const lower = safeRelPath(relPath).toLowerCase();
+  return /\.(png|jpe?g|gif|webp|ico|pdf|zip|gz|tgz|xz|7z|rar|exe|dll|so|dylib|wasm|bin|dat|sqlite|db|mp4|mov|webm|mp3|wav|ogg)$/i.test(lower);
+}
+
+function stricterPathClassification(base, overlay) {
+  if (!overlay) return base;
+  const baseDecision = normalizeString(base?.decision, "allow");
+  const overlayDecision = normalizeString(overlay.decision, "allow");
+  if ((POLICY_DECISION_RANK[overlayDecision] ?? 0) >= (POLICY_DECISION_RANK[baseDecision] ?? 0)) return overlay;
+  return base;
+}
+
+function classifyWorkspaceChange(change = {}, caps = DEFAULT_DIRECT_WORKSPACE_MUTATION_CAPS) {
+  const relPath = safeRelPath(change.relPath || change.path || change.displayPath);
+  let classification = classifyWorkspacePath(relPath);
+  const gitStatus = normalizeGitStatus(change.gitStatus || change.status || change.porcelainStatus);
+  if (change.workspaceBoundary === "external_worktree" || change.externalWorktree === true) {
+    classification = stricterPathClassification(classification, { pathClass: "external_worktree", decision: "block", reasonCode: "external_worktree" });
+  }
+  if (change.symlinkEscape === true) {
+    classification = stricterPathClassification(classification, { pathClass: "outside_workspace", decision: "block", reasonCode: "symlink_escape_blocked" });
+  } else if (change.isSymlink === true || change.fileType === "symlink") {
+    classification = stricterPathClassification(classification, { pathClass: "symlink", decision: "block", reasonCode: "symlink_path" });
+  }
+  if (change.ignored === true || gitStatus === "ignored") {
+    classification = stricterPathClassification(classification, { pathClass: "ignored_path", decision: "degrade_to_read_only", reasonCode: "ignored_path" });
+  }
+  if (change.isBinary === true || change.fileType === "binary" || looksBinaryPath(relPath)) {
+    classification = stricterPathClassification(classification, { pathClass: "binary_file", decision: "block", reasonCode: "binary_file_path" });
+  }
+  const sizeBytes = Number(change.sizeBytes ?? change.afterSizeBytes ?? 0);
+  if (Number.isFinite(sizeBytes) && sizeBytes > Number(caps.maxSingleFileBytes ?? DEFAULT_DIRECT_WORKSPACE_MUTATION_CAPS.maxSingleFileBytes)) {
+    classification = stricterPathClassification(classification, { pathClass: "large_file", decision: "extra_confirmation_required", reasonCode: "large_file_path" });
+  }
+  return classification;
+}
+
+function normalizeGitStatus(value) {
+  const status = normalizeString(value, "").toLowerCase();
+  if (!status) return "";
+  if (status === "??" || status.includes("?") || status === "untracked") return "untracked";
+  if (status === "!!" || status.includes("!") || status === "ignored") return "ignored";
+  if (status === "added") return "added";
+  if (status === "deleted") return "deleted";
+  if (status === "modified") return "modified";
+  if (status.includes("a")) return "added";
+  if (status.includes("d")) return "deleted";
+  if (status.includes("m")) return "modified";
+  return status;
+}
+
 function strictestDecision(decisions = []) {
   let strictest = "allow";
   for (const decision of decisions) {
@@ -170,6 +250,7 @@ function strictestDecision(decisions = []) {
 }
 
 function buildPolicySnapshot(input = {}) {
+  const policyRows = workspaceMutationPolicyRows(input);
   const snapshot = {
     schema: DIRECT_WORKSPACE_MUTATION_POLICY_SNAPSHOT_SCHEMA,
     policyDigest: normalizeString(input.policyDigest, "") || digestValue({
@@ -182,6 +263,8 @@ function buildPolicySnapshot(input = {}) {
     capPolicyDigest: normalizeString(input.capPolicyDigest, "workspace_mutation_caps_default@1"),
     networkRiskPolicyDigest: normalizeString(input.networkRiskPolicyDigest, "network_helpers_blocked_not_sandboxed@1"),
     backendCapabilityDigest: normalizeString(input.backendCapabilityDigest, "backend_capabilities_unknown@1"),
+    policyRows,
+    policyRowDigest: digestValue(policyRows),
     pathClassifierVersion: DIRECT_WORKSPACE_PATH_CLASSIFIER_VERSION,
     effectScannerVersion: DIRECT_WORKSPACE_EFFECT_SCANNER_VERSION,
   };
@@ -220,16 +303,18 @@ function scanCapabilitiesForScope(scanScope, input = {}) {
   };
 }
 
-function normalizeRawChange(change = {}, fallbackExpectation = "unknown") {
+function normalizeRawChange(change = {}, fallbackExpectation = "unknown", caps = DEFAULT_DIRECT_WORKSPACE_MUTATION_CAPS) {
   const relPath = safeRelPath(change.relPath || change.path || change.displayPath);
-  const classification = classifyWorkspacePath(relPath);
+  const classification = classifyWorkspaceChange({ ...change, relPath }, caps);
   const changeKind = normalizeString(change.changeKind || change.operation, "modified");
+  const gitStatus = normalizeGitStatus(change.gitStatus || change.status || change.porcelainStatus);
   const sourceExpectation = normalizeString(change.sourceExpectation, fallbackExpectation);
   const providerVisibility = normalizeString(change.providerVisibility, "summary_only");
+  const rawSizeBytes = change.sizeBytes ?? change.afterSizeBytes;
   return {
     relPath,
     canonicalEvidenceKey: normalizeString(change.canonicalEvidenceKey, "") || evidenceKeyForPath(relPath),
-    changeKind: ["created", "modified", "deleted", "renamed", "mode_changed", "unknown"].includes(changeKind) ? changeKind : "modified",
+    changeKind: ["created", "modified", "deleted", "renamed", "mode_changed", "untracked", "ignored", "unknown"].includes(changeKind) ? changeKind : "modified",
     sourceExpectation,
     beforeEvidenceKey: normalizeString(change.beforeEvidenceKey || change.beforeDigest, ""),
     afterEvidenceKey: normalizeString(change.afterEvidenceKey || change.afterDigest, ""),
@@ -237,8 +322,77 @@ function normalizeRawChange(change = {}, fallbackExpectation = "unknown") {
     policyDecision: classification.decision,
     policyReasonCode: classification.reasonCode,
     providerVisibility,
-    rendererPreviewAllowed: classification.decision !== "block",
+    rendererPreviewAllowed: classification.decision !== "block" && classification.decision !== "degrade_to_read_only",
     providerSummaryAllowed: classification.decision !== "block",
+    isSymlink: change.isSymlink === true || change.fileType === "symlink",
+    gitStatus: gitStatus || undefined,
+    isIgnored: change.ignored === true || gitStatus === "ignored",
+    isUntracked: change.isUntracked === true || gitStatus === "untracked" || changeKind === "untracked",
+    isBinary: change.isBinary === true || change.fileType === "binary" || looksBinaryPath(relPath),
+    sizeBytes: rawSizeBytes !== undefined ? Number(rawSizeBytes) : undefined,
+  };
+}
+
+function workspaceEffectClassProjectionFor(input = {}) {
+  const source = normalizeString(input.source, "");
+  const changes = Array.isArray(input.changes) ? input.changes : [];
+  const baselineDirtyState = isPlainObject(input.baselineDirtyState) ? input.baselineDirtyState : {};
+  const directPatchEffects = changes.filter((change) => source === "patch_apply" || change.sourceExpectation === "expected_patch_change");
+  const preExistingDirtyChanges = changes.filter((change) => change.sourceExpectation === "modified_preexisting_dirty");
+  const commandObservedEffects = changes.filter((change) =>
+    (source === "run_command" || change.sourceExpectation === "expected_command_change") &&
+    change.sourceExpectation !== "modified_preexisting_dirty"
+  );
+  const untrackedChanges = changes.filter((change) => change.isUntracked || change.changeKind === "untracked");
+  return {
+    schema: DIRECT_WORKSPACE_EFFECT_CLASS_PROJECTION_SCHEMA,
+    directPatchEffectCount: directPatchEffects.length,
+    commandObservedEffectCount: commandObservedEffects.length,
+    untrackedChangeCount: untrackedChanges.length,
+    preExistingDirtyPathCount: Number(baselineDirtyState.dirtyPathCount || 0),
+    preExistingDirtyTouchedCount: preExistingDirtyChanges.length,
+    blockedPathCount: changes.filter((change) => change.policyDecision === "block").length,
+    degradedPathCount: changes.filter((change) => ["allow_with_warning", "extra_confirmation_required", "degrade_to_read_only", "manual_recovery_required"].includes(change.policyDecision)).length,
+    categories: {
+      directPatch: directPatchEffects.map((change) => change.canonicalEvidenceKey),
+      commandObserved: commandObservedEffects.map((change) => change.canonicalEvidenceKey),
+      untracked: untrackedChanges.map((change) => change.canonicalEvidenceKey),
+      preExistingDirty: preExistingDirtyChanges.map((change) => change.canonicalEvidenceKey),
+    },
+    rawPathsIncluded: false,
+    rendererProjectionIsAuthority: false,
+  };
+}
+
+function buildRevertPlanPreview(input = {}) {
+  const source = normalizeString(input.source, "");
+  const changes = Array.isArray(input.changes) ? input.changes : [];
+  const blockers = [];
+  if (source !== "patch_apply") blockers.push("not_direct_patch_effect");
+  if (!changes.length) blockers.push("no_patch_effects");
+  if (Number(input.omittedChangeCount || 0) > 0) blockers.push("omitted_changes_unknown");
+  if (changes.some((change) => change.sourceExpectation === "unexpected_extra_change")) blockers.push("unexpected_changes_present");
+  if (changes.some((change) => change.policyDecision === "block")) blockers.push("blocked_path_present");
+  for (const change of changes) {
+    const kind = normalizeString(change.changeKind, "modified");
+    const beforeOk = kind === "created" || Boolean(change.beforeEvidenceKey);
+    const afterOk = kind === "deleted" || Boolean(change.afterEvidenceKey);
+    if (!beforeOk || !afterOk) blockers.push("before_after_evidence_incomplete");
+  }
+  const available = blockers.length === 0;
+  return {
+    schema: DIRECT_WORKSPACE_REVERT_PLAN_PREVIEW_SCHEMA,
+    available,
+    revertExecutionAllowed: false,
+    executionStatus: "disabled_pending_future_authority",
+    blockerCodes: [...new Set(blockers)],
+    operationCount: available ? changes.length : 0,
+    operationsPreview: available ? changes.map((change) => ({
+      canonicalEvidenceKey: change.canonicalEvidenceKey,
+      revertOperation: change.changeKind === "created" ? "delete_created_file" : (change.changeKind === "deleted" ? "restore_deleted_file" : "restore_previous_content"),
+      policyClass: change.policyClass,
+      rawPathIncluded: false,
+    })) : [],
   };
 }
 
@@ -312,8 +466,8 @@ function buildWorkspaceEffectSummary(input = {}) {
     input.expectationConfidence,
     preStateConfidence === "exact" ? "exact" : (source === "patch_apply" ? "derived_from_patch_plan" : "unknown_due_to_missing_prestate"),
   );
-  const changes = rawChanges.map((change) => normalizeRawChange(change, source === "patch_apply" ? "expected_patch_change" : "expected_command_change"));
   const caps = { ...DEFAULT_DIRECT_WORKSPACE_MUTATION_CAPS, ...(isPlainObject(input.caps) ? input.caps : {}) };
+  const changes = rawChanges.map((change) => normalizeRawChange(change, source === "patch_apply" ? "expected_patch_change" : "expected_command_change", caps));
   const reportedChangedPathCount = Math.max(positiveInteger(input.changedPathCount, changes.length), changes.length);
   const omittedChangeCount = Math.max(0, reportedChangedPathCount - changes.length);
   const changedPathsPreview = changes.filter((change) => change.providerSummaryAllowed).slice(0, caps.maxEffectPreviewPaths).map((change) => ({
@@ -342,6 +496,8 @@ function buildWorkspaceEffectSummary(input = {}) {
         dirtyPathsPreview: [],
         dirtyPathsTruncated: false,
       };
+  const effectClassProjection = workspaceEffectClassProjectionFor({ source, changes, baselineDirtyState });
+  const revertPlanPreview = buildRevertPlanPreview({ source, changes, omittedChangeCount, unexpectedChangeCount: changes.filter((change) => change.sourceExpectation === "unexpected_extra_change").length });
   return {
     schema: DIRECT_WORKSPACE_EFFECT_SUMMARY_SCHEMA,
     effectSummaryId,
@@ -384,12 +540,19 @@ function buildWorkspaceEffectSummary(input = {}) {
     changedPathsTruncated: input.changedPathsTruncated === true || reportedChangedPathCount > changedPathsPreview.length,
     expectedChangeCount: changes.filter((change) => change.sourceExpectation === "expected_patch_change" || change.sourceExpectation === "expected_command_change").length,
     unexpectedChangeCount: changes.filter((change) => change.sourceExpectation === "unexpected_extra_change").length,
+    effectClassProjection,
     blockedChangeCount: changes.filter((change) => change.policyDecision === "block").length,
     sensitiveChangeCount: changes.filter((change) => change.policyClass === "secret_like" || change.policyClass === "app_private" || change.policyClass === "vcs_internal").length,
     generatedOrVendorChangeCount: changes.filter((change) => ["generated", "vendor", "dependency_dir", "build_output", "coverage_output"].includes(change.policyClass)).length,
     lockfileChangeCount: changes.filter((change) => change.policyClass === "lockfile").length,
+    binaryChangeCount: changes.filter((change) => change.policyClass === "binary_file").length,
+    largeFileChangeCount: changes.filter((change) => change.policyClass === "large_file").length,
+    symlinkChangeCount: changes.filter((change) => change.policyClass === "symlink" || change.policyReasonCode === "symlink_escape_blocked").length,
+    ignoredPathChangeCount: changes.filter((change) => change.policyClass === "ignored_path").length,
+    externalWorktreeChangeCount: changes.filter((change) => change.policyClass === "external_worktree").length,
     providerVisibility,
     policyEvaluation,
+    revertPlanPreview,
     rendererSafeSummary: {
       changedPathCount: reportedChangedPathCount,
       knownChangedPathCount: changes.length,
@@ -398,6 +561,14 @@ function buildWorkspaceEffectSummary(input = {}) {
       changedPathsTruncated: input.changedPathsTruncated === true || reportedChangedPathCount > changedPathsPreview.length,
       providerVisibilityCompleteness: providerVisibility.providerVisibilityCompleteness,
       strictestPolicyDecision: policyEvaluation.strictestDecision,
+      effectClassCounts: {
+        directPatchEffectCount: effectClassProjection.directPatchEffectCount,
+        commandObservedEffectCount: effectClassProjection.commandObservedEffectCount,
+        untrackedChangeCount: effectClassProjection.untrackedChangeCount,
+        preExistingDirtyPathCount: effectClassProjection.preExistingDirtyPathCount,
+      },
+      revertPreviewAvailable: revertPlanPreview.available,
+      revertExecutionAllowed: false,
       rawPathsIncluded: false,
     },
     rawWorkspacePathExposed: false,
@@ -414,12 +585,23 @@ function buildWorkspaceEffectSummary(input = {}) {
 
 function changesFromCommandEffects(workspaceEffects = {}) {
   const preview = Array.isArray(workspaceEffects.changedPathsPreview) ? workspaceEffects.changedPathsPreview : [];
-  return preview.map((entry) => ({
-    relPath: entry.relPath || entry.path,
-    changeKind: entry.changeKind || "modified",
-    sourceExpectation: "expected_command_change",
-    providerVisibility: "summary_only",
-  }));
+  return preview.map((entry) => {
+    const gitStatus = normalizeGitStatus(entry.gitStatus || entry.status || entry.porcelainStatus);
+    return {
+      relPath: entry.relPath || entry.path,
+      changeKind: entry.changeKind || "modified",
+      gitStatus,
+      isUntracked: entry.isUntracked === true || gitStatus === "untracked",
+      ignored: entry.ignored === true || gitStatus === "ignored",
+      isSymlink: entry.isSymlink === true,
+      symlinkEscape: entry.symlinkEscape === true,
+      isBinary: entry.isBinary === true,
+      fileType: normalizeString(entry.fileType, ""),
+      sizeBytes: entry.sizeBytes ?? entry.afterSizeBytes,
+      sourceExpectation: "expected_command_change",
+      providerVisibility: "summary_only",
+    };
+  });
 }
 
 function buildCommandWorkspaceEffectSummary(input = {}) {
@@ -603,17 +785,22 @@ module.exports = {
   DEFAULT_DIRECT_WORKSPACE_MUTATION_CAPS,
   DIRECT_PATCH_JOURNAL_INSPECTION_SCHEMA,
   DIRECT_WORKSPACE_EFFECT_PROVIDER_ENVELOPE_SCHEMA,
+  DIRECT_WORKSPACE_EFFECT_CLASS_PROJECTION_SCHEMA,
   DIRECT_WORKSPACE_EFFECT_SCANNER_VERSION,
   DIRECT_WORKSPACE_EFFECT_SUMMARY_SCHEMA,
+  DIRECT_WORKSPACE_MUTATION_POLICY_ROW_SCHEMA,
   DIRECT_WORKSPACE_MUTATION_POLICY_SNAPSHOT_SCHEMA,
   DIRECT_WORKSPACE_MUTATION_POLICY_VERSION,
   DIRECT_WORKSPACE_MUTATION_REPORT_SCHEMA,
   DIRECT_WORKSPACE_PATH_CLASSIFIER_VERSION,
   DIRECT_WORKSPACE_POLICY_EVALUATION_SCHEMA,
+  DIRECT_WORKSPACE_REVERT_PLAN_PREVIEW_SCHEMA,
   buildCommandWorkspaceEffectSummary,
   buildPatchWorkspaceEffectSummary,
   buildPolicySnapshot,
+  buildRevertPlanPreview,
   buildWorkspaceEffectSummary,
+  classifyWorkspaceChange,
   classifyWorkspacePath,
   defaultCapabilities,
   inspectPatchJournal,
@@ -621,5 +808,7 @@ module.exports = {
   providerEnvelopeForEffectSummary,
   strictestDecision,
   validateWorkspaceMutationReport,
+  workspaceEffectClassProjectionFor,
   workspaceEffectRecoveryState,
+  workspaceMutationPolicyRows,
 };
