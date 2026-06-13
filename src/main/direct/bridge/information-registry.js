@@ -280,6 +280,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "Worker graph alignment now maps observed agent nodes to AgentClassSpec and WorkThread evidence while keeping routing/spawn/output-promotion authority disabled.",
   },
   {
+    id: "ic7.sub-agent-inspect-wait-containment",
+    name: "Sub-agent inspect/wait containment",
+    role: "observability_surface",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/agents/inspect-wait-containment.js", "scripts/direct-sub-agent-inspect-wait-containment-regression.mjs", "src/main/direct/agents/observability.js"],
+    ontology: ontologyShape(["direct_sub_agent_inspect_packet", "direct_sub_agent_wait_status_packet", "direct_sub_agent_contained_tab_projection"], "sub_agent", {
+      identityFields: ["projectId", "workThreadId", "primaryThreadId", "agentThreadId", "inspectPacketId"],
+      schema: "direct_sub_agent_inspect_packet@1",
+    }),
+    bridgeFit: "Projects direct worker/sub-agent inspect and wait status as read-only packets with stale, failed, deadlock-risk, unknown-identity, model, and reasoning-effort witnesses.",
+    realignment: "Inspection and wait status remain contained UI evidence only: no recursive spawn, send input, resume, close, scheduling, provider transport, workspace mutation, or child-output promotion authority.",
+  },
+  {
     id: "ic8.usage-quota-readiness",
     name: "Usage, quota, model, and readiness evidence",
     role: "observability_surface",
