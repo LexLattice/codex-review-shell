@@ -90,13 +90,13 @@ right ChatGPT pane != direct Codex memory
 
 ## 3. Current Descent Summary
 
-Status snapshot after Wave 5, 2026-06-13:
+Status snapshot after Wave 6 PR 33, 2026-06-14:
 
 ```text
 direct information bridge audit: valid
-registry rows: 32
+registry rows: 33
 implemented rows: 10
-partial rows: 20
+partial rows: 21
 inherited rows: 2
 missing source files: 0
 ```
@@ -117,7 +117,7 @@ It does not grant runtime authority by itself.
 | Command implementation-lane tool loop | `B-F` | Command authority module, package-script evidence read, plan, approval, shell-false backend execution, stdout/stderr capture, exit/timeout status, workspace-effect scan, continuation request, context-pack/request-manifest path, blocked-command proof, and unsafe-cwd proof exist; live-provider promotion remains pending. |
 | Workspace mutation truth | `B-F/S` | Patch planning/application, command-observed effects, explicit mutation policy rows, class-separated effect projection, dirty/untracked classification, and disabled revert preview have fixture proof; live promotion and revert execution remain pending. |
 | Recovery and replay safety | `B-F/B-P` | Recovery scanner classifies lifecycle stage, interrupted-turn class, renderer-safe status, and replay safety with fixture proof; manual resume/replay authority remains disabled. |
-| WorkThread identity and target resolution | `B-F` | WorkThread registry, target report, operator broker, stale guards, and non-target preservation constraints exist. |
+| WorkThread identity and target resolution | `B-F` | WorkThread registry, target report, operator broker, control deck/current pointer, stale guards, and non-target preservation constraints exist. |
 | Direct settings / bridge status | `B-F` | Renderer-safe settings/control status surface exists for runtime, registry, WorkThread, broker, modules, and continuity. |
 | AgentClassSpec registry | `B-F` | Main/worker/auditor/fix/closeout/orchestrator/broker/memory/governance/sub-agent role contracts exist. |
 | Worker graph and sub-agent observability | `B-F` | Worker graph alignment, progress/attention/containment projections and contained inspect/wait packets exist; mature choreography remains pending. |
@@ -585,24 +585,23 @@ ledgers.
 
 ## 9. Immediate Next Spec
 
-The next spec should target Wave 6 PR 33:
+The next spec should target Wave 6 PR 34:
 
 ```text
-WorkThread control deck and current pointer UX.
+Clarification and target picker UX.
 ```
 
 It should not add provider/tool authority. It should prove:
 
-1. WorkThread is visible as the active work-world identity;
-2. current pointers are renderer-safe and cite source evidence;
-3. stale/mismatch states are visible for project, branch, workspace, provider
-   lane, context pack, route, and authority transition;
-4. selecting a WorkThread records a bounded operator selection artifact;
-5. selection alone does not start a provider turn, run tools, mutate workspace,
-   spawn workers, or replace app-server behavior;
-6. downstream direct routes can cite the selected WorkThread pointer;
-7. non-target preservation constraints remain visible;
-8. ambiguity still routes to clarification rather than silent selection.
+1. clarification packets are visible as operator-facing target choices;
+2. candidate selection cites WorkThread and broker evidence;
+3. rejecting all candidates remains an admissible outcome;
+4. selected clarification answers become routing evidence only;
+5. target picking does not start provider turns, run tools, mutate workspace,
+   spawn workers, or perform object-level audit;
+6. non-target preservation constraints remain visible;
+7. stale candidates are blocked or degraded with precise reasons;
+8. ambiguity remains explicit rather than being silently collapsed.
 
 Current implementation note:
 

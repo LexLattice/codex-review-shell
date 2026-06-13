@@ -1739,7 +1739,7 @@ Still intentionally not authority:
 
 ## Wave 6: Operator Control Loop And WorkThread Productization
 
-Status: planned.
+Status: in progress.
 
 Review posture after Wave 5:
 
@@ -1768,7 +1768,7 @@ Standing Wave 6 constraints:
 
 ### PR 33: WorkThread Control Deck And Current Pointer UX
 
-Status: planned.
+Status: implemented in PR 33.
 
 Purpose:
 
@@ -1789,6 +1789,23 @@ Scope:
 - Add stale/mismatch diagnostics when provider thread, project, branch, or
   workspace identity no longer match the selected work thread.
 - Keep selection from starting a provider turn or mutating workspace state.
+
+Implemented slice:
+
+- Added `direct_work_thread_current_pointer@1`,
+  `direct_work_thread_control_deck@1`, and
+  `direct_work_thread_selection_transition@1`.
+- Added fail-closed pointer states for selected, missing, stale, mismatch, and
+  unknown WorkThread posture.
+- Added stale/mismatch blockers for project, branch, workspace, provider lane,
+  selected digest, stale lifecycle, archived lifecycle, missing pointer, and
+  not-found selected thread.
+- Added direct settings surface rows for the active WorkThread pointer, selected
+  provider lane, direct session, provider thread, blocker summary, preservation
+  constraints, and authority posture.
+- Added `direct:workthread-control-deck` regression coverage proving no provider
+  call, workspace mutation, worker spawn, or app-server replacement authority is
+  granted by selection.
 
 Promotion criterion:
 

@@ -364,6 +364,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "Broker resolutions make candidates, confidence, ambiguity, and non-target preservation constraints visible, but still grant no mutation/provider authority until explicit enforcement is implemented.",
   },
   {
+    id: "ic12.work-thread-control-deck",
+    name: "WorkThread control deck and current pointer",
+    role: "governance_routing",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/bridge/work-thread-control-deck.js", "src/main/direct/ui/settings-surface.js", "scripts/direct-workthread-control-deck-regression.mjs"],
+    ontology: ontologyShape(["work_thread_control_deck", "work_thread_current_pointer", "work_thread_selection_transition"], "harness", {
+      identityFields: ["projectId", "workThreadId", "pointerId", "selectionTransitionId"],
+      schema: "direct_work_thread_control_deck@1",
+    }),
+    bridgeFit: "Projects WorkThread as the operator-facing work-world control unit with current pointer, lane/session/context/authority/route refs, stale or mismatch diagnostics, and selection transition evidence.",
+    realignment: "Selection remains pointer evidence only and grants no provider call, workspace mutation, worker spawn, app-server replacement, automatic routing, or object-level authority.",
+  },
+  {
     id: "ic12.governance-enforcement-clarification",
     name: "Governance enforcement preflight and clarification packet",
     role: "governance_routing",

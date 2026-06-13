@@ -43,14 +43,14 @@ capability. "Inherited" is not a defect when it is explicit and law-compatible.
 
 ## Current Executable Audit Snapshot
 
-Last reviewed after Wave 5 / PR 32 on `2026-06-13`.
+Last reviewed after Wave 6 / PR 33 on `2026-06-14`.
 
 ```text
-registry rows: 32
+registry rows: 33
 valid: yes
 missing source files: 0
 implemented rows: 10
-partial rows: 20
+partial rows: 21
 inherited rows: 2
 ```
 
@@ -194,6 +194,7 @@ The executable registry currently tracks these bridge rows:
 | `ic10.retained-appserver-path` | observability surface | inherited | retain when aligned |
 | `ic11.inherited-shell-ux` | observability surface | inherited | retain when aligned |
 | `ic12.work-thread-registry` | governance/routing | partial | keep shadow |
+| `ic12.work-thread-control-deck` | governance/routing | partial | keep guarded |
 | `ic12.governance-enforcement-clarification` | governance/routing | partial | keep guarded |
 | `ic13.bridge-information-registry` | governance/routing | partial | bootstrap now |
 | `ic14.skills-hooks-apps` | governance/routing | partial | keep shadow |
