@@ -145,7 +145,7 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     role: "authority_gate",
     implementationState: "implemented",
     directPathPosture: "keep",
-    sourceFiles: ["src/main/direct/tools/read-only-authority.js", "src/main/direct/controller/live-text-controller.js", "src/main/direct/bridge/work-thread-alignment.js"],
+    sourceFiles: ["src/main/direct/tools/read-only-authority.js", "src/main/direct/controller/live-text-controller.js", "src/main/direct/bridge/work-thread-alignment.js", "scripts/direct-read-tool-loop-regression.mjs"],
     ontology: ontologyShape(["readonly_tool_authority_decision", "readonly_tool_result", "readonly_tool_continuation_request"], "workspace", {
       identityFields: ["projectId", "threadId", "turnId", "obligationId", "resultId"],
       schema: "direct_codex_readonly_tool_authority_decision@1",
