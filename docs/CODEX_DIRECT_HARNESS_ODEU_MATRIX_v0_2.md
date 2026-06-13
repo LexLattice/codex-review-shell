@@ -135,7 +135,7 @@ Main remaining coverage gaps from the matrix:
 |---|---|---|
 | Real-provider implementation-lane proof | `I7`, `E3-E15`, `B4-B6`, `F4-F7`, `J3-J7` | Read-only, patch, and command loops now have fixture/local disposable-workspace proof; live-provider promotion remains pending. |
 | Side-effect recovery/replay | `A11`, `C1-C3`, `C11-C12`, `E15`, `I9` | Recovery substrate exists, but crash/restart between tool, patch, command, and continuation states still needs proof. |
-| Iterative repair loop promotion | `E4`, `E14`, `E15`, `F4`, `D18` | Repair-loop substrate exists, but multi-step live read -> patch -> command -> continue cycles are not promoted. |
+| Iterative repair loop promotion | `E4`, `E14`, `E15`, `F4`, `D18` | Fixture/local read -> patch -> failing command -> repair patch -> passing command proof exists; live-provider promotion remains pending. |
 | Workspace change authority maturity | `E6-E8`, `E11`, `J4-J7` | Patch journals/effect summaries and command-observed effects are fixture-proved; generated/vendor/lockfile policy, network-risk truth, and optional revert are not complete. |
 | Actual context maintenance execution | `D1-D14`, `D22-D23`, `A12`, `J11` | Planning/gate/status artifacts exist; compact execution, memory materialization, baton reinjection, and automatic trimming remain gated. |
 | Governance enforcement and semantic fallback | `D15-D21`, `J10` | Shadow/preflight/routing artifacts exist; enforce mode, clarification UX, and fallback branch law remain future work. |
@@ -434,6 +434,14 @@ read -> patch -> command -> next patch/read -> command again
 ```
 
 Bound sequencing, per-step approval, and transition legality.
+
+Status:
+
+```text
+Fixture/local proof exists through direct_tool_continuation_repair_loop_regression_report@1.
+Real-provider promotion still requires a bounded live direct implementation turn
+that completes the same repair cycle from provider-originated tool calls.
+```
 
 ### Stage 4 - Workspace change authority
 

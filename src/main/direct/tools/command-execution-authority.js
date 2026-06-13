@@ -853,6 +853,12 @@ function buildCommandExecutionContinuationRequest(options = {}) {
     throw error;
   }
   const parsed = assertCommandObligation(obligation);
+  const continuationToolNames = Array.isArray(options.continuationToolNames)
+    ? options.continuationToolNames
+      .map((name) => normalizeString(name, ""))
+      .filter(Boolean)
+    : [];
+  const allowFurtherToolDeclarations = options.allowFurtherToolDeclarations === true || continuationToolNames.length > 0;
   return {
     schema: DIRECT_COMMAND_EXECUTION_CONTINUATION_REQUEST_SCHEMA,
     continuationId: commandContinuationIdFor(obligation.obligationId, obligation.result.resultId),
@@ -902,7 +908,8 @@ function buildCommandExecutionContinuationRequest(options = {}) {
     requestControls: {
       store: false,
       parallelToolCalls: false,
-      toolDeclarations: false,
+      toolDeclarations: allowFurtherToolDeclarations,
+      declaredToolNames: continuationToolNames,
       toolOutputItem: true,
       previousResponseId: true,
       nativePreviousResponseIdProof: Boolean(normalizeString(obligation.parentResponseId, "")),
