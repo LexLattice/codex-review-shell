@@ -48,6 +48,7 @@ const {
   MAX_READONLY_TOOL_LOOP_STEPS,
 } = require("../tools/read-only-authority");
 const { normalizeCodexBinding } = require("../runtime/runtime-status");
+const { buildDirectThreadDeckProjection } = require("../thread/thread-deck");
 
 const DIRECT_LIVE_TEXT_SURFACE_TRANSPORT = "direct-live-text";
 const DIRECT_FORK_PREVIEW_START_REQUEST_SHAPE = "direct_fork_preview_start_live_text@1";
@@ -578,6 +579,8 @@ function threadSnapshotFromSession(session = {}) {
     status: normalizeString(session.status, "created"),
     runtimeMode: normalizeString(session.runtimeMode, ""),
     directTransport: normalizeString(session.directTransport, DIRECT_LIVE_TEXT_SURFACE_TRANSPORT),
+    reasoningEffort: normalizeString(session.reasoningEffort, ""),
+    workThreadId: normalizeString(session.workThreadId, ""),
     turnCount: turns.length,
     activeTurnCount: turns.filter((turn) => ACTIVE_TURN_STATES.has(normalizeString(turn?.state, ""))).length,
     lastTurnState: normalizeString(turns[turns.length - 1]?.state, ""),
@@ -596,12 +599,15 @@ function threadListEntryFromIndexEntry(entry = {}) {
     updatedAt: normalizeString(entry.updatedAt, ""),
     status: normalizeString(entry.status, "created"),
     model: normalizeString(entry.model, ""),
+    reasoningEffort: normalizeString(entry.reasoningEffort, ""),
     runtimeMode: normalizeString(entry.runtimeMode, ""),
     directTransport: normalizeString(entry.directTransport, DIRECT_LIVE_TEXT_SURFACE_TRANSPORT),
+    workThreadId: normalizeString(entry.workThreadId, ""),
     turnCount: Number(entry.turnCount || 0),
     activeTurnCount: Number(entry.activeTurnCount || 0),
     lastTurnState: normalizeString(entry.lastTurnState, ""),
     activeToolLoopId: normalizeString(entry.activeToolLoopId, ""),
+    activeToolStepOrdinal: Number(entry.activeToolStepOrdinal || 0),
     sourceClass: "direct-native",
     rawPathExposed: false,
   };
@@ -611,6 +617,22 @@ function sessionMatchesProject(session = {}, projectId = "") {
   const scopedProjectId = normalizeString(projectId, "");
   if (!scopedProjectId) return true;
   return normalizeString(session?.projectId, "") === scopedProjectId;
+}
+
+function safeReadDirectSession(sessionStore, sessionId) {
+  try {
+    return sessionStore?.readSession?.(sessionId) || null;
+  } catch {
+    return null;
+  }
+}
+
+function safeReadDirectTurn(sessionStore, sessionId, turnId) {
+  try {
+    return sessionStore?.readTurn?.(sessionId, turnId) || null;
+  } catch {
+    return null;
+  }
 }
 
 function terminalStatusForState(state) {
@@ -946,6 +968,7 @@ class DirectLiveTextController {
     const project = context.project || {};
     const projectId = normalizeString(project.id, "");
     const status = this.assertReady(project);
+    const workThreadCarrier = directWorkThreadContextCarrier(params, context);
     const requestedSessionId = normalizeString(params.sessionId || params.threadId, "");
     if (requestedSessionId) {
       const existing = this.sessionStore.readSession(requestedSessionId);
@@ -956,12 +979,15 @@ class DirectLiveTextController {
         return { thread: threadSnapshotFromSession(existing), model: existing.model };
       }
     }
+    const model = normalizeString(params.model, "") || status.model;
+    const reasoningEffort = normalizeString(params.reasoningEffort || params.reasoning_effort, "");
     const session = this.sessionStore.createSession({
       projectId,
       workspace: isPlainObject(project.workspace) ? project.workspace : {},
       workspaceDisplayPath: workspaceDisplayPath(project),
-      title: `${normalizeString(project.name, "Direct")} live text session`,
-      model: status.model,
+      title: normalizeString(params.title, `${normalizeString(project.name, "Direct")} live text session`),
+      model,
+      reasoningEffort,
       runtimeMode: "direct-experimental",
       directTransport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
       modelSource: status.modelSource,
@@ -972,6 +998,8 @@ class DirectLiveTextController {
       nativeDirectSession: true,
       providerContinuityAvailable: false,
       continuityState: "fresh_session_only",
+      workThreadId: workThreadCarrier.workThreadId,
+      workThreadBindingDigest: normalizeString(workThreadCarrier.workThreadBinding?.bindingDigest, ""),
     });
     return {
       thread: threadSnapshotFromSession(session),
@@ -990,14 +1018,56 @@ class DirectLiveTextController {
       const parsed = Date.parse(normalizeString(entry?.updatedAt, ""));
       return Number.isFinite(parsed) ? parsed : 0;
     };
-    const threads = sessions
+    const scopedEntries = sessions
       .filter((entry) => {
         return entry && sessionMatchesProject(entry, projectId);
       })
       .sort((left, right) => updatedMs(right) - updatedMs(left))
-      .slice(0, limit)
-      .map(threadListEntryFromIndexEntry);
+      .slice(0, limit);
+    const threads = scopedEntries.map(threadListEntryFromIndexEntry);
+    const deckThreads = scopedEntries
+      .map((entry) => {
+        const session = safeReadDirectSession(this.sessionStore, entry.sessionId);
+        const sessionReadFailed = !session && Boolean(entry.sessionId);
+        const safeSession = session || {};
+        const turns = (Array.isArray(safeSession.turns) ? safeSession.turns : []).map((summary) => {
+          const turnId = normalizeString(summary?.turnId, "");
+          const turn = turnId ? safeReadDirectTurn(this.sessionStore, entry.sessionId, turnId) : null;
+          return {
+            turnId,
+            state: normalizeString(turn?.state || summary?.state, ""),
+            createdAt: normalizeString(turn?.createdAt || summary?.createdAt, ""),
+            updatedAt: normalizeString(turn?.updatedAt || summary?.updatedAt, ""),
+            model: normalizeString(turn?.model || summary?.model, ""),
+            reasoningEffort: normalizeString(turn?.reasoningEffort || summary?.reasoningEffort, ""),
+            error: isPlainObject(turn?.error)
+              ? {
+                  code: normalizeString(turn.error.code, ""),
+                  previousState: normalizeString(turn.error.previousState, ""),
+                  recoveredAt: normalizeString(turn.error.recoveredAt, ""),
+                }
+              : null,
+          };
+        });
+        return {
+          ...threadListEntryFromIndexEntry(entry),
+          turns,
+          storageState: sessionReadFailed ? "session_unreadable" : "available",
+          providerContinuityAvailable: safeSession.providerContinuityAvailable === true,
+        };
+      });
     const storeStatus = this.sessionStore.status({ projectId });
+    const defaultModel = normalizeString(params.defaultModel || params.model, "");
+    const defaultReasoningEffort = normalizeString(params.defaultReasoningEffort || params.reasoningEffort || params.reasoning_effort, "");
+    const deck = buildDirectThreadDeckProjection({
+      projectId,
+      runtime: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
+      threads: deckThreads,
+      storeStatus,
+      defaultModel,
+      defaultReasoningEffort,
+      canStart: true,
+    });
     return {
       schema: "direct_thread_list@1",
       runtime: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
@@ -1006,6 +1076,7 @@ class DirectLiveTextController {
       count: threads.length,
       limit,
       storeStatus,
+      deck,
       rawPathsExposed: false,
     };
   }
@@ -3866,6 +3937,7 @@ class DirectLiveTextController {
     }
     const prompt = this.textPrompt(params);
     const model = normalizeString(params.model, "") || status.model;
+    const reasoningEffort = normalizeString(params.reasoningEffort || params.reasoning_effort || params.effort, session.reasoningEffort);
     const existingTurnIds = this.sessionStore.listTurnIdsFromDisk(session.sessionId);
     const existingTurnCount = existingTurnIds.length;
     const summaries = Array.isArray(session.turns) ? session.turns : [];
@@ -3977,6 +4049,7 @@ class DirectLiveTextController {
     const turn = this.sessionStore.createTurn(session.sessionId, {
       input: [{ role: "user", text: prompt }],
       model: requestBody.model,
+      reasoningEffort,
       clientTurnRequestId,
       requestShape: requestShapeForDiagnostic(requestBody),
     });

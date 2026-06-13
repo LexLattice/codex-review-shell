@@ -602,7 +602,7 @@ Still intentionally not authority:
 
 ## Wave 3: Direct-Native Product Surface And Brokered Workflows
 
-Status: planned.
+Status: in progress.
 
 Goal:
 
@@ -615,7 +615,13 @@ before authority.
 
 ### PR 15: Direct-Native Thread Deck And New Thread UX
 
-Status: planned.
+Status: implemented in branch.
+
+Branch:
+
+```text
+codex/direct-thread-deck-new-thread
+```
 
 Purpose:
 
@@ -634,6 +640,20 @@ Scope:
 - Keep grouping control-plane invariant: WorkThread/project ontology first,
   provider/runtime thread id second.
 - Keep app-server path unchanged.
+
+Implemented in this slice:
+
+- `direct_thread_deck_projection@1` support artifact.
+- Direct `thread/list` now returns a renderer-safe deck projection alongside
+  the legacy thread list.
+- Direct session index rows retain model, reasoning effort, and WorkThread
+  binding evidence needed by the deck.
+- Direct `thread/start` persists operator-selected model/reasoning posture and
+  optional WorkThread id.
+- The Codex left-plane direct strip consumes deck rows/action descriptors while
+  retaining legacy list fallback.
+- Regression coverage for running, recoverable interrupted, WorkThread-scoped,
+  focus, resume, and new-thread default posture cases.
 
 Non-goals:
 

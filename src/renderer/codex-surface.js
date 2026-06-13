@@ -121,6 +121,7 @@ const state = {
   directUiOperationHistory: null,
   directUiPolicyView: null,
   directThreadList: [],
+  directThreadDeck: null,
   directThreadListStatus: "idle",
   directThreadListError: "",
   directThreadOpenRequestId: 0,
@@ -4016,10 +4017,18 @@ function directThreadTimeLabel(value) {
 
 function directThreadStateLabel(entry = {}) {
   if (!entry) return "unknown";
+  const displayState = String(entry.displayState || "").trim();
+  if (displayState) return displayState.replace(/_/g, " ");
   if (Number(entry.activeTurnCount || 0) > 0) return "running";
   const lastTurnState = String(entry.lastTurnState || "").trim();
   if (lastTurnState) return lastTurnState.replace(/_/g, " ");
   return String(entry.status || "created").replace(/_/g, " ");
+}
+
+function directThreadActionEnabled(entry = {}, actionName = "") {
+  const action = entry.actions?.[actionName];
+  if (!action || typeof action.enabled !== "boolean") return true;
+  return action.enabled === true;
 }
 
 function renderDirectThreadList() {
@@ -4031,9 +4040,17 @@ function renderDirectThreadList() {
   const loading = state.directThreadListStatus === "loading";
   const error = state.directThreadListStatus === "error";
   if (els.directThreadRefreshButton) els.directThreadRefreshButton.disabled = loading;
-  if (els.directThreadNewButton) els.directThreadNewButton.disabled = !state.connected || !hasCapability("threads", "canStart");
+  const startAction = state.directThreadDeck?.actions?.start || null;
+  if (els.directThreadNewButton) {
+    els.directThreadNewButton.disabled = !state.connected ||
+      !hasCapability("threads", "canStart") ||
+      (startAction && startAction.enabled === false);
+    els.directThreadNewButton.title = startAction?.disabledReason || startAction?.effect || "Start a fresh direct-native thread";
+  }
 
-  const threads = Array.isArray(state.directThreadList) ? state.directThreadList : [];
+  const threads = Array.isArray(state.directThreadDeck?.rows)
+    ? state.directThreadDeck.rows
+    : Array.isArray(state.directThreadList) ? state.directThreadList : [];
   if (loading) {
     els.directThreadStatus.textContent = "Refreshing direct sessions…";
   } else if (error) {
@@ -4041,8 +4058,13 @@ function renderDirectThreadList() {
   } else if (!threads.length) {
     els.directThreadStatus.textContent = "No direct sessions for this project yet.";
   } else {
-    const activeCount = threads.filter((entry) => entry && Number(entry.activeTurnCount || 0) > 0).length;
-    els.directThreadStatus.textContent = `${threads.length} direct session${threads.length === 1 ? "" : "s"}${activeCount ? ` · ${activeCount} running` : ""}`;
+    const activeCount = Number(state.directThreadDeck?.counts?.running ?? threads.filter((entry) => entry && Number(entry.activeTurnCount || 0) > 0).length);
+    const recoverableCount = Number(state.directThreadDeck?.counts?.recoverableInterrupted || 0);
+    els.directThreadStatus.textContent = [
+      `${threads.length} direct session${threads.length === 1 ? "" : "s"}`,
+      activeCount ? `${activeCount} running` : "",
+      recoverableCount ? `${recoverableCount} recoverable` : "",
+    ].filter(Boolean).join(" · ");
   }
 
   els.directThreadList.replaceChildren();
@@ -4051,12 +4073,18 @@ function renderDirectThreadList() {
     const threadId = String(entry.threadId || entry.id || "").trim();
     if (!threadId) continue;
     const isActive = threadId === String(state.threadId || "");
-    const isRunning = Number(entry.activeTurnCount || 0) > 0;
+    const isRunning = Number(entry.activeTurnCount || 0) > 0 || entry.displayState === "running";
     const button = document.createElement("button");
     button.type = "button";
     button.className = `direct-thread-pill${isActive ? " active" : ""}${isRunning ? " running" : ""}`;
     button.dataset.threadId = threadId;
-    button.title = `${entry.title || threadId}\n${threadId}`;
+    button.disabled = !directThreadActionEnabled(entry, "focus");
+    button.title = [
+      entry.title || threadId,
+      threadId,
+      entry.workThreadId ? `WorkThread ${entry.workThreadId}` : "WorkThread unresolved",
+      entry.actions?.focus?.disabledReason || entry.actions?.focus?.effect || "",
+    ].filter(Boolean).join("\n");
     const title = document.createElement("span");
     title.className = "direct-thread-pill-title";
     title.textContent = entry.title || threadId;
@@ -4068,6 +4096,8 @@ function renderDirectThreadList() {
     const model = String(entry.model || state.activeModel || "").trim();
     meta.textContent = [
       model || "model unknown",
+      entry.reasoningEffort || "",
+      entry.workThreadId ? "WorkThread scoped" : "project scoped",
       `${Number(entry.turnCount || 0)} turn${Number(entry.turnCount || 0) === 1 ? "" : "s"}`,
       directThreadTimeLabel(entry.updatedAt || entry.createdAt),
     ].filter(Boolean).join(" · ");
@@ -4082,6 +4112,7 @@ function renderDirectThreadList() {
 async function refreshDirectThreadList(options = {}) {
   if (!isDirectLiveTextSurface() || !state.connected || !hasCapability("threads", "canList")) {
     state.directThreadList = [];
+    state.directThreadDeck = null;
     state.directThreadListStatus = isDirectLiveTextSurface() ? "unavailable" : "hidden";
     state.directThreadListError = "";
     renderDirectThreadList();
@@ -4091,13 +4122,19 @@ async function refreshDirectThreadList(options = {}) {
   state.directThreadListError = "";
   renderDirectThreadList();
   try {
-    const result = await rpc("thread/list", { limit: options.limit || 40 });
+    const result = await rpc("thread/list", {
+      limit: options.limit || 40,
+      defaultModel: activeModelId() || null,
+      defaultReasoningEffort: requestedReasoningEffort() || null,
+    });
     state.directThreadList = Array.isArray(result?.threads) ? result.threads.filter(Boolean) : [];
+    state.directThreadDeck = result?.deck && result.deck.schema === "direct_thread_deck_projection@1" ? result.deck : null;
     state.directThreadListStatus = "ready";
     state.directThreadListError = "";
   } catch (error) {
     state.directThreadListStatus = "error";
     state.directThreadListError = error.message || "unknown error";
+    state.directThreadDeck = null;
     if (options.showErrors !== false) addSystemMessage(`Direct thread list failed: ${state.directThreadListError}`);
   }
   renderDirectThreadList();
@@ -6627,6 +6664,7 @@ async function startNewThread() {
   const params = {
     cwd,
     model: activeModelId() || null,
+    reasoningEffort: requestedReasoningEffort() || null,
     experimentalRawEvents: false,
     persistExtendedHistory: true,
   };
