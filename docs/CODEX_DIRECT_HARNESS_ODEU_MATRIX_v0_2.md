@@ -116,7 +116,7 @@ It does not grant runtime authority by itself.
 | Patch implementation-lane tool loop | `B-F` | Patch authority module, dry-run plan, approval, backend apply, workspace-effect evidence, patch journal inspection, continuation request, context-pack/request-manifest path, create/edit fixture proof, blocked outside-workspace proof, failed-patch proof, and no-command sentinel exist; live-provider promotion remains pending. |
 | Command implementation-lane tool loop | `B-F` | Command authority module, package-script evidence read, plan, approval, shell-false backend execution, stdout/stderr capture, exit/timeout status, workspace-effect scan, continuation request, context-pack/request-manifest path, blocked-command proof, and unsafe-cwd proof exist; live-provider promotion remains pending. |
 | Workspace mutation truth | `B-F/S` | Patch planning/application and command-observed workspace effect summaries have fixture proof; broader live side-effect recovery and revert remain pending. |
-| Recovery and replay safety | `B-F/B-P` | Recovery scanner and repair-loop substrate exist; side-effect crash/replay proof remains a later bundle. |
+| Recovery and replay safety | `B-F/B-P` | Recovery scanner classifies lifecycle stage, interrupted-turn class, renderer-safe status, and replay safety with fixture proof; manual resume/replay authority remains disabled. |
 | WorkThread identity and target resolution | `B-F` | WorkThread registry, target report, operator broker, stale guards, and non-target preservation constraints exist. |
 | Direct settings / bridge status | `B-F` | Renderer-safe settings/control status surface exists for runtime, registry, WorkThread, broker, modules, and continuity. |
 | AgentClassSpec registry | `B-F` | Main/worker/auditor/fix/closeout/orchestrator/broker/memory/governance/sub-agent role contracts exist. |
@@ -134,7 +134,7 @@ Main remaining coverage gaps from the matrix:
 | Gap | Rows | Why it remains open |
 |---|---|---|
 | Real-provider implementation-lane proof | `I7`, `E3-E15`, `B4-B6`, `F4-F7`, `J3-J7` | Read-only, patch, and command loops now have fixture/local disposable-workspace proof; live-provider promotion remains pending. |
-| Side-effect recovery/replay | `A11`, `C1-C3`, `C11-C12`, `E15`, `I9` | Recovery substrate exists, but crash/restart between tool, patch, command, and continuation states still needs proof. |
+| Side-effect recovery/replay | `A11`, `C1-C3`, `C11-C12`, `E15`, `I9` | Fixture proof covers interrupted read/patch/command/continuation states and corrupt ledgers; live crash harness and manual resume remain pending. |
 | Iterative repair loop promotion | `E4`, `E14`, `E15`, `F4`, `D18` | Fixture/local read -> patch -> failing command -> repair patch -> passing command proof exists; live-provider promotion remains pending. |
 | Workspace change authority maturity | `E6-E8`, `E11`, `J4-J7` | Patch journals/effect summaries and command-observed effects are fixture-proved; generated/vendor/lockfile policy, network-risk truth, and optional revert are not complete. |
 | Actual context maintenance execution | `D1-D14`, `D22-D23`, `A12`, `J11` | Planning/gate/status artifacts exist; compact execution, memory materialization, baton reinjection, and automatic trimming remain gated. |
@@ -421,6 +421,14 @@ tool result recorded but continuation not sent
 patch applied but continuation failed
 command ran but continuation failed
 handoff unknown never auto-retries
+```
+
+Status:
+
+```text
+Fixture/local proof exists through direct_recovery_report@1 with explicit
+lifecycle stage, interrupted-turn class, renderer-safe recovery projection, and
+replay-safety posture. Manual resume/replay actions remain disabled.
 ```
 
 Keep this as its own bundle after real loops. It shares state-machine, ledger, journal, handoff-unknown, and no-auto-retry concerns that should not be hidden inside the first real-provider proof PR.
