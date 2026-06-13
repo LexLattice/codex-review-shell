@@ -29,9 +29,10 @@ function boundedString(value, maxLength = 280) {
   return text.length > maxLength ? `${text.slice(0, Math.max(0, maxLength - 1)).trim()}…` : text;
 }
 
-function finiteNumber(value, fallback = 0) {
+function boundedCount(value, max = 100) {
   const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : fallback;
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  return Math.min(max, Math.floor(parsed));
 }
 
 function arrayOrEmpty(value) {
@@ -84,7 +85,7 @@ function normalizeRef(input = {}, fallbackKind = "work_thread_control") {
 function normalizeRefs(values, fallbackKind = "work_thread_control") {
   return arrayOrEmpty(values)
     .map((value) => normalizeRef(value, fallbackKind))
-    .filter((ref) => ref.id || ref.digest || ref.label);
+    .filter((ref) => ref.id || ref.digest);
 }
 
 function normalizePointerRef(input = {}, fallbackKind = "unknown") {
@@ -193,11 +194,56 @@ function rowForThread(thread = {}, pointer = {}, context = {}) {
   return row;
 }
 
+function projectionRowToControlThread(input = {}, options = {}) {
+  const source = isPlainObject(input) ? input : {};
+  const updatedAt = normalizeString(source.updatedAt, nowIso(options.nowMs));
+  const thread = {
+    schema: "direct_work_thread_control_projection_row@1",
+    workThreadId: normalizeString(source.workThreadId || source.id, ""),
+    projectId: normalizeString(source.projectId, ""),
+    title: boundedString(source.title || source.workThreadId || source.id, 180),
+    lifecycleState: normalizeString(source.lifecycleState, "unknown"),
+    objective: {
+      summary: boundedString(source.objectiveSummary || source.objective?.summary || source.objective, 240),
+    },
+    currentArc: {
+      label: boundedString(source.currentArcLabel || source.currentArc?.label, 180),
+    },
+    phaseState: {
+      phaseKind: normalizeString(source.phaseKind || source.phaseState?.phaseKind, "unknown"),
+      status: normalizeString(source.phaseStatus || source.phaseState?.status, "unknown"),
+    },
+    branchIdentity: {
+      branchName: normalizeString(source.branchName || source.branchIdentity?.branchName, ""),
+    },
+    workspaceIdentity: {
+      workspaceEvidenceKey: normalizeString(source.workspaceEvidenceKey || source.workspaceIdentity?.workspaceEvidenceKey, ""),
+    },
+    activeRuntimePath: normalizeString(source.activeRuntimePath, "unknown"),
+    openObligations: Array.from({ length: boundedCount(source.openObligationCount) }, (_, index) => ({ obligationId: `projection_obligation_${index + 1}` })),
+    linkedCodexThreads: Array.from({ length: boundedCount(source.linkedCodexThreadCount) }, (_, index) => ({ threadId: `projection_codex_thread_${index + 1}` })),
+    linkedChatGptThreads: Array.from({ length: boundedCount(source.linkedChatGptThreadCount) }, (_, index) => ({ threadId: `projection_chatgpt_thread_${index + 1}` })),
+    updatedAt,
+    digest: normalizeString(source.digest, ""),
+    rawTextIncluded: false,
+    rawPathIncluded: false,
+  };
+  if (!thread.digest) thread.digest = digestFor("direct-work-thread-control-projection-row@1", thread);
+  return thread;
+}
+
+function normalizeFullWorkThread(input = {}, options = {}) {
+  const source = isPlainObject(input) ? input : {};
+  const thread = buildWorkThread(source, options);
+  const providedDigest = normalizeString(source.digest, "");
+  return providedDigest ? { ...thread, digest: providedDigest } : thread;
+}
+
 function normalizeWorkThreads(input = {}, options = {}) {
-  if (Array.isArray(input.workThreads)) return input.workThreads.map((thread) => buildWorkThread(thread, options));
-  if (Array.isArray(input.rows)) return input.rows.map((thread) => buildWorkThread(thread, options));
-  if (Array.isArray(input.workThreadProjection?.rows)) return input.workThreadProjection.rows.map((thread) => buildWorkThread(thread, options));
-  if (Array.isArray(input.projection?.rows)) return input.projection.rows.map((thread) => buildWorkThread(thread, options));
+  if (Array.isArray(input.workThreads)) return input.workThreads.map((thread) => normalizeFullWorkThread(thread, options));
+  if (Array.isArray(input.rows)) return input.rows.map((thread) => projectionRowToControlThread(thread, options));
+  if (Array.isArray(input.workThreadProjection?.rows)) return input.workThreadProjection.rows.map((thread) => projectionRowToControlThread(thread, options));
+  if (Array.isArray(input.projection?.rows)) return input.projection.rows.map((thread) => projectionRowToControlThread(thread, options));
   return [];
 }
 
@@ -290,10 +336,11 @@ function buildWorkThreadSelectionTransition(input = {}, options = {}) {
   const requestedWorkThreadId = normalizeString(source.requestedWorkThreadId || source.selectedWorkThreadId || source.workThreadId, "");
   const projectId = normalizeString(source.projectId, "");
   const workThreads = normalizeWorkThreads(source, options);
-  const selectedThread = workThreads.find((thread) => thread.workThreadId === requestedWorkThreadId) || null;
+  const selectedThread = workThreads.find((thread) => thread.workThreadId === requestedWorkThreadId && (!projectId || thread.projectId === projectId)) || null;
   const blockerCodes = [];
   if (!requestedWorkThreadId) blockerCodes.push("requested_work_thread_missing");
   if (requestedWorkThreadId && !selectedThread) blockerCodes.push("requested_work_thread_not_found");
+  if (selectedThread?.lifecycleState === "stale") blockerCodes.push("requested_work_thread_stale");
   if (selectedThread?.lifecycleState === "archived") blockerCodes.push("requested_work_thread_archived");
   const transitionState = blockerCodes.length ? "blocked" : "accepted";
   const selectedPointer = transitionState === "accepted"

@@ -122,6 +122,35 @@ assert.equal(stalePointerDeck.pointerState, "stale");
 assert.equal(stalePointerDeck.selectedWorkThreadId, "");
 assert(stalePointerDeck.blockerCodes.includes("selected_work_thread_digest_mismatch"));
 
+const projectionBackedDeck = buildWorkThreadControlDeck({
+  projectId,
+  workThreadProjection: {
+    rows: [
+      {
+        workThreadId: fixture.selected.workThreadId,
+        projectId,
+        title: fixture.selected.title,
+        lifecycleState: fixture.selected.lifecycleState,
+        objectiveSummary: fixture.selected.objective.summary,
+        currentArcLabel: fixture.selected.currentArc.label,
+        phaseKind: fixture.selected.phaseState.phaseKind,
+        phaseStatus: fixture.selected.phaseState.status,
+        activeRuntimePath: fixture.selected.activeRuntimePath,
+        openObligationCount: fixture.selected.openObligations.length,
+        linkedCodexThreadCount: fixture.selected.linkedCodexThreads.length,
+        linkedChatGptThreadCount: fixture.selected.linkedChatGptThreads.length,
+        updatedAt: fixture.selected.updatedAt,
+        digest: fixture.selected.digest,
+      },
+    ],
+  },
+  currentPointer: pointer,
+  selectedProviderLane: "direct-implementation",
+}, { nowMs });
+assertWorkThreadControlDeckSafe(projectionBackedDeck);
+assert.equal(projectionBackedDeck.pointerState, "selected");
+assert.equal(projectionBackedDeck.selectedWorkThreadDigest, fixture.selected.digest);
+
 const missingPointerDeck = buildWorkThreadControlDeck({
   projectId,
   workThreads: fixture.all,
@@ -153,6 +182,31 @@ assertWorkThreadSelectionTransitionSafe(archivedTransition);
 assert.equal(archivedTransition.transitionState, "blocked");
 assert.equal(archivedTransition.selectedWorkThreadId, "");
 assert(archivedTransition.blockerCodes.includes("requested_work_thread_archived"));
+
+const staleTransition = buildWorkThreadSelectionTransition({
+  projectId,
+  requestedWorkThreadId: fixture.stale.workThreadId,
+  workThreads: fixture.all,
+}, { nowMs });
+assertWorkThreadSelectionTransitionSafe(staleTransition);
+assert.equal(staleTransition.transitionState, "blocked");
+assert.equal(staleTransition.selectedWorkThreadId, "");
+assert(staleTransition.blockerCodes.includes("requested_work_thread_stale"));
+
+const crossProjectTransition = buildWorkThreadSelectionTransition({
+  projectId,
+  requestedWorkThreadId: fixture.selected.workThreadId,
+  workThreads: [
+    {
+      ...fixture.selected,
+      projectId: "other-project",
+    },
+  ],
+}, { nowMs });
+assertWorkThreadSelectionTransitionSafe(crossProjectTransition);
+assert.equal(crossProjectTransition.transitionState, "blocked");
+assert.equal(crossProjectTransition.selectedWorkThreadId, "");
+assert(crossProjectTransition.blockerCodes.includes("requested_work_thread_not_found"));
 
 const notFoundTransition = buildWorkThreadSelectionTransition({
   projectId,
