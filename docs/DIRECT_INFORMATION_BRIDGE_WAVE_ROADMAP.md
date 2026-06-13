@@ -987,7 +987,7 @@ Worker start V0 and role handoff packet exist.
 
 ## Wave 4: Real-Provider Implementation Lane And Side-Effect Safety
 
-Status: planned.
+Status: in review.
 
 Goal:
 
@@ -1258,6 +1258,21 @@ Scope:
   read then patch, patch then test command, failing test then repair patch, and
   blocked repair after policy limit.
 
+Implemented in this slice:
+
+- `direct_tool_continuation_repair_loop_regression_report@1`.
+- Disposable-workspace fixture proof for a bounded
+  `read_file -> apply_patch -> run_command -> apply_patch -> run_command`
+  repair sequence.
+- Explicit continuation request evidence after every local tool result,
+  including context pack and request manifest references.
+- Command-result continuations can opt in to bounded repair tool declarations
+  when the original user intent is an implementation task; default command
+  continuations remain terminal/no-tools.
+- Sentinel checks for no hidden retry authority: each patch and command executes
+  exactly once, all continuation IDs are unique, and final assistant completion
+  occurs only after the passing command evidence exists.
+
 Non-goals:
 
 - No meta-orchestrator autonomous advancement.
@@ -1276,6 +1291,14 @@ Promotion criteria:
 ```text
 A bounded real-provider direct implementation turn can complete a small
 repair cycle while every continuation cites exact prior tool-result evidence.
+```
+
+Current posture:
+
+```text
+Fixture/local proof is implemented in this PR.
+Live-provider promotion remains opt-in through the implementation-proof runner
+and should be used before raising matrix rows from B-F to B-R.
 ```
 
 ### PR 26: Side-Effect Recovery And Replay Safety
