@@ -187,13 +187,13 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     role: "governance_routing",
     implementationState: "implemented",
     directPathPosture: "keep",
-    sourceFiles: ["src/main/direct/recovery/recovery-scanner.js", "src/main/direct/repair/repair-loop.js", "scripts/direct-tool-continuation-repair-loop-regression.mjs"],
+    sourceFiles: ["src/main/direct/recovery/recovery-scanner.js", "src/main/direct/repair/repair-loop.js", "scripts/direct-recovery-regression.mjs", "scripts/direct-tool-continuation-repair-loop-regression.mjs"],
     ontology: ontologyShape(["direct_recovery_report", "repair_loop"], "harness", {
       identityFields: ["projectId", "sessionId", "turnId", "reportId"],
       schema: "direct_recovery_report@1",
     }),
-    bridgeFit: "Audits active obligations and ledgers without replaying provider calls, file reads, patches, commands, or continuations; fixture-proves a bounded read -> patch -> command -> repair loop with explicit continuation evidence.",
-    realignment: "Use registry rows to classify which missing evidence blocks recovery versus degrades UI only; live-provider repair-loop promotion remains gated by real continuation evidence.",
+    bridgeFit: "Audits active obligations and ledgers without replaying provider calls, file reads, patches, commands, or continuations; fixture-proves recovery lifecycle, replay-safety projection, and a bounded read -> patch -> command -> repair loop with explicit continuation evidence.",
+    realignment: "Use registry rows to classify which missing evidence blocks recovery versus degrades UI only; live-provider repair-loop promotion and manual resume/replay actions remain gated by real continuation evidence.",
   },
   {
     id: "ic6.semantic-governance-broker",

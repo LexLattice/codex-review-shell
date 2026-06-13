@@ -1235,7 +1235,7 @@ and should be used before raising matrix rows from B-F to B-R.
 
 ### PR 25: Direct Tool Continuation And Iterative Repair Loop V0
 
-Status: planned.
+Status: merged.
 
 Purpose:
 
@@ -1303,7 +1303,7 @@ and should be used before raising matrix rows from B-F to B-R.
 
 ### PR 26: Side-Effect Recovery And Replay Safety
 
-Status: planned.
+Status: in review.
 
 Purpose:
 
@@ -1327,6 +1327,25 @@ Scope:
   before execution, during execution, after patch before result sent, after
   command result sent before continuation, and corrupt ledger.
 
+Implemented in this slice:
+
+- Recovery classifications now expose `operationLifecycleStage`,
+  `interruptedTurnClass`, and a renderer-safe `replaySafety` block.
+- Lifecycle stages cover `intent_observed`, `authority_pending`,
+  `execution_started`, `execution_completed`, `result_sent`,
+  `continuation_started`, `terminal_observed`, `handoff_unknown`, and
+  `corrupt`.
+- Interrupted turns are classified as `healthy`, `resumable`,
+  `needs_operator_review`, `sent_unknown`, `side_effect_unknown`, or
+  `corrupt`.
+- Recovery status projection is renderer-safe and explicitly non-authoritative.
+- Regression fixtures cover before execution, during patch/command execution,
+  after patch apply before result handoff, after command result before
+  continuation send, provider handoff unknown, stream interruption, and corrupt
+  operation ledger.
+- Replay safety remains conservative: provider retry, tool re-execution, and
+  continuation replay are never automatic in this slice.
+
 Non-goals:
 
 - No automatic revert.
@@ -1344,6 +1363,14 @@ Promotion criteria:
 ```text
 An interrupted implementation-lane turn is never shown as cleanly idle or
 silently retried when side-effect state is unknown.
+```
+
+Current posture:
+
+```text
+Fixture/local recovery classification proof is implemented in this PR.
+Manual resume/replay actions remain disabled and require a later authority
+transition before any side-effecting operation can be retried or replayed.
 ```
 
 ### PR 27: Workspace Authority Maturity V0

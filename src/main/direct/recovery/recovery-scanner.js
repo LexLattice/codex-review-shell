@@ -299,6 +299,109 @@ function sideEffectStateForRecordedResult(authorityKind, hasResult = true) {
   return "none";
 }
 
+function operationLifecycleStageFor(classification = {}) {
+  const recoveryState = normalizeString(classification.recoveryState, "");
+  const providerHandoffState = normalizeString(classification.providerHandoffState, "");
+  const providerTerminalKind = normalizeString(classification.providerTerminalKind, "");
+  if (recoveryState === "corrupt" || recoveryState === "raw_exposure_blocked") return "corrupt";
+  if (providerTerminalKind && providerTerminalKind !== "not_terminal" && providerTerminalKind !== "unknown_event_blocked") return "terminal_observed";
+  if (providerHandoffState === "sent_no_bytes") return "handoff_unknown";
+  if (recoveryState === "stream_interrupted") return "continuation_started";
+  if (providerHandoffState === "stream_interrupted") return "continuation_started";
+  if (recoveryState === "request_built_not_sent") return "result_sent";
+  if ([
+    "result_recorded_no_context",
+    "context_built_no_manifest",
+    "patch_applied_no_result",
+    "patch_applied_effect_summary_missing",
+    "command_completed_no_result",
+    "command_ran_effect_summary_missing",
+  ].includes(recoveryState)) return "execution_completed";
+  if (recoveryState === "command_started_no_terminal" || recoveryState === "patch_partial_unknown") return "execution_started";
+  if (recoveryState === "decision_committed_no_result") return "authority_pending";
+  if (recoveryState === "waiting_for_user" || recoveryState === "collecting_tool_call") return "intent_observed";
+  return "intent_observed";
+}
+
+function interruptedTurnClassFor(classification = {}) {
+  const recoveryState = normalizeString(classification.recoveryState, "");
+  const sideEffectState = normalizeString(classification.sideEffectState, "");
+  const providerHandoffState = normalizeString(classification.providerHandoffState, "");
+  if (recoveryState === "corrupt" || recoveryState === "raw_exposure_blocked") return "corrupt";
+  if (classification.composerAllowed === true && recoveryState === "terminal") return "healthy";
+  if (providerHandoffState === "sent_no_bytes") return "sent_unknown";
+  if (sideEffectState === "workspace_patch_partial_unknown" || sideEffectState === "command_may_have_run") return "side_effect_unknown";
+  if (providerHandoffState === "stream_interrupted" && ["workspace_patch_applied", "command_ran"].includes(sideEffectState)) return "side_effect_unknown";
+  if (recoveryState === "waiting_for_user" || recoveryState === "collecting_tool_call") return "resumable";
+  return "needs_operator_review";
+}
+
+function replaySafetyFor(classification = {}) {
+  const sideEffectState = normalizeString(classification.sideEffectState, "");
+  const interruptedTurnClass = interruptedTurnClassFor(classification);
+  const providerHandoffState = normalizeString(classification.providerHandoffState, "");
+  const recoveryState = normalizeString(classification.recoveryState, "");
+  const blockers = [];
+  let posture = "post_side_effect_replay_forbidden";
+  if (interruptedTurnClass === "healthy") posture = "terminal_no_replay_needed";
+  else if (interruptedTurnClass === "corrupt") posture = "corrupt_replay_forbidden";
+  else if (providerHandoffState === "sent_no_bytes") posture = "provider_handoff_unknown_replay_forbidden";
+  else if (sideEffectState === "none" && ["waiting_for_user", "collecting_tool_call", "decision_committed_no_result"].includes(recoveryState)) {
+    posture = "pre_side_effect_manual_resume_possible";
+  }
+  if (posture === "corrupt_replay_forbidden") blockers.push("corrupt_recovery_artifacts");
+  if (posture === "provider_handoff_unknown_replay_forbidden") blockers.push("provider_handoff_unknown");
+  if (posture === "post_side_effect_replay_forbidden") blockers.push("side_effect_boundary_crossed");
+  if (interruptedTurnClass === "side_effect_unknown") blockers.push("side_effect_state_unknown");
+  return {
+    posture,
+    automaticProviderRetryAllowed: false,
+    automaticToolReexecuteAllowed: false,
+    automaticContinuationReplayAllowed: false,
+    manualResumeMayBePossible: posture === "pre_side_effect_manual_resume_possible",
+    manualInspectionRequired: interruptedTurnClass !== "healthy" && posture !== "pre_side_effect_manual_resume_possible",
+    blockers,
+  };
+}
+
+function projectDirectRecoveryStatus(classification = {}) {
+  const operationLifecycleStage = normalizeString(classification.operationLifecycleStage, operationLifecycleStageFor(classification));
+  const interruptedTurnClass = normalizeString(classification.interruptedTurnClass, interruptedTurnClassFor(classification));
+  const replaySafety = isPlainObject(classification.replaySafety) ? classification.replaySafety : replaySafetyFor({ ...classification, interruptedTurnClass });
+  return {
+    schema: "direct_recovery_status_projection@1",
+    sessionId: normalizeString(classification.sessionId, ""),
+    turnId: normalizeString(classification.turnId, ""),
+    recoveryState: normalizeString(classification.recoveryState, "healthy"),
+    sideEffectState: normalizeString(classification.sideEffectState, "none"),
+    providerHandoffState: normalizeString(classification.providerHandoffState, "not_started"),
+    operationLifecycleStage,
+    interruptedTurnClass,
+    replayPosture: normalizeString(replaySafety.posture, "post_side_effect_replay_forbidden"),
+    composerAllowed: classification.composerAllowed === true,
+    composerAllowedReason: normalizeString(classification.composerAllowedReason, ""),
+    manualActionKind: normalizeString(classification.manualActionKind, ""),
+    safeRendererMessage: normalizeString(classification.safeRendererMessage, ""),
+    rendererProjectionIsAuthority: false,
+  };
+}
+
+function enrichRecoveryClassification(base = {}) {
+  const operationLifecycleStage = operationLifecycleStageFor(base);
+  const interruptedTurnClass = interruptedTurnClassFor(base);
+  const replaySafety = replaySafetyFor({ ...base, operationLifecycleStage, interruptedTurnClass });
+  const enriched = {
+    ...base,
+    operationLifecycleStage,
+    interruptedTurnClass,
+    replaySafety,
+  };
+  return {
+    ...enriched,
+    recoveryStatusProjection: projectDirectRecoveryStatus(enriched),
+  };
+}
+
 function stepRefFor(turn = {}, obligation = {}) {
   if (!obligation) return null;
   return {
@@ -567,7 +670,7 @@ function classifyDirectTurnRecovery(input = {}) {
   const session = isPlainObject(input.session) ? input.session : {};
   const turn = isPlainObject(input.turn) ? input.turn : {};
   if (normalizeString(turn.schema, "") !== "direct_codex_turn@1") {
-    return {
+    return enrichRecoveryClassification({
       schema: "direct_recovery_classification@1",
       sessionId: normalizeString(input.sessionId || session.sessionId, ""),
       turnId: normalizeString(input.turnId || turn.turnId, ""),
@@ -591,11 +694,11 @@ function classifyDirectTurnRecovery(input = {}) {
         requiresFutureSpec: "repair",
       },
       safeRendererMessage: "Direct recovery could not classify this turn because required artifacts are unavailable.",
-    };
+    });
   }
   const state = normalizeString(turn.state, "");
   if (!DIRECT_TURN_STATES.has(state)) {
-    return {
+    const base = {
       ...classifyTextOnlyTurn({ ...turn, state: "failed" }, input),
       schema: "direct_recovery_classification@1",
       sessionId: normalizeString(session.sessionId || turn.sessionId, ""),
@@ -606,13 +709,17 @@ function classifyDirectTurnRecovery(input = {}) {
       composerAllowed: false,
       composerAllowedReason: "disabled_corrupt",
     };
+    return enrichRecoveryClassification({
+      ...base,
+      safeRendererMessage: safeRendererMessage(base),
+    });
   }
 
   const obligation = input.obligation || activeObligation(turn);
   const base = obligation
     ? classifyByObligation(turn, obligation, input)
     : classifyTextOnlyTurn(turn, input);
-  return {
+  const classification = {
     schema: "direct_recovery_classification@1",
     scannerVersion: DIRECT_RECOVERY_SCANNER_VERSION,
     sessionId: normalizeString(session.sessionId || turn.sessionId, ""),
@@ -623,6 +730,7 @@ function classifyDirectTurnRecovery(input = {}) {
     ...base,
     safeRendererMessage: safeRendererMessage(base),
   };
+  return enrichRecoveryClassification(classification);
 }
 
 function safeRendererMessage(classification = {}) {
@@ -678,6 +786,24 @@ function validateDirectRecoveryReport(report = {}) {
     if (!entry.classification || entry.classification.autoRetryAllowed !== false || entry.classification.autoReexecuteAllowed !== false) {
       throw new Error(`Recovery case ${entry.caseId || "unknown"} permits retry/reexecute.`);
     }
+    if (!normalizeString(entry.classification.operationLifecycleStage, "")) {
+      throw new Error(`Recovery case ${entry.caseId || "unknown"} missing lifecycle stage.`);
+    }
+    if (!normalizeString(entry.classification.interruptedTurnClass, "")) {
+      throw new Error(`Recovery case ${entry.caseId || "unknown"} missing interrupted turn class.`);
+    }
+    if (!isPlainObject(entry.classification.replaySafety) ||
+      entry.classification.replaySafety.automaticProviderRetryAllowed !== false ||
+      entry.classification.replaySafety.automaticToolReexecuteAllowed !== false ||
+      entry.classification.replaySafety.automaticContinuationReplayAllowed !== false
+    ) {
+      throw new Error(`Recovery case ${entry.caseId || "unknown"} permits unsafe replay.`);
+    }
+    if (!isPlainObject(entry.classification.recoveryStatusProjection) ||
+      entry.classification.recoveryStatusProjection.rendererProjectionIsAuthority !== false
+    ) {
+      throw new Error(`Recovery case ${entry.caseId || "unknown"} missing renderer-safe recovery projection.`);
+    }
     if (!sentinelCountersAreZero(entry.sentinelCounters || {})) {
       throw new Error(`Recovery case ${entry.caseId || "unknown"} has non-zero sentinel counters.`);
     }
@@ -695,6 +821,7 @@ module.exports = {
   classifyDirectTurnRecovery,
   createZeroRecoverySentinelCounters,
   normalizeCounters,
+  projectDirectRecoveryStatus,
   scanDirectSessionRecovery,
   sentinelCountersAreZero,
   validateDirectRecoveryReport,
