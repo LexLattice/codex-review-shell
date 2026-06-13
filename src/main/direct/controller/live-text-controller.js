@@ -3606,6 +3606,11 @@ class DirectLiveTextController {
     const currentObligation = this.sessionStore.findToolObligation(sessionId, turnId, obligationId).obligation;
     const parentResponseId = parentResponseIdForToolStep(turn, currentObligation);
     const parentResponseSource = parentResponseSourceForToolStep(currentObligation);
+    const stepOrdinal = Number(currentObligation.stepOrdinal || 1) || 1;
+    const originalUserIntent = userPromptTextFromTurn(turn);
+    const continuationToolNames = implementationContinuationToolNames(this.statusForProject(project), originalUserIntent);
+    const continuationTools = directImplementationToolSchemas(continuationToolNames);
+    const implementationRepairContinuation = continuationToolNames.some((name) => name === "apply_patch" || name === "run_command");
     let continuationRequest = null;
     let continuationContext = null;
     if (this.directThreadStore && typeof this.directThreadStore.buildAndPersistContextForToolContinuation === "function") {
@@ -3641,8 +3646,10 @@ class DirectLiveTextController {
         kind: "patch_apply_continuation",
         stream: true,
         store: false,
-        tools: false,
-        toolDeclarations: false,
+        tools: continuationTools.length > 0,
+        toolCount: continuationTools.length,
+        declaredToolNames: continuationToolNames,
+        toolDeclarations: continuationTools.length > 0,
         toolOutputItem: false,
         parallelToolCalls: false,
         hasInstructions: true,
@@ -3652,7 +3659,12 @@ class DirectLiveTextController {
         providerCallType: normalizeString(continuationRequest.toolResult?.providerCallType, ""),
         providerOutputType: outputType,
         continuationTransportMode: "fresh_context",
-        requestShapeClass: "direct_patch_apply_continuation@1",
+        requestShapeClass: stepOrdinal > 1
+          ? "direct_patch_apply_loop_continuation@1"
+          : "direct_patch_apply_continuation@1",
+        toolLoopId: normalizeString(continuationRequest.toolLoop?.toolLoopId, ""),
+        stepId: normalizeString(continuationRequest.toolLoop?.stepId, ""),
+        stepOrdinal,
         patchPlanId: normalizeString(currentObligation.patchPlan?.patchPlanId, ""),
         patchResultId: normalizeString(executed.result?.resultId, ""),
       };
@@ -3671,7 +3683,7 @@ class DirectLiveTextController {
         endpointClass: "chatgpt-codex-responses",
         endpointHash: this.endpoint ? sha256(this.endpoint) : "",
         modelEvidenceRef: normalizeString(this.statusForProject(project).evidenceId, ""),
-        requestShapeEvidenceRef: "direct_patch_apply_continuation@1",
+        requestShapeEvidenceRef: continuationShape.requestShapeClass,
         endpointEvidenceRef: this.endpoint ? sha256(this.endpoint) : "",
         ...directWorkThreadContextCarrier(options),
       }, {
@@ -3710,8 +3722,18 @@ class DirectLiveTextController {
       obligationId,
       continuationRequest,
       previousResponseId: parentResponseId,
-      instructions: normalizeString(continuationContext?.providerInput?.instructions, ""),
-      prompt: normalizeString(continuationContext?.providerInput?.prompt, ""),
+      instructions: implementationRepairContinuation
+        ? DEFAULT_REPAIR_LOOP_CONTINUATION_INSTRUCTIONS
+        : [
+            normalizeString(continuationContext?.providerInput?.instructions, ""),
+            DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS,
+          ].filter(Boolean).join("\n\n"),
+      prompt: implementationRepairContinuation && originalUserIntent
+        ? [
+            `[CURRENT USER INTENT]\n${originalUserIntent}`,
+            normalizeString(continuationContext?.providerInput?.prompt, ""),
+          ].filter(Boolean).join("\n\n")
+        : normalizeString(continuationContext?.providerInput?.prompt, ""),
       continuationTransportMode: "fresh_context",
       endpoint: this.endpoint || undefined,
       authStore: this.currentAuthStore(),
@@ -3721,6 +3743,7 @@ class DirectLiveTextController {
       fetchImpl: this.fetchImpl || undefined,
       allowSequentialReadOnlyToolLoop: false,
       allowSequentialImplementationRepairLoop: true,
+      continuationTools,
       onLifecycle: (event) => {
         if (event.phase === "streaming") {
           this.emitNotification(surfaceSession, "turn/started", {

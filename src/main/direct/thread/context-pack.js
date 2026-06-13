@@ -1025,7 +1025,7 @@ function buildContextPack({
     ? [
         "[PATCH CONTINUATION INTENT]",
         "Continue the parent response using the quoted local apply_patch result evidence.",
-        "Do not request another tool in this turn.",
+        "If further local implementation action is strictly necessary, request exactly one allowed implementation tool; otherwise answer.",
       ].join("\n")
     : policy.policyId === DIRECT_READONLY_TOOL_CONTINUATION_POLICY_ID && !prompt
     ? [

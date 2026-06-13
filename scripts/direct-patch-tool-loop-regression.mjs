@@ -219,6 +219,11 @@ function applySimplePatchToText(originalText, file) {
       error.code = "patch_context_mismatch";
       throw error;
     }
+    if (targetIndex > originalLines.length) {
+      const error = new Error("Patch start line exceeds file length.");
+      error.code = "patch_context_mismatch";
+      throw error;
+    }
     while (cursor < targetIndex) {
       result.push(originalLines[cursor]);
       cursor += 1;
@@ -358,7 +363,9 @@ function buildContinuationContext({
   obligationId,
   continuationRequest,
   requestShapeEvidenceRef,
+  continuationToolNames = [],
 }) {
+  const declaredToolNames = Array.isArray(continuationToolNames) ? continuationToolNames.filter(Boolean) : [];
   const turn = sessionStore.readTurn(sessionId, turnId);
   const session = sessionStore.readSession(sessionId);
   threadStore.indexSessionArtifacts(sessionStore, session, [turn]);
@@ -366,8 +373,10 @@ function buildContinuationContext({
     kind: "patch_apply_continuation",
     stream: true,
     store: false,
-    tools: false,
-    toolDeclarations: false,
+    tools: declaredToolNames.length > 0,
+    toolCount: declaredToolNames.length,
+    declaredToolNames,
+    toolDeclarations: declaredToolNames.length > 0,
     toolOutputItem: false,
     parallelToolCalls: false,
     hasInstructions: true,
@@ -379,7 +388,7 @@ function buildContinuationContext({
     stepOrdinal: Number(continuationRequest.toolLoop?.stepOrdinal || 1),
     patchResultId: normalizeString(continuationRequest.toolResult?.metadata?.resultId, ""),
   };
-  return threadStore.buildAndPersistContextForToolContinuation({
+  const built = threadStore.buildAndPersistContextForToolContinuation({
     sessionStore,
     session,
     projectId,
@@ -397,6 +406,10 @@ function buildContinuationContext({
     requestShapeEvidenceRef,
     endpointEvidenceRef: "fixture_endpoint",
   }, { sessionStore });
+  return {
+    ...built,
+    requestShape,
+  };
 }
 
 async function executePatchStep({
@@ -408,6 +421,7 @@ async function executePatchStep({
   turnId,
   obligationId,
   requestShapeEvidenceRef,
+  continuationToolNames = [],
 }) {
   const planned = await planPatchApplyObligation({
     sessionStore,
@@ -450,6 +464,7 @@ async function executePatchStep({
     obligationId,
     continuationRequest: baseContinuation,
     requestShapeEvidenceRef,
+    continuationToolNames,
   });
   const continuationRequest = {
     ...baseContinuation,
@@ -529,6 +544,14 @@ const FAILED_PATCH = `diff --git a/src/alpha.txt b/src/alpha.txt
 +should fail
 `;
 
+const FAR_HUNK_PATCH = `diff --git a/src/alpha.txt b/src/alpha.txt
+--- a/src/alpha.txt
++++ b/src/alpha.txt
+@@ -99,1 +99,1 @@
+-missing
++still missing
+`;
+
 async function main() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "direct-patch-tool-loop-"));
   const workspaceRoot = path.join(root, "workspace");
@@ -588,6 +611,7 @@ async function main() {
       turnId: turn.turnId,
       obligationId: editObligations[0].obligationId,
       requestShapeEvidenceRef: "direct_patch_apply_continuation@1",
+      continuationToolNames: ["apply_patch"],
     });
     assert(readText(workspaceRoot, "src/alpha.txt") === "alpha one\nalpha patched\n", "edit patch must mutate alpha exactly");
     assert(edit.patchPlan.authorityTransition?.sideEffectExecuted === false, "patch plan must be side-effect false");
@@ -599,6 +623,9 @@ async function main() {
     assert(edit.continuationRequest.safety?.sideEffectExecuted === true, "patch continuation must preserve side-effect truth");
     assert(edit.continuationContext.contextPack.policy?.policyId === "direct_patch_apply_continuation@1", "patch continuation context must use patch policy");
     assert(edit.continuationContext.requestManifest.requestShapeClass === "direct_patch_apply_continuation@1", "patch request manifest class mismatch");
+    assert(edit.continuationContext.requestShape.tools === true, "patch continuation shape must declare tools when another patch step is allowed");
+    assert(edit.continuationContext.requestShape.toolDeclarations === true, "patch continuation shape must record tool declarations");
+    assert(edit.continuationContext.requestShape.declaredToolNames?.includes("apply_patch"), "patch continuation shape must include apply_patch");
 
     sessionStore.updateTurnState(session.sessionId, turn.turnId, "streaming_continuation", {
       responseId: "resp_continuation_patch_loop_1",
@@ -628,6 +655,7 @@ async function main() {
       turnId: turn.turnId,
       obligationId: createObligations[0].obligationId,
       requestShapeEvidenceRef: "direct_patch_apply_loop_continuation@1",
+      continuationToolNames: ["apply_patch"],
     });
     assert(readText(workspaceRoot, "src/new.txt") === "new one\nnew two\n", "create patch must write new file exactly");
     assert(
@@ -697,10 +725,39 @@ async function main() {
     }
     assert(failedBlocked, "patch with mismatched context must fail before approval/apply");
 
+    const farHunkObligations = sessionStore.addToolObligations(session.sessionId, turn.turnId, [
+      patchEvent({
+        itemId: "item_patch_far_hunk",
+        callId: "call_patch_far_hunk",
+        patch: FAR_HUNK_PATCH,
+        sequence: 5,
+        responseId: "resp_continuation_patch_loop_4",
+      }),
+    ], {
+      parentResponseId: "resp_continuation_patch_loop_4",
+      parentResponseSource: "native_direct_tool_continuation_stream",
+      toolLoopId: edit.continuationRequest.toolLoop?.toolLoopId,
+      stepOrdinal: 5,
+    }).obligations;
+    let farHunkBlocked = false;
+    try {
+      await planPatchApplyObligation({
+        sessionStore,
+        sessionId: session.sessionId,
+        turnId: turn.turnId,
+        obligationId: farHunkObligations[0].obligationId,
+        workspaceRequest,
+        projectId: session.projectId,
+      });
+    } catch (error) {
+      farHunkBlocked = error?.code === "patch_context_mismatch";
+    }
+    assert(farHunkBlocked, "patch with hunk start beyond file length must fail before approval/apply");
+
     const finalTurn = sessionStore.readTurn(session.sessionId, turn.turnId);
     assert((finalTurn.toolResults || []).length >= 2, "turn must persist patch result evidence");
     assert((finalTurn.continuationRequests || []).length >= 2, "turn must persist patch continuation evidence");
-    assert(counters.dryRunCalls === 4, "each patch proposal should dry-run exactly once");
+    assert(counters.dryRunCalls === 5, "each patch proposal should dry-run exactly once");
     assert(counters.applyPatchCalls === 2, "only approved valid patches should apply");
     assert(counters.runCommandCalls === 0, "patch loop regression must not execute commands");
 
@@ -712,6 +769,7 @@ async function main() {
         "create_file_patch_applied",
         "outside_workspace_patch_blocked_before_approval",
         "failed_patch_blocked_before_approval",
+        "out_of_bounds_hunk_blocked_before_approval",
         "workspace_effect_summary_rendered",
         "patch_continuation_context_built",
         "no_command_execution",
