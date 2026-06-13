@@ -43,14 +43,14 @@ capability. "Inherited" is not a defect when it is explicit and law-compatible.
 
 ## Current Executable Audit Snapshot
 
-Last reviewed after Wave 6 / PR 33 on `2026-06-14`.
+Last reviewed after Wave 6 / PR 34 on `2026-06-14`.
 
 ```text
-registry rows: 33
+registry rows: 34
 valid: yes
 missing source files: 0
 implemented rows: 10
-partial rows: 21
+partial rows: 22
 inherited rows: 2
 ```
 
@@ -196,6 +196,7 @@ The executable registry currently tracks these bridge rows:
 | `ic12.work-thread-registry` | governance/routing | partial | keep shadow |
 | `ic12.work-thread-control-deck` | governance/routing | partial | keep guarded |
 | `ic12.governance-enforcement-clarification` | governance/routing | partial | keep guarded |
+| `ic12.clarification-target-picker` | governance/routing | partial | keep guarded |
 | `ic13.bridge-information-registry` | governance/routing | partial | bootstrap now |
 | `ic14.skills-hooks-apps` | governance/routing | partial | keep shadow |
 | `ic15.direct-settings-surface` | observability surface | partial | keep shadow |

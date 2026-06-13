@@ -392,6 +392,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "The gate may satisfy a transition precondition but does not perform object-level audit, worker tasks, broad execution authority, autonomous routing, or hidden mutation.",
   },
   {
+    id: "ic12.clarification-target-picker",
+    name: "Clarification target picker and operator answer",
+    role: "governance_routing",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/governance/target-picker.js", "src/main/direct/ui/settings-surface.js", "scripts/direct-clarification-target-picker-regression.mjs"],
+    ontology: ontologyShape(["direct_clarification_target_picker", "direct_clarification_target_answer", "operator_routing_evidence"], "harness", {
+      identityFields: ["projectId", "targetPickerId", "clarificationAnswerId", "workThreadId"],
+      schema: "direct_clarification_target_picker@1",
+    }),
+    bridgeFit: "Turns blocked clarification packets and operator-broker candidates into a renderer-safe target picker plus explicit operator answer artifact.",
+    realignment: "Picker answers are routing evidence only and grant no provider call, workspace mutation, tool transition, worker spawn, object audit, or app-server replacement authority.",
+  },
+  {
     id: "ic13.bridge-information-registry",
     name: "Bridge information class registry",
     role: "governance_routing",

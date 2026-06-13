@@ -232,6 +232,32 @@ function summarizeWorkThreadControlDeck(input = {}) {
   };
 }
 
+function summarizeClarificationTargetPicker(input = {}) {
+  const picker = objectOrEmpty(input.clarificationTargetPicker || input.targetPicker || input);
+  const actions = objectOrEmpty(picker.actions);
+  return {
+    available: normalizeString(picker.schema, "") === "direct_clarification_target_picker@1",
+    schema: normalizeString(picker.schema, "not_exposed"),
+    pickerState: normalizeString(picker.pickerState, "unavailable"),
+    transitionKind: normalizeString(picker.transitionKind, "unknown"),
+    candidateCount: Number(picker.candidateCount ?? arrayOrEmpty(picker.candidates).length ?? 0),
+    selectableCandidateCount: Number(picker.selectableCandidateCount ?? 0),
+    blockerCodes: arrayOrEmpty(picker.blockerCodes).map((item) => normalizeString(item, "")).filter(Boolean),
+    chooseCandidateAvailable: actions.chooseCandidateAvailable === true,
+    rejectAllAvailable: actions.rejectAllAvailable === true,
+    keepBlockedAvailable: actions.keepBlockedAvailable === true,
+    providerCallAuthorityGranted: actions.providerCallAuthorityGranted === true,
+    workspaceMutationAuthorityGranted: actions.workspaceMutationAuthorityGranted === true,
+    workerSpawnAuthorityGranted: actions.workerSpawnAuthorityGranted === true,
+    objectAuditAuthorityGranted: actions.objectAuditAuthorityGranted === true,
+    appServerReplacementAuthorityGranted: actions.appServerReplacementAuthorityGranted === true,
+    nonTargetPreservationRequired: picker.downstreamRoutePacketConstraints?.nonTargetPreservationRequired === true,
+    targetPickerDigest: normalizeString(picker.pickerDigest, ""),
+    clarificationPacketDigest: normalizeString(picker.clarificationPacketDigest, ""),
+    operatorBrokerResolutionDigest: normalizeString(picker.operatorBrokerResolutionDigest, ""),
+  };
+}
+
 function summarizeGovernance(input = {}) {
   const governance = objectOrEmpty(input.governanceStatus || input.governance || input.metaSessionStatus?.governance);
   const broker = objectOrEmpty(input.brokerStatus || input.broker || input.metaSessionStatus?.routeSummary);
@@ -356,6 +382,7 @@ function buildRows(sections) {
   const registry = sections.registry;
   const workThreads = sections.workThreads;
   const workThreadControl = sections.workThreadControl;
+  const clarificationTargetPicker = sections.clarificationTargetPicker;
   const operatorBroker = sections.operatorBroker;
   const governance = sections.governance;
   const modules = sections.modules;
@@ -401,6 +428,17 @@ function buildRows(sections) {
       statusRow("Non-target preservation", workThreadControl.nonTargetPreservationConstraints.length ? "required" : "standard", workThreadControl.nonTargetPreservationConstraints.length ? "diagnostic" : "ok"),
       statusRow("Selection transition", workThreadControl.selectionTransitionAvailable ? "available" : "not available", workThreadControl.selectionTransitionAvailable ? "diagnostic" : "missing"),
       statusRow("Authority", workThreadControl.providerCallAuthorityGranted || workThreadControl.workspaceMutationAuthorityGranted || workThreadControl.workerSpawnAuthorityGranted || workThreadControl.appServerReplacementAuthorityGranted ? "unexpected grant" : "no grant", workThreadControl.providerCallAuthorityGranted || workThreadControl.workspaceMutationAuthorityGranted || workThreadControl.workerSpawnAuthorityGranted || workThreadControl.appServerReplacementAuthorityGranted ? "blocked" : "ok"),
+    ],
+    clarificationTargetPicker: [
+      statusRow("Surface", clarificationTargetPicker.available ? "available" : "not exposed", clarificationTargetPicker.available ? "diagnostic" : "missing"),
+      statusRow("Picker", clarificationTargetPicker.pickerState, clarificationTargetPicker.pickerState === "ready" ? "ok" : "blocked"),
+      statusRow("Transition", clarificationTargetPicker.transitionKind),
+      statusRow("Candidates", `${clarificationTargetPicker.candidateCount}/${clarificationTargetPicker.selectableCandidateCount}`),
+      statusRow("Choose", clarificationTargetPicker.chooseCandidateAvailable ? "available" : "not available", clarificationTargetPicker.chooseCandidateAvailable ? "diagnostic" : "blocked"),
+      statusRow("Reject / keep blocked", `${clarificationTargetPicker.rejectAllAvailable ? "reject" : "no reject"} / ${clarificationTargetPicker.keepBlockedAvailable ? "keep" : "no keep"}`),
+      statusRow("Blockers", clarificationTargetPicker.blockerCodes.length ? clarificationTargetPicker.blockerCodes.slice(0, 5).join(", ") : "none", clarificationTargetPicker.blockerCodes.length ? "blocked" : "ok"),
+      statusRow("Non-target preservation", clarificationTargetPicker.nonTargetPreservationRequired ? "required" : "standard", clarificationTargetPicker.nonTargetPreservationRequired ? "diagnostic" : "ok"),
+      statusRow("Authority", clarificationTargetPicker.providerCallAuthorityGranted || clarificationTargetPicker.workspaceMutationAuthorityGranted || clarificationTargetPicker.workerSpawnAuthorityGranted || clarificationTargetPicker.objectAuditAuthorityGranted || clarificationTargetPicker.appServerReplacementAuthorityGranted ? "unexpected grant" : "no grant", clarificationTargetPicker.providerCallAuthorityGranted || clarificationTargetPicker.workspaceMutationAuthorityGranted || clarificationTargetPicker.workerSpawnAuthorityGranted || clarificationTargetPicker.objectAuditAuthorityGranted || clarificationTargetPicker.appServerReplacementAuthorityGranted ? "blocked" : "ok"),
     ],
     operatorBroker: [
       statusRow("Surface", operatorBroker.available ? "available" : "not exposed", operatorBroker.available ? "diagnostic" : "missing"),
@@ -478,6 +516,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
   const registry = summarizeRegistry(input.registryAudit);
   const workThreads = summarizeWorkThreads(input.workThreads || input);
   const workThreadControl = summarizeWorkThreadControlDeck(input.workThreadControlDeck || input.workThreadControl || input);
+  const clarificationTargetPicker = summarizeClarificationTargetPicker(input.clarificationTargetPicker || input.targetPicker || input);
   const operatorBroker = summarizeOperatorBroker(input.operatorBroker || input.operatorBrokerResolution || input.operatorBrokerProjection || input);
   const governance = summarizeGovernance(input);
   const modules = summarizeModules(input.moduleStatus);
@@ -502,7 +541,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
     rawPathIncluded: false,
     rawSecretIncluded: false,
   };
-  const sections = { runtime, registry, workThreads, workThreadControl, operatorBroker, governance, modules, agentClasses, continuity, agentUsage };
+  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, agentClasses, continuity, agentUsage };
   const sourceDigest = digestFor("direct-settings-surface-source@1", sections);
   const projection = {
     schema: DIRECT_SETTINGS_SURFACE_PROJECTION_SCHEMA,
@@ -516,6 +555,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       "registry",
       "work_thread",
       "work_thread_control",
+      "clarification_target_picker",
       "operator_broker",
       "governance",
       "skills_hooks_apps",
@@ -536,6 +576,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       { kind: "runtime_status", digest: normalizeString(input.runtimeStatus?.sourceDigest || input.runtimeStatus?.statusDigest, ""), label: "Direct runtime status" },
       { kind: "work_thread_projection", digest: normalizeString(workThreads.projectionDigest, ""), label: "WorkThread projection" },
       { kind: "work_thread_control_deck", digest: normalizeString(workThreadControl.controlDeckDigest, ""), label: "WorkThread control deck" },
+      { kind: "clarification_target_picker", digest: normalizeString(clarificationTargetPicker.targetPickerDigest, ""), label: "Clarification target picker" },
       { kind: "operator_broker_resolution", digest: normalizeString(operatorBroker.brokerResolutionDigest, ""), label: "Operator broker resolution" },
       { kind: "module_status", digest: normalizeString(input.moduleStatus?.projectionDigest, ""), label: "Bridge module status" },
       { kind: "agent_class_status", digest: normalizeString(input.agentClassStatus?.projectionDigest, ""), label: "Agent class status" },
