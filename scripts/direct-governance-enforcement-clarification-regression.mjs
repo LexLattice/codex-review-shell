@@ -231,6 +231,45 @@ assert.equal(unknownTransitionGate.gateState, "blocked");
 assert.equal(unknownTransitionGate.allowed, false);
 assert(unknownTransitionGate.blockerCodes.includes("unsupported_transition_kind"));
 
+const docsSelectedThread = docsWorkThread({
+  linkedCodexThreads: [{ threadId: "codex_docs_thread", title: "Docs thread" }],
+});
+const docsBroker = brokerFor({
+  activeRuntimePath: "direct-text",
+  codexThreadId: "codex_docs_thread",
+  userRequest: "update direct documentation alignment docs",
+}, [docsSelectedThread]);
+const forbiddenActionGate = buildGovernanceEnforcementPreflight({
+  projectId,
+  transitionKind: "workspace_mutation",
+  workThread: docsSelectedThread,
+  workTargetResolutionReport: docsBroker.workTargetResolutionReport,
+  operatorBrokerResolution: docsBroker,
+  activeBranchName: branchName,
+}, { nowMs });
+validateGovernanceEnforcementPreflight(forbiddenActionGate);
+assert.equal(forbiddenActionGate.gateState, "blocked");
+assert.equal(forbiddenActionGate.allowed, false);
+assert.equal(forbiddenActionGate.workspaceMutationAllowed, false);
+assert(forbiddenActionGate.blockerCodes.includes("action_not_allowed"));
+assert(forbiddenActionGate.blockerCodes.includes("action_forbidden"));
+
+const callerOverrideGate = buildGovernanceEnforcementPreflight({
+  projectId,
+  transitionKind: "provider_call",
+  selectedWorkThreadId: "work_thread_direct_docs",
+  workThread: docsThread,
+  workTargetResolutionReport: clearBroker.workTargetResolutionReport,
+  operatorBrokerResolution: clearBroker,
+  activeBranchName: branchName,
+}, { nowMs });
+validateGovernanceEnforcementPreflight(callerOverrideGate);
+assert.equal(callerOverrideGate.gateState, "blocked");
+assert.equal(callerOverrideGate.allowed, false);
+assert.equal(callerOverrideGate.selectedWorkThreadId, "work_thread_direct_bridge");
+assert(callerOverrideGate.blockerCodes.includes("caller_selected_work_thread_mismatch"));
+assert(callerOverrideGate.blockerCodes.includes("operator_broker_work_thread_mismatch"));
+
 console.log(JSON.stringify({
   ok: true,
   clearMutationGate: clearMutationGate.gateState,
@@ -240,4 +279,6 @@ console.log(JSON.stringify({
   missingAuthorityGate: missingAuthorityGate.gateState,
   mismatchGate: mismatchGate.gateState,
   unknownTransitionGate: unknownTransitionGate.gateState,
+  forbiddenActionGate: forbiddenActionGate.gateState,
+  callerOverrideGate: callerOverrideGate.gateState,
 }, null, 2));

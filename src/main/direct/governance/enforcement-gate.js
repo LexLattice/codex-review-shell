@@ -134,10 +134,9 @@ function normalizeCandidate(candidate = {}, index = 0) {
   };
 }
 
-function selectedWorkThreadIdFor(workTargetResolutionReport = {}, operatorBrokerResolution = {}, input = {}) {
+function selectedWorkThreadIdFor(workTargetResolutionReport = {}, operatorBrokerResolution = {}) {
   return normalizeString(
-    input.selectedWorkThreadId ||
-      operatorBrokerResolution.selectedWorkThreadId ||
+    operatorBrokerResolution.selectedWorkThreadId ||
       operatorBrokerResolution.downstreamRoutePacketConstraints?.selectedWorkThreadId ||
       workTargetResolutionReport.selectedWorkThreadId,
     "",
@@ -173,6 +172,7 @@ function workThreadAuthorityBoundary(workThread = {}) {
 function collectBlockers(normalized = {}) {
   const {
     selectedWorkThreadId,
+    requestedWorkThreadId,
     expectedWorkThreadId,
     workTargetResolutionReport,
     operatorBrokerResolution,
@@ -200,8 +200,20 @@ function collectBlockers(normalized = {}) {
   if (expectedWorkThreadId && selectedWorkThreadId && expectedWorkThreadId !== selectedWorkThreadId) {
     blockers.add("operator_broker_work_thread_mismatch");
   }
+  if (requestedWorkThreadId && selectedWorkThreadId && requestedWorkThreadId !== selectedWorkThreadId) {
+    blockers.add("caller_selected_work_thread_mismatch");
+  }
   if (workTargetResolutionReport.stale === true) blockers.add("work_target_resolution_stale");
-  if (!authorityBoundary.present) blockers.add("authority_boundary_missing");
+  if (!authorityBoundary.present) {
+    blockers.add("authority_boundary_missing");
+  } else {
+    if (authorityBoundary.allowedActions.length > 0 && !authorityBoundary.allowedActions.includes(transitionKind)) {
+      blockers.add("action_not_allowed");
+    }
+    if (authorityBoundary.forbiddenActions.includes(transitionKind)) {
+      blockers.add("action_forbidden");
+    }
+  }
   if (normalizeString(operatorBrokerResolution.confidenceLabel, "none") === "low") blockers.add("target_confidence_too_low");
   if (targetBranchName && activeBranchName && targetBranchName !== activeBranchName) blockers.add("branch_mismatch");
   if (expectedBranchName && activeBranchName && expectedBranchName !== activeBranchName) blockers.add("branch_mismatch");
@@ -268,7 +280,8 @@ function buildGovernanceEnforcementPreflight(input = {}, options = {}) {
   const operatorBrokerResolution = isPlainObject(input.operatorBrokerResolution) ? input.operatorBrokerResolution : {};
   const workThread = isPlainObject(input.workThread) ? input.workThread : {};
   const transitionKind = normalizeTransitionKind(input.transitionKind);
-  const selectedWorkThreadId = selectedWorkThreadIdFor(workTargetResolutionReport, operatorBrokerResolution, input);
+  const selectedWorkThreadId = selectedWorkThreadIdFor(workTargetResolutionReport, operatorBrokerResolution);
+  const requestedWorkThreadId = normalizeString(input.selectedWorkThreadId, "");
   const expectedWorkThreadId = normalizeString(input.expectedWorkThreadId || workThread.workThreadId, "");
   const authorityBoundary = normalizeAuthorityBoundary(input.authorityBoundary || workThreadAuthorityBoundary(workThread));
   const activeBranchName = normalizeString(input.activeBranchName || input.branchName, "");
@@ -276,6 +289,7 @@ function buildGovernanceEnforcementPreflight(input = {}, options = {}) {
   const targetBranchName = workThreadBranchName(workThread);
   const normalized = {
     selectedWorkThreadId,
+    requestedWorkThreadId,
     expectedWorkThreadId,
     workTargetResolutionReport,
     operatorBrokerResolution,
@@ -320,6 +334,7 @@ function buildGovernanceEnforcementPreflight(input = {}, options = {}) {
     projectId: input.projectId,
     transitionKind,
     selectedWorkThreadId,
+    requestedWorkThreadId,
     expectedWorkThreadId,
     blockerCodes,
     reportDigest: workTargetResolutionReport.reportDigest,
