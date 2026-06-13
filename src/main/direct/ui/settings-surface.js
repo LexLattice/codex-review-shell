@@ -489,6 +489,41 @@ function summarizeAgentUsage(input = {}) {
   };
 }
 
+function summarizeManualSmokeGate(input = {}) {
+  const source = objectOrEmpty(input);
+  const gate = normalizeString(source.schema, "") === "direct_manual_smoke_gate@1"
+    ? source
+    : objectOrEmpty(source.manualSmokeGate || source.directManualSmokeGate || source.manualSmokeGateProjection);
+  const counts = objectOrEmpty(gate.counts);
+  const authority = objectOrEmpty(gate.authority);
+  return {
+    available: normalizeString(gate.schema, "") === "direct_manual_smoke_gate@1",
+    schema: normalizeString(gate.schema, "not_exposed"),
+    gateState: normalizeString(gate.gateState, "unavailable"),
+    rowCount: Number(counts.rowCount ?? arrayOrEmpty(gate.rows).length ?? 0),
+    passedCount: Number(counts.passedCount ?? 0),
+    blockedCount: Number(counts.blockedCount ?? 0),
+    warningCount: Number(counts.warningCount ?? 0),
+    notCheckedCount: Number(counts.notCheckedCount ?? 0),
+    requiredBlockedCount: Number(counts.requiredBlockedCount ?? 0),
+    blockerCodes: arrayOrEmpty(gate.blockerCodes).map((item) => normalizeString(item, "")).filter(Boolean),
+    coverageSource: normalizeString(gate.coverageSource, "unknown"),
+    matrixPromotionCandidate: gate.matrixPromotionCandidate === true,
+    electronRunnerAvailable: gate.electronRunner?.available === true,
+    manualSmokeExecutionAllowed: authority.manualSmokeExecutionAllowed === true,
+    runtimePathMutationAllowed: authority.runtimePathMutationAllowed === true,
+    workThreadMutationAllowed: authority.workThreadMutationAllowed === true,
+    providerTransportAllowed: authority.providerTransportAllowed === true,
+    workspaceMutationAllowed: authority.workspaceMutationAllowed === true,
+    appServerReplacementAllowed: authority.appServerReplacementAllowed === true,
+    autoApprovalAllowed: authority.autoApprovalAllowed === true,
+    moduleExecutionAllowed: authority.moduleExecutionAllowed === true,
+    recursiveWorkerAllowed: authority.recursiveWorkerAllowed === true,
+    matrixPromotionAllowed: authority.matrixPromotionAllowed === true,
+    gateDigest: normalizeString(gate.gateDigest, ""),
+  };
+}
+
 function buildRows(sections) {
   const runtime = sections.runtime;
   const registry = sections.registry;
@@ -504,6 +539,7 @@ function buildRows(sections) {
   const contextPreview = sections.contextPreview;
   const memoryWorkbench = sections.memoryWorkbench;
   const agentUsage = sections.agentUsage;
+  const manualSmokeGate = sections.manualSmokeGate;
   return {
     runtime: [
       statusRow("Current path", runtime.currentPath),
@@ -667,6 +703,19 @@ function buildRows(sections) {
       statusRow("Routes", agentUsage.routeCount),
       statusRow("Cost", agentUsage.costComputed || agentUsage.billingGrade ? "unexpected" : "not computed", agentUsage.costComputed || agentUsage.billingGrade ? "blocked" : "ok"),
     ],
+    manualSmokeGate: [
+      statusRow("Surface", manualSmokeGate.available ? "available" : "not exposed", manualSmokeGate.available ? "diagnostic" : "missing"),
+      statusRow("Gate", manualSmokeGate.gateState, manualSmokeGate.gateState === "passed" ? "ok" : manualSmokeGate.gateState === "blocked" ? "blocked" : "diagnostic"),
+      statusRow("Rows", manualSmokeGate.rowCount),
+      statusRow("Passed/warn", `${manualSmokeGate.passedCount}/${manualSmokeGate.warningCount}`, manualSmokeGate.warningCount ? "diagnostic" : "ok"),
+      statusRow("Blocked/not checked", `${manualSmokeGate.blockedCount}/${manualSmokeGate.notCheckedCount}`, manualSmokeGate.blockedCount ? "blocked" : "ok"),
+      statusRow("Required blocked", manualSmokeGate.requiredBlockedCount, manualSmokeGate.requiredBlockedCount ? "blocked" : "ok"),
+      statusRow("Coverage", manualSmokeGate.coverageSource),
+      statusRow("Electron runner", manualSmokeGate.electronRunnerAvailable ? "available" : "not invoked", manualSmokeGate.electronRunnerAvailable ? "diagnostic" : "ok"),
+      statusRow("Blockers", manualSmokeGate.blockerCodes.length ? manualSmokeGate.blockerCodes.slice(0, 6).join(", ") : "none", manualSmokeGate.blockerCodes.length ? "blocked" : "ok"),
+      statusRow("Promotion", manualSmokeGate.matrixPromotionCandidate || manualSmokeGate.matrixPromotionAllowed ? "unexpected" : "not promoted", manualSmokeGate.matrixPromotionCandidate || manualSmokeGate.matrixPromotionAllowed ? "blocked" : "ok"),
+      statusRow("Authority", manualSmokeGate.manualSmokeExecutionAllowed || manualSmokeGate.runtimePathMutationAllowed || manualSmokeGate.workThreadMutationAllowed || manualSmokeGate.providerTransportAllowed || manualSmokeGate.workspaceMutationAllowed || manualSmokeGate.appServerReplacementAllowed || manualSmokeGate.autoApprovalAllowed || manualSmokeGate.moduleExecutionAllowed || manualSmokeGate.recursiveWorkerAllowed ? "unexpected grant" : "display only", manualSmokeGate.manualSmokeExecutionAllowed || manualSmokeGate.runtimePathMutationAllowed || manualSmokeGate.workThreadMutationAllowed || manualSmokeGate.providerTransportAllowed || manualSmokeGate.workspaceMutationAllowed || manualSmokeGate.appServerReplacementAllowed || manualSmokeGate.autoApprovalAllowed || manualSmokeGate.moduleExecutionAllowed || manualSmokeGate.recursiveWorkerAllowed ? "blocked" : "ok"),
+    ],
   };
 }
 
@@ -686,6 +735,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
   const contextPreview = summarizeContextPreview(input.contextPreview || input.contextPacketPreview || input.directContextPreview || input);
   const memoryWorkbench = summarizeMemoryWorkbench(input.memoryWorkbench || input.memoryReviewWorkbench || input.directMemoryWorkbench || input);
   const agentUsage = summarizeAgentUsage(input.agentUsageStatus || input.agentUsageProjection || input.directAgentUsage || input);
+  const manualSmokeGate = summarizeManualSmokeGate(input.manualSmokeGate || input.directManualSmokeGate || input.manualSmokeGateProjection || input);
   const generatedAt = normalizeString(input.generatedAt, nowIso(input.nowMs));
   const authority = {
     displayOnly: true,
@@ -710,11 +760,18 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
     providerMemoryClaimAccepted: false,
     automaticRefreshAllowed: false,
     workspaceMutationAllowed: false,
+    manualSmokeExecutionAllowed: false,
+    runtimePathMutationAllowed: false,
+    workThreadMutationAllowed: false,
+    appServerReplacementAllowed: false,
+    autoApprovalAllowed: false,
+    recursiveWorkerAllowed: false,
+    matrixPromotionAllowed: false,
     rawTextIncluded: false,
     rawPathIncluded: false,
     rawSecretIncluded: false,
   };
-  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, continuity, contextPreview, memoryWorkbench, agentUsage };
+  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, continuity, contextPreview, memoryWorkbench, agentUsage, manualSmokeGate };
   const sourceDigest = digestFor("direct-settings-surface-source@1", sections);
   const projection = {
     schema: DIRECT_SETTINGS_SURFACE_PROJECTION_SCHEMA,
@@ -738,6 +795,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       "context_packet_preview",
       "memory_review_workbench",
       "direct_agent_usage",
+      "manual_smoke_gate",
     ],
     sections,
     rows: buildRows(sections),
@@ -761,6 +819,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       { kind: "context_packet_preview", digest: normalizeString(contextPreview.previewDigest, ""), label: "Context packet preview" },
       { kind: "memory_review_workbench", digest: normalizeString(memoryWorkbench.workbenchDigest, ""), label: "Memory review workbench" },
       { kind: "direct_agent_usage", digest: normalizeString(agentUsage.projectionDigest || agentUsage.ledgerDigest, ""), label: "Direct agent usage summary" },
+      { kind: "manual_smoke_gate", digest: normalizeString(manualSmokeGate.gateDigest, ""), label: "Direct manual smoke gate" },
     ].filter((ref) => ref.digest || ref.kind === "registry_audit"),
     sourceDigest,
     rawTextIncluded: false,
@@ -797,6 +856,13 @@ function assertDirectSettingsSurfaceRendererSafe(projection = {}) {
     "providerMemoryClaimAccepted",
     "automaticRefreshAllowed",
     "workspaceMutationAllowed",
+    "manualSmokeExecutionAllowed",
+    "runtimePathMutationAllowed",
+    "workThreadMutationAllowed",
+    "appServerReplacementAllowed",
+    "autoApprovalAllowed",
+    "recursiveWorkerAllowed",
+    "matrixPromotionAllowed",
     "rawTextIncluded",
     "rawPathIncluded",
     "rawSecretIncluded",
