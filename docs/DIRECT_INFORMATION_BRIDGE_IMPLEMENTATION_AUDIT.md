@@ -43,14 +43,14 @@ capability. "Inherited" is not a defect when it is explicit and law-compatible.
 
 ## Current Executable Audit Snapshot
 
-Last reviewed after Wave 6 / PR 36 on `2026-06-14`.
+Last reviewed after Wave 6 / PR 37 on `2026-06-14`.
 
 ```text
-registry rows: 36
+registry rows: 37
 valid: yes
 missing source files: 0
 implemented rows: 10
-partial rows: 24
+partial rows: 25
 inherited rows: 2
 ```
 
@@ -201,6 +201,7 @@ The executable registry currently tracks these bridge rows:
 | `ic12.clarification-target-picker` | governance/routing | partial | keep guarded |
 | `ic13.bridge-information-registry` | governance/routing | partial | bootstrap now |
 | `ic14.skills-hooks-apps` | governance/routing | partial | keep shadow |
+| `ic14.module-context-intake` | context construction | partial | keep guarded |
 | `ic15.direct-settings-surface` | observability surface | partial | keep shadow |
 | `ic16.agent-class-spec-registry` | governance/routing | partial | keep shadow |
 | `ic17.direct-attachment-capability` | authority gate | partial | keep and align |
@@ -244,7 +245,6 @@ Not built yet:
 - Enforced semantic broker routing.
 - Full direct-native memory/compaction/frontier workflow with live scheduler and UI controls.
 - Agent execution contracts for worker/auditor/meta-orchestrator beyond declared role specs.
-- Module context/evidence intake UI.
 - Broad manual/electron smoke gate for the direct branch.
 
 ## Remaining Work Ledger

@@ -462,6 +462,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "Context-only skill refs, connector evidence rows, hook proposals, and execution gates are visible; module execution, auto-invocation, workspace mutation, provider calls, and WorkThread routing remain disabled.",
   },
   {
+    id: "ic14.module-context-intake",
+    name: "Module context contribution intake",
+    role: "context_construction",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/bridge/module-context-intake.js", "src/main/direct/context/preview-workbench.js", "src/main/direct/ui/settings-surface.js", "scripts/direct-module-context-intake-regression.mjs"],
+    ontology: ontologyShape(["direct_module_context_intake", "direct_module_context_intake_row", "module_context_contribution", "module_imported_evidence"], "harness", {
+      identityFields: ["projectId", "workThreadId", "threadId", "moduleId", "rowId"],
+      schema: "direct_module_context_intake@1",
+    }),
+    bridgeFit: "Accepts bounded context-only skill output and imported connector evidence rows into WorkThread-bound context preview rows after source, scope, and raw-exposure checks.",
+    realignment: "Accepted module information may appear in context preview, but context-packet mutation, connector mutation, hook execution, auto-invocation, workspace mutation, provider transport, and module execution remain disabled.",
+  },
+  {
     id: "ic15.direct-settings-surface",
     name: "Direct settings and bridge status surface",
     role: "observability_surface",

@@ -192,7 +192,13 @@ function extractContextRows(input) {
   addMany(input.durableMemory || input.memoryRows || input.contextPack?.durableMemory || input.contextMaintenance?.durableMemory, "durable_memory");
   addMany(input.frontierBaton || input.batonRows || input.contextPack?.frontierBaton || input.contextMaintenance?.frontierBaton, "frontier_baton");
   addMany(input.attachments || input.attachmentRows || input.contextPack?.attachments, "attachment");
-  addMany(input.moduleContextContributions || input.moduleContextRows || input.moduleStatus?.contextContributions, "module_context");
+  addMany([
+    ...arrayOrEmpty(input.moduleContextContributions),
+    ...arrayOrEmpty(input.moduleContextRows),
+    ...arrayOrEmpty(input.moduleStatus?.contextContributions),
+    ...arrayOrEmpty(input.moduleContextIntake?.acceptedContextPreviewRows),
+    ...arrayOrEmpty(input.directModuleContextIntake?.acceptedContextPreviewRows),
+  ], "module_context");
   addMany(input.toolResultRefs || input.toolResultRows || input.contextPack?.toolResultRefs, "tool_result_ref");
   addMany(input.omissionRows || input.omissionWitnesses || input.contextMaintenance?.omissionRows || input.contextPack?.omissionRows, "omission_witness");
   addMany(input.harnessPolicyRows || input.policyRows, "harness_policy");
