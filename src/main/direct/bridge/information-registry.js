@@ -140,6 +140,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "Compaction now has local plan and manual-gate witnesses; actual compact execution, memory mutation/reset, provider compaction, and replay authority remain gated until separate live evidence and authority controls exist.",
   },
   {
+    id: "ic3.context-packet-preview-workbench",
+    name: "Context packet preview and omission workbench",
+    role: "context_construction",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/context/preview-workbench.js", "src/main/direct/ui/settings-surface.js", "scripts/direct-context-preview-workbench-regression.mjs"],
+    ontology: ontologyShape(["direct_context_packet_preview", "direct_context_preview_source_row", "context_omission_witness"], "harness", {
+      identityFields: ["projectId", "workThreadId", "threadId", "previewId", "rowId"],
+      schema: "direct_context_packet_preview@1",
+    }),
+    bridgeFit: "Builds renderer-safe preview rows over request-bound context sources, omissions, stale/missing refs, raw-exposure blockers, token/size pressure, and request-blocked posture before provider input assembly.",
+    realignment: "This slice is display-only: it grants no request assembly, provider transport, memory mutation, provider compaction, workspace mutation, or preview editing authority.",
+  },
+  {
     id: "ic4.read-file-authority",
     name: "Read-file authority transition",
     role: "authority_gate",

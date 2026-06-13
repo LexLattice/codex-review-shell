@@ -1861,7 +1861,7 @@ not chat recency or silent default selection.
 
 ### PR 35: Context Packet Preview And Omission Workbench
 
-Status: planned.
+Status: implemented in PR 35.
 
 Purpose:
 
@@ -1887,6 +1887,20 @@ Promotion criterion:
 The operator can inspect what information will be sent, what is omitted, and
 why, before a direct request is assembled.
 ```
+
+Implemented slice:
+
+- Added `direct_context_packet_preview@1` and renderer-safe source rows for
+  recent dialogue, durable memory, frontier baton, attachments, module context,
+  tool result refs, omission witnesses, and harness policy rows.
+- Added preview totals for source classes, included/omitted rows, token/size
+  estimates, stale/missing/raw-exposure counts, and request blockers.
+- Added `blocked_from_request` posture for required missing/stale sources,
+  raw-exposure unsafe rows, and missing required omission witnesses.
+- Surfaced the preview in the direct settings/status projection as display-only
+  and registered it as `ic3.context-packet-preview-workbench`.
+- Kept request assembly, provider transport, preview editing, memory mutation,
+  provider compaction, and workspace mutation authority disabled.
 
 ### PR 36: Memory Review Materialization UI V0
 
