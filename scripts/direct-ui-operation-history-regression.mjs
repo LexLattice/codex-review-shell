@@ -305,7 +305,7 @@ function buildReport() {
       approvalCardsVisible: uiStatus.implementationLane.canShowApprovalCards,
       latestToolResultStatus: uiStatus.latestToolResult.status,
       latestToolResultTool: uiStatus.latestToolResult.tool,
-      latestToolResultActionable: uiStatus.latestToolResult.actionability.actionable,
+      latestToolResultActionable: uiStatus.latestToolResult.actionability?.actionable,
       contextMaintenanceDisplayOnly: uiStatus.contextMaintenance.displayOnly,
       contextMaintenanceActionable: uiStatus.contextMaintenance.actionability.actionable,
       contextMaintenanceCompactActionAllowed: uiStatus.contextMaintenance.compactActionAllowed,

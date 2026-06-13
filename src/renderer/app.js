@@ -175,6 +175,7 @@ const state = {
   directImplementationPolicyView: null,
   directImplementationUiLoading: false,
   directImplementationUiError: "",
+  directImplementationUiWarning: "",
   directMetaSessionStatus: null,
   directMetaSessionLoading: false,
   directMetaSessionError: "",
@@ -3301,10 +3302,29 @@ function renderDirectImplementationUiStatus() {
       els.directImplementationEvidence.textContent = `Implementation-lane projection unavailable: ${state.directImplementationUiError}`;
     } else if (schemaOk) {
       const rowCount = Array.isArray(history.rows) ? history.rows.length : 0;
-      els.directImplementationEvidence.textContent = `Read-only projection · ${rowCount} history row${rowCount === 1 ? "" : "s"} · policy ${policy.schema ? "loaded" : "not loaded"} · no approval, replay, recovery, or workspace mutation action is exposed here.`;
+      const historyScope = history.scope || "not loaded";
+      const warning = state.directImplementationUiWarning ? ` · warning: ${state.directImplementationUiWarning}` : "";
+      els.directImplementationEvidence.textContent = `Read-only projection · ${rowCount} ${historyScope} history row${rowCount === 1 ? "" : "s"} · policy ${policy.schema ? "loaded" : "not loaded"} · no approval, replay, recovery, or workspace mutation action is exposed here.${warning}`;
     } else {
       els.directImplementationEvidence.textContent = "Direct implementation-lane UI status is read-only and not loaded yet.";
     }
+  }
+}
+
+function directImplementationHistoryRequest(status) {
+  const projection = directDiagnosticsObject(status);
+  const activeTurnId = projection.activeTurn?.turnId || "";
+  if (activeTurnId) return { scope: "active-turn", targetTurnId: activeTurnId, limit: 24 };
+  const latestTurnId = projection.latestToolResult?.turnId || "";
+  if (latestTurnId) return { scope: "latest-result-turn", targetTurnId: latestTurnId, limit: 24 };
+  return { scope: "project", limit: 24 };
+}
+
+async function optionalDirectImplementationProjection(label, loader) {
+  try {
+    return { value: await loader(), warning: "" };
+  } catch (error) {
+    return { value: null, warning: `${label}: ${error.message || "unavailable"}` };
   }
 }
 
@@ -6689,23 +6709,30 @@ async function refreshDirectImplementationUiStatus(projectId = activeProject()?.
   const snapshot = projectRequestSnapshot(projectId);
   state.directImplementationUiLoading = true;
   state.directImplementationUiError = "";
+  state.directImplementationUiWarning = "";
   if (options.renderBefore !== false) renderDirectImplementationUiStatus();
   try {
-    const [status, history, policy] = await Promise.all([
-      bridge.getDirectImplementationLaneUiStatus(projectId),
+    const status = await bridge.getDirectImplementationLaneUiStatus(projectId);
+    const historyRequest = directImplementationHistoryRequest(status);
+    const [historyResult, policyResult] = await Promise.all([
       bridge.readDirectImplementationOperationHistory
-        ? bridge.readDirectImplementationOperationHistory(projectId, { scope: "active-turn", limit: 24 })
-        : Promise.resolve(null),
+        ? optionalDirectImplementationProjection("operation history", () => bridge.readDirectImplementationOperationHistory(projectId, historyRequest))
+        : Promise.resolve({ value: null, warning: "" }),
       bridge.getDirectImplementationPolicyView
-        ? bridge.getDirectImplementationPolicyView(projectId)
-        : Promise.resolve(null),
+        ? optionalDirectImplementationProjection("policy", () => bridge.getDirectImplementationPolicyView(projectId))
+        : Promise.resolve({ value: null, warning: "" }),
     ]);
     if (isRequestStale("directImplementationUiStatus", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
     state.directImplementationUiStatus = status || null;
-    state.directImplementationOperationHistory = history || null;
-    state.directImplementationPolicyView = policy || null;
+    state.directImplementationOperationHistory = historyResult.value || null;
+    state.directImplementationPolicyView = policyResult.value || null;
+    state.directImplementationUiWarning = [historyResult.warning, policyResult.warning].filter(Boolean).join("; ");
   } catch (error) {
     if (isRequestStale("directImplementationUiStatus", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directImplementationUiStatus = null;
+    state.directImplementationOperationHistory = null;
+    state.directImplementationPolicyView = null;
+    state.directImplementationUiWarning = "";
     state.directImplementationUiError = error.message || "Direct implementation-lane UI status failed.";
   } finally {
     if (!isRequestStale("directImplementationUiStatus", requestVersion)) {
