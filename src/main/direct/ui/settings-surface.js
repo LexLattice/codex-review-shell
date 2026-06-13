@@ -296,6 +296,39 @@ function summarizeModules(moduleStatus = {}) {
   };
 }
 
+function summarizeModuleContextIntake(input = {}) {
+  const source = objectOrEmpty(input);
+  const intake = normalizeString(source.schema, "") === "direct_module_context_intake@1"
+    ? source
+    : objectOrEmpty(source.moduleContextIntake || source.directModuleContextIntake || source.moduleContextIntakeProjection);
+  const counts = objectOrEmpty(intake.counts);
+  const authority = objectOrEmpty(intake.authority);
+  return {
+    available: normalizeString(intake.schema, "") === "direct_module_context_intake@1",
+    schema: normalizeString(intake.schema, "not_exposed"),
+    intakeState: normalizeString(intake.intakeState, "unavailable"),
+    rowCount: Number(counts.rowCount ?? arrayOrEmpty(intake.rows).length ?? 0),
+    acceptedRowCount: Number(counts.acceptedRowCount ?? 0),
+    rejectedRowCount: Number(counts.rejectedRowCount ?? 0),
+    blockedRowCount: Number(counts.blockedRowCount ?? 0),
+    pendingReviewRowCount: Number(counts.pendingReviewRowCount ?? 0),
+    contextEligibleRowCount: Number(counts.contextEligibleRowCount ?? 0),
+    importedEvidenceRowCount: Number(counts.importedEvidenceRowCount ?? 0),
+    rawExposureUnsafeCount: Number(counts.rawExposureUnsafeCount ?? 0),
+    acceptedContextPreviewRowCount: Number(counts.acceptedContextPreviewRowCount ?? arrayOrEmpty(intake.acceptedContextPreviewRows).length ?? 0),
+    tokenEstimateTotal: Number(counts.tokenEstimateTotal ?? 0),
+    sizeBytesTotal: Number(counts.sizeBytesTotal ?? 0),
+    contextPacketMutationAllowed: authority.contextPacketMutationAllowed === true,
+    connectorMutationAllowed: authority.connectorMutationAllowed === true,
+    hookExecutionAllowed: authority.hookExecutionAllowed === true,
+    autoInvocationAllowed: authority.autoInvocationAllowed === true,
+    workspaceMutationAllowed: authority.workspaceMutationAllowed === true,
+    providerTransportAllowed: authority.providerTransportAllowed === true,
+    moduleExecutionAllowed: authority.moduleExecutionAllowed === true,
+    intakeDigest: normalizeString(intake.intakeDigest, ""),
+  };
+}
+
 function summarizeAgentClasses(agentClassStatus = {}) {
   const status = objectOrEmpty(agentClassStatus);
   return {
@@ -465,6 +498,7 @@ function buildRows(sections) {
   const operatorBroker = sections.operatorBroker;
   const governance = sections.governance;
   const modules = sections.modules;
+  const moduleContextIntake = sections.moduleContextIntake;
   const agentClasses = sections.agentClasses;
   const continuity = sections.continuity;
   const contextPreview = sections.contextPreview;
@@ -553,6 +587,20 @@ function buildRows(sections) {
       statusRow("Execution gates", modules.executionGateCount),
       statusRow("Execution", modules.executionAllowedInThisPr ? "unexpected enabled" : "disabled", modules.executionAllowedInThisPr ? "blocked" : "ok"),
     ],
+    moduleContextIntake: [
+      statusRow("Surface", moduleContextIntake.available ? "available" : "not exposed", moduleContextIntake.available ? "diagnostic" : "missing"),
+      statusRow("Intake", moduleContextIntake.intakeState, moduleContextIntake.intakeState === "ready" ? "ok" : moduleContextIntake.intakeState === "blocked" ? "blocked" : "diagnostic"),
+      statusRow("Rows", moduleContextIntake.rowCount),
+      statusRow("Accepted/rejected", `${moduleContextIntake.acceptedRowCount}/${moduleContextIntake.rejectedRowCount}`),
+      statusRow("Pending/blocked", `${moduleContextIntake.pendingReviewRowCount}/${moduleContextIntake.blockedRowCount}`, moduleContextIntake.blockedRowCount ? "blocked" : "ok"),
+      statusRow("Context eligible", moduleContextIntake.contextEligibleRowCount),
+      statusRow("Imported evidence", moduleContextIntake.importedEvidenceRowCount),
+      statusRow("Preview rows", moduleContextIntake.acceptedContextPreviewRowCount),
+      statusRow("Token estimate", moduleContextIntake.tokenEstimateTotal),
+      statusRow("Size", `${moduleContextIntake.sizeBytesTotal} bytes`),
+      statusRow("Raw exposure", moduleContextIntake.rawExposureUnsafeCount, moduleContextIntake.rawExposureUnsafeCount ? "blocked" : "ok"),
+      statusRow("Authority", moduleContextIntake.contextPacketMutationAllowed || moduleContextIntake.connectorMutationAllowed || moduleContextIntake.hookExecutionAllowed || moduleContextIntake.autoInvocationAllowed || moduleContextIntake.workspaceMutationAllowed || moduleContextIntake.providerTransportAllowed || moduleContextIntake.moduleExecutionAllowed ? "unexpected grant" : "display only", moduleContextIntake.contextPacketMutationAllowed || moduleContextIntake.connectorMutationAllowed || moduleContextIntake.hookExecutionAllowed || moduleContextIntake.autoInvocationAllowed || moduleContextIntake.workspaceMutationAllowed || moduleContextIntake.providerTransportAllowed || moduleContextIntake.moduleExecutionAllowed ? "blocked" : "ok"),
+    ],
     agentClasses: [
       statusRow("Status", agentClasses.status),
       statusRow("Specs", agentClasses.specCount),
@@ -632,6 +680,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
   const operatorBroker = summarizeOperatorBroker(input.operatorBroker || input.operatorBrokerResolution || input.operatorBrokerProjection || input);
   const governance = summarizeGovernance(input);
   const modules = summarizeModules(input.moduleStatus);
+  const moduleContextIntake = summarizeModuleContextIntake(input.moduleContextIntake || input.directModuleContextIntake || input.moduleContextIntakeProjection || input);
   const agentClasses = summarizeAgentClasses(input.agentClassStatus);
   const continuity = summarizeContinuity(input);
   const contextPreview = summarizeContextPreview(input.contextPreview || input.contextPacketPreview || input.directContextPreview || input);
@@ -645,6 +694,10 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
     routingEnforced: false,
     semanticBrokerEnforced: false,
     moduleExecutionAllowed: false,
+    moduleContextPacketMutationAllowed: false,
+    connectorMutationAllowed: false,
+    hookExecutionAllowed: false,
+    autoInvocationAllowed: false,
     memoryEditingAllowed: false,
     memoryResetAllowed: false,
     manualCompactActionAllowed: false,
@@ -661,7 +714,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
     rawPathIncluded: false,
     rawSecretIncluded: false,
   };
-  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, agentClasses, continuity, contextPreview, memoryWorkbench, agentUsage };
+  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, continuity, contextPreview, memoryWorkbench, agentUsage };
   const sourceDigest = digestFor("direct-settings-surface-source@1", sections);
   const projection = {
     schema: DIRECT_SETTINGS_SURFACE_PROJECTION_SCHEMA,
@@ -679,6 +732,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       "operator_broker",
       "governance",
       "skills_hooks_apps",
+      "module_context_intake",
       "agent_class_specs",
       "memory_baton_omission_compaction",
       "context_packet_preview",
@@ -701,6 +755,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       { kind: "clarification_target_picker", digest: normalizeString(clarificationTargetPicker.targetPickerDigest, ""), label: "Clarification target picker" },
       { kind: "operator_broker_resolution", digest: normalizeString(operatorBroker.brokerResolutionDigest, ""), label: "Operator broker resolution" },
       { kind: "module_status", digest: normalizeString(input.moduleStatus?.projectionDigest, ""), label: "Bridge module status" },
+      { kind: "module_context_intake", digest: normalizeString(moduleContextIntake.intakeDigest, ""), label: "Module context intake" },
       { kind: "agent_class_status", digest: normalizeString(input.agentClassStatus?.projectionDigest, ""), label: "Agent class status" },
       { kind: "continuity_status", digest: normalizeString(input.continuityStatus?.projectionDigest, ""), label: "Continuity status" },
       { kind: "context_packet_preview", digest: normalizeString(contextPreview.previewDigest, ""), label: "Context packet preview" },
@@ -726,6 +781,10 @@ function assertDirectSettingsSurfaceRendererSafe(projection = {}) {
     "routingEnforced",
     "semanticBrokerEnforced",
     "moduleExecutionAllowed",
+    "moduleContextPacketMutationAllowed",
+    "connectorMutationAllowed",
+    "hookExecutionAllowed",
+    "autoInvocationAllowed",
     "memoryEditingAllowed",
     "memoryResetAllowed",
     "manualCompactActionAllowed",

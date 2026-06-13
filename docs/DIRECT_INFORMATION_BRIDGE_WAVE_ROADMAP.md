@@ -1946,7 +1946,7 @@ Implemented slice:
 
 ### PR 37: Module Context Contribution Intake V0
 
-Status: planned.
+Status: implemented in PR 37.
 
 Purpose:
 
@@ -1971,6 +1971,21 @@ Promotion criterion:
 Bridge modules can add bounded information to a WorkThread context packet
 without becoming tools or hidden authority.
 ```
+
+Implemented slice:
+
+- Added `direct_module_context_intake@1` and intake rows for context-only skill
+  output, imported connector evidence, and blocked diagnostics.
+- Required module source, source scope, WorkThread binding, raw-exposure scan,
+  and disabled-authority checks before rows can become context eligible.
+- Fed accepted intake rows into the PR 35 context packet preview as
+  `module_context` source rows.
+- Surfaced intake counts, imported evidence, accepted preview rows, blocked/raw
+  posture, and authority state in the direct settings/status projection.
+- Registered the artifact as `ic14.module-context-intake`.
+- Kept context-packet mutation, connector mutation, hook execution,
+  auto-invocation, workspace mutation, provider transport, and module execution
+  disabled.
 
 ### PR 38: Direct Manual Smoke Gate And Regression Checklist
 
