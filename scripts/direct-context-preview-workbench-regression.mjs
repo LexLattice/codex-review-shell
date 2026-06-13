@@ -32,6 +32,7 @@ const readyPreview = buildContextPacketPreview({
   projectId: "project_direct",
   workThreadId: "work_thread_bridge",
   threadId: "thread_direct",
+  nowMs: 0,
   recentDialogue: [sourceRow("recent_dialogue", "dialogue_1", { required: true })],
   durableMemory: [sourceRow("durable_memory", "memory_1")],
   frontierBaton: [sourceRow("frontier_baton", "baton_1")],
@@ -42,13 +43,25 @@ const readyPreview = buildContextPacketPreview({
     includedInRequest: false,
     omissionReason: "trimmed_old_dialogue",
   })],
+  contextPack: {
+    sourceArtifacts: [
+      { artifactKind: "durable_thread_memory", artifactId: "memory_artifact", artifactDigest: "digest_memory_artifact", evidenceRefs: [{}] },
+      { artifactKind: "frontier_baton", artifactId: "baton_artifact", artifactDigest: "digest_baton_artifact" },
+      { artifactKind: "context_omission_ledger", artifactId: "omission_artifact", artifactDigest: "digest_omission_artifact" },
+      { artifactKind: "tool_continuation_context_projection", artifactId: "tool_artifact", artifactDigest: "digest_tool_artifact" },
+    ],
+    sourceProjections: [
+      { projectionKind: "context_projection", projectionId: "projection_artifact", projectionDigest: "digest_projection_artifact" },
+    ],
+  },
 });
 
 assert.equal(readyPreview.schema, "direct_context_packet_preview@1");
 assert.equal(readyPreview.previewState, "ready");
-assert.equal(readyPreview.counts.rowCount, 7);
-assert.equal(readyPreview.counts.includedSourceCount, 6);
-assert.equal(readyPreview.counts.omittedSourceCount, 1);
+assert.equal(readyPreview.generatedAt, "1970-01-01T00:00:00.000Z");
+assert.equal(readyPreview.counts.rowCount, 12);
+assert.equal(readyPreview.counts.includedSourceCount, 10);
+assert.equal(readyPreview.counts.omittedSourceCount, 2);
 assert.equal(readyPreview.downstreamRequestConstraints.requestAssemblyAllowed, true);
 assert.equal(readyPreview.authority.providerTransportAllowed, false);
 assert.equal(readyPreview.authority.requestAssemblyAuthorityGranted, false);
@@ -65,16 +78,43 @@ assert.deepEqual(sourceClasses, [
   "recent_dialogue",
   "tool_result_ref",
 ]);
+assert.equal(
+  readyPreview.sourceRows.find((row) => row.sourceId === "memory_artifact").evidenceRefs.length,
+  0,
+  "empty evidence refs should not be retained as noisy default refs",
+);
+
+const repeatReadyPreview = buildContextPacketPreview({
+  projectId: "project_direct",
+  workThreadId: "work_thread_bridge",
+  threadId: "thread_direct",
+  nowMs: 0,
+  recentDialogue: [sourceRow("recent_dialogue", "dialogue_1", { required: true })],
+});
+const repeatReadyPreviewAgain = buildContextPacketPreview({
+  projectId: "project_direct",
+  workThreadId: "work_thread_bridge",
+  threadId: "thread_direct",
+  nowMs: 0,
+  recentDialogue: [sourceRow("recent_dialogue", "dialogue_1", { required: true })],
+});
+assert.equal(repeatReadyPreview.previewDigest, repeatReadyPreviewAgain.previewDigest, "nowMs should make preview digest deterministic for identical input");
 
 const blockedPreview = buildContextPacketPreview({
   projectId: "project_direct",
   workThreadId: "work_thread_bridge",
   threadId: "thread_direct",
+  nowMs: 0,
   recentDialogue: [
     sourceRow("recent_dialogue", "missing_required", { required: true, missing: true }),
     sourceRow("recent_dialogue", "stale_required", { required: true, stale: true }),
     sourceRow("recent_dialogue", "unsafe", { rawExposureUnsafe: true }),
   ],
+  contextPack: {
+    sourceArtifacts: [
+      { artifactKind: "context_projection", artifactId: "raw_exposed_projection", rawPathExposed: true },
+    ],
+  },
 }, { omissionRequired: true });
 
 assert.equal(blockedPreview.previewState, "blocked_from_request");
@@ -84,7 +124,7 @@ assert(blockedPreview.downstreamRequestConstraints.blockerCodes.includes("requir
 assert(blockedPreview.downstreamRequestConstraints.blockerCodes.includes("required_source_stale"));
 assert(blockedPreview.downstreamRequestConstraints.blockerCodes.includes("raw_exposure_unsafe"));
 assert(blockedPreview.downstreamRequestConstraints.blockerCodes.includes("required_omission_witness_missing"));
-assert.equal(blockedPreview.counts.rawExposureUnsafeCount, 1);
+assert.equal(blockedPreview.counts.rawExposureUnsafeCount, 2);
 assertContextPacketPreviewSafe(blockedPreview);
 
 const settingsProjection = buildDirectSettingsSurfaceProjection({

@@ -36,7 +36,7 @@ function normalizeString(value, fallback = "") {
 
 function boundedString(value, maxLength = 280) {
   const text = normalizeString(value, "");
-  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}...` : text;
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
 }
 
 function arrayOrEmpty(value) {
@@ -75,12 +75,52 @@ function normalizeSourceClass(value) {
 function evidenceRefsFrom(value) {
   return arrayOrEmpty(value)
     .filter(isPlainObject)
+    .filter((ref) => ref.kind || ref.type || ref.digest || ref.refDigest || ref.sourceDigest || ref.label || ref.name)
     .map((ref) => ({
       kind: boundedString(ref.kind || ref.type || "evidence", 80),
       digest: boundedString(ref.digest || ref.refDigest || ref.sourceDigest || "", 96),
       label: boundedString(ref.label || ref.name || "", 160),
-    }))
-    .filter((ref) => ref.kind || ref.digest || ref.label);
+    }));
+}
+
+function hasUnsafeRawExposure(value) {
+  if (!value || typeof value !== "object") return false;
+  if (Array.isArray(value)) return value.some((entry) => hasUnsafeRawExposure(entry));
+  for (const [key, nested] of Object.entries(value)) {
+    if (/^raw[A-Z].*(Included|Exposed)$/.test(key) && nested === true) return true;
+    if (nested && typeof nested === "object" && hasUnsafeRawExposure(nested)) return true;
+  }
+  return false;
+}
+
+function sourceClassForArtifact(item = {}) {
+  const artifactKind = normalizeString(item.artifactKind || item.projectionKind || item.kind, "");
+  if (artifactKind === "durable_thread_memory" || artifactKind === "thread_memory_review_packet" || artifactKind === "thread_memory_refresh_proposal") return "durable_memory";
+  if (artifactKind === "frontier_baton") return "frontier_baton";
+  if (artifactKind === "context_omission_ledger" || artifactKind === "context_omission_witness" || artifactKind === "context_loss_witness") return "omission_witness";
+  if (artifactKind === "tool_continuation_context_projection" || artifactKind === "readonly_tool_result" || artifactKind === "tool_result_ref") return "tool_result_ref";
+  if (artifactKind === "attachment" || artifactKind === "composer_attachment") return "attachment";
+  if (artifactKind === "module_context" || artifactKind === "module_context_contribution") return "module_context";
+  if (artifactKind === "harness_policy" || artifactKind === "work_thread" || artifactKind === "governance_packet" || artifactKind === "semantic_broker_packet" || artifactKind === "controlled_routing_slice") return "harness_policy";
+  if (artifactKind === "current_user_prompt" || artifactKind === "context_projection" || artifactKind === "checkpoint_seed" || artifactKind === "fork_seed" || artifactKind === "derived_fork_seed") return "recent_dialogue";
+  return "unknown";
+}
+
+function normalizeSourceArtifact(item = {}) {
+  const artifact = objectOrEmpty(item);
+  return {
+    sourceClass: sourceClassForArtifact(artifact),
+    sourceId: artifact.artifactId || artifact.projectionId || artifact.sourceId || artifact.id || "",
+    label: artifact.label || artifact.artifactKind || artifact.projectionKind || artifact.kind || "",
+    sourceDigest: artifact.artifactDigest || artifact.projectionDigest || artifact.sourceDigest || artifact.digest || "",
+    includedInRequest: artifact.includedInRequest !== false,
+    required: artifact.required === true || artifact.requiredForRequest === true,
+    stale: artifact.stale === true || artifact.state === "stale",
+    missing: artifact.missing === true || artifact.state === "missing",
+    rawExposureUnsafe: hasUnsafeRawExposure(artifact),
+    evidenceRefs: artifact.evidenceRefs || artifact.refs || [],
+    retentionLaw: artifact.retentionLaw || artifact.retention || artifact.policy || "context_pack_source_artifact",
+  };
 }
 
 function rowIdFor(sourceClass, sourceId, ordinal, source) {
@@ -99,7 +139,7 @@ function coercePreviewSource(source, fallbackClass, ordinal) {
   const required = item.required === true || item.requiredForRequest === true;
   const stale = item.stale === true || item.state === "stale";
   const missing = item.missing === true || item.state === "missing";
-  const rawExposureUnsafe = item.rawExposureUnsafe === true || item.rawTextIncluded === true || item.rawPathIncluded === true || item.rawSecretIncluded === true;
+  const rawExposureUnsafe = item.rawExposureUnsafe === true || hasUnsafeRawExposure(item);
   const row = {
     schema: DIRECT_CONTEXT_PREVIEW_SOURCE_ROW_SCHEMA,
     rowId: rowIdFor(sourceClass, sourceId, ordinal, item),
@@ -156,6 +196,14 @@ function extractContextRows(input) {
   addMany(input.toolResultRefs || input.toolResultRows || input.contextPack?.toolResultRefs, "tool_result_ref");
   addMany(input.omissionRows || input.omissionWitnesses || input.contextMaintenance?.omissionRows || input.contextPack?.omissionRows, "omission_witness");
   addMany(input.harnessPolicyRows || input.policyRows, "harness_policy");
+  for (const item of arrayOrEmpty(input.contextPack?.sourceArtifacts || input.sourceArtifacts)) {
+    const normalized = normalizeSourceArtifact(item);
+    sources.push(coercePreviewSource(normalized, normalized.sourceClass, sources.length));
+  }
+  for (const item of arrayOrEmpty(input.contextPack?.sourceProjections || input.sourceProjections)) {
+    const normalized = normalizeSourceArtifact(item);
+    sources.push(coercePreviewSource(normalized, normalized.sourceClass, sources.length));
+  }
 
   const packItems = arrayOrEmpty(input.contextPack?.items || input.contextPack?.contextItems || input.contextPacket?.items);
   for (const item of packItems) {
@@ -236,7 +284,7 @@ function buildContextPacketPreview(input = {}, options = {}) {
     projectId: boundedString(source.projectId || source.contextPack?.projectId || "", 120),
     workThreadId: boundedString(source.workThreadId || source.contextPack?.workThreadId || source.requestManifest?.workThreadId || "", 160),
     threadId: boundedString(source.threadId || source.contextPack?.threadId || source.requestManifest?.threadId || "", 160),
-    generatedAt: normalizeString(source.generatedAt, new Date().toISOString()),
+    generatedAt: normalizeString(source.generatedAt, typeof source.nowMs === "number" ? new Date(source.nowMs).toISOString() : new Date().toISOString()),
     previewState,
     sourceRows: rows,
     blockers,
