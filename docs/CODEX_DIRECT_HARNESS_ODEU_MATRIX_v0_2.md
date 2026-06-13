@@ -652,3 +652,25 @@ thread-spawn containment
 Those do not change the immediate Wave 5 order. They prevent the roadmap from
 collapsing long-context, governance, routing, and sub-agent observability into
 vague buckets once the implementation lane is promoted under live evidence.
+
+### Wave 5 UI readiness update
+
+The direct shell now exposes a read-only implementation-lane readiness card in
+the overview/control plane. It consumes the same renderer-safe projections used
+by the Codex surface runtime drawer:
+
+```text
+direct_implementation_lane_ui_status@1
+direct_operation_history_projection@1
+direct_policy_readonly_view@1
+```
+
+This improves manual testability for selected matrix rows without granting new
+authority:
+
+- approval and continuation facets are visible but not executed from the card;
+- active-turn/composer/recovery state is visible;
+- latest tool-result and workspace-effect posture is summarized without raw
+  paths, tool output, or provider payload;
+- operation history rows are read-only;
+- app-server remains selectable and retained as the vanilla lane.

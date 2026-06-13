@@ -1496,7 +1496,7 @@ Standing Wave 5 constraints:
 
 ### PR 28: Live Implementation-Lane Promotion Harness
 
-Status: planned.
+Status: merged.
 
 Purpose:
 
@@ -1546,7 +1546,9 @@ non-promotion reason without weakening fixture proof.
 
 ### PR 29: Direct Implementation-Lane UI Readiness
 
-Status: planned.
+Status: in review.
+
+Branch: `codex/direct-implementation-ui-readiness-v0`.
 
 Purpose:
 
@@ -1564,6 +1566,26 @@ Scope:
   history projection.
 - Keep the runtime switch explicit and keep the app-server lane available.
 - Do not add new tool scope, auto-approval, or automatic recovery action.
+
+Implemented slice:
+
+- The shell overview now includes a read-only Direct implementation-lane
+  readiness card.
+- The card renders the existing `direct_implementation_lane_ui_status@1`,
+  `direct_operation_history_projection@1`, and
+  `direct_policy_readonly_view@1` IPC projections instead of deriving authority
+  from raw runtime labels.
+- It shows lane state, approval/continuation facets, active-turn/composer state,
+  recovery posture, latest tool-result/workspace-effect summary, and recent
+  operation-history rows.
+- The card exposes only a refresh action; it does not approve, replay, recover,
+  mutate workspace files, call the provider, mutate the right pane, or perform
+  handoff operations.
+- The UI projection fixture now asserts approval-card readiness, active-turn
+  composer state, latest tool-result status, provider-visibility posture, and
+  read-only actionability.
+- The bridge information registry now includes implementation-lane UI readiness
+  as an observability artifact.
 
 Promotion criterion:
 

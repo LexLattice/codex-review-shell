@@ -433,6 +433,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     bridgeFit: "Projects implementation-proof runs into a separate live-promotion artifact that distinguishes provider tool emission, local authority execution, continuation completion, terminal assistant evidence, and matrix promotion eligibility.",
     realignment: "Promotion rows can move matrix claims only when live provider scenarios promote; fixture/preflight rows remain explicit non-promotion evidence and grant no app-server fallback, auto-approval, replay, revert, right-pane mutation, or handoff mutation.",
   },
+  {
+    id: "ic19.direct-implementation-ui-readiness",
+    name: "Direct implementation-lane UI readiness",
+    role: "observability_surface",
+    implementationState: "partial",
+    directPathPosture: "keep_readonly",
+    sourceFiles: ["src/main/direct/ui/implementation-lane-ui.js", "src/main.js", "src/preload.js", "src/renderer/app.js", "src/renderer/index.html", "src/renderer/styles.css", "scripts/direct-ui-operation-history-regression.mjs", "scripts/direct-electron-read-approval-regression.mjs"],
+    ontology: ontologyShape(["direct_implementation_lane_ui_status", "direct_operation_history_projection", "direct_tool_result_status_projection", "direct_policy_readonly_view"], "human_interface", {
+      identityFields: ["projectId", "uiProjectionGeneration", "operationId", "resultId"],
+      schema: "direct_implementation_lane_ui_status@1",
+    }),
+    bridgeFit: "Surfaces implementation-lane readiness, approval/continuation facets, active turn state, recovery posture, latest tool-result status, operation history, and policy summary as renderer-safe read-only UI projection.",
+    realignment: "The UI card grants no approval, replay, recovery, provider transport, handoff, right-pane, or workspace mutation authority; every action still requires the existing main-process authority-bearing transition.",
+  },
 ]);
 
 function isPlainObject(value) {

@@ -1437,6 +1437,11 @@ button:active {
   gap: 10px;
 }
 
+.direct-implementation-card {
+  display: grid;
+  gap: 10px;
+}
+
 .direct-meta-session-summary {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
