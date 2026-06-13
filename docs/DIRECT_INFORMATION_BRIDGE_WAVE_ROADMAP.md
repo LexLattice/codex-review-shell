@@ -1816,7 +1816,7 @@ direct provider/tool transition is allowed to proceed.
 
 ### PR 34: Clarification And Target Picker UX
 
-Status: planned.
+Status: implemented in PR 34.
 
 Purpose:
 
@@ -1836,6 +1836,21 @@ Scope:
 - Preserve non-target workspaces and threads in the resulting route packet.
 - Keep the picker from executing provider calls, tools, worker starts, or
   object-level audit.
+
+Implemented slice:
+
+- Added `direct_clarification_target_picker@1` and
+  `direct_clarification_target_answer@1`.
+- Target picker consumes `direct_governance_clarification_packet@1`,
+  `operator_broker_resolution@1`, and WorkTarget candidate rows.
+- Operator answers support choose candidate, reject all, and keep blocked.
+- Stale, archived, missing-id, and cross-project candidates are blocked or
+  degraded before they can become accepted route evidence.
+- Settings surface exposes picker state, candidate counts, answer availability,
+  blockers, preservation posture, and authority posture.
+- Added `direct:clarification-target-picker` regression proving answers grant no
+  provider call, workspace mutation, tool transition, worker spawn, object audit,
+  or app-server replacement authority.
 
 Promotion criterion:
 

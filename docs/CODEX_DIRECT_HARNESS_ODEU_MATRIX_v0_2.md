@@ -90,13 +90,13 @@ right ChatGPT pane != direct Codex memory
 
 ## 3. Current Descent Summary
 
-Status snapshot after Wave 6 PR 33, 2026-06-14:
+Status snapshot after Wave 6 PR 34, 2026-06-14:
 
 ```text
 direct information bridge audit: valid
-registry rows: 33
+registry rows: 34
 implemented rows: 10
-partial rows: 21
+partial rows: 22
 inherited rows: 2
 missing source files: 0
 ```
@@ -125,7 +125,7 @@ It does not grant runtime authority by itself.
 | Direct attachment submit semantics | `B-F` | Direct attachment capability projection and reference-only submit packet semantics exist; provider binary/image payload support is not claimed. |
 | Skills/hooks/apps bridge modules | `B-P/B-F` | Module classification, context contribution, evidence import, hook proposal, and execution gate artifacts exist; no execution runner exists. |
 | Context maintenance / memory / baton | `B-P/B-F` | Omission/loss witnesses, memory review/refresh/reset proposals, compaction plan/gate, continuity transitions, and guarded local maintenance execution packets exist; no provider compaction or hidden memory authority. |
-| Governance / semantic broker | `B-P/B-F` | Governance packet, semantic broker preflight, controlled routing slice, route-to-role handoff, operator broker, and narrow enforcement/clarification packets exist; operator target-picker UX remains pending. |
+| Governance / semantic broker | `B-P/B-F` | Governance packet, semantic broker preflight, controlled routing slice, route-to-role handoff, operator broker, narrow enforcement/clarification packets, and target-picker answer artifacts exist. |
 | Explicit direct worker start | `B-P/B-F` | Operator-accepted role handoff can start one bounded direct worker turn; recursive spawning and workflow closure remain disabled. |
 | Meta-orchestrator / auditor loop shadow | `B-P/B-F` | Plan pointer, step events, implementation evidence, audit artifact, and transition gate schemas exist; no autonomous scheduler or super-auditor behavior. |
 
@@ -138,7 +138,7 @@ Main remaining coverage gaps from the matrix:
 | Iterative repair loop promotion | `E4`, `E14`, `E15`, `F4`, `D18` | Fixture/local read -> patch -> failing command -> repair patch -> passing command proof exists; live-provider promotion remains pending. |
 | Workspace change authority maturity | `E6-E8`, `E11`, `J4-J7` | Generated/vendor/lockfile/binary/large/symlink/ignored/external-worktree policy rows, dirty/untracked separation, classed effect summaries, and disabled revert preview are fixture-proved; live VCS policy breadth, network-risk truth, and revert execution remain future work. |
 | Context maintenance productization | `D1-D14`, `D22-D23`, `A12`, `J11` | Guarded local execution packets exist; operator context preview, memory materialization UI, provider compaction, and automatic trimming remain gated. |
-| Governance enforcement and semantic fallback | `D15-D21`, `J10` | Narrow preflight enforcement and clarification packets exist; operator target picker and fallback branch law remain future work. |
+| Governance enforcement and semantic fallback | `D15-D21`, `J10` | Narrow preflight enforcement, clarification packets, and target-picker answer artifacts exist; fallback branch law remains future work. |
 | Mature multi-agent choreography | `H1-H10`, `J9` | Worker start, graph alignment, progress projections, and contained inspect/wait packets exist; recursive delegation, model-visible wait tools, no-deadlock synchronization, and transcript promotion law remain future work. |
 | Mainline readiness and broad UI proof | `F1-F10`, `I1-I15`, `J1-J12` | Status surfaces and regressions exist; WorkThread control UX, context preview, manual smoke gate, and merge-behind-flag checklist remain later work. |
 
@@ -585,23 +585,23 @@ ledgers.
 
 ## 9. Immediate Next Spec
 
-The next spec should target Wave 6 PR 34:
+The next spec should target Wave 6 PR 35:
 
 ```text
-Clarification and target picker UX.
+Context packet preview and omission workbench.
 ```
 
 It should not add provider/tool authority. It should prove:
 
-1. clarification packets are visible as operator-facing target choices;
-2. candidate selection cites WorkThread and broker evidence;
-3. rejecting all candidates remains an admissible outcome;
-4. selected clarification answers become routing evidence only;
-5. target picking does not start provider turns, run tools, mutate workspace,
-   spawn workers, or perform object-level audit;
-6. non-target preservation constraints remain visible;
-7. stale candidates are blocked or degraded with precise reasons;
-8. ambiguity remains explicit rather than being silently collapsed.
+1. context packet sources are visible before direct provider input assembly;
+2. omission, retention, and context-loss witnesses are shown with source refs;
+3. stale, missing, or raw-exposure-unsafe sources block request assembly;
+4. preview rows distinguish memory, baton, attachments, tool refs, modules, and
+   dialogue;
+5. preview editing remains disabled unless a later transition packet grants it;
+6. provider compaction and hidden memory mutation remain disabled;
+7. downstream request manifests can cite the preview;
+8. non-target WorkThread context remains excluded unless explicitly selected.
 
 Current implementation note:
 
