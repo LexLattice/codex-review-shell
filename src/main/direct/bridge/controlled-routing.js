@@ -229,6 +229,19 @@ function buildControlledRoutingSlice(input = {}, options = {}) {
   if (operatorBrokerResolution?.routingGateState && operatorBrokerResolution.routingGateState !== "selected_ready") {
     blockerCodes.push(`operator_broker_${operatorBrokerResolution.routingGateState}`);
   }
+  if (operatorBrokerResolution?.routingGateState === "selected_ready") {
+    const brokerProjectId = normalizeString(operatorBrokerResolution.projectId, "");
+    const brokerWorkThreadId = normalizeString(operatorBrokerResolution.selectedWorkThreadId, "");
+    if (brokerProjectId && brokerProjectId !== projectId) {
+      blockerCodes.push("operator_broker_project_mismatch");
+    }
+    if (brokerWorkThreadId && brokerWorkThreadId !== workTargetResolutionReport.selectedWorkThreadId) {
+      blockerCodes.push("operator_broker_work_thread_mismatch");
+    }
+    if (!brokerWorkThreadId) {
+      blockerCodes.push("operator_broker_missing_selected_work_thread");
+    }
+  }
   if (semanticBrokerPreflight.recommendationClass !== "allow") {
     blockerCodes.push(`preflight_${semanticBrokerPreflight.recommendationClass || "unknown"}`);
   }

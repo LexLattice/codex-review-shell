@@ -95,7 +95,13 @@ const selectedResolution = buildOperatorBrokerResolution({
   },
   linkedCodexThreads: [{ threadId: "codex_direct_thread", title: "Direct path implementation" }],
   linkedChatGptThreads: [{ threadId: "gpt_direct_review", title: "Direct path review" }],
-  openObligations: [{ obligationId: "obl_operator_broker", kind: "governance", status: "open", summary: "Resolve target before mutation." }],
+  openObligations: [{
+    obligationId: "obl_operator_broker",
+    kind: "governance",
+    status: "open",
+    summary: "Resolve target before mutation.",
+    evidenceRefs: [{}, { kind: "obligation", id: "obl_operator_broker_ref" }],
+  }],
   recentContextRefs: [{ kind: "context_packet", id: "ctx_direct_broker", label: "Recent direct broker packet" }],
 }, workThreads, { nowMs });
 
@@ -110,6 +116,7 @@ assert.equal(selectedResolution.authority.providerCallAuthorityGranted, false);
 assert.equal(selectedResolution.authority.routingEnforced, false);
 assert.equal(selectedResolution.workWorldSnapshot.workspaceIdentity.rawPathIncluded, false);
 assert.equal(selectedResolution.rawPathIncluded, false);
+assert.equal(selectedResolution.workWorldSnapshot.openObligations[0].evidenceRefs.length, 1);
 assert(selectedResolution.nonTargetPreservationConstraints.includes("do_not_route_by_chat_recency_only"));
 assert(selectedResolution.downstreamRoutePacketConstraints.constraintCodes.includes("preserve_non_target_workthreads"));
 
@@ -152,6 +159,22 @@ assert.equal(settingsProjection.sections.operatorBroker.selectedWorkThreadId, "w
 assert(settingsProjection.bridgeOrgans.includes("operator_broker"));
 assert(settingsProjection.rows.operatorBroker.some((row) => row.label === "Clarification"));
 
+const zeroCountSettingsProjection = buildDirectSettingsSurfaceProjection({
+  projectId,
+  operatorBroker: {
+    ...selectedProjection,
+    candidateCount: 0,
+    candidates: [{ workThreadId: "should_not_count_when_explicit_zero" }],
+    workWorld: {
+      ...selectedProjection.workWorld,
+      recentContextRefCount: 0,
+      recentContextRefs: [{ id: "should_not_count_when_explicit_zero" }],
+    },
+  },
+});
+assert.equal(zeroCountSettingsProjection.sections.operatorBroker.candidateCount, 0);
+assert.equal(zeroCountSettingsProjection.sections.operatorBroker.recentContextRefCount, 0);
+
 const routed = buildControlledRoutingSlice({
   projectId,
   threadId: "thread_operator_broker",
@@ -165,6 +188,23 @@ assert.equal(routed.route.gateState, "ready_for_direct_text_turn");
 assert.equal(routed.route.operatorBrokerResolution.brokerResolutionDigest, selectedResolution.brokerResolutionDigest);
 assert(routed.route.nonTargetPreservationConstraints.includes("preserve_non_target_workthreads"));
 assert(routed.route.evidenceRefs.some((ref) => ref.kind === "operator_broker_resolution"));
+
+const mismatchedBrokerRoute = buildControlledRoutingSlice({
+  projectId,
+  threadId: "thread_operator_broker",
+  turnId: "turn_mismatched_broker",
+  requestPreview: "continue the operator broker resolution implementation in the direct information bridge",
+  workThread: workThreads[0],
+  operatorBrokerResolution: {
+    ...selectedResolution,
+    selectedWorkThreadId: "work_thread_direct_docs",
+    brokerResolutionDigest: "sha256:mismatched_broker",
+  },
+}, { nowMs });
+validateControlledRoutingSlice(mismatchedBrokerRoute.route);
+assert.equal(mismatchedBrokerRoute.route.gateState, "blocked");
+assert.equal(mismatchedBrokerRoute.route.controlledProviderCallAllowed, false);
+assert(mismatchedBrokerRoute.route.blockerCodes.includes("operator_broker_work_thread_mismatch"));
 
 const blockedByBroker = buildControlledRoutingSlice({
   projectId,

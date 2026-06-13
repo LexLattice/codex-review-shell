@@ -12,7 +12,9 @@ const OPERATOR_BROKER_RESOLUTION_SCHEMA = "operator_broker_resolution@1";
 const OPERATOR_BROKER_RESOLUTION_PROJECTION_SCHEMA = "operator_broker_resolution_projection@1";
 
 function isPlainObject(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === null || proto === Object.prototype;
 }
 
 function normalizeString(value, fallback = "") {
@@ -25,6 +27,7 @@ function boundedString(value, maxLength = 280) {
 }
 
 function stableStringify(value) {
+  if (value && typeof value.toJSON === "function") return stableStringify(value.toJSON());
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map((entry) => (entry === undefined ? "null" : stableStringify(entry))).join(",")}]`;
   return `{${Object.keys(value)
@@ -64,8 +67,17 @@ function normalizeRef(input = {}, fallbackKind = "unknown") {
 
 function normalizeRefs(values, fallbackKind = "unknown") {
   return arrayOrEmpty(values)
-    .map((value) => normalizeRef(value, fallbackKind))
-    .filter((ref) => ref.id || ref.digest || ref.label);
+    .filter((value) => isPlainObject(value) && (
+      value.id ||
+      value.refId ||
+      value.artifactId ||
+      value.digest ||
+      value.artifactDigest ||
+      value.sourceDigest ||
+      value.label ||
+      value.rendererSafeLabel
+    ))
+    .map((value) => normalizeRef(value, fallbackKind));
 }
 
 function normalizeIdentity(input = {}, defaults = {}) {
@@ -299,7 +311,7 @@ function buildOperatorBrokerResolutionProjection(resolution = {}) {
     resolutionState: normalizeString(source.resolutionState, "unavailable"),
     routingGateState: normalizeString(source.routingGateState, "unavailable"),
     selectedWorkThreadId: normalizeString(source.selectedWorkThreadId, ""),
-    candidateCount: Number(source.candidateCount || arrayOrEmpty(source.candidates).length || 0),
+    candidateCount: Number(source.candidateCount ?? arrayOrEmpty(source.candidates).length ?? 0),
     confidenceLabel: normalizeString(source.confidenceLabel, "none"),
     candidates: arrayOrEmpty(source.candidates).map(candidateProjection).slice(0, 6),
     ambiguityBlockers: arrayOrEmpty(source.ambiguityBlockers).map((item) => normalizeString(item, "")).filter(Boolean),
