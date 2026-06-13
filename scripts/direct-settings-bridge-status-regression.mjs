@@ -13,6 +13,10 @@ const {
   buildDirectInformationBridgeAudit,
 } = require("../src/main/direct/bridge/information-registry");
 const {
+  buildDirectAgentUsageLedger,
+  buildDirectAgentUsageSummaryProjection,
+} = require("../src/main/direct/usage/agent-ledger");
+const {
   buildWorkTargetResolution,
   buildWorkTargetResolutionReport,
   buildWorkThread,
@@ -253,6 +257,34 @@ function main() {
   }, { nowMs: 0 });
   const moduleStatus = buildModuleStatusFixture(projectId, workThread.workThreadId);
   const continuityStatus = buildContinuityFixture(projectId, workThread.workThreadId);
+  const agentUsageStatus = buildDirectAgentUsageSummaryProjection(buildDirectAgentUsageLedger({
+    projectId,
+    rows: [
+      {
+        rowId: "settings_usage_fixture",
+        projectId,
+        sessionId: "thread_settings_surface_fixture",
+        threadId: "thread_settings_surface_fixture",
+        turnId: "turn_settings_surface_fixture",
+        workThreadId: workThread.workThreadId,
+        routeScope: { routeId: "controlled_route_settings", routed: true },
+        agentScope: { agentKind: "primary_agent", agentThreadId: "thread_settings_surface_fixture" },
+        model: "gpt-5.4",
+        reasoningEffort: "high",
+        usageSource: "response_completed_usage",
+        usageRecordKind: "terminal",
+        inputTokens: 9,
+        outputTokens: 6,
+        totalTokens: 15,
+        timing: { durationMs: 2500 },
+        rawPromptIncluded: false,
+        rawResponseIncluded: false,
+        rawProviderFrameIncluded: false,
+        rawTokenDetailsIncluded: false,
+        billingGrade: false,
+      },
+    ],
+  }));
   const runtimeStatus = {
     projectId,
     status: "available",
@@ -297,6 +329,7 @@ function main() {
       routingEnforced: false,
     },
     moduleStatus,
+    agentUsageStatus,
     continuityStatus,
     nowMs: 0,
   });
@@ -330,6 +363,9 @@ function main() {
   assert(projection.sections.continuity.manualCompactGateState === "manual_ready", "manual compact gate state should be visible");
   assert(projection.sections.continuity.compactionSourceSpanCount === 0, "compaction source span count should be visible");
   assert(projection.sections.continuity.compactionResidualRiskCount === 0, "compaction residual risk count should be visible");
+  assert(projection.sections.agentUsage.available === true, "agent usage summary should be visible");
+  assert(projection.sections.agentUsage.totalTokensKnown === 15, "agent usage known tokens should be visible");
+  assert(projection.sections.agentUsage.costComputed === false, "settings surface must not compute cost");
   assert(projection.rows.runtime.length >= 4, "runtime rows should render");
   assert(projection.rows.registry.length >= 4, "registry rows should render");
   assert(projection.rows.workThreads.length >= 4, "WorkThread rows should render");
@@ -338,6 +374,7 @@ function main() {
   assert(projection.rows.modules.length >= 4, "module rows should render");
   assert(projection.rows.modules.some((row) => row.label === "Context refs" && row.value === "1"), "module rows should include context refs");
   assert(projection.rows.modules.some((row) => row.label === "Evidence rows" && row.value === "1"), "module rows should include evidence rows");
+  assert(projection.rows.agentUsage.some((row) => row.label === "Cost" && row.value === "not computed"), "agent usage rows should show no cost computation");
   assert(projection.rows.modules.some((row) => row.label === "Hook proposals" && row.value === "1"), "module rows should include hook proposals");
   assert(projection.rows.modules.some((row) => row.label === "Execution gates" && row.value === "1"), "module rows should include execution gates");
   assert(projection.rows.continuity.some((row) => row.label === "Memory review" && row.value === "current"), "continuity rows should include memory review");

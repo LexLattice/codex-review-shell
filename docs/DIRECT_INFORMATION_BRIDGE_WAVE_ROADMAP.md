@@ -670,7 +670,7 @@ Controlled routing and settings bridge status are merged.
 
 ### PR 16: Operator / Project Broker Resolution Surface
 
-Status: implemented in branch.
+Status: merged.
 
 Branch:
 
@@ -723,7 +723,13 @@ slice exist.
 
 ### PR 17: Direct Usage Ledger By Agent And Worker
 
-Status: planned.
+Status: implemented in branch.
+
+Branch:
+
+```text
+codex/direct-usage-ledger-agent-worker
+```
 
 Purpose:
 
@@ -740,6 +746,21 @@ Scope:
 - Attribute rows to primary agent, worker/sub-agent, WorkThread, and route.
 - Expose summary in analytics/settings without treating cost as runtime truth.
 - Keep cost derivation separate and price-snapshot-bound.
+
+Implemented in this slice:
+
+- `direct_agent_usage_ledger@1` and
+  `direct_agent_usage_summary_projection@1` over existing direct
+  per-turn usage attribution.
+- Usage rows retain model, reasoning effort, service-tier exposure posture,
+  context/request manifest ids, turn duration, agent scope, WorkThread id, and
+  controlled-route scope.
+- Missing usage rows are explicit and never treated as zero-token truth.
+- Direct settings/project surface now includes a Direct usage status panel.
+- Current-project settings status builds a usage summary from local direct
+  session/turn evidence.
+- Regression coverage for primary-agent, sub-worker, WorkThread, route,
+  dedupe, missing usage, duration, privacy, and no-cost posture.
 
 Non-goals:
 

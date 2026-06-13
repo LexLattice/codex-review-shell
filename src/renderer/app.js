@@ -247,6 +247,7 @@ const els = {
   directBridgeSettingsModulesList: document.getElementById("directBridgeSettingsModulesList"),
   directBridgeSettingsAgentClassList: document.getElementById("directBridgeSettingsAgentClassList"),
   directBridgeSettingsContinuityList: document.getElementById("directBridgeSettingsContinuityList"),
+  directBridgeSettingsAgentUsageList: document.getElementById("directBridgeSettingsAgentUsageList"),
   directBridgeSettingsEvidence: document.getElementById("directBridgeSettingsEvidence"),
   projectList: document.getElementById("projectList"),
   projectCount: document.getElementById("projectCount"),
@@ -3022,6 +3023,7 @@ function renderDirectBridgeSettingsStatus() {
   renderDirectDiagnosticsRows(els.directBridgeSettingsModulesList, directBridgeSettingsRows("modules"));
   renderDirectDiagnosticsRows(els.directBridgeSettingsAgentClassList, directBridgeSettingsRows("agentClasses"));
   renderDirectDiagnosticsRows(els.directBridgeSettingsContinuityList, directBridgeSettingsRows("continuity"));
+  renderDirectDiagnosticsRows(els.directBridgeSettingsAgentUsageList, directBridgeSettingsRows("agentUsage"));
   if (els.directBridgeSettingsEvidence) {
     if (state.directBridgeSettingsError) {
       els.directBridgeSettingsEvidence.textContent = `Bridge settings status unavailable: ${state.directBridgeSettingsError}`;

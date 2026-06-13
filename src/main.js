@@ -88,6 +88,10 @@ const {
   buildAgentClassStatusProjection,
 } = require("./main/direct/bridge/agent-class-spec");
 const {
+  buildDirectAgentUsageLedger,
+  buildDirectAgentUsageSummaryProjection,
+} = require("./main/direct/usage/agent-ledger");
+const {
   buildVanillaSiblingContextEvidence,
 } = require("./main/direct/context/maintenance");
 const {
@@ -2336,6 +2340,7 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     registry: agentClassRegistry,
     status: "shadow_only",
   });
+  const agentUsageStatus = buildDirectAgentUsageStatusForProject(projectId);
   const projection = buildDirectSettingsSurfaceProjection({
     projectId,
     runtimeStatus,
@@ -2366,9 +2371,78 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     moduleStatus,
     agentClassStatus,
     continuityStatus: runtimeStatus.directContextMaintenance,
+    agentUsageStatus,
   });
   assertDirectSettingsSurfaceRendererSafe(projection);
   return projection;
+}
+
+function buildDirectAgentUsageStatusForProject(projectId) {
+  const safeProjectId = normalizeString(projectId, "");
+  try {
+    const sessionStore = ensureDirectSessionStore();
+    const index = sessionStore.ensure();
+    const sessions = (Array.isArray(index.sessions) ? index.sessions : [])
+      .filter((entry) => !safeProjectId || normalizeString(entry.projectId, "") === safeProjectId)
+      .map((entry) => {
+        const session = sessionStore.readSession(entry.sessionId);
+        if (!session) return null;
+        const turnIds = new Set([
+          ...(Array.isArray(session.turns) ? session.turns.map((turn) => normalizeString(turn?.turnId, "")).filter(Boolean) : []),
+          ...sessionStore.listTurnIdsFromDisk(session.sessionId),
+        ]);
+        const turns = [...turnIds]
+          .map((turnId) => sessionStore.readTurn(session.sessionId, turnId))
+          .filter(Boolean);
+        return { session, turns };
+      })
+      .filter(Boolean);
+    const ledger = buildDirectAgentUsageLedger({
+      projectId: safeProjectId,
+      sessionTurns: sessions,
+    });
+    return buildDirectAgentUsageSummaryProjection(ledger);
+  } catch (error) {
+    return {
+      schema: "direct_agent_usage_summary_projection@1",
+      projectId: safeProjectId,
+      rowCount: 0,
+      totals: {
+        rowCount: 0,
+        turnCount: 0,
+        inputTokensKnown: 0,
+        cachedInputTokensKnown: 0,
+        nonCachedInputTokensKnown: 0,
+        outputTokensKnown: 0,
+        reasoningTokensKnown: 0,
+        totalTokensKnown: 0,
+        missingUsageRowCount: 0,
+        durationMsKnown: 0,
+      },
+      byAgent: [],
+      byWorkThread: [],
+      byRoute: [],
+      evidencePosture: {
+        exactWhereProviderReported: false,
+        missingUsageIsNotZero: true,
+        costComputed: false,
+        billingGrade: false,
+      },
+      privacy: {
+        rawPromptIncluded: false,
+        rawResponseIncluded: false,
+        rawProviderFrameIncluded: false,
+        rawTokenDetailsIncluded: false,
+      },
+      error: {
+        code: "direct_agent_usage_status_unavailable",
+        message: normalizeString(error?.message, "Direct agent usage status unavailable."),
+      },
+      rawTextIncluded: false,
+      rawPathIncluded: false,
+      rawSecretIncluded: false,
+    };
+  }
 }
 
 function emitDirectRuntimeStatus(project = currentProject) {
