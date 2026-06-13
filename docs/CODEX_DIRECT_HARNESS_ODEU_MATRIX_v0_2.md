@@ -112,7 +112,8 @@ It does not grant runtime authority by itself.
 | Direct session/thread/turn evidence | `B-F/B-R` | Direct session store, thread operation ledger, direct thread deck, and new-thread UX exist; real-provider text path is green. |
 | Renderer/thread workbench projections | `B-F` | Transcript, deck, lifecycle, graph, preview, and workbench projections are implemented as derived projections. |
 | Context pack and request manifest | `B-F/B-R` | Context/request/provider-input artifacts exist and are used by direct text; tool/worker/maintenance paths remain scoped. |
-| Read/patch/command authority substrate | `B-F/S` | Authority modules and transition envelopes exist; live implementation-lane proof remains pending. |
+| Read-only implementation-lane tool loop | `B-F` | Authority module, result evidence, continuation request, context-pack/request-manifest path, sequential read-loop fixture proof, and no-mutation proof exist; opt-in live proof remains available but not promoted here. |
+| Patch/command authority substrate | `B-F/S` | Authority modules and transition envelopes exist; live implementation-lane proof remains pending. |
 | Workspace mutation truth | `B-F/S` | Patch/command planning and workspace effect summaries exist; broader live side-effect recovery and revert remain pending. |
 | Recovery and replay safety | `B-F/B-P` | Recovery scanner and repair-loop substrate exist; side-effect crash/replay proof remains a later bundle. |
 | WorkThread identity and target resolution | `B-F` | WorkThread registry, target report, operator broker, stale guards, and non-target preservation constraints exist. |
@@ -131,7 +132,7 @@ Main remaining coverage gaps from the matrix:
 
 | Gap | Rows | Why it remains open |
 |---|---|---|
-| Real-provider implementation-lane proof | `I7`, `E3-E15`, `B4-B6`, `F4-F7`, `J3-J7` | Read/patch/command authority exists, but we still need scoped live-provider loops and disposable workspace proof. |
+| Real-provider implementation-lane proof | `I7`, `E3-E15`, `B4-B6`, `F4-F7`, `J3-J7` | Read-only loop now has fixture/local disposable-workspace proof; live-provider promotion plus patch/command proof remain pending. |
 | Side-effect recovery/replay | `A11`, `C1-C3`, `C11-C12`, `E15`, `I9` | Recovery substrate exists, but crash/restart between tool, patch, command, and continuation states still needs proof. |
 | Iterative repair loop promotion | `E4`, `E14`, `E15`, `F4`, `D18` | Repair-loop substrate exists, but multi-step live read -> patch -> command -> continue cycles are not promoted. |
 | Workspace change authority maturity | `E6-E8`, `E11`, `J4-J7` | Journals/effect summaries exist; generated/vendor/lockfile policy, network-risk truth, and optional revert are not complete. |

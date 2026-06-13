@@ -1025,7 +1025,7 @@ Standing Wave 4 constraints:
 
 ### PR 22: Direct Read Tool Loop V0
 
-Status: planned.
+Status: in review.
 
 Purpose:
 
@@ -1049,6 +1049,22 @@ Scope:
   read one file, read missing file, read outside workspace blocked, read result
   continuation, and no workspace mutation.
 
+Implemented in this slice:
+
+- `direct:read-tool-loop` deterministic regression covering the existing
+  direct read-authority, read-result, continuation-request, and continuation
+  context-pack path.
+- Fixture workspace proof for one read step, second sequential read step,
+  missing-file failure before provider continuation, outside-workspace path
+  rejection before execution, and no workspace mutation.
+- Registry source-file coverage for the read-loop regression under
+  `ic4.read-file-authority`.
+- Existing opt-in live proof remains available through:
+
+```sh
+npm run direct:implementation-proof -- --mode=live --allow-live-provider-call
+```
+
 Non-goals:
 
 - No patch application.
@@ -1068,6 +1084,14 @@ Promotion criteria:
 ```text
 One real-provider direct turn can request a read, receive governed file content,
 continue from the tool result, and finish without mutating the workspace.
+```
+
+Current posture:
+
+```text
+Fixture/local proof is implemented in this PR.
+Real-provider live promotion remains opt-in through the implementation-proof
+runner and should be used before raising matrix rows from B-F to B-R.
 ```
 
 ### PR 23: Direct Patch Tool Loop V0
