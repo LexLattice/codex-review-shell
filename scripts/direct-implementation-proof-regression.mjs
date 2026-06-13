@@ -25,6 +25,7 @@ const REDACTION_VERSION = "direct-implementation-proof-redaction@1";
 const ROLE_MAPPING_DIGEST = "role_mapping_direct_implementation_proof_v1";
 const HARNESS_POLICY_DIGEST = "harness_policy_direct_implementation_proof_v1";
 const CONTEXT_POLICY_DIGEST = "context_policy_direct_tool_continuation_v1";
+const LIVE_PROMOTION_REPORT_SCHEMA = "direct_implementation_lane_live_promotion_report@1";
 
 const {
   createDirectAuthStore,
@@ -871,6 +872,123 @@ function finalizeProof(caseReport) {
   return caseReport;
 }
 
+function promotionScenarioForCase(caseReport = {}) {
+  const scenario = normalizeString(caseReport.scenario, "");
+  return ["read", "read_loop", "patch", "command"].includes(scenario) ? scenario : "";
+}
+
+function promotionVerdictForCase(caseReport = {}) {
+  const scenario = promotionScenarioForCase(caseReport);
+  if (!scenario) return "not_promoted_out_of_scope";
+  if (caseReport.coverageSource !== "real_provider") return "not_live_not_evaluated";
+  if (caseReport.countsAsRealProviderProof === true && caseReport.status === "proved") return "promoted";
+  if (caseReport.providerToolCallObserved !== true) return "not_promoted_provider_tool_not_emitted";
+  if (caseReport.localAuthorityExecuted !== true) return "not_promoted_local_authority_blocked";
+  if (caseReport.providerContinuationSent !== true) return "not_promoted_continuation_not_sent";
+  if (caseReport.providerContinuationCompleted !== true) return "not_promoted_continuation_failed";
+  return "not_promoted_terminal_missing";
+}
+
+function promotionRowForCase(caseReport = {}) {
+  const verdict = promotionVerdictForCase(caseReport);
+  return {
+    caseId: normalizeString(caseReport.caseId, ""),
+    scenario: normalizeString(caseReport.scenario, ""),
+    coverageSource: normalizeString(caseReport.coverageSource, ""),
+    status: normalizeString(caseReport.status, ""),
+    proofOutcome: normalizeString(caseReport.proofOutcome, ""),
+    failureCode: normalizeString(caseReport.failureCode, ""),
+    providerEventClass: caseReport.providerToolCallObserved === true ? "provider_tool_emitted" : "provider_tool_not_emitted",
+    localAuthorityClass: caseReport.localAuthorityExecuted === true ? "executed" : (caseReport.providerToolCallObserved === true ? "blocked_or_not_reached" : "not_reached"),
+    continuationClass: caseReport.providerContinuationCompleted === true
+      ? "completed"
+      : (caseReport.providerContinuationSent === true ? "failed_or_non_terminal" : "not_sent"),
+    terminalAssistantClass: caseReport.providerContinuationCompleted === true && normalizeString(caseReport.terminalState, "") === "completed"
+      ? "terminal_completed"
+      : "terminal_not_proved",
+    promotionVerdict: verdict,
+    promotionEligible: verdict === "promoted",
+    matrixRows: promotionScenarioForCase(caseReport)
+      ? ["A3", "B5", "I7", "E3-E15", "B4-B6", "F4-F7", "J3-J7"]
+      : [],
+    rawProviderPayloadIncluded: false,
+    rawToolArgsIncluded: false,
+    rawWorkspacePathIncluded: false,
+  };
+}
+
+function buildLivePromotionReport(report = {}) {
+  const rows = (Array.isArray(report.cases) ? report.cases : [])
+    .map(promotionRowForCase)
+    .filter((row) => row.promotionVerdict !== "not_promoted_out_of_scope");
+  const requiredScenarios = ["read", "read_loop", "patch", "command"];
+  const promotedScenarios = new Set(rows.filter((row) => row.promotionVerdict === "promoted").map((row) => row.scenario));
+  const missingScenarios = requiredScenarios.filter((scenario) => !promotedScenarios.has(scenario));
+  const liveRows = rows.filter((row) => row.coverageSource === "real_provider");
+  let promotionStatus = "not_evaluated";
+  if (report.mode === "live") {
+    if (!liveRows.length) promotionStatus = "no_live_cases";
+    else if (missingScenarios.length === 0) promotionStatus = "promoted";
+    else if (promotedScenarios.size > 0) promotionStatus = "partial_promotion";
+    else promotionStatus = "not_promoted";
+  }
+  const matrixRowsPromoted = missingScenarios.length === 0
+    ? ["A3", "B5", "I7", "E3-E15", "B4-B6", "F4-F7", "J3-J7"]
+    : [];
+  const artifact = {
+    schema: LIVE_PROMOTION_REPORT_SCHEMA,
+    promotionReportId: `live_promotion_${sha256(`${normalizeString(report.runId, "")}:${normalizeString(report.createdAt, "")}`).slice(0, 20)}`,
+    generatedAt: nowIso(),
+    sourceReport: {
+      schema: normalizeString(report.schema, ""),
+      runId: normalizeString(report.runId, ""),
+      mode: normalizeString(report.mode, ""),
+      liveProviderCallOptIn: report.liveProviderCallOptIn === true,
+      sourceReportDigest: digestValue({
+        runId: report.runId,
+        mode: report.mode,
+        cases: (report.cases || []).map((entry) => ({
+          caseId: entry.caseId,
+          scenario: entry.scenario,
+          coverageSource: entry.coverageSource,
+          status: entry.status,
+          proofOutcome: entry.proofOutcome,
+          countsAsRealProviderProof: entry.countsAsRealProviderProof,
+          failureCode: entry.failureCode,
+        })),
+      }),
+    },
+    promotionStatus,
+    requiredScenarios,
+    promotedScenarios: [...promotedScenarios],
+    missingScenarios,
+    rows,
+    matrixPromotionSummary: {
+      promoted: promotionStatus === "promoted",
+      matrixRowsPromoted,
+      matrixRowsBlocked: matrixRowsPromoted.length ? [] : ["A3", "B5", "I7", "E3-E15", "B4-B6", "F4-F7", "J3-J7"],
+      compactReason: promotionStatus === "promoted"
+        ? "All required live provider implementation-lane scenarios promoted."
+        : (report.mode === "live" ? "One or more live provider implementation-lane scenarios did not promote." : "Live provider proof was not requested."),
+    },
+    authorityBoundary: {
+      appServerFallbackAllowed: false,
+      rightPaneMutationAllowed: false,
+      handoffMutationAllowed: false,
+      autoApprovalAllowed: false,
+      automaticReplayAllowed: false,
+      automaticRevertAllowed: false,
+      providerCallsAllowedOnlyWhenOptedIn: true,
+    },
+    rawProviderPayloadIncluded: false,
+    rawToolArgsIncluded: false,
+    rawWorkspacePathIncluded: false,
+    rawAccountIncluded: false,
+  };
+  artifact.promotionReportDigest = digestValue(artifact);
+  return artifact;
+}
+
 function assistantTextFromEvents(events = []) {
   return events.filter((event) => event.type === "message_delta").map((event) => event.text || "").join("");
 }
@@ -1433,10 +1551,40 @@ function validateReport(report) {
   if (report.scopedImplementationLaneProof && !Array.isArray(report.scopedImplementationLaneProof.evidence)) {
     throw new Error("Scoped implementation proof evidence must be an array.");
   }
+  if (report.livePromotionReport) validateLivePromotionReport(report.livePromotionReport, report);
   for (const entry of report.cases) {
     for (const key of ["providerToolCallObserved", "localAuthorityExecuted", "providerContinuationSent", "providerContinuationCompleted", "countsAsRealProviderProof"]) {
       if (typeof entry[key] !== "boolean") throw new Error(`Case ${entry.caseId} missing boolean ${key}.`);
     }
+  }
+  return true;
+}
+
+function validateLivePromotionReport(promotion = {}, sourceReport = {}) {
+  if (!isPlainObject(promotion) || promotion.schema !== LIVE_PROMOTION_REPORT_SCHEMA) throw new Error("Invalid live promotion report schema.");
+  if (!Array.isArray(promotion.rows)) throw new Error("Live promotion report rows must be an array.");
+  if (!isPlainObject(promotion.matrixPromotionSummary)) throw new Error("Live promotion report missing matrix summary.");
+  if (promotion.sourceReport?.mode !== sourceReport.mode) throw new Error("Live promotion source mode mismatch.");
+  if (promotion.promotionStatus === "promoted") {
+    const required = new Set(promotion.requiredScenarios || []);
+    for (const row of promotion.rows) {
+      if (row.promotionVerdict === "promoted") required.delete(row.scenario);
+    }
+    if (required.size > 0) throw new Error("Live promotion cannot promote with missing scenarios.");
+    if (promotion.matrixPromotionSummary.promoted !== true) throw new Error("Promoted live report must mark matrix summary promoted.");
+  }
+  for (const row of promotion.rows) {
+    if (row.promotionVerdict === "promoted" && row.coverageSource !== "real_provider") throw new Error(`Promotion row ${row.caseId} is not live provider evidence.`);
+    if (row.promotionVerdict === "promoted" && row.promotionEligible !== true) throw new Error(`Promotion row ${row.caseId} is not eligible.`);
+    if (row.rawProviderPayloadIncluded || row.rawToolArgsIncluded || row.rawWorkspacePathIncluded) {
+      throw new Error(`Promotion row ${row.caseId} exposes raw data.`);
+    }
+  }
+  if (promotion.authorityBoundary?.autoApprovalAllowed !== false ||
+    promotion.authorityBoundary?.automaticReplayAllowed !== false ||
+    promotion.authorityBoundary?.automaticRevertAllowed !== false
+  ) {
+    throw new Error("Live promotion report grants forbidden authority.");
   }
   return true;
 }
@@ -1457,15 +1605,47 @@ function markdownSummary(report) {
   const rows = report.cases.map((entry) =>
     `| ${entry.caseId} | ${entry.coverageSource} | ${entry.status} | ${entry.proofOutcome} | ${entry.countsAsRealProviderProof} | ${entry.failureCode || ""} |`,
   ).join("\n");
+  const promotion = report.livePromotionReport || {};
+  const promotionRows = Array.isArray(promotion.rows)
+    ? promotion.rows.map((entry) => `| ${entry.caseId} | ${entry.scenario} | ${entry.coverageSource} | ${entry.promotionVerdict} |`).join("\n")
+    : "";
   return `# Direct Implementation-Lane Proof ${report.runId}
 
 - Mode: \`${report.mode}\`
 - Live opt-in: \`${report.liveProviderCallOptIn}\`
 - Matrix promotion candidates: \`${report.cases.filter((entry) => entry.matrixPromotionCandidate).length}\`
 - Scoped tool proof rows: \`${report.scopedImplementationLaneProof?.evidence?.filter((entry) => entry.usable).length || 0}\`
+- Live promotion status: \`${promotion.promotionStatus || "not_evaluated"}\`
+- Live promoted scenarios: \`${(promotion.promotedScenarios || []).join(", ") || "none"}\`
 
 | Case | Coverage | Status | Proof outcome | Proof | Failure |
 | --- | --- | --- | --- | --- | --- |
+${rows}
+
+## Live Promotion
+
+| Case | Scenario | Coverage | Promotion verdict |
+| --- | --- | --- | --- |
+${promotionRows}
+`;
+}
+
+function markdownPromotionSummary(promotion = {}) {
+  const rows = (promotion.rows || []).map((entry) =>
+    `| ${entry.caseId} | ${entry.scenario} | ${entry.coverageSource} | ${entry.providerEventClass} | ${entry.localAuthorityClass} | ${entry.continuationClass} | ${entry.promotionVerdict} |`,
+  ).join("\n");
+  return `# Direct Live Implementation Promotion ${promotion.promotionReportId || ""}
+
+- Status: \`${promotion.promotionStatus || "unknown"}\`
+- Source run: \`${promotion.sourceReport?.runId || ""}\`
+- Required scenarios: \`${(promotion.requiredScenarios || []).join(", ")}\`
+- Promoted scenarios: \`${(promotion.promotedScenarios || []).join(", ") || "none"}\`
+- Missing scenarios: \`${(promotion.missingScenarios || []).join(", ") || "none"}\`
+- Matrix promoted: \`${promotion.matrixPromotionSummary?.promoted === true}\`
+- Compact reason: ${promotion.matrixPromotionSummary?.compactReason || ""}
+
+| Case | Scenario | Coverage | Provider | Local authority | Continuation | Verdict |
+| --- | --- | --- | --- | --- | --- | --- |
 ${rows}
 `;
 }
@@ -1487,6 +1667,8 @@ async function main() {
   const workspaceRequest = createWorkspaceBackend(workspace);
   const reportPath = path.join(outputRoot, "implementation-proof-report.json");
   const markdownPath = path.join(outputRoot, "implementation-proof-report.md");
+  const promotionReportPath = path.join(outputRoot, "implementation-promotion-report.json");
+  const promotionMarkdownPath = path.join(outputRoot, "implementation-promotion-report.md");
   const scopedProofContext = {
     model: optionString(options, "model", "gpt-5.5"),
     endpoint: optionString(options, "endpoint", process.env.CODEX_DIRECT_RESPONSES_ENDPOINT || DEFAULT_CODEX_RESPONSES_ENDPOINT),
@@ -1621,6 +1803,7 @@ async function main() {
     report,
     ...scopedProofContext,
   });
+  report.livePromotionReport = buildLivePromotionReport(report);
   validateReport(report);
   const preFindings = rawExposureFindings(report, [workspace, outputRoot, appUserDataRoot]);
   report.rawExposureScan = {
@@ -1652,9 +1835,16 @@ async function main() {
   }
   writeJsonAtomic(reportPath, report);
   writeTextFile(markdownPath, markdownSummary(report));
+  writeJsonAtomic(promotionReportPath, report.livePromotionReport);
+  writeTextFile(promotionMarkdownPath, markdownPromotionSummary(report.livePromotionReport));
   const written = readJsonFile(reportPath);
   validateReport(written);
-  const postFindings = rawExposureFindings({ report: written, markdown: fs.readFileSync(markdownPath, "utf8") }, [workspace, outputRoot, appUserDataRoot]);
+  const postFindings = rawExposureFindings({
+    report: written,
+    promotionReport: readJsonFile(promotionReportPath),
+    markdown: fs.readFileSync(markdownPath, "utf8"),
+    promotionMarkdown: fs.readFileSync(promotionMarkdownPath, "utf8"),
+  }, [workspace, outputRoot, appUserDataRoot]);
   if (postFindings.length) {
     const minimal = {
       schema: "direct_implementation_lane_real_provider_proof_report@1",
