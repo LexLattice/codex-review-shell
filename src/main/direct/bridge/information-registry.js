@@ -350,6 +350,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "Broker resolutions make candidates, confidence, ambiguity, and non-target preservation constraints visible, but still grant no mutation/provider authority until explicit enforcement is implemented.",
   },
   {
+    id: "ic12.governance-enforcement-clarification",
+    name: "Governance enforcement preflight and clarification packet",
+    role: "governance_routing",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/governance/enforcement-gate.js", "scripts/direct-governance-enforcement-clarification-regression.mjs"],
+    ontology: ontologyShape(["governance_enforcement_preflight", "governance_clarification_packet", "authority_precondition_gate"], "harness", {
+      identityFields: ["projectId", "preflightId", "workThreadId", "transitionKind"],
+      schema: "direct_governance_enforcement_preflight@1",
+    }),
+    bridgeFit: "Promotes selected WorkThread/operator-broker evidence into a narrow fail-closed precondition for provider, tool, and workspace mutation transitions.",
+    realignment: "The gate may satisfy a transition precondition but does not perform object-level audit, worker tasks, broad execution authority, autonomous routing, or hidden mutation.",
+  },
+  {
     id: "ic13.bridge-information-registry",
     name: "Bridge information class registry",
     role: "governance_routing",
