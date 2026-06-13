@@ -985,6 +985,344 @@ Dependency:
 Worker start V0 and role handoff packet exist.
 ```
 
+## Wave 4: Real-Provider Implementation Lane And Side-Effect Safety
+
+Status: planned.
+
+Goal:
+
+```text
+Prove that the direct path can perform bounded implementation work with a real
+provider while preserving the bridge laws already built in Waves 1-3:
+
+target resolution before mutation,
+authority transition before tool execution,
+tool result evidence before continuation,
+workspace effect truth before promotion,
+and recovery classification before retry/replay.
+```
+
+This wave closes the current highest-confidence gap in the matrix:
+
+```text
+Real-provider implementation-lane harness for read/patch/command,
+without adding new authority.
+```
+
+Wave 4 must remain narrower than the ideal direct harness. It should prove
+one lawful implementation lane, not every future workflow.
+
+Standing Wave 4 constraints:
+
+- Use disposable or explicitly selected test workspaces for real-provider proof.
+- Keep vanilla app-server path unchanged.
+- Do not enable recursive worker spawning.
+- Do not let provider tool calls bypass `AuthorityBearingTransition`.
+- Do not treat renderer-visible controls as action authority.
+- Do not retry after side effects unless recovery state explicitly permits it.
+- Do not promote a repair loop unless all tool-result continuations cite prior
+  tool evidence.
+
+### PR 22: Direct Read Tool Loop V0
+
+Status: planned.
+
+Purpose:
+
+```text
+Prove the first real-provider implementation-lane tool loop with read-only
+workspace access.
+```
+
+Scope:
+
+- Add a direct read-tool provider loop for selected files/globs already allowed
+  by the active WorkThread and authority boundary.
+- Convert provider read intent into an `AuthorityBearingTransition`.
+- Revalidate WorkThread, workspace root, path containment, stale route state,
+  and read scope in main process.
+- Emit read request/result evidence rows with source refs, truncation posture,
+  and raw-path redaction posture.
+- Continue the provider turn with read results through the existing direct
+  request/manifest/context-pack path.
+- Add disposable-workspace real-provider smoke coverage for:
+  read one file, read missing file, read outside workspace blocked, read result
+  continuation, and no workspace mutation.
+
+Non-goals:
+
+- No patch application.
+- No command execution.
+- No broad filesystem search beyond explicitly scoped read policy.
+- No automatic context refresh from arbitrary read results.
+
+Dependency:
+
+```text
+AuthorityBearingTransition, controlled routing, WorkTargetResolution, context
+pack/request manifest, and real-provider direct text path are green.
+```
+
+Promotion criteria:
+
+```text
+One real-provider direct turn can request a read, receive governed file content,
+continue from the tool result, and finish without mutating the workspace.
+```
+
+### PR 23: Direct Patch Tool Loop V0
+
+Status: planned.
+
+Purpose:
+
+```text
+Prove bounded workspace mutation through patch application, with workspace
+effect truth and no command execution.
+```
+
+Scope:
+
+- Add a direct patch-tool provider loop that accepts only explicit patch
+  proposals under the resolved workspace.
+- Convert provider patch intent into an `AuthorityBearingTransition`.
+- Revalidate WorkThread, route, file containment, patch size, binary-file
+  exclusion, generated/vendor/lockfile posture, and stale base content where
+  available.
+- Apply patches only through the existing main-process patch path.
+- Emit workspace effect rows for changed files, created files, deleted files,
+  failed hunks, and skipped paths.
+- Continue the provider turn with patch-result evidence.
+- Add disposable-workspace real-provider smoke coverage for:
+  simple edit, create file, blocked outside-workspace patch, failed patch,
+  and effect summary rendering.
+
+Non-goals:
+
+- No shell command execution.
+- No automatic revert UI beyond effect evidence.
+- No lockfile/vendor/generated policy finalization beyond conservative blocking
+  or explicit degraded posture.
+
+Dependency:
+
+```text
+Direct read loop is green; workspace mutation truth rows are present enough to
+describe patch effects.
+```
+
+Promotion criteria:
+
+```text
+One real-provider direct turn can propose a patch, the harness can lawfully
+apply it, report exact workspace effects, continue from the result, and finish
+without hiding failed/skipped mutations.
+```
+
+### PR 24: Direct Command Tool Loop V0
+
+Status: planned.
+
+Purpose:
+
+```text
+Prove bounded shell command execution after explicit authority gating, with
+safe output capture and continuation.
+```
+
+Scope:
+
+- Add a direct command-tool provider loop for commands allowed by the active
+  access/sandbox policy.
+- Convert provider command intent into an `AuthorityBearingTransition`.
+- Revalidate WorkThread, workspace root, command policy, cwd containment,
+  environment exposure policy, network posture, timeout, and output caps.
+- Emit command started/completed/failed evidence rows with exit status,
+  duration, stdout/stderr truncation posture, and workspace-effect uncertainty.
+- Continue the provider turn with command-result evidence.
+- Add disposable-workspace real-provider smoke coverage for:
+  safe read-only command, failing command, timeout/degraded command, blocked
+  command, and continuation from command output.
+
+Non-goals:
+
+- No long-running background process manager.
+- No network-enabled command policy unless separately evidenced.
+- No command-driven auto-approval expansion.
+- No treating command output as workspace mutation truth unless separately
+  observed.
+
+Dependency:
+
+```text
+Direct read loop and patch loop are green; access/sandbox policy projection is
+available to the direct controller.
+```
+
+Promotion criteria:
+
+```text
+One real-provider direct turn can request a bounded command, receive governed
+output, continue from the result, and preserve command authority/evidence
+without renderer-side execution.
+```
+
+### PR 25: Direct Tool Continuation And Iterative Repair Loop V0
+
+Status: planned.
+
+Purpose:
+
+```text
+Prove a small read -> patch -> command -> repair sequence without introducing
+autonomous orchestration or hidden retry authority.
+```
+
+Scope:
+
+- Add direct continuation ledger links between provider tool call, local tool
+  execution, tool result, next provider request, and final assistant message.
+- Permit a bounded multi-step implementation turn only when each step cites the
+  previous result evidence.
+- Add repair-loop state for `needs_more_read`, `patch_failed`,
+  `command_failed`, `tests_failed`, `finalized`, and `blocked`.
+- Ensure retry policy distinguishes pre-side-effect retry from post-side-effect
+  continuation.
+- Add disposable-workspace real-provider smoke coverage for:
+  read then patch, patch then test command, failing test then repair patch, and
+  blocked repair after policy limit.
+
+Non-goals:
+
+- No meta-orchestrator autonomous advancement.
+- No worker/auditor certification loop.
+- No recursive task decomposition.
+- No silent retries after side effects.
+
+Dependency:
+
+```text
+Read, patch, and command loops are individually green.
+```
+
+Promotion criteria:
+
+```text
+A bounded real-provider direct implementation turn can complete a small
+repair cycle while every continuation cites exact prior tool-result evidence.
+```
+
+### PR 26: Side-Effect Recovery And Replay Safety
+
+Status: planned.
+
+Purpose:
+
+```text
+Make crash/restart and connection-loss states explicit for implementation-lane
+turns that have tool calls, patches, commands, or partial continuations.
+```
+
+Scope:
+
+- Extend recovery scanner for direct tool-call lifecycles:
+  `intent_observed`, `authority_pending`, `execution_started`,
+  `execution_completed`, `result_sent`, `continuation_started`,
+  `terminal_observed`, and `handoff_unknown`.
+- Classify interrupted turns as healthy, resumable, needs operator review,
+  sent-unknown, side-effect-unknown, or corrupt.
+- Prevent replay of patch/command side effects unless a recovery row proves
+  replay is safe.
+- Add recovery UI/status projection for implementation-lane interrupted turns.
+- Add crash/restart regression fixtures for:
+  before execution, during execution, after patch before result sent, after
+  command result sent before continuation, and corrupt ledger.
+
+Non-goals:
+
+- No automatic revert.
+- No automatic replay of side-effecting operations.
+- No provider-side continuity assumption without explicit continuation proof.
+
+Dependency:
+
+```text
+Read/patch/command result rows and continuation links exist.
+```
+
+Promotion criteria:
+
+```text
+An interrupted implementation-lane turn is never shown as cleanly idle or
+silently retried when side-effect state is unknown.
+```
+
+### PR 27: Workspace Authority Maturity V0
+
+Status: planned.
+
+Purpose:
+
+```text
+Harden workspace mutation policy enough for daily direct-path implementation
+testing without pretending it is final production governance.
+```
+
+Scope:
+
+- Add explicit policy rows for generated files, vendor paths, lockfiles,
+  binary files, large files, symlinks, ignored paths, and external worktrees.
+- Add workspace effect summary projection that separates:
+  direct patch effects, command-observed effects, untracked changes, and
+  pre-existing dirty state.
+- Add optional revert-plan preview for direct patch effects where safe.
+- Keep revert execution disabled unless a later PR grants it.
+- Add fixtures for:
+  dirty worktree preservation, symlink escape blocking, generated/vendor
+  degraded posture, lockfile explicit policy, and untracked file classification.
+
+Non-goals:
+
+- No automatic revert execution.
+- No destructive cleanup.
+- No broad VCS policy replacement.
+
+Dependency:
+
+```text
+Patch and command loops emit workspace effect evidence.
+```
+
+Promotion criteria:
+
+```text
+The direct implementation lane can state what changed, what may have changed,
+what was already dirty, and what policy blocked, without conflating those
+classes.
+```
+
+Wave 4 expected result:
+
+```text
+Implemented:
+  direct read tool loop
+  direct patch tool loop
+  direct command tool loop
+  bounded tool-result continuation / repair cycle
+  side-effect recovery classifications
+  workspace authority maturity V0
+
+Still intentionally not authority:
+  autonomous scheduler
+  recursive worker spawning
+  mature auditor certification loop
+  automatic revert execution
+  broad generated/vendor/lockfile policy finalization
+  provider compaction execution
+  skill/hook/connector execution runner
+  direct path replacement of the vanilla app-server lane
+```
+
 ## Update Rules
 
 After each PR:
