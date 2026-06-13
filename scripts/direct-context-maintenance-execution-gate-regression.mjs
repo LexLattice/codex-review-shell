@@ -259,6 +259,24 @@ function buildReport() {
   );
   assert(staleProposal.result.memoryPointerUpdated === false, "stale proposal must not update memory pointer");
 
+  const missingCurrentProof = executionCase(
+    "missing_current_source_proof_blocks_materialization",
+    {
+      ...basePacket,
+      actionKind: "memory_refresh_materialize",
+      operatorDecision: "accepted",
+      currentMemoryId: fixture.currentMemory.memoryId,
+      proposedMemoryId: fixture.proposedMemory.memoryId,
+    },
+    {
+      memoryRefreshProposal: fixture.acceptedRefreshProposal,
+      currentMemory: fixture.currentMemory,
+      proposedMemory: fixture.proposedMemory,
+    },
+    { resultState: "blocked", blockerCode: "stale_source_digest", materializedCount: 0 },
+  );
+  assert(missingCurrentProof.result.memoryPointerUpdated === false, "missing current proof must not update memory pointer");
+
   const rawExposure = executionCase(
     "raw_exposure_blocks_execution",
     {
@@ -293,7 +311,7 @@ function buildReport() {
       currentSourceDigest: fixture.currentSourceDigest,
       currentUiProjectionGeneration: fixture.currentUiProjectionGeneration,
     },
-    { resultState: "preview_ready", blockerCode: "", previewCount: 1 },
+    { resultState: "preview_ready", blockerCode: "", previewCount: 3 },
   );
   assert(batonPreview.result.batonReinjectionPreviewReady === true, "baton reinjection preview should be ready");
   assert(batonPreview.result.mutationScope === "none", "preview must not mutate local context pointers");
@@ -305,7 +323,7 @@ function buildReport() {
     status: "passed",
     matrixPromotionCandidate: false,
     rowsExercised: ["D7", "D10", "D11", "D13", "D14", "J11", "J12"],
-    cases: [acceptedMemory, staleProposal, rawExposure, batonPreview].map(({ caseId, result }) => ({
+    cases: [acceptedMemory, staleProposal, missingCurrentProof, rawExposure, batonPreview].map(({ caseId, result }) => ({
       caseId,
       actionKind: result.actionKind,
       resultState: result.resultState,

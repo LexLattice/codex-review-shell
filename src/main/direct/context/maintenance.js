@@ -1493,44 +1493,71 @@ function buildContextMaintenanceExecutionPacket(input = {}) {
     ? input.operatorDecision
     : "deferred";
   const sourceArtifactRefs = normalizeExecutionSourceRefs(input.sourceArtifactRefs || input.sourceRefs, actionKind);
+  const projectId = normalizeString(input.projectId, "");
+  const threadId = normalizeString(input.threadId, "");
+  const workThreadId = normalizeString(input.workThreadId, "");
+  const expectedSourceDigest = normalizeString(input.expectedSourceDigest, "");
+  const expectedUiProjectionGeneration = input.expectedUiProjectionGeneration === undefined || input.expectedUiProjectionGeneration === null
+    ? null
+    : Number(input.expectedUiProjectionGeneration);
+  const currentMemoryId = normalizeString(input.currentMemoryId, "");
+  const proposedMemoryId = normalizeString(input.proposedMemoryId, "");
+  const currentBatonId = normalizeString(input.currentBatonId, "");
+  const proposedBatonId = normalizeString(input.proposedBatonId, "");
+  const omissionLedgerId = normalizeString(input.omissionLedgerId, "");
+  const contextLossWitnessId = normalizeString(input.contextLossWitnessId, "");
+  const retentionLaw = normalizeString(input.retentionLaw, "source_refs_and_previous_pointer_retained");
+  const omissionRisk = normalizeString(input.omissionRisk, "visible_operator_acknowledged");
+  const rollbackPosture = normalizeString(input.rollbackPosture, "previous_pointer_retained");
+  const providerCompactionRequested = input.providerCompactionRequested === true;
+  const rawTextIncluded = input.rawTextIncluded === true;
   const sourceDigest = sha256(stableStringify({
-    projectId: input.projectId,
-    threadId: input.threadId,
-    workThreadId: input.workThreadId,
+    projectId,
+    threadId,
+    workThreadId,
     actionKind,
     operatorDecision,
     sourceArtifactRefs,
-    expectedSourceDigest: input.expectedSourceDigest,
-    expectedUiProjectionGeneration: input.expectedUiProjectionGeneration,
+    expectedSourceDigest,
+    expectedUiProjectionGeneration,
+    currentMemoryId,
+    proposedMemoryId,
+    currentBatonId,
+    proposedBatonId,
+    omissionLedgerId,
+    contextLossWitnessId,
+    retentionLaw,
+    omissionRisk,
+    rollbackPosture,
+    providerCompactionRequested,
+    rawTextIncluded,
   }));
   const packet = {
     schema: DIRECT_CONTEXT_MAINTENANCE_EXECUTION_PACKET_SCHEMA,
     executionPacketId: normalizeString(input.executionPacketId, `context_maintenance_exec_${sourceDigest.slice(0, 24)}`),
-    projectId: normalizeString(input.projectId, ""),
-    threadId: normalizeString(input.threadId, ""),
-    workThreadId: normalizeString(input.workThreadId, ""),
+    projectId,
+    threadId,
+    workThreadId,
     actionKind,
     operatorDecision,
     sourceArtifactRefs,
-    expectedSourceDigest: normalizeString(input.expectedSourceDigest, ""),
-    expectedUiProjectionGeneration: input.expectedUiProjectionGeneration === undefined || input.expectedUiProjectionGeneration === null
-      ? null
-      : Number(input.expectedUiProjectionGeneration),
-    currentMemoryId: normalizeString(input.currentMemoryId, ""),
-    proposedMemoryId: normalizeString(input.proposedMemoryId, ""),
-    currentBatonId: normalizeString(input.currentBatonId, ""),
-    proposedBatonId: normalizeString(input.proposedBatonId, ""),
-    omissionLedgerId: normalizeString(input.omissionLedgerId, ""),
-    contextLossWitnessId: normalizeString(input.contextLossWitnessId, ""),
-    retentionLaw: normalizeString(input.retentionLaw, "source_refs_and_previous_pointer_retained"),
-    omissionRisk: normalizeString(input.omissionRisk, "visible_operator_acknowledged"),
-    rollbackPosture: normalizeString(input.rollbackPosture, "previous_pointer_retained"),
-    providerCompactionRequested: input.providerCompactionRequested === true,
+    expectedSourceDigest,
+    expectedUiProjectionGeneration,
+    currentMemoryId,
+    proposedMemoryId,
+    currentBatonId,
+    proposedBatonId,
+    omissionLedgerId,
+    contextLossWitnessId,
+    retentionLaw,
+    omissionRisk,
+    rollbackPosture,
+    providerCompactionRequested,
     providerCompactionAllowed: false,
     providerTransportAllowed: false,
     automaticSchedulerAllowed: false,
     workspaceMutationAllowed: false,
-    rawTextIncluded: input.rawTextIncluded === true,
+    rawTextIncluded,
     createdAt: normalizeString(input.createdAt, nowIso(input.nowMs)),
   };
   packet.integrity = makeIntegrity(sourceDigest);
@@ -1573,11 +1600,11 @@ function contextMaintenanceExecutionBlocker(input = {}) {
   if (packet.operatorDecision === "rejected") return "operator_rejected";
   if (packet.operatorDecision !== "accepted") return "operator_acceptance_required";
   const currentSourceDigest = normalizeString(input.currentSourceDigest, "");
-  if (packet.expectedSourceDigest && currentSourceDigest && packet.expectedSourceDigest !== currentSourceDigest) return "stale_source_digest";
+  if (packet.expectedSourceDigest && packet.expectedSourceDigest !== currentSourceDigest) return "stale_source_digest";
   const currentUiProjectionGeneration = input.currentUiProjectionGeneration === undefined || input.currentUiProjectionGeneration === null
     ? null
     : Number(input.currentUiProjectionGeneration);
-  if (packet.expectedUiProjectionGeneration !== null && currentUiProjectionGeneration !== null && packet.expectedUiProjectionGeneration !== currentUiProjectionGeneration) {
+  if (packet.expectedUiProjectionGeneration !== null && packet.expectedUiProjectionGeneration !== currentUiProjectionGeneration) {
     return "stale_ui_projection_generation";
   }
   return "";
@@ -1612,17 +1639,19 @@ function buildContextMaintenanceExecutionResult(input = {}) {
       retainedArtifacts.push(executionRefForArtifact("previous_frontier_baton", input.currentBaton || { batonId: packet.currentBatonId }));
     } else if (packet.actionKind === "omission_witness_acknowledge") {
       if (!omissionLedger && !contextLossWitness) blockerCode = "omission_witness_missing";
-      else materializedArtifacts.push(
-        executionRefForArtifact("context_omission_ledger", omissionLedger) ||
+      else {
+        materializedArtifacts.push(
+          executionRefForArtifact("context_omission_ledger", omissionLedger),
           executionRefForArtifact("context_loss_witness", contextLossWitness),
-      );
+        );
+      }
     } else if (packet.actionKind === "context_loss_remediation_preview") {
       if (!contextLossWitness && !localCompactionPlan && !baton) blockerCode = "context_loss_remediation_source_missing";
       else {
         previewArtifacts.push(
-          executionRefForArtifact("context_loss_witness", contextLossWitness) ||
-            executionRefForArtifact("local_compaction_plan", localCompactionPlan) ||
-            executionRefForArtifact("frontier_baton_reinjection_preview", baton),
+          executionRefForArtifact("context_loss_witness", contextLossWitness),
+          executionRefForArtifact("local_compaction_plan", localCompactionPlan),
+          executionRefForArtifact("frontier_baton_reinjection_preview", baton),
         );
       }
     }
