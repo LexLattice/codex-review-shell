@@ -43,14 +43,14 @@ capability. "Inherited" is not a defect when it is explicit and law-compatible.
 
 ## Current Executable Audit Snapshot
 
-Last reviewed after Wave 6 / PR 35 on `2026-06-14`.
+Last reviewed after Wave 6 / PR 36 on `2026-06-14`.
 
 ```text
-registry rows: 35
+registry rows: 36
 valid: yes
 missing source files: 0
 implemented rows: 10
-partial rows: 23
+partial rows: 24
 inherited rows: 2
 ```
 
@@ -179,6 +179,7 @@ The executable registry currently tracks these bridge rows:
 | `ic3.context-pack-and-request-manifest` | context construction | implemented | keep |
 | `ic3.context-maintenance-memory-baton` | memory/continuity | partial | keep and align |
 | `ic3.context-packet-preview-workbench` | context construction | partial | keep guarded |
+| `ic3.memory-review-workbench` | memory/continuity | partial | keep guarded |
 | `ic4.read-file-authority` | authority gate | implemented | keep |
 | `ic4.patch-authority` | authority gate | implemented | keep |
 | `ic4.command-authority` | authority gate | implemented | keep |

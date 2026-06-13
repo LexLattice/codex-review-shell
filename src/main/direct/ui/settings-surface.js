@@ -387,6 +387,47 @@ function summarizeContextPreview(input = {}) {
   };
 }
 
+function summarizeMemoryWorkbench(input = {}) {
+  const source = objectOrEmpty(input);
+  const workbench = normalizeString(source.schema, "") === "direct_memory_review_workbench@1"
+    ? source
+    : objectOrEmpty(source.memoryWorkbench || source.memoryReviewWorkbench || source.directMemoryWorkbench);
+  const counts = objectOrEmpty(workbench.counts);
+  const transitions = objectOrEmpty(workbench.transitions);
+  const authority = objectOrEmpty(workbench.authority);
+  return {
+    available: normalizeString(workbench.schema, "") === "direct_memory_review_workbench@1",
+    schema: normalizeString(workbench.schema, "not_exposed"),
+    workbenchState: normalizeString(workbench.workbenchState, "unavailable"),
+    rowCount: Number(counts.rowCount ?? arrayOrEmpty(workbench.rows).length ?? 0),
+    reviewRowCount: Number(counts.reviewRowCount ?? 0),
+    refreshProposalRowCount: Number(counts.refreshProposalRowCount ?? 0),
+    resetRowCount: Number(counts.resetRowCount ?? 0),
+    executionTransitionRowCount: Number(counts.executionTransitionRowCount ?? 0),
+    contextLossRowCount: Number(counts.contextLossRowCount ?? 0),
+    omissionImpactRowCount: Number(counts.omissionImpactRowCount ?? 0),
+    staleMemoryEntryCount: Number(counts.staleMemoryEntryCount ?? 0),
+    conflictedMemoryEntryCount: Number(counts.conflictedMemoryEntryCount ?? 0),
+    omittedItemCount: Number(counts.omittedItemCount ?? 0),
+    omittedTokenEstimate: Number(counts.omittedTokenEstimate ?? 0),
+    blockedRowCount: Number(counts.blockedRowCount ?? 0),
+    rawExposureUnsafeCount: Number(counts.rawExposureUnsafeCount ?? 0),
+    acceptedRefreshVisible: transitions.acceptedRefreshVisible === true,
+    rejectedRefreshVisible: transitions.rejectedRefreshVisible === true,
+    localMaterializationWitnessVisible: transitions.localMaterializationWitnessVisible === true,
+    rollbackPostureVisible: transitions.rollbackPostureVisible === true,
+    resetWorkflowVisible: transitions.resetWorkflowVisible === true,
+    resetExecutionAllowed: transitions.resetExecutionAllowed === true,
+    memoryMutationAllowed: authority.memoryMutationAllowed === true,
+    providerMemoryClaimAccepted: authority.providerMemoryClaimAccepted === true,
+    providerCompactionAllowed: authority.providerCompactionAllowed === true,
+    automaticRefreshAllowed: authority.automaticRefreshAllowed === true,
+    providerTransportAllowed: authority.providerTransportAllowed === true,
+    workspaceMutationAllowed: authority.workspaceMutationAllowed === true,
+    workbenchDigest: normalizeString(workbench.workbenchDigest, ""),
+  };
+}
+
 function summarizeAgentUsage(input = {}) {
   const source = objectOrEmpty(input);
   const usage = normalizeString(source.schema, "") === "direct_agent_usage_summary_projection@1"
@@ -427,6 +468,7 @@ function buildRows(sections) {
   const agentClasses = sections.agentClasses;
   const continuity = sections.continuity;
   const contextPreview = sections.contextPreview;
+  const memoryWorkbench = sections.memoryWorkbench;
   const agentUsage = sections.agentUsage;
   return {
     runtime: [
@@ -547,6 +589,23 @@ function buildRows(sections) {
       statusRow("Request", contextPreview.requestAssemblyAllowed ? "preview clear" : "blocked/not granted", contextPreview.requestAssemblyAllowed && !contextPreview.requestAssemblyBlocked ? "diagnostic" : "blocked"),
       statusRow("Authority", contextPreview.previewEditingAllowed || contextPreview.providerTransportAllowed || contextPreview.workspaceMutationAllowed || contextPreview.memoryMutationAllowed || contextPreview.providerCompactionAllowed ? "unexpected grant" : "display only", contextPreview.previewEditingAllowed || contextPreview.providerTransportAllowed || contextPreview.workspaceMutationAllowed || contextPreview.memoryMutationAllowed || contextPreview.providerCompactionAllowed ? "blocked" : "ok"),
     ],
+    memoryWorkbench: [
+      statusRow("Surface", memoryWorkbench.available ? "available" : "not exposed", memoryWorkbench.available ? "diagnostic" : "missing"),
+      statusRow("Workbench", memoryWorkbench.workbenchState, memoryWorkbench.workbenchState === "ready" ? "ok" : memoryWorkbench.workbenchState === "blocked_raw_exposure" ? "blocked" : "diagnostic"),
+      statusRow("Rows", memoryWorkbench.rowCount),
+      statusRow("Review/refresh", `${memoryWorkbench.reviewRowCount}/${memoryWorkbench.refreshProposalRowCount}`),
+      statusRow("Reset rows", memoryWorkbench.resetRowCount),
+      statusRow("Execution rows", memoryWorkbench.executionTransitionRowCount),
+      statusRow("Context loss / omission", `${memoryWorkbench.contextLossRowCount}/${memoryWorkbench.omissionImpactRowCount}`),
+      statusRow("Memory stale/conflict", `${memoryWorkbench.staleMemoryEntryCount}/${memoryWorkbench.conflictedMemoryEntryCount}`, memoryWorkbench.staleMemoryEntryCount || memoryWorkbench.conflictedMemoryEntryCount ? "diagnostic" : "ok"),
+      statusRow("Omitted items/tokens", `${memoryWorkbench.omittedItemCount}/${memoryWorkbench.omittedTokenEstimate}`),
+      statusRow("Refresh", memoryWorkbench.acceptedRefreshVisible ? "accepted visible" : memoryWorkbench.rejectedRefreshVisible ? "rejected visible" : "not accepted"),
+      statusRow("Materialization witness", memoryWorkbench.localMaterializationWitnessVisible ? "visible" : "none", memoryWorkbench.localMaterializationWitnessVisible ? "diagnostic" : "ok"),
+      statusRow("Rollback", memoryWorkbench.rollbackPostureVisible ? "visible" : "not visible", memoryWorkbench.rollbackPostureVisible ? "diagnostic" : "ok"),
+      statusRow("Reset execution", memoryWorkbench.resetExecutionAllowed ? "unexpected enabled" : "disabled", memoryWorkbench.resetExecutionAllowed ? "blocked" : "ok"),
+      statusRow("Blocked/raw", `${memoryWorkbench.blockedRowCount}/${memoryWorkbench.rawExposureUnsafeCount}`, memoryWorkbench.rawExposureUnsafeCount ? "blocked" : "ok"),
+      statusRow("Authority", memoryWorkbench.memoryMutationAllowed || memoryWorkbench.providerMemoryClaimAccepted || memoryWorkbench.providerCompactionAllowed || memoryWorkbench.automaticRefreshAllowed || memoryWorkbench.providerTransportAllowed || memoryWorkbench.workspaceMutationAllowed ? "unexpected grant" : "display only", memoryWorkbench.memoryMutationAllowed || memoryWorkbench.providerMemoryClaimAccepted || memoryWorkbench.providerCompactionAllowed || memoryWorkbench.automaticRefreshAllowed || memoryWorkbench.providerTransportAllowed || memoryWorkbench.workspaceMutationAllowed ? "blocked" : "ok"),
+    ],
     agentUsage: [
       statusRow("Surface", agentUsage.available ? "available" : "not exposed", agentUsage.available ? "diagnostic" : "missing"),
       statusRow("Rows / turns", `${agentUsage.rowCount}/${agentUsage.turnCount}`),
@@ -576,6 +635,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
   const agentClasses = summarizeAgentClasses(input.agentClassStatus);
   const continuity = summarizeContinuity(input);
   const contextPreview = summarizeContextPreview(input.contextPreview || input.contextPacketPreview || input.directContextPreview || input);
+  const memoryWorkbench = summarizeMemoryWorkbench(input.memoryWorkbench || input.memoryReviewWorkbench || input.directMemoryWorkbench || input);
   const agentUsage = summarizeAgentUsage(input.agentUsageStatus || input.agentUsageProjection || input.directAgentUsage || input);
   const generatedAt = normalizeString(input.generatedAt, nowIso(input.nowMs));
   const authority = {
@@ -592,12 +652,16 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
     providerTransportAllowed: false,
     requestAssemblyAuthorityGranted: false,
     contextPreviewEditingAllowed: false,
+    memoryWorkbenchEditingAllowed: false,
+    memoryMutationAllowed: false,
+    providerMemoryClaimAccepted: false,
+    automaticRefreshAllowed: false,
     workspaceMutationAllowed: false,
     rawTextIncluded: false,
     rawPathIncluded: false,
     rawSecretIncluded: false,
   };
-  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, agentClasses, continuity, contextPreview, agentUsage };
+  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, agentClasses, continuity, contextPreview, memoryWorkbench, agentUsage };
   const sourceDigest = digestFor("direct-settings-surface-source@1", sections);
   const projection = {
     schema: DIRECT_SETTINGS_SURFACE_PROJECTION_SCHEMA,
@@ -618,6 +682,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       "agent_class_specs",
       "memory_baton_omission_compaction",
       "context_packet_preview",
+      "memory_review_workbench",
       "direct_agent_usage",
     ],
     sections,
@@ -639,6 +704,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       { kind: "agent_class_status", digest: normalizeString(input.agentClassStatus?.projectionDigest, ""), label: "Agent class status" },
       { kind: "continuity_status", digest: normalizeString(input.continuityStatus?.projectionDigest, ""), label: "Continuity status" },
       { kind: "context_packet_preview", digest: normalizeString(contextPreview.previewDigest, ""), label: "Context packet preview" },
+      { kind: "memory_review_workbench", digest: normalizeString(memoryWorkbench.workbenchDigest, ""), label: "Memory review workbench" },
       { kind: "direct_agent_usage", digest: normalizeString(agentUsage.projectionDigest || agentUsage.ledgerDigest, ""), label: "Direct agent usage summary" },
     ].filter((ref) => ref.digest || ref.kind === "registry_audit"),
     sourceDigest,
@@ -667,6 +733,10 @@ function assertDirectSettingsSurfaceRendererSafe(projection = {}) {
     "providerTransportAllowed",
     "requestAssemblyAuthorityGranted",
     "contextPreviewEditingAllowed",
+    "memoryWorkbenchEditingAllowed",
+    "memoryMutationAllowed",
+    "providerMemoryClaimAccepted",
+    "automaticRefreshAllowed",
     "workspaceMutationAllowed",
     "rawTextIncluded",
     "rawPathIncluded",
