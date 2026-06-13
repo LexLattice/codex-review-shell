@@ -1206,9 +1206,15 @@ function parseGitStatusPorcelain(text) {
     if (status.includes("?") || status.includes("A")) changeKind = "created";
     if (status.includes("D")) changeKind = "deleted";
     if (!status.trim()) changeKind = "unknown";
+    let gitStatus = "modified";
+    if (status.includes("?")) gitStatus = "untracked";
+    else if (status.includes("!")) gitStatus = "ignored";
+    else if (status.includes("A")) gitStatus = "added";
+    else if (status.includes("D")) gitStatus = "deleted";
     entries.push({
       relPath: displayRelPath(relPath.replace(/^"|"$/g, "")),
       changeKind,
+      gitStatus,
     });
   }
   return entries;

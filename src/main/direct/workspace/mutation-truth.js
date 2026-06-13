@@ -166,12 +166,13 @@ function classifyWorkspacePath(relPath) {
 
 function workspaceMutationPolicyRows(input = {}) {
   const caps = { ...DEFAULT_DIRECT_WORKSPACE_MUTATION_CAPS, ...(isPlainObject(input.caps) ? input.caps : {}) };
+  const maxSingleFileBytes = caps.maxSingleFileBytes ?? DEFAULT_DIRECT_WORKSPACE_MUTATION_CAPS.maxSingleFileBytes;
   const rows = [
     ["generated", "block", "generated_path", "Generated files require explicit operator policy before mutation."],
     ["vendor", "block", "vendor_path", "Vendor paths require explicit operator policy before mutation."],
     ["lockfile", "block", "lockfile_path", "Lockfile mutation is blocked in direct v0 unless a later policy grants it."],
     ["binary_file", "block", "binary_file_path", "Binary file mutation is blocked in direct v0."],
-    ["large_file", "extra_confirmation_required", "large_file_path", `Large file mutation requires explicit confirmation above ${caps.maxSingleFileBytes} bytes.`],
+    ["large_file", "extra_confirmation_required", "large_file_path", `Large file mutation requires explicit confirmation above ${maxSingleFileBytes} bytes.`],
     ["symlink", "block", "symlink_path", "Symlink mutation is blocked unless canonical containment is proven by a later policy."],
     ["ignored_path", "degrade_to_read_only", "ignored_path", "Ignored paths are not treated as normal source mutation truth."],
     ["external_worktree", "block", "external_worktree", "External worktree mutation is outside this workspace authority boundary."],
@@ -203,6 +204,7 @@ function stricterPathClassification(base, overlay) {
 function classifyWorkspaceChange(change = {}, caps = DEFAULT_DIRECT_WORKSPACE_MUTATION_CAPS) {
   const relPath = safeRelPath(change.relPath || change.path || change.displayPath);
   let classification = classifyWorkspacePath(relPath);
+  const gitStatus = normalizeGitStatus(change.gitStatus || change.status || change.porcelainStatus);
   if (change.workspaceBoundary === "external_worktree" || change.externalWorktree === true) {
     classification = stricterPathClassification(classification, { pathClass: "external_worktree", decision: "block", reasonCode: "external_worktree" });
   }
@@ -211,17 +213,31 @@ function classifyWorkspaceChange(change = {}, caps = DEFAULT_DIRECT_WORKSPACE_MU
   } else if (change.isSymlink === true || change.fileType === "symlink") {
     classification = stricterPathClassification(classification, { pathClass: "symlink", decision: "block", reasonCode: "symlink_path" });
   }
-  if (change.ignored === true || change.gitStatus === "ignored") {
+  if (change.ignored === true || gitStatus === "ignored") {
     classification = stricterPathClassification(classification, { pathClass: "ignored_path", decision: "degrade_to_read_only", reasonCode: "ignored_path" });
   }
   if (change.isBinary === true || change.fileType === "binary" || looksBinaryPath(relPath)) {
     classification = stricterPathClassification(classification, { pathClass: "binary_file", decision: "block", reasonCode: "binary_file_path" });
   }
-  const sizeBytes = Number(change.sizeBytes || change.afterSizeBytes || 0);
-  if (Number.isFinite(sizeBytes) && sizeBytes > Number(caps.maxSingleFileBytes || DEFAULT_DIRECT_WORKSPACE_MUTATION_CAPS.maxSingleFileBytes)) {
+  const sizeBytes = Number(change.sizeBytes ?? change.afterSizeBytes ?? 0);
+  if (Number.isFinite(sizeBytes) && sizeBytes > Number(caps.maxSingleFileBytes ?? DEFAULT_DIRECT_WORKSPACE_MUTATION_CAPS.maxSingleFileBytes)) {
     classification = stricterPathClassification(classification, { pathClass: "large_file", decision: "extra_confirmation_required", reasonCode: "large_file_path" });
   }
   return classification;
+}
+
+function normalizeGitStatus(value) {
+  const status = normalizeString(value, "").toLowerCase();
+  if (!status) return "";
+  if (status === "??" || status.includes("?") || status === "untracked") return "untracked";
+  if (status === "!!" || status.includes("!") || status === "ignored") return "ignored";
+  if (status === "added") return "added";
+  if (status === "deleted") return "deleted";
+  if (status === "modified") return "modified";
+  if (status.includes("a")) return "added";
+  if (status.includes("d")) return "deleted";
+  if (status.includes("m")) return "modified";
+  return status;
 }
 
 function strictestDecision(decisions = []) {
@@ -291,8 +307,10 @@ function normalizeRawChange(change = {}, fallbackExpectation = "unknown", caps =
   const relPath = safeRelPath(change.relPath || change.path || change.displayPath);
   const classification = classifyWorkspaceChange({ ...change, relPath }, caps);
   const changeKind = normalizeString(change.changeKind || change.operation, "modified");
+  const gitStatus = normalizeGitStatus(change.gitStatus || change.status || change.porcelainStatus);
   const sourceExpectation = normalizeString(change.sourceExpectation, fallbackExpectation);
   const providerVisibility = normalizeString(change.providerVisibility, "summary_only");
+  const rawSizeBytes = change.sizeBytes ?? change.afterSizeBytes;
   return {
     relPath,
     canonicalEvidenceKey: normalizeString(change.canonicalEvidenceKey, "") || evidenceKeyForPath(relPath),
@@ -307,10 +325,11 @@ function normalizeRawChange(change = {}, fallbackExpectation = "unknown", caps =
     rendererPreviewAllowed: classification.decision !== "block" && classification.decision !== "degrade_to_read_only",
     providerSummaryAllowed: classification.decision !== "block",
     isSymlink: change.isSymlink === true || change.fileType === "symlink",
-    isIgnored: change.ignored === true || change.gitStatus === "ignored",
-    isUntracked: change.isUntracked === true || change.gitStatus === "untracked" || changeKind === "untracked",
+    gitStatus: gitStatus || undefined,
+    isIgnored: change.ignored === true || gitStatus === "ignored",
+    isUntracked: change.isUntracked === true || gitStatus === "untracked" || changeKind === "untracked",
     isBinary: change.isBinary === true || change.fileType === "binary" || looksBinaryPath(relPath),
-    sizeBytes: Number(change.sizeBytes || change.afterSizeBytes || 0) || undefined,
+    sizeBytes: rawSizeBytes !== undefined ? Number(rawSizeBytes) : undefined,
   };
 }
 
@@ -319,9 +338,12 @@ function workspaceEffectClassProjectionFor(input = {}) {
   const changes = Array.isArray(input.changes) ? input.changes : [];
   const baselineDirtyState = isPlainObject(input.baselineDirtyState) ? input.baselineDirtyState : {};
   const directPatchEffects = changes.filter((change) => source === "patch_apply" || change.sourceExpectation === "expected_patch_change");
-  const commandObservedEffects = changes.filter((change) => source === "run_command" || change.sourceExpectation === "expected_command_change");
-  const untrackedChanges = changes.filter((change) => change.isUntracked || change.changeKind === "untracked");
   const preExistingDirtyChanges = changes.filter((change) => change.sourceExpectation === "modified_preexisting_dirty");
+  const commandObservedEffects = changes.filter((change) =>
+    (source === "run_command" || change.sourceExpectation === "expected_command_change") &&
+    change.sourceExpectation !== "modified_preexisting_dirty"
+  );
+  const untrackedChanges = changes.filter((change) => change.isUntracked || change.changeKind === "untracked");
   return {
     schema: DIRECT_WORKSPACE_EFFECT_CLASS_PROJECTION_SCHEMA,
     directPatchEffectCount: directPatchEffects.length,
@@ -563,12 +585,23 @@ function buildWorkspaceEffectSummary(input = {}) {
 
 function changesFromCommandEffects(workspaceEffects = {}) {
   const preview = Array.isArray(workspaceEffects.changedPathsPreview) ? workspaceEffects.changedPathsPreview : [];
-  return preview.map((entry) => ({
-    relPath: entry.relPath || entry.path,
-    changeKind: entry.changeKind || "modified",
-    sourceExpectation: "expected_command_change",
-    providerVisibility: "summary_only",
-  }));
+  return preview.map((entry) => {
+    const gitStatus = normalizeGitStatus(entry.gitStatus || entry.status || entry.porcelainStatus);
+    return {
+      relPath: entry.relPath || entry.path,
+      changeKind: entry.changeKind || "modified",
+      gitStatus,
+      isUntracked: entry.isUntracked === true || gitStatus === "untracked",
+      ignored: entry.ignored === true || gitStatus === "ignored",
+      isSymlink: entry.isSymlink === true,
+      symlinkEscape: entry.symlinkEscape === true,
+      isBinary: entry.isBinary === true,
+      fileType: normalizeString(entry.fileType, ""),
+      sizeBytes: entry.sizeBytes ?? entry.afterSizeBytes,
+      sourceExpectation: "expected_command_change",
+      providerVisibility: "summary_only",
+    };
+  });
 }
 
 function buildCommandWorkspaceEffectSummary(input = {}) {

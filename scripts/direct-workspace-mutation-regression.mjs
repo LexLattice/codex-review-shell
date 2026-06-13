@@ -391,6 +391,7 @@ function dirtyPrestateCase() {
   });
   const ok = effectSummary.baselineDirtyState.captured === true &&
     effectSummary.changes[0].sourceExpectation === "modified_preexisting_dirty" &&
+    effectSummary.effectClassProjection.commandObservedEffectCount === 0 &&
     effectSummary.effectClassProjection.preExistingDirtyPathCount === 1 &&
     effectSummary.rendererSafeSummary.effectClassCounts.preExistingDirtyPathCount === 1;
   return baseCase({
@@ -399,6 +400,25 @@ function dirtyPrestateCase() {
     proofOutcome: "effect_summary_recorded",
     effectSummary,
     failureCode: ok ? "" : "dirty_prestate_misclassified",
+  });
+}
+
+function zeroByteSizePreservedCase() {
+  const effectSummary = buildWorkspaceEffectSummary({
+    source: "run_command",
+    sourceArtifactId: "command_result_zero_byte",
+    changes: [
+      { relPath: "src/empty.txt", changeKind: "modified", sourceExpectation: "expected_command_change", sizeBytes: 0, afterSizeBytes: 2048 },
+    ],
+  });
+  const ok = effectSummary.changes[0].sizeBytes === 0 &&
+    effectSummary.largeFileChangeCount === 0;
+  return baseCase({
+    caseId: "zero_byte_size_preserved",
+    status: ok ? "passed" : "failed",
+    proofOutcome: "effect_summary_recorded",
+    effectSummary,
+    failureCode: ok ? "" : "zero_byte_size_not_preserved",
   });
 }
 
@@ -484,6 +504,28 @@ function untrackedClassificationCase() {
     proofOutcome: "effect_summary_recorded",
     effectSummary,
     failureCode: ok ? "" : "untracked_not_classified",
+  });
+}
+
+function commandGitStatusUntrackedCase() {
+  const effectSummary = buildCommandWorkspaceEffectSummary({
+    sourceArtifactId: "command_result_git_untracked",
+    workspaceEffects: {
+      changedPathCount: 1,
+      changedPathsPreview: [{ relPath: "src/from-git-status.ts", changeKind: "created", gitStatus: "untracked" }],
+      scanScope: "git-status",
+      scanFailed: false,
+    },
+  });
+  const ok = effectSummary.changes[0].gitStatus === "untracked" &&
+    effectSummary.changes[0].isUntracked === true &&
+    effectSummary.effectClassProjection.untrackedChangeCount === 1;
+  return baseCase({
+    caseId: "command_git_status_untracked_classified",
+    status: ok ? "passed" : "failed",
+    proofOutcome: "effect_summary_recorded",
+    effectSummary,
+    failureCode: ok ? "" : "git_status_untracked_not_preserved",
   });
 }
 
@@ -710,10 +752,12 @@ function runCases() {
     commandNoChangesCase(),
     commandWorkspaceChangedCase(),
     dirtyPrestateCase(),
+    zeroByteSizePreservedCase(),
     symlinkEscapeBlockedCase(),
     ignoredPathDegradedCase(),
     binaryAndLargePolicyCase(),
     untrackedClassificationCase(),
+    commandGitStatusUntrackedCase(),
     externalWorktreeBlockedCase(),
     commandMustNotWriteCase(),
     scanUnsupportedCase(),
