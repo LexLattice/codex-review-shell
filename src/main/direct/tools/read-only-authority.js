@@ -705,12 +705,13 @@ function recordReadOnlyToolContinuationRequest(options = {}) {
     ? options.continuationRequest
     : buildReadOnlyToolContinuationRequest(options);
   assertContinuationRequestForObligation(continuationRequest, obligation);
+  const explicitToolLoop = isPlainObject(continuationRequest.toolLoop) ? continuationRequest.toolLoop : {};
   const updated = sessionStore.updateToolObligation(options.sessionId, options.turnId, obligation.obligationId, {
     status: "continuation_built",
     authorityState: "continuation_built",
-    toolLoopId: canonicalToolLoopId(obligation),
-    stepId: canonicalToolStepId(obligation),
-    stepOrdinal: Number(obligation.stepOrdinal || 1),
+    toolLoopId: normalizeString(explicitToolLoop.toolLoopId, "") || canonicalToolLoopId(obligation),
+    stepId: normalizeString(explicitToolLoop.stepId, "") || canonicalToolStepId(obligation),
+    stepOrdinal: Number(explicitToolLoop.stepOrdinal || obligation.stepOrdinal || 1),
     executionAllowed: false,
     continuationAllowed: false,
     continuationRequest,

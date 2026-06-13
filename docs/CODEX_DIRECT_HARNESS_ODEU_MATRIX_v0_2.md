@@ -113,8 +113,9 @@ It does not grant runtime authority by itself.
 | Renderer/thread workbench projections | `B-F` | Transcript, deck, lifecycle, graph, preview, and workbench projections are implemented as derived projections. |
 | Context pack and request manifest | `B-F/B-R` | Context/request/provider-input artifacts exist and are used by direct text; tool/worker/maintenance paths remain scoped. |
 | Read-only implementation-lane tool loop | `B-F` | Authority module, result evidence, continuation request, context-pack/request-manifest path, sequential read-loop fixture proof, and no-mutation proof exist; opt-in live proof remains available but not promoted here. |
-| Patch/command authority substrate | `B-F/S` | Authority modules and transition envelopes exist; live implementation-lane proof remains pending. |
-| Workspace mutation truth | `B-F/S` | Patch/command planning and workspace effect summaries exist; broader live side-effect recovery and revert remain pending. |
+| Patch implementation-lane tool loop | `B-F` | Patch authority module, dry-run plan, approval, backend apply, workspace-effect evidence, patch journal inspection, continuation request, context-pack/request-manifest path, create/edit fixture proof, blocked outside-workspace proof, failed-patch proof, and no-command sentinel exist; live-provider promotion remains pending. |
+| Command authority substrate | `B-F/S` | Command authority module and transition envelopes exist; live implementation-lane proof remains pending. |
+| Workspace mutation truth | `B-F/S` | Patch planning/application and workspace effect summaries have fixture proof; command-observed effects, broader live side-effect recovery, and revert remain pending. |
 | Recovery and replay safety | `B-F/B-P` | Recovery scanner and repair-loop substrate exist; side-effect crash/replay proof remains a later bundle. |
 | WorkThread identity and target resolution | `B-F` | WorkThread registry, target report, operator broker, stale guards, and non-target preservation constraints exist. |
 | Direct settings / bridge status | `B-F` | Renderer-safe settings/control status surface exists for runtime, registry, WorkThread, broker, modules, and continuity. |
@@ -132,10 +133,10 @@ Main remaining coverage gaps from the matrix:
 
 | Gap | Rows | Why it remains open |
 |---|---|---|
-| Real-provider implementation-lane proof | `I7`, `E3-E15`, `B4-B6`, `F4-F7`, `J3-J7` | Read-only loop now has fixture/local disposable-workspace proof; live-provider promotion plus patch/command proof remain pending. |
+| Real-provider implementation-lane proof | `I7`, `E3-E15`, `B4-B6`, `F4-F7`, `J3-J7` | Read-only and patch loops now have fixture/local disposable-workspace proof; live-provider promotion plus command proof remain pending. |
 | Side-effect recovery/replay | `A11`, `C1-C3`, `C11-C12`, `E15`, `I9` | Recovery substrate exists, but crash/restart between tool, patch, command, and continuation states still needs proof. |
 | Iterative repair loop promotion | `E4`, `E14`, `E15`, `F4`, `D18` | Repair-loop substrate exists, but multi-step live read -> patch -> command -> continue cycles are not promoted. |
-| Workspace change authority maturity | `E6-E8`, `E11`, `J4-J7` | Journals/effect summaries exist; generated/vendor/lockfile policy, network-risk truth, and optional revert are not complete. |
+| Workspace change authority maturity | `E6-E8`, `E11`, `J4-J7` | Patch journals/effect summaries are fixture-proved; generated/vendor/lockfile policy, command mutation truth, network-risk truth, and optional revert are not complete. |
 | Actual context maintenance execution | `D1-D14`, `D22-D23`, `A12`, `J11` | Planning/gate/status artifacts exist; compact execution, memory materialization, baton reinjection, and automatic trimming remain gated. |
 | Governance enforcement and semantic fallback | `D15-D21`, `J10` | Shadow/preflight/routing artifacts exist; enforce mode, clarification UX, and fallback branch law remain future work. |
 | Mature multi-agent choreography | `H1-H10`, `J9` | Worker start and graph alignment exist; recursive delegation, inspect/wait tools, deadlock prevention, and transcript promotion law remain future work. |

@@ -159,7 +159,7 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     role: "authority_gate",
     implementationState: "implemented",
     directPathPosture: "keep",
-    sourceFiles: ["src/main/direct/tools/patch-apply-authority.js", "src/main/direct/workspace/mutation-truth.js", "src/main/direct/bridge/work-thread-alignment.js"],
+    sourceFiles: ["src/main/direct/tools/patch-apply-authority.js", "src/main/direct/workspace/mutation-truth.js", "src/main/direct/bridge/work-thread-alignment.js", "scripts/direct-patch-tool-loop-regression.mjs"],
     ontology: ontologyShape(["patch_apply_plan", "patch_apply_result", "workspace_effect_summary"], "workspace", {
       identityFields: ["projectId", "threadId", "turnId", "obligationId", "patchPlanId", "resultId"],
       schema: "direct_patch_apply_plan@1",

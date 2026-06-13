@@ -66,6 +66,26 @@ function patchContinuationIdFor(obligationId, resultId) {
   return `patch_continuation_${sha256(`${normalizeString(obligationId, "")}:${normalizeString(resultId, "")}`).slice(0, 20)}`;
 }
 
+function canonicalPatchToolLoopId(obligation = {}) {
+  const existing = normalizeString(obligation.toolLoopId, "");
+  if (existing) return existing;
+  const digest = sha256(`${normalizeString(obligation.sessionId, "")}:${normalizeString(obligation.turnId, "")}:patch_tool_loop`).slice(0, 20);
+  return `patch_tool_loop_${digest}`;
+}
+
+function canonicalPatchToolStepId(obligation = {}) {
+  const existing = normalizeString(obligation.stepId, "");
+  if (existing) return existing;
+  const digest = sha256([
+    normalizeString(obligation.sessionId, ""),
+    normalizeString(obligation.turnId, ""),
+    canonicalPatchToolLoopId(obligation),
+    String(Number(obligation.stepOrdinal || 1) || 1),
+    normalizeString(obligation.obligationId, ""),
+  ].join(":")).slice(0, 20);
+  return `patch_tool_step_${digest}`;
+}
+
 function parseArgumentsJson(obligation = {}) {
   const text = normalizeString(obligation.argumentsText, "");
   if (!text) return {};
@@ -515,6 +535,14 @@ function buildPatchApplyContinuationRequest(options = {}) {
       recordedAt: normalizeString(obligation.result.appliedAt || obligation.result.recordedAt, ""),
       approvedAt: normalizeString(obligation.approvedAt, ""),
     },
+    toolLoop: {
+      toolLoopId: canonicalPatchToolLoopId(obligation),
+      stepId: canonicalPatchToolStepId(obligation),
+      stepOrdinal: Number(obligation.stepOrdinal || 1),
+      parentResponseId: normalizeString(obligation.parentResponseId, ""),
+      parentResponseSource: normalizeString(obligation.parentResponseSource, ""),
+      parentResponseDigest: normalizeString(obligation.parentResponseDigest, ""),
+    },
     toolResult: {
       obligationId: obligation.obligationId,
       callId: parsed.callId,
@@ -584,6 +612,8 @@ module.exports = {
   approvePatchApplyObligation,
   assertPatchObligation,
   buildPatchApplyContinuationRequest,
+  canonicalPatchToolLoopId,
+  canonicalPatchToolStepId,
   decidePatchApplyObligation,
   executeApprovedPatchApplyObligation,
   planPatchApplyObligation,

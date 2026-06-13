@@ -1096,7 +1096,7 @@ runner and should be used before raising matrix rows from B-F to B-R.
 
 ### PR 23: Direct Patch Tool Loop V0
 
-Status: planned.
+Status: in review.
 
 Purpose:
 
@@ -1117,9 +1117,21 @@ Scope:
 - Emit workspace effect rows for changed files, created files, deleted files,
   failed hunks, and skipped paths.
 - Continue the provider turn with patch-result evidence.
-- Add disposable-workspace real-provider smoke coverage for:
+- Add disposable-workspace fixture coverage for:
   simple edit, create file, blocked outside-workspace patch, failed patch,
   and effect summary rendering.
+
+Implemented in this slice:
+
+- `direct_patch_tool_loop_regression_report@1`.
+- End-to-end local provider-loop proof for provider `apply_patch` intent:
+  obligation detection, dry-run plan, approval, backend apply, workspace effect
+  summary, patch journal inspection, provider-safe result envelope, continuation
+  context pack, and request manifest.
+- Command-free sentinel coverage for simple edit and create-file patches.
+- Blocked outside-workspace and failed-context patches before approval/apply.
+- Explicit patch continuation `toolLoop` metadata, with the shared continuation
+  recorder preserving explicit loop/step fields for non-read continuations.
 
 Non-goals:
 
@@ -1141,6 +1153,14 @@ Promotion criteria:
 One real-provider direct turn can propose a patch, the harness can lawfully
 apply it, report exact workspace effects, continue from the result, and finish
 without hiding failed/skipped mutations.
+```
+
+Current posture:
+
+```text
+Fixture/local proof is implemented in this PR.
+Live-provider promotion remains opt-in through the implementation-proof runner
+and should be used before raising matrix rows from B-F to B-R.
 ```
 
 ### PR 24: Direct Command Tool Loop V0
