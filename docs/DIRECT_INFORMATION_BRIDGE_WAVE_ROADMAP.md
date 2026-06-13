@@ -615,7 +615,7 @@ before authority.
 
 ### PR 15: Direct-Native Thread Deck And New Thread UX
 
-Status: implemented in branch.
+Status: merged.
 
 Branch:
 
@@ -670,7 +670,13 @@ Controlled routing and settings bridge status are merged.
 
 ### PR 16: Operator / Project Broker Resolution Surface
 
-Status: planned.
+Status: implemented in branch.
+
+Branch:
+
+```text
+codex/direct-operator-broker-resolution
+```
 
 Purpose:
 
@@ -687,6 +693,20 @@ Scope:
 - Add candidate/confidence/ambiguity projection in settings or project surface.
 - Add clarification-required state when candidates conflict.
 - Add non-target preservation constraints to downstream route packets.
+
+Implemented in this slice:
+
+- `operator_broker_resolution@1` support artifact and renderer-safe
+  `operator_broker_resolution_projection@1`.
+- Broker resolution wraps existing `WorkTargetResolution` and target report
+  evidence with work-world inputs, candidate confidence, ambiguity blockers,
+  clarification state, and non-target preservation constraints.
+- Direct settings/project surface now has a distinct Operator broker panel.
+- Controlled routing packets can cite an operator broker resolution and carry
+  its non-target preservation constraints; clarification-required broker output
+  blocks the direct text route.
+- Regression coverage for selected, ambiguous, settings projection, and
+  controlled-routing packet cases.
 
 Non-goals:
 

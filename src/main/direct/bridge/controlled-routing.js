@@ -36,6 +36,10 @@ function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
+function arrayOrEmpty(value) {
+  return Array.isArray(value) ? value : [];
+}
+
 function nowIso(nowMs = Date.now()) {
   return new Date(Number(nowMs) || Date.now()).toISOString();
 }
@@ -112,6 +116,15 @@ function buildControlledRoutingSlice(input = {}, options = {}) {
         resolution: workTargetResolution,
       }, { nowMs });
   assertWorkTargetResolutionReportSafe(workTargetResolutionReport);
+  const operatorBrokerResolution = isPlainObject(source.operatorBrokerResolution)
+    ? source.operatorBrokerResolution
+    : isPlainObject(source.operatorBroker?.resolution)
+      ? source.operatorBroker.resolution
+      : null;
+  const operatorBrokerConstraints = arrayOrEmpty(
+    operatorBrokerResolution?.downstreamRoutePacketConstraints?.constraintCodes ||
+    operatorBrokerResolution?.nonTargetPreservationConstraints,
+  ).map((item) => normalizeString(item, "")).filter(Boolean);
 
   const selectedWorkThread = workThreads.find((thread) => thread.workThreadId === workTargetResolutionReport.selectedWorkThreadId) || workThread || null;
   const workThreadBinding = buildWorkThreadContextBinding(source.workThreadBinding || {
@@ -210,6 +223,12 @@ function buildControlledRoutingSlice(input = {}, options = {}) {
   if (workTargetResolutionReport.routingGateState !== "selected_ready") {
     blockerCodes.push(`work_target_${workTargetResolutionReport.routingGateState || "unknown"}`);
   }
+  if (operatorBrokerResolution?.clarificationRequired === true) {
+    blockerCodes.push("operator_broker_clarification_required");
+  }
+  if (operatorBrokerResolution?.routingGateState && operatorBrokerResolution.routingGateState !== "selected_ready") {
+    blockerCodes.push(`operator_broker_${operatorBrokerResolution.routingGateState}`);
+  }
   if (semanticBrokerPreflight.recommendationClass !== "allow") {
     blockerCodes.push(`preflight_${semanticBrokerPreflight.recommendationClass || "unknown"}`);
   }
@@ -228,6 +247,7 @@ function buildControlledRoutingSlice(input = {}, options = {}) {
     threadId,
     turnId,
     workTargetReportDigest: workTargetResolutionReport.reportDigest,
+    operatorBrokerResolutionDigest: operatorBrokerResolution?.brokerResolutionDigest,
     preflightDigest: semanticBrokerPreflight.integrity?.artifactDigest,
     agentClassDigest: primaryAgentSpec?.specDigest,
     routeKind: semanticBrokerPreflight.selectedRouteKind,
@@ -259,6 +279,15 @@ function buildControlledRoutingSlice(input = {}, options = {}) {
       routingGateState: normalizeString(workTargetResolutionReport.routingGateState, ""),
       selectedWorkThreadId: normalizeString(workTargetResolutionReport.selectedWorkThreadId, ""),
     },
+    operatorBrokerResolution: operatorBrokerResolution ? {
+      brokerResolutionId: normalizeString(operatorBrokerResolution.brokerResolutionId, ""),
+      brokerResolutionDigest: normalizeString(operatorBrokerResolution.brokerResolutionDigest, ""),
+      routingGateState: normalizeString(operatorBrokerResolution.routingGateState, ""),
+      selectedWorkThreadId: normalizeString(operatorBrokerResolution.selectedWorkThreadId, ""),
+      clarificationRequired: operatorBrokerResolution.clarificationRequired === true,
+      nonTargetPreservationRequired: operatorBrokerResolution.nonTargetPreservationRequired !== false,
+    } : null,
+    nonTargetPreservationConstraints: operatorBrokerConstraints,
     semanticBrokerPreflight: {
       preflightId: normalizeString(semanticBrokerPreflight.preflightId, ""),
       preflightDigest: normalizeString(semanticBrokerPreflight.integrity?.artifactDigest, ""),
@@ -280,6 +309,7 @@ function buildControlledRoutingSlice(input = {}, options = {}) {
     rawSecretIncluded: false,
     evidenceRefs: [
       sourceRefForArtifact("work_thread_binding", workTargetResolutionReport.reportId, workTargetResolutionReport.reportDigest, "Work-target resolution report", "accepted"),
+      operatorBrokerResolution ? sourceRefForArtifact("operator_broker_resolution", operatorBrokerResolution.brokerResolutionId, operatorBrokerResolution.brokerResolutionDigest, "Operator broker resolution", "accepted") : null,
       sourceRefForArtifact("semantic_registry", semanticBrokerPreflight.preflightId, semanticBrokerPreflight.integrity?.artifactDigest, "Semantic broker preflight", "accepted"),
       primaryAgentSpec ? sourceRefForArtifact("semantic_registry", primaryAgentSpec.agentClassId, primaryAgentSpec.specDigest, "Agent class spec", "accepted") : null,
       workThreadBindingRef,
@@ -320,6 +350,8 @@ function buildControlledRoutingSlice(input = {}, options = {}) {
         semanticBrokerPacketDigest: semanticBrokerPacket.integrity?.artifactDigest || "",
         controlledRoutingSliceId: route.routeId,
         controlledRoutingSliceDigest: route.routeDigest,
+        operatorBrokerResolutionId: operatorBrokerResolution?.brokerResolutionId || "",
+        operatorBrokerResolutionDigest: operatorBrokerResolution?.brokerResolutionDigest || "",
       }),
     },
   };

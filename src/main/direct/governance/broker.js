@@ -43,6 +43,7 @@ const SOURCE_REF_KINDS = new Set([
   "fresh_fork_seed",
   "work_thread",
   "work_thread_binding",
+  "operator_broker_resolution",
   "authority_transition",
   "policy_snapshot",
   "model_evidence",
