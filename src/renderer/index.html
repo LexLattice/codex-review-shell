@@ -188,6 +188,42 @@
             <p id="directAuthEvidence" class="muted direct-auth-evidence">No raw tokens exposed to renderer.</p>
           </section>
 
+          <section class="control-card direct-implementation-card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Direct implementation lane</p>
+                <h3>UI readiness projection</h3>
+              </div>
+              <div class="heading-actions">
+                <span id="directImplementationStatusBadge" class="counter">not loaded</span>
+                <button class="ghost small" id="directImplementationRefreshButton" type="button">Refresh</button>
+              </div>
+            </div>
+            <div class="direct-diagnostics-grid">
+              <section class="direct-diagnostics-panel">
+                <h4>Lane state</h4>
+                <div id="directImplementationLaneList" class="direct-diagnostics-list"></div>
+              </section>
+              <section class="direct-diagnostics-panel">
+                <h4>Approval and continuation</h4>
+                <div id="directImplementationApprovalList" class="direct-diagnostics-list"></div>
+              </section>
+              <section class="direct-diagnostics-panel">
+                <h4>Active turn</h4>
+                <div id="directImplementationActiveTurnList" class="direct-diagnostics-list"></div>
+              </section>
+              <section class="direct-diagnostics-panel">
+                <h4>Latest tool result</h4>
+                <div id="directImplementationToolResultList" class="direct-diagnostics-list"></div>
+              </section>
+              <section class="direct-diagnostics-panel span-2">
+                <h4>Operation history</h4>
+                <div id="directImplementationHistoryList" class="direct-diagnostics-list"></div>
+              </section>
+            </div>
+            <p id="directImplementationEvidence" class="muted direct-auth-evidence">Direct implementation-lane status is read-only.</p>
+          </section>
+
           <section class="control-card direct-meta-session-card">
             <div class="section-heading">
               <div>

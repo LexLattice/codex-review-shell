@@ -129,6 +129,23 @@ function fixtureRuntimeStatus() {
       activeTurnCount: 0,
       unresolvedObligationCount: 0,
       lastTurnState: "completed",
+      latestToolResult: {
+        sessionId: "session_ui_fixture",
+        turnId: "turn_ui_fixture",
+        obligationId: "obligation_read_fixture",
+        resultId: "result_read_fixture",
+        tool: "read_file",
+        status: "completed",
+        resultClass: "read_completed",
+        sideEffectExecuted: false,
+        workspaceEffectScanRan: false,
+        workspaceEffectScanSupported: false,
+        workspaceChangesDetected: false,
+        changedPathCount: 0,
+        providerVisibility: "none",
+        providerSawChangedFileContents: false,
+        providerSawAllChangedFileContents: false,
+      },
     },
     directThreadStore: {
       available: true,
@@ -242,6 +259,16 @@ function buildReport() {
   assert(uiStatus.implementationLane.facets.canApproveRead.canUse, "Read approval facet should be usable.");
   assert(uiStatus.implementationLane.facets.canApprovePatch.canUse, "Patch approval facet should be usable.");
   assert(uiStatus.implementationLane.facets.canApproveCommand.canUse, "Command approval facet should be usable.");
+  assert(uiStatus.implementationLane.canShowOperationHistory === true, "Implementation lane should expose operation-history readiness.");
+  assert(uiStatus.implementationLane.canShowApprovalCards === true, "Implementation lane should expose approval-card readiness.");
+  assert(uiStatus.activeTurn.composerAllowed === true, "Terminal fixture should allow composer input.");
+  assert(["healthy", "healthy_terminal"].includes(uiStatus.recovery.state), "Terminal fixture should report healthy recovery.");
+  assert(uiStatus.latestToolResult.schema === "direct_tool_result_status_projection@1", "Latest tool result projection should be present.");
+  assert(uiStatus.latestToolResult.tool === "read_file", "Latest tool result should preserve tool identity.");
+  assert(uiStatus.latestToolResult.status === "completed", "Latest tool result should preserve renderer-safe status.");
+  assert(uiStatus.latestToolResult.sideEffectExecuted === false, "Read result must not report side effects.");
+  assert(uiStatus.latestToolResult.providerVisibility === "none", "Read result should not claim provider saw changed files.");
+  assert(uiStatus.latestToolResult.actionability?.actionable === false, "Latest tool result must be read-only.");
   assert(recoveryUiStatus.implementationLane.canRollbackToAppServer === false, "Active recovery must block app-server rollback.");
   assert(validateDirectUiProjection(circularUiStatus, DIRECT_IMPLEMENTATION_LANE_UI_STATUS_SCHEMA), "Circular runtime input must still produce a safe projection.");
   assert(policy.editable === false && policy.privateConfigIncluded === false, "Policy view must be read-only and private-config-free.");
@@ -274,6 +301,11 @@ function buildReport() {
       witnessCount: uiStatus.witnesses.length,
       policyEditable: policy.editable,
       operationHistoryActionableRows: history.rows.filter((row) => row.actionability?.actionable).length,
+      activeTurnComposerAllowed: uiStatus.activeTurn.composerAllowed,
+      approvalCardsVisible: uiStatus.implementationLane.canShowApprovalCards,
+      latestToolResultStatus: uiStatus.latestToolResult.status,
+      latestToolResultTool: uiStatus.latestToolResult.tool,
+      latestToolResultActionable: uiStatus.latestToolResult.actionability.actionable,
       contextMaintenanceDisplayOnly: uiStatus.contextMaintenance.displayOnly,
       contextMaintenanceActionable: uiStatus.contextMaintenance.actionability.actionable,
       contextMaintenanceCompactActionAllowed: uiStatus.contextMaintenance.compactActionAllowed,

@@ -170,6 +170,11 @@ const state = {
   directRuntimeStatus: null,
   directRuntimeLoading: false,
   directRuntimeError: "",
+  directImplementationUiStatus: null,
+  directImplementationOperationHistory: null,
+  directImplementationPolicyView: null,
+  directImplementationUiLoading: false,
+  directImplementationUiError: "",
   directMetaSessionStatus: null,
   directMetaSessionLoading: false,
   directMetaSessionError: "",
@@ -197,6 +202,7 @@ const state = {
     directThreadWorkbenchOperation: 0,
     directMetaSessionStatus: 0,
     directBridgeSettingsStatus: 0,
+    directImplementationUiStatus: 0,
     analyticsThreads: 0,
     analyticsDetail: 0,
     workTree: 0,
@@ -300,6 +306,14 @@ const els = {
   directContextOmissionBadge: document.getElementById("directContextOmissionBadge"),
   directContextProviderCompactBadge: document.getElementById("directContextProviderCompactBadge"),
   directContextEvidence: document.getElementById("directContextEvidence"),
+  directImplementationStatusBadge: document.getElementById("directImplementationStatusBadge"),
+  directImplementationRefreshButton: document.getElementById("directImplementationRefreshButton"),
+  directImplementationLaneList: document.getElementById("directImplementationLaneList"),
+  directImplementationApprovalList: document.getElementById("directImplementationApprovalList"),
+  directImplementationActiveTurnList: document.getElementById("directImplementationActiveTurnList"),
+  directImplementationToolResultList: document.getElementById("directImplementationToolResultList"),
+  directImplementationHistoryList: document.getElementById("directImplementationHistoryList"),
+  directImplementationEvidence: document.getElementById("directImplementationEvidence"),
   directMetaSessionHealthBadge: document.getElementById("directMetaSessionHealthBadge"),
   directMetaSessionRefreshButton: document.getElementById("directMetaSessionRefreshButton"),
   directMetaSessionSummary: document.getElementById("directMetaSessionSummary"),
@@ -3173,6 +3187,127 @@ function renderDirectDiagnosticsStatus(status = state.directRuntimeStatus) {
   if (els.directDiagnosticsEvidence) els.directDiagnosticsEvidence.textContent = projection.evidenceText;
 }
 
+function directImplementationBooleanLabel(value) {
+  if (value === true) return "yes";
+  if (value === false) return "no";
+  return "unknown";
+}
+
+function directImplementationFacetState(facet, fallbackValue = false) {
+  if (facet && typeof facet === "object") return facet.state || (facet.canUse ? "ready" : "blocked");
+  return fallbackValue ? "ready" : "blocked";
+}
+
+function directImplementationUiRows() {
+  const projection = directDiagnosticsObject(state.directImplementationUiStatus);
+  const lane = directDiagnosticsObject(projection.implementationLane);
+  if (state.directImplementationUiLoading && !projection.schema) return [directDiagnosticsRow("Status", "loading")];
+  if (state.directImplementationUiError) return [directDiagnosticsRow("Status", state.directImplementationUiError, "blocked")];
+  if (!projection.schema) return [directDiagnosticsRow("Status", "not loaded", "missing")];
+  return [
+    directDiagnosticsRow("Active tier", projection.activeRuntimeTier || "unknown", projection.activeRuntimeTier === "direct-implementation-lane" ? "ok" : "diagnostic"),
+    directDiagnosticsRow("Lane", lane.readiness || lane.status || "unknown", lane.readiness === "ready" ? "ok" : lane.readiness === "blocked" ? "blocked" : "diagnostic"),
+    directDiagnosticsRow("Selected", directImplementationBooleanLabel(lane.selected), lane.selected ? "ok" : "unknown"),
+    directDiagnosticsRow("Start turn", directImplementationFacetState(lane.facets?.canStartTurn, lane.canStartFirstTurn), lane.canStartFirstTurn ? "ok" : "blocked"),
+    directDiagnosticsRow("Rollback", lane.canRollbackToAppServer ? "available" : "blocked", lane.canRollbackToAppServer ? "diagnostic" : "blocked"),
+    directDiagnosticsRow("Generation", projection.meta?.uiProjectionGeneration || "missing", projection.meta?.uiProjectionGeneration ? "diagnostic" : "missing"),
+  ];
+}
+
+function directImplementationApprovalRows() {
+  const projection = directDiagnosticsObject(state.directImplementationUiStatus);
+  const lane = directDiagnosticsObject(projection.implementationLane);
+  const facets = directDiagnosticsObject(lane.facets);
+  if (!projection.schema) return [directDiagnosticsRow("Status", state.directImplementationUiLoading ? "loading" : "not loaded", "missing")];
+  return [
+    directDiagnosticsRow("Cards", directImplementationFacetState(facets.canShowApprovalCards, lane.canShowApprovalCards), lane.canShowApprovalCards ? "ok" : "blocked"),
+    directDiagnosticsRow("Read", directImplementationFacetState(facets.canApproveRead, lane.canApproveReadFile), lane.canApproveReadFile ? "ok" : "blocked"),
+    directDiagnosticsRow("Patch", directImplementationFacetState(facets.canApprovePatch, lane.canApprovePatchApply), lane.canApprovePatchApply ? "ok" : "blocked"),
+    directDiagnosticsRow("Command", directImplementationFacetState(facets.canApproveCommand, lane.canApproveRunCommand), lane.canApproveRunCommand ? "ok" : "blocked"),
+    directDiagnosticsRow("Continuation", directImplementationFacetState(facets.canContinueAfterResult, lane.canSendContinuation), lane.canSendContinuation ? "ok" : "blocked"),
+    directDiagnosticsRow("Blockers", (lane.blockerCodes || []).join(", ") || "none", lane.blockerCodes?.length ? "blocked" : "ok"),
+  ];
+}
+
+function directImplementationActiveTurnRows() {
+  const projection = directDiagnosticsObject(state.directImplementationUiStatus);
+  const activeTurn = directDiagnosticsObject(projection.activeTurn);
+  const currentSession = directDiagnosticsObject(projection.currentSession);
+  const recovery = directDiagnosticsObject(projection.recovery);
+  if (!projection.schema) return [directDiagnosticsRow("Status", state.directImplementationUiLoading ? "loading" : "not loaded", "missing")];
+  return [
+    directDiagnosticsRow("Turn state", activeTurn.state || "idle", activeTurn.state ? "diagnostic" : "ok"),
+    directDiagnosticsRow("Composer", activeTurn.composerAllowed ? "allowed" : "blocked", activeTurn.composerAllowed ? "ok" : "blocked"),
+    directDiagnosticsRow("Composer reason", activeTurn.composerAllowedReason || "unknown", activeTurn.composerAllowed ? "ok" : "diagnostic"),
+    directDiagnosticsRow("Active turns", currentSession.activeTurnCount ?? "unknown", currentSession.activeTurnCount ? "diagnostic" : "ok"),
+    directDiagnosticsRow("Obligations", currentSession.unresolvedObligationCount ?? "unknown", currentSession.unresolvedObligationCount ? "blocked" : "ok"),
+    directDiagnosticsRow("Recovery", recovery.state || "unknown", recovery.state && recovery.state !== "healthy" ? "diagnostic" : "ok"),
+  ];
+}
+
+function directImplementationToolResultRows() {
+  const projection = directDiagnosticsObject(state.directImplementationUiStatus);
+  const latest = directDiagnosticsObject(projection.latestToolResult);
+  if (!projection.schema) return [directDiagnosticsRow("Status", state.directImplementationUiLoading ? "loading" : "not loaded", "missing")];
+  if (!latest.schema || latest.status === "none") return [directDiagnosticsRow("Latest result", "none", "missing")];
+  return [
+    directDiagnosticsRow("Tool", latest.tool || "unknown", "diagnostic"),
+    directDiagnosticsRow("Status", latest.status || "unknown", latest.status?.includes("failed") ? "blocked" : "diagnostic"),
+    directDiagnosticsRow("Side effect", directImplementationBooleanLabel(latest.sideEffectExecuted), latest.sideEffectExecuted ? "diagnostic" : "ok"),
+    directDiagnosticsRow("Effect scan", latest.workspaceEffectScanRan ? "ran" : "not run", latest.workspaceEffectScanRan ? "ok" : "missing"),
+    directDiagnosticsRow("Changes", latest.workspaceChangesDetected ? `${latest.changedPathCount || 0}` : "none", latest.workspaceChangesDetected ? "diagnostic" : "ok"),
+    directDiagnosticsRow("Provider saw", latest.providerVisibility || "none", latest.providerSawChangedFileContents ? "blocked" : "ok"),
+  ];
+}
+
+function directImplementationHistoryRows() {
+  const history = directDiagnosticsObject(state.directImplementationOperationHistory);
+  const rows = Array.isArray(history.rows) ? history.rows : [];
+  if (state.directImplementationUiLoading && !rows.length) return [directDiagnosticsRow("Status", "loading")];
+  if (state.directImplementationUiError) return [directDiagnosticsRow("Status", state.directImplementationUiError, "blocked")];
+  if (!history.schema) return [directDiagnosticsRow("Status", "not loaded", "missing")];
+  if (!rows.length) return [directDiagnosticsRow("Rows", "none", "missing")];
+  return rows.slice(0, 6).map((row) => directDiagnosticsRow(
+    row.family || row.eventKind || "operation",
+    `${row.status || "unknown"} · ${row.rendererSafeSummary || row.eventKind || row.rowId || "operation"}`,
+    row.status === "failed" ? "blocked" : "diagnostic",
+  ));
+}
+
+function renderDirectImplementationUiStatus() {
+  if (!els.directImplementationStatusBadge) return;
+  const projection = directDiagnosticsObject(state.directImplementationUiStatus);
+  const history = directDiagnosticsObject(state.directImplementationOperationHistory);
+  const policy = directDiagnosticsObject(state.directImplementationPolicyView);
+  const schemaOk = projection.schema === "direct_implementation_lane_ui_status@1";
+  els.directImplementationStatusBadge.textContent = state.directImplementationUiLoading
+    ? "loading"
+    : schemaOk
+      ? projection.implementationLane?.readiness || projection.activeRuntimeTier || "ready"
+      : "not loaded";
+  els.directImplementationStatusBadge.title = state.directImplementationUiError ||
+    (schemaOk ? projection.meta?.sourceDigest || "Renderer-safe direct implementation-lane status." : "Projection not loaded.");
+  if (els.directImplementationRefreshButton) {
+    els.directImplementationRefreshButton.disabled = state.directImplementationUiLoading || !bridge.getDirectImplementationLaneUiStatus;
+    els.directImplementationRefreshButton.title = "Refresh direct implementation-lane UI readiness, operation history, and policy projection.";
+  }
+  renderDirectDiagnosticsRows(els.directImplementationLaneList, directImplementationUiRows());
+  renderDirectDiagnosticsRows(els.directImplementationApprovalList, directImplementationApprovalRows());
+  renderDirectDiagnosticsRows(els.directImplementationActiveTurnList, directImplementationActiveTurnRows());
+  renderDirectDiagnosticsRows(els.directImplementationToolResultList, directImplementationToolResultRows());
+  renderDirectDiagnosticsRows(els.directImplementationHistoryList, directImplementationHistoryRows());
+  if (els.directImplementationEvidence) {
+    if (state.directImplementationUiError) {
+      els.directImplementationEvidence.textContent = `Implementation-lane projection unavailable: ${state.directImplementationUiError}`;
+    } else if (schemaOk) {
+      const rowCount = Array.isArray(history.rows) ? history.rows.length : 0;
+      els.directImplementationEvidence.textContent = `Read-only projection · ${rowCount} history row${rowCount === 1 ? "" : "s"} · policy ${policy.schema ? "loaded" : "not loaded"} · no approval, replay, recovery, or workspace mutation action is exposed here.`;
+    } else {
+      els.directImplementationEvidence.textContent = "Direct implementation-lane UI status is read-only and not loaded yet.";
+    }
+  }
+}
+
 function renderDirectRuntimeStatus() {
   if (!els.directRuntimeModeBadge) return;
   const status = state.directRuntimeStatus || {};
@@ -3292,6 +3427,7 @@ function renderDirectRuntimeStatus() {
     }
   }
   renderDirectDiagnosticsStatus(status);
+  renderDirectImplementationUiStatus();
 }
 
 function metaSessionHealthLabel(status = {}) {
@@ -6538,11 +6674,44 @@ async function refreshDirectRuntimeStatus(projectId = activeProject()?.id || "")
   renderDirectRuntimeStatus();
   try {
     state.directRuntimeStatus = await bridge.getDirectRuntimeStatus(projectId);
+    await refreshDirectImplementationUiStatus(projectId, { renderBefore: false });
   } catch (error) {
     state.directRuntimeError = error.message || "Direct runtime status failed.";
   } finally {
     state.directRuntimeLoading = false;
     renderDirectRuntimeStatus();
+  }
+}
+
+async function refreshDirectImplementationUiStatus(projectId = activeProject()?.id || "", options = {}) {
+  if (!bridge.getDirectImplementationLaneUiStatus || !projectId) return;
+  const requestVersion = nextRequestVersion("directImplementationUiStatus");
+  const snapshot = projectRequestSnapshot(projectId);
+  state.directImplementationUiLoading = true;
+  state.directImplementationUiError = "";
+  if (options.renderBefore !== false) renderDirectImplementationUiStatus();
+  try {
+    const [status, history, policy] = await Promise.all([
+      bridge.getDirectImplementationLaneUiStatus(projectId),
+      bridge.readDirectImplementationOperationHistory
+        ? bridge.readDirectImplementationOperationHistory(projectId, { scope: "active-turn", limit: 24 })
+        : Promise.resolve(null),
+      bridge.getDirectImplementationPolicyView
+        ? bridge.getDirectImplementationPolicyView(projectId)
+        : Promise.resolve(null),
+    ]);
+    if (isRequestStale("directImplementationUiStatus", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directImplementationUiStatus = status || null;
+    state.directImplementationOperationHistory = history || null;
+    state.directImplementationPolicyView = policy || null;
+  } catch (error) {
+    if (isRequestStale("directImplementationUiStatus", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directImplementationUiError = error.message || "Direct implementation-lane UI status failed.";
+  } finally {
+    if (!isRequestStale("directImplementationUiStatus", requestVersion)) {
+      state.directImplementationUiLoading = false;
+      renderDirectImplementationUiStatus();
+    }
   }
 }
 
@@ -8259,6 +8428,7 @@ function bindEvents() {
   els.directAuthLogoutButton.addEventListener("click", logoutDirectAuth);
   els.directRuntimePathSelect?.addEventListener("change", renderDirectRuntimeStatus);
   els.directRuntimePathApplyButton?.addEventListener("click", setDirectRuntimePathFromControl);
+  els.directImplementationRefreshButton?.addEventListener("click", () => refreshDirectImplementationUiStatus().catch((error) => setLastEvent(`Direct implementation UI refresh failed: ${error.message}`)));
   els.directMetaSessionRefreshButton?.addEventListener("click", () => refreshDirectMetaSessionStatus().catch((error) => setLastEvent(`Meta-session status refresh failed: ${error.message}`)));
   els.directBridgeSettingsRefreshButton?.addEventListener("click", () => refreshDirectBridgeSettingsStatus().catch((error) => setLastEvent(`Bridge settings status refresh failed: ${error.message}`)));
   els.directTextOnlyEnableButton?.addEventListener("click", selectDirectTextOnlyRuntime);
@@ -8435,6 +8605,7 @@ function bindEvents() {
     if (event.type === "direct-runtime-status") {
       state.directRuntimeStatus = event.status || state.directRuntimeStatus;
       renderDirectAuthControls();
+      refreshDirectImplementationUiStatus(activeProject()?.id || "", { renderBefore: false }).catch(() => {});
       setLastEvent(`Direct runtime ${directRuntimeModeLabel(state.directRuntimeStatus)}: ${directRuntimeStatusLabel(state.directRuntimeStatus)}.`);
     }
     if (event.type === "codex-request-updated" && event.request?.key) {
