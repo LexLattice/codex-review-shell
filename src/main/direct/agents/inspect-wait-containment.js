@@ -41,7 +41,7 @@ function stableStringify(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map((entry) => (entry === undefined ? "null" : stableStringify(entry))).join(",")}]`;
   return `{${Object.keys(value)
-    .filter((key) => value[key] !== undefined && !["artifactDigest", "inspectPacketDigest", "waitStatusPacketDigest", "projectionDigest"].includes(key))
+    .filter((key) => value[key] !== undefined && !["artifactDigest", "inspectPacketDigest", "waitStatusPacketDigest", "projectionDigest", "refDigest"].includes(key))
     .sort()
     .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
     .join(",")}}`;
@@ -110,14 +110,17 @@ function normalizeAgentNode(input = {}, index = 0) {
 
 function normalizeTranscriptProjection(input = {}) {
   const source = isPlainObject(input) ? input : {};
-  const items = arrayOrEmpty(source.rendererSafeItems).map((item, index) => ({
-    itemId: normalizeString(item.itemId, `sub_agent_item_${index + 1}`),
-    sourceItemId: normalizeString(item.sourceItemId, ""),
-    authorKind: ["parent_agent", "child_agent", "harness_controller", "tool", "system", "unknown_agent"].includes(item.authorKind) ? item.authorKind : "unknown_agent",
-    rendererSafeTextPreview: boundedString(item.rendererSafeTextPreview, 900),
-    textTruncated: item.textTruncated === true,
-    evidenceRefs: normalizeEvidenceRefs(item.evidenceRefs, "transcript_projection"),
-  }));
+  const items = arrayOrEmpty(source.rendererSafeItems).map((item, index) => {
+    const rendererSafeTextPreview = normalizeString(item.rendererSafeTextPreview, "");
+    return {
+      itemId: normalizeString(item.itemId, `sub_agent_item_${index + 1}`),
+      sourceItemId: normalizeString(item.sourceItemId, ""),
+      authorKind: ["parent_agent", "child_agent", "harness_controller", "tool", "system", "unknown_agent"].includes(item.authorKind) ? item.authorKind : "unknown_agent",
+      rendererSafeTextPreview: boundedString(rendererSafeTextPreview, 900),
+      textTruncated: item.textTruncated === true || rendererSafeTextPreview.length > 900,
+      evidenceRefs: normalizeEvidenceRefs(item.evidenceRefs, "transcript_projection"),
+    };
+  });
   return {
     transcriptProjectionId: normalizeString(source.transcriptProjectionId, ""),
     itemCount: finiteNumber(source.itemCount, items.length),
@@ -152,10 +155,10 @@ function attentionStateFor(node = {}, progressEntry = {}, witness = {}) {
 function waitStateFor(node = {}, progressEntry = {}, options = {}) {
   const phase = normalizeString(progressEntry?.phase || node.lifecycleState, "unknown");
   const blockers = arrayOrEmpty(progressEntry?.blockerCodes);
-  if (blockers.includes("wait_deadlock_risk") || blockers.includes("deadlock_risk")) return "deadlock_risk";
-  if (phase === "stale") return "stale";
-  if (phase === "failed") return "failed";
+  if (phase === "failed" || node.lifecycleState === "failed") return "failed";
+  if (phase === "stale" || node.lifecycleState === "stale") return "stale";
   if (phase === "completed" || node.lifecycleState === "completed" || node.lifecycleState === "closed") return "completed";
+  if (blockers.includes("wait_deadlock_risk") || blockers.includes("deadlock_risk")) return "deadlock_risk";
   if (phase === "waiting") return "waiting";
   if (["running", "discovered", "created", "input_sent"].includes(phase)) return "not_waiting";
   if (options.deadlockRisk === true) return "deadlock_risk";

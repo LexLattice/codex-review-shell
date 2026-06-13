@@ -113,13 +113,14 @@ function registryFixture(graph) {
         agentThreadId: "agent_stale",
         phase: "running",
         activeWorkSummary: "Stale worker has not emitted progress.",
+        blockerCodes: ["wait_deadlock_risk"],
         lastEventAt: "2026-06-13T17:50:00.000Z",
       },
       {
         agentThreadId: "agent_failed",
         phase: "failed",
         activeWorkSummary: "Faulty worker failed.",
-        blockerCodes: ["worker_failed"],
+        blockerCodes: ["worker_failed", "wait_deadlock_risk"],
         lastEventAt: "2026-06-13T17:59:10.000Z",
       },
       {
@@ -230,7 +231,9 @@ for (const packet of waitPackets) {
 }
 assert(waitPackets.find((packet) => packet.agentThreadId === "agent_waiting").blockerCodes.includes("wait_deadlock_risk"));
 assert(waitPackets.find((packet) => packet.agentThreadId === "agent_stale").blockerCodes.includes("stale_worker"));
+assert.equal(waitPackets.find((packet) => packet.agentThreadId === "agent_stale").waitState, "stale");
 assert(waitPackets.find((packet) => packet.agentThreadId === "agent_failed").blockerCodes.includes("worker_failed"));
+assert.equal(waitPackets.find((packet) => packet.agentThreadId === "agent_failed").waitState, "failed");
 
 const standaloneInspect = buildInspectPacket({
   projectId,
