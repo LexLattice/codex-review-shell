@@ -76,21 +76,29 @@ function normalizeSourceScope(value) {
 function normalizeEvidenceRefs(values, fallbackKind = "module_context_intake") {
   return arrayOrEmpty(values)
     .filter(isPlainObject)
-    .map((ref) => ({
-      kind: boundedString(ref.kind || ref.type || fallbackKind, 80),
-      artifactId: boundedString(ref.artifactId || ref.id || "", 160),
-      artifactDigest: boundedString(ref.artifactDigest || ref.digest || ref.sourceDigest || ref.refDigest || "", 120),
-      rendererSafeLabel: boundedString(ref.rendererSafeLabel || ref.label || ref.name || fallbackKind, 160),
-      rawTextIncluded: false,
-    }));
+    .map((ref) => {
+      const digest = boundedString(ref.artifactDigest || ref.digest || ref.sourceDigest || ref.refDigest || "", 120);
+      const label = boundedString(ref.rendererSafeLabel || ref.label || ref.name || fallbackKind, 160);
+      return {
+        kind: boundedString(ref.kind || ref.type || fallbackKind, 80),
+        artifactId: boundedString(ref.artifactId || ref.id || "", 160),
+        artifactDigest: digest,
+        digest,
+        rendererSafeLabel: label,
+        label,
+        rawTextIncluded: false,
+      };
+    });
 }
 
-function hasUnsafeRawExposure(value) {
+function hasUnsafeRawExposure(value, visited = new Set()) {
   if (!value || typeof value !== "object") return false;
-  if (Array.isArray(value)) return value.some((entry) => hasUnsafeRawExposure(entry));
+  if (visited.has(value)) return false;
+  visited.add(value);
+  if (Array.isArray(value)) return value.some((entry) => hasUnsafeRawExposure(entry, visited));
   for (const [key, nested] of Object.entries(value)) {
     if (/^raw[A-Z].*(Included|Exposed)$/.test(key) && nested === true) return true;
-    if (nested && typeof nested === "object" && hasUnsafeRawExposure(nested)) return true;
+    if (nested && typeof nested === "object" && hasUnsafeRawExposure(nested, visited)) return true;
   }
   return false;
 }
@@ -111,7 +119,7 @@ function authorityBlockers(item = {}) {
   return blockers;
 }
 
-function requirementBlockers(item = {}, rowKind) {
+function requirementBlockers(item = {}, rowKind, evidenceRefs = []) {
   const blockers = [];
   const moduleId = normalizeString(item.moduleId || item.module?.moduleId || item.moduleRef?.moduleId || item.id, "");
   const sourceScope = normalizeSourceScope(item.sourceScope || item.scope || item.bindingScope);
@@ -120,10 +128,22 @@ function requirementBlockers(item = {}, rowKind) {
   if (!workThreadId) blockers.push("work_thread_binding_missing");
   if (sourceScope === "unknown") blockers.push("scope_missing");
   if (hasUnsafeRawExposure(item)) blockers.push("raw_exposure_unsafe");
-  if (rowKind === "imported_evidence" && !arrayOrEmpty(item.evidenceRefs || item.sourceRefs || item.refs).length) {
+  if (rowKind === "imported_evidence" && !evidenceRefs.length) {
     blockers.push("import_source_missing");
   }
   return blockers;
+}
+
+function normalizeUpstreamIntakeState(item = {}) {
+  const explicit = normalizeString(item.state || item.status || item.intakeState, "");
+  if (INTAKE_STATES.has(explicit)) return explicit;
+  const contributionState = normalizeString(item.contributionState, "");
+  if (contributionState === "accepted_context_ref") return "accepted";
+  if (contributionState.startsWith("blocked")) return "blocked";
+  const importState = normalizeString(item.importState, "");
+  if (importState === "accepted_evidence_row") return "accepted";
+  if (importState.startsWith("blocked")) return "blocked";
+  return "";
 }
 
 function normalizeIntakeState(value, blockers) {
@@ -150,13 +170,17 @@ function buildModuleContextIntakeRow(input = {}, defaults = {}, ordinal = 0) {
   const workThreadId = normalizeString(hasOwn("workThreadId") ? item.workThreadId : defaults.workThreadId, "");
   const projectId = normalizeString(hasOwn("projectId") ? item.projectId : defaults.projectId, "");
   const threadId = normalizeString(hasOwn("threadId") ? item.threadId : defaults.threadId, "");
+  const evidenceRefs = normalizeEvidenceRefs(item.evidenceRefs || item.sourceRefs || item.refs, rowKind === "imported_evidence" ? "module_imported_evidence" : "module_context");
   const blockers = [
-    ...requirementBlockers({ ...item, moduleId, sourceScope, workThreadId }, rowKind),
+    ...requirementBlockers({ ...item, moduleId, sourceScope, workThreadId }, rowKind, evidenceRefs),
     ...authorityBlockers(item),
   ];
-  const state = normalizeIntakeState(item.state || item.status || item.intakeState, blockers);
+  const requestedState = normalizeUpstreamIntakeState(item) || (rowKind === "blocked_diagnostic" ? "blocked" : "");
+  const state = normalizeIntakeState(requestedState, blockers);
   const accepted = state === "accepted";
-  const evidenceRefs = normalizeEvidenceRefs(item.evidenceRefs || item.sourceRefs || item.refs, rowKind === "imported_evidence" ? "module_imported_evidence" : "module_context");
+  const blockReasons = state === "blocked" && blockers.length === 0
+    ? ["upstream_state_blocked"]
+    : blockers;
   const row = {
     schema: DIRECT_MODULE_CONTEXT_INTAKE_ROW_SCHEMA,
     rowId: rowIdFor(item, rowKind, moduleId, ordinal),
@@ -173,7 +197,7 @@ function buildModuleContextIntakeRow(input = {}, defaults = {}, ordinal = 0) {
     state,
     contextEligible: accepted && blockers.length === 0,
     importedEvidence: rowKind === "imported_evidence",
-    blockReasons: blockers,
+    blockReasons,
     tokenEstimate: numberOrZero(item.tokenEstimate || item.estimatedTokens || item.tokens),
     sizeBytes: numberOrZero(item.sizeBytes || item.byteSize || item.bytes),
     evidenceRefs,

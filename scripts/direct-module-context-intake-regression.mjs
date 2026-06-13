@@ -24,6 +24,14 @@ const {
 const projectId = "project_direct";
 const workThreadId = "work_thread_module_context";
 const threadId = "thread_module_context";
+const circularBlockedRow = {
+  rowId: "blocked_circular_raw",
+  moduleId: "skill_circular",
+  moduleKind: "skill",
+  sourceScope: "work_thread",
+  title: "Circular raw scan diagnostic",
+};
+circularBlockedRow.self = circularBlockedRow;
 
 const intake = buildDirectModuleContextIntake({
   projectId,
@@ -61,6 +69,14 @@ const intake = buildDirectModuleContextIntake({
       tokenEstimate: 12,
       evidenceRefs: [{ kind: "review_comment", artifactId: "comment_1", artifactDigest: "digest_review_comment" }],
     },
+    {
+      rowId: "connector_invalid_evidence",
+      moduleId: "connector_invalid_review",
+      moduleKind: "connector",
+      sourceScope: "work_thread",
+      title: "Invalid imported review finding",
+      evidenceRefs: ["invalid"],
+    },
   ],
   blockedRows: [
     {
@@ -80,17 +96,18 @@ const intake = buildDirectModuleContextIntake({
       workThreadId: "",
       title: "Missing WorkThread binding",
     },
+    circularBlockedRow,
   ],
 });
 
 assert.equal(intake.schema, "direct_module_context_intake@1");
 assert.equal(intake.generatedAt, "1970-01-01T00:00:00.000Z");
 assert.equal(intake.intakeState, "blocked");
-assert.equal(intake.counts.rowCount, 5);
+assert.equal(intake.counts.rowCount, 7);
 assert.equal(intake.counts.acceptedRowCount, 2);
 assert.equal(intake.counts.pendingReviewRowCount, 1);
-assert.equal(intake.counts.blockedRowCount, 2);
-assert.equal(intake.counts.importedEvidenceRowCount, 1);
+assert.equal(intake.counts.blockedRowCount, 4);
+assert.equal(intake.counts.importedEvidenceRowCount, 2);
 assert.equal(intake.counts.contextEligibleRowCount, 2);
 assert.equal(intake.counts.acceptedContextPreviewRowCount, 2);
 assert.equal(intake.counts.rawExposureUnsafeCount, 1);
@@ -108,6 +125,15 @@ const blockedHook = intake.rows.find((row) => row.rowId === "blocked_raw_hook");
 assert(blockedHook.blockReasons.includes("raw_exposure_unsafe"));
 assert(blockedHook.blockReasons.includes("hook_execution_disabled"));
 assert.equal(blockedHook.contextEligible, false);
+
+const invalidImport = intake.rows.find((row) => row.rowId === "connector_invalid_evidence");
+assert(invalidImport.blockReasons.includes("import_source_missing"));
+assert.equal(invalidImport.evidenceRefs.length, 0);
+assert.equal(invalidImport.contextEligible, false);
+
+const acceptedImport = intake.rows.find((row) => row.rowId === "connector_review_evidence");
+assert.equal(acceptedImport.evidenceRefs[0].digest, "digest_review_comment");
+assert.equal(acceptedImport.evidenceRefs[0].label, "module_imported_evidence");
 
 const preview = buildContextPacketPreview({
   projectId,
@@ -130,6 +156,45 @@ assert.equal(preview.counts.bySourceClass.module_context, 2);
 assert.equal(preview.counts.rowCount, 3);
 assert.equal(preview.downstreamRequestConstraints.requestAssemblyAllowed, true);
 assertContextPacketPreviewSafe(preview);
+const previewImportRef = preview.sourceRows
+  .find((row) => row.sourceId === "connector_review_evidence")
+  .evidenceRefs[0];
+assert.equal(previewImportRef.digest, "digest_review_comment");
+assert.equal(previewImportRef.label, "module_imported_evidence");
+
+const upstreamStateIntake = buildDirectModuleContextIntake({
+  projectId,
+  workThreadId,
+  threadId,
+  nowMs: 0,
+  moduleStatus: {
+    contextContributions: [
+      {
+        contributionId: "blocked_upstream_context",
+        moduleRef: { moduleId: "skill_wrong_posture", moduleKind: "hook" },
+        contributionState: "blocked_not_context_module",
+        sourceScope: "work_thread",
+        title: "Blocked upstream context",
+      },
+    ],
+    evidenceImportRows: [
+      {
+        evidenceImportRowId: "blocked_upstream_evidence",
+        moduleRef: { moduleId: "connector_wrong_posture", moduleKind: "skill" },
+        importState: "blocked_not_connector",
+        sourceScope: "work_thread",
+        sourceRefs: [{ kind: "review_comment", artifactDigest: "digest_upstream_blocked" }],
+      },
+    ],
+  },
+});
+
+assertDirectModuleContextIntakeSafe(upstreamStateIntake);
+assert.equal(upstreamStateIntake.counts.rowCount, 2);
+assert.equal(upstreamStateIntake.counts.acceptedRowCount, 0);
+assert.equal(upstreamStateIntake.counts.blockedRowCount, 2);
+assert.equal(upstreamStateIntake.acceptedContextPreviewRows.length, 0);
+assert(upstreamStateIntake.rows.every((row) => row.blockReasons.includes("upstream_state_blocked")));
 
 const settingsProjection = buildDirectSettingsSurfaceProjection({
   projectId,
@@ -142,7 +207,7 @@ assertDirectSettingsSurfaceRendererSafe(settingsProjection);
 assert(settingsProjection.bridgeOrgans.includes("module_context_intake"));
 assert.equal(settingsProjection.sections.moduleContextIntake.available, true);
 assert.equal(settingsProjection.sections.moduleContextIntake.contextEligibleRowCount, 2);
-assert.equal(settingsProjection.sections.moduleContextIntake.blockedRowCount, 2);
+assert.equal(settingsProjection.sections.moduleContextIntake.blockedRowCount, 4);
 assert.equal(settingsProjection.sections.moduleContextIntake.providerTransportAllowed, false);
 assert.equal(settingsProjection.rows.moduleContextIntake.some((row) => row.label === "Authority" && row.value === "display only"), true);
 assert(settingsProjection.evidenceRefs.some((ref) => ref.kind === "module_context_intake" && ref.digest));
