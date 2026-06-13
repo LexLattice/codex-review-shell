@@ -6746,12 +6746,11 @@ async function startCodexTurn(text, options = {}) {
     model: activeModelId() || null,
     effort: requestedReasoningEffort(),
   };
-  if (connection?.transport === DIRECT_LIVE_TEXT_TRANSPORT) {
-    params.clientTurnRequestId = options.clientTurnRequestId || createClientTurnRequestId();
-    params.promptText = text;
-    params.attachmentDrafts = Array.isArray(options.attachments) ? options.attachments : [];
-    params.attachmentDraftSetDigest = options.attachmentDraftSetDigest || "";
-  } else if (String(connection?.transport || "").startsWith("direct-")) {
+  if (connection?.transport === DIRECT_LIVE_TEXT_TRANSPORT || String(connection?.transport || "").startsWith("direct-")) {
+    if (connection?.transport === DIRECT_LIVE_TEXT_TRANSPORT) {
+      params.clientTurnRequestId = options.clientTurnRequestId || createClientTurnRequestId();
+      params.promptText = text;
+    }
     params.attachmentDrafts = Array.isArray(options.attachments) ? options.attachments : [];
     params.attachmentDraftSetDigest = options.attachmentDraftSetDigest || "";
   }

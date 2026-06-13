@@ -9,6 +9,7 @@ const {
   assertDirectAttachmentCapabilityProjectionSafe,
   assertDirectAttachmentSubmitPacketSafe,
   buildDirectAttachmentCapabilityProjection,
+  buildDirectAttachmentProviderPrompt,
   buildDirectAttachmentSubmitPacket,
 } = require("../attachments/capability");
 
@@ -218,7 +219,7 @@ class DirectFixtureController {
     if (!session) throw new Error(`Direct fixture session not found: ${threadId}`);
     const model = normalizeString(params.model, "") || this.defaultModel(context.project || {});
     const input = Array.isArray(params.input) ? params.input : [];
-    const prompt = firstTextInput(input);
+    const rawPrompt = firstTextInput(input);
     const capabilityProjection = buildDirectAttachmentCapabilityProjection({
       projectId: normalizeString(context.project?.id, ""),
       runtimeKind: DIRECT_FIXTURE_SURFACE_TRANSPORT,
@@ -229,7 +230,7 @@ class DirectFixtureController {
       projectId: normalizeString(context.project?.id, ""),
       surfaceId: "codex",
       turnClientId: normalizeString(params.clientTurnRequestId, ""),
-      text: prompt,
+      text: rawPrompt,
       attachments: Array.isArray(params.attachmentDrafts) ? params.attachmentDrafts : [],
       capabilityProjection,
     });
@@ -243,8 +244,9 @@ class DirectFixtureController {
       };
       throw error;
     }
+    const prompt = buildDirectAttachmentProviderPrompt(rawPrompt, attachmentSubmitPacket);
     const turn = this.sessionStore.createTurn(session.sessionId, {
-      input,
+      input: prompt ? [{ type: "text", text: prompt, text_elements: [] }] : input,
       model,
     });
     const turnId = turn.turnId;

@@ -53,6 +53,7 @@ const {
   assertDirectAttachmentCapabilityProjectionSafe,
   assertDirectAttachmentSubmitPacketSafe,
   buildDirectAttachmentCapabilityProjection,
+  buildDirectAttachmentProviderPrompt,
   buildDirectAttachmentSubmitPacket,
 } = require("../attachments/capability");
 
@@ -3958,9 +3959,11 @@ class DirectLiveTextController {
       error.code = "missing_client_turn_request_id";
       throw error;
     }
+    const rawPrompt = this.textPrompt(params);
+    const attachmentSubmit = this.directAttachmentSubmitPacket(params, context, rawPrompt);
+    const prompt = buildDirectAttachmentProviderPrompt(rawPrompt, attachmentSubmit.packet);
     const duplicate = this.findTurnByClientRequestId(session, clientTurnRequestId);
     if (duplicate) {
-      const prompt = this.textPrompt(params);
       if (turnPromptDigest(duplicate) !== sha256(prompt)) {
         const error = new Error("Direct live text clientTurnRequestId was reused with a different prompt.");
         error.code = "client_turn_request_id_conflict";
@@ -3969,7 +3972,6 @@ class DirectLiveTextController {
       const requestedAttachmentDraftSetDigest = normalizeString(params.attachmentDraftSetDigest, "");
       const existingAttachmentDraftSetDigest = normalizeString(duplicate.requestShape?.directAttachmentDraftSetDigest, "");
       if (
-        requestedAttachmentDraftSetDigest &&
         existingAttachmentDraftSetDigest &&
         requestedAttachmentDraftSetDigest !== existingAttachmentDraftSetDigest
       ) {
@@ -3991,8 +3993,6 @@ class DirectLiveTextController {
       error.status = activeTurn.state;
       throw error;
     }
-    const prompt = this.textPrompt(params);
-    const attachmentSubmit = this.directAttachmentSubmitPacket(params, context, prompt);
     const model = normalizeString(params.model, "") || status.model;
     const reasoningEffort = normalizeString(params.reasoningEffort || params.reasoning_effort || params.effort, session.reasoningEffort);
     const existingTurnIds = this.sessionStore.listTurnIdsFromDisk(session.sessionId);

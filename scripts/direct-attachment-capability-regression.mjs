@@ -9,6 +9,7 @@ const {
   assertDirectAttachmentCapabilityProjectionSafe,
   assertDirectAttachmentSubmitPacketSafe,
   buildDirectAttachmentCapabilityProjection,
+  buildDirectAttachmentProviderPrompt,
   buildDirectAttachmentReferenceBlock,
   buildDirectAttachmentSubmitPacket,
 } = require("../src/main/direct/attachments/capability");
@@ -95,6 +96,13 @@ assert(referenceBlock.includes("docs/notes.md"));
 assert(referenceBlock.includes("diagram.png"));
 assert(referenceBlock.includes("[workspace_ref]"));
 assert(referenceBlock.includes("[staged_ref]"));
+
+const providerPrompt = buildDirectAttachmentProviderPrompt("Review these attachments.", packet);
+assert(providerPrompt.includes("Review these attachments."));
+assert(providerPrompt.includes("docs/notes.md"));
+assert(providerPrompt.includes(".codex/review-shell/attachments/att_staged_image/diagram.png"));
+const alreadyExpandedPrompt = buildDirectAttachmentProviderPrompt(providerPrompt, packet);
+assert.equal(alreadyExpandedPrompt, providerPrompt, "provider prompt must not duplicate attachment refs");
 
 const blocked = buildDirectAttachmentSubmitPacket({
   projectId,

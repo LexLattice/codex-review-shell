@@ -261,6 +261,21 @@ function buildDirectAttachmentReferenceBlock(packet = {}) {
   return ["", "Attachments submitted as governed direct references:", ...lines].join("\n");
 }
 
+function packetReferenceTargets(packet = {}) {
+  return arrayOrEmpty(packet.dispositions)
+    .map((row) => attachmentReferenceForPacket(row))
+    .filter(Boolean);
+}
+
+function buildDirectAttachmentProviderPrompt(promptText = "", packet = {}) {
+  const prompt = String(promptText || "");
+  const block = buildDirectAttachmentReferenceBlock(packet);
+  if (!block) return prompt;
+  const targets = packetReferenceTargets(packet);
+  if (targets.length && targets.every((target) => prompt.includes(target))) return prompt;
+  return `${prompt}${block}`;
+}
+
 function assertDirectAttachmentCapabilityProjectionSafe(projection = {}) {
   if (!isPlainObject(projection) || projection.schema !== DIRECT_ATTACHMENT_CAPABILITY_PROJECTION_SCHEMA) {
     throw new Error("direct_attachment_capability_projection_schema_mismatch");
@@ -300,6 +315,7 @@ module.exports = {
   assertDirectAttachmentCapabilityProjectionSafe,
   assertDirectAttachmentSubmitPacketSafe,
   buildDirectAttachmentCapabilityProjection,
+  buildDirectAttachmentProviderPrompt,
   buildDirectAttachmentReferenceBlock,
   buildDirectAttachmentSubmitPacket,
 };
