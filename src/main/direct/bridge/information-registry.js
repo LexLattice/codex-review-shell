@@ -419,6 +419,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     bridgeFit: "Classifies staged composer attachments for direct turns as provider payloads, workspace refs, staged refs, text refs, or unsupported without exposing raw paths or raw payloads.",
     realignment: "Direct provider file/image payloads remain unsupported until runtime evidence proves them; v0 accepts governed workspace/staged references and records blocked-state witnesses for unsupported drafts.",
   },
+  {
+    id: "ic18.direct-live-promotion-report",
+    name: "Direct live implementation-lane promotion report",
+    role: "canonical_evidence",
+    implementationState: "partial",
+    directPathPosture: "keep_gated",
+    sourceFiles: ["scripts/direct-implementation-proof-regression.mjs"],
+    ontology: ontologyShape(["direct_implementation_lane_live_promotion_report", "direct_implementation_lane_promotion_row", "matrix_promotion_summary"], "model_provider", {
+      identityFields: ["promotionReportId", "runId", "caseId", "scenario"],
+      schema: "direct_implementation_lane_live_promotion_report@1",
+    }),
+    bridgeFit: "Projects implementation-proof runs into a separate live-promotion artifact that distinguishes provider tool emission, local authority execution, continuation completion, terminal assistant evidence, and matrix promotion eligibility.",
+    realignment: "Promotion rows can move matrix claims only when live provider scenarios promote; fixture/preflight rows remain explicit non-promotion evidence and grant no app-server fallback, auto-approval, replay, revert, right-pane mutation, or handoff mutation.",
+  },
 ]);
 
 function isPlainObject(value) {

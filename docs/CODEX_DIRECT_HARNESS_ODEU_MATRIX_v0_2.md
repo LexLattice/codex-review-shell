@@ -598,6 +598,25 @@ It should not add new authority. It should prove:
 8. selected matrix rows can cite the report as live evidence only when the
    report has a passing promotion verdict.
 
+Current implementation note:
+
+```text
+direct:implementation-proof now emits
+direct_implementation_lane_live_promotion_report@1 as both embedded report
+state and sidecar JSON/Markdown artifacts.
+```
+
+The implemented artifact is intentionally conservative:
+
+- preflight mode writes `promotionStatus = not_evaluated`;
+- fixture/local proof does not count as live promotion;
+- matrix rows remain blocked unless all required live scenarios promote;
+- non-emission, local-authority failure, continuation failure, and missing
+  terminal assistant evidence are typed non-promotion outcomes;
+- the report boundary explicitly denies app-server fallback, right-pane
+  mutation, handoff mutation, auto-approval, automatic replay, and automatic
+  revert.
+
 It should explicitly not mean:
 
 ```text

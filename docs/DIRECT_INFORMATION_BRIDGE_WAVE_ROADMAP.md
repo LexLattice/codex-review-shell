@@ -1466,7 +1466,9 @@ Still intentionally not authority:
 
 ## Wave 5: Live Promotion And Operator Usability Gate
 
-Status: planned.
+Status: in review.
+
+Branch: `codex/direct-live-promotion-report-v0`.
 
 Review posture after Wave 4:
 
@@ -1515,6 +1517,24 @@ Scope:
 - Keep live proof opt-in; normal validation must not call the provider.
 - Add a compact matrix promotion summary that can move selected rows from
   fixture-only to live-proved when evidence exists.
+
+Implemented slice:
+
+- `direct:implementation-proof` now emits an embedded
+  `direct_implementation_lane_live_promotion_report@1` artifact.
+- The runner also writes sidecar JSON and Markdown promotion reports:
+  `implementation-promotion-report.json` and
+  `implementation-promotion-report.md`.
+- Promotion rows classify provider tool emission, local authority execution,
+  continuation completion, terminal assistant evidence, and typed
+  non-promotion reasons per scenario.
+- Preflight remains provider-free and produces `not_evaluated` promotion
+  state rather than pretending fixture evidence is live evidence.
+- The report includes an explicit authority boundary: no app-server fallback,
+  no right-pane mutation, no handoff mutation, no auto-approval, no automatic
+  replay, and no automatic revert.
+- The bridge information registry now includes the promotion report as a
+  canonical evidence artifact.
 
 Promotion criterion:
 
