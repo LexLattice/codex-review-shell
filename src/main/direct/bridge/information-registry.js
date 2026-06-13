@@ -349,6 +349,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     bridgeFit: "Declares role contracts for primary, worker, auditor, broker, orchestrator, memory, governance, closeout, fix, and sub-agent classes before execution routing exists.",
     realignment: "Keep role contracts display-only until later PRs bind worker graphs, WorkThread routing, and authority gates to concrete execution surfaces.",
   },
+  {
+    id: "ic17.direct-attachment-capability",
+    name: "Direct attachment capability and submit semantics",
+    role: "authority_gate",
+    implementationState: "partial",
+    directPathPosture: "keep_and_align",
+    sourceFiles: ["src/main/direct/attachments/capability.js", "scripts/direct-attachment-capability-regression.mjs", "src/main/direct/controller/live-text-controller.js", "src/main/direct/controller/fixture-controller.js", "src/renderer/codex-surface.js"],
+    ontology: ontologyShape(["direct_attachment_capability_projection", "direct_attachment_submit_packet", "attachment_transcript_witness"], "harness", {
+      identityFields: ["projectId", "draftId", "turnClientId", "packetId"],
+      schema: "direct_attachment_submit_packet@1",
+    }),
+    bridgeFit: "Classifies staged composer attachments for direct turns as provider payloads, workspace refs, staged refs, text refs, or unsupported without exposing raw paths or raw payloads.",
+    realignment: "Direct provider file/image payloads remain unsupported until runtime evidence proves them; v0 accepts governed workspace/staged references and records blocked-state witnesses for unsupported drafts.",
+  },
 ]);
 
 function isPlainObject(value) {
