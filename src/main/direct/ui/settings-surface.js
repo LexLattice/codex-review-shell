@@ -349,6 +349,44 @@ function summarizeContinuity(input = {}) {
   };
 }
 
+function summarizeContextPreview(input = {}) {
+  const source = objectOrEmpty(input);
+  const preview = normalizeString(source.schema, "") === "direct_context_packet_preview@1"
+    ? source
+    : objectOrEmpty(source.contextPreview || source.contextPacketPreview || source.directContextPreview);
+  const counts = objectOrEmpty(preview.counts);
+  const constraints = objectOrEmpty(preview.downstreamRequestConstraints);
+  const authority = objectOrEmpty(preview.authority);
+  const bySourceClass = objectOrEmpty(counts.bySourceClass);
+  const sourceClasses = Object.keys(bySourceClass).sort();
+  return {
+    available: normalizeString(preview.schema, "") === "direct_context_packet_preview@1",
+    schema: normalizeString(preview.schema, "not_exposed"),
+    previewState: normalizeString(preview.previewState, "unavailable"),
+    rowCount: Number(counts.rowCount ?? arrayOrEmpty(preview.sourceRows).length ?? 0),
+    includedSourceCount: Number(counts.includedSourceCount ?? 0),
+    omittedSourceCount: Number(counts.omittedSourceCount ?? 0),
+    requiredSourceCount: Number(counts.requiredSourceCount ?? 0),
+    staleSourceCount: Number(counts.staleSourceCount ?? 0),
+    missingSourceCount: Number(counts.missingSourceCount ?? 0),
+    rawExposureUnsafeCount: Number(counts.rawExposureUnsafeCount ?? 0),
+    tokenEstimateTotal: Number(counts.tokenEstimateTotal ?? 0),
+    sizeBytesTotal: Number(counts.sizeBytesTotal ?? 0),
+    sourceClasses,
+    blockerCount: arrayOrEmpty(preview.blockers).length,
+    blockerCodes: arrayOrEmpty(constraints.blockerCodes).map((item) => normalizeString(item, "")).filter(Boolean),
+    requestAssemblyAllowed: constraints.requestAssemblyAllowed === true,
+    requestAssemblyBlocked: constraints.requestAssemblyBlocked === true,
+    providerCallBlocked: constraints.providerCallBlocked !== false,
+    previewEditingAllowed: authority.previewEditingAllowed === true,
+    providerTransportAllowed: authority.providerTransportAllowed === true,
+    workspaceMutationAllowed: authority.workspaceMutationAllowed === true,
+    memoryMutationAllowed: authority.memoryMutationAllowed === true,
+    providerCompactionAllowed: authority.providerCompactionAllowed === true,
+    previewDigest: normalizeString(preview.previewDigest, ""),
+  };
+}
+
 function summarizeAgentUsage(input = {}) {
   const source = objectOrEmpty(input);
   const usage = normalizeString(source.schema, "") === "direct_agent_usage_summary_projection@1"
@@ -388,6 +426,7 @@ function buildRows(sections) {
   const modules = sections.modules;
   const agentClasses = sections.agentClasses;
   const continuity = sections.continuity;
+  const contextPreview = sections.contextPreview;
   const agentUsage = sections.agentUsage;
   return {
     runtime: [
@@ -494,6 +533,20 @@ function buildRows(sections) {
       statusRow("Baton", continuity.batonState),
       statusRow("Provider compact", continuity.providerCompactionState),
     ],
+    contextPreview: [
+      statusRow("Surface", contextPreview.available ? "available" : "not exposed", contextPreview.available ? "diagnostic" : "missing"),
+      statusRow("Preview", contextPreview.previewState, contextPreview.previewState === "ready" ? "ok" : contextPreview.previewState === "blocked_from_request" ? "blocked" : "diagnostic"),
+      statusRow("Sources", contextPreview.rowCount),
+      statusRow("Included/omitted", `${contextPreview.includedSourceCount}/${contextPreview.omittedSourceCount}`),
+      statusRow("Required", contextPreview.requiredSourceCount),
+      statusRow("Token estimate", contextPreview.tokenEstimateTotal),
+      statusRow("Size", `${contextPreview.sizeBytesTotal} bytes`),
+      statusRow("Stale/missing/raw", `${contextPreview.staleSourceCount}/${contextPreview.missingSourceCount}/${contextPreview.rawExposureUnsafeCount}`, contextPreview.staleSourceCount || contextPreview.missingSourceCount || contextPreview.rawExposureUnsafeCount ? "blocked" : "ok"),
+      statusRow("Classes", contextPreview.sourceClasses.length ? contextPreview.sourceClasses.join(", ") : "none"),
+      statusRow("Blockers", contextPreview.blockerCodes.length ? contextPreview.blockerCodes.slice(0, 5).join(", ") : "none", contextPreview.blockerCodes.length ? "blocked" : "ok"),
+      statusRow("Request", contextPreview.requestAssemblyAllowed ? "preview clear" : "blocked/not granted", contextPreview.requestAssemblyAllowed && !contextPreview.requestAssemblyBlocked ? "diagnostic" : "blocked"),
+      statusRow("Authority", contextPreview.previewEditingAllowed || contextPreview.providerTransportAllowed || contextPreview.workspaceMutationAllowed || contextPreview.memoryMutationAllowed || contextPreview.providerCompactionAllowed ? "unexpected grant" : "display only", contextPreview.previewEditingAllowed || contextPreview.providerTransportAllowed || contextPreview.workspaceMutationAllowed || contextPreview.memoryMutationAllowed || contextPreview.providerCompactionAllowed ? "blocked" : "ok"),
+    ],
     agentUsage: [
       statusRow("Surface", agentUsage.available ? "available" : "not exposed", agentUsage.available ? "diagnostic" : "missing"),
       statusRow("Rows / turns", `${agentUsage.rowCount}/${agentUsage.turnCount}`),
@@ -522,6 +575,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
   const modules = summarizeModules(input.moduleStatus);
   const agentClasses = summarizeAgentClasses(input.agentClassStatus);
   const continuity = summarizeContinuity(input);
+  const contextPreview = summarizeContextPreview(input.contextPreview || input.contextPacketPreview || input.directContextPreview || input);
   const agentUsage = summarizeAgentUsage(input.agentUsageStatus || input.agentUsageProjection || input.directAgentUsage || input);
   const generatedAt = normalizeString(input.generatedAt, nowIso(input.nowMs));
   const authority = {
@@ -536,12 +590,14 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
     manualCompactActionAllowed: false,
     providerCompactionAllowed: false,
     providerTransportAllowed: false,
+    requestAssemblyAuthorityGranted: false,
+    contextPreviewEditingAllowed: false,
     workspaceMutationAllowed: false,
     rawTextIncluded: false,
     rawPathIncluded: false,
     rawSecretIncluded: false,
   };
-  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, agentClasses, continuity, agentUsage };
+  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, agentClasses, continuity, contextPreview, agentUsage };
   const sourceDigest = digestFor("direct-settings-surface-source@1", sections);
   const projection = {
     schema: DIRECT_SETTINGS_SURFACE_PROJECTION_SCHEMA,
@@ -561,6 +617,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       "skills_hooks_apps",
       "agent_class_specs",
       "memory_baton_omission_compaction",
+      "context_packet_preview",
       "direct_agent_usage",
     ],
     sections,
@@ -581,6 +638,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       { kind: "module_status", digest: normalizeString(input.moduleStatus?.projectionDigest, ""), label: "Bridge module status" },
       { kind: "agent_class_status", digest: normalizeString(input.agentClassStatus?.projectionDigest, ""), label: "Agent class status" },
       { kind: "continuity_status", digest: normalizeString(input.continuityStatus?.projectionDigest, ""), label: "Continuity status" },
+      { kind: "context_packet_preview", digest: normalizeString(contextPreview.previewDigest, ""), label: "Context packet preview" },
       { kind: "direct_agent_usage", digest: normalizeString(agentUsage.projectionDigest || agentUsage.ledgerDigest, ""), label: "Direct agent usage summary" },
     ].filter((ref) => ref.digest || ref.kind === "registry_audit"),
     sourceDigest,
@@ -607,6 +665,8 @@ function assertDirectSettingsSurfaceRendererSafe(projection = {}) {
     "manualCompactActionAllowed",
     "providerCompactionAllowed",
     "providerTransportAllowed",
+    "requestAssemblyAuthorityGranted",
+    "contextPreviewEditingAllowed",
     "workspaceMutationAllowed",
     "rawTextIncluded",
     "rawPathIncluded",

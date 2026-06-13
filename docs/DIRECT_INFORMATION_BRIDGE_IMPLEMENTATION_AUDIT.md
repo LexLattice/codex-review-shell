@@ -43,14 +43,14 @@ capability. "Inherited" is not a defect when it is explicit and law-compatible.
 
 ## Current Executable Audit Snapshot
 
-Last reviewed after Wave 6 / PR 34 on `2026-06-14`.
+Last reviewed after Wave 6 / PR 35 on `2026-06-14`.
 
 ```text
-registry rows: 34
+registry rows: 35
 valid: yes
 missing source files: 0
 implemented rows: 10
-partial rows: 22
+partial rows: 23
 inherited rows: 2
 ```
 
@@ -178,6 +178,7 @@ The executable registry currently tracks these bridge rows:
 | `ic2.thread-workbench-projections` | derived projection | implemented | keep |
 | `ic3.context-pack-and-request-manifest` | context construction | implemented | keep |
 | `ic3.context-maintenance-memory-baton` | memory/continuity | partial | keep and align |
+| `ic3.context-packet-preview-workbench` | context construction | partial | keep guarded |
 | `ic4.read-file-authority` | authority gate | implemented | keep |
 | `ic4.patch-authority` | authority gate | implemented | keep |
 | `ic4.command-authority` | authority gate | implemented | keep |
@@ -238,13 +239,10 @@ Realignment needed:
 
 Not built yet:
 
-- Operator-facing WorkThread control deck and current-pointer selection.
-- Operator target picker for ambiguous work-target resolution.
 - Full direct settings workflows for editing/resetting memory, provider compaction, module execution, and enforced routing.
 - Enforced semantic broker routing.
 - Full direct-native memory/compaction/frontier workflow with live scheduler and UI controls.
 - Agent execution contracts for worker/auditor/meta-orchestrator beyond declared role specs.
-- Context packet preview / omission workbench before provider request assembly.
 - Module context/evidence intake UI.
 - Broad manual/electron smoke gate for the direct branch.
 

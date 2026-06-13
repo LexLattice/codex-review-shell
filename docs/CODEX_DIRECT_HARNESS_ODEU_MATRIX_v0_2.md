@@ -90,13 +90,13 @@ right ChatGPT pane != direct Codex memory
 
 ## 3. Current Descent Summary
 
-Status snapshot after Wave 6 PR 34, 2026-06-14:
+Status snapshot after Wave 6 PR 35, 2026-06-14:
 
 ```text
 direct information bridge audit: valid
-registry rows: 34
+registry rows: 35
 implemented rows: 10
-partial rows: 22
+partial rows: 23
 inherited rows: 2
 missing source files: 0
 ```
@@ -585,32 +585,35 @@ ledgers.
 
 ## 9. Immediate Next Spec
 
-The next spec should target Wave 6 PR 35:
+The next spec should target Wave 6 PR 36:
 
 ```text
-Context packet preview and omission workbench.
+Memory review materialization UI V0.
 ```
 
 It should not add provider/tool authority. It should prove:
 
-1. context packet sources are visible before direct provider input assembly;
-2. omission, retention, and context-loss witnesses are shown with source refs;
-3. stale, missing, or raw-exposure-unsafe sources block request assembly;
-4. preview rows distinguish memory, baton, attachments, tool refs, modules, and
-   dialogue;
-5. preview editing remains disabled unless a later transition packet grants it;
-6. provider compaction and hidden memory mutation remain disabled;
-7. downstream request manifests can cite the preview;
-8. non-target WorkThread context remains excluded unless explicitly selected.
+1. memory review packets are visible as operator-facing materialization
+   candidates;
+2. stale and conflicted memory rows are inspectable before acceptance;
+3. reset policy and confirmation posture are explicit and disabled by default;
+4. accepted/rejected refresh transitions cite the guarded context-maintenance
+   execution packet/result;
+5. provider memory claims, provider compaction, and automatic refresh remain
+   disabled;
+6. omission impact and rollback posture remain attached to every materialized
+   memory transition;
+7. local materialization cannot bypass WorkThread identity or source refs;
+8. hidden memory mutation remains impossible.
 
 Current implementation note:
 
 ```text
-Wave 5 completed the first live-promotion, direct-readiness,
-context-maintenance execution, governance enforcement, and sub-agent
-inspect/wait containment artifacts. Those are still mostly gated or read-only.
-Wave 6 should make them operator-operable as one coherent WorkThread control
-loop before expanding authority.
+Wave 6 now includes the context packet preview/omission workbench. The operator
+can inspect source classes, inclusion/omission posture, pressure estimates, and
+blocked-from-request reasons before the direct request path consumes a context
+packet. The remaining Wave 6 work should make memory review/materialization and
+module context intake operator-operable before expanding authority.
 ```
 
 It should explicitly not mean:
