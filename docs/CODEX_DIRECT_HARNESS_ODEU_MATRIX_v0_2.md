@@ -90,13 +90,13 @@ right ChatGPT pane != direct Codex memory
 
 ## 3. Current Descent Summary
 
-Status snapshot after Wave 3, 2026-06-13:
+Status snapshot after Wave 5, 2026-06-13:
 
 ```text
 direct information bridge audit: valid
-registry rows: 26
-implemented rows: 9
-partial rows: 15
+registry rows: 32
+implemented rows: 10
+partial rows: 20
 inherited rows: 2
 missing source files: 0
 ```
@@ -120,12 +120,12 @@ It does not grant runtime authority by itself.
 | WorkThread identity and target resolution | `B-F` | WorkThread registry, target report, operator broker, stale guards, and non-target preservation constraints exist. |
 | Direct settings / bridge status | `B-F` | Renderer-safe settings/control status surface exists for runtime, registry, WorkThread, broker, modules, and continuity. |
 | AgentClassSpec registry | `B-F` | Main/worker/auditor/fix/closeout/orchestrator/broker/memory/governance/sub-agent role contracts exist. |
-| Worker graph and sub-agent observability | `B-P/B-F` | Worker graph alignment, progress/attention/containment projections exist; mature choreography and inspect/wait tools remain pending. |
+| Worker graph and sub-agent observability | `B-F` | Worker graph alignment, progress/attention/containment projections and contained inspect/wait packets exist; mature choreography remains pending. |
 | Direct usage ledger by agent/worker | `B-F` | Direct agent/work-thread/route usage summary projection exists; cost remains separate and price-snapshot-bound. |
 | Direct attachment submit semantics | `B-F` | Direct attachment capability projection and reference-only submit packet semantics exist; provider binary/image payload support is not claimed. |
 | Skills/hooks/apps bridge modules | `B-P/B-F` | Module classification, context contribution, evidence import, hook proposal, and execution gate artifacts exist; no execution runner exists. |
-| Context maintenance / memory / baton | `B-P/B-F` | Omission/loss witnesses, memory review/refresh/reset proposals, compaction plan/gate, and continuity transitions exist; no provider compaction or memory mutation authority. |
-| Governance / semantic broker | `B-P/B-F` | Governance packet, semantic broker preflight, controlled routing slice, route-to-role handoff, and operator broker exist; enforcement is still narrow/shadow. |
+| Context maintenance / memory / baton | `B-P/B-F` | Omission/loss witnesses, memory review/refresh/reset proposals, compaction plan/gate, continuity transitions, and guarded local maintenance execution packets exist; no provider compaction or hidden memory authority. |
+| Governance / semantic broker | `B-P/B-F` | Governance packet, semantic broker preflight, controlled routing slice, route-to-role handoff, operator broker, and narrow enforcement/clarification packets exist; operator target-picker UX remains pending. |
 | Explicit direct worker start | `B-P/B-F` | Operator-accepted role handoff can start one bounded direct worker turn; recursive spawning and workflow closure remain disabled. |
 | Meta-orchestrator / auditor loop shadow | `B-P/B-F` | Plan pointer, step events, implementation evidence, audit artifact, and transition gate schemas exist; no autonomous scheduler or super-auditor behavior. |
 
@@ -133,27 +133,28 @@ Main remaining coverage gaps from the matrix:
 
 | Gap | Rows | Why it remains open |
 |---|---|---|
-| Real-provider implementation-lane proof | `I7`, `E3-E15`, `B4-B6`, `F4-F7`, `J3-J7` | Read-only, patch, and command loops now have fixture/local disposable-workspace proof; live-provider promotion remains pending. |
+| Live-provider implementation-lane promotion | `I7`, `E3-E15`, `B4-B6`, `F4-F7`, `J3-J7` | Read-only, patch, and command loops have fixture/local disposable-workspace proof and a live promotion report artifact; selected rows still need scoped passing live runs before moving to `B-R`. |
 | Side-effect recovery/replay | `A11`, `C1-C3`, `C11-C12`, `E15`, `I9` | Fixture proof covers interrupted read/patch/command/continuation states and corrupt ledgers; live crash harness and manual resume remain pending. |
 | Iterative repair loop promotion | `E4`, `E14`, `E15`, `F4`, `D18` | Fixture/local read -> patch -> failing command -> repair patch -> passing command proof exists; live-provider promotion remains pending. |
 | Workspace change authority maturity | `E6-E8`, `E11`, `J4-J7` | Generated/vendor/lockfile/binary/large/symlink/ignored/external-worktree policy rows, dirty/untracked separation, classed effect summaries, and disabled revert preview are fixture-proved; live VCS policy breadth, network-risk truth, and revert execution remain future work. |
-| Actual context maintenance execution | `D1-D14`, `D22-D23`, `A12`, `J11` | Planning/gate/status artifacts exist; compact execution, memory materialization, baton reinjection, and automatic trimming remain gated. |
-| Governance enforcement and semantic fallback | `D15-D21`, `J10` | Shadow/preflight/routing artifacts exist; enforce mode, clarification UX, and fallback branch law remain future work. |
-| Mature multi-agent choreography | `H1-H10`, `J9` | Worker start and graph alignment exist; recursive delegation, inspect/wait tools, deadlock prevention, and transcript promotion law remain future work. |
-| Mainline readiness and broad UI proof | `F1-F10`, `I1-I15`, `J1-J12` | Status surfaces and regressions exist; full Electron/UI proof and merge-behind-flag checklist remain later work. |
+| Context maintenance productization | `D1-D14`, `D22-D23`, `A12`, `J11` | Guarded local execution packets exist; operator context preview, memory materialization UI, provider compaction, and automatic trimming remain gated. |
+| Governance enforcement and semantic fallback | `D15-D21`, `J10` | Narrow preflight enforcement and clarification packets exist; operator target picker and fallback branch law remain future work. |
+| Mature multi-agent choreography | `H1-H10`, `J9` | Worker start, graph alignment, progress projections, and contained inspect/wait packets exist; recursive delegation, model-visible wait tools, no-deadlock synchronization, and transcript promotion law remain future work. |
+| Mainline readiness and broad UI proof | `F1-F10`, `I1-I15`, `J1-J12` | Status surfaces and regressions exist; WorkThread control UX, context preview, manual smoke gate, and merge-behind-flag checklist remain later work. |
 
-The next confidence gap is now Wave 5:
+The next confidence gap is now Wave 6:
 
 ```text
-live implementation-lane promotion and operator usability,
-without adding new authority.
+operator control loop and WorkThread productization,
+without adding autonomous authority.
 ```
 
-Wave 5 should start with the live promotion report because read/patch/command,
-recovery, repair, and workspace mutation truth are now fixture/local-proved.
-After that, direct UI readiness should come before broader context/governance
-execution so manual testing can inspect status, approvals, operation history,
-recovery posture, and workspace effects without reading raw ledgers.
+Wave 6 should start with the WorkThread control deck because the direct branch
+now has many correct packets and gates, but the operator still needs a stable
+control-plane unit for selecting the active work world, resolving ambiguity,
+and inspecting context/authority before a turn. Context preview, memory
+materialization UI, module context intake, and a manual smoke gate should follow
+before any broader autonomous or recursive authority.
 
 ## 4. Canonical ODEU Capability Matrix
 
@@ -223,23 +224,23 @@ These are canonical direct-shell capability rows. Fork docs provide exemplars bu
 | D4 | Remote-hybrid compaction | Provider compact plus local memory/governance preservation. | Provider compact primitive only. | Reinject required local artifacts. | `S`; fork exemplar | Direct spec after route matrix. |
 | D5 | Local-pure compaction | Local/model-summarized compaction without provider compact endpoint. | Model text only if used. | Summary policy, validation, provenance. | `S`; fork exemplar | Local compaction pack and quality checks. |
 | D6 | Compaction timing law | Intra-turn/turn-boundary/pre-request/post-tool/post-terminal are distinct. | OAI agnostic. | Scheduler prevents unsafe mid-obligation compaction. | `S`; fork exemplar | Transition table. |
-| D7 | Continuation bridge/frontier baton | Turn-scoped artifact carrying frontier across compaction. | OAI can ingest as context, not native law. | `frontier_baton@1` or bridge artifact with open obligations/source refs. | `S`; fork built bridge | Direct baton schema and pack integration. |
+| D7 | Continuation bridge/frontier baton | Turn-scoped artifact carrying frontier across compaction. | OAI can ingest as context, not native law. | `frontier_baton@1` or bridge artifact with open obligations/source refs. | `B-P/B-F`; fork built bridge | Context preview and pack integration proof. |
 | D8 | Rich review bridge | Frontier plus review risks/alternatives. | OAI can generate/consume text. | Review-specific bridge policy. | `S`; fork exemplar | Decide display-only vs authoring. |
 | D9 | Bridge sub-agent supplement | Carry child-agent frontier/progress into bridge. | OAI can ingest as context. | Child summaries and unresolved waits. | `S`; fork exemplar | Requires agent registry. |
-| D10 | Durable ODEU thread memory | Long-lived memory separate from recent context and compaction summary. | OAI none. | `durable_thread_memory@1`, refresh/governance lifecycle. | `S`; fork built thread memory | Direct memory artifact visibility first. |
-| D11 | Memory refresh operation | Refresh durable memory from source refs. | OAI can summarize if asked. | Refresh manifest, source digests, redaction. | `S`; fork exemplar | `thread_memory_refresh@1` tests. |
-| D12 | Memory/context/summary separation | Memory, context pack, and compaction summary are distinct. | OAI agnostic. | Separate schema/storage/rendering paths. | `B-P/S` | Store/projection schema split. |
+| D10 | Durable ODEU thread memory | Long-lived memory separate from recent context and compaction summary. | OAI none. | `durable_thread_memory@1`, refresh/governance lifecycle. | `B-P/B-F`; fork built thread memory | Operator review/materialization UI. |
+| D11 | Memory refresh operation | Refresh durable memory from source refs. | OAI can summarize if asked. | Refresh manifest, source digests, redaction. | `B-P/B-F`; fork exemplar | Memory materialization UI and rollback witness. |
+| D12 | Memory/context/summary separation | Memory, context pack, and compaction summary are distinct. | OAI agnostic. | Separate schema/storage/rendering paths. | `B-F` | Context packet preview. |
 | D13 | Fail-closed raw-window trimming | Required artifacts are never silently dropped. | Context-window limits only. | Trim policy with required artifact classes. | `S`; fork exemplar | `raw_window_trim_policy@1`. |
-| D14 | Context omission ledger | Every omitted span has source/count/reason. | None. | Omission markers in packs/previews. | `B-F/S` | Omission parity tests. |
+| D14 | Context omission ledger | Every omitted span has source/count/reason. | None. | Omission markers in packs/previews. | `B-F` | Omission workbench UI. |
 | D15 | Governance prompt layering | Ordered harness/system/developer/task/runtime/memory/tool layers. | OAI accepts instructions/input items. | `governance_packet@1`, `compiled_prompt_layers@1`, role mapping digest. | `S`; fork built prompt layering | Status artifact and manifest refs. |
 | D16 | Governance shadow mode | Diagnostics without blocking. | None. | Shadow compiler and renderer-safe status. | `S`; fork exemplar | Diagnostic projection. |
-| D17 | Governance enforce mode | Compiler may block illegal transitions. | None. | Transition legality gates and blockers. | `NO/S` for direct default | Keep hidden until workflow value is proved. |
-| D18 | Governance transition legality | Explicit transition graph for text/tool/patch/command/compact/fork. | None. | `workflow_transition_graph@1`. | `S/B-P` | Connect to tool state machines. |
+| D17 | Governance enforce mode | Compiler may block illegal transitions. | None. | Transition legality gates and blockers. | `B-P/B-F` narrow direct preflight | Operator target picker before broader enforce mode. |
+| D18 | Governance transition legality | Explicit transition graph for text/tool/patch/command/compact/fork. | None. | `workflow_transition_graph@1`. | `B-F` | Context/route preview integration. |
 | D19 | Governance diagnostics | Explain missing packet, compile fallback, illegal transition. | None. | Renderer-safe diagnostics. | `S`; fork exemplar | Advanced drawer/status only. |
-| D20 | Semantic broker active packet | Resolve user/task semantics to schema/tool/context route. | OAI can follow schema/tool descriptions, not broker law. | `semantic_broker_packet@1`, registry snapshot, candidate/adjudication evidence. | `S/B-P`; fork hidden/built partial | Define runtime contract before UI. |
-| D21 | Semantic broker fallback | Ask/degrade safely when uncertain. | None. | Fallback transition law. | `S` | Ambiguity tests. |
-| D22 | Maintenance manifests | Compact/refresh/prune manifest with source digest, route, engine, outcome. | Provider compact may return items. | `context_maintenance_manifest@1`. | `S` | First maintenance bundle. |
-| D23 | Maintenance UI posture | Status lane, not chat transcript. | None. | Requested/running/completed/failed/unsupported status. | `S` | UX spec. |
+| D20 | Semantic broker active packet | Resolve user/task semantics to schema/tool/context route. | OAI can follow schema/tool descriptions, not broker law. | `semantic_broker_packet@1`, registry snapshot, candidate/adjudication evidence. | `B-F`; fork hidden/built partial | Operator target picker. |
+| D21 | Semantic broker fallback | Ask/degrade safely when uncertain. | None. | Fallback transition law. | `B-P/B-F` | Clarification resolution loop. |
+| D22 | Maintenance manifests | Compact/refresh/prune manifest with source digest, route, engine, outcome. | Provider compact may return items. | `context_maintenance_manifest@1`. | `B-P/B-F` | Context packet preview and materialization UI. |
+| D23 | Maintenance UI posture | Status lane, not chat transcript. | None. | Requested/running/completed/failed/unsupported status. | `B-F` | Memory/context workbench UI. |
 
 Key distinction:
 
@@ -311,16 +312,16 @@ This section is canonical for agent/sub-agent depth. The custom fork provides ex
 
 | # | Capability | Ideal | OAI/server side | Harness provision | Direct status | Next proof |
 |---:|---|---|---|---|---:|---|
-| H1 | Agent graph | Parent/child agent relationship graph. | None or app-server events. | Agent graph store and projections. | `S/B-P` | Read-only graph projection. |
-| H2 | Agent progress registry | Live progress/attention witness for child agents. | None directly. | Progress reducer, seq, phase, active work, blockers. | `S`; fork built E-witness | Diagnostic registry first. |
-| H3 | E-witness progress object | Renderer/model-safe progress witness. | Tool-call substrate only if exposed. | `agent_progress_witness@1`. | `S`; fork built | Display-only rows. |
-| H4 | Inspect agent progress tool | Model-visible inspection of child progress. | OAI tool-call primitive only. | Tool definition + local registry lookup. | `S`; fork built | Diagnostic only before choreography. |
-| H5 | Wait agent progress tool | Model-visible wait/synchronization tool. | OAI tool-call primitive only. | Wait state, timeout, cancel, no-deadlock law. | `S`; fork built | Requires recovery/concurrency law. |
+| H1 | Agent graph | Parent/child agent relationship graph. | None or app-server events. | Agent graph store and projections. | `B-F` | Operator-facing WorkThread deck integration. |
+| H2 | Agent progress registry | Live progress/attention witness for child agents. | None directly. | Progress reducer, seq, phase, active work, blockers. | `B-F`; fork built E-witness | Live worker status hydration. |
+| H3 | E-witness progress object | Renderer/model-safe progress witness. | Tool-call substrate only if exposed. | `agent_progress_witness@1`. | `B-F`; fork built | Context preview inclusion rules. |
+| H4 | Inspect agent progress tool | Model-visible inspection of child progress. | OAI tool-call primitive only. | Tool definition + local registry lookup. | `B-P`; fork built | Keep read-only until choreography law exists. |
+| H5 | Wait agent progress tool | Model-visible wait/synchronization tool. | OAI tool-call primitive only. | Wait state, timeout, cancel, no-deadlock law. | `B-P`; fork built | Requires no-deadlock synchronization law. |
 | H6 | Thread-spawn containment | Spawned child tool surface is bounded. | Tool substrate only. | Tool-surface policy and permissions inheritance. | `S`; fork built | Direct/app-server capability profile. |
 | H7 | Collab tool surface | spawn/send/followup/wait/close/list tools. | Tool substrate only. | Multi-agent orchestration and graph store. | `S` | Standalone should show evidence before choreography. |
-| H8 | Sub-agent transcript projection | Child transcript separate from main transcript. | None. | Transcript hydration and tabs/panels. | `S/B-P` docs | UI after graph/registry. |
-| H9 | Agent activity attention model | Badges/unread/error/attention. | None. | Activity projection and stale guards. | `S` | Useful after registry. |
-| H10 | Wait deadlock prevention | Primary lane cannot wait forever. | None. | Wait caps, cancellation, terminal states. | `S` | Required before wait promotion. |
+| H8 | Sub-agent transcript projection | Child transcript separate from main transcript. | None. | Transcript hydration and tabs/panels. | `B-F` docs + projection | Manual smoke and live hydration proof. |
+| H9 | Agent activity attention model | Badges/unread/error/attention. | None. | Activity projection and stale guards. | `B-F` | WorkThread control deck integration. |
+| H10 | Wait deadlock prevention | Primary lane cannot wait forever. | None. | Wait caps, cancellation, terminal states. | `B-P` diagnostics | Required before model-visible wait promotion. |
 
 ### I. Evidence, Profile, Testing, Safety
 
@@ -332,7 +333,7 @@ This section is canonical for agent/sub-agent depth. The custom fork provides ex
 | I4 | Diagnostic non-promotion | Diagnostics do not unlock controls. | None. | Run modes/report states. | `B-R` | Keep regression. |
 | I5 | Raw-exposure scanning | Scan reports/artifacts/renderer/storage. | None. | Scanner and minimal safe failure report. | `B-R/B-F` | Extend to tools. |
 | I6 | Headless text regression | Real appserver/direct text runs. | OAI/app-server/direct. | Scripts and reports. | `B-R` | Keep green. |
-| I7 | Headless implementation-lane regression | Real provider read/patch/command loops. | OAI tool calls + local actions. | Disposable workspace, scripted tasks. | `S` | Immediate next. |
+| I7 | Headless implementation-lane regression | Real provider read/patch/command loops. | OAI tool calls + local actions. | Disposable workspace, scripted tasks. | `B-F` promotion-report substrate | Scoped passing live runs before `B-R`. |
 | I8 | Fixture suite | Fast deterministic fixtures. | None. | Fake events/transports. | `B-R/B-F` | Expand for command/patch. |
 | I9 | Recovery/replay suite | Crash/reload between every state. | None. | State rehydration and no auto-retry. | `S/B-P` | After real loops. |
 | I10 | Usage ledger | Neutral runtime usage evidence. | Usage where exposed. | Ledger rows and privacy policy. | `S/B-P` | Feed status later. |
@@ -355,8 +356,8 @@ This section is canonical for agent/sub-agent depth. The custom fork provides ex
 | J7 | Network-risk policy | Truthful backend capability and warnings. | None. | Command backend capability truth. | `S` | Command implementation. |
 | J8 | Model/evidence status | Project-specific readiness. | Model/account support. | Status resolver. | `B-F` | UI status. |
 | J9 | Fork capability profile | Detect fork methods/keys/artifacts. | None. | Schema/config/probe checks, not path substring. | `S/B-P` | Capability rows. |
-| J10 | Governance mode settings | off/shadow/enforce if supported. | None. | Advanced provider/status drawer. | `S`; fork exemplar | Status first. |
-| J11 | Compaction/memory settings | Engine/model/reasoning/bridge variants. | Provider compact if used. | Advanced config/status. | `S`; fork exemplar | Diagnostics only first. |
+| J10 | Governance mode settings | off/shadow/enforce if supported. | None. | Advanced provider/status drawer. | `B-P/B-F`; fork exemplar | Operator target picker and scoped enforce UX. |
+| J11 | Compaction/memory settings | Engine/model/reasoning/bridge variants. | Provider compact if used. | Advanced config/status. | `B-P/B-F`; fork exemplar | Memory/context workbench UI. |
 | J12 | Maintenance hygiene | Docs/migration/regression readiness. | None. | Checklists and automated regression. | `B-P/S` | Mainline readiness. |
 
 ## 5. Fork Exemplar Crosswalk
@@ -548,7 +549,7 @@ Bundle rules:
 - Do not split governance packet, transition legality, semantic broker packet, and fallback/ask-human behavior at first. They are one routing/governance diagnostics family.
 - Do not mix implementation-lane tool authority, context maintenance/memory, and sub-agent observability in one PR. They touch different authority surfaces.
 
-Recommended PR order after Wave 4:
+Recommended PR order after Wave 5:
 
 ```text
 Done:
@@ -556,66 +557,62 @@ Done:
   2. Recovery and replay safety
   3. Iterative implementation repair loop
   4. Workspace mutation truth and policy substrate
-
-Wave 5:
   5. Live implementation-lane promotion report
   6. Implementation-lane UI and operation history readiness
   7. Context maintenance, memory, frontier baton execution gates
   8. Governance and semantic broker enforcement gates
   9. Sub-agent inspect/wait containment
 
+Wave 6:
+  10. WorkThread control deck and current pointer UX
+  11. Clarification and target picker UX
+  12. Context packet preview and omission workbench
+  13. Memory review materialization UI
+  14. Module context contribution intake
+  15. Direct manual smoke gate and regression checklist
+
 Later:
-  10. Usage/quota/model readiness hardening
-  11. Mainline merge-behind-flag checklist and broad Electron proof
+  16. Usage/quota/model readiness hardening
+  17. Mainline merge-behind-flag checklist and broad Electron proof
+  18. Recursive worker choreography only after no-deadlock law exists
 ```
 
-The only acceptable Wave 5 swap is moving direct UI readiness before live
-promotion if manual app testing becomes blocked. Context maintenance,
-governance, and sub-agent work should not move ahead of live promotion and UI
-readiness because they need the same visible operation-state substrate.
+Wave 6 should not start by expanding authority. It should productize the
+operator control loop around `WorkThread`, target clarification, context packet
+visibility, memory review, and module context intake. Those surfaces make later
+authority-bearing work inspectable instead of forcing the operator to read raw
+ledgers.
 
 ## 9. Immediate Next Spec
 
-The next spec should target Wave 5 PR 28:
+The next spec should target Wave 6 PR 33:
 
 ```text
-Live implementation-lane promotion report for provider-originated read,
-patch, command, continuation, and terminal assistant cycles.
+WorkThread control deck and current pointer UX.
 ```
 
-It should not add new authority. It should prove:
+It should not add provider/tool authority. It should prove:
 
-1. the live proof runner emits a stable promotion report shape;
-2. provider-originated tool calls are distinguished from fixture/local tool
-   calls;
-3. non-emission of a provider tool call produces a typed non-promotion result,
-   not a failed local proof;
-4. disposable workspace identity is explicit;
-5. local authority transitions remain mandatory for read, patch, and command;
-6. continuation and terminal assistant evidence is classified;
-7. no app-server fallback, right-pane mutation, raw exposure, non-target
-   workspace mutation, auto-approval, or automatic replay occurs;
-8. selected matrix rows can cite the report as live evidence only when the
-   report has a passing promotion verdict.
+1. WorkThread is visible as the active work-world identity;
+2. current pointers are renderer-safe and cite source evidence;
+3. stale/mismatch states are visible for project, branch, workspace, provider
+   lane, context pack, route, and authority transition;
+4. selecting a WorkThread records a bounded operator selection artifact;
+5. selection alone does not start a provider turn, run tools, mutate workspace,
+   spawn workers, or replace app-server behavior;
+6. downstream direct routes can cite the selected WorkThread pointer;
+7. non-target preservation constraints remain visible;
+8. ambiguity still routes to clarification rather than silent selection.
 
 Current implementation note:
 
 ```text
-direct:implementation-proof now emits
-direct_implementation_lane_live_promotion_report@1 as both embedded report
-state and sidecar JSON/Markdown artifacts.
+Wave 5 completed the first live-promotion, direct-readiness,
+context-maintenance execution, governance enforcement, and sub-agent
+inspect/wait containment artifacts. Those are still mostly gated or read-only.
+Wave 6 should make them operator-operable as one coherent WorkThread control
+loop before expanding authority.
 ```
-
-The implemented artifact is intentionally conservative:
-
-- preflight mode writes `promotionStatus = not_evaluated`;
-- fixture/local proof does not count as live promotion;
-- matrix rows remain blocked unless all required live scenarios promote;
-- non-emission, local-authority failure, continuation failure, and missing
-  terminal assistant evidence are typed non-promotion outcomes;
-- the report boundary explicitly denies app-server fallback, right-pane
-  mutation, handoff mutation, auto-approval, automatic replay, and automatic
-  revert.
 
 It should explicitly not mean:
 
@@ -633,11 +630,12 @@ app-server can be removed
 
 v0.2 keeps the deeper v0.1 coverage while assigning a single owner row to each capability.
 
-The direct branch is now real-green for text and fixture/local-green for the
-implementation lane. The next confidence gap is live promotion plus operator
-usability, not another round of fixture-only modeling. Fork-derived depth should
-remain visible in the roadmap, but it should enter the direct shell through
-explicit row-owned specs:
+The direct branch is now real-green for text, fixture/local-green for the
+implementation lane, and productized for several read-only or guarded bridge
+surfaces. The next confidence gap is operator control of the work-world
+identity and information packet, not another round of hidden artifact modeling.
+Fork-derived depth should remain visible in the roadmap, but it should enter the
+direct shell through explicit row-owned specs:
 
 ```text
 context route matrix
@@ -649,9 +647,9 @@ E-witness progress registry
 thread-spawn containment
 ```
 
-Those do not change the immediate Wave 5 order. They prevent the roadmap from
+Those do not change the immediate Wave 6 order. They prevent the roadmap from
 collapsing long-context, governance, routing, and sub-agent observability into
-vague buckets once the implementation lane is promoted under live evidence.
+vague buckets once WorkThread control becomes operator-facing.
 
 ### Wave 5 UI readiness update
 

@@ -987,7 +987,7 @@ Worker start V0 and role handoff packet exist.
 
 ## Wave 4: Real-Provider Implementation Lane And Side-Effect Safety
 
-Status: in review.
+Status: merged.
 
 Goal:
 
@@ -1025,7 +1025,7 @@ Standing Wave 4 constraints:
 
 ### PR 22: Direct Read Tool Loop V0
 
-Status: in review.
+Status: merged.
 
 Purpose:
 
@@ -1096,7 +1096,7 @@ runner and should be used before raising matrix rows from B-F to B-R.
 
 ### PR 23: Direct Patch Tool Loop V0
 
-Status: in review.
+Status: merged.
 
 Purpose:
 
@@ -1165,7 +1165,7 @@ and should be used before raising matrix rows from B-F to B-R.
 
 ### PR 24: Direct Command Tool Loop V0
 
-Status: in review.
+Status: merged.
 
 Purpose:
 
@@ -1466,9 +1466,9 @@ Still intentionally not authority:
 
 ## Wave 5: Live Promotion And Operator Usability Gate
 
-Status: in review.
+Status: merged.
 
-Branch: `codex/direct-live-promotion-report-v0`.
+Branches: PR 28 through PR 32 feature branches.
 
 Review posture after Wave 4:
 
@@ -1546,7 +1546,7 @@ non-promotion reason without weakening fixture proof.
 
 ### PR 29: Direct Implementation-Lane UI Readiness
 
-Status: in review.
+Status: merged.
 
 Branch: `codex/direct-implementation-ui-readiness-v0`.
 
@@ -1596,7 +1596,7 @@ executing, recovering, blocked, or terminal without reading raw ledgers.
 
 ### PR 30: Context Maintenance Execution Gate V0
 
-Status: implemented in PR 30.
+Status: merged.
 
 Purpose:
 
@@ -1637,7 +1637,7 @@ diagnostics.
 
 ### PR 31: Governance Enforcement And Clarification V0
 
-Status: implemented in PR 31.
+Status: merged.
 
 Purpose:
 
@@ -1678,7 +1678,7 @@ thread is unresolved or authority evidence is missing.
 
 ### PR 32: Sub-Agent Inspect/Wait Containment V0
 
-Status: implemented in PR 32.
+Status: merged.
 
 Purpose:
 
@@ -1734,6 +1734,231 @@ Still intentionally not authority:
   recursive worker orchestration
   provider compaction execution
   broad browser/network/MCP tool execution
+  direct path replacement of the vanilla app-server lane
+```
+
+## Wave 6: Operator Control Loop And WorkThread Productization
+
+Status: planned.
+
+Review posture after Wave 5:
+
+```text
+The direct branch now has a lawful implementation-lane substrate, visible
+readiness state, guarded context-maintenance transitions, narrow governance
+preflight enforcement, and contained sub-agent inspect/wait projections.
+
+The remaining confidence gap is no longer artifact shape. It is operator
+control: selecting the right WorkThread, seeing the exact context/authority
+packet before a turn, resolving ambiguity, and advancing bounded work without
+collapsing into autonomous orchestration.
+```
+
+Standing Wave 6 constraints:
+
+- Keep app-server as the retained vanilla lane.
+- Do not enable recursive worker spawning or autonomous scheduling.
+- Do not enable provider compaction, module execution, broad browser/network
+  tools, or automatic replay/revert.
+- Every operator action must cite WorkThread identity, authority posture, and
+  source evidence.
+- Clarification resolves routing; it does not perform object-level work.
+- Context/memory/module surfaces are projections and gated transitions, not
+  hidden policy.
+
+### PR 33: WorkThread Control Deck And Current Pointer UX
+
+Status: planned.
+
+Purpose:
+
+```text
+Make WorkThread the visible control-plane unit for direct work, not repo,
+folder, provider session, or chat recency.
+```
+
+Scope:
+
+- Add a WorkThread control deck projection over active, stale, blocked,
+  recoverable, and archived work threads.
+- Expose current pointers: active WorkThread, active direct session, selected
+  provider lane, last context pack, last authority transition, and last
+  controlled route.
+- Add an explicit operator selection transition for setting the active
+  WorkThread pointer.
+- Add stale/mismatch diagnostics when provider thread, project, branch, or
+  workspace identity no longer match the selected work thread.
+- Keep selection from starting a provider turn or mutating workspace state.
+
+Promotion criterion:
+
+```text
+The operator can select and inspect the active work-world identity before any
+direct provider/tool transition is allowed to proceed.
+```
+
+### PR 34: Clarification And Target Picker UX
+
+Status: planned.
+
+Purpose:
+
+```text
+Turn governance clarification packets into an operator-facing resolution loop
+instead of a blocked diagnostic artifact.
+```
+
+Scope:
+
+- Render `direct_governance_clarification_packet@1` and
+  `operator_broker_resolution@1` candidates in a target picker.
+- Let the operator choose a candidate, reject all candidates, or keep the turn
+  blocked.
+- Persist the clarification answer as routing evidence for the next controlled
+  route.
+- Preserve non-target workspaces and threads in the resulting route packet.
+- Keep the picker from executing provider calls, tools, worker starts, or
+  object-level audit.
+
+Promotion criterion:
+
+```text
+Ambiguous user intent can be resolved by an explicit operator routing artifact,
+not chat recency or silent default selection.
+```
+
+### PR 35: Context Packet Preview And Omission Workbench
+
+Status: planned.
+
+Purpose:
+
+```text
+Make the next direct turn's information bridge visible before it becomes model
+context.
+```
+
+Scope:
+
+- Add a renderer-safe context packet preview over recent dialogue, durable
+  memory, frontier baton, attachments, module context contributions, tool
+  result refs, and omitted spans.
+- Show source classes, token/size pressure, retention law, stale refs, and
+  omission witnesses.
+- Add a "blocked from request" posture when required source artifacts are
+  missing, stale, or raw-exposure unsafe.
+- Keep preview editing disabled except for explicit future transition packets.
+
+Promotion criterion:
+
+```text
+The operator can inspect what information will be sent, what is omitted, and
+why, before a direct request is assembled.
+```
+
+### PR 36: Memory Review Materialization UI V0
+
+Status: planned.
+
+Purpose:
+
+```text
+Connect memory review/refresh/reset proposals to visible operator actions
+without making memory hidden policy.
+```
+
+Scope:
+
+- Render memory review packets, refresh proposals, stale/conflict rows, reset
+  policy, and context-loss links in the settings/control plane.
+- Let the operator accept or reject local memory refresh materialization through
+  the existing guarded execution gate.
+- Show post-transition witnesses, rollback posture, and omission impact.
+- Keep provider memory claims, provider compaction, and automatic refresh
+  disabled.
+
+Promotion criterion:
+
+```text
+Durable memory can be reviewed and locally materialized only through explicit
+operator-gated evidence transitions.
+```
+
+### PR 37: Module Context Contribution Intake V0
+
+Status: planned.
+
+Purpose:
+
+```text
+Let skills/hooks/apps contribute context or imported evidence through the bridge
+without granting execution authority.
+```
+
+Scope:
+
+- Add a module contribution intake view for context-only skill output and
+  connector/imported evidence rows.
+- Require module source, scope, raw-exposure scan, and WorkThread binding.
+- Let accepted context contributions appear in the context packet preview from
+  PR 35.
+- Keep hook execution, connector mutations, auto-invocation, and workspace
+  writes disabled.
+
+Promotion criterion:
+
+```text
+Bridge modules can add bounded information to a WorkThread context packet
+without becoming tools or hidden authority.
+```
+
+### PR 38: Direct Manual Smoke Gate And Regression Checklist
+
+Status: planned.
+
+Purpose:
+
+```text
+Package the merged direct path into a repeatable manual/electron smoke gate for
+operator usability before enabling deeper authority.
+```
+
+Scope:
+
+- Add a direct manual-smoke checklist artifact covering lane selection,
+  WorkThread selection, context preview, direct text turn, read/patch/command
+  readiness, recovery posture, sub-agent inspect, and app-server fallback.
+- Add an optional electron smoke runner that validates projection availability
+  without live provider calls.
+- Record blockers as readiness evidence, not test silence.
+- Keep the checklist from promoting direct as production or replacing
+  app-server.
+
+Promotion criterion:
+
+```text
+The direct branch has a stable operator test path that can be run before each
+new authority-bearing wave.
+```
+
+Wave 6 expected result:
+
+```text
+Implemented:
+  WorkThread control deck and current pointers
+  operator clarification / target picker
+  context packet preview with omission workbench
+  memory review materialization UI
+  module context/evidence intake
+  direct manual smoke gate
+
+Still intentionally not authority:
+  autonomous scheduler
+  recursive worker orchestration
+  broad module/tool execution
+  provider compaction execution
+  automatic memory mutation
+  automatic replay/revert
   direct path replacement of the vanilla app-server lane
 ```
 

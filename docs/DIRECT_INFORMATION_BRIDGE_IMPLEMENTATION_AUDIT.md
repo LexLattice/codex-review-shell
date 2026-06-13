@@ -41,6 +41,25 @@ direct-native bridge capability
 The implementation audit must distinguish these from missing or partial direct
 capability. "Inherited" is not a defect when it is explicit and law-compatible.
 
+## Current Executable Audit Snapshot
+
+Last reviewed after Wave 5 / PR 32 on `2026-06-13`.
+
+```text
+registry rows: 32
+valid: yes
+missing source files: 0
+implemented rows: 10
+partial rows: 20
+inherited rows: 2
+```
+
+The executable source of this snapshot is:
+
+```sh
+npm run direct:information-bridge-audit
+```
+
 ## Wave 1 Ledger
 
 This implementation wave turned the abstract bridge constitution into concrete,
@@ -116,9 +135,13 @@ governance/observability:
   shadow governance packets
   semantic broker diagnostics
   sub-agent observability
+  sub-agent inspect/wait containment
   usage/quota/model readiness
   bridge module classification
   continuity status projection
+  direct implementation-lane UI readiness
+  context maintenance execution gate
+  live promotion report
 ```
 
 The first version of the key abstraction now exists as a shadow substrate:
@@ -158,18 +181,28 @@ The executable registry currently tracks these bridge rows:
 | `ic4.read-file-authority` | authority gate | implemented | keep |
 | `ic4.patch-authority` | authority gate | implemented | keep |
 | `ic4.command-authority` | authority gate | implemented | keep |
+| `ic4.workspace-mutation-truth` | canonical evidence | implemented | keep |
 | `ic5.recovery-and-replay-safety` | governance/routing | implemented | keep |
 | `ic6.semantic-governance-broker` | governance/routing | partial | keep shadow |
+| `ic6.direct-role-handoff-packet` | governance/routing | partial | keep shadow |
+| `ic6.direct-worker-start-v0` | governance/routing | partial | keep guarded |
+| `ic6.direct-meta-orchestrator-shadow` | governance/routing | partial | keep shadow |
 | `ic7.sub-agent-observability` | observability surface | partial | keep and align |
+| `ic7.sub-agent-inspect-wait-containment` | observability surface | partial | keep guarded |
 | `ic8.usage-quota-readiness` | observability surface | partial | keep and align |
 | `ic9.direct-runtime-selection` | governance/routing | partial | keep and simplify UI |
 | `ic10.retained-appserver-path` | observability surface | inherited | retain when aligned |
 | `ic11.inherited-shell-ux` | observability surface | inherited | retain when aligned |
 | `ic12.work-thread-registry` | governance/routing | partial | keep shadow |
+| `ic12.governance-enforcement-clarification` | governance/routing | partial | keep guarded |
 | `ic13.bridge-information-registry` | governance/routing | partial | bootstrap now |
 | `ic14.skills-hooks-apps` | governance/routing | partial | keep shadow |
 | `ic15.direct-settings-surface` | observability surface | partial | keep shadow |
 | `ic16.agent-class-spec-registry` | governance/routing | partial | keep shadow |
+| `ic17.direct-attachment-capability` | authority gate | partial | keep and align |
+| `ic18.direct-live-promotion-report` | canonical evidence | partial | keep gated |
+| `ic19.direct-implementation-ui-readiness` | observability surface | partial | keep read-only |
+| `ic20.context-maintenance-execution-gate` | memory/continuity | partial | keep guarded |
 
 ## Keep
 
@@ -191,28 +224,36 @@ Realignment needed:
 - Continue normalizing future actions under the shared `AuthorityBearingTransition` envelope.
 - Preserve the distinction between Codex thread/session identity and `WorkThread` identity as routing becomes real.
 - Keep governance/broker in shadow mode until a `WorkThread` router exists.
-- Tie sub-agent nodes to future `AgentClassSpec` and `WorkThread` scope.
+- Continue tying sub-agent nodes, inspect packets, and wait-status packets to
+  `AgentClassSpec` and `WorkThread` scope before any choreography authority.
 - Continue moving detailed direct diagnostics out of the Codex transcript lane into settings/control surfaces.
+- Productize WorkThread current pointers so the operator can see and select the
+  active work-world identity before provider/tool transitions.
+- Productize clarification packets into an operator target picker rather than
+  leaving ambiguous routing as blocked diagnostics only.
 
 ## Missing
 
 Not built yet:
 
-- Enforced `WorkThread` broker and mutation routing.
-- Work-target resolution from messy user utterance to active work-thread ontology.
+- Operator-facing WorkThread control deck and current-pointer selection.
+- Operator target picker for ambiguous work-target resolution.
 - Full direct settings workflows for editing/resetting memory, provider compaction, module execution, and enforced routing.
 - Enforced semantic broker routing.
 - Full direct-native memory/compaction/frontier workflow with live scheduler and UI controls.
 - Agent execution contracts for worker/auditor/meta-orchestrator beyond declared role specs.
+- Context packet preview / omission workbench before provider request assembly.
+- Module context/evidence intake UI.
+- Broad manual/electron smoke gate for the direct branch.
 
 ## Remaining Work Ledger
 
 The remaining direct-path work should proceed in dependency order:
 
 1. Direct settings/control surface:
-   the first display-only status projection is implemented. Remaining work is
-   full settings workflow design, live WorkThread store wiring, and any future
-   user-authorized edit/reset actions.
+   the first display-only status projections are implemented. Remaining work is
+   WorkThread current-pointer UX, context preview, and user-authorized
+   edit/reset workflows.
 
 2. Agent-class specification:
    the first role-contract registry is implemented. Remaining work is binding
@@ -220,16 +261,16 @@ The remaining direct-path work should proceed in dependency order:
    gates.
 
 3. Work-target broker:
-   convert shadow `WorkTargetResolution` into a user-visible routing gate for
-   ambiguous utterances, without allowing mutation before target resolution.
+   convert shadow/blocked clarification packets into a user-visible target
+   picker, without allowing mutation before target resolution.
 
 4. Semantic broker enforcement:
    promote governance/broker diagnostics into transition law only after the
    WorkThread router has exact evidence and stale-result guards.
 
 5. Direct-native memory workflow:
-   add explicit memory refresh/edit/reset policies, persistence, review, and UI
-   controls. Memory remains evidence, not policy.
+   connect memory refresh/edit/reset proposals to an operator-visible
+   materialization UI. Memory remains evidence, not policy.
 
 6. Direct-native compaction workflow:
    add live scheduler/manual compact controls only after provider/local
@@ -240,8 +281,14 @@ The remaining direct-path work should proceed in dependency order:
    execution only through explicit authority gates.
 
 8. Sub-agent / worker graph alignment:
-   bind sub-agent activity, worker roles, and future multi-agent orchestration to
-   `WorkThread` and `AgentClassSpec`, not only to provider thread ids.
+   keep sub-agent activity, worker roles, inspect packets, and future
+   multi-agent orchestration bound to `WorkThread` and `AgentClassSpec`, not
+   only to provider thread ids.
+
+9. Wave 6 operator control loop:
+   implement WorkThread control deck, clarification picker, context packet
+   preview, memory materialization UI, module contribution intake, and direct
+   manual smoke gate before adding broader authority.
 
 ## Inherited
 
