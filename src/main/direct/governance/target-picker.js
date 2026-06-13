@@ -21,7 +21,7 @@ function normalizeString(value, fallback = "") {
 
 function boundedString(value, maxLength = 280) {
   const text = normalizeString(value, "");
-  return text.length > maxLength ? `${text.slice(0, Math.max(0, maxLength - 1)).trim()}...` : text;
+  return text.length > maxLength ? `${text.slice(0, Math.max(0, maxLength - 3)).trim()}...` : text;
 }
 
 function arrayOrEmpty(value) {
@@ -43,6 +43,7 @@ function stableValue(value) {
         "rowDigest",
         "sourceDigest",
         "artifactDigest",
+        "clarificationAnswerDigest",
       ].includes(key)) continue;
       if (value[key] !== undefined) output[key] = stableValue(value[key]);
     }
@@ -100,12 +101,12 @@ function normalizeCandidate(input = {}, index = 0, projectId = "") {
   if (source.lifecycleState === "archived") blockerCodes.push("candidate_archived");
   if (source.lifecycleState === "stale") blockerCodes.push("candidate_stale");
   const candidate = {
-    rank: Number(source.rank || index + 1),
+    rank: Number(source.rank ?? index + 1),
     workThreadId,
     projectId: candidateProjectId,
     title: boundedString(source.title || workThreadId || `Candidate ${index + 1}`, 180),
     lifecycleState: normalizeString(source.lifecycleState, "unknown"),
-    score: Number(source.score || 0),
+    score: Number(source.score ?? 0),
     confidenceLabel: normalizeString(source.confidenceLabel, "unknown"),
     reasons: arrayOrEmpty(source.reasons).map((item) => boundedString(item, 120)).filter(Boolean).slice(0, 10),
     blockerCodes: [...new Set(blockerCodes)],
@@ -119,16 +120,52 @@ function normalizeCandidate(input = {}, index = 0, projectId = "") {
   return candidate;
 }
 
+function candidateWithDigest(candidate = {}) {
+  const output = { ...candidate };
+  output.selectable = arrayOrEmpty(output.blockerCodes).length === 0;
+  output.rowDigest = digestFor("direct-clarification-target-candidate@1", output);
+  return output;
+}
+
+function mergeCandidate(existing = {}, candidate = {}) {
+  const blockerCodes = [...new Set([
+    ...arrayOrEmpty(existing.blockerCodes),
+    ...arrayOrEmpty(candidate.blockerCodes),
+  ].map((item) => normalizeString(item, "")).filter(Boolean))];
+  const reasons = [...new Set([
+    ...arrayOrEmpty(existing.reasons),
+    ...arrayOrEmpty(candidate.reasons),
+  ].map((item) => boundedString(item, 120)).filter(Boolean))].slice(0, 10);
+  const existingScore = Number.isFinite(Number(existing.score)) ? Number(existing.score) : 0;
+  const candidateScore = Number.isFinite(Number(candidate.score)) ? Number(candidate.score) : 0;
+  const existingRank = Number.isFinite(Number(existing.rank)) ? Number(existing.rank) : Number.MAX_SAFE_INTEGER;
+  const candidateRank = Number.isFinite(Number(candidate.rank)) ? Number(candidate.rank) : Number.MAX_SAFE_INTEGER;
+  const higherScoreCandidate = candidateScore > existingScore ? candidate : existing;
+  return candidateWithDigest({
+    ...existing,
+    title: existing.title || candidate.title,
+    projectId: existing.projectId || candidate.projectId,
+    lifecycleState: existing.lifecycleState !== "unknown" ? existing.lifecycleState : candidate.lifecycleState,
+    rank: Math.min(existingRank, candidateRank),
+    score: Math.max(existingScore, candidateScore),
+    confidenceLabel: normalizeString(higherScoreCandidate.confidenceLabel, existing.confidenceLabel || candidate.confidenceLabel || "unknown"),
+    reasons,
+    blockerCodes,
+    digest: existing.digest || candidate.digest,
+  });
+}
+
 function dedupeCandidates(candidates = []) {
-  const seen = new Set();
-  const rows = [];
+  const rowsByKey = new Map();
   for (const candidate of candidates) {
     const key = candidate.workThreadId || candidate.rowDigest;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    rows.push(candidate);
+    if (rowsByKey.has(key)) {
+      rowsByKey.set(key, mergeCandidate(rowsByKey.get(key), candidate));
+    } else {
+      rowsByKey.set(key, candidateWithDigest(candidate));
+    }
   }
-  return rows;
+  return [...rowsByKey.values()];
 }
 
 function buildClarificationTargetPicker(input = {}, options = {}) {

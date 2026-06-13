@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { strict as assert } from "node:assert";
+import crypto from "node:crypto";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -29,6 +30,30 @@ const {
 
 const nowMs = Date.parse("2026-06-14T09:00:00.000Z");
 const projectId = "codex-review-shell-direct";
+
+function stableValue(value) {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (value && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
+    const output = {};
+    for (const key of Object.keys(value).sort()) {
+      if ([
+        "pickerDigest",
+        "answerDigest",
+        "rowDigest",
+        "sourceDigest",
+        "artifactDigest",
+        "clarificationAnswerDigest",
+      ].includes(key)) continue;
+      if (value[key] !== undefined) output[key] = stableValue(value[key]);
+    }
+    return output;
+  }
+  return value;
+}
+
+function digestFor(domain, value) {
+  return `sha256:${crypto.createHash("sha256").update(`${domain}\0${JSON.stringify(stableValue(value))}`).digest("hex")}`;
+}
 
 const workThreads = [
   buildWorkThread({
@@ -94,6 +119,7 @@ assert.equal(picker.actions.providerCallAuthorityGranted, false);
 assert.equal(picker.downstreamRoutePacketConstraints.providerCallBlocked, true);
 assert(picker.blockerCodes.includes("operator_broker_clarification_required"));
 assert.equal(picker.candidates.find((candidate) => candidate.workThreadId === "work_thread_stale").selectable, false);
+assert(picker.candidates.find((candidate) => candidate.workThreadId === "work_thread_stale").blockerCodes.includes("candidate_stale"));
 
 const selectedAnswer = buildClarificationTargetAnswer({
   targetPicker: picker,
@@ -106,6 +132,7 @@ assert.equal(selectedAnswer.selectedWorkThreadId, "work_thread_bridge");
 assert.equal(selectedAnswer.routingEvidenceReady, true);
 assert.equal(selectedAnswer.authority.providerCallAuthorityGranted, false);
 assert.equal(selectedAnswer.downstreamRoutePacketConstraints.providerCallBlocked, true);
+assert.equal(digestFor("direct-clarification-target-answer@1", selectedAnswer), selectedAnswer.answerDigest);
 
 const staleAnswer = buildClarificationTargetAnswer({
   targetPicker: picker,
