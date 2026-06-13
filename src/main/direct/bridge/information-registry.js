@@ -173,7 +173,7 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     role: "authority_gate",
     implementationState: "implemented",
     directPathPosture: "keep",
-    sourceFiles: ["src/main/direct/tools/command-execution-authority.js", "src/main/direct/workspace/mutation-truth.js", "src/main/direct/bridge/work-thread-alignment.js"],
+    sourceFiles: ["src/main/direct/tools/command-execution-authority.js", "src/main/direct/workspace/mutation-truth.js", "src/main/direct/bridge/work-thread-alignment.js", "scripts/direct-command-tool-loop-regression.mjs"],
     ontology: ontologyShape(["command_execution_plan", "command_execution_result", "workspace_effect_summary"], "workspace", {
       identityFields: ["projectId", "threadId", "turnId", "obligationId", "commandPlanId", "resultId"],
       schema: "direct_command_execution_plan@1",
