@@ -3838,6 +3838,7 @@ class DirectLiveTextController {
     }
     const parentResponseId = parentResponseIdForToolStep(turn, currentObligation);
     const parentResponseSource = parentResponseSourceForToolStep(currentObligation);
+    const stepOrdinal = Number(currentObligation.stepOrdinal || 1) || 1;
     let continuationRequest = null;
     let continuationContext = null;
     if (this.directThreadStore && typeof this.directThreadStore.buildAndPersistContextForToolContinuation === "function") {
@@ -3884,7 +3885,12 @@ class DirectLiveTextController {
         providerCallType: normalizeString(continuationRequest.toolResult?.providerCallType, ""),
         providerOutputType: outputType,
         continuationTransportMode: "fresh_context",
-        requestShapeClass: "direct_command_execution_continuation@1",
+        requestShapeClass: stepOrdinal > 1
+          ? "direct_command_execution_loop_continuation@1"
+          : "direct_command_execution_continuation@1",
+        toolLoopId: normalizeString(continuationRequest.toolLoop?.toolLoopId, ""),
+        stepId: normalizeString(continuationRequest.toolLoop?.stepId, ""),
+        stepOrdinal,
         commandPlanId: normalizeString(currentObligation.commandPlan?.commandPlanId, ""),
         commandResultId: normalizeString(executed.result?.resultId, ""),
       };
@@ -3903,7 +3909,7 @@ class DirectLiveTextController {
         endpointClass: "chatgpt-codex-responses",
         endpointHash: this.endpoint ? sha256(this.endpoint) : "",
         modelEvidenceRef: normalizeString(this.statusForProject(project).evidenceId, ""),
-        requestShapeEvidenceRef: "direct_command_execution_continuation@1",
+        requestShapeEvidenceRef: continuationShape.requestShapeClass,
         endpointEvidenceRef: this.endpoint ? sha256(this.endpoint) : "",
         ...directWorkThreadContextCarrier(options),
       }, {

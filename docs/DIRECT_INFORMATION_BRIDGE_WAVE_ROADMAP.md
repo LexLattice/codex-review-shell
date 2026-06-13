@@ -1165,7 +1165,7 @@ and should be used before raising matrix rows from B-F to B-R.
 
 ### PR 24: Direct Command Tool Loop V0
 
-Status: planned.
+Status: in review.
 
 Purpose:
 
@@ -1184,9 +1184,23 @@ Scope:
 - Emit command started/completed/failed evidence rows with exit status,
   duration, stdout/stderr truncation posture, and workspace-effect uncertainty.
 - Continue the provider turn with command-result evidence.
-- Add disposable-workspace real-provider smoke coverage for:
+- Add disposable-workspace fixture coverage for:
   safe read-only command, failing command, timeout/degraded command, blocked
   command, and continuation from command output.
+
+Implemented in this slice:
+
+- `direct_command_tool_loop_regression_report@1`.
+- End-to-end local provider-loop proof for provider `run_command` intent:
+  obligation detection, package-script evidence read, command plan, approval,
+  shell-false backend execution, stdout/stderr capture, workspace-effect scan,
+  provider-safe result envelope, continuation context pack, and request
+  manifest.
+- Fixture coverage for safe exit-zero command, nonzero command, workspace
+  mutation detection, timeout/degraded command, denied executable, denied
+  package-script body, unsafe cwd, and command continuation.
+- Explicit command continuation `toolLoop` metadata, with continuation shape
+  fields carried into context/request manifest construction.
 
 Non-goals:
 
@@ -1209,6 +1223,14 @@ Promotion criteria:
 One real-provider direct turn can request a bounded command, receive governed
 output, continue from the result, and preserve command authority/evidence
 without renderer-side execution.
+```
+
+Current posture:
+
+```text
+Fixture/local proof is implemented in this PR.
+Live-provider promotion remains opt-in through the implementation-proof runner
+and should be used before raising matrix rows from B-F to B-R.
 ```
 
 ### PR 25: Direct Tool Continuation And Iterative Repair Loop V0
