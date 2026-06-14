@@ -59,7 +59,7 @@ const MAINLINE_READINESS = new Set(["ready_behind_flag", "blocked", "diagnostic_
 const RUNTIME_ENABLEMENT = new Set(["no_projects_enabled", "eligible_projects_only", "diagnostic_only", "blocked"]);
 const GATE_STATUS = new Set(["passed", "failed", "blocked", "skipped"]);
 const READINESS_EFFECTS = new Set(["required_for_ready_behind_flag", "blocks_runtime_facet_only", "diagnostic_only", "informational"]);
-const WITNESS_KINDS = new Set(["model", "reasoning", "quota", "usage", "drift", "evidence", "report_validation", "app_server_baseline", "readiness"]);
+const WITNESS_KINDS = new Set(["model", "reasoning", "quota", "usage", "context", "drift", "evidence", "report_validation", "app_server_baseline", "readiness"]);
 const WITNESS_STATES = new Set(["fresh", "expiring", "expired", "unknown", "blocked", "diagnostic"]);
 
 function isPlainObject(value) {
