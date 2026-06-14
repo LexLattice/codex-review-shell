@@ -433,6 +433,7 @@ async function main() {
     };
     const sentinelCounters = buildSentinelCounters({ beforeProcesses, afterProcesses, projectionSummary });
     const badgeText = await visibleText(page, "#directBridgeSettingsBadge");
+    const quickStatusText = await visibleText(page, "#codexRuntimeQuickStatus");
     const evidenceText = await visibleText(page, "#directBridgeSettingsEvidence");
     const manualSmokeText = await visibleText(page, "#directBridgeSettingsManualSmokeList");
     const runtimeText = await visibleText(page, "#directBridgeSettingsRuntimeList");
@@ -441,6 +442,10 @@ async function main() {
     const continuityText = await visibleText(page, "#directBridgeSettingsContinuityList");
 
     assertCase(cases, "electron_project_tab_visible", await page.isVisible("#projectTabPanel"));
+    assertCase(cases, "electron_codex_runtime_quick_controls_visible", await page.isVisible("#codexRuntimeQuickSelect") && await page.isVisible("#codexRuntimeQuickApplyButton"), {
+      quickStatusText,
+      optionValues: await page.$$eval("#codexRuntimeQuickSelect option", (options) => options.map((option) => option.value)),
+    });
     assertCase(cases, "electron_settings_projection_schema", projectionSummary.schema === "direct_settings_surface_projection@1", projectionSummary);
     assertCase(cases, "electron_manual_smoke_rows_visible", /Gate|Rows|Authority/.test(manualSmokeText) && projectionSummary.manualSmoke.rowCount > 0, {
       manualSmokeText,

@@ -341,13 +341,13 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     role: "governance_routing",
     implementationState: "partial",
     directPathPosture: "keep_and_simplify_ui",
-    sourceFiles: ["src/main/direct/runtime/project-activation.js", "src/main/direct/runtime/runtime-path-selection.js", "src/main/direct/runtime/runtime-status.js", "src/main.js", "src/renderer/app.js"],
+    sourceFiles: ["src/main/direct/runtime/project-activation.js", "src/main/direct/runtime/runtime-path-selection.js", "src/main/direct/runtime/runtime-status.js", "src/main.js", "src/renderer/index.html", "src/renderer/app.js", "src/renderer/styles.css"],
     ontology: ontologyShape(["runtime_selection", "activation_gate", "runtime_status"], "harness", {
       identityFields: ["projectId", "runtimePath", "activationId", "gateId"],
       schema: "direct_runtime_status@1",
     }),
-    bridgeFit: "Can persist app-server/direct-text/direct-implementation runtime path with activation gates and stale-digest checks.",
-    realignment: "Move noisy diagnostics into settings and expose a small provider-path switch as a project/work-thread decision.",
+    bridgeFit: "Can persist app-server/direct-text/direct-implementation runtime path with activation gates and stale-digest checks, now exposed through a compact Codex-plane switch and Project settings status.",
+    realignment: "Noisy diagnostics live in Project settings/control; the small provider-path switch remains a guarded project/work-thread decision and grants no independent authority.",
   },
   {
     id: "ic10.retained-appserver-path",

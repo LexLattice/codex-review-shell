@@ -274,6 +274,10 @@ const els = {
   leftSplitter: document.getElementById("leftSplitter"),
   rightSplitter: document.getElementById("rightSplitter"),
   codexStatus: document.getElementById("codexStatus"),
+  codexRuntimeQuickStatus: document.getElementById("codexRuntimeQuickStatus"),
+  codexRuntimeQuickSelect: document.getElementById("codexRuntimeQuickSelect"),
+  codexRuntimeQuickApplyButton: document.getElementById("codexRuntimeQuickApplyButton"),
+  codexRuntimeSettingsButton: document.getElementById("codexRuntimeSettingsButton"),
   chatgptStatus: document.getElementById("chatgptStatus"),
   lastEvent: document.getElementById("lastEvent"),
   addProjectButton: document.getElementById("addProjectButton"),
@@ -2801,6 +2805,45 @@ function selectedDirectRuntimePath() {
   return directRuntimePathFromCodex(activeProject()?.surfaceBinding?.codex || {});
 }
 
+function directRuntimePathReadiness(status = state.directRuntimeStatus, currentPath = selectedDirectRuntimePath()) {
+  const activation = status?.activation || {};
+  return {
+    textOnlyReady: status?.directTextOnly?.status === "eligible" || status?.directTextOnly?.status === "enabled",
+    implementationReady: status?.directImplementationLane?.canSelect === true || activation.state === "eligible" || currentPath === "direct-implementation",
+  };
+}
+
+function syncDirectRuntimePathControl(selectEl, applyButton, status = state.directRuntimeStatus, options = {}) {
+  if (!selectEl) return;
+  const currentPath = selectedDirectRuntimePath();
+  const { textOnlyReady, implementationReady } = directRuntimePathReadiness(status, currentPath);
+  const directTextOption = [...selectEl.options].find((option) => option.value === "direct-text");
+  const directImplementationOption = [...selectEl.options].find((option) => option.value === "direct-implementation");
+  if (directTextOption) directTextOption.disabled = !textOnlyReady && currentPath !== "direct-text";
+  if (directImplementationOption) directImplementationOption.disabled = !implementationReady;
+  if (document.activeElement !== selectEl) selectEl.value = currentPath;
+  const selectedPath = selectEl.value || currentPath;
+  const selectedBlocked =
+    (selectedPath === "direct-text" && !textOnlyReady && currentPath !== "direct-text") ||
+    (selectedPath === "direct-implementation" && !implementationReady);
+  if (applyButton) {
+    applyButton.disabled =
+      state.directRuntimeLoading ||
+      !activeProject() ||
+      !bridge.setDirectRuntimePath ||
+      selectedPath === currentPath ||
+      selectedBlocked;
+    const prefix = options.compact ? "Switch Codex lane" : "Persist this Codex path as the project default";
+    applyButton.title = selectedPath === currentPath
+      ? "This Codex path is already the persisted project default."
+      : selectedBlocked
+        ? selectedPath === "direct-text"
+          ? `Direct Text is blocked: ${directTextOnlyBlockedDetail(status)}`
+          : `Direct Tools is blocked: ${directActivationBlockedDetail(status)}`
+        : `${prefix} and reload the Codex lane.`;
+  }
+}
+
 function directActivationBlockers(status = state.directRuntimeStatus) {
   const blockers = status?.activation?.gateSummary?.blockers;
   return Array.isArray(blockers) ? blockers : [];
@@ -3390,6 +3433,16 @@ function renderDirectRuntimeStatus() {
     directRuntimeStatusLabel(status);
   els.directModelSourceBadge.textContent = `models: ${modelSource}`;
   els.directModelSourceBadge.title = profileId ? `Profile: ${profileId}` : "Model source is not available.";
+  if (els.codexRuntimeQuickStatus) {
+    const currentPath = selectedDirectRuntimePath();
+    const label = currentPath === "app-server"
+      ? "App Server"
+      : currentPath === "direct-text"
+        ? "Direct Text"
+        : "Direct Tools";
+    els.codexRuntimeQuickStatus.textContent = state.directRuntimeLoading ? "runtime loading" : label;
+    els.codexRuntimeQuickStatus.title = `${directRuntimeStatusLabel(status)}. Detailed direct diagnostics live in Project settings.`;
+  }
   const contextMaintenance = directContextMaintenanceStatus(status);
   if (els.directContextPressureBadge) {
     els.directContextPressureBadge.textContent = `context ${formatDirectContextState(contextMaintenance.pressureState)}`;
@@ -3420,37 +3473,8 @@ function renderDirectRuntimeStatus() {
     els.directContextProviderCompactBadge.textContent = `compact ${formatDirectContextState(contextMaintenance.providerCompactState)}`;
     els.directContextProviderCompactBadge.title = `Provider compact evidence: ${formatDirectContextState(contextMaintenance.providerCompactEvidenceState)}. Provider transport allowed: ${contextMaintenance.providerTransportAllowed ? "yes" : "no"}.`;
   }
-  if (els.directRuntimePathSelect) {
-    const currentPath = selectedDirectRuntimePath();
-    const textOnlyReady = status.directTextOnly?.status === "eligible" || status.directTextOnly?.status === "enabled";
-    const implementationReady = status.directImplementationLane?.canSelect === true || activation.state === "eligible" || currentPath === "direct-implementation";
-    const directTextOption = [...els.directRuntimePathSelect.options].find((option) => option.value === "direct-text");
-    const directImplementationOption = [...els.directRuntimePathSelect.options].find((option) => option.value === "direct-implementation");
-    if (directTextOption) directTextOption.disabled = !textOnlyReady && currentPath !== "direct-text";
-    if (directImplementationOption) directImplementationOption.disabled = !implementationReady;
-    if (document.activeElement !== els.directRuntimePathSelect) {
-      els.directRuntimePathSelect.value = currentPath;
-    }
-    const selectedPath = els.directRuntimePathSelect.value || currentPath;
-    const selectedBlocked =
-      selectedPath === "direct-text" && !textOnlyReady && currentPath !== "direct-text" ||
-      selectedPath === "direct-implementation" && !implementationReady;
-    if (els.directRuntimePathApplyButton) {
-      els.directRuntimePathApplyButton.disabled =
-        state.directRuntimeLoading ||
-        !activeProject() ||
-        !bridge.setDirectRuntimePath ||
-        selectedPath === currentPath ||
-        selectedBlocked;
-      els.directRuntimePathApplyButton.title = selectedPath === currentPath
-        ? "This Codex path is already the persisted project default."
-        : selectedBlocked
-          ? selectedPath === "direct-text"
-            ? `Direct Text is blocked: ${directTextOnlyBlockedDetail(status)}`
-            : `Direct Tools is blocked: ${directActivationBlockedDetail(status)}`
-          : "Persist this Codex path as the project default and reload the Codex lane.";
-    }
-  }
+  syncDirectRuntimePathControl(els.directRuntimePathSelect, els.directRuntimePathApplyButton, status);
+  syncDirectRuntimePathControl(els.codexRuntimeQuickSelect, els.codexRuntimeQuickApplyButton, status, { compact: true });
   if (els.directTextOnlyEnableButton) {
     const canUseTextOnlyAction = Boolean(activeProject()) && Boolean(bridge.selectDirectTextOnlyRuntime) && !state.directRuntimeLoading;
     const canEnableTextOnly = (status.directTextOnly?.status === "eligible" || status.directTextOnly?.status === "enabled") && canUseTextOnlyAction;
@@ -6910,10 +6934,10 @@ async function selectDirectTextOnlyRuntime() {
   }
 }
 
-async function setDirectRuntimePathFromControl() {
+async function setDirectRuntimePathFromControl(selectEl = els.directRuntimePathSelect) {
   const project = activeProject();
-  if (!project || !bridge.setDirectRuntimePath || !els.directRuntimePathSelect) return;
-  const runtimePath = els.directRuntimePathSelect.value || "app-server";
+  if (!project || !bridge.setDirectRuntimePath || !selectEl) return;
+  const runtimePath = selectEl.value || "app-server";
   const currentPath = selectedDirectRuntimePath();
   if (runtimePath === currentPath) return;
   await refreshDirectAuthStatus();
@@ -8499,6 +8523,12 @@ function bindEvents() {
   els.directAuthLogoutButton.addEventListener("click", logoutDirectAuth);
   els.directRuntimePathSelect?.addEventListener("change", renderDirectRuntimeStatus);
   els.directRuntimePathApplyButton?.addEventListener("click", setDirectRuntimePathFromControl);
+  els.codexRuntimeQuickSelect?.addEventListener("change", renderDirectRuntimeStatus);
+  els.codexRuntimeQuickApplyButton?.addEventListener("click", () => setDirectRuntimePathFromControl(els.codexRuntimeQuickSelect));
+  els.codexRuntimeSettingsButton?.addEventListener("click", () => {
+    setMiddleTab("project");
+    setLastEvent("Opened Project settings for direct runtime details.");
+  });
   els.directImplementationRefreshButton?.addEventListener("click", () => refreshDirectImplementationUiStatus().catch((error) => setLastEvent(`Direct implementation UI refresh failed: ${error.message}`)));
   els.directMetaSessionRefreshButton?.addEventListener("click", () => refreshDirectMetaSessionStatus().catch((error) => setLastEvent(`Meta-session status refresh failed: ${error.message}`)));
   els.directBridgeSettingsRefreshButton?.addEventListener("click", () => refreshDirectBridgeSettingsStatus().catch((error) => setLastEvent(`Bridge settings status refresh failed: ${error.message}`)));

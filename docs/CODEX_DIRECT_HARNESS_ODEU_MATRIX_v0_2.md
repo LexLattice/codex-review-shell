@@ -155,8 +155,10 @@ Wave 6 has productized the WorkThread control deck, target picker, context
 preview, memory review workbench, module context intake, and manual smoke gate.
 Wave 7 has made the manual smoke gate visible in the Electron operator surface
 and added a repeatable Electron smoke runner for the direct settings/control
-projection. The remaining confidence gap is simplifying the direct runtime and
-settings operator path before broadening authority.
+projection. It has also added a compact Codex-plane runtime selector while
+moving detailed direct diagnostics into Project settings/control. The remaining
+confidence gap is exposing WorkThread/thread identity as the operator-facing
+unit before broadening authority.
 
 ## 4. Canonical ODEU Capability Matrix
 
@@ -592,32 +594,31 @@ new live-provider or recursive authority is considered.
 
 ## 9. Immediate Next Spec
 
-The next spec should target Wave 7 PR 41:
+The next spec should target Wave 7 PR 42:
 
 ```text
-Direct runtime and settings simplification for daily operator use.
+WorkThread thread deck and new-thread operator UX.
 ```
 
 It should not add provider/tool authority. It should implement:
 
-1. a compact visible runtime-path selector for app-server versus direct;
-2. a settings/control home for detailed direct diagnostics that keeps the Codex
-   chat lane clear;
-3. persisted operator preference for the default path without silently promoting
-   direct to production authority;
-4. clear unavailable/degraded fallback states when direct cannot be used;
-5. reuse of the PR 40 Electron smoke runner as projection proof.
+1. a direct WorkThread/thread deck view for active, stale, blocked,
+   recoverable, archived, and candidate work threads;
+2. a guarded new-thread draft transition that creates local direct thread
+   evidence only after WorkThread identity and context posture are explicit;
+3. visible separation between WorkThread identity and runtime/provider thread
+   ids;
+4. stale/degraded states that do not silently mutate the active work thread;
+5. no provider turn, recursive worker, or app-server fallback mutation from the
+   thread deck.
 
 Current implementation note:
 
 ```text
-PR 40 added `direct:electron-settings-smoke`, which opens the actual Electron
-shell, reaches the Project tab direct settings/control surface, verifies the
-runtime/WorkThread/module/continuity/manual-smoke row groups, and feeds a
-sanitized `electron_projection` row into `direct_manual_smoke_gate@1`.
-
-The next problem is operator ergonomics: the direct/runtime choice and detailed
-diagnostics should be usable without crowding the Codex chat lane.
+PR 41 added a compact Codex-plane runtime selector and moved broad direct
+diagnostics into Project settings/control. The next problem is work identity:
+direct-native threads should be selected and drafted from WorkThread evidence,
+not from raw provider thread ids or repo folders.
 ```
 
 It should explicitly not mean:
