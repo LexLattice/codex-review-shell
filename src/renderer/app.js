@@ -257,6 +257,7 @@ const els = {
   directBridgeSettingsModulesList: document.getElementById("directBridgeSettingsModulesList"),
   directBridgeSettingsAgentClassList: document.getElementById("directBridgeSettingsAgentClassList"),
   directBridgeSettingsContinuityList: document.getElementById("directBridgeSettingsContinuityList"),
+  directBridgeSettingsRuntimeWitnessList: document.getElementById("directBridgeSettingsRuntimeWitnessList"),
   directBridgeSettingsAgentUsageList: document.getElementById("directBridgeSettingsAgentUsageList"),
   directBridgeSettingsAppServerFallbackList: document.getElementById("directBridgeSettingsAppServerFallbackList"),
   directBridgeSettingsManualSmokeList: document.getElementById("directBridgeSettingsManualSmokeList"),
@@ -3089,6 +3090,7 @@ function renderDirectBridgeSettingsStatus() {
   const projectionOk = status.schema === "direct_settings_surface_projection@1";
   const authority = status.authority || {};
   const fallback = status.sections?.appServerFallbackParity || {};
+  const runtimeWitness = status.sections?.runtimeWitness || {};
   const manualSmoke = directBridgeManualSmokeSummary(status);
   const blockedAuthority = [
     authority.runtimeMutationAllowed ? "runtime mutation" : "",
@@ -3100,6 +3102,7 @@ function renderDirectBridgeSettingsStatus() {
     authority.providerCompactionAllowed ? "provider compact" : "",
     authority.providerTransportAllowed ? "provider transport" : "",
     authority.workspaceMutationAllowed ? "workspace mutation" : "",
+    runtimeWitness.providerTransportAllowed || runtimeWitness.quotaReadAllowed || runtimeWitness.modelMutationAllowed || runtimeWitness.costComputationAllowed ? "runtime witness authority" : "",
     fallback.providerTransportAllowed || fallback.appServerSpawnAllowed || fallback.appServerReplacementAllowed || fallback.appServerMutationAllowed || fallback.runtimeSelectionMutationAllowed || fallback.workspaceMutationAllowed || fallback.recursiveWorkerAllowed || fallback.matrixPromotionAllowed ? "app-server fallback authority" : "",
     manualSmoke.unexpectedAuthority ? "manual smoke authority" : "",
   ].filter(Boolean);
@@ -3128,6 +3131,7 @@ function renderDirectBridgeSettingsStatus() {
   renderDirectDiagnosticsRows(els.directBridgeSettingsModulesList, directBridgeSettingsRows("modules"));
   renderDirectDiagnosticsRows(els.directBridgeSettingsAgentClassList, directBridgeSettingsRows("agentClasses"));
   renderDirectDiagnosticsRows(els.directBridgeSettingsContinuityList, directBridgeSettingsRows("continuity"));
+  renderDirectDiagnosticsRows(els.directBridgeSettingsRuntimeWitnessList, directBridgeSettingsRows("runtimeWitness"), "Runtime witness projection is not exposed by the current projection.");
   renderDirectDiagnosticsRows(els.directBridgeSettingsAgentUsageList, directBridgeSettingsRows("agentUsage"));
   renderDirectDiagnosticsRows(els.directBridgeSettingsAppServerFallbackList, directBridgeSettingsRows("appServerFallbackParity"), "App-server fallback parity is not exposed by the current projection.");
   renderDirectDiagnosticsRows(els.directBridgeSettingsManualSmokeList, directBridgeSettingsRows("manualSmokeGate"), "Manual smoke gate is not exposed by the current projection.");

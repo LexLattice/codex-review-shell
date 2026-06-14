@@ -368,6 +368,7 @@ function safeProjectionSummary(projection = {}) {
   const sections = projection.sections || {};
   const manual = sections.manualSmokeGate || {};
   const fallback = sections.appServerFallbackParity || {};
+  const runtimeWitness = sections.runtimeWitness || {};
   return {
     schema: projection.schema || "",
     projectId: projection.projectId || "",
@@ -394,6 +395,22 @@ function safeProjectionSummary(projection = {}) {
         manual.moduleExecutionAllowed ||
         manual.recursiveWorkerAllowed ||
         manual.matrixPromotionAllowed
+      ),
+    },
+    runtimeWitness: {
+      available: runtimeWitness.available === true,
+      modelState: runtimeWitness.modelState || "",
+      reasoningState: runtimeWitness.reasoningState || "",
+      quotaState: runtimeWitness.quotaState || "",
+      usageState: runtimeWitness.usageState || "",
+      driftState: runtimeWitness.driftState || "",
+      unknownCount: Number(runtimeWitness.unknownCount || 0),
+      costComputed: runtimeWitness.costComputed === true,
+      authorityUnexpected: Boolean(
+        runtimeWitness.providerTransportAllowed ||
+        runtimeWitness.quotaReadAllowed ||
+        runtimeWitness.modelMutationAllowed ||
+        runtimeWitness.costComputationAllowed
       ),
     },
     appServerFallbackParity: {
@@ -457,6 +474,7 @@ async function main() {
     const workThreadText = await visibleText(page, "#directBridgeSettingsWorkThreadList");
     const moduleText = await visibleText(page, "#directBridgeSettingsModulesList");
     const continuityText = await visibleText(page, "#directBridgeSettingsContinuityList");
+    const runtimeWitnessText = await visibleText(page, "#directBridgeSettingsRuntimeWitnessList");
     const appServerFallbackText = await visibleText(page, "#directBridgeSettingsAppServerFallbackList");
 
     assertCase(cases, "electron_project_tab_visible", await page.isVisible("#projectTabPanel"));
@@ -475,11 +493,16 @@ async function main() {
     assertCase(cases, "electron_workthread_rows_visible", /WorkThread|Target gate|Candidates|Mutation/.test(workThreadText), { workThreadText });
     assertCase(cases, "electron_module_rows_visible", /Execution|Context|Evidence|Hooks/.test(moduleText), { moduleText });
     assertCase(cases, "electron_continuity_rows_visible", /Memory|Baton|Compact|Transport/.test(continuityText), { continuityText });
+    assertCase(cases, "electron_runtime_witness_rows_visible", /Model|Reasoning|Quota|Usage|Drift|Authority/.test(runtimeWitnessText) && projectionSummary.runtimeWitness.available, {
+      runtimeWitnessText,
+      runtimeWitness: projectionSummary.runtimeWitness,
+    });
     assertCase(cases, "electron_appserver_fallback_rows_visible", /Parity|Fallback|Authority/.test(appServerFallbackText) && projectionSummary.appServerFallbackParity.available, {
       appServerFallbackText,
       appServerFallbackParity: projectionSummary.appServerFallbackParity,
     });
     assertCase(cases, "electron_no_manual_smoke_authority", projectionSummary.manualSmoke.authorityUnexpected === false, projectionSummary.manualSmoke);
+    assertCase(cases, "electron_no_runtime_witness_authority", projectionSummary.runtimeWitness.authorityUnexpected === false && projectionSummary.runtimeWitness.costComputed === false, projectionSummary.runtimeWitness);
     assertCase(cases, "electron_no_appserver_fallback_authority", projectionSummary.appServerFallbackParity.authorityUnexpected === false, projectionSummary.appServerFallbackParity);
     assertSentinelCountersClear(cases, sentinelCounters, processObservations);
 

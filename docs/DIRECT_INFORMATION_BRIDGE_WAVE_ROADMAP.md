@@ -2333,7 +2333,7 @@ Implemented notes:
 
 ### PR 45: Usage/Quota/Model Witness Polish
 
-Status: planned.
+Status: implemented.
 
 Purpose:
 
@@ -2354,6 +2354,19 @@ Promotion criterion:
 Direct readiness can explain model/quota/usage posture without creating billing
 or provider-authority claims.
 ```
+
+Implemented notes:
+
+- Added a dedicated runtime witness section to the direct settings/control
+  projection for model, reasoning, quota/rate, usage, and drift posture.
+- Reused `direct_runtime_witness_projection@1` and kept unknown/unavailable
+  states explicit instead of deriving provider defaults.
+- Wired runtime witnesses into the manual smoke gate as a visibility check.
+  Unknown quota/drift produce warning evidence, not authority promotion.
+- Added Electron/settings regression coverage proving runtime witness rows are
+  visible and display-only.
+- Confirmed witness display does not grant provider transport, quota read,
+  model mutation, cost computation, workspace mutation, or matrix promotion.
 
 Wave 7 expected result:
 

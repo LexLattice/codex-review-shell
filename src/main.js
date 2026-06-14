@@ -86,6 +86,10 @@ const {
   buildDirectManualSmokeGate,
 } = require("./main/direct/readiness/manual-smoke-gate");
 const {
+  buildRuntimeWitnessProjection,
+  normalizeEvidenceRef,
+} = require("./main/direct/readiness/usage-readiness");
+const {
   buildAppServerFallbackParityReport,
 } = require("./main/direct/readiness/appserver-fallback-parity");
 const {
@@ -2374,6 +2378,13 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     legacySession: currentLegacyAppServerSnapshot(),
   });
   const generatedAt = nowIso();
+  const runtimeWitnessProjection = buildDirectRuntimeWitnessProjectionForProject({
+    project,
+    runtimeStatus,
+    agentUsageStatus,
+    appServerFallbackParity,
+    generatedAt,
+  });
   const registryAudit = buildDirectInformationBridgeAudit({
     branch: "codex/direct-chatgpt-harness",
     generatedAt,
@@ -2405,6 +2416,7 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     moduleStatus,
     agentClassStatus,
     continuityStatus: runtimeStatus.directContextMaintenance,
+    runtimeWitnessProjection,
     agentUsageStatus,
     appServerFallbackParityReport: appServerFallbackParity,
     generatedAt,
@@ -2414,6 +2426,7 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     ...projectionInput,
     settingsProjection: baseProjection,
     implementationLaneUiStatus,
+    runtimeWitnessProjection,
     appServerFallbackParityReport: appServerFallbackParity,
     appServerFallbackAvailable: runtimeStatus.diagnostics?.legacyAppServerAvailable === true,
     generatedAt,
@@ -2493,6 +2506,100 @@ function buildDirectAgentUsageStatusForProject(projectId) {
       rawSecretIncluded: false,
     };
   }
+}
+
+function directWitnessStateFromEvidence(value) {
+  const state = normalizeString(value, "unknown");
+  if (state === "runtime_probed" || state === "accepted" || state === "exact") return "fresh";
+  if (state === "expired") return "expired";
+  if (state === "rejected" || state === "scope_mismatch") return "blocked";
+  if (state === "candidate" || state === "diagnostic" || state === "unstable") return "diagnostic";
+  return "unknown";
+}
+
+function runtimeWitnessEvidenceRef(kind, artifactId, label, confidence = "diagnostic") {
+  const digest = crypto.createHash("sha256").update(`${kind}:${artifactId || label || ""}`).digest("hex");
+  return normalizeEvidenceRef({
+    kind,
+    artifactId: normalizeString(artifactId, kind),
+    artifactDigest: digest,
+    sourceConfidence: confidence,
+    rendererSafeLabel: label,
+  });
+}
+
+function buildDirectRuntimeWitnessProjectionForProject(input = {}) {
+  const project = input.project || {};
+  const projectId = normalizeString(project.id || input.runtimeStatus?.projectId, "");
+  const runtimeStatus = input.runtimeStatus || {};
+  const agentUsageStatus = input.agentUsageStatus || {};
+  const generatedAt = normalizeString(input.generatedAt, nowIso());
+  const codexBinding = project.surfaceBinding?.codex || {};
+  const liveText = runtimeStatus.liveTextRuntime || {};
+  const modelIds = Array.isArray(runtimeStatus.models?.ids) ? runtimeStatus.models.ids.filter(Boolean) : [];
+  const selectedModel = normalizeString(
+    codexBinding.model ||
+      liveText.liveProbeEvidence?.model ||
+      modelIds[0],
+    "",
+  );
+  const modelEvidenceState = normalizeString(liveText.modelEvidenceState || runtimeStatus.models?.source, modelIds.length ? "diagnostic" : "unknown");
+  const modelState = directWitnessStateFromEvidence(modelEvidenceState);
+  const reasoningEffort = normalizeString(codexBinding.reasoningEffort, "");
+  const usageAvailable = agentUsageStatus.schema === "direct_agent_usage_summary_projection@1";
+  const missingUsage = Number(agentUsageStatus.totals?.missingUsageRowCount || 0);
+  const knownUsage = Number(agentUsageStatus.totals?.totalTokensKnown || 0);
+  const usageState = usageAvailable
+    ? missingUsage
+      ? "diagnostic"
+      : knownUsage > 0
+        ? "fresh"
+        : "unknown"
+    : "unknown";
+  const appServerFallback = input.appServerFallbackParity || {};
+  const appServerFallbackState = normalizeString(appServerFallback.parityState, "");
+  return buildRuntimeWitnessProjection({
+    projectId,
+    generatedAt,
+    chips: [
+      {
+        kind: "model",
+        label: selectedModel
+          ? `Model ${selectedModel} (${modelEvidenceState})`
+          : "Model unknown",
+        state: modelState,
+        evidenceRefs: [runtimeWitnessEvidenceRef("runtime_status", runtimeStatus.statusDigest || runtimeStatus.generatedAt || "runtime_status", "Direct runtime model witness")],
+      },
+      {
+        kind: "reasoning",
+        label: reasoningEffort
+          ? `Reasoning ${reasoningEffort} (configured)`
+          : "Reasoning effort unknown",
+        state: reasoningEffort ? "diagnostic" : "unknown",
+        evidenceRefs: [runtimeWitnessEvidenceRef("project_config", projectId || "project", "Configured reasoning witness")],
+      },
+      {
+        kind: "quota",
+        label: "Quota/rate unknown (no direct read authority)",
+        state: "unknown",
+        evidenceRefs: [runtimeWitnessEvidenceRef("quota", appServerFallbackState || "quota_not_read", "Quota/rate not read by direct witness", "unknown")],
+      },
+      {
+        kind: "usage",
+        label: usageAvailable
+          ? `Usage rows ${Number(agentUsageStatus.rowCount || 0)} · known tokens ${knownUsage}`
+          : "Usage unavailable",
+        state: usageState,
+        evidenceRefs: [runtimeWitnessEvidenceRef("direct_agent_usage", agentUsageStatus.projectionDigest || agentUsageStatus.ledgerDigest || "usage_projection", "Direct usage witness")],
+      },
+      {
+        kind: "drift",
+        label: "Drift unknown (no direct drift report)",
+        state: "unknown",
+        evidenceRefs: [runtimeWitnessEvidenceRef("drift", "drift_not_run", "Drift watch not run", "unknown")],
+      },
+    ],
+  });
 }
 
 function emitDirectRuntimeStatus(project = currentProject) {

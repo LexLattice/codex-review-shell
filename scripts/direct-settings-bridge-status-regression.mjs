@@ -17,6 +17,9 @@ const {
   buildDirectAgentUsageSummaryProjection,
 } = require("../src/main/direct/usage/agent-ledger");
 const {
+  buildRuntimeWitnessProjection,
+} = require("../src/main/direct/readiness/usage-readiness");
+const {
   buildWorkTargetResolution,
   buildWorkTargetResolutionReport,
   buildWorkThread,
@@ -285,6 +288,17 @@ function main() {
       },
     ],
   }));
+  const runtimeWitnessProjection = buildRuntimeWitnessProjection({
+    projectId,
+    generatedAt: "1970-01-01T00:00:00.000Z",
+    chips: [
+      { kind: "model", label: "Model gpt-5.4 (runtime-probed)", state: "fresh" },
+      { kind: "reasoning", label: "Reasoning high (configured)", state: "diagnostic" },
+      { kind: "quota", label: "Quota/rate unknown (no direct read authority)", state: "unknown" },
+      { kind: "usage", label: "Usage rows 1 · known tokens 15", state: "fresh" },
+      { kind: "drift", label: "Drift unknown (not run)", state: "unknown" },
+    ],
+  });
   const runtimeStatus = {
     projectId,
     status: "available",
@@ -329,6 +343,7 @@ function main() {
       routingEnforced: false,
     },
     moduleStatus,
+    runtimeWitnessProjection,
     agentUsageStatus,
     continuityStatus,
     nowMs: 0,
@@ -366,6 +381,11 @@ function main() {
   assert(projection.sections.agentUsage.available === true, "agent usage summary should be visible");
   assert(projection.sections.agentUsage.totalTokensKnown === 15, "agent usage known tokens should be visible");
   assert(projection.sections.agentUsage.costComputed === false, "settings surface must not compute cost");
+  assert(projection.sections.runtimeWitness.available === true, "runtime witness projection should be visible");
+  assert(projection.sections.runtimeWitness.modelState === "fresh", "runtime witness should expose model state");
+  assert(projection.sections.runtimeWitness.quotaState === "unknown", "quota witness should remain unknown when not read");
+  assert(projection.sections.runtimeWitness.driftState === "unknown", "drift witness should remain unknown when not run");
+  assert(projection.sections.runtimeWitness.costComputed === false, "runtime witness must not compute cost");
   assert(projection.rows.runtime.length >= 4, "runtime rows should render");
   assert(projection.rows.registry.length >= 4, "registry rows should render");
   assert(projection.rows.workThreads.length >= 4, "WorkThread rows should render");
@@ -375,6 +395,8 @@ function main() {
   assert(projection.rows.modules.some((row) => row.label === "Context refs" && row.value === "1"), "module rows should include context refs");
   assert(projection.rows.modules.some((row) => row.label === "Evidence rows" && row.value === "1"), "module rows should include evidence rows");
   assert(projection.rows.agentUsage.some((row) => row.label === "Cost" && row.value === "not computed"), "agent usage rows should show no cost computation");
+  assert(projection.rows.runtimeWitness.some((row) => row.label === "Quota/rate" && row.value.includes("unknown")), "runtime witness rows should show unknown quota");
+  assert(projection.rows.runtimeWitness.some((row) => row.label === "Authority" && row.value === "display only"), "runtime witness rows should stay display-only");
   assert(projection.rows.modules.some((row) => row.label === "Hook proposals" && row.value === "1"), "module rows should include hook proposals");
   assert(projection.rows.modules.some((row) => row.label === "Execution gates" && row.value === "1"), "module rows should include execution gates");
   assert(projection.rows.continuity.some((row) => row.label === "Memory review" && row.value === "current"), "continuity rows should include memory review");
