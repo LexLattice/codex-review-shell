@@ -474,7 +474,8 @@ function buildWorkThreadOperatorDeck(input = {}, options = {}) {
       .map((row) => candidateRowForRuntime(row, projectId)),
   ].sort((a, b) => {
     const stateRank = { active: 0, recoverable: 1, blocked: 2, candidate: 3, stale: 4, archived: 5, unknown: 6 };
-    return (stateRank[a.operatorState] ?? 9) - (stateRank[b.operatorState] ?? 9) || a.title.localeCompare(b.title);
+    return (stateRank[a.operatorState] ?? 9) - (stateRank[b.operatorState] ?? 9) ||
+      normalizeString(a.title, "").localeCompare(normalizeString(b.title, ""));
   });
   const deck = {
     schema: DIRECT_WORK_THREAD_OPERATOR_DECK_SCHEMA,

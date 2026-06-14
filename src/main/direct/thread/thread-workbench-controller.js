@@ -95,6 +95,35 @@ function requestShapeEvidenceRefForPreviewKind(sourcePreviewKind) {
   return DIRECT_FORK_PREVIEW_START_REQUEST_SHAPE;
 }
 
+function safeReadSession(sessionStore, threadId) {
+  try {
+    return sessionStore?.readSession?.(threadId) || null;
+  } catch {
+    return null;
+  }
+}
+
+function draftBlockedResult(projectId, draft, blockerCodes = []) {
+  return {
+    schema: "direct_work_thread_new_thread_draft_result@1",
+    projectId,
+    status: "blocked",
+    draft: {
+      ...draft,
+      transitionState: "blocked",
+      blockerCodes: [...new Set([...(Array.isArray(draft?.blockerCodes) ? draft.blockerCodes : []), ...blockerCodes])],
+      localDirectThreadEvidenceAllowed: false,
+    },
+    thread: null,
+    providerTurnStarted: false,
+    appServerMutated: false,
+    workspaceMutationAuthorityGranted: false,
+    providerCallAuthorityGranted: false,
+    rawTextIncluded: false,
+    rawPathIncluded: false,
+  };
+}
+
 function pageParams(params = {}, fallbackLimit = 60) {
   const offset = Math.max(0, normalizeNumber(params.offset, 0));
   const limit = Math.max(1, Math.min(500, normalizeNumber(params.limit, fallbackLimit)));
@@ -378,7 +407,7 @@ class DirectThreadWorkbenchController {
       offset: threadPage.offset,
       limit: threadPage.limit,
     }).map((thread) => {
-      const session = this.sessionStore?.readSession?.(thread.threadId) || null;
+      const session = safeReadSession(this.sessionStore, thread.threadId);
       return {
         ...thread,
         model: normalizeString(session?.model, ""),
@@ -476,24 +505,20 @@ class DirectThreadWorkbenchController {
       ],
     }, { nowMs: this.now() });
     assertWorkThreadNewThreadDraftTransitionSafe(draft);
-    if (draft.transitionState !== "accepted") {
-      return {
-        schema: "direct_work_thread_new_thread_draft_result@1",
-        projectId,
-        status: "blocked",
-        draft,
-        thread: null,
-        providerTurnStarted: false,
-        appServerMutated: false,
-        workspaceMutationAuthorityGranted: false,
-        providerCallAuthorityGranted: false,
-        rawTextIncluded: false,
-        rawPathIncluded: false,
-      };
-    }
+    if (draft.transitionState !== "accepted") return draftBlockedResult(projectId, draft);
     let workThread = null;
+    let existingWorkThread = null;
     if (this.workThreadStore && typeof this.workThreadStore.upsertWorkThread === "function") {
-      workThread = this.workThreadStore.upsertWorkThread({
+      existingWorkThread = typeof this.workThreadStore.readWorkThread === "function"
+        ? this.workThreadStore.readWorkThread(draft.workThreadId)
+        : null;
+      if (existingWorkThread && normalizeString(existingWorkThread.projectId, "") !== projectId) {
+        return draftBlockedResult(projectId, draft, ["work_thread_id_project_collision"]);
+      }
+      if (["archived", "stale"].includes(normalizeString(existingWorkThread?.lifecycleState, ""))) {
+        return draftBlockedResult(projectId, draft, [`work_thread_${existingWorkThread.lifecycleState}`]);
+      }
+      workThread = existingWorkThread || this.workThreadStore.upsertWorkThread({
         workThreadId: draft.workThreadId,
         projectId,
         title: draft.title,
@@ -538,13 +563,16 @@ class DirectThreadWorkbenchController {
       }],
     }, { nowMs: this.now() });
     if (workThread && this.workThreadStore && typeof this.workThreadStore.upsertWorkThread === "function") {
-      this.workThreadStore.upsertWorkThread({
+      const finalWorkThread = this.workThreadStore.upsertWorkThread({
         ...workThread,
         linkedCodexThreads: [
           ...(Array.isArray(workThread.linkedCodexThreads) ? workThread.linkedCodexThreads : []),
           { threadId: session.sessionId, source: "direct", title: session.title, status: "local_draft" },
         ],
       });
+      session.workThreadBindingDigest = normalizeString(finalWorkThread.digest, session.workThreadBindingDigest);
+      this.sessionStore.writeSession(session);
+      workThread = finalWorkThread;
     }
     this.ensureIndexed({ forceIndex: true });
     return {

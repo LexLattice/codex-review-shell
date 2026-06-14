@@ -234,7 +234,30 @@ try {
   const acceptedSession = sessionStore.readSession(acceptedDraft.thread.threadId);
   assert.equal(acceptedSession.turns.length, 0, "local draft must not start a provider turn");
   assert.equal(acceptedSession.workThreadId, "work_thread_drafted_local");
-  assert.equal(workThreadStore.readWorkThread("work_thread_drafted_local").lifecycleState, "candidate");
+  const acceptedWorkThread = workThreadStore.readWorkThread("work_thread_drafted_local");
+  assert.equal(acceptedWorkThread.lifecycleState, "candidate");
+  assert.equal(acceptedSession.workThreadBindingDigest, acceptedWorkThread.digest, "session binding digest should match final linked WorkThread digest");
+
+  workThreadStore.upsertWorkThread({
+    workThreadId: "work_thread_existing_active",
+    projectId: project.id,
+    title: "Existing active WorkThread",
+    lifecycleState: "active",
+    objective: "Existing metadata must not be overwritten by a draft collision.",
+    activeRuntimePath: "direct-implementation",
+  });
+  const reusedDraft = await workbenchController.createWorkThreadDraftSession(project, {
+    title: "Attempted overwrite title",
+    objectiveSummary: "Attempted overwrite objective.",
+    contextPosture: "explicit_operator_draft",
+    workThreadId: "work_thread_existing_active",
+    model: "gpt-5.5",
+  });
+  assert.equal(reusedDraft.status, "created");
+  const reusedWorkThread = workThreadStore.readWorkThread("work_thread_existing_active");
+  assert.equal(reusedWorkThread.lifecycleState, "active", "draft reuse must preserve existing WorkThread lifecycle");
+  assert.equal(reusedWorkThread.title, "Existing active WorkThread", "draft reuse must preserve existing WorkThread title");
+  assert.equal(sessionStore.readSession(reusedDraft.thread.threadId).workThreadBindingDigest, reusedWorkThread.digest);
 
   const corruptSession = sessionStore.createSession({
     projectId: project.id,
@@ -244,6 +267,11 @@ try {
     updatedAt: "2026-06-13T12:10:00.000Z",
     runtimeMode: "direct-experimental",
     directTransport: "direct-live-text",
+  });
+  await workbenchController.getSnapshot(project, {
+    refresh: true,
+    filters: { includeArchived: true },
+    page: { threads: { offset: 0, limit: 20 }, operations: { offset: 0, limit: 10 } },
   });
   fs.writeFileSync(sessionStore.sessionPath(corruptSession.sessionId), "{not valid json", "utf8");
 
@@ -265,6 +293,21 @@ try {
   });
   fs.writeFileSync(sessionStore.turnPath(corruptTurnSession.sessionId, "direct_turn_corrupt_file"), "{not valid json", "utf8");
 
+  const degradedSnapshot = await workbenchController.getSnapshot(project, {
+    refresh: false,
+    filters: { includeArchived: true },
+    page: { threads: { offset: 0, limit: 20 }, operations: { offset: 0, limit: 10 } },
+  });
+  const degradedRow = degradedSnapshot.threads.find((thread) => thread.threadId === corruptSession.sessionId);
+  assert(degradedRow, "previously indexed corrupt session row should remain visible");
+  assert.equal(degradedRow.storageState, "session_unreadable");
+  const refreshedAfterCorruption = await workbenchController.getSnapshot(project, {
+    refresh: true,
+    filters: { includeArchived: true },
+    page: { threads: { offset: 0, limit: 20 }, operations: { offset: 0, limit: 10 } },
+  });
+  assert.equal(refreshedAfterCorruption.schema, "renderer_safe_direct_thread_workbench_snapshot@1", "refresh snapshot should degrade corrupt sessions instead of throwing");
+
   const result = controller.listThreads({
     limit: 10,
     defaultModel: "gpt-5.5",
@@ -282,7 +325,7 @@ try {
   assert.equal(result.deck.actions.start.mutationAuthorityGranted, false);
   assert.equal(result.deck.rawPathExposed, false);
   assert.equal(result.deck.rawPromptTextExposed, false);
-  assert.equal(result.deck.rows.length, 6);
+  assert.equal(result.deck.rows.length, 7);
 
   const scopedRow = result.deck.rows.find((row) => row.threadId === scoped.sessionId);
   assert(scopedRow, "WorkThread scoped row should be present");
