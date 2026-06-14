@@ -594,36 +594,39 @@ new live-provider or recursive authority is considered.
 
 ## 9. Immediate Next Spec
 
-The next spec should target Wave 7 PR 43:
+The next spec should target Wave 7 PR 44:
 
 ```text
-Live promotion candidate queue and evidence gate.
+App-server fallback parity watchdog.
 ```
 
-PR 42 is now implemented. The direct workbench exposes WorkThread/operator
-identity rows for active, stale, blocked, recoverable, archived, and candidate
-threads; the guarded new-thread draft transition creates local direct session
-evidence only after explicit WorkThread identity/context posture; provider
-thread ids remain secondary runtime identities.
+PR 43 is now implemented. The direct implementation-lane UI exposes a
+renderer-safe live promotion candidate queue for fixture/local-green direct
+text, read, patch, command, repair, recovery, usage, and UI readiness
+capabilities. Each candidate cites fixture/local evidence, required live
+evidence, blockers, latest attempt status, and next manual smoke class without
+granting provider transport, workspace mutation, recursive worker, app-server
+fallback, matrix-row mutation, or default-mutation authority.
 
-PR 43 should not add broad provider/tool authority. It should implement:
+PR 44 should not expand direct authority. It should implement:
 
-1. a visible queue of fixture/local-green capabilities that may be promoted to
-   live use;
-2. explicit evidence requirements and blockers for each promotion candidate;
-3. operator opt-in transitions that remain blocked when evidence is stale or
-   missing;
-4. no automatic promotion from successful local tests alone;
-5. no recursive worker, app-server fallback, or workspace mutation authority
-   expansion from the promotion queue itself.
+1. a visible app-server fallback parity report over availability, selected lane,
+   startup/failure posture, reload/reconnect posture, and direct fallback
+   blockers;
+2. manual/Electron smoke coverage proving app-server fallback state remains
+   visible when direct state is blocked;
+3. stale/failure handling that does not silently reroute through direct or hide
+   app-server recovery posture;
+4. no automatic direct promotion from app-server parity alone;
+5. no new provider/tool/workspace mutation authority from fallback reporting.
 
 Current implementation note:
 
 ```text
-PR 42 added WorkThread/thread deck operator UX and a guarded local new-thread
-draft transition. The next problem is live capability promotion: fixture-green
-direct capabilities need an explicit evidence gate before becoming operator
-selectable live authority.
+PR 43 turned fixture/local-green direct capabilities into an explicit
+display-only promotion queue. The next problem is parity safety: direct failures
+must not erode the retained vanilla app-server path or make fallback state
+opaque.
 ```
 
 It should explicitly not mean:

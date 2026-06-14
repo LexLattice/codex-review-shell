@@ -2253,7 +2253,7 @@ Implemented:
 
 ### PR 43: Live Promotion Candidate Queue And Evidence Gate
 
-Status: planned.
+Status: implemented.
 
 Purpose:
 
@@ -2277,6 +2277,20 @@ Promotion criterion:
 Live-provider proof becomes a governed queue, not ad hoc manual testing or
 silent status inflation.
 ```
+
+Implemented notes:
+
+- Added `direct_live_promotion_candidate_queue@1` as a renderer-safe
+  display-only queue for direct text, read, patch, command, repair, recovery,
+  usage, and UI readiness promotion candidates.
+- Each candidate cites fixture/local evidence, required live evidence,
+  blockers, latest attempt status, and the next manual smoke class without
+  exposing a renderer-runner transition.
+- Added report-only attempt rows for skipped, blocked, failed, and passed
+  promotion attempts.
+- Confirmed promotion queue reports do not mutate defaults, matrix rows,
+  runtime selection, app-server fallback, recursive workers, provider
+  transport, or workspace mutation authority.
 
 ### PR 44: App-Server Fallback Parity Watchdog
 
