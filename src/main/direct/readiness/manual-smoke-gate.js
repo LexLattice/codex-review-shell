@@ -150,7 +150,10 @@ function buildRows(input = {}) {
   const electron = section(input.electronProjectionStatus || {});
   const runtimePath = normalizeString(runtime.currentPath || runtime.runtimePath || input.runtimeStatus?.selection?.runtimePath || input.runtimeStatus?.currentRuntimePath, "");
   const laneAvailable = Boolean(runtimePath || input.runtimeStatus?.currentCodexLane || runtime.lane);
-  const appServerAvailable = input.appServerFallbackAvailable === true || runtimePath === "app-server" || input.runtimeStatus?.appServerFallbackAvailable === true;
+  const appServerAvailable = input.appServerFallbackAvailable === true ||
+    runtimePath === "app-server" ||
+    input.runtimeStatus?.appServerFallbackAvailable === true ||
+    input.runtimeStatus?.diagnostics?.legacyAppServerAvailable === true;
   const selectedWorkThreadId = normalizeString(workThreadControl.selectedWorkThreadId || input.workThreadId, "");
   const contextPreviewAvailable = contextPreview.available === true || contextPreview.schema === "direct_context_packet_preview@1" || contextPreview.previewState === "ready";
   const implementationFacets = objectOrEmpty(implementation.facets);
@@ -309,9 +312,11 @@ function buildDirectManualSmokeGate(input = {}) {
   const rows = buildRows(source);
   const counts = summarizeCounts(rows);
   const blockerCodes = [...new Set(rows.flatMap((row) => row.blockerCodes))].sort();
+  const projectId = normalizeString(source.projectId, source.settingsProjection?.projectId || "");
+  const workThreadId = normalizeString(source.workThreadId, source.workThreadControl?.selectedWorkThreadId || source.settingsProjection?.sections?.workThreadControl?.selectedWorkThreadId || "");
   const sourceDigest = digestFor("direct-manual-smoke-gate-source@1", {
-    projectId: source.projectId,
-    workThreadId: source.workThreadId,
+    projectId,
+    workThreadId,
     rows: rows.map((row) => row.rowDigest),
   });
   const gateState = counts.requiredBlockedCount > 0
@@ -322,8 +327,8 @@ function buildDirectManualSmokeGate(input = {}) {
   const gate = {
     schema: DIRECT_MANUAL_SMOKE_GATE_SCHEMA,
     gateId: normalizeString(source.gateId, `direct_manual_smoke_gate_${sourceDigest.slice(0, 24)}`),
-    projectId: normalizeString(source.projectId, source.settingsProjection?.projectId || ""),
-    workThreadId: normalizeString(source.workThreadId, source.workThreadControl?.selectedWorkThreadId || source.settingsProjection?.sections?.workThreadControl?.selectedWorkThreadId || ""),
+    projectId,
+    workThreadId,
     generatedAt: normalizeString(source.generatedAt, nowIso(source.nowMs)),
     gateState,
     coverageSource: source.coverageSource === "electron_projection" ? "electron_projection" : "fixture_projection",

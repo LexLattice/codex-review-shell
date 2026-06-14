@@ -137,6 +137,26 @@ assert.equal(passingGate.authority.appServerReplacementAllowed, false);
 assert.equal(passingGate.authority.matrixPromotionAllowed, false);
 assertDirectManualSmokeGateSafe(passingGate);
 
+const nestedIdentityGate = buildDirectManualSmokeGate({
+  nowMs: 0,
+  settingsProjection: settingsFixture(),
+  implementationLaneUiStatus: implementationUiFixture(),
+  appServerFallbackAvailable: true,
+  subAgentProjection: {
+    schema: "direct_sub_agent_contained_tab_projection@1",
+    counts: { total: 1 },
+    projectionDigest: "digest_sub_agent_projection",
+  },
+  electronProjectionStatus: {
+    available: true,
+    digest: "digest_electron_projection",
+  },
+});
+assert.equal(nestedIdentityGate.projectId, projectId);
+assert.equal(nestedIdentityGate.workThreadId, workThreadId);
+assert.equal(nestedIdentityGate.sourceDigest, passingGate.sourceDigest);
+assert.equal(nestedIdentityGate.gateDigest, passingGate.gateDigest);
+
 const rowKinds = passingGate.rows.map((row) => row.checkKind).sort();
 assert.deepEqual(rowKinds, [
   "app_server_fallback",

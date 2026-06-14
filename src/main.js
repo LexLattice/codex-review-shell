@@ -81,6 +81,10 @@ const {
   buildDirectInformationBridgeAudit,
 } = require("./main/direct/bridge/information-registry");
 const {
+  assertDirectManualSmokeGateSafe,
+  buildDirectManualSmokeGate,
+} = require("./main/direct/readiness/manual-smoke-gate");
+const {
   buildBridgeModuleStatusProjection,
 } = require("./main/direct/bridge/skills-hooks-apps");
 const {
@@ -2341,13 +2345,16 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     status: "shadow_only",
   });
   const agentUsageStatus = buildDirectAgentUsageStatusForProject(projectId);
-  const projection = buildDirectSettingsSurfaceProjection({
+  const implementationLaneUiStatus = buildDirectImplementationLaneUiStatus({ project, runtimeStatus });
+  const generatedAt = nowIso();
+  const registryAudit = buildDirectInformationBridgeAudit({
+    branch: "codex/direct-chatgpt-harness",
+    generatedAt,
+  });
+  const projectionInput = {
     projectId,
     runtimeStatus,
-    registryAudit: buildDirectInformationBridgeAudit({
-      branch: "codex/direct-chatgpt-harness",
-      generatedAt: nowIso(),
-    }),
+    registryAudit,
     workThreads: {
       status: {
         available: false,
@@ -2372,6 +2379,20 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     agentClassStatus,
     continuityStatus: runtimeStatus.directContextMaintenance,
     agentUsageStatus,
+    generatedAt,
+  };
+  const baseProjection = buildDirectSettingsSurfaceProjection(projectionInput);
+  const manualSmokeGate = buildDirectManualSmokeGate({
+    ...projectionInput,
+    settingsProjection: baseProjection,
+    implementationLaneUiStatus,
+    appServerFallbackAvailable: runtimeStatus.diagnostics?.legacyAppServerAvailable === true,
+    generatedAt,
+  });
+  assertDirectManualSmokeGateSafe(manualSmokeGate);
+  const projection = buildDirectSettingsSurfaceProjection({
+    ...projectionInput,
+    manualSmokeGate,
   });
   assertDirectSettingsSurfaceRendererSafe(projection);
   return projection;
