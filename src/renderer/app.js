@@ -258,6 +258,7 @@ const els = {
   directBridgeSettingsAgentClassList: document.getElementById("directBridgeSettingsAgentClassList"),
   directBridgeSettingsContinuityList: document.getElementById("directBridgeSettingsContinuityList"),
   directBridgeSettingsAgentUsageList: document.getElementById("directBridgeSettingsAgentUsageList"),
+  directBridgeSettingsAppServerFallbackList: document.getElementById("directBridgeSettingsAppServerFallbackList"),
   directBridgeSettingsManualSmokeList: document.getElementById("directBridgeSettingsManualSmokeList"),
   directBridgeSettingsEvidence: document.getElementById("directBridgeSettingsEvidence"),
   projectList: document.getElementById("projectList"),
@@ -3087,6 +3088,7 @@ function renderDirectBridgeSettingsStatus() {
   const status = state.directBridgeSettingsStatus || {};
   const projectionOk = status.schema === "direct_settings_surface_projection@1";
   const authority = status.authority || {};
+  const fallback = status.sections?.appServerFallbackParity || {};
   const manualSmoke = directBridgeManualSmokeSummary(status);
   const blockedAuthority = [
     authority.runtimeMutationAllowed ? "runtime mutation" : "",
@@ -3098,6 +3100,7 @@ function renderDirectBridgeSettingsStatus() {
     authority.providerCompactionAllowed ? "provider compact" : "",
     authority.providerTransportAllowed ? "provider transport" : "",
     authority.workspaceMutationAllowed ? "workspace mutation" : "",
+    fallback.providerTransportAllowed || fallback.appServerSpawnAllowed || fallback.appServerReplacementAllowed || fallback.appServerMutationAllowed || fallback.runtimeSelectionMutationAllowed || fallback.workspaceMutationAllowed || fallback.recursiveWorkerAllowed || fallback.matrixPromotionAllowed ? "app-server fallback authority" : "",
     manualSmoke.unexpectedAuthority ? "manual smoke authority" : "",
   ].filter(Boolean);
   els.directBridgeSettingsBadge.textContent = state.directBridgeSettingsLoading
@@ -3126,6 +3129,7 @@ function renderDirectBridgeSettingsStatus() {
   renderDirectDiagnosticsRows(els.directBridgeSettingsAgentClassList, directBridgeSettingsRows("agentClasses"));
   renderDirectDiagnosticsRows(els.directBridgeSettingsContinuityList, directBridgeSettingsRows("continuity"));
   renderDirectDiagnosticsRows(els.directBridgeSettingsAgentUsageList, directBridgeSettingsRows("agentUsage"));
+  renderDirectDiagnosticsRows(els.directBridgeSettingsAppServerFallbackList, directBridgeSettingsRows("appServerFallbackParity"), "App-server fallback parity is not exposed by the current projection.");
   renderDirectDiagnosticsRows(els.directBridgeSettingsManualSmokeList, directBridgeSettingsRows("manualSmokeGate"), "Manual smoke gate is not exposed by the current projection.");
   if (els.directBridgeSettingsEvidence) {
     if (state.directBridgeSettingsError) {

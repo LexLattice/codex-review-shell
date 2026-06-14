@@ -86,6 +86,9 @@ const {
   buildDirectManualSmokeGate,
 } = require("./main/direct/readiness/manual-smoke-gate");
 const {
+  buildAppServerFallbackParityReport,
+} = require("./main/direct/readiness/appserver-fallback-parity");
+const {
   buildBridgeModuleStatusProjection,
 } = require("./main/direct/bridge/skills-hooks-apps");
 const {
@@ -2271,6 +2274,7 @@ function buildDirectRuntimeStatusForProject(project, options = {}) {
   const projectId = normalizeString(project?.id, "");
   const sessionStoreStatus = sessionStore.status({ projectId });
   const activationStoreStatus = projectId ? activationStore.statusForProject(projectId) : {};
+  const legacySession = currentLegacyAppServerSnapshot();
   const activationEvaluation = evaluateDirectExperimentalProjectActivation({
     project,
     authSettings,
@@ -2309,7 +2313,7 @@ function buildDirectRuntimeStatusForProject(project, options = {}) {
     activation: activationEvaluation.status,
     fixtureRuntime: { available: true, capabilities: buildDirectFixtureCapabilities() },
     liveTextRuntime: { available: true, status: liveTextStatus, capabilities: buildDirectLiveTextCapabilities(liveTextStatus) },
-    legacySession: currentLegacyAppServerSnapshot(),
+    legacySession,
   });
   runtimeStatus.directTextOnly = {
     ...(runtimeStatus.directTextOnly || {}),
@@ -2334,6 +2338,13 @@ function buildDirectRuntimeStatusForProject(project, options = {}) {
     threadStoreForContext = ensureDirectThreadStore();
   } catch {}
   runtimeStatus.directContextMaintenance = buildDirectContextMaintenanceRuntimeStatus(project, sessionStore, threadStoreForContext);
+  runtimeStatus.appServerFallbackParity = buildAppServerFallbackParityReport({
+    projectId,
+    runtimeStatus,
+    legacySession,
+    directFallbackBlockers: implementationBlockers,
+    generatedAt: runtimeStatus.generatedAt,
+  });
   return runtimeStatus;
 }
 
@@ -2357,6 +2368,11 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
   });
   const agentUsageStatus = buildDirectAgentUsageStatusForProject(projectId);
   const implementationLaneUiStatus = buildDirectImplementationLaneUiStatus({ project, runtimeStatus });
+  const appServerFallbackParity = runtimeStatus.appServerFallbackParity || buildAppServerFallbackParityReport({
+    projectId,
+    runtimeStatus,
+    legacySession: currentLegacyAppServerSnapshot(),
+  });
   const generatedAt = nowIso();
   const registryAudit = buildDirectInformationBridgeAudit({
     branch: "codex/direct-chatgpt-harness",
@@ -2390,6 +2406,7 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     agentClassStatus,
     continuityStatus: runtimeStatus.directContextMaintenance,
     agentUsageStatus,
+    appServerFallbackParityReport: appServerFallbackParity,
     generatedAt,
   };
   const baseProjection = buildDirectSettingsSurfaceProjection(projectionInput);
@@ -2397,6 +2414,7 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     ...projectionInput,
     settingsProjection: baseProjection,
     implementationLaneUiStatus,
+    appServerFallbackParityReport: appServerFallbackParity,
     appServerFallbackAvailable: runtimeStatus.diagnostics?.legacyAppServerAvailable === true,
     generatedAt,
   });

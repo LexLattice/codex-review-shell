@@ -594,39 +594,37 @@ new live-provider or recursive authority is considered.
 
 ## 9. Immediate Next Spec
 
-The next spec should target Wave 7 PR 44:
+The next spec should target Wave 7 PR 45:
 
 ```text
-App-server fallback parity watchdog.
+Usage/quota/model witness polish.
 ```
 
-PR 43 is now implemented. The direct implementation-lane UI exposes a
-renderer-safe live promotion candidate queue for fixture/local-green direct
-text, read, patch, command, repair, recovery, usage, and UI readiness
-capabilities. Each candidate cites fixture/local evidence, required live
-evidence, blockers, latest attempt status, and next manual smoke class without
-granting provider transport, workspace mutation, recursive worker, app-server
-fallback, matrix-row mutation, or default-mutation authority.
+PR 44 is now implemented. The direct settings surface exposes a renderer-safe
+app-server fallback parity report over fallback availability, selected lane,
+startup/failure posture, reload/reconnect posture, and direct blockers. The
+same report feeds manual smoke and Electron settings smoke, and it grants no
+provider transport, app-server spawn/replacement, runtime-selection mutation,
+workspace mutation, recursive worker, or matrix-promotion authority.
 
-PR 44 should not expand direct authority. It should implement:
+PR 45 should not expand direct runtime authority. It should implement:
 
-1. a visible app-server fallback parity report over availability, selected lane,
-   startup/failure posture, reload/reconnect posture, and direct fallback
-   blockers;
-2. manual/Electron smoke coverage proving app-server fallback state remains
-   visible when direct state is blocked;
-3. stale/failure handling that does not silently reroute through direct or hide
-   app-server recovery posture;
-4. no automatic direct promotion from app-server parity alone;
-5. no new provider/tool/workspace mutation authority from fallback reporting.
+1. aligned model, reasoning, quota/rate, usage, and drift witness rows in the
+   direct settings/control surface;
+2. explicit unknown/unavailable/stale states instead of invented defaults;
+3. manual-smoke visibility for the witness rows needed before broader direct
+   promotion;
+4. no cost computation as capture-time runtime truth;
+5. no provider transport, quota read, or model mutation authority from witness
+   display.
 
 Current implementation note:
 
 ```text
-PR 43 turned fixture/local-green direct capabilities into an explicit
-display-only promotion queue. The next problem is parity safety: direct failures
-must not erode the retained vanilla app-server path or make fallback state
-opaque.
+PR 44 made app-server fallback parity explicit and display-only. The next
+problem is runtime witness polish: model/reasoning/quota/usage/drift rows need
+to agree across the settings surface and smoke gates before any broader direct
+promotion.
 ```
 
 It should explicitly not mean:
