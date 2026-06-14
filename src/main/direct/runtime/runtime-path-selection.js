@@ -14,6 +14,7 @@ function normalizeDirectRuntimePath(value, fallback = "app-server") {
   const candidate = normalizeString(value, fallback).toLowerCase();
   if (candidate === "legacy-app-server" || candidate === "legacy_app_server") return "app-server";
   if (candidate === "appserver" || candidate === "app_server" || candidate === "managed") return "app-server";
+  if (candidate === "direct" || candidate === "direct_oai" || candidate === "direct-oai") return "direct-text";
   if (candidate === "text-only" || candidate === "text_only") return "direct-text";
   if (candidate === "direct-live-text" || candidate === "direct_text" || candidate === "direct-text-only") return "direct-text";
   if (candidate === "implementation" || candidate === "implementation-lane") return "direct-implementation";
@@ -66,8 +67,7 @@ function bindingForDirectRuntimePath(binding, runtimePath) {
 
 function directRuntimePathLabel(runtimePath) {
   const path = normalizeDirectRuntimePath(runtimePath);
-  if (path === "direct-text") return "Direct Text";
-  if (path === "direct-implementation") return "Direct Tools";
+  if (path === "direct-text" || path === "direct-implementation") return "Direct";
   return "App Server";
 }
 

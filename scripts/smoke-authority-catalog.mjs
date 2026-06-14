@@ -64,6 +64,7 @@ assert.equal(hasFullCodexBridge(external), false);
 
 assert.equal(isAllowedCodexClientRequestMethod("turn/start"), true);
 assert.equal(isAllowedCodexClientRequestMethod("account/login/start"), true);
+assert.equal(isAllowedCodexClientRequestMethod("thread/list"), true);
 assert.equal(isAllowedCodexClientRequestMethod("thread/rollback"), true);
 assert.equal(isAllowedCodexClientRequestMethod("thread/delete"), false);
 assert.equal(isAllowedCodexClientNotificationMethod("initialized"), true);
@@ -75,10 +76,11 @@ const readyCapabilities = {
   configRequirements: { canRead: true },
   usage: { canReadRateLimits: true },
   model: { canList: true },
-  threads: { canStart: true, canResume: true, canRead: true, canRollback: true },
+  threads: { canStart: true, canResume: true, canRead: true, canList: true, canRollback: true },
   turns: { canStart: true, canSteer: true, canInterrupt: true },
 };
 assert.equal(codexClientRequestDecision("turn/start", readyCapabilities).ok, true);
+assert.equal(codexClientRequestDecision("thread/list", readyCapabilities).ok, true);
 assert.equal(codexClientRequestDecision("account/rateLimits/read", readyCapabilities).ok, true);
 assert.equal(codexClientRequestDecision("turn/start", { coreRuntime: { canInitialize: true } }).ok, false);
 assert.equal(codexClientRequestDecision("thread/delete", readyCapabilities).reason, "method_not_allowlisted");

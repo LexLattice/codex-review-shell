@@ -125,6 +125,7 @@ const state = {
   runtimeConstitution: null,
   runtimeDrawerOpen: false,
   runtimeDrawerTab: "runtime",
+  directSurfaceProjection: payload.directSurfaceProjection || connection?.directSurfaceProjection || null,
   directUiStatus: null,
   directUiStatusState: "idle",
   directUiStatusError: "",
@@ -805,6 +806,35 @@ function providerSettingsProjection() {
   return providerProfile()?.settingsProjection || {};
 }
 
+function directSurfaceProjection() {
+  const projection = state.directSurfaceProjection || connection?.directSurfaceProjection || null;
+  return projection?.schema === "direct_codex_surface_projection@1" ? projection : null;
+}
+
+function directComposerWitness() {
+  const witness = directSurfaceProjection()?.composerRuntimeWitness || null;
+  return witness?.schema === "direct_composer_runtime_witness@1" ? witness : null;
+}
+
+function directRuntimeWitnessChip(kind) {
+  const chips = directSurfaceProjection()?.runtimeWitnessProjection?.chips;
+  return Array.isArray(chips) ? chips.find((chip) => String(chip?.kind || "") === kind) || null : null;
+}
+
+function directModelLabel() {
+  const witness = directComposerWitness();
+  const label = String(witness?.modelLabel || "").trim();
+  if (!label || label === "model unknown") return "";
+  return label;
+}
+
+function directReasoningLabel() {
+  const witness = directComposerWitness();
+  const label = String(witness?.reasoningLabel || "").trim();
+  if (!label || label === "reasoning unknown") return "";
+  return label;
+}
+
 function settingScopeEnabled(scope) {
   return Boolean(scope?.nextTurn || scope?.sessionDefault || scope?.projectDefault || scope?.liveThread);
 }
@@ -854,6 +884,7 @@ function supportedReasoningOptions() {
 }
 
 function reasoningLabel() {
+  if (isDirectLiveTextSurface()) return state.runtimeOverrides.reasoningEffort || directReasoningLabel() || project?.codex?.reasoningEffort || "unknown";
   return state.runtimeOverrides.reasoningEffort || project?.codex?.reasoningEffort || selectedModel()?.defaultReasoningEffort || "unknown";
 }
 
@@ -1041,6 +1072,13 @@ function formatQuotaHeader() {
 }
 
 function composerQuotaLabel() {
+  if (isDirectLiveTextSurface()) {
+    const witness = directComposerWitness();
+    const quota = String(witness?.quotaLabel || "").trim();
+    const usage = String(witness?.usageLabel || "").trim();
+    if (quota && usage && usage !== "usage unknown") return `${quota} / ${usage}`;
+    if (quota) return quota;
+  }
   const snapshot = selectRateLimitSnapshot();
   if (!snapshot) return state.rateLimitsStatus === "failed" ? "quota unavailable" : "quota unknown";
   const windows = quotaWindows(snapshot).sort((a, b) =>
@@ -1101,6 +1139,31 @@ function remainingContextPercent(tokensInWindow, contextWindow) {
 }
 
 function contextUsageProjection() {
+  if (isDirectLiveTextSurface()) {
+    const witness = directComposerWitness();
+    const projection = directSurfaceProjection();
+    const contextLabel = String(witness?.contextLabel || "").trim();
+    const contextState = String(witness?.contextState || "unknown").trim();
+    const preview = projection?.contextPreview || {};
+    const summary = preview.rendererSafeSummary || {};
+    const blockerCount = Number(summary.blockerCount || 0);
+    const sourceClasses = Array.isArray(summary.sourceClasses) ? summary.sourceClasses : [];
+    const label = [
+      contextLabel || "context preview unknown",
+      sourceClasses.length ? `sources: ${sourceClasses.join(", ")}` : "",
+      blockerCount ? `${blockerCount} blocker${blockerCount === 1 ? "" : "s"}` : "",
+    ].filter(Boolean).join(" · ");
+    return {
+      label,
+      compactLabel: contextLabel || "context unknown",
+      status: blockerCount ? "blocked" : contextState === "diagnostic" ? "available" : contextState || "unknown",
+      evidenceRefs: [evidenceRef("direct_context_packet_preview", label, {
+        status: blockerCount ? "blocked" : "fresh",
+        confidence: preview.previewDigest ? "declared" : "unknown",
+      })],
+      directContextPreview: preview,
+    };
+  }
   const usage = state.tokenUsage;
   if (!usage) {
     const status = state.tokenUsageStatus === "failed" ? "failed" : "not_exposed";
@@ -1336,8 +1399,26 @@ function buildRuntimeConstitution() {
       "thread/tokenUsage/updated",
     ...projectedContextUsage,
   };
-  const usageLabel = providerQuota.status === "available"
-    ? providerQuota.label
+  const directWitness = isDirectLiveTextSurface() ? directComposerWitness() : null;
+  const directQuotaChip = isDirectLiveTextSurface() ? directRuntimeWitnessChip("quota") : null;
+  const directModelDisplay = isDirectLiveTextSurface() ? directModelLabel() : "";
+  const directReasoningDisplay = isDirectLiveTextSurface() ? directReasoningLabel() : "";
+  const effectiveProviderQuota = directWitness ? {
+    canRead: false,
+    readMethod: "",
+    eventName: "",
+    label: directWitness.quotaLabel || "quota unknown",
+    status: directWitness.quotaState === "blocked" ? "blocked" : "not_exposed",
+    error: "",
+    evidenceRefs: [evidenceRef("direct_runtime_witness", directQuotaChip?.label || "Direct quota/rate witness", {
+      status: directWitness.quotaState || "unknown",
+      confidence: directWitness.runtimeWitnessDigest ? "declared" : "unknown",
+    })],
+  } : providerQuota;
+  const usageLabel = directWitness?.usageLabel && directWitness.usageLabel !== "usage unknown"
+    ? directWitness.usageLabel
+    : effectiveProviderQuota.status === "available"
+      ? effectiveProviderQuota.label
     : contextPressure.status === "available"
       ? contextPressure.label
       : turnCount || commandCount || approvalCount || toolCallCount
@@ -1371,8 +1452,8 @@ function buildRuntimeConstitution() {
     },
     account,
     model: {
-      label: modelLabel(),
-      source: state.runtimeOverrides.model ? "operator_requested" : state.activeModel ? "runtime_reported" : project?.codex?.model ? "project_config" : defaultModelId() ? "runtime_default" : "unknown",
+      label: directModelDisplay || modelLabel(),
+      source: directModelDisplay ? "direct_runtime_witness" : state.runtimeOverrides.model ? "operator_requested" : state.activeModel ? "runtime_reported" : project?.codex?.model ? "project_config" : defaultModelId() ? "runtime_default" : "unknown",
       selection: {
         canList: settingsProjection.model?.canList === true && state.modelListStatus === "ready",
         canSetNextTurn: canOverrideModel,
@@ -1383,17 +1464,17 @@ function buildRuntimeConstitution() {
         unsupportedReason: canOverrideModel ? "" : "Provider profile does not expose next-turn model override.",
       },
       models: state.models,
-      selectedId: activeModelId(),
-      truth: state.runtimeOverrides.model ? "operator_requested" : state.activeModel ? "runtime_declared" : project?.codex?.model ? "project_configured" : defaultModelId() ? "runtime_declared" : "unknown",
+      selectedId: activeModelId() || directModelDisplay,
+      truth: directModelDisplay ? "runtime_declared" : state.runtimeOverrides.model ? "operator_requested" : state.activeModel ? "runtime_declared" : project?.codex?.model ? "project_configured" : defaultModelId() ? "runtime_declared" : "unknown",
       evidenceRefs: [
-        evidenceRef(state.runtimeOverrides.model ? "operator_action" : state.activeModel || defaultModelId() ? "app_server_probe" : "project_config", state.runtimeOverrides.model ? "Operator selected model for subsequent turns" : state.activeModel ? "Thread/model response" : defaultModelId() ? "model/list default model" : "Project model setting", {
-          confidence: state.runtimeOverrides.model ? "configured" : state.activeModel || defaultModelId() ? "declared" : project?.codex?.model ? "configured" : "unknown",
+        evidenceRef(directModelDisplay ? "direct_runtime_witness" : state.runtimeOverrides.model ? "operator_action" : state.activeModel || defaultModelId() ? "app_server_probe" : "project_config", directModelDisplay ? directRuntimeWitnessChip("model")?.label || "Direct runtime model witness" : state.runtimeOverrides.model ? "Operator selected model for subsequent turns" : state.activeModel ? "Thread/model response" : defaultModelId() ? "model/list default model" : "Project model setting", {
+          confidence: directModelDisplay ? "declared" : state.runtimeOverrides.model ? "configured" : state.activeModel || defaultModelId() ? "declared" : project?.codex?.model ? "configured" : "unknown",
         }),
       ],
     },
     reasoning: {
-      label: `reasoning: ${reasoningLabel()}`,
-      selected: reasoningLabel(),
+      label: `reasoning: ${directReasoningDisplay || reasoningLabel()}`,
+      selected: directReasoningDisplay || reasoningLabel(),
       supported: supportedReasoningOptions(),
       selection: {
         canSetNextTurn: canOverrideReasoning,
@@ -1403,10 +1484,10 @@ function buildRuntimeConstitution() {
         enabledScopes: canOverrideReasoning ? ["next_turn"] : [],
         unsupportedReason: canOverrideReasoning ? "" : "Provider profile does not expose next-turn reasoning override.",
       },
-      truth: state.runtimeOverrides.reasoningEffort ? "operator_requested" : project?.codex?.reasoningEffort ? "project_configured" : selectedModel()?.defaultReasoningEffort ? "runtime_declared" : "unknown",
+      truth: directReasoningDisplay ? "runtime_declared" : state.runtimeOverrides.reasoningEffort ? "operator_requested" : project?.codex?.reasoningEffort ? "project_configured" : selectedModel()?.defaultReasoningEffort ? "runtime_declared" : "unknown",
       evidenceRefs: [
-        evidenceRef(state.runtimeOverrides.reasoningEffort ? "operator_action" : "project_config", state.runtimeOverrides.reasoningEffort ? "Operator selected reasoning effort for subsequent turns" : project?.codex?.reasoningEffort ? "Project reasoning effort setting" : "Model default reasoning effort", {
-          confidence: state.runtimeOverrides.reasoningEffort || project?.codex?.reasoningEffort ? "configured" : selectedModel()?.defaultReasoningEffort ? "declared" : "unknown",
+        evidenceRef(directReasoningDisplay ? "direct_runtime_witness" : state.runtimeOverrides.reasoningEffort ? "operator_action" : "project_config", directReasoningDisplay ? directRuntimeWitnessChip("reasoning")?.label || "Direct runtime reasoning witness" : state.runtimeOverrides.reasoningEffort ? "Operator selected reasoning effort for subsequent turns" : project?.codex?.reasoningEffort ? "Project reasoning effort setting" : "Model default reasoning effort", {
+          confidence: directReasoningDisplay ? "declared" : state.runtimeOverrides.reasoningEffort || project?.codex?.reasoningEffort ? "configured" : selectedModel()?.defaultReasoningEffort ? "declared" : "unknown",
         }),
       ],
     },
@@ -1441,8 +1522,8 @@ function buildRuntimeConstitution() {
     },
     usage: {
       label: usageLabel,
-      status: providerQuota.status === "available" || contextPressure.status === "available" || turnCount || commandCount || approvalCount || toolCallCount ? "available" : "unknown",
-      providerQuota,
+      status: effectiveProviderQuota.status === "available" || contextPressure.status === "available" || directWitness?.usageState === "fresh" || turnCount || commandCount || approvalCount || toolCallCount ? "available" : "unknown",
+      providerQuota: effectiveProviderQuota,
       contextPressure,
       activity: {
         turnCount,
@@ -1669,6 +1750,26 @@ async function refreshDirectImplementationUi({ force = false } = {}) {
     state.directUiStatusError = error?.message || "Direct implementation UI status unavailable.";
   }
   renderRuntimeConstitution();
+}
+
+async function refreshDirectSurfaceProjection(options = {}) {
+  if (!project?.id || !isDirectLiveTextSurface() || typeof bridge?.getDirectCodexSurfaceProjection !== "function") return null;
+  try {
+    const projection = await bridge.getDirectCodexSurfaceProjection(project.id);
+    if (projection?.schema === "direct_codex_surface_projection@1") {
+      state.directSurfaceProjection = projection;
+      if (connection) connection = { ...connection, directSurfaceProjection: projection };
+      if (options.render !== false) {
+        renderRuntimeConstitution();
+        renderComposerRuntimeBand();
+        renderDirectThreadList();
+      }
+      return projection;
+    }
+  } catch (error) {
+    if (options.showErrors) addSystemMessage(`Direct surface projection refresh failed: ${error.message}`);
+  }
+  return null;
 }
 
 function openRuntimeDrawer(tab = "runtime") {
@@ -2265,6 +2366,10 @@ function serviceTierOptions() {
 }
 
 function compactModelLabel() {
+  if (isDirectLiveTextSurface()) {
+    const directLabel = directModelLabel();
+    if (directLabel) return directLabel.replace(/^GPT-/i, "GPT-");
+  }
   const model = selectedModel();
   const label = model?.displayName || model?.model || activeModelId() || "default";
   return label.replace(/^GPT-/i, "GPT-");
@@ -3925,6 +4030,10 @@ function rememberPromptTurn(turnId, text, retryCount = 0) {
 async function retryEmptyTurn(turnId) {
   const id = String(turnId || "").trim();
   if (!id || state.emptyTurnRetrying.has(id)) return;
+  if (!hasCapability("threads", "canRollback")) {
+    addSystemMessage("Codex completed without output, but this runtime does not expose rollback/retry capability.");
+    return;
+  }
   const prompt = state.turnPromptMap.get(id);
   const retryCount = state.turnRetryCountMap.get(id) || 0;
   if (!prompt || retryCount >= EMPTY_TURN_AUTO_RETRY_LIMIT) return;
@@ -3975,7 +4084,13 @@ function renderTurnCompletionNotice(turnId, turn) {
   }
   const prompt = state.turnPromptMap.get(id);
   const retryCount = state.turnRetryCountMap.get(id) || 0;
-  if (prompt && retryCount < EMPTY_TURN_AUTO_RETRY_LIMIT && state.threadId && state.connected) {
+  if (
+    prompt &&
+    retryCount < EMPTY_TURN_AUTO_RETRY_LIMIT &&
+    state.threadId &&
+    state.connected &&
+    hasCapability("threads", "canRollback")
+  ) {
     addSystemMessage(
       `Codex accepted the prompt but completed${duration} without assistant, tool, or reasoning output. This empty turn will be rolled back and retried once.`,
     );
@@ -4087,6 +4202,16 @@ function directThreadActionEnabled(entry = {}, actionName = "") {
   return action.enabled === true;
 }
 
+function activeDirectThreadRow() {
+  const threadId = String(state.threadId || "");
+  if (!threadId) return null;
+  const rows = Array.isArray(state.directThreadDeck?.rows) ? state.directThreadDeck.rows : state.directThreadList;
+  return (Array.isArray(rows) ? rows : []).find((entry) => {
+    const id = String(entry?.threadId || entry?.id || entry?.sessionId || "");
+    return id && id === threadId;
+  }) || null;
+}
+
 function renderDirectThreadList() {
   if (!els.directThreadStrip || !els.directThreadList || !els.directThreadStatus) return;
   const enabled = isDirectLiveTextSurface();
@@ -4116,11 +4241,20 @@ function renderDirectThreadList() {
   } else {
     const activeCount = Number(state.directThreadDeck?.counts?.running ?? threads.filter((entry) => entry && Number(entry.activeTurnCount || 0) > 0).length);
     const recoverableCount = Number(state.directThreadDeck?.counts?.recoverableInterrupted || 0);
+    const projection = directSurfaceProjection();
+    const workThreadCount = Number(projection?.workThreads?.status?.workThreadCount || state.directThreadDeck?.counts?.workThreadScoped || 0);
+    const broker = projection?.operatorBroker || {};
+    const brokerSuffix = broker.clarificationRequired
+      ? " · target clarification needed"
+      : broker.selectedWorkThreadId
+        ? " · target resolved"
+        : "";
     els.directThreadStatus.textContent = [
       `${threads.length} direct session${threads.length === 1 ? "" : "s"}`,
+      `${workThreadCount} WorkThread${workThreadCount === 1 ? "" : "s"}`,
       activeCount ? `${activeCount} running` : "",
       recoverableCount ? `${recoverableCount} recoverable` : "",
-    ].filter(Boolean).join(" · ");
+    ].filter(Boolean).join(" · ") + brokerSuffix;
   }
 
   els.directThreadList.replaceChildren();
@@ -6715,6 +6849,32 @@ async function startNewThread() {
   if (!hasCapability("threads", "canStart")) {
     throw new Error("Active Codex runtime does not expose thread/start capability.");
   }
+  if (isDirectLiveTextSurface() && typeof bridge?.createDirectWorkThreadDraftSession === "function" && project?.id) {
+    state.directThreadOpenRequestId += 1;
+    const result = await bridge.createDirectWorkThreadDraftSession(project.id, {
+      clientDraftId: `codex_surface_new_thread_${Date.now()}`,
+      title: `${project?.name || "Direct"} direct session`,
+      objectiveSummary: "Operator-created direct Codex session from the Codex plane.",
+      contextPosture: "fresh_session_only",
+      model: activeModelId() || null,
+      reasoningEffort: requestedReasoningEffort() || null,
+    });
+    if (result?.status === "created" && result.thread) {
+      clearRenderedThreadState();
+      state.sourceHome = "";
+      state.sessionFilePath = "";
+      bindThread(result.thread, result.thread.model || activeModelId() || null);
+      addSystemMessage(`Created WorkThread-backed direct session${result.workThread?.workThreadId ? ` (${result.workThread.workThreadId})` : ""}.`);
+      await persistRuntimePreferences("thread-model");
+      await refreshDirectSurfaceProjection({ render: false });
+      await refreshDirectThreadList({ showErrors: false });
+      renderRuntimeConstitution();
+      return;
+    }
+    const blockers = Array.isArray(result?.draft?.blockerCodes) ? result.draft.blockerCodes.filter(Boolean).join(", ") : "";
+    addSystemMessage(`Direct WorkThread draft did not create a session${blockers ? `: ${blockers}` : "."}`);
+    return;
+  }
   if (isDirectLiveTextSurface()) state.directThreadOpenRequestId += 1;
   const cwd = workspaceRootText();
   const params = {
@@ -6733,6 +6893,7 @@ async function startNewThread() {
   state.sessionFilePath = "";
   bindThread(result.thread, result.model);
   await persistRuntimePreferences("thread-model");
+  await refreshDirectSurfaceProjection({ render: false });
   await refreshDirectThreadList({ showErrors: false });
 }
 
@@ -6740,6 +6901,7 @@ async function startCodexTurn(text, options = {}) {
   if (!hasCapability("turns", "canStart")) {
     throw new Error("Active Codex runtime does not expose turn/start capability.");
   }
+  if (isDirectLiveTextSurface()) await refreshDirectSurfaceProjection({ render: false });
   const params = {
     threadId: state.threadId,
     input: [{ type: "text", text, text_elements: [] }],
@@ -6750,6 +6912,25 @@ async function startCodexTurn(text, options = {}) {
     if (connection?.transport === DIRECT_LIVE_TEXT_TRANSPORT) {
       params.clientTurnRequestId = options.clientTurnRequestId || createClientTurnRequestId();
       params.promptText = text;
+      const directProjection = directSurfaceProjection();
+      const activeRow = activeDirectThreadRow();
+      const selectedWorkThreadId = activeRow?.workThreadId ||
+        directProjection?.operatorBroker?.selectedWorkThreadId ||
+        directProjection?.workThreads?.resolutionReport?.selectedWorkThreadId ||
+        "";
+      if (selectedWorkThreadId) {
+        params.workThreadId = selectedWorkThreadId;
+        params.requireControlledRouting = true;
+      }
+      if (directProjection?.contextPreview?.previewDigest) {
+        params.contextPreviewDigest = directProjection.contextPreview.previewDigest;
+      }
+      if (directProjection?.operatorBroker?.projectionDigest || directProjection?.operatorBroker?.brokerResolutionDigest) {
+        params.operatorBrokerResolutionDigest = directProjection.operatorBroker.projectionDigest || directProjection.operatorBroker.brokerResolutionDigest;
+      }
+      if (directProjection?.workThreads?.resolutionReport?.reportDigest) {
+        params.workTargetResolutionReportDigest = directProjection.workThreads.resolutionReport.reportDigest;
+      }
     }
     params.attachmentDrafts = Array.isArray(options.attachments) ? options.attachments : [];
     params.attachmentDraftSetDigest = options.attachmentDraftSetDigest || "";
@@ -6771,6 +6952,7 @@ async function startCodexTurn(text, options = {}) {
       activity.durationMs = null;
     }
     rememberPromptTurn(turnId, text, options.retryCount || 0);
+    refreshDirectSurfaceProjection({ render: false }).catch(() => {});
     renderRuntimeConstitution();
   }
   return result;
@@ -7125,6 +7307,7 @@ function handleNotification(method, params) {
       collapseThoughtProcess(completedTurnId);
       finalizeTurnMessages(completedTurnId);
       renderTurnCompletionNotice(completedTurnId, params?.turn || {});
+      refreshDirectSurfaceProjection({ render: false }).catch(() => {});
       refreshDirectThreadList({ showErrors: false }).catch(() => {});
       scheduleQueuedPromptDrain("turn-completed");
     }
@@ -7162,7 +7345,12 @@ function handleBridgeEvent(event) {
     return;
   }
   if (event.type === "connection-status") {
-    if (event.connection) connection = { ...connection, ...event.connection };
+    if (event.connection) {
+      connection = { ...connection, ...event.connection };
+      if (event.connection.directSurfaceProjection?.schema === "direct_codex_surface_projection@1") {
+        state.directSurfaceProjection = event.connection.directSurfaceProjection;
+      }
+    }
     if (event.status === "connected") {
       state.connected = true;
       state.connectionStatus = "connected";
@@ -7356,8 +7544,12 @@ async function connect() {
   renderDirectThreadList();
   const connectedSession = await bridge.connect(connection);
   if (connectedSession?.connection) connection = { ...connection, ...connectedSession.connection };
+  if (connection?.directSurfaceProjection?.schema === "direct_codex_surface_projection@1") {
+    state.directSurfaceProjection = connection.directSurfaceProjection;
+  }
   state.connected = true;
   state.connectionStatus = "connected";
+  await refreshDirectSurfaceProjection({ render: false });
   renderRuntimeConstitution();
   renderDirectThreadList();
   try {

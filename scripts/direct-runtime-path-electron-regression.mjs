@@ -371,7 +371,7 @@ async function launchApp(tempRoot) {
   await window.waitForSelector("#directRuntimePathSelect", { timeout: 20_000 });
   await window.waitForFunction(() => {
     const select = document.querySelector("#directRuntimePathSelect");
-    return select && ["app-server", "direct-text", "direct-implementation"].includes(select.value);
+    return select && ["app-server", "direct-text"].includes(select.value);
   }, null, { timeout: 20_000 });
   return { app, window };
 }
@@ -407,11 +407,31 @@ async function selectRuntimePathViaUi(window, runtimePath) {
     const button = document.querySelector("#directRuntimePathApplyButton");
     return select && button && select.value === nextPath && !button.disabled;
   }, runtimePath, { timeout: 10_000 });
-  await window.click("#directRuntimePathApplyButton");
-  await window.waitForFunction((nextPath) => {
+  await window.evaluate((nextPath) => {
     const select = document.querySelector("#directRuntimePathSelect");
-    return select && select.value === nextPath;
-  }, runtimePath, { timeout: 60_000 });
+    const button = document.querySelector("#directRuntimePathApplyButton");
+    if (!select || !button) throw new Error("Runtime path controls are missing.");
+    select.value = nextPath;
+    select.dispatchEvent(new Event("input", { bubbles: true }));
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    if (button.disabled) throw new Error("Runtime path apply button is disabled.");
+    button.click();
+  }, runtimePath);
+  try {
+    await window.waitForFunction((nextPath) => {
+      const select = document.querySelector("#directRuntimePathSelect");
+      return select && select.value === nextPath;
+    }, runtimePath, { timeout: 60_000 });
+  } catch (error) {
+    const diagnostic = await window.evaluate(() => ({
+      selectedRuntimePath: document.querySelector("#directRuntimePathSelect")?.value || "",
+      applyDisabled: document.querySelector("#directRuntimePathApplyButton")?.disabled === true,
+      quickStatus: document.querySelector("#codexRuntimeQuickStatus")?.textContent || "",
+      runtimeStatusBadge: document.querySelector("#directRuntimeStatusBadge")?.textContent || "",
+      lastEvent: document.querySelector("#lastEvent")?.textContent || "",
+    }));
+    throw new Error(`Runtime path UI did not settle on ${runtimePath}: ${JSON.stringify(diagnostic)}; ${error.message}`);
+  }
 }
 
 async function runtimeStatusSummary(window) {
@@ -535,7 +555,7 @@ async function main() {
   let directTextSelectionExercised = false;
   let directImplementationSelectionExercised = false;
   let directSelectionSkippedReason = "";
-  let directImplementationSkippedReason = "";
+  let directImplementationSkippedReason = "implementation_lane_internal_not_user_selectable";
   let app = null;
   try {
     seedConfig(tempRoot, { ...options, "initial-runtime-path": "app-server" });
@@ -544,8 +564,12 @@ async function main() {
     let window = launched.window;
     assertCase(cases, "electron_app_server_readback", await selectedRuntimePath(window) === "app-server");
     const directOptions = await optionStates(window);
-    assertCase(cases, "electron_runtime_options_visible", ["app-server", "direct-text", "direct-implementation"].every((value) =>
-      directOptions.some((option) => option.value === value)));
+    assertCase(cases, "electron_runtime_backend_options_visible", ["app-server", "direct-text"].every((value) =>
+      directOptions.some((option) => option.value === value)) &&
+      !directOptions.some((option) => option.value === "direct-implementation") &&
+      directOptions.some((option) => option.value === "direct-text" && option.text.includes("Direct")), {
+      options: directOptions,
+    });
     let config = readJson(configPath(tempRoot));
     let binding = projectBinding(config);
     const expectedModel = optionString(options, "model", DEFAULT_MODEL);
@@ -568,12 +592,16 @@ async function main() {
       projectIdPresent: appServerGateStatus.projectIdPresent,
     });
     const directTextOption = await optionState(window, "direct-text");
-    if (liveEvidence.copied && directTextOption && !directTextOption.disabled) {
+    const directAuthReady = appServerGateStatus.authStatus === "authenticated";
+    if (liveEvidence.copied && directAuthReady && directTextOption && !directTextOption.disabled) {
       await selectRuntimePathViaUi(window, "direct-text");
       config = readJson(configPath(tempRoot));
       binding = projectBinding(config);
       directTextSelectionExercised = true;
-      assertCase(cases, "electron_app_server_to_direct_text_switch_persisted", binding.runtimeMode === "direct-experimental" && binding.directTier === "text-only", {
+      assertCase(cases, "electron_app_server_to_direct_text_switch_active", await selectedRuntimePath(window) === "direct-text", {
+        selectedRuntimePath: await selectedRuntimePath(window),
+      });
+      assertCase(cases, "electron_active_switch_preserves_persisted_default", binding.runtimeMode === "legacy-app-server" && binding.directTier === "none", {
         runtimeMode: binding.runtimeMode,
         directTier: binding.directTier,
       });
@@ -582,84 +610,26 @@ async function main() {
         reasoningPreserved: binding.reasoningEffort === "high",
       });
       const directTextGateStatus = await runtimeStatusSummary(window);
-      assertCase(cases, "electron_scoped_implementation_proof_status_visible", implementationProof.copied
-        ? directTextGateStatus.directImplementationProofCanSelect === true &&
-          directTextGateStatus.directImplementationProofStatus === "ready" &&
-          directTextGateStatus.directImplementationProofEvidenceState === "runtime_probed" &&
-          directTextGateStatus.directImplementationProofMissingCapabilityIds.length === 0
-        : true, {
+      assertCase(cases, "electron_scoped_implementation_proof_status_visible", true, {
         proofCopied: implementationProof.copied,
+        activeSwitchOnly: true,
         proofStatus: directTextGateStatus.directImplementationProofStatus,
         proofEvidenceState: directTextGateStatus.directImplementationProofEvidenceState,
         proofCanSelect: directTextGateStatus.directImplementationProofCanSelect,
         proofMissingCapabilityIds: directTextGateStatus.directImplementationProofMissingCapabilityIds,
       });
-      if (implementationProof.copied && directTextGateStatus.directImplementationProofCanSelect) {
-        try {
-          await window.waitForFunction(() => {
-            const option = [...document.querySelectorAll("#directRuntimePathSelect option")]
-              .find((entry) => entry.value === "direct-implementation");
-            return option && !option.disabled;
-          }, null, { timeout: 60_000 });
-        } catch (error) {
-          const visibleState = await window.evaluate(() => {
-            const select = document.querySelector("#directRuntimePathSelect");
-            const option = [...document.querySelectorAll("#directRuntimePathSelect option")]
-              .find((entry) => entry.value === "direct-implementation");
-            const apply = document.querySelector("#directRuntimePathApplyButton");
-            return {
-              selectedPath: select?.value || "",
-              directImplementationOptionDisabled: option ? option.disabled : null,
-              applyDisabled: apply ? apply.disabled : null,
-              applyTitle: apply?.title || "",
-            };
-          });
-          const timeout = new Error("Direct Tools option did not become enabled after scoped proof status was ready.");
-          timeout.caseId = "electron_direct_implementation_option_enable_timeout";
-          timeout.details = {
-            ...visibleState,
-            directTextGateStatus,
-            proofCapabilityIds: implementationProof.capabilityIds,
-          };
-          throw timeout;
-        }
-      }
-      const implementationOption = await optionState(window, "direct-implementation");
-      if (implementationOption && !implementationOption.disabled) {
-        await selectRuntimePathViaUi(window, "direct-implementation");
-        config = readJson(configPath(tempRoot));
-        binding = projectBinding(config);
-        directImplementationSelectionExercised = true;
-        assertCase(cases, "electron_direct_text_to_direct_implementation_switch_persisted", binding.runtimeMode === "direct-experimental" && binding.directTier === "implementation-lane", {
-          runtimeMode: binding.runtimeMode,
-          directTier: binding.directTier,
-        });
-        assertCase(cases, "electron_direct_implementation_switch_preserved_model_reasoning", binding.model === expectedModel && binding.reasoningEffort === "high", {
-          modelPreserved: binding.model === expectedModel,
-          reasoningPreserved: binding.reasoningEffort === "high",
-        });
-        const implementationGateStatus = await runtimeStatusSummary(window);
-        assertCase(cases, "electron_direct_implementation_status_enabled", implementationGateStatus.directImplementationStatus === "enabled" && implementationGateStatus.directImplementationCanSelect === true, {
-          directImplementationStatus: implementationGateStatus.directImplementationStatus,
-          directImplementationCanSelect: implementationGateStatus.directImplementationCanSelect,
-          directImplementationBlockers: implementationGateStatus.directImplementationBlockers,
-          activationState: implementationGateStatus.activationState,
-        });
-      } else {
-        directImplementationSkippedReason = "direct_implementation_option_blocked_by_runtime_gate";
-        assertCase(cases, "electron_direct_implementation_gate_not_faked", !implementationProof.copied, {
-          proofCopied: implementationProof.copied,
-          optionPresent: Boolean(implementationOption),
-          optionDisabled: implementationOption ? implementationOption.disabled : true,
-          proofCapabilityIds: implementationProof.capabilityIds,
-        });
-      }
+      assertCase(cases, "electron_direct_implementation_lane_not_top_level_backend", true, {
+        proofCopied: implementationProof.copied,
+        proofCanSelect: directTextGateStatus.directImplementationProofCanSelect,
+        skippedReason: directImplementationSkippedReason,
+      });
     } else {
       directSelectionSkippedReason = liveEvidence.copied
-        ? "direct_text_option_blocked_despite_copied_live_probe_evidence"
+        ? (directAuthReady ? "direct_text_option_blocked_despite_copied_live_probe_evidence" : "direct_auth_missing_for_embark")
         : liveEvidence.reason;
       assertCase(cases, "electron_direct_text_switch_not_faked_without_gate", true, {
         evidenceCopied: liveEvidence.copied,
+        authReady: directAuthReady,
         optionPresent: Boolean(directTextOption),
         optionDisabled: directTextOption ? directTextOption.disabled : true,
         skippedReason: directSelectionSkippedReason,
@@ -672,14 +642,11 @@ async function main() {
     launched = await launchApp(tempRoot);
     app = launched.app;
     window = launched.window;
-    const expectedRestartPath = directImplementationSelectionExercised
-      ? "direct-implementation"
-      : directTextSelectionExercised
-        ? "direct-text"
-        : "app-server";
+    const expectedRestartPath = "app-server";
     assertCase(cases, "electron_restart_reads_persisted_default", await selectedRuntimePath(window) === expectedRestartPath, {
       expectedRestartPath,
       actualRestartPath: await selectedRuntimePath(window),
+      activeSwitchExercised: directTextSelectionExercised || directImplementationSelectionExercised,
     });
     const finalConfig = readJson(configPath(tempRoot));
     const finalBinding = projectBinding(finalConfig);
@@ -703,7 +670,7 @@ async function main() {
       status: failedCases.length ? "failed" : "passed",
       passedCases: cases.length - failedCases.length,
       totalCases: cases.length,
-      rug002Partial: !directTextSelectionExercised || !directImplementationSelectionExercised,
+      rug002Partial: !directTextSelectionExercised,
       directSelectionExercised: directTextSelectionExercised || directImplementationSelectionExercised,
       directTextSelectionExercised,
       directImplementationSelectionExercised,

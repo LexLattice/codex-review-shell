@@ -1855,8 +1855,12 @@ try {
   assert(connected.connected === true, "Expected fixture surface session to connect.");
   const initialized = await surfaceSession.request("initialize", {});
   assert(initialized.runtime === DIRECT_FIXTURE_SURFACE_TRANSPORT, "Expected direct fixture initialize result.");
+  assert(initialized.capabilities.account.canRead === true, "Expected fixture surface to declare account/read.");
+  assert(initialized.capabilities.configRequirements.canRead === true, "Expected fixture surface to declare configRequirements/read.");
   const account = await surfaceSession.request("account/read", {});
   assert(account.account.type === "chatgpt", "Expected fixture account to mimic ChatGPT auth state.");
+  const configRequirements = await surfaceSession.request("configRequirements/read", {});
+  assert(configRequirements.status === "none", "Expected fixture configRequirements/read to return no requirements.");
   const started = await surfaceSession.request("thread/start", { model: "gpt-5.4" });
   assert(started.thread.id, "Expected fixture thread start to create a direct session.");
   const turnResult = await surfaceSession.request("turn/start", {
@@ -2311,10 +2315,14 @@ try {
   const liveInitialized = await liveSurface.request("initialize", {});
   assert(liveInitialized.runtime === DIRECT_LIVE_TEXT_SURFACE_TRANSPORT, "Expected live text initialize runtime.");
   assert(liveInitialized.capabilities.threads.canStart === true, "Expected ready live text controller to allow thread start.");
+  assert(liveInitialized.capabilities.account.canRead === true, "Expected live text surface to declare account/read.");
+  assert(liveInitialized.capabilities.configRequirements.canRead === true, "Expected live text surface to declare configRequirements/read.");
   assert(liveInitialized.capabilities.diagnostics.appServerRequired === false, "Expected live text capabilities to deny app-server requirement.");
   const liveAccount = await liveSurface.request("account/read", {});
   assert(liveAccount.requiresOpenaiAuth === false, "Expected authenticated live text account.");
   assert(liveAccount.rawTokensExposed === false, "Expected live text account projection to redact tokens.");
+  const liveConfigRequirements = await liveSurface.request("configRequirements/read", {});
+  assert(liveConfigRequirements.status === "none", "Expected live text configRequirements/read to return no requirements.");
   const liveThread = await liveSurface.request("thread/start", { model: "gpt-5.4" });
   assert(liveThread.thread.id, "Expected live text thread start to create a direct session.");
   const liveAck = await liveSurface.request("turn/start", {

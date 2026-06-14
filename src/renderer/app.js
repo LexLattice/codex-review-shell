@@ -171,6 +171,7 @@ const state = {
   directAuthLoading: false,
   directAuthError: "",
   directRuntimeStatus: null,
+  activeCodexRuntimePathByProject: {},
   directRuntimeLoading: false,
   directRuntimeError: "",
   directImplementationUiStatus: null,
@@ -2757,18 +2758,28 @@ function directRuntimePathFromCodex(codex = {}) {
     return "direct-text";
   }
   if (directTransport === "live-text" && (directTier === "implementation-lane" || directTier === "implementation_lane")) {
-    return "direct-implementation";
+    return "direct-text";
   }
   return "app-server";
 }
 
-function directRuntimeBindingFieldsForPath(runtimePath) {
-  if (runtimePath === "direct-text") {
+function codexBindingUsesDirectImplementationLane(codex = {}) {
+  const runtimeMode = String(codex.runtimeMode || "legacy-app-server").toLowerCase();
+  const directTransport = String(codex.directTransport || "fixture").toLowerCase();
+  const directTier = String(codex.directTier || codex.activationTier || codex.runtimeTier || "none").toLowerCase();
+  return runtimeMode === "direct-experimental" &&
+    directTransport === "live-text" &&
+    (directTier === "implementation-lane" || directTier === "implementation_lane");
+}
+
+function directRuntimeBindingFieldsForPath(runtimePath, currentCodex = null) {
+  if (runtimePath === "direct-text" || runtimePath === "direct") {
+    const preserveImplementationLane = codexBindingUsesDirectImplementationLane(currentCodex || {});
     return {
       bindingProvider: "direct-chatgpt-codex",
       runtimeMode: "direct-experimental",
       directTransport: "live-text",
-      directTier: "text-only",
+      directTier: preserveImplementationLane ? "implementation-lane" : "text-only",
     };
   }
   if (runtimePath === "direct-implementation") {
@@ -2802,50 +2813,46 @@ function projectWithRuntimePath(project, runtimePath) {
 
 function syncProjectRuntimeFieldsFromDefaultPath() {
   if (!els.codexDefaultPathInput) return;
-  const fields = directRuntimeBindingFieldsForPath(els.codexDefaultPathInput.value || "app-server");
+  const existing = state.config?.projects.find((project) => project.id === els.projectIdInput?.value);
+  const fields = directRuntimeBindingFieldsForPath(els.codexDefaultPathInput.value || "app-server", existing?.surfaceBinding?.codex || null);
   if (els.codexRuntimeModeInput) els.codexRuntimeModeInput.value = fields.runtimeMode;
   if (els.codexDirectTransportInput) els.codexDirectTransportInput.value = fields.directTransport;
 }
 
-function selectedDirectRuntimePath() {
+function persistedDirectRuntimePath() {
   return directRuntimePathFromCodex(activeProject()?.surfaceBinding?.codex || {});
 }
 
-function directRuntimePathReadiness(status = state.directRuntimeStatus, currentPath = selectedDirectRuntimePath()) {
-  const activation = status?.activation || {};
-  return {
-    textOnlyReady: status?.directTextOnly?.status === "eligible" || status?.directTextOnly?.status === "enabled",
-    implementationReady: status?.directImplementationLane?.canSelect === true || activation.state === "eligible" || currentPath === "direct-implementation",
-  };
+function selectedDirectRuntimePath(options = {}) {
+  const project = activeProject();
+  if (!project) return "app-server";
+  if (options.scope === "default") return persistedDirectRuntimePath();
+  return state.activeCodexRuntimePathByProject?.[project.id] || persistedDirectRuntimePath();
 }
 
-function syncDirectRuntimePathControl(selectEl, applyButton, status = state.directRuntimeStatus, options = {}) {
+function syncDirectRuntimePathControl(selectEl, applyButton, _status = state.directRuntimeStatus, options = {}) {
   if (!selectEl) return;
-  const currentPath = selectedDirectRuntimePath();
-  const { textOnlyReady, implementationReady } = directRuntimePathReadiness(status, currentPath);
+  const scope = options.persistDefault ? "default" : "active";
+  const currentPath = selectedDirectRuntimePath({ scope });
   const directTextOption = [...selectEl.options].find((option) => option.value === "direct-text");
   const directImplementationOption = [...selectEl.options].find((option) => option.value === "direct-implementation");
-  if (directTextOption) directTextOption.disabled = !textOnlyReady && currentPath !== "direct-text";
-  if (directImplementationOption) directImplementationOption.disabled = !implementationReady;
+  if (directTextOption) directTextOption.disabled = false;
+  if (directImplementationOption) directImplementationOption.disabled = true;
   if (document.activeElement !== selectEl) selectEl.value = currentPath;
   const selectedPath = selectEl.value || currentPath;
-  const selectedBlocked =
-    (selectedPath === "direct-text" && !textOnlyReady && currentPath !== "direct-text") ||
-    (selectedPath === "direct-implementation" && !implementationReady);
   if (applyButton) {
     applyButton.disabled =
       state.directRuntimeLoading ||
       !activeProject() ||
       !bridge.setDirectRuntimePath ||
-      selectedPath === currentPath ||
-      selectedBlocked;
-    const prefix = options.compact ? "Switch Codex lane" : "Persist this Codex path as the project default";
+      selectedPath === currentPath;
+    const prefix = options.persistDefault ? "Persist this Codex backend as the project default" : "Switch the active Codex lane";
     applyButton.title = selectedPath === currentPath
-      ? "This Codex path is already the persisted project default."
-      : selectedBlocked
-        ? selectedPath === "direct-text"
-          ? `Direct Text is blocked: ${directTextOnlyBlockedDetail(status)}`
-          : `Direct Tools is blocked: ${directActivationBlockedDetail(status)}`
+      ? (options.persistDefault
+          ? "This Codex backend is already the persisted project default."
+          : "This Codex backend is already active for this session.")
+      : selectedPath === "direct-text"
+        ? `${prefix}, validate Direct gates, and reload the Codex lane.`
         : `${prefix} and reload the Codex lane.`;
   }
 }
@@ -2882,6 +2889,39 @@ function directTextOnlyBlockedDetail(status = state.directRuntimeStatus) {
   const codes = Array.isArray(textOnly.blockers) ? textOnly.blockers : [];
   if (codes.length) return codes.slice(0, 4).join(", ");
   return textOnly.labels?.detail || "Direct text-only gates are missing.";
+}
+
+function directEmbarkFailureMessage(result = {}) {
+  const error = result?.error || {};
+  const runtimeStatus = result?.runtimeStatus || state.directRuntimeStatus || {};
+  return error.message ||
+    directTextOnlyBlockedDetail(runtimeStatus) ||
+    directActivationBlockedDetail(runtimeStatus) ||
+    result.status ||
+    "Direct embark failed.";
+}
+
+async function embarkDirectRuntimeFromControl(project, options = {}) {
+  if (!project || !bridge.embarkDirectRuntime) {
+    throw new Error("Direct embark bridge is unavailable.");
+  }
+  let result = await bridge.embarkDirectRuntime(project.id, options);
+  if (result?.status === "auth_required" && result.loginRequired) {
+    setLastEvent("Direct login required; opening login flow.");
+    const loginResult = await beginDirectAuthLogin();
+    if (!loginResult?.ok) {
+      return {
+        ...result,
+        status: "auth_required",
+        error: {
+          code: loginResult?.status || "auth_required",
+          message: loginResult?.reason || "Direct login did not complete.",
+        },
+      };
+    }
+    result = await bridge.embarkDirectRuntime(project.id, options);
+  }
+  return result;
 }
 
 function directContextMaintenanceStatus(status = state.directRuntimeStatus) {
@@ -3468,11 +3508,7 @@ function renderDirectRuntimeStatus() {
   els.directModelSourceBadge.title = profileId ? `Profile: ${profileId}` : "Model source is not available.";
   if (els.codexRuntimeQuickStatus) {
     const currentPath = selectedDirectRuntimePath();
-    const label = currentPath === "app-server"
-      ? "App Server"
-      : currentPath === "direct-text"
-        ? "Direct Text"
-        : "Direct Tools";
+    const label = currentPath === "app-server" ? "App Server" : "Direct";
     els.codexRuntimeQuickStatus.textContent = state.directRuntimeLoading ? "runtime loading" : label;
     els.codexRuntimeQuickStatus.title = `${directRuntimeStatusLabel(status)}. Detailed direct diagnostics live in Project settings.`;
   }
@@ -7145,59 +7181,47 @@ async function selectDirectTextOnlyRuntime() {
 async function setDirectRuntimePathFromControl(selectEl = els.directRuntimePathSelect) {
   const project = activeProject();
   if (!project || !bridge.setDirectRuntimePath || !selectEl) return;
+  const persistDefault = false;
   const runtimePath = selectEl.value || "app-server";
-  const currentPath = selectedDirectRuntimePath();
+  const currentPath = selectedDirectRuntimePath({ scope: persistDefault ? "default" : "active" });
   if (runtimePath === currentPath) return;
-  await refreshDirectAuthStatus();
-  await refreshDirectRuntimeStatus(project.id);
-  const status = state.directRuntimeStatus || {};
-  const textOnly = status.directTextOnly || {};
-  const activation = status.activation || {};
-  const implementation = status.directImplementationLane || {};
+  let requestRuntimePath = runtimePath;
   const options = {
-    clientOperationId: directActivationClientId("client_runtime_path"),
+    clientOperationId: directActivationClientId(runtimePath === "direct-text" ? "client_direct_embark" : "client_runtime_path"),
+    persistDefault,
   };
-  if (runtimePath === "direct-text") {
-    if (textOnly.status !== "eligible" && textOnly.status !== "enabled") {
-      setLastEvent(`Direct Text blocked: ${directTextOnlyBlockedDetail(status)}`);
-      renderDirectRuntimeStatus();
-      return;
-    }
-    options.expectedGateId = textOnly.gateId;
-    options.expectedGateDigest = textOnly.gateDigest;
-  }
-  if (runtimePath === "direct-implementation") {
-    if (implementation.canSelect !== true && activation.state !== "eligible") {
-      setLastEvent(`Direct Tools blocked: ${directActivationBlockedDetail(status)}`);
-      renderDirectRuntimeStatus();
-      return;
-    }
-    options.expectedGateId = activation.gateId;
-    options.expectedGateDigest = activation.gateDigest;
-  }
-  const label = runtimePath === "app-server"
-    ? "App Server"
-    : runtimePath === "direct-text"
-      ? "Direct Text"
-      : "Direct Tools";
-  const confirmed = window.confirm(`Set ${label} as this project's default Codex path and reload the Codex lane?`);
-  if (!confirmed) {
-    renderDirectRuntimeStatus();
-    return;
-  }
+  const label = runtimePath === "app-server" ? "App Server" : "Direct";
   state.directRuntimeLoading = true;
   renderDirectRuntimeStatus();
   try {
-    const result = await bridge.setDirectRuntimePath(project.id, runtimePath, options);
+    let result;
+    if (runtimePath === "direct-text" && bridge.embarkDirectRuntime) {
+      result = await embarkDirectRuntimeFromControl(project, {
+        ...options,
+        clientEmbarkId: options.clientOperationId,
+        requestedFrom: selectEl?.id || "runtime-selector",
+      });
+      if (!result?.ok) throw new Error(directEmbarkFailureMessage(result));
+      requestRuntimePath = "direct-text";
+    } else {
+      result = await bridge.setDirectRuntimePath(project.id, requestRuntimePath, options);
+    }
     if (result?.config) {
       state.config = result.config;
       render();
     }
+    if (result?.project?.id) {
+      state.activeCodexRuntimePathByProject[result.project.id] = requestRuntimePath;
+    }
     await refreshDirectRuntimeStatus(project.id);
-    setLastEvent(result?.duplicate ? `${label} is already the default Codex path.` : `Default Codex path set to ${label}.`);
+    if (persistDefault) {
+      setLastEvent(result?.duplicate ? `${label} is already the default Codex backend.` : `Default Codex backend set to ${label}.`);
+    } else {
+      setLastEvent(result?.duplicate ? `${label} is already the active Codex backend.` : `Active Codex backend switched to ${label}.`);
+    }
   } catch (error) {
-    state.directRuntimeError = error.message || "Codex path switch failed.";
-    setLastEvent(`Codex path switch failed: ${state.directRuntimeError}`);
+    state.directRuntimeError = error.message || "Codex backend switch failed.";
+    setLastEvent(`Codex backend switch failed: ${state.directRuntimeError}`);
   } finally {
     state.directRuntimeLoading = false;
     renderDirectRuntimeStatus();
@@ -7262,8 +7286,9 @@ async function beginDirectAuthLogin() {
   state.directAuthLoading = true;
   state.directAuthError = "";
   renderDirectAuthControls();
+  let result = null;
   try {
-    let result = await bridge.beginDirectAuthLogin();
+    result = await bridge.beginDirectAuthLogin();
     if (result?.manualCodeRequired && result.loginId && bridge.completeDirectAuthLogin) {
       const pasted = window.prompt("Paste the authorization code or full localhost redirect URL.");
       if (pasted && pasted.trim()) {
@@ -7275,10 +7300,16 @@ async function beginDirectAuthLogin() {
   } catch (error) {
     state.directAuthError = sanitizedDirectAuthError("Direct auth login failed.");
     setLastEvent(`Direct auth login failed: ${state.directAuthError}`);
+    result = {
+      ok: false,
+      status: "failed",
+      reason: state.directAuthError,
+    };
   } finally {
     state.directAuthLoading = false;
     renderDirectAuthControls();
   }
+  return result;
 }
 
 async function logoutDirectAuth() {
@@ -7784,7 +7815,10 @@ function projectFromForm() {
   const fallbackThreadId = currentPrimary?.id || threads[0]?.id || "";
   const activeChatThreadId = preservedThreadId(threads, existing?.activeChatThreadId, fallbackThreadId);
   const lastActiveThreadId = preservedThreadId(threads, existing?.lastActiveThreadId, activeChatThreadId);
-  const runtimePathFields = directRuntimeBindingFieldsForPath(els.codexDefaultPathInput?.value || "app-server");
+  const runtimePathFields = directRuntimeBindingFieldsForPath(
+    els.codexDefaultPathInput?.value || "app-server",
+    existing?.surfaceBinding?.codex || null,
+  );
 
   return {
     id: els.projectIdInput.value || createId("project"),
@@ -7884,10 +7918,10 @@ async function handleProjectFormSubmit(event) {
         render();
       }
       await refreshDirectRuntimeStatus(project.id);
-      setLastEvent(`Saved project binding for ${project.name}; default Codex path updated.`);
+      setLastEvent(`Saved project binding for ${project.name}; default Codex backend updated.`);
     } catch (error) {
-      state.directRuntimeError = error.message || "Codex path switch failed.";
-      setLastEvent(`Saved project binding for ${project.name}; Codex path change blocked: ${state.directRuntimeError}`);
+      state.directRuntimeError = error.message || "Codex backend switch failed.";
+      setLastEvent(`Saved project binding for ${project.name}; Codex backend change blocked: ${state.directRuntimeError}`);
     } finally {
       state.directRuntimeLoading = false;
       renderDirectRuntimeStatus();

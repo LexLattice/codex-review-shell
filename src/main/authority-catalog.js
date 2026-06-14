@@ -32,6 +32,7 @@ const CODEX_CLIENT_REQUEST_METHODS = Object.freeze([
   "configRequirements/read",
   "model/list",
   "account/login/start",
+  "thread/list",
   "thread/start",
   "thread/resume",
   "thread/read",
@@ -48,6 +49,7 @@ const CODEX_CLIENT_REQUEST_CONTRACTS = Object.freeze({
   "configRequirements/read": { class: "config_read", capabilityPath: ["configRequirements", "canRead"] },
   "model/list": { class: "model_read", capabilityPath: ["model", "canList"] },
   "account/login/start": { class: "account_auth_transition", capabilityPath: ["account", "canStartLogin"] },
+  "thread/list": { class: "thread_read", capabilityPath: ["threads", "canList"] },
   "thread/start": { class: "thread_mutation", capabilityPath: ["threads", "canStart"] },
   "thread/resume": { class: "thread_lifecycle", capabilityPath: ["threads", "canResume"] },
   "thread/read": { class: "thread_read", capabilityPath: ["threads", "canRead"] },
@@ -85,6 +87,12 @@ const IPC_CHANNEL_CONTRACTS = Object.freeze([
     allowedSenderRoles: [SURFACE_ROLES.TRUSTED_CODEX_SURFACE],
     requiredBridgeProfile: CODEX_SURFACE_BRIDGE_PROFILES.FULL,
     authorityEvidence: "PendingServerRequest",
+  },
+  {
+    channel: "codex-surface:direct-projection",
+    allowedSenderRoles: [SURFACE_ROLES.TRUSTED_CODEX_SURFACE],
+    requiredBridgeProfile: CODEX_SURFACE_BRIDGE_PROFILES.FULL,
+    authorityEvidence: "DirectCodexSurfaceProjection",
   },
   {
     channel: "attachments:*",
