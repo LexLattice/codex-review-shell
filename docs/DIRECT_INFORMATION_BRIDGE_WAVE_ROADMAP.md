@@ -1989,7 +1989,7 @@ Implemented slice:
 
 ### PR 38: Direct Manual Smoke Gate And Regression Checklist
 
-Status: planned.
+Status: implemented in PR 38.
 
 Purpose:
 
@@ -2015,6 +2015,22 @@ Promotion criterion:
 The direct branch has a stable operator test path that can be run before each
 new authority-bearing wave.
 ```
+
+Implemented slice:
+
+- Added `direct_manual_smoke_gate@1` and `direct_manual_smoke_check_row@1` as
+  readiness artifacts over existing direct projections.
+- Covered lane selection, app-server fallback, WorkThread selection, target
+  clarification, context preview, memory review, module context intake, direct
+  text turn, read/patch/command readiness, recovery posture, sub-agent inspect,
+  usage readiness, and optional Electron projection availability.
+- Recorded blockers as explicit readiness evidence instead of silent test
+  failures.
+- Surfaced manual smoke gate status in the direct settings/status projection.
+- Registered the artifact as `ic21.direct-manual-smoke-gate`.
+- Kept live provider calls, app-server spawn/replacement, runtime path mutation,
+  WorkThread mutation, workspace mutation, auto-approval, module execution,
+  recursive worker execution, and matrix promotion disabled.
 
 Wave 6 expected result:
 

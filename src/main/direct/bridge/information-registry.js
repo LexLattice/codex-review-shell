@@ -559,6 +559,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     bridgeFit: "Adds an operator-gated local execution artifact for accepted memory refresh, frontier baton update, omission witness acknowledgement, and context-loss remediation preview.",
     realignment: "Execution remains local-context-only: provider compaction, provider transport, app-server fallback, automatic scheduling, workspace mutation, and raw text exposure are blocked.",
   },
+  {
+    id: "ic21.direct-manual-smoke-gate",
+    name: "Direct manual smoke gate and regression checklist",
+    role: "observability_surface",
+    implementationState: "partial",
+    directPathPosture: "keep_readonly",
+    sourceFiles: ["src/main/direct/readiness/manual-smoke-gate.js", "src/main/direct/ui/settings-surface.js", "scripts/direct-manual-smoke-gate-regression.mjs", "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md"],
+    ontology: ontologyShape(["direct_manual_smoke_gate", "direct_manual_smoke_check_row", "operator_readiness_blocker"], "human_interface", {
+      identityFields: ["projectId", "workThreadId", "gateId", "checkId"],
+      schema: "direct_manual_smoke_gate@1",
+    }),
+    bridgeFit: "Packages lane selection, WorkThread selection, context preview, direct text/read/patch/command readiness, recovery, sub-agent inspect, usage, and app-server fallback checks into a repeatable operator smoke gate.",
+    realignment: "The smoke gate records readiness and blockers only; it cannot run live provider calls, mutate runtime path or WorkThread state, replace app-server, approve actions, execute modules, or promote matrix rows.",
+  },
 ]);
 
 function isPlainObject(value) {

@@ -43,14 +43,14 @@ capability. "Inherited" is not a defect when it is explicit and law-compatible.
 
 ## Current Executable Audit Snapshot
 
-Last reviewed after Wave 6 / PR 37 on `2026-06-14`.
+Last reviewed after Wave 6 / PR 38 on `2026-06-14`.
 
 ```text
-registry rows: 37
+registry rows: 38
 valid: yes
 missing source files: 0
 implemented rows: 10
-partial rows: 25
+partial rows: 26
 inherited rows: 2
 ```
 
@@ -208,6 +208,7 @@ The executable registry currently tracks these bridge rows:
 | `ic18.direct-live-promotion-report` | canonical evidence | partial | keep gated |
 | `ic19.direct-implementation-ui-readiness` | observability surface | partial | keep read-only |
 | `ic20.context-maintenance-execution-gate` | memory/continuity | partial | keep guarded |
+| `ic21.direct-manual-smoke-gate` | observability surface | partial | keep read-only |
 
 ## Keep
 

@@ -90,13 +90,13 @@ right ChatGPT pane != direct Codex memory
 
 ## 3. Current Descent Summary
 
-Status snapshot after Wave 6 PR 37, 2026-06-14:
+Status snapshot after Wave 6 PR 38, 2026-06-14:
 
 ```text
 direct information bridge audit: valid
-registry rows: 37
+registry rows: 38
 implemented rows: 10
-partial rows: 25
+partial rows: 26
 inherited rows: 2
 missing source files: 0
 ```
@@ -126,6 +126,7 @@ It does not grant runtime authority by itself.
 | Skills/hooks/apps bridge modules | `B-P/B-F` | Module classification, context contribution, evidence import, hook proposal, and execution gate artifacts exist; no execution runner exists. |
 | Context maintenance / memory / baton | `B-P/B-F` | Omission/loss witnesses, memory review/refresh/reset proposals, compaction plan/gate, continuity transitions, and guarded local maintenance execution packets exist; no provider compaction or hidden memory authority. |
 | Module context intake | `B-P/B-F` | WorkThread-bound context-only skill output and imported connector evidence can produce accepted context-preview rows after source/scope/raw-exposure checks; no module execution or connector/hook authority exists. |
+| Direct manual smoke gate | `B-P/B-F` | Repeatable fixture/electron-projection readiness gate covers lane selection, app-server fallback, WorkThread selection, context preview, memory, module intake, direct text/read/patch/command readiness, recovery, sub-agent inspect, and usage without promotion authority. |
 | Governance / semantic broker | `B-P/B-F` | Governance packet, semantic broker preflight, controlled routing slice, route-to-role handoff, operator broker, narrow enforcement/clarification packets, and target-picker answer artifacts exist. |
 | Explicit direct worker start | `B-P/B-F` | Operator-accepted role handoff can start one bounded direct worker turn; recursive spawning and workflow closure remain disabled. |
 | Meta-orchestrator / auditor loop shadow | `B-P/B-F` | Plan pointer, step events, implementation evidence, audit artifact, and transition gate schemas exist; no autonomous scheduler or super-auditor behavior. |
@@ -141,19 +142,19 @@ Main remaining coverage gaps from the matrix:
 | Context maintenance productization | `D1-D14`, `D22-D23`, `A12`, `J11` | Guarded local execution packets exist; operator context preview, memory materialization UI, provider compaction, and automatic trimming remain gated. |
 | Governance enforcement and semantic fallback | `D15-D21`, `J10` | Narrow preflight enforcement, clarification packets, and target-picker answer artifacts exist; fallback branch law remains future work. |
 | Mature multi-agent choreography | `H1-H10`, `J9` | Worker start, graph alignment, progress projections, and contained inspect/wait packets exist; recursive delegation, model-visible wait tools, no-deadlock synchronization, and transcript promotion law remain future work. |
-| Mainline readiness and broad UI proof | `F1-F10`, `I1-I15`, `J1-J12` | Status surfaces and regressions exist; WorkThread control UX, context preview, manual smoke gate, and merge-behind-flag checklist remain later work. |
+| Mainline readiness and broad UI proof | `F1-F10`, `I1-I15`, `J1-J12` | Status surfaces, WorkThread control, context preview, memory/module readiness, and manual smoke gate exist; merge-behind-flag checklist and broad Electron proof remain later work. |
 
-The next confidence gap is now Wave 6:
+The next confidence gap is now Wave 7:
 
 ```text
-operator control loop and WorkThread productization,
+mainline hardening and direct usability promotion,
 without adding autonomous authority.
 ```
 
 Wave 6 has productized the WorkThread control deck, target picker, context
-preview, memory review workbench, and module context intake. The remaining
-confidence gap is a repeatable manual/electron smoke gate before broader
-autonomous or recursive authority.
+preview, memory review workbench, module context intake, and manual smoke gate.
+The remaining confidence gap is deciding which Wave 7 hardening work should be
+proved before broadening authority.
 
 ## 4. Canonical ODEU Capability Matrix
 
@@ -584,35 +585,30 @@ ledgers.
 
 ## 9. Immediate Next Spec
 
-The next spec should target Wave 6 PR 38:
+The next spec should target Wave 7 planning:
 
 ```text
-Direct manual smoke gate and regression checklist V0.
+Mainline hardening and direct usability promotion plan.
 ```
 
-It should not add provider/tool authority. It should prove:
+It should not add provider/tool authority. It should decide:
 
-1. lane selection and app-server fallback are visible and recoverable;
-2. WorkThread selection/current pointer state is visible before a turn;
-3. target clarification and non-target preservation blockers are inspectable;
-4. context preview, omission posture, memory review, and module context intake
-   are present in settings/control status;
-5. direct text turn readiness remains green without hidden request assembly;
-6. read/patch/command readiness remains guarded and evidence-backed;
-7. recovery, sub-agent inspect/wait, and usage readiness projections are visible;
-8. the smoke gate records blockers as readiness evidence, not silent pass/fail.
+1. which direct-path surfaces need manual Electron proof before promotion;
+2. whether merge-behind-flag work should precede additional authority gates;
+3. which fixture-only readiness rows are eligible for live-provider proof;
+4. which WorkThread/context/memory/module controls need operator UX polish;
+5. how to keep app-server fallback retained while direct usability improves.
 
 Current implementation note:
 
 ```text
 Wave 6 now includes the context packet preview/omission workbench, memory
-review materialization workbench, and module context intake. The operator can
-inspect source classes, inclusion/omission posture, pressure estimates,
-blocked-from-request reasons, memory review/refresh/reset posture, local
-materialization witnesses, rollback/omission impact, accepted module context,
-imported evidence rows, and unsafe module diagnostics before expanding
-authority. The remaining Wave 6 work should package those surfaces into a
-repeatable manual smoke gate.
+review materialization workbench, module context intake, and manual smoke gate.
+The operator can inspect source classes, inclusion/omission posture, pressure
+estimates, blocked-from-request reasons, memory review/refresh/reset posture,
+local materialization witnesses, rollback/omission impact, accepted module
+context, imported evidence rows, unsafe module diagnostics, and manual smoke
+blockers before expanding authority.
 ```
 
 It should explicitly not mean:
