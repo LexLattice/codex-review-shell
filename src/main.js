@@ -2619,7 +2619,7 @@ function directOperatorBrokerProjectionForProject(project = {}, workThreadBundle
 
 function directContextPreviewForProject(project = {}, input = {}) {
   const projectId = normalizeString(project?.id, "");
-  const runtimePath = directRuntimePathFromBinding(project.surfaceBinding?.codex || {});
+  const runtimePath = directRuntimePathFromBinding(project?.surfaceBinding?.codex || {});
   const workThreadBundle = input.workThreadBundle || directWorkThreadProjectionForProject(project);
   const contextMaintenance = input.runtimeStatus?.directContextMaintenance || {};
   const preview = buildContextPacketPreview({
@@ -2856,7 +2856,7 @@ function buildDirectCodexSurfaceProjectionForProject(project = {}, input = {}) {
     schema: "direct_codex_surface_projection@1",
     projectId,
     generatedAt,
-    runtimePath: directRuntimePathFromBinding(project.surfaceBinding?.codex || {}),
+    runtimePath: directRuntimePathFromBinding(project?.surfaceBinding?.codex || {}),
     runtimeWitnessProjection,
     composerRuntimeWitness,
     contextPreview,
@@ -2882,16 +2882,16 @@ function buildDirectCodexSurfaceProjectionForProject(project = {}, input = {}) {
     rawPathIncluded: false,
     rawSecretIncluded: false,
   };
-  projection.projectionDigest = crypto.createHash("sha256").update(JSON.stringify({
-    schema: projection.schema,
+  projection.projectionDigest = crypto.createHash("sha256").update(JSON.stringify([
+    projection.schema,
     projectId,
     generatedAt,
-    runtimePath: projection.runtimePath,
-    runtimeWitnessDigest: composerRuntimeWitness.runtimeWitnessDigest,
-    contextPreviewDigest: composerRuntimeWitness.contextPreviewDigest,
-    usageProjectionDigest: composerRuntimeWitness.usageProjectionDigest,
-    workThreadDigest: workThreadBundle?.projection?.projectionDigest || "",
-  })).digest("hex");
+    projection.runtimePath,
+    composerRuntimeWitness.runtimeWitnessDigest,
+    composerRuntimeWitness.contextPreviewDigest,
+    composerRuntimeWitness.usageProjectionDigest,
+    workThreadBundle?.projection?.projectionDigest || "",
+  ])).digest("hex");
   return projection;
 }
 
@@ -3207,7 +3207,7 @@ function directTextOnlyCanSelect(runtimeStatus = {}) {
 
 function directLiveProbeModel(project = {}, runtimeStatus = {}) {
   return normalizeString(
-    project.surfaceBinding?.codex?.model ||
+    project?.surfaceBinding?.codex?.model ||
       runtimeStatus.liveTextRuntime?.model ||
       runtimeStatus.liveTextRuntime?.status?.model ||
       runtimeStatus.directTextOnly?.scope?.model,
@@ -7553,7 +7553,10 @@ ipcMain.handle("codex-surface:disconnect", async (event) => {
 
 ipcMain.handle("codex-surface:direct-projection", async (event, payload) => {
   requireFullCodexSurfaceBridge(event.sender, "codex-surface:direct-projection");
-  const project = await getProjectById(payload?.projectId);
+  const requestedProjectId = normalizeString(payload?.projectId, "");
+  const project = currentProject?.id && currentProject.id === requestedProjectId
+    ? currentProject
+    : await getProjectById(requestedProjectId);
   if (!project) throw new Error("Project not found.");
   return buildDirectCodexSurfaceProjectionForProject(project);
 });

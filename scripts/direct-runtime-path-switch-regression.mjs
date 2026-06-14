@@ -136,6 +136,8 @@ assertIncludes(mainSource, "connectionRef: newId(\"direct_codex_conn\")", "direc
 assertIncludes(mainSource, "setManagedCodexSurfaceAuthority(project, localUrl, \"direct-local-ready\")", "direct local surface authority registration");
 assertIncludes(mainSource, "switchActiveCodexRuntimePath", "main process active-only runtime switch");
 assertIncludes(mainSource, "payload.persistDefault !== false", "main process runtime switch default persistence gate");
+assertIncludes(mainSource, "ipcMain.handle(\"codex-surface:direct-projection\"", "Codex surface direct projection refresh endpoint");
+assertIncludes(mainSource, "currentProject?.id && currentProject.id === requestedProjectId", "direct projection refresh uses active project before persisted config");
 assert.ok(
   mainSource.indexOf("setManagedCodexSurfaceAuthority(project, localUrl, \"direct-local-ready\")") <
     mainSource.indexOf("if (codex.mode === \"url\")"),

@@ -807,7 +807,7 @@ function providerSettingsProjection() {
 }
 
 function directSurfaceProjection() {
-  const projection = state.directSurfaceProjection || connection?.directSurfaceProjection || payload.directSurfaceProjection || null;
+  const projection = state.directSurfaceProjection || connection?.directSurfaceProjection || null;
   return projection?.schema === "direct_codex_surface_projection@1" ? projection : null;
 }
 
@@ -4241,8 +4241,9 @@ function renderDirectThreadList() {
   } else {
     const activeCount = Number(state.directThreadDeck?.counts?.running ?? threads.filter((entry) => entry && Number(entry.activeTurnCount || 0) > 0).length);
     const recoverableCount = Number(state.directThreadDeck?.counts?.recoverableInterrupted || 0);
-    const workThreadCount = Number(directSurfaceProjection()?.workThreads?.status?.workThreadCount || state.directThreadDeck?.counts?.workThreadScoped || 0);
-    const broker = directSurfaceProjection()?.operatorBroker || {};
+    const projection = directSurfaceProjection();
+    const workThreadCount = Number(projection?.workThreads?.status?.workThreadCount || state.directThreadDeck?.counts?.workThreadScoped || 0);
+    const broker = projection?.operatorBroker || {};
     const brokerSuffix = broker.clarificationRequired
       ? " · target clarification needed"
       : broker.selectedWorkThreadId
@@ -6872,6 +6873,7 @@ async function startNewThread() {
     }
     const blockers = Array.isArray(result?.draft?.blockerCodes) ? result.draft.blockerCodes.filter(Boolean).join(", ") : "";
     addSystemMessage(`Direct WorkThread draft did not create a session${blockers ? `: ${blockers}` : "."}`);
+    return;
   }
   if (isDirectLiveTextSurface()) state.directThreadOpenRequestId += 1;
   const cwd = workspaceRootText();
@@ -6918,7 +6920,7 @@ async function startCodexTurn(text, options = {}) {
         "";
       if (selectedWorkThreadId) {
         params.workThreadId = selectedWorkThreadId;
-        params.requireControlledRouting = false;
+        params.requireControlledRouting = true;
       }
       if (directProjection?.contextPreview?.previewDigest) {
         params.contextPreviewDigest = directProjection.contextPreview.previewDigest;
