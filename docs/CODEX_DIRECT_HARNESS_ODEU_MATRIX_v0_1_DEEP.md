@@ -159,6 +159,25 @@ Each row includes:
 | A11 | Error/retry taxonomy | Pre-stream retry only; no retry after bytes/side effects. | `OAI-A`: transport/provider errors. | Request lifecycle states, handoff-unknown states. | `B-R` text, `B-F/S` tools | Tool/patch/command interrupted-state tests. |
 | A12 | Provider-side compaction primitive | Optional endpoint/items for reducing context. | `OAI-A/OAI-U`: compact endpoint/items where supported. | Context-maintenance policy; artifact lifetime law. | `S/B-P` | Exact compaction probe and local artifact mapping. |
 
+### A7/A8/A10 Field-Level Split
+
+The broad model/settings/usage rows above are not a single feature. They split
+into separate evidence obligations so the direct path can match vanilla
+app-server usability without fabricating values.
+
+| Subcapability | Server-served field/source | Direct projection obligation | Current | Next proof |
+| --- | --- | --- | ---: | --- |
+| A7.1 model list | `model/list` or direct Codex models endpoint | Account-scoped model catalog with `id`, `model`, display label, hidden/default/upgrade state, ETag/client version evidence. | `B-P` | Direct catalog read/cache fixture. |
+| A7.2 model descriptor controls | Model descriptor/preset | Per-model `supportedReasoningEfforts`, `defaultReasoningEffort`, `serviceTiers`, `defaultServiceTier`, modalities, context windows. | `B-P/NO` | Picker populated entirely from live descriptors. |
+| A7.3 provider capabilities | provider capability read / model descriptor | `namespaceTools`, image generation, web search, personality/modalities; unknown disables or degrades affordances. | `B-P` | Capability-profile witness in runtime drawer. |
+| A8.1 composer override axes | active turn/request settings | Per-axis default/override/unsupported state for model, reasoning, service tier, approval, permission profile. | `B-R/B-P` | Restart-persistent direct thread override fixture. |
+| A8.2 accepted request controls | request manifest and provider response | For each setting, record `accepted`, `omitted`, `blocked`, or `unknown`; labels never imply acceptance. | `B-P` | Request manifest diff under direct start-turn. |
+| A10.1 token usage | provider usage / turn usage event | Preserve input, cached input, output, reasoning output, total tokens; missing field remains unknown. | `B-R/B-P` | Direct turn usage witness. |
+| A10.2 context pressure | token usage plus model context window | Show context used/remaining only when both usage and context-window evidence exist; estimates are labeled. | `B-P` | Bottom-band direct context witness. |
+| A10.3 quota/rate windows | account rate-limit read/update | Primary/secondary windows, used percent, reset timestamp, credits, plan/reached type. | `NO/B-P` | Direct account quota chip and drawer details. |
+| A10.4 account token profile | account token usage profile | Lifetime/daily/streak analytics; never substitute for quota or context pressure. | `B-P` | Analytics tab profile row with source labels. |
+| A10.5 timing | turn start/complete lifecycle | Turn started/completed, duration, time-to-first-token, trace id where exposed. | `B-R` | Per-turn direct timing witness. |
+
 ---
 
 ## B. Request, response item, and stream semantics

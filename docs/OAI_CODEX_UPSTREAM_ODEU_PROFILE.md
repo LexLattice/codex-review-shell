@@ -715,6 +715,190 @@ Rules:
   backlog, but cannot enable controls.
 - Provider quota and context controls are read-only until live evidence exists.
 
+## Field-Level Server Metadata Map
+
+This section decomposes the fields the vanilla Codex/app-server path can serve
+today, and the fields the direct harness must eventually adapt into a normalized
+provider metadata profile. The point is not to mirror app-server method names as
+direct-harness law. The point is to preserve the evidence classes that make the
+UX truthful.
+
+Core law:
+
+```text
+Provider metadata is runtime evidence.
+It is not UI label text, not project config, and not static model folklore.
+Missing metadata is unknown/unavailable, not zero, not default, and not support.
+```
+
+### Served Metadata Inventory
+
+| Metadata class | Vanilla/app-server source | Upstream/provider source | Key fields | Direct harness use |
+| --- | --- | --- | --- | --- |
+| Auth/account status | `account/read`, `account/updated` | ChatGPT account/session profile | `authMode`, `planType`, `requiresOpenaiAuth`, account presence | Decide whether direct path can run; show account posture without raw identity leakage. |
+| Auth refresh | `account/chatgptAuthTokens/refresh` | ChatGPT auth refresh endpoint | `accessToken`, `chatgptAccountId`, `chatgptPlanType` | Main-process token refresh only; raw token and raw account id never enter renderer state. |
+| Model catalog | `model/list` | Codex models endpoint, versioned by client version and cached with ETag | `id`, `model`, `displayName`, `description`, `hidden`, `upgrade`, `availabilityNux`, `isDefault` | Populate model picker from live account-scoped descriptors, not static enums. |
+| Reasoning choices | `model/list` model item | Model descriptor / preset | `supportedReasoningEfforts[]`, `defaultReasoningEffort` | Populate intelligence menu per model; no invented `none`/`minimal` unless exposed by the descriptor. |
+| Speed/service tiers | `model/list` model item | Model descriptor / preset | `serviceTiers[]`, `defaultServiceTier`, deprecated `additionalSpeedTiers` | Populate speed menu per model; label the actual default tier when exposed. |
+| Modalities | `model/list`, provider capability read | Model descriptor / provider capability descriptor | `inputModalities`, `supportsPersonality`, `imageGeneration`, `webSearch`, `namespaceTools` | Gate attachment/image/web/tool affordances; unknown remains disabled/degraded. |
+| Model implementation metadata | Codex model profile cache, not all projected through app-server | Model info/preset source | context windows, max context, auto-compact limit, tool mode, truncation policy, verbosity, summary support, parallel tool support | Direct adapter may use these as internal evidence; renderer receives only normalized safe projection. |
+| Model reroute/verification | `model/rerouted`, `model/verification`, turn moderation metadata notifications | Runtime turn metadata | `fromModel`, `toModel`, `reason`, verification entries, moderation metadata | Record runtime drift; do not silently rewrite selected model as if it was operator-selected. |
+| Active turn settings | turn start / thread settings snapshot | Runtime request/session state | `model`, `modelProviderId`, `serviceTier`, `approvalPolicy`, `permissionProfile`, `reasoningEffort`, `reasoningSummary`, `personality`, `collaborationMode` | Project bottom-band/runtime drawer from actual active turn settings. |
+| Request controls | provider request manifest | Responses/Codex request shape | `model`, `input`, `instructions`, `tools`, `toolChoice`, `parallelToolCalls`, `reasoning`, `serviceTier`, `store`, `stream`, `include`, `promptCacheKey`, text verbosity/format | Direct harness must produce a request manifest and cite which controls were accepted, omitted, or blocked. |
+| Stream lifecycle | app-server item lifecycle and provider stream events | SSE/WebSocket response events | response created/completed/failed/incomplete, output item added/done, text deltas, tool-call args deltas, reasoning summary/content | Normalize into local event ontology; unknown event drift becomes evidence and fails closed when semantic. |
+| Token usage | `thread/tokenUsage/updated`, turn completed usage | Provider response usage / Codex turn delta | `inputTokens`, `cachedInputTokens`, `outputTokens`, `reasoningOutputTokens`, `totalTokens`, `lastTokenUsage` | Separate provider usage from local context estimate; do not infer missing token fields as zero. |
+| Context window/pressure | turn started, token usage info, model descriptor | runtime event plus model catalog | `modelContextWindow`, descriptor context window, total tokens in active context | Bottom context chip should display only when model window plus usage evidence exist; estimates must be labeled. |
+| Turn timing | `turn/started`, `turn/completed` | Runtime turn lifecycle | `turnId`, `traceId`, `startedAt`, `completedAt`, `durationMs`, `timeToFirstTokenMs`, collaboration mode | Turn status/timer and persisted turn duration witnesses. |
+| Rate limits/quota | `account/rateLimits/read`, `account/rateLimits/updated` | account quota/rate-limit endpoint | limit id/name, primary/secondary window, `usedPercent`, window duration, reset timestamp/after, credits, individual limit, plan type, reached type | Compact quota chip and drawer usage section; reset labels come only from provider-served timestamps. |
+| Account token profile | `account/tokenUsage/read` | account usage profile endpoint | lifetime tokens, peak daily tokens, longest running turn, streaks, daily usage buckets | Analytics/account view only; not a substitute for live quota or per-turn context pressure. |
+| Server requests | app-server request lifecycle | runtime/tool harness | approval/user-input/auth-refresh/MCP/dynamic-tool requests, request id, method, lifecycle | Authority evidence. Direct path must keep request id scoped by connection/session and never approve via renderer labels. |
+| Tool/item metadata | item lifecycle notifications | provider tool calls plus local tool controller | command execution, file change, MCP tool call, collab tool call, web search, image view, compaction/review items | Render process evidence and usage ledger rows; direct action authority remains local harness-owned. |
+| Collaboration/sub-agents | collab tool items and thread metadata | local Codex collaboration controller | agent nickname/role when available, sender/receiver thread ids, prompt preview, wait/close/send status | Build agent graph and right-plane worker tabs; child messages must not flatten into `You`/primary assistant. |
+| Cache/session continuity | request manifest, provider response metadata | provider/cache/session fields | prompt cache key, response id, trace id, upstream request id, ETag/client version for model catalog | Continuity evidence and dedupe keys; never equate local thread id with provider response id. |
+| Maintenance/compaction | compaction items/endpoints where exposed | provider or local harness maintenance | compaction request/result, summary policy, context-loss witness | Direct path must distinguish provider compaction from local baton/summary artifacts. |
+
+### Normalized Direct Provider Metadata Profile
+
+The direct harness should expose a renderer-safe profile shaped around the
+evidence classes above:
+
+```ts
+type DirectProviderMetadataProfile = {
+  schema: "direct_provider_metadata_profile@1";
+  providerKind: "direct_oai";
+  profileId: string;
+  account: {
+    status: "authenticated" | "login_required" | "unavailable" | "failed" | "unknown";
+    authMode?: "chatgpt" | "api_key" | "none" | "unknown";
+    planType?: string;
+    accountEvidenceKey?: string;
+    evidenceRefs: EvidenceRef[];
+  };
+  modelCatalog: {
+    status: RuntimeStateStatus;
+    source: "server_model_list" | "cache" | "static_fallback" | "unknown";
+    etag?: string;
+    clientVersion?: string;
+    items: Array<{
+      id: string;
+      model: string;
+      displayName?: string;
+      description?: string;
+      hidden?: boolean;
+      isDefault?: boolean;
+      supportedReasoningEfforts: ReasoningEffortOption[];
+      defaultReasoningEffort?: string;
+      serviceTiers: ModelServiceTier[];
+      defaultServiceTier?: string;
+      inputModalities?: string[];
+      contextWindow?: number;
+      maxContextWindow?: number;
+      evidenceRefs: EvidenceRef[];
+    }>;
+    evidenceRefs: EvidenceRef[];
+  };
+  runtimeSettings: {
+    active?: {
+      model?: string;
+      reasoningEffort?: string;
+      serviceTier?: string;
+      approvalPolicy?: string;
+      permissionProfile?: string;
+    };
+    requestControls: Array<{
+      name: string;
+      status: "accepted" | "omitted" | "blocked" | "unknown";
+      evidenceRefs: EvidenceRef[];
+    }>;
+  };
+  usage: {
+    tokenUsage?: TokenUsage;
+    context?: {
+      status: "available" | "estimated" | "unavailable" | "unknown";
+      usedTokens?: number;
+      modelContextWindow?: number;
+      usedPercent?: number;
+      evidenceRefs: EvidenceRef[];
+    };
+    quota?: {
+      status: "available" | "stale" | "unavailable" | "unknown";
+      windows: RateLimitSnapshot[];
+      evidenceRefs: EvidenceRef[];
+    };
+    accountTokenProfile?: {
+      status: "available" | "unavailable" | "unknown";
+      lifetimeTokens?: number;
+      dailyBuckets?: Array<{ startDate: string; tokens: number }>;
+      evidenceRefs: EvidenceRef[];
+    };
+  };
+  capabilities: {
+    provider: {
+      namespaceTools?: boolean;
+      imageGeneration?: boolean;
+      webSearch?: boolean;
+    };
+    tools: ToolCapabilityDescriptor[];
+    maintenance: CapabilityDescriptor[];
+  };
+  transport: {
+    streamKind: "sse" | "websocket" | "unknown";
+    connectionEvidenceKey?: string;
+    servedMethods: string[];
+    evidenceRefs: EvidenceRef[];
+  };
+  updatedAt: string;
+};
+```
+
+### Field Use Rules
+
+- Model picker entries come only from `modelCatalog.items`. Static labels may
+  appear only as degraded diagnostics.
+- Reasoning and speed menus are per-model projections. They must not use one
+  global enum across all models.
+- `Runtime default` in the composer means "clear this next-turn override"; it
+  should point to the actual default model/effort/tier only when the descriptor
+  exposes it.
+- Account token profile is analytics evidence, not quota evidence.
+- Quota reset labels are formatted only from provider-served reset timestamps.
+- Context pressure requires both token usage and a model context window. If one
+  side is missing, render unknown or estimated with source labels.
+- Raw access tokens, raw account ids, emails, request payloads, tool payloads,
+  and provider responses remain main-process/private evidence unless a later
+  contract explicitly permits a sanitized projection.
+- Direct-path UI parity with vanilla app-server means exposing the same evidence
+  classes, not cloning app-server method names.
+
+### Current Direct Gap
+
+The direct branch already has partial concept coverage in the matrix and bridge
+registry, but the field-level adapter is incomplete:
+
+- Model persistence can remember the chosen model/reasoning effort, but the
+  model picker is still not backed by a live server catalog.
+- Speed/service tier projection is incomplete; only a default placeholder is
+  visible when direct metadata is missing.
+- Bottom-band quota is unknown because direct quota/rate-limit snapshots are not
+  yet read from the account endpoint.
+- Bottom-band context is estimated/unknown because direct token usage and model
+  context-window evidence are not yet fused into a context-pressure witness.
+- Account token usage is known in some cases, but it must remain separate from
+  quota and context pressure.
+
+Next implementation artifact:
+
+```text
+DirectServerMetadataAdapter
+  -> auth/account read
+  -> model catalog read/cache
+  -> rate-limit read/update
+  -> account token profile read
+  -> turn token/context/timing witness
+  -> DirectProviderMetadataProfile
+  -> RuntimeSettingsProjection + bottom-band witnesses
+```
+
 ## Direct Harness Thread Import
 
 Existing threads can come from Codex CLI, ChatGPT, or the future direct harness.

@@ -2390,6 +2390,88 @@ Still intentionally not authority:
   broad module/tool execution
 ```
 
+## Wave 8: Direct Provider Metadata Truth And Drift Validation
+
+Status: planned.
+
+Review posture after Wave 7:
+
+```text
+The direct path can now be selected and smoke-tested from the Electron UX, and it
+has visible runtime witnesses. The remaining usability gap is that several
+runtime-facing chips and menus still depend on partial/static projections:
+model catalog, reasoning choices, service tiers, quota windows, account token
+profile, and context pressure. These must become read-only provider metadata
+truth before direct can feel like a normal daily lane.
+```
+
+Standing Wave 8 constraints:
+
+- Read-only provider metadata probes only.
+- No provider turns are started by metadata validation.
+- No tool execution, workspace mutation, approval mutation, worker spawning,
+  recursive orchestration, cost computation, or matrix promotion.
+- Startup validation must be cheap, bounded, TTL/ETag aware, and non-blocking
+  unless direct cannot safely initialize.
+- Unknown/new fields are drift evidence, not crashes.
+- Raw tokens, raw account ids, emails, request payloads, provider payloads, and
+  full local paths remain main-process/private evidence.
+
+### PR 46: Direct Metadata Adapter And Startup Drift Sentinel
+
+Status: planned.
+
+Purpose:
+
+```text
+Fetch direct provider metadata through a single robust adapter, validate it at
+startup, and project model/settings/quota/context witnesses from live evidence
+instead of static assumptions.
+```
+
+Scope:
+
+- Add a `DirectServerMetadataAdapter` that performs read-only direct metadata
+  fetches for account status, model catalog, model descriptors, rate-limit
+  windows, account token profile, and turn usage/context witnesses when
+  available.
+- Add a `DirectMetadataDriftReport` startup sentinel that validates raw adapter
+  input and normalized `direct_provider_metadata_profile@1` output.
+- Cache last-known-good metadata with source, ETag/client-version evidence, TTL,
+  and changed-field/unknown-value diagnostics.
+- Project model picker, reasoning menu, service-tier/speed menu, quota chip,
+  context chip, and runtime witness rows from the normalized metadata profile.
+- Preserve degraded/unknown/unavailable states with source labels when any
+  upstream field is absent or stale.
+- Add fixture and regression coverage for schema drift, unknown enum values,
+  stale cache fallback, raw-exposure blocking, quota/context formatting, and
+  renderer-safe projection.
+
+Promotion criterion:
+
+```text
+The direct lane can explain model, reasoning, speed, quota, token, and context
+posture from validated provider metadata, and startup detects drift without
+making the app fragile.
+```
+
+Expected implementation notes:
+
+- `defaultReasoningEffort` must be validated against
+  `supportedReasoningEfforts`.
+- `defaultServiceTier` must be validated against `serviceTiers`.
+- The reasoning menu must not show non-provider values such as `none` or
+  `minimal` unless the live descriptor exposes them.
+- The speed menu must not be a global enum; it is per-model and should label the
+  descriptor's actual default tier when known.
+- Quota reset labels must be formatted only from provider-served reset
+  timestamps.
+- Context pressure must require both token usage and model context-window
+  evidence, otherwise it remains unknown or explicitly estimated.
+- Account token profile rows are analytics evidence, not quota evidence.
+- Startup drift reports should surface in settings/runtime diagnostics and only
+  affect composer/bottom-band UI when current controls are impacted.
+
 ## Update Rules
 
 After each PR:
