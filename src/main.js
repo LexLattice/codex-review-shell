@@ -2806,55 +2806,86 @@ function directMetadataWitnessState(profile = {}, driftReport = {}) {
   return "unknown";
 }
 
-function directMetadataPrimaryQuotaWindow(profile = {}) {
+function directMetadataQuotaWindows(profile = {}) {
   const windows = profile?.usage?.quota?.windows;
-  if (!Array.isArray(windows) || !windows.length) return null;
-  const sorted = [...windows].sort((a, b) => {
+  if (!Array.isArray(windows) || !windows.length) return [];
+  const codexWindows = windows.filter((window) => String(window?.windowId || "").startsWith("codex:"));
+  const selectedWindows = codexWindows.length ? codexWindows : windows;
+  return [...selectedWindows].sort((a, b) => {
+    const priority = (window) => {
+      const label = directMetadataQuotaWindowLabel(window);
+      if (label === "5h") return 1;
+      if (label === "W") return 2;
+      return 10;
+    };
+    const priorityDiff = priority(a) - priority(b);
+    if (priorityDiff) return priorityDiff;
     const aPercent = Number(a?.usedPercent);
     const bPercent = Number(b?.usedPercent);
     if (Number.isFinite(aPercent) && Number.isFinite(bPercent) && aPercent !== bPercent) return bPercent - aPercent;
-    if (a?.windowKind === "five_hour") return -1;
-    if (b?.windowKind === "five_hour") return 1;
     return 0;
   });
-  return sorted[0] || null;
 }
 
-function directMetadataResetLabel(resetAt = "") {
+function directMetadataQuotaWindowLabel(window = {}) {
+  const safeWindow = window ?? {};
+  if (safeWindow.windowKind === "weekly") return "W";
+  if (safeWindow.windowKind === "five_hour") return "5h";
+  const duration = Number(safeWindow.windowDurationMins || 0);
+  if (duration === 300) return "5h";
+  if (duration === 10080) return "W";
+  if (duration > 0 && duration < 60) return `${duration}m`;
+  if (duration > 0 && duration % 1440 === 0) return `${duration / 1440}d`;
+  if (duration > 0 && duration % 60 === 0) return `${duration / 60}h`;
+  return normalizeString(safeWindow.windowKind, "quota");
+}
+
+function directMetadataAvailablePercent(window = {}) {
+  const used = Number(window?.usedPercent);
+  if (!Number.isFinite(used)) return null;
+  return Math.max(0, Math.min(100, 100 - Math.round(used)));
+}
+
+function directMetadataResetLabel(window = {}) {
+  const resetAt = window?.resetsAt;
   if (!resetAt) return "";
   const date = new Date(resetAt);
   if (!Number.isFinite(date.getTime())) return "";
-  const hours = String(date.getHours()).padStart(2, "0");
-  const minutes = String(date.getMinutes()).padStart(2, "0");
-  return `${hours}:${minutes}`;
+  const options = directMetadataQuotaWindowLabel(window) === "W"
+    ? { weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false }
+    : { hour: "2-digit", minute: "2-digit", hour12: false };
+  return new Intl.DateTimeFormat(undefined, options).format(date);
 }
 
 function directMetadataQuotaLabel(profile = {}) {
-  const window = directMetadataPrimaryQuotaWindow(profile);
-  if (!window) return "Quota/rate unknown";
-  const percent = Number(window.usedPercent);
-  const prefix = window.windowKind === "weekly"
-    ? "weekly"
-    : window.windowKind === "five_hour"
-      ? "5h"
-      : normalizeString(window.windowKind, "quota");
-  const reset = directMetadataResetLabel(window.resetsAt);
-  return [
-    "Quota/rate",
-    prefix,
-    Number.isFinite(percent) ? `${Math.round(percent)}%` : "",
-    reset ? `resets ${reset}` : "",
-  ].filter(Boolean).join(" ");
+  const windows = directMetadataQuotaWindows(profile);
+  if (!windows.length) return "Quota/rate unknown";
+  const parts = windows
+    .slice(0, 2)
+    .map((window) => {
+      const percent = directMetadataAvailablePercent(window);
+      if (percent == null) return "";
+      const reset = directMetadataResetLabel(window);
+      return [directMetadataQuotaWindowLabel(window), `${percent}%`, reset].filter(Boolean).join(" ");
+    })
+    .filter(Boolean);
+  return parts.length ? `Quota/rate ${parts.join(" / ")}` : "Quota/rate available";
 }
 
-function directMetadataContextLabel(profile = {}, modelDescriptor = null) {
+function directMetadataContextLabel(profile = {}, modelDescriptor = null, agentUsageStatus = {}) {
   const contextWindow = Number(profile?.usage?.context?.modelContextWindow || modelDescriptor?.contextWindow || 0);
-  const usedTokens = Number(profile?.usage?.context?.usedTokens || profile?.usage?.context?.tokensInWindow || 0);
+  const latestUsage = agentUsageStatus?.latestUsage || {};
+  const usedTokens = Number(
+    profile?.usage?.context?.usedTokens ??
+      profile?.usage?.context?.tokensInWindow ??
+      latestUsage.inputTokensKnown ??
+      0,
+  );
   if (Number.isFinite(contextWindow) && contextWindow > 0 && Number.isFinite(usedTokens) && usedTokens > 0) {
     const usedPercent = Math.max(0, Math.min(100, Math.round((usedTokens / contextWindow) * 100)));
     return `Context ${usedPercent}% · ${usedTokens}/${contextWindow}`;
   }
-  if (Number.isFinite(contextWindow) && contextWindow > 0) return `Context window ${contextWindow}`;
+  if (Number.isFinite(contextWindow) && contextWindow > 0) return `Context fill unknown · window ${contextWindow}`;
   return "Context unknown";
 }
 
@@ -2887,10 +2918,15 @@ function buildDirectRuntimeWitnessProjectionForProject(input = {}) {
     : "unknown";
   const appServerFallback = input.appServerFallbackParity || {};
   const appServerFallbackState = normalizeString(appServerFallback.parityState, "");
-  const quotaWindow = metadataProfile ? directMetadataPrimaryQuotaWindow(metadataProfile) : null;
-  const quotaState = quotaWindow ? modelState : "unknown";
-  const contextLabel = metadataProfile ? directMetadataContextLabel(metadataProfile, selected.descriptor) : "Context unknown";
-  const contextState = metadataProfile?.usage?.context?.available || selected.descriptor?.contextWindow ? modelState : "unknown";
+  const quotaWindows = metadataProfile ? directMetadataQuotaWindows(metadataProfile) : [];
+  const quotaState = quotaWindows.length ? modelState : "unknown";
+  const contextLabel = metadataProfile ? directMetadataContextLabel(metadataProfile, selected.descriptor, agentUsageStatus) : "Context unknown";
+  const contextHasFill = Number(agentUsageStatus?.latestUsage?.inputTokensKnown ?? metadataProfile?.usage?.context?.usedTokens ?? metadataProfile?.usage?.context?.tokensInWindow ?? 0) > 0;
+  const contextState = contextHasFill
+    ? modelState
+    : selected.descriptor?.contextWindow
+      ? "diagnostic"
+      : "unknown";
   const driftStatus = normalizeString(driftReport?.status, metadataProfile ? "stable" : "unknown");
   const driftState = driftStatus === "invalid" || driftStatus === "blocked"
     ? "blocked"

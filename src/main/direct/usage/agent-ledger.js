@@ -380,6 +380,62 @@ function summarizeBy(rows = [], keyFn, labelFn = keyFn) {
   }).sort((left, right) => right.totals.totalTokensKnown - left.totals.totalTokensKnown || left.key.localeCompare(right.key));
 }
 
+function latestUsageFromRows(rows = []) {
+  const candidates = arrayOrEmpty(rows)
+    .filter((row) => row.usageRecordKind !== "missing" && Number.isFinite(Number(row.inputTokens ?? row.totalTokens)))
+    .map((row) => {
+      const completedMs = parseTimeMs(row.timing?.completedAt);
+      const createdMs = parseTimeMs(row.timing?.createdAt || row.timing?.streamStartedAt);
+      const observedMs = completedMs || createdMs || Number(row.sourceEventSequence || 0);
+      return { row, observedMs };
+    })
+    .sort((left, right) => right.observedMs - left.observedMs || numberValue(right.row.sourceEventSequence, 0) - numberValue(left.row.sourceEventSequence, 0));
+  const latest = candidates[0]?.row || null;
+  if (!latest) return null;
+  return {
+    rowId: normalizeString(latest.rowId, ""),
+    sessionId: normalizeString(latest.sessionId, ""),
+    threadId: normalizeString(latest.threadId, ""),
+    turnId: normalizeString(latest.turnId, ""),
+    model: normalizeString(latest.model, ""),
+    inputTokensKnown: latest.inputTokens === undefined ? null : numberValue(latest.inputTokens, 0),
+    totalTokensKnown: latest.totalTokens === undefined ? null : numberValue(latest.totalTokens, 0),
+    tokenFieldConfidence: isPlainObject(latest.tokenFieldConfidence) ? latest.tokenFieldConfidence : {},
+    observedAt: normalizeString(latest.timing?.completedAt || latest.timing?.createdAt || "", ""),
+    rowDigest: normalizeString(latest.rowDigest, ""),
+  };
+}
+
+function latestUsageByThreadFromRows(rows = []) {
+  const byThread = new Map();
+  for (const row of arrayOrEmpty(rows)) {
+    const threadId = normalizeString(row.threadId || row.sessionId, "");
+    if (!threadId || row.usageRecordKind === "missing" || !Number.isFinite(Number(row.inputTokens ?? row.totalTokens))) continue;
+    const completedMs = parseTimeMs(row.timing?.completedAt);
+    const createdMs = parseTimeMs(row.timing?.createdAt || row.timing?.streamStartedAt);
+    const observedMs = completedMs || createdMs || Number(row.sourceEventSequence || 0);
+    const current = byThread.get(threadId);
+    if (!current || observedMs > current.observedMs || (observedMs === current.observedMs && numberValue(row.sourceEventSequence, 0) > numberValue(current.row.sourceEventSequence, 0))) {
+      byThread.set(threadId, { row, observedMs });
+    }
+  }
+  return [...byThread.values()]
+    .sort((left, right) => right.observedMs - left.observedMs || normalizeString(left.row.threadId || left.row.sessionId, "").localeCompare(normalizeString(right.row.threadId || right.row.sessionId, "")))
+    .slice(0, 40)
+    .map(({ row }) => ({
+      rowId: normalizeString(row.rowId, ""),
+      sessionId: normalizeString(row.sessionId, ""),
+      threadId: normalizeString(row.threadId || row.sessionId, ""),
+      turnId: normalizeString(row.turnId, ""),
+      model: normalizeString(row.model, ""),
+      inputTokensKnown: row.inputTokens === undefined ? null : numberValue(row.inputTokens, 0),
+      totalTokensKnown: row.totalTokens === undefined ? null : numberValue(row.totalTokens, 0),
+      tokenFieldConfidence: isPlainObject(row.tokenFieldConfidence) ? row.tokenFieldConfidence : {},
+      observedAt: normalizeString(row.timing?.completedAt || row.timing?.createdAt || "", ""),
+      rowDigest: normalizeString(row.rowDigest, ""),
+    }));
+}
+
 function buildDirectAgentUsageLedger(input = {}) {
   const rows = dedupeRows(collectInputRows(input));
   const projectId = normalizeString(input.projectId || rows[0]?.projectId, "");
@@ -436,6 +492,8 @@ function buildDirectAgentUsageSummaryProjection(ledger = {}) {
     generatedAt: normalizeString(source.generatedAt, nowIso()),
     rowCount: Number(source.rowCount ?? arrayOrEmpty(source.rows).length ?? 0),
     totals: isPlainObject(source.totals) ? source.totals : emptyTotals(),
+    latestUsage: latestUsageFromRows(source.rows),
+    latestUsageByThread: latestUsageByThreadFromRows(source.rows),
     byAgent: arrayOrEmpty(source.byAgent).slice(0, 12),
     byWorkThread: arrayOrEmpty(source.byWorkThread).slice(0, 12),
     byRoute: arrayOrEmpty(source.byRoute).slice(0, 12),

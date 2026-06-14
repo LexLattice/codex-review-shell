@@ -66,6 +66,16 @@ const usagePayload = {
       reset_at: 1781523300,
     },
   },
+  additional_rate_limits: [{
+    metered_feature: "codex_other",
+    rate_limit: {
+      primary_window: {
+        used_percent: 0,
+        limit_window_seconds: 18000,
+        reset_at: 1781443200,
+      },
+    },
+  }],
 };
 
 const profile = buildDirectProviderMetadataProfile({
@@ -92,7 +102,9 @@ assert.equal(zeroContext.contextWindow, 0);
 assert.equal(zeroContext.maxContextWindow, 0);
 assert.equal(profile.usage.quota.status, "available");
 assert.equal(profile.usage.quota.planType, "pro");
-assert.equal(profile.usage.quota.windows.length, 2);
+assert.equal(profile.usage.quota.windows.length, 3);
+assert(profile.usage.quota.windows.some((window) => window.windowId === "codex:secondary" && window.windowKind === "weekly"));
+assert(profile.usage.quota.windows.some((window) => window.windowId === "codex_other:primary" && window.windowKind === "five_hour"));
 assert.equal(profile.rawTokenIncluded, false);
 assert.equal(profile.rawAccountIdIncluded, false);
 assert.equal(profile.rawProviderPayloadIncluded, false);
