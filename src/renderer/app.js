@@ -322,6 +322,7 @@ const els = {
   directImplementationActiveTurnList: document.getElementById("directImplementationActiveTurnList"),
   directImplementationToolResultList: document.getElementById("directImplementationToolResultList"),
   directImplementationHistoryList: document.getElementById("directImplementationHistoryList"),
+  directImplementationPromotionList: document.getElementById("directImplementationPromotionList"),
   directImplementationEvidence: document.getElementById("directImplementationEvidence"),
   directMetaSessionHealthBadge: document.getElementById("directMetaSessionHealthBadge"),
   directMetaSessionRefreshButton: document.getElementById("directMetaSessionRefreshButton"),
@@ -3365,6 +3366,24 @@ function directImplementationHistoryRows() {
   ));
 }
 
+function directImplementationPromotionRows() {
+  const projection = directDiagnosticsObject(state.directImplementationUiStatus);
+  const queue = directDiagnosticsObject(projection.livePromotionCandidateQueue);
+  const candidates = Array.isArray(queue.candidates) ? queue.candidates : [];
+  if (!projection.schema) return [directDiagnosticsRow("Status", state.directImplementationUiLoading ? "loading" : "not loaded", "missing")];
+  if (!queue.schema) return [directDiagnosticsRow("Queue", "not exposed", "missing")];
+  const rows = [
+    directDiagnosticsRow("Queue", `${queue.readyCount || 0} ready / ${queue.blockedCount || 0} blocked`, queue.readyCount ? "diagnostic" : "blocked"),
+  ];
+  for (const candidate of candidates.slice(0, 8)) {
+    const blockers = Array.isArray(candidate.blockerCodes) ? candidate.blockerCodes : [];
+    const value = `${candidate.gateState || "unknown"} · ${blockers[0] || candidate.promotionState || "candidate"}`;
+    rows.push(directDiagnosticsRow(candidate.label || candidate.capabilityId || "Candidate", value, candidate.gateState === "ready" ? "ok" : "blocked", blockers.join(", ")));
+  }
+  rows.push(directDiagnosticsRow("Authority", "display only", "diagnostic", "No provider transport, workspace mutation, recursive worker, app-server fallback, matrix, or default mutation authority is exposed."));
+  return rows;
+}
+
 function renderDirectImplementationUiStatus() {
   if (!els.directImplementationStatusBadge) return;
   const projection = directDiagnosticsObject(state.directImplementationUiStatus);
@@ -3387,14 +3406,17 @@ function renderDirectImplementationUiStatus() {
   renderDirectDiagnosticsRows(els.directImplementationActiveTurnList, directImplementationActiveTurnRows());
   renderDirectDiagnosticsRows(els.directImplementationToolResultList, directImplementationToolResultRows());
   renderDirectDiagnosticsRows(els.directImplementationHistoryList, directImplementationHistoryRows());
+  renderDirectDiagnosticsRows(els.directImplementationPromotionList, directImplementationPromotionRows());
   if (els.directImplementationEvidence) {
     if (state.directImplementationUiError) {
       els.directImplementationEvidence.textContent = `Implementation-lane projection unavailable: ${state.directImplementationUiError}`;
     } else if (schemaOk) {
       const rowCount = Array.isArray(history.rows) ? history.rows.length : 0;
       const historyScope = history.scope || "not loaded";
+      const queue = directDiagnosticsObject(projection.livePromotionCandidateQueue);
+      const promotionSummary = queue.schema ? ` · promotion candidates ${queue.readyCount || 0}/${queue.candidateCount || 0} ready` : "";
       const warning = state.directImplementationUiWarning ? ` · warning: ${state.directImplementationUiWarning}` : "";
-      els.directImplementationEvidence.textContent = `Read-only projection · ${rowCount} ${historyScope} history row${rowCount === 1 ? "" : "s"} · policy ${policy.schema ? "loaded" : "not loaded"} · no approval, replay, recovery, or workspace mutation action is exposed here.${warning}`;
+      els.directImplementationEvidence.textContent = `Read-only projection · ${rowCount} ${historyScope} history row${rowCount === 1 ? "" : "s"} · policy ${policy.schema ? "loaded" : "not loaded"}${promotionSummary} · no approval, replay, recovery, promotion, or workspace mutation action is exposed here.${warning}`;
     } else {
       els.directImplementationEvidence.textContent = "Direct implementation-lane UI status is read-only and not loaded yet.";
     }

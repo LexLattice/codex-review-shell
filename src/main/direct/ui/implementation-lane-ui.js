@@ -2,6 +2,10 @@
 
 const crypto = require("node:crypto");
 
+const {
+  buildLivePromotionCandidateQueue,
+} = require("../readiness/live-promotion-candidate-gate");
+
 const DIRECT_IMPLEMENTATION_LANE_UI_STATUS_SCHEMA = "direct_implementation_lane_ui_status@1";
 const DIRECT_OPERATION_HISTORY_PROJECTION_SCHEMA = "direct_operation_history_projection@1";
 const DIRECT_POLICY_READONLY_VIEW_SCHEMA = "direct_policy_readonly_view@1";
@@ -467,6 +471,14 @@ function buildDirectImplementationLaneUiStatus({ project = {}, runtimeStatus = {
   const appServerSelected = activeTier === "app-server";
   const contextMaintenance = contextMaintenanceStatus(runtimeStatus);
   const latestToolResult = latestToolResultStatus(runtimeStatus);
+  const livePromotionCandidateQueue = buildLivePromotionCandidateQueue({
+    projectId,
+    generatedAt: meta.generatedAt,
+    fixtureEvidenceByCapability: runtimeStatus.livePromotion?.fixtureEvidenceByCapability,
+    liveEvidenceByCapability: runtimeStatus.livePromotion?.liveEvidenceByCapability,
+    attempts: runtimeStatus.livePromotion?.attempts,
+    operatorOptIn: runtimeStatus.livePromotion?.operatorOptIn === true,
+  });
   const activeTurnCountValue = numberValue(runtimeStatus.sessionStore?.activeTurnCount);
   const activeTurnStateValue = normalizeString(runtimeStatus.sessionStore?.lastTurnState, "");
   const activeSessionIdValue = normalizeString(runtimeStatus.sessionStore?.activeSessionId, "");
@@ -540,6 +552,7 @@ function buildDirectImplementationLaneUiStatus({ project = {}, runtimeStatus = {
     },
     contextMaintenance,
     latestToolResult,
+    livePromotionCandidateQueue,
     witnesses: witnessChips(runtimeStatus),
     blockers: implementationLane.blockerCodes.map((code) => ({ code, source: "runtime-status", rendererSafe: true })),
     warnings: [],
