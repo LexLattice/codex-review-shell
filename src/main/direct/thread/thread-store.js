@@ -1100,13 +1100,24 @@ class DirectThreadStore {
     let indexedTurnCount = 0;
     let missingSessionFileCount = 0;
     for (const sessionId of sessionStore.listSessionIdsFromDisk()) {
-      const session = sessionStore.readSession(sessionId);
+      let session = null;
+      try {
+        session = sessionStore.readSession(sessionId);
+      } catch {
+        session = null;
+      }
       if (!session || session.schema !== DIRECT_SESSION_SCHEMA) {
         missingSessionFileCount += 1;
         continue;
       }
       const turns = sessionStore.listTurnIdsFromDisk(session.sessionId)
-        .map((turnId) => sessionStore.readTurn(session.sessionId, turnId))
+        .map((turnId) => {
+          try {
+            return sessionStore.readTurn(session.sessionId, turnId);
+          } catch {
+            return null;
+          }
+        })
         .filter((turn) => turn && turn.schema === DIRECT_TURN_SCHEMA);
       this.indexSessionArtifacts(sessionStore, session, turns, options);
       indexedSessionCount += 1;

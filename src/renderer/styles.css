@@ -1811,6 +1811,62 @@ button:active {
   line-height: 1.35;
 }
 
+.direct-workthread-deck-section .section-heading.compact {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 8px;
+}
+
+.direct-workthread-counts,
+.direct-workthread-list {
+  display: grid;
+  gap: 6px;
+}
+
+.direct-workthread-counts {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.direct-workthread-row {
+  display: grid;
+  gap: 4px;
+  padding: 7px;
+  border: 1px solid rgba(141, 180, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(7, 11, 18, 0.54);
+}
+
+.direct-workthread-row.state-active {
+  border-color: rgba(95, 214, 144, 0.28);
+}
+
+.direct-workthread-row.state-recoverable {
+  border-color: rgba(255, 190, 93, 0.34);
+}
+
+.direct-workthread-row.state-blocked,
+.direct-workthread-row.state-stale {
+  border-color: rgba(255, 112, 133, 0.28);
+}
+
+.direct-workthread-row.state-candidate {
+  border-color: rgba(141, 180, 255, 0.26);
+  border-style: dashed;
+}
+
+.direct-workthread-draft-form {
+  display: grid;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.direct-workthread-draft-form input,
+.direct-workthread-draft-form textarea {
+  min-width: 0;
+}
+
 .direct-fork-start-form {
   display: grid;
   gap: 8px;

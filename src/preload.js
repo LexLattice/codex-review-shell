@@ -140,6 +140,8 @@ contextBridge.exposeInMainWorld("workspaceShell", {
     ipcRenderer.invoke("direct-thread-workbench:read-preview-projection", { ...options, projectId, previewId }),
   readDirectThreadWorkbenchOperationHistory: (projectId, options = {}) =>
     ipcRenderer.invoke("direct-thread-workbench:read-operation-history", { ...options, projectId }),
+  createDirectWorkThreadDraftSession: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-thread-workbench:create-work-thread-draft-session", { ...options, projectId }),
   prepareDirectThreadSoftDelete: (projectId, threadId, options = {}) =>
     ipcRenderer.invoke("direct-thread-workbench:prepare-soft-delete", { ...options, projectId, threadId }),
   runDirectThreadLifecycleAction: (projectId, options = {}) =>

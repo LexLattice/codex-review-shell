@@ -30,6 +30,7 @@ const { loadDirectCodexProfile } = require("./main/direct/odeu-profile/profile-l
 const { DirectSessionStore } = require("./main/direct/session/session-store");
 const { DirectThreadStore } = require("./main/direct/thread/thread-store");
 const { DirectThreadWorkbenchController } = require("./main/direct/thread/thread-workbench-controller");
+const { DirectWorkThreadRegistryStore } = require("./main/direct/bridge/work-thread-registry");
 const { DirectImportController } = require("./main/direct/import/import-controller");
 const {
   DirectMetaSessionStore,
@@ -274,6 +275,7 @@ let directCodexCliAuthStore = null;
 let directCodexProfileDoc = null;
 let directSessionStore = null;
 let directThreadStore = null;
+let directWorkThreadStore = null;
 let directThreadWorkbenchController = null;
 let directImportController = null;
 let directMetaSessionStore = null;
@@ -1875,11 +1877,20 @@ function ensureDirectThreadStore() {
   return directThreadStore;
 }
 
+function ensureDirectWorkThreadStore() {
+  if (directWorkThreadStore) return directWorkThreadStore;
+  directWorkThreadStore = new DirectWorkThreadRegistryStore({
+    rootDir: directSessionRootDir(),
+  });
+  return directWorkThreadStore;
+}
+
 function ensureDirectThreadWorkbenchController() {
   if (directThreadWorkbenchController) return directThreadWorkbenchController;
   directThreadWorkbenchController = new DirectThreadWorkbenchController({
     threadStore: ensureDirectThreadStore(),
     sessionStore: ensureDirectSessionStore(),
+    workThreadStore: ensureDirectWorkThreadStore(),
     projectResolver: (projectId) => getProjectById(projectId),
     liveTextController: () => ensureDirectLiveTextController(),
   });
@@ -6733,6 +6744,7 @@ async function createWindow() {
     directThreadStore?.close();
     directThreadStore = null;
     directSessionStore = null;
+    directWorkThreadStore = null;
     middleWebHost?.dispose();
     middleWebHost = null;
     if (chatgptDownloadHandler && chatgptView?.webContents && !chatgptView.webContents.isDestroyed()) {
@@ -7479,6 +7491,13 @@ ipcMain.handle("direct-thread-workbench:read-operation-history", async (_event, 
   return ensureDirectThreadWorkbenchController().readOperationHistory(project, payload || {});
 });
 
+ipcMain.handle("direct-thread-workbench:create-work-thread-draft-session", async (_event, payload) => {
+  const project = await getProjectById(payload?.projectId);
+  const result = await ensureDirectThreadWorkbenchController().createWorkThreadDraftSession(project, payload || {});
+  emitDirectRuntimeStatus(project);
+  return result;
+});
+
 ipcMain.handle("direct-thread-workbench:prepare-soft-delete", async (_event, payload) => {
   const project = await getProjectById(payload?.projectId);
   return ensureDirectThreadWorkbenchController().prepareSoftDelete(project, payload?.threadId, payload || {});
@@ -7611,9 +7630,10 @@ app.on("before-quit", () => {
   directImplementationProofEvidenceStore = null;
   directActivationStore = null;
   directThreadWorkbenchController = null;
-  directThreadStore?.close();
-  directThreadStore = null;
-  directSessionStore = null;
+    directThreadStore?.close();
+    directThreadStore = null;
+    directSessionStore = null;
+    directWorkThreadStore = null;
 });
 
 function emitDirectAuthAndRuntimeStatus(event) {

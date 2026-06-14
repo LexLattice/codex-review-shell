@@ -128,6 +128,9 @@ const state = {
     selectedProjection: null,
     selectedPreview: null,
     forkStartPrompt: "",
+    newThreadDraftTitle: "",
+    newThreadDraftObjective: "",
+    newThreadDraftWorkThreadId: "",
     lastError: "",
     filters: {
       includeHidden: false,
@@ -4735,6 +4738,130 @@ function renderDirectThreadWorkbenchList() {
   }
 }
 
+function renderDirectWorkThreadOperatorDeckSection() {
+  const snapshot = state.directThreadWorkbench.snapshot;
+  const deck = snapshot?.workThreadOperatorDeck || null;
+  const section = document.createElement("div");
+  section.className = "direct-thread-side-section direct-workthread-deck-section";
+  const heading = document.createElement("div");
+  heading.className = "section-heading compact";
+  const title = document.createElement("div");
+  title.innerHTML = `<p class="eyebrow">WorkThread deck</p><h4>Work identity</h4>`;
+  const count = document.createElement("span");
+  count.className = "counter";
+  count.textContent = deck ? `${deck.rowCount || 0}` : "0";
+  heading.append(title, count);
+  section.appendChild(heading);
+
+  const law = document.createElement("p");
+  law.className = "muted";
+  law.textContent = "WorkThread is the control-plane identity; provider thread ids are runtime identities only.";
+  section.appendChild(law);
+
+  const counts = document.createElement("div");
+  counts.className = "direct-workthread-counts";
+  const deckCounts = deck?.counts || {};
+  for (const key of ["active", "recoverable", "blocked", "candidate", "stale", "archived"]) {
+    const pill = document.createElement("span");
+    pill.className = "pill subtle";
+    pill.textContent = `${key} ${Number(deckCounts[key] || 0)}`;
+    counts.appendChild(pill);
+  }
+  section.appendChild(counts);
+
+  const list = document.createElement("div");
+  list.className = "direct-workthread-list";
+  const rows = deck?.rows || [];
+  if (!rows.length) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = "No WorkThread rows yet. Draft one below before starting provider work.";
+    list.appendChild(empty);
+  } else {
+    for (const row of rows.slice(0, 12)) {
+      const item = document.createElement("div");
+      item.className = `direct-workthread-row state-${row.operatorState || "unknown"}`;
+      const itemTitle = document.createElement("strong");
+      itemTitle.textContent = row.title || row.workThreadId || "WorkThread";
+      const meta = document.createElement("span");
+      meta.className = "binding-meta";
+      meta.textContent = `${row.operatorState || "unknown"} · ${row.workThreadId || "unscoped"}`;
+      const runtime = document.createElement("span");
+      runtime.className = "binding-meta";
+      runtime.textContent = row.primaryRuntimeThreadId
+        ? `runtime thread ${row.primaryRuntimeThreadId}`
+        : "no runtime thread";
+      item.append(itemTitle, meta, runtime);
+      if (row.primaryRuntimeThreadId) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "ghost small";
+        button.textContent = "Open runtime";
+        button.disabled = state.directThreadWorkbench.status === "working";
+        button.addEventListener("click", () => {
+          selectDirectWorkbenchThread(row.primaryRuntimeThreadId).catch((error) => setLastEvent(`Open WorkThread runtime failed: ${error.message}`));
+        });
+        item.appendChild(button);
+      }
+      list.appendChild(item);
+    }
+  }
+  section.appendChild(list);
+
+  const form = document.createElement("div");
+  form.className = "direct-workthread-draft-form";
+  const titleLabel = document.createElement("label");
+  titleLabel.textContent = "New thread title";
+  const titleInput = document.createElement("input");
+  titleInput.type = "text";
+  titleInput.placeholder = "Direct work thread title";
+  titleInput.value = state.directThreadWorkbench.newThreadDraftTitle || "";
+  titleLabel.appendChild(titleInput);
+
+  const objectiveLabel = document.createElement("label");
+  objectiveLabel.textContent = "Objective / context posture";
+  const objectiveInput = document.createElement("textarea");
+  objectiveInput.rows = 4;
+  objectiveInput.placeholder = "State the work-world objective before creating a local direct thread.";
+  objectiveInput.value = state.directThreadWorkbench.newThreadDraftObjective || "";
+  objectiveLabel.appendChild(objectiveInput);
+
+  const idLabel = document.createElement("label");
+  idLabel.textContent = "WorkThread id (optional)";
+  const idInput = document.createElement("input");
+  idInput.type = "text";
+  idInput.placeholder = "Generated if omitted";
+  idInput.value = state.directThreadWorkbench.newThreadDraftWorkThreadId || "";
+  idLabel.appendChild(idInput);
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "primary small";
+  button.textContent = "Create local draft";
+  const updateButton = () => {
+    state.directThreadWorkbench.newThreadDraftTitle = titleInput.value;
+    state.directThreadWorkbench.newThreadDraftObjective = objectiveInput.value;
+    state.directThreadWorkbench.newThreadDraftWorkThreadId = idInput.value;
+    button.disabled = state.directThreadWorkbench.status === "working" ||
+      !bridge.createDirectWorkThreadDraftSession ||
+      !titleInput.value.trim() ||
+      !objectiveInput.value.trim();
+  };
+  titleInput.addEventListener("input", updateButton);
+  objectiveInput.addEventListener("input", updateButton);
+  idInput.addEventListener("input", updateButton);
+  button.addEventListener("click", () => {
+    createDirectWorkThreadDraftSession().catch((error) => setLastEvent(`Create local WorkThread draft failed: ${error.message}`));
+  });
+  updateButton();
+  const note = document.createElement("p");
+  note.className = "muted";
+  note.textContent = "Creates local direct thread evidence only. It does not start a provider turn, worker, app-server fallback, or workspace mutation.";
+  form.append(titleLabel, objectiveLabel, idLabel, button, note);
+  section.appendChild(form);
+  return section;
+}
+
 function renderDirectThreadProjectionDetail() {
   if (!els.directThreadWorkbenchDetail) return;
   const workbench = state.directThreadWorkbench;
@@ -4857,6 +4984,8 @@ function renderDirectThreadWorkbenchSide() {
   const snapshot = state.directThreadWorkbench.snapshot;
   const preview = state.directThreadWorkbench.selectedPreview?.projection || null;
   els.directThreadWorkbenchSide.textContent = "";
+  els.directThreadWorkbenchSide.appendChild(renderDirectWorkThreadOperatorDeckSection());
+
   const revision = document.createElement("div");
   revision.className = "direct-thread-side-section";
   revision.innerHTML = `<p class="eyebrow">Workbench revision</p><p class="mono muted"></p><p class="muted"></p>`;
@@ -5027,6 +5156,9 @@ function resetDirectThreadWorkbench(projectId = activeProject()?.id || "") {
     selectedProjection: null,
     selectedPreview: null,
     forkStartPrompt: "",
+    newThreadDraftTitle: "",
+    newThreadDraftObjective: "",
+    newThreadDraftWorkThreadId: "",
     lastError: "",
     filters: {
       includeHidden: Boolean(state.directThreadWorkbench?.filters?.includeHidden),
@@ -6497,6 +6629,52 @@ async function startDirectThreadForkFromSelectedPreview() {
     if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
     state.directThreadWorkbench.status = "error";
     state.directThreadWorkbench.lastError = `Start fresh fork failed: ${error.message}`;
+    setLastEvent(state.directThreadWorkbench.lastError);
+    renderDirectThreadWorkbench();
+  }
+}
+
+async function createDirectWorkThreadDraftSession() {
+  const project = activeProject();
+  if (!project || !bridge.createDirectWorkThreadDraftSession) return;
+  const title = String(state.directThreadWorkbench.newThreadDraftTitle || "").trim();
+  const objectiveSummary = String(state.directThreadWorkbench.newThreadDraftObjective || "").trim();
+  const workThreadId = String(state.directThreadWorkbench.newThreadDraftWorkThreadId || "").trim();
+  if (!title || !objectiveSummary) {
+    setLastEvent("Local WorkThread draft needs both title and objective.");
+    renderDirectThreadWorkbench();
+    return;
+  }
+  state.directThreadWorkbench.status = "working";
+  renderDirectThreadWorkbench();
+  const requestVersion = nextRequestVersion("directThreadWorkbenchOperation");
+  const snapshot = { projectId: project.id, projectVersion: Number(state.requestVersions.project || 0) };
+  try {
+    const result = await bridge.createDirectWorkThreadDraftSession(project.id, directThreadWorkbenchExpectedInput({
+      clientDraftId: createId("direct_workthread_draft"),
+      title,
+      objectiveSummary,
+      workThreadId,
+      contextPosture: "explicit_operator_draft",
+    }));
+    if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    if (result?.status !== "created") {
+      state.directThreadWorkbench.status = "loaded";
+      setLastEvent(`Local WorkThread draft blocked: ${(result?.draft?.blockerCodes || []).join(", ") || "unknown blocker"}.`);
+      renderDirectThreadWorkbench();
+      return;
+    }
+    state.directThreadWorkbench.newThreadDraftTitle = "";
+    state.directThreadWorkbench.newThreadDraftObjective = "";
+    state.directThreadWorkbench.newThreadDraftWorkThreadId = "";
+    state.directThreadWorkbench.selectedThreadId = result.thread?.threadId || result.thread?.id || "";
+    setLastEvent(`Created local WorkThread draft: ${result.thread?.title || result.draft?.title || "direct thread"}.`);
+    await loadDirectThreadWorkbench({ refresh: true });
+    if (state.directThreadWorkbench.selectedThreadId) await selectDirectWorkbenchThread(state.directThreadWorkbench.selectedThreadId);
+  } catch (error) {
+    if (isRequestStale("directThreadWorkbenchOperation", requestVersion) || isProjectRequestStale(snapshot.projectId, snapshot.projectVersion)) return;
+    state.directThreadWorkbench.status = "error";
+    state.directThreadWorkbench.lastError = `Create local WorkThread draft failed: ${error.message}`;
     setLastEvent(state.directThreadWorkbench.lastError);
     renderDirectThreadWorkbench();
   }

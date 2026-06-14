@@ -2055,7 +2055,7 @@ Still intentionally not authority:
 
 ## Wave 7: Mainline Hardening And Direct Usability Promotion
 
-Status: planned.
+Status: implemented in PR 42.
 
 Review posture after Wave 6:
 
@@ -2238,6 +2238,18 @@ Promotion criterion:
 The operator can choose or draft the active direct work thread from a bounded
 control surface before any direct turn starts.
 ```
+
+Implemented:
+
+- Added renderer-safe WorkThread operator deck rows for active, stale, blocked,
+  recoverable, archived, and candidate WorkThreads in the direct thread
+  workbench.
+- Added a guarded local new-thread draft transition that blocks missing
+  WorkThread identity/context posture and creates only local direct session
+  evidence when accepted.
+- Kept runtime/provider thread ids visible as secondary runtime identities and
+  preserved the no provider-turn / no app-server-fallback / no worker-spawn
+  authority boundary.
 
 ### PR 43: Live Promotion Candidate Queue And Evidence Gate
 
