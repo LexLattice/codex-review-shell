@@ -95,6 +95,9 @@ const {
   normalizeEvidenceRef,
 } = require("./main/direct/readiness/usage-readiness");
 const {
+  DirectServerMetadataAdapter,
+} = require("./main/direct/provider/metadata-adapter");
+const {
   assertContextPacketPreviewSafe,
   buildContextPacketPreview,
 } = require("./main/direct/context/preview-workbench");
@@ -305,6 +308,7 @@ let directLiveProbeEvidenceStore = null;
 let directImplementationProofEvidenceStore = null;
 let directFixtureController = null;
 let directLiveTextController = null;
+let directProviderMetadataAdapter = null;
 let directActivationStore = null;
 const directActivationLocks = new Map();
 let chatgptDownloadHandler = null;
@@ -377,6 +381,10 @@ function threadAnalyticsDbPath() {
 
 function directAuthRootDir() {
   return path.join(app.getPath("userData"), "direct-auth");
+}
+
+function directProviderMetadataRootDir() {
+  return path.join(app.getPath("userData"), "direct-provider-metadata");
 }
 
 function directSessionRootDir() {
@@ -1878,6 +1886,56 @@ function refreshDirectRuntimeCredentials() {
   return ensureDirectAuthLoginCoordinator().refreshCredentials(directRuntimeAuthRefreshController());
 }
 
+function ensureDirectProviderMetadataAdapter() {
+  if (directProviderMetadataAdapter) return directProviderMetadataAdapter;
+  directProviderMetadataAdapter = new DirectServerMetadataAdapter({
+    rootDir: directProviderMetadataRootDir(),
+    authStoreFactory: () => directRuntimeAuthStore(),
+    refreshCredentials: () => refreshDirectRuntimeCredentials(),
+  });
+  return directProviderMetadataAdapter;
+}
+
+function directProviderMetadataStatusForProject(project = {}) {
+  try {
+    return ensureDirectProviderMetadataAdapter().cachedStatus(project?.id || "");
+  } catch (error) {
+    return {
+      profile: null,
+      driftReport: {
+        schema: "direct_metadata_drift_report@1",
+        projectId: normalizeString(project?.id, ""),
+        observedAt: nowIso(),
+        status: "unavailable",
+        cacheState: "missing",
+        fetchStatus: "failed",
+        source: normalizeString(error?.message, "metadata_cache_unavailable"),
+        validation: { ok: false, errors: ["metadata_cache_unavailable"], warnings: [] },
+        unknownEnums: [],
+        missingFields: [],
+        changedDefaults: [],
+        rawTextIncluded: false,
+        rawPathIncluded: false,
+        rawSecretIncluded: false,
+      },
+      cacheState: "missing",
+      error,
+    };
+  }
+}
+
+async function refreshDirectProviderMetadataForProject(project = {}) {
+  try {
+    return await ensureDirectProviderMetadataAdapter().refreshForProject(project);
+  } catch (error) {
+    return {
+      ...directProviderMetadataStatusForProject(project),
+      cacheState: "failed",
+      error,
+    };
+  }
+}
+
 function ensureDirectCodexProfileDoc() {
   if (directCodexProfileDoc) return directCodexProfileDoc;
   directCodexProfileDoc = loadDirectCodexProfile();
@@ -2387,6 +2445,7 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
   });
   const agentUsageStatus = buildDirectAgentUsageStatusForProject(projectId);
   const implementationLaneUiStatus = buildDirectImplementationLaneUiStatus({ project, runtimeStatus });
+  const directProviderMetadata = directProviderMetadataStatusForProject(project);
   const appServerFallbackParity = runtimeStatus.appServerFallbackParity || buildAppServerFallbackParityReport({
     projectId,
     runtimeStatus,
@@ -2399,6 +2458,7 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     runtimeStatus,
     agentUsageStatus,
     appServerFallbackParity,
+    directProviderMetadata,
     generatedAt,
   });
   const contextPreview = directContextPreviewForProject(project, {
@@ -2697,24 +2757,123 @@ function runtimeWitnessEvidenceRef(kind, artifactId, label, confidence = "diagno
   });
 }
 
+function directMetadataModelItems(profile = {}) {
+  const items = profile?.modelCatalog?.items;
+  return Array.isArray(items) ? items : [];
+}
+
+function directMetadataModelById(profile = {}, value = "") {
+  const id = normalizeString(value, "");
+  if (!id) return null;
+  return directMetadataModelItems(profile).find((model) => (
+    normalizeString(model.id, "") === id ||
+    normalizeString(model.model, "") === id
+  )) || null;
+}
+
+function directMetadataSelectedModel(profile = {}, project = {}, runtimeStatus = {}) {
+  const codexBinding = project.surfaceBinding?.codex || {};
+  const liveText = runtimeStatus.liveTextRuntime || {};
+  const modelIds = Array.isArray(runtimeStatus.models?.ids) ? runtimeStatus.models.ids.filter(Boolean) : [];
+  const candidate = normalizeString(
+    codexBinding.model ||
+      profile?.runtimeSettings?.active?.model ||
+      profile?.modelCatalog?.defaultModel ||
+      liveText.liveProbeEvidence?.model ||
+      modelIds[0],
+    "",
+  );
+  return {
+    id: candidate,
+    descriptor: directMetadataModelById(profile, candidate),
+  };
+}
+
+function directMetadataReasoningEffort(profile = {}, project = {}, modelDescriptor = null) {
+  const codexBinding = project.surfaceBinding?.codex || {};
+  return normalizeString(
+    codexBinding.reasoningEffort ||
+      profile?.runtimeSettings?.active?.reasoningEffort ||
+      modelDescriptor?.defaultReasoningEffort,
+    "",
+  );
+}
+
+function directMetadataWitnessState(profile = {}, driftReport = {}) {
+  if (driftReport?.status === "invalid" || driftReport?.status === "blocked") return "blocked";
+  if (profile?.modelCatalog?.source === "server_model_list") return "fresh";
+  if (profile?.modelCatalog?.source === "cache") return "diagnostic";
+  return "unknown";
+}
+
+function directMetadataPrimaryQuotaWindow(profile = {}) {
+  const windows = profile?.usage?.quota?.windows;
+  if (!Array.isArray(windows) || !windows.length) return null;
+  const sorted = [...windows].sort((a, b) => {
+    const aPercent = Number(a?.usedPercent);
+    const bPercent = Number(b?.usedPercent);
+    if (Number.isFinite(aPercent) && Number.isFinite(bPercent) && aPercent !== bPercent) return bPercent - aPercent;
+    if (a?.windowKind === "five_hour") return -1;
+    if (b?.windowKind === "five_hour") return 1;
+    return 0;
+  });
+  return sorted[0] || null;
+}
+
+function directMetadataResetLabel(resetAt = "") {
+  const date = new Date(resetAt);
+  if (!Number.isFinite(date.getTime())) return "";
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
+
+function directMetadataQuotaLabel(profile = {}) {
+  const window = directMetadataPrimaryQuotaWindow(profile);
+  if (!window) return "Quota/rate unknown";
+  const percent = Number(window.usedPercent);
+  const prefix = window.windowKind === "weekly"
+    ? "weekly"
+    : window.windowKind === "five_hour"
+      ? "5h"
+      : normalizeString(window.windowKind, "quota");
+  const reset = directMetadataResetLabel(window.resetsAt);
+  return [
+    "Quota/rate",
+    prefix,
+    Number.isFinite(percent) ? `${Math.round(percent)}%` : "",
+    reset ? `resets ${reset}` : "",
+  ].filter(Boolean).join(" ");
+}
+
+function directMetadataContextLabel(profile = {}, modelDescriptor = null) {
+  const contextWindow = Number(profile?.usage?.context?.modelContextWindow || modelDescriptor?.contextWindow || 0);
+  const usedTokens = Number(profile?.usage?.context?.usedTokens || profile?.usage?.context?.tokensInWindow || 0);
+  if (Number.isFinite(contextWindow) && contextWindow > 0 && Number.isFinite(usedTokens) && usedTokens > 0) {
+    const usedPercent = Math.max(0, Math.min(100, Math.round((usedTokens / contextWindow) * 100)));
+    return `Context ${usedPercent}% · ${usedTokens}/${contextWindow}`;
+  }
+  if (Number.isFinite(contextWindow) && contextWindow > 0) return `Context window ${contextWindow}`;
+  return "Context unknown";
+}
+
 function buildDirectRuntimeWitnessProjectionForProject(input = {}) {
   const project = input.project || {};
   const projectId = normalizeString(project.id || input.runtimeStatus?.projectId, "");
   const runtimeStatus = input.runtimeStatus || {};
   const agentUsageStatus = input.agentUsageStatus || {};
   const generatedAt = normalizeString(input.generatedAt, nowIso());
-  const codexBinding = project.surfaceBinding?.codex || {};
-  const liveText = runtimeStatus.liveTextRuntime || {};
-  const modelIds = Array.isArray(runtimeStatus.models?.ids) ? runtimeStatus.models.ids.filter(Boolean) : [];
-  const selectedModel = normalizeString(
-    codexBinding.model ||
-      liveText.liveProbeEvidence?.model ||
-      modelIds[0],
-    "",
-  );
-  const modelEvidenceState = normalizeString(liveText.modelEvidenceState || runtimeStatus.models?.source, modelIds.length ? "diagnostic" : "unknown");
-  const modelState = directWitnessStateFromEvidence(modelEvidenceState);
-  const reasoningEffort = normalizeString(codexBinding.reasoningEffort, "");
+  const directProviderMetadata = input.directProviderMetadata || {};
+  const metadataProfile = directProviderMetadata.profile || input.providerMetadataProfile || null;
+  const driftReport = directProviderMetadata.driftReport || input.metadataDriftReport || null;
+  const selected = directMetadataSelectedModel(metadataProfile || {}, project, runtimeStatus);
+  const selectedModel = selected.id;
+  const modelEvidenceState = metadataProfile?.modelCatalog?.source || runtimeStatus.models?.source || "";
+  const modelState = metadataProfile ? directMetadataWitnessState(metadataProfile, driftReport || {}) : directWitnessStateFromEvidence(modelEvidenceState);
+  const reasoningEffort = directMetadataReasoningEffort(metadataProfile || {}, project, selected.descriptor);
+  const reasoningState = reasoningEffort
+    ? metadataProfile ? modelState : "diagnostic"
+    : "unknown";
   const usageAvailable = agentUsageStatus.schema === "direct_agent_usage_summary_projection@1";
   const missingUsage = Number(agentUsageStatus.totals?.missingUsageRowCount || 0);
   const knownUsage = Number(agentUsageStatus.totals?.totalTokensKnown || 0);
@@ -2727,6 +2886,18 @@ function buildDirectRuntimeWitnessProjectionForProject(input = {}) {
     : "unknown";
   const appServerFallback = input.appServerFallbackParity || {};
   const appServerFallbackState = normalizeString(appServerFallback.parityState, "");
+  const quotaWindow = metadataProfile ? directMetadataPrimaryQuotaWindow(metadataProfile) : null;
+  const quotaState = quotaWindow ? modelState : "unknown";
+  const contextLabel = metadataProfile ? directMetadataContextLabel(metadataProfile, selected.descriptor) : "Context unknown";
+  const contextState = metadataProfile?.usage?.context?.available || selected.descriptor?.contextWindow ? modelState : "unknown";
+  const driftStatus = normalizeString(driftReport?.status, metadataProfile ? "stable" : "unknown");
+  const driftState = driftStatus === "invalid" || driftStatus === "blocked"
+    ? "blocked"
+    : driftStatus === "stable"
+      ? modelState
+      : driftStatus === "unknown"
+        ? "unknown"
+        : "diagnostic";
   return buildRuntimeWitnessProjection({
     projectId,
     generatedAt,
@@ -2734,23 +2905,23 @@ function buildDirectRuntimeWitnessProjectionForProject(input = {}) {
       {
         kind: "model",
         label: selectedModel
-          ? `Model ${selectedModel} (${modelEvidenceState})`
+          ? `Model ${selectedModel} (${modelEvidenceState || "unknown"})`
           : "Model unknown",
         state: modelState,
-        evidenceRefs: [runtimeWitnessEvidenceRef("runtime_status", runtimeStatus.statusDigest || runtimeStatus.generatedAt || "runtime_status", "Direct runtime model witness")],
+        evidenceRefs: [runtimeWitnessEvidenceRef("direct_provider_metadata", metadataProfile?.profileDigest || runtimeStatus.statusDigest || "runtime_status", "Direct provider model metadata")],
       },
       {
         kind: "reasoning",
         label: reasoningEffort
-          ? `Reasoning ${reasoningEffort} (configured)`
+          ? `Reasoning ${reasoningEffort} (${metadataProfile ? "metadata" : "configured"})`
           : "Reasoning effort unknown",
-        state: reasoningEffort ? "diagnostic" : "unknown",
-        evidenceRefs: [runtimeWitnessEvidenceRef("project_config", projectId || "project", "Configured reasoning witness")],
+        state: reasoningState,
+        evidenceRefs: [runtimeWitnessEvidenceRef("direct_provider_metadata", metadataProfile?.profileDigest || projectId || "project", "Direct reasoning metadata")],
       },
       {
         kind: "quota",
-        label: "Quota/rate unknown (no direct read authority)",
-        state: "unknown",
+        label: metadataProfile ? directMetadataQuotaLabel(metadataProfile) : "Quota/rate unknown (no direct read authority)",
+        state: quotaState,
         evidenceRefs: [runtimeWitnessEvidenceRef("quota", appServerFallbackState || "quota_not_read", "Quota/rate not read by direct witness", "unknown")],
       },
       {
@@ -2762,10 +2933,18 @@ function buildDirectRuntimeWitnessProjectionForProject(input = {}) {
         evidenceRefs: [runtimeWitnessEvidenceRef("direct_agent_usage", agentUsageStatus.projectionDigest || agentUsageStatus.ledgerDigest || "usage_projection", "Direct usage witness")],
       },
       {
+        kind: "context",
+        label: contextLabel,
+        state: contextState,
+        evidenceRefs: [runtimeWitnessEvidenceRef("direct_provider_metadata", metadataProfile?.profileDigest || "context_unknown", "Direct context metadata", metadataProfile ? "observed" : "unknown")],
+      },
+      {
         kind: "drift",
-        label: "Drift unknown (no direct drift report)",
-        state: "unknown",
-        evidenceRefs: [runtimeWitnessEvidenceRef("drift", "drift_not_run", "Drift watch not run", "unknown")],
+        label: driftReport
+          ? `Drift ${driftStatus} (${Number(driftReport.unknownEnums?.length || 0)} unknown, ${Number(driftReport.missingFields?.length || 0)} missing)`
+          : "Drift unknown (no direct drift report)",
+        state: driftState,
+        evidenceRefs: [runtimeWitnessEvidenceRef("direct_metadata_drift", driftReport?.reportDigest || "drift_not_run", "Direct metadata drift report", driftReport ? "observed" : "unknown")],
       },
     ],
   });
@@ -2793,6 +2972,7 @@ function buildDirectComposerRuntimeWitness(input = {}) {
   const reasoningChip = directRuntimeWitnessChip(runtimeWitness, "reasoning");
   const quotaChip = directRuntimeWitnessChip(runtimeWitness, "quota");
   const usageChip = directRuntimeWitnessChip(runtimeWitness, "usage");
+  const contextChip = directRuntimeWitnessChip(runtimeWitness, "context");
   const sourceCount = Number(contextPreview?.rendererSafeSummary?.sourceCount ?? contextPreview?.counts?.rowCount ?? 0);
   const includedCount = Number(contextPreview?.rendererSafeSummary?.includedSourceCount ?? contextPreview?.counts?.includedSourceCount ?? 0);
   const blockerCount = Number(contextPreview?.rendererSafeSummary?.blockerCount ?? 0);
@@ -2809,10 +2989,12 @@ function buildDirectComposerRuntimeWitness(input = {}) {
       ? `usage ${knownTokens} token${knownTokens === 1 ? "" : "s"} known`
       : directCompactWitnessLabel(usageChip?.label, "Usage") || "usage unknown",
     usageState: normalizeString(usageChip?.state, "unknown"),
-    contextLabel: sourceCount
+    contextLabel: contextChip
+      ? directCompactWitnessLabel(contextChip.label, "Context")
+      : sourceCount
       ? `context preview ${includedCount}/${sourceCount}`
       : "context preview unknown",
-    contextState: blockerCount ? "blocked" : sourceCount ? "diagnostic" : "unknown",
+    contextState: blockerCount ? "blocked" : normalizeString(contextChip?.state, sourceCount ? "diagnostic" : "unknown"),
     contextPreviewDigest: normalizeString(contextPreview.previewDigest, ""),
     usageProjectionDigest: normalizeString(agentUsage.projectionDigest, ""),
     runtimeWitnessDigest: normalizeString(runtimeWitness.integrity?.artifactDigest || runtimeWitness.projectionDigest, ""),
@@ -2832,12 +3014,14 @@ function buildDirectCodexSurfaceProjectionForProject(project = {}, input = {}) {
     runtimeStatus,
     legacySession: currentLegacyAppServerSnapshot(),
   });
+  const directProviderMetadata = input.directProviderMetadata || directProviderMetadataStatusForProject(project);
   const generatedAt = normalizeString(input.generatedAt, nowIso());
   const runtimeWitnessProjection = input.runtimeWitnessProjection || buildDirectRuntimeWitnessProjectionForProject({
     project,
     runtimeStatus,
     agentUsageStatus,
     appServerFallbackParity,
+    directProviderMetadata,
     generatedAt,
   });
   const contextPreview = input.contextPreview || directContextPreviewForProject(project, {
@@ -2859,6 +3043,9 @@ function buildDirectCodexSurfaceProjectionForProject(project = {}, input = {}) {
     runtimePath: directRuntimePathFromBinding(project?.surfaceBinding?.codex || {}),
     runtimeWitnessProjection,
     composerRuntimeWitness,
+    providerMetadataProfile: directProviderMetadata?.profile || null,
+    metadataDriftReport: directProviderMetadata?.driftReport || null,
+    metadataCacheState: normalizeString(directProviderMetadata?.cacheState, ""),
     contextPreview,
     agentUsageStatus,
     operatorBroker,
@@ -3967,6 +4154,7 @@ async function loadCodexSurface(project, options = {}) {
   const runtimeMode = normalizeDirectRuntimeModeForStatus(codex.runtimeMode);
   if (runtimeMode !== "legacy-app-server") {
     await disposeCodexAppServerManager();
+    const directProviderMetadata = await refreshDirectProviderMetadataForProject(project);
     const runtimeStatus = buildDirectRuntimeStatusForProject(project);
     const directTransport = normalizeDirectExperimentalTransport(codex.directTransport);
     const isLiveText = directTransport === "live-text";
@@ -3977,6 +4165,7 @@ async function loadCodexSurface(project, options = {}) {
       : buildDirectFixtureCapabilities();
     const directSurfaceProjection = buildDirectCodexSurfaceProjectionForProject(project, {
       runtimeStatus,
+      directProviderMetadata,
       attachmentCapability: capabilities.attachments || null,
     });
     const directConnection = {
@@ -7558,7 +7747,10 @@ ipcMain.handle("codex-surface:direct-projection", async (event, payload) => {
     ? currentProject
     : await getProjectById(requestedProjectId);
   if (!project) throw new Error("Project not found.");
-  return buildDirectCodexSurfaceProjectionForProject(project);
+  const directProviderMetadata = payload?.refreshMetadata
+    ? await refreshDirectProviderMetadataForProject(project)
+    : directProviderMetadataStatusForProject(project);
+  return buildDirectCodexSurfaceProjectionForProject(project, { directProviderMetadata });
 });
 
 ipcMain.handle("codex-surface:request", async (event, payload) => {

@@ -59,6 +59,7 @@
     "direct:live-promotion-gate": "node ./scripts/direct-live-promotion-candidate-gate-regression.mjs",
     "direct:appserver-fallback-parity": "node ./scripts/direct-appserver-fallback-parity-regression.mjs",
     "direct:runtime-witness-polish": "node ./scripts/direct-runtime-witness-polish-regression.mjs",
+    "direct:provider-metadata": "node ./scripts/direct-provider-metadata-regression.mjs",
     "direct:matrix-eprobe": "node ./scripts/direct-matrix-eprobe-conformance.mjs",
     "direct:evidence-ledger": "node ./scripts/direct-real-usage-evidence-ledger.mjs",
     "direct:information-bridge-audit": "node ./scripts/direct-information-bridge-audit.mjs",

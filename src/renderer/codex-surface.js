@@ -821,6 +821,57 @@ function directRuntimeWitnessChip(kind) {
   return Array.isArray(chips) ? chips.find((chip) => String(chip?.kind || "") === kind) || null : null;
 }
 
+function directProviderMetadataProfile() {
+  const profile = directSurfaceProjection()?.providerMetadataProfile || null;
+  return profile?.schema === "direct_provider_metadata_profile@1" ? profile : null;
+}
+
+function directMetadataModels() {
+  const items = directProviderMetadataProfile()?.modelCatalog?.items;
+  if (!Array.isArray(items)) return [];
+  return items
+    .map((model) => {
+      const id = String(model?.id || model?.model || "").trim();
+      const modelId = String(model?.model || model?.id || "").trim();
+      if (!id && !modelId) return null;
+      return {
+        ...model,
+        id: id || modelId,
+        model: modelId || id,
+        displayName: String(model?.displayName || model?.display_name || modelId || id).trim(),
+        hidden: Boolean(model?.hidden),
+        isDefault: Boolean(model?.isDefault || model?.is_default),
+        supportedReasoningEfforts: Array.isArray(model?.supportedReasoningEfforts)
+          ? model.supportedReasoningEfforts
+          : [],
+        serviceTiers: Array.isArray(model?.serviceTiers)
+          ? model.serviceTiers
+          : [],
+      };
+    })
+    .filter(Boolean);
+}
+
+function effectiveModels() {
+  const directModels = isDirectLiveTextSurface() ? directMetadataModels() : [];
+  return directModels.length ? directModels : state.models;
+}
+
+function applyDirectMetadataModels(projection = directSurfaceProjection()) {
+  if (!projection || !isDirectLiveTextSurface()) return;
+  const profile = projection.providerMetadataProfile;
+  const models = profile?.schema === "direct_provider_metadata_profile@1"
+    ? directMetadataModels()
+    : [];
+  if (!models.length) {
+    state.modelListStatus = projection.metadataCacheState === "missing" ? "unavailable" : state.modelListStatus;
+    return;
+  }
+  state.models = models;
+  state.modelListStatus = projection.metadataCacheState === "stale" ? "stale" : "ready";
+  state.modelListError = "";
+}
+
 function directModelLabel() {
   const witness = directComposerWitness();
   const label = String(witness?.modelLabel || "").trim();
@@ -863,14 +914,15 @@ function selectedModel() {
 }
 
 function defaultModelId() {
-  const defaultModel = state.models.find((model) => model?.isDefault) || null;
+  const models = effectiveModels();
+  const defaultModel = models.find((model) => model?.isDefault) || null;
   return defaultModel?.model || defaultModel?.id || "";
 }
 
 function modelById(value) {
   const id = String(value || "").trim();
   if (!id) return null;
-  return state.models.find((model) => model?.id === id || model?.model === id) || null;
+  return effectiveModels().find((model) => model?.id === id || model?.model === id) || null;
 }
 
 function supportedReasoningOptions() {
@@ -880,6 +932,7 @@ function supportedReasoningOptions() {
       .map((item) => String(item?.reasoningEffort || item?.reasoning_effort || "").trim())
       .filter(Boolean)
     : [];
+  if (isDirectLiveTextSurface()) return options;
   return options.length ? options : DEFAULT_REASONING_EFFORTS;
 }
 
@@ -917,6 +970,9 @@ function clearedReasoningEffort() {
 }
 
 function defaultServiceTier() {
+  if (isDirectLiveTextSurface()) {
+    return String(selectedModel()?.defaultServiceTier || "").trim();
+  }
   const settingsProjection = providerSettingsProjection();
   return String(
     settingsProjection.serviceTier?.defaultTier ||
@@ -1755,10 +1811,13 @@ async function refreshDirectImplementationUi({ force = false } = {}) {
 async function refreshDirectSurfaceProjection(options = {}) {
   if (!project?.id || !isDirectLiveTextSurface() || typeof bridge?.getDirectCodexSurfaceProjection !== "function") return null;
   try {
-    const projection = await bridge.getDirectCodexSurfaceProjection(project.id);
+    const projection = await bridge.getDirectCodexSurfaceProjection(project.id, {
+      refreshMetadata: options.refreshMetadata === true,
+    });
     if (projection?.schema === "direct_codex_surface_projection@1") {
       state.directSurfaceProjection = projection;
       if (connection) connection = { ...connection, directSurfaceProjection: projection };
+      applyDirectMetadataModels(projection);
       if (options.render !== false) {
         renderRuntimeConstitution();
         renderComposerRuntimeBand();
@@ -2208,8 +2267,9 @@ function refreshButton(label, onClick) {
 }
 
 function modelOptions() {
-  const visible = state.models.filter((model) => !model?.hidden);
-  const rows = visible.length ? visible : state.models;
+  const models = effectiveModels();
+  const visible = models.filter((model) => !model?.hidden);
+  const rows = visible.length ? visible : models;
   const providerDefaultId = defaultModelId();
   const clearDefaultId = clearedModelId();
   const options = rows
@@ -2270,7 +2330,7 @@ function normalizeRuntimeOverrideValue(name, value) {
   if (!candidate) return "";
   if (name === "approvalPolicy") return APPROVAL_POLICY_OPTIONS.includes(candidate) ? candidate : "";
   if (name === "sandboxMode") return SANDBOX_MODE_OPTIONS.includes(candidate) ? candidate : "";
-  if (name === "reasoningEffort") return DEFAULT_REASONING_EFFORTS.includes(candidate) ? candidate : "";
+  if (name === "reasoningEffort") return supportedReasoningOptions().includes(candidate) ? candidate : "";
   if (name === "model") return candidate;
   return candidate;
 }
@@ -2359,6 +2419,14 @@ async function persistRuntimePreferences(scope) {
 }
 
 function serviceTierOptions() {
+  if (isDirectLiveTextSurface()) {
+    const model = selectedModel();
+    const tiers = Array.isArray(model?.serviceTiers) ? model.serviceTiers : [];
+    const values = tiers
+      .map((tier) => String(tier?.id || tier?.serviceTier || tier?.service_tier || tier?.name || tier || "").trim())
+      .filter(Boolean);
+    return ["", ...values].map((value) => ({ value, label: value || defaultOptionLabel(defaultServiceTier()) }));
+  }
   const settingsProjection = providerSettingsProjection();
   const configured = settingsProjection.serviceTier?.availableTiers || settingsProjection.speed?.availableTiers || null;
   const values = Array.isArray(configured) && configured.length
@@ -4366,6 +4434,18 @@ async function createDirectThreadFromStrip() {
 }
 
 async function refreshModelList(showErrors = false) {
+  if (isDirectLiveTextSurface()) {
+    state.modelListStatus = "loading";
+    renderRuntimeConstitution();
+    const projection = await refreshDirectSurfaceProjection({ render: false, showErrors, refreshMetadata: true });
+    applyDirectMetadataModels(projection || directSurfaceProjection());
+    if (!effectiveModels().length) {
+      state.modelListStatus = "unavailable";
+      state.modelListError = "Direct provider metadata did not expose model choices.";
+    }
+    renderRuntimeConstitution();
+    return;
+  }
   const settingsProjection = providerSettingsProjection();
   if (settingsProjection.model?.canList !== true && !hasCapabilityForMutation("model", "canList")) {
     state.modelListStatus = "unavailable";
@@ -7359,6 +7439,7 @@ function handleBridgeEvent(event) {
       connection = { ...connection, ...event.connection };
       if (event.connection.directSurfaceProjection?.schema === "direct_codex_surface_projection@1") {
         state.directSurfaceProjection = event.connection.directSurfaceProjection;
+        applyDirectMetadataModels(event.connection.directSurfaceProjection);
       }
     }
     if (event.status === "connected") {
@@ -7556,6 +7637,7 @@ async function connect() {
   if (connectedSession?.connection) connection = { ...connection, ...connectedSession.connection };
   if (connection?.directSurfaceProjection?.schema === "direct_codex_surface_projection@1") {
     state.directSurfaceProjection = connection.directSurfaceProjection;
+    applyDirectMetadataModels(connection.directSurfaceProjection);
   }
   state.connected = true;
   state.connectionStatus = "connected";

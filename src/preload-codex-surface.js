@@ -25,7 +25,7 @@ contextBridge.exposeInMainWorld("codexSurfaceBridge", {
   reportAgentGraph: (graph) => ipcRenderer.invoke("codex-surface:agent-graph", graph),
   reportContextManagementEvidence: (evidence) => ipcRenderer.invoke("codex-surface:context-management-evidence", evidence),
   focusSubAgent: (request) => ipcRenderer.invoke("codex-surface:focus-sub-agent", request),
-  getDirectCodexSurfaceProjection: (projectId) => ipcRenderer.invoke("codex-surface:direct-projection", { projectId }),
+  getDirectCodexSurfaceProjection: (projectId, options = {}) => ipcRenderer.invoke("codex-surface:direct-projection", { projectId, ...options }),
   createDirectWorkThreadDraftSession: (projectId, options = {}) =>
     ipcRenderer.invoke("direct-thread-workbench:create-work-thread-draft-session", { ...options, projectId }),
   getRuntimePreferences: (request) => ipcRenderer.invoke("codex-runtime-preferences:get", request || {}),
