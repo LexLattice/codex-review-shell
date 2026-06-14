@@ -524,6 +524,43 @@ function summarizeAgentUsage(input = {}) {
   };
 }
 
+function summarizeRuntimeWitness(input = {}) {
+  const source = objectOrEmpty(input);
+  const witness = normalizeString(source.schema, "") === "direct_runtime_witness_projection@1"
+    ? source
+    : objectOrEmpty(source.runtimeWitnessProjection || source.runtimeWitness || source.directRuntimeWitness);
+  const chips = arrayOrEmpty(witness.chips);
+  const chipByKind = (kind) => chips.find((chip) => normalizeString(chip.kind, "") === kind) || {};
+  const stateFor = (kind) => normalizeString(chipByKind(kind).state, witness.schema ? "unknown" : "unavailable");
+  const labelFor = (kind, fallback) => normalizeString(chipByKind(kind).label, fallback);
+  const countStates = (states) => chips.filter((chip) => states.includes(normalizeString(chip.state, "unknown"))).length;
+  return {
+    available: normalizeString(witness.schema, "") === "direct_runtime_witness_projection@1",
+    schema: normalizeString(witness.schema, "not_exposed"),
+    chipCount: chips.length,
+    modelState: stateFor("model"),
+    modelLabel: labelFor("model", "Model unknown"),
+    reasoningState: stateFor("reasoning"),
+    reasoningLabel: labelFor("reasoning", "Reasoning unknown"),
+    quotaState: stateFor("quota"),
+    quotaLabel: labelFor("quota", "Quota/rate unknown"),
+    usageState: stateFor("usage"),
+    usageLabel: labelFor("usage", "Usage unknown"),
+    driftState: stateFor("drift"),
+    driftLabel: labelFor("drift", "Drift unknown"),
+    unknownCount: countStates(["unknown"]),
+    staleCount: countStates(["expired", "expiring"]),
+    blockedCount: countStates(["blocked"]),
+    diagnosticCount: countStates(["diagnostic"]),
+    costComputed: witness.costComputed === true || witness.billingGrade === true,
+    providerTransportAllowed: witness.providerTransportAllowed === true,
+    quotaReadAllowed: witness.quotaReadAllowed === true,
+    modelMutationAllowed: witness.modelMutationAllowed === true,
+    costComputationAllowed: witness.costComputationAllowed === true,
+    projectionDigest: normalizeString(witness.integrity?.artifactDigest || witness.projectionDigest, ""),
+  };
+}
+
 function summarizeManualSmokeGate(input = {}) {
   const source = objectOrEmpty(input);
   const gate = normalizeString(source.schema, "") === "direct_manual_smoke_gate@1"
@@ -573,6 +610,7 @@ function buildRows(sections) {
   const continuity = sections.continuity;
   const contextPreview = sections.contextPreview;
   const memoryWorkbench = sections.memoryWorkbench;
+  const runtimeWitness = sections.runtimeWitness;
   const agentUsage = sections.agentUsage;
   const appServerFallbackParity = sections.appServerFallbackParity;
   const manualSmokeGate = sections.manualSmokeGate;
@@ -739,6 +777,17 @@ function buildRows(sections) {
       statusRow("Routes", agentUsage.routeCount),
       statusRow("Cost", agentUsage.costComputed || agentUsage.billingGrade ? "unexpected" : "not computed", agentUsage.costComputed || agentUsage.billingGrade ? "blocked" : "ok"),
     ],
+    runtimeWitness: [
+      statusRow("Surface", runtimeWitness.available ? "available" : "not exposed", runtimeWitness.available ? "diagnostic" : "missing"),
+      statusRow("Model", `${runtimeWitness.modelLabel} · ${runtimeWitness.modelState}`, runtimeWitness.modelState === "fresh" ? "ok" : runtimeWitness.modelState === "blocked" ? "blocked" : "diagnostic"),
+      statusRow("Reasoning", `${runtimeWitness.reasoningLabel} · ${runtimeWitness.reasoningState}`, runtimeWitness.reasoningState === "fresh" ? "ok" : runtimeWitness.reasoningState === "blocked" ? "blocked" : "diagnostic"),
+      statusRow("Quota/rate", `${runtimeWitness.quotaLabel} · ${runtimeWitness.quotaState}`, runtimeWitness.quotaState === "blocked" ? "blocked" : "diagnostic"),
+      statusRow("Usage", `${runtimeWitness.usageLabel} · ${runtimeWitness.usageState}`, runtimeWitness.usageState === "fresh" ? "ok" : runtimeWitness.usageState === "blocked" ? "blocked" : "diagnostic"),
+      statusRow("Drift", `${runtimeWitness.driftLabel} · ${runtimeWitness.driftState}`, runtimeWitness.driftState === "blocked" ? "blocked" : "diagnostic"),
+      statusRow("Unknown/stale/blocked", `${runtimeWitness.unknownCount}/${runtimeWitness.staleCount}/${runtimeWitness.blockedCount}`, runtimeWitness.blockedCount ? "blocked" : runtimeWitness.unknownCount || runtimeWitness.staleCount ? "diagnostic" : "ok"),
+      statusRow("Cost", runtimeWitness.costComputed ? "unexpected" : "not computed", runtimeWitness.costComputed ? "blocked" : "ok"),
+      statusRow("Authority", runtimeWitness.providerTransportAllowed || runtimeWitness.quotaReadAllowed || runtimeWitness.modelMutationAllowed || runtimeWitness.costComputationAllowed ? "unexpected grant" : "display only", runtimeWitness.providerTransportAllowed || runtimeWitness.quotaReadAllowed || runtimeWitness.modelMutationAllowed || runtimeWitness.costComputationAllowed ? "blocked" : "ok"),
+    ],
     appServerFallbackParity: [
       statusRow("Surface", appServerFallbackParity.available ? "available" : "not exposed", appServerFallbackParity.available ? "diagnostic" : "missing"),
       statusRow("Parity", appServerFallbackParity.parityState, appServerFallbackParity.parityState === "blocked" ? "blocked" : appServerFallbackParity.available ? "ok" : "missing"),
@@ -782,6 +831,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
   const continuity = summarizeContinuity(input);
   const contextPreview = summarizeContextPreview(input.contextPreview || input.contextPacketPreview || input.directContextPreview || input);
   const memoryWorkbench = summarizeMemoryWorkbench(input.memoryWorkbench || input.memoryReviewWorkbench || input.directMemoryWorkbench || input);
+  const runtimeWitness = summarizeRuntimeWitness(input.runtimeWitnessProjection || input.runtimeWitness || input.directRuntimeWitness || input);
   const agentUsage = summarizeAgentUsage(input.agentUsageStatus || input.agentUsageProjection || input.directAgentUsage || input);
   const appServerFallbackParity = summarizeAppServerFallbackParity(input.appServerFallbackParityReport || input.appServerFallbackParity || input);
   const manualSmokeGate = summarizeManualSmokeGate(input.manualSmokeGate || input.directManualSmokeGate || input.manualSmokeGateProjection || input);
@@ -820,7 +870,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
     rawPathIncluded: false,
     rawSecretIncluded: false,
   };
-  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, continuity, contextPreview, memoryWorkbench, agentUsage, appServerFallbackParity, manualSmokeGate };
+  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, continuity, contextPreview, memoryWorkbench, runtimeWitness, agentUsage, appServerFallbackParity, manualSmokeGate };
   const sourceDigest = digestFor("direct-settings-surface-source@1", sections);
   const projection = {
     schema: DIRECT_SETTINGS_SURFACE_PROJECTION_SCHEMA,
@@ -843,6 +893,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       "memory_baton_omission_compaction",
       "context_packet_preview",
       "memory_review_workbench",
+      "runtime_witness",
       "direct_agent_usage",
       "appserver_fallback_parity",
       "manual_smoke_gate",
@@ -868,6 +919,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       { kind: "continuity_status", digest: normalizeString(input.continuityStatus?.projectionDigest, ""), label: "Continuity status" },
       { kind: "context_packet_preview", digest: normalizeString(contextPreview.previewDigest, ""), label: "Context packet preview" },
       { kind: "memory_review_workbench", digest: normalizeString(memoryWorkbench.workbenchDigest, ""), label: "Memory review workbench" },
+      { kind: "runtime_witness", digest: normalizeString(runtimeWitness.projectionDigest, ""), label: "Runtime witness projection" },
       { kind: "direct_agent_usage", digest: normalizeString(agentUsage.projectionDigest || agentUsage.ledgerDigest, ""), label: "Direct agent usage summary" },
       { kind: "appserver_fallback_parity", digest: normalizeString(appServerFallbackParity.reportDigest, ""), label: "App-server fallback parity" },
       { kind: "manual_smoke_gate", digest: normalizeString(manualSmokeGate.gateDigest, ""), label: "Direct manual smoke gate" },

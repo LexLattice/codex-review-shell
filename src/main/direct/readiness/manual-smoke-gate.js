@@ -20,6 +20,7 @@ const CHECK_KINDS = new Set([
   "recovery_posture",
   "sub_agent_inspect",
   "usage_readiness",
+  "runtime_witnesses",
   "electron_projection",
 ]);
 const CHECK_STATES = new Set(["passed", "blocked", "warning", "not_checked"]);
@@ -135,6 +136,10 @@ function settingSection(settings, key) {
   return objectOrEmpty(objectOrEmpty(settings.sections)[key]);
 }
 
+function hasObjectFields(value) {
+  return isPlainObject(value) && Object.keys(value).length > 0;
+}
+
 function buildRows(input = {}) {
   const settings = objectOrEmpty(input.settingsProjection || input.settingsSurface || input.directSettingsSurface);
   const runtime = section(input.runtimeStatus || settingSection(settings, "runtime"));
@@ -142,6 +147,8 @@ function buildRows(input = {}) {
   const clarificationTargetPicker = section(input.clarificationTargetPicker || settingSection(settings, "clarificationTargetPicker"));
   const contextPreview = section(input.contextPreview || settingSection(settings, "contextPreview"));
   const memoryWorkbench = section(input.memoryWorkbench || settingSection(settings, "memoryWorkbench"));
+  const settingsRuntimeWitness = settingSection(settings, "runtimeWitness");
+  const runtimeWitness = section(input.runtimeWitness || (hasObjectFields(settingsRuntimeWitness) ? settingsRuntimeWitness : input.runtimeWitnessProjection));
   const moduleContextIntake = section(input.moduleContextIntake || settingSection(settings, "moduleContextIntake"));
   const usage = section(input.usageReadiness || input.agentUsage || settingSection(settings, "agentUsage"));
   const implementation = section(input.implementationLaneUiStatus?.implementationLane || input.implementationLane || input.runtimeStatus?.directImplementationLane);
@@ -179,6 +186,16 @@ function buildRows(input = {}) {
     subAgents.schema === "direct_sub_agent_contained_tab_projection@1" ||
     Number(subAgents.counts?.total || subAgents.agentCount || 0) > 0;
   const usageAvailable = usage.available === true || usage.schema === "direct_agent_usage_summary_projection@1" || Number(usage.rowCount || 0) > 0;
+  const runtimeWitnessAvailable = runtimeWitness.available === true || runtimeWitness.schema === "direct_runtime_witness_projection@1" || Number(runtimeWitness.chipCount || 0) >= 5;
+  const runtimeWitnessWarnings = runtimeWitnessAvailable
+    ? [
+        runtimeWitness.modelState && runtimeWitness.modelState !== "fresh" ? `model_${runtimeWitness.modelState}` : "",
+        runtimeWitness.reasoningState && !["fresh", "diagnostic"].includes(runtimeWitness.reasoningState) ? `reasoning_${runtimeWitness.reasoningState}` : "",
+        runtimeWitness.quotaState && runtimeWitness.quotaState !== "fresh" ? `quota_${runtimeWitness.quotaState}` : "",
+        runtimeWitness.usageState && runtimeWitness.usageState !== "fresh" ? `usage_${runtimeWitness.usageState}` : "",
+        runtimeWitness.driftState && runtimeWitness.driftState !== "fresh" ? `drift_${runtimeWitness.driftState}` : "",
+      ].filter(Boolean)
+    : [];
   const electronAvailable = electron.available === true || input.electronProjectionAvailable === true;
 
   return [
@@ -294,6 +311,15 @@ function buildRows(input = {}) {
       warningCodes: usage.missingUsageRowCount ? ["usage_rows_missing"] : [],
       evidenceRefs: [{ kind: "direct_agent_usage", digest: usage.projectionDigest || usage.ledgerDigest || "", label: "usage readiness" }],
       operatorAction: "Confirm usage rows are evidence, not cost truth.",
+    }),
+    checkRow({
+      checkKind: "runtime_witnesses",
+      label: "Runtime witnesses visible",
+      available: runtimeWitnessAvailable,
+      blockerCodes: runtimeWitnessAvailable ? [] : ["runtime_witness_projection_not_visible"],
+      warningCodes: runtimeWitnessWarnings,
+      evidenceRefs: [{ kind: "runtime_witness", digest: runtimeWitness.projectionDigest || "", label: "model/reasoning/quota/usage/drift witnesses" }],
+      operatorAction: "Confirm model, reasoning, quota/rate, usage, and drift witnesses are visible without granting provider authority.",
     }),
     checkRow({
       checkKind: "electron_projection",

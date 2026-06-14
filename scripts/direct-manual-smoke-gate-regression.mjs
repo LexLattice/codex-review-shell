@@ -72,6 +72,17 @@ function settingsFixture() {
         projectionDigest: "digest_agent_usage",
         missingUsageRowCount: 0,
       },
+      runtimeWitness: {
+        available: true,
+        schema: "direct_runtime_witness_projection@1",
+        chipCount: 5,
+        modelState: "fresh",
+        reasoningState: "diagnostic",
+        quotaState: "unknown",
+        usageState: "fresh",
+        driftState: "unknown",
+        projectionDigest: "digest_runtime_witness",
+      },
     },
   };
 }
@@ -124,9 +135,10 @@ const passingGate = buildDirectManualSmokeGate({
 
 assert.equal(passingGate.schema, "direct_manual_smoke_gate@1");
 assert.equal(passingGate.generatedAt, "1970-01-01T00:00:00.000Z");
-assert.equal(passingGate.gateState, "passed");
-assert.equal(passingGate.counts.rowCount, 15);
+assert.equal(passingGate.gateState, "degraded");
+assert.equal(passingGate.counts.rowCount, 16);
 assert.equal(passingGate.counts.passedCount, 15);
+assert.equal(passingGate.counts.warningCount, 1);
 assert.equal(passingGate.counts.requiredBlockedCount, 0);
 assert.equal(passingGate.matrixPromotionCandidate, false);
 assert.equal(passingGate.electronRunner.liveProviderCallsAllowed, false);
@@ -170,6 +182,7 @@ assert.deepEqual(rowKinds, [
   "readiness_patch",
   "readiness_read",
   "recovery_posture",
+  "runtime_witnesses",
   "sub_agent_inspect",
   "target_clarification",
   "usage_readiness",
@@ -211,8 +224,8 @@ const settingsProjection = buildDirectSettingsSurfaceProjection({
 assertDirectSettingsSurfaceRendererSafe(settingsProjection);
 assert(settingsProjection.bridgeOrgans.includes("manual_smoke_gate"));
 assert.equal(settingsProjection.sections.manualSmokeGate.available, true);
-assert.equal(settingsProjection.sections.manualSmokeGate.gateState, "passed");
-assert.equal(settingsProjection.sections.manualSmokeGate.rowCount, 15);
+assert.equal(settingsProjection.sections.manualSmokeGate.gateState, "degraded");
+assert.equal(settingsProjection.sections.manualSmokeGate.rowCount, 16);
 assert.equal(settingsProjection.sections.manualSmokeGate.providerTransportAllowed, false);
 assert.equal(settingsProjection.sections.manualSmokeGate.matrixPromotionAllowed, false);
 assert.equal(settingsProjection.rows.manualSmokeGate.some((row) => row.label === "Authority" && row.value === "display only"), true);

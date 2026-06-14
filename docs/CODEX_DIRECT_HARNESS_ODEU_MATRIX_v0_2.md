@@ -594,37 +594,26 @@ new live-provider or recursive authority is considered.
 
 ## 9. Immediate Next Spec
 
-The next spec should target Wave 7 PR 45:
+The next spec should target Wave 7 PR 46:
 
 ```text
-Usage/quota/model witness polish.
+Post-witness promotion planning.
 ```
 
-PR 44 is now implemented. The direct settings surface exposes a renderer-safe
-app-server fallback parity report over fallback availability, selected lane,
-startup/failure posture, reload/reconnect posture, and direct blockers. The
-same report feeds manual smoke and Electron settings smoke, and it grants no
-provider transport, app-server spawn/replacement, runtime-selection mutation,
-workspace mutation, recursive worker, or matrix-promotion authority.
-
-PR 45 should not expand direct runtime authority. It should implement:
-
-1. aligned model, reasoning, quota/rate, usage, and drift witness rows in the
-   direct settings/control surface;
-2. explicit unknown/unavailable/stale states instead of invented defaults;
-3. manual-smoke visibility for the witness rows needed before broader direct
-   promotion;
-4. no cost computation as capture-time runtime truth;
-5. no provider transport, quota read, or model mutation authority from witness
-   display.
+PR 45 is now implemented. The direct settings surface exposes renderer-safe
+runtime witness rows for model, reasoning, quota/rate, usage, and drift posture.
+Those rows preserve unknown/unavailable states instead of inventing defaults,
+feed manual smoke as visibility evidence, and do not compute cost or grant
+provider transport, quota-read, model-mutation, workspace-mutation, recursive
+worker, app-server replacement, or matrix-promotion authority.
 
 Current implementation note:
 
 ```text
-PR 44 made app-server fallback parity explicit and display-only. The next
-problem is runtime witness polish: model/reasoning/quota/usage/drift rows need
-to agree across the settings surface and smoke gates before any broader direct
-promotion.
+PR 44 made app-server fallback parity explicit and display-only. PR 45 made
+runtime witnesses explicit and display-only. The next problem is deciding which
+already-visible readiness evidence should enter the live promotion queue next,
+without treating witness visibility as capability authority.
 ```
 
 It should explicitly not mean:
