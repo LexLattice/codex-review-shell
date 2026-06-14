@@ -11,7 +11,7 @@ const DIRECT_WORK_TARGET_RESOLUTION_SCHEMA = "direct_work_target_resolution@1";
 const DIRECT_WORK_TARGET_RESOLUTION_REPORT_SCHEMA = "direct_work_target_resolution_report@1";
 const DIRECT_WORK_THREAD_STORE_STATUS_SCHEMA = "direct_work_thread_store_status@1";
 
-const LIFECYCLE_STATES = new Set(["active", "paused", "completed", "archived", "stale", "unknown"]);
+const LIFECYCLE_STATES = new Set(["active", "paused", "completed", "archived", "stale", "candidate", "unknown"]);
 const RESOLUTION_STATES = new Set(["selected", "ambiguous", "unresolved"]);
 const ROUTING_GATE_STATES = new Set(["selected_ready", "clarification_required", "stale_blocked", "unresolved_blocked"]);
 const RUNTIME_PATHS = new Set(["app-server", "direct-text", "direct-implementation", "unknown"]);

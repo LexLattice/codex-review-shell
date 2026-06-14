@@ -9,10 +9,14 @@ const {
 const DIRECT_WORK_THREAD_CONTROL_DECK_SCHEMA = "direct_work_thread_control_deck@1";
 const DIRECT_WORK_THREAD_CURRENT_POINTER_SCHEMA = "direct_work_thread_current_pointer@1";
 const DIRECT_WORK_THREAD_SELECTION_TRANSITION_SCHEMA = "direct_work_thread_selection_transition@1";
+const DIRECT_WORK_THREAD_OPERATOR_DECK_SCHEMA = "direct_work_thread_operator_deck@1";
+const DIRECT_WORK_THREAD_OPERATOR_ROW_SCHEMA = "direct_work_thread_operator_row@1";
+const DIRECT_WORK_THREAD_NEW_THREAD_DRAFT_SCHEMA = "direct_work_thread_new_thread_draft_transition@1";
 
 const POINTER_SOURCE_KINDS = new Set(["operator_selection", "session_restore", "resolver_selection", "runtime_observation", "unknown"]);
 const POINTER_STATES = new Set(["selected", "missing", "stale", "mismatch", "unknown"]);
 const TRANSITION_STATES = new Set(["accepted", "blocked", "noop"]);
+const OPERATOR_ROW_STATES = new Set(["active", "stale", "blocked", "recoverable", "archived", "candidate", "unknown"]);
 
 function isPlainObject(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -33,6 +37,13 @@ function boundedCount(value, max = 100) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return 0;
   return Math.min(max, Math.floor(parsed));
+}
+
+function normalizeWorkThreadId(value, fallbackBasis = {}) {
+  const explicit = normalizeString(value, "");
+  if (explicit) return explicit.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 120);
+  const basisDigest = digestFor("direct-work-thread-draft-id@1", fallbackBasis).slice(7, 31);
+  return `work_thread_${basisDigest}`;
 }
 
 function arrayOrEmpty(value) {
@@ -331,6 +342,233 @@ function buildWorkThreadControlDeck(input = {}, options = {}) {
   return controlDeck;
 }
 
+function runtimeRowsForWorkThread(directThreadDeck = {}, workThreadId = "") {
+  const id = normalizeString(workThreadId, "");
+  return arrayOrEmpty(directThreadDeck.rows)
+    .filter((row) => normalizeString(row.workThreadId, "") === id)
+    .map((row) => ({
+      threadId: normalizeString(row.threadId, ""),
+      providerThreadId: normalizeString(row.providerThreadId, ""),
+      providerThreadIdRole: row.providerThreadIdIsSecondary === true ? "secondary_runtime_identity" : "runtime_identity",
+      displayState: normalizeString(row.displayState, "unknown"),
+      activeTurnCount: Number(row.activeTurnCount || 0),
+      recoverableInterruptedTurnCount: Number(row.recoverableInterruptedTurnCount || 0),
+      model: normalizeString(row.model, ""),
+      reasoningEffort: normalizeString(row.reasoningEffort, ""),
+      rawTextIncluded: false,
+      rawPathIncluded: false,
+    }));
+}
+
+function operatorRowStateFor(controlRow = {}, runtimeRows = []) {
+  if (controlRow.lifecycleState === "archived") return "archived";
+  if (controlRow.stale || controlRow.lifecycleState === "stale") return "stale";
+  if (arrayOrEmpty(controlRow.blockerCodes).length || controlRow.mismatch) return "blocked";
+  if (runtimeRows.some((row) => Number(row.recoverableInterruptedTurnCount || 0) > 0 || row.displayState === "recoverable_interrupted")) return "recoverable";
+  if (controlRow.lifecycleState === "candidate") return "candidate";
+  if (controlRow.lifecycleState === "active") return "active";
+  return OPERATOR_ROW_STATES.has(controlRow.lifecycleState) ? controlRow.lifecycleState : "unknown";
+}
+
+function candidateRowForRuntime(runtimeRow = {}, projectId = "") {
+  const threadId = normalizeString(runtimeRow.threadId || runtimeRow.sessionId, "");
+  const workThreadId = normalizeWorkThreadId(runtimeRow.workThreadId, { projectId, threadId, title: runtimeRow.title });
+  const row = {
+    schema: DIRECT_WORK_THREAD_OPERATOR_ROW_SCHEMA,
+    rowKind: "direct_work_thread_operator_row",
+    workThreadId,
+    projectId,
+    title: boundedString(runtimeRow.title || runtimeRow.preview || "Unscoped direct session", 180),
+    lifecycleState: "candidate",
+    operatorState: "candidate",
+    objectiveSummary: "Direct session is not yet bound to an explicit WorkThread.",
+    currentArcLabel: "",
+    phaseKind: "unknown",
+    phaseStatus: "candidate",
+    selected: false,
+    stale: false,
+    mismatch: false,
+    blockerCodes: ["work_thread_identity_missing"],
+    openObligationCount: 1,
+    linkedCodexThreadCount: threadId ? 1 : 0,
+    linkedChatGptThreadCount: 0,
+    activeRuntimePath: "direct-implementation",
+    runtimeThreadIds: threadId ? [threadId] : [],
+    primaryRuntimeThreadId: threadId,
+    runtimeRows: runtimeRowsForWorkThread({ rows: [runtimeRow] }, normalizeString(runtimeRow.workThreadId, "")),
+    runtimeProviderThreadIdsAreSecondary: true,
+    canOpenRuntimeThread: Boolean(threadId),
+    canSelectWorkThread: false,
+    canDraftFromRow: true,
+    rendererSafeSummary: "Candidate WorkThread: bind this session to explicit work identity before routing mutation.",
+    providerCallAuthorityGranted: false,
+    workspaceMutationAuthorityGranted: false,
+    workerSpawnAuthorityGranted: false,
+    appServerReplacementAuthorityGranted: false,
+    rawTextIncluded: false,
+    rawPathIncluded: false,
+    rawSecretIncluded: false,
+  };
+  row.rowDigest = digestFor("direct-work-thread-operator-row@1", row);
+  return row;
+}
+
+function operatorRowForControlRow(controlRow = {}, directThreadDeck = {}) {
+  const runtimeRows = runtimeRowsForWorkThread(directThreadDeck, controlRow.workThreadId);
+  const state = operatorRowStateFor(controlRow, runtimeRows);
+  const row = {
+    schema: DIRECT_WORK_THREAD_OPERATOR_ROW_SCHEMA,
+    rowKind: "direct_work_thread_operator_row",
+    workThreadId: normalizeString(controlRow.workThreadId, ""),
+    projectId: normalizeString(controlRow.projectId, ""),
+    title: boundedString(controlRow.title || controlRow.workThreadId, 180),
+    lifecycleState: normalizeString(controlRow.lifecycleState, "unknown"),
+    operatorState: state,
+    objectiveSummary: boundedString(controlRow.objectiveSummary, 240),
+    currentArcLabel: boundedString(controlRow.currentArcLabel, 180),
+    phaseKind: normalizeString(controlRow.phaseKind, "unknown"),
+    phaseStatus: normalizeString(controlRow.phaseStatus, "unknown"),
+    selected: controlRow.selected === true,
+    stale: controlRow.stale === true,
+    mismatch: controlRow.mismatch === true,
+    blockerCodes: arrayOrEmpty(controlRow.blockerCodes).map((code) => normalizeString(code, "")).filter(Boolean),
+    openObligationCount: Number(controlRow.openObligationCount || 0),
+    linkedCodexThreadCount: Number(controlRow.linkedCodexThreadCount || 0),
+    linkedChatGptThreadCount: Number(controlRow.linkedChatGptThreadCount || 0),
+    activeRuntimePath: normalizeString(controlRow.activeRuntimePath, "unknown"),
+    runtimeThreadIds: runtimeRows.map((row) => row.threadId).filter(Boolean),
+    primaryRuntimeThreadId: normalizeString(runtimeRows.find((row) => row.activeTurnCount > 0)?.threadId || runtimeRows[0]?.threadId, ""),
+    runtimeRows,
+    runtimeProviderThreadIdsAreSecondary: true,
+    canOpenRuntimeThread: runtimeRows.some((row) => row.threadId),
+    canSelectWorkThread: state === "active" || state === "recoverable",
+    canDraftFromRow: false,
+    rendererSafeSummary: state === "candidate"
+      ? "Candidate WorkThread."
+      : `${state} WorkThread: ${boundedString(controlRow.title || controlRow.workThreadId, 120)}`,
+    providerCallAuthorityGranted: false,
+    workspaceMutationAuthorityGranted: false,
+    workerSpawnAuthorityGranted: false,
+    appServerReplacementAuthorityGranted: false,
+    rawTextIncluded: false,
+    rawPathIncluded: false,
+    rawSecretIncluded: false,
+  };
+  row.rowDigest = digestFor("direct-work-thread-operator-row@1", row);
+  return row;
+}
+
+function buildWorkThreadOperatorDeck(input = {}, options = {}) {
+  const source = isPlainObject(input) ? input : {};
+  const projectId = normalizeString(source.projectId, "");
+  const controlDeck = isPlainObject(source.controlDeck)
+    ? source.controlDeck
+    : buildWorkThreadControlDeck(source, options);
+  const directThreadDeck = isPlainObject(source.directThreadDeck) ? source.directThreadDeck : {};
+  const controlRows = arrayOrEmpty(controlDeck.rows);
+  const scopedWorkThreadIds = new Set(controlRows.map((row) => normalizeString(row.workThreadId, "")).filter(Boolean));
+  const operatorRows = [
+    ...controlRows.map((row) => operatorRowForControlRow(row, directThreadDeck)),
+    ...arrayOrEmpty(directThreadDeck.rows)
+      .filter((row) => !normalizeString(row.workThreadId, "") || !scopedWorkThreadIds.has(normalizeString(row.workThreadId, "")))
+      .map((row) => candidateRowForRuntime(row, projectId)),
+  ].sort((a, b) => {
+    const stateRank = { active: 0, recoverable: 1, blocked: 2, candidate: 3, stale: 4, archived: 5, unknown: 6 };
+    return (stateRank[a.operatorState] ?? 9) - (stateRank[b.operatorState] ?? 9) || a.title.localeCompare(b.title);
+  });
+  const deck = {
+    schema: DIRECT_WORK_THREAD_OPERATOR_DECK_SCHEMA,
+    deckId: normalizeString(source.deckId, `work_thread_operator_deck_${digestFor("direct-work-thread-operator-deck-id@1", {
+      projectId,
+      controlDeckDigest: controlDeck.controlDeckDigest,
+      directThreadDeckDigest: directThreadDeck.projectionDigest,
+    }).slice(7, 31)}`),
+    projectId,
+    generatedAt: normalizeString(source.generatedAt, nowIso(options.nowMs)),
+    selectedWorkThreadId: normalizeString(controlDeck.selectedWorkThreadId, ""),
+    pointerState: normalizeString(controlDeck.pointerState, "unknown"),
+    rowCount: operatorRows.length,
+    counts: {
+      active: operatorRows.filter((row) => row.operatorState === "active").length,
+      stale: operatorRows.filter((row) => row.operatorState === "stale").length,
+      blocked: operatorRows.filter((row) => row.operatorState === "blocked").length,
+      recoverable: operatorRows.filter((row) => row.operatorState === "recoverable").length,
+      archived: operatorRows.filter((row) => row.operatorState === "archived").length,
+      candidate: operatorRows.filter((row) => row.operatorState === "candidate").length,
+    },
+    identityLaw: {
+      controlPlaneIdentity: "workThreadId",
+      runtimeThreadIdentity: "providerThreadId",
+      providerThreadIdRole: "secondary_runtime_identity",
+      providerThreadIdsSelectWorkThread: false,
+    },
+    rows: operatorRows,
+    providerCallAuthorityGranted: false,
+    workspaceMutationAuthorityGranted: false,
+    workerSpawnAuthorityGranted: false,
+    appServerReplacementAuthorityGranted: false,
+    rawTextIncluded: false,
+    rawPathIncluded: false,
+    rawSecretIncluded: false,
+    evidenceRefs: normalizeRefs([
+      { kind: "work_thread_control_deck", id: controlDeck.controlDeckId, digest: controlDeck.controlDeckDigest, label: "WorkThread control deck" },
+      { kind: "direct_thread_deck", id: normalizeString(directThreadDeck.projectionDigest, ""), digest: normalizeString(directThreadDeck.projectionDigest, ""), label: "Direct runtime thread deck" },
+    ], "work_thread_operator_deck"),
+  };
+  deck.deckDigest = digestFor("direct-work-thread-operator-deck@1", deck);
+  return deck;
+}
+
+function buildWorkThreadNewThreadDraftTransition(input = {}, options = {}) {
+  const source = isPlainObject(input) ? input : {};
+  const projectId = normalizeString(source.projectId, "");
+  const title = boundedString(source.title, 180);
+  const objectiveSummary = boundedString(source.objectiveSummary || source.objective, 500);
+  const workThreadId = normalizeWorkThreadId(source.workThreadId, { projectId, title, objectiveSummary });
+  const contextPosture = normalizeString(source.contextPosture, "");
+  const blockerCodes = [];
+  if (!projectId) blockerCodes.push("project_missing");
+  if (!title) blockerCodes.push("work_thread_title_missing");
+  if (!objectiveSummary) blockerCodes.push("work_thread_objective_missing");
+  if (!contextPosture || contextPosture === "implicit" || contextPosture === "unknown") blockerCodes.push("context_posture_not_explicit");
+  const transitionState = blockerCodes.length ? "blocked" : "accepted";
+  const transition = {
+    schema: DIRECT_WORK_THREAD_NEW_THREAD_DRAFT_SCHEMA,
+    draftTransitionId: normalizeString(source.draftTransitionId, `work_thread_new_thread_draft_${digestFor("direct-work-thread-new-thread-draft-id@1", {
+      projectId,
+      workThreadId,
+      title,
+      objectiveSummary,
+      contextPosture,
+    }).slice(7, 31)}`),
+    projectId,
+    workThreadId,
+    title,
+    objectiveSummary,
+    lifecycleState: "candidate",
+    contextPosture: contextPosture || "unknown",
+    authorityPosture: "local_evidence_only",
+    transitionState,
+    blockerCodes,
+    localDirectThreadEvidenceAllowed: transitionState === "accepted",
+    providerTurnStarted: false,
+    providerCallAuthorityGranted: false,
+    workspaceMutationAuthorityGranted: false,
+    workerSpawnAuthorityGranted: false,
+    appServerReplacementAuthorityGranted: false,
+    appServerMutated: false,
+    recursiveWorkerStarted: false,
+    runtimeProviderThreadId: "",
+    createdAt: normalizeString(source.createdAt, nowIso(options.nowMs)),
+    evidenceRefs: normalizeRefs(source.evidenceRefs, "work_thread_new_thread_draft"),
+    rawTextIncluded: false,
+    rawPathIncluded: false,
+    rawSecretIncluded: false,
+  };
+  transition.draftTransitionDigest = digestFor("direct-work-thread-new-thread-draft@1", transition);
+  return transition;
+}
+
 function buildWorkThreadSelectionTransition(input = {}, options = {}) {
   const source = isPlainObject(input) ? input : {};
   const requestedWorkThreadId = normalizeString(source.requestedWorkThreadId || source.selectedWorkThreadId || source.workThreadId, "");
@@ -430,14 +668,44 @@ function assertWorkThreadSelectionTransitionSafe(transition = {}) {
   return true;
 }
 
+function assertWorkThreadOperatorDeckSafe(deck = {}) {
+  if (!isPlainObject(deck) || deck.schema !== DIRECT_WORK_THREAD_OPERATOR_DECK_SCHEMA) throw new Error("direct_work_thread_operator_deck_schema_mismatch");
+  assertNoAuthorityLeak(deck, "direct_work_thread_operator_deck");
+  for (const row of arrayOrEmpty(deck.rows)) {
+    if (row.schema !== DIRECT_WORK_THREAD_OPERATOR_ROW_SCHEMA) throw new Error("direct_work_thread_operator_row_schema_mismatch");
+    if (!OPERATOR_ROW_STATES.has(row.operatorState)) throw new Error(`direct_work_thread_operator_row_state_invalid:${row.operatorState || ""}`);
+    assertNoAuthorityLeak(row, "direct_work_thread_operator_row");
+    if (row.runtimeProviderThreadIdsAreSecondary !== true) throw new Error("direct_work_thread_operator_row_provider_identity_not_secondary");
+  }
+  return true;
+}
+
+function assertWorkThreadNewThreadDraftTransitionSafe(transition = {}) {
+  if (!isPlainObject(transition) || transition.schema !== DIRECT_WORK_THREAD_NEW_THREAD_DRAFT_SCHEMA) throw new Error("direct_work_thread_new_thread_draft_schema_mismatch");
+  assertNoAuthorityLeak(transition, "direct_work_thread_new_thread_draft");
+  if (transition.providerTurnStarted !== false || transition.appServerMutated !== false || transition.recursiveWorkerStarted !== false) {
+    throw new Error("direct_work_thread_new_thread_draft_runtime_mutation_leak");
+  }
+  if (transition.transitionState !== "accepted" && transition.localDirectThreadEvidenceAllowed) {
+    throw new Error("direct_work_thread_new_thread_draft_allows_blocked_transition");
+  }
+  return true;
+}
+
 module.exports = {
   DIRECT_WORK_THREAD_CONTROL_DECK_SCHEMA,
   DIRECT_WORK_THREAD_CURRENT_POINTER_SCHEMA,
+  DIRECT_WORK_THREAD_NEW_THREAD_DRAFT_SCHEMA,
+  DIRECT_WORK_THREAD_OPERATOR_DECK_SCHEMA,
   DIRECT_WORK_THREAD_SELECTION_TRANSITION_SCHEMA,
   assertCurrentWorkThreadPointerSafe,
   assertWorkThreadControlDeckSafe,
+  assertWorkThreadNewThreadDraftTransitionSafe,
+  assertWorkThreadOperatorDeckSafe,
   assertWorkThreadSelectionTransitionSafe,
   buildCurrentWorkThreadPointer,
+  buildWorkThreadNewThreadDraftTransition,
   buildWorkThreadControlDeck,
+  buildWorkThreadOperatorDeck,
   buildWorkThreadSelectionTransition,
 };

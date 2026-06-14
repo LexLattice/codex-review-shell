@@ -13,6 +13,15 @@ const {
   buildDirectThreadEvidenceWorkbenchProjection,
   validateThreadEvidenceWorkbenchProjection,
 } = require("./thread-evidence-workbench");
+const {
+  assertWorkThreadNewThreadDraftTransitionSafe,
+  buildWorkThreadControlDeck,
+  buildWorkThreadNewThreadDraftTransition,
+  buildWorkThreadOperatorDeck,
+} = require("../bridge/work-thread-control-deck");
+const {
+  buildDirectThreadDeckProjection,
+} = require("./thread-deck");
 
 const DIRECT_THREAD_WORKBENCH_SNAPSHOT_SCHEMA = "renderer_safe_direct_thread_workbench_snapshot@1";
 const DIRECT_THREAD_WORKBENCH_CONTROLLER_VERSION = "direct_thread_workbench_controller@1";
@@ -132,6 +141,7 @@ class DirectThreadWorkbenchController {
     if (!options.threadStore) throw new Error("DirectThreadWorkbenchController requires a threadStore.");
     this.threadStore = options.threadStore;
     this.sessionStore = options.sessionStore || null;
+    this.workThreadStore = options.workThreadStore || null;
     this.projectResolver = typeof options.projectResolver === "function" ? options.projectResolver : null;
     this.liveTextController = options.liveTextController || null;
     this.now = typeof options.now === "function" ? options.now : () => Date.now();
@@ -204,6 +214,76 @@ class DirectThreadWorkbenchController {
     } catch {
       return null;
     }
+  }
+
+  directThreadDeck(projectId, threads = [], params = {}) {
+    return buildDirectThreadDeckProjection({
+      projectId,
+      runtime: "direct-live-text",
+      threads: threads.map((thread) => ({
+        threadId: thread.threadId,
+        sessionId: thread.threadId,
+        projectId,
+        title: thread.title,
+        preview: thread.preview,
+        status: thread.lifecycle?.state || thread.lifecycleState || "active",
+        updatedAt: thread.updatedAt,
+        createdAt: thread.createdAt,
+        model: thread.model,
+        reasoningEffort: thread.reasoningEffort,
+        workThreadId: thread.workThreadId,
+        activeTurnCount: thread.activeTurnCount,
+        turnCount: thread.turnCount,
+        sourceClass: thread.sourceClass,
+        storageState: thread.storageState,
+        runtimeMode: thread.runtimeMode,
+        directTransport: thread.directTransport,
+      })),
+      canStart: true,
+      defaultModel: normalizeString(params.defaultModel || params.model, ""),
+      defaultReasoningEffort: normalizeString(params.defaultReasoningEffort || params.reasoningEffort, ""),
+    }, { projectId, nowMs: this.now() });
+  }
+
+  workThreadProjection(projectId, params = {}) {
+    if (!this.workThreadStore || typeof this.workThreadStore.buildProjection !== "function") {
+      return {
+        schema: "direct_work_thread_projection@1",
+        projectId,
+        generatedAt: nowIso(this.now()),
+        rowCount: 0,
+        activeCount: 0,
+        rows: [],
+        projectionDigest: "",
+        rawTextIncluded: false,
+        rawPathIncluded: false,
+      };
+    }
+    return this.workThreadStore.buildProjection({
+      projectId,
+      includeArchived: params.includeArchived === true,
+    });
+  }
+
+  workThreadOperatorDeck(projectId, directThreadDeck, params = {}) {
+    const workThreadProjection = this.workThreadProjection(projectId, params);
+    const controlDeck = buildWorkThreadControlDeck({
+      projectId,
+      workThreadProjection,
+      selectedWorkThreadId: normalizeString(params.selectedWorkThreadId, ""),
+      selectedWorkThreadDigest: normalizeString(params.selectedWorkThreadDigest, ""),
+      pointerSourceKind: params.selectedWorkThreadId ? "operator_selection" : "unknown",
+      selectedProviderLane: "direct-implementation",
+    }, { nowMs: this.now() });
+    return {
+      workThreadProjection,
+      workThreadControlDeck: controlDeck,
+      workThreadOperatorDeck: buildWorkThreadOperatorDeck({
+        projectId,
+        controlDeck,
+        directThreadDeck,
+      }, { nowMs: this.now() }),
+    };
   }
 
   workbenchRevision(projectId) {
@@ -297,11 +377,27 @@ class DirectThreadWorkbenchController {
       ...threadQuery,
       offset: threadPage.offset,
       limit: threadPage.limit,
-    }).map((thread) => ({
-      ...thread,
-      rendererProjection: this.currentThreadProjectionSummary(thread.threadId),
-      activeTurnCount: this.threadStore.activeTurnCount(thread.threadId),
-    }));
+    }).map((thread) => {
+      const session = this.sessionStore?.readSession?.(thread.threadId) || null;
+      return {
+        ...thread,
+        model: normalizeString(session?.model, ""),
+        reasoningEffort: normalizeString(session?.reasoningEffort, ""),
+        workThreadId: normalizeString(session?.workThreadId, ""),
+        workThreadBindingDigest: normalizeString(session?.workThreadBindingDigest, ""),
+        runtimeMode: normalizeString(session?.runtimeMode, ""),
+        directTransport: normalizeString(session?.directTransport, ""),
+        storageState: session ? "available" : "session_unreadable",
+        rendererProjection: this.currentThreadProjectionSummary(thread.threadId),
+        activeTurnCount: this.threadStore.activeTurnCount(thread.threadId),
+      };
+    });
+    const directThreadDeck = this.directThreadDeck(projectId, threads, params);
+    const workThreadDecks = this.workThreadOperatorDeck(projectId, directThreadDeck, {
+      includeArchived: threadQuery.includeArchived,
+      selectedWorkThreadId: params.selectedWorkThreadId,
+      selectedWorkThreadDigest: params.selectedWorkThreadDigest,
+    });
     const lifecycleProjection = this.threadStore.readThreadLifecycleProjection(projectId, { offset: 0, limit: 1 });
     const graphProjection = this.threadStore.readThreadGraphProjection(projectId, { offset: 0, limit: 120 });
     const operations = this.readOperationHistorySync(projectId, params.page?.operations || { limit: 20 });
@@ -337,6 +433,10 @@ class DirectThreadWorkbenchController {
         itemCount: Number(graphProjection?.page?.total || graphProjection?.items?.length || 0),
         items: Array.isArray(graphProjection?.items) ? graphProjection.items.slice(0, 120) : [],
       },
+      directThreadDeck,
+      workThreadProjection: workThreadDecks.workThreadProjection,
+      workThreadControlDeck: workThreadDecks.workThreadControlDeck,
+      workThreadOperatorDeck: workThreadDecks.workThreadOperatorDeck,
       threads,
       page: {
         threads: {
@@ -358,6 +458,121 @@ class DirectThreadWorkbenchController {
     snapshot.evidenceWorkbench = buildDirectThreadEvidenceWorkbenchProjection({ snapshot });
     if (!validateThreadEvidenceWorkbenchProjection(snapshot.evidenceWorkbench)) throw makeError("renderer_projection_unsafe");
     return snapshot;
+  }
+
+  async createWorkThreadDraftSession(projectOrId, input = {}) {
+    const project = await this.resolveProject(projectOrId);
+    const projectId = this.projectId(project);
+    if (!projectId) throw makeError("project_missing");
+    if (!this.sessionStore) throw makeError("direct_session_store_unavailable");
+    const draft = buildWorkThreadNewThreadDraftTransition({
+      projectId,
+      title: input.title,
+      objectiveSummary: input.objectiveSummary || input.objective,
+      workThreadId: input.workThreadId,
+      contextPosture: input.contextPosture,
+      evidenceRefs: [
+        { kind: "operator_draft", id: normalizeString(input.clientDraftId, ""), label: "Operator new-thread draft" },
+      ],
+    }, { nowMs: this.now() });
+    assertWorkThreadNewThreadDraftTransitionSafe(draft);
+    if (draft.transitionState !== "accepted") {
+      return {
+        schema: "direct_work_thread_new_thread_draft_result@1",
+        projectId,
+        status: "blocked",
+        draft,
+        thread: null,
+        providerTurnStarted: false,
+        appServerMutated: false,
+        workspaceMutationAuthorityGranted: false,
+        providerCallAuthorityGranted: false,
+        rawTextIncluded: false,
+        rawPathIncluded: false,
+      };
+    }
+    let workThread = null;
+    if (this.workThreadStore && typeof this.workThreadStore.upsertWorkThread === "function") {
+      workThread = this.workThreadStore.upsertWorkThread({
+        workThreadId: draft.workThreadId,
+        projectId,
+        title: draft.title,
+        lifecycleState: "candidate",
+        objective: {
+          summary: draft.objectiveSummary,
+          currentObjective: draft.objectiveSummary,
+        },
+        phaseState: {
+          phaseKind: "operator_draft",
+          status: "candidate",
+        },
+        activeRuntimePath: "direct-implementation",
+        linkedCodexThreads: [],
+        authorityBoundary: {
+          summary: "Local direct draft only; no provider turn or workspace mutation has been authorized.",
+          forbiddenActions: ["provider_turn_before_operator_submit", "workspace_mutation_before_target_resolution"],
+        },
+        evidenceRefs: [{ kind: "work_thread_new_thread_draft", id: draft.draftTransitionId, digest: draft.draftTransitionDigest, label: "New thread draft transition" }],
+      });
+    }
+    const session = this.sessionStore.createSession({
+      projectId,
+      workspace: isPlainObject(project.workspace) ? project.workspace : {},
+      workspaceDisplayPath: normalizeString(project.workspace?.linuxPath || project.workspace?.localPath || project.repoPath, ""),
+      title: draft.title,
+      model: normalizeString(input.model || project.surfaceBinding?.codex?.model, ""),
+      reasoningEffort: normalizeString(input.reasoningEffort || project.surfaceBinding?.codex?.reasoningEffort, ""),
+      runtimeMode: "direct-experimental",
+      directTransport: "direct-live-text",
+      sourceClass: "direct-native",
+      nativeDirectSession: true,
+      providerContinuityAvailable: false,
+      continuityState: "fresh_session_only",
+      workThreadId: draft.workThreadId,
+      workThreadBindingDigest: normalizeString(workThread?.digest || draft.draftTransitionDigest, ""),
+      unresolvedObligations: [{
+        obligationId: "operator_first_turn_required",
+        kind: "operator_input",
+        status: "open",
+        summary: "Operator must submit the first turn before provider work starts.",
+      }],
+    }, { nowMs: this.now() });
+    if (workThread && this.workThreadStore && typeof this.workThreadStore.upsertWorkThread === "function") {
+      this.workThreadStore.upsertWorkThread({
+        ...workThread,
+        linkedCodexThreads: [
+          ...(Array.isArray(workThread.linkedCodexThreads) ? workThread.linkedCodexThreads : []),
+          { threadId: session.sessionId, source: "direct", title: session.title, status: "local_draft" },
+        ],
+      });
+    }
+    this.ensureIndexed({ forceIndex: true });
+    return {
+      schema: "direct_work_thread_new_thread_draft_result@1",
+      projectId,
+      status: "created",
+      draft,
+      workThread: workThread ? {
+        workThreadId: workThread.workThreadId,
+        title: workThread.title,
+        lifecycleState: workThread.lifecycleState,
+        digest: workThread.digest,
+      } : null,
+      thread: {
+        id: session.sessionId,
+        threadId: session.sessionId,
+        title: session.title,
+        workThreadId: session.workThreadId,
+        model: session.model,
+        reasoningEffort: session.reasoningEffort,
+      },
+      providerTurnStarted: false,
+      appServerMutated: false,
+      workspaceMutationAuthorityGranted: false,
+      providerCallAuthorityGranted: false,
+      rawTextIncluded: false,
+      rawPathIncluded: false,
+    };
   }
 
   async getEvidenceWorkbenchProjection(projectOrId, params = {}) {

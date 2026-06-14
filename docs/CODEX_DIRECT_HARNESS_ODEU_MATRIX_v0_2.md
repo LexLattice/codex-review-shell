@@ -594,31 +594,36 @@ new live-provider or recursive authority is considered.
 
 ## 9. Immediate Next Spec
 
-The next spec should target Wave 7 PR 42:
+The next spec should target Wave 7 PR 43:
 
 ```text
-WorkThread thread deck and new-thread operator UX.
+Live promotion candidate queue and evidence gate.
 ```
 
-It should not add provider/tool authority. It should implement:
+PR 42 is now implemented. The direct workbench exposes WorkThread/operator
+identity rows for active, stale, blocked, recoverable, archived, and candidate
+threads; the guarded new-thread draft transition creates local direct session
+evidence only after explicit WorkThread identity/context posture; provider
+thread ids remain secondary runtime identities.
 
-1. a direct WorkThread/thread deck view for active, stale, blocked,
-   recoverable, archived, and candidate work threads;
-2. a guarded new-thread draft transition that creates local direct thread
-   evidence only after WorkThread identity and context posture are explicit;
-3. visible separation between WorkThread identity and runtime/provider thread
-   ids;
-4. stale/degraded states that do not silently mutate the active work thread;
-5. no provider turn, recursive worker, or app-server fallback mutation from the
-   thread deck.
+PR 43 should not add broad provider/tool authority. It should implement:
+
+1. a visible queue of fixture/local-green capabilities that may be promoted to
+   live use;
+2. explicit evidence requirements and blockers for each promotion candidate;
+3. operator opt-in transitions that remain blocked when evidence is stale or
+   missing;
+4. no automatic promotion from successful local tests alone;
+5. no recursive worker, app-server fallback, or workspace mutation authority
+   expansion from the promotion queue itself.
 
 Current implementation note:
 
 ```text
-PR 41 added a compact Codex-plane runtime selector and moved broad direct
-diagnostics into Project settings/control. The next problem is work identity:
-direct-native threads should be selected and drafted from WorkThread evidence,
-not from raw provider thread ids or repo folders.
+PR 42 added WorkThread/thread deck operator UX and a guarded local new-thread
+draft transition. The next problem is live capability promotion: fixture-green
+direct capabilities need an explicit evidence gate before becoming operator
+selectable live authority.
 ```
 
 It should explicitly not mean:

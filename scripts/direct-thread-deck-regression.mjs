@@ -15,6 +15,9 @@ const {
   DirectSessionStore,
 } = require("../src/main/direct/session/session-store");
 const {
+  DirectWorkThreadRegistryStore,
+} = require("../src/main/direct/bridge/work-thread-registry");
+const {
   DIRECT_THREAD_DECK_PROJECTION_SCHEMA,
 } = require("../src/main/direct/thread/thread-deck");
 
@@ -64,6 +67,32 @@ const authStore = {
 try {
   const sessionStore = new DirectSessionStore({ rootDir: tempRoot });
   sessionStore.ensure();
+  const workThreadStore = new DirectWorkThreadRegistryStore({ rootDir: tempRoot });
+  workThreadStore.upsertWorkThread({
+    workThreadId: "work_thread_pr15",
+    projectId: project.id,
+    title: "WorkThread scoped direct work",
+    lifecycleState: "active",
+    objective: "Keep direct-native sessions scoped to work-world identity.",
+    activeRuntimePath: "direct-implementation",
+    linkedCodexThreads: [{ threadId: "pending_runtime", source: "direct", title: "Pending runtime" }],
+  });
+  workThreadStore.upsertWorkThread({
+    workThreadId: "work_thread_stale_deck",
+    projectId: project.id,
+    title: "Stale WorkThread fixture",
+    lifecycleState: "stale",
+    objective: "Should render stale without selecting or mutating.",
+    activeRuntimePath: "direct-implementation",
+  });
+  workThreadStore.upsertWorkThread({
+    workThreadId: "work_thread_archived_deck",
+    projectId: project.id,
+    title: "Archived WorkThread fixture",
+    lifecycleState: "archived",
+    objective: "Should render archived only when included.",
+    activeRuntimePath: "direct-implementation",
+  });
   const controller = new DirectLiveTextController({
     sessionStore,
     profileDoc,
@@ -76,6 +105,17 @@ try {
       "data: {\"response\":{\"id\":\"resp_direct_thread_deck\",\"status\":\"completed\"}}",
       "",
     ].join("\n"), 200, { "content-type": "text/event-stream" }),
+  });
+  const { DirectThreadWorkbenchController } = require("../src/main/direct/thread/thread-workbench-controller");
+  const { DirectThreadStore } = require("../src/main/direct/thread/thread-store");
+  const threadStore = new DirectThreadStore({ rootDir: tempRoot, mode: "index_only" });
+  const workbenchController = new DirectThreadWorkbenchController({
+    threadStore,
+    sessionStore,
+    workThreadStore,
+    projectResolver: () => project,
+    liveTextController: controller,
+    now: () => Date.parse("2026-06-13T14:00:00.000Z"),
   });
 
   const scoped = sessionStore.createSession({
@@ -117,35 +157,6 @@ try {
   });
   sessionStore.recoverInterruptedTurns({ nowMs: Date.parse("2026-06-13T12:03:00.000Z") });
 
-  const corruptSession = sessionStore.createSession({
-    projectId: project.id,
-    title: "Corrupt stored session",
-    model: "gpt-5.4",
-    createdAt: "2026-06-13T12:10:00.000Z",
-    updatedAt: "2026-06-13T12:10:00.000Z",
-    runtimeMode: "direct-experimental",
-    directTransport: "direct-live-text",
-  });
-  fs.writeFileSync(sessionStore.sessionPath(corruptSession.sessionId), "{not valid json", "utf8");
-
-  const corruptTurnSession = sessionStore.createSession({
-    projectId: project.id,
-    title: "Corrupt stored turn",
-    model: "gpt-5.4",
-    createdAt: "2026-06-13T12:20:00.000Z",
-    updatedAt: "2026-06-13T12:20:00.000Z",
-    runtimeMode: "direct-experimental",
-    directTransport: "direct-live-text",
-  });
-  sessionStore.createTurn(corruptTurnSession.sessionId, {
-    turnId: "direct_turn_corrupt_file",
-    state: "completed",
-    model: "gpt-5.4",
-    createdAt: "2026-06-13T12:21:00.000Z",
-    updatedAt: "2026-06-13T12:22:00.000Z",
-  });
-  fs.writeFileSync(sessionStore.turnPath(corruptTurnSession.sessionId, "direct_turn_corrupt_file"), "{not valid json", "utf8");
-
   const running = sessionStore.createSession({
     projectId: project.id,
     title: "Running direct session",
@@ -175,6 +186,85 @@ try {
     directTransport: "direct-live-text",
   });
 
+  const snapshot = await workbenchController.getSnapshot(project, {
+    refresh: true,
+    filters: { includeArchived: true },
+    page: { threads: { offset: 0, limit: 20 }, operations: { offset: 0, limit: 10 } },
+  });
+  assert.equal(snapshot.workThreadOperatorDeck.schema, "direct_work_thread_operator_deck@1");
+  assert.equal(snapshot.workThreadOperatorDeck.identityLaw.controlPlaneIdentity, "workThreadId");
+  assert.equal(snapshot.workThreadOperatorDeck.identityLaw.providerThreadIdRole, "secondary_runtime_identity");
+  assert.equal(snapshot.workThreadOperatorDeck.providerCallAuthorityGranted, false);
+  assert.equal(snapshot.workThreadOperatorDeck.workspaceMutationAuthorityGranted, false);
+  assert(snapshot.workThreadOperatorDeck.counts.active >= 1, "operator deck should expose active WorkThreads");
+  assert(snapshot.workThreadOperatorDeck.counts.candidate >= 1, "operator deck should expose unscoped sessions as candidates");
+  assert(snapshot.workThreadOperatorDeck.counts.stale >= 1, "operator deck should expose stale WorkThreads");
+  assert(snapshot.workThreadOperatorDeck.counts.archived >= 1, "operator deck should expose archived WorkThreads when requested");
+  const operatorScopedRow = snapshot.workThreadOperatorDeck.rows.find((row) => row.workThreadId === "work_thread_pr15");
+  assert(operatorScopedRow, "operator WorkThread row should be present");
+  assert.equal(operatorScopedRow.runtimeProviderThreadIdsAreSecondary, true);
+  assert(operatorScopedRow.runtimeThreadIds.includes(scoped.sessionId), "operator row should cite runtime session as secondary identity");
+  const candidateRows = snapshot.workThreadOperatorDeck.rows.filter((row) => row.operatorState === "candidate");
+  assert(candidateRows.some((row) => row.primaryRuntimeThreadId), "candidate rows should keep runtime session openable without selection authority");
+
+  const blockedDraft = await workbenchController.createWorkThreadDraftSession(project, {
+    title: "",
+    objectiveSummary: "",
+    contextPosture: "unknown",
+  });
+  assert.equal(blockedDraft.status, "blocked");
+  assert.equal(blockedDraft.providerTurnStarted, false);
+  assert.equal(blockedDraft.appServerMutated, false);
+  assert(blockedDraft.draft.blockerCodes.includes("work_thread_title_missing"));
+  assert(blockedDraft.draft.blockerCodes.includes("context_posture_not_explicit"));
+
+  const acceptedDraft = await workbenchController.createWorkThreadDraftSession(project, {
+    title: "Drafted local WorkThread thread",
+    objectiveSummary: "Create local evidence before provider work starts.",
+    contextPosture: "explicit_operator_draft",
+    workThreadId: "work_thread_drafted_local",
+    model: "gpt-5.5",
+    reasoningEffort: "high",
+  });
+  assert.equal(acceptedDraft.status, "created");
+  assert.equal(acceptedDraft.providerTurnStarted, false);
+  assert.equal(acceptedDraft.appServerMutated, false);
+  assert.equal(acceptedDraft.providerCallAuthorityGranted, false);
+  assert.equal(acceptedDraft.thread.workThreadId, "work_thread_drafted_local");
+  const acceptedSession = sessionStore.readSession(acceptedDraft.thread.threadId);
+  assert.equal(acceptedSession.turns.length, 0, "local draft must not start a provider turn");
+  assert.equal(acceptedSession.workThreadId, "work_thread_drafted_local");
+  assert.equal(workThreadStore.readWorkThread("work_thread_drafted_local").lifecycleState, "candidate");
+
+  const corruptSession = sessionStore.createSession({
+    projectId: project.id,
+    title: "Corrupt stored session",
+    model: "gpt-5.4",
+    createdAt: "2026-06-13T12:10:00.000Z",
+    updatedAt: "2026-06-13T12:10:00.000Z",
+    runtimeMode: "direct-experimental",
+    directTransport: "direct-live-text",
+  });
+  fs.writeFileSync(sessionStore.sessionPath(corruptSession.sessionId), "{not valid json", "utf8");
+
+  const corruptTurnSession = sessionStore.createSession({
+    projectId: project.id,
+    title: "Corrupt stored turn",
+    model: "gpt-5.4",
+    createdAt: "2026-06-13T12:20:00.000Z",
+    updatedAt: "2026-06-13T12:20:00.000Z",
+    runtimeMode: "direct-experimental",
+    directTransport: "direct-live-text",
+  });
+  sessionStore.createTurn(corruptTurnSession.sessionId, {
+    turnId: "direct_turn_corrupt_file",
+    state: "completed",
+    model: "gpt-5.4",
+    createdAt: "2026-06-13T12:21:00.000Z",
+    updatedAt: "2026-06-13T12:22:00.000Z",
+  });
+  fs.writeFileSync(sessionStore.turnPath(corruptTurnSession.sessionId, "direct_turn_corrupt_file"), "{not valid json", "utf8");
+
   const result = controller.listThreads({
     limit: 10,
     defaultModel: "gpt-5.5",
@@ -192,7 +282,7 @@ try {
   assert.equal(result.deck.actions.start.mutationAuthorityGranted, false);
   assert.equal(result.deck.rawPathExposed, false);
   assert.equal(result.deck.rawPromptTextExposed, false);
-  assert.equal(result.deck.rows.length, 5);
+  assert.equal(result.deck.rows.length, 6);
 
   const scopedRow = result.deck.rows.find((row) => row.threadId === scoped.sessionId);
   assert(scopedRow, "WorkThread scoped row should be present");
