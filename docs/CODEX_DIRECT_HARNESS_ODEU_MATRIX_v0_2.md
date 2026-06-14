@@ -153,8 +153,8 @@ without adding autonomous authority.
 
 Wave 6 has productized the WorkThread control deck, target picker, context
 preview, memory review workbench, module context intake, and manual smoke gate.
-The remaining confidence gap is deciding which Wave 7 hardening work should be
-proved before broadening authority.
+The remaining confidence gap is making those surfaces visible and smoke-testable
+in the actual Electron operator path before broadening authority.
 
 ## 4. Canonical ODEU Capability Matrix
 
@@ -571,44 +571,50 @@ Wave 6:
   14. Module context contribution intake
   15. Direct manual smoke gate and regression checklist
 
+Wave 7:
+  16. Manual smoke gate projection in the Electron settings/control surface
+  17. Electron smoke runner for direct settings, runtime lane, and fallback
+  18. Direct runtime/settings simplification for daily operator use
+  19. WorkThread thread deck/new-thread operator UX
+  20. Live promotion candidate queue and evidence gate
+  21. App-server fallback parity watchdog
+  22. Usage/quota/model witness polish if needed for promotion
+
 Later:
-  16. Usage/quota/model readiness hardening
-  17. Mainline merge-behind-flag checklist and broad Electron proof
-  18. Recursive worker choreography only after no-deadlock law exists
+  23. Recursive worker choreography only after no-deadlock law exists
 ```
 
-Wave 6 should not start by expanding authority. It should productize the
-operator control loop around `WorkThread`, target clarification, context packet
-visibility, memory review, and module context intake. Those surfaces make later
-authority-bearing work inspectable instead of forcing the operator to read raw
-ledgers.
+Wave 7 should not start by expanding authority. It should prove the operator can
+actually see and smoke-test the Wave 6 control surfaces in Electron before any
+new live-provider or recursive authority is considered.
 
 ## 9. Immediate Next Spec
 
-The next spec should target Wave 7 planning:
+The next spec should target Wave 7 PR 39:
 
 ```text
-Mainline hardening and direct usability promotion plan.
+Manual smoke gate settings/control surface V0.
 ```
 
-It should not add provider/tool authority. It should decide:
+It should not add provider/tool authority. It should implement:
 
-1. which direct-path surfaces need manual Electron proof before promotion;
-2. whether merge-behind-flag work should precede additional authority gates;
-3. which fixture-only readiness rows are eligible for live-provider proof;
-4. which WorkThread/context/memory/module controls need operator UX polish;
-5. how to keep app-server fallback retained while direct usability improves.
+1. renderer support for the `manualSmokeGate` row group already emitted by the
+   direct settings projection;
+2. a compact status summary for passed, degraded, blocked, and not-run smoke
+   states;
+3. visible blocker rows with source/evidence labels and no raw paths/text;
+4. stale/missing projection handling when settings refresh races project switch;
+5. a clear statement that the gate is display-only and cannot start provider,
+   app-server, module, workspace, or promotion transitions.
 
 Current implementation note:
 
 ```text
-Wave 6 now includes the context packet preview/omission workbench, memory
-review materialization workbench, module context intake, and manual smoke gate.
-The operator can inspect source classes, inclusion/omission posture, pressure
-estimates, blocked-from-request reasons, memory review/refresh/reset posture,
-local materialization witnesses, rollback/omission impact, accepted module
-context, imported evidence rows, unsafe module diagnostics, and manual smoke
-blockers before expanding authority.
+Wave 6 now emits the context packet preview/omission workbench, memory review
+materialization workbench, module context intake, and manual smoke gate. The
+next problem is operator access: the Electron direct settings panel must render
+the manual smoke row group and blockers before the smoke gate can be treated as
+a real daily-use readiness surface.
 ```
 
 It should explicitly not mean:

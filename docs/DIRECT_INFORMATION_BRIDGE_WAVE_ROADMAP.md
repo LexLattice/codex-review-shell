@@ -1739,7 +1739,7 @@ Still intentionally not authority:
 
 ## Wave 6: Operator Control Loop And WorkThread Productization
 
-Status: in progress.
+Status: merged.
 
 Review posture after Wave 5:
 
@@ -2051,6 +2051,242 @@ Still intentionally not authority:
   automatic memory mutation
   automatic replay/revert
   direct path replacement of the vanilla app-server lane
+```
+
+## Wave 7: Mainline Hardening And Direct Usability Promotion
+
+Status: planned.
+
+Review posture after Wave 6:
+
+```text
+The direct branch now has the core operator-control artifacts: WorkThread
+selection, target clarification, context preview, memory review, module context
+intake, and a manual smoke gate. The next gap is not another authority artifact.
+It is proving that these artifacts are reachable, legible, and recoverable in
+the actual Electron operator path while app-server remains the safe fallback.
+```
+
+Standing Wave 7 constraints:
+
+- Keep app-server as the retained vanilla lane.
+- Do not enable autonomous scheduling, recursive worker orchestration, module
+  execution, provider compaction, broad browser/network/MCP tools, or automatic
+  replay/revert.
+- Treat Electron/UI proof as projection proof, not provider capability
+  promotion.
+- Keep direct controls behind explicit experimental/readiness posture.
+- Any live-provider promotion candidate must cite prior fixture/local proof,
+  manual smoke readiness, and a bounded operator opt-in.
+
+### PR 39: Manual Smoke Gate Settings/Control Surface V0
+
+Status: planned.
+
+Purpose:
+
+```text
+Make the PR 38 manual smoke gate visible in the operator's actual Electron
+direct settings/control surface.
+```
+
+Scope:
+
+- Render the `manualSmokeGate` row group already emitted by
+  `direct_settings_surface_projection@1`.
+- Show gate state, passed/warning/blocked/not-checked counts, required blockers,
+  source/evidence labels, and promotion/authority posture.
+- Add stale/missing projection handling for project switches and refresh races.
+- Keep the surface display-only: no provider call, app-server restart, runtime
+  mutation, WorkThread mutation, module execution, workspace mutation,
+  auto-approval, recursive worker, or matrix promotion.
+
+Promotion criterion:
+
+```text
+The operator can see whether the direct branch is smoke-ready from inside the
+app, without reading raw ledgers or running headless scripts.
+```
+
+### PR 40: Electron Smoke Runner And Readiness Proof Pack
+
+Status: planned.
+
+Purpose:
+
+```text
+Turn the manual smoke gate from a fixture-only artifact into a repeatable
+Electron projection proof.
+```
+
+Scope:
+
+- Add a bounded Electron smoke script that opens a project, loads the direct
+  settings/control surface, refreshes bridge status, verifies visible runtime
+  lane/app-server fallback/WorkThread/context/memory/module/manual-smoke rows,
+  and exits without provider calls.
+- Emit an `electron_projection` smoke result that can be passed into
+  `direct_manual_smoke_gate@1`.
+- Keep live provider turns, app-server spawn/replacement, module execution,
+  workspace mutation, and direct promotion disabled.
+
+Promotion criterion:
+
+```text
+Direct readiness has a reproducible app-level projection check, not only unit
+fixtures.
+```
+
+### PR 41: Direct Runtime And Settings Simplification
+
+Status: planned.
+
+Purpose:
+
+```text
+Make direct usable without forcing the operator to parse diagnostic walls during
+normal work.
+```
+
+Scope:
+
+- Keep a small visible runtime lane switch/status witness in the Codex plane.
+- Move broad direct diagnostics into the settings/control surface.
+- Preserve app-server fallback visibility and make unavailable/direct-blocked
+  states explicit.
+- Persist only safe operator preferences; do not mutate production direct mode
+  or provider defaults.
+
+Promotion criterion:
+
+```text
+Direct can be selected, inspected, and backed out of without losing the vanilla
+app-server lane or exposing hidden authority.
+```
+
+### PR 42: WorkThread Thread Deck And New-Thread Operator UX
+
+Status: planned.
+
+Purpose:
+
+```text
+Expose work-world thread identity as the operator-facing unit, not just a
+diagnostic registry row.
+```
+
+Scope:
+
+- Add a direct WorkThread/thread deck view for active, stale, blocked,
+  recoverable, archived, and candidate work threads.
+- Add a guarded new-thread draft transition that creates local direct thread
+  evidence only after WorkThread identity and context posture are explicit.
+- Keep Codex provider thread ids as runtime identities, not the control-plane
+  source of work truth.
+
+Promotion criterion:
+
+```text
+The operator can choose or draft the active direct work thread from a bounded
+control surface before any direct turn starts.
+```
+
+### PR 43: Live Promotion Candidate Queue And Evidence Gate
+
+Status: planned.
+
+Purpose:
+
+```text
+Convert selected fixture/local-green capabilities into explicit opt-in live
+promotion candidates.
+```
+
+Scope:
+
+- List candidate rows for direct text, read, patch, command, repair, recovery,
+  usage, and UI readiness with required evidence refs.
+- Require manual smoke readiness and bounded operator opt-in before any live
+  promotion run.
+- Record skipped, blocked, failed, and passed promotion attempts as evidence.
+- Keep promotion reports from changing defaults or matrix rows automatically.
+
+Promotion criterion:
+
+```text
+Live-provider proof becomes a governed queue, not ad hoc manual testing or
+silent status inflation.
+```
+
+### PR 44: App-Server Fallback Parity Watchdog
+
+Status: planned.
+
+Purpose:
+
+```text
+Ensure direct usability work never erodes the retained vanilla app-server path.
+```
+
+Scope:
+
+- Add a renderer-safe fallback parity report over app-server availability,
+  selected lane, startup/failure posture, reload/reconnect posture, and direct
+  fallback blockers.
+- Include app-server fallback status in manual/Electron smoke outputs.
+- Add regression cases proving direct-path failures do not silently reroute,
+  mutate, or hide app-server fallback state.
+
+Promotion criterion:
+
+```text
+Direct can fail closed while the app-server lane remains visible and recoverable.
+```
+
+### PR 45: Usage/Quota/Model Witness Polish
+
+Status: planned.
+
+Purpose:
+
+```text
+Tighten the runtime witnesses needed before broader direct-path promotion.
+```
+
+Scope:
+
+- Align model, reasoning, quota/rate, usage, and drift witnesses with the direct
+  settings/control surface and manual smoke gate.
+- Preserve unknown/unavailable/stale states instead of inventing defaults.
+- Keep cost as a later derived pricing pass, not capture-time runtime truth.
+
+Promotion criterion:
+
+```text
+Direct readiness can explain model/quota/usage posture without creating billing
+or provider-authority claims.
+```
+
+Wave 7 expected result:
+
+```text
+Implemented:
+  visible manual smoke gate in Electron settings/control
+  app-level Electron projection smoke runner
+  simplified direct runtime/settings operator path
+  WorkThread/thread deck operator UX
+  governed live-promotion candidate queue
+  app-server fallback parity watchdog
+  polished usage/quota/model witnesses
+
+Still intentionally not authority:
+  direct as production/default
+  automatic approval
+  recursive worker orchestration
+  provider compaction execution
+  automatic memory mutation
+  automatic replay/revert
+  broad module/tool execution
 ```
 
 ## Update Rules
