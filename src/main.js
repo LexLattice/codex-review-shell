@@ -1882,8 +1882,8 @@ function directRuntimeAuthRefreshController() {
   };
 }
 
-function refreshDirectRuntimeCredentials() {
-  return ensureDirectAuthLoginCoordinator().refreshCredentials(directRuntimeAuthRefreshController());
+function refreshDirectRuntimeCredentials(options = {}) {
+  return ensureDirectAuthLoginCoordinator().refreshCredentials(directRuntimeAuthRefreshController(), options);
 }
 
 function ensureDirectProviderMetadataAdapter() {
@@ -1891,7 +1891,7 @@ function ensureDirectProviderMetadataAdapter() {
   directProviderMetadataAdapter = new DirectServerMetadataAdapter({
     rootDir: directProviderMetadataRootDir(),
     authStoreFactory: () => directRuntimeAuthStore(),
-    refreshCredentials: () => refreshDirectRuntimeCredentials(),
+    refreshCredentials: (options) => refreshDirectRuntimeCredentials(options),
   });
   return directProviderMetadataAdapter;
 }
@@ -2821,6 +2821,7 @@ function directMetadataPrimaryQuotaWindow(profile = {}) {
 }
 
 function directMetadataResetLabel(resetAt = "") {
+  if (!resetAt) return "";
   const date = new Date(resetAt);
   if (!Number.isFinite(date.getTime())) return "";
   const hours = String(date.getHours()).padStart(2, "0");
@@ -2893,7 +2894,7 @@ function buildDirectRuntimeWitnessProjectionForProject(input = {}) {
   const driftStatus = normalizeString(driftReport?.status, metadataProfile ? "stable" : "unknown");
   const driftState = driftStatus === "invalid" || driftStatus === "blocked"
     ? "blocked"
-    : driftStatus === "stable"
+    : driftStatus === "stable" || driftStatus === "ok"
       ? modelState
       : driftStatus === "unknown"
         ? "unknown"

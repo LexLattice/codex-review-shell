@@ -42,6 +42,13 @@ const modelsPayload = {
       supported_reasoning_levels: ["ultra"],
       default_reasoning_level: "ultra",
     },
+    null,
+    {
+      id: "gpt-zero-context",
+      model: "gpt-zero-context",
+      context_window: 0,
+      max_context_window: 0,
+    },
   ],
 };
 
@@ -80,6 +87,9 @@ assert.deepEqual(
 );
 assert.deepEqual(profile.modelCatalog.items[0].serviceTiers.map((item) => item.id), ["standard", "fast"]);
 assert.equal(profile.modelCatalog.items[0].contextWindow, 272000);
+const zeroContext = profile.modelCatalog.items.find((item) => item.id === "gpt-zero-context");
+assert.equal(zeroContext.contextWindow, 0);
+assert.equal(zeroContext.maxContextWindow, 0);
 assert.equal(profile.usage.quota.status, "available");
 assert.equal(profile.usage.quota.planType, "pro");
 assert.equal(profile.usage.quota.windows.length, 2);
@@ -100,6 +110,7 @@ assert.equal(drift.schema, "direct_metadata_drift_report@1");
 assert.equal(drift.status, "changed");
 assert.equal(drift.unknownValues.length, 1);
 assert.equal(drift.unknownValues[0].value, "ultra");
+assert.ok(drift.missingRequiredFields.includes("models[3]"));
 
 const badProfile = buildDirectProviderMetadataProfile({
   projectId: "project-test",
@@ -144,7 +155,81 @@ assert.equal(fetchCalls.length, 2);
 
 const cached = adapter.cachedStatus("project-test");
 assert.equal(cached.cacheState, "fresh");
-assert.equal(cached.profile.modelCatalog.items.length, 3);
+assert.equal(cached.profile.modelCatalog.items.length, 4);
 assert.ok(fs.existsSync(adapter.cachePath("project-test")));
+
+let credentialRecord = {
+  access_token: "expired-token",
+  refresh_token: "refresh-token",
+  expiresAt: Date.now() - 1000,
+  account_id: "acct-test",
+};
+let refreshCalls = 0;
+const refreshAdapter = new DirectServerMetadataAdapter({
+  rootDir: fs.mkdtempSync(path.join(os.tmpdir(), "direct-provider-metadata-refresh-")),
+  authStoreFactory: () => ({
+    readCredentials: () => credentialRecord,
+    readStatus: () => ({ status: "authenticated", authMode: "chatgpt", planType: "pro" }),
+  }),
+  refreshCredentials: async () => {
+    refreshCalls += 1;
+    credentialRecord = { ...credentialRecord, access_token: "fresh-token", expiresAt: Date.now() + 300000 };
+    return { ok: true, status: "authenticated" };
+  },
+  fetchImpl: async (_url, options) => {
+    assert.equal(options.headers.Authorization, "Bearer fresh-token");
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => "" },
+      text: async () => JSON.stringify(modelsPayload),
+    };
+  },
+});
+await refreshAdapter.refreshForProject({ id: "refresh-project" });
+assert.equal(refreshCalls, 1);
+
+let retryCredentialRecord = {
+  access_token: "stale-token",
+  refresh_token: "refresh-token",
+  expiresAt: Date.now() + 300000,
+  account_id: "acct-test",
+};
+let retryRefreshCalls = 0;
+let retryFetchCalls = 0;
+const retryAdapter = new DirectServerMetadataAdapter({
+  rootDir: fs.mkdtempSync(path.join(os.tmpdir(), "direct-provider-metadata-retry-")),
+  authStoreFactory: () => ({
+    readCredentials: () => retryCredentialRecord,
+    readStatus: () => ({ status: "authenticated", authMode: "chatgpt", planType: "pro" }),
+  }),
+  refreshCredentials: async () => {
+    retryRefreshCalls += 1;
+    retryCredentialRecord = { ...retryCredentialRecord, access_token: "retried-token" };
+    return { ok: true, status: "authenticated" };
+  },
+  fetchImpl: async (_url, options) => {
+    retryFetchCalls += 1;
+    if (options.headers.Authorization === "Bearer stale-token") {
+      return {
+        ok: false,
+        status: 401,
+        headers: { get: () => "" },
+        text: async () => "expired",
+      };
+    }
+    assert.equal(options.headers.Authorization, "Bearer retried-token");
+    return {
+      ok: true,
+      status: 200,
+      headers: { get: () => "" },
+      text: async () => JSON.stringify(modelsPayload),
+    };
+  },
+});
+const retryResult = await retryAdapter.refreshForProject({ id: "retry-project" });
+assert.equal(retryResult.fetched, true);
+assert.equal(retryRefreshCalls, 1);
+assert.ok(retryFetchCalls >= 2);
 
 console.log("direct provider metadata regression passed");

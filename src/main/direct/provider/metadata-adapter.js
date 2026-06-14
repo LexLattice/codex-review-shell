@@ -11,6 +11,7 @@ const DEFAULT_CHATGPT_WHAM_USAGE_ENDPOINT = "https://chatgpt.com/backend-api/wha
 const DEFAULT_CLIENT_VERSION = "0.0.0-codex-review-shell";
 const DEFAULT_TTL_MS = 15 * 60 * 1000;
 const DEFAULT_TIMEOUT_MS = 3500;
+const DEFAULT_REFRESH_BEFORE_MS = 60_000;
 const KNOWN_REASONING_EFFORTS = new Set(["low", "medium", "high", "xhigh"]);
 
 function isPlainObject(value) {
@@ -109,6 +110,10 @@ function normalizeInputModalities(value) {
 }
 
 function normalizeModelDescriptor(raw = {}, index = 0, validation = {}) {
+  if (!isPlainObject(raw)) {
+    validation.missingRequiredFields.push(`models[${index}]`);
+    return null;
+  }
   const modelId = normalizeString(raw.id || raw.model || raw.slug, "");
   const model = normalizeString(raw.model || raw.slug || raw.id, modelId);
   if (!modelId && !model) {
@@ -163,10 +168,22 @@ function normalizeModelDescriptor(raw = {}, index = 0, validation = {}) {
     defaultServiceTier,
     inputModalities: normalizeInputModalities(raw.inputModalities || raw.input_modalities),
     supportsPersonality: raw.supportsPersonality ?? raw.supports_personality,
-    contextWindow: numberOrUndefined(raw.contextWindow || raw.context_window),
-    maxContextWindow: numberOrUndefined(raw.maxContextWindow || raw.max_context_window),
+    contextWindow: numberOrUndefined(raw.contextWindow ?? raw.context_window),
+    maxContextWindow: numberOrUndefined(raw.maxContextWindow ?? raw.max_context_window),
     evidenceRefs: [evidenceRef("direct_model_descriptor", `Model descriptor ${model || modelId}`, "exact", model || modelId)],
   };
+}
+
+function credentialExpiresInMs(credentials = {}, nowMs = Date.now()) {
+  const expiresAt = Number(credentials.expiresAt ?? credentials.expires ?? 0) || 0;
+  return expiresAt > 0 ? Math.max(0, expiresAt - nowMs) : Number.POSITIVE_INFINITY;
+}
+
+function shouldRefreshCredentials(credentials = {}, options = {}) {
+  if (!credentials?.refreshToken && !credentials?.refresh_token && !credentials?.refresh) return false;
+  if (options.forceRefresh === true) return true;
+  if (!credentials?.accessToken && !credentials?.access_token && !credentials?.access) return true;
+  return credentialExpiresInMs(credentials, options.nowMs) <= Number(options.refreshBeforeMs ?? DEFAULT_REFRESH_BEFORE_MS);
 }
 
 function rawModelsArray(response) {
@@ -526,12 +543,36 @@ class DirectServerMetadataAdapter {
     const authStore = typeof this.authStoreFactory === "function" ? this.authStoreFactory() : null;
     let credentials = null;
     let authStatus = null;
+    const readAuthState = () => {
+      try {
+        return {
+          credentials: authStore && typeof authStore.readCredentials === "function" ? authStore.readCredentials() : null,
+          authStatus: authStore && typeof authStore.readStatus === "function" ? authStore.readStatus() : null,
+        };
+      } catch {
+        return { credentials: null, authStatus: null };
+      }
+    };
     try {
-      credentials = authStore && typeof authStore.readCredentials === "function" ? authStore.readCredentials() : null;
-      authStatus = authStore && typeof authStore.readStatus === "function" ? authStore.readStatus() : null;
+      ({ credentials, authStatus } = readAuthState());
+      if (shouldRefreshCredentials(credentials, options)) {
+        if (typeof this.refreshCredentials !== "function") {
+          throw new Error("direct_metadata_refresh_unavailable");
+        }
+        const refreshResult = await this.refreshCredentials({
+          authStore,
+          credentials,
+          reason: options.forceRefresh === true ? "forced" : "expiring",
+        });
+        if (refreshResult?.ok === false) {
+          const error = new Error(normalizeString(refreshResult.reason || refreshResult.status, "direct_metadata_refresh_failed"));
+          error.code = "direct_metadata_refresh_failed";
+          throw error;
+        }
+        ({ credentials, authStatus } = readAuthState());
+      }
     } catch {
-      credentials = null;
-      authStatus = null;
+      ({ credentials, authStatus } = readAuthState());
     }
     if (!credentials?.accessToken && !credentials?.access_token) {
       const profile = buildDirectProviderMetadataProfile({
@@ -563,20 +604,24 @@ class DirectServerMetadataAdapter {
     };
     const rawAccountId = normalizeString(credentials.accountId || credentials.account_id, "");
     if (rawAccountId) headers["ChatGPT-Account-Id"] = rawAccountId;
-    try {
+    const fetchMetadata = async (requestHeaders) => {
       const models = await fetchJsonWithTimeout(url.toString(), {
         fetchImpl: this.fetchImpl,
-        headers,
+        headers: requestHeaders,
         timeoutMs: options.timeoutMs || DEFAULT_TIMEOUT_MS,
       });
       let usage = { body: null, etag: "" };
       try {
         usage = await fetchJsonWithTimeout(this.usageEndpoint, {
           fetchImpl: this.fetchImpl,
-          headers,
+          headers: requestHeaders,
           timeoutMs: options.timeoutMs || DEFAULT_TIMEOUT_MS,
         });
       } catch {}
+      return { models, usage };
+    };
+    try {
+      let { models, usage } = await fetchMetadata(headers);
       const generatedAt = nowIso();
       const profile = buildDirectProviderMetadataProfile({
         projectId,
@@ -619,6 +664,19 @@ class DirectServerMetadataAdapter {
       });
       return { profile, driftReport, cacheState: "fresh", fetched: true };
     } catch (error) {
+      if (error?.status === 401 && typeof this.refreshCredentials === "function" && !options._retriedAfterAuth) {
+        try {
+          const refreshResult = await this.refreshCredentials({
+            authStore,
+            credentials,
+            reason: "metadata_401",
+            forceRefresh: true,
+          });
+          if (refreshResult?.ok !== false) {
+            return this.refreshForProject(project, { ...options, forceRefresh: false, _retriedAfterAuth: true });
+          }
+        } catch {}
+      }
       const profile = previous?.profile || buildDirectProviderMetadataProfile({
         projectId,
         authStatus,
