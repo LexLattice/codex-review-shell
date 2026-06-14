@@ -255,6 +255,7 @@ const els = {
   directBridgeSettingsAgentClassList: document.getElementById("directBridgeSettingsAgentClassList"),
   directBridgeSettingsContinuityList: document.getElementById("directBridgeSettingsContinuityList"),
   directBridgeSettingsAgentUsageList: document.getElementById("directBridgeSettingsAgentUsageList"),
+  directBridgeSettingsManualSmokeList: document.getElementById("directBridgeSettingsManualSmokeList"),
   directBridgeSettingsEvidence: document.getElementById("directBridgeSettingsEvidence"),
   projectList: document.getElementById("projectList"),
   projectCount: document.getElementById("projectCount"),
@@ -3003,11 +3004,43 @@ function directBridgeSettingsRows(sectionName) {
   return Array.isArray(rows) ? rows : [];
 }
 
+function directBridgeManualSmokeSummary(status) {
+  const gate = status?.sections?.manualSmokeGate || {};
+  const available = gate.available === true;
+  const gateState = typeof gate.gateState === "string" && gate.gateState ? gate.gateState : available ? "unknown" : "not exposed";
+  const blocked = Number(gate.blockedCount || 0);
+  const requiredBlocked = Number(gate.requiredBlockedCount || 0);
+  const warnings = Number(gate.warningCount || 0);
+  const notChecked = Number(gate.notCheckedCount || 0);
+  return {
+    available,
+    gateState,
+    blocked,
+    requiredBlocked,
+    warnings,
+    notChecked,
+    blockerCodes: Array.isArray(gate.blockerCodes) ? gate.blockerCodes.filter(Boolean) : [],
+    unexpectedAuthority: Boolean(
+      gate.manualSmokeExecutionAllowed ||
+      gate.runtimePathMutationAllowed ||
+      gate.workThreadMutationAllowed ||
+      gate.providerTransportAllowed ||
+      gate.workspaceMutationAllowed ||
+      gate.appServerReplacementAllowed ||
+      gate.autoApprovalAllowed ||
+      gate.moduleExecutionAllowed ||
+      gate.recursiveWorkerAllowed ||
+      gate.matrixPromotionAllowed
+    ),
+  };
+}
+
 function renderDirectBridgeSettingsStatus() {
   if (!els.directBridgeSettingsBadge) return;
   const status = state.directBridgeSettingsStatus || {};
   const projectionOk = status.schema === "direct_settings_surface_projection@1";
   const authority = status.authority || {};
+  const manualSmoke = directBridgeManualSmokeSummary(status);
   const blockedAuthority = [
     authority.runtimeMutationAllowed ? "runtime mutation" : "",
     authority.routingEnforced ? "routing" : "",
@@ -3018,14 +3051,21 @@ function renderDirectBridgeSettingsStatus() {
     authority.providerCompactionAllowed ? "provider compact" : "",
     authority.providerTransportAllowed ? "provider transport" : "",
     authority.workspaceMutationAllowed ? "workspace mutation" : "",
+    manualSmoke.unexpectedAuthority ? "manual smoke authority" : "",
   ].filter(Boolean);
   els.directBridgeSettingsBadge.textContent = state.directBridgeSettingsLoading
     ? "loading"
     : projectionOk
-      ? "status only"
+      ? manualSmoke.available
+        ? `smoke ${manualSmoke.gateState}`
+        : "status only"
       : "not loaded";
   els.directBridgeSettingsBadge.title = state.directBridgeSettingsError ||
-    (projectionOk ? status.projectionDigest || "Renderer-safe direct bridge settings projection." : "Projection not loaded.");
+    (projectionOk
+      ? manualSmoke.available
+        ? `Manual smoke gate: ${manualSmoke.gateState} · blocked: ${manualSmoke.blocked} · required blockers: ${manualSmoke.requiredBlocked}`
+        : status.projectionDigest || "Renderer-safe direct bridge settings projection."
+      : "Projection not loaded.");
   if (els.directBridgeSettingsRefreshButton) {
     els.directBridgeSettingsRefreshButton.disabled = state.directBridgeSettingsLoading || !bridge.getDirectBridgeSettingsStatus;
     els.directBridgeSettingsRefreshButton.title = "Refresh the renderer-safe direct bridge status surface.";
@@ -3039,11 +3079,15 @@ function renderDirectBridgeSettingsStatus() {
   renderDirectDiagnosticsRows(els.directBridgeSettingsAgentClassList, directBridgeSettingsRows("agentClasses"));
   renderDirectDiagnosticsRows(els.directBridgeSettingsContinuityList, directBridgeSettingsRows("continuity"));
   renderDirectDiagnosticsRows(els.directBridgeSettingsAgentUsageList, directBridgeSettingsRows("agentUsage"));
+  renderDirectDiagnosticsRows(els.directBridgeSettingsManualSmokeList, directBridgeSettingsRows("manualSmokeGate"), "Manual smoke gate is not exposed by the current projection.");
   if (els.directBridgeSettingsEvidence) {
     if (state.directBridgeSettingsError) {
       els.directBridgeSettingsEvidence.textContent = `Bridge settings status unavailable: ${state.directBridgeSettingsError}`;
     } else if (blockedAuthority.length) {
       els.directBridgeSettingsEvidence.textContent = `WARNING: unexpected authority exposed (${blockedAuthority.join(", ")}).`;
+    } else if (projectionOk && manualSmoke.available) {
+      const blockerText = manualSmoke.blockerCodes.length ? ` · blockers: ${manualSmoke.blockerCodes.slice(0, 5).join(", ")}${manualSmoke.blockerCodes.length > 5 ? "…" : ""}` : "";
+      els.directBridgeSettingsEvidence.textContent = `Manual smoke gate is ${manualSmoke.gateState} · blocked ${manualSmoke.blocked} · required blockers ${manualSmoke.requiredBlocked} · warnings ${manualSmoke.warnings} · not checked ${manualSmoke.notChecked}${blockerText}. Display-only: no provider, app-server, module, workspace, approval, recursive worker, or promotion transition is exposed.`;
     } else if (projectionOk) {
       els.directBridgeSettingsEvidence.textContent = "Display-only surface · no routing, module execution, memory edit/reset, provider compact, provider transport, or workspace mutation is exposed.";
     } else {

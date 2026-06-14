@@ -2081,7 +2081,7 @@ Standing Wave 7 constraints:
 
 ### PR 39: Manual Smoke Gate Settings/Control Surface V0
 
-Status: planned.
+Status: implemented in PR 39.
 
 Purpose:
 
@@ -2107,6 +2107,24 @@ Promotion criterion:
 The operator can see whether the direct branch is smoke-ready from inside the
 app, without reading raw ledgers or running headless scripts.
 ```
+
+Implemented slice:
+
+- Added a dedicated `Manual smoke gate` panel to the Project tab direct bridge
+  settings/control surface.
+- Rendered the existing `rows.manualSmokeGate` projection from
+  `direct_settings_surface_projection@1`.
+- Updated the bridge settings badge and evidence text to summarize smoke state,
+  required blockers, warnings, not-checked rows, blocker codes, and authority
+  posture.
+- Added stale/missing projection fallback copy when the smoke gate is not
+  exposed.
+- Added static renderer/projection regression coverage proving the panel exists,
+  the renderer binds it, rows are rendered, and the display-only authority
+  boundary remains visible.
+- Kept provider calls, app-server mutation, runtime mutation, WorkThread
+  mutation, module execution, workspace mutation, auto-approval, recursive
+  worker execution, and matrix promotion disabled.
 
 ### PR 40: Electron Smoke Runner And Readiness Proof Pack
 

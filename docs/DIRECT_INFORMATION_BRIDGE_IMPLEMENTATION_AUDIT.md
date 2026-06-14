@@ -488,8 +488,11 @@ Implemented in the PR 6 slice:
 - `src/main/direct/ui/settings-surface.js` builds `direct_settings_surface_projection@1`.
 - `direct-settings:bridge-status` exposes a renderer-safe, display-only IPC projection.
 - The Project tab renders runtime/profile, registry, WorkThread, governance/broker,
-  skills/hooks/apps, and continuity status rows.
+  skills/hooks/apps, continuity, direct usage, and manual smoke gate status rows.
 - `scripts/direct-settings-bridge-status-regression.mjs` asserts authority flags remain false.
+- `scripts/direct-manual-smoke-gate-surface-regression.mjs` asserts the Electron
+  settings/control markup and renderer wiring expose the smoke gate rows as
+  display-only evidence.
 
 Explicitly still out of scope:
 
