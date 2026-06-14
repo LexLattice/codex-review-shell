@@ -116,6 +116,24 @@ assert(runtimeWitnessRow.warningCodes.includes("quota_unknown"));
 assert(runtimeWitnessRow.warningCodes.includes("drift_unknown"));
 assert(runtimeWitnessRow.evidenceRefs.some((ref) => ref.kind === "runtime_witness"));
 
+const manualSmokeWithRawProjectionAlsoPresent = buildDirectManualSmokeGate({
+  projectId,
+  runtimeWitnessProjection: witness,
+  settingsProjection: {
+    schema: settingsProjection.schema,
+    projectId,
+    sections: {
+      runtime: { currentPath: "direct-implementation" },
+      workThreadControl: { selectedWorkThreadId: "work_thread_witness" },
+      runtimeWitness: settingsProjection.sections.runtimeWitness,
+    },
+  },
+});
+const summarizedRuntimeWitnessRow = manualSmokeWithRawProjectionAlsoPresent.rows.find((row) => row.checkKind === "runtime_witnesses");
+assert(summarizedRuntimeWitnessRow);
+assert(summarizedRuntimeWitnessRow.warningCodes.includes("quota_unknown"));
+assert(summarizedRuntimeWitnessRow.warningCodes.includes("drift_unknown"));
+
 const missingWitnessGate = buildDirectManualSmokeGate({
   projectId,
   settingsProjection: {
@@ -127,6 +145,10 @@ const missingWitnessGate = buildDirectManualSmokeGate({
   },
 });
 assert(missingWitnessGate.blockerCodes.includes("runtime_witness_projection_not_visible"));
+const missingRuntimeWitnessRow = missingWitnessGate.rows.find((row) => row.checkKind === "runtime_witnesses");
+assert(missingRuntimeWitnessRow);
+assert.equal(missingRuntimeWitnessRow.state, "blocked");
+assert.deepEqual(missingRuntimeWitnessRow.warningCodes, []);
 
 console.log(JSON.stringify({
   ok: true,
