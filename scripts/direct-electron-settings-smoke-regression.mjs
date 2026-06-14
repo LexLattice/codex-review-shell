@@ -206,15 +206,20 @@ async function launchApp(tempRoot) {
 async function closeApp(app) {
   if (!app) return;
   let timedOut = false;
+  let timeoutId = null;
   try {
     await Promise.race([
       app.close(),
-      new Promise((resolve) => setTimeout(() => {
-        timedOut = true;
-        resolve();
-      }, 5000)),
+      new Promise((resolve) => {
+        timeoutId = setTimeout(() => {
+          timedOut = true;
+          resolve();
+        }, 5000);
+      }),
     ]);
-  } catch {}
+  } catch {} finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
   if (timedOut) {
     try {
       app.process()?.kill?.("SIGTERM");
@@ -238,6 +243,73 @@ function cleanupFixtureWorkspaceAgents() {
   } catch {}
 }
 
+function processSnapshot() {
+  if (process.platform === "win32") {
+    return {
+      available: false,
+      reason: "process_snapshot_unavailable_on_win32",
+      appServerPids: [],
+      fixtureAgentPids: [],
+    };
+  }
+  try {
+    const result = spawnSync("ps", ["-eo", "pid=,args="], {
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+    });
+    const appServerPids = [];
+    const fixtureAgentPids = [];
+    for (const line of String(result.stdout || "").split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const match = trimmed.match(/^(\d+)\s+(.+)$/);
+      if (!match) continue;
+      const pid = Number(match[1]);
+      const command = match[2] || "";
+      if (!Number.isFinite(pid)) continue;
+      if (/\bcodex\s+app-server\b/.test(command)) appServerPids.push(pid);
+      if (new RegExp(`src/backend/wsl-agent\\.js .*--project-id ${PROJECT_ID}`).test(command)) fixtureAgentPids.push(pid);
+    }
+    return {
+      available: true,
+      appServerPids: appServerPids.sort((a, b) => a - b),
+      fixtureAgentPids: fixtureAgentPids.sort((a, b) => a - b),
+    };
+  } catch (error) {
+    return {
+      available: false,
+      reason: String(error?.message || error).slice(0, 160),
+      appServerPids: [],
+      fixtureAgentPids: [],
+    };
+  }
+}
+
+function newProcessCount(before = {}, after = {}, field) {
+  const beforeSet = new Set(Array.isArray(before[field]) ? before[field] : []);
+  return (Array.isArray(after[field]) ? after[field] : []).filter((pid) => !beforeSet.has(pid)).length;
+}
+
+function buildSentinelCounters({ beforeProcesses, afterProcesses, projectionSummary }) {
+  const manualSmoke = projectionSummary?.manualSmoke || {};
+  const processObservationsAvailable = Boolean(beforeProcesses?.available && afterProcesses?.available);
+  return {
+    appServerSpawnCalls: processObservationsAvailable ? newProcessCount(beforeProcesses, afterProcesses, "appServerPids") : 0,
+    appServerReplacementCalls: processObservationsAvailable ? newProcessCount(beforeProcesses, afterProcesses, "appServerPids") : 0,
+    unexpectedAuthorityExposed: manualSmoke.authorityUnexpected ? 1 : 0,
+  };
+}
+
+function assertSentinelCountersClear(cases, sentinelCounters, processObservations) {
+  const unexpected = Object.entries(sentinelCounters)
+    .filter(([key, value]) => !key.endsWith("CallsExpected") && Number(value || 0) !== 0)
+    .map(([key, value]) => ({ key, value }));
+  assertCase(cases, "electron_sentinel_counters_observed_clear", unexpected.length === 0, {
+    unexpected,
+    processObservations,
+  });
+}
+
 function cleanupTempRoot(tempRoot) {
   try {
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -245,8 +317,8 @@ function cleanupTempRoot(tempRoot) {
 }
 
 function pathLeakVariants(value) {
-  const text = String(value || "");
-  if (!text) return [];
+  const text = String(value || "").trim();
+  if (!text || text === "/" || text === "\\") return [];
   return [text, text.replace(/\\/g, "\\\\"), text.replace(/\\/g, "/")].filter(Boolean);
 }
 
@@ -272,19 +344,19 @@ function rawExposureScan(report) {
   };
 }
 
-async function visibleText(window, selector) {
-  return window.$eval(selector, (element) => element.textContent || "");
+async function visibleText(page, selector) {
+  return page.$eval(selector, (element) => element.textContent || "");
 }
 
-async function readDirectSettingsProjection(window) {
-  return window.evaluate(async (projectId) => window.workspaceShell.getDirectBridgeSettingsStatus(projectId), PROJECT_ID);
+async function readDirectSettingsProjection(page) {
+  return page.evaluate(async (projectId) => window.workspaceShell.getDirectBridgeSettingsStatus(projectId), PROJECT_ID);
 }
 
-async function refreshProjectTab(window) {
-  await window.click("#projectTabButton");
-  await window.waitForSelector("#projectTabPanel:not([hidden])", { timeout: 10_000 });
-  await window.click("#directBridgeSettingsRefreshButton");
-  await window.waitForFunction(() => {
+async function refreshProjectTab(page) {
+  await page.click("#projectTabButton");
+  await page.waitForSelector("#projectTabPanel:not([hidden])", { timeout: 10_000 });
+  await page.click("#directBridgeSettingsRefreshButton");
+  await page.waitForFunction(() => {
     const badge = document.querySelector("#directBridgeSettingsBadge");
     const manualRows = document.querySelectorAll("#directBridgeSettingsManualSmokeList .direct-diagnostics-row");
     return badge && !/loading/i.test(badge.textContent || "") && manualRows.length > 0;
@@ -336,22 +408,39 @@ async function main() {
   let report = null;
   try {
     seedConfig(tempRoot);
+    const beforeProcesses = processSnapshot();
     const launched = await launchApp(tempRoot);
     app = launched.app;
-    const window = launched.window;
-    await refreshProjectTab(window);
+    const page = launched.window;
+    await refreshProjectTab(page);
 
-    const projection = await readDirectSettingsProjection(window);
+    const projection = await readDirectSettingsProjection(page);
     const projectionSummary = safeProjectionSummary(projection);
-    const badgeText = await visibleText(window, "#directBridgeSettingsBadge");
-    const evidenceText = await visibleText(window, "#directBridgeSettingsEvidence");
-    const manualSmokeText = await visibleText(window, "#directBridgeSettingsManualSmokeList");
-    const runtimeText = await visibleText(window, "#directBridgeSettingsRuntimeList");
-    const workThreadText = await visibleText(window, "#directBridgeSettingsWorkThreadList");
-    const moduleText = await visibleText(window, "#directBridgeSettingsModulesList");
-    const continuityText = await visibleText(window, "#directBridgeSettingsContinuityList");
+    const afterProcesses = processSnapshot();
+    const processObservations = {
+      available: Boolean(beforeProcesses.available && afterProcesses.available),
+      before: {
+        appServerProcessCount: beforeProcesses.appServerPids.length,
+        fixtureWorkspaceAgentProcessCount: beforeProcesses.fixtureAgentPids.length,
+      },
+      after: {
+        appServerProcessCount: afterProcesses.appServerPids.length,
+        fixtureWorkspaceAgentProcessCount: afterProcesses.fixtureAgentPids.length,
+      },
+      observedNewAppServerProcesses: newProcessCount(beforeProcesses, afterProcesses, "appServerPids"),
+      observedNewFixtureWorkspaceAgents: newProcessCount(beforeProcesses, afterProcesses, "fixtureAgentPids"),
+      unavailableReason: beforeProcesses.reason || afterProcesses.reason || "",
+    };
+    const sentinelCounters = buildSentinelCounters({ beforeProcesses, afterProcesses, projectionSummary });
+    const badgeText = await visibleText(page, "#directBridgeSettingsBadge");
+    const evidenceText = await visibleText(page, "#directBridgeSettingsEvidence");
+    const manualSmokeText = await visibleText(page, "#directBridgeSettingsManualSmokeList");
+    const runtimeText = await visibleText(page, "#directBridgeSettingsRuntimeList");
+    const workThreadText = await visibleText(page, "#directBridgeSettingsWorkThreadList");
+    const moduleText = await visibleText(page, "#directBridgeSettingsModulesList");
+    const continuityText = await visibleText(page, "#directBridgeSettingsContinuityList");
 
-    assertCase(cases, "electron_project_tab_visible", await window.isVisible("#projectTabPanel"));
+    assertCase(cases, "electron_project_tab_visible", await page.isVisible("#projectTabPanel"));
     assertCase(cases, "electron_settings_projection_schema", projectionSummary.schema === "direct_settings_surface_projection@1", projectionSummary);
     assertCase(cases, "electron_manual_smoke_rows_visible", /Gate|Rows|Authority/.test(manualSmokeText) && projectionSummary.manualSmoke.rowCount > 0, {
       manualSmokeText,
@@ -364,6 +453,7 @@ async function main() {
     assertCase(cases, "electron_module_rows_visible", /Execution|Context|Evidence|Hooks/.test(moduleText), { moduleText });
     assertCase(cases, "electron_continuity_rows_visible", /Memory|Baton|Compact|Transport/.test(continuityText), { continuityText });
     assertCase(cases, "electron_no_manual_smoke_authority", projectionSummary.manualSmoke.authorityUnexpected === false, projectionSummary.manualSmoke);
+    assertSentinelCountersClear(cases, sentinelCounters, processObservations);
 
     const electronProjection = {
       available: true,
@@ -402,19 +492,12 @@ async function main() {
         gateDigest: gateWithElectronEvidence.gateDigest,
         electronProjectionRowState: gateWithElectronEvidence.rows.find((row) => row.checkKind === "electron_projection")?.state || "",
       },
-      sentinelCounters: {
-        providerTransportCalls: 0,
-        liveProviderCalls: 0,
-        appServerSpawnCalls: 0,
-        appServerReplacementCalls: 0,
-        runtimeMutationCalls: 0,
-        workThreadMutationCalls: 0,
-        moduleExecutionCalls: 0,
-        workspaceMutationCalls: 0,
-        autoApprovalCalls: 0,
-        recursiveWorkerCalls: 0,
-        matrixPromotionCalls: 0,
+      processObservations,
+      authorityProjection: {
+        source: "direct_settings_surface_projection",
+        manualSmokeAuthorityUnexpected: projectionSummary.manualSmoke.authorityUnexpected,
       },
+      sentinelCounters,
       rawExposure: {
         passed: true,
         blockerCodes: [],
@@ -450,17 +533,9 @@ async function main() {
         details: error?.details || {},
       },
       sentinelCounters: {
-        providerTransportCalls: 0,
-        liveProviderCalls: 0,
         appServerSpawnCalls: 0,
         appServerReplacementCalls: 0,
-        runtimeMutationCalls: 0,
-        workThreadMutationCalls: 0,
-        moduleExecutionCalls: 0,
-        workspaceMutationCalls: 0,
-        autoApprovalCalls: 0,
-        recursiveWorkerCalls: 0,
-        matrixPromotionCalls: 0,
+        unexpectedAuthorityExposed: 0,
       },
     };
     report.rawExposure = rawExposureScan(report);

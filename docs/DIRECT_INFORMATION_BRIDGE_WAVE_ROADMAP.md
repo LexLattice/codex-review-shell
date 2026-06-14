@@ -2163,8 +2163,8 @@ Implemented slice:
   verifies visible runtime, WorkThread, module, continuity, and manual-smoke
   rows.
 - Emits `direct_electron_settings_smoke_report@1` with a sanitized projection
-  summary, sentinel counters, raw-exposure scan, and no raw workspace/home path
-  report fields.
+  summary, measured process/projection sentinels, raw-exposure scan, and no raw
+  workspace/home path report fields.
 - Feeds an `electron_projection` evidence row into
   `direct_manual_smoke_gate@1` and verifies the gate remains display-only.
 - Added `direct:electron-settings-smoke` regression coverage.
