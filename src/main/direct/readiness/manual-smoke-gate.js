@@ -148,7 +148,12 @@ function buildRows(input = {}) {
   const recovery = section(input.recoveryStatus || input.implementationLaneUiStatus?.recovery || input.recoveryReport);
   const subAgents = section(input.subAgentInspect || input.subAgentProjection || input.subAgentContainedProjection);
   const electron = section(input.electronProjectionStatus || {});
-  const appServerParity = section(input.appServerFallbackParityReport || input.appServerFallbackParity || input.runtimeStatus?.appServerFallbackParity);
+  const appServerParity = section(
+    input.appServerFallbackParityReport ||
+      input.appServerFallbackParity ||
+      input.runtimeStatus?.appServerFallbackParity ||
+      settingSection(settings, "appServerFallbackParity"),
+  );
   const runtimePath = normalizeString(runtime.currentPath || runtime.runtimePath || input.runtimeStatus?.selection?.runtimePath || input.runtimeStatus?.currentRuntimePath, "");
   const laneAvailable = Boolean(runtimePath || input.runtimeStatus?.currentCodexLane || runtime.lane);
   const appServerAvailable = appServerParity.appServerFallback?.available === true ||

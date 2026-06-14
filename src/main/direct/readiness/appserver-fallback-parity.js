@@ -41,6 +41,7 @@ function digestFor(domain, value) {
 
 function nowIso(input) {
   if (input instanceof Date) return input.toISOString();
+  if (typeof input === "number" && Number.isFinite(input)) return new Date(input).toISOString();
   return normalizeString(input, "") || new Date().toISOString();
 }
 
@@ -60,6 +61,19 @@ function evidenceRef(kind, refId, state = "present", label = "") {
   };
 }
 
+function normalizedErrorPosture(value) {
+  if (!value) return "";
+  if (typeof value === "string") return value;
+  if (value instanceof Error) return normalizeString(value.code, "") || normalizeString(value.name, "error");
+  if (isPlainObject(value)) {
+    return normalizeString(value.code, "") ||
+      normalizeString(value.name, "") ||
+      normalizeString(value.message, "") ||
+      "structured_error";
+  }
+  return "";
+}
+
 function fallbackSnapshot(runtimeStatus = {}, input = {}) {
   const explicit = isPlainObject(input.appServerFallback)
     ? input.appServerFallback
@@ -73,11 +87,16 @@ function fallbackSnapshot(runtimeStatus = {}, input = {}) {
       diagnostics.legacyAppServerStatus,
     diagnostics.legacyAppServerAvailable === true ? "available" : "unknown",
   );
-  const available = explicit.available === true ||
+  const readyStatuses = new Set(["ready", "available", "running", "started"]);
+  const nonReadyStatuses = new Set(["starting", "exited", "failed", "stopped", "stopping", "closed", "disconnected", "unavailable"]);
+  const hasReadyStatus = readyStatuses.has(status);
+  const hasNonReadyStatus = nonReadyStatuses.has(status);
+  const available = !hasNonReadyStatus && (
     explicit.ready === true ||
-    Boolean(explicit.key) ||
-    diagnostics.legacyAppServerAvailable === true ||
-    ["ready", "available", "running", "started"].includes(status);
+    hasReadyStatus ||
+    (explicit.available === true && status === "unknown") ||
+    (diagnostics.legacyAppServerAvailable === true && status === "unknown")
+  );
   return {
     available,
     status: available ? status : status === "unknown" ? "unavailable" : status,
@@ -86,7 +105,7 @@ function fallbackSnapshot(runtimeStatus = {}, input = {}) {
     readyUrlAvailable: Boolean(explicit.readyUrl || explicit.wsUrl),
     capabilityProfileAvailable: isPlainObject(explicit.capabilities),
     startupPosture: normalizeString(input.startupPosture || explicit.startupPosture, available ? "observed_available" : "not_observed"),
-    failurePosture: normalizeString(input.failurePosture || explicit.failurePosture || explicit.error, available ? "none" : "unavailable"),
+    failurePosture: normalizeString(input.failurePosture || explicit.failurePosture || normalizedErrorPosture(explicit.error), available ? "none" : "unavailable"),
     reloadPosture: normalizeString(input.reloadPosture || explicit.reloadPosture, "status_only"),
     reconnectPosture: normalizeString(input.reconnectPosture || explicit.reconnectPosture, "status_only"),
   };
@@ -217,6 +236,10 @@ function collectStrings(value, output = [], seen = new WeakSet()) {
   if (value && typeof value === "object") {
     if (seen.has(value)) return output;
     seen.add(value);
+    if (value instanceof Error) {
+      collectStrings(value.message, output, seen);
+      collectStrings(value.stack, output, seen);
+    }
     for (const item of Object.values(value)) collectStrings(item, output, seen);
   }
   return output;
@@ -258,14 +281,24 @@ function assertAppServerFallbackParityReportSafe(report = {}) {
     "recursiveWorkerAllowed",
     "matrixPromotionAllowed",
   ];
+  const forbiddenEffects = [
+    "changesRuntimeSelection",
+    "changesDefaults",
+    "changesMatrixRows",
+    "startsAppServer",
+    "replacesAppServer",
+    "reroutesDirectFailure",
+  ];
   if (authority.displayOnly !== true || authority.rendererSafe !== true) {
     throw new Error("direct_appserver_fallback_parity_not_display_only");
   }
   for (const flag of forbiddenAuthority) {
     if (authority[flag] !== false) throw new Error(`direct_appserver_fallback_parity_authority_leak:${flag}`);
   }
-  for (const [flag, value] of Object.entries(reportEffects)) {
-    if (value !== false) throw new Error(`direct_appserver_fallback_parity_effect_leak:${flag}`);
+  for (const flag of forbiddenEffects) {
+    if (reportEffects[flag] !== false) {
+      throw new Error(`direct_appserver_fallback_parity_effect_leak:${flag}`);
+    }
   }
   if (report.rendererSafe !== true || report.rawProviderPayloadIncluded !== false || report.rawLocalPathIncluded !== false || report.rawToolOutputIncluded !== false) {
     throw new Error("direct_appserver_fallback_parity_not_renderer_safe");

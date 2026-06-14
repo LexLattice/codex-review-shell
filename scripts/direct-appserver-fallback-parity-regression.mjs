@@ -60,6 +60,34 @@ assert.equal(visibleFallback.authority.providerTransportAllowed, false);
 assert.equal(visibleFallback.reportEffects.changesRuntimeSelection, false);
 assertAppServerFallbackParityReportSafe(visibleFallback);
 
+const numericGeneratedAt = buildAppServerFallbackParityReport({
+  projectId,
+  generatedAt: Date.UTC(2026, 5, 14, 1, 2, 3),
+  runtimeStatus: { projectId, diagnostics: { legacyAppServerAvailable: true, legacyAppServerStatus: "ready" } },
+  legacySession: { status: "ready" },
+});
+assert.equal(numericGeneratedAt.generatedAt, "2026-06-14T01:02:03.000Z");
+
+const startingFallback = buildAppServerFallbackParityReport({
+  projectId,
+  generatedAt,
+  runtimeStatus: {
+    projectId,
+    runtimeMode: "direct-experimental",
+    diagnostics: {
+      legacyAppServerAvailable: true,
+      legacyAppServerStatus: "starting",
+    },
+  },
+  legacySession: {
+    key: "stale_appserver_fixture_key",
+    status: "starting",
+  },
+});
+assert.equal(startingFallback.appServerFallback.available, false);
+assert.equal(startingFallback.parityState, "blocked");
+assert(startingFallback.blockerCodes.includes("app_server_fallback_not_visible"));
+
 const missingFallback = buildAppServerFallbackParityReport({
   projectId,
   generatedAt,
@@ -100,6 +128,26 @@ assert(staleReroute.blockerCodes.includes("direct_failure_silent_reroute_detecte
 assert(staleReroute.blockerCodes.includes("fallback_hidden_by_direct_failure"));
 assert(staleReroute.blockerCodes.includes("app_server_fallback_parity_stale"));
 assertAppServerFallbackParityReportSafe(staleReroute);
+
+const structuredFailure = buildAppServerFallbackParityReport({
+  projectId,
+  generatedAt,
+  runtimeStatus: { projectId, diagnostics: { legacyAppServerAvailable: true, legacyAppServerStatus: "failed" } },
+  legacySession: {
+    status: "failed",
+    error: Object.assign(new Error("private /home/rose/work path should not be exported"), { code: "EAPPFAIL" }),
+  },
+});
+assert.equal(structuredFailure.appServerFallback.failurePosture, "EAPPFAIL");
+assertAppServerFallbackParityReportSafe(structuredFailure);
+
+assert.throws(
+  () => assertAppServerFallbackParityReportSafe({
+    ...visibleFallback,
+    reportEffects: {},
+  }),
+  /direct_appserver_fallback_parity_effect_leak:changesRuntimeSelection/,
+);
 
 const manualSmoke = buildDirectManualSmokeGate({
   projectId,
@@ -154,6 +202,23 @@ assert(fallbackRow.warningCodes.includes("direct_path_blocked_fallback_still_vis
 assert(fallbackRow.evidenceRefs.some((ref) => ref.kind === "appserver_fallback_parity" && ref.digest === visibleFallback.reportDigest));
 assert.equal(manualSmoke.appServerFallbackParity.reportDigest, visibleFallback.reportDigest);
 assert.equal(manualSmoke.authority.appServerReplacementAllowed, false);
+
+const manualSmokeFromSettings = buildDirectManualSmokeGate({
+  projectId,
+  generatedAt,
+  runtimeStatus: {
+    currentRuntimePath: "direct-implementation",
+  },
+  settingsProjection: {
+    sections: {
+      runtime: { currentPath: "direct-implementation" },
+      appServerFallbackParity: visibleFallback,
+    },
+  },
+});
+const settingsFallbackRow = manualSmokeFromSettings.rows.find((row) => row.checkKind === "app_server_fallback");
+assert.notEqual(settingsFallbackRow.state, "blocked");
+assert(settingsFallbackRow.evidenceRefs.some((ref) => ref.kind === "appserver_fallback_parity" && ref.digest === visibleFallback.reportDigest));
 
 const settingsProjection = buildDirectSettingsSurfaceProjection({
   projectId,
