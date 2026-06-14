@@ -22,6 +22,7 @@ assert(app.includes("directBridgeSettingsManualSmokeList: document.getElementByI
 assert(app.includes('directBridgeSettingsRows("manualSmokeGate")'), "renderer must render manualSmokeGate rows");
 assert(app.includes("function directBridgeManualSmokeSummary"), "renderer must summarize manual smoke status");
 assert(app.includes("Manual smoke gate is not exposed by the current projection."), "renderer must fail visible when smoke gate is absent");
+assert(app.includes('manualSmoke.blockerCodes.length > 5 ? "…" : ""'), "renderer must mark truncated blocker-code lists");
 assert(app.includes("Display-only: no provider, app-server, module, workspace, approval, recursive worker, or promotion transition is exposed."), "renderer copy must preserve display-only authority boundary");
 
 const passingGate = buildDirectManualSmokeGate({

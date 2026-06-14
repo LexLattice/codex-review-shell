@@ -3086,7 +3086,7 @@ function renderDirectBridgeSettingsStatus() {
     } else if (blockedAuthority.length) {
       els.directBridgeSettingsEvidence.textContent = `WARNING: unexpected authority exposed (${blockedAuthority.join(", ")}).`;
     } else if (projectionOk && manualSmoke.available) {
-      const blockerText = manualSmoke.blockerCodes.length ? ` · blockers: ${manualSmoke.blockerCodes.slice(0, 5).join(", ")}` : "";
+      const blockerText = manualSmoke.blockerCodes.length ? ` · blockers: ${manualSmoke.blockerCodes.slice(0, 5).join(", ")}${manualSmoke.blockerCodes.length > 5 ? "…" : ""}` : "";
       els.directBridgeSettingsEvidence.textContent = `Manual smoke gate is ${manualSmoke.gateState} · blocked ${manualSmoke.blocked} · required blockers ${manualSmoke.requiredBlocked} · warnings ${manualSmoke.warnings} · not checked ${manualSmoke.notChecked}${blockerText}. Display-only: no provider, app-server, module, workspace, approval, recursive worker, or promotion transition is exposed.`;
     } else if (projectionOk) {
       els.directBridgeSettingsEvidence.textContent = "Display-only surface · no routing, module execution, memory edit/reset, provider compact, provider transport, or workspace mutation is exposed.";
