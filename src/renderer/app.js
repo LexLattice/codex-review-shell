@@ -8522,7 +8522,7 @@ function bindEvents() {
   els.directAuthLoginButton.addEventListener("click", beginDirectAuthLogin);
   els.directAuthLogoutButton.addEventListener("click", logoutDirectAuth);
   els.directRuntimePathSelect?.addEventListener("change", renderDirectRuntimeStatus);
-  els.directRuntimePathApplyButton?.addEventListener("click", setDirectRuntimePathFromControl);
+  els.directRuntimePathApplyButton?.addEventListener("click", () => setDirectRuntimePathFromControl(els.directRuntimePathSelect));
   els.codexRuntimeQuickSelect?.addEventListener("change", renderDirectRuntimeStatus);
   els.codexRuntimeQuickApplyButton?.addEventListener("click", () => setDirectRuntimePathFromControl(els.codexRuntimeQuickSelect));
   els.codexRuntimeSettingsButton?.addEventListener("click", () => {
