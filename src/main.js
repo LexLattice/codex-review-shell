@@ -2531,6 +2531,12 @@ function buildDirectAgentUsageStatusForProject(projectId) {
       projectId: safeProjectId,
       sessionTurns: sessions,
     });
+    try {
+      ensureDirectThreadStore().recordDirectRuntimeAnalyticsFacts({
+        projectId: safeProjectId,
+        sessionTurns: sessions,
+      });
+    } catch {}
     return buildDirectAgentUsageSummaryProjection(ledger);
   } catch (error) {
     return {
@@ -3052,6 +3058,14 @@ function buildDirectCodexSurfaceProjectionForProject(project = {}, input = {}) {
     legacySession: currentLegacyAppServerSnapshot(),
   });
   const directProviderMetadata = input.directProviderMetadata || directProviderMetadataStatusForProject(project);
+  if (directProviderMetadata?.profile) {
+    try {
+      ensureDirectThreadStore().recordDirectRuntimeAnalyticsFacts({
+        projectId,
+        providerMetadataProfile: directProviderMetadata.profile,
+      });
+    } catch {}
+  }
   const generatedAt = normalizeString(input.generatedAt, nowIso());
   const runtimeWitnessProjection = input.runtimeWitnessProjection || buildDirectRuntimeWitnessProjectionForProject({
     project,
