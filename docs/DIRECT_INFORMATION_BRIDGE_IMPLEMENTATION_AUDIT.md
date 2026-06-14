@@ -43,7 +43,7 @@ capability. "Inherited" is not a defect when it is explicit and law-compatible.
 
 ## Current Executable Audit Snapshot
 
-Last reviewed after Wave 7 / PR 40 on `2026-06-14`.
+Last reviewed after Wave 7 / PR 41 on `2026-06-14`.
 
 ```text
 registry rows: 38
@@ -497,6 +497,9 @@ Implemented in the PR 6 slice:
   Electron shell against a fixture project, opens the Project tab, verifies the
   runtime/WorkThread/module/continuity/manual-smoke row groups, and feeds a
   sanitized `electron_projection` result into `direct_manual_smoke_gate@1`.
+- PR 41 adds a compact Codex-plane runtime selector/status witness and moves the
+  broad Direct implementation-lane and Direct diagnostics cards into the Project
+  settings/control surface.
 
 Explicitly still out of scope:
 

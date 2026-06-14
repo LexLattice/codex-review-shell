@@ -113,6 +113,41 @@ dd {
   letter-spacing: -0.01em;
 }
 
+.codex-runtime-quick {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+  max-width: 64%;
+}
+
+.codex-runtime-quick .pill {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 118px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.codex-runtime-quick select {
+  width: clamp(104px, 17vw, 150px);
+  min-width: 0;
+  padding: 5px 20px 5px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(141, 180, 255, 0.2);
+  background: rgba(8, 12, 18, 0.78);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.codex-runtime-quick .small {
+  min-height: 26px;
+  padding: 5px 8px;
+}
+
 .right-plane-controls {
   display: flex;
   align-items: center;
@@ -2551,6 +2586,21 @@ body.dragging {
 
   .surface-bar h2 {
     font-size: 12px;
+  }
+
+  .codex-runtime-quick {
+    max-width: 70%;
+    gap: 5px;
+  }
+
+  .codex-runtime-quick .pill,
+  #codexRuntimeSettingsButton {
+    display: none;
+  }
+
+  .codex-runtime-quick select {
+    width: clamp(96px, 22vw, 132px);
+    font-size: 10px;
   }
 
   .control-plane {

@@ -2174,7 +2174,7 @@ Implemented slice:
 
 ### PR 41: Direct Runtime And Settings Simplification
 
-Status: planned.
+Status: implemented in PR 41.
 
 Purpose:
 
@@ -2198,6 +2198,19 @@ Promotion criterion:
 Direct can be selected, inspected, and backed out of without losing the vanilla
 app-server lane or exposing hidden authority.
 ```
+
+Implemented slice:
+
+- Added a compact Codex-plane runtime path witness and selector for App Server,
+  Direct Text, and Direct Tools.
+- Reused the existing guarded `direct-runtime:set-path` transition; the compact
+  selector grants no separate runtime mutation authority.
+- Moved broad Direct implementation-lane and Direct diagnostics cards out of the
+  normal Overview flow into the Project settings/control surface.
+- Kept Direct auth and small runtime/context witnesses visible while preserving
+  explicit unavailable/degraded labels.
+- Extended `direct:electron-settings-smoke` to prove the compact controls and
+  Project settings surface are both reachable in Electron.
 
 ### PR 42: WorkThread Thread Deck And New-Thread Operator UX
 

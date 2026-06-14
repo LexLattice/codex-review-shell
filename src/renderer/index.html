@@ -18,7 +18,17 @@
             <p class="eyebrow">Left plane</p>
             <h2 id="codexSurfaceTitle">Codex implementation companion</h2>
           </div>
-          <span id="codexStatus" class="status-dot">idle</span>
+          <div class="codex-runtime-quick" aria-label="Codex runtime path">
+            <span id="codexRuntimeQuickStatus" class="pill subtle">runtime unknown</span>
+            <select id="codexRuntimeQuickSelect" aria-label="Codex runtime path">
+              <option value="app-server">App Server</option>
+              <option value="direct-text">Direct Text</option>
+              <option value="direct-implementation">Direct Tools</option>
+            </select>
+            <button class="ghost small" id="codexRuntimeQuickApplyButton" type="button">Apply</button>
+            <button class="ghost small" id="codexRuntimeSettingsButton" type="button" title="Open Project settings">Settings</button>
+            <span id="codexStatus" class="status-dot">idle</span>
+          </div>
         </div>
         <div class="surface-slot" id="codexSlot">
           <div class="slot-placeholder">
@@ -188,42 +198,6 @@
             <p id="directAuthEvidence" class="muted direct-auth-evidence">No raw tokens exposed to renderer.</p>
           </section>
 
-          <section class="control-card direct-implementation-card">
-            <div class="section-heading">
-              <div>
-                <p class="eyebrow">Direct implementation lane</p>
-                <h3>UI readiness projection</h3>
-              </div>
-              <div class="heading-actions">
-                <span id="directImplementationStatusBadge" class="counter">not loaded</span>
-                <button class="ghost small" id="directImplementationRefreshButton" type="button">Refresh</button>
-              </div>
-            </div>
-            <div class="direct-diagnostics-grid">
-              <section class="direct-diagnostics-panel">
-                <h4>Lane state</h4>
-                <div id="directImplementationLaneList" class="direct-diagnostics-list"></div>
-              </section>
-              <section class="direct-diagnostics-panel">
-                <h4>Approval and continuation</h4>
-                <div id="directImplementationApprovalList" class="direct-diagnostics-list"></div>
-              </section>
-              <section class="direct-diagnostics-panel">
-                <h4>Active turn</h4>
-                <div id="directImplementationActiveTurnList" class="direct-diagnostics-list"></div>
-              </section>
-              <section class="direct-diagnostics-panel">
-                <h4>Latest tool result</h4>
-                <div id="directImplementationToolResultList" class="direct-diagnostics-list"></div>
-              </section>
-              <section class="direct-diagnostics-panel span-2">
-                <h4>Operation history</h4>
-                <div id="directImplementationHistoryList" class="direct-diagnostics-list"></div>
-              </section>
-            </div>
-            <p id="directImplementationEvidence" class="muted direct-auth-evidence">Direct implementation-lane status is read-only.</p>
-          </section>
-
           <section class="control-card direct-meta-session-card">
             <div class="section-heading">
               <div>
@@ -238,47 +212,6 @@
             <div class="direct-meta-session-summary" id="directMetaSessionSummary"></div>
             <div class="direct-meta-session-routes" id="directMetaSessionRoutes"></div>
             <p id="directMetaSessionEvidence" class="muted direct-auth-evidence">Status projection is read-only.</p>
-          </section>
-
-          <section class="control-card direct-diagnostics-card">
-            <div class="section-heading">
-              <div>
-                <p class="eyebrow">Direct diagnostics</p>
-                <h3>Status-only workbench</h3>
-              </div>
-              <span id="directDiagnosticsStatusBadge" class="counter">not loaded</span>
-            </div>
-            <div class="direct-diagnostics-grid">
-              <section class="direct-diagnostics-panel">
-                <h4>Context detail</h4>
-                <div id="directDiagnosticsContextGrid" class="direct-diagnostics-list"></div>
-              </section>
-              <section class="direct-diagnostics-panel">
-                <h4>Artifact inspector</h4>
-                <div id="directDiagnosticsArtifactList" class="direct-diagnostics-list"></div>
-              </section>
-              <section class="direct-diagnostics-panel">
-                <h4>Recovery status</h4>
-                <div id="directDiagnosticsRecoveryList" class="direct-diagnostics-list"></div>
-              </section>
-              <section class="direct-diagnostics-panel">
-                <h4>Governance shadow</h4>
-                <div id="directDiagnosticsGovernanceList" class="direct-diagnostics-list"></div>
-              </section>
-              <section class="direct-diagnostics-panel">
-                <h4>Broker packet</h4>
-                <div id="directDiagnosticsBrokerList" class="direct-diagnostics-list"></div>
-              </section>
-              <section class="direct-diagnostics-panel">
-                <h4>Transition graph</h4>
-                <div id="directDiagnosticsTransitionList" class="direct-diagnostics-list"></div>
-              </section>
-              <section class="direct-diagnostics-panel span-2">
-                <h4>Sub-agent observability</h4>
-                <div id="directDiagnosticsSubAgentList" class="direct-diagnostics-list"></div>
-              </section>
-            </div>
-            <p id="directDiagnosticsEvidence" class="muted direct-auth-evidence">Direct diagnostics are renderer-safe status projections only.</p>
           </section>
 
           <section class="control-card codex-request-card">
@@ -424,6 +357,83 @@
             <p id="directBridgeSettingsEvidence" class="muted direct-auth-evidence">
               Direct bridge settings are display-only; no routing, module execution, memory edit, provider compact, or workspace mutation is exposed.
             </p>
+          </section>
+
+          <section class="control-card direct-implementation-card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Direct implementation lane</p>
+                <h3>UI readiness projection</h3>
+              </div>
+              <div class="heading-actions">
+                <span id="directImplementationStatusBadge" class="counter">not loaded</span>
+                <button class="ghost small" id="directImplementationRefreshButton" type="button">Refresh</button>
+              </div>
+            </div>
+            <div class="direct-diagnostics-grid">
+              <section class="direct-diagnostics-panel">
+                <h4>Lane state</h4>
+                <div id="directImplementationLaneList" class="direct-diagnostics-list"></div>
+              </section>
+              <section class="direct-diagnostics-panel">
+                <h4>Approval and continuation</h4>
+                <div id="directImplementationApprovalList" class="direct-diagnostics-list"></div>
+              </section>
+              <section class="direct-diagnostics-panel">
+                <h4>Active turn</h4>
+                <div id="directImplementationActiveTurnList" class="direct-diagnostics-list"></div>
+              </section>
+              <section class="direct-diagnostics-panel">
+                <h4>Latest tool result</h4>
+                <div id="directImplementationToolResultList" class="direct-diagnostics-list"></div>
+              </section>
+              <section class="direct-diagnostics-panel span-2">
+                <h4>Operation history</h4>
+                <div id="directImplementationHistoryList" class="direct-diagnostics-list"></div>
+              </section>
+            </div>
+            <p id="directImplementationEvidence" class="muted direct-auth-evidence">Direct implementation-lane status is read-only.</p>
+          </section>
+
+          <section class="control-card direct-diagnostics-card">
+            <div class="section-heading">
+              <div>
+                <p class="eyebrow">Direct diagnostics</p>
+                <h3>Status-only workbench</h3>
+              </div>
+              <span id="directDiagnosticsStatusBadge" class="counter">not loaded</span>
+            </div>
+            <div class="direct-diagnostics-grid">
+              <section class="direct-diagnostics-panel">
+                <h4>Context detail</h4>
+                <div id="directDiagnosticsContextGrid" class="direct-diagnostics-list"></div>
+              </section>
+              <section class="direct-diagnostics-panel">
+                <h4>Artifact inspector</h4>
+                <div id="directDiagnosticsArtifactList" class="direct-diagnostics-list"></div>
+              </section>
+              <section class="direct-diagnostics-panel">
+                <h4>Recovery status</h4>
+                <div id="directDiagnosticsRecoveryList" class="direct-diagnostics-list"></div>
+              </section>
+              <section class="direct-diagnostics-panel">
+                <h4>Governance shadow</h4>
+                <div id="directDiagnosticsGovernanceList" class="direct-diagnostics-list"></div>
+              </section>
+              <section class="direct-diagnostics-panel">
+                <h4>Broker packet</h4>
+                <div id="directDiagnosticsBrokerList" class="direct-diagnostics-list"></div>
+              </section>
+              <section class="direct-diagnostics-panel">
+                <h4>Transition graph</h4>
+                <div id="directDiagnosticsTransitionList" class="direct-diagnostics-list"></div>
+              </section>
+              <section class="direct-diagnostics-panel span-2">
+                <h4>Sub-agent observability</h4>
+                <div id="directDiagnosticsSubAgentList" class="direct-diagnostics-list"></div>
+              </section>
+            </div>
+            <p id="directDiagnosticsEvidence" class="muted direct-auth-evidence">Direct diagnostics are renderer-safe status projections only.</p>
           </section>
 
           <section class="control-card project-stash-card">
