@@ -2128,7 +2128,7 @@ Implemented slice:
 
 ### PR 40: Electron Smoke Runner And Readiness Proof Pack
 
-Status: planned.
+Status: implemented in PR 40.
 
 Purpose:
 
@@ -2154,6 +2154,23 @@ Promotion criterion:
 Direct readiness has a reproducible app-level projection check, not only unit
 fixtures.
 ```
+
+Implemented slice:
+
+- Added `scripts/direct-electron-settings-smoke-regression.mjs`, a bounded
+  Playwright/Electron smoke runner that opens a fixture project, reaches the
+  Project tab direct settings/control surface, refreshes bridge status, and
+  verifies visible runtime, WorkThread, module, continuity, and manual-smoke
+  rows.
+- Emits `direct_electron_settings_smoke_report@1` with a sanitized projection
+  summary, sentinel counters, raw-exposure scan, and no raw workspace/home path
+  report fields.
+- Feeds an `electron_projection` evidence row into
+  `direct_manual_smoke_gate@1` and verifies the gate remains display-only.
+- Added `direct:electron-settings-smoke` regression coverage.
+- Kept provider transport, live turns, app-server spawn/replacement, runtime
+  mutation, WorkThread mutation, module execution, workspace mutation,
+  auto-approval, recursive worker execution, and matrix promotion disabled.
 
 ### PR 41: Direct Runtime And Settings Simplification
 

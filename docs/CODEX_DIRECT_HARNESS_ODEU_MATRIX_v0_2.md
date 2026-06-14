@@ -142,7 +142,7 @@ Main remaining coverage gaps from the matrix:
 | Context maintenance productization | `D1-D14`, `D22-D23`, `A12`, `J11` | Guarded local execution packets exist; operator context preview, memory materialization UI, provider compaction, and automatic trimming remain gated. |
 | Governance enforcement and semantic fallback | `D15-D21`, `J10` | Narrow preflight enforcement, clarification packets, and target-picker answer artifacts exist; fallback branch law remains future work. |
 | Mature multi-agent choreography | `H1-H10`, `J9` | Worker start, graph alignment, progress projections, and contained inspect/wait packets exist; recursive delegation, model-visible wait tools, no-deadlock synchronization, and transcript promotion law remain future work. |
-| Mainline readiness and broad UI proof | `F1-F10`, `I1-I15`, `J1-J12` | Status surfaces, WorkThread control, context preview, memory/module readiness, and manual smoke gate exist; merge-behind-flag checklist and broad Electron proof remain later work. |
+| Mainline readiness and broad UI proof | `F1-F10`, `I1-I15`, `J1-J12` | Status surfaces, WorkThread control, context preview, memory/module readiness, manual smoke gate, and Electron projection smoke proof exist; merge-behind-flag checklist and broader operator-path proof remain later work. |
 
 The next confidence gap is now Wave 7:
 
@@ -153,10 +153,10 @@ without adding autonomous authority.
 
 Wave 6 has productized the WorkThread control deck, target picker, context
 preview, memory review workbench, module context intake, and manual smoke gate.
-Wave 7 has started by making the manual smoke gate visible in the Electron
-operator surface. The remaining confidence gap is making those surfaces
-repeatably smoke-testable in the actual Electron path before broadening
-authority.
+Wave 7 has made the manual smoke gate visible in the Electron operator surface
+and added a repeatable Electron smoke runner for the direct settings/control
+projection. The remaining confidence gap is simplifying the direct runtime and
+settings operator path before broadening authority.
 
 ## 4. Canonical ODEU Capability Matrix
 
@@ -592,32 +592,32 @@ new live-provider or recursive authority is considered.
 
 ## 9. Immediate Next Spec
 
-The next spec should target Wave 7 PR 40:
+The next spec should target Wave 7 PR 41:
 
 ```text
-Electron smoke runner and readiness proof pack.
+Direct runtime and settings simplification for daily operator use.
 ```
 
 It should not add provider/tool authority. It should implement:
 
-1. a bounded Electron smoke script that opens the shell and reaches the Project
-   tab direct settings/control surface;
-2. checks for visible runtime lane, app-server fallback, WorkThread/context/
-   memory/module/manual-smoke rows;
-3. optional `electron_projection` evidence that can feed
-   `direct_manual_smoke_gate@1`;
-4. stale/project-switch protection in the smoke runner;
-5. sentinel checks proving no provider call, app-server spawn/replacement,
-   runtime mutation, WorkThread mutation, module execution, workspace mutation,
-   auto-approval, recursive worker, or matrix promotion occurs.
+1. a compact visible runtime-path selector for app-server versus direct;
+2. a settings/control home for detailed direct diagnostics that keeps the Codex
+   chat lane clear;
+3. persisted operator preference for the default path without silently promoting
+   direct to production authority;
+4. clear unavailable/degraded fallback states when direct cannot be used;
+5. reuse of the PR 40 Electron smoke runner as projection proof.
 
 Current implementation note:
 
 ```text
-PR 39 made the manual smoke row group visible in the Electron direct settings
-panel. The next problem is repeatability: the app-level smoke path should verify
-that direct settings, runtime lane, fallback, and manual smoke surfaces can be
-loaded without relying only on headless fixture scripts.
+PR 40 added `direct:electron-settings-smoke`, which opens the actual Electron
+shell, reaches the Project tab direct settings/control surface, verifies the
+runtime/WorkThread/module/continuity/manual-smoke row groups, and feeds a
+sanitized `electron_projection` row into `direct_manual_smoke_gate@1`.
+
+The next problem is operator ergonomics: the direct/runtime choice and detailed
+diagnostics should be usable without crowding the Codex chat lane.
 ```
 
 It should explicitly not mean:

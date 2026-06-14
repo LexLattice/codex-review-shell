@@ -43,7 +43,7 @@ capability. "Inherited" is not a defect when it is explicit and law-compatible.
 
 ## Current Executable Audit Snapshot
 
-Last reviewed after Wave 6 / PR 38 on `2026-06-14`.
+Last reviewed after Wave 7 / PR 40 on `2026-06-14`.
 
 ```text
 registry rows: 38
@@ -493,6 +493,10 @@ Implemented in the PR 6 slice:
 - `scripts/direct-manual-smoke-gate-surface-regression.mjs` asserts the Electron
   settings/control markup and renderer wiring expose the smoke gate rows as
   display-only evidence.
+- `scripts/direct-electron-settings-smoke-regression.mjs` launches the actual
+  Electron shell against a fixture project, opens the Project tab, verifies the
+  runtime/WorkThread/module/continuity/manual-smoke row groups, and feeds a
+  sanitized `electron_projection` result into `direct_manual_smoke_gate@1`.
 
 Explicitly still out of scope:
 

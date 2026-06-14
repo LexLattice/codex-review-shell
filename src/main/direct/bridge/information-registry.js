@@ -565,7 +565,7 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     role: "observability_surface",
     implementationState: "partial",
     directPathPosture: "keep_readonly",
-    sourceFiles: ["src/main/direct/readiness/manual-smoke-gate.js", "src/main/direct/ui/settings-surface.js", "scripts/direct-manual-smoke-gate-regression.mjs", "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md"],
+    sourceFiles: ["src/main/direct/readiness/manual-smoke-gate.js", "src/main/direct/ui/settings-surface.js", "scripts/direct-manual-smoke-gate-regression.mjs", "scripts/direct-electron-settings-smoke-regression.mjs", "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md"],
     ontology: ontologyShape(["direct_manual_smoke_gate", "direct_manual_smoke_check_row", "operator_readiness_blocker"], "human_interface", {
       identityFields: ["projectId", "workThreadId", "gateId", "checkId"],
       schema: "direct_manual_smoke_gate@1",
