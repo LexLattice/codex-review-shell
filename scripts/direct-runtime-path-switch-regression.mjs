@@ -190,10 +190,12 @@ const directQuotaSource = codexSurfaceSource.slice(
 );
 assertIncludes(directQuotaSource, "quotaState === \"unknown\"", "direct composer quota avoids unknown/usage mixed compact label");
 const directContextSource = codexSurfaceSource.slice(
-  codexSurfaceSource.indexOf("function directContextUsageProjection"),
+  codexSurfaceSource.indexOf("function directLatestUsageForCurrentThread"),
   codexSurfaceSource.indexOf("const usage = state.tokenUsage"),
 );
 assertIncludes(directContextSource, "latestUsage.inputTokensKnown", "direct context pressure mirrors app-server token usage using latest direct input tokens");
+assertIncludes(directContextSource, "directLatestUsageForCurrentThread", "direct context pressure scopes direct usage rows to the displayed thread");
+assertIncludes(directContextSource, "latestUsageByThread", "direct context pressure consumes per-thread usage summaries before falling back");
 assertIncludes(directContextSource, "remainingContextPercent", "direct context pressure uses the same percent calculation as app-server context usage");
 assert.ok(!directContextSource.includes("sourceClasses.join"), "direct context compact label should not expose raw diagnostic source classes.");
 assert.ok(!rendererSource.includes("Direct blocked: ${directTextOnlyBlockedDetail(status)"), "Direct apply should not block before main-process embark can probe.");

@@ -189,6 +189,8 @@ assert.equal(projection.schema, "direct_agent_usage_summary_projection@1");
 assert.equal(projection.totals.totalTokensKnown, 18);
 assert.equal(projection.latestUsage.inputTokensKnown, 11);
 assert.equal(projection.latestUsage.turnId, "turn_primary");
+assert(Array.isArray(projection.latestUsageByThread), "Expected latest usage to be grouped by thread.");
+assert(projection.latestUsageByThread.some((row) => row.threadId === "session_primary" && row.inputTokensKnown === 11), "Expected primary thread latest usage to be exposed.");
 assert.equal(projection.evidencePosture.costComputed, false);
 assert.equal(projection.evidencePosture.billingGrade, false);
 

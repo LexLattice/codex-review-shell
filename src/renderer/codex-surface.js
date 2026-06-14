@@ -1207,6 +1207,21 @@ function directContextWindowFromProjection(projection = directSurfaceProjection(
   return Number(profile?.usage?.context?.modelContextWindow || selected?.contextWindow || selected?.maxContextWindow || 0);
 }
 
+function directLatestUsageForCurrentThread(projection = directSurfaceProjection()) {
+  const currentThreadId = String(state.threadId || "").trim();
+  const byThread = Array.isArray(projection?.agentUsageStatus?.latestUsageByThread)
+    ? projection.agentUsageStatus.latestUsageByThread
+    : [];
+  if (currentThreadId) {
+    const scoped = byThread.find((usage) => String(usage?.threadId || usage?.sessionId || "").trim() === currentThreadId);
+    if (scoped) return scoped;
+    const latest = projection?.agentUsageStatus?.latestUsage || null;
+    const latestThreadId = String(latest?.threadId || latest?.sessionId || "").trim();
+    return latestThreadId && latestThreadId === currentThreadId ? latest : null;
+  }
+  return projection?.agentUsageStatus?.latestUsage || null;
+}
+
 function directContextUsageProjection() {
   const witness = directComposerWitness();
   const projection = directSurfaceProjection();
@@ -1214,7 +1229,7 @@ function directContextUsageProjection() {
   const preview = projection?.contextPreview || {};
   const summary = preview.rendererSafeSummary || {};
   const blockerCount = Number(summary.blockerCount || 0);
-  const latestUsage = projection?.agentUsageStatus?.latestUsage || {};
+  const latestUsage = directLatestUsageForCurrentThread(projection) || {};
   const window = directContextWindowFromProjection(projection);
   const tokens = Number(latestUsage.inputTokensKnown ?? projection?.providerMetadataProfile?.usage?.context?.usedTokens ?? projection?.providerMetadataProfile?.usage?.context?.tokensInWindow ?? 0);
   if (Number.isFinite(window) && window > 0 && Number.isFinite(tokens) && tokens > 0) {
@@ -1232,14 +1247,14 @@ function directContextUsageProjection() {
       percentUsed: usedPercent,
       percentRemaining: remaining,
       tokensInContext: tokens,
-      totalTokens: Number(latestUsage.totalTokensKnown || 0) || null,
+      totalTokens: Number(latestUsage.totalTokensKnown ?? 0) || null,
       modelContextWindow: window,
       observedAt: latestUsage.observedAt || projection?.generatedAt || "",
       tokenUsage: {
         threadId: latestUsage.threadId || "",
         turnId: latestUsage.turnId || "",
         total: {
-          totalTokens: Number(latestUsage.totalTokensKnown || tokens),
+          totalTokens: Number(latestUsage.totalTokensKnown ?? tokens),
           inputTokens: tokens,
           cachedInputTokens: 0,
           outputTokens: 0,
@@ -1262,13 +1277,14 @@ function directContextUsageProjection() {
     };
   }
   const contextLabel = String(witness?.contextLabel || "").trim();
+  const scopedContextLabel = state.threadId ? "" : contextLabel;
   const label = [
-    contextLabel || (window ? `context fill unknown · ${formatCompactTokens(window)} window` : "context preview unknown"),
+    scopedContextLabel || (window ? `context fill unknown · ${formatCompactTokens(window)} window` : "context preview unknown"),
     blockerCount ? `${blockerCount} blocker${blockerCount === 1 ? "" : "s"}` : "",
   ].filter(Boolean).join(" · ");
   return {
     label,
-    compactLabel: window ? "context unknown" : contextLabel || "context unknown",
+    compactLabel: window ? "context unknown" : scopedContextLabel || "context unknown",
     status: blockerCount ? "blocked" : contextState === "diagnostic" ? "not_exposed" : contextState || "unknown",
     modelContextWindow: window || null,
     observedAt: projection?.generatedAt || "",

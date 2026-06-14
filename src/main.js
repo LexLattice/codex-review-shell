@@ -2828,19 +2828,20 @@ function directMetadataQuotaWindows(profile = {}) {
 }
 
 function directMetadataQuotaWindowLabel(window = {}) {
-  if (window.windowKind === "weekly") return "W";
-  if (window.windowKind === "five_hour") return "5h";
-  const duration = Number(window.windowDurationMins || 0);
+  const safeWindow = window ?? {};
+  if (safeWindow.windowKind === "weekly") return "W";
+  if (safeWindow.windowKind === "five_hour") return "5h";
+  const duration = Number(safeWindow.windowDurationMins || 0);
   if (duration === 300) return "5h";
   if (duration === 10080) return "W";
   if (duration > 0 && duration < 60) return `${duration}m`;
   if (duration > 0 && duration % 1440 === 0) return `${duration / 1440}d`;
   if (duration > 0 && duration % 60 === 0) return `${duration / 60}h`;
-  return normalizeString(window.windowKind, "quota");
+  return normalizeString(safeWindow.windowKind, "quota");
 }
 
 function directMetadataAvailablePercent(window = {}) {
-  const used = Number(window.usedPercent);
+  const used = Number(window?.usedPercent);
   if (!Number.isFinite(used)) return null;
   return Math.max(0, Math.min(100, 100 - Math.round(used)));
 }
@@ -2875,9 +2876,9 @@ function directMetadataContextLabel(profile = {}, modelDescriptor = null, agentU
   const contextWindow = Number(profile?.usage?.context?.modelContextWindow || modelDescriptor?.contextWindow || 0);
   const latestUsage = agentUsageStatus?.latestUsage || {};
   const usedTokens = Number(
-    profile?.usage?.context?.usedTokens ||
-      profile?.usage?.context?.tokensInWindow ||
-      latestUsage.inputTokensKnown ||
+    profile?.usage?.context?.usedTokens ??
+      profile?.usage?.context?.tokensInWindow ??
+      latestUsage.inputTokensKnown ??
       0,
   );
   if (Number.isFinite(contextWindow) && contextWindow > 0 && Number.isFinite(usedTokens) && usedTokens > 0) {
@@ -2920,7 +2921,7 @@ function buildDirectRuntimeWitnessProjectionForProject(input = {}) {
   const quotaWindows = metadataProfile ? directMetadataQuotaWindows(metadataProfile) : [];
   const quotaState = quotaWindows.length ? modelState : "unknown";
   const contextLabel = metadataProfile ? directMetadataContextLabel(metadataProfile, selected.descriptor, agentUsageStatus) : "Context unknown";
-  const contextHasFill = Number(agentUsageStatus?.latestUsage?.inputTokensKnown || metadataProfile?.usage?.context?.usedTokens || metadataProfile?.usage?.context?.tokensInWindow || 0) > 0;
+  const contextHasFill = Number(agentUsageStatus?.latestUsage?.inputTokensKnown ?? metadataProfile?.usage?.context?.usedTokens ?? metadataProfile?.usage?.context?.tokensInWindow ?? 0) > 0;
   const contextState = contextHasFill
     ? modelState
     : selected.descriptor?.contextWindow
