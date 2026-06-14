@@ -148,12 +148,22 @@ function buildRows(input = {}) {
   const recovery = section(input.recoveryStatus || input.implementationLaneUiStatus?.recovery || input.recoveryReport);
   const subAgents = section(input.subAgentInspect || input.subAgentProjection || input.subAgentContainedProjection);
   const electron = section(input.electronProjectionStatus || {});
+  const appServerParity = section(
+    input.appServerFallbackParityReport ||
+      input.appServerFallbackParity ||
+      input.runtimeStatus?.appServerFallbackParity ||
+      settingSection(settings, "appServerFallbackParity"),
+  );
   const runtimePath = normalizeString(runtime.currentPath || runtime.runtimePath || input.runtimeStatus?.selection?.runtimePath || input.runtimeStatus?.currentRuntimePath, "");
   const laneAvailable = Boolean(runtimePath || input.runtimeStatus?.currentCodexLane || runtime.lane);
-  const appServerAvailable = input.appServerFallbackAvailable === true ||
+  const appServerAvailable = appServerParity.appServerFallback?.available === true ||
+    appServerParity.parityState === "fallback_visible" ||
+    appServerParity.parityState === "app_server_selected" ||
+    input.appServerFallbackAvailable === true ||
     runtimePath === "app-server" ||
     input.runtimeStatus?.appServerFallbackAvailable === true ||
     input.runtimeStatus?.diagnostics?.legacyAppServerAvailable === true;
+  const appServerParityBlockers = blockerList(appServerParity.blockerCodes);
   const selectedWorkThreadId = normalizeString(workThreadControl.selectedWorkThreadId || input.workThreadId, "");
   const contextPreviewAvailable = contextPreview.available === true || contextPreview.schema === "direct_context_packet_preview@1" || contextPreview.previewState === "ready";
   const implementationFacets = objectOrEmpty(implementation.facets);
@@ -184,8 +194,9 @@ function buildRows(input = {}) {
       checkKind: "app_server_fallback",
       label: "App-server fallback visible",
       available: appServerAvailable,
-      blockerCodes: appServerAvailable ? [] : ["app_server_fallback_not_visible"],
-      evidenceRefs: [{ kind: "runtime_status", digest: runtime.statusDigest || runtime.sourceDigest || "", label: "app-server fallback" }],
+      blockerCodes: appServerParityBlockers.length ? appServerParityBlockers : appServerAvailable ? [] : ["app_server_fallback_not_visible"],
+      warningCodes: appServerParity.directFailurePosture?.blocked ? ["direct_path_blocked_fallback_still_visible"] : [],
+      evidenceRefs: [{ kind: "appserver_fallback_parity", digest: appServerParity.reportDigest || runtime.statusDigest || runtime.sourceDigest || "", label: appServerParity.parityState || "app-server fallback" }],
       operatorAction: "Confirm app-server remains available as fallback.",
     }),
     checkRow({
@@ -333,6 +344,9 @@ function buildDirectManualSmokeGate(input = {}) {
     gateState,
     coverageSource: source.coverageSource === "electron_projection" ? "electron_projection" : "fixture_projection",
     matrixPromotionCandidate: false,
+    appServerFallbackParity: isPlainObject(source.appServerFallbackParityReport || source.appServerFallbackParity || source.runtimeStatus?.appServerFallbackParity)
+      ? source.appServerFallbackParityReport || source.appServerFallbackParity || source.runtimeStatus.appServerFallbackParity
+      : null,
     rows,
     counts,
     blockerCodes,

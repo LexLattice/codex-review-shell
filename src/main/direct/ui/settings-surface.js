@@ -131,6 +131,41 @@ function summarizeRuntime(runtimeStatus = {}) {
   };
 }
 
+function summarizeAppServerFallbackParity(input = {}) {
+  const report = objectOrEmpty(input.appServerFallbackParityReport || input.appServerFallbackParity || input.runtimeStatus?.appServerFallbackParity || input);
+  const fallback = objectOrEmpty(report.appServerFallback);
+  const direct = objectOrEmpty(report.directFailurePosture);
+  const reload = objectOrEmpty(report.reloadReconnectPosture);
+  const startup = objectOrEmpty(report.startupFailurePosture);
+  const authority = objectOrEmpty(report.authority);
+  return {
+    available: normalizeString(report.schema, "") === "direct_appserver_fallback_parity_report@1",
+    schema: normalizeString(report.schema, "not_exposed"),
+    parityState: normalizeString(report.parityState, "unavailable"),
+    selectedLane: normalizeString(report.selectedLane, "unknown"),
+    fallbackAvailable: fallback.available === true,
+    fallbackStatus: normalizeString(fallback.status, "unknown"),
+    startupPosture: normalizeString(startup.startupPosture || fallback.startupPosture, "unknown"),
+    failurePosture: normalizeString(startup.failurePosture || fallback.failurePosture, "unknown"),
+    reloadPosture: normalizeString(reload.reloadPosture || fallback.reloadPosture, "unknown"),
+    reconnectPosture: normalizeString(reload.reconnectPosture || fallback.reconnectPosture, "unknown"),
+    directBlocked: direct.blocked === true,
+    directBlockerCount: arrayOrEmpty(direct.blockerCodes).length,
+    silentRerouteDetected: direct.silentRerouteDetected === true,
+    fallbackHidden: direct.fallbackHidden === true,
+    blockerCodes: arrayOrEmpty(report.blockerCodes).map((item) => normalizeString(item, "")).filter(Boolean),
+    providerTransportAllowed: authority.providerTransportAllowed === true,
+    appServerSpawnAllowed: authority.appServerSpawnAllowed === true,
+    appServerReplacementAllowed: authority.appServerReplacementAllowed === true,
+    appServerMutationAllowed: authority.appServerMutationAllowed === true,
+    runtimeSelectionMutationAllowed: authority.runtimeSelectionMutationAllowed === true,
+    workspaceMutationAllowed: authority.workspaceMutationAllowed === true,
+    recursiveWorkerAllowed: authority.recursiveWorkerAllowed === true,
+    matrixPromotionAllowed: authority.matrixPromotionAllowed === true,
+    reportDigest: normalizeString(report.reportDigest, ""),
+  };
+}
+
 function summarizeWorkThreads(input = {}) {
   const status = objectOrEmpty(input.status || input.workThreadStatus);
   const projection = objectOrEmpty(input.projection || input.workThreadProjection);
@@ -539,6 +574,7 @@ function buildRows(sections) {
   const contextPreview = sections.contextPreview;
   const memoryWorkbench = sections.memoryWorkbench;
   const agentUsage = sections.agentUsage;
+  const appServerFallbackParity = sections.appServerFallbackParity;
   const manualSmokeGate = sections.manualSmokeGate;
   return {
     runtime: [
@@ -703,6 +739,18 @@ function buildRows(sections) {
       statusRow("Routes", agentUsage.routeCount),
       statusRow("Cost", agentUsage.costComputed || agentUsage.billingGrade ? "unexpected" : "not computed", agentUsage.costComputed || agentUsage.billingGrade ? "blocked" : "ok"),
     ],
+    appServerFallbackParity: [
+      statusRow("Surface", appServerFallbackParity.available ? "available" : "not exposed", appServerFallbackParity.available ? "diagnostic" : "missing"),
+      statusRow("Parity", appServerFallbackParity.parityState, appServerFallbackParity.parityState === "blocked" ? "blocked" : appServerFallbackParity.available ? "ok" : "missing"),
+      statusRow("Selected lane", appServerFallbackParity.selectedLane),
+      statusRow("Fallback", `${appServerFallbackParity.fallbackAvailable ? "visible" : "missing"} · ${appServerFallbackParity.fallbackStatus}`, appServerFallbackParity.fallbackAvailable ? "ok" : "blocked"),
+      statusRow("Startup/failure", `${appServerFallbackParity.startupPosture}/${appServerFallbackParity.failurePosture}`, appServerFallbackParity.failurePosture && !["none", "unavailable"].includes(appServerFallbackParity.failurePosture) ? "blocked" : "diagnostic"),
+      statusRow("Reload/reconnect", `${appServerFallbackParity.reloadPosture}/${appServerFallbackParity.reconnectPosture}`),
+      statusRow("Direct blockers", appServerFallbackParity.directBlockerCount, appServerFallbackParity.directBlocked ? "diagnostic" : "ok"),
+      statusRow("Silent reroute", appServerFallbackParity.silentRerouteDetected || appServerFallbackParity.fallbackHidden ? "detected" : "none", appServerFallbackParity.silentRerouteDetected || appServerFallbackParity.fallbackHidden ? "blocked" : "ok"),
+      statusRow("Blockers", appServerFallbackParity.blockerCodes.length ? appServerFallbackParity.blockerCodes.slice(0, 6).join(", ") : "none", appServerFallbackParity.blockerCodes.length ? "blocked" : "ok"),
+      statusRow("Authority", appServerFallbackParity.providerTransportAllowed || appServerFallbackParity.appServerSpawnAllowed || appServerFallbackParity.appServerReplacementAllowed || appServerFallbackParity.appServerMutationAllowed || appServerFallbackParity.runtimeSelectionMutationAllowed || appServerFallbackParity.workspaceMutationAllowed || appServerFallbackParity.recursiveWorkerAllowed || appServerFallbackParity.matrixPromotionAllowed ? "unexpected grant" : "display only", appServerFallbackParity.providerTransportAllowed || appServerFallbackParity.appServerSpawnAllowed || appServerFallbackParity.appServerReplacementAllowed || appServerFallbackParity.appServerMutationAllowed || appServerFallbackParity.runtimeSelectionMutationAllowed || appServerFallbackParity.workspaceMutationAllowed || appServerFallbackParity.recursiveWorkerAllowed || appServerFallbackParity.matrixPromotionAllowed ? "blocked" : "ok"),
+    ],
     manualSmokeGate: [
       statusRow("Surface", manualSmokeGate.available ? "available" : "not exposed", manualSmokeGate.available ? "diagnostic" : "missing"),
       statusRow("Gate", manualSmokeGate.gateState, manualSmokeGate.gateState === "passed" ? "ok" : manualSmokeGate.gateState === "blocked" ? "blocked" : "diagnostic"),
@@ -735,6 +783,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
   const contextPreview = summarizeContextPreview(input.contextPreview || input.contextPacketPreview || input.directContextPreview || input);
   const memoryWorkbench = summarizeMemoryWorkbench(input.memoryWorkbench || input.memoryReviewWorkbench || input.directMemoryWorkbench || input);
   const agentUsage = summarizeAgentUsage(input.agentUsageStatus || input.agentUsageProjection || input.directAgentUsage || input);
+  const appServerFallbackParity = summarizeAppServerFallbackParity(input.appServerFallbackParityReport || input.appServerFallbackParity || input);
   const manualSmokeGate = summarizeManualSmokeGate(input.manualSmokeGate || input.directManualSmokeGate || input.manualSmokeGateProjection || input);
   const generatedAt = normalizeString(input.generatedAt, nowIso(input.nowMs));
   const authority = {
@@ -771,7 +820,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
     rawPathIncluded: false,
     rawSecretIncluded: false,
   };
-  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, continuity, contextPreview, memoryWorkbench, agentUsage, manualSmokeGate };
+  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, continuity, contextPreview, memoryWorkbench, agentUsage, appServerFallbackParity, manualSmokeGate };
   const sourceDigest = digestFor("direct-settings-surface-source@1", sections);
   const projection = {
     schema: DIRECT_SETTINGS_SURFACE_PROJECTION_SCHEMA,
@@ -795,6 +844,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       "context_packet_preview",
       "memory_review_workbench",
       "direct_agent_usage",
+      "appserver_fallback_parity",
       "manual_smoke_gate",
     ],
     sections,
@@ -819,6 +869,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       { kind: "context_packet_preview", digest: normalizeString(contextPreview.previewDigest, ""), label: "Context packet preview" },
       { kind: "memory_review_workbench", digest: normalizeString(memoryWorkbench.workbenchDigest, ""), label: "Memory review workbench" },
       { kind: "direct_agent_usage", digest: normalizeString(agentUsage.projectionDigest || agentUsage.ledgerDigest, ""), label: "Direct agent usage summary" },
+      { kind: "appserver_fallback_parity", digest: normalizeString(appServerFallbackParity.reportDigest, ""), label: "App-server fallback parity" },
       { kind: "manual_smoke_gate", digest: normalizeString(manualSmokeGate.gateDigest, ""), label: "Direct manual smoke gate" },
     ].filter((ref) => ref.digest || ref.kind === "registry_audit"),
     sourceDigest,

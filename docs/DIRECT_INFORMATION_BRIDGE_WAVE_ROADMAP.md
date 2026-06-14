@@ -2294,7 +2294,7 @@ Implemented notes:
 
 ### PR 44: App-Server Fallback Parity Watchdog
 
-Status: planned.
+Status: implemented.
 
 Purpose:
 
@@ -2314,8 +2314,22 @@ Scope:
 Promotion criterion:
 
 ```text
-Direct can fail closed while the app-server lane remains visible and recoverable.
+Direct failures remain visible as direct failures, while the retained vanilla
+app-server lane remains visible and recoverable as a separate fallback posture.
 ```
+
+Implemented notes:
+
+- Added `direct_appserver_fallback_parity_report@1` as a renderer-safe
+  display-only report over app-server fallback availability, selected lane,
+  startup/failure posture, reload/reconnect posture, and direct blockers.
+- Wired the parity report into runtime status, the Project-tab settings
+  surface, manual smoke gate rows, and Electron settings smoke validation.
+- Added regression cases proving missing fallback, stale/reroute flags, and
+  visible fallback state are explicit evidence states.
+- Confirmed fallback reports do not mutate runtime selection, defaults, matrix
+  rows, app-server processes, provider transport, recursive workers, or
+  workspace state.
 
 ### PR 45: Usage/Quota/Model Witness Polish
 

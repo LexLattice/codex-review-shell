@@ -367,6 +367,7 @@ function safeProjectionSummary(projection = {}) {
   const rows = projection.rows || {};
   const sections = projection.sections || {};
   const manual = sections.manualSmokeGate || {};
+  const fallback = sections.appServerFallbackParity || {};
   return {
     schema: projection.schema || "",
     projectId: projection.projectId || "",
@@ -393,6 +394,22 @@ function safeProjectionSummary(projection = {}) {
         manual.moduleExecutionAllowed ||
         manual.recursiveWorkerAllowed ||
         manual.matrixPromotionAllowed
+      ),
+    },
+    appServerFallbackParity: {
+      available: fallback.available === true,
+      parityState: fallback.parityState || "",
+      fallbackAvailable: fallback.fallbackAvailable === true,
+      blockerCount: Array.isArray(fallback.blockerCodes) ? fallback.blockerCodes.length : 0,
+      authorityUnexpected: Boolean(
+        fallback.providerTransportAllowed ||
+        fallback.appServerSpawnAllowed ||
+        fallback.appServerReplacementAllowed ||
+        fallback.appServerMutationAllowed ||
+        fallback.runtimeSelectionMutationAllowed ||
+        fallback.workspaceMutationAllowed ||
+        fallback.recursiveWorkerAllowed ||
+        fallback.matrixPromotionAllowed
       ),
     },
   };
@@ -440,6 +457,7 @@ async function main() {
     const workThreadText = await visibleText(page, "#directBridgeSettingsWorkThreadList");
     const moduleText = await visibleText(page, "#directBridgeSettingsModulesList");
     const continuityText = await visibleText(page, "#directBridgeSettingsContinuityList");
+    const appServerFallbackText = await visibleText(page, "#directBridgeSettingsAppServerFallbackList");
 
     assertCase(cases, "electron_project_tab_visible", await page.isVisible("#projectTabPanel"));
     assertCase(cases, "electron_codex_runtime_quick_controls_visible", await page.isVisible("#codexRuntimeQuickSelect") && await page.isVisible("#codexRuntimeQuickApplyButton"), {
@@ -457,7 +475,12 @@ async function main() {
     assertCase(cases, "electron_workthread_rows_visible", /WorkThread|Target gate|Candidates|Mutation/.test(workThreadText), { workThreadText });
     assertCase(cases, "electron_module_rows_visible", /Execution|Context|Evidence|Hooks/.test(moduleText), { moduleText });
     assertCase(cases, "electron_continuity_rows_visible", /Memory|Baton|Compact|Transport/.test(continuityText), { continuityText });
+    assertCase(cases, "electron_appserver_fallback_rows_visible", /Parity|Fallback|Authority/.test(appServerFallbackText) && projectionSummary.appServerFallbackParity.available, {
+      appServerFallbackText,
+      appServerFallbackParity: projectionSummary.appServerFallbackParity,
+    });
     assertCase(cases, "electron_no_manual_smoke_authority", projectionSummary.manualSmoke.authorityUnexpected === false, projectionSummary.manualSmoke);
+    assertCase(cases, "electron_no_appserver_fallback_authority", projectionSummary.appServerFallbackParity.authorityUnexpected === false, projectionSummary.appServerFallbackParity);
     assertSentinelCountersClear(cases, sentinelCounters, processObservations);
 
     const electronProjection = {
