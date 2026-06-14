@@ -2307,8 +2307,10 @@ async function loadRuntimePreferences(options = {}) {
   const applyGlobal = options.applyGlobal !== false;
   const applyThread = options.applyThread !== false && Boolean(state.threadId);
   const guardThreadId = String(options.guardThreadId || options.threadId || "");
-  const guardSourceHome = String(options.guardSourceHome ?? "");
-  const guardSessionFilePath = String(options.guardSessionFilePath ?? "");
+  const hasGuardSourceHome = Object.prototype.hasOwnProperty.call(options, "guardSourceHome");
+  const guardSourceHome = hasGuardSourceHome ? String(options.guardSourceHome ?? "") : "";
+  const hasGuardSessionFilePath = Object.prototype.hasOwnProperty.call(options, "guardSessionFilePath");
+  const guardSessionFilePath = hasGuardSessionFilePath ? String(options.guardSessionFilePath ?? "") : "";
   state.runtimePreferencesStatus = "loading";
   state.runtimePreferencesError = "";
   try {
@@ -2318,8 +2320,8 @@ async function loadRuntimePreferences(options = {}) {
       const stillCurrentThread =
         !guardThreadId ||
         (state.threadId === guardThreadId &&
-          (!guardSourceHome || state.sourceHome === guardSourceHome) &&
-          (!guardSessionFilePath || state.sessionFilePath === guardSessionFilePath));
+          (!hasGuardSourceHome || state.sourceHome === guardSourceHome) &&
+          (!hasGuardSessionFilePath || state.sessionFilePath === guardSessionFilePath));
       if (applyThread && stillCurrentThread) applyThreadRuntimePreferences(response.threadDefaults || {});
     }
     state.runtimePreferencesStatus = "ready";
@@ -4349,6 +4351,7 @@ async function openDirectThread(threadId) {
     guardSourceHome: state.sourceHome,
     guardSessionFilePath: state.sessionFilePath,
   });
+  if (state.directThreadOpenRequestId !== openRequestId || state.threadId !== requestedThreadId) return;
   await reportThreadState("attached_live", {
     threadId: requestedThreadId,
     title: result?.thread?.title || requestedThreadId,

@@ -181,6 +181,9 @@ const openDirectThreadSource = codexSurfaceSource.slice(
 );
 assertIncludes(openDirectThreadSource, "await loadRuntimePreferences", "direct thread strip open reloads thread model/reasoning preferences");
 assertIncludes(openDirectThreadSource, "guardThreadId: requestedThreadId", "direct thread preference load is guarded to the opened thread");
+assertIncludes(openDirectThreadSource, "state.directThreadOpenRequestId !== openRequestId || state.threadId !== requestedThreadId", "direct thread open rechecks stale requests after preference load");
+assertIncludes(codexSurfaceSource, "hasGuardSourceHome", "runtime preference guard distinguishes omitted source-home guard from explicit empty string");
+assertIncludes(codexSurfaceSource, "hasGuardSessionFilePath", "runtime preference guard distinguishes omitted session-file guard from explicit empty string");
 const directQuotaSource = codexSurfaceSource.slice(
   codexSurfaceSource.indexOf("function composerQuotaLabel"),
   codexSurfaceSource.indexOf("function numericField"),
