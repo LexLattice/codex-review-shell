@@ -2809,7 +2809,9 @@ function directMetadataWitnessState(profile = {}, driftReport = {}) {
 function directMetadataQuotaWindows(profile = {}) {
   const windows = profile?.usage?.quota?.windows;
   if (!Array.isArray(windows) || !windows.length) return [];
-  return [...windows].sort((a, b) => {
+  const codexWindows = windows.filter((window) => String(window?.windowId || "").startsWith("codex:"));
+  const selectedWindows = codexWindows.length ? codexWindows : windows;
+  return [...selectedWindows].sort((a, b) => {
     const priority = (window) => {
       const label = directMetadataQuotaWindowLabel(window);
       if (label === "5h") return 1;
