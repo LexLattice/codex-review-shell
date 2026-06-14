@@ -175,6 +175,22 @@ assert.ok(
   retryEmptyTurnSource.indexOf("canRollback") < retryEmptyTurnSource.indexOf("thread/rollback"),
   "empty-turn retry must check rollback capability before calling thread/rollback.",
 );
+const openDirectThreadSource = codexSurfaceSource.slice(
+  codexSurfaceSource.indexOf("async function openDirectThread"),
+  codexSurfaceSource.indexOf("async function createDirectThreadFromStrip"),
+);
+assertIncludes(openDirectThreadSource, "await loadRuntimePreferences", "direct thread strip open reloads thread model/reasoning preferences");
+assertIncludes(openDirectThreadSource, "guardThreadId: requestedThreadId", "direct thread preference load is guarded to the opened thread");
+const directQuotaSource = codexSurfaceSource.slice(
+  codexSurfaceSource.indexOf("function composerQuotaLabel"),
+  codexSurfaceSource.indexOf("function numericField"),
+);
+assertIncludes(directQuotaSource, "quotaState === \"unknown\"", "direct composer quota avoids unknown/usage mixed compact label");
+const directContextSource = codexSurfaceSource.slice(
+  codexSurfaceSource.indexOf("function contextUsageProjection"),
+  codexSurfaceSource.indexOf("const usage = state.tokenUsage"),
+);
+assert.ok(!directContextSource.includes("sourceClasses.join"), "direct context compact label should not expose raw diagnostic source classes.");
 assert.ok(!rendererSource.includes("Direct blocked: ${directTextOnlyBlockedDetail(status)"), "Direct apply should not block before main-process embark can probe.");
 assert.ok(!rendererSource.includes("renderProjects("), "renderer should not call undefined renderProjects()");
 assertIncludes(htmlSource, "Codex backend", "shell UI label");

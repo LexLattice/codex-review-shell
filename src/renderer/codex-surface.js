@@ -1076,6 +1076,8 @@ function composerQuotaLabel() {
     const witness = directComposerWitness();
     const quota = String(witness?.quotaLabel || "").trim();
     const usage = String(witness?.usageLabel || "").trim();
+    const quotaState = String(witness?.quotaState || "").trim();
+    if (usage && usage !== "usage unknown" && (!quota || quota === "quota unknown" || quotaState === "unknown")) return usage;
     if (quota && usage && usage !== "usage unknown") return `${quota} / ${usage}`;
     if (quota) return quota;
   }
@@ -1147,10 +1149,8 @@ function contextUsageProjection() {
     const preview = projection?.contextPreview || {};
     const summary = preview.rendererSafeSummary || {};
     const blockerCount = Number(summary.blockerCount || 0);
-    const sourceClasses = Array.isArray(summary.sourceClasses) ? summary.sourceClasses : [];
     const label = [
       contextLabel || "context preview unknown",
-      sourceClasses.length ? `sources: ${sourceClasses.join(", ")}` : "",
       blockerCount ? `${blockerCount} blocker${blockerCount === 1 ? "" : "s"}` : "",
     ].filter(Boolean).join(" · ");
     return {
@@ -4342,6 +4342,13 @@ async function openDirectThread(threadId) {
   state.sourceHome = "";
   state.sessionFilePath = "";
   applyLiveThreadResult(result);
+  await loadRuntimePreferences({
+    applyThread: true,
+    threadId: requestedThreadId,
+    guardThreadId: requestedThreadId,
+    guardSourceHome: state.sourceHome,
+    guardSessionFilePath: state.sessionFilePath,
+  });
   await reportThreadState("attached_live", {
     threadId: requestedThreadId,
     title: result?.thread?.title || requestedThreadId,
