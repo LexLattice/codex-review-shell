@@ -153,8 +153,10 @@ without adding autonomous authority.
 
 Wave 6 has productized the WorkThread control deck, target picker, context
 preview, memory review workbench, module context intake, and manual smoke gate.
-The remaining confidence gap is making those surfaces visible and smoke-testable
-in the actual Electron operator path before broadening authority.
+Wave 7 has started by making the manual smoke gate visible in the Electron
+operator surface. The remaining confidence gap is making those surfaces
+repeatably smoke-testable in the actual Electron path before broadening
+authority.
 
 ## 4. Canonical ODEU Capability Matrix
 
@@ -590,31 +592,32 @@ new live-provider or recursive authority is considered.
 
 ## 9. Immediate Next Spec
 
-The next spec should target Wave 7 PR 39:
+The next spec should target Wave 7 PR 40:
 
 ```text
-Manual smoke gate settings/control surface V0.
+Electron smoke runner and readiness proof pack.
 ```
 
 It should not add provider/tool authority. It should implement:
 
-1. renderer support for the `manualSmokeGate` row group already emitted by the
-   direct settings projection;
-2. a compact status summary for passed, degraded, blocked, and not-run smoke
-   states;
-3. visible blocker rows with source/evidence labels and no raw paths/text;
-4. stale/missing projection handling when settings refresh races project switch;
-5. a clear statement that the gate is display-only and cannot start provider,
-   app-server, module, workspace, or promotion transitions.
+1. a bounded Electron smoke script that opens the shell and reaches the Project
+   tab direct settings/control surface;
+2. checks for visible runtime lane, app-server fallback, WorkThread/context/
+   memory/module/manual-smoke rows;
+3. optional `electron_projection` evidence that can feed
+   `direct_manual_smoke_gate@1`;
+4. stale/project-switch protection in the smoke runner;
+5. sentinel checks proving no provider call, app-server spawn/replacement,
+   runtime mutation, WorkThread mutation, module execution, workspace mutation,
+   auto-approval, recursive worker, or matrix promotion occurs.
 
 Current implementation note:
 
 ```text
-Wave 6 now emits the context packet preview/omission workbench, memory review
-materialization workbench, module context intake, and manual smoke gate. The
-next problem is operator access: the Electron direct settings panel must render
-the manual smoke row group and blockers before the smoke gate can be treated as
-a real daily-use readiness surface.
+PR 39 made the manual smoke row group visible in the Electron direct settings
+panel. The next problem is repeatability: the app-level smoke path should verify
+that direct settings, runtime lane, fallback, and manual smoke surfaces can be
+loaded without relying only on headless fixture scripts.
 ```
 
 It should explicitly not mean:

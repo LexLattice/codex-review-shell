@@ -481,12 +481,12 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     role: "observability_surface",
     implementationState: "partial",
     directPathPosture: "keep_shadow",
-    sourceFiles: ["src/main/direct/ui/settings-surface.js", "scripts/direct-settings-bridge-status-regression.mjs", "src/main.js", "src/preload.js", "src/renderer/app.js"],
+    sourceFiles: ["src/main/direct/ui/settings-surface.js", "scripts/direct-settings-bridge-status-regression.mjs", "scripts/direct-manual-smoke-gate-surface-regression.mjs", "src/main.js", "src/preload.js", "src/renderer/index.html", "src/renderer/app.js"],
     ontology: ontologyShape(["settings_surface", "runtime_profile_view", "bridge_registry_view"], "human_interface", {
       identityFields: ["projectId", "settingsSurfaceId", "profileId"],
       schema: "direct_settings_surface@1",
     }),
-    bridgeFit: "Builds a renderer-safe, display-only settings projection over runtime/profile, registry, WorkThread, operator broker, governance, module, and continuity status.",
+    bridgeFit: "Builds a renderer-safe, display-only settings projection over runtime/profile, registry, WorkThread, operator broker, governance, module, continuity, agent usage, and manual smoke status.",
     realignment: "Full settings workflows remain future work; this surface exposes status without enabling routing, mutation, module execution, memory editing, or provider compaction.",
   },
   {
