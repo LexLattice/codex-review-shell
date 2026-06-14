@@ -70,11 +70,13 @@ const readyQueue = buildLivePromotionCandidateQueue({
   liveEvidenceByCapability: {
     direct_text_turn: {
       live_provider_turn_completed: {
-        state: "fresh",
-        evidenceRefs: ["live_text_turn_row_1"],
+        status: "runtime_probed",
+        expiresAt: "2026-06-14T01:02:00.000Z",
+        evidenceRefs: ["live_text_turn_row_1", null, 42],
       },
       usage_or_missing_usage_witness: {
-        state: "fresh",
+        state: "accepted",
+        expiresAt: new Date("2026-06-14T01:02:00.000Z"),
         evidenceRefs: ["live_usage_witness_row_1"],
       },
     },
@@ -87,6 +89,9 @@ const readyCandidate = readyQueue.candidates.find((candidate) => candidate.candi
 assert.equal(readyCandidate.gateState, "ready");
 assert.equal(readyCandidate.promotionState, "passed");
 assert.deepEqual(readyCandidate.blockerCodes, []);
+assert.equal(readyCandidate.requiredLiveEvidence[0].state, "runtime_probed");
+assert.equal(readyCandidate.requiredLiveEvidence[0].evidenceRefs.length, 3);
+assert.equal(readyCandidate.requiredLiveEvidence[1].state, "accepted");
 assert.equal(readyCandidate.allowedNextPromotionRun.canRunFromRenderer, false);
 assert.equal(readyCandidate.authority.providerTransportAuthorityGranted, false);
 assert.equal(readyQueue.reportEffects.changesDefaults, false);
@@ -95,6 +100,7 @@ assertLivePromotionCandidateQueueSafe(readyQueue);
 
 const staleQueue = buildLivePromotionCandidateQueue({
   projectId,
+  generatedAt: "2026-06-14T00:02:00.000Z",
   operatorOptIn: true,
   liveEvidenceByCapability: {
     direct_text_turn: {
@@ -107,6 +113,31 @@ const staleCandidate = staleQueue.candidates.find((candidate) => candidate.candi
 assert.equal(staleCandidate.gateState, "blocked");
 assert(staleCandidate.blockerCodes.includes("live_provider_turn_completed_stale"));
 assertLivePromotionCandidateQueueSafe(staleQueue);
+
+const expiredQueue = buildLivePromotionCandidateQueue({
+  projectId,
+  generatedAt: "2026-06-14T00:02:00.000Z",
+  operatorOptIn: true,
+  liveEvidenceByCapability: {
+    direct_text_turn: {
+      live_provider_turn_completed: {
+        status: "runtime_probed",
+        expiresAt: "2026-06-14T00:01:00.000Z",
+        evidenceRefs: ["expired_text_turn_row"],
+      },
+      usage_or_missing_usage_witness: {
+        status: "accepted",
+        expiresAt: "2026-06-14T01:02:00.000Z",
+        evidenceRefs: ["usage_row"],
+      },
+    },
+  },
+});
+const expiredCandidate = expiredQueue.candidates.find((candidate) => candidate.candidateId === "direct_text_turn_live_promotion");
+assert.equal(expiredCandidate.gateState, "blocked");
+assert.equal(expiredCandidate.requiredLiveEvidence[0].state, "stale");
+assert(expiredCandidate.blockerCodes.includes("live_provider_turn_completed_stale"));
+assertLivePromotionCandidateQueueSafe(expiredQueue);
 
 const missingFixtureQueue = buildLivePromotionCandidateQueue({
   projectId,

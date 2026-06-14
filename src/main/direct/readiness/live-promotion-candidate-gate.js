@@ -109,6 +109,9 @@ function stableValue(value, seen = new WeakSet()) {
   if (value && typeof value === "object") {
     if (seen.has(value)) return "[Circular]";
     seen.add(value);
+    if (typeof value.toJSON === "function") {
+      return stableValue(value.toJSON(), seen);
+    }
     const output = {};
     for (const key of Object.keys(value).sort()) {
       if (value[key] !== undefined) output[key] = stableValue(value[key], seen);
@@ -123,7 +126,17 @@ function digestValue(value) {
 }
 
 function nowIso(input) {
+  if (input instanceof Date) return input.toISOString();
   return normalizeString(input, "") || new Date().toISOString();
+}
+
+function toTimeMs(value) {
+  if (value instanceof Date) {
+    const time = value.getTime();
+    return Number.isFinite(time) ? time : NaN;
+  }
+  const parsed = Date.parse(normalizeString(value, ""));
+  return Number.isFinite(parsed) ? parsed : NaN;
 }
 
 function evidenceRef(kind, refId, state = "present") {
@@ -137,31 +150,64 @@ function evidenceRef(kind, refId, state = "present") {
   };
 }
 
-function normalizeEvidenceState(input, fallbackState = "missing") {
-  if (typeof input === "string") return { state: input, evidenceRefs: [] };
-  if (!isPlainObject(input)) return { state: fallbackState, evidenceRefs: [] };
+function normalizeEvidenceRefs(refs, defaultKind) {
+  return safeArray(refs).map((ref, index) => {
+    if (typeof ref === "string") return evidenceRef(defaultKind, ref);
+    if (isPlainObject(ref)) {
+      return evidenceRef(ref.kind || defaultKind, ref.refId || ref.evidenceKey || `evidence_${index}`, ref.state || "present");
+    }
+    return evidenceRef(defaultKind, `evidence_${index}`);
+  });
+}
+
+function evidenceExpired(expiresAt, referenceAt) {
+  const expiresMs = toTimeMs(expiresAt);
+  if (!Number.isFinite(expiresMs)) return false;
+  const parsedReferenceMs = toTimeMs(referenceAt);
+  const referenceMs = Number.isFinite(parsedReferenceMs) ? parsedReferenceMs : Date.now();
+  return Number.isFinite(referenceMs) && expiresMs <= referenceMs;
+}
+
+function normalizeEvidenceState(input, fallbackState = "missing", referenceAt = "") {
+  if (typeof input === "string") {
+    return { state: input, evidenceRefs: [], observedAt: "", expiresAt: "", expired: false };
+  }
+  if (!isPlainObject(input)) return { state: fallbackState, evidenceRefs: [], observedAt: "", expiresAt: "", expired: false };
+  const expiresAt = input.expiresAt instanceof Date ? input.expiresAt.toISOString() : normalizeString(input.expiresAt, "");
+  const expired = evidenceExpired(expiresAt, referenceAt);
+  const state = normalizeString(input.state || input.status, fallbackState);
   return {
-    state: normalizeString(input.state || input.status, fallbackState),
-    observedAt: normalizeString(input.observedAt, ""),
-    expiresAt: normalizeString(input.expiresAt, ""),
-    evidenceRefs: safeArray(input.evidenceRefs).map((ref, index) => {
-      if (typeof ref === "string") return evidenceRef("runtime_evidence", ref);
-      return evidenceRef(ref.kind || "runtime_evidence", ref.refId || ref.evidenceKey || `evidence_${index}`, ref.state || "present");
-    }),
+    state: expired && isFreshSatisfied(state) ? "stale" : state,
+    observedAt: input.observedAt instanceof Date ? input.observedAt.toISOString() : normalizeString(input.observedAt, ""),
+    expiresAt,
+    expired,
+    evidenceRefs: normalizeEvidenceRefs(input.evidenceRefs, "runtime_evidence"),
   };
 }
 
-function isFreshSatisfied(state) {
-  return ["fresh", "passed", "satisfied", "available", "ready"].includes(normalizeString(state, ""));
+function isFreshSatisfied(evidenceOrState) {
+  if (isPlainObject(evidenceOrState) && evidenceOrState.expired === true) return false;
+  const state = isPlainObject(evidenceOrState) ? evidenceOrState.state : evidenceOrState;
+  return [
+    "accepted",
+    "available",
+    "fresh",
+    "local_green",
+    "passed",
+    "profile_declared",
+    "ready",
+    "runtime_probed",
+    "satisfied",
+  ].includes(normalizeString(state, ""));
 }
 
 function isStale(state) {
   return ["stale", "expired"].includes(normalizeString(state, ""));
 }
 
-function candidateFixtureEvidence(definition, fixtureEvidenceByCapability = {}) {
+function candidateFixtureEvidence(definition, fixtureEvidenceByCapability = {}, referenceAt = "") {
   const hasOverride = Object.prototype.hasOwnProperty.call(Object(fixtureEvidenceByCapability), definition.capabilityId);
-  const override = normalizeEvidenceState(hasOverride ? fixtureEvidenceByCapability[definition.capabilityId] : { state: "local_green" }, "local_green");
+  const override = normalizeEvidenceState(hasOverride ? fixtureEvidenceByCapability[definition.capabilityId] : { state: "local_green" }, "local_green", referenceAt);
   const state = override.state;
   const refs = override.evidenceRefs.length
     ? override.evidenceRefs
@@ -172,16 +218,16 @@ function candidateFixtureEvidence(definition, fixtureEvidenceByCapability = {}) 
   };
 }
 
-function buildRequirementRows(definition, liveEvidenceByCapability = {}) {
-  const liveEvidence = isPlainObject(liveEvidenceByCapability[definition.capabilityId])
+function buildRequirementRows(definition, liveEvidenceByCapability = {}, referenceAt = "") {
+  const liveEvidence = liveEvidenceByCapability && isPlainObject(liveEvidenceByCapability[definition.capabilityId])
     ? liveEvidenceByCapability[definition.capabilityId]
     : {};
   return definition.requiredLiveEvidence.map((requirementId) => {
-    const requirementEvidence = normalizeEvidenceState(liveEvidence[requirementId], "missing");
+    const requirementEvidence = normalizeEvidenceState(liveEvidence[requirementId], "missing", referenceAt);
     return {
       requirementId,
       state: requirementEvidence.state,
-      blockerCode: isFreshSatisfied(requirementEvidence.state)
+      blockerCode: isFreshSatisfied(requirementEvidence)
         ? ""
         : isStale(requirementEvidence.state)
           ? `${requirementId}_stale`
@@ -204,10 +250,7 @@ function normalizeAttempt(input, candidateId) {
     status,
     attemptedAt: normalizeString(input.attemptedAt, ""),
     reasonCode: normalizeString(input.reasonCode, status),
-    evidenceRefs: safeArray(input.evidenceRefs).map((ref, index) => {
-      if (typeof ref === "string") return evidenceRef("promotion_attempt_evidence", ref);
-      return evidenceRef(ref.kind || "promotion_attempt_evidence", ref.refId || `attempt_evidence_${index}`, ref.state || "present");
-    }),
+    evidenceRefs: normalizeEvidenceRefs(input.evidenceRefs, "promotion_attempt_evidence"),
     reportOnly: true,
     changedDefaults: false,
     changedMatrixRows: false,
@@ -230,10 +273,11 @@ function latestAttemptForCandidate(candidateId, attempts = []) {
 }
 
 function buildCandidate(definition, input = {}) {
-  const fixtureEvidence = candidateFixtureEvidence(definition, input.fixtureEvidenceByCapability);
-  const requirements = buildRequirementRows(definition, input.liveEvidenceByCapability);
+  const referenceAt = nowIso(input.generatedAt);
+  const fixtureEvidence = candidateFixtureEvidence(definition, input.fixtureEvidenceByCapability, referenceAt);
+  const requirements = buildRequirementRows(definition, input.liveEvidenceByCapability, referenceAt);
   const blockers = [];
-  if (!isFreshSatisfied(fixtureEvidence.state) && fixtureEvidence.state !== "local_green") {
+  if (!isFreshSatisfied(fixtureEvidence)) {
     blockers.push("fixture_or_local_evidence_missing");
   }
   for (const requirement of requirements) {
