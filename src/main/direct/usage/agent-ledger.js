@@ -380,6 +380,32 @@ function summarizeBy(rows = [], keyFn, labelFn = keyFn) {
   }).sort((left, right) => right.totals.totalTokensKnown - left.totals.totalTokensKnown || left.key.localeCompare(right.key));
 }
 
+function latestUsageFromRows(rows = []) {
+  const candidates = arrayOrEmpty(rows)
+    .filter((row) => row.usageRecordKind !== "missing" && Number.isFinite(Number(row.inputTokens ?? row.totalTokens)))
+    .map((row) => {
+      const completedMs = parseTimeMs(row.timing?.completedAt);
+      const createdMs = parseTimeMs(row.timing?.createdAt || row.timing?.streamStartedAt);
+      const observedMs = completedMs || createdMs || Number(row.sourceEventSequence || 0);
+      return { row, observedMs };
+    })
+    .sort((left, right) => right.observedMs - left.observedMs || numberValue(right.row.sourceEventSequence, 0) - numberValue(left.row.sourceEventSequence, 0));
+  const latest = candidates[0]?.row || null;
+  if (!latest) return null;
+  return {
+    rowId: normalizeString(latest.rowId, ""),
+    sessionId: normalizeString(latest.sessionId, ""),
+    threadId: normalizeString(latest.threadId, ""),
+    turnId: normalizeString(latest.turnId, ""),
+    model: normalizeString(latest.model, ""),
+    inputTokensKnown: latest.inputTokens === undefined ? null : numberValue(latest.inputTokens, 0),
+    totalTokensKnown: latest.totalTokens === undefined ? null : numberValue(latest.totalTokens, 0),
+    tokenFieldConfidence: isPlainObject(latest.tokenFieldConfidence) ? latest.tokenFieldConfidence : {},
+    observedAt: normalizeString(latest.timing?.completedAt || latest.timing?.createdAt || "", ""),
+    rowDigest: normalizeString(latest.rowDigest, ""),
+  };
+}
+
 function buildDirectAgentUsageLedger(input = {}) {
   const rows = dedupeRows(collectInputRows(input));
   const projectId = normalizeString(input.projectId || rows[0]?.projectId, "");
@@ -436,6 +462,7 @@ function buildDirectAgentUsageSummaryProjection(ledger = {}) {
     generatedAt: normalizeString(source.generatedAt, nowIso()),
     rowCount: Number(source.rowCount ?? arrayOrEmpty(source.rows).length ?? 0),
     totals: isPlainObject(source.totals) ? source.totals : emptyTotals(),
+    latestUsage: latestUsageFromRows(source.rows),
     byAgent: arrayOrEmpty(source.byAgent).slice(0, 12),
     byWorkThread: arrayOrEmpty(source.byWorkThread).slice(0, 12),
     byRoute: arrayOrEmpty(source.byRoute).slice(0, 12),

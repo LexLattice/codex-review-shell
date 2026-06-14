@@ -187,6 +187,8 @@ const projection = buildDirectAgentUsageSummaryProjection(ledger);
 assertDirectAgentUsageProjectionSafe(projection);
 assert.equal(projection.schema, "direct_agent_usage_summary_projection@1");
 assert.equal(projection.totals.totalTokensKnown, 18);
+assert.equal(projection.latestUsage.inputTokensKnown, 11);
+assert.equal(projection.latestUsage.turnId, "turn_primary");
 assert.equal(projection.evidencePosture.costComputed, false);
 assert.equal(projection.evidencePosture.billingGrade, false);
 
