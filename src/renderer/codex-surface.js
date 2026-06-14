@@ -3925,6 +3925,10 @@ function rememberPromptTurn(turnId, text, retryCount = 0) {
 async function retryEmptyTurn(turnId) {
   const id = String(turnId || "").trim();
   if (!id || state.emptyTurnRetrying.has(id)) return;
+  if (!hasCapability("threads", "canRollback")) {
+    addSystemMessage("Codex completed without output, but this runtime does not expose rollback/retry capability.");
+    return;
+  }
   const prompt = state.turnPromptMap.get(id);
   const retryCount = state.turnRetryCountMap.get(id) || 0;
   if (!prompt || retryCount >= EMPTY_TURN_AUTO_RETRY_LIMIT) return;
@@ -3975,7 +3979,13 @@ function renderTurnCompletionNotice(turnId, turn) {
   }
   const prompt = state.turnPromptMap.get(id);
   const retryCount = state.turnRetryCountMap.get(id) || 0;
-  if (prompt && retryCount < EMPTY_TURN_AUTO_RETRY_LIMIT && state.threadId && state.connected) {
+  if (
+    prompt &&
+    retryCount < EMPTY_TURN_AUTO_RETRY_LIMIT &&
+    state.threadId &&
+    state.connected &&
+    hasCapability("threads", "canRollback")
+  ) {
     addSystemMessage(
       `Codex accepted the prompt but completed${duration} without assistant, tool, or reasoning output. This empty turn will be rolled back and retried once.`,
     );

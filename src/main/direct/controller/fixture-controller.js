@@ -59,6 +59,13 @@ function buildDirectFixtureCapabilities() {
       transports: [DIRECT_FIXTURE_SURFACE_TRANSPORT],
       schemaSource: "direct-fixture-controller",
     },
+    account: {
+      canRead: true,
+      canStartLogin: false,
+    },
+    configRequirements: {
+      canRead: true,
+    },
     threads: {
       canStart: true,
       canRead: false,
@@ -160,6 +167,16 @@ class DirectFixtureController {
         email: "direct-fixture@local",
       },
       requiresOpenaiAuth: false,
+    };
+  }
+
+  configRequirementsRead() {
+    return {
+      requirements: null,
+      status: "none",
+      source: "direct-fixture-controller",
+      rawTokensExposed: false,
+      rawBackendFramesExposed: false,
     };
   }
 
@@ -426,6 +443,7 @@ class DirectFixtureController {
   async handleRequest(method, params = {}, context = {}) {
     if (method === "initialize") return this.initialize(params, context);
     if (method === "account/read") return this.accountRead(params, context);
+    if (method === "configRequirements/read") return this.configRequirementsRead(params, context);
     if (method === "thread/start") return this.startThread(params, context);
     if (method === "turn/start") return this.startTurn(params, context);
     throw new Error(`Direct fixture controller does not support ${method}.`);

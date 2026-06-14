@@ -58,6 +58,11 @@ const {
   buildDirectLiveTextCapabilities,
 } = require("./main/direct/controller/live-text-controller");
 const {
+  DEFAULT_TEXT_PROBE_INSTRUCTIONS,
+  DEFAULT_TEXT_PROBE_PROMPT,
+  runTextOnlyDirectProbe,
+} = require("./main/direct/transport/codex-responses-transport");
+const {
   buildDirectRuntimeStatus,
   directRuntimeLaneLabel,
   normalizeCodexBindingProvider,
@@ -2672,6 +2677,30 @@ function projectWithCodexBinding(project, codexBinding) {
   };
 }
 
+async function switchActiveCodexRuntimePath(project, runtimePath, reason = "active-runtime-path-switch") {
+  const projectId = normalizeString(project?.id, "");
+  if (!projectId) throw new Error("Project not found.");
+  const activeTurns = activeDirectTurnCountForProject(ensureDirectSessionStore(), projectId);
+  if (activeTurns > 0) {
+    const error = new Error("A direct turn is active. Wait before changing the active runtime selection.");
+    error.code = "active_direct_turn_exists";
+    throw error;
+  }
+  const nextBinding = bindingForDirectRuntimePath(project.surfaceBinding?.codex || {}, runtimePath);
+  const activeProject = projectWithCodexBinding(project, nextBinding);
+  currentProject = activeProject;
+  await loadCodexSurface(activeProject, { activationEpoch: nextSurfaceActivationEpoch(reason) });
+  emitDirectRuntimeStatus(activeProject);
+  return {
+    ok: true,
+    runtimePath,
+    activeOnly: true,
+    project: activeProject,
+    config: null,
+    status: buildDirectRuntimeStatusForProject(activeProject),
+  };
+}
+
 async function enableDirectExperimentalProject(payload = {}) {
   const projectId = normalizeString(payload.projectId, "");
   return withDirectActivationLock(projectId, async () => {
@@ -2830,15 +2859,218 @@ async function selectDirectTextOnlyRuntime(payload = {}) {
   });
 }
 
+function directEmbarkStep(step, status = "completed", details = {}) {
+  return {
+    step,
+    status,
+    at: nowIso(),
+    ...details,
+  };
+}
+
+function directEmbarkResult(projectId, status, details = {}) {
+  return {
+    schema: "direct_runtime_embark_result@1",
+    ok: status === "direct_surface_ready" || status === "direct_thread_ready",
+    projectId,
+    status,
+    rawTokensExposed: false,
+    rawBackendFramesExposed: false,
+    ...details,
+  };
+}
+
+function directAuthIsAuthenticated(authStatus = {}) {
+  return normalizeString(authStatus.status, "") === "authenticated";
+}
+
+async function directEmbarkAuthStatus(steps = []) {
+  const authStore = directRuntimeAuthStore();
+  let authStatus = authStore.readStatus();
+  if (directAuthIsAuthenticated(authStatus)) {
+    steps.push(directEmbarkStep("auth_ready"));
+    return authStatus;
+  }
+  if (authStatus?.hasRefreshToken) {
+    steps.push(directEmbarkStep("auth_refresh", "started"));
+    try {
+      await refreshDirectRuntimeCredentials();
+      authStatus = authStore.readStatus();
+      steps.push(directEmbarkStep("auth_refresh", directAuthIsAuthenticated(authStatus) ? "completed" : "failed", {
+        authStatus: authStatus.status,
+      }));
+    } catch (error) {
+      steps.push(directEmbarkStep("auth_refresh", "failed", {
+        reason: normalizeString(error?.code || error?.message, "auth_refresh_failed"),
+      }));
+      authStatus = authStore.readStatus();
+    }
+  }
+  if (directAuthIsAuthenticated(authStatus)) {
+    steps.push(directEmbarkStep("auth_ready"));
+  }
+  return authStatus;
+}
+
+function directTextOnlyCanSelect(runtimeStatus = {}) {
+  const status = normalizeString(runtimeStatus.directTextOnly?.status, "");
+  return status === "eligible" || status === "enabled";
+}
+
+function directLiveProbeModel(project = {}, runtimeStatus = {}) {
+  return normalizeString(
+    project.surfaceBinding?.codex?.model ||
+      runtimeStatus.liveTextRuntime?.model ||
+      runtimeStatus.liveTextRuntime?.status?.model ||
+      runtimeStatus.directTextOnly?.scope?.model,
+    "",
+  );
+}
+
+async function recordDirectEmbarkLiveProbe(project, runtimeStatus, steps = []) {
+  const profileDoc = ensureDirectCodexProfileDoc();
+  const authStore = directRuntimeAuthStore();
+  const model = directLiveProbeModel(project, runtimeStatus);
+  steps.push(directEmbarkStep("probing", "started", { model: model || "profile-default" }));
+  const result = await runTextOnlyDirectProbe({
+    authStore,
+    refreshCredentials: () => refreshDirectRuntimeCredentials(),
+    profileDoc,
+    model,
+    prompt: DEFAULT_TEXT_PROBE_PROMPT,
+    instructions: DEFAULT_TEXT_PROBE_INSTRUCTIONS,
+  });
+  const requestedModel = normalizeString(result.requestShape?.model || model, "");
+  const recorded = ensureDirectLiveProbeEvidenceStore().recordProbeResult(result, {
+    source: "direct-runtime-embark",
+    project,
+    profileDoc,
+    authStatus: authStore.readStatus(),
+    credentials: authStore.readCredentials(),
+    model: requestedModel,
+    promptClass: "fixed-live-text-probe",
+    prompt: DEFAULT_TEXT_PROBE_PROMPT,
+  });
+  steps.push(directEmbarkStep("probing", recorded.view?.usable ? "completed" : "failed", {
+    evidenceStatus: recorded.view?.status || "unknown",
+    evidenceId: recorded.view?.evidenceId || "",
+  }));
+  return {
+    probeResult: {
+      ok: Boolean(result.ok),
+      terminalState: normalizeString(result.terminal?.state, ""),
+      responseStatus: Number(result.response?.status || 0),
+      evidenceStatus: recorded.view?.status || "",
+      evidenceUsable: recorded.view?.usable === true,
+      evidenceId: recorded.view?.evidenceId || "",
+      rawBackendFramesExposed: false,
+    },
+    recorded,
+  };
+}
+
+async function embarkDirectRuntime(payload = {}) {
+  const projectId = normalizeString(payload.projectId, "");
+  const clientOperationId = normalizeString(payload.clientOperationId || payload.clientEmbarkId, "") || newId("client_direct_embark");
+  const steps = [directEmbarkStep("requested")];
+  const config = await loadConfig();
+  const project = config.projects.find((item) => item.id === projectId);
+  if (!project) throw new Error("Project not found.");
+
+  let authStatus = await directEmbarkAuthStatus(steps);
+  let runtimeStatus = buildDirectRuntimeStatusForProject(project);
+  let probeResult = null;
+  if (!directAuthIsAuthenticated(authStatus)) {
+    steps.push(directEmbarkStep("auth_required", "blocked", { authStatus: authStatus.status || "unknown" }));
+    return directEmbarkResult(projectId, "auth_required", {
+      loginRequired: true,
+      steps,
+      authStatus,
+      runtimeStatus,
+    });
+  }
+
+  if (!directTextOnlyCanSelect(runtimeStatus)) {
+    steps.push(directEmbarkStep("probe_required"));
+    try {
+      const probe = await recordDirectEmbarkLiveProbe(project, runtimeStatus, steps);
+      probeResult = probe.probeResult;
+    } catch (error) {
+      runtimeStatus = buildDirectRuntimeStatusForProject(project);
+      return directEmbarkResult(projectId, "probe_failed", {
+        steps,
+        authStatus,
+        runtimeStatus,
+        error: {
+          code: normalizeString(error?.code, "direct_probe_failed"),
+          message: normalizeString(error?.message, "Direct probe failed."),
+        },
+      });
+    }
+    runtimeStatus = buildDirectRuntimeStatusForProject(project);
+  }
+
+  if (!directTextOnlyCanSelect(runtimeStatus)) {
+    return directEmbarkResult(projectId, "probe_failed", {
+      steps,
+      authStatus,
+      runtimeStatus,
+      probeResult,
+      error: {
+        code: "direct_text_only_not_eligible",
+        message: "Direct text-only gates are still blocked after probe.",
+      },
+    });
+  }
+
+  steps.push(directEmbarkStep("switching_backend", "started"));
+  try {
+    const selection = await setCodexRuntimePath({
+      ...payload,
+      projectId,
+      runtimePath: "direct-text",
+      clientOperationId,
+      expectedGateId: runtimeStatus.directTextOnly?.gateId || "",
+      expectedGateDigest: runtimeStatus.directTextOnly?.gateDigest || "",
+    });
+    steps.push(directEmbarkStep("switching_backend", "completed"));
+    return directEmbarkResult(projectId, "direct_surface_ready", {
+      duplicate: selection?.duplicate === true,
+      steps,
+      authStatus: directRuntimeAuthStore().readStatus(),
+      runtimeStatus: selection?.status || buildDirectRuntimeStatusForProject(selection?.project || project),
+      probeResult,
+      project: selection?.project,
+      config: selection?.config,
+      selection: selection?.selection || null,
+    });
+  } catch (error) {
+    runtimeStatus = buildDirectRuntimeStatusForProject(project);
+    steps.push(directEmbarkStep("switching_backend", "failed", {
+      reason: normalizeString(error?.code || error?.message, "switch_failed"),
+    }));
+    return directEmbarkResult(projectId, "switch_failed", {
+      steps,
+      authStatus: directRuntimeAuthStore().readStatus(),
+      runtimeStatus,
+      error: {
+        code: normalizeString(error?.code, "switch_failed"),
+        message: normalizeString(error?.message, "Direct backend switch failed."),
+      },
+    });
+  }
+}
+
 async function setCodexRuntimePath(payload = {}) {
   const projectId = normalizeString(payload.projectId, "");
   const runtimePath = normalizeDirectRuntimePath(payload.runtimePath || payload.path);
+  const persistDefault = payload.persistDefault !== false;
   const config = await loadConfig();
   const project = config.projects.find((item) => item.id === projectId);
   if (!project) throw new Error("Project not found.");
 
   const currentPath = directRuntimePathFromBinding(project.surfaceBinding?.codex || {});
-  if (currentPath === runtimePath) {
+  if (persistDefault && currentPath === runtimePath) {
     return {
       ok: true,
       duplicate: true,
@@ -2847,6 +3079,10 @@ async function setCodexRuntimePath(payload = {}) {
       config,
       status: buildDirectRuntimeStatusForProject(project),
     };
+  }
+
+  if (!persistDefault) {
+    return switchActiveCodexRuntimePath(project, runtimePath, `active-runtime-path-${runtimePath}`);
   }
 
   if (runtimePath === "direct-text") {
@@ -3452,6 +3688,7 @@ async function loadCodexSurface(project, options = {}) {
       ? buildDirectLiveTextCapabilities(liveTextStatus)
       : buildDirectFixtureCapabilities();
     const directConnection = {
+      connectionRef: newId("direct_codex_conn"),
       projectId: project.id,
       transport,
       runtime: transport,
@@ -3487,6 +3724,7 @@ async function loadCodexSurface(project, options = {}) {
     });
     emitDirectRuntimeStatus(project);
     if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
+    setManagedCodexSurfaceAuthority(project, localUrl, "direct-local-ready");
     await codexView.webContents.loadURL(localUrl);
     return;
   }
@@ -7415,7 +7653,10 @@ ipcMain.handle("workspace:status", async (_event, payload) => {
 });
 
 ipcMain.handle("direct-runtime:status", async (_event, payload) => {
-  const project = await getProjectById(payload?.projectId);
+  const requestedProjectId = normalizeString(payload?.projectId, "");
+  const project = currentProject?.id && currentProject.id === requestedProjectId
+    ? currentProject
+    : await getProjectById(requestedProjectId);
   return buildDirectRuntimeStatusForProject(project);
 });
 
@@ -7470,6 +7711,10 @@ ipcMain.handle("direct-settings:bridge-status", async (_event, payload) => {
 
 ipcMain.handle("direct-runtime:select-text-only", async (_event, payload) => {
   return selectDirectTextOnlyRuntime(payload || {});
+});
+
+ipcMain.handle("direct-runtime:embark", async (_event, payload) => {
+  return embarkDirectRuntime(payload || {});
 });
 
 ipcMain.handle("direct-runtime:set-path", async (_event, payload) => {

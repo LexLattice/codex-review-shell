@@ -92,6 +92,8 @@ contextBridge.exposeInMainWorld("workspaceShell", {
     ipcRenderer.invoke("direct-settings:bridge-status", { ...options, projectId }),
   setDirectRuntimePath: (projectId, runtimePath, options = {}) =>
     ipcRenderer.invoke("direct-runtime:set-path", { ...options, projectId, runtimePath }),
+  embarkDirectRuntime: (projectId, options = {}) =>
+    ipcRenderer.invoke("direct-runtime:embark", { ...options, projectId }),
   selectDirectTextOnlyRuntime: (projectId, options = {}) =>
     ipcRenderer.invoke("direct-runtime:select-text-only", { ...options, projectId }),
   enableDirectExperimentalRuntime: (projectId, options = {}) =>

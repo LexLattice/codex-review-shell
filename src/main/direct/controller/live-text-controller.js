@@ -492,6 +492,13 @@ function buildDirectLiveTextCapabilities(status = {}) {
       transports: [DIRECT_LIVE_TEXT_SURFACE_TRANSPORT],
       schemaSource: "direct-live-text-controller",
     },
+    account: {
+      canRead: true,
+      canStartLogin: false,
+    },
+    configRequirements: {
+      canRead: true,
+    },
     threads: {
       canStart: ready,
       canRead: true,
@@ -1030,6 +1037,16 @@ class DirectLiveTextController {
       requiresOpenaiAuth: true,
       authStatus: status,
       rawTokensExposed: false,
+    };
+  }
+
+  configRequirementsRead() {
+    return {
+      requirements: null,
+      status: "none",
+      source: "direct-live-text-controller",
+      rawTokensExposed: false,
+      rawBackendFramesExposed: false,
     };
   }
 
@@ -4811,6 +4828,7 @@ class DirectLiveTextController {
   async handleRequest(method, params = {}, context = {}) {
     if (method === "initialize") return this.initialize(params, context);
     if (method === "account/read") return this.accountRead(params, context);
+    if (method === "configRequirements/read") return this.configRequirementsRead(params, context);
     if (method === "thread/start") return this.startThread(params, context);
     if (method === "thread/list") return this.listThreads(params, context);
     if (method === "thread/read") return this.readThread(params, context);
