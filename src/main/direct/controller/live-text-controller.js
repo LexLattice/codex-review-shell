@@ -107,6 +107,13 @@ function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
+function repairLoopContinuationInstructions(specificInstructions = "") {
+  return [
+    normalizeString(specificInstructions, ""),
+    DEFAULT_REPAIR_LOOP_CONTINUATION_INSTRUCTIONS,
+  ].filter(Boolean).join("\n\n");
+}
+
 function directWorkThreadContextCarrier(...sources) {
   const carrier = {
     workThread: null,
@@ -3744,6 +3751,10 @@ class DirectLiveTextController {
       clientDecisionId: normalizeString(options.clientPatchDecisionId, ""),
     });
     maybeInjectToolFaultAfterHistory("apply_patch");
+    const patchContinuationInstructions = [
+      normalizeString(continuationContext?.providerInput?.instructions, ""),
+      DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS,
+    ].filter(Boolean).join("\n\n");
     const continuation = await runPersistedReadOnlyToolContinuation({
       sessionStore: this.sessionStore,
       sessionId,
@@ -3752,11 +3763,8 @@ class DirectLiveTextController {
       continuationRequest,
       previousResponseId: parentResponseId,
       instructions: implementationRepairContinuation
-        ? DEFAULT_REPAIR_LOOP_CONTINUATION_INSTRUCTIONS
-        : [
-            normalizeString(continuationContext?.providerInput?.instructions, ""),
-            DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS,
-          ].filter(Boolean).join("\n\n"),
+        ? repairLoopContinuationInstructions(patchContinuationInstructions)
+        : patchContinuationInstructions,
       prompt: implementationRepairContinuation && originalUserIntent
         ? [
             `[CURRENT USER INTENT]\n${originalUserIntent}`,
@@ -3978,6 +3986,7 @@ class DirectLiveTextController {
       clientDecisionId: normalizeString(options.clientCommandDecisionId, ""),
     });
     maybeInjectToolFaultAfterHistory("run_command");
+    const commandContinuationInstructions = normalizeString(continuationContext?.providerInput?.instructions, "");
     const continuation = await runPersistedReadOnlyToolContinuation({
       sessionStore: this.sessionStore,
       sessionId,
@@ -3986,8 +3995,8 @@ class DirectLiveTextController {
       continuationRequest,
       previousResponseId: parentResponseId,
       instructions: implementationRepairContinuation
-        ? DEFAULT_REPAIR_LOOP_CONTINUATION_INSTRUCTIONS
-        : normalizeString(continuationContext?.providerInput?.instructions, ""),
+        ? repairLoopContinuationInstructions(commandContinuationInstructions)
+        : commandContinuationInstructions,
       prompt: implementationRepairContinuation && originalUserIntent
         ? [
             `[CURRENT USER INTENT]\n${originalUserIntent}`,

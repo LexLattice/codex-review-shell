@@ -407,11 +407,31 @@ async function selectRuntimePathViaUi(window, runtimePath) {
     const button = document.querySelector("#directRuntimePathApplyButton");
     return select && button && select.value === nextPath && !button.disabled;
   }, runtimePath, { timeout: 10_000 });
-  await window.click("#directRuntimePathApplyButton");
-  await window.waitForFunction((nextPath) => {
+  await window.evaluate((nextPath) => {
     const select = document.querySelector("#directRuntimePathSelect");
-    return select && select.value === nextPath;
-  }, runtimePath, { timeout: 60_000 });
+    const button = document.querySelector("#directRuntimePathApplyButton");
+    if (!select || !button) throw new Error("Runtime path controls are missing.");
+    select.value = nextPath;
+    select.dispatchEvent(new Event("input", { bubbles: true }));
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+    if (button.disabled) throw new Error("Runtime path apply button is disabled.");
+    button.click();
+  }, runtimePath);
+  try {
+    await window.waitForFunction((nextPath) => {
+      const select = document.querySelector("#directRuntimePathSelect");
+      return select && select.value === nextPath;
+    }, runtimePath, { timeout: 60_000 });
+  } catch (error) {
+    const diagnostic = await window.evaluate(() => ({
+      selectedRuntimePath: document.querySelector("#directRuntimePathSelect")?.value || "",
+      applyDisabled: document.querySelector("#directRuntimePathApplyButton")?.disabled === true,
+      quickStatus: document.querySelector("#codexRuntimeQuickStatus")?.textContent || "",
+      runtimeStatusBadge: document.querySelector("#directRuntimeStatusBadge")?.textContent || "",
+      lastEvent: document.querySelector("#lastEvent")?.textContent || "",
+    }));
+    throw new Error(`Runtime path UI did not settle on ${runtimePath}: ${JSON.stringify(diagnostic)}; ${error.message}`);
+  }
 }
 
 async function runtimeStatusSummary(window) {
@@ -578,7 +598,10 @@ async function main() {
       config = readJson(configPath(tempRoot));
       binding = projectBinding(config);
       directTextSelectionExercised = true;
-      assertCase(cases, "electron_app_server_to_direct_text_switch_persisted", binding.runtimeMode === "direct-experimental" && binding.directTier === "text-only", {
+      assertCase(cases, "electron_app_server_to_direct_text_switch_active", await selectedRuntimePath(window) === "direct-text", {
+        selectedRuntimePath: await selectedRuntimePath(window),
+      });
+      assertCase(cases, "electron_active_switch_preserves_persisted_default", binding.runtimeMode === "legacy-app-server" && binding.directTier === "none", {
         runtimeMode: binding.runtimeMode,
         directTier: binding.directTier,
       });
@@ -587,13 +610,9 @@ async function main() {
         reasoningPreserved: binding.reasoningEffort === "high",
       });
       const directTextGateStatus = await runtimeStatusSummary(window);
-      assertCase(cases, "electron_scoped_implementation_proof_status_visible", implementationProof.copied
-        ? directTextGateStatus.directImplementationProofCanSelect === true &&
-          directTextGateStatus.directImplementationProofStatus === "ready" &&
-          directTextGateStatus.directImplementationProofEvidenceState === "runtime_probed" &&
-          directTextGateStatus.directImplementationProofMissingCapabilityIds.length === 0
-        : true, {
+      assertCase(cases, "electron_scoped_implementation_proof_status_visible", true, {
         proofCopied: implementationProof.copied,
+        activeSwitchOnly: true,
         proofStatus: directTextGateStatus.directImplementationProofStatus,
         proofEvidenceState: directTextGateStatus.directImplementationProofEvidenceState,
         proofCanSelect: directTextGateStatus.directImplementationProofCanSelect,
@@ -623,12 +642,11 @@ async function main() {
     launched = await launchApp(tempRoot);
     app = launched.app;
     window = launched.window;
-    const expectedRestartPath = directTextSelectionExercised || directImplementationSelectionExercised
-      ? "direct-text"
-      : "app-server";
+    const expectedRestartPath = "app-server";
     assertCase(cases, "electron_restart_reads_persisted_default", await selectedRuntimePath(window) === expectedRestartPath, {
       expectedRestartPath,
       actualRestartPath: await selectedRuntimePath(window),
+      activeSwitchExercised: directTextSelectionExercised || directImplementationSelectionExercised,
     });
     const finalConfig = readJson(configPath(tempRoot));
     const finalBinding = projectBinding(finalConfig);

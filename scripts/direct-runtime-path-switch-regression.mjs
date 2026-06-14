@@ -156,8 +156,8 @@ assertIncludes(rendererSource, "const projectForConfig = runtimePathChanged ? pr
 assertIncludes(rendererSource, "bridge.setDirectRuntimePath(project.id, requestedRuntimePath", "drawer routes project drawer runtime path changes through guarded IPC");
 assertIncludes(rendererSource, "bridge.embarkDirectRuntime(project.id, options)", "runtime switch routes user-facing Direct through Direct embark");
 assertIncludes(rendererSource, "directTextOption.disabled = false", "Direct backend option remains selectable before gate validation");
-assertIncludes(rendererSource, "persistDefault = selectEl === els.directRuntimePathSelect", "runtime picker separates active switch from persisted default");
-assertIncludes(rendererSource, "persistDefault: true", "settings runtime picker remains default-scoped");
+assertIncludes(rendererSource, "const persistDefault = false", "visible runtime picker is active-session scoped");
+assertIncludes(rendererSource, "codexDefaultPathInput", "project drawer remains the persisted default selector");
 assertIncludes(rendererSource, "persistDefault,", "runtime switch sends scope to main process");
 assertIncludes(rendererSource, "Active Codex backend switched", "quick backend switch reports active session scope");
 assert.ok(

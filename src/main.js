@@ -95,6 +95,16 @@ const {
   normalizeEvidenceRef,
 } = require("./main/direct/readiness/usage-readiness");
 const {
+  assertContextPacketPreviewSafe,
+  buildContextPacketPreview,
+} = require("./main/direct/context/preview-workbench");
+const {
+  assertOperatorBrokerProjectionSafe,
+  assertOperatorBrokerResolutionSafe,
+  buildOperatorBrokerResolution,
+  buildOperatorBrokerResolutionProjection,
+} = require("./main/direct/governance/operator-broker-resolution");
+const {
   buildAppServerFallbackParityReport,
 } = require("./main/direct/readiness/appserver-fallback-parity");
 const {
@@ -2383,6 +2393,7 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     legacySession: currentLegacyAppServerSnapshot(),
   });
   const generatedAt = nowIso();
+  const workThreadBundle = directWorkThreadProjectionForProject(project);
   const runtimeWitnessProjection = buildDirectRuntimeWitnessProjectionForProject({
     project,
     runtimeStatus,
@@ -2390,6 +2401,13 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     appServerFallbackParity,
     generatedAt,
   });
+  const contextPreview = directContextPreviewForProject(project, {
+    runtimeStatus,
+    runtimeWitnessProjection,
+    agentUsageStatus,
+    workThreadBundle,
+  });
+  const operatorBroker = directOperatorBrokerProjectionForProject(project, workThreadBundle);
   const registryAudit = buildDirectInformationBridgeAudit({
     branch: "codex/direct-chatgpt-harness",
     generatedAt,
@@ -2398,29 +2416,13 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     projectId,
     runtimeStatus,
     registryAudit,
-    workThreads: {
-      status: {
-        available: false,
-        reason: "work_thread_registry_store_not_wired_to_main_process",
-        workThreadCount: 0,
-        activeCount: 0,
-      },
-      resolution: {
-        resolutionState: "unavailable",
-        candidates: [],
-        ambiguityBlockers: ["work_thread_registry_store_not_wired_to_main_process"],
-        transitionLaw: {
-          mutationAllowed: false,
-          providerCallAllowed: false,
-          routingEnforced: false,
-          reason: "settings_surface_status_only",
-        },
-      },
-    },
+    workThreads: workThreadBundle,
+    operatorBroker,
     metaSessionStatus,
     moduleStatus,
     agentClassStatus,
     continuityStatus: runtimeStatus.directContextMaintenance,
+    contextPreview,
     runtimeWitnessProjection,
     agentUsageStatus,
     appServerFallbackParityReport: appServerFallbackParity,
@@ -2511,6 +2513,168 @@ function buildDirectAgentUsageStatusForProject(projectId) {
       rawSecretIncluded: false,
     };
   }
+}
+
+function emptyDirectWorkThreadProjection(projectId, reason = "work_thread_registry_unavailable") {
+  return {
+    status: {
+      available: false,
+      reason,
+      workThreadCount: 0,
+      activeCount: 0,
+      projectionDigest: "",
+    },
+    projection: {
+      schema: "direct_work_thread_projection@1",
+      projectId,
+      generatedAt: nowIso(),
+      rowCount: 0,
+      activeCount: 0,
+      rows: [],
+      projectionDigest: "",
+      rawTextIncluded: false,
+      rawPathIncluded: false,
+    },
+    resolutionReport: {
+      resolutionState: "unavailable",
+      routingGateState: "unavailable",
+      selectedWorkThreadId: "",
+      candidateCount: 0,
+      blockerCodes: [reason],
+      ambiguityBlockers: [reason],
+      clarificationRequired: false,
+      nonTargetPreservationRequired: true,
+      mutationBlocked: true,
+      providerCallBlocked: true,
+      reportDigest: "",
+    },
+  };
+}
+
+function directWorkThreadProjectionForProject(project = {}) {
+  const projectId = normalizeString(project?.id, "");
+  if (!projectId) return emptyDirectWorkThreadProjection("", "project_missing");
+  try {
+    const store = ensureDirectWorkThreadStore();
+    const status = store.status({ projectId });
+    const projection = store.buildProjection({ projectId });
+    const resolutionReport = store.resolveWorkTargetReport({
+      projectId,
+      activeRuntimePath: directRuntimePathFromBinding(project.surfaceBinding?.codex || {}),
+      maxAgeMs: 10 * 60 * 1000,
+    });
+    return { status, projection, resolutionReport };
+  } catch (error) {
+    return emptyDirectWorkThreadProjection(projectId, normalizeString(error?.code || error?.message, "work_thread_registry_unavailable"));
+  }
+}
+
+function directOperatorBrokerProjectionForProject(project = {}, workThreadBundle = null) {
+  const projectId = normalizeString(project?.id, "");
+  if (!projectId) return null;
+  try {
+    const store = ensureDirectWorkThreadStore();
+    const workThreads = store.listWorkThreads({ projectId, includeArchived: true });
+    const resolution = buildOperatorBrokerResolution({
+      projectId,
+      activeRuntimePath: directRuntimePathFromBinding(project.surfaceBinding?.codex || {}),
+      workTargetResolutionReport: workThreadBundle?.resolutionReport,
+    }, workThreads, { nowMs: Date.now() });
+    assertOperatorBrokerResolutionSafe(resolution);
+    const projection = buildOperatorBrokerResolutionProjection(resolution);
+    assertOperatorBrokerProjectionSafe(projection);
+    return projection;
+  } catch (error) {
+    return {
+      schema: "operator_broker_resolution_projection@1",
+      brokerResolutionId: "",
+      projectId,
+      resolutionState: "unavailable",
+      routingGateState: "unavailable",
+      selectedWorkThreadId: "",
+      candidateCount: 0,
+      confidenceLabel: "none",
+      candidates: [],
+      ambiguityBlockers: [normalizeString(error?.code || error?.message, "operator_broker_unavailable")],
+      clarificationRequired: false,
+      nonTargetPreservationRequired: true,
+      nonTargetPreservationConstraints: ["preserve_non_target_workthreads"],
+      workWorldSnapshot: {},
+      authority: {
+        mutationAuthorityGranted: false,
+        providerCallAuthorityGranted: false,
+        routingEnforced: false,
+        workspaceMutationAllowed: false,
+        providerTransportAllowed: false,
+        rawTextIncluded: false,
+        rawPathIncluded: false,
+        rawSecretIncluded: false,
+      },
+      rawTextIncluded: false,
+      rawPathIncluded: false,
+      rawSecretIncluded: false,
+    };
+  }
+}
+
+function directContextPreviewForProject(project = {}, input = {}) {
+  const projectId = normalizeString(project?.id, "");
+  const runtimePath = directRuntimePathFromBinding(project.surfaceBinding?.codex || {});
+  const workThreadBundle = input.workThreadBundle || directWorkThreadProjectionForProject(project);
+  const contextMaintenance = input.runtimeStatus?.directContextMaintenance || {};
+  const preview = buildContextPacketPreview({
+    projectId,
+    harnessPolicyRows: [
+      {
+        sourceClass: "harness_policy",
+        sourceId: "direct_runtime_path",
+        label: `Direct runtime path: ${runtimePath || "unknown"}`,
+        includedInRequest: true,
+        required: true,
+        stale: false,
+        missing: !runtimePath,
+        retentionLaw: "runtime_selection_witness",
+      },
+      {
+        sourceClass: "harness_policy",
+        sourceId: "work_thread_registry",
+        label: `WorkThread registry: ${Number(workThreadBundle?.status?.workThreadCount || 0)} active-world row(s)`,
+        includedInRequest: true,
+        required: false,
+        stale: false,
+        missing: workThreadBundle?.status?.available !== true,
+        retentionLaw: "work_thread_identity_witness",
+      },
+      {
+        sourceClass: "harness_policy",
+        sourceId: "context_maintenance",
+        label: `Context maintenance: ${normalizeString(contextMaintenance.pressureState, "unknown")}`,
+        includedInRequest: true,
+        required: false,
+        stale: false,
+        missing: false,
+        retentionLaw: "context_status_witness",
+      },
+    ],
+    sourceArtifacts: [
+      {
+        artifactKind: "runtime_witness",
+        artifactId: input.runtimeWitnessProjection?.projectionId || "",
+        label: "Direct model/reasoning/quota/usage witness",
+        artifactDigest: input.runtimeWitnessProjection?.integrity?.artifactDigest || "",
+        requiredForRequest: false,
+      },
+      {
+        artifactKind: "usage_projection",
+        artifactId: input.agentUsageStatus?.projectionId || "",
+        label: "Direct usage summary projection",
+        artifactDigest: input.agentUsageStatus?.projectionDigest || "",
+        requiredForRequest: false,
+      },
+    ],
+  }, { nowMs: Date.now() });
+  assertContextPacketPreviewSafe(preview);
+  return preview;
 }
 
 function directWitnessStateFromEvidence(value) {
@@ -2605,6 +2769,130 @@ function buildDirectRuntimeWitnessProjectionForProject(input = {}) {
       },
     ],
   });
+}
+
+function directRuntimeWitnessChip(witness = {}, kind = "") {
+  return (Array.isArray(witness.chips) ? witness.chips : [])
+    .find((chip) => normalizeString(chip?.kind, "") === kind) || null;
+}
+
+function directCompactWitnessLabel(label = "", prefix = "") {
+  const text = normalizeString(label, "");
+  if (!text) return "";
+  const trimmed = prefix && text.toLowerCase().startsWith(prefix.toLowerCase())
+    ? text.slice(prefix.length).trim()
+    : text;
+  return trimmed.replace(/\s*\([^)]*\)\s*$/, "").trim();
+}
+
+function buildDirectComposerRuntimeWitness(input = {}) {
+  const runtimeWitness = input.runtimeWitnessProjection || {};
+  const contextPreview = input.contextPreview || {};
+  const agentUsage = input.agentUsageStatus || {};
+  const modelChip = directRuntimeWitnessChip(runtimeWitness, "model");
+  const reasoningChip = directRuntimeWitnessChip(runtimeWitness, "reasoning");
+  const quotaChip = directRuntimeWitnessChip(runtimeWitness, "quota");
+  const usageChip = directRuntimeWitnessChip(runtimeWitness, "usage");
+  const sourceCount = Number(contextPreview?.rendererSafeSummary?.sourceCount ?? contextPreview?.counts?.rowCount ?? 0);
+  const includedCount = Number(contextPreview?.rendererSafeSummary?.includedSourceCount ?? contextPreview?.counts?.includedSourceCount ?? 0);
+  const blockerCount = Number(contextPreview?.rendererSafeSummary?.blockerCount ?? 0);
+  const knownTokens = Number(agentUsage?.totals?.totalTokensKnown || 0);
+  return {
+    schema: "direct_composer_runtime_witness@1",
+    modelLabel: directCompactWitnessLabel(modelChip?.label, "Model") || "model unknown",
+    modelState: normalizeString(modelChip?.state, "unknown"),
+    reasoningLabel: directCompactWitnessLabel(reasoningChip?.label, "Reasoning") || "reasoning unknown",
+    reasoningState: normalizeString(reasoningChip?.state, "unknown"),
+    quotaLabel: directCompactWitnessLabel(quotaChip?.label, "Quota/rate") || "quota unknown",
+    quotaState: normalizeString(quotaChip?.state, "unknown"),
+    usageLabel: knownTokens > 0
+      ? `usage ${knownTokens} token${knownTokens === 1 ? "" : "s"} known`
+      : directCompactWitnessLabel(usageChip?.label, "Usage") || "usage unknown",
+    usageState: normalizeString(usageChip?.state, "unknown"),
+    contextLabel: sourceCount
+      ? `context preview ${includedCount}/${sourceCount}`
+      : "context preview unknown",
+    contextState: blockerCount ? "blocked" : sourceCount ? "diagnostic" : "unknown",
+    contextPreviewDigest: normalizeString(contextPreview.previewDigest, ""),
+    usageProjectionDigest: normalizeString(agentUsage.projectionDigest, ""),
+    runtimeWitnessDigest: normalizeString(runtimeWitness.integrity?.artifactDigest || runtimeWitness.projectionDigest, ""),
+    rawTextIncluded: false,
+    rawPathIncluded: false,
+    rawSecretIncluded: false,
+  };
+}
+
+function buildDirectCodexSurfaceProjectionForProject(project = {}, input = {}) {
+  const projectId = normalizeString(project?.id, "");
+  const runtimeStatus = input.runtimeStatus || buildDirectRuntimeStatusForProject(project);
+  const agentUsageStatus = input.agentUsageStatus || buildDirectAgentUsageStatusForProject(projectId);
+  const workThreadBundle = input.workThreadBundle || directWorkThreadProjectionForProject(project);
+  const appServerFallbackParity = input.appServerFallbackParity || runtimeStatus.appServerFallbackParity || buildAppServerFallbackParityReport({
+    projectId,
+    runtimeStatus,
+    legacySession: currentLegacyAppServerSnapshot(),
+  });
+  const generatedAt = normalizeString(input.generatedAt, nowIso());
+  const runtimeWitnessProjection = input.runtimeWitnessProjection || buildDirectRuntimeWitnessProjectionForProject({
+    project,
+    runtimeStatus,
+    agentUsageStatus,
+    appServerFallbackParity,
+    generatedAt,
+  });
+  const contextPreview = input.contextPreview || directContextPreviewForProject(project, {
+    runtimeStatus,
+    runtimeWitnessProjection,
+    agentUsageStatus,
+    workThreadBundle,
+  });
+  const operatorBroker = input.operatorBroker || directOperatorBrokerProjectionForProject(project, workThreadBundle);
+  const composerRuntimeWitness = buildDirectComposerRuntimeWitness({
+    runtimeWitnessProjection,
+    contextPreview,
+    agentUsageStatus,
+  });
+  const projection = {
+    schema: "direct_codex_surface_projection@1",
+    projectId,
+    generatedAt,
+    runtimePath: directRuntimePathFromBinding(project.surfaceBinding?.codex || {}),
+    runtimeWitnessProjection,
+    composerRuntimeWitness,
+    contextPreview,
+    agentUsageStatus,
+    operatorBroker,
+    workThreads: {
+      status: workThreadBundle.status,
+      projection: workThreadBundle.projection,
+      resolutionReport: workThreadBundle.resolutionReport,
+    },
+    attachmentCapability: input.attachmentCapability || null,
+    authority: {
+      displayOnly: true,
+      rendererSafe: true,
+      runtimeMutationAllowed: false,
+      providerTransportAllowed: false,
+      workspaceMutationAllowed: false,
+      rawTextIncluded: false,
+      rawPathIncluded: false,
+      rawSecretIncluded: false,
+    },
+    rawTextIncluded: false,
+    rawPathIncluded: false,
+    rawSecretIncluded: false,
+  };
+  projection.projectionDigest = crypto.createHash("sha256").update(JSON.stringify({
+    schema: projection.schema,
+    projectId,
+    generatedAt,
+    runtimePath: projection.runtimePath,
+    runtimeWitnessDigest: composerRuntimeWitness.runtimeWitnessDigest,
+    contextPreviewDigest: composerRuntimeWitness.contextPreviewDigest,
+    usageProjectionDigest: composerRuntimeWitness.usageProjectionDigest,
+    workThreadDigest: workThreadBundle?.projection?.projectionDigest || "",
+  })).digest("hex");
+  return projection;
 }
 
 function emitDirectRuntimeStatus(project = currentProject) {
@@ -3687,6 +3975,10 @@ async function loadCodexSurface(project, options = {}) {
     const capabilities = isLiveText
       ? buildDirectLiveTextCapabilities(liveTextStatus)
       : buildDirectFixtureCapabilities();
+    const directSurfaceProjection = buildDirectCodexSurfaceProjectionForProject(project, {
+      runtimeStatus,
+      attachmentCapability: capabilities.attachments || null,
+    });
     const directConnection = {
       connectionRef: newId("direct_codex_conn"),
       projectId: project.id,
@@ -3697,6 +3989,7 @@ async function loadCodexSurface(project, options = {}) {
       capabilities,
       activationEpoch: Number(options.activationEpoch) || 0,
       directLiveText: liveTextStatus || null,
+      directSurfaceProjection,
       fixture: isLiveText ? null : {
         id: "plain-text-turn",
         source: "normalized-fixture",
@@ -3705,6 +3998,7 @@ async function loadCodexSurface(project, options = {}) {
     activeCodexSurfaceConnection = directConnection;
     const localUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, {
       codexConnection: directConnection,
+      directSurfaceProjection,
       activationEpoch: Number(options.activationEpoch) || 0,
       error: [
         `Direct runtime selected: ${runtimeStatus.runtimeModeLabel}.`,
@@ -7255,6 +7549,13 @@ ipcMain.handle("codex-surface:disconnect", async (event) => {
   const session = codexSurfaceSessionFor(event.sender);
   await session.dispose({ reason: "Renderer requested disconnect." });
   return true;
+});
+
+ipcMain.handle("codex-surface:direct-projection", async (event, payload) => {
+  requireFullCodexSurfaceBridge(event.sender, "codex-surface:direct-projection");
+  const project = await getProjectById(payload?.projectId);
+  if (!project) throw new Error("Project not found.");
+  return buildDirectCodexSurfaceProjectionForProject(project);
 });
 
 ipcMain.handle("codex-surface:request", async (event, payload) => {

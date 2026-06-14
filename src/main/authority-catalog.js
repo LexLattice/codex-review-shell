@@ -89,6 +89,12 @@ const IPC_CHANNEL_CONTRACTS = Object.freeze([
     authorityEvidence: "PendingServerRequest",
   },
   {
+    channel: "codex-surface:direct-projection",
+    allowedSenderRoles: [SURFACE_ROLES.TRUSTED_CODEX_SURFACE],
+    requiredBridgeProfile: CODEX_SURFACE_BRIDGE_PROFILES.FULL,
+    authorityEvidence: "DirectCodexSurfaceProjection",
+  },
+  {
     channel: "attachments:*",
     allowedSenderRoles: [SURFACE_ROLES.SHELL_RENDERER, SURFACE_ROLES.TRUSTED_CODEX_SURFACE],
     requiredBridgeProfile: "shell_or_full_codex_surface_bridge",
