@@ -333,6 +333,7 @@ function finalizeProjection(projection) {
     projection.quota.observedAt,
     projection.turns.observedAt,
     projection.tools.observedAt,
+    projection.requests.observedAt,
   );
   const sources = [
     projection.tokens.source,
@@ -340,6 +341,7 @@ function finalizeProjection(projection) {
     projection.quota.source,
     projection.turns.source,
     projection.tools.source,
+    projection.requests.source,
   ].filter((source) => source && source !== "unavailable");
   const confidences = [
     projection.tokens.confidence,
@@ -347,6 +349,7 @@ function finalizeProjection(projection) {
     projection.quota.confidence,
     projection.turns.confidence,
     projection.tools.confidence,
+    projection.requests.confidence,
   ].filter((confidence) => confidence && confidence !== "unavailable");
   projection.status = sources.length
     ? projection.blockers.length
@@ -535,8 +538,17 @@ function buildDirectRuntimeAnalyticsProjection(input = {}) {
   const counts = isPlainObject(summary.counts) ? summary.counts : {};
   const tokenTotals = isPlainObject(summary.tokenTotals) ? summary.tokenTotals : {};
   const observedAt = normalizeString(snapshot.lastObservedAt || summary.lastObservedAt, "");
+  const nonMissingUsageFacts = numberOrZero(counts.nonMissingUsageFacts);
+  const hasKnownTokenTotals = [
+    tokenTotals.inputTokens,
+    tokenTotals.cachedInputTokens,
+    tokenTotals.nonCachedInputTokens,
+    tokenTotals.outputTokens,
+    tokenTotals.reasoningTokens,
+    tokenTotals.totalTokens,
+  ].some((value) => nullableNumber(value) !== null && numberOrZero(value) > 0);
 
-  if (numberOrZero(counts.usageFacts) > 0) {
+  if (nonMissingUsageFacts > 0 || hasKnownTokenTotals) {
     projection.tokens = {
       status: "available",
       source: "direct_native",

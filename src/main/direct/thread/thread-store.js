@@ -1142,6 +1142,7 @@ class DirectThreadStore {
           contextFacts: 0,
           toolFacts: 0,
           quotaFacts: 0,
+          nonMissingUsageFacts: 0,
         },
         context: {
           contextBuildsAllowed: false,
@@ -1573,6 +1574,7 @@ class DirectThreadStore {
       counts: {
         timingMarks: countFor("direct_runtime_timing_marks"),
         usageFacts: countFor("direct_turn_usage_facts"),
+        nonMissingUsageFacts: tokenRows.length,
         contextFacts: countFor("direct_context_analytics_facts"),
         toolFacts: countFor("direct_tool_analytics_facts"),
         quotaFacts: countFor("direct_quota_snapshot_facts"),
@@ -1645,7 +1647,7 @@ class DirectThreadStore {
             observed_at
           from direct_context_analytics_facts
           where project_id = ?
-          order by observed_at desc
+          order by (used_percent is null), observed_at desc
           limit 1
         `).get(safeProjectId)
       : this.db.prepare(`
@@ -1659,7 +1661,7 @@ class DirectThreadStore {
             estimate_confidence,
             observed_at
           from direct_context_analytics_facts
-          order by observed_at desc
+          order by (used_percent is null), observed_at desc
           limit 1
         `).get();
     const toolRows = safeProjectId
@@ -1722,9 +1724,9 @@ class DirectThreadStore {
       ? this.db.prepare(`
           select
             started.turn_id as turn_id,
-            started.at as started_at,
-            completed.at as completed_at,
-            first_visible.at as first_visible_at
+            min(started.at) as started_at,
+            min(completed.at) as completed_at,
+            min(first_visible.at) as first_visible_at
           from direct_runtime_timing_marks started
           left join direct_runtime_timing_marks completed
             on completed.project_id = started.project_id
@@ -1738,13 +1740,14 @@ class DirectThreadStore {
             and first_visible.mark_kind = 'first_visible_delta'
           where started.project_id = ?
             and started.mark_kind in ('submitted', 'accepted')
+          group by started.project_id, started.thread_id, started.turn_id
         `).all(safeProjectId)
       : this.db.prepare(`
           select
             started.turn_id as turn_id,
-            started.at as started_at,
-            completed.at as completed_at,
-            first_visible.at as first_visible_at
+            min(started.at) as started_at,
+            min(completed.at) as completed_at,
+            min(first_visible.at) as first_visible_at
           from direct_runtime_timing_marks started
           left join direct_runtime_timing_marks completed
             on completed.project_id = started.project_id
@@ -1757,6 +1760,7 @@ class DirectThreadStore {
             and first_visible.turn_id = started.turn_id
             and first_visible.mark_kind = 'first_visible_delta'
           where started.mark_kind in ('submitted', 'accepted')
+          group by started.project_id, started.thread_id, started.turn_id
         `).all();
 
     const toolByKind = new Map();
@@ -1802,7 +1806,15 @@ class DirectThreadStore {
     const timing = {
       started: Math.max(timingByKind.get("submitted") || 0, timingByKind.get("accepted") || 0),
       completed: timingByKind.get("completed") || 0,
-      active: Math.max(0, Math.max(timingByKind.get("submitted") || 0, timingByKind.get("accepted") || 0) - (timingByKind.get("completed") || 0)),
+      failed: timingByKind.get("failed") || 0,
+      aborted: timingByKind.get("aborted") || 0,
+      active: Math.max(
+        0,
+        Math.max(timingByKind.get("submitted") || 0, timingByKind.get("accepted") || 0)
+          - (timingByKind.get("completed") || 0)
+          - (timingByKind.get("failed") || 0)
+          - (timingByKind.get("aborted") || 0),
+      ),
       durationMs: completedDurations.length
         ? completedDurations.reduce((sum, value) => sum + value, 0)
         : 0,

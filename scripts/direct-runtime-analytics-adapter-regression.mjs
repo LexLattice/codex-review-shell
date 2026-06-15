@@ -101,7 +101,40 @@ assert.equal(appserverProjection.requests.resolved, 1);
 assert.equal(appserverProjection.privacy.rawPromptIncluded, false);
 assert.equal(appserverProjection.privacy.costComputed, false);
 
+const requestOnlyProjection = buildRuntimeAnalyticsProjection({
+  projectId: "project_request_only",
+  threadId: "thread_request_only",
+  runtimePath: "app-server",
+  usageLedgerAnalytics: {
+    schemaVersion: 1,
+    status: "available",
+    source: "codex_usage_ledger@1",
+    lastObservedAt: "2026-06-15T09:05:00.000Z",
+    requests: {
+      total: 1,
+      pending: 1,
+      resolved: 0,
+      failed: 0,
+      byKind: [{ xValue: "approval", yValue: 1 }],
+    },
+  },
+  generatedAt: "2026-06-15T09:05:01.000Z",
+});
+assert.equal(requestOnlyProjection.status, "partial");
+assert.equal(requestOnlyProjection.requests.status, "available");
+assert.equal(requestOnlyProjection.sourcePosture.primarySource, "derived_from_appserver");
+
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "direct-runtime-analytics-adapter-"));
+let store;
+function cleanup() {
+  try {
+    store?.close();
+  } catch {}
+  try {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  } catch {}
+}
+process.once("exit", cleanup);
 const projectId = "project_direct_runtime_adapter";
 const session = {
   sessionId: "direct_session_adapter",
@@ -117,6 +150,7 @@ const turn = {
   threadId: session.sessionId,
   turnId: "direct_turn_adapter",
   state: "completed",
+  submittedAt: "2026-06-15T10:00:00.000Z",
   createdAt: "2026-06-15T10:00:00.000Z",
   requestBuiltAt: "2026-06-15T10:00:00.250Z",
   firstVisibleDeltaAt: "2026-06-15T10:00:01.200Z",
@@ -158,6 +192,21 @@ const turn = {
     ],
   },
 };
+const failedTurn = {
+  ...turn,
+  turnId: "direct_turn_adapter_failed",
+  state: "failed",
+  submittedAt: "2026-06-15T10:01:00.000Z",
+  createdAt: "2026-06-15T10:01:00.000Z",
+  firstVisibleDeltaAt: "",
+  completedAt: "",
+  failedAt: "2026-06-15T10:01:04.000Z",
+  updatedAt: "2026-06-15T10:01:04.000Z",
+  toolResults: [],
+  usageAttribution: {
+    rows: [],
+  },
+};
 const providerMetadataProfile = {
   schema: "direct_provider_metadata_profile@1",
   provider: "openai",
@@ -187,13 +236,18 @@ const providerMetadataProfile = {
   },
 };
 
-const store = new DirectThreadStore({ rootDir: tempRoot, mode: "index_only" });
+store = new DirectThreadStore({ rootDir: tempRoot, mode: "index_only" });
 store.recordDirectRuntimeAnalyticsFacts({
   projectId,
-  sessionTurns: [{ session, turns: [turn] }],
+  sessionTurns: [{ session, turns: [turn, failedTurn] }],
   providerMetadataProfile,
 });
 const directSnapshot = store.getDirectRuntimeAnalyticsFactSnapshot(projectId);
+assert.equal(directSnapshot.summary.counts.nonMissingUsageFacts, 1);
+assert.equal(directSnapshot.timing.completed, 1);
+assert.equal(directSnapshot.timing.failed, 1);
+assert.equal(directSnapshot.timing.active, 0);
+assert.equal(directSnapshot.timing.durationMs, 5000);
 const directProjection = buildRuntimeAnalyticsProjection({
   projectId,
   threadId: session.sessionId,
@@ -229,7 +283,27 @@ assert.equal(unavailableProjection.status, "unavailable");
 assert.equal(unavailableProjection.tokens.inputTokens, null);
 assert(unavailableProjection.blockers.includes("direct_token_usage_unavailable"));
 
-store.close();
+const missingUsageProjection = buildRuntimeAnalyticsProjection({
+  projectId: "project_missing_usage",
+  runtimePath: "direct-implementation",
+  directFactSnapshot: {
+    summary: {
+      counts: { usageFacts: 1, nonMissingUsageFacts: 0 },
+      tokenTotals: {
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        nonCachedInputTokens: 0,
+        outputTokens: 0,
+        reasoningTokens: 0,
+        totalTokens: 0,
+      },
+    },
+  },
+});
+assert.equal(missingUsageProjection.tokens.status, "unavailable");
+assert.equal(missingUsageProjection.tokens.inputTokens, null);
+
+cleanup();
 
 console.log(JSON.stringify({
   ok: true,
