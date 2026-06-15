@@ -2533,10 +2533,63 @@ renderer-only live projections, but bottom-band/runtime UI truth still depends
 on PR 46 metadata projection and later analytics-display work.
 ```
 
+### PR 48: Runtime Analytics Adapter Projection
+
+Status: planned.
+
+Purpose:
+
+```text
+Create one UX-facing runtime analytics projection that can be populated from
+either the vanilla app-server path or the direct path, while preserving source,
+confidence, freshness, and blocker truth per field.
+```
+
+Scope:
+
+- Add a provider-neutral `RuntimeAnalyticsProjection@1` contract.
+- Add an app-server adapter that consumes native app-server/usage-ledger
+  analytics where available and avoids expensive synthetic reconstruction.
+- Add a direct adapter that consumes direct runtime analytics fact tables,
+  direct usage ledger summaries, and provider metadata profile facts.
+- Classify every metric as:
+  - `appserver_native`;
+  - `direct_native`;
+  - `derived_from_appserver`;
+  - `derived_from_direct`;
+  - `unavailable`.
+- Preserve evidence refs, confidence, freshness, and blockers for every
+  displayed field.
+- Keep the renderer consuming the normalized projection only.
+
+Explicit non-goals:
+
+- No new analytics dashboard UI yet.
+- No cost computation.
+- No billing-grade claim.
+- No synthetic reconstruction from app-server payloads unless cheap, stable,
+  and explicitly marked derived.
+- No runtime selection, provider calls, tool execution, workspace mutation, or
+  matrix promotion.
+
+Promotion criterion:
+
+```text
+Middle analytics, bottom-band chips, and future daemon analytics can consume one
+projection shape without hiding whether a value is native, derived, estimated,
+or unavailable for the active runtime path.
+```
+
 ### Planned follow-up: Headless Direct Service / Message Endpoint
 
 Status: not implemented; conceptually distinct from the existing one-shot
 headless real-turn scripts.
+
+Spec:
+
+```text
+docs/DIRECT_HEADLESS_BRIDGE_DAEMON_SPEC.md
+```
 
 Current implemented substrate:
 
