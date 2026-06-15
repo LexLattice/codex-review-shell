@@ -42,6 +42,9 @@ const {
   buildControlledRoutingSlice,
   validateControlledRoutingSlice,
 } = require("../bridge/controlled-routing");
+const {
+  buildDirectRuntimeAnalyticsFacts,
+} = require("../analytics/runtime-facts");
 
 const DIRECT_THREAD_STORE_STATUS_SCHEMA = "direct_thread_store_status@1";
 const DIRECT_THREAD_OPERATION_EVENT_SCHEMA = "direct_thread_operation_event@1";
@@ -174,6 +177,11 @@ const DIRECT_THREAD_COUNT_TABLES = new Set([
   "direct_rollouts",
   "direct_threads",
   "direct_turns",
+  "direct_runtime_timing_marks",
+  "direct_turn_usage_facts",
+  "direct_context_analytics_facts",
+  "direct_tool_analytics_facts",
+  "direct_quota_snapshot_facts",
 ]);
 const DIRECT_PROJECTION_KINDS = new Set([
   RENDERER_TRANSCRIPT_PROJECTION_KIND,
@@ -220,6 +228,45 @@ function workThreadContextCarrier(input = {}) {
 function normalizeNumber(value, fallback = 0) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : fallback;
+}
+
+function nullableNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function jsonText(value) {
+  return JSON.stringify(value === undefined ? null : value);
+}
+
+function usageFactPriority(row = {}) {
+  const kind = normalizeString(row.usage_record_kind, "missing");
+  if (kind === "terminal") return 5;
+  if (kind === "delta") return 3;
+  if (kind === "diagnostic") return 2;
+  return 1;
+}
+
+function dedupeUsageFactRowsForTotals(rows = []) {
+  const byKey = new Map();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const threadId = normalizeString(row.thread_id, "");
+    const turnId = normalizeString(row.turn_id, "");
+    const responseId = normalizeString(row.response_id, "");
+    const sourceRowDigest = normalizeString(row.source_row_digest, "");
+    const usageFactId = normalizeString(row.usage_fact_id, "");
+    const key = responseId
+      ? `${threadId}:${turnId}:response:${responseId}`
+      : sourceRowDigest
+        ? `${threadId}:${turnId}:source:${sourceRowDigest}`
+        : `${threadId}:${turnId}:fact:${usageFactId}`;
+    const existing = byKey.get(key);
+    if (!existing || usageFactPriority(row) >= usageFactPriority(existing)) {
+      byKey.set(key, row);
+    }
+  }
+  return [...byKey.values()];
 }
 
 function normalizeLifecycleState(value, fallback = "active") {
@@ -833,6 +880,107 @@ class DirectThreadStore {
         foreign key(context_build_id) references direct_context_builds(context_build_id)
       );
 
+      create table if not exists direct_runtime_timing_marks (
+        timing_mark_id text primary key,
+        project_id text not null,
+        thread_id text not null,
+        turn_id text not null,
+        agent_thread_id text,
+        agent_kind text,
+        mark_kind text not null,
+        at text not null,
+        source_kind text not null,
+        confidence text not null,
+        fact_digest text not null,
+        created_at text not null,
+        unique(project_id, thread_id, turn_id, mark_kind)
+      );
+
+      create table if not exists direct_turn_usage_facts (
+        usage_fact_id text primary key,
+        project_id text not null,
+        thread_id text not null,
+        turn_id text not null,
+        agent_thread_id text,
+        agent_kind text,
+        parent_thread_id text,
+        model text,
+        reasoning_effort text,
+        service_tier text,
+        response_id text,
+        request_manifest_id text,
+        context_build_id text,
+        usage_source text not null,
+        usage_record_kind text not null,
+        usage_missing_reason text,
+        input_tokens integer,
+        cached_input_tokens integer,
+        non_cached_input_tokens integer,
+        output_tokens integer,
+        reasoning_tokens integer,
+        total_tokens integer,
+        token_confidence_json text not null,
+        observed_at text,
+        source_row_digest text,
+        fact_digest text not null,
+        raw_prompt_included integer not null default 0,
+        raw_response_included integer not null default 0,
+        raw_provider_frame_included integer not null default 0,
+        raw_token_details_included integer not null default 0,
+        billing_grade integer not null default 0
+      );
+
+      create table if not exists direct_context_analytics_facts (
+        context_fact_id text primary key,
+        project_id text not null,
+        thread_id text not null,
+        turn_id text not null,
+        context_build_id text,
+        request_manifest_id text,
+        model_context_window integer,
+        input_tokens integer,
+        used_percent real,
+        source_mix_json text not null,
+        omitted_sources_json text not null,
+        estimate_confidence text not null,
+        observed_at text,
+        fact_digest text not null
+      );
+
+      create table if not exists direct_tool_analytics_facts (
+        tool_fact_id text primary key,
+        project_id text not null,
+        thread_id text not null,
+        turn_id text not null,
+        agent_thread_id text,
+        agent_kind text,
+        tool_kind text not null,
+        tool_name text,
+        status text not null,
+        started_at text,
+        completed_at text,
+        duration_ms integer,
+        workspace_effect_summary_json text not null,
+        source_ref_json text not null,
+        fact_digest text not null
+      );
+
+      create table if not exists direct_quota_snapshot_facts (
+        quota_fact_id text primary key,
+        project_id text not null,
+        provider text not null,
+        window_kind text not null,
+        window_id text not null,
+        used_percent real,
+        resets_at text,
+        window_duration_mins integer,
+        plan_type text,
+        observed_at text not null,
+        source text not null,
+        account_evidence_key text,
+        fact_digest text not null
+      );
+
       create table if not exists direct_compaction_checkpoints (
         checkpoint_id text primary key,
         project_id text not null,
@@ -880,6 +1028,18 @@ class DirectThreadStore {
         on direct_projection_items(projection_id, stable_source_item_key);
       create index if not exists idx_direct_context_builds_thread
         on direct_context_builds(project_id, thread_id, built_at desc);
+      create index if not exists idx_direct_runtime_timing_marks_turn
+        on direct_runtime_timing_marks(project_id, thread_id, turn_id, mark_kind);
+      create index if not exists idx_direct_turn_usage_facts_turn
+        on direct_turn_usage_facts(project_id, thread_id, turn_id);
+      create index if not exists idx_direct_turn_usage_facts_agent
+        on direct_turn_usage_facts(project_id, agent_thread_id, observed_at desc);
+      create index if not exists idx_direct_context_analytics_facts_thread
+        on direct_context_analytics_facts(project_id, thread_id, observed_at desc);
+      create index if not exists idx_direct_tool_analytics_facts_turn
+        on direct_tool_analytics_facts(project_id, thread_id, turn_id);
+      create index if not exists idx_direct_quota_snapshot_facts_project
+        on direct_quota_snapshot_facts(project_id, observed_at desc);
       create unique index if not exists idx_direct_thread_edges_active_unique
         on direct_thread_edges(project_id, edge_kind, source_kind, source_id, target_kind, target_id)
         where status = 'active';
@@ -976,6 +1136,13 @@ class DirectThreadStore {
         contextBuildCount: 0,
         requestManifestCount: 0,
         contextPolicyCount: 0,
+        analyticsFactCounts: {
+          timingMarks: 0,
+          usageFacts: 0,
+          contextFacts: 0,
+          toolFacts: 0,
+          quotaFacts: 0,
+        },
         context: {
           contextBuildsAllowed: false,
           contextBuildRequiredForNewTurns: this.mode === "context_build_required",
@@ -1006,6 +1173,7 @@ class DirectThreadStore {
       contextBuildCount: countRows(this.db, "direct_context_builds"),
       requestManifestCount: countRows(this.db, "direct_request_manifests"),
       contextPolicyCount: countRows(this.db, "direct_context_policies"),
+      analyticsFactCounts: this.getDirectRuntimeAnalyticsFactSummary().counts,
       context: {
         contextBuildsAllowed: this.mode !== "disabled",
         contextBuildRequiredForNewTurns: this.mode === "context_build_required",
@@ -1016,6 +1184,407 @@ class DirectThreadStore {
         corruptManifestCount: 0,
         missingArtifactCount: 0,
       },
+    };
+  }
+
+  recordDirectRuntimeAnalyticsFacts(input = {}) {
+    this.requireDatabase();
+    const facts = buildDirectRuntimeAnalyticsFacts(input);
+    const insertedAt = normalizeString(input.insertedAt, nowIso(input.nowMs));
+    const insertTiming = this.db.prepare(`
+      insert into direct_runtime_timing_marks (
+        timing_mark_id,
+        project_id,
+        thread_id,
+        turn_id,
+        agent_thread_id,
+        agent_kind,
+        mark_kind,
+        at,
+        source_kind,
+        confidence,
+        fact_digest,
+        created_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      on conflict(project_id, thread_id, turn_id, mark_kind) do update set
+        timing_mark_id = excluded.timing_mark_id,
+        project_id = excluded.project_id,
+        thread_id = excluded.thread_id,
+        agent_thread_id = excluded.agent_thread_id,
+        agent_kind = excluded.agent_kind,
+        at = excluded.at,
+        source_kind = excluded.source_kind,
+        confidence = excluded.confidence,
+        fact_digest = excluded.fact_digest,
+        created_at = excluded.created_at
+    `);
+    const insertUsage = this.db.prepare(`
+      insert into direct_turn_usage_facts (
+        usage_fact_id,
+        project_id,
+        thread_id,
+        turn_id,
+        agent_thread_id,
+        agent_kind,
+        parent_thread_id,
+        model,
+        reasoning_effort,
+        service_tier,
+        response_id,
+        request_manifest_id,
+        context_build_id,
+        usage_source,
+        usage_record_kind,
+        usage_missing_reason,
+        input_tokens,
+        cached_input_tokens,
+        non_cached_input_tokens,
+        output_tokens,
+        reasoning_tokens,
+        total_tokens,
+        token_confidence_json,
+        observed_at,
+        source_row_digest,
+        fact_digest,
+        raw_prompt_included,
+        raw_response_included,
+        raw_provider_frame_included,
+        raw_token_details_included,
+        billing_grade
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      on conflict(usage_fact_id) do update set
+        project_id = excluded.project_id,
+        thread_id = excluded.thread_id,
+        turn_id = excluded.turn_id,
+        agent_thread_id = excluded.agent_thread_id,
+        agent_kind = excluded.agent_kind,
+        parent_thread_id = excluded.parent_thread_id,
+        model = excluded.model,
+        reasoning_effort = excluded.reasoning_effort,
+        service_tier = excluded.service_tier,
+        response_id = excluded.response_id,
+        request_manifest_id = excluded.request_manifest_id,
+        context_build_id = excluded.context_build_id,
+        usage_source = excluded.usage_source,
+        usage_record_kind = excluded.usage_record_kind,
+        usage_missing_reason = excluded.usage_missing_reason,
+        input_tokens = excluded.input_tokens,
+        cached_input_tokens = excluded.cached_input_tokens,
+        non_cached_input_tokens = excluded.non_cached_input_tokens,
+        output_tokens = excluded.output_tokens,
+        reasoning_tokens = excluded.reasoning_tokens,
+        total_tokens = excluded.total_tokens,
+        token_confidence_json = excluded.token_confidence_json,
+        observed_at = excluded.observed_at,
+        source_row_digest = excluded.source_row_digest,
+        fact_digest = excluded.fact_digest,
+        raw_prompt_included = excluded.raw_prompt_included,
+        raw_response_included = excluded.raw_response_included,
+        raw_provider_frame_included = excluded.raw_provider_frame_included,
+        raw_token_details_included = excluded.raw_token_details_included,
+        billing_grade = excluded.billing_grade
+    `);
+    const insertContext = this.db.prepare(`
+      insert into direct_context_analytics_facts (
+        context_fact_id,
+        project_id,
+        thread_id,
+        turn_id,
+        context_build_id,
+        request_manifest_id,
+        model_context_window,
+        input_tokens,
+        used_percent,
+        source_mix_json,
+        omitted_sources_json,
+        estimate_confidence,
+        observed_at,
+        fact_digest
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      on conflict(context_fact_id) do update set
+        project_id = excluded.project_id,
+        thread_id = excluded.thread_id,
+        turn_id = excluded.turn_id,
+        context_build_id = excluded.context_build_id,
+        request_manifest_id = excluded.request_manifest_id,
+        model_context_window = excluded.model_context_window,
+        input_tokens = excluded.input_tokens,
+        used_percent = excluded.used_percent,
+        source_mix_json = excluded.source_mix_json,
+        omitted_sources_json = excluded.omitted_sources_json,
+        estimate_confidence = excluded.estimate_confidence,
+        observed_at = excluded.observed_at,
+        fact_digest = excluded.fact_digest
+    `);
+    const insertTool = this.db.prepare(`
+      insert into direct_tool_analytics_facts (
+        tool_fact_id,
+        project_id,
+        thread_id,
+        turn_id,
+        agent_thread_id,
+        agent_kind,
+        tool_kind,
+        tool_name,
+        status,
+        started_at,
+        completed_at,
+        duration_ms,
+        workspace_effect_summary_json,
+        source_ref_json,
+        fact_digest
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      on conflict(tool_fact_id) do update set
+        project_id = excluded.project_id,
+        thread_id = excluded.thread_id,
+        turn_id = excluded.turn_id,
+        agent_thread_id = excluded.agent_thread_id,
+        agent_kind = excluded.agent_kind,
+        tool_kind = excluded.tool_kind,
+        tool_name = excluded.tool_name,
+        status = excluded.status,
+        started_at = excluded.started_at,
+        completed_at = excluded.completed_at,
+        duration_ms = excluded.duration_ms,
+        workspace_effect_summary_json = excluded.workspace_effect_summary_json,
+        source_ref_json = excluded.source_ref_json,
+        fact_digest = excluded.fact_digest
+    `);
+    const insertQuota = this.db.prepare(`
+      insert into direct_quota_snapshot_facts (
+        quota_fact_id,
+        project_id,
+        provider,
+        window_kind,
+        window_id,
+        used_percent,
+        resets_at,
+        window_duration_mins,
+        plan_type,
+        observed_at,
+        source,
+        account_evidence_key,
+        fact_digest
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      on conflict(quota_fact_id) do update set
+        project_id = excluded.project_id,
+        provider = excluded.provider,
+        window_kind = excluded.window_kind,
+        window_id = excluded.window_id,
+        used_percent = excluded.used_percent,
+        resets_at = excluded.resets_at,
+        window_duration_mins = excluded.window_duration_mins,
+        plan_type = excluded.plan_type,
+        observed_at = excluded.observed_at,
+        source = excluded.source,
+        account_evidence_key = excluded.account_evidence_key,
+        fact_digest = excluded.fact_digest
+    `);
+
+    this.transaction(() => {
+      for (const mark of facts.timingMarks) {
+        insertTiming.run(
+          mark.timingMarkId,
+          mark.projectId,
+          mark.threadId,
+          mark.turnId,
+          mark.agentThreadId,
+          mark.agentKind,
+          mark.markKind,
+          mark.at,
+          mark.sourceKind,
+          mark.confidence,
+          mark.factDigest,
+          insertedAt,
+        );
+      }
+      for (const usage of facts.usageFacts) {
+        insertUsage.run(
+          usage.usageFactId,
+          usage.projectId,
+          usage.threadId,
+          usage.turnId,
+          usage.agentThreadId,
+          usage.agentKind,
+          usage.parentThreadId,
+          usage.model,
+          usage.reasoningEffort,
+          usage.serviceTier,
+          usage.responseId,
+          usage.requestManifestId,
+          usage.contextBuildId,
+          usage.usageSource,
+          usage.usageRecordKind,
+          usage.usageMissingReason,
+          nullableNumber(usage.inputTokens),
+          nullableNumber(usage.cachedInputTokens),
+          nullableNumber(usage.nonCachedInputTokens),
+          nullableNumber(usage.outputTokens),
+          nullableNumber(usage.reasoningTokens),
+          nullableNumber(usage.totalTokens),
+          jsonText(usage.tokenConfidence),
+          usage.observedAt,
+          usage.sourceRowDigest,
+          usage.factDigest,
+          usage.rawPromptIncluded === true ? 1 : 0,
+          usage.rawResponseIncluded === true ? 1 : 0,
+          usage.rawProviderFrameIncluded === true ? 1 : 0,
+          usage.rawTokenDetailsIncluded === true ? 1 : 0,
+          usage.billingGrade === true ? 1 : 0,
+        );
+      }
+      for (const context of facts.contextFacts) {
+        insertContext.run(
+          context.contextFactId,
+          context.projectId,
+          context.threadId,
+          context.turnId,
+          context.contextBuildId,
+          context.requestManifestId,
+          nullableNumber(context.modelContextWindow),
+          nullableNumber(context.inputTokens),
+          nullableNumber(context.usedPercent),
+          jsonText(context.sourceMix),
+          jsonText(context.omittedSources),
+          context.estimateConfidence,
+          context.observedAt,
+          context.factDigest,
+        );
+      }
+      for (const tool of facts.toolFacts) {
+        insertTool.run(
+          tool.toolFactId,
+          tool.projectId,
+          tool.threadId,
+          tool.turnId,
+          tool.agentThreadId,
+          tool.agentKind,
+          tool.toolKind,
+          tool.toolName,
+          tool.status,
+          tool.startedAt,
+          tool.completedAt,
+          nullableNumber(tool.durationMs),
+          jsonText(tool.workspaceEffectSummary),
+          jsonText(tool.sourceRef),
+          tool.factDigest,
+        );
+      }
+      for (const quota of facts.quotaFacts) {
+        insertQuota.run(
+          quota.quotaFactId,
+          quota.projectId,
+          quota.provider,
+          quota.windowKind,
+          quota.windowId,
+          nullableNumber(quota.usedPercent),
+          quota.resetsAt,
+          nullableNumber(quota.windowDurationMins),
+          quota.planType,
+          quota.observedAt,
+          quota.source,
+          quota.accountEvidenceKey,
+          quota.factDigest,
+        );
+      }
+    });
+
+    return {
+      schema: "direct_runtime_analytics_persistence_result@1",
+      projectId: facts.projectId,
+      factsDigest: facts.factsDigest,
+      counts: facts.counts,
+      rawPromptIncluded: false,
+      rawResponseIncluded: false,
+      rawProviderFrameIncluded: false,
+      rawTokenDetailsIncluded: false,
+      rawPathIncluded: false,
+      rawSecretIncluded: false,
+    };
+  }
+
+  getDirectRuntimeAnalyticsFactSummary(projectId = "") {
+    if (!this.db) {
+      return {
+        schema: "direct_runtime_analytics_fact_summary@1",
+        projectId: normalizeString(projectId, ""),
+        counts: {
+          timingMarks: 0,
+          usageFacts: 0,
+          contextFacts: 0,
+          toolFacts: 0,
+          quotaFacts: 0,
+        },
+        tokenTotals: {
+          inputTokens: 0,
+          cachedInputTokens: 0,
+          nonCachedInputTokens: 0,
+          outputTokens: 0,
+          reasoningTokens: 0,
+          totalTokens: 0,
+        },
+      };
+    }
+    const safeProjectId = normalizeString(projectId, "");
+    const countFor = (tableName) => {
+      if (!DIRECT_THREAD_COUNT_TABLES.has(tableName)) throw new Error(`Invalid direct analytics table: ${tableName}`);
+      const sql = safeProjectId ? `select count(*) as count from ${tableName} where project_id = ?` : `select count(*) as count from ${tableName}`;
+      const row = safeProjectId ? this.db.prepare(sql).get(safeProjectId) : this.db.prepare(sql).get();
+      return Number(row?.count || 0);
+    };
+    const tokenSql = `
+      select
+        usage_fact_id,
+        thread_id,
+        turn_id,
+        response_id,
+        source_row_digest,
+        usage_record_kind,
+        input_tokens,
+        cached_input_tokens,
+        non_cached_input_tokens,
+        output_tokens,
+        reasoning_tokens,
+        total_tokens
+      from direct_turn_usage_facts
+      where usage_record_kind != 'missing'${safeProjectId ? " and project_id = ?" : ""}
+    `;
+    const tokenRows = safeProjectId ? this.db.prepare(tokenSql).all(safeProjectId) : this.db.prepare(tokenSql).all();
+    const dedupedTokenRows = dedupeUsageFactRowsForTotals(tokenRows);
+    const tokenTotals = dedupedTokenRows.reduce((totals, row) => {
+      totals.inputTokens += normalizeNumber(row.input_tokens, 0);
+      totals.cachedInputTokens += normalizeNumber(row.cached_input_tokens, 0);
+      totals.nonCachedInputTokens += normalizeNumber(row.non_cached_input_tokens, 0);
+      totals.outputTokens += normalizeNumber(row.output_tokens, 0);
+      totals.reasoningTokens += normalizeNumber(row.reasoning_tokens, 0);
+      totals.totalTokens += normalizeNumber(row.total_tokens, 0);
+      return totals;
+    }, {
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      nonCachedInputTokens: 0,
+      outputTokens: 0,
+      reasoningTokens: 0,
+      totalTokens: 0,
+    });
+    return {
+      schema: "direct_runtime_analytics_fact_summary@1",
+      projectId: safeProjectId,
+      counts: {
+        timingMarks: countFor("direct_runtime_timing_marks"),
+        usageFacts: countFor("direct_turn_usage_facts"),
+        contextFacts: countFor("direct_context_analytics_facts"),
+        toolFacts: countFor("direct_tool_analytics_facts"),
+        quotaFacts: countFor("direct_quota_snapshot_facts"),
+      },
+      tokenTotals,
+      rawPromptIncluded: false,
+      rawResponseIncluded: false,
+      rawProviderFrameIncluded: false,
+      rawTokenDetailsIncluded: false,
+      rawPathIncluded: false,
+      rawSecretIncluded: false,
+      billingGrade: false,
     };
   }
 
