@@ -7,7 +7,7 @@ const DIRECT_RUNTIME_ANALYTICS_FACTS_SCHEMA = "direct_runtime_analytics_facts@1"
 const DIRECT_RUNTIME_ANALYTICS_FACTS_VERSION = "direct-runtime-analytics-facts@1";
 
 function isPlainObject(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+  return Object.prototype.toString.call(value) === "[object Object]";
 }
 
 function arrayOrEmpty(value) {
@@ -24,6 +24,7 @@ function numberValue(value, fallback = 0) {
 }
 
 function nullableNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
 }
@@ -145,10 +146,39 @@ function usageFactsForTurn(projectId, session, turn) {
   });
 }
 
+function usageFactPriority(row = {}) {
+  const kind = normalizeString(row.usageRecordKind, "missing");
+  if (kind === "terminal") return 5;
+  if (kind === "delta") return 3;
+  if (kind === "diagnostic") return 2;
+  return 1;
+}
+
+function dedupeUsageFactsForTotals(usageFacts = []) {
+  const byKey = new Map();
+  for (const row of arrayOrEmpty(usageFacts)) {
+    const threadId = normalizeString(row.threadId, "");
+    const turnId = normalizeString(row.turnId, "");
+    const responseId = normalizeString(row.responseId, "");
+    const sourceRowDigest = normalizeString(row.sourceRowDigest, "");
+    const usageFactId = normalizeString(row.usageFactId, "");
+    const key = responseId
+      ? `${threadId}:${turnId}:response:${responseId}`
+      : sourceRowDigest
+        ? `${threadId}:${turnId}:source:${sourceRowDigest}`
+        : `${threadId}:${turnId}:fact:${usageFactId}`;
+    const existing = byKey.get(key);
+    if (!existing || usageFactPriority(row) >= usageFactPriority(existing)) {
+      byKey.set(key, row);
+    }
+  }
+  return [...byKey.values()];
+}
+
 function contextFactForTurn(projectId, session, turn, usageFacts = []) {
   const contextBuildId = normalizeString(turn.contextBuildId, "");
   const requestManifestId = normalizeString(turn.requestManifestId, "");
-  const inputTokens = usageFacts
+  const inputTokens = dedupeUsageFactsForTotals(usageFacts)
     .filter((row) => row.usageRecordKind !== "missing")
     .reduce((sum, row) => sum + numberValue(row.inputTokens, 0), 0);
   if (!contextBuildId && !requestManifestId && inputTokens <= 0) return null;
@@ -252,8 +282,9 @@ function toolFactsForTurn(projectId, session, turn) {
     });
   });
   obligations
-    .filter((obligation) => !resultObligationIds.has(normalizeString(obligation.obligationId, "")))
-    .forEach((obligation, index) => {
+    .map((obligation, index) => ({ obligation, index }))
+    .filter(({ obligation }) => !resultObligationIds.has(normalizeString(obligation.obligationId, "")))
+    .forEach(({ obligation, index }) => {
       const toolName = toolNameFrom(obligation, "");
       const core = {
         projectId,
@@ -276,7 +307,9 @@ function toolFactsForTurn(projectId, session, turn) {
       };
       facts.push({
         ...core,
-        toolFactId: factId("tool_fact", { threadId, turnId: core.turnId, obligationId: core.sourceRef.obligationId, index }),
+        toolFactId: core.sourceRef.obligationId
+          ? factId("tool_fact", { threadId, turnId: core.turnId, obligationId: core.sourceRef.obligationId })
+          : factId("tool_fact", { threadId, turnId: core.turnId, ordinal: core.sourceRef.ordinal, toolName }),
         factDigest: digestFor("direct-tool-analytics-fact@1", core),
       });
     });

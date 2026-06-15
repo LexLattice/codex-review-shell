@@ -231,12 +231,42 @@ function normalizeNumber(value, fallback = 0) {
 }
 
 function nullableNumber(value) {
+  if (value === null || value === undefined || value === "") return null;
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : null;
 }
 
 function jsonText(value) {
   return JSON.stringify(value === undefined ? null : value);
+}
+
+function usageFactPriority(row = {}) {
+  const kind = normalizeString(row.usage_record_kind, "missing");
+  if (kind === "terminal") return 5;
+  if (kind === "delta") return 3;
+  if (kind === "diagnostic") return 2;
+  return 1;
+}
+
+function dedupeUsageFactRowsForTotals(rows = []) {
+  const byKey = new Map();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const threadId = normalizeString(row.thread_id, "");
+    const turnId = normalizeString(row.turn_id, "");
+    const responseId = normalizeString(row.response_id, "");
+    const sourceRowDigest = normalizeString(row.source_row_digest, "");
+    const usageFactId = normalizeString(row.usage_fact_id, "");
+    const key = responseId
+      ? `${threadId}:${turnId}:response:${responseId}`
+      : sourceRowDigest
+        ? `${threadId}:${turnId}:source:${sourceRowDigest}`
+        : `${threadId}:${turnId}:fact:${usageFactId}`;
+    const existing = byKey.get(key);
+    if (!existing || usageFactPriority(row) >= usageFactPriority(existing)) {
+      byKey.set(key, row);
+    }
+  }
+  return [...byKey.values()];
 }
 
 function normalizeLifecycleState(value, fallback = "active") {
@@ -1504,16 +1534,39 @@ class DirectThreadStore {
     };
     const tokenSql = `
       select
-        coalesce(sum(input_tokens), 0) as inputTokens,
-        coalesce(sum(cached_input_tokens), 0) as cachedInputTokens,
-        coalesce(sum(non_cached_input_tokens), 0) as nonCachedInputTokens,
-        coalesce(sum(output_tokens), 0) as outputTokens,
-        coalesce(sum(reasoning_tokens), 0) as reasoningTokens,
-        coalesce(sum(total_tokens), 0) as totalTokens
+        usage_fact_id,
+        thread_id,
+        turn_id,
+        response_id,
+        source_row_digest,
+        usage_record_kind,
+        input_tokens,
+        cached_input_tokens,
+        non_cached_input_tokens,
+        output_tokens,
+        reasoning_tokens,
+        total_tokens
       from direct_turn_usage_facts
       where usage_record_kind != 'missing'${safeProjectId ? " and project_id = ?" : ""}
     `;
-    const tokenRow = safeProjectId ? this.db.prepare(tokenSql).get(safeProjectId) : this.db.prepare(tokenSql).get();
+    const tokenRows = safeProjectId ? this.db.prepare(tokenSql).all(safeProjectId) : this.db.prepare(tokenSql).all();
+    const dedupedTokenRows = dedupeUsageFactRowsForTotals(tokenRows);
+    const tokenTotals = dedupedTokenRows.reduce((totals, row) => {
+      totals.inputTokens += normalizeNumber(row.input_tokens, 0);
+      totals.cachedInputTokens += normalizeNumber(row.cached_input_tokens, 0);
+      totals.nonCachedInputTokens += normalizeNumber(row.non_cached_input_tokens, 0);
+      totals.outputTokens += normalizeNumber(row.output_tokens, 0);
+      totals.reasoningTokens += normalizeNumber(row.reasoning_tokens, 0);
+      totals.totalTokens += normalizeNumber(row.total_tokens, 0);
+      return totals;
+    }, {
+      inputTokens: 0,
+      cachedInputTokens: 0,
+      nonCachedInputTokens: 0,
+      outputTokens: 0,
+      reasoningTokens: 0,
+      totalTokens: 0,
+    });
     return {
       schema: "direct_runtime_analytics_fact_summary@1",
       projectId: safeProjectId,
@@ -1524,14 +1577,7 @@ class DirectThreadStore {
         toolFacts: countFor("direct_tool_analytics_facts"),
         quotaFacts: countFor("direct_quota_snapshot_facts"),
       },
-      tokenTotals: {
-        inputTokens: Number(tokenRow?.inputTokens || 0),
-        cachedInputTokens: Number(tokenRow?.cachedInputTokens || 0),
-        nonCachedInputTokens: Number(tokenRow?.nonCachedInputTokens || 0),
-        outputTokens: Number(tokenRow?.outputTokens || 0),
-        reasoningTokens: Number(tokenRow?.reasoningTokens || 0),
-        totalTokens: Number(tokenRow?.totalTokens || 0),
-      },
+      tokenTotals,
       rawPromptIncluded: false,
       rawResponseIncluded: false,
       rawProviderFrameIncluded: false,

@@ -68,6 +68,27 @@ const turn = {
     },
     rows: [
       {
+        rowId: "turn_usage_analytics_delta",
+        usageSource: "provider_usage_delta",
+        usageRecordKind: "delta",
+        responseId: "resp_analytics",
+        inputTokens: 9999,
+        cachedInputTokens: 999,
+        nonCachedInputTokens: 9000,
+        outputTokens: 999,
+        reasoningTokens: 99,
+        totalTokens: 10998,
+        tokenFieldConfidence: {
+          inputTokens: "exact",
+          cachedInputTokens: "exact",
+          nonCachedInputTokens: "derived",
+          outputTokens: "exact",
+          reasoningTokens: "exact",
+          totalTokens: "exact",
+        },
+        rowDigest: "sha256:usage_analytics_delta",
+      },
+      {
         rowId: "turn_usage_analytics",
         usageSource: "response_completed_usage",
         usageRecordKind: "terminal",
@@ -105,7 +126,7 @@ const providerMetadataProfile = {
       source: "server_rate_limits",
       windows: [
         { windowId: "codex:primary", windowKind: "five_hour", usedPercent: 25, resetsAt: "2026-06-15T09:00:00.000Z", windowDurationMins: 300 },
-        { windowId: "codex:secondary", windowKind: "weekly", usedPercent: 60, resetsAt: "2026-06-21T18:00:00.000Z", windowDurationMins: 10080 },
+        { windowId: "codex:secondary", windowKind: "weekly", usedPercent: null, resetsAt: "2026-06-21T18:00:00.000Z", windowDurationMins: null },
       ],
     },
   },
@@ -116,15 +137,43 @@ const facts = buildDirectRuntimeAnalyticsFacts({
   sessionTurns: [{ session, turns: [turn] }],
   providerMetadataProfile,
 });
+const pendingPairTurn = {
+  ...turn,
+  turnId: "direct_turn_pending_pair",
+  toolResults: [],
+  unresolvedObligations: [
+    { obligationId: "obligation_pending_a", name: "read_file", status: "waiting", createdAt: "2026-06-15T08:00:01.000Z" },
+    { obligationId: "obligation_pending_b", name: "run_command", status: "waiting", createdAt: "2026-06-15T08:00:01.500Z" },
+  ],
+  usageAttribution: { rows: [] },
+};
+const afterFirstResolvedTurn = {
+  ...pendingPairTurn,
+  toolResults: [
+    { resultId: "result_pending_a", obligationId: "obligation_pending_a", name: "read_file", status: "completed" },
+  ],
+  unresolvedObligations: [
+    { obligationId: "obligation_pending_b", name: "run_command", status: "waiting", createdAt: "2026-06-15T08:00:01.500Z" },
+  ],
+};
+const pendingPairFacts = buildDirectRuntimeAnalyticsFacts({ projectId, sessionTurns: [{ session, turns: [pendingPairTurn] }] });
+const afterFirstResolvedFacts = buildDirectRuntimeAnalyticsFacts({ projectId, sessionTurns: [{ session, turns: [afterFirstResolvedTurn] }] });
+const pendingBInitial = pendingPairFacts.toolFacts.find((fact) => fact.sourceRef.obligationId === "obligation_pending_b");
+const pendingBAfter = afterFirstResolvedFacts.toolFacts.find((fact) => fact.sourceRef.obligationId === "obligation_pending_b");
 
 assert.equal(facts.schema, "direct_runtime_analytics_facts@1");
 assert(facts.counts.timingMarks >= 4, "Expected runtime timing marks.");
-assert.equal(facts.counts.usageFacts, 1);
+assert.equal(facts.counts.usageFacts, 2);
 assert.equal(facts.counts.contextFacts, 1);
 assert.equal(facts.counts.toolFacts, 2);
 assert.equal(facts.counts.quotaFacts, 2);
 assert.equal(facts.privacy.rawPromptIncluded, false);
 assert.equal(facts.privacy.rawResponseIncluded, false);
+assert.equal(facts.contextFacts[0].inputTokens, 1000);
+assert.equal(facts.toolFacts.find((fact) => fact.sourceRef.sourceKind === "tool_obligation").durationMs, null);
+assert.equal(pendingBInitial.toolFactId, pendingBAfter.toolFactId);
+assert.equal(facts.quotaFacts[0].usedPercent, 25);
+assert.equal(facts.quotaFacts[1].usedPercent, null);
 
 const store = new DirectThreadStore({ rootDir: tempRoot, mode: "index_only" });
 const first = store.recordDirectRuntimeAnalyticsFacts({
@@ -141,7 +190,7 @@ assert.deepEqual(first.counts, second.counts, "Repeated persistence should be id
 
 const summary = store.getDirectRuntimeAnalyticsFactSummary(projectId);
 assert.equal(summary.schema, "direct_runtime_analytics_fact_summary@1");
-assert.equal(summary.counts.usageFacts, 1);
+assert.equal(summary.counts.usageFacts, 2);
 assert.equal(summary.counts.contextFacts, 1);
 assert.equal(summary.counts.toolFacts, 2);
 assert.equal(summary.counts.quotaFacts, 2);
@@ -152,9 +201,12 @@ assert.equal(summary.tokenTotals.nonCachedInputTokens, 750);
 assert.equal(summary.tokenTotals.outputTokens, 120);
 assert.equal(summary.tokenTotals.reasoningTokens, 40);
 assert.equal(summary.tokenTotals.totalTokens, 1120);
+const persistedNullQuota = store.db.prepare("select used_percent, window_duration_mins from direct_quota_snapshot_facts where window_kind = 'weekly'").get();
+assert.equal(persistedNullQuota.used_percent, null);
+assert.equal(persistedNullQuota.window_duration_mins, null);
 
 const status = store.status();
-assert.equal(status.analyticsFactCounts.usageFacts, 1);
+assert.equal(status.analyticsFactCounts.usageFacts, 2);
 assert.equal(status.analyticsFactCounts.quotaFacts, 2);
 store.close();
 
