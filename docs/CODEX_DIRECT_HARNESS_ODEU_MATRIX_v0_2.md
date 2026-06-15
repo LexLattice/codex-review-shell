@@ -121,7 +121,7 @@ It does not grant runtime authority by itself.
 | Direct settings / bridge status | `B-F` | Renderer-safe settings/control status surface exists for runtime, registry, WorkThread, broker, modules, and continuity. |
 | AgentClassSpec registry | `B-F` | Main/worker/auditor/fix/closeout/orchestrator/broker/memory/governance/sub-agent role contracts exist. |
 | Worker graph and sub-agent observability | `B-F` | Worker graph alignment, progress/attention/containment projections and contained inspect/wait packets exist; mature choreography remains pending. |
-| Direct usage ledger by agent/worker | `B-F` | Direct agent/work-thread/route usage summary projection exists; cost remains separate and price-snapshot-bound. |
+| Direct usage ledger and analytics facts | `B-F` | Direct agent/work-thread/route usage summary projection exists, and persisted runtime timing/usage/context/tool/quota fact tables exist; cost remains separate and price-snapshot-bound. |
 | Direct attachment submit semantics | `B-F` | Direct attachment capability projection and reference-only submit packet semantics exist; provider binary/image payload support is not claimed. |
 | Skills/hooks/apps bridge modules | `B-P/B-F` | Module classification, context contribution, evidence import, hook proposal, and execution gate artifacts exist; no execution runner exists. |
 | Context maintenance / memory / baton | `B-P/B-F` | Omission/loss witnesses, memory review/refresh/reset proposals, compaction plan/gate, continuity transitions, and guarded local maintenance execution packets exist; no provider compaction or hidden memory authority. |
@@ -177,7 +177,7 @@ Each capability appears once. Fork-derived precedents are linked later in the cr
 | A7 | Model descriptors/catalog | Live descriptors for model, context, reasoning, service tier. | `OAI-A/OAI-U`, account dependent. | Model evidence resolver, no static-only authority. | `B-P` | Live account-scoped catalog evidence. |
 | A8 | Reasoning/verbosity controls | Per-model controls only where proven. | `OAI-A/OAI-U`. | Profile-gated UI and manifests. | `B-P/NO` | Probe per model/control/shape. |
 | A9 | Prompt cache/session affinity | Explicit cache/session behavior, not local continuity. | `OAI-A/OAI-U`. | Cache/session evidence separate from thread id. | `S/B-P` | Evidence rows for cache/session use. |
-| A10 | Usage/quota/rate evidence | Runtime status grounded in provider evidence. | `OAI-A` where exposed. | Usage ledger/profile rows, no zero inference. | `B-P` | Direct quota/rate snapshot proof. |
+| A10 | Usage/quota/rate evidence | Runtime status grounded in provider evidence. | `OAI-A` where exposed. | Usage ledger/profile rows, persisted analytics fact tables, no zero inference. | `B-F/B-P` | Provider metadata projection into UI witnesses. |
 | A11 | Error/retry taxonomy | Pre-stream retry only; no retry after bytes/side effects. | `OAI-A`. | Lifecycle states, handoff-unknown states. | `B-R` text, `B-F/S` tools | Interrupted tool/patch/command tests. |
 | A12 | Provider compaction primitive | Optional provider-assisted compaction. | `OAI-A/OAI-U`. | Context-maintenance policy and profile mapping. | `S` | Compact endpoint/item probe. |
 
@@ -291,7 +291,7 @@ Semantic broker = task/tool/schema routing layer.
 | F6 | Approval cards | Renderer hints only; main authoritative. | None. | Action tokens and digest revalidation. | `B-F/S` | Real cards under provider calls. |
 | F7 | Runtime status/blockers | Explain readiness/degraded states. | None. | Status resolver and blocker taxonomy. | `B-F` | Tool status rows. |
 | F8 | Operation history | Durable read/patch/command/fork/lifecycle history. | None. | Operation ledger projections. | `B-F/S` | Workbench tests. |
-| F9 | Runtime witness chips | Model/access/quota/tier/compact status. | Usage/model/account evidence. | Read-only witnesses. | `B-P/S` | Ground in profile/ledger. |
+| F9 | Runtime witness chips | Model/access/quota/tier/compact status. | Usage/model/account evidence. | Read-only witnesses backed by provider profile and analytics facts. | `B-P/S` | Finish metadata-to-UI projection. |
 | F10 | ChatGPT handoff boundary | Explicit handoff items, no automatic direct mutation. | ChatGPT UI separate. | Handoff queue/templates/thread deck. | `B-R/B-F` shell | Keep separate from direct runtime. |
 
 ### G. Imports, Derived Views, Thread Workbench

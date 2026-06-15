@@ -2390,9 +2390,9 @@ Still intentionally not authority:
   broad module/tool execution
 ```
 
-## Wave 8: Direct Provider Metadata Truth And Drift Validation
+## Wave 8: Direct Provider Metadata Truth, Analytics Facts, And Drift Validation
 
-Status: planned.
+Status: in progress.
 
 Review posture after Wave 7:
 
@@ -2472,6 +2472,104 @@ Expected implementation notes:
 - Startup drift reports should surface in settings/runtime diagnostics and only
   affect composer/bottom-band UI when current controls are impacted.
 
+### PR 47: Direct Runtime Analytics Facts Persistence
+
+Status: merged as GitHub PR `#178`.
+
+Branch:
+
+```text
+codex/direct-analytics-facts-db
+```
+
+Purpose:
+
+```text
+Persist neutral direct runtime analytics facts in the direct thread store so
+later analytics views can read timing, token, context, tool, and quota evidence
+without reconstructing everything from live renderer state.
+```
+
+Delivered:
+
+- Added `direct_runtime_analytics_facts@1` normalization for:
+  - runtime timing marks;
+  - per-turn usage facts;
+  - context analytics facts;
+  - tool analytics facts;
+  - provider quota snapshot facts.
+- Added dedicated SQLite tables and indexes:
+  - `direct_runtime_timing_marks`;
+  - `direct_turn_usage_facts`;
+  - `direct_context_analytics_facts`;
+  - `direct_tool_analytics_facts`;
+  - `direct_quota_snapshot_facts`.
+- Added idempotent persistence and scoped summary reads through
+  `DirectThreadStore`.
+- Added opportunistic main-process recording from direct agent usage summaries
+  and provider metadata profiles.
+- Preserved audit/evidence rows while deduping terminal-vs-delta usage rows for
+  aggregate token totals and context pressure inputs.
+- Preserved nullable numeric fields as `NULL`, not false zeroes.
+- Kept pending tool-obligation fact IDs stable when earlier obligations resolve.
+- Added focused regression coverage through
+  `scripts/direct-runtime-analytics-facts-regression.mjs`.
+
+Explicit non-goals:
+
+- No analytics dashboard/display change.
+- No cost computation.
+- No billing-grade claim.
+- No raw prompt, response, provider frame, token-detail, secret, or path
+  persistence.
+- No provider calls, tool execution, workspace mutation, runtime selection, or
+  matrix promotion.
+
+Promotion criterion:
+
+```text
+Direct analytics views can now consume persisted neutral fact rows instead of
+renderer-only live projections, but bottom-band/runtime UI truth still depends
+on PR 46 metadata projection and later analytics-display work.
+```
+
+### Planned follow-up: Headless Direct Service / Message Endpoint
+
+Status: not implemented; conceptually distinct from the existing one-shot
+headless real-turn scripts.
+
+Current implemented substrate:
+
+```text
+scripts/codex-real-turn.mjs
+scripts/direct-codex-real-turn.mjs
+```
+
+Those scripts can run explicit headless turns and write redacted reports. They
+do not keep a long-lived backend service alive after the frontend exits.
+
+The future service shape should be a direct backend daemon:
+
+```text
+direct backend service
+  -> owns auth/session/thread store/context builder
+  -> accepts local governed message requests
+  -> emits events/status over IPC/WebSocket/HTTP local loopback
+  -> can be used by Electron, CLI, automation, and future workspace UX panels
+```
+
+Required laws before implementation:
+
+- The daemon must not be an authority bypass around Electron controls.
+- Every submitted message still needs WorkThread resolution, context manifest,
+  runtime path, auth, model/settings, and authority evidence.
+- Local API access must be loopback-only and capability-token/signed-request
+  gated.
+- The service must use the same `DirectThreadStore`, context pack, usage facts,
+  and governance artifacts as the GUI path.
+- One-shot scripts remain useful smoke/probe tools, but the daemon is the
+  production headless substrate.
+
 ## Update Rules
 
 After each PR:
@@ -2498,3 +2596,5 @@ Items that are real but not yet assigned to a wave:
 - Project-scoped persistent web/session policy for future governed browser
   surfaces.
 - Direct-native import/migration strategy for selected app-server transcripts.
+- Long-lived headless direct backend service / local message endpoint over the
+  direct information bridge.
