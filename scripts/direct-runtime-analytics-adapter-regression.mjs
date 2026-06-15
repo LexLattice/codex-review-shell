@@ -1,0 +1,245 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const { DirectThreadStore } = require("../src/main/direct/thread/thread-store");
+const {
+  RUNTIME_ANALYTICS_PROJECTION_SCHEMA,
+  buildRuntimeAnalyticsProjection,
+} = require("../src/main/direct/analytics/runtime-analytics-adapter");
+
+const appserverUsageLedger = {
+  schemaVersion: 1,
+  status: "available",
+  source: "codex_usage_ledger@1",
+  lastObservedAt: "2026-06-15T09:00:01.000Z",
+  confidence: "provider_exact",
+  tokens: {
+    status: "snapshot_available",
+    tokenRows: 1,
+    latestSnapshotAt: "2026-06-15T09:00:00.000Z",
+    usageScope: "thread_total",
+    inputTokens: 2000,
+    cachedInputTokens: 500,
+    nonCachedInputTokens: 1500,
+    outputTokens: 300,
+    reasoningOutputTokens: 80,
+    totalTokens: 2300,
+    modelContextWindow: 272000,
+    confidence: "provider_exact",
+  },
+  turns: {
+    started: 2,
+    completed: 1,
+    active: 1,
+    durationMs: 4200,
+    timeToFirstTokenMs: 900,
+  },
+  tools: {
+    total: 3,
+    completed: 2,
+    failed: 1,
+    commands: 1,
+    patches: 1,
+    subagents: 1,
+    byKind: [{ xValue: "command_exec", yValue: 1 }],
+  },
+  requests: {
+    total: 1,
+    pending: 0,
+    resolved: 1,
+    failed: 0,
+    byKind: [{ xValue: "approval", yValue: 1 }],
+  },
+  rateLimits: {
+    status: "available",
+    observedAt: "2026-06-15T09:00:00.000Z",
+    planType: "plus",
+    primary: {
+      name: "5h",
+      usedPercent: 70,
+      windowDurationMins: 300,
+      resetsAt: "2026-06-15T10:00:00.000Z",
+    },
+    secondary: {
+      name: "weekly",
+      usedPercent: 91,
+      windowDurationMins: 10080,
+      resetsAt: "2026-06-21T18:00:00.000Z",
+    },
+  },
+  series: {
+    token_mix: [{ xValue: "input", yValue: 1500 }],
+    tool_kind_mix: [{ xValue: "command_exec", yValue: 1 }],
+    request_kind_mix: [{ xValue: "approval", yValue: 1 }],
+    turn_status_mix: [{ xValue: "active", yValue: 1 }],
+  },
+};
+
+const appserverProjection = buildRuntimeAnalyticsProjection({
+  projectId: "project_runtime_adapter",
+  threadId: "thread_appserver",
+  runtimePath: "app-server",
+  usageLedgerAnalytics: appserverUsageLedger,
+  generatedAt: "2026-06-15T09:00:02.000Z",
+});
+
+assert.equal(appserverProjection.schema, RUNTIME_ANALYTICS_PROJECTION_SCHEMA);
+assert.equal(appserverProjection.status, "available");
+assert.equal(appserverProjection.sourcePosture.adapterKind, "appserver");
+assert.equal(appserverProjection.tokens.source, "appserver_native");
+assert.equal(appserverProjection.tokens.confidence, "provider_exact");
+assert.equal(appserverProjection.tokens.reasoningTokens, 80);
+assert.equal(appserverProjection.context.source, "derived_from_appserver");
+assert(appserverProjection.context.usedPercent > 0);
+assert.equal(appserverProjection.quota.source, "appserver_native");
+assert.equal(appserverProjection.quota.windows.length, 2);
+assert.equal(appserverProjection.requests.resolved, 1);
+assert.equal(appserverProjection.privacy.rawPromptIncluded, false);
+assert.equal(appserverProjection.privacy.costComputed, false);
+
+const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "direct-runtime-analytics-adapter-"));
+const projectId = "project_direct_runtime_adapter";
+const session = {
+  sessionId: "direct_session_adapter",
+  projectId,
+  model: "gpt-5.5",
+  reasoningEffort: "high",
+  agentKind: "main_agent",
+  agentThreadId: "direct_session_adapter",
+};
+const turn = {
+  schema: "direct_codex_turn@1",
+  sessionId: session.sessionId,
+  threadId: session.sessionId,
+  turnId: "direct_turn_adapter",
+  state: "completed",
+  createdAt: "2026-06-15T10:00:00.000Z",
+  requestBuiltAt: "2026-06-15T10:00:00.250Z",
+  firstVisibleDeltaAt: "2026-06-15T10:00:01.200Z",
+  completedAt: "2026-06-15T10:00:05.000Z",
+  updatedAt: "2026-06-15T10:00:05.000Z",
+  model: "gpt-5.5",
+  reasoningEffort: "high",
+  contextBuildId: "context_adapter",
+  requestManifestId: "request_adapter",
+  requestShape: {
+    modelContextWindow: 272000,
+  },
+  toolResults: [
+    {
+      resultId: "tool_adapter_1",
+      obligationId: "tool_adapter_1",
+      name: "run_command",
+      status: "completed",
+      startedAt: "2026-06-15T10:00:02.000Z",
+      completedAt: "2026-06-15T10:00:02.200Z",
+      durationMs: 200,
+    },
+  ],
+  usageAttribution: {
+    rows: [
+      {
+        rowId: "usage_adapter_terminal",
+        usageSource: "response_completed_usage",
+        usageRecordKind: "terminal",
+        responseId: "resp_adapter",
+        inputTokens: 3000,
+        cachedInputTokens: 1000,
+        nonCachedInputTokens: 2000,
+        outputTokens: 350,
+        reasoningTokens: 120,
+        totalTokens: 3350,
+        rowDigest: "sha256:usage_adapter",
+      },
+    ],
+  },
+};
+const providerMetadataProfile = {
+  schema: "direct_provider_metadata_profile@1",
+  provider: "openai",
+  generatedAt: "2026-06-15T10:00:06.000Z",
+  account: {
+    planType: "plus",
+  },
+  usage: {
+    quota: {
+      windows: [
+        {
+          windowId: "codex:5h",
+          windowKind: "five_hour",
+          usedPercent: 77,
+          resetsAt: "2026-06-15T11:00:00.000Z",
+          windowDurationMins: 300,
+        },
+        {
+          windowId: "codex:weekly",
+          windowKind: "weekly",
+          usedPercent: 93,
+          resetsAt: "2026-06-21T18:00:00.000Z",
+          windowDurationMins: 10080,
+        },
+      ],
+    },
+  },
+};
+
+const store = new DirectThreadStore({ rootDir: tempRoot, mode: "index_only" });
+store.recordDirectRuntimeAnalyticsFacts({
+  projectId,
+  sessionTurns: [{ session, turns: [turn] }],
+  providerMetadataProfile,
+});
+const directSnapshot = store.getDirectRuntimeAnalyticsFactSnapshot(projectId);
+const directProjection = buildRuntimeAnalyticsProjection({
+  projectId,
+  threadId: session.sessionId,
+  runtimePath: "direct-implementation",
+  directFactSnapshot: directSnapshot,
+  directProviderMetadataProfile: providerMetadataProfile,
+  generatedAt: "2026-06-15T10:00:07.000Z",
+});
+
+assert.equal(directProjection.schema, RUNTIME_ANALYTICS_PROJECTION_SCHEMA);
+assert.equal(directProjection.sourcePosture.adapterKind, "direct");
+assert.equal(directProjection.tokens.source, "direct_native");
+assert.equal(directProjection.tokens.confidence, "runtime_exact");
+assert.equal(directProjection.tokens.reasoningTokens, 120);
+assert.equal(directProjection.context.source, "derived_from_direct");
+assert.equal(directProjection.context.modelContextWindow, 272000);
+assert.equal(directProjection.context.usedPercent, 1);
+assert.equal(directProjection.tools.commands, 1);
+assert.equal(directProjection.quota.source, "direct_native");
+assert.equal(directProjection.quota.windows.length, 2);
+assert.equal(directProjection.quota.windows[1].windowKind, "weekly");
+assert.equal(directProjection.privacy.rawProviderFrameIncluded, false);
+assert.equal(directProjection.privacy.billingGrade, false);
+
+const unavailableProjection = buildRuntimeAnalyticsProjection({
+  projectId: "project_empty",
+  runtimePath: "direct-implementation",
+  directFactSnapshot: {
+    summary: { counts: {}, tokenTotals: {} },
+  },
+});
+assert.equal(unavailableProjection.status, "unavailable");
+assert.equal(unavailableProjection.tokens.inputTokens, null);
+assert(unavailableProjection.blockers.includes("direct_token_usage_unavailable"));
+
+store.close();
+
+console.log(JSON.stringify({
+  ok: true,
+  appserver: {
+    status: appserverProjection.status,
+    tokenSource: appserverProjection.tokens.source,
+  },
+  direct: {
+    status: directProjection.status,
+    tokenSource: directProjection.tokens.source,
+    quotaWindows: directProjection.quota.windows.length,
+  },
+}));

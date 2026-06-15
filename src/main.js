@@ -160,6 +160,9 @@ const {
 } = require("./main/attachment-staging-store");
 const { defaultUsageLedgerConfig, normalizeUsageLedgerConfig } = require("./main/usage-ledger-config");
 const { readUsageLedgerAnalytics } = require("./main/usage-ledger-analytics");
+const {
+  buildRuntimeAnalyticsProjection,
+} = require("./main/direct/analytics/runtime-analytics-adapter");
 const { PLANE_ZOOM_DEFAULT, clampZoomFactor, zoomDeltaForDirection } = require("./shared/plane-zoom");
 
 const APP_TITLE = "Codex Review Shell";
@@ -3087,6 +3090,17 @@ function buildDirectCodexSurfaceProjectionForProject(project = {}, input = {}) {
     contextPreview,
     agentUsageStatus,
   });
+  let directRuntimeAnalyticsSnapshot = null;
+  try {
+    directRuntimeAnalyticsSnapshot = ensureDirectThreadStore().getDirectRuntimeAnalyticsFactSnapshot(projectId);
+  } catch {}
+  const runtimeAnalyticsProjection = buildRuntimeAnalyticsProjection({
+    projectId,
+    runtimePath: directRuntimePathFromBinding(project?.surfaceBinding?.codex || {}),
+    directFactSnapshot: directRuntimeAnalyticsSnapshot,
+    directProviderMetadataProfile: directProviderMetadata?.profile || null,
+    generatedAt,
+  });
   const projection = {
     schema: "direct_codex_surface_projection@1",
     projectId,
@@ -3099,6 +3113,7 @@ function buildDirectCodexSurfaceProjectionForProject(project = {}, input = {}) {
     metadataCacheState: normalizeString(directProviderMetadata?.cacheState, ""),
     contextPreview,
     agentUsageStatus,
+    runtimeAnalyticsProjection,
     operatorBroker,
     workThreads: {
       status: workThreadBundle.status,
@@ -3125,6 +3140,7 @@ function buildDirectCodexSurfaceProjectionForProject(project = {}, input = {}) {
     projectId,
     generatedAt,
     projection.runtimePath,
+    runtimeAnalyticsProjection.projectionDigest,
     composerRuntimeWitness.runtimeWitnessDigest,
     composerRuntimeWitness.contextPreviewDigest,
     composerRuntimeWitness.usageProjectionDigest,
@@ -6858,10 +6874,18 @@ async function getThreadAnalyticsDashboard(projectId, threadKey) {
   const usageLedger = dashboard
     ? await readUsageLedgerAnalytics(project, dashboard.thread?.threadId || "")
     : null;
+  const runtimeAnalyticsProjection = dashboard
+    ? buildRuntimeAnalyticsProjection({
+        projectId: project.id,
+        threadId: dashboard.thread?.threadId || "",
+        runtimePath: "app-server",
+        usageLedgerAnalytics: usageLedger,
+      })
+    : null;
   return {
     projectId: project.id,
     threadKey: key,
-    dashboard: dashboard ? { ...dashboard, usageLedger } : dashboard,
+    dashboard: dashboard ? { ...dashboard, usageLedger, runtimeAnalyticsProjection } : dashboard,
     analyzerVersion: THREAD_ANALYTICS_ANALYZER_VERSION,
   };
 }
