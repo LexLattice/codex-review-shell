@@ -214,6 +214,15 @@ try {
   });
   assert.equal(duplicate.response.status, 202);
   assert.equal(duplicate.body.duplicate, true);
+  assert.equal(duplicate.body.turnPacket.packetId, first.body.turnPacket.packetId);
+  assert.equal(duplicate.body.queued, false);
+
+  textRuntime.queueByThread.set("direct_session_headless_text", [
+    "missing_packet_id",
+    first.body.turnPacket.packetId,
+  ]);
+  textRuntime.processNext("direct_session_headless_text");
+  assert.equal(textRuntime.queueByThread.has("direct_session_headless_text"), false);
 
   const status = await requestJson(baseUrl, "/v1/bridge/status");
   assert.equal(status.response.status, 200);

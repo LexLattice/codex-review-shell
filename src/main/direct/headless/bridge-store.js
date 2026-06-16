@@ -435,15 +435,18 @@ class DirectHeadlessBridgeStore {
   }
 
   turnPacketSummary() {
-    const rows = this.db.prepare("select packet_json from direct_bridge_turn_packets").all();
+    const rows = this.db.prepare(`
+      select coalesce(json_extract(packet_json, '$.state'), 'unknown') as state, count(*) as count
+      from direct_bridge_turn_packets
+      group by state
+    `).all();
     const byState = {};
     for (const row of rows) {
-      const packet = parseJson(row.packet_json, {});
-      const state = normalizeString(packet.state, "unknown");
-      byState[state] = (byState[state] || 0) + 1;
+      const state = normalizeString(row.state, "unknown");
+      byState[state] = Number(row.count) || 0;
     }
     return {
-      total: rows.length,
+      total: Object.values(byState).reduce((sum, count) => sum + count, 0),
       byState,
     };
   }

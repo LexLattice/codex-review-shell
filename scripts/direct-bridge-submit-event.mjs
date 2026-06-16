@@ -65,9 +65,18 @@ async function requestJson(url, options = {}) {
       ...(options.headers || {}),
     },
   });
+  const text = await response.text();
+  let body = null;
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    body = {
+      raw: text,
+    };
+  }
   return {
     status: response.status,
-    body: await response.json(),
+    body,
   };
 }
 

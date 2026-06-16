@@ -91,6 +91,9 @@ class DirectHeadlessTextRuntime {
     this.project = isPlainObject(options.project) ? options.project : {};
     this.activeByThread = new Map();
     this.queueByThread = new Map();
+    this.retryTimersByThread = new Map();
+    this.deferNextByThread = new Set();
+    this.activeTurnRetryDelayMs = Math.max(100, Number(options.activeTurnRetryDelayMs) || 1000);
   }
 
   statusProjection() {
@@ -104,7 +107,20 @@ class DirectHeadlessTextRuntime {
 
   submitEvent(body = {}) {
     const result = this.store.submitEvent(body);
-    if (!result.ok || result.duplicate) return result;
+    if (!result.ok) return result;
+    if (result.duplicate) {
+      const existingPacket = result.event?.envelopeId
+        ? this.store.readTurnPacketForEnvelope(result.event.envelopeId)
+        : null;
+      if (existingPacket) {
+        return {
+          ...result,
+          turnPacket: existingPacket,
+          queued: !TERMINAL_PACKET_STATES.has(existingPacket.state),
+        };
+      }
+      return result;
+    }
     const packetResult = this.enqueueAcceptedEvent(result, body);
     return {
       ...result,
@@ -222,24 +238,44 @@ class DirectHeadlessTextRuntime {
     this.queueByThread.get(threadId).push(packet.packetId);
   }
 
+  scheduleRetry(threadId = "") {
+    if (this.retryTimersByThread.has(threadId)) return;
+    const timer = setTimeout(() => {
+      this.retryTimersByThread.delete(threadId);
+      if (!this.activeByThread.has(threadId)) this.processNext(threadId);
+    }, this.activeTurnRetryDelayMs);
+    if (typeof timer.unref === "function") timer.unref();
+    this.retryTimersByThread.set(threadId, timer);
+  }
+
   startPacket(packet = {}) {
     if (packet.state === "failed") return packet;
     const threadId = normalizeString(packet.targetThreadId, "");
     this.activeByThread.set(threadId, packet.packetId);
     this.runPacket(packet).finally(() => {
       if (this.activeByThread.get(threadId) === packet.packetId) this.activeByThread.delete(threadId);
-      this.processNext(threadId);
+      const deferred = this.deferNextByThread.delete(threadId);
+      if (!deferred) this.processNext(threadId);
     });
     return packet;
   }
 
   processNext(threadId = "") {
-    const queue = this.queueByThread.get(threadId) || [];
-    const nextPacketId = queue.shift();
-    if (!queue.length) this.queueByThread.delete(threadId);
-    if (!nextPacketId) return;
-    const packet = this.store.readTurnPacket(nextPacketId);
-    if (packet && !TERMINAL_PACKET_STATES.has(packet.state)) this.startPacket(packet);
+    if (this.activeByThread.has(threadId)) return;
+    const queue = this.queueByThread.get(threadId);
+    if (!queue?.length) {
+      this.queueByThread.delete(threadId);
+      return;
+    }
+    while (queue.length) {
+      const nextPacketId = queue.shift();
+      const packet = nextPacketId ? this.store.readTurnPacket(nextPacketId) : null;
+      if (!packet || TERMINAL_PACKET_STATES.has(packet.state)) continue;
+      if (!queue.length) this.queueByThread.delete(threadId);
+      this.startPacket(packet);
+      return;
+    }
+    this.queueByThread.delete(threadId);
   }
 
   async runPacket(packet = {}) {
@@ -269,7 +305,7 @@ class DirectHeadlessTextRuntime {
       mark("provider_started", {
         providerStarted: true,
         replayState: "replay_unsafe",
-        threadId: thread.thread?.id || packet.targetThreadId,
+        threadId: thread?.thread?.id || packet.targetThreadId,
       });
       const turnAck = await this.controller.startTurn({
         sessionId: packet.targetThreadId,
@@ -278,16 +314,16 @@ class DirectHeadlessTextRuntime {
         promptText: packet.promptText,
         workThreadId: packet.workThreadId,
       }, context);
-      const active = this.controller.activeRuns?.get(turnAck.turn?.id);
+      const active = this.controller.activeRuns?.get(turnAck?.turn?.id);
       if (active?.promise) await active.promise;
       const finalTurn = this.controller.sessionStore?.readTurn
-        ? this.controller.sessionStore.readTurn(packet.targetThreadId, turnAck.turn?.id)
+        ? this.controller.sessionStore.readTurn(packet.targetThreadId, turnAck?.turn?.id)
         : null;
-      const terminalState = terminalStateForTurn(finalTurn || turnAck.turn || {});
+      const terminalState = terminalStateForTurn(finalTurn || turnAck?.turn || {});
       mark(terminalState, {
         providerCompleted: terminalState === "provider_completed",
-        turnId: turnAck.turn?.id || "",
-        terminalTurnState: normalizeString(finalTurn?.state || turnAck.turn?.state || turnAck.turn?.status, ""),
+        turnId: turnAck?.turn?.id || "",
+        terminalTurnState: normalizeString(finalTurn?.state || turnAck?.turn?.state || turnAck?.turn?.status, ""),
         error: isPlainObject(finalTurn?.error) ? finalTurn.error : null,
       });
     } catch (error) {
@@ -300,6 +336,8 @@ class DirectHeadlessTextRuntime {
       if (code === "active_turn_exists") {
         const queued = this.store.readTurnPacket(packetId);
         this.queuePacket(queued || packet);
+        this.deferNextByThread.add(normalizeString(packet.targetThreadId, ""));
+        this.scheduleRetry(normalizeString(packet.targetThreadId, ""));
       }
     }
   }
