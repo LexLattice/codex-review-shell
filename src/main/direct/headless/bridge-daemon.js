@@ -3,7 +3,8 @@
 const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
-const { DirectHeadlessBridgeStore, normalizeString } = require("./bridge-store");
+const crypto = require("node:crypto");
+const { DirectHeadlessBridgeStore, clientCapabilityTokenDigest, normalizeString } = require("./bridge-store");
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 
@@ -64,6 +65,24 @@ function requireLoopbackHost(host = "") {
   return safeHost;
 }
 
+function sameDigest(left = "", right = "") {
+  const leftBuffer = Buffer.from(String(left));
+  const rightBuffer = Buffer.from(String(right));
+  return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function bearerToken(req) {
+  const auth = normalizeString(req.headers.authorization, "");
+  const match = auth.match(/^Bearer\s+(.+)$/i);
+  return normalizeString(match?.[1] || req.headers["x-bridge-capability-token"], "");
+}
+
+function httpStatusForError(error) {
+  if (error.code === "invalid_json") return 400;
+  if (error.code === "request_body_too_large") return 413;
+  return 500;
+}
+
 class DirectHeadlessBridgeDaemon {
   constructor(options = {}) {
     const rootDir = normalizeString(options.rootDir || options.root, "");
@@ -109,6 +128,47 @@ class DirectHeadlessBridgeDaemon {
     return this.store.submitEvent(body);
   }
 
+  authenticateEventRequest(req, body = {}) {
+    const clientId = normalizeString(body.clientId || body.client_id, "");
+    const client = this.store.readClient(clientId);
+    if (!client) {
+      return {
+        ok: true,
+        reason: "",
+      };
+    }
+    if (client.authMode === "disabled" || client.authMode === "none") {
+      return {
+        ok: true,
+        reason: "",
+      };
+    }
+    if (client.authMode === "capability_token") {
+      const expectedDigest = normalizeString(client.capabilityTokenDigest || client.capability_token_digest, "");
+      const actualDigest = clientCapabilityTokenDigest(client.clientId, bearerToken(req));
+      if (!expectedDigest) {
+        return {
+          ok: false,
+          reason: "client_auth_not_configured",
+        };
+      }
+      if (!actualDigest || !sameDigest(actualDigest, expectedDigest)) {
+        return {
+          ok: false,
+          reason: "client_auth_failed",
+        };
+      }
+      return {
+        ok: true,
+        reason: "",
+      };
+    }
+    return {
+      ok: false,
+      reason: `client_auth_mode_unsupported:${client.authMode}`,
+    };
+  }
+
   readEvent(envelopeId = "") {
     return this.store.readEvent(envelopeId);
   }
@@ -120,7 +180,7 @@ class DirectHeadlessBridgeDaemon {
     this.server = http.createServer((req, res) => {
       this.handleHttp(req, res).catch((error) => {
         this.lastErrorClass = normalizeString(error.code, "internal_error");
-        jsonResponse(res, error.code === "invalid_json" ? 400 : 500, {
+        jsonResponse(res, httpStatusForError(error), {
           ok: false,
           error: this.lastErrorClass,
           providerRequestStarted: false,
@@ -168,6 +228,16 @@ class DirectHeadlessBridgeDaemon {
     }
     if (req.method === "POST" && url.pathname === "/v1/bridge/events") {
       const body = await readRequestJson(req, this.maxBodyBytes);
+      const auth = this.authenticateEventRequest(req, body);
+      if (!auth.ok) {
+        return jsonResponse(res, 401, {
+          ok: false,
+          status: "blocked_ingress",
+          error: auth.reason,
+          providerRequestStarted: false,
+          rawPayloadIncluded: false,
+        });
+      }
       const result = this.submitEvent(body);
       return jsonResponse(res, result.ok ? 202 : 400, result);
     }
@@ -178,11 +248,13 @@ class DirectHeadlessBridgeDaemon {
 function buildHeadlessBridgeDaemonFromConfig(options = {}) {
   const config = isPlainObject(options.config) ? options.config : readConfigFile(options.configPath);
   const rootDir = normalizeString(options.rootDir || config.rootDir || config.root, path.join(process.cwd(), ".codex", "headless-bridge"));
+  const hasHostOverride = Object.hasOwn(options, "host") && normalizeString(options.host, "");
+  const hasPortOverride = Object.hasOwn(options, "port") && options.port !== undefined;
   return new DirectHeadlessBridgeDaemon({
     ...config,
     rootDir,
-    host: options.host || config.host,
-    port: options.port ?? config.port,
+    host: hasHostOverride ? options.host : config.host,
+    port: hasPortOverride ? options.port : config.port,
     maxInboxEvents: options.maxInboxEvents ?? config.maxInboxEvents,
     maxBodyBytes: options.maxBodyBytes ?? config.maxBodyBytes,
   });

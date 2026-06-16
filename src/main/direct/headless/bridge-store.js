@@ -31,6 +31,13 @@ function sha256(value) {
   return `sha256:${crypto.createHash("sha256").update(String(value)).digest("hex")}`;
 }
 
+function clientCapabilityTokenDigest(clientId, token) {
+  const safeClientId = normalizeString(clientId, "");
+  const safeToken = typeof token === "string" ? token : "";
+  if (!safeClientId || !safeToken) return "";
+  return sha256(`bridge-client-capability-token:${safeClientId}:${safeToken}`);
+}
+
 function digestFor(kind, value) {
   return sha256(`${kind}:${stableStringify(value)}`);
 }
@@ -81,6 +88,10 @@ function routeDigest(route = {}) {
 function normalizeClient(input = {}) {
   const clientId = normalizeString(input.clientId || input.client_id, "");
   if (!clientId) throw new Error("bridge_client_missing_id");
+  const capabilityTokenDigest = normalizeString(
+    input.capabilityTokenDigest || input.capability_token_digest,
+    clientCapabilityTokenDigest(clientId, input.capabilityToken || input.capability_token),
+  );
   return {
     schema: CLIENT_REGISTRATION_SCHEMA,
     clientId,
@@ -89,6 +100,7 @@ function normalizeClient(input = {}) {
     allowedIngressContracts: Array.isArray(input.allowedIngressContracts) ? input.allowedIngressContracts.map((value) => normalizeString(value, "")).filter(Boolean) : [],
     allowedRoutes: Array.isArray(input.allowedRoutes) ? input.allowedRoutes.map((value) => normalizeString(value, "")).filter(Boolean) : [],
     authMode: normalizeString(input.authMode || input.auth_mode, "disabled"),
+    capabilityTokenDigest,
     status: normalizeString(input.status, "active"),
   };
 }
@@ -105,13 +117,13 @@ function normalizeRoute(input = {}) {
     status: normalizeString(input.status, "active"),
     ingressContractRef: normalizeString(input.ingressContractRef || input.ingress_contract_ref, ""),
     workThreadId: normalizeString(input.workThreadId || input.work_thread_id, ""),
-    candidateWorkThreadIds: Array.isArray(input.candidateWorkThreadIds) ? input.candidateWorkThreadIds.map((value) => normalizeString(value, "")).filter(Boolean) : [],
+    candidateWorkThreadIds: Array.isArray(input.candidateWorkThreadIds || input.candidate_work_thread_ids) ? (input.candidateWorkThreadIds || input.candidate_work_thread_ids).map((value) => normalizeString(value, "")).filter(Boolean) : [],
     targetKind: normalizeString(input.targetKind || input.target_kind, "codex_direct_thread"),
     targetThreadRef: isPlainObject(input.targetThreadRef || input.target_thread_ref) ? (input.targetThreadRef || input.target_thread_ref) : null,
     contextPolicyRef: normalizeString(input.contextPolicyRef || input.context_policy_ref, ""),
     modelPolicyRef: normalizeString(input.modelPolicyRef || input.model_policy_ref, ""),
     outputReducerRef: normalizeString(input.outputReducerRef || input.output_reducer_ref, ""),
-    egressPolicyRefs: Array.isArray(input.egressPolicyRefs) ? input.egressPolicyRefs.map((value) => normalizeString(value, "")).filter(Boolean) : [],
+    egressPolicyRefs: Array.isArray(input.egressPolicyRefs || input.egress_policy_refs) ? (input.egressPolicyRefs || input.egress_policy_refs).map((value) => normalizeString(value, "")).filter(Boolean) : [],
     interruptionPolicyRef: normalizeString(input.interruptionPolicyRef || input.interruption_policy_ref, ""),
     authorityBoundaryRef: normalizeString(input.authorityBoundaryRef || input.authority_boundary_ref, ""),
     toolAuthorityMode: normalizeString(input.toolAuthorityMode || input.tool_authority_mode, "disabled"),
@@ -187,7 +199,10 @@ class DirectHeadlessBridgeStore {
   }
 
   close() {
-    this.db?.close();
+    if (this.db) {
+      this.db.close();
+      this.db = null;
+    }
   }
 
   ensureSchema() {
@@ -552,72 +567,86 @@ class DirectHeadlessBridgeStore {
         at,
       );
     };
-    if (!validation.ok) {
-      const decision = validation.routeDecision || this.writeRouteDecision({
+    this.db.exec("begin immediate");
+    try {
+      if (!validation.ok) {
+        const decision = validation.routeDecision || this.writeRouteDecision({
+          envelopeId,
+          routeId: validation.requestedRouteId,
+          routeVersion: validation.routeVersion,
+          workThreadId: validation.workThreadId,
+          targetThreadId: validation.targetThreadId,
+          status: "blocked",
+          blockerCode: validation.errorCode,
+          evidenceRefs: validation.evidenceRefs,
+          createdAt: at,
+        });
+        writeInbox(validation.lifecycle, decision.decisionId);
+        this.appendLifecycle(envelopeId, "received", "", {}, at);
+        this.appendLifecycle(envelopeId, validation.lifecycle, validation.errorCode, {
+          routeDecisionId: decision.decisionId,
+        }, at);
+        const row = this.db.prepare("select * from direct_bridge_inbox_events where envelope_id = ?").get(envelopeId);
+        const result = {
+          ok: false,
+          duplicate: false,
+          status: validation.lifecycle,
+          error: validation.errorCode,
+          event: safeEventProjection(row),
+          routeDecision: decision,
+        };
+        this.db.exec("commit");
+        return result;
+      }
+      const decision = this.writeRouteDecision({
         envelopeId,
-        routeId: validation.requestedRouteId,
-        routeVersion: validation.routeVersion,
+        routeId: validation.route.routeId,
+        routeVersion: validation.route.routeVersion,
+        routeDigest: validation.route.routeDigest,
         workThreadId: validation.workThreadId,
         targetThreadId: validation.targetThreadId,
-        status: "blocked",
-        blockerCode: validation.errorCode,
+        status: "resolved",
+        dependencyBundle: validation.route.dependencyBundle,
         evidenceRefs: validation.evidenceRefs,
         createdAt: at,
       });
-      writeInbox(validation.lifecycle, decision.decisionId);
+      writeInbox("route_resolved", decision.decisionId);
       this.appendLifecycle(envelopeId, "received", "", {}, at);
-      this.appendLifecycle(envelopeId, validation.lifecycle, validation.errorCode, {
+      this.appendLifecycle(envelopeId, "accepted_inbox", "", {
+        clientId: validation.clientId,
+        idempotencyKey: validation.idempotencyKey,
+      }, at);
+      this.appendLifecycle(envelopeId, "route_resolved", "", {
         routeDecisionId: decision.decisionId,
+        routeDigest: validation.route.routeDigest,
+        workThreadId: validation.workThreadId,
+        targetThreadId: validation.targetThreadId,
       }, at);
       const row = this.db.prepare("select * from direct_bridge_inbox_events where envelope_id = ?").get(envelopeId);
-      return {
-        ok: false,
+      const result = {
+        ok: true,
         duplicate: false,
-        status: validation.lifecycle,
-        error: validation.errorCode,
+        status: "route_resolved",
         event: safeEventProjection(row),
         routeDecision: decision,
       };
+      this.db.exec("commit");
+      return result;
+    } catch (error) {
+      try {
+        this.db.exec("rollback");
+      } catch {
+        // Preserve the original write failure.
+      }
+      throw error;
     }
-    const decision = this.writeRouteDecision({
-      envelopeId,
-      routeId: validation.route.routeId,
-      routeVersion: validation.route.routeVersion,
-      routeDigest: validation.route.routeDigest,
-      workThreadId: validation.workThreadId,
-      targetThreadId: validation.targetThreadId,
-      status: "resolved",
-      dependencyBundle: validation.route.dependencyBundle,
-      evidenceRefs: validation.evidenceRefs,
-      createdAt: at,
-    });
-    writeInbox("route_resolved", decision.decisionId);
-    this.appendLifecycle(envelopeId, "received", "", {}, at);
-    this.appendLifecycle(envelopeId, "accepted_inbox", "", {
-      clientId: validation.clientId,
-      idempotencyKey: validation.idempotencyKey,
-    }, at);
-    this.appendLifecycle(envelopeId, "route_resolved", "", {
-      routeDecisionId: decision.decisionId,
-      routeDigest: validation.route.routeDigest,
-      workThreadId: validation.workThreadId,
-      targetThreadId: validation.targetThreadId,
-    }, at);
-    const row = this.db.prepare("select * from direct_bridge_inbox_events where envelope_id = ?").get(envelopeId);
-    return {
-      ok: true,
-      duplicate: false,
-      status: "route_resolved",
-      event: safeEventProjection(row),
-      routeDecision: decision,
-    };
   }
 
   validateIngress(input = {}, options = {}) {
     if (!isPlainObject(input)) {
       return this.blockedValidation("invalid_json", "blocked_ingress");
     }
-    const rawPayloadIncluded = input.rawPayloadIncluded === true || input.raw_payload_included === true || isPlainObject(input.rawPayload) || typeof input.rawPayload === "string";
+    const rawPayloadIncluded = input.rawPayloadIncluded === true || input.raw_payload_included === true || isPlainObject(input.rawPayload) || typeof input.rawPayload === "string" || isPlainObject(input.raw_payload) || typeof input.raw_payload === "string";
     const clientId = normalizeString(input.clientId || input.client_id || options.clientId, "");
     const idempotencyKey = normalizeString(input.idempotencyKey || input.idempotency_key, "");
     const eventSchema = normalizeString(input.eventSchema || input.event_schema || input.schema, "");
@@ -705,7 +734,7 @@ class DirectHeadlessBridgeStore {
     if (workThread.status === "archived" || workThread.status === "disabled") {
       return { ...base, route, routeVersion: frozenRouteVersion, workThreadId, errorCode: "work_thread_inactive", lifecycle: "route_blocked", processingIdentity };
     }
-    const targetThreadId = normalizeString(route.targetThreadRef?.threadId || route.target_thread_ref?.threadId, "");
+    const targetThreadId = normalizeString(route.targetThreadRef?.threadId || route.targetThreadRef?.thread_id, "");
     if (!targetThreadId) {
       return { ...base, route, routeVersion: frozenRouteVersion, workThreadId, errorCode: "target_thread_missing", lifecycle: "route_blocked", processingIdentity };
     }
@@ -759,6 +788,7 @@ module.exports = {
   EVENT_ENVELOPE_SCHEMA,
   HEADLESS_BRIDGE_STORE_SCHEMA,
   ROUTE_BINDING_SCHEMA,
+  clientCapabilityTokenDigest,
   digestFor,
   normalizeClient,
   normalizeRoute,

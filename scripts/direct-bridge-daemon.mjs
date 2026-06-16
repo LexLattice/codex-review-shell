@@ -11,6 +11,10 @@ function readArg(args, name, fallback = "") {
   return args[index + 1];
 }
 
+function hasArg(args, name) {
+  return args.includes(name);
+}
+
 function readNumberArg(args, name, fallback) {
   const value = readArg(args, name, "");
   if (!value) return fallback;
@@ -21,9 +25,9 @@ function readNumberArg(args, name, fallback) {
 const args = process.argv.slice(2);
 const daemon = buildHeadlessBridgeDaemonFromConfig({
   configPath: readArg(args, "--config", ""),
-  rootDir: readArg(args, "--root", ""),
-  host: readArg(args, "--host", "127.0.0.1"),
-  port: readNumberArg(args, "--port", 0),
+  ...(hasArg(args, "--root") ? { rootDir: readArg(args, "--root", "") } : {}),
+  ...(hasArg(args, "--host") ? { host: readArg(args, "--host", "") } : {}),
+  ...(hasArg(args, "--port") ? { port: readNumberArg(args, "--port", 0) } : {}),
   maxInboxEvents: readNumberArg(args, "--max-inbox-events", undefined),
   maxBodyBytes: readNumberArg(args, "--max-body-bytes", undefined),
 });
