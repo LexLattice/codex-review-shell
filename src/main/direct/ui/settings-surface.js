@@ -385,6 +385,33 @@ function summarizeAgentClasses(agentClassStatus = {}) {
   };
 }
 
+function summarizeToolCapabilities(toolCapabilityStatus = {}) {
+  const status = objectOrEmpty(toolCapabilityStatus);
+  return {
+    schema: normalizeString(status.schema, ""),
+    status: normalizeString(status.status, "not_exposed"),
+    rowCount: Number(status.rowCount || 0),
+    registryId: normalizeString(status.registryId, ""),
+    registryDigest: normalizeString(status.registryDigest, ""),
+    upstreamCodexTag: normalizeString(status.upstreamCodexTag, "unknown"),
+    byFamily: objectOrEmpty(status.byFamily),
+    byPromotionState: objectOrEmpty(status.byPromotionState),
+    byImplementationState: objectOrEmpty(status.byImplementationState),
+    byProviderDeclarationState: objectOrEmpty(status.byProviderDeclarationState),
+    providerDeclaredCount: Number(status.providerDeclaredCount || 0),
+    localExecutorCount: Number(status.localExecutorCount || 0),
+    directRestrictedCount: Number(status.directRestrictedCount || 0),
+    unsupportedCount: Number(status.unsupportedCount || 0),
+    deferredExternalAuthorityCount: Number(status.deferredExternalAuthorityCount || 0),
+    providerDeclarationsEnabledInThisPr: status.providerDeclarationsEnabledInThisPr === true,
+    localExecutionEnabledInThisPr: status.localExecutionEnabledInThisPr === true,
+    authorityGateEnabledInThisPr: status.authorityGateEnabledInThisPr === true,
+    requestShapeMutationEnabledInThisPr: status.requestShapeMutationEnabledInThisPr === true,
+    actionable: status.actionable === true,
+    rendererSafeSummary: boundedString(status.rendererSafeSummary || "Tool capabilities are mapped as a constitution only.", 360),
+  };
+}
+
 function summarizeContinuity(input = {}) {
   const continuity = objectOrEmpty(input.continuityStatus || input.contextContinuityStatus);
   const runtimeContext = objectOrEmpty(input.runtimeStatus?.directContextMaintenance || input.runtimeStatus?.contextMaintenance);
@@ -644,6 +671,7 @@ function buildRows(sections) {
   const modules = sections.modules;
   const moduleContextIntake = sections.moduleContextIntake;
   const agentClasses = sections.agentClasses;
+  const toolCapabilities = sections.toolCapabilities;
   const continuity = sections.continuity;
   const contextPreview = sections.contextPreview;
   const memoryWorkbench = sections.memoryWorkbench;
@@ -755,6 +783,19 @@ function buildRows(sections) {
       statusRow("Execution", agentClasses.executionEnabledInThisPr ? "unexpected enabled" : "disabled", agentClasses.executionEnabledInThisPr ? "blocked" : "ok"),
       statusRow("Routing", agentClasses.routingEnabledInThisPr ? "unexpected enabled" : "shadow only", agentClasses.routingEnabledInThisPr ? "blocked" : "ok"),
       statusRow("Audit automation", agentClasses.objectAuditAutomationEnabledInThisPr ? "unexpected enabled" : "disabled", agentClasses.objectAuditAutomationEnabledInThisPr ? "blocked" : "ok"),
+    ],
+    toolCapabilities: [
+      statusRow("Surface", toolCapabilities.rowCount ? "available" : "not exposed", toolCapabilities.rowCount ? "diagnostic" : "missing"),
+      statusRow("Status", toolCapabilities.status),
+      statusRow("Upstream map", toolCapabilities.upstreamCodexTag),
+      statusRow("Tool rows", toolCapabilities.rowCount),
+      statusRow("Restricted/direct", toolCapabilities.directRestrictedCount),
+      statusRow("Unsupported/deferred", `${toolCapabilities.unsupportedCount}/${toolCapabilities.deferredExternalAuthorityCount}`),
+      statusRow("Provider-declared rows", toolCapabilities.providerDeclaredCount),
+      statusRow("Local executors", toolCapabilities.localExecutorCount),
+      statusRow("Families", Object.keys(toolCapabilities.byFamily).length),
+      statusRow("Promotion states", Object.keys(toolCapabilities.byPromotionState).length),
+      statusRow("Authority", toolCapabilities.providerDeclarationsEnabledInThisPr || toolCapabilities.localExecutionEnabledInThisPr || toolCapabilities.authorityGateEnabledInThisPr || toolCapabilities.requestShapeMutationEnabledInThisPr ? "unexpected grant" : "constitution only", toolCapabilities.providerDeclarationsEnabledInThisPr || toolCapabilities.localExecutionEnabledInThisPr || toolCapabilities.authorityGateEnabledInThisPr || toolCapabilities.requestShapeMutationEnabledInThisPr ? "blocked" : "ok"),
     ],
     continuity: [
       statusRow("Transition", continuity.transitionStatus),
@@ -881,6 +922,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
   const modules = summarizeModules(input.moduleStatus);
   const moduleContextIntake = summarizeModuleContextIntake(input.moduleContextIntake || input.directModuleContextIntake || input.moduleContextIntakeProjection || input);
   const agentClasses = summarizeAgentClasses(input.agentClassStatus);
+  const toolCapabilities = summarizeToolCapabilities(input.toolCapabilityStatus || input.toolCapabilityProjection || input.directToolCapabilityStatus || input);
   const continuity = summarizeContinuity(input);
   const contextPreview = summarizeContextPreview(input.contextPreview || input.contextPacketPreview || input.directContextPreview || input);
   const memoryWorkbench = summarizeMemoryWorkbench(input.memoryWorkbench || input.memoryReviewWorkbench || input.directMemoryWorkbench || input);
@@ -920,11 +962,15 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
     autoApprovalAllowed: false,
     recursiveWorkerAllowed: false,
     matrixPromotionAllowed: false,
+    toolProviderDeclarationAllowed: false,
+    toolLocalExecutionAllowed: false,
+    toolAuthorityGateAllowed: false,
+    toolRequestShapeMutationAllowed: false,
     rawTextIncluded: false,
     rawPathIncluded: false,
     rawSecretIncluded: false,
   };
-  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, continuity, contextPreview, memoryWorkbench, runtimeWitness, agentUsage, appServerFallbackParity, manualSmokeGate, headlessDaemon };
+  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, toolCapabilities, continuity, contextPreview, memoryWorkbench, runtimeWitness, agentUsage, appServerFallbackParity, manualSmokeGate, headlessDaemon };
   const sourceDigest = digestFor("direct-settings-surface-source@1", sections);
   const projection = {
     schema: DIRECT_SETTINGS_SURFACE_PROJECTION_SCHEMA,
@@ -944,6 +990,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       "skills_hooks_apps",
       "module_context_intake",
       "agent_class_specs",
+      "direct_tool_capability_constitution",
       "memory_baton_omission_compaction",
       "context_packet_preview",
       "memory_review_workbench",
@@ -971,6 +1018,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       { kind: "module_status", digest: normalizeString(input.moduleStatus?.projectionDigest, ""), label: "Bridge module status" },
       { kind: "module_context_intake", digest: normalizeString(moduleContextIntake.intakeDigest, ""), label: "Module context intake" },
       { kind: "agent_class_status", digest: normalizeString(input.agentClassStatus?.projectionDigest, ""), label: "Agent class status" },
+      { kind: "direct_tool_capability_status", digest: normalizeString(toolCapabilities.registryDigest || input.toolCapabilityStatus?.projectionDigest, ""), label: "Direct tool capability constitution" },
       { kind: "continuity_status", digest: normalizeString(input.continuityStatus?.projectionDigest, ""), label: "Continuity status" },
       { kind: "context_packet_preview", digest: normalizeString(contextPreview.previewDigest, ""), label: "Context packet preview" },
       { kind: "memory_review_workbench", digest: normalizeString(memoryWorkbench.workbenchDigest, ""), label: "Memory review workbench" },
@@ -1022,6 +1070,10 @@ function assertDirectSettingsSurfaceRendererSafe(projection = {}) {
     "autoApprovalAllowed",
     "recursiveWorkerAllowed",
     "matrixPromotionAllowed",
+    "toolProviderDeclarationAllowed",
+    "toolLocalExecutionAllowed",
+    "toolAuthorityGateAllowed",
+    "toolRequestShapeMutationAllowed",
     "rawTextIncluded",
     "rawPathIncluded",
     "rawSecretIncluded",

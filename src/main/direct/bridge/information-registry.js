@@ -643,6 +643,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     bridgeFit: "Packages lane selection, WorkThread selection, context preview, direct text/read/patch/command readiness, recovery, sub-agent inspect, usage, and app-server fallback checks into a repeatable operator smoke gate.",
     realignment: "The smoke gate records readiness and blockers only; it cannot run live provider calls, mutate runtime path or WorkThread state, replace app-server, approve actions, execute modules, or promote matrix rows.",
   },
+  {
+    id: "ic22.direct-tool-capability-constitution",
+    name: "Direct tool capability constitution",
+    role: "authority_gate",
+    implementationState: "partial",
+    directPathPosture: "keep_readonly",
+    sourceFiles: ["src/main/direct/bridge/tool-capability-registry.js", "src/main/direct/ui/settings-surface.js", "scripts/direct-tool-capability-registry-regression.mjs", "docs/DIRECT_TOOL_AUTHORITY_FAMILIES_WAVE_SPEC.md"],
+    ontology: ontologyShape(["direct_tool_capability_registry", "direct_tool_capability_row", "direct_tool_capability_status_projection"], "harness", {
+      identityFields: ["projectId", "workThreadId", "registryId", "toolId", "rowDigest"],
+      schema: "direct_tool_capability_registry@1",
+    }),
+    bridgeFit: "Maps vanilla, already-direct, deferred, provider-hosted, MCP, plugin, code-mode, and agent-tool families into capability rows with separate implementation, provider declaration, local executor, promotion, authority, replay, context, and usage fields.",
+    realignment: "The constitution is read-only in this slice: it declares no new provider tools, exposes no local executor, grants no authority gate, mutates no request shape, and only surfaces status rows in settings.",
+  },
 ]);
 
 function isPlainObject(value) {
