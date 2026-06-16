@@ -2891,7 +2891,7 @@ the same authority-bearing transitions used by the Electron path.
 
 ### PR 53: Output, Artifact Outbox, And Human Decision Loop
 
-Status: planned.
+Status: implemented in branch `codex/direct-headless-output-outbox`.
 
 Purpose:
 
@@ -2910,6 +2910,27 @@ Scope:
 - Add safe `write_artifact` outbox action under an allowed artifact root.
 - Add `human_decision_packet@1` and `human_decision_reply@1`.
 - Add reply endpoint with bounded choices and `freeTextNote` as context only.
+
+Implemented slice:
+
+- `src/main/direct/headless/output-reducer.js` reduces terminal assistant
+  output for `markdown_summary_only`, `artifact_only`,
+  `json_contract_required`, and `human_review_required` route modes.
+- `direct_bridge_reduced_results` now stores provenance-cited reduced results
+  with source output digest, route/reducer refs, inference witness, and
+  explicit raw-exposure posture.
+- `write_artifact` outbox actions write local markdown artifacts under the
+  configured artifact root, then persist delivered action/receipt evidence with
+  renderer-safe relative paths.
+- `human_decision_packet@1` and `human_decision_reply@1` are persisted through
+  the bridge store; reply free text is context-only and does not widen
+  authority.
+- The daemon exposes safe read endpoints for reduced results, outbox actions,
+  human decision packets, and bounded human decision replies.
+- `scripts/direct-headless-output-outbox-regression.mjs` proves markdown
+  artifact delivery, reduced-result retrieval, human-review packet creation,
+  valid reply persistence, closed-decision rejection, and raw-exposure
+  sentinels.
 
 Explicit non-goals:
 

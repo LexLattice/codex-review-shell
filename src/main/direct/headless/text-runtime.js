@@ -8,6 +8,7 @@ const {
   normalizeString,
   stableStringify,
 } = require("./bridge-store");
+const { reduceHeadlessTurnOutput } = require("./output-reducer");
 
 const HEADLESS_DIRECT_TEXT_RUNTIME_SCHEMA = "headless_direct_text_runtime@1";
 const TERMINAL_PACKET_STATES = new Set([
@@ -159,6 +160,7 @@ class DirectHeadlessTextRuntime {
     this.deferNextByThread = new Set();
     this.activeTurnRetryDelayMs = Math.max(100, Number(options.activeTurnRetryDelayMs) || 1000);
     this.implementationSettleTimeoutMs = Math.max(500, Number(options.implementationSettleTimeoutMs) || 5000);
+    this.artifactRoot = normalizeString(options.artifactRoot, "");
   }
 
   statusProjection() {
@@ -536,12 +538,35 @@ class DirectHeadlessTextRuntime {
         ? this.controller.sessionStore.readTurn(packet.targetThreadId, turnAck?.turn?.id)
         : null;
       const terminalState = terminalStateForTurn(finalTurn || turnAck?.turn || {});
-      mark(terminalState, {
+      const terminalPacket = mark(terminalState, {
         providerCompleted: terminalState === "provider_completed",
         turnId: turnAck?.turn?.id || "",
         terminalTurnState: normalizeString(finalTurn?.state || turnAck?.turn?.state || turnAck?.turn?.status, ""),
         error: isPlainObject(finalTurn?.error) ? finalTurn.error : null,
       });
+      if (terminalState === "provider_completed") {
+        const reduction = reduceHeadlessTurnOutput({
+          store: this.store,
+          controller: this.controller,
+          packet: terminalPacket || this.store.readTurnPacket(packetId) || packet,
+          route: route || {},
+          artifactRoot: this.artifactRoot,
+        });
+        if (reduction) {
+          mark(terminalState, {
+            outputReduction: {
+              reducedResultId: reduction.reducedResult?.resultId || "",
+              reductionStatus: reduction.reducedResult?.reductionStatus || "",
+              reducerMode: reduction.reducedResult?.reducerMode || "",
+              writeArtifactActionId: reduction.artifacts?.writeArtifact?.action?.actionId || "",
+              humanDecisionId: reduction.artifacts?.humanDecision?.decisionId || "",
+              rawOutputIncluded: false,
+              rawProviderPayloadIncluded: false,
+              rawPathIncluded: false,
+            },
+          });
+        }
+      }
     } catch (error) {
       const code = normalizeString(error?.code, "");
       mark(code === "active_turn_exists" ? "queued" : "failed", {

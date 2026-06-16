@@ -490,6 +490,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "V0 proves read-only disposable fixture routes. Production workspace mutation, broad command authority, recursive workers, external actions, outbox delivery, and human decision routing remain gated to later Wave 9 slices.",
   },
   {
+    id: "ic13.headless-output-outbox",
+    name: "Headless output reducer, artifact outbox, and human decisions",
+    role: "governance_routing",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/headless/output-reducer.js", "src/main/direct/headless/bridge-store.js", "src/main/direct/headless/bridge-daemon.js", "scripts/direct-headless-output-outbox-regression.mjs"],
+    ontology: ontologyShape(["headless_reduced_result", "headless_outbox_action", "headless_delivery_receipt", "human_decision_packet", "human_decision_reply"], "harness", {
+      identityFields: ["envelopeId", "packetId", "resultId", "actionId", "decisionId"],
+      schema: "headless_reduced_result@1",
+    }),
+    bridgeFit: "Reduces terminal headless output into durable provenance-cited results, writes safe local artifacts through a bounded outbox action, and records bounded human decisions/replies without promoting free text into authority.",
+    realignment: "V0 keeps external delivery, webhook/email/Slack integrations, trading/order execution, and action-specific human replies disabled until later authority contracts exist.",
+  },
+  {
     id: "ic14.skills-hooks-apps",
     name: "Skills, hooks, and app connectors as bridge modules",
     role: "governance_routing",
