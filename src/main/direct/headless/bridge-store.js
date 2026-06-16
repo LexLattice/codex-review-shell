@@ -780,6 +780,24 @@ class DirectHeadlessBridgeStore {
     return row ? parseJson(row.decision_json, null) : null;
   }
 
+  duplicateEventForProcessingIdentity(processingIdentity = "") {
+    const duplicate = this.db.prepare("select * from direct_bridge_inbox_events where processing_identity = ?").get(processingIdentity);
+    if (!duplicate) return null;
+    return {
+      ok: true,
+      duplicate: true,
+      status: duplicate.lifecycle,
+      event: safeEventProjection(duplicate),
+    };
+  }
+
+  duplicateEventForInput(input = {}, options = {}) {
+    const at = nowIso(options.nowMs);
+    const validation = this.validateIngress(input, options);
+    const processingIdentity = validation.processingIdentity || `invalid:${sha256(`${at}:${validation.errorCode}:${stableStringify(input)}`).slice(7, 31)}`;
+    return this.duplicateEventForProcessingIdentity(processingIdentity);
+  }
+
   submitHumanDecisionReply(input = {}, options = {}) {
     const at = normalizeString(options.now, nowIso(options.nowMs));
     const decisionId = normalizeString(input.decisionId || input.decision_id, "");
@@ -846,15 +864,8 @@ class DirectHeadlessBridgeStore {
     const at = nowIso(options.nowMs);
     const validation = this.validateIngress(input, options);
     const processingIdentity = validation.processingIdentity || `invalid:${sha256(`${at}:${validation.errorCode}:${stableStringify(input)}`).slice(7, 31)}`;
-    const duplicate = this.db.prepare("select * from direct_bridge_inbox_events where processing_identity = ?").get(processingIdentity);
-    if (duplicate) {
-      return {
-        ok: true,
-        duplicate: true,
-        status: duplicate.lifecycle,
-        event: safeEventProjection(duplicate),
-      };
-    }
+    const duplicate = this.duplicateEventForProcessingIdentity(processingIdentity);
+    if (duplicate) return duplicate;
     const envelopeId = normalizeString(input.envelopeId || input.envelope_id, `bridge_evt_${sha256(`${processingIdentity}:${at}`).slice(7, 31)}`);
     const eventJson = {
       sourceSystem: validation.sourceSystem,

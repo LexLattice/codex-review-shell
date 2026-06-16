@@ -136,6 +136,14 @@ try {
   assert.equal(unauthenticated.body.status, "control_blocked");
   assert.equal(unauthenticated.body.error, "unknown_client");
 
+  const nullBody = await requestJson(baseUrl, "/v1/bridge/control", {
+    method: "POST",
+    body: "null",
+  });
+  assert.equal(nullBody.response.status, 401);
+  assert.equal(nullBody.body.status, "control_blocked");
+  assert.equal(nullBody.body.error, "unknown_client");
+
   const paused = await control(baseUrl, "pause_intake");
   assert.equal(paused.response.status, 202);
   assert.equal(paused.body.ok, true);
@@ -156,6 +164,17 @@ try {
   assert.equal(accepted.response.status, 202);
   assert.equal(accepted.body.status, "route_resolved");
 
+  const pausedAfterAccept = await control(baseUrl, "pause_intake");
+  assert.equal(pausedAfterAccept.response.status, 202);
+
+  const duplicateWhilePaused = await submitEvent(baseUrl, event("accepted-after-resume"));
+  assert.equal(duplicateWhilePaused.response.status, 202);
+  assert.equal(duplicateWhilePaused.body.duplicate, true);
+  assert.equal(duplicateWhilePaused.body.event.envelopeId, accepted.body.event.envelopeId);
+
+  const resumedAfterDuplicate = await control(baseUrl, "resume_intake");
+  assert.equal(resumedAfterDuplicate.response.status, 202);
+
   const draining = await control(baseUrl, "drain");
   assert.equal(draining.response.status, 202);
   assert.equal(draining.body.control.intakeState, "paused");
@@ -169,17 +188,16 @@ try {
   assert.equal(shutdown.response.status, 202);
   assert.equal(shutdown.body.status, "shutdown_requested");
   assert.equal(shutdown.body.control.shutdownState, "requested");
+  assert.equal(shutdown.body.control.recentEvents.length >= 6, true);
 
-  const finalStatus = await requestJson(baseUrl, "/v1/bridge/status");
-  assert.equal(finalStatus.body.control.recentEvents.length >= 4, true);
-  assert.equal(finalStatus.body.providerRequestsStarted, 0);
-  assert.equal(finalStatus.body.rawPayloadsExposed, false);
+  await new Promise((resolve) => setTimeout(resolve, 350));
+  assert.equal(daemon.state, "stopped");
 
   console.log(JSON.stringify({
     ok: true,
     regression: "direct-headless-control-surface",
-    controls: finalStatus.body.control.safeControls,
-    recentControlEvents: finalStatus.body.control.recentEvents.length,
+    controls: shutdown.body.control.safeControls,
+    recentControlEvents: shutdown.body.control.recentEvents.length,
   }, null, 2));
 } finally {
   await daemon.close().catch(() => {});

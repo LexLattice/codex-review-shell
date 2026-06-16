@@ -12,6 +12,10 @@ function isPlainObject(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
+function requestBodyObject(value) {
+  return isPlainObject(value) ? value : {};
+}
+
 function jsonResponse(res, statusCode, body) {
   const payload = JSON.stringify(body ?? {});
   res.writeHead(statusCode, {
@@ -105,6 +109,7 @@ class DirectHeadlessBridgeDaemon {
     this.intakePaused = false;
     this.draining = false;
     this.shutdownRequested = false;
+    this.shutdownTimer = null;
     this.controlEvents = [];
     this._turnRuntime = options.turnRuntime || options.textRuntime || null;
     Object.defineProperty(this, "turnRuntime", {
@@ -183,8 +188,20 @@ class DirectHeadlessBridgeDaemon {
     return event;
   }
 
+  scheduleShutdown() {
+    if (this.shutdownTimer) return;
+    this.shutdownTimer = setTimeout(() => {
+      this.shutdownTimer = null;
+      this.close().catch((error) => {
+        this.lastErrorClass = normalizeString(error?.code, "shutdown_close_failed");
+      });
+    }, 250);
+    if (typeof this.shutdownTimer.unref === "function") this.shutdownTimer.unref();
+  }
+
   controlDaemon(body = {}) {
-    const action = normalizeString(body.action || body.controlAction, "");
+    const safeBody = requestBodyObject(body);
+    const action = normalizeString(safeBody.action || safeBody.controlAction, "");
     if (action === "pause_intake") {
       this.intakePaused = true;
       this.draining = false;
@@ -231,6 +248,7 @@ class DirectHeadlessBridgeDaemon {
       this.shutdownRequested = true;
       this.intakePaused = true;
       this.draining = true;
+      this.scheduleShutdown();
       return {
         ok: true,
         status: "shutdown_requested",
@@ -256,7 +274,10 @@ class DirectHeadlessBridgeDaemon {
   }
 
   submitEvent(body = {}) {
+    const safeBody = requestBodyObject(body);
     if (this.draining) {
+      const duplicate = this.store.duplicateEventForInput?.(safeBody);
+      if (duplicate) return duplicate;
       return {
         ok: false,
         status: "blocked_ingress",
@@ -266,6 +287,8 @@ class DirectHeadlessBridgeDaemon {
       };
     }
     if (this.intakePaused) {
+      const duplicate = this.store.duplicateEventForInput?.(safeBody);
+      if (duplicate) return duplicate;
       return {
         ok: false,
         status: "blocked_ingress",
@@ -283,12 +306,13 @@ class DirectHeadlessBridgeDaemon {
         rawPayloadIncluded: false,
       };
     }
-    if (this.turnRuntime?.submitEvent) return this.turnRuntime.submitEvent(body);
-    return this.store.submitEvent(body);
+    if (this.turnRuntime?.submitEvent) return this.turnRuntime.submitEvent(safeBody);
+    return this.store.submitEvent(safeBody);
   }
 
   authenticateEventRequest(req, body = {}) {
-    const clientId = normalizeString(body.clientId || body.client_id, "");
+    const safeBody = requestBodyObject(body);
+    const clientId = normalizeString(safeBody.clientId || safeBody.client_id, "");
     const client = this.store.readClient(clientId);
     if (!client) {
       return {
@@ -329,7 +353,8 @@ class DirectHeadlessBridgeDaemon {
   }
 
   authenticateKnownClientRequest(req, body = {}) {
-    const clientId = normalizeString(body.clientId || body.client_id, "");
+    const safeBody = requestBodyObject(body);
+    const clientId = normalizeString(safeBody.clientId || safeBody.client_id, "");
     const client = this.store.readClient(clientId);
     if (!client) {
       return {
@@ -343,7 +368,7 @@ class DirectHeadlessBridgeDaemon {
         reason: "client_inactive",
       };
     }
-    return this.authenticateEventRequest(req, body);
+    return this.authenticateEventRequest(req, safeBody);
   }
 
   readEvent(envelopeId = "") {
@@ -383,6 +408,10 @@ class DirectHeadlessBridgeDaemon {
   }
 
   async close() {
+    if (this.shutdownTimer) {
+      clearTimeout(this.shutdownTimer);
+      this.shutdownTimer = null;
+    }
     const server = this.server;
     this.server = null;
     this.state = "stopped";
@@ -430,7 +459,7 @@ class DirectHeadlessBridgeDaemon {
     }
     if (req.method === "POST" && url.pathname.startsWith("/v1/bridge/human-decisions/") && url.pathname.endsWith("/replies")) {
       const decisionId = decodeURIComponent(url.pathname.slice("/v1/bridge/human-decisions/".length, -"/replies".length));
-      const body = await readRequestJson(req, this.maxBodyBytes);
+      const body = requestBodyObject(await readRequestJson(req, this.maxBodyBytes));
       const auth = this.authenticateKnownClientRequest(req, body);
       if (!auth.ok) {
         return jsonResponse(res, 401, {
@@ -445,7 +474,7 @@ class DirectHeadlessBridgeDaemon {
       return jsonResponse(res, result.ok ? 202 : 400, result);
     }
     if (req.method === "POST" && url.pathname === "/v1/bridge/control") {
-      const body = await readRequestJson(req, this.maxBodyBytes);
+      const body = requestBodyObject(await readRequestJson(req, this.maxBodyBytes));
       const auth = this.authenticateKnownClientRequest(req, body);
       if (!auth.ok) {
         return jsonResponse(res, 401, {
@@ -461,7 +490,7 @@ class DirectHeadlessBridgeDaemon {
       return jsonResponse(res, result.ok ? 202 : 400, result);
     }
     if (req.method === "POST" && url.pathname === "/v1/bridge/events") {
-      const body = await readRequestJson(req, this.maxBodyBytes);
+      const body = requestBodyObject(await readRequestJson(req, this.maxBodyBytes));
       const auth = this.authenticateEventRequest(req, body);
       if (!auth.ok) {
         return jsonResponse(res, 401, {
