@@ -2949,7 +2949,7 @@ decision packets without becoming executable authority.
 
 ### PR 54: Electron Control Surface And Promotion Harness
 
-Status: planned.
+Status: implemented in branch `codex/direct-headless-control-surface`.
 
 Purpose:
 
@@ -2969,6 +2969,30 @@ Scope:
   diagnostic event, direct text route, active-turn queue, implementation-lane
   fixture, reducer/write artifact, human decision reply, restart/replay safety.
 - Update docs, matrix, and readiness rows.
+
+Implemented in this slice:
+
+- `headless_daemon_control_projection@1` exposes daemon intake, drain, shutdown
+  request, safe-control list, and recent control events without exposing raw
+  payloads or route authority.
+- `/v1/bridge/control` accepts only authenticated known clients and supports
+  daemon-local `pause_intake`, `resume_intake`, `drain`, and `shutdown`
+  request transitions.
+- Paused/draining daemon states block new ingress events before route/provider
+  execution while preserving existing durable store truth.
+- Bridge status now includes pending/completed human-decision counts for
+  renderer-safe control-surface display.
+- Direct settings projection adds a `headless_daemon` section showing daemon
+  status, routes/clients, inbox, active/queued turns, outbox failures, pending
+  decisions, packets/results, and control posture.
+- `direct-headless-control-surface-regression.mjs` verifies authenticated
+  controls, blocked ingress while paused/draining, settings projection safety,
+  and no provider/request/route-authority grant.
+- `direct-headless-promotion-suite.mjs` packages the headless substrate, text
+  runtime, implementation runtime, output/outbox, and control-surface
+  regressions as a repeatable readiness suite.
+- Information bridge registry now names the control surface and promotion
+  harness as `ic13.headless-control-surface`.
 
 Explicit non-goals:
 

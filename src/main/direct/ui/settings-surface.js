@@ -596,6 +596,43 @@ function summarizeManualSmokeGate(input = {}) {
   };
 }
 
+function summarizeHeadlessDaemon(input = {}) {
+  const source = objectOrEmpty(input);
+  const daemon = normalizeString(source.schema, "") === "bridge_daemon_status_projection@1"
+    ? source
+    : objectOrEmpty(source.headlessDaemonStatus || source.headlessBridgeStatus || source.bridgeDaemonStatus || source.runtimeStatus?.headlessDaemonStatus || source.runtimeStatus?.headlessBridgeStatus);
+  const control = objectOrEmpty(daemon.control);
+  const textRuntime = objectOrEmpty(daemon.textRuntime);
+  const turnRuntime = objectOrEmpty(daemon.turnRuntime);
+  const turnPackets = objectOrEmpty(daemon.turnPackets);
+  const reducedResults = objectOrEmpty(daemon.reducedResults);
+  return {
+    available: normalizeString(daemon.schema, "") === "bridge_daemon_status_projection@1",
+    schema: normalizeString(daemon.schema, "not_exposed"),
+    daemonState: normalizeString(daemon.daemonState, "unavailable"),
+    activeRoutes: Number(daemon.activeRoutes ?? 0),
+    registeredClients: Number(daemon.registeredClients ?? 0),
+    inboxEvents: Number(daemon.inboxEvents ?? 0),
+    queuedInboxEvents: Number(daemon.queuedInboxEvents ?? 0),
+    activeTurns: Number(textRuntime.activeTurns ?? turnRuntime.activeTurns ?? daemon.activeTurns ?? 0),
+    queuedTurns: Number(textRuntime.queuedTurns ?? turnRuntime.queuedTurns ?? 0),
+    queuedEgressActions: Number(daemon.queuedEgressActions ?? 0),
+    failedEgressActions: Number(daemon.failedEgressActions ?? 0),
+    pendingDecisions: Number(daemon.pendingHumanDecisions ?? daemon.humanDecisionPendingCount ?? 0),
+    turnPacketsWritten: Number(turnPackets.total ?? turnPackets.totalPackets ?? turnPackets.packetCount ?? 0),
+    reducedResultsWritten: Number(reducedResults.total ?? reducedResults.totalResults ?? reducedResults.resultCount ?? 0),
+    intakeState: normalizeString(control.intakeState, "unknown"),
+    drainState: normalizeString(control.drainState, "unknown"),
+    shutdownState: normalizeString(control.shutdownState, "unknown"),
+    safeControls: arrayOrEmpty(control.safeControls).map((item) => normalizeString(item, "")).filter(Boolean),
+    recentControlEventCount: arrayOrEmpty(control.recentEvents).length,
+    routeAuthorityMutable: control.routeAuthorityMutable === true,
+    providerTransportAllowed: control.providerTransportAllowed === true,
+    rawPayloadIncluded: control.rawPayloadIncluded === true || daemon.rawPayloadsExposed === true,
+    projectionDigest: normalizeString(daemon.projectionDigest || daemon.sourceDigest, ""),
+  };
+}
+
 function buildRows(sections) {
   const runtime = sections.runtime;
   const registry = sections.registry;
@@ -614,6 +651,7 @@ function buildRows(sections) {
   const agentUsage = sections.agentUsage;
   const appServerFallbackParity = sections.appServerFallbackParity;
   const manualSmokeGate = sections.manualSmokeGate;
+  const headlessDaemon = sections.headlessDaemon;
   return {
     runtime: [
       statusRow("Current path", runtime.currentPath),
@@ -813,6 +851,21 @@ function buildRows(sections) {
       statusRow("Promotion", manualSmokeGate.matrixPromotionCandidate || manualSmokeGate.matrixPromotionAllowed ? "unexpected" : "not promoted", manualSmokeGate.matrixPromotionCandidate || manualSmokeGate.matrixPromotionAllowed ? "blocked" : "ok"),
       statusRow("Authority", manualSmokeGate.manualSmokeExecutionAllowed || manualSmokeGate.runtimePathMutationAllowed || manualSmokeGate.workThreadMutationAllowed || manualSmokeGate.providerTransportAllowed || manualSmokeGate.workspaceMutationAllowed || manualSmokeGate.appServerReplacementAllowed || manualSmokeGate.autoApprovalAllowed || manualSmokeGate.moduleExecutionAllowed || manualSmokeGate.recursiveWorkerAllowed ? "unexpected grant" : "display only", manualSmokeGate.manualSmokeExecutionAllowed || manualSmokeGate.runtimePathMutationAllowed || manualSmokeGate.workThreadMutationAllowed || manualSmokeGate.providerTransportAllowed || manualSmokeGate.workspaceMutationAllowed || manualSmokeGate.appServerReplacementAllowed || manualSmokeGate.autoApprovalAllowed || manualSmokeGate.moduleExecutionAllowed || manualSmokeGate.recursiveWorkerAllowed ? "blocked" : "ok"),
     ],
+    headlessDaemon: [
+      statusRow("Surface", headlessDaemon.available ? "available" : "not exposed", headlessDaemon.available ? "diagnostic" : "missing"),
+      statusRow("Daemon", headlessDaemon.daemonState, headlessDaemon.daemonState === "ready" ? "ok" : "diagnostic"),
+      statusRow("Routes / clients", `${headlessDaemon.activeRoutes}/${headlessDaemon.registeredClients}`),
+      statusRow("Inbox queued/events", `${headlessDaemon.queuedInboxEvents}/${headlessDaemon.inboxEvents}`),
+      statusRow("Turns active/queued", `${headlessDaemon.activeTurns}/${headlessDaemon.queuedTurns}`),
+      statusRow("Outbox queued/failed", `${headlessDaemon.queuedEgressActions}/${headlessDaemon.failedEgressActions}`, headlessDaemon.failedEgressActions ? "blocked" : "ok"),
+      statusRow("Decisions pending", headlessDaemon.pendingDecisions, headlessDaemon.pendingDecisions ? "diagnostic" : "ok"),
+      statusRow("Packets / results", `${headlessDaemon.turnPacketsWritten}/${headlessDaemon.reducedResultsWritten}`),
+      statusRow("Intake", `${headlessDaemon.intakeState} · ${headlessDaemon.drainState}`, headlessDaemon.intakeState === "paused" || headlessDaemon.drainState === "draining" ? "diagnostic" : "ok"),
+      statusRow("Shutdown", headlessDaemon.shutdownState, headlessDaemon.shutdownState === "requested" ? "diagnostic" : "ok"),
+      statusRow("Controls", headlessDaemon.safeControls.length ? headlessDaemon.safeControls.join(", ") : "none", headlessDaemon.safeControls.length ? "diagnostic" : "missing"),
+      statusRow("Control events", headlessDaemon.recentControlEventCount),
+      statusRow("Authority", headlessDaemon.routeAuthorityMutable || headlessDaemon.providerTransportAllowed || headlessDaemon.rawPayloadIncluded ? "unexpected grant" : "daemon-local only", headlessDaemon.routeAuthorityMutable || headlessDaemon.providerTransportAllowed || headlessDaemon.rawPayloadIncluded ? "blocked" : "ok"),
+    ],
   };
 }
 
@@ -835,6 +888,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
   const agentUsage = summarizeAgentUsage(input.agentUsageStatus || input.agentUsageProjection || input.directAgentUsage || input);
   const appServerFallbackParity = summarizeAppServerFallbackParity(input.appServerFallbackParityReport || input.appServerFallbackParity || input);
   const manualSmokeGate = summarizeManualSmokeGate(input.manualSmokeGate || input.directManualSmokeGate || input.manualSmokeGateProjection || input);
+  const headlessDaemon = summarizeHeadlessDaemon(input.headlessDaemonStatus || input.headlessBridgeStatus || input.bridgeDaemonStatus || input);
   const generatedAt = normalizeString(input.generatedAt, nowIso(input.nowMs));
   const authority = {
     displayOnly: true,
@@ -870,7 +924,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
     rawPathIncluded: false,
     rawSecretIncluded: false,
   };
-  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, continuity, contextPreview, memoryWorkbench, runtimeWitness, agentUsage, appServerFallbackParity, manualSmokeGate };
+  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, continuity, contextPreview, memoryWorkbench, runtimeWitness, agentUsage, appServerFallbackParity, manualSmokeGate, headlessDaemon };
   const sourceDigest = digestFor("direct-settings-surface-source@1", sections);
   const projection = {
     schema: DIRECT_SETTINGS_SURFACE_PROJECTION_SCHEMA,
@@ -897,6 +951,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       "direct_agent_usage",
       "appserver_fallback_parity",
       "manual_smoke_gate",
+      "headless_daemon",
     ],
     sections,
     rows: buildRows(sections),
@@ -923,6 +978,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       { kind: "direct_agent_usage", digest: normalizeString(agentUsage.projectionDigest || agentUsage.ledgerDigest, ""), label: "Direct agent usage summary" },
       { kind: "appserver_fallback_parity", digest: normalizeString(appServerFallbackParity.reportDigest, ""), label: "App-server fallback parity" },
       { kind: "manual_smoke_gate", digest: normalizeString(manualSmokeGate.gateDigest, ""), label: "Direct manual smoke gate" },
+      { kind: "headless_daemon", digest: normalizeString(headlessDaemon.projectionDigest, ""), label: "Headless daemon control surface" },
     ].filter((ref) => ref.digest || ref.kind === "registry_audit"),
     sourceDigest,
     rawTextIncluded: false,

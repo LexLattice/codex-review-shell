@@ -504,6 +504,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "V0 keeps external delivery, webhook/email/Slack integrations, trading/order execution, and action-specific human replies disabled until later authority contracts exist.",
   },
   {
+    id: "ic13.headless-control-surface",
+    name: "Headless daemon control surface and promotion harness",
+    role: "observability_surface",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/headless/bridge-daemon.js", "src/main/direct/headless/bridge-store.js", "src/main/direct/ui/settings-surface.js", "scripts/direct-headless-control-surface-regression.mjs", "scripts/direct-headless-promotion-suite.mjs"],
+    ontology: ontologyShape(["headless_daemon_control_projection", "headless_daemon_control_event", "direct_headless_promotion_suite_report"], "harness", {
+      identityFields: ["controlEventId", "clientId", "routeId", "workThreadId"],
+      schema: "headless_daemon_control_projection@1",
+    }),
+    bridgeFit: "Makes the loopback headless daemon inspectable and daemon-locally controllable from a renderer-safe settings projection, then packages a repeatable promotion suite for the headless path.",
+    realignment: "Controls are limited to daemon intake pause/resume/drain/shutdown request and do not mutate route authority, start provider calls, deliver external actions, approve requests, or expose raw payloads.",
+  },
+  {
     id: "ic14.skills-hooks-apps",
     name: "Skills, hooks, and app connectors as bridge modules",
     role: "governance_routing",
