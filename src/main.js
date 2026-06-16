@@ -127,6 +127,10 @@ const {
   buildDirectAgentUsageSummaryProjection,
 } = require("./main/direct/usage/agent-ledger");
 const {
+  assertAgentRuntimeSubstrateSafe,
+  buildAgentRuntimeSubstrateStatus,
+} = require("./main/direct/agents/runtime-substrate");
+const {
   assertControlToolSubstrateSafe,
   buildControlToolSubstrateStatus,
 } = require("./main/direct/tools/control-perception-decision-substrate");
@@ -2490,6 +2494,12 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     directProviderMetadata,
     generatedAt,
   });
+  const agentRuntimeStatus = buildDirectAgentRuntimeSubstrateStatusForProject({
+    project,
+    runtimeStatus,
+    agentUsageStatus,
+    generatedAt,
+  });
   const contextPreview = directContextPreviewForProject(project, {
     runtimeStatus,
     runtimeWitnessProjection,
@@ -2512,6 +2522,7 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     agentClassStatus,
     toolCapabilityStatus,
     controlToolStatus,
+    agentRuntimeStatus,
     continuityStatus: runtimeStatus.directContextMaintenance,
     contextPreview,
     runtimeWitnessProjection,
@@ -2536,6 +2547,30 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
   });
   assertDirectSettingsSurfaceRendererSafe(projection);
   return projection;
+}
+
+function buildDirectAgentRuntimeSubstrateStatusForProject(input = {}) {
+  const project = input.project || {};
+  const projectId = normalizeString(project.id || input.runtimeStatus?.projectId, "");
+  const primaryThreadId = normalizeString(
+    input.runtimeStatus?.activeProviderThreadId ||
+      input.runtimeStatus?.activeDirectSessionId ||
+      project.codexThreadId ||
+      project.threadId,
+    "primary_agent",
+  );
+  const generatedAt = normalizeString(input.generatedAt, nowIso());
+  const status = buildAgentRuntimeSubstrateStatus({
+    projectId,
+    primaryThreadId,
+    nodes: [],
+    edges: [],
+    messages: [],
+    lifecycleEntries: [],
+    generatedAt,
+  });
+  assertAgentRuntimeSubstrateSafe(status);
+  return status;
 }
 
 function buildDirectAgentUsageStatusForProject(projectId) {

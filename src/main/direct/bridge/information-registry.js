@@ -322,6 +322,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "Inspection and wait status remain contained UI evidence only: no recursive spawn, send input, resume, close, scheduling, provider transport, workspace mutation, or child-output promotion authority.",
   },
   {
+    id: "ic24.direct-agent-runtime-substrate",
+    name: "Direct agent runtime substrate",
+    role: "observability_surface",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/agents/runtime-substrate.js", "src/main/direct/ui/settings-surface.js", "scripts/direct-agent-runtime-substrate-regression.mjs", "src/main.js"],
+    ontology: ontologyShape(["direct_agent_runtime_registry", "direct_agent_thread_graph", "direct_agent_mailbox", "direct_agent_lifecycle_registry", "direct_agent_spawn_plan", "direct_agent_runtime_recovery_classification"], "sub_agent", {
+      identityFields: ["projectId", "primaryThreadId", "agentThreadId", "mailboxId", "spawnPlanId", "recoveryId"],
+      schema: "direct_agent_runtime_substrate_status@1",
+    }),
+    bridgeFit: "Creates the pre-tool runtime substrate for direct sub-agents: canonical graph evidence, mailbox sequencing/idempotency, lifecycle/progress posture, context packet families, authority boundaries, spawn plans, and restart recovery classes.",
+    realignment: "This slice enables no spawn/list/wait/send/interrupt provider tool, no request-shape mutation, no recursive worker authority, and no child transcript promotion into primary transcript.",
+  },
+  {
     id: "ic8.usage-quota-readiness",
     name: "Usage, quota, model, and readiness evidence",
     role: "observability_surface",
