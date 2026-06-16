@@ -2718,7 +2718,7 @@ Standing Wave 9 constraints:
 
 ### PR 50: Headless Bridge Substrate
 
-Status: planned.
+Status: implemented in branch `codex/direct-headless-bridge-substrate`.
 
 Purpose:
 
@@ -2748,6 +2748,20 @@ Scope:
   unknown route, disabled route, missing WorkThread, ambiguous WorkThread, and
   unknown schema.
 - Add bounded queue/backpressure status.
+
+Implemented substrate:
+
+- `src/main/direct/headless/bridge-store.js` owns the local SQLite bridge
+  store, client/route/WorkThread registries, inbox lifecycle evidence,
+  route-decision rows, duplicate processing identities, and safe status
+  projection.
+- `src/main/direct/headless/bridge-daemon.js` owns the loopback-only HTTP
+  daemon for status, event submission, and event inspection.
+- `scripts/direct-bridge-daemon.mjs` starts the daemon without Electron.
+- `scripts/direct-headless-bridge-substrate-regression.mjs` proves lawful
+  accept/block behavior for accepted events, duplicate idempotency, raw-payload
+  rejection, unknown schemas, unknown routes, disabled routes, missing
+  WorkThreads, ambiguous WorkThreads, and zero provider-call authority.
 
 Explicit non-goals:
 

@@ -448,6 +448,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "Promote this static audit into a stricter preflight gate for future direct feature specs and tests.",
   },
   {
+    id: "ic13.headless-bridge-substrate",
+    name: "Headless direct bridge intake substrate",
+    role: "governance_routing",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/headless/bridge-store.js", "src/main/direct/headless/bridge-daemon.js", "scripts/direct-bridge-daemon.mjs", "scripts/direct-headless-bridge-substrate-regression.mjs"],
+    ontology: ontologyShape(["bridge_event_envelope", "bridge_client_registration", "bridge_route_binding", "bridge_route_decision", "bridge_event_lifecycle_witness"], "harness", {
+      identityFields: ["clientId", "idempotencyKey", "routeId", "workThreadId", "envelopeId"],
+      schema: "bridge_event_envelope@1",
+    }),
+    bridgeFit: "Creates the loopback-only headless intake institution with durable clients, routes, WorkThread resolution, inbox lifecycle evidence, route decisions, duplicate processing identities, and blocked-state witnesses before provider authority exists.",
+    realignment: "Provider calls, context-pack construction, direct session creation, tool execution, outbox delivery, and human-decision routing remain disabled until later Wave 9 slices add explicit authority.",
+  },
+  {
     id: "ic14.skills-hooks-apps",
     name: "Skills, hooks, and app connectors as bridge modules",
     role: "governance_routing",
