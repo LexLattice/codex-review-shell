@@ -18,13 +18,23 @@ const modelsPayload = {
     {
       id: "gpt-5.5",
       model: "gpt-5.5",
-      display_name: "GPT-5.5",
-      is_default: true,
-      supported_reasoning_levels: ["low", "medium", "high", "xhigh"],
-      default_reasoning_level: "high",
-      service_tiers: [{ id: "standard" }, { id: "fast" }],
-      default_service_tier: "standard",
-      context_window: 272000,
+      displayName: "GPT-5.5",
+      isDefault: true,
+      supportedReasoningEfforts: [
+        { reasoningEffort: "low", description: "quick checks" },
+        { reasoningEffort: "medium", description: "balanced" },
+        { reasoningEffort: "high", description: "deep" },
+        { reasoningEffort: "xhigh", description: "extra deep" },
+      ],
+      defaultReasoningEffort: "high",
+      serviceTiers: [{ id: "standard", name: "Standard" }, { id: "fast", name: "Fast" }],
+      additionalSpeedTiers: ["standard"],
+      defaultServiceTier: "standard",
+      inputModalities: ["text", "image"],
+      supportsPersonality: true,
+      upgradeInfo: { model: "gpt-5.6", upgradeCopy: "upgrade available" },
+      availabilityNux: { kind: "default" },
+      contextWindow: 272000,
     },
     {
       id: "gpt-5.4",
@@ -54,6 +64,17 @@ const modelsPayload = {
 
 const usagePayload = {
   plan_type: "pro",
+  summary: {
+    lifetime_tokens: 123456,
+    peak_daily_tokens: 15000,
+    longest_running_turn_sec: 240,
+    current_streak_days: 3,
+    longest_streak_days: 5,
+  },
+  daily_usage_buckets: [
+    { start_date: "2026-06-14", tokens: 1000 },
+    { start_date: "2026-06-15", tokens: 2000 },
+  ],
   rate_limit: {
     primary_window: {
       used_percent: 63,
@@ -78,6 +99,41 @@ const usagePayload = {
   }],
 };
 
+const appServer140RateLimitsPayload = {
+  planType: "team",
+  rateLimits: {
+    limitId: "legacy",
+    primary: {
+      usedPercent: 44,
+      windowDurationMins: 300,
+      resetsAt: 1781436900,
+    },
+  },
+  rateLimitsByLimitId: {
+    codex: {
+      limitId: "codex",
+      primary: {
+        usedPercent: 63,
+        windowDurationMins: 300,
+        resetsAt: 1781436900,
+      },
+      secondary: {
+        usedPercent: 8,
+        windowDurationMins: 10080,
+        resetsAt: 1781523300,
+      },
+    },
+    codex_other: {
+      limitName: "Other",
+      primary: {
+        usedPercent: 3,
+        windowDurationMins: 300,
+        resetsAt: 1781443200,
+      },
+    },
+  },
+};
+
 const profile = buildDirectProviderMetadataProfile({
   projectId: "project-test",
   authStatus: { status: "authenticated", authMode: "chatgpt", planType: "pro" },
@@ -97,6 +153,10 @@ assert.deepEqual(
 );
 assert.deepEqual(profile.modelCatalog.items[0].serviceTiers.map((item) => item.id), ["standard", "fast"]);
 assert.equal(profile.modelCatalog.items[0].contextWindow, 272000);
+assert.equal(profile.modelCatalog.items[0].availabilityState, "available_with_nux");
+assert.equal(profile.modelCatalog.items[0].upgradeInfo.model, "gpt-5.6");
+assert.deepEqual(profile.modelCatalog.items[0].inputModalities, ["text", "image"]);
+assert.equal(profile.modelCatalog.items[0].supportsPersonality, true);
 const zeroContext = profile.modelCatalog.items.find((item) => item.id === "gpt-zero-context");
 assert.equal(zeroContext.contextWindow, 0);
 assert.equal(zeroContext.maxContextWindow, 0);
@@ -105,12 +165,31 @@ assert.equal(profile.usage.quota.planType, "pro");
 assert.equal(profile.usage.quota.windows.length, 3);
 assert(profile.usage.quota.windows.some((window) => window.windowId === "codex:secondary" && window.windowKind === "weekly"));
 assert(profile.usage.quota.windows.some((window) => window.windowId === "codex_other:primary" && window.windowKind === "five_hour"));
+assert.equal(profile.usage.accountTokenProfile.status, "unknown");
 assert.equal(profile.rawTokenIncluded, false);
 assert.equal(profile.rawAccountIdIncluded, false);
 assert.equal(profile.rawProviderPayloadIncluded, false);
 
 const validation = validateDirectProviderMetadataProfile(profile);
 assert.deepEqual(validation, []);
+
+const appServer140Profile = buildDirectProviderMetadataProfile({
+  projectId: "project-test",
+  authStatus: { status: "authenticated", authMode: "chatgpt", planType: "team" },
+  credentials: { access_token: "redacted-token", account_id: "acct-test" },
+  rawModelsResponse: modelsPayload,
+  rawRateLimits: appServer140RateLimitsPayload,
+  rawAccountTokenProfile: usagePayload,
+  modelSource: "server_model_list",
+  generatedAt: "2026-06-14T00:00:00.000Z",
+});
+assert.equal(appServer140Profile.usage.quota.planType, "team");
+assert.equal(appServer140Profile.usage.quota.windows.length, 3);
+assert(appServer140Profile.usage.quota.windows.some((window) => window.windowId === "codex:secondary" && window.windowKind === "weekly"));
+assert(!appServer140Profile.usage.quota.windows.some((window) => window.windowId === "legacy:primary"), "legacy mirror must not duplicate rateLimitsByLimitId");
+assert.equal(appServer140Profile.usage.accountTokenProfile.status, "available");
+assert.equal(appServer140Profile.usage.accountTokenProfile.lifetimeTokens, 123456);
+assert.equal(appServer140Profile.usage.accountTokenProfile.dailyBuckets.length, 2);
 
 const drift = buildDirectMetadataDriftReport({
   projectId: "project-test",

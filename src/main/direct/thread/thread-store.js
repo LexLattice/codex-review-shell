@@ -269,6 +269,152 @@ function dedupeUsageFactRowsForTotals(rows = []) {
   return [...byKey.values()];
 }
 
+function addUsageTokens(target, row = {}) {
+  target.inputTokens += normalizeNumber(row.input_tokens, 0);
+  target.cachedInputTokens += normalizeNumber(row.cached_input_tokens, 0);
+  target.nonCachedInputTokens += normalizeNumber(row.non_cached_input_tokens, 0);
+  target.outputTokens += normalizeNumber(row.output_tokens, 0);
+  target.reasoningTokens += normalizeNumber(row.reasoning_tokens, 0);
+  target.totalTokens += normalizeNumber(row.total_tokens, 0);
+}
+
+function emptyUsageAggregate() {
+  return {
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    nonCachedInputTokens: 0,
+    outputTokens: 0,
+    reasoningTokens: 0,
+    totalTokens: 0,
+  };
+}
+
+function usageTokenTotals(rows = []) {
+  return (Array.isArray(rows) ? rows : []).reduce((totals, row) => {
+    addUsageTokens(totals, row);
+    return totals;
+  }, emptyUsageAggregate());
+}
+
+function maxIso(left = "", right = "") {
+  const leftMs = Date.parse(left || "");
+  const rightMs = Date.parse(right || "");
+  if (!Number.isFinite(leftMs)) return right || "";
+  if (!Number.isFinite(rightMs)) return left || "";
+  return rightMs >= leftMs ? right : left;
+}
+
+function byObservedDesc(left = {}, right = {}) {
+  const leftMs = Date.parse(left.observedAt || left.observed_at || "");
+  const rightMs = Date.parse(right.observedAt || right.observed_at || "");
+  const leftValid = Number.isFinite(leftMs);
+  const rightValid = Number.isFinite(rightMs);
+  if (!leftValid && !rightValid) return 0;
+  if (!leftValid) return 1;
+  if (!rightValid) return -1;
+  return rightMs - leftMs;
+}
+
+function usageDimensionRows(rows = [], scopeThreadId = "") {
+  const turnMap = new Map();
+  const agentMap = new Map();
+  const edgeMap = new Map();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const threadId = normalizeString(row.thread_id, "");
+    const turnId = normalizeString(row.turn_id, "");
+    const agentThreadId = normalizeString(row.agent_thread_id || threadId, threadId);
+    const agentKind = normalizeString(row.agent_kind, "unknown_agent");
+    const parentThreadId = normalizeString(row.parent_thread_id, "");
+    const model = normalizeString(row.model, "");
+    const reasoningEffort = normalizeString(row.reasoning_effort, "");
+    const serviceTier = normalizeString(row.service_tier, "");
+    const observedAt = normalizeString(row.observed_at, "");
+    const turnKey = [threadId, turnId, agentThreadId, model, reasoningEffort, serviceTier].join("\u001f");
+    if (!turnMap.has(turnKey)) {
+      turnMap.set(turnKey, {
+        threadId,
+        turnId,
+        agentThreadId,
+        agentKind,
+        parentThreadId,
+        model,
+        reasoningEffort,
+        serviceTier,
+        responseCount: 0,
+        ...emptyUsageAggregate(),
+        observedAt: "",
+        source: "direct_turn_usage_facts",
+      });
+    }
+    const turnEntry = turnMap.get(turnKey);
+    turnEntry.responseCount += 1;
+    addUsageTokens(turnEntry, row);
+    turnEntry.observedAt = maxIso(turnEntry.observedAt, observedAt);
+
+    const agentKey = [agentThreadId, agentKind, parentThreadId, model, reasoningEffort, serviceTier].join("\u001f");
+    if (!agentMap.has(agentKey)) {
+      agentMap.set(agentKey, {
+        agentThreadId,
+        agentKind,
+        parentThreadId,
+        model,
+        reasoningEffort,
+        serviceTier,
+        turnCount: 0,
+        responseCount: 0,
+        ...emptyUsageAggregate(),
+        observedAt: "",
+        source: "direct_turn_usage_facts",
+      });
+    }
+    const agentEntry = agentMap.get(agentKey);
+    agentEntry.turnCount += turnEntry.responseCount === 1 ? 1 : 0;
+    agentEntry.responseCount += 1;
+    addUsageTokens(agentEntry, row);
+    agentEntry.observedAt = maxIso(agentEntry.observedAt, observedAt);
+
+    if (parentThreadId && agentThreadId && agentThreadId !== parentThreadId) {
+      const edgeKey = [parentThreadId, agentThreadId, threadId, turnId, model, reasoningEffort].join("\u001f");
+      if (!edgeMap.has(edgeKey)) {
+        edgeMap.set(edgeKey, {
+          parentThreadId,
+          parentTurnId: "",
+          parentTurnResolved: false,
+          childThreadId: agentThreadId,
+          childUsageThreadId: threadId,
+          childTurnId: turnId,
+          agentKind,
+          model,
+          reasoningEffort,
+          serviceTier,
+          responseCount: 0,
+          ...emptyUsageAggregate(),
+          observedAt: "",
+          source: "direct_turn_usage_facts.parent_thread_id",
+          evidencePosture: "parent_thread_known_parent_turn_unknown",
+        });
+      }
+      const edgeEntry = edgeMap.get(edgeKey);
+      edgeEntry.responseCount += 1;
+      addUsageTokens(edgeEntry, row);
+      edgeEntry.observedAt = maxIso(edgeEntry.observedAt, observedAt);
+    }
+  }
+  const turnUsageRows = [...turnMap.values()]
+    .filter((row) => !scopeThreadId || row.threadId === scopeThreadId || row.parentThreadId === scopeThreadId)
+    .sort(byObservedDesc)
+    .slice(0, 120);
+  const agentUsageRows = [...agentMap.values()]
+    .filter((row) => !scopeThreadId || row.agentThreadId === scopeThreadId || row.parentThreadId === scopeThreadId)
+    .sort((left, right) => normalizeNumber(right.totalTokens, 0) - normalizeNumber(left.totalTokens, 0) || byObservedDesc(left, right))
+    .slice(0, 80);
+  const parentTurnAgentEdges = [...edgeMap.values()]
+    .filter((row) => !scopeThreadId || row.parentThreadId === scopeThreadId)
+    .sort(byObservedDesc)
+    .slice(0, 120);
+  return { turnUsageRows, agentUsageRows, parentTurnAgentEdges };
+}
+
 function normalizeLifecycleState(value, fallback = "active") {
   const state = normalizeString(value, fallback);
   return LIFECYCLE_STATES.has(state) ? state : fallback;
@@ -1590,13 +1736,15 @@ class DirectThreadStore {
     };
   }
 
-  getDirectRuntimeAnalyticsFactSnapshot(projectId = "") {
+  getDirectRuntimeAnalyticsFactSnapshot(projectId = "", options = {}) {
     const safeProjectId = normalizeString(projectId, "");
+    const safeThreadId = normalizeString(options.threadId, "");
     const summary = this.getDirectRuntimeAnalyticsFactSummary(safeProjectId);
     if (!this.db) {
       return {
         schema: "direct_runtime_analytics_fact_snapshot@1",
         projectId: safeProjectId,
+        threadId: safeThreadId,
         summary,
         lastObservedAt: "",
         latestContext: { status: "unavailable" },
@@ -1605,6 +1753,9 @@ class DirectThreadStore {
         quotaWindows: [],
         quotaObservedAt: "",
         quotaPlanType: "",
+        turnUsageRows: [],
+        agentUsageRows: [],
+        parentTurnAgentEdges: [],
         rawPromptIncluded: false,
         rawResponseIncluded: false,
         rawProviderFrameIncluded: false,
@@ -1618,22 +1769,22 @@ class DirectThreadStore {
     const latestObservedRow = safeProjectId
       ? this.db.prepare(`
           select max(observed_at) as observed_at from (
-            select observed_at from direct_turn_usage_facts where project_id = ?
+            select observed_at from direct_turn_usage_facts where project_id = ? and (? = '' or thread_id = ?)
             union all
-            select observed_at from direct_context_analytics_facts where project_id = ?
+            select observed_at from direct_context_analytics_facts where project_id = ? and (? = '' or thread_id = ?)
             union all
             select observed_at from direct_quota_snapshot_facts where project_id = ?
           )
-        `).get(safeProjectId, safeProjectId, safeProjectId)
+        `).get(safeProjectId, safeThreadId, safeThreadId, safeProjectId, safeThreadId, safeThreadId, safeProjectId)
       : this.db.prepare(`
           select max(observed_at) as observed_at from (
-            select observed_at from direct_turn_usage_facts
+            select observed_at from direct_turn_usage_facts where (? = '' or thread_id = ?)
             union all
-            select observed_at from direct_context_analytics_facts
+            select observed_at from direct_context_analytics_facts where (? = '' or thread_id = ?)
             union all
             select observed_at from direct_quota_snapshot_facts
           )
-        `).get();
+        `).get(safeThreadId, safeThreadId, safeThreadId, safeThreadId);
     const latestContextRow = safeProjectId
       ? this.db.prepare(`
           select
@@ -1647,9 +1798,10 @@ class DirectThreadStore {
             observed_at
           from direct_context_analytics_facts
           where project_id = ?
-          order by (used_percent is null), observed_at desc
+            and (? = '' or thread_id = ?)
+          order by observed_at desc
           limit 1
-        `).get(safeProjectId)
+        `).get(safeProjectId, safeThreadId, safeThreadId)
       : this.db.prepare(`
           select
             context_fact_id,
@@ -1661,21 +1813,36 @@ class DirectThreadStore {
             estimate_confidence,
             observed_at
           from direct_context_analytics_facts
-          order by (used_percent is null), observed_at desc
+          where (? = '' or thread_id = ?)
+          order by observed_at desc
           limit 1
-        `).get();
+        `).get(safeThreadId, safeThreadId);
+    const contextCountRow = safeProjectId
+      ? this.db.prepare(`
+          select count(*) as count
+          from direct_context_analytics_facts
+          where project_id = ?
+            and (? = '' or thread_id = ?)
+        `).get(safeProjectId, safeThreadId, safeThreadId)
+      : this.db.prepare(`
+          select count(*) as count
+          from direct_context_analytics_facts
+          where (? = '' or thread_id = ?)
+        `).get(safeThreadId, safeThreadId);
     const toolRows = safeProjectId
       ? this.db.prepare(`
           select tool_kind, status, count(*) as count
           from direct_tool_analytics_facts
           where project_id = ?
+            and (? = '' or thread_id = ?)
           group by tool_kind, status
-        `).all(safeProjectId)
+        `).all(safeProjectId, safeThreadId, safeThreadId)
       : this.db.prepare(`
           select tool_kind, status, count(*) as count
           from direct_tool_analytics_facts
+          where (? = '' or thread_id = ?)
           group by tool_kind, status
-        `).all();
+        `).all(safeThreadId, safeThreadId);
     const quotaRows = safeProjectId
       ? this.db.prepare(`
           select
@@ -1708,18 +1875,77 @@ class DirectThreadStore {
           order by observed_at desc
           limit 80
         `).all();
+    const usageDetailRows = safeProjectId
+      ? this.db.prepare(`
+          select
+            usage_fact_id,
+            thread_id,
+            turn_id,
+            agent_thread_id,
+            agent_kind,
+            parent_thread_id,
+            model,
+            reasoning_effort,
+            service_tier,
+            response_id,
+            source_row_digest,
+            usage_record_kind,
+            input_tokens,
+            cached_input_tokens,
+            non_cached_input_tokens,
+            output_tokens,
+            reasoning_tokens,
+            total_tokens,
+            observed_at
+          from direct_turn_usage_facts
+          where project_id = ?
+            and usage_record_kind != 'missing'
+            and (? = '' or thread_id = ? or parent_thread_id = ?)
+          order by observed_at desc
+        `).all(safeProjectId, safeThreadId, safeThreadId, safeThreadId)
+      : this.db.prepare(`
+          select
+            usage_fact_id,
+            thread_id,
+            turn_id,
+            agent_thread_id,
+            agent_kind,
+            parent_thread_id,
+            model,
+            reasoning_effort,
+            service_tier,
+            response_id,
+            source_row_digest,
+            usage_record_kind,
+            input_tokens,
+            cached_input_tokens,
+            non_cached_input_tokens,
+            output_tokens,
+            reasoning_tokens,
+            total_tokens,
+            observed_at
+          from direct_turn_usage_facts
+          where usage_record_kind != 'missing'
+            and (? = '' or thread_id = ? or parent_thread_id = ?)
+          order by observed_at desc
+        `).all(safeThreadId, safeThreadId, safeThreadId);
+    const dedupedUsageDetailRows = dedupeUsageFactRowsForTotals(usageDetailRows);
+    const usageDimensions = usageDimensionRows(dedupedUsageDetailRows, safeThreadId);
+    const scopedTokenTotals = usageTokenTotals(dedupedUsageDetailRows);
     const timingRows = safeProjectId
       ? this.db.prepare(`
           select mark_kind, count(*) as count
           from direct_runtime_timing_marks
           where project_id = ?
+            and (? = '' or thread_id = ?)
           group by mark_kind
-        `).all(safeProjectId)
+        `).all(safeProjectId, safeThreadId, safeThreadId)
       : this.db.prepare(`
           select mark_kind, count(*) as count
           from direct_runtime_timing_marks
+          where (? = '' or thread_id = ?)
           group by mark_kind
-        `).all();
+        `).all(safeThreadId, safeThreadId);
     const durationRows = safeProjectId
       ? this.db.prepare(`
           select
@@ -1739,9 +1965,10 @@ class DirectThreadStore {
             and first_visible.turn_id = started.turn_id
             and first_visible.mark_kind = 'first_visible_delta'
           where started.project_id = ?
+            and (? = '' or started.thread_id = ?)
             and started.mark_kind in ('submitted', 'accepted')
           group by started.project_id, started.thread_id, started.turn_id
-        `).all(safeProjectId)
+        `).all(safeProjectId, safeThreadId, safeThreadId)
       : this.db.prepare(`
           select
             started.turn_id as turn_id,
@@ -1760,8 +1987,9 @@ class DirectThreadStore {
             and first_visible.turn_id = started.turn_id
             and first_visible.mark_kind = 'first_visible_delta'
           where started.mark_kind in ('submitted', 'accepted')
+            and (? = '' or started.thread_id = ?)
           group by started.project_id, started.thread_id, started.turn_id
-        `).all();
+        `).all(safeThreadId, safeThreadId);
 
     const toolByKind = new Map();
     const tools = {
@@ -1842,10 +2070,26 @@ class DirectThreadStore {
       });
     }
 
+    const summaryForSnapshot = {
+      ...summary,
+      threadId: safeThreadId,
+      counts: {
+        ...summary.counts,
+        timingMarks: timingRows.reduce((sum, row) => sum + normalizeNumber(row.count, 0), 0),
+        usageFacts: usageDetailRows.length,
+        nonMissingUsageFacts: usageDetailRows.length,
+        contextFacts: normalizeNumber(contextCountRow?.count, 0),
+        toolFacts: toolRows.reduce((sum, row) => sum + normalizeNumber(row.count, 0), 0),
+        quotaFacts: quotaRows.length,
+      },
+      tokenTotals: scopedTokenTotals,
+    };
+
     return {
       schema: "direct_runtime_analytics_fact_snapshot@1",
       projectId: safeProjectId,
-      summary,
+      threadId: safeThreadId,
+      summary: summaryForSnapshot,
       lastObservedAt: normalizeString(latestObservedRow?.observed_at, ""),
       latestContext: latestContextRow
         ? {
@@ -1865,6 +2109,9 @@ class DirectThreadStore {
       quotaWindows,
       quotaObservedAt: normalizeString(quotaWindows[0]?.observedAt, ""),
       quotaPlanType: normalizeString(quotaWindows[0]?.planType, ""),
+      turnUsageRows: usageDimensions.turnUsageRows,
+      agentUsageRows: usageDimensions.agentUsageRows,
+      parentTurnAgentEdges: usageDimensions.parentTurnAgentEdges,
       rawPromptIncluded: false,
       rawResponseIncluded: false,
       rawProviderFrameIncluded: false,

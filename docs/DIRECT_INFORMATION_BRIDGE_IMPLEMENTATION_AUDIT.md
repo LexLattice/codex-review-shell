@@ -304,6 +304,25 @@ remain bridge-compatible:
 - Middle-plane Web/Files/Project tabs.
 - Main provider-profile/runtime constitution concepts.
 
+Codex `rust-v0.140.0` raises the inherited vanilla baseline in ways that matter
+for the direct matrix:
+
+- `model/list` now provides ordered reasoning options, default reasoning,
+  service tiers, default service tier, modality, hidden/default/upgrade, and
+  availability metadata.
+- `account/rateLimits/read` exposes `rateLimitsByLimitId`; the legacy
+  `rateLimits` field is a compatibility mirror and must not duplicate quota
+  rows when the bucket map is present.
+- `account/usage/read` exposes account token activity; this is analytics
+  evidence, not quota or context pressure truth.
+- `thread/tokenUsage/updated` remains the app-server context-pressure witness
+  when paired with `modelContextWindow`; direct should mirror this derivation
+  from direct usage facts and model metadata.
+- `thread/turns/list`, `turn/steer`, `thread/settings/update`,
+  `thread/delete`, `thread/goal/*`, skills/hooks/apps, and `remoteControl/*`
+  are vanilla capability baselines that direct either mirrors, adapts, or
+  deliberately replaces with WorkThread/context/authority-aware equivalents.
+
 Direct replacements should be created only when inherited behavior encodes the
 wrong abstraction, for example treating repo/folder/chat/session as the work
 unit instead of `WorkThread`.

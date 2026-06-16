@@ -178,6 +178,27 @@ app-server usability without fabricating values.
 | A10.4 account token profile | account token usage profile | Lifetime/daily/streak analytics; never substitute for quota or context pressure. | `B-P` | Analytics tab profile row with source labels. |
 | A10.5 timing | turn start/complete lifecycle | Turn started/completed, duration, time-to-first-token, trace id where exposed. | `B-R` | Per-turn direct timing witness. |
 
+### A4 Vanilla App-Server 0.140 Baseline Deltas
+
+The direct path keeps the vanilla app-server path as a usability baseline, but
+does not blindly inherit its ontology. The 0.140 release adds or clarifies
+surfaces that the direct bridge should either mirror, adapt, or deliberately
+replace with a broader ODEU-native construct.
+
+| Vanilla surface | App-server source | Direct bridge posture | Matrix implication |
+| --- | --- | --- | --- |
+| Model descriptors | `model/list` returns `supportedReasoningEfforts`, `defaultReasoningEffort`, `serviceTiers`, `defaultServiceTier`, `inputModalities`, hidden/default/upgrade metadata | Mirror from live provider descriptors; no static menu authority | Strengthens `A7.1`, `A7.2`, `A8.1` |
+| Multi-bucket quota | `account/rateLimits/read` returns legacy `rateLimits` plus `rateLimitsByLimitId` | Preserve bucket identity and window kind; legacy mirror must not duplicate map rows | Strengthens `A10.3` |
+| Account token activity | `account/usage/read` returns summary and daily buckets | Treat as analytics evidence, not quota/context truth | Strengthens `A10.4` |
+| Context pressure | `thread/tokenUsage/updated.total` plus `modelContextWindow`; upstream `get_context_remaining` derives remaining tokens from the same pair | Direct computes used/remaining from provider usage facts and model metadata when both exist | Strengthens `A10.2` and `D2` |
+| History paging | `thread/turns/list`; `thread/turns/items/list` shape exists but is unsupported | Use as app-server baseline; direct thread store should expose equivalent paged projection without replay side effects | Strengthens `G4`, `G5`, `C4` |
+| Active turn steering | `turn/steer` with required `expectedTurnId` | Direct steer/queue UI must cite active-turn id and fail closed on stale turn | Strengthens `F7`, `B1`, `B11` |
+| Next-turn settings | `thread/settings/update` and `thread/settings/updated` | Direct settings persistence should remain per-axis and evidence-backed | Strengthens `A8.1`, `F9` |
+| Thread deletion | `thread/delete` hard-deletes descendants and emits `thread/deleted` | Direct delete/purge remains separate until tombstone/deletion plans exist | Keeps `G11` as future work |
+| Thread goal | `thread/goal/set|get|clear` persists one thread goal | Direct goal/orchestration model is broader; vanilla goal is a compatibility row, not the direct constitutional model | Extends long-horizon work beyond vanilla |
+| Skills/hooks/apps | `skills/list`, `skills/extraRoots/set`, `hooks/list`, `app/list`, selected capability roots | Model as bridge modules with context/evidence/action gates; classification is not execution | Strengthens Wave 1/2 module gates |
+| Remote control/headless | `remoteControl/*` pairing/status/enable/disable | Direct headless daemon must preserve WorkThread/context/authority law, not become an authority bypass | Feeds future headless bridge daemon |
+
 ---
 
 ## B. Request, response item, and stream semantics

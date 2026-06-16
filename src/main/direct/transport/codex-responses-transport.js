@@ -143,7 +143,8 @@ function buildTextOnlyProbeRequest(options = {}) {
   const prompt = normalizeString(options.prompt, DEFAULT_TEXT_PROBE_PROMPT);
   const instructions = normalizeString(options.instructions, DEFAULT_TEXT_PROBE_INSTRUCTIONS);
   const model = normalizeString(options.model, modelFromProfile(options.profileDoc));
-  return {
+  const reasoningEffort = normalizeString(options.reasoningEffort || options.reasoning_effort || options.effort, "");
+  const requestBody = {
     model,
     stream: true,
     store: false,
@@ -160,6 +161,8 @@ function buildTextOnlyProbeRequest(options = {}) {
       },
     ],
   };
+  if (reasoningEffort) requestBody.reasoning = { effort: reasoningEffort };
+  return requestBody;
 }
 
 function directImplementationToolSchemas(toolNames = []) {
@@ -218,6 +221,7 @@ function buildImplementationToolInitialRequest(options = {}) {
   const prompt = normalizeString(options.prompt, DEFAULT_TEXT_PROBE_PROMPT);
   const instructions = normalizeString(options.instructions, DEFAULT_IMPLEMENTATION_TOOL_INSTRUCTIONS);
   const model = normalizeString(options.model, modelFromProfile(options.profileDoc));
+  const reasoningEffort = normalizeString(options.reasoningEffort || options.reasoning_effort || options.effort, "");
   const tools = Array.isArray(options.tools)
     ? options.tools.filter(Boolean)
     : directImplementationToolSchemas(options.toolNames || ["read_file", "apply_patch", "run_command"]);
@@ -243,6 +247,7 @@ function buildImplementationToolInitialRequest(options = {}) {
     requestBody.tools = tools;
     requestBody.tool_choice = normalizeString(options.toolChoicePolicy, "auto") === "required" ? "required" : "auto";
   }
+  if (reasoningEffort) requestBody.reasoning = { effort: reasoningEffort };
   return requestBody;
 }
 
@@ -368,6 +373,7 @@ function requestShapeForDiagnostic(requestBody = {}) {
       : 0,
     toolCount: Array.isArray(requestBody.tools) ? requestBody.tools.length : 0,
     parallelToolCalls: requestBody.parallel_tool_calls === true,
+    reasoningEffort: normalizeString(requestBody.reasoning?.effort || requestBody.reasoning_effort, ""),
   };
 }
 

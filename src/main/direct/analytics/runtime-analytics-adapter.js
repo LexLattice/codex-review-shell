@@ -102,6 +102,9 @@ function baseProjection(input = {}) {
       request_kind_mix: [],
       turn_status_mix: [],
     },
+    turnUsageRows: [],
+    agentUsageRows: [],
+    parentTurnAgentEdges: [],
     blockers: [],
     evidenceRefs: [],
     privacy: rendererSafePrivacy(),
@@ -299,6 +302,20 @@ function normalizeQuotaWindows(windows, source, confidence) {
   return rows;
 }
 
+function normalizeRateLimitMapWindows(map, source, confidence) {
+  const rows = [];
+  if (!isPlainObject(map)) return rows;
+  for (const [limitId, snapshot] of Object.entries(map)) {
+    if (!isPlainObject(snapshot)) continue;
+    const prefix = normalizeString(snapshot.limitId || snapshot.limit_id || limitId, limitId || "limit");
+    const primary = quotaWindowFromRateLimitWindow(snapshot.primary || snapshot.primaryWindow || snapshot.primary_window, "five_hour", source, confidence);
+    const secondary = quotaWindowFromRateLimitWindow(snapshot.secondary || snapshot.secondaryWindow || snapshot.secondary_window, "weekly", source, confidence);
+    if (primary) rows.push({ ...primary, windowId: `${prefix}:primary` });
+    if (secondary) rows.push({ ...secondary, windowId: `${prefix}:secondary` });
+  }
+  return rows;
+}
+
 function providerMetadataQuotaWindows(profile) {
   if (!isPlainObject(profile)) return [];
   const usage = isPlainObject(profile.usage) ? profile.usage : {};
@@ -324,6 +341,23 @@ function providerMetadataQuotaWindows(profile) {
     }
   }
   return windows;
+}
+
+function providerMetadataModelContextWindow(profile, modelId = "") {
+  if (!isPlainObject(profile)) return null;
+  const usage = isPlainObject(profile.usage) ? profile.usage : {};
+  const context = isPlainObject(usage.context) ? usage.context : {};
+  const usageWindow = nullableNumber(context.modelContextWindow || context.contextWindow || context.maxContextWindow);
+  if (usageWindow !== null && usageWindow > 0) return usageWindow;
+  const catalog = isPlainObject(profile.modelCatalog) ? profile.modelCatalog : {};
+  const activeModel = normalizeString(modelId || profile.runtimeSettings?.active?.model || catalog.defaultModel, "");
+  const models = arrayOrEmpty(catalog.items);
+  const selected = models.find((model) => (
+    normalizeString(model?.id, "") === activeModel ||
+    normalizeString(model?.model, "") === activeModel
+  )) || models.find((model) => model?.isDefault || model?.is_default) || models[0] || null;
+  const modelWindow = nullableNumber(selected?.contextWindow || selected?.maxContextWindow || selected?.modelContextWindow);
+  return modelWindow !== null && modelWindow > 0 ? modelWindow : null;
 }
 
 function finalizeProjection(projection) {
@@ -494,10 +528,17 @@ function buildAppServerRuntimeAnalyticsProjection(input = {}) {
   }
 
   const rateLimits = isPlainObject(usage.rateLimits) ? usage.rateLimits : {};
-  const quotaWindows = [
-    quotaWindowFromRateLimitWindow(rateLimits.primary, "primary", "appserver_native", "provider_exact"),
-    quotaWindowFromRateLimitWindow(rateLimits.secondary, "secondary", "appserver_native", "provider_exact"),
-  ].filter(Boolean);
+  const quotaWindows = normalizeRateLimitMapWindows(
+    rateLimits.rateLimitsByLimitId || rateLimits.rate_limits_by_limit_id,
+    "appserver_native",
+    "provider_exact",
+  );
+  if (!quotaWindows.length) {
+    quotaWindows.push(...[
+      quotaWindowFromRateLimitWindow(rateLimits.primary, "five_hour", "appserver_native", "provider_exact"),
+      quotaWindowFromRateLimitWindow(rateLimits.secondary, "weekly", "appserver_native", "provider_exact"),
+    ].filter(Boolean));
+  }
   if (rateLimits.status === "available" && quotaWindows.length) {
     projection.quota = {
       status: "available",
@@ -571,16 +612,29 @@ function buildDirectRuntimeAnalyticsProjection(input = {}) {
 
   const latestContext = isPlainObject(snapshot.latestContext) ? snapshot.latestContext : {};
   if (latestContext.status === "available" || numberOrZero(counts.contextFacts) > 0) {
+    const metadataContextWindow = providerMetadataModelContextWindow(input.directProviderMetadataProfile, latestContext.model || input.model);
+    const rawContextWindow = nullableNumber(latestContext.modelContextWindow);
+    const contextWindow = rawContextWindow || metadataContextWindow;
+    const contextInputTokens = nullableNumber(latestContext.inputTokens);
+    const rawUsedPercent = clampPercent(latestContext.usedPercent);
+    const derivedUsedPercent = contextWindow && contextInputTokens !== null
+      ? clampPercent((contextInputTokens / contextWindow) * 100)
+      : null;
+    const contextBlockers = latestContext.status === "available" ? [] : ["latest_context_fact_unavailable"];
+    if (!rawContextWindow && metadataContextWindow) contextBlockers.push("context_window_filled_from_provider_metadata");
     projection.context = {
       status: latestContext.status === "available" ? "available" : "partial",
       source: "derived_from_direct",
       confidence: normalizeConfidence(latestContext.confidence, "derived"),
       observedAt: normalizeString(latestContext.observedAt || observedAt, ""),
-      modelContextWindow: nullableNumber(latestContext.modelContextWindow),
-      inputTokens: nullableNumber(latestContext.inputTokens),
-      usedPercent: clampPercent(latestContext.usedPercent),
-      evidenceRefs: [evidenceRef("direct_runtime_analytics_facts@1", "context_analytics_fact", latestContext.observedAt || observedAt)],
-      blockers: latestContext.status === "available" ? [] : ["latest_context_fact_unavailable"],
+      modelContextWindow: contextWindow,
+      inputTokens: contextInputTokens,
+      usedPercent: rawUsedPercent ?? derivedUsedPercent,
+      evidenceRefs: [
+        evidenceRef("direct_runtime_analytics_facts@1", "context_analytics_fact", latestContext.observedAt || observedAt),
+        ...(metadataContextWindow ? [evidenceRef("direct_provider_metadata_profile@1", "model_context_window", input.directProviderMetadataProfile?.generatedAt)] : []),
+      ],
+      blockers: contextBlockers,
     };
     if (latestContext.status !== "available") projection.blockers.push("direct_context_latest_unavailable");
   } else {
@@ -656,6 +710,9 @@ function buildDirectRuntimeAnalyticsProjection(input = {}) {
       { xValue: "active", yValue: numberOrZero(timing.active) },
     ].filter((point) => point.yValue > 0),
   };
+  projection.turnUsageRows = arrayOrEmpty(snapshot.turnUsageRows).slice(0, 80);
+  projection.agentUsageRows = arrayOrEmpty(snapshot.agentUsageRows).slice(0, 40);
+  projection.parentTurnAgentEdges = arrayOrEmpty(snapshot.parentTurnAgentEdges).slice(0, 80);
   projection.evidenceRefs.push(evidenceRef("direct_runtime_analytics_facts@1", "direct_fact_snapshot", observedAt));
   return finalizeProjection(projection);
 }

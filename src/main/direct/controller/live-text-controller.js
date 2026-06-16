@@ -4238,6 +4238,7 @@ class DirectLiveTextController {
             profileDoc: this.profileDoc,
             model,
             prompt,
+            reasoningEffort,
             tools: directImplementationToolSchemas(implementationToolNames),
             toolChoicePolicy: "auto",
           })
@@ -4245,6 +4246,7 @@ class DirectLiveTextController {
           profileDoc: this.profileDoc,
           model,
           prompt,
+          reasoningEffort,
         });
     const turn = this.sessionStore.createTurn(session.sessionId, {
       input: [{ role: "user", text: prompt }],
@@ -4311,6 +4313,7 @@ class DirectLiveTextController {
             model,
             prompt: contextResult.providerInput.prompt,
             instructions: implementationContextInstructions(contextResult.providerInput.instructions),
+            reasoningEffort,
             tools: directImplementationToolSchemas(implementationToolNames),
             toolChoicePolicy: "auto",
           })
@@ -4319,6 +4322,7 @@ class DirectLiveTextController {
             model,
             prompt: contextResult.providerInput.prompt,
             instructions: contextResult.providerInput.instructions,
+            reasoningEffort,
           });
     }
     const requestShape = {
@@ -4393,6 +4397,7 @@ class DirectLiveTextController {
       requestBody,
       requestKind: implementationTier ? "implementation_tool_initial" : "text_only",
       model: requestBody.model,
+      reasoningEffort,
       project,
       surfaceSession,
       userItem,
@@ -4602,6 +4607,7 @@ class DirectLiveTextController {
       requestBody,
       requestKind,
       model,
+      reasoningEffort,
       project,
       surfaceSession,
       userItem,
@@ -4623,6 +4629,7 @@ class DirectLiveTextController {
       refreshCredentials: this.refreshCredentials,
       profileDoc: this.profileDoc,
       model,
+      reasoningEffort,
       prompt,
       instructions,
       fetchImpl: this.fetchImpl || undefined,

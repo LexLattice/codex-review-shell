@@ -105,6 +105,18 @@ function normalizeServiceTier(value) {
   };
 }
 
+function uniqueByKey(items, keyFn) {
+  const seen = new Set();
+  const result = [];
+  for (const item of items) {
+    const key = normalizeString(keyFn(item), "");
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    result.push(item);
+  }
+  return result;
+}
+
 function normalizeInputModalities(value) {
   return arrayValue(value).map((entry) => normalizeString(entry, "")).filter(Boolean);
 }
@@ -120,9 +132,12 @@ function normalizeModelDescriptor(raw = {}, index = 0, validation = {}) {
     validation.missingRequiredFields.push(`models[${index}].id`);
     return null;
   }
-  const supportedReasoningEfforts = arrayValue(raw.supportedReasoningEfforts || raw.supported_reasoning_efforts || raw.supported_reasoning_levels)
-    .map(normalizeReasoningOption)
-    .filter(Boolean);
+  const supportedReasoningEfforts = uniqueByKey(
+    arrayValue(raw.supportedReasoningEfforts || raw.supported_reasoning_efforts || raw.supported_reasoning_levels)
+      .map(normalizeReasoningOption)
+      .filter(Boolean),
+    (entry) => entry.reasoningEffort,
+  );
   const defaultReasoningEffort = normalizeString(raw.defaultReasoningEffort || raw.default_reasoning_effort || raw.default_reasoning_level, "");
   const effortValues = new Set(supportedReasoningEfforts.map((entry) => entry.reasoningEffort));
   if (defaultReasoningEffort && effortValues.size && !effortValues.has(defaultReasoningEffort)) {
@@ -140,10 +155,10 @@ function normalizeModelDescriptor(raw = {}, index = 0, validation = {}) {
       });
     }
   }
-  const serviceTiers = [
+  const serviceTiers = uniqueByKey([
     ...arrayValue(raw.serviceTiers || raw.service_tiers),
     ...arrayValue(raw.additionalSpeedTiers || raw.additional_speed_tiers),
-  ].map(normalizeServiceTier).filter(Boolean);
+  ].map(normalizeServiceTier).filter(Boolean), (entry) => entry.id);
   const defaultServiceTier = normalizeString(raw.defaultServiceTier || raw.default_service_tier, "");
   const serviceTierIds = new Set(serviceTiers.map((entry) => entry.id));
   if (defaultServiceTier && serviceTierIds.size && !serviceTierIds.has(defaultServiceTier)) {
@@ -161,7 +176,13 @@ function normalizeModelDescriptor(raw = {}, index = 0, validation = {}) {
     hidden: normalizeBoolean(raw.hidden, normalizeString(raw.visibility, "") === "hidden"),
     isDefault: normalizeBoolean(raw.isDefault || raw.is_default, false),
     upgrade: raw.upgrade === undefined ? null : raw.upgrade,
+    upgradeInfo: raw.upgradeInfo || raw.upgrade_info || null,
     availabilityNux: raw.availabilityNux || raw.availability_nux || null,
+    availabilityState: normalizeString(
+      raw.availabilityState || raw.availability_state || raw.status || "",
+      raw.hidden ? "hidden" : raw.availabilityNux || raw.availability_nux ? "available_with_nux" : "available",
+    ),
+    unavailableReason: normalizeString(raw.unavailableReason || raw.unavailable_reason, ""),
     supportedReasoningEfforts,
     defaultReasoningEffort,
     serviceTiers,
@@ -196,7 +217,7 @@ function rawModelsArray(response) {
 function normalizeRateLimitWindow(input = {}) {
   if (!isPlainObject(input)) return null;
   const usedPercent = numberOrUndefined(input.usedPercent ?? input.used_percent);
-  const resetEpoch = numberOrUndefined(input.resetAt ?? input.reset_at);
+  const resetEpoch = numberOrUndefined(input.resetAt ?? input.reset_at ?? input.resetsAt ?? input.resets_at);
   const resetsAt = normalizeString(
     input.resetsAt || input.resets_at || "",
     resetEpoch ? new Date(resetEpoch * 1000).toISOString() : "",
@@ -227,10 +248,42 @@ function normalizeRateLimitDetails(details = {}, prefix = "limit") {
   return snapshots;
 }
 
+function normalizeRateLimitMap(map = {}) {
+  const snapshots = [];
+  if (!isPlainObject(map)) return snapshots;
+  for (const [key, value] of Object.entries(map)) {
+    if (!isPlainObject(value)) continue;
+    const id = normalizeString(value.limitId || value.limit_id || key, key || "limit");
+    snapshots.push(...normalizeRateLimitDetails(value, id));
+  }
+  return snapshots;
+}
+
+function dedupeQuotaWindows(windows = []) {
+  const seen = new Set();
+  const deduped = [];
+  for (const window of windows) {
+    if (!window) continue;
+    const key = `${normalizeString(window.windowId, "")}:${normalizeString(window.windowKind, "")}:${normalizeString(window.resetsAt, "")}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(window);
+  }
+  return deduped;
+}
+
 function normalizeQuotaSnapshot(raw = null) {
   if (!isPlainObject(raw)) return { status: "unknown", windows: [], evidenceRefs: [] };
-  const rateLimits = raw.rateLimits || raw.rate_limits || raw.rateLimitsByLimitId || raw.rate_limits_by_limit_id || (raw.rate_limit ? {} : raw);
   const sourceWindows = [];
+  const rateLimitsByLimitId = raw.rateLimitsByLimitId || raw.rate_limits_by_limit_id;
+  if (isPlainObject(rateLimitsByLimitId) && Object.keys(rateLimitsByLimitId).length) {
+    sourceWindows.push(...normalizeRateLimitMap(rateLimitsByLimitId));
+  } else {
+    const rateLimits = raw.rateLimits || raw.rate_limits || (raw.rate_limit ? {} : raw);
+    if (isPlainObject(rateLimits) && Object.keys(rateLimits).length) {
+      sourceWindows.push(...normalizeRateLimitDetails(rateLimits, normalizeString(rateLimits.limitId || rateLimits.limit_id, "codex")));
+    }
+  }
   if (isPlainObject(raw.rate_limit)) {
     sourceWindows.push(...normalizeRateLimitDetails(raw.rate_limit, "codex"));
   }
@@ -238,17 +291,13 @@ function normalizeQuotaSnapshot(raw = null) {
     const id = normalizeString(additional.metered_feature || additional.meteredFeature || additional.limit_name || additional.limitName, "additional");
     if (isPlainObject(additional.rate_limit)) sourceWindows.push(...normalizeRateLimitDetails(additional.rate_limit, id));
   }
-  for (const value of Object.values(isPlainObject(rateLimits) ? rateLimits : {})) {
-    if (!isPlainObject(value)) continue;
-    const id = normalizeString(value.limitId || value.limit_id || "limit");
-    sourceWindows.push(...normalizeRateLimitDetails(value, id));
-  }
+  const windows = dedupeQuotaWindows(sourceWindows);
   return {
-    status: sourceWindows.length ? "available" : "unknown",
+    status: windows.length ? "available" : "unknown",
     planType: normalizeString(raw.planType || raw.plan_type, ""),
     rateLimitReachedType: raw.rateLimitReachedType || raw.rate_limit_reached_type || null,
-    windows: sourceWindows,
-    evidenceRefs: sourceWindows.length ? [evidenceRef("direct_quota", "Direct quota/rate metadata", "exact")] : [],
+    windows,
+    evidenceRefs: windows.length ? [evidenceRef("direct_quota", "Direct quota/rate metadata", "exact")] : [],
   };
 }
 
@@ -256,14 +305,31 @@ function normalizeAccountTokenProfile(raw = null) {
   if (!isPlainObject(raw)) return { status: "unknown", evidenceRefs: [] };
   const summary = raw.summary || raw;
   const daily = arrayValue(raw.dailyUsageBuckets || raw.daily_usage_buckets);
+  const lifetimeTokens = numberOrUndefined(summary.lifetimeTokens ?? summary.lifetime_tokens);
+  const peakDailyTokens = numberOrUndefined(summary.peakDailyTokens ?? summary.peak_daily_tokens);
+  const longestRunningTurnSec = numberOrUndefined(summary.longestRunningTurnSec ?? summary.longest_running_turn_sec);
+  const currentStreakDays = numberOrUndefined(summary.currentStreakDays ?? summary.current_streak_days);
+  const longestStreakDays = numberOrUndefined(summary.longestStreakDays ?? summary.longest_streak_days);
+  const dailyBuckets = daily.map((entry) => ({
+    startDate: normalizeString(entry.startDate || entry.start_date, ""),
+    tokens: numberOrUndefined(entry.tokens) || 0,
+  })).filter((entry) => entry.startDate);
+  const hasProfileEvidence = [
+    lifetimeTokens,
+    peakDailyTokens,
+    longestRunningTurnSec,
+    currentStreakDays,
+    longestStreakDays,
+  ].some((value) => value !== undefined) || dailyBuckets.length > 0;
+  if (!hasProfileEvidence) return { status: "unknown", evidenceRefs: [] };
   return {
     status: "available",
-    lifetimeTokens: numberOrUndefined(summary.lifetimeTokens ?? summary.lifetime_tokens),
-    peakDailyTokens: numberOrUndefined(summary.peakDailyTokens ?? summary.peak_daily_tokens),
-    dailyBuckets: daily.map((entry) => ({
-      startDate: normalizeString(entry.startDate || entry.start_date, ""),
-      tokens: numberOrUndefined(entry.tokens) || 0,
-    })).filter((entry) => entry.startDate),
+    lifetimeTokens,
+    peakDailyTokens,
+    longestRunningTurnSec,
+    currentStreakDays,
+    longestStreakDays,
+    dailyBuckets,
     evidenceRefs: [evidenceRef("direct_account_usage", "Direct account token usage profile", "exact")],
   };
 }
@@ -392,8 +458,13 @@ function compareProfiles(previous = null, next = null) {
   for (const [id, model] of nextModels.entries()) {
     const previousModel = previousModels.get(id);
     if (!previousModel) continue;
-    for (const field of ["defaultReasoningEffort", "defaultServiceTier", "contextWindow", "maxContextWindow"]) {
+    for (const field of ["defaultReasoningEffort", "defaultServiceTier", "contextWindow", "maxContextWindow", "hidden", "availabilityState"]) {
       if (String(previousModel[field] ?? "") !== String(model[field] ?? "")) {
+        changes.push({ field: `modelCatalog.items.${id}.${field}`, status: "changed" });
+      }
+    }
+    for (const field of ["supportedReasoningEfforts", "serviceTiers", "inputModalities"]) {
+      if (stableStringify(previousModel[field] ?? []) !== stableStringify(model[field] ?? [])) {
         changes.push({ field: `modelCatalog.items.${id}.${field}`, status: "changed" });
       }
     }
@@ -629,6 +700,7 @@ class DirectServerMetadataAdapter {
         credentials,
         rawModelsResponse: models.body,
         rawRateLimits: usage.body,
+        rawAccountTokenProfile: usage.body,
         modelSource: "server_model_list",
         etag: models.etag,
         clientVersion: this.clientVersion,

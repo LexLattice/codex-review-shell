@@ -78,6 +78,22 @@ const THOUGHT_ASSISTANT_PHASES = new Set([
   "commentary",
 ]);
 
+function localStorageGet(key, fallback = "") {
+  try {
+    return window.localStorage?.getItem(key) ?? fallback;
+  } catch (_error) {
+    return fallback;
+  }
+}
+
+function localStorageSet(key, value) {
+  try {
+    window.localStorage?.setItem(key, String(value));
+  } catch (_error) {
+    // Local storage can be unavailable in hardened or test contexts.
+  }
+}
+
 const state = {
   threadId: "",
   threadTitle: "",
@@ -125,6 +141,8 @@ const state = {
   runtimeConstitution: null,
   runtimeDrawerOpen: false,
   runtimeDrawerTab: "runtime",
+  analyticsPanelOpen: localStorageGet("codex.threadAnalyticsPanel.open", "false") === "true",
+  analyticsPanelDock: localStorageGet("codex.threadAnalyticsPanel.dock", "right"),
   directSurfaceProjection: payload.directSurfaceProjection || connection?.directSurfaceProjection || null,
   directUiStatus: null,
   directUiStatusState: "idle",
@@ -466,6 +484,7 @@ const els = {
   reasoningBadge: document.getElementById("reasoningBadge"),
   accessBadge: document.getElementById("accessBadge"),
   usageBadge: document.getElementById("usageBadge"),
+  analyticsPanelButton: document.getElementById("analyticsPanelButton"),
   runtimeDrawerButton: document.getElementById("runtimeDrawerButton"),
   environmentChipCluster: document.getElementById("environmentChipCluster"),
   controlChipCluster: document.getElementById("controlChipCluster"),
@@ -475,6 +494,12 @@ const els = {
   runtimeDrawerClose: document.getElementById("runtimeDrawerClose"),
   runtimeDrawerTabs: document.getElementById("runtimeDrawerTabs"),
   runtimeDrawerBody: document.getElementById("runtimeDrawerBody"),
+  threadAnalyticsPanel: document.getElementById("threadAnalyticsPanel"),
+  threadAnalyticsPanelClose: document.getElementById("threadAnalyticsPanelClose"),
+  threadAnalyticsPanelTitle: document.getElementById("threadAnalyticsPanelTitle"),
+  threadAnalyticsPanelMeta: document.getElementById("threadAnalyticsPanelMeta"),
+  threadAnalyticsPanelBody: document.getElementById("threadAnalyticsPanelBody"),
+  threadAnalyticsDockButtons: document.getElementById("threadAnalyticsDockButtons"),
   directThreadStrip: document.getElementById("directThreadStrip"),
   directThreadStatus: document.getElementById("directThreadStatus"),
   directThreadList: document.getElementById("directThreadList"),
@@ -937,12 +962,21 @@ function supportedReasoningOptions() {
 }
 
 function reasoningLabel() {
-  if (isDirectLiveTextSurface()) return state.runtimeOverrides.reasoningEffort || directReasoningLabel() || project?.codex?.reasoningEffort || "unknown";
+  if (isDirectLiveTextSurface()) {
+    return state.runtimeOverrides.reasoningEffort ||
+      directReasoningLabel() ||
+      project?.codex?.reasoningEffort ||
+      defaultReasoningEffort() ||
+      "unknown";
+  }
   return state.runtimeOverrides.reasoningEffort || project?.codex?.reasoningEffort || selectedModel()?.defaultReasoningEffort || "unknown";
 }
 
 function requestedReasoningEffort() {
-  return state.runtimeOverrides.reasoningEffort || project?.codex?.reasoningEffort || null;
+  if (state.runtimeOverrides.reasoningEffort) return state.runtimeOverrides.reasoningEffort;
+  if (project?.codex?.reasoningEffort) return project.codex.reasoningEffort;
+  if (isDirectLiveTextSurface()) return defaultReasoningEffort() || null;
+  return null;
 }
 
 function approvalPolicyLabel() {
@@ -1247,7 +1281,7 @@ function directContextUsageProjection() {
       percentUsed: usedPercent,
       percentRemaining: remaining,
       tokensInContext: tokens,
-      totalTokens: Number(latestUsage.totalTokensKnown ?? 0) || null,
+      totalTokens: numericField(latestUsage, "totalTokensKnown") ?? null,
       modelContextWindow: window,
       observedAt: latestUsage.observedAt || projection?.generatedAt || "",
       tokenUsage: {
@@ -1343,6 +1377,503 @@ function contextUsageProjection() {
       confidence: "proven",
     })],
   };
+}
+
+function analyticsNumber(value, fallback = "—") {
+  if (value === null || value === undefined || value === "") return fallback;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  if (Math.abs(number) >= 1_000_000) return `${(number / 1_000_000).toFixed(Math.abs(number) >= 10_000_000 ? 0 : 1)}M`;
+  if (Math.abs(number) >= 1000) return `${(number / 1000).toFixed(Math.abs(number) >= 10_000 ? 0 : 1)}k`;
+  return String(Math.round(number));
+}
+
+function analyticsPercent(value, fallback = "—") {
+  if (value === null || value === undefined || value === "") return fallback;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return `${Math.max(0, Math.min(100, Math.round(number)))}%`;
+}
+
+function analyticsNullableNumber(value) {
+  if (value === null || value === undefined || value === "") return NaN;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : NaN;
+}
+
+function analyticsDuration(valueMs) {
+  const number = Number(valueMs);
+  if (!Number.isFinite(number) || number < 0) return "—";
+  return formatElapsedDuration(number / 1000);
+}
+
+function analyticsSectionAvailable(section) {
+  return section && !["unavailable", "unknown", "not_exposed", "failed"].includes(String(section.status || ""));
+}
+
+function analyticsSourceLabel(projection) {
+  const posture = projection?.sourcePosture || {};
+  const source = String(posture.primarySource || projection?.tokens?.source || projection?.context?.source || "unknown").replace(/_/g, " ");
+  const confidence = String(posture.confidence || projection?.tokens?.confidence || projection?.context?.confidence || "unknown").replace(/_/g, " ");
+  return `${source} · ${confidence}`;
+}
+
+function liveRuntimeAnalyticsProjection() {
+  const context = contextUsageProjection();
+  const quotaSnapshot = selectRateLimitSnapshot();
+  const tokenUsage = state.tokenUsage || {};
+  const total = tokenUsage.total || {};
+  const last = tokenUsage.last || {};
+  const turns = Array.from(state.turnActivityMap.values());
+  const completedTurns = turns.filter((activity) => activity?.completedAt || String(activity?.status || "").includes("completed")).length;
+  const activeTurns = turnIsActive() ? 1 : 0;
+  const commandCount = countCodexItems(new Set(["commandExecution"]));
+  const patchCount = countCodexItems(new Set(["fileChange"]));
+  const subagentCount = countCodexItems(new Set(["collabAgentToolCall"]));
+  const otherToolCount = countCodexItems(new Set(["mcpToolCall", "dynamicToolCall", "webSearch", "imageGeneration"]));
+  const requestRows = Array.from(state.serverRequests.values());
+  const requestCount = requestRows.length;
+  const pendingRequests = requestRows.filter((request) => String(request?.status || "").toLowerCase().includes("pending")).length;
+  const observedAt = nowIso();
+  const hasTokens = Boolean(state.tokenUsage);
+  const quotaEntries = quotaSnapshot ? quotaWindows(quotaSnapshot).map((entry, index) => ({
+    windowKind: entry.label === "W" ? "weekly" : entry.label,
+    windowId: entry.label || `window-${index + 1}`,
+    name: entry.label,
+    remainingPercent: entry.available,
+    usedPercent: Number.isFinite(Number(entry.available)) ? 100 - Number(entry.available) : null,
+    resetsAt: entry.window?.resetsAt || entry.window?.resets_at || entry.window?.resetAt || entry.window?.reset_at || "",
+    windowDurationMins: entry.window?.windowDurationMins || entry.window?.window_duration_mins || null,
+    source: "appserver_native",
+    confidence: "provider_exact",
+  })) : [];
+  const toolTotal = commandCount + patchCount + subagentCount + otherToolCount;
+  const projection = {
+    schema: "runtime_analytics_projection@1",
+    adapterVersion: "renderer-live-analytics@1",
+    projectId: project?.id || "",
+    threadId: state.threadId || "",
+    runtimePath: isDirectLiveTextSurface() ? "direct-implementation" : "app-server",
+    status: hasTokens || analyticsSectionAvailable(context) || quotaEntries.length || turns.length || toolTotal || requestCount ? "available" : "unavailable",
+    generatedAt: observedAt,
+    sourcePosture: {
+      adapterKind: isDirectLiveTextSurface() ? "direct" : "appserver",
+      primarySource: hasTokens ? "appserver_native" : "renderer_observation",
+      confidence: hasTokens ? "runtime_exact" : "observed",
+      freshness: "live",
+      observedAt,
+    },
+    tokens: hasTokens ? {
+      status: "available",
+      source: "appserver_native",
+      confidence: "runtime_exact",
+      observedAt: state.tokenUsageObservedAt ? new Date(state.tokenUsageObservedAt).toISOString() : observedAt,
+      inputTokens: numericField(total, "inputTokens"),
+      cachedInputTokens: numericField(total, "cachedInputTokens"),
+      nonCachedInputTokens: numericField(total, "inputTokens") === null
+        ? null
+        : Math.max(0, Number(total.inputTokens || 0) - Number(total.cachedInputTokens || 0)),
+      outputTokens: numericField(total, "outputTokens"),
+      reasoningTokens: numericField(total, "reasoningOutputTokens"),
+      totalTokens: numericField(total, "totalTokens"),
+      usageScope: "thread_total",
+      billingGrade: false,
+      evidenceRefs: [evidenceRef("app_server_probe", "thread/tokenUsage/updated supplied live token usage", { confidence: "proven" })],
+      blockers: [],
+    } : {
+      status: "unavailable",
+      source: "unavailable",
+      confidence: "unavailable",
+      observedAt: "",
+      inputTokens: null,
+      cachedInputTokens: null,
+      nonCachedInputTokens: null,
+      outputTokens: null,
+      reasoningTokens: null,
+      totalTokens: null,
+      usageScope: "",
+      billingGrade: false,
+      evidenceRefs: [],
+      blockers: ["token_usage_unavailable"],
+    },
+    context: {
+      status: context.status || "unknown",
+      source: context.status === "available" ? "appserver_native" : "renderer_observation",
+      confidence: context.status === "available" ? "runtime_exact" : "observed",
+      observedAt: context.observedAt || "",
+      modelContextWindow: context.modelContextWindow || tokenUsage.modelContextWindow || null,
+      inputTokens: last.inputTokens || last.totalTokens || context.tokensInContext || null,
+      usedPercent: context.percentUsed ?? null,
+      evidenceRefs: context.evidenceRefs || [],
+      blockers: context.status === "available" ? [] : ["context_usage_unavailable"],
+    },
+    turns: {
+      status: turns.length || activeTurns ? "available" : "unavailable",
+      source: "renderer_observation",
+      confidence: "observed",
+      observedAt,
+      started: turns.length,
+      completed: completedTurns,
+      active: activeTurns,
+      durationMs: sessionDurationMs() || null,
+      timeToFirstTokenMs: null,
+      evidenceRefs: [evidenceRef("renderer_observation", "Renderer turn activity map supplied active thread timing", { confidence: "observed" })],
+      blockers: [],
+    },
+    tools: {
+      status: toolTotal ? "available" : "unavailable",
+      source: "renderer_observation",
+      confidence: "observed",
+      observedAt,
+      total: toolTotal,
+      completed: toolTotal,
+      failed: 0,
+      commands: commandCount,
+      patches: patchCount,
+      subagents: subagentCount,
+      byKind: [
+        { xValue: "commands", yValue: commandCount },
+        { xValue: "patches", yValue: patchCount },
+        { xValue: "subagents", yValue: subagentCount },
+        { xValue: "other tools", yValue: otherToolCount },
+      ].filter((point) => point.yValue > 0),
+      evidenceRefs: [evidenceRef("renderer_observation", "Renderer item map supplied tool activity counts", { confidence: "observed" })],
+      blockers: [],
+    },
+    requests: {
+      status: requestCount ? "available" : "unavailable",
+      source: "renderer_observation",
+      confidence: "observed",
+      observedAt,
+      total: requestCount,
+      pending: pendingRequests,
+      resolved: Math.max(0, requestCount - pendingRequests),
+      failed: 0,
+      byKind: [],
+      evidenceRefs: [evidenceRef("renderer_observation", "Renderer server request map supplied request counts", { confidence: "observed" })],
+      blockers: [],
+    },
+    quota: {
+      status: quotaEntries.length ? "available" : "unavailable",
+      source: quotaEntries.length ? "appserver_native" : "unavailable",
+      confidence: quotaEntries.length ? "provider_exact" : "unavailable",
+      observedAt: state.rateLimitsObservedAt ? new Date(state.rateLimitsObservedAt).toISOString() : "",
+      planType: state.rateLimits?.planType || state.rateLimits?.plan_type || "",
+      windows: quotaEntries,
+      evidenceRefs: quotaEntries.length ? [evidenceRef("provider_quota", "account/rateLimits/read supplied quota windows", { confidence: "proven" })] : [],
+      blockers: quotaEntries.length ? [] : ["quota_unavailable"],
+    },
+    series: {
+      token_mix: [
+        { xValue: "input", yValue: Number(total.inputTokens || 0) },
+        { xValue: "cached", yValue: Number(total.cachedInputTokens || 0) },
+        { xValue: "output", yValue: Number(total.outputTokens || 0) },
+        { xValue: "reasoning", yValue: Number(total.reasoningOutputTokens || 0) },
+      ].filter((point) => point.yValue > 0),
+      tool_kind_mix: [
+        { xValue: "commands", yValue: commandCount },
+        { xValue: "patches", yValue: patchCount },
+        { xValue: "subagents", yValue: subagentCount },
+        { xValue: "other tools", yValue: otherToolCount },
+      ].filter((point) => point.yValue > 0),
+      request_kind_mix: [],
+      turn_status_mix: [
+        { xValue: "completed", yValue: completedTurns },
+        { xValue: "active", yValue: activeTurns },
+      ].filter((point) => point.yValue > 0),
+    },
+    blockers: [],
+    evidenceRefs: [evidenceRef("renderer_observation", "Floating analytics panel live fallback projection", { confidence: "observed" })],
+    privacy: {
+      rawPromptIncluded: false,
+      rawResponseIncluded: false,
+      rawProviderFrameIncluded: false,
+      rawTokenDetailsIncluded: false,
+      rawPathIncluded: false,
+      rawSecretIncluded: false,
+      billingGrade: false,
+      costComputed: false,
+    },
+    rawTextIncluded: false,
+    rawPathIncluded: false,
+    rawSecretIncluded: false,
+  };
+  return projection;
+}
+
+function activeThreadAnalyticsProjection() {
+  const direct = directSurfaceProjection()?.runtimeAnalyticsProjection;
+  if (direct?.schema === "runtime_analytics_projection@1") return direct;
+  return liveRuntimeAnalyticsProjection();
+}
+
+function analyticsResetTimestampMs(window) {
+  const numeric = resetTimestampMs(window);
+  if (numeric) return numeric;
+  const raw = String(window?.resetsAt || window?.resetAt || "").trim();
+  if (!raw) return 0;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function analyticsQuotaWindowLabel(window) {
+  const duration = Number(window?.windowDurationMins || 0);
+  const rawKind = String(window?.windowKind || window?.name || window?.windowId || "").toLowerCase();
+  if (duration === 300 || rawKind.includes("5h") || rawKind.includes("five")) return "5h";
+  if (duration === 10080 || rawKind.includes("week") || rawKind === "w") return "W";
+  if (duration > 0 && duration < 60) return `${duration}m`;
+  if (duration > 0 && duration % 1440 === 0) return `${duration / 1440}d`;
+  if (duration > 0 && duration % 60 === 0) return `${duration / 60}h`;
+  return window?.name || window?.windowKind || "quota";
+}
+
+function analyticsQuotaResetLabel(window) {
+  const timestamp = analyticsResetTimestampMs(window);
+  if (!timestamp) return "--:--";
+  const date = new Date(timestamp);
+  const label = analyticsQuotaWindowLabel(window);
+  const options = label === "W"
+    ? { weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false }
+    : { hour: "2-digit", minute: "2-digit", hour12: false };
+  return new Intl.DateTimeFormat(undefined, options).format(date);
+}
+
+function analyticsQuotaLabel(projection) {
+  const windows = Array.isArray(projection?.quota?.windows) ? projection.quota.windows : [];
+  if (!windows.length) return "quota unavailable";
+  return windows.slice(0, 2).map((window) => {
+    const remaining = Number.isFinite(Number(window.remainingPercent))
+      ? Number(window.remainingPercent)
+      : Number.isFinite(Number(window.usedPercent))
+        ? 100 - Number(window.usedPercent)
+        : null;
+    return `${analyticsQuotaWindowLabel(window)} ${analyticsPercent(remaining)} ${analyticsQuotaResetLabel(window)}`;
+  }).join(" / ");
+}
+
+function analyticsEl(tag, className = "", text = "") {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== "") node.textContent = text;
+  return node;
+}
+
+function analyticsMetricCard(label, value, note = "", accent = "") {
+  const card = analyticsEl("div", `thread-analytics-card${accent ? ` ${accent}` : ""}`);
+  card.appendChild(analyticsEl("span", "thread-analytics-card-label", label));
+  card.appendChild(analyticsEl("strong", "thread-analytics-card-value", value));
+  if (note) card.appendChild(analyticsEl("span", "thread-analytics-card-note", note));
+  return card;
+}
+
+function analyticsGauge(label, percent, detail) {
+  const wrapper = analyticsEl("div", "thread-analytics-gauge-card");
+  const gauge = analyticsEl("div", "thread-analytics-gauge");
+  const value = Number(percent);
+  const safe = Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0;
+  gauge.style.setProperty("--analytics-gauge", `${safe}%`);
+  gauge.appendChild(analyticsEl("span", "", Number.isFinite(value) ? `${Math.round(safe)}%` : "—"));
+  const copy = analyticsEl("div", "thread-analytics-gauge-copy");
+  copy.appendChild(analyticsEl("span", "thread-analytics-card-label", label));
+  copy.appendChild(analyticsEl("strong", "thread-analytics-card-value", detail || (Number.isFinite(value) ? `${Math.round(safe)}%` : "unknown")));
+  wrapper.append(gauge, copy);
+  return wrapper;
+}
+
+function analyticsBarChart(title, rows, valueFormatter = analyticsNumber) {
+  const section = analyticsEl("section", "thread-analytics-chart");
+  section.appendChild(analyticsEl("h3", "", title));
+  const validRows = rows.filter((row) => Number(row?.value ?? row?.yValue) > 0);
+  if (!validRows.length) {
+    section.appendChild(analyticsEl("p", "thread-analytics-empty", "No evidence yet."));
+    return section;
+  }
+  const max = Math.max(...validRows.map((row) => Number(row.value ?? row.yValue) || 0), 1);
+  const list = analyticsEl("div", "thread-analytics-bars");
+  for (const row of validRows.slice(0, 7)) {
+    const value = Number(row.value ?? row.yValue) || 0;
+    const item = analyticsEl("div", "thread-analytics-bar-row");
+    item.appendChild(analyticsEl("span", "thread-analytics-bar-label", String(row.label ?? row.xValue ?? "unknown")));
+    const rail = analyticsEl("span", "thread-analytics-bar");
+    const fill = analyticsEl("span", "thread-analytics-bar-fill");
+    fill.style.width = `${Math.max(2, Math.round((value / max) * 100))}%`;
+    rail.appendChild(fill);
+    item.appendChild(rail);
+    item.appendChild(analyticsEl("span", "thread-analytics-bar-value", valueFormatter(value)));
+    list.appendChild(item);
+  }
+  section.appendChild(list);
+  return section;
+}
+
+function analyticsShortId(value) {
+  const text = String(value || "").trim();
+  if (!text) return "unknown";
+  if (text.length <= 18) return text;
+  return `${text.slice(0, 8)}…${text.slice(-6)}`;
+}
+
+function analyticsModelEffortLabel(row = {}) {
+  return [
+    row.model || "model unknown",
+    row.reasoningEffort ? `${row.reasoningEffort}` : "effort default/unknown",
+    row.serviceTier ? `${row.serviceTier}` : "",
+  ].filter(Boolean).join(" · ");
+}
+
+function analyticsTokenSplitLabel(row = {}) {
+  return [
+    `in ${analyticsNumber(row.inputTokens)}`,
+    `uncached ${analyticsNumber(row.nonCachedInputTokens)}`,
+    `cached ${analyticsNumber(row.cachedInputTokens)}`,
+    `out ${analyticsNumber(row.outputTokens)}`,
+    `reason ${analyticsNumber(row.reasoningTokens)}`,
+    `total ${analyticsNumber(row.totalTokens)}`,
+  ].join(" · ");
+}
+
+function analyticsDetailSection(title, rows, rowRenderer, emptyText = "No detail evidence yet.") {
+  const section = analyticsEl("section", "thread-analytics-detail");
+  section.appendChild(analyticsEl("h3", "", title));
+  const list = analyticsEl("div", "thread-analytics-detail-list");
+  const safeRows = Array.isArray(rows) ? rows : [];
+  if (!safeRows.length) {
+    list.appendChild(analyticsEl("p", "thread-analytics-empty", emptyText));
+  } else {
+    for (const row of safeRows) {
+      const rendered = rowRenderer(row);
+      if (rendered) list.appendChild(rendered);
+    }
+  }
+  section.appendChild(list);
+  return section;
+}
+
+function analyticsDetailRow(primary, secondary = "", meta = "") {
+  const row = analyticsEl("div", "thread-analytics-detail-row");
+  row.appendChild(analyticsEl("strong", "thread-analytics-detail-primary", primary));
+  if (secondary) row.appendChild(analyticsEl("span", "thread-analytics-detail-secondary", secondary));
+  if (meta) row.appendChild(analyticsEl("span", "thread-analytics-detail-meta", meta));
+  return row;
+}
+
+function renderThreadAnalyticsPanel() {
+  if (!els.threadAnalyticsPanel || !els.threadAnalyticsPanelBody) return;
+  const dock = ["float", "left", "right", "bottom"].includes(state.analyticsPanelDock) ? state.analyticsPanelDock : "right";
+  els.threadAnalyticsPanel.hidden = !state.analyticsPanelOpen;
+  els.threadAnalyticsPanel.className = `thread-analytics-panel dock-${dock}`;
+  els.analyticsPanelButton?.setAttribute("aria-expanded", state.analyticsPanelOpen ? "true" : "false");
+  els.analyticsPanelButton?.classList.toggle("ready", state.analyticsPanelOpen);
+  els.analyticsPanelButton?.classList.toggle("unknown", !state.analyticsPanelOpen);
+  for (const button of els.threadAnalyticsDockButtons?.querySelectorAll?.("[data-analytics-dock]") || []) {
+    button.classList.toggle("active", button.dataset.analyticsDock === dock);
+  }
+  if (!state.analyticsPanelOpen) return;
+
+  const projection = activeThreadAnalyticsProjection();
+  const title = state.threadTitle || state.threadId || "Thread analytics";
+  if (els.threadAnalyticsPanelTitle) els.threadAnalyticsPanelTitle.textContent = title;
+  if (els.threadAnalyticsPanelMeta) {
+    const freshness = projection?.sourcePosture?.freshness || "live";
+    els.threadAnalyticsPanelMeta.textContent = `${projection?.runtimePath || "runtime"} · ${analyticsSourceLabel(projection)} · ${freshness}`;
+  }
+
+  const tokens = projection.tokens || {};
+  const context = projection.context || {};
+  const turns = projection.turns || {};
+  const tools = projection.tools || {};
+  const requests = projection.requests || {};
+  const activeLabel = turnIsActive()
+    ? `Active ${activeTurnElapsedLabel() || "now"}`
+    : "Idle";
+  const tokenTotal = analyticsNullableNumber(tokens.totalTokens);
+  const inputTokens = analyticsNullableNumber(tokens.inputTokens);
+  const cachedTokens = analyticsNullableNumber(tokens.cachedInputTokens);
+  const nonCachedTokens = analyticsNullableNumber(tokens.nonCachedInputTokens);
+  const outputTokens = analyticsNullableNumber(tokens.outputTokens);
+  const reasoningTokens = analyticsNullableNumber(tokens.reasoningTokens);
+  const contextUsed = analyticsNullableNumber(context.usedPercent);
+  const contextDetail = Number.isFinite(contextUsed)
+    ? `${analyticsNumber(context.inputTokens)} / ${analyticsNumber(context.modelContextWindow)}`
+    : context.modelContextWindow
+      ? `${analyticsNumber(context.modelContextWindow)} window`
+      : "context unknown";
+
+  els.threadAnalyticsPanelBody.innerHTML = "";
+  if (projection.status === "unavailable") {
+    const empty = analyticsEl("div", "thread-analytics-empty-state");
+    empty.appendChild(analyticsEl("strong", "", "No analytics evidence for this thread yet."));
+    empty.appendChild(analyticsEl("p", "", "Send a turn or refresh runtime metadata; this panel will fill from direct runtime facts or live app-server observations."));
+    els.threadAnalyticsPanelBody.appendChild(empty);
+    return;
+  }
+
+  const hero = analyticsEl("section", "thread-analytics-hero");
+  hero.appendChild(analyticsMetricCard("Thread state", activeLabel, `${analyticsNumber(turns.completed || 0)} completed · ${analyticsNumber(turns.active || 0)} active`, turnIsActive() ? "live" : ""));
+  hero.appendChild(analyticsGauge("Context used", contextUsed, contextDetail));
+  hero.appendChild(analyticsMetricCard("Quota", analyticsQuotaLabel(projection), projection.quota?.status === "available" ? "provider window" : "not exposed", "quota"));
+  els.threadAnalyticsPanelBody.appendChild(hero);
+
+  const metrics = analyticsEl("section", "thread-analytics-grid");
+  metrics.appendChild(analyticsMetricCard("Total tokens", analyticsNumber(tokenTotal), tokens.status === "available" ? tokens.usageScope || "known" : "not exposed", "tokens"));
+  metrics.appendChild(analyticsMetricCard("Input", analyticsNumber(inputTokens), [
+    Number.isFinite(cachedTokens) ? `${analyticsNumber(cachedTokens)} cached` : "cache unknown",
+    Number.isFinite(nonCachedTokens) ? `${analyticsNumber(nonCachedTokens)} uncached` : "uncached unknown",
+  ].join(" · ")));
+  metrics.appendChild(analyticsMetricCard("Output", analyticsNumber(outputTokens), Number.isFinite(reasoningTokens) ? `${analyticsNumber(reasoningTokens)} reasoning` : "reasoning unknown"));
+  metrics.appendChild(analyticsMetricCard("Turns", `${analyticsNumber(turns.started || 0)} started`, turns.durationMs ? `${analyticsDuration(turns.durationMs)} wall span` : "duration unknown"));
+  metrics.appendChild(analyticsMetricCard("Tools", analyticsNumber(tools.total || 0), `${analyticsNumber(tools.commands || 0)} cmd · ${analyticsNumber(tools.patches || 0)} patch`));
+  metrics.appendChild(analyticsMetricCard("Requests", analyticsNumber(requests.total || 0), `${analyticsNumber(requests.pending || 0)} pending`));
+  els.threadAnalyticsPanelBody.appendChild(metrics);
+
+  const charts = analyticsEl("section", "thread-analytics-chart-grid");
+  charts.appendChild(analyticsBarChart("Token mix", [
+    { label: "uncached", value: nonCachedTokens },
+    { label: "cached", value: cachedTokens },
+    { label: "output", value: outputTokens },
+    { label: "reasoning", value: reasoningTokens },
+  ].filter((row) => Number.isFinite(row.value) && row.value > 0), analyticsNumber));
+  charts.appendChild(analyticsBarChart("Tool mix", [
+    ...(Array.isArray(projection.series?.tool_kind_mix) ? projection.series.tool_kind_mix : []),
+    ...(!projection.series?.tool_kind_mix?.length ? [
+      { xValue: "commands", yValue: tools.commands || 0 },
+      { xValue: "patches", yValue: tools.patches || 0 },
+      { xValue: "subagents", yValue: tools.subagents || 0 },
+    ] : []),
+  ], analyticsNumber));
+  els.threadAnalyticsPanelBody.appendChild(charts);
+
+  const turnRows = Array.isArray(projection.turnUsageRows) ? projection.turnUsageRows.slice(0, 8) : [];
+  const agentRows = Array.isArray(projection.agentUsageRows) ? projection.agentUsageRows.slice(0, 8) : [];
+  const edgeRows = Array.isArray(projection.parentTurnAgentEdges) ? projection.parentTurnAgentEdges.slice(0, 6) : [];
+  const detailGrid = analyticsEl("section", "thread-analytics-detail-grid");
+  detailGrid.appendChild(analyticsDetailSection("Turn usage", turnRows, (row) => analyticsDetailRow(
+    `${analyticsShortId(row.turnId)} · ${row.agentKind || "agent"}`,
+    analyticsModelEffortLabel(row),
+    analyticsTokenSplitLabel(row),
+  )));
+  detailGrid.appendChild(analyticsDetailSection("Agent usage", agentRows, (row) => analyticsDetailRow(
+    `${analyticsShortId(row.agentThreadId)} · ${row.agentKind || "agent"}`,
+    analyticsModelEffortLabel(row),
+    `${analyticsNumber(row.turnCount)} turn(s) · ${analyticsTokenSplitLabel(row)}`,
+  )));
+  if (edgeRows.length) {
+    detailGrid.appendChild(analyticsDetailSection("Sub-agent links", edgeRows, (row) => analyticsDetailRow(
+      `${analyticsShortId(row.parentThreadId)} → ${analyticsShortId(row.childThreadId)}`,
+      analyticsModelEffortLabel(row),
+      `${row.parentTurnResolved ? "parent turn resolved" : "parent thread only"} · ${analyticsTokenSplitLabel(row)}`,
+    )));
+  }
+  els.threadAnalyticsPanelBody.appendChild(detailGrid);
+
+  const evidence = analyticsEl("section", "thread-analytics-evidence");
+  const observedAt = projection.sourcePosture?.observedAt || tokens.observedAt || context.observedAt || projection.generatedAt || "";
+  evidence.appendChild(analyticsEl("span", "", `source: ${analyticsSourceLabel(projection)}`));
+  evidence.appendChild(analyticsEl("span", "", `observed: ${observedAt ? new Date(observedAt).toLocaleString() : "unknown"}`));
+  if (Array.isArray(projection.blockers) && projection.blockers.length) {
+    evidence.appendChild(analyticsEl("span", "", `blockers: ${projection.blockers.slice(0, 3).join(", ")}`));
+  }
+  els.threadAnalyticsPanelBody.appendChild(evidence);
 }
 
 function applyThreadTokenUsageUpdate(params) {
@@ -1848,6 +2379,7 @@ function renderRuntimeConstitution() {
   }
   renderRuntimeDrawer();
   renderComposerRuntimeBand();
+  renderThreadAnalyticsPanel();
 }
 
 function createRuntimeChip(chip) {
@@ -1893,6 +2425,7 @@ async function refreshDirectSurfaceProjection(options = {}) {
   try {
     const projection = await bridge.getDirectCodexSurfaceProjection(project.id, {
       refreshMetadata: options.refreshMetadata === true,
+      threadId: state.threadId || "",
     });
     if (projection?.schema === "direct_codex_surface_projection@1") {
       state.directSurfaceProjection = projection;
@@ -2165,6 +2698,7 @@ function updateComposerGeometry() {
   els.composerForm.style.setProperty("--composer-control-height", `${controlHeight}px`);
   els.composerForm.style.setProperty("--composer-action-width", `${actionWidth}px`);
   els.composerForm.dataset.composerSize = safeWidth < 390 ? "narrow" : safeWidth < 760 ? "medium" : "wide";
+  document.documentElement.style.setProperty("--composer-shell-height", `${Math.round(shellRect.height || 150)}px`);
 }
 
 function installComposerGeometryObserver() {
@@ -2190,7 +2724,6 @@ function renderComposerAccessMenu() {
 function composerSelectedOverride(name) {
   const value = String(state.runtimeOverrides[name] || "");
   if (name === "model" && value === clearedModelId()) return "";
-  if (name === "reasoningEffort" && value === clearedReasoningEffort()) return "";
   if (name === "serviceTier" && value === defaultServiceTier()) return "";
   return value;
 }
@@ -2212,7 +2745,10 @@ function renderComposerModelMenu() {
 function updateComposerStatusTicker(active) {
   const shouldTick = Boolean(active && currentActiveTurnActivity()?.startedAt);
   if (shouldTick && !state.composerStatusInterval) {
-    state.composerStatusInterval = window.setInterval(() => renderComposerRuntimeBand(), 1000);
+    state.composerStatusInterval = window.setInterval(() => {
+      renderComposerRuntimeBand();
+      renderThreadAnalyticsPanel();
+    }, 1000);
   } else if (!shouldTick && state.composerStatusInterval) {
     window.clearInterval(state.composerStatusInterval);
     state.composerStatusInterval = null;
@@ -2385,7 +2921,6 @@ function reasoningOptions() {
   return [
     { value: "", label: defaultOptionLabel(clearDefault) },
     ...supportedReasoningOptions()
-      .filter((effort) => effort !== clearDefault)
       .map((effort) => ({
         value: effort,
         label: `${effort}${effort === modelDefault ? " · model default" : ""}`,
@@ -8006,7 +8541,16 @@ document.addEventListener("focusin", (event) => {
 }, true);
 
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") dismissComposerOverlay("escape");
+  if (event.key === "Escape") {
+    dismissComposerOverlay("escape");
+    const target = event.target;
+    const editableTarget = target?.closest?.("input, textarea, [contenteditable='true']");
+    if (state.analyticsPanelOpen && !editableTarget) {
+      state.analyticsPanelOpen = false;
+      localStorageSet("codex.threadAnalyticsPanel.open", "false");
+      renderThreadAnalyticsPanel();
+    }
+  }
 });
 
 window.addEventListener("blur", () => dismissComposerOverlay("window-blur"));
@@ -8017,6 +8561,28 @@ document.addEventListener("click", (event) => {
   if (!target) return;
   const tab = target.getAttribute("data-runtime-tab") || "runtime";
   openRuntimeDrawer(tab);
+});
+
+els.analyticsPanelButton?.addEventListener("click", () => {
+  dismissComposerOverlay("thread-analytics-open");
+  state.analyticsPanelOpen = !state.analyticsPanelOpen;
+  localStorageSet("codex.threadAnalyticsPanel.open", state.analyticsPanelOpen ? "true" : "false");
+  renderThreadAnalyticsPanel();
+});
+
+els.threadAnalyticsPanelClose?.addEventListener("click", () => {
+  state.analyticsPanelOpen = false;
+  localStorageSet("codex.threadAnalyticsPanel.open", "false");
+  renderThreadAnalyticsPanel();
+});
+
+els.threadAnalyticsDockButtons?.addEventListener("click", (event) => {
+  const button = event.target?.closest?.("[data-analytics-dock]");
+  const dock = button?.dataset?.analyticsDock || "";
+  if (!["float", "left", "right", "bottom"].includes(dock)) return;
+  state.analyticsPanelDock = dock;
+  localStorageSet("codex.threadAnalyticsPanel.dock", dock);
+  renderThreadAnalyticsPanel();
 });
 
 els.runtimeDrawerClose?.addEventListener("click", () => closeRuntimeDrawer());

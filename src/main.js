@@ -3052,6 +3052,7 @@ function buildDirectComposerRuntimeWitness(input = {}) {
 
 function buildDirectCodexSurfaceProjectionForProject(project = {}, input = {}) {
   const projectId = normalizeString(project?.id, "");
+  const activeThreadId = normalizeString(input.threadId || input.activeThreadId || "", "");
   const runtimeStatus = input.runtimeStatus || buildDirectRuntimeStatusForProject(project);
   const agentUsageStatus = input.agentUsageStatus || buildDirectAgentUsageStatusForProject(projectId);
   const workThreadBundle = input.workThreadBundle || directWorkThreadProjectionForProject(project);
@@ -3092,10 +3093,13 @@ function buildDirectCodexSurfaceProjectionForProject(project = {}, input = {}) {
   });
   let directRuntimeAnalyticsSnapshot = null;
   try {
-    directRuntimeAnalyticsSnapshot = ensureDirectThreadStore().getDirectRuntimeAnalyticsFactSnapshot(projectId);
+    directRuntimeAnalyticsSnapshot = ensureDirectThreadStore().getDirectRuntimeAnalyticsFactSnapshot(projectId, {
+      threadId: activeThreadId,
+    });
   } catch {}
   const runtimeAnalyticsProjection = buildRuntimeAnalyticsProjection({
     projectId,
+    threadId: activeThreadId,
     runtimePath: directRuntimePathFromBinding(project?.surfaceBinding?.codex || {}),
     directFactSnapshot: directRuntimeAnalyticsSnapshot,
     directProviderMetadataProfile: directProviderMetadata?.profile || null,
@@ -7825,7 +7829,10 @@ ipcMain.handle("codex-surface:direct-projection", async (event, payload) => {
   const directProviderMetadata = payload?.refreshMetadata
     ? await refreshDirectProviderMetadataForProject(project)
     : directProviderMetadataStatusForProject(project);
-  return buildDirectCodexSurfaceProjectionForProject(project, { directProviderMetadata });
+  return buildDirectCodexSurfaceProjectionForProject(project, {
+    directProviderMetadata,
+    threadId: normalizeString(payload?.threadId, ""),
+  });
 });
 
 ipcMain.handle("codex-surface:request", async (event, payload) => {
