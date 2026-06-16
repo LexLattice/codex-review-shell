@@ -18,6 +18,7 @@ const {
   buildNewContextBlockedProjection,
   buildPlanArtifact,
   buildViewImageProjection,
+  stableStringify,
 } = require("../src/main/direct/tools/control-perception-decision-substrate");
 const {
   buildToolCapabilityRegistry,
@@ -40,6 +41,16 @@ function byToolId(registry) {
 function main() {
   const projectId = "project_control_tool_fixture";
   const threadId = "thread_control_tool_fixture";
+  const serialized = stableStringify({
+    keep: 1,
+    fn: () => {},
+    sym: Symbol("x"),
+    undef: undefined,
+    big: 1n,
+    arr: [undefined, () => {}, "ok"],
+  });
+  assert(serialized === '{"arr":[null,null,"ok"],"keep":1}', "stableStringify should match JSON-compatible omission/null semantics");
+
   const contextWitness = buildContextRemainingWitness({
     projectId,
     threadId,
@@ -54,6 +65,15 @@ function main() {
   assert(contextWitness.permissionToContinue === false, "context witness must not grant permission to continue");
   assert(contextWitness.compactionAuthority === false, "context witness must not grant compaction authority");
   assert(contextWitness.providerTruth === false, "local estimate must not become provider truth");
+
+  const unknownContextWitness = buildContextRemainingWitness({
+    projectId,
+    threadId,
+    nowMs: 0,
+  });
+  assert(unknownContextWitness.tokensLeft === null, "missing usage evidence must keep context remaining unknown");
+  assert(unknownContextWitness.confidence === "unknown", "missing usage evidence should not become derived confidence");
+  assert(unknownContextWitness.source === "unavailable", "missing usage evidence should not claim a context source");
 
   const plan = buildPlanArtifact({
     projectId,

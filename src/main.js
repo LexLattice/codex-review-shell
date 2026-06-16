@@ -2533,7 +2533,6 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
   const projection = buildDirectSettingsSurfaceProjection({
     ...projectionInput,
     manualSmokeGate,
-    controlToolStatus,
   });
   assertDirectSettingsSurfaceRendererSafe(projection);
   return projection;
@@ -2937,13 +2936,13 @@ function buildDirectControlToolStatusForProject(input = {}) {
   const selected = directMetadataSelectedModel(metadataProfile || {}, project, runtimeStatus);
   const modelDescriptor = selected.descriptor || {};
   const contextWindow = Number(metadataProfile?.usage?.context?.modelContextWindow || modelDescriptor.contextWindow || 0);
-  const usedTokens = Number(
+  const usedTokenCandidate =
     metadataProfile?.usage?.context?.usedTokens ??
       metadataProfile?.usage?.context?.tokensInWindow ??
-      agentUsageStatus?.latestUsage?.inputTokensKnown ??
-      0,
-  );
-  const tokensLeft = Number.isFinite(contextWindow) && contextWindow > 0 && Number.isFinite(usedTokens)
+      agentUsageStatus?.latestUsage?.inputTokensKnown;
+  const usedTokens = Number(usedTokenCandidate);
+  const hasUsageEvidence = usedTokenCandidate !== undefined && usedTokenCandidate !== null && Number.isFinite(usedTokens);
+  const tokensLeft = Number.isFinite(contextWindow) && contextWindow > 0 && hasUsageEvidence
     ? Math.max(0, contextWindow - Math.max(0, usedTokens))
     : null;
   const estimateKind = metadataProfile?.usage?.context?.source === "provider_reported"

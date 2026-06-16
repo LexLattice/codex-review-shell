@@ -40,12 +40,23 @@ function boundedString(value, maxLength = 320) {
 
 function stableStringify(value) {
   if (value && typeof value.toJSON === "function") return stableStringify(value.toJSON());
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map((entry) => (entry === undefined ? "null" : stableStringify(entry))).join(",")}]`;
+  if (value === null) return "null";
+  const type = typeof value;
+  if (type === "boolean" || type === "number" || type === "string") return JSON.stringify(value);
+  if (type === "bigint" || type === "function" || type === "symbol" || type === "undefined") return undefined;
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => {
+      const serialized = stableStringify(entry);
+      return serialized === undefined ? "null" : serialized;
+    }).join(",")}]`;
+  }
   return `{${Object.keys(value)
-    .filter((key) => value[key] !== undefined)
     .sort()
-    .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
+    .map((key) => {
+      const serialized = stableStringify(value[key]);
+      return serialized === undefined ? "" : `${JSON.stringify(key)}:${serialized}`;
+    })
+    .filter(Boolean)
     .join(",")}}`;
 }
 
