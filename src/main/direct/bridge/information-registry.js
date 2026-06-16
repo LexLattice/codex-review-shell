@@ -657,6 +657,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     bridgeFit: "Maps vanilla, already-direct, deferred, provider-hosted, MCP, plugin, code-mode, and agent-tool families into capability rows with separate implementation, provider declaration, local executor, promotion, authority, replay, context, and usage fields.",
     realignment: "The constitution is read-only in this slice: it declares no new provider tools, exposes no local executor, grants no authority gate, mutates no request shape, and only surfaces status rows in settings.",
   },
+  {
+    id: "ic23.control-perception-human-decision-tool-substrate",
+    name: "Control, perception, and human-decision tool substrate",
+    role: "authority_gate",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/tools/control-perception-decision-substrate.js", "src/main/direct/ui/settings-surface.js", "scripts/direct-control-tool-substrate-regression.mjs", "docs/DIRECT_TOOL_AUTHORITY_FAMILIES_WAVE_SPEC.md"],
+    ontology: ontologyShape(["direct_context_remaining_witness", "direct_plan_artifact", "direct_view_image_projection", "direct_human_decision_tool_packet", "direct_new_context_blocked_projection"], "harness", {
+      identityFields: ["projectId", "threadId", "turnId", "artifactId", "toolId"],
+      schema: "direct_control_tool_substrate_status@1",
+    }),
+    bridgeFit: "Adds non-executable substrate artifacts for get_context_remaining, update_plan, view_image metadata/provider visibility, request_user_input human-decision packet law, request_permissions widening posture, and blocked new_context.",
+    realignment: "The substrate exposes no provider tool declarations, no local tool execution, no workspace mutation, no agent spawning, no external action, no free-text authority widening, and no plan-derived task-completion proof.",
+  },
 ]);
 
 function isPlainObject(value) {

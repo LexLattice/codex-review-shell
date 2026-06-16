@@ -127,6 +127,10 @@ const {
   buildDirectAgentUsageSummaryProjection,
 } = require("./main/direct/usage/agent-ledger");
 const {
+  assertControlToolSubstrateSafe,
+  buildControlToolSubstrateStatus,
+} = require("./main/direct/tools/control-perception-decision-substrate");
+const {
   buildVanillaSiblingContextEvidence,
 } = require("./main/direct/context/maintenance");
 const {
@@ -2479,6 +2483,13 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     directProviderMetadata,
     generatedAt,
   });
+  const controlToolStatus = buildDirectControlToolStatusForProject({
+    project,
+    runtimeStatus,
+    agentUsageStatus,
+    directProviderMetadata,
+    generatedAt,
+  });
   const contextPreview = directContextPreviewForProject(project, {
     runtimeStatus,
     runtimeWitnessProjection,
@@ -2500,6 +2511,7 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     moduleStatus,
     agentClassStatus,
     toolCapabilityStatus,
+    controlToolStatus,
     continuityStatus: runtimeStatus.directContextMaintenance,
     contextPreview,
     runtimeWitnessProjection,
@@ -2521,6 +2533,7 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
   const projection = buildDirectSettingsSurfaceProjection({
     ...projectionInput,
     manualSmokeGate,
+    controlToolStatus,
   });
   assertDirectSettingsSurfaceRendererSafe(projection);
   return projection;
@@ -2912,6 +2925,78 @@ function directMetadataContextLabel(profile = {}, modelDescriptor = null, agentU
   }
   if (Number.isFinite(contextWindow) && contextWindow > 0) return `Context fill unknown · window ${contextWindow}`;
   return "Context unknown";
+}
+
+function buildDirectControlToolStatusForProject(input = {}) {
+  const project = input.project || {};
+  const projectId = normalizeString(project.id || input.runtimeStatus?.projectId, "");
+  const runtimeStatus = input.runtimeStatus || {};
+  const agentUsageStatus = input.agentUsageStatus || {};
+  const directProviderMetadata = input.directProviderMetadata || {};
+  const metadataProfile = directProviderMetadata.profile || input.providerMetadataProfile || null;
+  const selected = directMetadataSelectedModel(metadataProfile || {}, project, runtimeStatus);
+  const modelDescriptor = selected.descriptor || {};
+  const contextWindow = Number(metadataProfile?.usage?.context?.modelContextWindow || modelDescriptor.contextWindow || 0);
+  const usedTokens = Number(
+    metadataProfile?.usage?.context?.usedTokens ??
+      metadataProfile?.usage?.context?.tokensInWindow ??
+      agentUsageStatus?.latestUsage?.inputTokensKnown ??
+      0,
+  );
+  const tokensLeft = Number.isFinite(contextWindow) && contextWindow > 0 && Number.isFinite(usedTokens)
+    ? Math.max(0, contextWindow - Math.max(0, usedTokens))
+    : null;
+  const estimateKind = metadataProfile?.usage?.context?.source === "provider_reported"
+    ? "provider_reported"
+    : Number.isFinite(tokensLeft)
+      ? "budget_policy_estimate"
+      : "unknown";
+  const generatedAt = normalizeString(input.generatedAt, nowIso());
+  const status = buildControlToolSubstrateStatus({
+    projectId,
+    generatedAt,
+    contextRemainingInput: {
+      projectId,
+      tokensLeft,
+      confidence: Number.isFinite(tokensLeft) ? "derived" : "unknown",
+      source: Number.isFinite(tokensLeft) ? "direct_provider_metadata_and_usage" : "unavailable",
+      estimateKind,
+      usableFor: "display_only",
+      observedAt: generatedAt,
+    },
+    planInput: {
+      projectId,
+      source: "model_tool_call",
+      status: "active",
+      sourceRefs: [{ kind: "tool_capability_row", ref: "vanilla.update_plan" }],
+      steps: [],
+      conflictsWithCurrentUserIntent: false,
+      createdAt: generatedAt,
+    },
+    viewImageInput: {
+      projectId,
+      providerVisibilityState: "metadata_only",
+      providerVisibilityEvidence: "not_sent",
+      metadataStrippingPolicy: "not_payload_sent",
+      decodeCapsApplied: true,
+      observedAt: generatedAt,
+    },
+    humanDecisionInput: {
+      projectId,
+      toolKind: "request_user_input",
+      promptPreview: "No active request_user_input packet.",
+      choices: [],
+      freeTextAllowed: true,
+      createdAt: generatedAt,
+    },
+    newContextInput: {
+      projectId,
+      reason: "blocked_until_context_maintenance_law",
+      observedAt: generatedAt,
+    },
+  });
+  assertControlToolSubstrateSafe(status);
+  return status;
 }
 
 function buildDirectRuntimeWitnessProjectionForProject(input = {}) {
