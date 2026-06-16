@@ -497,6 +497,55 @@ function summarizeAgentRuntimeSubstrate(agentRuntimeStatus = {}) {
   };
 }
 
+function summarizeTextSubAgentToolSurface(agentToolSurface = {}) {
+  const source = objectOrEmpty(agentToolSurface);
+  const status = normalizeString(source.schema, "") === "direct_text_sub_agent_tool_surface@1"
+    ? source
+    : objectOrEmpty(source.agentToolSurface || source.textSubAgentToolSurface || source.directTextSubAgentToolSurface);
+  return {
+    available: normalizeString(status.schema, "") === "direct_text_sub_agent_tool_surface@1",
+    schema: normalizeString(status.schema, "not_exposed"),
+    mode: normalizeString(status.mode, "not_exposed"),
+    surfaceId: normalizeString(status.surfaceId, ""),
+    surfaceDigest: normalizeString(status.surfaceDigest, ""),
+    graphId: normalizeString(status.graphId, ""),
+    mailboxId: normalizeString(status.mailboxId, ""),
+    listRowCount: Number(status.listProjection?.rowCount || 0),
+    activeCount: Number(status.listProjection?.activeCount || 0),
+    terminalCount: Number(status.listProjection?.terminalCount || 0),
+    spawnAccepted: status.spawnRequest?.acceptedAsTextOnlyIntent === true,
+    spawnBlockerCodes: arrayOrEmpty(status.spawnRequest?.blockerCodes).map((item) => normalizeString(item, "")).filter(Boolean),
+    waitBounded: status.waitPlan?.noDeadlockLawSatisfied === true,
+    waitCycleCheck: normalizeString(status.waitPlan?.cycleCheck, "unknown"),
+    waitTimeoutMs: Number(status.waitPlan?.timeoutMs || 0),
+    sendCanAppend: status.sendMessagePlan?.canAppend === true,
+    followupCanAppend: status.followupTaskPlan?.canAppend === true,
+    interruptMarkRequestedAllowed: status.interruptRequest?.markRequestedAllowed === true,
+    interruptProviderCancelAllowed: status.interruptRequest?.providerCancelAllowed === true,
+    listAgentsToolEnabledInThisPr: status.listAgentsToolEnabledInThisPr === true,
+    spawnAgentTextOnlyEnabledInThisPr: status.spawnAgentTextOnlyEnabledInThisPr === true,
+    waitAgentToolEnabledInThisPr: status.waitAgentToolEnabledInThisPr === true,
+    sendMessageToolEnabledInThisPr: status.sendMessageToolEnabledInThisPr === true,
+    followupTaskToolEnabledInThisPr: status.followupTaskToolEnabledInThisPr === true,
+    interruptAgentMarkRequestedEnabledInThisPr: status.interruptAgentMarkRequestedEnabledInThisPr === true,
+    interruptAgentProviderCancelEnabledInThisPr: status.interruptAgentProviderCancelEnabledInThisPr === true,
+    childToolsAllowed: status.childToolsAllowed === true,
+    recursiveSpawnAllowed: status.recursiveSpawnAllowed === true,
+    inheritedParentAuthorityAllowed: status.inheritedParentAuthorityAllowed === true,
+    providerDeclarationAllowed: status.providerDeclarationAllowed === true,
+    providerTransportAllowed: status.providerTransportAllowed === true,
+    requestShapeMutationAllowed: status.requestShapeMutationAllowed === true,
+    childTranscriptPromotionAllowed: status.childTranscriptPromotionAllowed === true,
+    parentSpawnIntentMayClaimChildSuccess: status.parentSpawnIntentMayClaimChildSuccess === true,
+    separateUsageAttributionRequired: status.separateUsageAttributionRequired === true,
+    rawPromptIncluded: status.rawPromptIncluded === true,
+    rawTranscriptIncluded: status.rawTranscriptIncluded === true,
+    rawProviderFrameIncluded: status.rawProviderFrameIncluded === true,
+    rawSecretIncluded: status.rawSecretIncluded === true,
+    rendererSafeSummary: boundedString(status.rendererSafeSummary || "Text-only sub-agent tool surface is not exposed.", 360),
+  };
+}
+
 function summarizeContinuity(input = {}) {
   const continuity = objectOrEmpty(input.continuityStatus || input.contextContinuityStatus);
   const runtimeContext = objectOrEmpty(input.runtimeStatus?.directContextMaintenance || input.runtimeStatus?.contextMaintenance);
@@ -759,6 +808,7 @@ function buildRows(sections) {
   const toolCapabilities = sections.toolCapabilities;
   const controlTools = sections.controlTools;
   const agentRuntime = sections.agentRuntime;
+  const agentToolSurface = sections.agentToolSurface;
   const continuity = sections.continuity;
   const contextPreview = sections.contextPreview;
   const memoryWorkbench = sections.memoryWorkbench;
@@ -911,6 +961,17 @@ function buildRows(sections) {
       statusRow("Projection law", agentRuntime.subAgentPanelProjectionOnly && !agentRuntime.childTranscriptPromotionAllowed && !agentRuntime.parentSpawnIntentMayClaimChildSuccess ? "panel only, no flattening" : "unsafe", agentRuntime.subAgentPanelProjectionOnly && !agentRuntime.childTranscriptPromotionAllowed && !agentRuntime.parentSpawnIntentMayClaimChildSuccess ? "ok" : "blocked"),
       statusRow("Authority", agentRuntime.agentSpawnExecutable || agentRuntime.providerSpawnEnabledInThisPr || agentRuntime.localSpawnEnabledInThisPr || agentRuntime.providerDeclarationEnabledInThisPr || agentRuntime.requestShapeMutationEnabledInThisPr || agentRuntime.recursiveSpawnEnabledInThisPr || agentRuntime.waitToolEnabledInThisPr || agentRuntime.sendMessageToolEnabledInThisPr || agentRuntime.interruptToolEnabledInThisPr ? "unexpected grant" : "substrate only", agentRuntime.agentSpawnExecutable || agentRuntime.providerSpawnEnabledInThisPr || agentRuntime.localSpawnEnabledInThisPr || agentRuntime.providerDeclarationEnabledInThisPr || agentRuntime.requestShapeMutationEnabledInThisPr || agentRuntime.recursiveSpawnEnabledInThisPr || agentRuntime.waitToolEnabledInThisPr || agentRuntime.sendMessageToolEnabledInThisPr || agentRuntime.interruptToolEnabledInThisPr ? "blocked" : "ok"),
     ],
+    agentToolSurface: [
+      statusRow("Surface", agentToolSurface.available ? "available" : "not exposed", agentToolSurface.available ? "diagnostic" : "missing"),
+      statusRow("Mode", agentToolSurface.mode),
+      statusRow("List", `${agentToolSurface.listRowCount} agents · ${agentToolSurface.activeCount} active / ${agentToolSurface.terminalCount} terminal`, agentToolSurface.listAgentsToolEnabledInThisPr ? "ok" : "missing"),
+      statusRow("Text spawn", agentToolSurface.spawnAccepted ? "accepted as intent" : `blocked ${agentToolSurface.spawnBlockerCodes.join(", ") || "unknown"}`, agentToolSurface.spawnAccepted ? "ok" : "blocked"),
+      statusRow("Wait", `${agentToolSurface.waitCycleCheck} · ${agentToolSurface.waitTimeoutMs}ms`, agentToolSurface.waitBounded ? "ok" : "blocked"),
+      statusRow("Mailbox", `send ${agentToolSurface.sendCanAppend ? "append" : "blocked"} / followup ${agentToolSurface.followupCanAppend ? "append" : "blocked"}`, agentToolSurface.sendCanAppend && agentToolSurface.followupCanAppend ? "ok" : "blocked"),
+      statusRow("Interrupt", agentToolSurface.interruptMarkRequestedAllowed ? "mark requested only" : "blocked", agentToolSurface.interruptProviderCancelAllowed ? "blocked" : "diagnostic"),
+      statusRow("Usage", agentToolSurface.separateUsageAttributionRequired ? "separate child attribution required" : "missing", agentToolSurface.separateUsageAttributionRequired ? "ok" : "blocked"),
+      statusRow("Authority", agentToolSurface.providerTransportAllowed || agentToolSurface.providerDeclarationAllowed || agentToolSurface.requestShapeMutationAllowed || agentToolSurface.recursiveSpawnAllowed || agentToolSurface.childToolsAllowed || agentToolSurface.inheritedParentAuthorityAllowed || agentToolSurface.childTranscriptPromotionAllowed || agentToolSurface.parentSpawnIntentMayClaimChildSuccess || agentToolSurface.interruptProviderCancelAllowed ? "unexpected grant" : "text-only gated", agentToolSurface.providerTransportAllowed || agentToolSurface.providerDeclarationAllowed || agentToolSurface.requestShapeMutationAllowed || agentToolSurface.recursiveSpawnAllowed || agentToolSurface.childToolsAllowed || agentToolSurface.inheritedParentAuthorityAllowed || agentToolSurface.childTranscriptPromotionAllowed || agentToolSurface.parentSpawnIntentMayClaimChildSuccess || agentToolSurface.interruptProviderCancelAllowed ? "blocked" : "ok"),
+    ],
     continuity: [
       statusRow("Transition", continuity.transitionStatus),
       statusRow("Context loss", continuity.contextLossState),
@@ -1039,6 +1100,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
   const toolCapabilities = summarizeToolCapabilities(input.toolCapabilityStatus || input.toolCapabilityProjection || input.directToolCapabilityStatus || input);
   const controlTools = summarizeControlToolSubstrate(input.controlToolStatus || input.controlToolSubstrateStatus || input.directControlToolStatus || input);
   const agentRuntime = summarizeAgentRuntimeSubstrate(input.agentRuntimeStatus || input.agentRuntimeSubstrateStatus || input.directAgentRuntimeStatus || input);
+  const agentToolSurface = summarizeTextSubAgentToolSurface(input.agentToolSurfaceStatus || input.textSubAgentToolSurface || input.directTextSubAgentToolSurface || input);
   const continuity = summarizeContinuity(input);
   const contextPreview = summarizeContextPreview(input.contextPreview || input.contextPacketPreview || input.directContextPreview || input);
   const memoryWorkbench = summarizeMemoryWorkbench(input.memoryWorkbench || input.memoryReviewWorkbench || input.directMemoryWorkbench || input);
@@ -1095,11 +1157,15 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
     agentRuntimeWaitAllowed: false,
     agentRuntimeSendMessageAllowed: false,
     agentRuntimeInterruptAllowed: false,
+    agentToolSurfaceProviderTransportAllowed: false,
+    agentToolSurfaceRecursiveSpawnAllowed: false,
+    agentToolSurfaceChildToolAllowed: false,
+    agentToolSurfaceInterruptProviderCancelAllowed: false,
     rawTextIncluded: false,
     rawPathIncluded: false,
     rawSecretIncluded: false,
   };
-  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, toolCapabilities, controlTools, agentRuntime, continuity, contextPreview, memoryWorkbench, runtimeWitness, agentUsage, appServerFallbackParity, manualSmokeGate, headlessDaemon };
+  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, toolCapabilities, controlTools, agentRuntime, agentToolSurface, continuity, contextPreview, memoryWorkbench, runtimeWitness, agentUsage, appServerFallbackParity, manualSmokeGate, headlessDaemon };
   const sourceDigest = digestFor("direct-settings-surface-source@1", sections);
   const projection = {
     schema: DIRECT_SETTINGS_SURFACE_PROJECTION_SCHEMA,
@@ -1122,6 +1188,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       "direct_tool_capability_constitution",
       "control_perception_human_decision_tool_substrate",
       "agent_runtime_substrate",
+      "text_only_sub_agent_tool_surface",
       "memory_baton_omission_compaction",
       "context_packet_preview",
       "memory_review_workbench",
@@ -1152,6 +1219,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       { kind: "direct_tool_capability_status", digest: normalizeString(toolCapabilities.registryDigest || input.toolCapabilityStatus?.projectionDigest, ""), label: "Direct tool capability constitution" },
       { kind: "direct_control_tool_substrate_status", digest: normalizeString(controlTools.statusDigest, ""), label: "Control/perception/human-decision tool substrate" },
       { kind: "direct_agent_runtime_substrate_status", digest: normalizeString(agentRuntime.statusDigest, ""), label: "Agent runtime substrate" },
+      { kind: "direct_text_sub_agent_tool_surface", digest: normalizeString(agentToolSurface.surfaceDigest, ""), label: "Text-only sub-agent tool surface" },
       { kind: "continuity_status", digest: normalizeString(input.continuityStatus?.projectionDigest, ""), label: "Continuity status" },
       { kind: "context_packet_preview", digest: normalizeString(contextPreview.previewDigest, ""), label: "Context packet preview" },
       { kind: "memory_review_workbench", digest: normalizeString(memoryWorkbench.workbenchDigest, ""), label: "Memory review workbench" },
@@ -1220,6 +1288,10 @@ function assertDirectSettingsSurfaceRendererSafe(projection = {}) {
     "agentRuntimeWaitAllowed",
     "agentRuntimeSendMessageAllowed",
     "agentRuntimeInterruptAllowed",
+    "agentToolSurfaceProviderTransportAllowed",
+    "agentToolSurfaceRecursiveSpawnAllowed",
+    "agentToolSurfaceChildToolAllowed",
+    "agentToolSurfaceInterruptProviderCancelAllowed",
     "rawTextIncluded",
     "rawPathIncluded",
     "rawSecretIncluded",

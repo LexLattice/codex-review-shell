@@ -336,6 +336,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "This slice enables no spawn/list/wait/send/interrupt provider tool, no request-shape mutation, no recursive worker authority, and no child transcript promotion into primary transcript.",
   },
   {
+    id: "ic25.text-only-sub-agent-tool-surface",
+    name: "Text-only sub-agent tool surface",
+    role: "authority_gate",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/agents/text-tool-surface.js", "src/main/direct/agents/runtime-substrate.js", "src/main/direct/ui/settings-surface.js", "scripts/direct-text-sub-agent-tool-surface-regression.mjs", "src/main.js"],
+    ontology: ontologyShape(["direct_text_sub_agent_tool_surface", "direct_sub_agent_list_projection", "direct_text_sub_agent_spawn_request", "direct_agent_wait_plan", "direct_agent_mailbox_write_plan", "direct_agent_interrupt_request"], "sub_agent", {
+      identityFields: ["projectId", "primaryThreadId", "agentThreadId", "surfaceId", "waitId", "writePlanId"],
+      schema: "direct_text_sub_agent_tool_surface@1",
+    }),
+    bridgeFit: "Exposes a bounded text-only sub-agent surface over the runtime substrate: list projection, spawn intent, timeout/cycle-checked wait plan, sequenced mailbox write plans, and mark-requested interrupt evidence.",
+    realignment: "Provider tool declaration, provider transport, recursive spawning, inherited parent tool authority, child workspace mutation, provider cancellation, and child transcript promotion remain disabled.",
+  },
+  {
     id: "ic8.usage-quota-readiness",
     name: "Usage, quota, model, and readiness evidence",
     role: "observability_surface",
