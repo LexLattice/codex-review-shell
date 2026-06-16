@@ -78,6 +78,13 @@ function assistantTextFromSessionTurn(session = {}, turnId = "") {
     .trim();
 }
 
+function jsonContractTextFromAssistant(assistantText = "") {
+  let jsonText = normalizeString(assistantText, "");
+  if (!jsonText.startsWith("```")) return jsonText;
+  const fenced = jsonText.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  return fenced ? fenced[1].trim() : jsonText;
+}
+
 function defaultHumanChoices() {
   return [
     {
@@ -218,7 +225,7 @@ function reduceHeadlessTurnOutput({
   let parsedJson = null;
   if (config.reducerMode === "json_contract_required") {
     try {
-      parsedJson = JSON.parse(assistantText);
+      parsedJson = JSON.parse(jsonContractTextFromAssistant(assistantText));
       resultPatch = {
         reductionStatus: "valid",
         jsonContractDigest: digestFor("json-contract", parsedJson),
@@ -275,6 +282,7 @@ module.exports = {
   HEADLESS_OUTPUT_REDUCER_SCHEMA,
   REDUCER_MODES,
   assistantTextFromSessionTurn,
+  jsonContractTextFromAssistant,
   reduceHeadlessTurnOutput,
   reducerConfig,
 };

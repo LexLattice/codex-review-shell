@@ -27,7 +27,7 @@ function fixtureConfig(rootDir) {
       authMode: "capability_token",
       capabilityToken: TOKEN,
       allowedIngressContracts: ["headless_text_event@1"],
-      allowedRoutes: ["route_markdown", "route_human"],
+      allowedRoutes: ["route_markdown", "route_human", "route_json"],
     }],
     workThreads: [{
       workThreadId: "wt_output",
@@ -75,6 +75,22 @@ function fixtureConfig(rootDir) {
           ],
         },
         authorityBoundaryRef: "headless-output-human-review",
+        toolAuthorityMode: "disabled",
+      },
+      {
+        routeId: "route_json",
+        routeVersion: "v1",
+        status: "active",
+        ingressContractRef: "headless_text_event@1",
+        workThreadId: "wt_output",
+        targetThreadRef: {
+          runtimePath: "direct-text",
+          threadId: "direct_session_headless_output_json",
+        },
+        contextPolicyRef: "direct_text_turn_empty_context@1",
+        modelPolicyRef: "fixture-model-policy",
+        outputReducerRef: "json_contract_required",
+        authorityBoundaryRef: "headless-output-json-contract",
         toolAuthorityMode: "disabled",
       },
     ],
@@ -125,9 +141,11 @@ class FixtureDirectTextController {
   async startTurn(params = {}) {
     const sessionId = params.sessionId || params.threadId;
     const turnId = `turn_${String(++this.turnOrdinal).padStart(3, "0")}`;
-    const assistantText = params.promptText.includes("human")
-      ? "Human review required for this output."
-      : "Markdown summary for artifact output.";
+    const assistantText = params.promptText.includes("json")
+      ? "```json\n{\"status\":\"ok\",\"next\":\"none\"}\n```"
+      : params.promptText.includes("human")
+        ? "Human review required for this output."
+        : "Markdown summary for artifact output.";
     const turn = {
       turnId,
       id: turnId,
@@ -282,6 +300,19 @@ try {
   assert.equal(decision.body.decision.status, "pending");
   assert.equal(decision.body.decision.choices.length, 2);
 
+  const unauthReply = await requestJson(
+    baseUrl,
+    `/v1/bridge/human-decisions/${encodeURIComponent(humanTerminal.outputReduction.humanDecisionId)}/replies`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        choiceId: "accept",
+      }),
+    },
+  );
+  assert.equal(unauthReply.response.status, 401);
+  assert.equal(unauthReply.body.error, "unknown_client");
+
   const reply = await requestJson(
     baseUrl,
     `/v1/bridge/human-decisions/${encodeURIComponent(humanTerminal.outputReduction.humanDecisionId)}/replies`,
@@ -313,10 +344,31 @@ try {
   assert.equal(invalidReply.response.status, 400);
   assert.equal(invalidReply.body.error, "human_decision_closed");
 
+  const json = await requestJson(baseUrl, "/v1/bridge/events", {
+    method: "POST",
+    body: JSON.stringify(event("json-1", "route_json", "make json contract")),
+  });
+  assert.equal(json.response.status, 202);
+  const jsonTerminal = await waitForPacket(
+    baseUrl,
+    json.body.turnPacket.packetId,
+    (packet) => packet.outputReduction?.reducedResultId,
+    "json output reduction",
+  );
+  assert.equal(jsonTerminal.outputReduction.reducerMode, "json_contract_required");
+  assert.equal(jsonTerminal.outputReduction.reductionStatus, "valid");
+  const jsonReduced = await requestJson(
+    baseUrl,
+    `/v1/bridge/reduced-results/${encodeURIComponent(jsonTerminal.outputReduction.reducedResultId)}`,
+  );
+  assert.equal(jsonReduced.response.status, 200);
+  assert.equal(jsonReduced.body.result.jsonContractDigest.startsWith("sha256:"), true);
+  assert.equal(jsonReduced.body.result.failureCode || "", "");
+
   const status = await requestJson(baseUrl, "/v1/bridge/status");
   assert.equal(status.response.status, 200);
-  assert.equal(status.body.reducedResults.total, 2, JSON.stringify(status.body.reducedResults));
-  assert.equal(status.body.reducedResults.byStatus.valid, 1, JSON.stringify(status.body.reducedResults));
+  assert.equal(status.body.reducedResults.total, 3, JSON.stringify(status.body.reducedResults));
+  assert.equal(status.body.reducedResults.byStatus.valid, 2, JSON.stringify(status.body.reducedResults));
   assert.equal(status.body.reducedResults.byStatus.needs_human_review, 1, JSON.stringify(status.body.reducedResults));
   assert.equal(status.body.rawPayloadsExposed, false);
 } finally {

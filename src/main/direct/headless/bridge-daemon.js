@@ -202,6 +202,24 @@ class DirectHeadlessBridgeDaemon {
     };
   }
 
+  authenticateKnownClientRequest(req, body = {}) {
+    const clientId = normalizeString(body.clientId || body.client_id, "");
+    const client = this.store.readClient(clientId);
+    if (!client) {
+      return {
+        ok: false,
+        reason: "unknown_client",
+      };
+    }
+    if (client.status !== "active") {
+      return {
+        ok: false,
+        reason: "client_inactive",
+      };
+    }
+    return this.authenticateEventRequest(req, body);
+  }
+
   readEvent(envelopeId = "") {
     return this.store.readEvent(envelopeId);
   }
@@ -287,7 +305,7 @@ class DirectHeadlessBridgeDaemon {
     if (req.method === "POST" && url.pathname.startsWith("/v1/bridge/human-decisions/") && url.pathname.endsWith("/replies")) {
       const decisionId = decodeURIComponent(url.pathname.slice("/v1/bridge/human-decisions/".length, -"/replies".length));
       const body = await readRequestJson(req, this.maxBodyBytes);
-      const auth = this.authenticateEventRequest(req, body);
+      const auth = this.authenticateKnownClientRequest(req, body);
       if (!auth.ok) {
         return jsonResponse(res, 401, {
           ok: false,
