@@ -9,6 +9,7 @@ const HEADLESS_BRIDGE_STORE_SCHEMA = "direct_headless_bridge_store@1";
 const EVENT_ENVELOPE_SCHEMA = "bridge_event_envelope@1";
 const ROUTE_BINDING_SCHEMA = "bridge_route_binding@1";
 const CLIENT_REGISTRATION_SCHEMA = "bridge_client_registration@1";
+const HEADLESS_TURN_PACKET_SCHEMA = "headless_turn_packet@1";
 
 function normalizeString(value, fallback = "") {
   const text = typeof value === "string" ? value.trim() : "";
@@ -429,6 +430,21 @@ class DirectHeadlessBridgeStore {
       rawPayloadsExposed: false,
       rawProviderFramesExposed: false,
       rawPathsExposed: false,
+      turnPackets: this.turnPacketSummary(),
+    };
+  }
+
+  turnPacketSummary() {
+    const rows = this.db.prepare("select packet_json from direct_bridge_turn_packets").all();
+    const byState = {};
+    for (const row of rows) {
+      const packet = parseJson(row.packet_json, {});
+      const state = normalizeString(packet.state, "unknown");
+      byState[state] = (byState[state] || 0) + 1;
+    }
+    return {
+      total: rows.length,
+      byState,
     };
   }
 
@@ -514,6 +530,54 @@ class DirectHeadlessBridgeStore {
       lifecycle,
       routeDecision: routeDecision ? parseJson(routeDecision.decision_json, null) : null,
     };
+  }
+
+  writeTurnPacket(packet = {}, options = {}) {
+    const at = normalizeString(options.now, nowIso(options.nowMs));
+    const safePacket = {
+      schema: HEADLESS_TURN_PACKET_SCHEMA,
+      ...packet,
+      updatedAt: at,
+    };
+    const packetId = normalizeString(safePacket.packetId, `headless_turn_packet_${sha256(stableStringify(safePacket)).slice(7, 31)}`);
+    safePacket.packetId = packetId;
+    if (!safePacket.createdAt) safePacket.createdAt = at;
+    this.db.prepare(`
+      insert into direct_bridge_turn_packets (packet_id, envelope_id, route_id, packet_json, created_at)
+      values (?, ?, ?, ?, ?)
+      on conflict(packet_id) do update set
+        packet_json = excluded.packet_json
+    `).run(
+      packetId,
+      normalizeString(safePacket.envelopeId, ""),
+      normalizeString(safePacket.routeId, ""),
+      safeJson(safePacket),
+      normalizeString(safePacket.createdAt, at),
+    );
+    return safePacket;
+  }
+
+  readTurnPacket(packetId = "") {
+    const row = this.db.prepare("select packet_json from direct_bridge_turn_packets where packet_id = ?").get(normalizeString(packetId, ""));
+    return row ? parseJson(row.packet_json, null) : null;
+  }
+
+  readTurnPacketForEnvelope(envelopeId = "") {
+    const row = this.db.prepare("select packet_json from direct_bridge_turn_packets where envelope_id = ? order by created_at desc limit 1").get(normalizeString(envelopeId, ""));
+    return row ? parseJson(row.packet_json, null) : null;
+  }
+
+  updateTurnPacket(packetId = "", patch = {}, options = {}) {
+    const packet = this.readTurnPacket(packetId);
+    if (!packet) return null;
+    return this.writeTurnPacket({
+      ...packet,
+      ...patch,
+      statusHistory: [
+        ...(Array.isArray(packet.statusHistory) ? packet.statusHistory : []),
+        ...(Array.isArray(patch.statusHistory) ? patch.statusHistory : []),
+      ],
+    }, options);
   }
 
   submitEvent(input = {}, options = {}) {
@@ -786,6 +850,7 @@ module.exports = {
   CLIENT_REGISTRATION_SCHEMA,
   DirectHeadlessBridgeStore,
   EVENT_ENVELOPE_SCHEMA,
+  HEADLESS_TURN_PACKET_SCHEMA,
   HEADLESS_BRIDGE_STORE_SCHEMA,
   ROUTE_BINDING_SCHEMA,
   clientCapabilityTokenDigest,

@@ -102,10 +102,11 @@ class DirectHeadlessBridgeDaemon {
     this.state = "stopped";
     this.startedAt = "";
     this.lastErrorClass = "";
+    this.textRuntime = options.textRuntime || null;
   }
 
   statusProjection() {
-    return this.store.statusProjection({
+    const status = this.store.statusProjection({
       daemonState: this.state === "listening" ? "ready" : this.state,
       lastErrorClass: this.lastErrorClass,
       backpressure: {
@@ -113,6 +114,15 @@ class DirectHeadlessBridgeDaemon {
         acceptedEvents: this.store.count("direct_bridge_inbox_events"),
       },
     });
+    return {
+      ...status,
+      textRuntime: this.textRuntime?.statusProjection ? this.textRuntime.statusProjection() : {
+        schema: "headless_direct_text_runtime_status@1",
+        state: "not_configured",
+        activeTurns: 0,
+        queuedTurns: 0,
+      },
+    };
   }
 
   submitEvent(body = {}) {
@@ -125,6 +135,7 @@ class DirectHeadlessBridgeDaemon {
         rawPayloadIncluded: false,
       };
     }
+    if (this.textRuntime?.submitEvent) return this.textRuntime.submitEvent(body);
     return this.store.submitEvent(body);
   }
 
@@ -225,6 +236,12 @@ class DirectHeadlessBridgeDaemon {
       const event = this.readEvent(envelopeId);
       if (!event) return jsonResponse(res, 404, { ok: false, error: "event_not_found" });
       return jsonResponse(res, 200, { ok: true, ...event });
+    }
+    if (req.method === "GET" && url.pathname.startsWith("/v1/bridge/turn-packets/")) {
+      const packetId = decodeURIComponent(url.pathname.slice("/v1/bridge/turn-packets/".length));
+      const packet = this.store.readTurnPacket(packetId);
+      if (!packet) return jsonResponse(res, 404, { ok: false, error: "turn_packet_not_found" });
+      return jsonResponse(res, 200, { ok: true, packet });
     }
     if (req.method === "POST" && url.pathname === "/v1/bridge/events") {
       const body = await readRequestJson(req, this.maxBodyBytes);

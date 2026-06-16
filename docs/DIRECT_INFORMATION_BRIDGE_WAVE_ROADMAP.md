@@ -2781,7 +2781,7 @@ any model-call authority exists.
 
 ### PR 51: Headless Direct Text Runtime
 
-Status: planned.
+Status: implemented in branch `codex/direct-headless-text-runtime`.
 
 Purpose:
 
@@ -2804,6 +2804,26 @@ Scope:
   `failed`, `handoff_unknown`, and `replay_unsafe`.
 - Add local CLI/client test helper that submits an event and waits for a
   terminal result.
+
+Implemented slice:
+
+- `src/main/direct/headless/text-runtime.js` converts accepted bridge events
+  into durable `headless_turn_packet@1` records.
+- The runtime supports `direct-text` routes only and rejects/degrades other
+  runtime paths without starting provider work.
+- The daemon may receive an optional text runtime; without it, it remains the
+  PR 50 intake-only bridge.
+- `queue_after_active_turn` is the default active-turn policy per target
+  thread.
+- `GET /v1/bridge/turn-packets/:packetId` provides polling-safe packet status.
+- Terminal packet states classify `provider_completed`, `failed`,
+  `handoff_unknown`, and `replay_unsafe`.
+- `scripts/direct-headless-text-runtime-regression.mjs` proves event submit,
+  queued second turn, terminal status polling, duplicate idempotency, and safe
+  status projection with a fixture direct-text controller.
+- `scripts/direct-bridge-submit-event.mjs` provides a local CLI client helper
+  that can submit JSON/text events and optionally wait for terminal packet
+  status.
 
 Explicit non-goals:
 
