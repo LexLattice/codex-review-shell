@@ -41,13 +41,14 @@ function main() {
 
   const contextPacketFamily = buildAgentContextPacketFamily({
     projectId,
-    family: "text_only_child_context",
+    family: " Text_Only_Child_Context ",
     agentClassKind: "sub_agent_worker",
     allowedContextFamilies: ["work_thread_identity", "authority_boundary", "context_packet"],
     requiredArtifactOutputFamilies: ["sub_agent_result_artifact"],
     nowMs: 0,
   });
   assert(contextPacketFamily.schema === DIRECT_AGENT_CONTEXT_PACKET_FAMILY_SCHEMA, "context packet family schema mismatch");
+  assert(contextPacketFamily.family === "text_only_child_context", "context packet family should normalize enum strings");
   assert(contextPacketFamily.toolsAllowed === false, "child context family must not allow tools");
   assert(contextPacketFamily.recursiveSpawnAllowed === false, "child context family must not allow recursive spawn");
 
@@ -100,7 +101,7 @@ function main() {
         displayLabel: "Child fixture",
         model: "gpt-5.5",
         reasoningEffort: "medium",
-        nodeState: "running",
+        nodeState: " Running ",
         authorityBoundaryId: authorityBoundary.boundaryId,
         contextPacketFamilyId: contextPacketFamily.contextPacketFamilyId,
       },
@@ -120,6 +121,7 @@ function main() {
   assert(graph.subAgentPanelProjectionOnly === true, "sub-agent panel must remain projection");
   assert(graph.childTranscriptPromotionAllowed === false, "child transcript promotion must be blocked");
   assert(graph.parentSpawnIntentMayClaimChildSuccess === false, "spawn intent must not claim child success");
+  assert(graph.nodes[0].nodeState === "running", "graph node state should normalize enum strings");
 
   const mailbox = buildAgentMailbox({
     projectId,
@@ -129,8 +131,8 @@ function main() {
       {
         messageId: "msg_1",
         sequence: 1,
-        messageKind: "spawn_intent",
-        direction: "parent_to_child",
+        messageKind: " Spawn_Intent ",
+        direction: " Parent_To_Child ",
         parentAgentId: primaryThreadId,
         childAgentId: "agent_child_fixture",
         payloadRef: { kind: "spawn_prompt_ref", id: "spawn_prompt_1", digest: "sha256:spawn" },
@@ -149,20 +151,56 @@ function main() {
   });
   assert(mailbox.schema === DIRECT_AGENT_MAILBOX_SCHEMA, "mailbox schema mismatch");
   assert(mailbox.sequenceLaw === "strictly_increasing_per_mailbox", "mailbox must declare sequence law");
+  assert(mailbox.sequenceValid === true, "fixture mailbox should satisfy sequence law");
+  assert(mailbox.sequenceViolationCount === 0, "fixture mailbox should have no sequence violations");
   assert(mailbox.idempotencyLaw === "idempotency_key_required_per_message", "mailbox must declare idempotency law");
   assert(mailbox.duplicateMessageCount === 0, "fixture mailbox should be idempotent");
   assert(mailbox.providerTransportAllowed === false, "mailbox must not allow provider transport");
+
+  const invalidMailbox = buildAgentMailbox({
+    projectId,
+    primaryThreadId,
+    graphId: graph.graphId,
+    messages: [
+      {
+        messageId: "msg_bad_1",
+        sequence: 2,
+        messageKind: "status_update",
+        direction: "runtime_to_parent",
+        payloadRef: { kind: "status_ref", id: "bad_1", digest: "sha256:bad1" },
+      },
+      {
+        messageId: "msg_bad_2",
+        sequence: 2,
+        messageKind: "status_update",
+        direction: "runtime_to_parent",
+        payloadRef: { kind: "status_ref", id: "bad_2", digest: "sha256:bad2" },
+      },
+      {
+        messageId: "msg_bad_3",
+        sequence: 1,
+        messageKind: "status_update",
+        direction: "runtime_to_parent",
+        payloadRef: { kind: "status_ref", id: "bad_3", digest: "sha256:bad3" },
+      },
+    ],
+    nowMs: 0,
+  });
+  assert(invalidMailbox.sequenceValid === false, "invalid mailbox should not satisfy sequence law");
+  assert(invalidMailbox.sequenceViolationCount === 2, "invalid mailbox should count same/decreasing sequence violations");
+  assert(invalidMailbox.duplicateMessageCount === 0, "different payloads with bad ordering should not be hidden as idempotency duplicates");
 
   const lifecycleRegistry = buildAgentLifecycleRegistry({
     projectId,
     graphId: graph.graphId,
     entries: [
-      { agentThreadId: "agent_child_fixture", lifecycleState: "running", lastEventAt: "1970-01-01T00:00:00.000Z" },
+      { agentThreadId: "agent_child_fixture", lifecycleState: " Running ", lastEventAt: "1970-01-01T00:00:00.000Z" },
       { agentThreadId: "agent_done_fixture", lifecycleState: "completed", parentNotified: true, resultAccepted: true },
     ],
     nowMs: 0,
   });
   assert(lifecycleRegistry.schema === DIRECT_AGENT_LIFECYCLE_REGISTRY_SCHEMA, "lifecycle registry schema mismatch");
+  assert(lifecycleRegistry.entries[0].lifecycleState === "running", "lifecycle state should normalize enum strings");
   assert(lifecycleRegistry.activeCount === 1, "lifecycle registry should count active agents");
   assert(lifecycleRegistry.terminalCount === 1, "lifecycle registry should count terminal agents");
 
@@ -182,8 +220,10 @@ function main() {
       graphId: graph.graphId,
       agentThreadId: `agent_${item.expected}`,
       ...item,
+      recoveryClass: item.expected.toUpperCase(),
     });
     assert(classification.schema === DIRECT_AGENT_RUNTIME_RECOVERY_CLASSIFICATION_SCHEMA, "recovery classification schema mismatch");
+    assert(classification.recoveryClass === item.expected, "recovery class should normalize enum strings");
     assert(classification.automaticReplayAllowed === false, "recovery classification must not permit automatic replay");
   }
 
@@ -205,6 +245,8 @@ function main() {
   assert(status.agentContextPacketFamilyExists === true, "status should expose AgentContextPacketFamily existence");
   assert(status.agentAuthorityBoundaryExplicit === true, "status should expose AgentAuthorityBoundary existence");
   assert(status.mailboxSequenceLaw === "strictly_increasing_per_mailbox", "status should expose mailbox sequence law");
+  assert(status.mailboxSequenceValid === true, "status should expose valid mailbox sequencing");
+  assert(status.mailboxSequenceViolationCount === 0, "status should expose zero mailbox sequence violations");
   assert(status.mailboxIdempotencyLaw === "idempotency_key_required_per_message", "status should expose mailbox idempotency law");
   assertAgentRuntimeSubstrateSafe(status);
 

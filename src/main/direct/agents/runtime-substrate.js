@@ -161,7 +161,8 @@ function buildAgentAuthorityBoundary(input = {}) {
 }
 
 function buildAgentContextPacketFamily(input = {}) {
-  const family = CONTEXT_PACKET_FAMILIES.has(input.family) ? input.family : "text_only_child_context";
+  const familyCandidate = normalizeString(input.family, "text_only_child_context").toLowerCase();
+  const family = CONTEXT_PACKET_FAMILIES.has(familyCandidate) ? familyCandidate : "text_only_child_context";
   const packet = {
     schema: DIRECT_AGENT_CONTEXT_PACKET_FAMILY_SCHEMA,
     contextPacketFamilyId: normalizeString(input.contextPacketFamilyId, family),
@@ -231,9 +232,8 @@ function buildAgentThreadGraph(input = {}) {
   const nodes = arrayOrEmpty(input.nodes).map((node, index) => {
     const safeNode = isPlainObject(node) ? node : {};
     const agentThreadId = normalizeString(safeNode.agentThreadId || safeNode.providerThreadId || safeNode.threadId, `agent_${index + 1}`);
-    const nodeState = AGENT_NODE_STATES.has(safeNode.nodeState || safeNode.lifecycleState)
-      ? normalizeString(safeNode.nodeState || safeNode.lifecycleState)
-      : "planned";
+    const stateCandidate = normalizeString(safeNode.nodeState || safeNode.lifecycleState, "planned").toLowerCase();
+    const nodeState = AGENT_NODE_STATES.has(stateCandidate) ? stateCandidate : "planned";
     const threadKey = buildAgentThreadKey({
       projectId: input.projectId,
       primaryThreadId: input.primaryThreadId,
@@ -294,8 +294,10 @@ function buildAgentThreadGraph(input = {}) {
 }
 
 function normalizeMailboxMessage(message = {}, index = 0) {
-  const kind = MAILBOX_MESSAGE_KINDS.has(message.messageKind) ? message.messageKind : "diagnostic";
-  const direction = MAILBOX_DIRECTIONS.has(message.direction) ? message.direction : "unknown";
+  const kindCandidate = normalizeString(message.messageKind, "diagnostic").toLowerCase();
+  const kind = MAILBOX_MESSAGE_KINDS.has(kindCandidate) ? kindCandidate : "diagnostic";
+  const directionCandidate = normalizeString(message.direction, "unknown").toLowerCase();
+  const direction = MAILBOX_DIRECTIONS.has(directionCandidate) ? directionCandidate : "unknown";
   const messageCore = {
     messageId: normalizeString(message.messageId, `agent_mailbox_msg_${index + 1}`),
     sequence: finiteNumber(message.sequence, index + 1),
@@ -323,9 +325,13 @@ function normalizeMailboxMessage(message = {}, index = 0) {
 }
 
 function buildAgentMailbox(input = {}) {
-  const messages = arrayOrEmpty(input.messages)
-    .map((message, index) => normalizeMailboxMessage(message, index))
-    .sort((a, b) => a.sequence - b.sequence || a.messageId.localeCompare(b.messageId));
+  const normalizedMessages = arrayOrEmpty(input.messages)
+    .map((message, index) => normalizeMailboxMessage(message, index));
+  const sequenceViolationCount = normalizedMessages.reduce((count, message, index, source) => {
+    if (index === 0) return count;
+    return message.sequence > source[index - 1].sequence ? count : count + 1;
+  }, 0);
+  const messages = [...normalizedMessages].sort((a, b) => a.sequence - b.sequence || a.messageId.localeCompare(b.messageId));
   const idempotencyKeys = messages.map((message) => message.idempotencyKey);
   const mailbox = {
     schema: DIRECT_AGENT_MAILBOX_SCHEMA,
@@ -334,6 +340,8 @@ function buildAgentMailbox(input = {}) {
     primaryThreadId: normalizeString(input.primaryThreadId, ""),
     graphId: normalizeString(input.graphId, ""),
     sequenceLaw: "strictly_increasing_per_mailbox",
+    sequenceValid: sequenceViolationCount === 0,
+    sequenceViolationCount,
     idempotencyLaw: "idempotency_key_required_per_message",
     duplicateMessageCount: idempotencyKeys.length - new Set(idempotencyKeys).size,
     messageCount: messages.length,
@@ -350,7 +358,8 @@ function buildAgentMailbox(input = {}) {
 function buildAgentLifecycleRegistry(input = {}) {
   const entries = arrayOrEmpty(input.entries).map((entry, index) => {
     const safeEntry = isPlainObject(entry) ? entry : {};
-    const state = AGENT_NODE_STATES.has(safeEntry.lifecycleState) ? safeEntry.lifecycleState : "unknown";
+    const stateCandidate = normalizeString(safeEntry.lifecycleState, "unknown").toLowerCase();
+    const state = AGENT_NODE_STATES.has(stateCandidate) ? stateCandidate : "unknown";
     const lifecycleEntry = {
       lifecycleEntryId: normalizeString(safeEntry.lifecycleEntryId, `agent_lifecycle_${index + 1}`),
       agentThreadId: normalizeString(safeEntry.agentThreadId, `agent_${index + 1}`),
@@ -394,13 +403,13 @@ function classifyAgentRuntimeRecovery(input = {}) {
   if (!hasCreateEvidence) return "not_started";
   if (hasResult) return "terminal_known";
   if (hasRequestStart) return "result_pending";
-  if (hasCreateEvidence) return "child_created";
-  return "unknown";
+  return "child_created";
 }
 
 function buildAgentRuntimeRecoveryClassification(input = {}) {
-  const recoveryClass = RECOVERY_CLASSES.has(input.recoveryClass)
-    ? input.recoveryClass
+  const recoveryClassCandidate = normalizeString(input.recoveryClass, "").toLowerCase();
+  const recoveryClass = RECOVERY_CLASSES.has(recoveryClassCandidate)
+    ? recoveryClassCandidate
     : classifyAgentRuntimeRecovery(input);
   const classification = {
     schema: DIRECT_AGENT_RUNTIME_RECOVERY_CLASSIFICATION_SCHEMA,
@@ -533,6 +542,8 @@ function buildAgentRuntimeSubstrateStatus(input = {}) {
     edgeCount: arrayOrEmpty(graph.edges).length,
     mailboxMessageCount: mailbox.messageCount,
     duplicateMailboxMessageCount: mailbox.duplicateMessageCount,
+    mailboxSequenceValid: mailbox.sequenceValid === true,
+    mailboxSequenceViolationCount: finiteNumber(mailbox.sequenceViolationCount, 0),
     lifecycleEntryCount: lifecycleRegistry.entryCount,
     activeAgentCount: lifecycleRegistry.activeCount,
     terminalAgentCount: lifecycleRegistry.terminalCount,
@@ -593,6 +604,9 @@ function assertAgentRuntimeSubstrateSafe(status = {}) {
   if (status.agentSpawnPlanExists !== true) throw new Error("direct_agent_runtime_substrate_spawn_plan_missing");
   if (status.agentContextPacketFamilyExists !== true) throw new Error("direct_agent_runtime_substrate_context_family_missing");
   if (status.agentAuthorityBoundaryExplicit !== true) throw new Error("direct_agent_runtime_substrate_authority_boundary_missing");
+  if (status.mailboxSequenceValid !== true || status.mailboxSequenceViolationCount !== 0) {
+    throw new Error("direct_agent_runtime_substrate_mailbox_sequence_invalid");
+  }
   for (const required of ["child_created", "result_pending", "handoff_unknown", "recovery_required"]) {
     if (!arrayOrEmpty(status.recoveryClasses).includes(required)) {
       throw new Error(`direct_agent_runtime_substrate_recovery_class_missing:${required}`);
