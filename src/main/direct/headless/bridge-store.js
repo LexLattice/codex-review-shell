@@ -10,6 +10,9 @@ const EVENT_ENVELOPE_SCHEMA = "bridge_event_envelope@1";
 const ROUTE_BINDING_SCHEMA = "bridge_route_binding@1";
 const CLIENT_REGISTRATION_SCHEMA = "bridge_client_registration@1";
 const HEADLESS_TURN_PACKET_SCHEMA = "headless_turn_packet@1";
+const REDUCED_RESULT_SCHEMA = "headless_reduced_result@1";
+const HUMAN_DECISION_PACKET_SCHEMA = "human_decision_packet@1";
+const HUMAN_DECISION_REPLY_SCHEMA = "human_decision_reply@1";
 
 function normalizeString(value, fallback = "") {
   const text = typeof value === "string" ? value.trim() : "";
@@ -79,6 +82,7 @@ function routeDigest(route = {}) {
     contextPolicyRef: normalizeString(route.contextPolicyRef, ""),
     modelPolicyRef: normalizeString(route.modelPolicyRef, ""),
     outputReducerRef: normalizeString(route.outputReducerRef, ""),
+    outputReducer: isPlainObject(route.outputReducer) ? route.outputReducer : null,
     egressPolicyRefs: Array.isArray(route.egressPolicyRefs) ? route.egressPolicyRefs.map((id) => normalizeString(id, "")).filter(Boolean).sort() : [],
     interruptionPolicyRef: normalizeString(route.interruptionPolicyRef, ""),
     authorityBoundaryRef: normalizeString(route.authorityBoundaryRef, ""),
@@ -125,6 +129,9 @@ function normalizeRoute(input = {}) {
     contextPolicyRef: normalizeString(input.contextPolicyRef || input.context_policy_ref, ""),
     modelPolicyRef: normalizeString(input.modelPolicyRef || input.model_policy_ref, ""),
     outputReducerRef: normalizeString(input.outputReducerRef || input.output_reducer_ref, ""),
+    outputReducer: isPlainObject(input.outputReducer || input.output_reducer)
+      ? (input.outputReducer || input.output_reducer)
+      : {},
     egressPolicyRefs: Array.isArray(input.egressPolicyRefs || input.egress_policy_refs) ? (input.egressPolicyRefs || input.egress_policy_refs).map((value) => normalizeString(value, "")).filter(Boolean) : [],
     interruptionPolicyRef: normalizeString(input.interruptionPolicyRef || input.interruption_policy_ref, ""),
     authorityBoundaryRef: normalizeString(input.authorityBoundaryRef || input.authority_boundary_ref, ""),
@@ -138,6 +145,7 @@ function normalizeRoute(input = {}) {
     contextPolicyRef: route.contextPolicyRef,
     modelPolicyRef: route.modelPolicyRef,
     outputReducerRef: route.outputReducerRef,
+    outputReducer: route.outputReducer,
     egressPolicyRefs: route.egressPolicyRefs,
     interruptionPolicyRef: route.interruptionPolicyRef,
     authorityBoundaryRef: route.authorityBoundaryRef,
@@ -288,6 +296,16 @@ class DirectHeadlessBridgeStore {
         packet_json text not null,
         created_at text not null
       );
+      create table if not exists direct_bridge_reduced_results (
+        result_id text primary key,
+        packet_id text not null,
+        envelope_id text not null,
+        route_id text not null,
+        status text not null,
+        result_json text not null,
+        created_at text not null,
+        updated_at text not null
+      );
       create table if not exists direct_bridge_outbox_actions (
         action_id text primary key,
         envelope_id text not null,
@@ -398,6 +416,7 @@ class DirectHeadlessBridgeStore {
       "direct_bridge_lifecycle_events",
       "direct_bridge_route_decisions",
       "direct_bridge_turn_packets",
+      "direct_bridge_reduced_results",
       "direct_bridge_outbox_actions",
       "direct_bridge_delivery_receipts",
       "direct_bridge_human_decisions",
@@ -436,6 +455,7 @@ class DirectHeadlessBridgeStore {
       rawProviderFramesExposed: false,
       rawPathsExposed: false,
       turnPackets: this.turnPacketSummary(),
+      reducedResults: this.reducedResultSummary(),
     };
   }
 
@@ -586,6 +606,238 @@ class DirectHeadlessBridgeStore {
         ...(Array.isArray(patch.statusHistory) ? patch.statusHistory : []),
       ],
     }, options);
+  }
+
+  reducedResultSummary() {
+    const rows = this.db.prepare(`
+      select coalesce(status, 'unknown') as status, count(*) as count
+      from direct_bridge_reduced_results
+      group by status
+    `).all();
+    const byStatus = {};
+    for (const row of rows) byStatus[normalizeString(row.status, "unknown")] = Number(row.count) || 0;
+    return {
+      total: Object.values(byStatus).reduce((sum, count) => sum + count, 0),
+      byStatus,
+    };
+  }
+
+  writeReducedResult(input = {}, options = {}) {
+    const at = normalizeString(options.now, nowIso(options.nowMs));
+    const result = {
+      schema: REDUCED_RESULT_SCHEMA,
+      ...input,
+      resultId: normalizeString(input.resultId, `headless_reduced_${sha256(stableStringify(input)).slice(7, 31)}`),
+      packetId: normalizeString(input.packetId, ""),
+      sourceEnvelopeId: normalizeString(input.sourceEnvelopeId || input.envelopeId, ""),
+      routeId: normalizeString(input.routeId, ""),
+      routeVersion: normalizeString(input.routeVersion, ""),
+      routeDigest: normalizeString(input.routeDigest, ""),
+      reducerId: normalizeString(input.reducerId, ""),
+      reducerVersion: normalizeString(input.reducerVersion, "v1"),
+      reducerMode: normalizeString(input.reducerMode, ""),
+      reductionStatus: normalizeString(input.reductionStatus || input.status, "valid"),
+      sourceOutputDigest: normalizeString(input.sourceOutputDigest, ""),
+      contextBuildId: normalizeString(input.contextBuildId, ""),
+      requestManifestId: normalizeString(input.requestManifestId, ""),
+      evidenceRefs: Array.isArray(input.evidenceRefs) ? input.evidenceRefs : [],
+      rawOutputIncluded: input.rawOutputIncluded === true,
+      rawProviderPayloadIncluded: input.rawProviderPayloadIncluded === true,
+      rawPathIncluded: input.rawPathIncluded === true,
+      createdAt: normalizeString(input.createdAt, at),
+      updatedAt: at,
+    };
+    this.db.prepare(`
+      insert into direct_bridge_reduced_results (
+        result_id, packet_id, envelope_id, route_id, status, result_json, created_at, updated_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?)
+      on conflict(result_id) do update set
+        status = excluded.status,
+        result_json = excluded.result_json,
+        updated_at = excluded.updated_at
+    `).run(
+      result.resultId,
+      result.packetId,
+      result.sourceEnvelopeId,
+      result.routeId,
+      result.reductionStatus,
+      safeJson(result),
+      result.createdAt,
+      result.updatedAt,
+    );
+    return result;
+  }
+
+  readReducedResult(resultId = "") {
+    const row = this.db.prepare("select result_json from direct_bridge_reduced_results where result_id = ?").get(normalizeString(resultId, ""));
+    return row ? parseJson(row.result_json, null) : null;
+  }
+
+  writeOutboxAction(input = {}, options = {}) {
+    const at = normalizeString(options.now, nowIso(options.nowMs));
+    const action = {
+      schema: "headless_outbox_action@1",
+      ...input,
+      actionId: normalizeString(input.actionId, `headless_outbox_${sha256(stableStringify(input)).slice(7, 31)}`),
+      sourceEnvelopeId: normalizeString(input.sourceEnvelopeId || input.envelopeId, ""),
+      routeId: normalizeString(input.routeId, ""),
+      actionKind: normalizeString(input.actionKind, "write_artifact"),
+      status: normalizeString(input.status, "queued"),
+      rawOutputIncluded: input.rawOutputIncluded === true,
+      rawPathIncluded: input.rawPathIncluded === true,
+      createdAt: normalizeString(input.createdAt, at),
+      updatedAt: at,
+    };
+    this.db.prepare(`
+      insert into direct_bridge_outbox_actions (
+        action_id, envelope_id, route_id, status, action_json, created_at, updated_at
+      ) values (?, ?, ?, ?, ?, ?, ?)
+      on conflict(action_id) do update set
+        status = excluded.status,
+        action_json = excluded.action_json,
+        updated_at = excluded.updated_at
+    `).run(
+      action.actionId,
+      action.sourceEnvelopeId,
+      action.routeId,
+      action.status,
+      safeJson(action),
+      action.createdAt,
+      action.updatedAt,
+    );
+    return action;
+  }
+
+  readOutboxAction(actionId = "") {
+    const row = this.db.prepare("select action_json from direct_bridge_outbox_actions where action_id = ?").get(normalizeString(actionId, ""));
+    return row ? parseJson(row.action_json, null) : null;
+  }
+
+  writeDeliveryReceipt(input = {}, options = {}) {
+    const at = normalizeString(options.now, nowIso(options.nowMs));
+    const receipt = {
+      schema: "headless_delivery_receipt@1",
+      ...input,
+      receiptId: normalizeString(input.receiptId, `headless_receipt_${sha256(stableStringify(input)).slice(7, 31)}`),
+      actionId: normalizeString(input.actionId, ""),
+      status: normalizeString(input.status, "delivered"),
+      rawOutputIncluded: input.rawOutputIncluded === true,
+      rawPathIncluded: input.rawPathIncluded === true,
+      createdAt: normalizeString(input.createdAt, at),
+    };
+    this.db.prepare(`
+      insert into direct_bridge_delivery_receipts (receipt_id, action_id, status, receipt_json, created_at)
+      values (?, ?, ?, ?, ?)
+      on conflict(receipt_id) do update set
+        status = excluded.status,
+        receipt_json = excluded.receipt_json
+    `).run(receipt.receiptId, receipt.actionId, receipt.status, safeJson(receipt), receipt.createdAt);
+    return receipt;
+  }
+
+  writeHumanDecisionPacket(input = {}, options = {}) {
+    const at = normalizeString(options.now, nowIso(options.nowMs));
+    const decision = {
+      schema: HUMAN_DECISION_PACKET_SCHEMA,
+      ...input,
+      decisionId: normalizeString(input.decisionId, `headless_decision_${sha256(stableStringify(input)).slice(7, 31)}`),
+      sourceEnvelopeId: normalizeString(input.sourceEnvelopeId || input.envelopeId, ""),
+      workThreadId: normalizeString(input.workThreadId, ""),
+      status: normalizeString(input.status, "pending"),
+      choices: Array.isArray(input.choices) ? input.choices.map((choice) => ({
+        choiceId: normalizeString(choice.choiceId || choice.choice_id, ""),
+        label: normalizeString(choice.label, ""),
+        description: normalizeString(choice.description, ""),
+        consequenceClass: normalizeString(choice.consequenceClass || choice.consequence_class, "informational"),
+      })).filter((choice) => choice.choiceId && choice.label) : [],
+      rawOutputIncluded: input.rawOutputIncluded === true,
+      rawFreeTextAuthority: false,
+      createdAt: normalizeString(input.createdAt, at),
+      updatedAt: at,
+    };
+    this.db.prepare(`
+      insert into direct_bridge_human_decisions (decision_id, envelope_id, status, decision_json, created_at, updated_at)
+      values (?, ?, ?, ?, ?, ?)
+      on conflict(decision_id) do update set
+        status = excluded.status,
+        decision_json = excluded.decision_json,
+        updated_at = excluded.updated_at
+    `).run(
+      decision.decisionId,
+      decision.sourceEnvelopeId,
+      decision.status,
+      safeJson(decision),
+      decision.createdAt,
+      decision.updatedAt,
+    );
+    return decision;
+  }
+
+  readHumanDecisionPacket(decisionId = "") {
+    const row = this.db.prepare("select decision_json from direct_bridge_human_decisions where decision_id = ?").get(normalizeString(decisionId, ""));
+    return row ? parseJson(row.decision_json, null) : null;
+  }
+
+  submitHumanDecisionReply(input = {}, options = {}) {
+    const at = normalizeString(options.now, nowIso(options.nowMs));
+    const decisionId = normalizeString(input.decisionId || input.decision_id, "");
+    const choiceId = normalizeString(input.choiceId || input.choice_id, "");
+    const freeTextNote = normalizeString(input.freeTextNote || input.free_text_note, "").slice(0, 2000);
+    const operatorEvidenceKey = normalizeString(input.operatorEvidenceKey || input.operator_evidence_key, "");
+    const current = this.readHumanDecisionPacket(decisionId);
+    if (!current) {
+      return {
+        ok: false,
+        status: "blocked",
+        error: "human_decision_not_found",
+        rawPayloadIncluded: false,
+      };
+    }
+    if (current.status !== "pending") {
+      return {
+        ok: false,
+        status: current.status,
+        error: "human_decision_closed",
+        decision: current,
+        rawPayloadIncluded: false,
+      };
+    }
+    const choice = (Array.isArray(current.choices) ? current.choices : []).find((item) => item.choiceId === choiceId);
+    if (!choice) {
+      return {
+        ok: false,
+        status: "blocked",
+        error: "human_reply_invalid_choice",
+        decision: current,
+        rawPayloadIncluded: false,
+      };
+    }
+    const reply = {
+      schema: HUMAN_DECISION_REPLY_SCHEMA,
+      decisionId,
+      choiceId,
+      operatorEvidenceKey,
+      receivedAt: at,
+      freeTextNote,
+      freeTextAuthority: false,
+      rawPayloadIncluded: false,
+    };
+    const next = {
+      ...current,
+      status: "replied",
+      selectedChoiceId: choiceId,
+      selectedChoiceLabel: choice.label,
+      reply,
+      updatedAt: at,
+    };
+    this.writeHumanDecisionPacket(next, { now: at });
+    return {
+      ok: true,
+      status: "replied",
+      decision: next,
+      reply,
+      rawPayloadIncluded: false,
+    };
   }
 
   submitEvent(input = {}, options = {}) {
@@ -860,6 +1112,9 @@ module.exports = {
   EVENT_ENVELOPE_SCHEMA,
   HEADLESS_TURN_PACKET_SCHEMA,
   HEADLESS_BRIDGE_STORE_SCHEMA,
+  HUMAN_DECISION_PACKET_SCHEMA,
+  HUMAN_DECISION_REPLY_SCHEMA,
+  REDUCED_RESULT_SCHEMA,
   ROUTE_BINDING_SCHEMA,
   clientCapabilityTokenDigest,
   digestFor,

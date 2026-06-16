@@ -202,6 +202,24 @@ class DirectHeadlessBridgeDaemon {
     };
   }
 
+  authenticateKnownClientRequest(req, body = {}) {
+    const clientId = normalizeString(body.clientId || body.client_id, "");
+    const client = this.store.readClient(clientId);
+    if (!client) {
+      return {
+        ok: false,
+        reason: "unknown_client",
+      };
+    }
+    if (client.status !== "active") {
+      return {
+        ok: false,
+        reason: "client_inactive",
+      };
+    }
+    return this.authenticateEventRequest(req, body);
+  }
+
   readEvent(envelopeId = "") {
     return this.store.readEvent(envelopeId);
   }
@@ -264,6 +282,41 @@ class DirectHeadlessBridgeDaemon {
       const packet = this.store.readTurnPacket(packetId);
       if (!packet) return jsonResponse(res, 404, { ok: false, error: "turn_packet_not_found" });
       return jsonResponse(res, 200, { ok: true, packet });
+    }
+    if (req.method === "GET" && url.pathname.startsWith("/v1/bridge/reduced-results/")) {
+      const resultId = decodeURIComponent(url.pathname.slice("/v1/bridge/reduced-results/".length));
+      const result = this.store.readReducedResult(resultId);
+      if (!result) return jsonResponse(res, 404, { ok: false, error: "reduced_result_not_found" });
+      return jsonResponse(res, 200, { ok: true, result });
+    }
+    if (req.method === "GET" && url.pathname.startsWith("/v1/bridge/outbox-actions/")) {
+      const actionId = decodeURIComponent(url.pathname.slice("/v1/bridge/outbox-actions/".length));
+      const action = this.store.readOutboxAction(actionId);
+      if (!action) return jsonResponse(res, 404, { ok: false, error: "outbox_action_not_found" });
+      return jsonResponse(res, 200, { ok: true, action });
+    }
+    if (req.method === "GET" && url.pathname.startsWith("/v1/bridge/human-decisions/")) {
+      const decisionId = decodeURIComponent(url.pathname.slice("/v1/bridge/human-decisions/".length));
+      if (decisionId.endsWith("/replies")) return jsonResponse(res, 405, { ok: false, error: "method_not_allowed" });
+      const decision = this.store.readHumanDecisionPacket(decisionId);
+      if (!decision) return jsonResponse(res, 404, { ok: false, error: "human_decision_not_found" });
+      return jsonResponse(res, 200, { ok: true, decision });
+    }
+    if (req.method === "POST" && url.pathname.startsWith("/v1/bridge/human-decisions/") && url.pathname.endsWith("/replies")) {
+      const decisionId = decodeURIComponent(url.pathname.slice("/v1/bridge/human-decisions/".length, -"/replies".length));
+      const body = await readRequestJson(req, this.maxBodyBytes);
+      const auth = this.authenticateKnownClientRequest(req, body);
+      if (!auth.ok) {
+        return jsonResponse(res, 401, {
+          ok: false,
+          status: "blocked_ingress",
+          error: auth.reason,
+          providerRequestStarted: false,
+          rawPayloadIncluded: false,
+        });
+      }
+      const result = this.store.submitHumanDecisionReply({ ...body, decisionId });
+      return jsonResponse(res, result.ok ? 202 : 400, result);
     }
     if (req.method === "POST" && url.pathname === "/v1/bridge/events") {
       const body = await readRequestJson(req, this.maxBodyBytes);
