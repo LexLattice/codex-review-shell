@@ -3010,6 +3010,278 @@ The operator can inspect and safely manage the daemon, and the headless path has
 a repeatable readiness suite for future direct-path testing.
 ```
 
+## Wave 10: Direct Tool Authority Families
+
+Status: planned.
+
+Dedicated spec:
+
+```text
+docs/DIRECT_TOOL_AUTHORITY_FAMILIES_WAVE_SPEC.md
+```
+
+Goal:
+
+```text
+Add remaining vanilla Codex tool families to the direct path by ODEU authority
+class, not by copying tool names one by one.
+```
+
+Governing principle:
+
+```text
+tool call
+  = authority-bearing information transition
+  + evidence requirements
+  + context consequences
+  + replay/recovery law
+  + UI projection
+```
+
+### PR 55: Direct Tool Capability Constitution
+
+Status: planned.
+
+Purpose:
+
+```text
+Create the tool constitution and registry/matrix for every vanilla tool by
+ODEU authority class.
+```
+
+Scope summary:
+
+- Classify every vanilla tool family from upstream Codex `rust-v0.140.0`.
+- Split capability state, implementation state, promotion state, provider
+  declaration state, and local executor state.
+- Include side-effect class, authority required, request-shape family,
+  approval mode, replay risk, recovery law, context visibility, UI projection,
+  usage attribution, and agent eligibility.
+- No execution behavior changes.
+
+### PR 56: Control, Perception, And Human-Decision Tool Substrate
+
+Status: planned.
+
+Purpose:
+
+```text
+Implement or scaffold low-world-effect tool families without introducing
+workspace mutation, agent spawning, or external tool execution.
+```
+
+Scope summary:
+
+- `get_context_remaining`.
+- `update_plan`.
+- `view_image` metadata/projection path.
+- `request_user_input` bounded/scaffolded through human-decision packet law.
+- `new_context` blocked through existing context-maintenance law.
+
+Important constraint:
+
+```text
+new_context is not low-risk; it changes the model's informational world and
+must not be fully activated until context maintenance, omission ledger,
+frontier baton, request manifest, and source-ref law are wired.
+```
+
+### PR 57: Direct Agent Runtime Substrate
+
+Status: planned.
+
+Purpose:
+
+```text
+Build the runtime substrate needed before exposing any sub-agent tool.
+```
+
+Scope summary:
+
+- Agent runtime registry.
+- Agent thread graph.
+- Agent mailbox.
+- Lifecycle/progress registry.
+- Containment profile.
+- Parent/child authority boundary.
+- Agent usage attribution.
+- Recovery classifier.
+
+Non-goal:
+
+```text
+No spawn_agent exposure yet.
+```
+
+### PR 58: Text-Only Sub-Agent Tool Surface
+
+Status: planned.
+
+Purpose:
+
+```text
+Expose sub-agent tools in tiers after substrate exists.
+```
+
+Scope summary:
+
+- Tier 1: `list_agents`.
+- Tier 2: text-only `spawn_agent`.
+- Tier 3: `wait_agent` with timeout and no-deadlock law.
+- Tier 4: `send_message` and `followup_task` after mailbox proof.
+- Tier 5: `interrupt_agent` scaffold/blocked, mark-requested only, or
+  deferred.
+
+V0 restrictions:
+
+- No child tools by default.
+- No recursive spawning by default.
+- No inherited parent tool authority.
+- Explicit agent class required.
+- Bounded initial prompt/context.
+
+### PR 59: Stateful Exec / PTY / Stdin Parity
+
+Status: planned.
+
+Purpose:
+
+```text
+Add vanilla-style process-session authority without collapsing it into current
+bounded run_command.
+```
+
+Scope summary:
+
+- `exec_command`.
+- `write_stdin`.
+- Session ids.
+- Plain-pipe mode first; PTY mode deferred until evidence is stable.
+- Output frames and output budgets.
+- Idle/hard timeouts.
+- Cancellation and process tree cleanup.
+- Sandbox/approval profile.
+- Workspace-effect scan where relevant.
+
+Constraint:
+
+```text
+exec_command != run_command alias
+write_stdin != harmless text
+```
+
+### PR 60: External Capability Discovery Registry
+
+Status: planned.
+
+Purpose:
+
+```text
+Add discovery substrate for external/dynamic capabilities before execution.
+```
+
+Scope summary:
+
+- `tool_search` posture.
+- MCP server/resource/tool discovery registry.
+- Plugin list posture.
+- Schema/source digest tracking.
+- Deferred tool exposure status.
+- `ExternalCapabilityDescriptor`.
+
+### PR 61: MCP Resource Read And Tool Call Boundary
+
+Status: planned.
+
+Purpose:
+
+```text
+Add external resource/action boundary for MCP in direct path.
+```
+
+Scope summary:
+
+- `list_mcp_resources`.
+- `list_mcp_resource_templates`.
+- `read_mcp_resource` first.
+- Dynamic MCP tool call boundary scaffold before restricted execution.
+- External side-effect class and source provenance.
+
+### PR 62: Hosted Provider Tools
+
+Status: planned.
+
+Purpose:
+
+```text
+Add provider-hosted web/image tool posture where provider metadata proves
+support.
+```
+
+Scope summary:
+
+- `web_search`.
+- `image_generation`.
+- Provider declaration evidence.
+- Result provenance.
+- Artifact/source policy.
+- Separate web-search evidence contract and image-generation artifact contract.
+
+### PR 63: Plugin Governance
+
+Status: planned.
+
+Purpose:
+
+```text
+Handle plugin list/install as capability discovery/mutation, not ordinary tool
+execution.
+```
+
+Scope summary:
+
+- Plugin list.
+- Plugin install request posture.
+- Version/source/capability diff.
+- Rollback/uninstall law.
+- Actual install remains blocked until source pinning, capability diff,
+  non-auto-enabled new tool surface, rollback/uninstall, and recoverable
+  registry changes are proven.
+
+### PR 64: Code Mode Execution Lane
+
+Status: planned.
+
+Purpose:
+
+```text
+Model code mode as a structured execution lane, not shell parity.
+```
+
+Scope summary:
+
+- Code-mode execute/wait posture.
+- Kernel/session identity.
+- Artifact output policy.
+- Resource/wait/cancel semantics.
+
+### PR 65: Batch Agent Jobs
+
+Status: planned.
+
+Purpose:
+
+```text
+Add structured fan-out/fan-in after agent runtime is stable.
+```
+
+Scope summary:
+
+- `spawn_agents_on_csv`.
+- `report_agent_job_result`.
+- Worker result contracts.
+- Aggregation/export ledger.
+
 ## Update Rules
 
 After each PR:
