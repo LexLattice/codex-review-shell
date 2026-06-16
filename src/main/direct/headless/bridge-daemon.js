@@ -102,7 +102,23 @@ class DirectHeadlessBridgeDaemon {
     this.state = "stopped";
     this.startedAt = "";
     this.lastErrorClass = "";
-    this.textRuntime = options.textRuntime || null;
+    this._turnRuntime = options.turnRuntime || options.textRuntime || null;
+    Object.defineProperty(this, "turnRuntime", {
+      enumerable: true,
+      configurable: true,
+      get: () => this._turnRuntime,
+      set: (runtime) => {
+        this._turnRuntime = runtime || null;
+      },
+    });
+    Object.defineProperty(this, "textRuntime", {
+      enumerable: true,
+      configurable: true,
+      get: () => this._turnRuntime,
+      set: (runtime) => {
+        this._turnRuntime = runtime || null;
+      },
+    });
   }
 
   statusProjection() {
@@ -122,6 +138,12 @@ class DirectHeadlessBridgeDaemon {
         activeTurns: 0,
         queuedTurns: 0,
       },
+      turnRuntime: this.turnRuntime?.statusProjection ? this.turnRuntime.statusProjection() : {
+        schema: "headless_direct_turn_runtime_status@1",
+        state: "not_configured",
+        activeTurns: 0,
+        queuedTurns: 0,
+      },
     };
   }
 
@@ -135,7 +157,7 @@ class DirectHeadlessBridgeDaemon {
         rawPayloadIncluded: false,
       };
     }
-    if (this.textRuntime?.submitEvent) return this.textRuntime.submitEvent(body);
+    if (this.turnRuntime?.submitEvent) return this.turnRuntime.submitEvent(body);
     return this.store.submitEvent(body);
   }
 

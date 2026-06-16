@@ -476,6 +476,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "This slice is direct-text only; implementation-lane tools, outbox reducers, human decisions, automatic retry after provider start, and production external routes remain gated to later Wave 9 slices.",
   },
   {
+    id: "ic13.headless-implementation-runtime",
+    name: "Headless implementation-lane runtime",
+    role: "governance_routing",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/headless/text-runtime.js", "src/main/direct/headless/bridge-daemon.js", "src/main/direct/controller/live-text-controller.js", "scripts/direct-headless-implementation-runtime-regression.mjs"],
+    ontology: ontologyShape(["headless_turn_packet", "headless_implementation_policy", "direct_tool_authority_transition"], "harness", {
+      identityFields: ["envelopeId", "packetId", "workThreadId", "targetThreadId", "toolAuthorityMode"],
+      schema: "headless_implementation_policy@1",
+    }),
+    bridgeFit: "Lets selected headless routes enter the existing direct implementation lane through durable packets, explicit tool-authority mode, disposable-workspace auto-decision guards, and the same controller approval handlers used by Electron.",
+    realignment: "V0 proves read-only disposable fixture routes. Production workspace mutation, broad command authority, recursive workers, external actions, outbox delivery, and human decision routing remain gated to later Wave 9 slices.",
+  },
+  {
     id: "ic14.skills-hooks-apps",
     name: "Skills, hooks, and app connectors as bridge modules",
     role: "governance_routing",

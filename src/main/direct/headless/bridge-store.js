@@ -83,6 +83,7 @@ function routeDigest(route = {}) {
     interruptionPolicyRef: normalizeString(route.interruptionPolicyRef, ""),
     authorityBoundaryRef: normalizeString(route.authorityBoundaryRef, ""),
     toolAuthorityMode: normalizeString(route.toolAuthorityMode, "disabled"),
+    headlessImplementationPolicy: isPlainObject(route.headlessImplementationPolicy) ? route.headlessImplementationPolicy : null,
   });
 }
 
@@ -128,6 +129,9 @@ function normalizeRoute(input = {}) {
     interruptionPolicyRef: normalizeString(input.interruptionPolicyRef || input.interruption_policy_ref, ""),
     authorityBoundaryRef: normalizeString(input.authorityBoundaryRef || input.authority_boundary_ref, ""),
     toolAuthorityMode: normalizeString(input.toolAuthorityMode || input.tool_authority_mode, "disabled"),
+    headlessImplementationPolicy: isPlainObject(input.headlessImplementationPolicy || input.headless_implementation_policy)
+      ? (input.headlessImplementationPolicy || input.headless_implementation_policy)
+      : {},
   };
   route.dependencyBundle = {
     ingressContractRef: route.ingressContractRef,
@@ -138,6 +142,7 @@ function normalizeRoute(input = {}) {
     interruptionPolicyRef: route.interruptionPolicyRef,
     authorityBoundaryRef: route.authorityBoundaryRef,
     toolAuthorityMode: route.toolAuthorityMode,
+    headlessImplementationPolicy: route.headlessImplementationPolicy,
   };
   route.routeDigest = normalizeString(input.routeDigest || input.route_digest, routeDigest(route));
   return route;
