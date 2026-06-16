@@ -2580,7 +2580,7 @@ projection shape without hiding whether a value is native, derived, estimated,
 or unavailable for the active runtime path.
 ```
 
-Delivered in the current branch:
+Delivered in GitHub PR `#180`:
 
 - `RuntimeAnalyticsProjection@1` adapter contract.
 - App-server projection from usage-ledger analytics.
@@ -2591,7 +2591,7 @@ Delivered in the current branch:
 
 ### PR 49: Upstream 0.140 Metadata And Vanilla-Baseline Parity
 
-Status: in progress on branch `codex/direct-floating-analytics-panel`.
+Status: merged in GitHub PR `#180`.
 
 Purpose:
 
@@ -2635,10 +2635,31 @@ vanilla baseline parity in the matrix, and keep renderer controls grounded in
 live descriptors and evidence-backed usage facts.
 ```
 
-### Planned follow-up: Headless Direct Service / Message Endpoint
+## Wave 9: Headless Direct Bridge Service
 
-Status: not implemented; conceptually distinct from the existing one-shot
-headless real-turn scripts.
+Status: planned.
+
+Review posture after Wave 8:
+
+```text
+The direct branch has a usable Electron lane, direct runtime witnesses,
+provider metadata projection, runtime analytics facts, and a floating
+active-thread analytics consumer. The next capability should make the same
+direct information bridge available without opening Electron, so automation,
+CLI tests, workspace UX panels, and deterministic pipelines can submit governed
+events into direct threads.
+```
+
+Conceptual boundary:
+
+```text
+headless daemon != frontend bypass
+event accepted != action authorized
+JSON schema valid != route authorized
+Codex output != downstream command
+external event != operator message unless declared
+route configuration != low-authority preference
+```
 
 Spec:
 
@@ -2678,6 +2699,224 @@ Required laws before implementation:
 - One-shot scripts remain useful smoke/probe tools, but the daemon is the
   production headless substrate.
 
+Standing Wave 9 constraints:
+
+- Bind local APIs only to loopback/local sockets.
+- Require client registration, route binding, WorkThread resolution, context
+  policy, runtime metadata, and authority boundary evidence before provider
+  work.
+- Store lifecycle evidence for every accepted or blocked event.
+- Preserve route version and dependency bundle on accepted events.
+- Treat duplicate idempotency keys as duplicate processing identities, not new
+  turns.
+- Do not use chat recency as a route fallback.
+- Do not expose raw auth tokens, raw provider payloads, raw local paths, raw
+  event payloads, or raw prompt/output text in renderer-safe reports.
+- Do not enable external trading/order execution, broad web/network/MCP tools,
+  recursive worker spawning, automatic approval, automatic replay, or automatic
+  revert.
+
+### PR 50: Headless Bridge Substrate
+
+Status: planned.
+
+Purpose:
+
+```text
+Create the local headless bridge as a lawful information-intake institution:
+contracts, daemon ingestion, durable lifecycle store, route registry, and
+WorkThread resolution. No provider call.
+```
+
+Scope:
+
+- Add bridge schemas for event envelopes, lifecycle witnesses, client
+  registrations, route bindings, route decisions, turn packet stubs, outbox
+  action stubs, delivery receipts, and human decision packet stubs.
+- Add durable headless bridge store tables for clients, routes, inbox events,
+  lifecycle events, route decisions, turn packets, outbox actions, delivery
+  receipts, and human decisions.
+- Add `scripts/direct-bridge-daemon.mjs` with local-only loopback HTTP.
+- Implement:
+  - `GET /v1/bridge/status`;
+  - `POST /v1/bridge/events`;
+  - `GET /v1/bridge/events/:envelopeId`;
+  - route validation and route decision persistence.
+- Add route registry/config validation with route version and dependency bundle
+  freeze.
+- Resolve event -> route -> WorkThread -> target direct thread, blocking
+  unknown route, disabled route, missing WorkThread, ambiguous WorkThread, and
+  unknown schema.
+- Add bounded queue/backpressure status.
+
+Explicit non-goals:
+
+- No provider request.
+- No context pack build.
+- No direct session creation.
+- No tool execution.
+- No outbox delivery.
+- No Electron controls beyond possible fixture diagnostics.
+
+Promotion criterion:
+
+```text
+The daemon can lawfully receive, persist, route, and block typed events before
+any model-call authority exists.
+```
+
+### PR 51: Headless Direct Text Runtime
+
+Status: planned.
+
+Purpose:
+
+```text
+Convert accepted routed events into direct text turns with context packs,
+request manifests, queue/status projection, and restart/replay safety.
+```
+
+Scope:
+
+- Build `HeadlessTurnPacket` from route decision evidence.
+- Support `direct-text` routes only.
+- Reuse `DirectLiveTextController.startThread/startTurn`.
+- Reuse direct context packs, request manifests, provider metadata, usage
+  facts, and runtime analytics facts.
+- Add `queue_after_active_turn` as the default active-turn policy.
+- Add polling-safe status or `GET /v1/bridge/stream`.
+- Classify restart/replay states:
+  `queued`, `context_built`, `provider_started`, `provider_completed`,
+  `failed`, `handoff_unknown`, and `replay_unsafe`.
+- Add local CLI/client test helper that submits an event and waits for a
+  terminal result.
+
+Explicit non-goals:
+
+- No read/patch/command.
+- No implementation-lane route.
+- No human decision packet.
+- No reducer/outbox action beyond terminal result evidence.
+- No auto-retry after provider bytes are observed.
+
+Promotion criterion:
+
+```text
+A local client can submit a typed event and receive a completed direct text
+turn result without Electron being open.
+```
+
+### PR 52: Headless Implementation-Lane Runtime
+
+Status: planned.
+
+Purpose:
+
+```text
+Allow selected headless routes to enter existing direct read/patch/command
+authority gates without adding new tool authority.
+```
+
+Scope:
+
+- Add route mode `direct-implementation`.
+- Require explicit `toolAuthorityMode`; default is `disabled`.
+- Start with disposable-workspace route fixtures only.
+- Reuse existing read/patch/command authority gates, approval/authority
+  policies, workspace mutation truth, tool-result continuations, and recovery
+  classification.
+
+Explicit non-goals:
+
+- No auto-approval.
+- No broad command policy.
+- No recursive worker spawning.
+- No external actions.
+- No production workspace mutation route by default.
+
+Promotion criterion:
+
+```text
+The headless bridge can exercise the existing implementation lane only through
+the same authority-bearing transitions used by the Electron path.
+```
+
+### PR 53: Output, Artifact Outbox, And Human Decision Loop
+
+Status: planned.
+
+Purpose:
+
+```text
+Govern what happens after model output: reduce outputs into structured
+artifacts, queue safe outbox actions, and request bounded human decisions.
+```
+
+Scope:
+
+- Add reducer modes:
+  `markdown_summary_only`, `json_contract_required`,
+  `human_review_required`, and `artifact_only`.
+- Persist reduced results with source output digest, context/request refs,
+  route version, reducer version, model/settings, and raw-exposure posture.
+- Add safe `write_artifact` outbox action under an allowed artifact root.
+- Add `human_decision_packet@1` and `human_decision_reply@1`.
+- Add reply endpoint with bounded choices and `freeTextNote` as context only.
+
+Explicit non-goals:
+
+- No external delivery integrations.
+- No trading/order/action execution.
+- No free-text authority widening.
+- No unbounded human command channel.
+- No webhook/email/Slack delivery.
+
+Promotion criterion:
+
+```text
+Headless model output can become durable reduced artifacts or bounded human
+decision packets without becoming executable authority.
+```
+
+### PR 54: Electron Control Surface And Promotion Harness
+
+Status: planned.
+
+Purpose:
+
+```text
+Make the headless daemon inspectable and safely controllable from Electron,
+then package a repeatable headless promotion/regression suite.
+```
+
+Scope:
+
+- Add daemon discovery/status in the Project settings/control surface.
+- Show active routes, queued events, active turns, failed events, pending
+  decisions, outbox state, and delivery failures.
+- Add safe daemon-local controls such as pause, drain, shutdown, and possibly
+  resume intake.
+- Add headless regression suite:
+  diagnostic event, direct text route, active-turn queue, implementation-lane
+  fixture, reducer/write artifact, human decision reply, restart/replay safety.
+- Update docs, matrix, and readiness rows.
+
+Explicit non-goals:
+
+- Electron is not daemon truth.
+- Renderer cannot mutate route authority directly.
+- No provider call from renderer.
+- No approval bypass.
+- No hidden daemon start unless explicitly configured.
+- No external delivery controls.
+
+Promotion criterion:
+
+```text
+The operator can inspect and safely manage the daemon, and the headless path has
+a repeatable readiness suite for future direct-path testing.
+```
+
 ## Update Rules
 
 After each PR:
@@ -2704,5 +2943,3 @@ Items that are real but not yet assigned to a wave:
 - Project-scoped persistent web/session policy for future governed browser
   surfaces.
 - Direct-native import/migration strategy for selected app-server transcripts.
-- Long-lived headless direct backend service / local message endpoint over the
-  direct information bridge.
