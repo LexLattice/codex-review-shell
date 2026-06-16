@@ -1142,6 +1142,7 @@ class DirectThreadStore {
           contextFacts: 0,
           toolFacts: 0,
           quotaFacts: 0,
+          nonMissingUsageFacts: 0,
         },
         context: {
           contextBuildsAllowed: false,
@@ -1573,11 +1574,297 @@ class DirectThreadStore {
       counts: {
         timingMarks: countFor("direct_runtime_timing_marks"),
         usageFacts: countFor("direct_turn_usage_facts"),
+        nonMissingUsageFacts: tokenRows.length,
         contextFacts: countFor("direct_context_analytics_facts"),
         toolFacts: countFor("direct_tool_analytics_facts"),
         quotaFacts: countFor("direct_quota_snapshot_facts"),
       },
       tokenTotals,
+      rawPromptIncluded: false,
+      rawResponseIncluded: false,
+      rawProviderFrameIncluded: false,
+      rawTokenDetailsIncluded: false,
+      rawPathIncluded: false,
+      rawSecretIncluded: false,
+      billingGrade: false,
+    };
+  }
+
+  getDirectRuntimeAnalyticsFactSnapshot(projectId = "") {
+    const safeProjectId = normalizeString(projectId, "");
+    const summary = this.getDirectRuntimeAnalyticsFactSummary(safeProjectId);
+    if (!this.db) {
+      return {
+        schema: "direct_runtime_analytics_fact_snapshot@1",
+        projectId: safeProjectId,
+        summary,
+        lastObservedAt: "",
+        latestContext: { status: "unavailable" },
+        timing: { started: 0, completed: 0, active: 0, durationMs: 0, timeToFirstTokenMs: 0 },
+        tools: { total: 0, completed: 0, failed: 0, commands: 0, patches: 0, subagents: 0, byKind: [] },
+        quotaWindows: [],
+        quotaObservedAt: "",
+        quotaPlanType: "",
+        rawPromptIncluded: false,
+        rawResponseIncluded: false,
+        rawProviderFrameIncluded: false,
+        rawTokenDetailsIncluded: false,
+        rawPathIncluded: false,
+        rawSecretIncluded: false,
+        billingGrade: false,
+      };
+    }
+
+    const latestObservedRow = safeProjectId
+      ? this.db.prepare(`
+          select max(observed_at) as observed_at from (
+            select observed_at from direct_turn_usage_facts where project_id = ?
+            union all
+            select observed_at from direct_context_analytics_facts where project_id = ?
+            union all
+            select observed_at from direct_quota_snapshot_facts where project_id = ?
+          )
+        `).get(safeProjectId, safeProjectId, safeProjectId)
+      : this.db.prepare(`
+          select max(observed_at) as observed_at from (
+            select observed_at from direct_turn_usage_facts
+            union all
+            select observed_at from direct_context_analytics_facts
+            union all
+            select observed_at from direct_quota_snapshot_facts
+          )
+        `).get();
+    const latestContextRow = safeProjectId
+      ? this.db.prepare(`
+          select
+            context_fact_id,
+            thread_id,
+            turn_id,
+            model_context_window,
+            input_tokens,
+            used_percent,
+            estimate_confidence,
+            observed_at
+          from direct_context_analytics_facts
+          where project_id = ?
+          order by (used_percent is null), observed_at desc
+          limit 1
+        `).get(safeProjectId)
+      : this.db.prepare(`
+          select
+            context_fact_id,
+            thread_id,
+            turn_id,
+            model_context_window,
+            input_tokens,
+            used_percent,
+            estimate_confidence,
+            observed_at
+          from direct_context_analytics_facts
+          order by (used_percent is null), observed_at desc
+          limit 1
+        `).get();
+    const toolRows = safeProjectId
+      ? this.db.prepare(`
+          select tool_kind, status, count(*) as count
+          from direct_tool_analytics_facts
+          where project_id = ?
+          group by tool_kind, status
+        `).all(safeProjectId)
+      : this.db.prepare(`
+          select tool_kind, status, count(*) as count
+          from direct_tool_analytics_facts
+          group by tool_kind, status
+        `).all();
+    const quotaRows = safeProjectId
+      ? this.db.prepare(`
+          select
+            provider,
+            window_kind,
+            window_id,
+            used_percent,
+            resets_at,
+            window_duration_mins,
+            plan_type,
+            observed_at,
+            source
+          from direct_quota_snapshot_facts
+          where project_id = ?
+          order by observed_at desc
+          limit 80
+        `).all(safeProjectId)
+      : this.db.prepare(`
+          select
+            provider,
+            window_kind,
+            window_id,
+            used_percent,
+            resets_at,
+            window_duration_mins,
+            plan_type,
+            observed_at,
+            source
+          from direct_quota_snapshot_facts
+          order by observed_at desc
+          limit 80
+        `).all();
+    const timingRows = safeProjectId
+      ? this.db.prepare(`
+          select mark_kind, count(*) as count
+          from direct_runtime_timing_marks
+          where project_id = ?
+          group by mark_kind
+        `).all(safeProjectId)
+      : this.db.prepare(`
+          select mark_kind, count(*) as count
+          from direct_runtime_timing_marks
+          group by mark_kind
+        `).all();
+    const durationRows = safeProjectId
+      ? this.db.prepare(`
+          select
+            started.turn_id as turn_id,
+            min(started.at) as started_at,
+            min(completed.at) as completed_at,
+            min(first_visible.at) as first_visible_at
+          from direct_runtime_timing_marks started
+          left join direct_runtime_timing_marks completed
+            on completed.project_id = started.project_id
+            and completed.thread_id = started.thread_id
+            and completed.turn_id = started.turn_id
+            and completed.mark_kind = 'completed'
+          left join direct_runtime_timing_marks first_visible
+            on first_visible.project_id = started.project_id
+            and first_visible.thread_id = started.thread_id
+            and first_visible.turn_id = started.turn_id
+            and first_visible.mark_kind = 'first_visible_delta'
+          where started.project_id = ?
+            and started.mark_kind in ('submitted', 'accepted')
+          group by started.project_id, started.thread_id, started.turn_id
+        `).all(safeProjectId)
+      : this.db.prepare(`
+          select
+            started.turn_id as turn_id,
+            min(started.at) as started_at,
+            min(completed.at) as completed_at,
+            min(first_visible.at) as first_visible_at
+          from direct_runtime_timing_marks started
+          left join direct_runtime_timing_marks completed
+            on completed.project_id = started.project_id
+            and completed.thread_id = started.thread_id
+            and completed.turn_id = started.turn_id
+            and completed.mark_kind = 'completed'
+          left join direct_runtime_timing_marks first_visible
+            on first_visible.project_id = started.project_id
+            and first_visible.thread_id = started.thread_id
+            and first_visible.turn_id = started.turn_id
+            and first_visible.mark_kind = 'first_visible_delta'
+          where started.mark_kind in ('submitted', 'accepted')
+          group by started.project_id, started.thread_id, started.turn_id
+        `).all();
+
+    const toolByKind = new Map();
+    const tools = {
+      total: 0,
+      completed: 0,
+      failed: 0,
+      commands: 0,
+      patches: 0,
+      subagents: 0,
+      byKind: [],
+    };
+    for (const row of toolRows) {
+      const count = normalizeNumber(row.count, 0);
+      const kind = normalizeString(row.tool_kind, "unknown");
+      const status = normalizeString(row.status, "unknown");
+      tools.total += count;
+      if (status === "completed") tools.completed += count;
+      if (status === "failed") tools.failed += count;
+      if (kind === "run_command" || kind === "command_exec") tools.commands += count;
+      if (kind === "apply_patch" || kind === "file_change") tools.patches += count;
+      if (kind === "sub_agent" || kind === "subagent" || kind === "collab_agent") tools.subagents += count;
+      toolByKind.set(kind, (toolByKind.get(kind) || 0) + count);
+    }
+    tools.byKind = [...toolByKind.entries()]
+      .map(([xValue, yValue]) => ({ xValue, yValue }))
+      .sort((a, b) => Number(b.yValue || 0) - Number(a.yValue || 0));
+
+    const timingByKind = new Map(timingRows.map((row) => [normalizeString(row.mark_kind, "unknown"), normalizeNumber(row.count, 0)]));
+    const completedDurations = [];
+    const firstTokenDurations = [];
+    for (const row of durationRows) {
+      const startedMs = Date.parse(row.started_at || "");
+      const completedMs = Date.parse(row.completed_at || "");
+      const firstVisibleMs = Date.parse(row.first_visible_at || "");
+      if (Number.isFinite(startedMs) && Number.isFinite(completedMs) && completedMs >= startedMs) {
+        completedDurations.push(completedMs - startedMs);
+      }
+      if (Number.isFinite(startedMs) && Number.isFinite(firstVisibleMs) && firstVisibleMs >= startedMs) {
+        firstTokenDurations.push(firstVisibleMs - startedMs);
+      }
+    }
+    const timing = {
+      started: Math.max(timingByKind.get("submitted") || 0, timingByKind.get("accepted") || 0),
+      completed: timingByKind.get("completed") || 0,
+      failed: timingByKind.get("failed") || 0,
+      aborted: timingByKind.get("aborted") || 0,
+      active: Math.max(
+        0,
+        Math.max(timingByKind.get("submitted") || 0, timingByKind.get("accepted") || 0)
+          - (timingByKind.get("completed") || 0)
+          - (timingByKind.get("failed") || 0)
+          - (timingByKind.get("aborted") || 0),
+      ),
+      durationMs: completedDurations.length
+        ? completedDurations.reduce((sum, value) => sum + value, 0)
+        : 0,
+      timeToFirstTokenMs: firstTokenDurations.length
+        ? firstTokenDurations.reduce((sum, value) => sum + value, 0) / firstTokenDurations.length
+        : 0,
+    };
+
+    const quotaSeen = new Set();
+    const quotaWindows = [];
+    for (const row of quotaRows) {
+      const key = `${normalizeString(row.window_kind, "unknown")}:${normalizeString(row.window_id, "unknown")}`;
+      if (quotaSeen.has(key)) continue;
+      quotaSeen.add(key);
+      quotaWindows.push({
+        provider: normalizeString(row.provider, ""),
+        windowKind: normalizeString(row.window_kind, "unknown"),
+        windowId: normalizeString(row.window_id, "unknown"),
+        usedPercent: nullableNumber(row.used_percent),
+        resetsAt: normalizeString(row.resets_at, ""),
+        windowDurationMins: nullableNumber(row.window_duration_mins),
+        planType: normalizeString(row.plan_type, ""),
+        observedAt: normalizeString(row.observed_at, ""),
+        source: normalizeString(row.source, ""),
+      });
+    }
+
+    return {
+      schema: "direct_runtime_analytics_fact_snapshot@1",
+      projectId: safeProjectId,
+      summary,
+      lastObservedAt: normalizeString(latestObservedRow?.observed_at, ""),
+      latestContext: latestContextRow
+        ? {
+            status: "available",
+            contextFactId: normalizeString(latestContextRow.context_fact_id, ""),
+            threadId: normalizeString(latestContextRow.thread_id, ""),
+            turnId: normalizeString(latestContextRow.turn_id, ""),
+            modelContextWindow: nullableNumber(latestContextRow.model_context_window),
+            inputTokens: nullableNumber(latestContextRow.input_tokens),
+            usedPercent: nullableNumber(latestContextRow.used_percent),
+            confidence: normalizeString(latestContextRow.estimate_confidence, "derived"),
+            observedAt: normalizeString(latestContextRow.observed_at, ""),
+          }
+        : { status: "unavailable" },
+      timing,
+      tools,
+      quotaWindows,
+      quotaObservedAt: normalizeString(quotaWindows[0]?.observedAt, ""),
+      quotaPlanType: normalizeString(quotaWindows[0]?.planType, ""),
       rawPromptIncluded: false,
       rawResponseIncluded: false,
       rawProviderFrameIncluded: false,
