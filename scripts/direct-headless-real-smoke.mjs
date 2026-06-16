@@ -5,7 +5,6 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { EventEmitter } from "node:events";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -171,8 +170,15 @@ function tempFilePath(targetPath) {
 function writeJsonAtomic(filePath, value) {
   ensureDirectory(path.dirname(filePath));
   const tempPath = tempFilePath(filePath);
-  fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
-  fs.renameSync(tempPath, filePath);
+  try {
+    fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+    fs.renameSync(tempPath, filePath);
+  } catch (error) {
+    try {
+      fs.unlinkSync(tempPath);
+    } catch {}
+    throw error;
+  }
   return value;
 }
 
@@ -202,13 +208,6 @@ function projectById(config, projectId, options = {}) {
       },
     },
   };
-}
-
-function projectWorkspace(project = {}) {
-  const workspace = isPlainObject(project.workspace) ? project.workspace : {};
-  if (workspace.kind === "wsl") return { kind: "wsl", evidencePath: normalizeString(workspace.linuxPath, project.repoPath || "") };
-  if (workspace.kind === "local") return { kind: "local", evidencePath: normalizeString(workspace.localPath, project.repoPath || process.cwd()) };
-  return { kind: normalizeString(workspace.kind, "unknown"), evidencePath: normalizeString(workspace.linuxPath || workspace.localPath || project.repoPath, "") };
 }
 
 function firstModelFromProfile(profileDoc = {}) {
@@ -246,22 +245,6 @@ function forceDirectTextProject(project = {}, model = "", reasoningEffort = "") 
   };
 }
 
-class HeadlessSurfaceSession extends EventEmitter {
-  constructor() {
-    super();
-    this.events = [];
-  }
-
-  sendEvent(event) {
-    this.events.push(event);
-    this.emit("event", event);
-  }
-
-  hasServerRequest() {
-    return false;
-  }
-}
-
 async function requestJson(baseUrl, pathName, token, options = {}) {
   const response = await fetch(`${baseUrl}${pathName}`, {
     ...options,
@@ -271,7 +254,16 @@ async function requestJson(baseUrl, pathName, token, options = {}) {
       ...(options.headers || {}),
     },
   });
-  return { response, body: await response.json() };
+  const text = await response.text();
+  try {
+    return { response, body: text ? JSON.parse(text) : {} };
+  } catch (error) {
+    const detail = text ? ` Response preview: ${text.slice(0, 200)}` : "";
+    throw Object.assign(
+      new Error(`Failed to parse JSON response from ${pathName} with status ${response.status}.${detail}`),
+      { code: "headless_real_smoke_invalid_json_response", cause: error },
+    );
+  }
 }
 
 async function waitForPacket(baseUrl, packetId, token, timeoutMs) {
@@ -311,7 +303,8 @@ async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (!liveProviderOptIn(options)) {
     console.error("Live provider call blocked. Pass --allow-live-provider-call or set CODEX_DIRECT_HEADLESS_REAL_SMOKE=1.");
-    process.exit(2);
+    process.exitCode = 2;
+    return;
   }
   const projectId = optionString(options, "project-id", "headless_real_smoke");
   const prompt = optionString(options, "prompt", DEFAULT_PROMPT);
@@ -372,7 +365,6 @@ async function main() {
     modelEvidenceResolver,
     endpoint,
   });
-  const surfaceSession = new HeadlessSurfaceSession();
   const daemon = new DirectHeadlessBridgeDaemon({
     rootDir: bridgeRoot,
     host: "127.0.0.1",
@@ -427,6 +419,8 @@ async function main() {
         eventKind: "direct_text",
         sourceSystem: "headless-real-smoke",
         requestedRouteId: routeId,
+        model: modelChoice.model,
+        reasoningEffort,
         text: prompt,
       }),
     });
@@ -460,7 +454,8 @@ async function main() {
         providerStarted: packet.providerStarted === true,
       },
       assistantTextDigest: assistantText ? sha256(assistantText) : "",
-      assistantTextPreview: assistantText.slice(0, 240),
+      assistantTextPreview: "",
+      assistantTextPreviewRedacted: Boolean(assistantText),
       assistantCharCount: assistantText.length,
       bridgeStatus: {
         daemonState: normalizeString(status.body.daemonState, ""),
@@ -482,7 +477,7 @@ async function main() {
     writeJsonAtomic(reportPath, report);
     if (optionFlag(options, "report-json", false)) console.log(JSON.stringify(report, null, 2));
     else console.log(reportPath);
-    process.exit(report.status === "completed" ? 0 : 1);
+    process.exitCode = report.status === "completed" ? 0 : 1;
   } finally {
     await daemon.close().catch(() => {});
     directThreadStore.close();
