@@ -326,6 +326,23 @@ function providerMetadataQuotaWindows(profile) {
   return windows;
 }
 
+function providerMetadataModelContextWindow(profile, modelId = "") {
+  if (!isPlainObject(profile)) return null;
+  const usage = isPlainObject(profile.usage) ? profile.usage : {};
+  const context = isPlainObject(usage.context) ? usage.context : {};
+  const usageWindow = nullableNumber(context.modelContextWindow || context.contextWindow || context.maxContextWindow);
+  if (usageWindow !== null && usageWindow > 0) return usageWindow;
+  const catalog = isPlainObject(profile.modelCatalog) ? profile.modelCatalog : {};
+  const activeModel = normalizeString(modelId || profile.runtimeSettings?.active?.model || catalog.defaultModel, "");
+  const models = arrayOrEmpty(catalog.items);
+  const selected = models.find((model) => (
+    normalizeString(model?.id, "") === activeModel ||
+    normalizeString(model?.model, "") === activeModel
+  )) || models.find((model) => model?.isDefault || model?.is_default) || models[0] || null;
+  const modelWindow = nullableNumber(selected?.contextWindow || selected?.maxContextWindow || selected?.modelContextWindow);
+  return modelWindow !== null && modelWindow > 0 ? modelWindow : null;
+}
+
 function finalizeProjection(projection) {
   const observedAt = firstObservedAt(
     projection.tokens.observedAt,
@@ -571,16 +588,29 @@ function buildDirectRuntimeAnalyticsProjection(input = {}) {
 
   const latestContext = isPlainObject(snapshot.latestContext) ? snapshot.latestContext : {};
   if (latestContext.status === "available" || numberOrZero(counts.contextFacts) > 0) {
+    const metadataContextWindow = providerMetadataModelContextWindow(input.directProviderMetadataProfile, latestContext.model || input.model);
+    const rawContextWindow = nullableNumber(latestContext.modelContextWindow);
+    const contextWindow = rawContextWindow || metadataContextWindow;
+    const contextInputTokens = nullableNumber(latestContext.inputTokens);
+    const rawUsedPercent = clampPercent(latestContext.usedPercent);
+    const derivedUsedPercent = contextWindow && contextInputTokens !== null
+      ? clampPercent((contextInputTokens / contextWindow) * 100)
+      : null;
+    const contextBlockers = latestContext.status === "available" ? [] : ["latest_context_fact_unavailable"];
+    if (!rawContextWindow && metadataContextWindow) contextBlockers.push("context_window_filled_from_provider_metadata");
     projection.context = {
       status: latestContext.status === "available" ? "available" : "partial",
       source: "derived_from_direct",
       confidence: normalizeConfidence(latestContext.confidence, "derived"),
       observedAt: normalizeString(latestContext.observedAt || observedAt, ""),
-      modelContextWindow: nullableNumber(latestContext.modelContextWindow),
-      inputTokens: nullableNumber(latestContext.inputTokens),
-      usedPercent: clampPercent(latestContext.usedPercent),
-      evidenceRefs: [evidenceRef("direct_runtime_analytics_facts@1", "context_analytics_fact", latestContext.observedAt || observedAt)],
-      blockers: latestContext.status === "available" ? [] : ["latest_context_fact_unavailable"],
+      modelContextWindow: contextWindow,
+      inputTokens: contextInputTokens,
+      usedPercent: rawUsedPercent ?? derivedUsedPercent,
+      evidenceRefs: [
+        evidenceRef("direct_runtime_analytics_facts@1", "context_analytics_fact", latestContext.observedAt || observedAt),
+        ...(metadataContextWindow ? [evidenceRef("direct_provider_metadata_profile@1", "model_context_window", input.directProviderMetadataProfile?.generatedAt)] : []),
+      ],
+      blockers: contextBlockers,
     };
     if (latestContext.status !== "available") projection.blockers.push("direct_context_latest_unavailable");
   } else {

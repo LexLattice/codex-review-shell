@@ -2336,6 +2336,7 @@ async function refreshDirectSurfaceProjection(options = {}) {
   try {
     const projection = await bridge.getDirectCodexSurfaceProjection(project.id, {
       refreshMetadata: options.refreshMetadata === true,
+      threadId: state.threadId || "",
     });
     if (projection?.schema === "direct_codex_surface_projection@1") {
       state.directSurfaceProjection = projection;

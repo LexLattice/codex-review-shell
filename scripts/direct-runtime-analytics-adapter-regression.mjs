@@ -207,6 +207,37 @@ const failedTurn = {
     rows: [],
   },
 };
+const metadataWindowTurn = {
+  ...turn,
+  turnId: "direct_turn_adapter_metadata_window",
+  submittedAt: "2026-06-15T10:02:00.000Z",
+  createdAt: "2026-06-15T10:02:00.000Z",
+  requestBuiltAt: "2026-06-15T10:02:00.200Z",
+  firstVisibleDeltaAt: "2026-06-15T10:02:01.000Z",
+  completedAt: "2026-06-15T10:02:03.000Z",
+  updatedAt: "2026-06-15T10:02:03.000Z",
+  contextBuildId: "context_adapter_metadata_window",
+  requestManifestId: "request_adapter_metadata_window",
+  requestShape: {},
+  toolResults: [],
+  usageAttribution: {
+    rows: [
+      {
+        rowId: "usage_adapter_metadata_window",
+        usageSource: "response_completed_usage",
+        usageRecordKind: "terminal",
+        responseId: "resp_adapter_metadata_window",
+        inputTokens: 5440,
+        cachedInputTokens: 0,
+        nonCachedInputTokens: 5440,
+        outputTokens: 25,
+        reasoningTokens: 0,
+        totalTokens: 5465,
+        rowDigest: "sha256:usage_adapter_metadata_window",
+      },
+    ],
+  },
+};
 const providerMetadataProfile = {
   schema: "direct_provider_metadata_profile@1",
   provider: "openai",
@@ -234,20 +265,32 @@ const providerMetadataProfile = {
       ],
     },
   },
+  modelCatalog: {
+    defaultModel: "gpt-5.5",
+    items: [
+      {
+        id: "gpt-5.5",
+        model: "gpt-5.5",
+        isDefault: true,
+        contextWindow: 272000,
+        maxContextWindow: 272000,
+      },
+    ],
+  },
 };
 
 store = new DirectThreadStore({ rootDir: tempRoot, mode: "index_only" });
 store.recordDirectRuntimeAnalyticsFacts({
   projectId,
-  sessionTurns: [{ session, turns: [turn, failedTurn] }],
+  sessionTurns: [{ session, turns: [turn, failedTurn, metadataWindowTurn] }],
   providerMetadataProfile,
 });
 const directSnapshot = store.getDirectRuntimeAnalyticsFactSnapshot(projectId);
-assert.equal(directSnapshot.summary.counts.nonMissingUsageFacts, 1);
-assert.equal(directSnapshot.timing.completed, 1);
+assert.equal(directSnapshot.summary.counts.nonMissingUsageFacts, 2);
+assert.equal(directSnapshot.timing.completed, 2);
 assert.equal(directSnapshot.timing.failed, 1);
 assert.equal(directSnapshot.timing.active, 0);
-assert.equal(directSnapshot.timing.durationMs, 5000);
+assert.equal(directSnapshot.timing.durationMs, 8000);
 const directProjection = buildRuntimeAnalyticsProjection({
   projectId,
   threadId: session.sessionId,
@@ -264,13 +307,31 @@ assert.equal(directProjection.tokens.confidence, "runtime_exact");
 assert.equal(directProjection.tokens.reasoningTokens, 120);
 assert.equal(directProjection.context.source, "derived_from_direct");
 assert.equal(directProjection.context.modelContextWindow, 272000);
-assert.equal(directProjection.context.usedPercent, 1);
+assert.equal(directProjection.context.usedPercent, 2);
 assert.equal(directProjection.tools.commands, 1);
 assert.equal(directProjection.quota.source, "direct_native");
 assert.equal(directProjection.quota.windows.length, 2);
 assert.equal(directProjection.quota.windows[1].windowKind, "weekly");
 assert.equal(directProjection.privacy.rawProviderFrameIncluded, false);
 assert.equal(directProjection.privacy.billingGrade, false);
+
+const metadataWindowSnapshot = store.getDirectRuntimeAnalyticsFactSnapshot(projectId, {
+  threadId: session.sessionId,
+});
+assert.equal(metadataWindowSnapshot.latestContext.turnId, "direct_turn_adapter_metadata_window");
+assert.equal(metadataWindowSnapshot.latestContext.modelContextWindow, 0);
+assert.equal(metadataWindowSnapshot.latestContext.usedPercent, null);
+const metadataWindowProjection = buildRuntimeAnalyticsProjection({
+  projectId,
+  threadId: session.sessionId,
+  runtimePath: "direct-implementation",
+  directFactSnapshot: metadataWindowSnapshot,
+  directProviderMetadataProfile: providerMetadataProfile,
+  generatedAt: "2026-06-15T10:02:04.000Z",
+});
+assert.equal(metadataWindowProjection.context.modelContextWindow, 272000);
+assert.equal(metadataWindowProjection.context.usedPercent, 2);
+assert(metadataWindowProjection.context.blockers.includes("context_window_filled_from_provider_metadata"));
 
 const unavailableProjection = buildRuntimeAnalyticsProjection({
   projectId: "project_empty",

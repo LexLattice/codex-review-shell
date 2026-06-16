@@ -1590,13 +1590,15 @@ class DirectThreadStore {
     };
   }
 
-  getDirectRuntimeAnalyticsFactSnapshot(projectId = "") {
+  getDirectRuntimeAnalyticsFactSnapshot(projectId = "", options = {}) {
     const safeProjectId = normalizeString(projectId, "");
+    const safeThreadId = normalizeString(options.threadId, "");
     const summary = this.getDirectRuntimeAnalyticsFactSummary(safeProjectId);
     if (!this.db) {
       return {
         schema: "direct_runtime_analytics_fact_snapshot@1",
         projectId: safeProjectId,
+        threadId: safeThreadId,
         summary,
         lastObservedAt: "",
         latestContext: { status: "unavailable" },
@@ -1618,22 +1620,22 @@ class DirectThreadStore {
     const latestObservedRow = safeProjectId
       ? this.db.prepare(`
           select max(observed_at) as observed_at from (
-            select observed_at from direct_turn_usage_facts where project_id = ?
+            select observed_at from direct_turn_usage_facts where project_id = ? and (? = '' or thread_id = ?)
             union all
-            select observed_at from direct_context_analytics_facts where project_id = ?
+            select observed_at from direct_context_analytics_facts where project_id = ? and (? = '' or thread_id = ?)
             union all
             select observed_at from direct_quota_snapshot_facts where project_id = ?
           )
-        `).get(safeProjectId, safeProjectId, safeProjectId)
+        `).get(safeProjectId, safeThreadId, safeThreadId, safeProjectId, safeThreadId, safeThreadId, safeProjectId)
       : this.db.prepare(`
           select max(observed_at) as observed_at from (
-            select observed_at from direct_turn_usage_facts
+            select observed_at from direct_turn_usage_facts where (? = '' or thread_id = ?)
             union all
-            select observed_at from direct_context_analytics_facts
+            select observed_at from direct_context_analytics_facts where (? = '' or thread_id = ?)
             union all
             select observed_at from direct_quota_snapshot_facts
           )
-        `).get();
+        `).get(safeThreadId, safeThreadId, safeThreadId, safeThreadId);
     const latestContextRow = safeProjectId
       ? this.db.prepare(`
           select
@@ -1647,9 +1649,10 @@ class DirectThreadStore {
             observed_at
           from direct_context_analytics_facts
           where project_id = ?
-          order by (used_percent is null), observed_at desc
+            and (? = '' or thread_id = ?)
+          order by observed_at desc
           limit 1
-        `).get(safeProjectId)
+        `).get(safeProjectId, safeThreadId, safeThreadId)
       : this.db.prepare(`
           select
             context_fact_id,
@@ -1661,21 +1664,24 @@ class DirectThreadStore {
             estimate_confidence,
             observed_at
           from direct_context_analytics_facts
-          order by (used_percent is null), observed_at desc
+          where (? = '' or thread_id = ?)
+          order by observed_at desc
           limit 1
-        `).get();
+        `).get(safeThreadId, safeThreadId);
     const toolRows = safeProjectId
       ? this.db.prepare(`
           select tool_kind, status, count(*) as count
           from direct_tool_analytics_facts
           where project_id = ?
+            and (? = '' or thread_id = ?)
           group by tool_kind, status
-        `).all(safeProjectId)
+        `).all(safeProjectId, safeThreadId, safeThreadId)
       : this.db.prepare(`
           select tool_kind, status, count(*) as count
           from direct_tool_analytics_facts
+          where (? = '' or thread_id = ?)
           group by tool_kind, status
-        `).all();
+        `).all(safeThreadId, safeThreadId);
     const quotaRows = safeProjectId
       ? this.db.prepare(`
           select
@@ -1739,9 +1745,10 @@ class DirectThreadStore {
             and first_visible.turn_id = started.turn_id
             and first_visible.mark_kind = 'first_visible_delta'
           where started.project_id = ?
+            and (? = '' or started.thread_id = ?)
             and started.mark_kind in ('submitted', 'accepted')
           group by started.project_id, started.thread_id, started.turn_id
-        `).all(safeProjectId)
+        `).all(safeProjectId, safeThreadId, safeThreadId)
       : this.db.prepare(`
           select
             started.turn_id as turn_id,
@@ -1760,8 +1767,9 @@ class DirectThreadStore {
             and first_visible.turn_id = started.turn_id
             and first_visible.mark_kind = 'first_visible_delta'
           where started.mark_kind in ('submitted', 'accepted')
+            and (? = '' or started.thread_id = ?)
           group by started.project_id, started.thread_id, started.turn_id
-        `).all();
+        `).all(safeThreadId, safeThreadId);
 
     const toolByKind = new Map();
     const tools = {
@@ -1845,6 +1853,7 @@ class DirectThreadStore {
     return {
       schema: "direct_runtime_analytics_fact_snapshot@1",
       projectId: safeProjectId,
+      threadId: safeThreadId,
       summary,
       lastObservedAt: normalizeString(latestObservedRow?.observed_at, ""),
       latestContext: latestContextRow
