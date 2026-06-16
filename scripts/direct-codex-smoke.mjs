@@ -3932,10 +3932,12 @@ const textProbeRequest = buildTextOnlyProbeRequest({
   profileDoc,
   prompt: "probe prompt",
   model: "gpt-5.4",
+  reasoningEffort: "medium",
 });
 assert(textProbeRequest.stream === true, "Expected direct text probe request to stream.");
 assert(textProbeRequest.store === false, "Expected direct text probe request to disable backend storage.");
 assert(!textProbeRequest.tools, "Text-only probe must not include tools.");
+assert(textProbeRequest.reasoning?.effort === "medium", "Text-only probe should preserve concrete reasoning effort.");
 
 let capturedProbeRequest = null;
 const probeSse = [

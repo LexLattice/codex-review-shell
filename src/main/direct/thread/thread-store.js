@@ -269,6 +269,135 @@ function dedupeUsageFactRowsForTotals(rows = []) {
   return [...byKey.values()];
 }
 
+function addUsageTokens(target, row = {}) {
+  target.inputTokens += normalizeNumber(row.input_tokens, 0);
+  target.cachedInputTokens += normalizeNumber(row.cached_input_tokens, 0);
+  target.nonCachedInputTokens += normalizeNumber(row.non_cached_input_tokens, 0);
+  target.outputTokens += normalizeNumber(row.output_tokens, 0);
+  target.reasoningTokens += normalizeNumber(row.reasoning_tokens, 0);
+  target.totalTokens += normalizeNumber(row.total_tokens, 0);
+}
+
+function emptyUsageAggregate() {
+  return {
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    nonCachedInputTokens: 0,
+    outputTokens: 0,
+    reasoningTokens: 0,
+    totalTokens: 0,
+  };
+}
+
+function maxIso(left = "", right = "") {
+  const leftMs = Date.parse(left || "");
+  const rightMs = Date.parse(right || "");
+  if (!Number.isFinite(leftMs)) return right || "";
+  if (!Number.isFinite(rightMs)) return left || "";
+  return rightMs >= leftMs ? right : left;
+}
+
+function usageDimensionRows(rows = [], scopeThreadId = "") {
+  const turnMap = new Map();
+  const agentMap = new Map();
+  const edgeMap = new Map();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const threadId = normalizeString(row.thread_id, "");
+    const turnId = normalizeString(row.turn_id, "");
+    const agentThreadId = normalizeString(row.agent_thread_id || threadId, threadId);
+    const agentKind = normalizeString(row.agent_kind, "unknown_agent");
+    const parentThreadId = normalizeString(row.parent_thread_id, "");
+    const model = normalizeString(row.model, "");
+    const reasoningEffort = normalizeString(row.reasoning_effort, "");
+    const serviceTier = normalizeString(row.service_tier, "");
+    const observedAt = normalizeString(row.observed_at, "");
+    const turnKey = [threadId, turnId, agentThreadId, model, reasoningEffort, serviceTier].join("\u001f");
+    if (!turnMap.has(turnKey)) {
+      turnMap.set(turnKey, {
+        threadId,
+        turnId,
+        agentThreadId,
+        agentKind,
+        parentThreadId,
+        model,
+        reasoningEffort,
+        serviceTier,
+        responseCount: 0,
+        ...emptyUsageAggregate(),
+        observedAt: "",
+        source: "direct_turn_usage_facts",
+      });
+    }
+    const turnEntry = turnMap.get(turnKey);
+    turnEntry.responseCount += 1;
+    addUsageTokens(turnEntry, row);
+    turnEntry.observedAt = maxIso(turnEntry.observedAt, observedAt);
+
+    const agentKey = [agentThreadId, agentKind, parentThreadId, model, reasoningEffort, serviceTier].join("\u001f");
+    if (!agentMap.has(agentKey)) {
+      agentMap.set(agentKey, {
+        agentThreadId,
+        agentKind,
+        parentThreadId,
+        model,
+        reasoningEffort,
+        serviceTier,
+        turnCount: 0,
+        responseCount: 0,
+        ...emptyUsageAggregate(),
+        observedAt: "",
+        source: "direct_turn_usage_facts",
+      });
+    }
+    const agentEntry = agentMap.get(agentKey);
+    agentEntry.turnCount += turnEntry.responseCount === 1 ? 1 : 0;
+    agentEntry.responseCount += 1;
+    addUsageTokens(agentEntry, row);
+    agentEntry.observedAt = maxIso(agentEntry.observedAt, observedAt);
+
+    if (parentThreadId && agentThreadId && agentThreadId !== parentThreadId) {
+      const edgeKey = [parentThreadId, agentThreadId, threadId, turnId, model, reasoningEffort].join("\u001f");
+      if (!edgeMap.has(edgeKey)) {
+        edgeMap.set(edgeKey, {
+          parentThreadId,
+          parentTurnId: "",
+          parentTurnResolved: false,
+          childThreadId: agentThreadId,
+          childUsageThreadId: threadId,
+          childTurnId: turnId,
+          agentKind,
+          model,
+          reasoningEffort,
+          serviceTier,
+          responseCount: 0,
+          ...emptyUsageAggregate(),
+          observedAt: "",
+          source: "direct_turn_usage_facts.parent_thread_id",
+          evidencePosture: "parent_thread_known_parent_turn_unknown",
+        });
+      }
+      const edgeEntry = edgeMap.get(edgeKey);
+      edgeEntry.responseCount += 1;
+      addUsageTokens(edgeEntry, row);
+      edgeEntry.observedAt = maxIso(edgeEntry.observedAt, observedAt);
+    }
+  }
+  const byObservedDesc = (left, right) => Date.parse(right.observedAt || "") - Date.parse(left.observedAt || "");
+  const turnUsageRows = [...turnMap.values()]
+    .filter((row) => !scopeThreadId || row.threadId === scopeThreadId || row.parentThreadId === scopeThreadId)
+    .sort(byObservedDesc)
+    .slice(0, 120);
+  const agentUsageRows = [...agentMap.values()]
+    .filter((row) => !scopeThreadId || row.agentThreadId === scopeThreadId || row.parentThreadId === scopeThreadId)
+    .sort((left, right) => normalizeNumber(right.totalTokens, 0) - normalizeNumber(left.totalTokens, 0) || byObservedDesc(left, right))
+    .slice(0, 80);
+  const parentTurnAgentEdges = [...edgeMap.values()]
+    .filter((row) => !scopeThreadId || row.parentThreadId === scopeThreadId)
+    .sort(byObservedDesc)
+    .slice(0, 120);
+  return { turnUsageRows, agentUsageRows, parentTurnAgentEdges };
+}
+
 function normalizeLifecycleState(value, fallback = "active") {
   const state = normalizeString(value, fallback);
   return LIFECYCLE_STATES.has(state) ? state : fallback;
@@ -1607,6 +1736,9 @@ class DirectThreadStore {
         quotaWindows: [],
         quotaObservedAt: "",
         quotaPlanType: "",
+        turnUsageRows: [],
+        agentUsageRows: [],
+        parentTurnAgentEdges: [],
         rawPromptIncluded: false,
         rawResponseIncluded: false,
         rawProviderFrameIncluded: false,
@@ -1714,6 +1846,63 @@ class DirectThreadStore {
           order by observed_at desc
           limit 80
         `).all();
+    const usageDetailRows = safeProjectId
+      ? this.db.prepare(`
+          select
+            usage_fact_id,
+            thread_id,
+            turn_id,
+            agent_thread_id,
+            agent_kind,
+            parent_thread_id,
+            model,
+            reasoning_effort,
+            service_tier,
+            response_id,
+            source_row_digest,
+            usage_record_kind,
+            input_tokens,
+            cached_input_tokens,
+            non_cached_input_tokens,
+            output_tokens,
+            reasoning_tokens,
+            total_tokens,
+            observed_at
+          from direct_turn_usage_facts
+          where project_id = ?
+            and usage_record_kind != 'missing'
+            and (? = '' or thread_id = ? or parent_thread_id = ?)
+          order by observed_at desc
+          limit 500
+        `).all(safeProjectId, safeThreadId, safeThreadId, safeThreadId)
+      : this.db.prepare(`
+          select
+            usage_fact_id,
+            thread_id,
+            turn_id,
+            agent_thread_id,
+            agent_kind,
+            parent_thread_id,
+            model,
+            reasoning_effort,
+            service_tier,
+            response_id,
+            source_row_digest,
+            usage_record_kind,
+            input_tokens,
+            cached_input_tokens,
+            non_cached_input_tokens,
+            output_tokens,
+            reasoning_tokens,
+            total_tokens,
+            observed_at
+          from direct_turn_usage_facts
+          where usage_record_kind != 'missing'
+            and (? = '' or thread_id = ? or parent_thread_id = ?)
+          order by observed_at desc
+          limit 500
+        `).all(safeThreadId, safeThreadId, safeThreadId);
+    const usageDimensions = usageDimensionRows(dedupeUsageFactRowsForTotals(usageDetailRows), safeThreadId);
     const timingRows = safeProjectId
       ? this.db.prepare(`
           select mark_kind, count(*) as count
@@ -1874,6 +2063,9 @@ class DirectThreadStore {
       quotaWindows,
       quotaObservedAt: normalizeString(quotaWindows[0]?.observedAt, ""),
       quotaPlanType: normalizeString(quotaWindows[0]?.planType, ""),
+      turnUsageRows: usageDimensions.turnUsageRows,
+      agentUsageRows: usageDimensions.agentUsageRows,
+      parentTurnAgentEdges: usageDimensions.parentTurnAgentEdges,
       rawPromptIncluded: false,
       rawResponseIncluded: false,
       rawProviderFrameIncluded: false,

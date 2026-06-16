@@ -58,6 +58,32 @@ const appserverUsageLedger = {
     status: "available",
     observedAt: "2026-06-15T09:00:00.000Z",
     planType: "plus",
+    rateLimitsByLimitId: {
+      codex: {
+        limitId: "codex",
+        primary: {
+          name: "5h",
+          usedPercent: 70,
+          windowDurationMins: 300,
+          resetsAt: "2026-06-15T10:00:00.000Z",
+        },
+        secondary: {
+          name: "weekly",
+          usedPercent: 91,
+          windowDurationMins: 10080,
+          resetsAt: "2026-06-21T18:00:00.000Z",
+        },
+      },
+      codex_other: {
+        limitId: "codex_other",
+        primary: {
+          name: "other",
+          usedPercent: 12,
+          windowDurationMins: 300,
+          resetsAt: "2026-06-15T11:00:00.000Z",
+        },
+      },
+    },
     primary: {
       name: "5h",
       usedPercent: 70,
@@ -96,7 +122,9 @@ assert.equal(appserverProjection.tokens.reasoningTokens, 80);
 assert.equal(appserverProjection.context.source, "derived_from_appserver");
 assert(appserverProjection.context.usedPercent > 0);
 assert.equal(appserverProjection.quota.source, "appserver_native");
-assert.equal(appserverProjection.quota.windows.length, 2);
+assert.equal(appserverProjection.quota.windows.length, 3);
+assert(appserverProjection.quota.windows.some((window) => window.windowId === "codex:secondary" && window.windowKind === "weekly"));
+assert(appserverProjection.quota.windows.some((window) => window.windowId === "codex_other:primary" && window.windowKind === "five_hour"));
 assert.equal(appserverProjection.requests.resolved, 1);
 assert.equal(appserverProjection.privacy.rawPromptIncluded, false);
 assert.equal(appserverProjection.privacy.costComputed, false);
@@ -144,6 +172,15 @@ const session = {
   agentKind: "main_agent",
   agentThreadId: "direct_session_adapter",
 };
+const childSession = {
+  sessionId: "direct_child_adapter",
+  projectId,
+  model: "gpt-5.4-mini",
+  reasoningEffort: "medium",
+  agentKind: "sub_worker",
+  agentThreadId: "direct_child_adapter",
+  parentThreadId: session.sessionId,
+};
 const turn = {
   schema: "direct_codex_turn@1",
   sessionId: session.sessionId,
@@ -188,6 +225,46 @@ const turn = {
         reasoningTokens: 120,
         totalTokens: 3350,
         rowDigest: "sha256:usage_adapter",
+      },
+    ],
+  },
+};
+const childTurn = {
+  schema: "direct_codex_turn@1",
+  sessionId: childSession.sessionId,
+  threadId: childSession.sessionId,
+  turnId: "direct_child_turn_adapter",
+  state: "completed",
+  submittedAt: "2026-06-15T10:00:02.500Z",
+  createdAt: "2026-06-15T10:00:02.500Z",
+  requestBuiltAt: "2026-06-15T10:00:02.650Z",
+  firstVisibleDeltaAt: "2026-06-15T10:00:03.100Z",
+  completedAt: "2026-06-15T10:00:04.500Z",
+  updatedAt: "2026-06-15T10:00:04.500Z",
+  model: "gpt-5.4-mini",
+  reasoningEffort: "medium",
+  contextBuildId: "context_child_adapter",
+  requestManifestId: "request_child_adapter",
+  requestShape: {
+    modelContextWindow: 128000,
+  },
+  agentKind: "sub_worker",
+  agentThreadId: childSession.sessionId,
+  parentThreadId: session.sessionId,
+  usageAttribution: {
+    rows: [
+      {
+        rowId: "usage_child_adapter_terminal",
+        usageSource: "response_completed_usage",
+        usageRecordKind: "terminal",
+        responseId: "resp_child_adapter",
+        inputTokens: 1200,
+        cachedInputTokens: 200,
+        nonCachedInputTokens: 1000,
+        outputTokens: 180,
+        reasoningTokens: 40,
+        totalTokens: 1380,
+        rowDigest: "sha256:usage_child_adapter",
       },
     ],
   },
@@ -282,15 +359,18 @@ const providerMetadataProfile = {
 store = new DirectThreadStore({ rootDir: tempRoot, mode: "index_only" });
 store.recordDirectRuntimeAnalyticsFacts({
   projectId,
-  sessionTurns: [{ session, turns: [turn, failedTurn, metadataWindowTurn] }],
+  sessionTurns: [
+    { session, turns: [turn, failedTurn, metadataWindowTurn] },
+    { session: childSession, turns: [childTurn] },
+  ],
   providerMetadataProfile,
 });
 const directSnapshot = store.getDirectRuntimeAnalyticsFactSnapshot(projectId);
-assert.equal(directSnapshot.summary.counts.nonMissingUsageFacts, 2);
-assert.equal(directSnapshot.timing.completed, 2);
+assert.equal(directSnapshot.summary.counts.nonMissingUsageFacts, 3);
+assert.equal(directSnapshot.timing.completed, 3);
 assert.equal(directSnapshot.timing.failed, 1);
 assert.equal(directSnapshot.timing.active, 0);
-assert.equal(directSnapshot.timing.durationMs, 8000);
+assert.equal(directSnapshot.timing.durationMs, 10000);
 const directProjection = buildRuntimeAnalyticsProjection({
   projectId,
   threadId: session.sessionId,
@@ -304,11 +384,16 @@ assert.equal(directProjection.schema, RUNTIME_ANALYTICS_PROJECTION_SCHEMA);
 assert.equal(directProjection.sourcePosture.adapterKind, "direct");
 assert.equal(directProjection.tokens.source, "direct_native");
 assert.equal(directProjection.tokens.confidence, "runtime_exact");
-assert.equal(directProjection.tokens.reasoningTokens, 120);
+assert.equal(directProjection.tokens.reasoningTokens, 160);
 assert.equal(directProjection.context.source, "derived_from_direct");
 assert.equal(directProjection.context.modelContextWindow, 272000);
 assert.equal(directProjection.context.usedPercent, 2);
 assert.equal(directProjection.tools.commands, 1);
+assert(directProjection.turnUsageRows.some((row) => row.turnId === "direct_turn_adapter" && row.model === "gpt-5.5" && row.reasoningEffort === "high"));
+assert(directProjection.turnUsageRows.some((row) => row.turnId === "direct_child_turn_adapter" && row.agentKind === "sub_worker" && row.model === "gpt-5.4-mini" && row.reasoningEffort === "medium"));
+assert(directProjection.agentUsageRows.some((row) => row.agentThreadId === "direct_session_adapter" && row.agentKind === "primary_agent" && row.totalTokens === 8815));
+assert(directProjection.agentUsageRows.some((row) => row.agentThreadId === "direct_child_adapter" && row.agentKind === "sub_worker" && row.totalTokens === 1380));
+assert(directProjection.parentTurnAgentEdges.some((edge) => edge.parentThreadId === "direct_session_adapter" && edge.childThreadId === "direct_child_adapter" && edge.parentTurnResolved === false));
 assert.equal(directProjection.quota.source, "direct_native");
 assert.equal(directProjection.quota.windows.length, 2);
 assert.equal(directProjection.quota.windows[1].windowKind, "weekly");

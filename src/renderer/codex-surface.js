@@ -962,12 +962,21 @@ function supportedReasoningOptions() {
 }
 
 function reasoningLabel() {
-  if (isDirectLiveTextSurface()) return state.runtimeOverrides.reasoningEffort || directReasoningLabel() || project?.codex?.reasoningEffort || "unknown";
+  if (isDirectLiveTextSurface()) {
+    return state.runtimeOverrides.reasoningEffort ||
+      directReasoningLabel() ||
+      project?.codex?.reasoningEffort ||
+      defaultReasoningEffort() ||
+      "unknown";
+  }
   return state.runtimeOverrides.reasoningEffort || project?.codex?.reasoningEffort || selectedModel()?.defaultReasoningEffort || "unknown";
 }
 
 function requestedReasoningEffort() {
-  return state.runtimeOverrides.reasoningEffort || project?.codex?.reasoningEffort || null;
+  if (state.runtimeOverrides.reasoningEffort) return state.runtimeOverrides.reasoningEffort;
+  if (project?.codex?.reasoningEffort) return project.codex.reasoningEffort;
+  if (isDirectLiveTextSurface()) return defaultReasoningEffort() || null;
+  return null;
 }
 
 function approvalPolicyLabel() {
@@ -1272,7 +1281,7 @@ function directContextUsageProjection() {
       percentUsed: usedPercent,
       percentRemaining: remaining,
       tokensInContext: tokens,
-      totalTokens: Number(latestUsage.totalTokensKnown ?? 0) || null,
+      totalTokens: numericField(latestUsage, "totalTokensKnown") ?? null,
       modelContextWindow: window,
       observedAt: latestUsage.observedAt || projection?.generatedAt || "",
       tokenUsage: {
@@ -1459,12 +1468,14 @@ function liveRuntimeAnalyticsProjection() {
       source: "appserver_native",
       confidence: "runtime_exact",
       observedAt: state.tokenUsageObservedAt ? new Date(state.tokenUsageObservedAt).toISOString() : observedAt,
-      inputTokens: total.inputTokens || null,
-      cachedInputTokens: total.cachedInputTokens || null,
-      nonCachedInputTokens: Math.max(0, Number(total.inputTokens || 0) - Number(total.cachedInputTokens || 0)) || null,
-      outputTokens: total.outputTokens || null,
-      reasoningTokens: total.reasoningOutputTokens || null,
-      totalTokens: total.totalTokens || null,
+      inputTokens: numericField(total, "inputTokens"),
+      cachedInputTokens: numericField(total, "cachedInputTokens"),
+      nonCachedInputTokens: numericField(total, "inputTokens") === null
+        ? null
+        : Math.max(0, Number(total.inputTokens || 0) - Number(total.cachedInputTokens || 0)),
+      outputTokens: numericField(total, "outputTokens"),
+      reasoningTokens: numericField(total, "reasoningOutputTokens"),
+      totalTokens: numericField(total, "totalTokens"),
       usageScope: "thread_total",
       billingGrade: false,
       evidenceRefs: [evidenceRef("app_server_probe", "thread/tokenUsage/updated supplied live token usage", { confidence: "proven" })],
@@ -1695,6 +1706,57 @@ function analyticsBarChart(title, rows, valueFormatter = analyticsNumber) {
   return section;
 }
 
+function analyticsShortId(value) {
+  const text = String(value || "").trim();
+  if (!text) return "unknown";
+  if (text.length <= 18) return text;
+  return `${text.slice(0, 8)}…${text.slice(-6)}`;
+}
+
+function analyticsModelEffortLabel(row = {}) {
+  return [
+    row.model || "model unknown",
+    row.reasoningEffort ? `${row.reasoningEffort}` : "effort default/unknown",
+    row.serviceTier ? `${row.serviceTier}` : "",
+  ].filter(Boolean).join(" · ");
+}
+
+function analyticsTokenSplitLabel(row = {}) {
+  return [
+    `in ${analyticsNumber(row.inputTokens)}`,
+    `uncached ${analyticsNumber(row.nonCachedInputTokens)}`,
+    `cached ${analyticsNumber(row.cachedInputTokens)}`,
+    `out ${analyticsNumber(row.outputTokens)}`,
+    `reason ${analyticsNumber(row.reasoningTokens)}`,
+    `total ${analyticsNumber(row.totalTokens)}`,
+  ].join(" · ");
+}
+
+function analyticsDetailSection(title, rows, rowRenderer, emptyText = "No detail evidence yet.") {
+  const section = analyticsEl("section", "thread-analytics-detail");
+  section.appendChild(analyticsEl("h3", "", title));
+  const list = analyticsEl("div", "thread-analytics-detail-list");
+  const safeRows = Array.isArray(rows) ? rows : [];
+  if (!safeRows.length) {
+    list.appendChild(analyticsEl("p", "thread-analytics-empty", emptyText));
+  } else {
+    for (const row of safeRows) {
+      const rendered = rowRenderer(row);
+      if (rendered) list.appendChild(rendered);
+    }
+  }
+  section.appendChild(list);
+  return section;
+}
+
+function analyticsDetailRow(primary, secondary = "", meta = "") {
+  const row = analyticsEl("div", "thread-analytics-detail-row");
+  row.appendChild(analyticsEl("strong", "thread-analytics-detail-primary", primary));
+  if (secondary) row.appendChild(analyticsEl("span", "thread-analytics-detail-secondary", secondary));
+  if (meta) row.appendChild(analyticsEl("span", "thread-analytics-detail-meta", meta));
+  return row;
+}
+
 function renderThreadAnalyticsPanel() {
   if (!els.threadAnalyticsPanel || !els.threadAnalyticsPanelBody) return;
   const dock = ["float", "left", "right", "bottom"].includes(state.analyticsPanelDock) ? state.analyticsPanelDock : "right";
@@ -1727,6 +1789,7 @@ function renderThreadAnalyticsPanel() {
   const tokenTotal = analyticsNullableNumber(tokens.totalTokens);
   const inputTokens = analyticsNullableNumber(tokens.inputTokens);
   const cachedTokens = analyticsNullableNumber(tokens.cachedInputTokens);
+  const nonCachedTokens = analyticsNullableNumber(tokens.nonCachedInputTokens);
   const outputTokens = analyticsNullableNumber(tokens.outputTokens);
   const reasoningTokens = analyticsNullableNumber(tokens.reasoningTokens);
   const contextUsed = analyticsNullableNumber(context.usedPercent);
@@ -1753,8 +1816,11 @@ function renderThreadAnalyticsPanel() {
 
   const metrics = analyticsEl("section", "thread-analytics-grid");
   metrics.appendChild(analyticsMetricCard("Total tokens", analyticsNumber(tokenTotal), tokens.status === "available" ? tokens.usageScope || "known" : "not exposed", "tokens"));
-  metrics.appendChild(analyticsMetricCard("Input", analyticsNumber(inputTokens), cachedTokens ? `${analyticsNumber(cachedTokens)} cached` : "cache unknown"));
-  metrics.appendChild(analyticsMetricCard("Output", analyticsNumber(outputTokens), reasoningTokens ? `${analyticsNumber(reasoningTokens)} reasoning` : "reasoning unknown"));
+  metrics.appendChild(analyticsMetricCard("Input", analyticsNumber(inputTokens), [
+    Number.isFinite(cachedTokens) ? `${analyticsNumber(cachedTokens)} cached` : "cache unknown",
+    Number.isFinite(nonCachedTokens) ? `${analyticsNumber(nonCachedTokens)} uncached` : "uncached unknown",
+  ].join(" · ")));
+  metrics.appendChild(analyticsMetricCard("Output", analyticsNumber(outputTokens), Number.isFinite(reasoningTokens) ? `${analyticsNumber(reasoningTokens)} reasoning` : "reasoning unknown"));
   metrics.appendChild(analyticsMetricCard("Turns", `${analyticsNumber(turns.started || 0)} started`, turns.durationMs ? `${analyticsDuration(turns.durationMs)} wall span` : "duration unknown"));
   metrics.appendChild(analyticsMetricCard("Tools", analyticsNumber(tools.total || 0), `${analyticsNumber(tools.commands || 0)} cmd · ${analyticsNumber(tools.patches || 0)} patch`));
   metrics.appendChild(analyticsMetricCard("Requests", analyticsNumber(requests.total || 0), `${analyticsNumber(requests.pending || 0)} pending`));
@@ -1762,7 +1828,7 @@ function renderThreadAnalyticsPanel() {
 
   const charts = analyticsEl("section", "thread-analytics-chart-grid");
   charts.appendChild(analyticsBarChart("Token mix", [
-    { label: "input", value: inputTokens },
+    { label: "uncached", value: nonCachedTokens },
     { label: "cached", value: cachedTokens },
     { label: "output", value: outputTokens },
     { label: "reasoning", value: reasoningTokens },
@@ -1776,6 +1842,29 @@ function renderThreadAnalyticsPanel() {
     ] : []),
   ], analyticsNumber));
   els.threadAnalyticsPanelBody.appendChild(charts);
+
+  const turnRows = Array.isArray(projection.turnUsageRows) ? projection.turnUsageRows.slice(0, 8) : [];
+  const agentRows = Array.isArray(projection.agentUsageRows) ? projection.agentUsageRows.slice(0, 8) : [];
+  const edgeRows = Array.isArray(projection.parentTurnAgentEdges) ? projection.parentTurnAgentEdges.slice(0, 6) : [];
+  const detailGrid = analyticsEl("section", "thread-analytics-detail-grid");
+  detailGrid.appendChild(analyticsDetailSection("Turn usage", turnRows, (row) => analyticsDetailRow(
+    `${analyticsShortId(row.turnId)} · ${row.agentKind || "agent"}`,
+    analyticsModelEffortLabel(row),
+    analyticsTokenSplitLabel(row),
+  )));
+  detailGrid.appendChild(analyticsDetailSection("Agent usage", agentRows, (row) => analyticsDetailRow(
+    `${analyticsShortId(row.agentThreadId)} · ${row.agentKind || "agent"}`,
+    analyticsModelEffortLabel(row),
+    `${analyticsNumber(row.turnCount)} turn(s) · ${analyticsTokenSplitLabel(row)}`,
+  )));
+  if (edgeRows.length) {
+    detailGrid.appendChild(analyticsDetailSection("Sub-agent links", edgeRows, (row) => analyticsDetailRow(
+      `${analyticsShortId(row.parentThreadId)} → ${analyticsShortId(row.childThreadId)}`,
+      analyticsModelEffortLabel(row),
+      `${row.parentTurnResolved ? "parent turn resolved" : "parent thread only"} · ${analyticsTokenSplitLabel(row)}`,
+    )));
+  }
+  els.threadAnalyticsPanelBody.appendChild(detailGrid);
 
   const evidence = analyticsEl("section", "thread-analytics-evidence");
   const observedAt = projection.sourcePosture?.observedAt || tokens.observedAt || context.observedAt || projection.generatedAt || "";
@@ -2635,7 +2724,6 @@ function renderComposerAccessMenu() {
 function composerSelectedOverride(name) {
   const value = String(state.runtimeOverrides[name] || "");
   if (name === "model" && value === clearedModelId()) return "";
-  if (name === "reasoningEffort" && value === clearedReasoningEffort()) return "";
   if (name === "serviceTier" && value === defaultServiceTier()) return "";
   return value;
 }
@@ -2833,7 +2921,6 @@ function reasoningOptions() {
   return [
     { value: "", label: defaultOptionLabel(clearDefault) },
     ...supportedReasoningOptions()
-      .filter((effort) => effort !== clearDefault)
       .map((effort) => ({
         value: effort,
         label: `${effort}${effort === modelDefault ? " · model default" : ""}`,

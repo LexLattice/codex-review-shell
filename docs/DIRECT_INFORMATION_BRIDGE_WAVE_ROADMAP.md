@@ -2535,7 +2535,7 @@ on PR 46 metadata projection and later analytics-display work.
 
 ### PR 48: Runtime Analytics Adapter Projection
 
-Status: planned.
+Status: implemented on branch `codex/direct-floating-analytics-panel`; not yet merged.
 
 Purpose:
 
@@ -2578,6 +2578,61 @@ Promotion criterion:
 Middle analytics, bottom-band chips, and future daemon analytics can consume one
 projection shape without hiding whether a value is native, derived, estimated,
 or unavailable for the active runtime path.
+```
+
+Delivered in the current branch:
+
+- `RuntimeAnalyticsProjection@1` adapter contract.
+- App-server projection from usage-ledger analytics.
+- Direct projection from direct analytics fact snapshots and provider metadata.
+- Field-level source/confidence/blocker labels for tokens, context, turns,
+  tools, requests, quota, and series.
+- Floating active-thread analytics panel as an experimental UX consumer.
+
+### PR 49: Upstream 0.140 Metadata And Vanilla-Baseline Parity
+
+Status: in progress on branch `codex/direct-floating-analytics-panel`.
+
+Purpose:
+
+```text
+Fold Codex 0.140 app-server/provider metadata changes into the direct matrix
+and direct metadata/projection adapters without changing the high-level direct
+information-bridge ontology.
+```
+
+Scope:
+
+- Treat `model/list` descriptors as the live source for model, reasoning,
+  service-tier/speed, default, hidden, availability, modality, upgrade, and
+  context-window metadata.
+- Treat `rateLimitsByLimitId` as the preferred multi-bucket quota source when
+  present; keep legacy `rateLimits` as a compatibility mirror only.
+- Preserve account token activity as analytics evidence, not quota or context
+  pressure truth.
+- Confirm context pressure derives from token usage plus model context window,
+  matching upstream `thread/tokenUsage/updated` and `get_context_remaining`
+  semantics.
+- Record vanilla 0.140 baseline methods in the matrix:
+  `thread/turns/list`, `thread/delete`, `turn/steer`,
+  `thread/settings/update`, `thread/goal/*`, skills/hooks/apps, and
+  remote-control/headless surfaces.
+
+Explicit non-goals:
+
+- No provider call authority changes.
+- No direct deletion/purge implementation.
+- No collapse of direct long-horizon ODEU orchestration into vanilla
+  single-thread `goal`.
+- No new skill/hook/app execution.
+- No direct remote-control/headless daemon implementation.
+
+Promotion criterion:
+
+```text
+The direct branch can validate and project 0.140 metadata shapes, explain
+vanilla baseline parity in the matrix, and keep renderer controls grounded in
+live descriptors and evidence-backed usage facts.
 ```
 
 ### Planned follow-up: Headless Direct Service / Message Endpoint

@@ -102,6 +102,9 @@ function baseProjection(input = {}) {
       request_kind_mix: [],
       turn_status_mix: [],
     },
+    turnUsageRows: [],
+    agentUsageRows: [],
+    parentTurnAgentEdges: [],
     blockers: [],
     evidenceRefs: [],
     privacy: rendererSafePrivacy(),
@@ -295,6 +298,20 @@ function normalizeQuotaWindows(windows, source, confidence) {
       source,
       confidence,
     });
+  }
+  return rows;
+}
+
+function normalizeRateLimitMapWindows(map, source, confidence) {
+  const rows = [];
+  if (!isPlainObject(map)) return rows;
+  for (const [limitId, snapshot] of Object.entries(map)) {
+    if (!isPlainObject(snapshot)) continue;
+    const prefix = normalizeString(snapshot.limitId || snapshot.limit_id || limitId, limitId || "limit");
+    const primary = quotaWindowFromRateLimitWindow(snapshot.primary || snapshot.primaryWindow || snapshot.primary_window, "five_hour", source, confidence);
+    const secondary = quotaWindowFromRateLimitWindow(snapshot.secondary || snapshot.secondaryWindow || snapshot.secondary_window, "weekly", source, confidence);
+    if (primary) rows.push({ ...primary, windowId: `${prefix}:primary` });
+    if (secondary) rows.push({ ...secondary, windowId: `${prefix}:secondary` });
   }
   return rows;
 }
@@ -511,10 +528,17 @@ function buildAppServerRuntimeAnalyticsProjection(input = {}) {
   }
 
   const rateLimits = isPlainObject(usage.rateLimits) ? usage.rateLimits : {};
-  const quotaWindows = [
-    quotaWindowFromRateLimitWindow(rateLimits.primary, "primary", "appserver_native", "provider_exact"),
-    quotaWindowFromRateLimitWindow(rateLimits.secondary, "secondary", "appserver_native", "provider_exact"),
-  ].filter(Boolean);
+  const quotaWindows = normalizeRateLimitMapWindows(
+    rateLimits.rateLimitsByLimitId || rateLimits.rate_limits_by_limit_id,
+    "appserver_native",
+    "provider_exact",
+  );
+  if (!quotaWindows.length) {
+    quotaWindows.push(...[
+      quotaWindowFromRateLimitWindow(rateLimits.primary, "five_hour", "appserver_native", "provider_exact"),
+      quotaWindowFromRateLimitWindow(rateLimits.secondary, "weekly", "appserver_native", "provider_exact"),
+    ].filter(Boolean));
+  }
   if (rateLimits.status === "available" && quotaWindows.length) {
     projection.quota = {
       status: "available",
@@ -686,6 +710,9 @@ function buildDirectRuntimeAnalyticsProjection(input = {}) {
       { xValue: "active", yValue: numberOrZero(timing.active) },
     ].filter((point) => point.yValue > 0),
   };
+  projection.turnUsageRows = arrayOrEmpty(snapshot.turnUsageRows).slice(0, 80);
+  projection.agentUsageRows = arrayOrEmpty(snapshot.agentUsageRows).slice(0, 40);
+  projection.parentTurnAgentEdges = arrayOrEmpty(snapshot.parentTurnAgentEdges).slice(0, 80);
   projection.evidenceRefs.push(evidenceRef("direct_runtime_analytics_facts@1", "direct_fact_snapshot", observedAt));
   return finalizeProjection(projection);
 }

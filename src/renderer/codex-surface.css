@@ -527,7 +527,8 @@ textarea {
 
 .thread-analytics-hero,
 .thread-analytics-grid,
-.thread-analytics-chart-grid {
+.thread-analytics-chart-grid,
+.thread-analytics-detail-grid {
   display: grid;
   gap: 10px;
 }
@@ -552,9 +553,14 @@ textarea {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.thread-analytics-panel.dock-bottom .thread-analytics-detail-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .thread-analytics-card,
 .thread-analytics-gauge-card,
 .thread-analytics-chart,
+.thread-analytics-detail,
 .thread-analytics-empty-state,
 .thread-analytics-evidence {
   border: 1px solid rgba(121, 184, 255, 0.12);
@@ -647,11 +653,53 @@ textarea {
   padding: 12px;
 }
 
-.thread-analytics-chart h3 {
+.thread-analytics-chart h3,
+.thread-analytics-detail h3 {
   margin: 0;
   color: #d8e8ff;
   font-size: 12px;
   letter-spacing: 0.02em;
+}
+
+.thread-analytics-detail {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.thread-analytics-detail-list {
+  display: grid;
+  gap: 8px;
+}
+
+.thread-analytics-detail-row {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  padding: 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.thread-analytics-detail-primary,
+.thread-analytics-detail-secondary,
+.thread-analytics-detail-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-analytics-detail-primary {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.thread-analytics-detail-secondary,
+.thread-analytics-detail-meta {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.35;
 }
 
 .thread-analytics-bars {
@@ -2120,7 +2168,8 @@ button.typed-token {
   .thread-analytics-grid,
   .thread-analytics-panel.dock-bottom .thread-analytics-hero,
   .thread-analytics-panel.dock-bottom .thread-analytics-grid,
-  .thread-analytics-panel.dock-bottom .thread-analytics-chart-grid {
+  .thread-analytics-panel.dock-bottom .thread-analytics-chart-grid,
+  .thread-analytics-panel.dock-bottom .thread-analytics-detail-grid {
     grid-template-columns: 1fr;
   }
 
