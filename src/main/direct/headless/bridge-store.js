@@ -445,6 +445,8 @@ class DirectHeadlessBridgeStore {
       activeTurns: 0,
       queuedEgressActions: this.db.prepare("select count(*) as count from direct_bridge_outbox_actions where status = 'queued'").get()?.count || 0,
       failedEgressActions: this.db.prepare("select count(*) as count from direct_bridge_outbox_actions where status = 'failed'").get()?.count || 0,
+      pendingHumanDecisions: this.db.prepare("select count(*) as count from direct_bridge_human_decisions where status = 'pending'").get()?.count || 0,
+      completedHumanDecisions: this.db.prepare("select count(*) as count from direct_bridge_human_decisions where status in ('answered', 'completed')").get()?.count || 0,
       lifecycle,
       backpressure: extra.backpressure || null,
       lastEventAt: normalizeString(lastEventRow?.at, ""),

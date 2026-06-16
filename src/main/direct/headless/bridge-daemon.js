@@ -102,6 +102,10 @@ class DirectHeadlessBridgeDaemon {
     this.state = "stopped";
     this.startedAt = "";
     this.lastErrorClass = "";
+    this.intakePaused = false;
+    this.draining = false;
+    this.shutdownRequested = false;
+    this.controlEvents = [];
     this._turnRuntime = options.turnRuntime || options.textRuntime || null;
     Object.defineProperty(this, "turnRuntime", {
       enumerable: true,
@@ -132,6 +136,7 @@ class DirectHeadlessBridgeDaemon {
     });
     return {
       ...status,
+      control: this.controlProjection(),
       textRuntime: this.textRuntime?.statusProjection ? this.textRuntime.statusProjection() : {
         schema: "headless_direct_text_runtime_status@1",
         state: "not_configured",
@@ -147,7 +152,128 @@ class DirectHeadlessBridgeDaemon {
     };
   }
 
+  controlProjection() {
+    return {
+      schema: "headless_daemon_control_projection@1",
+      intakeState: this.intakePaused ? "paused" : "accepting",
+      drainState: this.draining ? "draining" : "idle",
+      shutdownState: this.shutdownRequested ? "requested" : "idle",
+      safeControls: ["pause_intake", "resume_intake", "drain", "shutdown"],
+      routeAuthorityMutable: false,
+      providerTransportAllowed: false,
+      rawPayloadIncluded: false,
+      rawSecretsIncluded: false,
+      recentEvents: this.controlEvents.slice(-10),
+    };
+  }
+
+  recordControlEvent(action, status, reason = "") {
+    const event = {
+      controlEventId: `headless_control_${crypto.randomUUID()}`,
+      action: normalizeString(action, "unknown"),
+      status: normalizeString(status, "unknown"),
+      reason: normalizeString(reason, ""),
+      observedAt: new Date().toISOString(),
+      routeAuthorityMutable: false,
+      providerTransportStarted: false,
+      rawPayloadIncluded: false,
+    };
+    this.controlEvents.push(event);
+    if (this.controlEvents.length > 25) this.controlEvents.splice(0, this.controlEvents.length - 25);
+    return event;
+  }
+
+  controlDaemon(body = {}) {
+    const action = normalizeString(body.action || body.controlAction, "");
+    if (action === "pause_intake") {
+      this.intakePaused = true;
+      this.draining = false;
+      return {
+        ok: true,
+        status: "control_applied",
+        action,
+        controlEvent: this.recordControlEvent(action, "applied"),
+        control: this.controlProjection(),
+        providerRequestStarted: false,
+        routeAuthorityMutable: false,
+        rawPayloadIncluded: false,
+      };
+    }
+    if (action === "resume_intake") {
+      this.intakePaused = false;
+      this.draining = false;
+      return {
+        ok: true,
+        status: "control_applied",
+        action,
+        controlEvent: this.recordControlEvent(action, "applied"),
+        control: this.controlProjection(),
+        providerRequestStarted: false,
+        routeAuthorityMutable: false,
+        rawPayloadIncluded: false,
+      };
+    }
+    if (action === "drain") {
+      this.intakePaused = true;
+      this.draining = true;
+      return {
+        ok: true,
+        status: "control_applied",
+        action,
+        controlEvent: this.recordControlEvent(action, "applied"),
+        control: this.controlProjection(),
+        providerRequestStarted: false,
+        routeAuthorityMutable: false,
+        rawPayloadIncluded: false,
+      };
+    }
+    if (action === "shutdown") {
+      this.shutdownRequested = true;
+      this.intakePaused = true;
+      this.draining = true;
+      return {
+        ok: true,
+        status: "shutdown_requested",
+        action,
+        controlEvent: this.recordControlEvent(action, "requested"),
+        control: this.controlProjection(),
+        providerRequestStarted: false,
+        routeAuthorityMutable: false,
+        rawPayloadIncluded: false,
+      };
+    }
+    return {
+      ok: false,
+      status: "control_blocked",
+      error: "unknown_control_action",
+      action,
+      controlEvent: this.recordControlEvent(action || "missing", "blocked", "unknown_control_action"),
+      control: this.controlProjection(),
+      providerRequestStarted: false,
+      routeAuthorityMutable: false,
+      rawPayloadIncluded: false,
+    };
+  }
+
   submitEvent(body = {}) {
+    if (this.draining) {
+      return {
+        ok: false,
+        status: "blocked_ingress",
+        error: "daemon_draining",
+        providerRequestStarted: false,
+        rawPayloadIncluded: false,
+      };
+    }
+    if (this.intakePaused) {
+      return {
+        ok: false,
+        status: "blocked_ingress",
+        error: "intake_paused",
+        providerRequestStarted: false,
+        rawPayloadIncluded: false,
+      };
+    }
     if (this.store.count("direct_bridge_inbox_events") >= this.maxInboxEvents) {
       return {
         ok: false,
@@ -316,6 +442,22 @@ class DirectHeadlessBridgeDaemon {
         });
       }
       const result = this.store.submitHumanDecisionReply({ ...body, decisionId });
+      return jsonResponse(res, result.ok ? 202 : 400, result);
+    }
+    if (req.method === "POST" && url.pathname === "/v1/bridge/control") {
+      const body = await readRequestJson(req, this.maxBodyBytes);
+      const auth = this.authenticateKnownClientRequest(req, body);
+      if (!auth.ok) {
+        return jsonResponse(res, 401, {
+          ok: false,
+          status: "control_blocked",
+          error: auth.reason,
+          providerRequestStarted: false,
+          routeAuthorityMutable: false,
+          rawPayloadIncluded: false,
+        });
+      }
+      const result = this.controlDaemon(body);
       return jsonResponse(res, result.ok ? 202 : 400, result);
     }
     if (req.method === "POST" && url.pathname === "/v1/bridge/events") {
