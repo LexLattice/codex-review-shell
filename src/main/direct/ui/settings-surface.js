@@ -446,6 +446,57 @@ function summarizeControlToolSubstrate(controlToolStatus = {}) {
   };
 }
 
+function summarizeAgentRuntimeSubstrate(agentRuntimeStatus = {}) {
+  const source = objectOrEmpty(agentRuntimeStatus);
+  const status = normalizeString(source.schema, "") === "direct_agent_runtime_substrate_status@1"
+    ? source
+    : objectOrEmpty(source.agentRuntimeStatus || source.agentRuntimeSubstrateStatus || source.directAgentRuntimeStatus);
+  return {
+    available: normalizeString(status.schema, "") === "direct_agent_runtime_substrate_status@1",
+    schema: normalizeString(status.schema, "not_exposed"),
+    mode: normalizeString(status.mode, "not_exposed"),
+    registryId: normalizeString(status.registryId, ""),
+    registryDigest: normalizeString(status.registryDigest, ""),
+    graphId: normalizeString(status.graphId, ""),
+    graphDigest: normalizeString(status.graphDigest, ""),
+    mailboxId: normalizeString(status.mailboxId, ""),
+    mailboxDigest: normalizeString(status.mailboxDigest, ""),
+    lifecycleRegistryId: normalizeString(status.lifecycleRegistryId, ""),
+    lifecycleRegistryDigest: normalizeString(status.lifecycleRegistryDigest, ""),
+    nodeCount: Number(status.nodeCount || 0),
+    edgeCount: Number(status.edgeCount || 0),
+    mailboxMessageCount: Number(status.mailboxMessageCount || 0),
+    duplicateMailboxMessageCount: Number(status.duplicateMailboxMessageCount || 0),
+    mailboxSequenceValid: status.mailboxSequenceValid === true,
+    mailboxSequenceViolationCount: Number(status.mailboxSequenceViolationCount || 0),
+    lifecycleEntryCount: Number(status.lifecycleEntryCount || 0),
+    activeAgentCount: Number(status.activeAgentCount || 0),
+    terminalAgentCount: Number(status.terminalAgentCount || 0),
+    unknownRecoveryCount: Number(status.unknownRecoveryCount || 0),
+    recoveryClasses: arrayOrEmpty(status.recoveryClasses).map((item) => normalizeString(item, "")).filter(Boolean),
+    canonicalGraphEvidence: status.canonicalGraphEvidence === true,
+    subAgentPanelProjectionOnly: status.subAgentPanelProjectionOnly === true,
+    childTranscriptPromotionAllowed: status.childTranscriptPromotionAllowed === true,
+    parentSpawnIntentMayClaimChildSuccess: status.parentSpawnIntentMayClaimChildSuccess === true,
+    agentSpawnPlanExists: status.agentSpawnPlanExists === true,
+    agentSpawnExecutable: status.agentSpawnExecutable === true,
+    agentContextPacketFamilyExists: status.agentContextPacketFamilyExists === true,
+    agentAuthorityBoundaryExplicit: status.agentAuthorityBoundaryExplicit === true,
+    mailboxSequenceLaw: normalizeString(status.mailboxSequenceLaw, "unknown"),
+    mailboxIdempotencyLaw: normalizeString(status.mailboxIdempotencyLaw, "unknown"),
+    providerSpawnEnabledInThisPr: status.providerSpawnEnabledInThisPr === true,
+    localSpawnEnabledInThisPr: status.localSpawnEnabledInThisPr === true,
+    providerDeclarationEnabledInThisPr: status.providerDeclarationEnabledInThisPr === true,
+    requestShapeMutationEnabledInThisPr: status.requestShapeMutationEnabledInThisPr === true,
+    recursiveSpawnEnabledInThisPr: status.recursiveSpawnEnabledInThisPr === true,
+    waitToolEnabledInThisPr: status.waitToolEnabledInThisPr === true,
+    sendMessageToolEnabledInThisPr: status.sendMessageToolEnabledInThisPr === true,
+    interruptToolEnabledInThisPr: status.interruptToolEnabledInThisPr === true,
+    rendererSafeSummary: boundedString(status.rendererSafeSummary || "Agent runtime substrate is not exposed.", 360),
+    statusDigest: normalizeString(status.statusDigest, ""),
+  };
+}
+
 function summarizeContinuity(input = {}) {
   const continuity = objectOrEmpty(input.continuityStatus || input.contextContinuityStatus);
   const runtimeContext = objectOrEmpty(input.runtimeStatus?.directContextMaintenance || input.runtimeStatus?.contextMaintenance);
@@ -707,6 +758,7 @@ function buildRows(sections) {
   const agentClasses = sections.agentClasses;
   const toolCapabilities = sections.toolCapabilities;
   const controlTools = sections.controlTools;
+  const agentRuntime = sections.agentRuntime;
   const continuity = sections.continuity;
   const contextPreview = sections.contextPreview;
   const memoryWorkbench = sections.memoryWorkbench;
@@ -844,6 +896,21 @@ function buildRows(sections) {
       statusRow("Execution/provider", `${controlTools.executableToolCount}/${controlTools.providerDeclaredToolCount}`, controlTools.executableToolCount || controlTools.providerDeclaredToolCount ? "blocked" : "ok"),
       statusRow("Authority", controlTools.localExecutorEnabledInThisPr || controlTools.providerDeclarationEnabledInThisPr || controlTools.authorityGateEnabledInThisPr || controlTools.workspaceMutationAllowed || controlTools.agentSpawnAllowed || controlTools.externalToolExecutionAllowed || controlTools.freeTextCanWidenAuthority || controlTools.planMayAuthorizeAction ? "unexpected grant" : "substrate only", controlTools.localExecutorEnabledInThisPr || controlTools.providerDeclarationEnabledInThisPr || controlTools.authorityGateEnabledInThisPr || controlTools.workspaceMutationAllowed || controlTools.agentSpawnAllowed || controlTools.externalToolExecutionAllowed || controlTools.freeTextCanWidenAuthority || controlTools.planMayAuthorizeAction ? "blocked" : "ok"),
     ],
+    agentRuntime: [
+      statusRow("Surface", agentRuntime.available ? "available" : "not exposed", agentRuntime.available ? "diagnostic" : "missing"),
+      statusRow("Mode", agentRuntime.mode),
+      statusRow("Graph", agentRuntime.canonicalGraphEvidence ? "canonical evidence" : "not canonical", agentRuntime.canonicalGraphEvidence ? "ok" : "blocked"),
+      statusRow("Nodes/edges", `${agentRuntime.nodeCount}/${agentRuntime.edgeCount}`),
+      statusRow("Mailbox messages", `${agentRuntime.mailboxMessageCount} · dup ${agentRuntime.duplicateMailboxMessageCount} · seq ${agentRuntime.mailboxSequenceViolationCount}`, agentRuntime.duplicateMailboxMessageCount || !agentRuntime.mailboxSequenceValid || agentRuntime.mailboxSequenceViolationCount ? "blocked" : "ok"),
+      statusRow("Lifecycle", `${agentRuntime.activeAgentCount} active / ${agentRuntime.terminalAgentCount} terminal / ${agentRuntime.unknownRecoveryCount} unknown`),
+      statusRow("Spawn plan", agentRuntime.agentSpawnPlanExists ? "exists" : "missing", agentRuntime.agentSpawnPlanExists ? "diagnostic" : "blocked"),
+      statusRow("Context family", agentRuntime.agentContextPacketFamilyExists ? "exists" : "missing", agentRuntime.agentContextPacketFamilyExists ? "ok" : "blocked"),
+      statusRow("Authority boundary", agentRuntime.agentAuthorityBoundaryExplicit ? "explicit" : "missing", agentRuntime.agentAuthorityBoundaryExplicit ? "ok" : "blocked"),
+      statusRow("Mailbox law", `${agentRuntime.mailboxSequenceLaw} / ${agentRuntime.mailboxIdempotencyLaw}`),
+      statusRow("Recovery classes", agentRuntime.recoveryClasses.length ? agentRuntime.recoveryClasses.slice(0, 6).join(", ") : "none", agentRuntime.recoveryClasses.length ? "diagnostic" : "missing"),
+      statusRow("Projection law", agentRuntime.subAgentPanelProjectionOnly && !agentRuntime.childTranscriptPromotionAllowed && !agentRuntime.parentSpawnIntentMayClaimChildSuccess ? "panel only, no flattening" : "unsafe", agentRuntime.subAgentPanelProjectionOnly && !agentRuntime.childTranscriptPromotionAllowed && !agentRuntime.parentSpawnIntentMayClaimChildSuccess ? "ok" : "blocked"),
+      statusRow("Authority", agentRuntime.agentSpawnExecutable || agentRuntime.providerSpawnEnabledInThisPr || agentRuntime.localSpawnEnabledInThisPr || agentRuntime.providerDeclarationEnabledInThisPr || agentRuntime.requestShapeMutationEnabledInThisPr || agentRuntime.recursiveSpawnEnabledInThisPr || agentRuntime.waitToolEnabledInThisPr || agentRuntime.sendMessageToolEnabledInThisPr || agentRuntime.interruptToolEnabledInThisPr ? "unexpected grant" : "substrate only", agentRuntime.agentSpawnExecutable || agentRuntime.providerSpawnEnabledInThisPr || agentRuntime.localSpawnEnabledInThisPr || agentRuntime.providerDeclarationEnabledInThisPr || agentRuntime.requestShapeMutationEnabledInThisPr || agentRuntime.recursiveSpawnEnabledInThisPr || agentRuntime.waitToolEnabledInThisPr || agentRuntime.sendMessageToolEnabledInThisPr || agentRuntime.interruptToolEnabledInThisPr ? "blocked" : "ok"),
+    ],
     continuity: [
       statusRow("Transition", continuity.transitionStatus),
       statusRow("Context loss", continuity.contextLossState),
@@ -971,6 +1038,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
   const agentClasses = summarizeAgentClasses(input.agentClassStatus);
   const toolCapabilities = summarizeToolCapabilities(input.toolCapabilityStatus || input.toolCapabilityProjection || input.directToolCapabilityStatus || input);
   const controlTools = summarizeControlToolSubstrate(input.controlToolStatus || input.controlToolSubstrateStatus || input.directControlToolStatus || input);
+  const agentRuntime = summarizeAgentRuntimeSubstrate(input.agentRuntimeStatus || input.agentRuntimeSubstrateStatus || input.directAgentRuntimeStatus || input);
   const continuity = summarizeContinuity(input);
   const contextPreview = summarizeContextPreview(input.contextPreview || input.contextPacketPreview || input.directContextPreview || input);
   const memoryWorkbench = summarizeMemoryWorkbench(input.memoryWorkbench || input.memoryReviewWorkbench || input.directMemoryWorkbench || input);
@@ -1020,11 +1088,18 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
     controlToolContextWorldMutationAllowed: false,
     controlToolFreeTextAuthorityAllowed: false,
     controlToolPlanAuthorityAllowed: false,
+    agentRuntimeSpawnAllowed: false,
+    agentRuntimeProviderDeclarationAllowed: false,
+    agentRuntimeRequestShapeMutationAllowed: false,
+    agentRuntimeRecursiveSpawnAllowed: false,
+    agentRuntimeWaitAllowed: false,
+    agentRuntimeSendMessageAllowed: false,
+    agentRuntimeInterruptAllowed: false,
     rawTextIncluded: false,
     rawPathIncluded: false,
     rawSecretIncluded: false,
   };
-  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, toolCapabilities, controlTools, continuity, contextPreview, memoryWorkbench, runtimeWitness, agentUsage, appServerFallbackParity, manualSmokeGate, headlessDaemon };
+  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, toolCapabilities, controlTools, agentRuntime, continuity, contextPreview, memoryWorkbench, runtimeWitness, agentUsage, appServerFallbackParity, manualSmokeGate, headlessDaemon };
   const sourceDigest = digestFor("direct-settings-surface-source@1", sections);
   const projection = {
     schema: DIRECT_SETTINGS_SURFACE_PROJECTION_SCHEMA,
@@ -1046,6 +1121,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       "agent_class_specs",
       "direct_tool_capability_constitution",
       "control_perception_human_decision_tool_substrate",
+      "agent_runtime_substrate",
       "memory_baton_omission_compaction",
       "context_packet_preview",
       "memory_review_workbench",
@@ -1075,6 +1151,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       { kind: "agent_class_status", digest: normalizeString(input.agentClassStatus?.projectionDigest, ""), label: "Agent class status" },
       { kind: "direct_tool_capability_status", digest: normalizeString(toolCapabilities.registryDigest || input.toolCapabilityStatus?.projectionDigest, ""), label: "Direct tool capability constitution" },
       { kind: "direct_control_tool_substrate_status", digest: normalizeString(controlTools.statusDigest, ""), label: "Control/perception/human-decision tool substrate" },
+      { kind: "direct_agent_runtime_substrate_status", digest: normalizeString(agentRuntime.statusDigest, ""), label: "Agent runtime substrate" },
       { kind: "continuity_status", digest: normalizeString(input.continuityStatus?.projectionDigest, ""), label: "Continuity status" },
       { kind: "context_packet_preview", digest: normalizeString(contextPreview.previewDigest, ""), label: "Context packet preview" },
       { kind: "memory_review_workbench", digest: normalizeString(memoryWorkbench.workbenchDigest, ""), label: "Memory review workbench" },
@@ -1136,6 +1213,13 @@ function assertDirectSettingsSurfaceRendererSafe(projection = {}) {
     "controlToolContextWorldMutationAllowed",
     "controlToolFreeTextAuthorityAllowed",
     "controlToolPlanAuthorityAllowed",
+    "agentRuntimeSpawnAllowed",
+    "agentRuntimeProviderDeclarationAllowed",
+    "agentRuntimeRequestShapeMutationAllowed",
+    "agentRuntimeRecursiveSpawnAllowed",
+    "agentRuntimeWaitAllowed",
+    "agentRuntimeSendMessageAllowed",
+    "agentRuntimeInterruptAllowed",
     "rawTextIncluded",
     "rawPathIncluded",
     "rawSecretIncluded",
