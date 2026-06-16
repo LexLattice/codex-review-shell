@@ -462,6 +462,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "Provider calls, context-pack construction, direct session creation, tool execution, outbox delivery, and human-decision routing remain disabled until later Wave 9 slices add explicit authority.",
   },
   {
+    id: "ic13.headless-direct-text-runtime",
+    name: "Headless direct text runtime",
+    role: "governance_routing",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/headless/text-runtime.js", "src/main/direct/headless/bridge-daemon.js", "src/main/direct/headless/bridge-store.js", "scripts/direct-bridge-submit-event.mjs", "scripts/direct-headless-text-runtime-regression.mjs"],
+    ontology: ontologyShape(["headless_turn_packet", "headless_direct_text_runtime_status", "bridge_event_lifecycle_witness"], "harness", {
+      identityFields: ["envelopeId", "packetId", "workThreadId", "targetThreadId", "clientTurnRequestId"],
+      schema: "headless_turn_packet@1",
+    }),
+    bridgeFit: "Converts accepted headless bridge events into direct-text turn packets with queue-after-active-turn policy, terminal packet evidence, replay-state classification, and polling-safe status without introducing tool authority.",
+    realignment: "This slice is direct-text only; implementation-lane tools, outbox reducers, human decisions, automatic retry after provider start, and production external routes remain gated to later Wave 9 slices.",
+  },
+  {
     id: "ic14.skills-hooks-apps",
     name: "Skills, hooks, and app connectors as bridge modules",
     role: "governance_routing",
