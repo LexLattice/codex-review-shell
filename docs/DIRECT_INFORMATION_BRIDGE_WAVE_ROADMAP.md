@@ -2842,7 +2842,7 @@ turn result without Electron being open.
 
 ### PR 52: Headless Implementation-Lane Runtime
 
-Status: planned.
+Status: implemented in branch `codex/direct-headless-implementation-runtime`.
 
 Purpose:
 
@@ -2859,6 +2859,20 @@ Scope:
 - Reuse existing read/patch/command authority gates, approval/authority
   policies, workspace mutation truth, tool-result continuations, and recovery
   classification.
+
+Implemented slice:
+
+- `direct-implementation` is accepted as a headless turn-packet runtime path.
+- The bridge daemon now exposes a generic `turnRuntime` projection while keeping
+  `textRuntime` compatibility for earlier Wave 9 clients.
+- Implementation routes can declare `headlessImplementationPolicy@1`.
+- Auto-approval is fail-closed and requires `disposableWorkspace=true`.
+- V0 regression covers a disposable read-only `read_file` route through the
+  existing `DirectLiveTextController`, `DirectLiveTextSurfaceSession.respond`,
+  read-only approval handler, workspace read backend, quoted tool-result
+  continuation, and terminal packet polling.
+- Unsafe auto-approval without disposable workspace produces a failed packet
+  before provider request.
 
 Explicit non-goals:
 
