@@ -57,6 +57,20 @@ function promptTextFromEvent(input = {}) {
   return normalizeString(facts.promptText || facts.prompt_text || facts.text || facts.message, "");
 }
 
+function modelFromEvent(input = {}) {
+  const direct = normalizeString(input.model || input.model_id || input.modelId, "");
+  if (direct) return direct;
+  const facts = isPlainObject(input.facts) ? input.facts : {};
+  return normalizeString(facts.model || facts.model_id || facts.modelId, "");
+}
+
+function reasoningEffortFromEvent(input = {}) {
+  const direct = normalizeString(input.reasoningEffort || input.reasoning_effort || input.effort, "");
+  if (direct) return direct;
+  const facts = isPlainObject(input.facts) ? input.facts : {};
+  return normalizeString(facts.reasoningEffort || facts.reasoning_effort || facts.effort, "");
+}
+
 function targetRuntimePath(route = {}) {
   const ref = isPlainObject(route.targetThreadRef) ? route.targetThreadRef : {};
   return normalizeString(ref.runtimePath || ref.runtime_path, "direct-text");
@@ -223,6 +237,8 @@ class DirectHeadlessTextRuntime {
     const runtimePath = targetRuntimePath(route);
     const routeTargetId = routeTargetThreadId(route);
     const promptText = promptTextFromEvent(body);
+    const model = modelFromEvent(body);
+    const reasoningEffort = reasoningEffortFromEvent(body);
     const packetId = `headless_turn_packet_${shortDigest(`${event.envelopeId}:${event.payloadDigest}:${runtimePath}`)}`;
     const now = nowIso();
     const implementationPolicy = routeImplementationPolicy(route);
@@ -320,6 +336,8 @@ class DirectHeadlessTextRuntime {
       promptDigest: sha256(promptText),
       promptText,
       promptChars: promptText.length,
+      model,
+      reasoningEffort,
       rawEventPayloadIncluded: false,
       providerStarted: false,
       providerCompleted: false,
@@ -509,6 +527,8 @@ class DirectHeadlessTextRuntime {
         sessionId: packet.targetThreadId,
         threadId: packet.targetThreadId,
         title: `Headless ${packet.routeId}`,
+        model: normalizeString(packet.model, ""),
+        reasoningEffort: normalizeString(packet.reasoningEffort, ""),
         workThreadId: packet.workThreadId,
       };
       const thread = implementationRuntime
@@ -524,6 +544,8 @@ class DirectHeadlessTextRuntime {
         threadId: packet.targetThreadId,
         clientTurnRequestId: packet.clientTurnRequestId,
         promptText: packet.promptText,
+        model: normalizeString(packet.model, ""),
+        reasoningEffort: normalizeString(packet.reasoningEffort, ""),
         workThreadId: packet.workThreadId,
       };
       const turnAck = implementationRuntime
