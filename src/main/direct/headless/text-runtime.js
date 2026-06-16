@@ -69,15 +69,28 @@ function routeTargetThreadId(route = {}) {
 function routeImplementationPolicy(route = {}) {
   const configured = isPlainObject(route.headlessImplementationPolicy) ? route.headlessImplementationPolicy : {};
   const toolAuthorityMode = normalizeString(route.toolAuthorityMode || route.tool_authority_mode, "disabled");
+  const configuredAllowedMethods = configured.allowedMethods || configured.allowed_methods;
   return {
     schema: "headless_implementation_policy@1",
     toolAuthorityMode,
-    autoDecisionMode: normalizeString(configured.autoDecisionMode || configured.autoDecision || route.autoDecisionMode, "disabled"),
-    disposableWorkspace: configured.disposableWorkspace === true || route.disposableWorkspace === true,
-    allowedMethods: Array.isArray(configured.allowedMethods)
-      ? configured.allowedMethods.map((method) => normalizeString(method, "")).filter(Boolean)
+    autoDecisionMode: normalizeString(
+      configured.autoDecisionMode ||
+        configured.auto_decision_mode ||
+        configured.autoDecision ||
+        route.autoDecisionMode ||
+        route.auto_decision_mode,
+      "disabled",
+    ),
+    disposableWorkspace: configured.disposableWorkspace === true ||
+      configured.disposable_workspace === true ||
+      route.disposableWorkspace === true ||
+      route.disposable_workspace === true,
+    allowedMethods: Array.isArray(configuredAllowedMethods)
+      ? configuredAllowedMethods
+        .map((method) => normalizeString(method, ""))
+        .filter((method) => IMPLEMENTATION_AUTO_APPROVE_METHODS.has(method))
       : [],
-    maxAutoDecisions: Math.max(0, Number(configured.maxAutoDecisions || 0) || 0),
+    maxAutoDecisions: Math.max(0, Number(configured.maxAutoDecisions ?? configured.max_auto_decisions ?? 0) || 0),
   };
 }
 
@@ -385,11 +398,11 @@ class DirectHeadlessTextRuntime {
       ? packet.headlessImplementationPolicy
       : routeImplementationPolicy(route);
     const method = normalizeString(request.method, "");
-    const allowedMethods = Array.isArray(policy.allowedMethods) && policy.allowedMethods.length
-      ? new Set(policy.allowedMethods)
-      : IMPLEMENTATION_AUTO_APPROVE_METHODS;
-    const existingDecisions = Array.isArray(packet.headlessImplementationDecisions)
-      ? packet.headlessImplementationDecisions
+    const allowedMethods = new Set((Array.isArray(policy.allowedMethods) ? policy.allowedMethods : [])
+      .filter((allowedMethod) => IMPLEMENTATION_AUTO_APPROVE_METHODS.has(allowedMethod)));
+    const latestPacket = this.store.readTurnPacket(packet.packetId) || packet;
+    const existingDecisions = Array.isArray(latestPacket.headlessImplementationDecisions)
+      ? latestPacket.headlessImplementationDecisions
       : [];
     if (
       policy.autoDecisionMode !== "approve" ||
@@ -397,15 +410,28 @@ class DirectHeadlessTextRuntime {
       !allowedMethods.has(method) ||
       existingDecisions.length >= Number(policy.maxAutoDecisions || 0)
     ) {
-      const latest = this.store.readTurnPacket(packet.packetId) || packet;
+      const declineToken = normalizeString(request.params?.actionTokens?.decline, "");
+      let responseSummary = "declined";
+      try {
+        const response = await surfaceSession.respond(request.key, {
+          decision: "decline",
+          clientToolDecisionId: `headless_decision_${shortDigest(`${packet.packetId}:${request.key}:decline`)}`,
+          actionTokenId: declineToken,
+        });
+        responseSummary = normalizeString(response?.request?.responseSummary || response?.response?.decision, responseSummary);
+      } catch (error) {
+        responseSummary = normalizeString(error?.message, "decline_failed");
+      }
+      const latest = this.store.readTurnPacket(packet.packetId) || latestPacket;
       this.store.updateTurnPacket(packet.packetId, {
         headlessImplementationDecisions: [
           ...(Array.isArray(latest.headlessImplementationDecisions) ? latest.headlessImplementationDecisions : []),
           {
             requestKey: normalizeString(request.key, ""),
             method,
-            decision: "pending_for_human",
+            decision: "decline",
             reason: "headless_auto_approval_not_available",
+            responseSummary,
             at: nowIso(),
           },
         ],

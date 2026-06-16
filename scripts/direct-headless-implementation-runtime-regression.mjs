@@ -63,7 +63,14 @@ function implementationProof() {
   };
 }
 
-function fixtureConfig(rootDir, unsafeAutoApprove = false) {
+function fixtureConfig(rootDir, options = {}) {
+  const unsafeAutoApprove = options.unsafeAutoApprove === true || options === true;
+  const omitAllowedMethods = options.omitAllowedMethods === true;
+  const routeId = unsafeAutoApprove
+    ? "route_impl_unsafe"
+    : omitAllowedMethods
+      ? "route_impl_no_allowed_methods"
+      : "route_impl";
   return {
     rootDir,
     host: "127.0.0.1",
@@ -74,7 +81,7 @@ function fixtureConfig(rootDir, unsafeAutoApprove = false) {
       authMode: "capability_token",
       capabilityToken: TOKEN,
       allowedIngressContracts: ["headless_text_event@1"],
-      allowedRoutes: unsafeAutoApprove ? ["route_impl_unsafe"] : ["route_impl"],
+      allowedRoutes: [routeId],
     }],
     workThreads: [{
       workThreadId: "wt_headless_impl",
@@ -82,14 +89,18 @@ function fixtureConfig(rootDir, unsafeAutoApprove = false) {
       projectId: "project_headless_impl",
     }],
     routes: [{
-      routeId: unsafeAutoApprove ? "route_impl_unsafe" : "route_impl",
+      routeId,
       routeVersion: "v1",
       status: "active",
       ingressContractRef: "headless_text_event@1",
       workThreadId: "wt_headless_impl",
       targetThreadRef: {
         runtimePath: "direct-implementation",
-        threadId: unsafeAutoApprove ? "direct_session_headless_impl_unsafe" : "direct_session_headless_impl",
+        threadId: unsafeAutoApprove
+          ? "direct_session_headless_impl_unsafe"
+          : omitAllowedMethods
+            ? "direct_session_headless_impl_no_allowed_methods"
+            : "direct_session_headless_impl",
       },
       contextPolicyRef: "direct_implementation_headless_context@1",
       modelPolicyRef: "fixture-model-policy",
@@ -99,7 +110,7 @@ function fixtureConfig(rootDir, unsafeAutoApprove = false) {
       headlessImplementationPolicy: {
         autoDecisionMode: "approve",
         disposableWorkspace: unsafeAutoApprove ? false : true,
-        allowedMethods: ["direct/tool/readOnly/requestApproval"],
+        ...(omitAllowedMethods ? {} : { allowedMethods: ["direct/tool/readOnly/requestApproval"] }),
         maxAutoDecisions: 1,
       },
     }],
@@ -223,14 +234,15 @@ const controller = new DirectLiveTextController({
   },
   fetchImpl: async (_url, init = {}) => {
     fetchCalls += 1;
-    if (fetchCalls === 2) {
-      const body = JSON.parse(init.body || "{}");
+    const body = JSON.parse(init.body || "{}");
+    const isContinuation = JSON.stringify(body.input || "").includes("read_file_result");
+    if (isContinuation) {
       assert.equal(body.store, false);
       assert.equal(body.parallel_tool_calls, false);
       assert(!("previous_response_id" in body));
       assert(body.input?.[0]?.content?.[0]?.text?.includes("read_file_result"));
     }
-    return textResponse(fetchCalls === 1 ? initialToolSse : continuationSse, 200, { "content-type": "text/event-stream" });
+    return textResponse(isContinuation ? continuationSse : initialToolSse, 200, { "content-type": "text/event-stream" });
   },
 });
 
@@ -281,7 +293,7 @@ try {
   assert.equal(status.body.rawPayloadsExposed, false);
 
   const unsafeRoot = await fs.mkdtemp(path.join(os.tmpdir(), "direct-headless-implementation-unsafe-"));
-  const unsafeDaemon = new DirectHeadlessBridgeDaemon(fixtureConfig(unsafeRoot, true));
+  const unsafeDaemon = new DirectHeadlessBridgeDaemon(fixtureConfig(unsafeRoot, { unsafeAutoApprove: true }));
   unsafeDaemon.turnRuntime = new DirectHeadlessTextRuntime({
     store: unsafeDaemon.store,
     controller,
@@ -301,6 +313,38 @@ try {
   } finally {
     await unsafeDaemon.close();
     await fs.rm(unsafeRoot, { recursive: true, force: true });
+  }
+
+  const omittedRoot = await fs.mkdtemp(path.join(os.tmpdir(), "direct-headless-implementation-omitted-"));
+  const omittedDaemon = new DirectHeadlessBridgeDaemon(fixtureConfig(omittedRoot, { omitAllowedMethods: true }));
+  omittedDaemon.turnRuntime = new DirectHeadlessTextRuntime({
+    store: omittedDaemon.store,
+    controller,
+    project,
+    implementationSettleTimeoutMs: 3000,
+  });
+  omittedDaemon.textRuntime = omittedDaemon.turnRuntime;
+  try {
+    const omittedAddress = await omittedDaemon.listen();
+    const omittedBaseUrl = `http://${omittedAddress.host}:${omittedAddress.port}`;
+    const omitted = await requestJson(omittedBaseUrl, "/v1/bridge/events", {
+      method: "POST",
+      body: JSON.stringify(event("impl-turn-no-allowed-methods", "route_impl_no_allowed_methods")),
+    });
+    assert.equal(omitted.response.status, 202);
+    const declined = await waitForPacket(
+      omittedBaseUrl,
+      omitted.body.turnPacket.packetId,
+      (packet) => packet.state === "failed",
+      "headless implementation decline without explicit methods",
+    );
+    assert.equal(declined.headlessImplementationDecisions.length, 1);
+    assert.equal(declined.headlessImplementationDecisions[0].decision, "decline");
+    assert.equal(declined.headlessImplementationDecisions[0].reason, "headless_auto_approval_not_available");
+    assert.equal(workspaceReads, 1);
+  } finally {
+    await omittedDaemon.close();
+    await fs.rm(omittedRoot, { recursive: true, force: true });
   }
 } finally {
   await daemon.close();
