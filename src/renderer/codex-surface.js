@@ -8543,7 +8543,9 @@ document.addEventListener("focusin", (event) => {
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     dismissComposerOverlay("escape");
-    if (state.analyticsPanelOpen && event.target?.closest?.("#threadAnalyticsPanel")) {
+    const target = event.target;
+    const editableTarget = target?.closest?.("input, textarea, [contenteditable='true']");
+    if (state.analyticsPanelOpen && !editableTarget) {
       state.analyticsPanelOpen = false;
       localStorageSet("codex.threadAnalyticsPanel.open", "false");
       renderThreadAnalyticsPanel();

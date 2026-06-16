@@ -263,6 +263,7 @@ function dedupeQuotaWindows(windows = []) {
   const seen = new Set();
   const deduped = [];
   for (const window of windows) {
+    if (!window) continue;
     const key = `${normalizeString(window.windowId, "")}:${normalizeString(window.windowKind, "")}:${normalizeString(window.resetsAt, "")}`;
     if (seen.has(key)) continue;
     seen.add(key);

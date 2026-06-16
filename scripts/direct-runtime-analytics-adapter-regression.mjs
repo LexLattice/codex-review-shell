@@ -418,6 +418,58 @@ assert.equal(metadataWindowProjection.context.modelContextWindow, 272000);
 assert.equal(metadataWindowProjection.context.usedPercent, 2);
 assert(metadataWindowProjection.context.blockers.includes("context_window_filled_from_provider_metadata"));
 
+const siblingSession = {
+  sessionId: "direct_sibling_adapter",
+  projectId,
+  model: "gpt-5.5",
+  reasoningEffort: "low",
+  agentKind: "main_agent",
+  agentThreadId: "direct_sibling_adapter",
+};
+const siblingTurn = {
+  ...turn,
+  sessionId: siblingSession.sessionId,
+  threadId: siblingSession.sessionId,
+  turnId: "direct_sibling_turn_adapter",
+  model: "gpt-5.5",
+  reasoningEffort: "low",
+  submittedAt: "2026-06-15T10:03:00.000Z",
+  createdAt: "2026-06-15T10:03:00.000Z",
+  requestBuiltAt: "2026-06-15T10:03:00.100Z",
+  firstVisibleDeltaAt: "2026-06-15T10:03:00.400Z",
+  completedAt: "2026-06-15T10:03:01.000Z",
+  updatedAt: "2026-06-15T10:03:01.000Z",
+  toolResults: [],
+  usageAttribution: {
+    rows: [
+      {
+        rowId: "usage_sibling_adapter_terminal",
+        usageSource: "response_completed_usage",
+        usageRecordKind: "terminal",
+        responseId: "resp_sibling_adapter",
+        inputTokens: 90000,
+        cachedInputTokens: 0,
+        nonCachedInputTokens: 90000,
+        outputTokens: 9000,
+        reasoningTokens: 999,
+        totalTokens: 99000,
+        rowDigest: "sha256:usage_sibling_adapter",
+      },
+    ],
+  },
+};
+store.recordDirectRuntimeAnalyticsFacts({
+  projectId,
+  sessionTurns: [{ session: siblingSession, turns: [siblingTurn] }],
+});
+const scopedAfterSiblingSnapshot = store.getDirectRuntimeAnalyticsFactSnapshot(projectId, {
+  threadId: session.sessionId,
+});
+assert.equal(scopedAfterSiblingSnapshot.summary.tokenTotals.totalTokens, 10195);
+assert.equal(scopedAfterSiblingSnapshot.summary.counts.nonMissingUsageFacts, 3);
+assert.equal(scopedAfterSiblingSnapshot.timing.completed, 2);
+assert(!scopedAfterSiblingSnapshot.turnUsageRows.some((row) => row.threadId === siblingSession.sessionId));
+
 const unavailableProjection = buildRuntimeAnalyticsProjection({
   projectId: "project_empty",
   runtimePath: "direct-implementation",

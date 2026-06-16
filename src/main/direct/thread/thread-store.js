@@ -289,12 +289,30 @@ function emptyUsageAggregate() {
   };
 }
 
+function usageTokenTotals(rows = []) {
+  return (Array.isArray(rows) ? rows : []).reduce((totals, row) => {
+    addUsageTokens(totals, row);
+    return totals;
+  }, emptyUsageAggregate());
+}
+
 function maxIso(left = "", right = "") {
   const leftMs = Date.parse(left || "");
   const rightMs = Date.parse(right || "");
   if (!Number.isFinite(leftMs)) return right || "";
   if (!Number.isFinite(rightMs)) return left || "";
   return rightMs >= leftMs ? right : left;
+}
+
+function byObservedDesc(left = {}, right = {}) {
+  const leftMs = Date.parse(left.observedAt || left.observed_at || "");
+  const rightMs = Date.parse(right.observedAt || right.observed_at || "");
+  const leftValid = Number.isFinite(leftMs);
+  const rightValid = Number.isFinite(rightMs);
+  if (!leftValid && !rightValid) return 0;
+  if (!leftValid) return 1;
+  if (!rightValid) return -1;
+  return rightMs - leftMs;
 }
 
 function usageDimensionRows(rows = [], scopeThreadId = "") {
@@ -382,7 +400,6 @@ function usageDimensionRows(rows = [], scopeThreadId = "") {
       edgeEntry.observedAt = maxIso(edgeEntry.observedAt, observedAt);
     }
   }
-  const byObservedDesc = (left, right) => Date.parse(right.observedAt || "") - Date.parse(left.observedAt || "");
   const turnUsageRows = [...turnMap.values()]
     .filter((row) => !scopeThreadId || row.threadId === scopeThreadId || row.parentThreadId === scopeThreadId)
     .sort(byObservedDesc)
@@ -1800,6 +1817,18 @@ class DirectThreadStore {
           order by observed_at desc
           limit 1
         `).get(safeThreadId, safeThreadId);
+    const contextCountRow = safeProjectId
+      ? this.db.prepare(`
+          select count(*) as count
+          from direct_context_analytics_facts
+          where project_id = ?
+            and (? = '' or thread_id = ?)
+        `).get(safeProjectId, safeThreadId, safeThreadId)
+      : this.db.prepare(`
+          select count(*) as count
+          from direct_context_analytics_facts
+          where (? = '' or thread_id = ?)
+        `).get(safeThreadId, safeThreadId);
     const toolRows = safeProjectId
       ? this.db.prepare(`
           select tool_kind, status, count(*) as count
@@ -1873,7 +1902,6 @@ class DirectThreadStore {
             and usage_record_kind != 'missing'
             and (? = '' or thread_id = ? or parent_thread_id = ?)
           order by observed_at desc
-          limit 500
         `).all(safeProjectId, safeThreadId, safeThreadId, safeThreadId)
       : this.db.prepare(`
           select
@@ -1900,21 +1928,24 @@ class DirectThreadStore {
           where usage_record_kind != 'missing'
             and (? = '' or thread_id = ? or parent_thread_id = ?)
           order by observed_at desc
-          limit 500
         `).all(safeThreadId, safeThreadId, safeThreadId);
-    const usageDimensions = usageDimensionRows(dedupeUsageFactRowsForTotals(usageDetailRows), safeThreadId);
+    const dedupedUsageDetailRows = dedupeUsageFactRowsForTotals(usageDetailRows);
+    const usageDimensions = usageDimensionRows(dedupedUsageDetailRows, safeThreadId);
+    const scopedTokenTotals = usageTokenTotals(dedupedUsageDetailRows);
     const timingRows = safeProjectId
       ? this.db.prepare(`
           select mark_kind, count(*) as count
           from direct_runtime_timing_marks
           where project_id = ?
+            and (? = '' or thread_id = ?)
           group by mark_kind
-        `).all(safeProjectId)
+        `).all(safeProjectId, safeThreadId, safeThreadId)
       : this.db.prepare(`
           select mark_kind, count(*) as count
           from direct_runtime_timing_marks
+          where (? = '' or thread_id = ?)
           group by mark_kind
-        `).all();
+        `).all(safeThreadId, safeThreadId);
     const durationRows = safeProjectId
       ? this.db.prepare(`
           select
@@ -2039,11 +2070,26 @@ class DirectThreadStore {
       });
     }
 
+    const summaryForSnapshot = {
+      ...summary,
+      threadId: safeThreadId,
+      counts: {
+        ...summary.counts,
+        timingMarks: timingRows.reduce((sum, row) => sum + normalizeNumber(row.count, 0), 0),
+        usageFacts: usageDetailRows.length,
+        nonMissingUsageFacts: usageDetailRows.length,
+        contextFacts: normalizeNumber(contextCountRow?.count, 0),
+        toolFacts: toolRows.reduce((sum, row) => sum + normalizeNumber(row.count, 0), 0),
+        quotaFacts: quotaRows.length,
+      },
+      tokenTotals: scopedTokenTotals,
+    };
+
     return {
       schema: "direct_runtime_analytics_fact_snapshot@1",
       projectId: safeProjectId,
       threadId: safeThreadId,
-      summary,
+      summary: summaryForSnapshot,
       lastObservedAt: normalizeString(latestObservedRow?.observed_at, ""),
       latestContext: latestContextRow
         ? {
