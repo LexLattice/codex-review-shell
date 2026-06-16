@@ -136,6 +136,23 @@ function main() {
   assert(settingsProjection.authority.toolLocalExecutionAllowed === false, "settings authority must block local tool execution");
   assertDirectSettingsSurfaceRendererSafe(settingsProjection);
 
+  const pollutedSettingsProjection = buildDirectSettingsSurfaceProjection({
+    projectId: registry.projectId,
+    status: "polluted_parent_status",
+    rowCount: 999,
+    toolCapabilityStatus: status,
+  });
+  assert(pollutedSettingsProjection.sections.toolCapabilities.rowCount === registry.rowCount, "settings surface should prefer nested tool capability status over parent fields");
+  assert(pollutedSettingsProjection.sections.toolCapabilities.status === "constitution_only", "settings surface should not inherit parent status field");
+
+  const missingSettingsProjection = buildDirectSettingsSurfaceProjection({
+    projectId: registry.projectId,
+    status: "polluted_parent_status",
+    rowCount: 999,
+  });
+  assert(missingSettingsProjection.sections.toolCapabilities.rowCount === 0, "missing tool capability status should not inherit parent rowCount");
+  assert(missingSettingsProjection.sections.toolCapabilities.status === "not_exposed", "missing tool capability status should not inherit parent status");
+
   const hostileEnabled = buildToolCapabilityRegistry({
     rows: [{
       toolId: "hostile.enabled_without_executor",
@@ -150,6 +167,21 @@ function main() {
     }],
   });
   expectThrows(() => validateToolCapabilityRegistry(hostileEnabled), "enabled_without_full_executor");
+
+  const hostileMissingExecutorPath = buildToolCapabilityRegistry({
+    rows: [{
+      toolId: "hostile.missing_executor_path",
+      displayName: "hostile missing executor path",
+      odeuFamily: "workspace_process_authority",
+      capabilityState: "runtime_probed",
+      implementationState: "restricted_executor",
+      promotionState: "direct_restricted",
+      providerDeclarationState: "declared_live_unproved",
+      localExecutorState: "implemented_restricted",
+      requestShapeFamilies: ["function_call"],
+    }],
+  });
+  expectThrows(() => validateToolCapabilityRegistry(hostileMissingExecutorPath), "missing_executor_path");
 
   const hostileUnsupported = buildToolCapabilityRegistry({
     rows: [{

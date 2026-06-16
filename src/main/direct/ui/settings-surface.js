@@ -386,7 +386,10 @@ function summarizeAgentClasses(agentClassStatus = {}) {
 }
 
 function summarizeToolCapabilities(toolCapabilityStatus = {}) {
-  const status = objectOrEmpty(toolCapabilityStatus);
+  const source = objectOrEmpty(toolCapabilityStatus);
+  const status = normalizeString(source.schema, "") === "direct_tool_capability_status_projection@1"
+    ? source
+    : objectOrEmpty(source.toolCapabilityStatus || source.toolCapabilityProjection || source.directToolCapabilityStatus);
   return {
     schema: normalizeString(status.schema, ""),
     status: normalizeString(status.status, "not_exposed"),

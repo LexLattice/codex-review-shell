@@ -118,6 +118,11 @@ const {
   buildAgentClassStatusProjection,
 } = require("./main/direct/bridge/agent-class-spec");
 const {
+  buildToolCapabilityRegistry,
+  buildToolCapabilityStatusProjection,
+  validateToolCapabilityRegistry,
+} = require("./main/direct/bridge/tool-capability-registry");
+const {
   buildDirectAgentUsageLedger,
   buildDirectAgentUsageSummaryProjection,
 } = require("./main/direct/usage/agent-ledger");
@@ -2446,6 +2451,16 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     registry: agentClassRegistry,
     status: "shadow_only",
   });
+  const toolCapabilityRegistry = buildToolCapabilityRegistry({
+    projectId,
+    mode: "constitution_only",
+  });
+  validateToolCapabilityRegistry(toolCapabilityRegistry);
+  const toolCapabilityStatus = buildToolCapabilityStatusProjection({
+    projectId,
+    registry: toolCapabilityRegistry,
+    status: "constitution_only",
+  });
   const agentUsageStatus = buildDirectAgentUsageStatusForProject(projectId);
   const implementationLaneUiStatus = buildDirectImplementationLaneUiStatus({ project, runtimeStatus });
   const directProviderMetadata = directProviderMetadataStatusForProject(project);
@@ -2484,6 +2499,7 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     metaSessionStatus,
     moduleStatus,
     agentClassStatus,
+    toolCapabilityStatus,
     continuityStatus: runtimeStatus.directContextMaintenance,
     contextPreview,
     runtimeWitnessProjection,

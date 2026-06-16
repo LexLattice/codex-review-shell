@@ -776,6 +776,9 @@ function validateToolCapabilityRegistry(registry = {}) {
     if (row.promotionState === "direct_enabled" && row.localExecutorState !== "implemented_full") {
       throw new Error(`direct_tool_capability_enabled_without_full_executor:${row.toolId}`);
     }
+    if (["implemented_restricted", "implemented_full"].includes(row.localExecutorState) && !normalizeString(row.localExecutor, "")) {
+      throw new Error(`direct_tool_capability_missing_executor_path:${row.toolId}`);
+    }
     for (const flag of ["toolEnabledInThisPr", "providerDeclarationEnabledInThisPr", "localExecutionEnabledInThisPr", "authorityGateEnabledInThisPr"]) {
       if (row[flag] !== false) throw new Error(`direct_tool_capability_authority_leak:${row.toolId}:${flag}`);
     }
