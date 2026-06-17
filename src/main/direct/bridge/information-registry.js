@@ -714,6 +714,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "Promotion decisions do not activate tools, mutate defaults, grant renderer authority, start provider calls, or bypass per-call authority; fixture/headless evidence remains restricted rather than direct runtime enablement.",
   },
   {
+    id: "ic13.direct-tool-activation-registry",
+    name: "Direct tool activation registry",
+    role: "authority_gate",
+    implementationState: "partial",
+    directPathPosture: "keep_gated",
+    sourceFiles: ["src/main/direct/headless/tool-activation-registry.js", "src/main/direct/headless/tool-promotion-decision-report.js", "scripts/direct-tool-activation-registry-regression.mjs", "docs/DIRECT_TOOL_AUTHORITY_FAMILIES_WAVE_SPEC.md"],
+    ontology: ontologyShape(["direct_tool_activation_registry", "direct_tool_activation_row", "direct_tool_activation_snapshot"], "harness", {
+      identityFields: ["registryId", "promotionReportDigest", "activationRowId", "toolClassId", "scope.kind", "rowDigest"],
+      schema: "direct_tool_activation_registry@1",
+    }),
+    bridgeFit: "Consumes promotion decisions and records scoped activation eligibility with precedence, deny/revoke law, provider request-shape support, executor state, authority envelope, recovery/replay classifier, and result-envelope policy.",
+    realignment: "Activation remains eligibility only in PR71: no provider declarations are built, no model-visible tools are enabled, no renderer authority is granted, and per-call authority gates remain mandatory.",
+  },
+  {
     id: "ic14.skills-hooks-apps",
     name: "Skills, hooks, and app connectors as bridge modules",
     role: "governance_routing",

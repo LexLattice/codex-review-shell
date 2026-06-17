@@ -3423,7 +3423,7 @@ No raw prompt/result/path/secret persistence.
 
 ## Wave 11: Tool Promotion And Activation
 
-Status: planned.
+Status: in progress.
 
 Detailed handoff:
 
@@ -3454,7 +3454,7 @@ collapsing evidence, policy, and activation into one switch.
 
 ### PR 70: Tool Promotion Decision Gate
 
-Status: implemented in branch `codex/direct-tool-promotion-decision-gate`.
+Status: merged.
 
 Purpose:
 
@@ -3507,7 +3507,7 @@ No workspace mutation.
 
 ### PR 71: Direct Tool Activation Registry
 
-Status: planned.
+Status: implemented in branch `codex/direct-tool-activation-registry`.
 
 Purpose:
 
@@ -3519,6 +3519,9 @@ runtime-available direct tools.
 Scope summary:
 
 - Add `direct_tool_activation_registry@1`.
+- Add `direct_tool_activation_row@1`.
+- Add `direct_tool_activation_snapshot@1`.
+- Add `direct:tool-activation-registry` regression coverage.
 - Preserve activation states:
   - `inactive`;
   - `active`;
@@ -3548,6 +3551,13 @@ Scope summary:
 - Freeze activation snapshot and tool declaration digest per provider request.
 - Keep all activation disabled by default unless explicitly configured.
 - Expose renderer-safe activation status and blockers.
+- Preserve PR71 as registry-only: active rows are declaration eligibility,
+  while `providerDeclarationEnabled`, `modelVisibleToolEnabled`, and
+  `perCallAuthorityBypassed` stay false.
+- Downgrade restricted promotion evidence to `shadow_only` when an active
+  request is attempted.
+- Suspend unsafe global positive activation for non-harmless tool classes in V0.
+- Preserve immediate `revoked` rows for emergency revoke scope.
 
 Non-goals:
 
