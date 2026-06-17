@@ -64,7 +64,7 @@ function activationRequestKey(value = {}) {
   const request = isPlainObject(value) ? value : {};
   const scope = isPlainObject(request.scope) ? request.scope : {};
   return [
-    normalizeString(request.toolClassId || request.scope?.toolClassId, "*"),
+    normalizeString(request.toolClassId || scope.toolClassId, "*"),
     normalizeString(request.toolName, "*"),
     normalizeString(scope.kind || request.scopeKind, "*"),
     normalizeString(scope.projectId || request.projectId, "*"),
@@ -73,45 +73,79 @@ function activationRequestKey(value = {}) {
   ].join("|");
 }
 
-function decisionRequestKeys(decision = {}, options = {}) {
+function activationRequestEffectPriority(request = {}) {
+  const state = requestState(request);
+  if (state === "revoked") return 0;
+  if (state === "inactive" || state === "expired") return 1;
+  if (state === "shadow_only" || state === "suspended") return 2;
+  return 3;
+}
+
+function decisionRequestCandidates(decision = {}, requestMap = new Map(), options = {}) {
   const scope = isPlainObject(decision.scope) ? decision.scope : {};
   const toolClassId = normalizeString(scope.toolClassId, "*");
   const toolName = normalizeString(scope.toolName, "*");
   const projectId = normalizeString(options.projectId, "");
   const workThreadId = normalizeString(options.workThreadId, "");
   const turnId = normalizeString(options.turnId, "");
-  return [
-    [toolClassId, toolName, "single_turn_override", projectId, workThreadId, turnId].join("|"),
-    [toolClassId, "*", "single_turn_override", projectId, workThreadId, turnId].join("|"),
-    [toolClassId, toolName, "work_thread_override", projectId, workThreadId, "*"].join("|"),
-    [toolClassId, "*", "work_thread_override", projectId, workThreadId, "*"].join("|"),
-    [toolClassId, toolName, "project_default", projectId, "*", "*"].join("|"),
-    [toolClassId, "*", "project_default", projectId, "*", "*"].join("|"),
-    [toolClassId, toolName, "global_default", "*", "*", "*"].join("|"),
-    [toolClassId, "*", "global_default", "*", "*", "*"].join("|"),
-    ["*", "*", "single_turn_override", projectId, workThreadId, turnId].join("|"),
-    ["*", "*", "work_thread_override", projectId, workThreadId, "*"].join("|"),
-    ["*", "*", "project_default", projectId, "*", "*"].join("|"),
-    ["*", "*", "global_default", "*", "*", "*"].join("|"),
+  const scopeSpecs = [
+    { kind: "single_turn_override", projectId, workThreadId, turnId },
+    { kind: "work_thread_override", projectId, workThreadId, turnId: "*" },
+    { kind: "project_default", projectId, workThreadId: "*", turnId: "*" },
+    { kind: "global_default", projectId: "*", workThreadId: "*", turnId: "*" },
   ];
+  const toolSpecs = [
+    { toolClassId, toolName, specificity: 2 },
+    { toolClassId, toolName: "*", specificity: 1 },
+    { toolClassId: "*", toolName: "*", specificity: 0 },
+  ];
+  const candidates = [];
+  for (const scopeSpec of scopeSpecs) {
+    const scopePrecedence = SCOPE_PRECEDENCE_ORDER.indexOf(scopeSpec.kind);
+    for (const toolSpec of toolSpecs) {
+      const key = [
+        toolSpec.toolClassId,
+        toolSpec.toolName,
+        scopeSpec.kind,
+        scopeSpec.projectId,
+        scopeSpec.workThreadId,
+        scopeSpec.turnId,
+      ].join("|");
+      if (!requestMap.has(key)) continue;
+      const request = requestMap.get(key);
+      candidates.push({
+        key,
+        request,
+        scopePrecedence,
+        effectPriority: activationRequestEffectPriority(request),
+        specificity: toolSpec.specificity,
+      });
+    }
+  }
+  return candidates.sort((left, right) => (
+    left.scopePrecedence - right.scopePrecedence
+    || left.effectPriority - right.effectPriority
+    || right.specificity - left.specificity
+  ));
 }
 
 function activationRequestFor(decision = {}, requestMap = new Map(), options = {}) {
-  for (const key of decisionRequestKeys(decision, options)) {
-    if (requestMap.has(key)) return requestMap.get(key);
-  }
-  return null;
+  return decisionRequestCandidates(decision, requestMap, options)[0]?.request || null;
 }
 
 function normalizeScope(request = {}, options = {}) {
   const safeRequest = isPlainObject(request) ? request : {};
   const scope = isPlainObject(safeRequest.scope) ? safeRequest.scope : {};
   const kind = normalizeString(scope.kind || safeRequest.scopeKind, options.workThreadId ? "work_thread_override" : options.projectId ? "project_default" : "global_default");
+  const safeKind = ACTIVATION_SCOPE_KINDS.has(kind) ? kind : "project_default";
+  const hasProject = safeKind !== "global_default";
+  const hasWorkThread = safeKind === "work_thread_override" || safeKind === "single_turn_override";
+  const hasTurn = safeKind === "single_turn_override";
   return {
-    kind: ACTIVATION_SCOPE_KINDS.has(kind) ? kind : "project_default",
-    projectId: normalizeString(scope.projectId || safeRequest.projectId, normalizeString(options.projectId, "")),
-    workThreadId: normalizeString(scope.workThreadId || safeRequest.workThreadId, normalizeString(options.workThreadId, "")),
-    turnId: normalizeString(scope.turnId || safeRequest.turnId, normalizeString(options.turnId, "")),
+    kind: safeKind,
+    projectId: hasProject ? normalizeString(scope.projectId || safeRequest.projectId, normalizeString(options.projectId, "")) : "",
+    workThreadId: hasWorkThread ? normalizeString(scope.workThreadId || safeRequest.workThreadId, normalizeString(options.workThreadId, "")) : "",
+    turnId: hasTurn ? normalizeString(scope.turnId || safeRequest.turnId, normalizeString(options.turnId, "")) : "",
     operatorId: normalizeString(scope.operatorId || safeRequest.operatorId, normalizeString(options.operatorId, "")),
     configRef: normalizeString(scope.configRef || safeRequest.configRef, ""),
   };
@@ -291,7 +325,7 @@ function requestMapFor(requests = []) {
   return map;
 }
 
-function buildSnapshot(rows = {}, registrySource = {}) {
+function buildSnapshot(rows = [], registrySource = {}) {
   const activeRows = (Array.isArray(rows) ? rows : []).filter((row) => row.state === "active");
   const snapshot = {
     schema: DIRECT_TOOL_ACTIVATION_SNAPSHOT_SCHEMA,
@@ -342,12 +376,13 @@ function buildDirectToolActivationRegistry(options = {}) {
     ...rows.filter((row) => row.state === "active" && row.scope.kind === "global_default" && !isHarmlessGlobalTool({ scope: { requestShapeFamily: row.providerRequestShapeSupport.requestShapeFamily, authorityFamily: row.localExecutorState.authorityFamily } }))
       .map((row) => `unsafe_positive_global_activation:${row.toolClassId}`),
   ];
+  const registryId = normalizeString(options.registryId, `direct_tool_activation_registry_${digestFor("direct-tool-activation-registry-source@1", {
+    promotionReportDigest: promotionReport.reportDigest,
+    rowDigests: rows.map((row) => row.rowDigest),
+  }).slice(0, 24)}`);
   const registry = {
     schema: DIRECT_TOOL_ACTIVATION_REGISTRY_SCHEMA,
-    registryId: normalizeString(options.registryId, `direct_tool_activation_registry_${digestFor("direct-tool-activation-registry-source@1", {
-      promotionReportDigest: promotionReport.reportDigest,
-      rowDigests: rows.map((row) => row.rowDigest),
-    }).slice(0, 24)}`),
+    registryId,
     generatedAt: normalizeString(options.generatedAt, nowIso(options.nowMs)),
     registryVersion: Number.isInteger(options.registryVersion) && options.registryVersion > 0 ? options.registryVersion : 1,
     sourceEvidence: {
@@ -367,7 +402,7 @@ function buildDirectToolActivationRegistry(options = {}) {
       emergencyRevokeWins: true,
       normalActivationAppliesAt: "next_turn",
     },
-    snapshot: buildSnapshot(rows, { registryId: options.registryId }),
+    snapshot: buildSnapshot(rows, { registryId }),
     rawExposureScan,
     summary: {
       byState: countBy(rows, "state"),
@@ -442,8 +477,7 @@ function validateDirectToolActivationRegistry(registry = {}) {
   }
   if (!isPlainObject(registry.snapshot) || registry.snapshot.schema !== DIRECT_TOOL_ACTIVATION_SNAPSHOT_SCHEMA) {
     errors.push("activation_snapshot_missing");
-  }
-  if (registry.snapshot?.providerDeclarationsBuilt !== false || registry.snapshot?.modelVisibleToolsEnabled !== false || registry.snapshot?.toolDeclarationDigest !== "") {
+  } else if (registry.snapshot.providerDeclarationsBuilt !== false || registry.snapshot.modelVisibleToolsEnabled !== false || registry.snapshot.toolDeclarationDigest !== "") {
     errors.push("activation_snapshot_declared_tools_too_early");
   }
   if (!isPlainObject(registry.rawExposureScan) || (registry.rawExposureScan.passed !== true && registry.status !== "failed")) {

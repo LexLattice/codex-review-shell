@@ -225,6 +225,9 @@ assert.equal(activeReadRow.perCallAuthorityBypassed, false, "activation must not
 
 const unsafeGlobalRegistry = buildDirectToolActivationRegistry({
   promotionReport: realProviderPromotionReport,
+  projectId: "project_tool_activation_registry_fixture",
+  workThreadId: "work_thread_activation_fixture",
+  turnId: "turn_activation_fixture",
   activationRequests: [
     activationRequestFor("local_perception.workspace_read", "active", "global_default"),
   ],
@@ -234,6 +237,9 @@ assert.deepEqual(validateDirectToolActivationRegistry(unsafeGlobalRegistry), [],
 const globalReadRow = unsafeGlobalRegistry.rows.find((row) => row.toolClassId === "local_perception.workspace_read");
 assert.equal(globalReadRow.state, "suspended", "non-harmless global activation should be suspended in V0");
 assert(globalReadRow.blockerCodes.includes("positive_global_activation_disabled_in_v0"), "global suspension blocker should be visible");
+assert.equal(globalReadRow.scope.projectId, "", "global scope must not inherit project fallback");
+assert.equal(globalReadRow.scope.workThreadId, "", "global scope must not inherit work-thread fallback");
+assert.equal(globalReadRow.scope.turnId, "", "global scope must not inherit turn fallback");
 
 const revokedRegistry = buildDirectToolActivationRegistry({
   promotionReport: realProviderPromotionReport,
@@ -250,6 +256,26 @@ const revokedReadRow = revokedRegistry.rows.find((row) => row.toolClassId === "l
 assert.equal(revokedReadRow.state, "revoked", "single-turn revoke should be preserved");
 assert.equal(revokedReadRow.activationEffect, "revoke", "revoke effect should be explicit");
 assert.equal(revokedReadRow.activationDecision.appliesAt, "immediate", "emergency revoke should apply immediately");
+
+const wildcardRevokedRegistry = buildDirectToolActivationRegistry({
+  promotionReport: realProviderPromotionReport,
+  projectId: "project_tool_activation_registry_fixture",
+  workThreadId: "work_thread_activation_fixture",
+  turnId: "turn_activation_fixture",
+  activationRequests: [
+    activationRequestFor("local_perception.workspace_read", "active", "project_default"),
+    activationRequestFor("*", "revoked", "single_turn_override"),
+  ],
+  nowMs: 0,
+});
+assert.deepEqual(validateDirectToolActivationRegistry(wildcardRevokedRegistry), [], "wildcard revoked registry should validate");
+const wildcardRevokedReadRow = wildcardRevokedRegistry.rows.find((row) => row.toolClassId === "local_perception.workspace_read");
+assert.equal(
+  wildcardRevokedReadRow.state,
+  "revoked",
+  "wildcard single-turn revoke must override broader tool-specific project allow",
+);
+assert.equal(wildcardRevokedReadRow.activationEffect, "revoke", "wildcard emergency revoke effect should be explicit");
 
 const outputPath = writeReportIfRequested(activeProjectRegistry, options.output);
 if (outputPath) {
