@@ -4296,112 +4296,131 @@ class DirectLiveTextController {
     this.rememberClientTurnRequest(session.sessionId, clientTurnRequestId, turn.turnId);
     let contextResult = null;
     let controlledRoutingResult = null;
-    if (this.directThreadStore && typeof this.directThreadStore.buildAndPersistContextForTextTurn === "function") {
-      this.indexDirectThreadStoreSession(session.sessionId);
-      const hasControlledRoutingInput = controlledRoutingRequested && textOnlyTier;
-      if (hasControlledRoutingInput && typeof this.directThreadStore.buildAndPersistControlledRoutingForTextTurn === "function") {
-        controlledRoutingResult = this.directThreadStore.buildAndPersistControlledRoutingForTextTurn({
-          session,
+    let requestShape = null;
+    try {
+      if (this.directThreadStore && typeof this.directThreadStore.buildAndPersistContextForTextTurn === "function") {
+        this.indexDirectThreadStoreSession(session.sessionId);
+        const hasControlledRoutingInput = controlledRoutingRequested && textOnlyTier;
+        if (hasControlledRoutingInput && typeof this.directThreadStore.buildAndPersistControlledRoutingForTextTurn === "function") {
+          controlledRoutingResult = this.directThreadStore.buildAndPersistControlledRoutingForTextTurn({
+            session,
+            projectId: session.projectId,
+            threadId: session.sessionId,
+            turnId: turn.turnId,
+            requestPreview: prompt,
+            workThreads: Array.isArray(params.workThreads) ? params.workThreads : [],
+            requireControlledRouting,
+            ...workThreadCarrier,
+          });
+        }
+        contextResult = this.directThreadStore.buildAndPersistContextForTextTurn({
+          session: this.sessionStore.readSession(session.sessionId) || session,
           projectId: session.projectId,
           threadId: session.sessionId,
           turnId: turn.turnId,
-          requestPreview: prompt,
-          workThreads: Array.isArray(params.workThreads) ? params.workThreads : [],
-          requireControlledRouting,
-          ...workThreadCarrier,
+          currentUserPrompt: prompt,
+          useRecentDialogue,
+          requireRecentDialogue: useRecentDialogue,
+          sourceContextProjectionId: normalizeString(frozenContextProjection?.projectionId, ""),
+          expectedOperationLedgerHeadDigest: normalizeString(params.expectedOperationLedgerHeadDigest, ""),
+          expectedRendererProjectionId: normalizeString(params.expectedRendererProjectionId, ""),
+          expectedRendererProjectionDigest: normalizeString(params.expectedRendererProjectionDigest, ""),
+          expectedContextProjectionId: normalizeString(params.expectedContextProjectionId, frozenContextProjection?.projectionId || ""),
+          expectedContextProjectionDigest: normalizeString(params.expectedContextProjectionDigest, frozenContextProjection?.projectionDigest || ""),
+          model: requestBody.model,
+          requestShape: requestShapeForDiagnostic(requestBody),
+          endpointClass: "chatgpt-codex-responses",
+          endpointHash: this.endpoint ? sha256(this.endpoint) : "",
+          modelEvidenceRef: normalizeString(status.evidenceId, status.modelEvidenceId || ""),
+          requestShapeEvidenceRef: implementationTier
+            ? "direct_implementation_tool_initial@1"
+            : useRecentDialogue ? "direct_text_turn_recent_dialogue@1" : "direct_text_turn_empty_context@1",
+          endpointEvidenceRef: this.endpoint ? sha256(this.endpoint) : "",
+          governanceRefs: controlledRoutingResult?.governanceRefs || params.governanceRefs,
+          workThreadBinding: controlledRoutingResult?.workThreadBinding || workThreadCarrier.workThreadBinding,
+          workThread: workThreadCarrier.workThread,
+          workThreadId: controlledRoutingResult?.route?.selectedWorkThreadId || workThreadCarrier.workThreadId,
+          authorityBoundary: workThreadCarrier.authorityBoundary,
+          openObligations: workThreadCarrier.openObligations,
+          bridgeInformationRefs: [
+            ...(Array.isArray(workThreadCarrier.bridgeInformationRefs) ? workThreadCarrier.bridgeInformationRefs : []),
+            ...(controlledRoutingResult?.route?.bridgeInformationRef ? [controlledRoutingResult.route.bridgeInformationRef] : []),
+          ],
         });
+        requestBody = implementationTier
+          ? buildImplementationToolInitialRequest({
+              profileDoc: this.profileDoc,
+              model,
+              prompt: contextResult.providerInput.prompt,
+              instructions: implementationContextInstructions(contextResult.providerInput.instructions),
+              reasoningEffort,
+              tools: directImplementationToolSchemas(implementationToolNames),
+              toolChoicePolicy: "auto",
+            })
+          : buildTextOnlyProbeRequest({
+              profileDoc: this.profileDoc,
+              model,
+              prompt: contextResult.providerInput.prompt,
+              instructions: contextResult.providerInput.instructions,
+              reasoningEffort,
+            });
       }
-      contextResult = this.directThreadStore.buildAndPersistContextForTextTurn({
-        session: this.sessionStore.readSession(session.sessionId) || session,
-        projectId: session.projectId,
-        threadId: session.sessionId,
-        turnId: turn.turnId,
-        currentUserPrompt: prompt,
-        useRecentDialogue,
-        requireRecentDialogue: useRecentDialogue,
-        sourceContextProjectionId: normalizeString(frozenContextProjection?.projectionId, ""),
-        expectedOperationLedgerHeadDigest: normalizeString(params.expectedOperationLedgerHeadDigest, ""),
-        expectedRendererProjectionId: normalizeString(params.expectedRendererProjectionId, ""),
-        expectedRendererProjectionDigest: normalizeString(params.expectedRendererProjectionDigest, ""),
-        expectedContextProjectionId: normalizeString(params.expectedContextProjectionId, frozenContextProjection?.projectionId || ""),
-        expectedContextProjectionDigest: normalizeString(params.expectedContextProjectionDigest, frozenContextProjection?.projectionDigest || ""),
-        model: requestBody.model,
-        requestShape: requestShapeForDiagnostic(requestBody),
-        endpointClass: "chatgpt-codex-responses",
-        endpointHash: this.endpoint ? sha256(this.endpoint) : "",
-        modelEvidenceRef: normalizeString(status.evidenceId, status.modelEvidenceId || ""),
-        requestShapeEvidenceRef: implementationTier
-          ? "direct_implementation_tool_initial@1"
-          : useRecentDialogue ? "direct_text_turn_recent_dialogue@1" : "direct_text_turn_empty_context@1",
-        endpointEvidenceRef: this.endpoint ? sha256(this.endpoint) : "",
-        governanceRefs: controlledRoutingResult?.governanceRefs || params.governanceRefs,
-        workThreadBinding: controlledRoutingResult?.workThreadBinding || workThreadCarrier.workThreadBinding,
-        workThread: workThreadCarrier.workThread,
-        workThreadId: controlledRoutingResult?.route?.selectedWorkThreadId || workThreadCarrier.workThreadId,
-        authorityBoundary: workThreadCarrier.authorityBoundary,
-        openObligations: workThreadCarrier.openObligations,
-        bridgeInformationRefs: [
-          ...(Array.isArray(workThreadCarrier.bridgeInformationRefs) ? workThreadCarrier.bridgeInformationRefs : []),
-          ...(controlledRoutingResult?.route?.bridgeInformationRef ? [controlledRoutingResult.route.bridgeInformationRef] : []),
-        ],
+      requestShape = {
+        ...requestShapeForDiagnostic(requestBody),
+        directAttachmentCapabilityProjectionDigest: attachmentSubmit.capabilityProjection.projectionDigest,
+        directAttachmentSubmitPacketId: attachmentSubmit.packet.packetId,
+        directAttachmentSubmitPacketDigest: attachmentSubmit.packet.packetDigest,
+        directAttachmentDraftSetDigest: normalizeString(params.attachmentDraftSetDigest, ""),
+        directAttachmentDispositionSummary: attachmentSubmit.packet.summary,
+        directAttachmentRawPayloadIncluded: false,
+        directAttachmentRawPathIncluded: false,
+        ...(contextResult ? {
+          contextBuildId: contextResult.contextPack.contextBuildId,
+          contextPackContentHash: contextResult.contextPack.contextPackContentHash,
+          contextPackShapeHash: contextResult.contextPack.contextPackShapeHash,
+          requestManifestId: contextResult.requestManifest.requestManifestId,
+          providerInputShapeHash: contextResult.providerInput.projection.providerInputShapeHash,
+          rawRequestBodyStored: false,
+          previousResponseIdUsed: false,
+        } : {}),
+        ...(controlledRoutingResult ? {
+          controlledRoutingSliceId: controlledRoutingResult.route.routeId,
+          controlledRoutingSliceDigest: controlledRoutingResult.route.routeDigest,
+          controlledRoutingGateState: controlledRoutingResult.route.gateState,
+          controlledRoutingProviderScope: controlledRoutingResult.route.providerCallScope,
+        } : {}),
+      };
+      this.sessionStore.updateTurnState(session.sessionId, turn.turnId, "request_built", {
+        requestShape,
+        directAttachmentSubmitPacket: attachmentSubmit.packet,
+        directAttachmentTranscriptWitnesses: attachmentSubmit.packet.transcriptWitnesses,
+        ...(contextResult ? {
+          contextBuildId: contextResult.contextPack.contextBuildId,
+          requestManifestId: contextResult.requestManifest.requestManifestId,
+          contextSummary: contextResult.rendererSafeSummary,
+        } : {}),
+        ...(controlledRoutingResult ? {
+          controlledRoutingSliceId: controlledRoutingResult.route.routeId,
+          controlledRoutingGateState: controlledRoutingResult.route.gateState,
+        } : {}),
       });
-      requestBody = implementationTier
-        ? buildImplementationToolInitialRequest({
-            profileDoc: this.profileDoc,
-            model,
-            prompt: contextResult.providerInput.prompt,
-            instructions: implementationContextInstructions(contextResult.providerInput.instructions),
-            reasoningEffort,
-            tools: directImplementationToolSchemas(implementationToolNames),
-            toolChoicePolicy: "auto",
-          })
-        : buildTextOnlyProbeRequest({
-            profileDoc: this.profileDoc,
-            model,
-            prompt: contextResult.providerInput.prompt,
-            instructions: contextResult.providerInput.instructions,
-            reasoningEffort,
-          });
+    } catch (error) {
+      this.sessionStore.updateTurnState(session.sessionId, turn.turnId, "failed", {
+        error: {
+          code: error.code || "direct_turn_pre_transport_failed",
+          message: error.message || "Direct text turn failed before provider transport.",
+        },
+        requestShape: requestShape || requestShapeForDiagnostic(requestBody),
+        controlledRoutingGateState: controlledRoutingResult?.route?.gateState || "",
+        preTransportFailed: true,
+      });
+      if (this.directThreadStore) {
+        try {
+          this.indexDirectThreadStoreSession(session.sessionId);
+        } catch {}
+      }
+      throw error;
     }
-    const requestShape = {
-      ...requestShapeForDiagnostic(requestBody),
-      directAttachmentCapabilityProjectionDigest: attachmentSubmit.capabilityProjection.projectionDigest,
-      directAttachmentSubmitPacketId: attachmentSubmit.packet.packetId,
-      directAttachmentSubmitPacketDigest: attachmentSubmit.packet.packetDigest,
-      directAttachmentDraftSetDigest: normalizeString(params.attachmentDraftSetDigest, ""),
-      directAttachmentDispositionSummary: attachmentSubmit.packet.summary,
-      directAttachmentRawPayloadIncluded: false,
-      directAttachmentRawPathIncluded: false,
-      ...(contextResult ? {
-        contextBuildId: contextResult.contextPack.contextBuildId,
-        contextPackContentHash: contextResult.contextPack.contextPackContentHash,
-        contextPackShapeHash: contextResult.contextPack.contextPackShapeHash,
-        requestManifestId: contextResult.requestManifest.requestManifestId,
-        providerInputShapeHash: contextResult.providerInput.projection.providerInputShapeHash,
-        rawRequestBodyStored: false,
-        previousResponseIdUsed: false,
-      } : {}),
-      ...(controlledRoutingResult ? {
-        controlledRoutingSliceId: controlledRoutingResult.route.routeId,
-        controlledRoutingSliceDigest: controlledRoutingResult.route.routeDigest,
-        controlledRoutingGateState: controlledRoutingResult.route.gateState,
-        controlledRoutingProviderScope: controlledRoutingResult.route.providerCallScope,
-      } : {}),
-    };
-    this.sessionStore.updateTurnState(session.sessionId, turn.turnId, "request_built", {
-      requestShape,
-      directAttachmentSubmitPacket: attachmentSubmit.packet,
-      directAttachmentTranscriptWitnesses: attachmentSubmit.packet.transcriptWitnesses,
-      ...(contextResult ? {
-        contextBuildId: contextResult.contextPack.contextBuildId,
-        requestManifestId: contextResult.requestManifest.requestManifestId,
-        contextSummary: contextResult.rendererSafeSummary,
-      } : {}),
-      ...(controlledRoutingResult ? {
-        controlledRoutingSliceId: controlledRoutingResult.route.routeId,
-        controlledRoutingGateState: controlledRoutingResult.route.gateState,
-      } : {}),
-    });
 
     const userItem = {
       id: `${turn.turnId}_user`,

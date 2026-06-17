@@ -43,6 +43,7 @@ const DIRECT_ACTIVE_TURN_STATES = new Set([
   "streaming_continuation",
 ]);
 const DIRECT_RECOVERABLE_ACTIVE_TURN_STATES = new Set([
+  "created",
   "request_built",
   "streaming",
   "continuation_sent",

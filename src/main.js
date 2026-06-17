@@ -1996,6 +1996,12 @@ function ensureDirectCodexProfileDoc() {
 function ensureDirectSessionStore() {
   if (directSessionStore) return directSessionStore;
   directSessionStore = new DirectSessionStore({ rootDir: directSessionRootDir() });
+  try {
+    directSessionStore.ensure();
+    directSessionStore.recoverInterruptedTurns();
+  } catch (error) {
+    console.warn("[direct] session recovery failed", error);
+  }
   return directSessionStore;
 }
 

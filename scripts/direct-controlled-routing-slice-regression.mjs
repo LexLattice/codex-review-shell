@@ -252,6 +252,54 @@ try {
   );
   assert.equal(unsupportedStore.readSession(unsupportedThread.thread.id).turns.length, 0, "unsupported required routing must fail before creating a turn");
 
+  const missingWorkThread = controller.startThread({
+    model: "gpt-5.4",
+    workThreadId: "work_thread_missing_for_blocked_route",
+  }, { project, surfaceSession });
+  const providerRequestsBeforeBlockedRoute = providerRequestCount;
+  await assert.rejects(
+    () => controller.startTurn({
+      threadId: missingWorkThread.thread.id,
+      promptText: "continue missing work thread controlled routing fixture",
+      clientTurnRequestId: "client_req_controlled_route_missing_work_thread",
+      model: "gpt-5.4",
+      requireControlledRouting: true,
+    }, { project, surfaceSession }),
+    (error) => error.code === "controlled_routing_blocked",
+  );
+  assert.equal(providerRequestCount, providerRequestsBeforeBlockedRoute, "blocked controlled route must not call provider");
+  const missingWorkThreadSession = sessionStore.readSession(missingWorkThread.thread.id);
+  assert.equal(missingWorkThreadSession.status, "failed");
+  assert.equal(missingWorkThreadSession.turns.length, 1);
+  const missingWorkThreadTurn = sessionStore.readTurn(
+    missingWorkThread.thread.id,
+    missingWorkThreadSession.turns[0].turnId,
+  );
+  assert.equal(missingWorkThreadTurn.state, "failed");
+  assert.equal(missingWorkThreadTurn.error.code, "controlled_routing_blocked");
+  assert.equal(missingWorkThreadTurn.preTransportFailed, true);
+
+  const recoveryStore = new DirectSessionStore({ rootDir: path.join(tempRoot, "recovery-sessions") });
+  const interruptedSession = recoveryStore.createSession({
+    sessionId: "direct_session_interrupted_fixture",
+    projectId,
+    title: "Interrupted direct fixture",
+    model: "gpt-5.4",
+  });
+  const interruptedTurn = recoveryStore.createTurn(interruptedSession.sessionId, {
+    turnId: "direct_turn_interrupted_created_fixture",
+    model: "gpt-5.4",
+    clientTurnRequestId: "client_req_interrupted_created_fixture",
+  });
+  const recovery = recoveryStore.recoverInterruptedTurns({ nowMs: Date.parse("2026-06-12T19:05:00.000Z") });
+  assert.equal(recovery.recoveredTurnCount, 1);
+  const recoveredSession = recoveryStore.readSession(interruptedSession.sessionId);
+  const recoveredTurn = recoveryStore.readTurn(interruptedSession.sessionId, interruptedTurn.turnId);
+  assert.equal(recoveredSession.status, "failed");
+  assert.equal(recoveredTurn.state, "failed");
+  assert.equal(recoveredTurn.error.code, "restart_interrupted_turn");
+  assert.equal(recoveredTurn.error.previousState, "created");
+
   const implementationLaneProject = {
     ...project,
     surfaceBinding: {
