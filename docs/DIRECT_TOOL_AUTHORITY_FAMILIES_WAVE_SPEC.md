@@ -1688,6 +1688,8 @@ No implicit activation from passing smoke.
 
 ### PR 72: First Usable Direct Tool Slice
 
+Status: implemented in branch `codex/direct-first-tool-slice`.
+
 Purpose:
 
 ```text
@@ -1704,6 +1706,9 @@ read_file + get_context_remaining
 Required behavior:
 
 - Tool declarations are generated from activation rows.
+- Declaration rows are frozen in `direct_first_tool_slice@1` with
+  activation snapshot id, registry digest, provider schema digest, declaration
+  digest, and result envelope policy.
 - Declaration generation is deterministic and cites activation snapshot,
   request-shape family, provider profile, model, declaration digest, activation
   row id, and result envelope policy id.
@@ -1715,6 +1720,8 @@ Required behavior:
   - authority envelope.
 - Tool calls route through existing authority envelopes.
 - Tool results are emitted through declared result/context envelopes.
+- `get_context_remaining` result envelopes are display-only and must not carry
+  continuation, compaction, or `new_context` authority.
 - Usage attribution and replay/recovery law are preserved.
 - Headless smoke covers the resulting model-visible path.
 - `read_file` is read-only but still sensitive. It requires path containment,

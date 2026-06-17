@@ -728,6 +728,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "Activation remains eligibility only in PR71: no provider declarations are built, no model-visible tools are enabled, no renderer authority is granted, and per-call authority gates remain mandatory.",
   },
   {
+    id: "ic13.direct-first-tool-slice",
+    name: "Direct first model-visible tool slice",
+    role: "authority_gate",
+    implementationState: "partial",
+    directPathPosture: "keep_gated",
+    sourceFiles: ["src/main/direct/headless/first-tool-slice.js", "src/main/direct/headless/tool-activation-registry.js", "src/main/direct/tools/read-only-authority.js", "src/main/direct/tools/control-perception-decision-substrate.js", "scripts/direct-first-tool-slice-regression.mjs"],
+    ontology: ontologyShape(["direct_first_tool_slice", "direct_first_tool_declaration_row", "direct_first_tool_call_gate", "direct_first_tool_result_envelope"], "harness", {
+      identityFields: ["sliceId", "activationRegistryDigest", "activationSnapshotId", "toolDeclarationDigest", "declarationRowId", "gateId"],
+      schema: "direct_first_tool_slice@1",
+    }),
+    bridgeFit: "Materializes the first gated model-visible tool declarations from active activation rows for read_file and get_context_remaining, freezes declaration digests, and validates provider tool calls against the frozen snapshot.",
+    realignment: "Only read-only/status tools are declared; read_file still requires per-call local authority and path containment, get_context_remaining remains display-only, and patch/command/agent/MCP/plugin/provider-hosted tools remain undeclared.",
+  },
+  {
     id: "ic14.skills-hooks-apps",
     name: "Skills, hooks, and app connectors as bridge modules",
     role: "governance_routing",

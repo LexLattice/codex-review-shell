@@ -29,6 +29,10 @@ const checks = [
     id: "electron_control_surface",
     script: "direct-headless-control-surface-regression.mjs",
   },
+  {
+    id: "first_tool_slice",
+    script: "direct-first-tool-slice-regression.mjs",
+  },
 ];
 
 const rows = [];
