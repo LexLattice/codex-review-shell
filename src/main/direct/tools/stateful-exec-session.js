@@ -190,8 +190,12 @@ function buildStatefulExecSessionPlan(input = {}) {
 function buildStatefulExecOutputFrame(input = {}) {
   const source = isPlainObject(input) ? input : {};
   const sequence = Math.max(1, Math.trunc(positiveNumber(source.sequence || source.frameSequence, 1)));
+  const outputBudgetChars = positiveNumber(source.outputBudgetChars, 24_000);
+  const providerResultBudgetChars = positiveNumber(source.providerResultBudgetChars, 12_000);
   const originalChars = nonNegativeNumber(source.originalChars ?? source.textChars ?? source.previewChars, 0);
-  const previewChars = nonNegativeNumber(source.previewChars ?? Math.min(originalChars, positiveNumber(source.outputBudgetChars, 24_000)), 0);
+  const requestedPreviewChars = nonNegativeNumber(source.previewChars ?? Math.min(originalChars, outputBudgetChars), 0);
+  const previewChars = Math.min(requestedPreviewChars, outputBudgetChars);
+  const requestedProviderIncludedChars = nonNegativeNumber(source.providerIncludedChars ?? Math.min(previewChars, providerResultBudgetChars), 0);
   const frame = {
     schema: DIRECT_STATEFUL_EXEC_OUTPUT_FRAME_SCHEMA,
     frameId: boundedString(source.frameId || `exec_output_frame_${digestFor("direct-stateful-exec-output-frame-source@1", source).slice(0, 24)}`, 160),
@@ -201,9 +205,9 @@ function buildStatefulExecOutputFrame(input = {}) {
     observedAt: boundedString(source.observedAt || source.createdAt || nowIso(source.nowMs), 80),
     originalChars,
     previewChars,
-    truncated: source.truncated === true || originalChars > previewChars,
+    truncated: source.truncated === true || originalChars > previewChars || requestedPreviewChars > previewChars,
     providerVisible: source.providerVisible === true,
-    providerIncludedChars: nonNegativeNumber(source.providerIncludedChars ?? Math.min(previewChars, positiveNumber(source.providerResultBudgetChars, 12_000)), 0),
+    providerIncludedChars: Math.min(requestedProviderIncludedChars, providerResultBudgetChars, previewChars),
     redactionApplied: source.redactionApplied !== false,
     outputEvidenceKey: boundedString(source.outputEvidenceKey || source.evidenceKey, 180),
     rawOutputIncluded: false,
@@ -283,16 +287,17 @@ function buildStatefulExecRecoveryClassification(input = {}) {
   else if (sessionState === "cleanup_required") recoveryClass = "cleanup_required";
   else if (sessionState === "recovery_required") recoveryClass = "recovery_required";
   else if (sessionState === "running" || sessionState === "stdin_waiting" || sessionState === "starting") recoveryClass = "running_unknown";
+  const finalRecoveryClass = normalizeEnum(source.recoveryClass, RECOVERY_CLASSES, recoveryClass);
   const classification = {
     schema: DIRECT_STATEFUL_EXEC_RECOVERY_CLASSIFICATION_SCHEMA,
     recoveryId: boundedString(source.recoveryId || `exec_recovery_${digestFor("direct-stateful-exec-recovery-source@1", source).slice(0, 24)}`, 160),
     sessionId: normalizeSessionId(source.sessionId ? source : session),
     sessionState,
-    recoveryClass: normalizeEnum(source.recoveryClass, RECOVERY_CLASSES, recoveryClass),
+    recoveryClass: finalRecoveryClass,
     replayAllowed: false,
     replayForbiddenReason: started ? "process_side_effects_may_have_occurred" : "not_started_replay_unneeded",
-    requiresHumanReconciliation: ["running_unknown", "cleanup_required", "recovery_required", "unknown"].includes(recoveryClass),
-    terminalSuccessClaimAllowed: recoveryClass === "terminal_known" && sessionState === "completed",
+    requiresHumanReconciliation: ["running_unknown", "cleanup_required", "recovery_required", "unknown"].includes(finalRecoveryClass),
+    terminalSuccessClaimAllowed: finalRecoveryClass === "terminal_known" && sessionState === "completed",
     evidenceRefs: normalizeEvidenceRefs(source.evidenceRefs, "stateful_exec_recovery_classification"),
     rawOutputIncluded: false,
     rawPathIncluded: false,
@@ -315,7 +320,13 @@ function validateOutputFrameSequence(outputFrames = []) {
 function buildStatefulExecSessionSurface(input = {}) {
   const source = isPlainObject(input) ? input : {};
   const sessionPlan = buildStatefulExecSessionPlan(source.sessionPlan || source.session || source);
-  const outputFrames = arrayOrEmpty(source.outputFrames).map((frame) => buildStatefulExecOutputFrame({ ...frame, sessionId: sessionPlan.sessionId }));
+  const outputFrames = arrayOrEmpty(source.outputFrames).map((frame) => buildStatefulExecOutputFrame({
+    ...frame,
+    sessionId: sessionPlan.sessionId,
+    outputBudgetChars: frame.outputBudgetChars ?? sessionPlan.outputBudgetChars,
+    providerResultBudgetChars: frame.providerResultBudgetChars ?? sessionPlan.providerResultBudgetChars,
+    nowMs: frame.nowMs ?? source.nowMs,
+  }));
   const stdinPlan = buildStatefulExecStdinPlan({
     ...(source.stdinPlan || {}),
     session: sessionPlan,
@@ -411,6 +422,14 @@ function assertStatefulExecSessionSurfaceSafe(surface = {}) {
   }
   if (!surface.outputFrameSequenceValid || !validateOutputFrameSequence(surface.outputFrames)) {
     throw new Error("direct_stateful_exec_output_frame_sequence_invalid");
+  }
+  for (const frame of arrayOrEmpty(surface.outputFrames)) {
+    if (Number(frame.previewChars || 0) > Number(surface.outputBudgetChars || 0)) {
+      throw new Error("direct_stateful_exec_output_frame_exceeds_output_budget");
+    }
+    if (Number(frame.providerIncludedChars || 0) > Number(surface.providerResultBudgetChars || 0)) {
+      throw new Error("direct_stateful_exec_output_frame_exceeds_provider_budget");
+    }
   }
   if (surface.writeStdinToolEnabledInThisPr === true && (surface.stdinPlan.canWrite !== true || surface.stdinPlan.writeStdinAuthorityBearing !== true)) {
     throw new Error("direct_stateful_exec_stdin_authority_invalid");

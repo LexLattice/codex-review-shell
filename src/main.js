@@ -2670,7 +2670,7 @@ function buildDirectStatefulExecSessionSurfaceForProject(input = {}) {
       projectId,
       workThreadId,
       sessionId: "planned_stateful_exec_session",
-      sessionState: "running",
+      sessionState: "planned",
       commandClass: "plain_pipe_process_session",
       commandPreview: "metadata-only command preview",
       transportMode: "plain_pipe",
@@ -2680,26 +2680,16 @@ function buildDirectStatefulExecSessionSurfaceForProject(input = {}) {
       outputBudgetChars: 24000,
       providerResultBudgetChars: 12000,
     },
-    outputFrames: [
-      {
-        sequence: 1,
-        sessionId: "planned_stateful_exec_session",
-        stream: "stdout",
-        originalChars: 128,
-        previewChars: 128,
-        outputEvidenceKey: "planned_exec_stdout_frame_1",
-        providerVisible: true,
-      },
-    ],
+    outputFrames: [],
     stdinPlan: {
-      stdinPolicy: "line_input",
-      inputPreviewChars: 12,
+      stdinPolicy: "blocked_until_policy",
+      inputPreviewChars: 0,
     },
     cleanupPlan: {
-      cleanupState: "pending",
+      cleanupState: "not_required",
     },
     recoveryClassification: {
-      sessionState: "running",
+      sessionState: "planned",
     },
     generatedAt: normalizeString(input.generatedAt, nowIso()),
   });

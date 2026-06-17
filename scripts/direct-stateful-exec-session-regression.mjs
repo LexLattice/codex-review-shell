@@ -147,6 +147,43 @@ assert(terminalTarget.stdinPlan.canWrite === false, "stdin should not target ter
 assert(terminalTarget.recoveryClassification.terminalSuccessClaimAllowed === true, "completed session with terminal evidence can claim terminal success");
 assertStatefulExecSessionSurfaceSafe(terminalTarget);
 
+const deterministicFrames = buildStatefulExecSessionSurface({
+  nowMs: 0,
+  sessionPlan: {
+    sessionId: "deterministic_frame_session",
+    sessionState: "running",
+    outputBudgetChars: 10,
+    providerResultBudgetChars: 5,
+  },
+  outputFrames: [
+    {
+      sequence: 1,
+      originalChars: 100,
+      previewChars: 100,
+      providerIncludedChars: 100,
+    },
+  ],
+});
+assert(deterministicFrames.outputFrames[0].observedAt === "1970-01-01T00:00:00.000Z", "surface nowMs should propagate to output frames");
+assert(deterministicFrames.outputFrames[0].previewChars === 10, "output frame preview should be capped to session output budget");
+assert(deterministicFrames.outputFrames[0].providerIncludedChars === 5, "provider output should be capped to session result budget");
+assert(deterministicFrames.outputFrames[0].truncated === true, "budget-capped frame should be marked truncated");
+assertStatefulExecSessionSurfaceSafe(deterministicFrames);
+
+const recoveryOverride = buildStatefulExecSessionSurface({
+  sessionPlan: {
+    sessionId: "recovery_override_session",
+    sessionState: "running",
+  },
+  recoveryClassification: {
+    recoveryClass: "terminal_known",
+  },
+});
+assert(recoveryOverride.recoveryClassification.recoveryClass === "terminal_known", "recovery override should be normalized into final recovery class");
+assert(recoveryOverride.recoveryClassification.requiresHumanReconciliation === false, "human reconciliation should follow final recovery class");
+assert(recoveryOverride.recoveryClassification.terminalSuccessClaimAllowed === false, "terminal success also requires completed session state");
+assertStatefulExecSessionSurfaceSafe(recoveryOverride);
+
 const badSequence = buildStatefulExecSessionSurface({
   sessionPlan: {
     sessionId: "bad_sequence_session",
