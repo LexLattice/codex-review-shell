@@ -102,6 +102,10 @@ const {
   buildProviderHostedToolsStatus,
 } = require("./main/direct/provider/hosted-tools");
 const {
+  assertPluginGovernanceStatusSafe,
+  buildPluginGovernanceStatus,
+} = require("./main/direct/external/plugin-governance");
+const {
   assertContextPacketPreviewSafe,
   buildContextPacketPreview,
 } = require("./main/direct/context/preview-workbench");
@@ -2509,6 +2513,10 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     directProviderMetadata,
     generatedAt,
   });
+  const pluginGovernanceStatus = buildDirectPluginGovernanceStatusForProject({
+    project,
+    generatedAt,
+  });
   const appServerFallbackParity = runtimeStatus.appServerFallbackParity || buildAppServerFallbackParityReport({
     projectId,
     runtimeStatus,
@@ -2572,6 +2580,7 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     externalDiscoveryStatus,
     mcpBoundaryStatus,
     providerHostedToolsStatus,
+    pluginGovernanceStatus,
     controlToolStatus,
     agentRuntimeStatus,
     agentToolSurfaceStatus,
@@ -2661,6 +2670,18 @@ function buildDirectProviderHostedToolsStatusForProject(input = {}) {
     generatedAt: normalizeString(input.generatedAt, nowIso()),
   });
   assertProviderHostedToolsStatusSafe(status);
+  return status;
+}
+
+function buildDirectPluginGovernanceStatusForProject(input = {}) {
+  const project = input.project || {};
+  const projectId = normalizeString(project.id, "");
+  const status = buildPluginGovernanceStatus({
+    projectId,
+    workThreadId: normalizeString(project.workThreadId, ""),
+    generatedAt: normalizeString(input.generatedAt, nowIso()),
+  });
+  assertPluginGovernanceStatusSafe(status);
   return status;
 }
 

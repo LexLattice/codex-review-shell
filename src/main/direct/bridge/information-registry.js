@@ -406,6 +406,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "This slice enables no hosted provider tool call, provider request-shape mutation, context injection, workspace artifact write, raw prompt/result storage, or trust promotion without a future provider-accepted execution contract.",
   },
   {
+    id: "ic30.plugin-governance",
+    name: "Plugin catalog and install governance",
+    role: "authority_gate",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/external/plugin-governance.js", "src/main/direct/external/capability-discovery.js", "src/main/direct/bridge/tool-capability-registry.js", "src/main/direct/ui/settings-surface.js", "scripts/direct-plugin-governance-regression.mjs", "src/main.js"],
+    ontology: ontologyShape(["plugin_catalog_descriptor", "plugin_install_request_posture", "plugin_capability_diff", "plugin_rollback_law", "plugin_governance_status"], "connector", {
+      identityFields: ["projectId", "workThreadId", "pluginId", "sourceRefDigest", "manifestDigest", "diffDigest", "rollbackDigest", "requestDigest"],
+      schema: "plugin_governance_status@1",
+    }),
+    bridgeFit: "Separates plugin catalog listing from plugin install mutation by recording source pin state, version/source refs, capability diff, rollback/uninstall law, and non-auto-enable posture.",
+    realignment: "This slice never installs, uninstalls, rolls back, auto-enables, mutates registries, declares provider tools, executes plugin code, or exposes raw manifests/payloads; it only creates the governance witness required before a future install authority can exist.",
+  },
+  {
     id: "ic8.usage-quota-readiness",
     name: "Usage, quota, model, and readiness evidence",
     role: "observability_surface",
