@@ -136,6 +136,21 @@ assert.equal(validateOnlyReport.summary.realProviderUnassignedRows, 0, "no real-
 assert.equal(validateOnlyReport.providerTransportStarted, false, "validate-only report must not start provider transport");
 assert.equal(validateOnlyReport.workspaceMutationStartedByReport, false, "validate-only report must not mutate workspace");
 
+const mismatchedExecutionReport = buildDirectHeadlessToolClassRealismReport({
+  pack,
+  executionMode: "execute_fixtures",
+  fixtureExecution: {
+    mode: "not_requested",
+    results: [null, undefined, { scriptPath: "scripts/direct-read-tool-loop-regression.mjs", status: "passed" }],
+  },
+  nowMs: 0,
+});
+assert.deepEqual(validateDirectHeadlessToolClassRealismReport(mismatchedExecutionReport), [], "mismatched execution report shape should validate");
+assert.equal(mismatchedExecutionReport.status, "failed", "execute_fixtures request without fixture execution must fail");
+assert.equal(mismatchedExecutionReport.requestedExecutionMode, "execute_fixtures", "mismatch report should preserve the requested mode");
+assert.equal(mismatchedExecutionReport.executionMode, "validate_only", "mismatch report must not claim executed fixture mode");
+assert(mismatchedExecutionReport.validationErrors.some((error) => error.startsWith("execution_mode_fixture_execution_mismatch")), "mismatch report should cite fixture execution mismatch");
+
 let fixtureExecution = {
   mode: "not_requested",
   results: [],

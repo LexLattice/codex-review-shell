@@ -66,7 +66,7 @@ function countBy(rows, field) {
 
 function resultMapForFixtureExecution(fixtureExecution = {}) {
   const results = Array.isArray(fixtureExecution.results) ? fixtureExecution.results : [];
-  return new Map(results.map((result) => [normalizeString(result.scriptPath, ""), result]).filter(([scriptPath]) => scriptPath));
+  return new Map(results.map((result) => [normalizeString(result?.scriptPath, ""), result]).filter(([scriptPath]) => scriptPath));
 }
 
 function fixtureStatusForExample(example = {}, fixtureExecution = {}) {
@@ -93,14 +93,14 @@ function fixtureStatusForExample(example = {}, fixtureExecution = {}) {
       missing += 1;
       continue;
     }
-    const status = normalizeString(result.status, "unknown");
+    const status = normalizeString(result?.status, "unknown");
     if (status === "passed") passed += 1;
     else failed += 1;
     fixtureResultRefs.push({
       scriptPath,
       status,
-      durationMs: Number(result.durationMs || 0),
-      errorDigest: result.error ? digestFor("direct-headless-fixture-error@1", result.error) : "",
+      durationMs: Number(result?.durationMs || 0),
+      errorDigest: result?.error ? digestFor("direct-headless-fixture-error@1", result.error) : "",
     });
   }
   const blockingReasons = [];
@@ -219,10 +219,18 @@ function buildDirectHeadlessToolClassRealismReport(options = {}) {
   const pack = isPlainObject(options.pack) ? options.pack : buildDirectHeadlessToolClassExamplePack(options);
   const packValidationErrors = validateDirectHeadlessToolClassExamplePack(pack);
   const fixtureExecution = isPlainObject(options.fixtureExecution) ? options.fixtureExecution : { mode: "not_requested", results: [] };
-  const executionMode = normalizeString(options.executionMode, normalizeString(fixtureExecution.mode, "validate_only"));
+  const fixtureExecutionMode = normalizeString(fixtureExecution.mode, "not_requested");
+  const requestedExecutionMode = normalizeString(
+    options.executionMode,
+    fixtureExecutionMode === "execute_fixtures" ? "execute_fixtures" : "validate_only",
+  );
+  const executionMode = fixtureExecutionMode === "execute_fixtures" ? "execute_fixtures" : "validate_only";
   const rows = (Array.isArray(pack.examples) ? pack.examples : []).map((example) => buildRealismRow(example, fixtureExecution));
   const validationErrors = [
     ...packValidationErrors,
+    ...(requestedExecutionMode === "execute_fixtures" && fixtureExecutionMode !== "execute_fixtures"
+      ? [`execution_mode_fixture_execution_mismatch:${requestedExecutionMode}:${fixtureExecutionMode}`]
+      : []),
     ...rows
       .filter((row) => !REALISM_STATUSES.has(row.realismStatus))
       .map((row) => `invalid_realism_status:${row.exampleId}:${row.realismStatus}`),
@@ -238,6 +246,8 @@ function buildDirectHeadlessToolClassRealismReport(options = {}) {
     packDigest: normalizeString(pack.packDigest, ""),
     generatedAt: normalizeString(options.generatedAt, nowIso(options.nowMs)),
     executionMode: EXECUTION_MODES.has(executionMode) ? executionMode : "validate_only",
+    requestedExecutionMode: EXECUTION_MODES.has(requestedExecutionMode) ? requestedExecutionMode : "validate_only",
+    fixtureExecutionMode,
     status: validationErrors.length || failedFixtureRows.length ? "failed" : "passed",
     validationErrors,
     rowCount: rows.length,
@@ -289,6 +299,12 @@ function validateDirectHeadlessToolClassRealismReport(report = {}) {
   }
   if (Array.isArray(report.validationErrors) && report.validationErrors.length && report.status !== "failed") {
     errors.push("validation_errors_without_failed_status");
+  }
+  if (report.requestedExecutionMode === "execute_fixtures" && report.fixtureExecutionMode !== "execute_fixtures" && report.status !== "failed") {
+    errors.push("fixture_execution_mismatch_without_failed_status");
+  }
+  if (report.executionMode === "execute_fixtures" && report.fixtureExecutionMode !== "execute_fixtures") {
+    errors.push("executed_report_without_fixture_execution");
   }
   return errors;
 }
