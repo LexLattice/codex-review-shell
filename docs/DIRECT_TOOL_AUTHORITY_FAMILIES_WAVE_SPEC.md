@@ -1339,7 +1339,7 @@ permission.
 
 ### PR 70: Tool Promotion Decision Gate
 
-Status: implemented in branch `codex/direct-tool-promotion-decision-gate`.
+Status: merged.
 
 Purpose:
 
@@ -1504,6 +1504,8 @@ No runtime activation.
 
 ### PR 71: Direct Tool Activation Registry
 
+Status: implemented in branch `codex/direct-tool-activation-registry`.
+
 Purpose:
 
 ```text
@@ -1514,6 +1516,8 @@ Expected artifact:
 
 ```text
 direct_tool_activation_registry@1
+direct_tool_activation_row@1
+direct_tool_activation_snapshot@1
 ```
 
 Activation states:
@@ -1583,6 +1587,15 @@ Every provider request that declares tools must freeze:
 activationSnapshotId
 activationRegistryDigest
 toolDeclarationDigest
+```
+
+PR71 only records the snapshot shape. It must not materialize provider tool
+declarations yet:
+
+```text
+providerDeclarationEnabled = false
+modelVisibleToolEnabled = false
+toolDeclarationDigest = ""
 ```
 
 Per-call execution still requires:
