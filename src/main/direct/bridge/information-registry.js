@@ -686,6 +686,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "The gate starts no provider transport, runs no live smoke, grants no renderer authority, mutates no workspace, and never promotes validate-only, projection-only, unsupported, or failed fixture classes.",
   },
   {
+    id: "ic13.headless-tool-live-smoke-report",
+    name: "Headless tool-class live smoke report",
+    role: "observability_surface",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/headless/tool-class-live-smoke-report.js", "src/main/direct/headless/tool-class-live-candidate-gate.js", "scripts/direct-headless-tool-live-smoke-report-regression.mjs", "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md"],
+    ontology: ontologyShape(["direct_headless_tool_class_live_smoke_report", "direct_headless_tool_class_live_smoke_row"], "harness", {
+      identityFields: ["reportId", "sourceCandidateGateDigest", "exampleId", "toolClassId", "rowDigest"],
+      schema: "direct_headless_tool_class_live_smoke_report@1",
+    }),
+    bridgeFit: "Consumes the live-candidate gate and records explicit live-smoke evidence per eligible class while preserving blocked rows and opt-in requirements.",
+    realignment: "The report is plan-only by default, requires explicit smoke evidence for execution mode, grants no renderer authority, grants no promotion, and exposes no raw prompt/result/path/secret payloads.",
+  },
+  {
     id: "ic14.skills-hooks-apps",
     name: "Skills, hooks, and app connectors as bridge modules",
     role: "governance_routing",
