@@ -1,6 +1,6 @@
 # Direct Tool Authority Families Wave Spec
 
-Status: planning spec for the next direct-harness implementation wave.
+Status: completed planning/implementation spec for Wave 10; PR55-69 merged.
 
 Primary upstream reference:
 
@@ -964,6 +964,11 @@ OutputExportPolicy
 
 ## Proposed PR Sequence
 
+This section records the original Wave 10 implementation sequence. PR55-65
+built the direct tool authority families. PR66-69 then added the headless
+evidence ladder needed to test those families without promoting them directly
+into runtime availability.
+
 ### PR 55: Direct Tool Capability Constitution
 
 Purpose:
@@ -1224,6 +1229,218 @@ Scope:
 - `report_agent_job_result`.
 - Worker result contracts.
 - Aggregation/export ledger.
+
+### PR 66: Headless Tool-Class Example Pack And Runner
+
+Purpose:
+
+```text
+Create one canonical example per ODEU tool authority class and verify registry
+coverage before any live or activation decision.
+```
+
+Scope:
+
+- `direct_headless_tool_class_example_pack@1`.
+- One example per authority class, not per raw vanilla tool name.
+- Test modes:
+  - `real_provider`;
+  - `headless_fixture`;
+  - `projection_blocked`;
+  - `unsupported_blocked`.
+- Validate-only default runner.
+- Optional fixture execution mode.
+- No provider transport, renderer authority, workspace mutation, or promotion.
+
+### PR 67: Headless Tool-Class Realism Report
+
+Purpose:
+
+```text
+Turn the example pack into an operational realism report.
+```
+
+Scope:
+
+- `direct_headless_tool_class_realism_report@1`.
+- Per-class realism rows.
+- Classify rows as fixture-proven, fixture-available-not-executed,
+  projection-blocked, unsupported, failed, or future-provider candidate.
+- Preserve promotion readiness as evidence only.
+- No live provider calls and no runtime enablement.
+
+### PR 68: Headless Tool-Class Live Candidate Gate
+
+Purpose:
+
+```text
+Select only fixture-proven tool classes as eligible live-smoke candidates.
+```
+
+Scope:
+
+- `direct_headless_tool_class_live_candidate_gate@1`.
+- Per-class candidate rows.
+- Require explicit live-smoke mode, operator/CI authority, provider opt-in,
+  bounded timeout, raw-exposure scan, route-authority review, and
+  class-specific conditions.
+- Preserve all blocked rows with explicit blockers.
+- No live smoke execution and no promotion.
+
+### PR 69: Headless Tool-Class Live Smoke Runner
+
+Purpose:
+
+```text
+Consume candidate rows and produce explicit live-smoke evidence without
+promoting any class automatically.
+```
+
+Scope:
+
+- `direct_headless_tool_class_live_smoke_report@1`.
+- Per-class live-smoke rows.
+- Plan-only default.
+- Explicit `execute_live_smoke` evidence mode.
+- Live pass requires satisfied conditions and smoke evidence refs.
+- Caller-requested `plan_only` remains plan-only even when supplied smoke
+  evidence exists.
+- No default provider transport, renderer authority, raw payload persistence,
+  or runtime activation.
+
+## Wave 11 Handoff: Promotion And Activation
+
+Wave 10 ends at evidence. It does not make any tool class usable by the model in
+the direct runtime.
+
+The next wave should consume Wave 10 artifacts through three separate
+transitions:
+
+```text
+live-smoke report
+  -> promotion decision
+  -> activation registry
+  -> first model-visible direct tool slice
+```
+
+The separation is mandatory:
+
+```text
+live smoke evidence != promotion decision
+promotion decision != activation
+activation != per-call authority
+per-call authority != provider-visible result
+```
+
+### PR 70: Tool Promotion Decision Gate
+
+Purpose:
+
+```text
+Produce per-tool-class promotion decisions from PR69 evidence.
+```
+
+Expected artifact:
+
+```text
+direct_tool_promotion_decision_report@1
+```
+
+Decision states:
+
+```text
+promotable
+blocked
+needs_more_evidence
+not_applicable
+```
+
+Required checks:
+
+- Source live-smoke report validates.
+- Smoke row passed with evidence refs.
+- Required conditions were satisfied.
+- No raw prompt/result/path/secret leak.
+- No renderer authority grant.
+- No provider transport outside the declared route.
+- No workspace/process/agent effect outside the class contract.
+- Tool constitution row still matches the source class and implementation
+  state.
+
+Non-goal:
+
+```text
+No runtime activation.
+```
+
+### PR 71: Direct Tool Activation Registry
+
+Purpose:
+
+```text
+Record which promoted tool classes are actually enabled for direct runtime use.
+```
+
+Expected artifact:
+
+```text
+direct_tool_activation_registry@1
+```
+
+Activation row must cite:
+
+- promotion decision digest;
+- operator/project/work-thread scope;
+- provider request-shape support;
+- local executor state;
+- authority envelope;
+- recovery/replay classifier;
+- context/result envelope policy.
+
+Activation scopes:
+
+```text
+global default
+project default
+work-thread override
+single-turn override
+```
+
+Non-goal:
+
+```text
+No implicit activation from passing smoke.
+```
+
+### PR 72: First Usable Direct Tool Slice
+
+Purpose:
+
+```text
+Expose the first model-visible direct tool slice through the activation
+registry.
+```
+
+Recommended slice:
+
+```text
+read-only workspace perception + context remaining
+```
+
+Required behavior:
+
+- Tool declarations are generated from activation rows.
+- Tool calls route through existing authority envelopes.
+- Tool results are emitted through declared result/context envelopes.
+- Usage attribution and replay/recovery law are preserved.
+- Headless smoke covers the resulting model-visible path.
+
+Non-goal:
+
+```text
+No mutation, process, sub-agent, MCP, plugin, provider-hosted, or batch-agent
+activation in the first slice.
+```
 
 ## Global Acceptance Criteria
 

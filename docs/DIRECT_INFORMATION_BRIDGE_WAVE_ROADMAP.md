@@ -3012,7 +3012,7 @@ a repeatable readiness suite for future direct-path testing.
 
 ## Wave 10: Direct Tool Authority Families
 
-Status: merged through PR 68; PR 69 implemented in branch `codex/direct-headless-live-smoke-runner`.
+Status: merged through PR 69; wave complete at the evidence/readiness layer.
 
 Dedicated spec:
 
@@ -3389,7 +3389,7 @@ No workspace mutation.
 
 ### PR 69: Headless Tool-Class Live Smoke Runner
 
-Status: implemented in branch `codex/direct-headless-live-smoke-runner`.
+Status: merged.
 
 Purpose:
 
@@ -3419,6 +3419,149 @@ No promotion of any class to direct-enabled.
 No new tool execution authority.
 No UI dashboard.
 No raw prompt/result/path/secret persistence.
+```
+
+## Wave 11: Direct Tool Promotion And Activation
+
+Status: planned.
+
+Detailed handoff:
+
+```text
+docs/DIRECT_TOOL_AUTHORITY_FAMILIES_WAVE_SPEC.md
+```
+
+Goal:
+
+```text
+Move from tool-class evidence/readiness reports to explicit direct-tool
+promotion decisions and guarded runtime activation.
+```
+
+Governing principle:
+
+```text
+live smoke evidence != runtime enablement
+promotion decision != default activation
+activation config != local execution authority
+tool call != provider-visible result until the transition is witnessed
+```
+
+Wave 10 produced the classification, examples, realism report, candidate gate,
+and live-smoke evidence report. Wave 11 should consume those artifacts and
+decide which tool classes may become usable in the direct runtime without
+collapsing evidence, policy, and activation into one switch.
+
+### PR 70: Tool Promotion Decision Gate
+
+Status: planned.
+
+Purpose:
+
+```text
+Consume PR 69 live-smoke reports and produce explicit per-tool-class promotion
+decisions.
+```
+
+Scope summary:
+
+- Add `direct_tool_promotion_decision_report@1`.
+- Add per-class `direct_tool_promotion_decision_row@1`.
+- Consume `direct_headless_tool_class_live_smoke_report@1`.
+- Preserve decision states:
+  - `promotable`;
+  - `blocked`;
+  - `needs_more_evidence`;
+  - `not_applicable`.
+- Require passing live-smoke evidence, no raw-payload leaks, no renderer
+  authority grant, no unexpected provider transport, and no workspace mutation
+  outside the class contract.
+- Include operator/CI evidence posture but do not mutate runtime defaults.
+- Emit explicit blockers for missing evidence, stale report, failed smoke row,
+  policy mismatch, class unsupported, or authority envelope gap.
+
+Non-goals:
+
+```text
+No tool activation.
+No runtime default mutation.
+No renderer affordance change.
+No provider call.
+No workspace mutation.
+```
+
+### PR 71: Direct Tool Activation Registry
+
+Status: planned.
+
+Purpose:
+
+```text
+Create the guarded activation registry that can turn promoted tool classes into
+runtime-available direct tools.
+```
+
+Scope summary:
+
+- Add `direct_tool_activation_registry@1`.
+- Activation row must cite:
+  - promotion decision digest;
+  - operator/project config;
+  - authority envelope;
+  - provider request-shape support;
+  - executor implementation state;
+  - recovery/replay classifier.
+- Split activation scopes:
+  - global default;
+  - project default;
+  - work-thread override;
+  - single-turn override.
+- Keep all activation disabled by default unless explicitly configured.
+- Expose renderer-safe activation status and blockers.
+
+Non-goals:
+
+```text
+No broad activation of all promoted classes.
+No implicit activation from passing smoke.
+No bypass of per-call authority gates.
+No UI dashboard beyond status projection.
+```
+
+### PR 72: First Usable Direct Tool Slice
+
+Status: planned.
+
+Purpose:
+
+```text
+Wire the safest high-value promoted tool slice into actual direct runtime
+model-visible tools.
+```
+
+Recommended first slice:
+
+```text
+read-only workspace perception + context remaining
+```
+
+Scope summary:
+
+- Wire only classes that pass PR70 and are enabled by PR71.
+- Start with read-only/context tools before mutation or agent lifecycle tools.
+- Produce provider request tool declarations from activation registry rows.
+- Route model tool calls through existing authority envelopes.
+- Emit tool result envelopes and context-pack witnesses.
+- Preserve usage attribution and recovery/replay classification.
+- Add headless direct smoke coverage for the first usable slice.
+
+Non-goals:
+
+```text
+No patch/command activation in this first slice.
+No sub-agent spawning activation.
+No MCP/plugin/provider-hosted activation.
+No recursive tool execution.
 ```
 
 ## Update Rules
