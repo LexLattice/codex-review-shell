@@ -137,6 +137,10 @@ const {
   buildTextOnlySubAgentToolSurface,
 } = require("./main/direct/agents/text-tool-surface");
 const {
+  assertStatefulExecSessionSurfaceSafe,
+  buildStatefulExecSessionSurface,
+} = require("./main/direct/tools/stateful-exec-session");
+const {
   assertControlToolSubstrateSafe,
   buildControlToolSubstrateStatus,
 } = require("./main/direct/tools/control-perception-decision-substrate");
@@ -2512,6 +2516,12 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     agentRuntimeStatus,
     generatedAt,
   });
+  const statefulExecStatus = buildDirectStatefulExecSessionSurfaceForProject({
+    project,
+    runtimeStatus,
+    workThreadBundle,
+    generatedAt,
+  });
   const contextPreview = directContextPreviewForProject(project, {
     runtimeStatus,
     runtimeWitnessProjection,
@@ -2536,6 +2546,7 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     controlToolStatus,
     agentRuntimeStatus,
     agentToolSurfaceStatus,
+    statefulExecStatus,
     continuityStatus: runtimeStatus.directContextMaintenance,
     contextPreview,
     runtimeWitnessProjection,
@@ -2640,6 +2651,59 @@ function buildDirectTextSubAgentToolSurfaceForProject(input = {}) {
     generatedAt,
   });
   assertTextOnlySubAgentToolSurfaceSafe(surface);
+  return surface;
+}
+
+function buildDirectStatefulExecSessionSurfaceForProject(input = {}) {
+  const project = input.project || {};
+  const projectId = normalizeString(project.id || input.runtimeStatus?.projectId, "");
+  const workThreadId = normalizeString(
+    input.workThreadBundle?.activeWorkThreadId ||
+      input.workThreadBundle?.projection?.activeWorkThreadId ||
+      project.workThreadId,
+    "work_thread_stateful_exec_preview",
+  );
+  const surface = buildStatefulExecSessionSurface({
+    projectId,
+    workThreadId,
+    sessionPlan: {
+      projectId,
+      workThreadId,
+      sessionId: "planned_stateful_exec_session",
+      sessionState: "running",
+      commandClass: "plain_pipe_process_session",
+      commandPreview: "metadata-only command preview",
+      transportMode: "plain_pipe",
+      cwdEvidenceKey: "workspace_root_evidence_key",
+      idleTimeoutMs: 30000,
+      hardTimeoutMs: 120000,
+      outputBudgetChars: 24000,
+      providerResultBudgetChars: 12000,
+    },
+    outputFrames: [
+      {
+        sequence: 1,
+        sessionId: "planned_stateful_exec_session",
+        stream: "stdout",
+        originalChars: 128,
+        previewChars: 128,
+        outputEvidenceKey: "planned_exec_stdout_frame_1",
+        providerVisible: true,
+      },
+    ],
+    stdinPlan: {
+      stdinPolicy: "line_input",
+      inputPreviewChars: 12,
+    },
+    cleanupPlan: {
+      cleanupState: "pending",
+    },
+    recoveryClassification: {
+      sessionState: "running",
+    },
+    generatedAt: normalizeString(input.generatedAt, nowIso()),
+  });
+  assertStatefulExecSessionSurfaceSafe(surface);
   return surface;
 }
 
