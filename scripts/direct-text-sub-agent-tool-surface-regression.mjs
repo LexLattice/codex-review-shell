@@ -170,7 +170,21 @@ function main() {
   assert(waitPlan.schema === DIRECT_AGENT_WAIT_PLAN_SCHEMA, "wait plan schema mismatch");
   assert(waitPlan.noDeadlockLawSatisfied === true, "wait plan should satisfy no-deadlock law");
   assert(waitPlan.cycleCheck === "passed", "wait cycle check should pass");
+  assert(waitPlan.targetMissingCount === 0, "wait plan should require existing targets");
   assert(waitPlan.parentWorkflowMayBlockIndefinitely === false, "wait must not block parent indefinitely");
+
+  const missingTargetWaitPlan = buildAgentWaitPlan({
+    projectId,
+    primaryThreadId,
+    graph,
+    parentAgentId: primaryThreadId,
+    targetAgentIds: ["missing_child"],
+    timeoutMs: 15000,
+    maxWaitDepth: 1,
+    nowMs: 0,
+  });
+  assert(missingTargetWaitPlan.noDeadlockLawSatisfied === false, "wait should block missing targets");
+  assert(missingTargetWaitPlan.targetMissingCount === 1, "wait should count missing targets");
 
   const cycleWaitPlan = buildAgentWaitPlan({
     projectId,
@@ -184,6 +198,29 @@ function main() {
   });
   assert(cycleWaitPlan.noDeadlockLawSatisfied === false, "wait cycle should fail no-deadlock law");
   assert(cycleWaitPlan.cycleCheck === "failed", "wait cycle should be detected");
+
+  const transitiveCycleGraph = buildAgentThreadGraph({
+    projectId,
+    primaryThreadId,
+    nodes: [
+      { agentThreadId: primaryThreadId, parentAgentThreadId: "agent_cycle_b", displayLabel: "Primary cycle node" },
+      { agentThreadId: "agent_cycle_a", parentAgentThreadId: primaryThreadId, displayLabel: "Cycle A" },
+      { agentThreadId: "agent_cycle_b", parentAgentThreadId: "agent_cycle_a", displayLabel: "Cycle B" },
+    ],
+    nowMs: 0,
+  });
+  const transitiveCycleWaitPlan = buildAgentWaitPlan({
+    projectId,
+    primaryThreadId,
+    graph: transitiveCycleGraph,
+    parentAgentId: primaryThreadId,
+    targetAgentIds: ["agent_cycle_a"],
+    timeoutMs: 15000,
+    maxWaitDepth: 1,
+    nowMs: 0,
+  });
+  assert(transitiveCycleWaitPlan.noDeadlockLawSatisfied === false, "wait should block transitive cycles");
+  assert(transitiveCycleWaitPlan.cycleCheck === "failed", "wait should detect transitive cycle");
 
   const sendPlan = buildAgentMailboxWritePlan({
     projectId,

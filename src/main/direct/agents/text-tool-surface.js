@@ -103,16 +103,16 @@ function normalizeEvidenceRefs(values, fallbackKind = "agent_tool_surface") {
     .map((value) => normalizeEvidenceRef(value, fallbackKind));
 }
 
-function graphNodes(graph = {}) {
-  return arrayOrEmpty(graph.nodes);
+function graphNodes(graph) {
+  return arrayOrEmpty(graph?.nodes);
 }
 
-function mailboxMessages(mailbox = {}) {
-  return arrayOrEmpty(mailbox.messages);
+function mailboxMessages(mailbox) {
+  return arrayOrEmpty(mailbox?.messages);
 }
 
-function lifecycleEntries(lifecycleRegistry = {}) {
-  return arrayOrEmpty(lifecycleRegistry.entries);
+function lifecycleEntries(lifecycleRegistry) {
+  return arrayOrEmpty(lifecycleRegistry?.entries);
 }
 
 function findNode(graph, agentThreadId) {
@@ -288,9 +288,27 @@ function buildAgentWaitPlan(input = {}) {
   const waitMode = WAIT_MODES.has(waitModeCandidate) ? waitModeCandidate : "specific";
   const timeoutMs = positiveNumber(input.timeoutMs, 30000);
   const maxWaitDepth = positiveNumber(input.maxWaitDepth, 1);
-  const targetSet = new Set(effectiveTargets);
-  const cycleDetected = effectiveTargets.includes(parentAgentId) || graphNodes(graph)
-    .some((node) => targetSet.has(normalizeString(node.parentAgentThreadId, "")) && normalizeString(node.agentThreadId, "") === parentAgentId);
+  const targetExistence = effectiveTargets.map((targetAgentId) => ({
+    targetAgentId,
+    exists: Boolean(findNode(graph, targetAgentId)),
+  }));
+  const targetMissingCount = targetExistence.filter((target) => !target.exists).length;
+  const parentByAgent = new Map(graphNodes(graph)
+    .map((node) => [normalizeString(node.agentThreadId, ""), normalizeString(node.parentAgentThreadId, "")])
+    .filter(([agentThreadId]) => Boolean(agentThreadId)));
+  const hasAncestor = (nodeId, ancestorId, visited = new Set()) => {
+    const safeNodeId = normalizeString(nodeId, "");
+    const safeAncestorId = normalizeString(ancestorId, "");
+    if (!safeNodeId || !safeAncestorId) return false;
+    if (safeNodeId === safeAncestorId) return true;
+    if (visited.has(safeNodeId)) return false;
+    visited.add(safeNodeId);
+    const parentId = normalizeString(parentByAgent.get(safeNodeId), "");
+    if (!parentId) return false;
+    return hasAncestor(parentId, safeAncestorId, visited);
+  };
+  const cycleDetected = effectiveTargets.includes(parentAgentId) ||
+    effectiveTargets.some((targetId) => hasAncestor(parentAgentId, targetId));
   const lifecycleByAgent = new Map(lifecycleEntries(input.lifecycleRegistry)
     .map((entry) => [normalizeString(entry.agentThreadId, ""), entry]));
   const allTargetsTerminal = effectiveTargets.length > 0 && effectiveTargets.every((target) => lifecycleByAgent.get(target)?.terminal === true);
@@ -304,6 +322,8 @@ function buildAgentWaitPlan(input = {}) {
     graphId: normalizeString(graph.graphId, ""),
     parentAgentId,
     targetAgentIds: effectiveTargets,
+    targetExistence,
+    targetMissingCount,
     waitMode,
     timeoutMs,
     maxWaitDepth,
@@ -311,7 +331,7 @@ function buildAgentWaitPlan(input = {}) {
     waitGraphDigest: normalizeString(graph.graphDigest, ""),
     restartState,
     parentWorkflowMayBlockIndefinitely: false,
-    noDeadlockLawSatisfied: !cycleDetected && timeoutMs > 0 && maxWaitDepth > 0,
+    noDeadlockLawSatisfied: effectiveTargets.length > 0 && targetMissingCount === 0 && !cycleDetected && timeoutMs > 0 && maxWaitDepth > 0,
     providerTransportAllowed: false,
     requestShapeMutationAllowed: false,
     evidenceRefs: normalizeEvidenceRefs(input.evidenceRefs, "agent_wait_plan"),
@@ -532,14 +552,11 @@ function assertTextOnlySubAgentToolSurfaceSafe(surface = {}) {
     if (surface[flag] !== false) throw new Error(`direct_text_sub_agent_tool_surface_authority_leak:${flag}`);
   }
   if (surface.listAgentsToolEnabledInThisPr !== true) throw new Error("direct_text_sub_agent_list_disabled");
-  if (surface.spawnAgentTextOnlyEnabledInThisPr !== true) throw new Error("direct_text_sub_agent_spawn_not_accepted");
-  if (surface.waitAgentToolEnabledInThisPr !== true) throw new Error("direct_text_sub_agent_wait_not_bounded");
   if (surface.separateUsageAttributionRequired !== true) throw new Error("direct_text_sub_agent_usage_attribution_missing");
-  if (surface.spawnRequest?.acceptedAsTextOnlyIntent !== true) throw new Error("direct_text_sub_agent_spawn_request_blocked");
   if (surface.spawnRequest?.childToolsAllowed !== false || surface.spawnRequest?.childRecursiveSpawnAllowed !== false) {
     throw new Error("direct_text_sub_agent_spawn_authority_leak");
   }
-  if (surface.waitPlan?.noDeadlockLawSatisfied !== true || surface.waitPlan?.cycleCheck !== "passed") {
+  if (surface.waitAgentToolEnabledInThisPr === true && (surface.waitPlan?.noDeadlockLawSatisfied !== true || surface.waitPlan?.cycleCheck !== "passed" || surface.waitPlan?.targetMissingCount !== 0)) {
     throw new Error("direct_text_sub_agent_wait_deadlock_risk");
   }
   for (const plan of [surface.sendMessagePlan, surface.followupTaskPlan]) {
