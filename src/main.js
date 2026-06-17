@@ -2458,6 +2458,7 @@ function buildDirectRuntimeStatusForProject(project, options = {}) {
 
 function buildDirectSettingsSurfaceStatusForProject(project) {
   const projectId = normalizeString(project?.id, "");
+  const generatedAt = nowIso();
   const runtimeStatus = buildDirectRuntimeStatusForProject(project);
   const metaSessionStatus = buildDirectMetaSessionStatusForProject(project, {});
   const moduleStatus = buildBridgeModuleStatusProjection({
@@ -2496,7 +2497,6 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     runtimeStatus,
     legacySession: currentLegacyAppServerSnapshot(),
   });
-  const generatedAt = nowIso();
   const workThreadBundle = directWorkThreadProjectionForProject(project);
   const runtimeWitnessProjection = buildDirectRuntimeWitnessProjectionForProject({
     project,
