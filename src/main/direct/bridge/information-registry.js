@@ -672,6 +672,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "The report starts no provider transport, grants no renderer authority, mutates no workspace by default, and does not promote projection-only or unsupported classes into executable direct tools.",
   },
   {
+    id: "ic13.headless-tool-live-candidate-gate",
+    name: "Headless tool-class live candidate gate",
+    role: "observability_surface",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/headless/tool-class-live-candidate-gate.js", "src/main/direct/headless/tool-class-realism-report.js", "scripts/direct-headless-tool-live-candidate-gate-regression.mjs", "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md"],
+    ontology: ontologyShape(["direct_headless_tool_class_live_candidate_gate", "direct_headless_tool_class_live_candidate_row"], "harness", {
+      identityFields: ["gateId", "sourceRealismReportDigest", "exampleId", "toolClassId", "rowDigest"],
+      schema: "direct_headless_tool_class_live_candidate_gate@1",
+    }),
+    bridgeFit: "Consumes the realism report and selects only fixture-proven tool classes as explicit live-smoke candidates while preserving per-class blockers and required conditions.",
+    realignment: "The gate starts no provider transport, runs no live smoke, grants no renderer authority, mutates no workspace, and never promotes validate-only, projection-only, unsupported, or failed fixture classes.",
+  },
+  {
     id: "ic14.skills-hooks-apps",
     name: "Skills, hooks, and app connectors as bridge modules",
     role: "governance_routing",
