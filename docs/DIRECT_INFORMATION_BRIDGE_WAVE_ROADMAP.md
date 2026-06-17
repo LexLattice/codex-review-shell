@@ -3507,7 +3507,7 @@ No workspace mutation.
 
 ### PR 71: Direct Tool Activation Registry
 
-Status: implemented in branch `codex/direct-tool-activation-registry`.
+Status: merged.
 
 Purpose:
 
@@ -3571,7 +3571,7 @@ No UI dashboard beyond status projection.
 
 ### PR 72: First Usable Direct Tool Slice
 
-Status: planned.
+Status: implemented in branch `codex/direct-first-tool-slice`.
 
 Purpose:
 
@@ -3591,6 +3591,10 @@ Scope summary:
 - Wire only classes that pass PR70 and are enabled by PR71.
 - Start with `read_file` and `get_context_remaining` before mutation or agent
   lifecycle tools.
+- Add `direct_first_tool_slice@1`, declaration rows, tool-call gate rows, and
+  result envelopes.
+- Add `direct:first-tool-slice` regression coverage and include it in the
+  headless promotion suite.
 - Treat read-only as sensitive: enforce path containment, sensitive-path deny
   list, size/line caps, redaction scan, result truncation markers, operation
   ledger entry, and recovery classifier.
@@ -3601,6 +3605,8 @@ Scope summary:
   scanning; local result existence does not imply provider-visible result.
 - Treat `get_context_remaining` as estimate/status only; it cannot authorize
   `new_context`, compaction, or large input continuation.
+- Keep `get_context_remaining` provider output display-only with
+  `permissionToContinue=false` and `compactionAuthority=false`.
 - Preserve usage attribution and recovery/replay classification.
 - Add headless direct smoke coverage for declaration, provider tool call,
   local authority route, result envelope, provider continuation, and terminal
