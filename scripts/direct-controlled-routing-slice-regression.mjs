@@ -26,6 +26,9 @@ const {
 const {
   DirectThreadStore,
 } = require("../src/main/direct/thread/thread-store");
+const {
+  runTextOnlyDirectProbe,
+} = require("../src/main/direct/transport/codex-responses-transport");
 
 function textResponse(body, status = 200, headers = {}) {
   return new Response(body, { status, headers });
@@ -139,6 +142,58 @@ assert(!missingPrimaryAgentRoute.route.evidenceRefs.some((ref) => ref.rendererSa
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "direct-controlled-route-"));
 try {
+  const encoder = new TextEncoder();
+  let liveDeltaSeenBeforeResolve = false;
+  let liveProbeResolved = false;
+  let liveCompletedSeen = false;
+  const liveProbe = runTextOnlyDirectProbe({
+    profileDoc,
+    model: "gpt-5.4",
+    prompt: "stream incrementally",
+    authStore: {
+      readStatus: () => ({
+        status: "authenticated",
+        accountId: "acct_controlled_route",
+        hasAccessToken: true,
+        rawTokensExposed: false,
+      }),
+      readCredentials: () => ({ accessToken: "controlled_route_access_token_secret_1234567890" }),
+    },
+    fetchImpl: async () => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode([
+          "event: response.output_text.delta",
+          "data: {\"delta\":\"live\"}",
+          "",
+          "",
+        ].join("\n")));
+        setTimeout(() => {
+          controller.enqueue(encoder.encode([
+            "event: response.completed",
+            "data: {\"response\":{\"id\":\"resp_incremental_route\",\"status\":\"completed\"}}",
+            "",
+            "",
+          ].join("\n")));
+          controller.close();
+        }, 50);
+      },
+    }), { status: 200, headers: { "content-type": "text/event-stream" } }),
+    onNormalizedEvents: (events) => {
+      if (events.some((event) => event.type === "message_delta" && event.text === "live")) {
+        liveDeltaSeenBeforeResolve = !liveProbeResolved &&
+          !liveCompletedSeen &&
+          !events.some((event) => event.type === "response_completed");
+      }
+      if (events.some((event) => event.type === "response_completed")) liveCompletedSeen = true;
+    },
+  });
+  await waitFor(() => liveDeltaSeenBeforeResolve, "incremental transport should emit message delta before probe resolves");
+  const liveProbeResult = await liveProbe;
+  liveProbeResolved = true;
+  assert.equal(liveProbeResult.ok, true);
+  assert.equal(liveProbeResult.lifecycle.timing.normalizedEventCount, 2);
+  assert(liveProbeResult.lifecycle.timing.firstNormalizedEventAt);
+
   const sessionStore = new DirectSessionStore({ rootDir: path.join(tempRoot, "sessions") });
   const directThreadStore = new DirectThreadStore({ rootDir: path.join(tempRoot, "threads") });
   const workThreadStore = new DirectWorkThreadRegistryStore({ rootDir: path.join(tempRoot, "work-threads") });
