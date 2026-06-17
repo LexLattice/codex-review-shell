@@ -3012,7 +3012,7 @@ a repeatable readiness suite for future direct-path testing.
 
 ## Wave 10: Direct Tool Authority Families
 
-Status: planned.
+Status: merged through PR 65; PR 66 implemented in branch `codex/direct-headless-tool-class-examples`.
 
 Dedicated spec:
 
@@ -3040,7 +3040,7 @@ tool call
 
 ### PR 55: Direct Tool Capability Constitution
 
-Status: planned.
+Status: merged.
 
 Purpose:
 
@@ -3061,7 +3061,7 @@ Scope summary:
 
 ### PR 56: Control, Perception, And Human-Decision Tool Substrate
 
-Status: planned.
+Status: merged.
 
 Purpose:
 
@@ -3088,7 +3088,7 @@ frontier baton, request manifest, and source-ref law are wired.
 
 ### PR 57: Direct Agent Runtime Substrate
 
-Status: planned.
+Status: merged.
 
 Purpose:
 
@@ -3115,7 +3115,7 @@ No spawn_agent exposure yet.
 
 ### PR 58: Text-Only Sub-Agent Tool Surface
 
-Status: planned.
+Status: merged.
 
 Purpose:
 
@@ -3142,7 +3142,7 @@ V0 restrictions:
 
 ### PR 59: Stateful Exec / PTY / Stdin Parity
 
-Status: planned.
+Status: merged.
 
 Purpose:
 
@@ -3172,7 +3172,7 @@ write_stdin != harmless text
 
 ### PR 60: External Capability Discovery Registry
 
-Status: planned.
+Status: merged.
 
 Purpose:
 
@@ -3191,7 +3191,7 @@ Scope summary:
 
 ### PR 61: MCP Resource Read And Tool Call Boundary
 
-Status: planned.
+Status: merged.
 
 Purpose:
 
@@ -3209,7 +3209,7 @@ Scope summary:
 
 ### PR 62: Hosted Provider Tools
 
-Status: planned.
+Status: merged.
 
 Purpose:
 
@@ -3229,7 +3229,7 @@ Scope summary:
 
 ### PR 63: Plugin Governance
 
-Status: planned.
+Status: merged.
 
 Purpose:
 
@@ -3250,7 +3250,7 @@ Scope summary:
 
 ### PR 64: Code Mode Execution Lane
 
-Status: planned.
+Status: merged.
 
 Purpose:
 
@@ -3267,7 +3267,7 @@ Scope summary:
 
 ### PR 65: Batch Agent Jobs
 
-Status: planned.
+Status: merged.
 
 Purpose:
 
@@ -3281,6 +3281,42 @@ Scope summary:
 - `report_agent_job_result`.
 - Worker result contracts.
 - Aggregation/export ledger.
+
+### PR 66: Headless Tool-Class Example Pack And Runner
+
+Status: implemented in branch `codex/direct-headless-tool-class-examples`.
+
+Purpose:
+
+```text
+Create a canonical example pack for testing every direct tool authority class
+at the correct realism tier before broad live/headless tool validation.
+```
+
+Scope summary:
+
+- Add `direct_headless_tool_class_example_pack@1`.
+- Add one canonical example per ODEU tool authority class, not per raw tool
+  name.
+- Cover every row in `direct_tool_capability_registry@1`.
+- Separate test modes:
+  - `real_provider`;
+  - `headless_fixture`;
+  - `projection_blocked`;
+  - `unsupported_blocked`.
+- Link each example to expected evidence schemas, runner scripts, success
+  assertions, and forbidden side effects.
+- Add validate-only runner by default.
+- Add optional `--execute-fixtures` mode for executing linked fixture scripts.
+
+Non-goals:
+
+```text
+No provider transport by default.
+No workspace mutation by default.
+No renderer authority.
+No promotion of projection-only or unsupported tools to executable status.
+```
 
 ## Update Rules
 

@@ -644,6 +644,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "Controls are limited to daemon intake pause/resume/drain/shutdown request and do not mutate route authority, start provider calls, deliver external actions, approve requests, or expose raw payloads.",
   },
   {
+    id: "ic13.headless-tool-class-examples",
+    name: "Headless tool-class example pack and runner",
+    role: "observability_surface",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/headless/tool-class-examples.js", "src/main/direct/bridge/tool-capability-registry.js", "scripts/direct-headless-tool-class-examples-regression.mjs", "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md"],
+    ontology: ontologyShape(["direct_headless_tool_class_example_pack", "direct_headless_tool_class_example", "direct_headless_tool_class_example_report"], "harness", {
+      identityFields: ["packId", "exampleId", "toolClassId", "toolId", "exampleDigest"],
+      schema: "direct_headless_tool_class_example_pack@1",
+    }),
+    bridgeFit: "Maps each direct tool authority family to a canonical headless example posture with tool ids covered, expected evidence schemas, runner scripts, forbidden side effects, and validation-only default execution.",
+    realignment: "The pack is a testing/control artifact: it starts no provider transport, grants no renderer authority, mutates no workspace by default, and separates real-provider, headless-fixture, projection-blocked, and unsupported-blocked tool classes.",
+  },
+  {
     id: "ic14.skills-hooks-apps",
     name: "Skills, hooks, and app connectors as bridge modules",
     role: "governance_routing",
