@@ -149,6 +149,10 @@ const {
   buildStatefulExecSessionSurface,
 } = require("./main/direct/tools/stateful-exec-session");
 const {
+  assertCodeModeExecutionLaneSafe,
+  buildCodeModeExecutionLaneStatus,
+} = require("./main/direct/tools/code-mode-execution-lane");
+const {
   assertExternalCapabilityDiscoveryRegistrySafe,
   buildExternalCapabilityDiscoveryRegistry,
   buildExternalCapabilityDiscoveryStatusProjection,
@@ -2556,6 +2560,12 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     workThreadBundle,
     generatedAt,
   });
+  const codeModeExecutionLaneStatus = buildDirectCodeModeExecutionLaneStatusForProject({
+    project,
+    runtimeStatus,
+    workThreadBundle,
+    generatedAt,
+  });
   const contextPreview = directContextPreviewForProject(project, {
     runtimeStatus,
     runtimeWitnessProjection,
@@ -2585,6 +2595,7 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     agentRuntimeStatus,
     agentToolSurfaceStatus,
     statefulExecStatus,
+    codeModeExecutionLaneStatus,
     continuityStatus: runtimeStatus.directContextMaintenance,
     contextPreview,
     runtimeWitnessProjection,
@@ -2783,6 +2794,50 @@ function buildDirectStatefulExecSessionSurfaceForProject(input = {}) {
   });
   assertStatefulExecSessionSurfaceSafe(surface);
   return surface;
+}
+
+function buildDirectCodeModeExecutionLaneStatusForProject(input = {}) {
+  const project = input.project || {};
+  const runtimeStatus = input.runtimeStatus || {};
+  const projectId = normalizeString(project.id || runtimeStatus.projectId, "");
+  const workThreadId = normalizeString(
+    input.workThreadBundle?.activeWorkThreadId ||
+      input.workThreadBundle?.projection?.activeWorkThreadId ||
+      project.workThreadId,
+    "work_thread_code_mode_preview",
+  );
+  const status = buildCodeModeExecutionLaneStatus({
+    projectId,
+    workThreadId,
+    threadId: normalizeString(runtimeStatus.activeProviderThreadId || runtimeStatus.activeDirectSessionId || project.codexThreadId || project.threadId, ""),
+    kernelSession: {
+      kernelSessionId: "planned_code_mode_kernel_session",
+      state: "not_started",
+      kernelKind: "provider_code_mode",
+      language: "unknown",
+      resourceClass: "unknown",
+      maxWallTimeMs: 0,
+      maxOutputBytes: 0,
+    },
+    executePosture: {
+      executionState: "blocked_execution_not_enabled",
+      requestShapeFamily: "code_mode_execute_request_posture",
+      estimatedResourceClass: "unknown",
+    },
+    waitCancelPolicy: {
+      waitState: "blocked_execution_not_enabled",
+      cancelState: "blocked_execution_not_enabled",
+      waitTimeoutMs: 0,
+    },
+    artifactOutputPolicy: {
+      artifactState: "metadata_only",
+      artifactRefPolicy: "metadata_only",
+      allowedArtifactKinds: ["structured_result_ref", "text_summary"],
+    },
+    generatedAt: normalizeString(input.generatedAt, nowIso()),
+  });
+  assertCodeModeExecutionLaneSafe(status);
+  return status;
 }
 
 function buildDirectAgentUsageStatusForProject(projectId) {

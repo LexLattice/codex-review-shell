@@ -420,6 +420,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "This slice never installs, uninstalls, rolls back, auto-enables, mutates registries, declares provider tools, executes plugin code, or exposes raw manifests/payloads; it only creates the governance witness required before a future install authority can exist.",
   },
   {
+    id: "ic31.code-mode-execution-lane",
+    name: "Code mode execution lane",
+    role: "authority_gate",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/tools/code-mode-execution-lane.js", "src/main/direct/bridge/tool-capability-registry.js", "src/main/direct/ui/settings-surface.js", "scripts/direct-code-mode-execution-lane-regression.mjs", "src/main.js"],
+    ontology: ontologyShape(["code_mode_execution_lane_status", "code_mode_kernel_session", "code_mode_execute_request_posture", "code_mode_wait_cancel_policy", "code_mode_artifact_output_policy"], "harness", {
+      identityFields: ["projectId", "workThreadId", "threadId", "kernelSessionId", "executeRequestId", "artifactPolicyId"],
+      schema: "code_mode_execution_lane_status@1",
+    }),
+    bridgeFit: "Models vanilla code_mode_execute/code_mode_wait as a separate structured execution lane with kernel/session identity, execute posture, wait/cancel law, resource posture, and artifact output policy.",
+    realignment: "This is not shell/process parity: kernel start, provider declaration, provider transport, local execution, request-shape mutation, shell approval inheritance, workspace artifact writes, and raw code/output/artifact exposure remain disabled.",
+  },
+  {
     id: "ic8.usage-quota-readiness",
     name: "Usage, quota, model, and readiness evidence",
     role: "observability_surface",
