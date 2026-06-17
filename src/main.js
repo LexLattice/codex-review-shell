@@ -98,6 +98,10 @@ const {
   DirectServerMetadataAdapter,
 } = require("./main/direct/provider/metadata-adapter");
 const {
+  assertProviderHostedToolsStatusSafe,
+  buildProviderHostedToolsStatus,
+} = require("./main/direct/provider/hosted-tools");
+const {
   assertContextPacketPreviewSafe,
   buildContextPacketPreview,
 } = require("./main/direct/context/preview-workbench");
@@ -2500,6 +2504,11 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
   const agentUsageStatus = buildDirectAgentUsageStatusForProject(projectId);
   const implementationLaneUiStatus = buildDirectImplementationLaneUiStatus({ project, runtimeStatus });
   const directProviderMetadata = directProviderMetadataStatusForProject(project);
+  const providerHostedToolsStatus = buildDirectProviderHostedToolsStatusForProject({
+    project,
+    directProviderMetadata,
+    generatedAt,
+  });
   const appServerFallbackParity = runtimeStatus.appServerFallbackParity || buildAppServerFallbackParityReport({
     projectId,
     runtimeStatus,
@@ -2562,6 +2571,7 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     toolCapabilityStatus,
     externalDiscoveryStatus,
     mcpBoundaryStatus,
+    providerHostedToolsStatus,
     controlToolStatus,
     agentRuntimeStatus,
     agentToolSurfaceStatus,
@@ -2637,6 +2647,20 @@ function buildDirectMcpBoundaryStatusForProject(input = {}) {
     generatedAt: normalizeString(input.generatedAt, nowIso()),
   });
   assertMcpResourceToolBoundarySafe(status);
+  return status;
+}
+
+function buildDirectProviderHostedToolsStatusForProject(input = {}) {
+  const project = input.project || {};
+  const projectId = normalizeString(project.id, "");
+  const directProviderMetadata = input.directProviderMetadata || {};
+  const status = buildProviderHostedToolsStatus({
+    projectId,
+    workThreadId: normalizeString(project.workThreadId, ""),
+    providerMetadataProfile: directProviderMetadata.profile || input.providerMetadataProfile || null,
+    generatedAt: normalizeString(input.generatedAt, nowIso()),
+  });
+  assertProviderHostedToolsStatusSafe(status);
   return status;
 }
 

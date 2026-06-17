@@ -392,6 +392,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "This slice executes no MCP read or dynamic tool call, injects no external payload into context, declares no provider tool, mutates no workspace, and exposes no raw resource URI, tool input, result payload, schema, or secret.",
   },
   {
+    id: "ic29.provider-hosted-tool-contracts",
+    name: "Provider-hosted web/image tool contracts",
+    role: "authority_gate",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/provider/hosted-tools.js", "src/main/direct/provider/metadata-adapter.js", "src/main/direct/bridge/tool-capability-registry.js", "src/main/direct/ui/settings-surface.js", "scripts/direct-provider-hosted-tools-regression.mjs", "src/main.js"],
+    ontology: ontologyShape(["provider_hosted_tool_capability", "provider_web_search_evidence_contract", "provider_image_generation_artifact_contract", "provider_hosted_tools_status"], "model_provider", {
+      identityFields: ["projectId", "workThreadId", "toolKind", "providerMetadataDigest", "capabilityDigest", "contractDigest"],
+      schema: "provider_hosted_tools_status@1",
+    }),
+    bridgeFit: "Models provider-hosted web search and image generation as metadata-backed capability rows with distinct external evidence and generated artifact contracts, source/result policy, and provider metadata refs.",
+    realignment: "This slice enables no hosted provider tool call, provider request-shape mutation, context injection, workspace artifact write, raw prompt/result storage, or trust promotion without a future provider-accepted execution contract.",
+  },
+  {
     id: "ic8.usage-quota-readiness",
     name: "Usage, quota, model, and readiness evidence",
     role: "observability_surface",
