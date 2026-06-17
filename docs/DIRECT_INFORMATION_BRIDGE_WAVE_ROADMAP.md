@@ -3012,7 +3012,7 @@ a repeatable readiness suite for future direct-path testing.
 
 ## Wave 10: Direct Tool Authority Families
 
-Status: merged through PR 66; PR 67 implemented in branch `codex/direct-headless-tool-realism-report`.
+Status: merged through PR 67; PR 68 implemented in branch `codex/direct-headless-live-candidate-gate`.
 
 Dedicated spec:
 
@@ -3320,7 +3320,7 @@ No promotion of projection-only or unsupported tools to executable status.
 
 ### PR 67: Headless Tool-Class Realism Report
 
-Status: implemented in branch `codex/direct-headless-tool-realism-report`.
+Status: merged.
 
 Purpose:
 
@@ -3347,6 +3347,44 @@ No live provider calls.
 No promotion of any class to direct-enabled.
 No new tool execution authority.
 No UI dashboard yet.
+```
+
+### PR 68: Headless Tool-Class Live Candidate Gate
+
+Status: implemented in branch `codex/direct-headless-live-candidate-gate`.
+
+Purpose:
+
+```text
+Convert the PR 67 realism report into a non-executing promotion gate that
+selects only fixture-proven tool classes as eligible live-smoke candidates.
+```
+
+Scope summary:
+
+- Add `direct_headless_tool_class_live_candidate_gate@1`.
+- Add per-class `direct_headless_tool_class_live_candidate_row@1`.
+- Consume `direct_headless_tool_class_realism_report@1`.
+- Treat only `headless_fixture_passed` rows as live-smoke candidates.
+- Preserve blockers for fixture-not-executed, fixture-failed,
+  projection-only, unsupported, real-provider-unassigned, and invalid rows.
+- Emit required conditions for every eligible row:
+  explicit live-smoke mode, operator/CI authority, provider opt-in, bounded
+  timeout, raw-exposure scan, route-authority review, and class-specific
+  workspace/process/agent conditions where relevant.
+- Add validate-only runner by default.
+- Add optional `--execute-fixtures` mode to prove which rows become candidates
+  after fixture execution.
+
+Non-goals:
+
+```text
+No live provider calls.
+No live smoke execution.
+No promotion of any class to direct-enabled.
+No new tool execution authority.
+No renderer authority.
+No workspace mutation.
 ```
 
 ## Update Rules
