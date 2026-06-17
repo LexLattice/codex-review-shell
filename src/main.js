@@ -141,6 +141,11 @@ const {
   buildStatefulExecSessionSurface,
 } = require("./main/direct/tools/stateful-exec-session");
 const {
+  assertExternalCapabilityDiscoveryRegistrySafe,
+  buildExternalCapabilityDiscoveryRegistry,
+  buildExternalCapabilityDiscoveryStatusProjection,
+} = require("./main/direct/external/capability-discovery");
+const {
   assertControlToolSubstrateSafe,
   buildControlToolSubstrateStatus,
 } = require("./main/direct/tools/control-perception-decision-substrate");
@@ -2479,6 +2484,10 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     registry: toolCapabilityRegistry,
     status: "constitution_only",
   });
+  const externalDiscoveryStatus = buildDirectExternalCapabilityDiscoveryStatusForProject({
+    project,
+    generatedAt,
+  });
   const agentUsageStatus = buildDirectAgentUsageStatusForProject(projectId);
   const implementationLaneUiStatus = buildDirectImplementationLaneUiStatus({ project, runtimeStatus });
   const directProviderMetadata = directProviderMetadataStatusForProject(project);
@@ -2543,6 +2552,7 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     moduleStatus,
     agentClassStatus,
     toolCapabilityStatus,
+    externalDiscoveryStatus,
     controlToolStatus,
     agentRuntimeStatus,
     agentToolSurfaceStatus,
@@ -2595,6 +2605,18 @@ function buildDirectAgentRuntimeSubstrateStatusForProject(input = {}) {
   });
   assertAgentRuntimeSubstrateSafe(status);
   return status;
+}
+
+function buildDirectExternalCapabilityDiscoveryStatusForProject(input = {}) {
+  const project = input.project || {};
+  const projectId = normalizeString(project.id, "");
+  const registry = buildExternalCapabilityDiscoveryRegistry({
+    projectId,
+    workThreadId: normalizeString(project.workThreadId, ""),
+    generatedAt: normalizeString(input.generatedAt, nowIso()),
+  });
+  assertExternalCapabilityDiscoveryRegistrySafe(registry);
+  return buildExternalCapabilityDiscoveryStatusProjection(registry);
 }
 
 function buildDirectTextSubAgentToolSurfaceForProject(input = {}) {

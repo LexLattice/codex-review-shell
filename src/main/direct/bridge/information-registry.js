@@ -364,6 +364,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "This is not an alias for bounded run_command; provider declaration, provider transport, PTY mode, request-shape mutation, unbounded stdout/stderr, raw stdin, and automatic replay remain disabled.",
   },
   {
+    id: "ic27.external-capability-discovery-registry",
+    name: "External capability discovery registry",
+    role: "authority_gate",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/external/capability-discovery.js", "src/main/direct/bridge/tool-capability-registry.js", "src/main/direct/ui/settings-surface.js", "scripts/direct-external-capability-discovery-regression.mjs", "src/main.js"],
+    ontology: ontologyShape(["external_capability_descriptor", "external_capability_discovery_registry", "external_capability_discovery_status_projection"], "connector", {
+      identityFields: ["projectId", "workThreadId", "registryId", "descriptorId", "sourceDigest"],
+      schema: "external_capability_discovery_registry@1",
+    }),
+    bridgeFit: "Adds descriptor-only discovery substrate for tool_search, MCP server/resource/tool listings, and plugin catalog posture with schema/source digests, trust state, permission class, side-effect class, and deferred exposure status.",
+    realignment: "Discovery remains non-executing: discovered tools are not provider-declared, resources are not read, MCP actions are not invoked, plugins are not installed, and external results are not trusted project evidence.",
+  },
+  {
     id: "ic8.usage-quota-readiness",
     name: "Usage, quota, model, and readiness evidence",
     role: "observability_surface",

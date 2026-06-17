@@ -601,6 +601,38 @@ function summarizeStatefulExecSurface(statefulExecSurface = {}) {
   };
 }
 
+function summarizeExternalCapabilityDiscovery(externalDiscovery = {}) {
+  const source = objectOrEmpty(externalDiscovery);
+  const status = normalizeString(source.schema, "") === "external_capability_discovery_status_projection@1"
+    ? source
+    : objectOrEmpty(source.externalCapabilityDiscovery || source.externalDiscoveryStatus || source.directExternalCapabilityDiscovery);
+  return {
+    available: normalizeString(status.schema, "") === "external_capability_discovery_status_projection@1",
+    schema: normalizeString(status.schema, "not_exposed"),
+    status: normalizeString(status.status, "not_exposed"),
+    registryId: normalizeString(status.registryId, ""),
+    registryDigest: normalizeString(status.registryDigest, ""),
+    projectionDigest: normalizeString(status.projectionDigest, ""),
+    descriptorCount: Number(status.descriptorCount || 0),
+    blockedCount: Number(status.blockedCount || 0),
+    deferredCount: Number(status.deferredCount || 0),
+    discoveredCount: Number(status.discoveredCount || 0),
+    bySourceKind: objectOrEmpty(status.bySourceKind),
+    byEnabledState: objectOrEmpty(status.byEnabledState),
+    byPermissionClass: objectOrEmpty(status.byPermissionClass),
+    providerDeclarationAllowed: status.providerDeclarationAllowed === true,
+    externalToolExecutionAllowed: status.externalToolExecutionAllowed === true,
+    resourceReadAllowed: status.resourceReadAllowed === true,
+    dynamicToolCallAllowed: status.dynamicToolCallAllowed === true,
+    pluginInstallAllowed: status.pluginInstallAllowed === true,
+    autoEnableDiscoveredToolsAllowed: status.autoEnableDiscoveredToolsAllowed === true,
+    rawSchemaIncluded: status.rawSchemaIncluded === true,
+    rawPayloadIncluded: status.rawPayloadIncluded === true,
+    rawSecretIncluded: status.rawSecretIncluded === true,
+    rendererSafeSummary: boundedString(status.rendererSafeSummary || "External capability discovery is not exposed.", 360),
+  };
+}
+
 function summarizeContinuity(input = {}) {
   const continuity = objectOrEmpty(input.continuityStatus || input.contextContinuityStatus);
   const runtimeContext = objectOrEmpty(input.runtimeStatus?.directContextMaintenance || input.runtimeStatus?.contextMaintenance);
@@ -865,6 +897,7 @@ function buildRows(sections) {
   const agentRuntime = sections.agentRuntime;
   const agentToolSurface = sections.agentToolSurface;
   const statefulExec = sections.statefulExec;
+  const externalDiscovery = sections.externalDiscovery;
   const continuity = sections.continuity;
   const contextPreview = sections.contextPreview;
   const memoryWorkbench = sections.memoryWorkbench;
@@ -989,6 +1022,16 @@ function buildRows(sections) {
       statusRow("Families", Object.keys(toolCapabilities.byFamily).length),
       statusRow("Promotion states", Object.keys(toolCapabilities.byPromotionState).length),
       statusRow("Authority", toolCapabilities.providerDeclarationsEnabledInThisPr || toolCapabilities.localExecutionEnabledInThisPr || toolCapabilities.authorityGateEnabledInThisPr || toolCapabilities.requestShapeMutationEnabledInThisPr ? "unexpected grant" : "constitution only", toolCapabilities.providerDeclarationsEnabledInThisPr || toolCapabilities.localExecutionEnabledInThisPr || toolCapabilities.authorityGateEnabledInThisPr || toolCapabilities.requestShapeMutationEnabledInThisPr ? "blocked" : "ok"),
+    ],
+    externalDiscovery: [
+      statusRow("Surface", externalDiscovery.available ? "available" : "not exposed", externalDiscovery.available ? "diagnostic" : "missing"),
+      statusRow("Status", externalDiscovery.status),
+      statusRow("Descriptors", `${externalDiscovery.descriptorCount} total · ${externalDiscovery.deferredCount} deferred / ${externalDiscovery.blockedCount} blocked`),
+      statusRow("Source kinds", Object.keys(externalDiscovery.bySourceKind).length),
+      statusRow("Permission classes", Object.keys(externalDiscovery.byPermissionClass).length),
+      statusRow("Discovered", externalDiscovery.discoveredCount, externalDiscovery.discoveredCount ? "diagnostic" : "ok"),
+      statusRow("Digest", externalDiscovery.registryDigest || "none"),
+      statusRow("Authority", externalDiscovery.providerDeclarationAllowed || externalDiscovery.externalToolExecutionAllowed || externalDiscovery.resourceReadAllowed || externalDiscovery.dynamicToolCallAllowed || externalDiscovery.pluginInstallAllowed || externalDiscovery.autoEnableDiscoveredToolsAllowed || externalDiscovery.rawSchemaIncluded || externalDiscovery.rawPayloadIncluded || externalDiscovery.rawSecretIncluded ? "unexpected grant" : "discovery only", externalDiscovery.providerDeclarationAllowed || externalDiscovery.externalToolExecutionAllowed || externalDiscovery.resourceReadAllowed || externalDiscovery.dynamicToolCallAllowed || externalDiscovery.pluginInstallAllowed || externalDiscovery.autoEnableDiscoveredToolsAllowed || externalDiscovery.rawSchemaIncluded || externalDiscovery.rawPayloadIncluded || externalDiscovery.rawSecretIncluded ? "blocked" : "ok"),
     ],
     controlTools: [
       statusRow("Surface", controlTools.rowCount ? "available" : "not exposed", controlTools.rowCount ? "diagnostic" : "missing"),
@@ -1168,6 +1211,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
   const moduleContextIntake = summarizeModuleContextIntake(input.moduleContextIntake || input.directModuleContextIntake || input.moduleContextIntakeProjection || input);
   const agentClasses = summarizeAgentClasses(input.agentClassStatus);
   const toolCapabilities = summarizeToolCapabilities(input.toolCapabilityStatus || input.toolCapabilityProjection || input.directToolCapabilityStatus || input);
+  const externalDiscovery = summarizeExternalCapabilityDiscovery(input.externalDiscoveryStatus || input.externalCapabilityDiscovery || input.directExternalCapabilityDiscovery || input);
   const controlTools = summarizeControlToolSubstrate(input.controlToolStatus || input.controlToolSubstrateStatus || input.directControlToolStatus || input);
   const agentRuntime = summarizeAgentRuntimeSubstrate(input.agentRuntimeStatus || input.agentRuntimeSubstrateStatus || input.directAgentRuntimeStatus || input);
   const agentToolSurface = summarizeTextSubAgentToolSurface(input.agentToolSurfaceStatus || input.textSubAgentToolSurface || input.directTextSubAgentToolSurface || input);
@@ -1215,6 +1259,12 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
     toolLocalExecutionAllowed: false,
     toolAuthorityGateAllowed: false,
     toolRequestShapeMutationAllowed: false,
+    externalDiscoveryProviderDeclarationAllowed: false,
+    externalDiscoveryToolExecutionAllowed: false,
+    externalDiscoveryResourceReadAllowed: false,
+    externalDiscoveryDynamicToolCallAllowed: false,
+    externalDiscoveryPluginInstallAllowed: false,
+    externalDiscoveryAutoEnableAllowed: false,
     controlToolLocalExecutionAllowed: false,
     controlToolProviderDeclarationAllowed: false,
     controlToolAuthorityGateAllowed: false,
@@ -1241,7 +1291,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
     rawPathIncluded: false,
     rawSecretIncluded: false,
   };
-  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, toolCapabilities, controlTools, agentRuntime, agentToolSurface, statefulExec, continuity, contextPreview, memoryWorkbench, runtimeWitness, agentUsage, appServerFallbackParity, manualSmokeGate, headlessDaemon };
+  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, toolCapabilities, externalDiscovery, controlTools, agentRuntime, agentToolSurface, statefulExec, continuity, contextPreview, memoryWorkbench, runtimeWitness, agentUsage, appServerFallbackParity, manualSmokeGate, headlessDaemon };
   const sourceDigest = digestFor("direct-settings-surface-source@1", sections);
   const projection = {
     schema: DIRECT_SETTINGS_SURFACE_PROJECTION_SCHEMA,
@@ -1262,6 +1312,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       "module_context_intake",
       "agent_class_specs",
       "direct_tool_capability_constitution",
+      "external_capability_discovery_registry",
       "control_perception_human_decision_tool_substrate",
       "agent_runtime_substrate",
       "text_only_sub_agent_tool_surface",
@@ -1294,6 +1345,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       { kind: "module_context_intake", digest: normalizeString(moduleContextIntake.intakeDigest, ""), label: "Module context intake" },
       { kind: "agent_class_status", digest: normalizeString(input.agentClassStatus?.projectionDigest, ""), label: "Agent class status" },
       { kind: "direct_tool_capability_status", digest: normalizeString(toolCapabilities.registryDigest || input.toolCapabilityStatus?.projectionDigest, ""), label: "Direct tool capability constitution" },
+      { kind: "external_capability_discovery_registry", digest: normalizeString(externalDiscovery.projectionDigest || externalDiscovery.registryDigest, ""), label: "External capability discovery registry" },
       { kind: "direct_control_tool_substrate_status", digest: normalizeString(controlTools.statusDigest, ""), label: "Control/perception/human-decision tool substrate" },
       { kind: "direct_agent_runtime_substrate_status", digest: normalizeString(agentRuntime.statusDigest, ""), label: "Agent runtime substrate" },
       { kind: "direct_text_sub_agent_tool_surface", digest: normalizeString(agentToolSurface.surfaceDigest, ""), label: "Text-only sub-agent tool surface" },
@@ -1353,6 +1405,12 @@ function assertDirectSettingsSurfaceRendererSafe(projection = {}) {
     "toolLocalExecutionAllowed",
     "toolAuthorityGateAllowed",
     "toolRequestShapeMutationAllowed",
+    "externalDiscoveryProviderDeclarationAllowed",
+    "externalDiscoveryToolExecutionAllowed",
+    "externalDiscoveryResourceReadAllowed",
+    "externalDiscoveryDynamicToolCallAllowed",
+    "externalDiscoveryPluginInstallAllowed",
+    "externalDiscoveryAutoEnableAllowed",
     "controlToolLocalExecutionAllowed",
     "controlToolProviderDeclarationAllowed",
     "controlToolAuthorityGateAllowed",
