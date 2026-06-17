@@ -100,8 +100,12 @@ function main() {
   assert(directRead.localExecutorState === "implemented_restricted", "direct read should cite restricted executor");
   assert(applyPatch.promotionState === "direct_restricted", "apply_patch should be restricted");
   assert(runCommand.promotionState === "direct_restricted", "run_command should be restricted");
-  assert(execCommand.promotionState === "diagnostic_only", "exec_command should not be aliased to direct run_command");
-  assert(execCommand.localExecutorState !== "implemented_restricted", "exec_command should not claim executor parity");
+  assert(execCommand.promotionState === "direct_restricted", "exec_command should be restricted through stateful exec session surface");
+  assert(execCommand.localExecutorState === "implemented_restricted", "exec_command should cite restricted stateful executor");
+  assert(execCommand.localExecutor === "src/main/direct/tools/stateful-exec-session.js", "exec_command should not be aliased to direct run_command");
+  assert(rows.get("vanilla.write_stdin").promotionState === "direct_restricted", "write_stdin should be restricted through stateful stdin surface");
+  assert(rows.get("vanilla.write_stdin").localExecutor === "src/main/direct/tools/stateful-exec-session.js", "write_stdin should cite restricted stateful executor");
+  assert(runCommand.localExecutor !== execCommand.localExecutor, "run_command and exec_command should remain separate executors");
   assert(newContext.promotionState === "unsupported", "new_context should remain blocked");
   assert(newContext.authorityRequired === "context_maintenance_gate", "new_context should require context maintenance law");
   assert(spawnAgent.odeuFamily === "agent_runtime", "spawn_agent should be classified as agent runtime");

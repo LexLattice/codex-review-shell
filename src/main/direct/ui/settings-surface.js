@@ -547,6 +547,60 @@ function summarizeTextSubAgentToolSurface(agentToolSurface = {}) {
   };
 }
 
+function summarizeStatefulExecSurface(statefulExecSurface = {}) {
+  const source = objectOrEmpty(statefulExecSurface);
+  const status = normalizeString(source.schema, "") === "direct_stateful_exec_session_surface@1"
+    ? source
+    : objectOrEmpty(source.statefulExecSurface || source.directStatefulExecSurface || source.statefulExecStatus);
+  const session = objectOrEmpty(status.sessionPlan);
+  const stdin = objectOrEmpty(status.stdinPlan);
+  const cleanup = objectOrEmpty(status.cleanupPlan);
+  const recovery = objectOrEmpty(status.recoveryClassification);
+  return {
+    available: normalizeString(status.schema, "") === "direct_stateful_exec_session_surface@1",
+    schema: normalizeString(status.schema, "not_exposed"),
+    mode: normalizeString(status.mode, "not_exposed"),
+    surfaceId: normalizeString(status.surfaceId, ""),
+    surfaceDigest: normalizeString(status.surfaceDigest, ""),
+    sessionId: normalizeString(session.sessionId, ""),
+    sessionState: normalizeString(session.sessionState, "unknown"),
+    terminal: session.terminal === true,
+    exitCodeKnown: session.exitCodeKnown === true,
+    transportMode: normalizeString(session.transportMode, "unknown"),
+    plainPipeModeEnabled: session.plainPipeModeEnabled === true,
+    ptyModeEnabled: session.ptyModeEnabled === true,
+    outputFrameCount: Number(status.outputFrameCount || 0),
+    outputFrameSequenceValid: status.outputFrameSequenceValid === true,
+    outputBudgetChars: Number(status.outputBudgetChars || session.outputBudgetChars || 0),
+    providerResultBudgetChars: Number(status.providerResultBudgetChars || session.providerResultBudgetChars || 0),
+    idleTimeoutMs: Number(session.idleTimeoutMs || 0),
+    hardTimeoutMs: Number(session.hardTimeoutMs || 0),
+    stdinPolicy: normalizeString(stdin.stdinPolicy, "unknown"),
+    stdinCanWrite: stdin.canWrite === true,
+    stdinBlockerCodes: arrayOrEmpty(stdin.blockerCodes).map((item) => normalizeString(item, "")).filter(Boolean),
+    cleanupState: normalizeString(cleanup.cleanupState, "unknown"),
+    cleanupRequired: cleanup.processTreeCleanupRequired === true,
+    recoveryClass: normalizeString(recovery.recoveryClass, "unknown"),
+    replayAllowed: recovery.replayAllowed === true,
+    terminalSuccessClaimAllowed: recovery.terminalSuccessClaimAllowed === true,
+    execCommandToolEnabledInThisPr: status.execCommandToolEnabledInThisPr === true,
+    writeStdinToolEnabledInThisPr: status.writeStdinToolEnabledInThisPr === true,
+    cancellationPlanEnabledInThisPr: status.cancellationPlanEnabledInThisPr === true,
+    processTreeCleanupPlanEnabledInThisPr: status.processTreeCleanupPlanEnabledInThisPr === true,
+    providerDeclarationAllowed: status.providerDeclarationAllowed === true,
+    providerTransportAllowed: status.providerTransportAllowed === true,
+    requestShapeMutationAllowed: status.requestShapeMutationAllowed === true,
+    runCommandAliasAllowed: status.runCommandAliasAllowed === true,
+    terminalSuccessWithoutExitAllowed: status.terminalSuccessWithoutExitAllowed === true,
+    rawCommandIncluded: status.rawCommandIncluded === true,
+    rawOutputIncluded: status.rawOutputIncluded === true,
+    rawInputIncluded: status.rawInputIncluded === true,
+    rawPathIncluded: status.rawPathIncluded === true,
+    rawSecretIncluded: status.rawSecretIncluded === true,
+    rendererSafeSummary: boundedString(status.rendererSafeSummary || "Stateful exec session surface is not exposed.", 360),
+  };
+}
+
 function summarizeContinuity(input = {}) {
   const continuity = objectOrEmpty(input.continuityStatus || input.contextContinuityStatus);
   const runtimeContext = objectOrEmpty(input.runtimeStatus?.directContextMaintenance || input.runtimeStatus?.contextMaintenance);
@@ -810,6 +864,7 @@ function buildRows(sections) {
   const controlTools = sections.controlTools;
   const agentRuntime = sections.agentRuntime;
   const agentToolSurface = sections.agentToolSurface;
+  const statefulExec = sections.statefulExec;
   const continuity = sections.continuity;
   const contextPreview = sections.contextPreview;
   const memoryWorkbench = sections.memoryWorkbench;
@@ -973,6 +1028,20 @@ function buildRows(sections) {
       statusRow("Usage", agentToolSurface.separateUsageAttributionRequired ? "separate child attribution required" : "missing", agentToolSurface.separateUsageAttributionRequired ? "ok" : "blocked"),
       statusRow("Authority", agentToolSurface.providerTransportAllowed || agentToolSurface.providerDeclarationAllowed || agentToolSurface.requestShapeMutationAllowed || agentToolSurface.recursiveSpawnAllowed || agentToolSurface.childToolsAllowed || agentToolSurface.inheritedParentAuthorityAllowed || agentToolSurface.childTranscriptPromotionAllowed || agentToolSurface.parentSpawnIntentMayClaimChildSuccess || agentToolSurface.interruptProviderCancelAllowed ? "unexpected grant" : "text-only gated", agentToolSurface.providerTransportAllowed || agentToolSurface.providerDeclarationAllowed || agentToolSurface.requestShapeMutationAllowed || agentToolSurface.recursiveSpawnAllowed || agentToolSurface.childToolsAllowed || agentToolSurface.inheritedParentAuthorityAllowed || agentToolSurface.childTranscriptPromotionAllowed || agentToolSurface.parentSpawnIntentMayClaimChildSuccess || agentToolSurface.interruptProviderCancelAllowed ? "blocked" : "ok"),
     ],
+    statefulExec: [
+      statusRow("Surface", statefulExec.available ? "available" : "not exposed", statefulExec.available ? "diagnostic" : "missing"),
+      statusRow("Mode", statefulExec.mode),
+      statusRow("Session", `${statefulExec.sessionId || "none"} · ${statefulExec.sessionState}`, statefulExec.sessionState === "running" || statefulExec.sessionState === "stdin_waiting" ? "diagnostic" : statefulExec.terminal ? "ok" : "blocked"),
+      statusRow("Transport", `${statefulExec.transportMode} · PTY ${statefulExec.ptyModeEnabled ? "enabled" : "deferred"}`, statefulExec.ptyModeEnabled ? "blocked" : "ok"),
+      statusRow("Output frames", `${statefulExec.outputFrameCount} · sequence ${statefulExec.outputFrameSequenceValid ? "valid" : "invalid"}`, statefulExec.outputFrameSequenceValid ? "ok" : "blocked"),
+      statusRow("Budgets", `${statefulExec.outputBudgetChars}/${statefulExec.providerResultBudgetChars} chars`),
+      statusRow("Timeouts", `${statefulExec.idleTimeoutMs}/${statefulExec.hardTimeoutMs} ms`),
+      statusRow("Stdin", `${statefulExec.stdinPolicy} · ${statefulExec.stdinCanWrite ? "can write" : statefulExec.stdinBlockerCodes.join(", ") || "blocked"}`, statefulExec.stdinCanWrite ? "diagnostic" : "blocked"),
+      statusRow("Cleanup", `${statefulExec.cleanupState}${statefulExec.cleanupRequired ? " · required" : ""}`, statefulExec.cleanupRequired ? "diagnostic" : "ok"),
+      statusRow("Recovery", `${statefulExec.recoveryClass} · replay ${statefulExec.replayAllowed ? "allowed" : "forbidden"}`, statefulExec.replayAllowed ? "blocked" : "ok"),
+      statusRow("Tools", `exec ${statefulExec.execCommandToolEnabledInThisPr ? "restricted" : "off"} / stdin ${statefulExec.writeStdinToolEnabledInThisPr ? "restricted" : "blocked"}`, statefulExec.execCommandToolEnabledInThisPr ? "diagnostic" : "missing"),
+      statusRow("Authority", statefulExec.providerDeclarationAllowed || statefulExec.providerTransportAllowed || statefulExec.requestShapeMutationAllowed || statefulExec.runCommandAliasAllowed || statefulExec.terminalSuccessWithoutExitAllowed || statefulExec.rawCommandIncluded || statefulExec.rawOutputIncluded || statefulExec.rawInputIncluded || statefulExec.rawPathIncluded || statefulExec.rawSecretIncluded ? "unexpected grant" : "stateful gated", statefulExec.providerDeclarationAllowed || statefulExec.providerTransportAllowed || statefulExec.requestShapeMutationAllowed || statefulExec.runCommandAliasAllowed || statefulExec.terminalSuccessWithoutExitAllowed || statefulExec.rawCommandIncluded || statefulExec.rawOutputIncluded || statefulExec.rawInputIncluded || statefulExec.rawPathIncluded || statefulExec.rawSecretIncluded ? "blocked" : "ok"),
+    ],
     continuity: [
       statusRow("Transition", continuity.transitionStatus),
       statusRow("Context loss", continuity.contextLossState),
@@ -1102,6 +1171,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
   const controlTools = summarizeControlToolSubstrate(input.controlToolStatus || input.controlToolSubstrateStatus || input.directControlToolStatus || input);
   const agentRuntime = summarizeAgentRuntimeSubstrate(input.agentRuntimeStatus || input.agentRuntimeSubstrateStatus || input.directAgentRuntimeStatus || input);
   const agentToolSurface = summarizeTextSubAgentToolSurface(input.agentToolSurfaceStatus || input.textSubAgentToolSurface || input.directTextSubAgentToolSurface || input);
+  const statefulExec = summarizeStatefulExecSurface(input.statefulExecStatus || input.statefulExecSurface || input.directStatefulExecSurface || input);
   const continuity = summarizeContinuity(input);
   const contextPreview = summarizeContextPreview(input.contextPreview || input.contextPacketPreview || input.directContextPreview || input);
   const memoryWorkbench = summarizeMemoryWorkbench(input.memoryWorkbench || input.memoryReviewWorkbench || input.directMemoryWorkbench || input);
@@ -1162,11 +1232,16 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
     agentToolSurfaceRecursiveSpawnAllowed: false,
     agentToolSurfaceChildToolAllowed: false,
     agentToolSurfaceInterruptProviderCancelAllowed: false,
+    statefulExecProviderDeclarationAllowed: false,
+    statefulExecProviderTransportAllowed: false,
+    statefulExecRequestShapeMutationAllowed: false,
+    statefulExecRunCommandAliasAllowed: false,
+    statefulExecTerminalSuccessWithoutExitAllowed: false,
     rawTextIncluded: false,
     rawPathIncluded: false,
     rawSecretIncluded: false,
   };
-  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, toolCapabilities, controlTools, agentRuntime, agentToolSurface, continuity, contextPreview, memoryWorkbench, runtimeWitness, agentUsage, appServerFallbackParity, manualSmokeGate, headlessDaemon };
+  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, toolCapabilities, controlTools, agentRuntime, agentToolSurface, statefulExec, continuity, contextPreview, memoryWorkbench, runtimeWitness, agentUsage, appServerFallbackParity, manualSmokeGate, headlessDaemon };
   const sourceDigest = digestFor("direct-settings-surface-source@1", sections);
   const projection = {
     schema: DIRECT_SETTINGS_SURFACE_PROJECTION_SCHEMA,
@@ -1190,6 +1265,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       "control_perception_human_decision_tool_substrate",
       "agent_runtime_substrate",
       "text_only_sub_agent_tool_surface",
+      "stateful_exec_session_surface",
       "memory_baton_omission_compaction",
       "context_packet_preview",
       "memory_review_workbench",
@@ -1221,6 +1297,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       { kind: "direct_control_tool_substrate_status", digest: normalizeString(controlTools.statusDigest, ""), label: "Control/perception/human-decision tool substrate" },
       { kind: "direct_agent_runtime_substrate_status", digest: normalizeString(agentRuntime.statusDigest, ""), label: "Agent runtime substrate" },
       { kind: "direct_text_sub_agent_tool_surface", digest: normalizeString(agentToolSurface.surfaceDigest, ""), label: "Text-only sub-agent tool surface" },
+      { kind: "direct_stateful_exec_session_surface", digest: normalizeString(statefulExec.surfaceDigest, ""), label: "Stateful exec session surface" },
       { kind: "continuity_status", digest: normalizeString(input.continuityStatus?.projectionDigest, ""), label: "Continuity status" },
       { kind: "context_packet_preview", digest: normalizeString(contextPreview.previewDigest, ""), label: "Context packet preview" },
       { kind: "memory_review_workbench", digest: normalizeString(memoryWorkbench.workbenchDigest, ""), label: "Memory review workbench" },
@@ -1293,6 +1370,11 @@ function assertDirectSettingsSurfaceRendererSafe(projection = {}) {
     "agentToolSurfaceRecursiveSpawnAllowed",
     "agentToolSurfaceChildToolAllowed",
     "agentToolSurfaceInterruptProviderCancelAllowed",
+    "statefulExecProviderDeclarationAllowed",
+    "statefulExecProviderTransportAllowed",
+    "statefulExecRequestShapeMutationAllowed",
+    "statefulExecRunCommandAliasAllowed",
+    "statefulExecTerminalSuccessWithoutExitAllowed",
     "rawTextIncluded",
     "rawPathIncluded",
     "rawSecretIncluded",

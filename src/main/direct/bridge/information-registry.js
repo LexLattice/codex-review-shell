@@ -350,6 +350,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "Provider tool declaration, provider transport, recursive spawning, inherited parent tool authority, child workspace mutation, provider cancellation, and child transcript promotion remain disabled.",
   },
   {
+    id: "ic26.stateful-exec-session-surface",
+    name: "Stateful exec / stdin session surface",
+    role: "authority_gate",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/tools/stateful-exec-session.js", "src/main/direct/bridge/tool-capability-registry.js", "src/main/direct/ui/settings-surface.js", "scripts/direct-stateful-exec-session-regression.mjs", "src/main.js"],
+    ontology: ontologyShape(["direct_stateful_exec_session_surface", "direct_stateful_exec_session_plan", "direct_stateful_exec_output_frame", "direct_stateful_exec_stdin_plan", "direct_stateful_exec_cleanup_plan", "direct_stateful_exec_recovery_classification"], "harness", {
+      identityFields: ["projectId", "workThreadId", "sessionId", "toolCallId", "frameId", "stdinPlanId"],
+      schema: "direct_stateful_exec_session_surface@1",
+    }),
+    bridgeFit: "Models vanilla exec_command/write_stdin parity as stateful process-session evidence: session identity, plain-pipe transport, bounded output frames, stdin policy, timeout/cancellation/cleanup posture, workspace-effect scan, and restart recovery class.",
+    realignment: "This is not an alias for bounded run_command; provider declaration, provider transport, PTY mode, request-shape mutation, unbounded stdout/stderr, raw stdin, and automatic replay remain disabled.",
+  },
+  {
     id: "ic8.usage-quota-readiness",
     name: "Usage, quota, model, and readiness evidence",
     role: "observability_surface",
