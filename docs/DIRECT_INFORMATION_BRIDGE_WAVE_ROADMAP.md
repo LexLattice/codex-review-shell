@@ -3012,7 +3012,7 @@ a repeatable readiness suite for future direct-path testing.
 
 ## Wave 10: Direct Tool Authority Families
 
-Status: merged through PR 65; PR 66 implemented in branch `codex/direct-headless-tool-class-examples`.
+Status: merged through PR 66; PR 67 implemented in branch `codex/direct-headless-tool-realism-report`.
 
 Dedicated spec:
 
@@ -3284,7 +3284,7 @@ Scope summary:
 
 ### PR 66: Headless Tool-Class Example Pack And Runner
 
-Status: implemented in branch `codex/direct-headless-tool-class-examples`.
+Status: merged.
 
 Purpose:
 
@@ -3316,6 +3316,37 @@ No provider transport by default.
 No workspace mutation by default.
 No renderer authority.
 No promotion of projection-only or unsupported tools to executable status.
+```
+
+### PR 67: Headless Tool-Class Realism Report
+
+Status: implemented in branch `codex/direct-headless-tool-realism-report`.
+
+Purpose:
+
+```text
+Turn the PR 66 example pack into an operational realism report that tells which
+tool classes are fixture-proven, projection-blocked, unsupported, or future
+real-provider candidates.
+```
+
+Scope summary:
+
+- Add `direct_headless_tool_class_realism_report@1`.
+- Add per-class `direct_headless_tool_class_realism_row@1`.
+- Consume `direct_headless_tool_class_example_pack@1`.
+- Produce validate-only report by default.
+- Support optional `--execute-fixtures` to run linked fixture scripts.
+- Record promotion readiness per class.
+- Preserve no-provider/no-workspace-mutation/no-renderer-authority defaults.
+
+Non-goals:
+
+```text
+No live provider calls.
+No promotion of any class to direct-enabled.
+No new tool execution authority.
+No UI dashboard yet.
 ```
 
 ## Update Rules
