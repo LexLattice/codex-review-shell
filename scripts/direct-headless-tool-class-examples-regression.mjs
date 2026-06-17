@@ -30,6 +30,16 @@ function unique(values) {
   return [...new Set(values.filter(Boolean))].sort((a, b) => a.localeCompare(b));
 }
 
+function processFailureMessage(error) {
+  const base = String(error?.message || error);
+  const stderr = typeof error?.stderr === "string"
+    ? error.stderr
+    : error?.stderr
+      ? String(error.stderr)
+      : "";
+  return stderr ? `${base}\nStderr:\n${stderr}` : base;
+}
+
 function executeFixtureScripts(pack) {
   const scripts = unique(pack.examples.flatMap((example) => example.runnerScripts || []))
     .filter((scriptPath) => scriptPath.endsWith("-regression.mjs"));
@@ -55,12 +65,14 @@ function executeFixtureScripts(pack) {
         scriptPath,
         status: "failed",
         durationMs: Date.now() - startedAt,
-        error: String(error?.message || error),
+        error: processFailureMessage(error),
       });
     }
   }
   return results;
 }
+
+assert(processFailureMessage({ message: "fixture failed", stderr: "details" }).includes("Stderr:\ndetails"), "fixture failure messages should include stderr");
 
 const args = parseArgs(process.argv.slice(2));
 const executeFixtures = args.has("--execute-fixtures");
@@ -107,6 +119,23 @@ assert.equal(report.status, "passed", "tool class example report should pass");
 assert.equal(report.providerTransportStarted, false, "default report must not start provider transport");
 assert.equal(report.workspaceMutationStarted, false, "default report must not mutate workspace");
 assert.equal(report.rendererAuthorityGranted, false, "default report must not grant renderer authority");
+
+const malformedReport = buildDirectHeadlessToolClassExampleReport({
+  pack: {
+    schema: "direct_headless_tool_class_example_pack@1",
+    packId: "malformed_pack",
+    examples: [{
+      schema: "direct_headless_tool_class_example@1",
+      exampleId: "malformed_example",
+      toolClassId: "malformed.class",
+      testMode: "projection_blocked",
+      realismTier: "projection",
+    }],
+  },
+  nowMs: 0,
+});
+assert.equal(malformedReport.status, "failed", "malformed custom pack should produce a failed report");
+assert.deepEqual(malformedReport.exampleRows[0].toolIdsCovered, [], "malformed example rows should not throw on missing arrays");
 
 let fixtureExecution = {
   mode: "not_requested",

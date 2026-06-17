@@ -30,6 +30,10 @@ function normalizeStringList(values, fallback = []) {
   return [...new Set(source.map((value) => normalizeString(value, "")).filter(Boolean))].sort((a, b) => a.localeCompare(b));
 }
 
+function arrayCopy(value) {
+  return Array.isArray(value) ? [...value] : [];
+}
+
 function stableStringify(value) {
   if (value && typeof value.toJSON === "function") return stableStringify(value.toJSON());
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -508,6 +512,7 @@ function validateDirectHeadlessToolClassExamplePack(pack = {}) {
 function buildDirectHeadlessToolClassExampleReport(options = {}) {
   const pack = isPlainObject(options.pack) ? options.pack : buildDirectHeadlessToolClassExamplePack(options);
   const validationErrors = validateDirectHeadlessToolClassExamplePack(pack);
+  const examples = Array.isArray(pack.examples) ? pack.examples : [];
   const report = {
     schema: DIRECT_HEADLESS_TOOL_CLASS_EXAMPLE_REPORT_SCHEMA,
     reportId: normalizeString(options.reportId, `direct_headless_tool_class_example_report_${digestFor("direct-headless-tool-class-report-source@1", pack.packDigest).slice(0, 24)}`),
@@ -517,17 +522,17 @@ function buildDirectHeadlessToolClassExampleReport(options = {}) {
     status: validationErrors.length ? "failed" : "passed",
     executionMode: "validate_only",
     validationErrors,
-    coverage: { ...(pack.coverage || {}) },
-    exampleRows: (pack.examples || []).map((example) => ({
+    coverage: isPlainObject(pack.coverage) ? { ...pack.coverage } : {},
+    exampleRows: examples.map((example) => ({
       exampleId: example.exampleId,
       toolClassId: example.toolClassId,
-      toolIdsCovered: [...example.toolIdsCovered],
+      toolIdsCovered: arrayCopy(example.toolIdsCovered),
       testMode: example.testMode,
       realismTier: example.realismTier,
-      runnerScripts: [...example.runnerScripts],
-      npmScripts: [...example.npmScripts],
-      expectedEvidenceSchemas: [...example.expectedEvidenceSchemas],
-      forbiddenSideEffects: [...example.forbiddenSideEffects],
+      runnerScripts: arrayCopy(example.runnerScripts),
+      npmScripts: arrayCopy(example.npmScripts),
+      expectedEvidenceSchemas: arrayCopy(example.expectedEvidenceSchemas),
+      forbiddenSideEffects: arrayCopy(example.forbiddenSideEffects),
       exampleDigest: example.exampleDigest,
       runnableByDefault: false,
     })),
