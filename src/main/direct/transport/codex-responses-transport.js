@@ -391,6 +391,7 @@ function decodeTextChunk(decoder, chunk) {
 }
 
 async function responseText(response) {
+  if (response && typeof response.text === "function") return response.text();
   if (response?.body && typeof response.body.getReader === "function") {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -478,6 +479,7 @@ async function readStreamingSseResponse(response, options = {}, requestBody = {}
   const onNormalizedEvents = options.onNormalizedEvents;
   let rawText = "";
   let buffer = "";
+  let error = null;
   const consumeFrame = (frame) => {
     const rawEvent = parseSingleSseFrame(frame);
     if (!rawEvent) return;
@@ -516,25 +518,29 @@ async function readStreamingSseResponse(response, options = {}, requestBody = {}
     buffer = split.remaining;
     for (const frame of split.frames) consumeFrame(frame);
   };
-  if (response?.body && typeof response.body.getReader === "function") {
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      consumeText(decoder.decode(value, { stream: true }));
+  try {
+    if (response?.body && typeof response.body.getReader === "function") {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        consumeText(decoder.decode(value, { stream: true }));
+      }
+      consumeText(decoder.decode());
+    } else if (response?.body && typeof response.body[Symbol.asyncIterator] === "function") {
+      const decoder = new TextDecoder();
+      for await (const chunk of response.body) consumeText(decodeTextChunk(decoder, chunk));
+      consumeText(decoder.decode());
+    } else if (response && typeof response.text === "function") {
+      consumeText(await response.text());
     }
-    consumeText(decoder.decode());
-  } else if (response?.body && typeof response.body[Symbol.asyncIterator] === "function") {
-    const decoder = new TextDecoder();
-    for await (const chunk of response.body) consumeText(decodeTextChunk(decoder, chunk));
-    consumeText(decoder.decode());
-  } else if (response && typeof response.text === "function") {
-    consumeText(await response.text());
-  }
-  if (buffer.trim()) {
-    consumeFrame(buffer);
-    buffer = "";
+    if (buffer.trim()) {
+      consumeFrame(buffer);
+      buffer = "";
+    }
+  } catch (caught) {
+    error = caught;
   }
   timing.streamCompletedAt = nowIso();
   return {
@@ -543,6 +549,7 @@ async function readStreamingSseResponse(response, options = {}, requestBody = {}
     normalizedEvents,
     unknownRawTypes,
     timing,
+    error,
   };
 }
 
@@ -747,6 +754,26 @@ async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, re
         timing.streamCompletedAt = streamed.timing.streamCompletedAt;
         timing.rawEventCount = streamed.timing.rawEventCount;
         timing.normalizedEventCount = streamed.timing.normalizedEventCount;
+        if (streamed.error) {
+          const caught = streamed.error;
+          const aborted = options.signal?.aborted === true || isAbortError(caught);
+          const code = errorCodeFromCaught(caught, streamStarted);
+          const message = caught?.message || String(caught || (aborted ? "Direct text probe was aborted." : "Direct text probe fetch failed."));
+          error = {
+            code,
+            message,
+          };
+          const errorEvent = aborted
+            ? { event: "aborted", data: { reason: error.message } }
+            : errorRawEvent(0, error.message, error.code);
+          const rawIndex = rawEvents.length;
+          rawEvents.push(errorEvent);
+          const normalizedError = normalizeLiveRawEvent(errorEvent, rawIndex, requestBody);
+          normalizedEvents.push(...normalizedError.normalized);
+          unknownRawTypes.push(...normalizedError.unknown.map((event) => event.rawType));
+          timing.rawEventCount = rawEvents.length;
+          timing.normalizedEventCount = normalizedEvents.length;
+        }
       }
       attempts.push({
         attempt: attemptNumber,

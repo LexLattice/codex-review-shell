@@ -94,6 +94,7 @@ const TERMINAL_TURN_STATES = new Set([
   "empty_output_terminal",
 ]);
 const SAFE_TEXT_ONLY_FOLLOWUP_PREVIOUS_STATES = new Set(["completed"]);
+const BLOCKED_WORK_THREAD_LIFECYCLE_STATES = new Set(["archived", "stale"]);
 const DEFAULT_MAX_PROMPT_CHARS = 64_000;
 const DEFAULT_MAX_ASSISTANT_CHARS = 256_000;
 const DEFAULT_READONLY_WORKSPACE_TIMEOUT_MS = 30_000;
@@ -138,6 +139,20 @@ function directWorkThreadContextCarrier(...sources) {
     if (!carrier.bridgeInformationRefs.length && Array.isArray(source.bridgeInformationRefs)) carrier.bridgeInformationRefs = source.bridgeInformationRefs;
   }
   return carrier;
+}
+
+function isRoutableWorkThreadForProject(workThread = {}, projectId = "") {
+  if (!workThread) return false;
+  const normalizedProjectId = normalizeString(projectId, "");
+  const normalizedWorkThreadProjectId = normalizeString(workThread.projectId, "");
+  const lifecycleState = normalizeString(workThread.lifecycleState, "unknown");
+  return Boolean(
+    workThread &&
+    normalizedProjectId &&
+    normalizedWorkThreadProjectId &&
+    normalizedWorkThreadProjectId === normalizedProjectId &&
+    !BLOCKED_WORK_THREAD_LIFECYCLE_STATES.has(lifecycleState),
+  );
 }
 
 function userPromptTextFromTurn(turn = {}) {
@@ -828,6 +843,9 @@ class DirectLiveTextController {
     };
     const workThreadId = normalizeString(hydrated.workThread?.workThreadId || hydrated.workThreadId, "");
     hydrated.workThreadId = workThreadId;
+    if (hydrated.workThread && !isRoutableWorkThreadForProject(hydrated.workThread, projectId)) {
+      hydrated.workThread = null;
+    }
     if (
       !hydrated.workThread &&
       workThreadId &&
@@ -835,7 +853,7 @@ class DirectLiveTextController {
       typeof this.workThreadStore.readWorkThread === "function"
     ) {
       const workThread = this.workThreadStore.readWorkThread(workThreadId);
-      if (workThread && normalizeString(workThread.projectId, "") === normalizeString(projectId, "")) {
+      if (isRoutableWorkThreadForProject(workThread, projectId)) {
         hydrated.workThread = workThread;
       }
     }
@@ -845,10 +863,10 @@ class DirectLiveTextController {
         hydrated.authorityBoundary = hydrated.workThread.authorityBoundary;
       }
       if (!hydrated.openObligations.length && Array.isArray(hydrated.workThread.openObligations)) {
-        hydrated.openObligations = hydrated.workThread.openObligations;
+        hydrated.openObligations = [...hydrated.workThread.openObligations];
       }
       if (!hydrated.bridgeInformationRefs.length && Array.isArray(hydrated.workThread.bridgeInformationRefs)) {
-        hydrated.bridgeInformationRefs = hydrated.workThread.bridgeInformationRefs;
+        hydrated.bridgeInformationRefs = [...hydrated.workThread.bridgeInformationRefs];
       }
     }
     return hydrated;

@@ -194,10 +194,59 @@ try {
   assert.equal(liveProbeResult.lifecycle.timing.normalizedEventCount, 2);
   assert(liveProbeResult.lifecycle.timing.firstNormalizedEventAt);
 
+  let partialDeltaSeen = false;
+  const interruptedProbeResult = await runTextOnlyDirectProbe({
+    profileDoc,
+    model: "gpt-5.4",
+    prompt: "stream then interrupt",
+    authStore: {
+      readStatus: () => ({
+        status: "authenticated",
+        accountId: "acct_controlled_route",
+        hasAccessToken: true,
+        rawTokensExposed: false,
+      }),
+      readCredentials: () => ({ accessToken: "controlled_route_access_token_secret_1234567890" }),
+    },
+    fetchImpl: async () => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode([
+          "event: response.output_text.delta",
+          "data: {\"delta\":\"partial\"}",
+          "",
+          "",
+        ].join("\n")));
+        setTimeout(() => controller.error(new Error("fixture stream interrupted")), 10);
+      },
+    }), { status: 200, headers: { "content-type": "text/event-stream" } }),
+    onNormalizedEvents: (events) => {
+      if (events.some((event) => event.type === "message_delta" && event.text === "partial")) {
+        partialDeltaSeen = true;
+      }
+    },
+  });
+  assert.equal(partialDeltaSeen, true);
+  assert.equal(interruptedProbeResult.ok, false);
+  assert(interruptedProbeResult.normalizedEvents.some((event) => event.type === "message_delta" && event.text === "partial"));
+  assert(interruptedProbeResult.normalizedEvents.some((event) => event.type === "transport_error" && event.code === "stream_failed"));
+  assert.equal(interruptedProbeResult.terminal.state, "failed");
+
   const sessionStore = new DirectSessionStore({ rootDir: path.join(tempRoot, "sessions") });
   const directThreadStore = new DirectThreadStore({ rootDir: path.join(tempRoot, "threads") });
   const workThreadStore = new DirectWorkThreadRegistryStore({ rootDir: path.join(tempRoot, "work-threads") });
   workThreadStore.upsertWorkThread(workThread);
+  workThreadStore.upsertWorkThread({
+    ...workThread,
+    workThreadId: "work_thread_archived_route",
+    title: "Archived controlled routing fixture",
+    lifecycleState: "archived",
+  });
+  workThreadStore.upsertWorkThread({
+    ...workThread,
+    workThreadId: "work_thread_stale_route",
+    title: "Stale controlled routing fixture",
+    lifecycleState: "stale",
+  });
   const events = [];
   let providerRequestCount = 0;
   let capturedProviderBody = null;
@@ -333,6 +382,52 @@ try {
   assert.equal(missingWorkThreadTurn.state, "failed");
   assert.equal(missingWorkThreadTurn.error.code, "controlled_routing_blocked");
   assert.equal(missingWorkThreadTurn.preTransportFailed, true);
+
+  const archivedWorkThreadSession = controller.startThread({
+    model: "gpt-5.4",
+    workThreadId: "work_thread_archived_route",
+  }, { project, surfaceSession });
+  const providerRequestsBeforeArchivedRoute = providerRequestCount;
+  await assert.rejects(
+    () => controller.startTurn({
+      threadId: archivedWorkThreadSession.thread.id,
+      promptText: "continue archived controlled routing fixture",
+      clientTurnRequestId: "client_req_controlled_route_archived_work_thread",
+      model: "gpt-5.4",
+      requireControlledRouting: true,
+    }, { project, surfaceSession }),
+    (error) => error.code === "controlled_routing_blocked",
+  );
+  assert.equal(providerRequestCount, providerRequestsBeforeArchivedRoute, "archived work thread route must not call provider");
+  const archivedTurn = sessionStore.readTurn(
+    archivedWorkThreadSession.thread.id,
+    sessionStore.readSession(archivedWorkThreadSession.thread.id).turns[0].turnId,
+  );
+  assert.equal(archivedTurn.state, "failed");
+  assert.equal(archivedTurn.error.code, "controlled_routing_blocked");
+
+  const staleWorkThreadSession = controller.startThread({
+    model: "gpt-5.4",
+    workThreadId: "work_thread_stale_route",
+  }, { project, surfaceSession });
+  const providerRequestsBeforeStaleRoute = providerRequestCount;
+  await assert.rejects(
+    () => controller.startTurn({
+      threadId: staleWorkThreadSession.thread.id,
+      promptText: "continue stale controlled routing fixture",
+      clientTurnRequestId: "client_req_controlled_route_stale_work_thread",
+      model: "gpt-5.4",
+      requireControlledRouting: true,
+    }, { project, surfaceSession }),
+    (error) => error.code === "controlled_routing_blocked",
+  );
+  assert.equal(providerRequestCount, providerRequestsBeforeStaleRoute, "stale work thread route must not call provider");
+  const staleTurn = sessionStore.readTurn(
+    staleWorkThreadSession.thread.id,
+    sessionStore.readSession(staleWorkThreadSession.thread.id).turns[0].turnId,
+  );
+  assert.equal(staleTurn.state, "failed");
+  assert.equal(staleTurn.error.code, "controlled_routing_blocked");
 
   const recoveryStore = new DirectSessionStore({ rootDir: path.join(tempRoot, "recovery-sessions") });
   const interruptedSession = recoveryStore.createSession({
