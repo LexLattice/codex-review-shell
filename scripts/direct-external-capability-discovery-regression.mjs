@@ -119,7 +119,10 @@ for (const toolId of [
   assert(row.odeuFamily === "external_capability_discovery", `${toolId} should be discovery family`);
   assert(row.implementationState === "projection_only", `${toolId} should cite projection substrate`);
   assert(row.localExecutorState === "scaffolded", `${toolId} should cite scaffolded discovery module`);
-  assert(row.localExecutor === "src/main/direct/external/capability-discovery.js", `${toolId} should cite discovery module`);
+  const expectedExecutor = toolId === "vanilla.list_available_plugins_to_install"
+    ? "src/main/direct/external/plugin-governance.js"
+    : "src/main/direct/external/capability-discovery.js";
+  assert(row.localExecutor === expectedExecutor, `${toolId} should cite discovery module`);
   assert(row.providerDeclarationState === "not_declared", `${toolId} must not be provider-declared`);
   assert(row.promotionState === "diagnostic_only", `${toolId} should remain diagnostic-only`);
 }

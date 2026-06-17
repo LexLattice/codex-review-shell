@@ -700,6 +700,41 @@ function summarizeProviderHostedTools(hostedTools = {}) {
   };
 }
 
+function summarizePluginGovernance(pluginGovernance = {}) {
+  const source = objectOrEmpty(pluginGovernance);
+  const status = normalizeString(source.schema, "") === "plugin_governance_status@1"
+    ? source
+    : objectOrEmpty(source.pluginGovernanceStatus || source.directPluginGovernance || source.pluginGovernance);
+  return {
+    available: normalizeString(status.schema, "") === "plugin_governance_status@1",
+    schema: normalizeString(status.schema, "not_exposed"),
+    status: normalizeString(status.status, "not_exposed"),
+    statusId: normalizeString(status.statusId, ""),
+    statusDigest: normalizeString(status.statusDigest, ""),
+    catalogDescriptorCount: Number(status.catalogDescriptorCount || 0),
+    installRequestCount: Number(status.installRequestCount || 0),
+    blockedInstallRequestCount: Number(status.blockedInstallRequestCount || 0),
+    sourcePinnedCount: Number(status.sourcePinnedCount || 0),
+    bySourcePinState: objectOrEmpty(status.bySourcePinState),
+    byInstallState: objectOrEmpty(status.byInstallState),
+    pluginCatalogListAllowed: status.pluginCatalogListAllowed === true,
+    pluginInstallAllowed: status.pluginInstallAllowed === true,
+    pluginUninstallAllowed: status.pluginUninstallAllowed === true,
+    pluginRollbackAllowed: status.pluginRollbackAllowed === true,
+    autoEnableNewToolsAllowed: status.autoEnableNewToolsAllowed === true,
+    registryMutationAllowed: status.registryMutationAllowed === true,
+    providerDeclarationAllowed: status.providerDeclarationAllowed === true,
+    localExecutionAllowed: status.localExecutionAllowed === true,
+    workspaceMutationAllowed: status.workspaceMutationAllowed === true,
+    externalNetworkMutationAllowed: status.externalNetworkMutationAllowed === true,
+    rawManifestIncluded: status.rawManifestIncluded === true,
+    rawPayloadIncluded: status.rawPayloadIncluded === true,
+    rawPathIncluded: status.rawPathIncluded === true,
+    rawSecretIncluded: status.rawSecretIncluded === true,
+    rendererSafeSummary: boundedString(status.rendererSafeSummary || "Plugin governance is not exposed.", 360),
+  };
+}
+
 function summarizeContinuity(input = {}) {
   const continuity = objectOrEmpty(input.continuityStatus || input.contextContinuityStatus);
   const runtimeContext = objectOrEmpty(input.runtimeStatus?.directContextMaintenance || input.runtimeStatus?.contextMaintenance);
@@ -967,6 +1002,7 @@ function buildRows(sections) {
   const externalDiscovery = sections.externalDiscovery;
   const mcpBoundary = sections.mcpBoundary;
   const providerHostedTools = sections.providerHostedTools;
+  const pluginGovernance = sections.pluginGovernance;
   const continuity = sections.continuity;
   const contextPreview = sections.contextPreview;
   const memoryWorkbench = sections.memoryWorkbench;
@@ -1124,6 +1160,18 @@ function buildRows(sections) {
       statusRow("Metadata", providerHostedTools.providerMetadataDigest || "none"),
       statusRow("Authority", providerHostedTools.providerToolDeclarationAllowed || providerHostedTools.providerHostedToolCallAllowed || providerHostedTools.providerTransportAllowed || providerHostedTools.requestShapeMutationAllowed || providerHostedTools.contextInjectionAllowed || providerHostedTools.workspaceMutationAllowed || providerHostedTools.rawProviderPayloadIncluded || providerHostedTools.rawPromptIncluded || providerHostedTools.rawResultIncluded || providerHostedTools.rawSecretIncluded ? "unexpected grant" : "contracts only", providerHostedTools.providerToolDeclarationAllowed || providerHostedTools.providerHostedToolCallAllowed || providerHostedTools.providerTransportAllowed || providerHostedTools.requestShapeMutationAllowed || providerHostedTools.contextInjectionAllowed || providerHostedTools.workspaceMutationAllowed || providerHostedTools.rawProviderPayloadIncluded || providerHostedTools.rawPromptIncluded || providerHostedTools.rawResultIncluded || providerHostedTools.rawSecretIncluded ? "blocked" : "ok"),
       statusRow("Summary", providerHostedTools.rendererSafeSummary),
+    ],
+    pluginGovernance: [
+      statusRow("Surface", pluginGovernance.available ? "available" : "not exposed", pluginGovernance.available ? "diagnostic" : "missing"),
+      statusRow("Status", pluginGovernance.status),
+      statusRow("Catalog descriptors", `${pluginGovernance.catalogDescriptorCount} total · ${pluginGovernance.sourcePinnedCount} pinned`),
+      statusRow("Install requests", `${pluginGovernance.installRequestCount} requests · ${pluginGovernance.blockedInstallRequestCount} blocked`, pluginGovernance.blockedInstallRequestCount ? "ok" : "diagnostic"),
+      statusRow("Pin states", Object.keys(pluginGovernance.bySourcePinState).length),
+      statusRow("Install states", Object.keys(pluginGovernance.byInstallState).length),
+      statusRow("Catalog list", pluginGovernance.pluginCatalogListAllowed ? "descriptor only" : "not exposed", pluginGovernance.pluginCatalogListAllowed ? "diagnostic" : "missing"),
+      statusRow("Digest", pluginGovernance.statusDigest || "none"),
+      statusRow("Authority", pluginGovernance.pluginInstallAllowed || pluginGovernance.pluginUninstallAllowed || pluginGovernance.pluginRollbackAllowed || pluginGovernance.autoEnableNewToolsAllowed || pluginGovernance.registryMutationAllowed || pluginGovernance.providerDeclarationAllowed || pluginGovernance.localExecutionAllowed || pluginGovernance.workspaceMutationAllowed || pluginGovernance.externalNetworkMutationAllowed || pluginGovernance.rawManifestIncluded || pluginGovernance.rawPayloadIncluded || pluginGovernance.rawPathIncluded || pluginGovernance.rawSecretIncluded ? "unexpected grant" : "governance only", pluginGovernance.pluginInstallAllowed || pluginGovernance.pluginUninstallAllowed || pluginGovernance.pluginRollbackAllowed || pluginGovernance.autoEnableNewToolsAllowed || pluginGovernance.registryMutationAllowed || pluginGovernance.providerDeclarationAllowed || pluginGovernance.localExecutionAllowed || pluginGovernance.workspaceMutationAllowed || pluginGovernance.externalNetworkMutationAllowed || pluginGovernance.rawManifestIncluded || pluginGovernance.rawPayloadIncluded || pluginGovernance.rawPathIncluded || pluginGovernance.rawSecretIncluded ? "blocked" : "ok"),
+      statusRow("Summary", pluginGovernance.rendererSafeSummary),
     ],
     controlTools: [
       statusRow("Surface", controlTools.rowCount ? "available" : "not exposed", controlTools.rowCount ? "diagnostic" : "missing"),
@@ -1306,6 +1354,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
   const externalDiscovery = summarizeExternalCapabilityDiscovery(input.externalDiscoveryStatus || input.externalCapabilityDiscovery || input.directExternalCapabilityDiscovery || input);
   const mcpBoundary = summarizeMcpResourceToolBoundary(input.mcpBoundaryStatus || input.mcpResourceToolBoundaryStatus || input.directMcpBoundary || input);
   const providerHostedTools = summarizeProviderHostedTools(input.providerHostedToolsStatus || input.directProviderHostedTools || input.hostedToolsStatus || input);
+  const pluginGovernance = summarizePluginGovernance(input.pluginGovernanceStatus || input.directPluginGovernance || input.pluginGovernance || input);
   const controlTools = summarizeControlToolSubstrate(input.controlToolStatus || input.controlToolSubstrateStatus || input.directControlToolStatus || input);
   const agentRuntime = summarizeAgentRuntimeSubstrate(input.agentRuntimeStatus || input.agentRuntimeSubstrateStatus || input.directAgentRuntimeStatus || input);
   const agentToolSurface = summarizeTextSubAgentToolSurface(input.agentToolSurfaceStatus || input.textSubAgentToolSurface || input.directTextSubAgentToolSurface || input);
@@ -1373,6 +1422,15 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
     providerHostedRequestShapeMutationAllowed: false,
     providerHostedContextInjectionAllowed: false,
     providerHostedWorkspaceMutationAllowed: false,
+    pluginGovernanceInstallAllowed: false,
+    pluginGovernanceUninstallAllowed: false,
+    pluginGovernanceRollbackAllowed: false,
+    pluginGovernanceAutoEnableAllowed: false,
+    pluginGovernanceRegistryMutationAllowed: false,
+    pluginGovernanceProviderDeclarationAllowed: false,
+    pluginGovernanceLocalExecutionAllowed: false,
+    pluginGovernanceWorkspaceMutationAllowed: false,
+    pluginGovernanceExternalNetworkMutationAllowed: false,
     controlToolLocalExecutionAllowed: false,
     controlToolProviderDeclarationAllowed: false,
     controlToolAuthorityGateAllowed: false,
@@ -1399,7 +1457,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
     rawPathIncluded: false,
     rawSecretIncluded: false,
   };
-  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, toolCapabilities, externalDiscovery, mcpBoundary, providerHostedTools, controlTools, agentRuntime, agentToolSurface, statefulExec, continuity, contextPreview, memoryWorkbench, runtimeWitness, agentUsage, appServerFallbackParity, manualSmokeGate, headlessDaemon };
+  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, toolCapabilities, externalDiscovery, mcpBoundary, providerHostedTools, pluginGovernance, controlTools, agentRuntime, agentToolSurface, statefulExec, continuity, contextPreview, memoryWorkbench, runtimeWitness, agentUsage, appServerFallbackParity, manualSmokeGate, headlessDaemon };
   const sourceDigest = digestFor("direct-settings-surface-source@1", sections);
   const projection = {
     schema: DIRECT_SETTINGS_SURFACE_PROJECTION_SCHEMA,
@@ -1423,6 +1481,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       "external_capability_discovery_registry",
       "mcp_resource_tool_boundary",
       "provider_hosted_tool_contracts",
+      "plugin_governance",
       "control_perception_human_decision_tool_substrate",
       "agent_runtime_substrate",
       "text_only_sub_agent_tool_surface",
@@ -1458,6 +1517,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       { kind: "external_capability_discovery_registry", digest: normalizeString(externalDiscovery.projectionDigest || externalDiscovery.registryDigest, ""), label: "External capability discovery registry" },
       { kind: "mcp_resource_tool_boundary", digest: normalizeString(mcpBoundary.statusDigest, ""), label: "MCP resource/tool boundary" },
       { kind: "provider_hosted_tool_contracts", digest: normalizeString(providerHostedTools.statusDigest, ""), label: "Provider-hosted tool contracts" },
+      { kind: "plugin_governance", digest: normalizeString(pluginGovernance.statusDigest, ""), label: "Plugin governance" },
       { kind: "direct_control_tool_substrate_status", digest: normalizeString(controlTools.statusDigest, ""), label: "Control/perception/human-decision tool substrate" },
       { kind: "direct_agent_runtime_substrate_status", digest: normalizeString(agentRuntime.statusDigest, ""), label: "Agent runtime substrate" },
       { kind: "direct_text_sub_agent_tool_surface", digest: normalizeString(agentToolSurface.surfaceDigest, ""), label: "Text-only sub-agent tool surface" },
@@ -1537,6 +1597,15 @@ function assertDirectSettingsSurfaceRendererSafe(projection = {}) {
     "providerHostedRequestShapeMutationAllowed",
     "providerHostedContextInjectionAllowed",
     "providerHostedWorkspaceMutationAllowed",
+    "pluginGovernanceInstallAllowed",
+    "pluginGovernanceUninstallAllowed",
+    "pluginGovernanceRollbackAllowed",
+    "pluginGovernanceAutoEnableAllowed",
+    "pluginGovernanceRegistryMutationAllowed",
+    "pluginGovernanceProviderDeclarationAllowed",
+    "pluginGovernanceLocalExecutionAllowed",
+    "pluginGovernanceWorkspaceMutationAllowed",
+    "pluginGovernanceExternalNetworkMutationAllowed",
     "controlToolLocalExecutionAllowed",
     "controlToolProviderDeclarationAllowed",
     "controlToolAuthorityGateAllowed",
