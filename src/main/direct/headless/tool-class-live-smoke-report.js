@@ -100,13 +100,17 @@ function missingConditions(row = {}, result = {}) {
   return required.filter((condition) => !satisfied.has(condition));
 }
 
+function hasEvidenceRefs(result = {}) {
+  return Array.isArray(result?.evidenceRefs) && result.evidenceRefs.some((ref) => isPlainObject(ref));
+}
+
 function smokeStatusFor(row = {}, result = null, executionMode = "plan_only") {
   const safeRow = safeGateRow(row);
   if (safeRow.eligibleForLiveSmoke !== true) return "blocked_by_candidate_gate";
   if (executionMode !== "execute_live_smoke") return "live_smoke_not_requested";
   if (!isPlainObject(result)) return "live_smoke_missing";
   const missing = missingConditions(safeRow, result);
-  return normalizeString(result.status, "failed") === "passed" && missing.length === 0
+  return normalizeString(result.status, "failed") === "passed" && missing.length === 0 && hasEvidenceRefs(result)
     ? "live_smoke_passed"
     : "live_smoke_failed";
 }
@@ -119,6 +123,7 @@ function smokeBlockersFor(status = "", row = {}, result = null) {
     const missing = missingConditions(row, result);
     return normalizeStringList([
       ...missing.map((condition) => `required_condition_missing:${condition}`),
+      ...(hasEvidenceRefs(result) ? [] : ["live_smoke_evidence_missing"]),
       normalizeString(result?.reasonCode, ""),
     ], ["live_smoke_failed"]);
   }
@@ -190,7 +195,7 @@ function buildDirectHeadlessToolClassLiveSmokeReport(options = {}) {
     options.executionMode,
     smokeExecutionMode === "execute_live_smoke" ? "execute_live_smoke" : "plan_only",
   );
-  const executionMode = smokeExecutionMode === "execute_live_smoke" ? "execute_live_smoke" : "plan_only";
+  const executionMode = requestedExecutionMode === "execute_live_smoke" && smokeExecutionMode === "execute_live_smoke" ? "execute_live_smoke" : "plan_only";
   const resultsByKey = smokeResultMap(smokeExecution);
   const rows = (Array.isArray(candidateGate.rows) ? candidateGate.rows : [])
     .map((row) => buildSmokeRow(row, resultForCandidate(row, resultsByKey), executionMode));
@@ -264,7 +269,7 @@ function validateDirectHeadlessToolClassLiveSmokeReport(report = {}) {
     if (row.smokeStatus === "live_smoke_passed" && row.eligibleForLiveSmoke !== true) {
       errors.push(`ineligible_row_passed_live_smoke:${row.exampleId}`);
     }
-    if (row.smokeStatus === "live_smoke_passed" && !Array.isArray(row.evidenceRefs)) {
+    if (row.smokeStatus === "live_smoke_passed" && (!Array.isArray(row.evidenceRefs) || row.evidenceRefs.length === 0)) {
       errors.push(`passed_live_smoke_missing_evidence_refs:${row.exampleId}`);
     }
     for (const flag of ["rendererAuthorityGranted", "rawPromptIncluded", "rawResultIncluded", "rawWorkspacePathIncluded", "rawSecretIncluded"]) {

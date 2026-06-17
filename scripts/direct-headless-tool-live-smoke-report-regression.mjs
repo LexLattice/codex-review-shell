@@ -159,6 +159,42 @@ assert.deepEqual(validateDirectHeadlessToolClassLiveSmokeReport(missingOptInRepo
 assert.equal(missingOptInReport.status, "failed", "execute-live-smoke without opt-in should fail");
 assert(missingOptInReport.validationErrors.includes("live_provider_opt_in_missing"), "missing opt-in should be explicit");
 
+const explicitPlanOnlyReport = buildDirectHeadlessToolClassLiveSmokeReport({
+  candidateGate,
+  executionMode: "plan_only",
+  smokeExecution: {
+    mode: "execute_live_smoke",
+    allowLiveProviderCall: true,
+    results: smokeResultsForGate(candidateGate),
+  },
+  nowMs: 0,
+});
+assert.deepEqual(validateDirectHeadlessToolClassLiveSmokeReport(explicitPlanOnlyReport), [], "explicit plan-only report should validate");
+assert.equal(explicitPlanOnlyReport.executionMode, "plan_only", "explicit plan-only request should override supplied execute smoke evidence");
+assert.equal(explicitPlanOnlyReport.liveSmokePassedCount, 0, "plan-only request must not claim supplied live smoke evidence");
+assert.equal(explicitPlanOnlyReport.summary.bySmokeStatus.live_smoke_not_requested, 5, "plan-only request should leave eligible rows unexecuted");
+
+const missingEvidenceReport = buildDirectHeadlessToolClassLiveSmokeReport({
+  candidateGate,
+  executionMode: "execute_live_smoke",
+  smokeExecution: {
+    mode: "execute_live_smoke",
+    allowLiveProviderCall: true,
+    results: smokeResultsForGate(candidateGate).map(({ evidenceRefs, ...result }) => result),
+  },
+  nowMs: 0,
+});
+assert.deepEqual(validateDirectHeadlessToolClassLiveSmokeReport(missingEvidenceReport), [], "missing-evidence report should remain structurally valid");
+assert.equal(missingEvidenceReport.status, "failed", "executed smoke without evidence refs should fail");
+assert.equal(missingEvidenceReport.liveSmokePassedCount, 0, "executed smoke without evidence refs must not pass rows");
+assert.equal(missingEvidenceReport.summary.bySmokeStatus.live_smoke_failed, 5, "missing evidence should fail each eligible smoke row");
+assert(
+  missingEvidenceReport.rows
+    .filter((row) => row.eligibleForLiveSmoke)
+    .every((row) => row.smokeBlockers.includes("live_smoke_evidence_missing")),
+  "missing evidence should be explicit on every eligible smoke row",
+);
+
 let smokeExecution = {
   mode: "not_requested",
   results: [],
