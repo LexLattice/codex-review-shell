@@ -666,6 +666,40 @@ function summarizeMcpResourceToolBoundary(mcpBoundary = {}) {
   };
 }
 
+function summarizeProviderHostedTools(hostedTools = {}) {
+  const source = objectOrEmpty(hostedTools);
+  const status = normalizeString(source.schema, "") === "provider_hosted_tools_status@1"
+    ? source
+    : objectOrEmpty(source.providerHostedToolsStatus || source.directProviderHostedTools || source.hostedToolsStatus);
+  return {
+    available: normalizeString(status.schema, "") === "provider_hosted_tools_status@1",
+    schema: normalizeString(status.schema, "not_exposed"),
+    status: normalizeString(status.status, "not_exposed"),
+    statusId: normalizeString(status.statusId, ""),
+    statusDigest: normalizeString(status.statusDigest, ""),
+    providerMetadataDigest: normalizeString(status.providerMetadataDigest, ""),
+    capabilityCount: Number(status.capabilityCount || 0),
+    supportedCount: Number(status.supportedCount || 0),
+    unsupportedCount: Number(status.unsupportedCount || 0),
+    unknownCount: Number(status.unknownCount || 0),
+    webSearchState: normalizeString(arrayOrEmpty(status.capabilities).find((capability) => capability?.toolKind === "web_search")?.evidenceState, "unknown"),
+    imageGenerationState: normalizeString(arrayOrEmpty(status.capabilities).find((capability) => capability?.toolKind === "image_generation")?.evidenceState, "unknown"),
+    webSearchContractDigest: normalizeString(status.webSearchContract?.contractDigest, ""),
+    imageGenerationContractDigest: normalizeString(status.imageGenerationContract?.contractDigest, ""),
+    providerToolDeclarationAllowed: status.providerToolDeclarationAllowed === true,
+    providerHostedToolCallAllowed: status.providerHostedToolCallAllowed === true,
+    providerTransportAllowed: status.providerTransportAllowed === true,
+    requestShapeMutationAllowed: status.requestShapeMutationAllowed === true,
+    contextInjectionAllowed: status.contextInjectionAllowed === true,
+    workspaceMutationAllowed: status.workspaceMutationAllowed === true,
+    rawProviderPayloadIncluded: status.rawProviderPayloadIncluded === true,
+    rawPromptIncluded: status.rawPromptIncluded === true,
+    rawResultIncluded: status.rawResultIncluded === true,
+    rawSecretIncluded: status.rawSecretIncluded === true,
+    rendererSafeSummary: boundedString(status.rendererSafeSummary || "Provider-hosted tool status is not exposed.", 360),
+  };
+}
+
 function summarizeContinuity(input = {}) {
   const continuity = objectOrEmpty(input.continuityStatus || input.contextContinuityStatus);
   const runtimeContext = objectOrEmpty(input.runtimeStatus?.directContextMaintenance || input.runtimeStatus?.contextMaintenance);
@@ -932,6 +966,7 @@ function buildRows(sections) {
   const statefulExec = sections.statefulExec;
   const externalDiscovery = sections.externalDiscovery;
   const mcpBoundary = sections.mcpBoundary;
+  const providerHostedTools = sections.providerHostedTools;
   const continuity = sections.continuity;
   const contextPreview = sections.contextPreview;
   const memoryWorkbench = sections.memoryWorkbench;
@@ -1077,6 +1112,18 @@ function buildRows(sections) {
       statusRow("Digest", mcpBoundary.statusDigest || "none"),
       statusRow("Authority", mcpBoundary.requestAcceptedForExecution || mcpBoundary.resourceReadAllowed || mcpBoundary.dynamicToolCallAllowed || mcpBoundary.externalActionAllowed || mcpBoundary.providerDeclarationAllowed || mcpBoundary.providerTransportAllowed || mcpBoundary.workspaceMutationAllowed || mcpBoundary.contextInjectionAllowed || mcpBoundary.rawUriIncluded || mcpBoundary.rawPayloadIncluded || mcpBoundary.rawSchemaIncluded || mcpBoundary.rawSecretIncluded ? "unexpected grant" : "boundary only", mcpBoundary.requestAcceptedForExecution || mcpBoundary.resourceReadAllowed || mcpBoundary.dynamicToolCallAllowed || mcpBoundary.externalActionAllowed || mcpBoundary.providerDeclarationAllowed || mcpBoundary.providerTransportAllowed || mcpBoundary.workspaceMutationAllowed || mcpBoundary.contextInjectionAllowed || mcpBoundary.rawUriIncluded || mcpBoundary.rawPayloadIncluded || mcpBoundary.rawSchemaIncluded || mcpBoundary.rawSecretIncluded ? "blocked" : "ok"),
       statusRow("Summary", mcpBoundary.rendererSafeSummary),
+    ],
+    providerHostedTools: [
+      statusRow("Surface", providerHostedTools.available ? "available" : "not exposed", providerHostedTools.available ? "diagnostic" : "missing"),
+      statusRow("Status", providerHostedTools.status),
+      statusRow("Capabilities", `${providerHostedTools.capabilityCount} total · ${providerHostedTools.supportedCount} supported / ${providerHostedTools.unknownCount} unknown`),
+      statusRow("Web search", providerHostedTools.webSearchState, providerHostedTools.webSearchState === "profile_declared" || providerHostedTools.webSearchState === "accepted" ? "diagnostic" : "unknown"),
+      statusRow("Image generation", providerHostedTools.imageGenerationState, providerHostedTools.imageGenerationState === "profile_declared" || providerHostedTools.imageGenerationState === "accepted" ? "diagnostic" : "unknown"),
+      statusRow("Web contract", providerHostedTools.webSearchContractDigest || "none"),
+      statusRow("Image contract", providerHostedTools.imageGenerationContractDigest || "none"),
+      statusRow("Metadata", providerHostedTools.providerMetadataDigest || "none"),
+      statusRow("Authority", providerHostedTools.providerToolDeclarationAllowed || providerHostedTools.providerHostedToolCallAllowed || providerHostedTools.providerTransportAllowed || providerHostedTools.requestShapeMutationAllowed || providerHostedTools.contextInjectionAllowed || providerHostedTools.workspaceMutationAllowed || providerHostedTools.rawProviderPayloadIncluded || providerHostedTools.rawPromptIncluded || providerHostedTools.rawResultIncluded || providerHostedTools.rawSecretIncluded ? "unexpected grant" : "contracts only", providerHostedTools.providerToolDeclarationAllowed || providerHostedTools.providerHostedToolCallAllowed || providerHostedTools.providerTransportAllowed || providerHostedTools.requestShapeMutationAllowed || providerHostedTools.contextInjectionAllowed || providerHostedTools.workspaceMutationAllowed || providerHostedTools.rawProviderPayloadIncluded || providerHostedTools.rawPromptIncluded || providerHostedTools.rawResultIncluded || providerHostedTools.rawSecretIncluded ? "blocked" : "ok"),
+      statusRow("Summary", providerHostedTools.rendererSafeSummary),
     ],
     controlTools: [
       statusRow("Surface", controlTools.rowCount ? "available" : "not exposed", controlTools.rowCount ? "diagnostic" : "missing"),
@@ -1258,6 +1305,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
   const toolCapabilities = summarizeToolCapabilities(input.toolCapabilityStatus || input.toolCapabilityProjection || input.directToolCapabilityStatus || input);
   const externalDiscovery = summarizeExternalCapabilityDiscovery(input.externalDiscoveryStatus || input.externalCapabilityDiscovery || input.directExternalCapabilityDiscovery || input);
   const mcpBoundary = summarizeMcpResourceToolBoundary(input.mcpBoundaryStatus || input.mcpResourceToolBoundaryStatus || input.directMcpBoundary || input);
+  const providerHostedTools = summarizeProviderHostedTools(input.providerHostedToolsStatus || input.directProviderHostedTools || input.hostedToolsStatus || input);
   const controlTools = summarizeControlToolSubstrate(input.controlToolStatus || input.controlToolSubstrateStatus || input.directControlToolStatus || input);
   const agentRuntime = summarizeAgentRuntimeSubstrate(input.agentRuntimeStatus || input.agentRuntimeSubstrateStatus || input.directAgentRuntimeStatus || input);
   const agentToolSurface = summarizeTextSubAgentToolSurface(input.agentToolSurfaceStatus || input.textSubAgentToolSurface || input.directTextSubAgentToolSurface || input);
@@ -1319,6 +1367,12 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
     mcpBoundaryProviderTransportAllowed: false,
     mcpBoundaryWorkspaceMutationAllowed: false,
     mcpBoundaryContextInjectionAllowed: false,
+    providerHostedToolDeclarationAllowed: false,
+    providerHostedToolCallAllowed: false,
+    providerHostedTransportAllowed: false,
+    providerHostedRequestShapeMutationAllowed: false,
+    providerHostedContextInjectionAllowed: false,
+    providerHostedWorkspaceMutationAllowed: false,
     controlToolLocalExecutionAllowed: false,
     controlToolProviderDeclarationAllowed: false,
     controlToolAuthorityGateAllowed: false,
@@ -1345,7 +1399,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
     rawPathIncluded: false,
     rawSecretIncluded: false,
   };
-  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, toolCapabilities, externalDiscovery, mcpBoundary, controlTools, agentRuntime, agentToolSurface, statefulExec, continuity, contextPreview, memoryWorkbench, runtimeWitness, agentUsage, appServerFallbackParity, manualSmokeGate, headlessDaemon };
+  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, toolCapabilities, externalDiscovery, mcpBoundary, providerHostedTools, controlTools, agentRuntime, agentToolSurface, statefulExec, continuity, contextPreview, memoryWorkbench, runtimeWitness, agentUsage, appServerFallbackParity, manualSmokeGate, headlessDaemon };
   const sourceDigest = digestFor("direct-settings-surface-source@1", sections);
   const projection = {
     schema: DIRECT_SETTINGS_SURFACE_PROJECTION_SCHEMA,
@@ -1368,6 +1422,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       "direct_tool_capability_constitution",
       "external_capability_discovery_registry",
       "mcp_resource_tool_boundary",
+      "provider_hosted_tool_contracts",
       "control_perception_human_decision_tool_substrate",
       "agent_runtime_substrate",
       "text_only_sub_agent_tool_surface",
@@ -1402,6 +1457,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       { kind: "direct_tool_capability_status", digest: normalizeString(toolCapabilities.registryDigest || input.toolCapabilityStatus?.projectionDigest, ""), label: "Direct tool capability constitution" },
       { kind: "external_capability_discovery_registry", digest: normalizeString(externalDiscovery.projectionDigest || externalDiscovery.registryDigest, ""), label: "External capability discovery registry" },
       { kind: "mcp_resource_tool_boundary", digest: normalizeString(mcpBoundary.statusDigest, ""), label: "MCP resource/tool boundary" },
+      { kind: "provider_hosted_tool_contracts", digest: normalizeString(providerHostedTools.statusDigest, ""), label: "Provider-hosted tool contracts" },
       { kind: "direct_control_tool_substrate_status", digest: normalizeString(controlTools.statusDigest, ""), label: "Control/perception/human-decision tool substrate" },
       { kind: "direct_agent_runtime_substrate_status", digest: normalizeString(agentRuntime.statusDigest, ""), label: "Agent runtime substrate" },
       { kind: "direct_text_sub_agent_tool_surface", digest: normalizeString(agentToolSurface.surfaceDigest, ""), label: "Text-only sub-agent tool surface" },
@@ -1475,6 +1531,12 @@ function assertDirectSettingsSurfaceRendererSafe(projection = {}) {
     "mcpBoundaryProviderTransportAllowed",
     "mcpBoundaryWorkspaceMutationAllowed",
     "mcpBoundaryContextInjectionAllowed",
+    "providerHostedToolDeclarationAllowed",
+    "providerHostedToolCallAllowed",
+    "providerHostedTransportAllowed",
+    "providerHostedRequestShapeMutationAllowed",
+    "providerHostedContextInjectionAllowed",
+    "providerHostedWorkspaceMutationAllowed",
     "controlToolLocalExecutionAllowed",
     "controlToolProviderDeclarationAllowed",
     "controlToolAuthorityGateAllowed",

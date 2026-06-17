@@ -663,11 +663,14 @@ function defaultToolCapabilityInputs() {
       vanillaNames: [name],
       odeuFamily: "provider_hosted_tools",
       capabilityState: "vanilla_known",
-      implementationState: "schema_only",
+      implementationState: "projection_only",
       promotionState: "diagnostic_only",
       providerDeclarationState: "not_declared",
-      localExecutorState: "none",
-      requestShapeFamilies: ["none"],
+      localExecutorState: "scaffolded",
+      localExecutor: "src/main/direct/provider/hosted-tools.js",
+      requestShapeFamilies: name === "web_search"
+        ? ["provider_hosted_tool_capability", "provider_web_search_evidence_contract", "provider_hosted_result"]
+        : ["provider_hosted_tool_capability", "provider_image_generation_artifact_contract", "generated_artifact_ref"],
       approvalMode: "future_gate_required",
       providerResultEnvelopeType: name === "web_search" ? "provider_hosted_result" : "generated_artifact_ref",
       recoveryLaw: name === "web_search"
