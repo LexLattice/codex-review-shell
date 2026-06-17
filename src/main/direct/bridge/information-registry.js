@@ -658,6 +658,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "The pack is a testing/control artifact: it starts no provider transport, grants no renderer authority, mutates no workspace by default, and separates real-provider, headless-fixture, projection-blocked, and unsupported-blocked tool classes.",
   },
   {
+    id: "ic13.headless-tool-class-realism-report",
+    name: "Headless tool-class realism report",
+    role: "observability_surface",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/headless/tool-class-realism-report.js", "src/main/direct/headless/tool-class-examples.js", "scripts/direct-headless-tool-realism-report-regression.mjs", "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md"],
+    ontology: ontologyShape(["direct_headless_tool_class_realism_report", "direct_headless_tool_class_realism_row"], "harness", {
+      identityFields: ["reportId", "packId", "exampleId", "toolClassId", "rowDigest"],
+      schema: "direct_headless_tool_class_realism_report@1",
+    }),
+    bridgeFit: "Consumes the headless tool-class example pack and records each class as fixture-proven, projection-blocked, unsupported, or future real-provider candidate with fixture execution refs and promotion readiness.",
+    realignment: "The report starts no provider transport, grants no renderer authority, mutates no workspace by default, and does not promote projection-only or unsupported classes into executable direct tools.",
+  },
+  {
     id: "ic14.skills-hooks-apps",
     name: "Skills, hooks, and app connectors as bridge modules",
     role: "governance_routing",
