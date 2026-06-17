@@ -118,14 +118,28 @@ function requestShapeFamilyFor(row = {}) {
   return "direct_tool_class";
 }
 
-function negativeEvidenceFor(row = {}) {
+function fullLoopEvidence(evidenceClass = "") {
+  return ["real_provider_full_loop", "real_runtime_full_loop"].includes(evidenceClass);
+}
+
+function providerTransportAllowed(row = {}, evidenceClass = "") {
+  return row.providerTransportStarted !== true || fullLoopEvidence(evidenceClass);
+}
+
+function workspaceEffectAllowed(row = {}, evidenceClass = "") {
+  if (row.workspaceMutationStartedBySmoke !== true) return true;
+  const family = authorityFamilyFor(row.toolClassId);
+  return fullLoopEvidence(evidenceClass) && ["workspace_mutation", "process_session", "code_mode"].includes(family);
+}
+
+function negativeEvidenceFor(row = {}, evidenceClass = "") {
   const rawFields = ["rawPromptIncluded", "rawResultIncluded", "rawWorkspacePathIncluded", "rawSecretIncluded"];
   const noRawExposure = rawFields.every((field) => row[field] === false);
   return {
     noRawExposure,
     noRendererAuthorityGrant: row.rendererAuthorityGranted === false,
-    noOutOfContractProviderTransport: row.providerTransportStarted === false,
-    noOutOfContractWorkspaceEffect: row.workspaceMutationStartedBySmoke === false,
+    noOutOfContractProviderTransport: providerTransportAllowed(row, evidenceClass),
+    noOutOfContractWorkspaceEffect: workspaceEffectAllowed(row, evidenceClass),
     noContextSmuggling: noRawExposure && row.rawResultIncluded === false,
     noReplayUnsafeState: true,
   };
@@ -229,7 +243,7 @@ function buildDecisionRow(row = {}, options = {}) {
   const safeRow = isPlainObject(row) ? row : {};
   const evidenceClass = evidenceClassFor(safeRow);
   const freshness = freshnessFor(options);
-  const negativeEvidence = negativeEvidenceFor(safeRow);
+  const negativeEvidence = negativeEvidenceFor(safeRow, evidenceClass);
   const blockers = normalizeStringList([
     ...negativeEvidenceBlockers(negativeEvidence),
     ...freshnessBlockers(freshness, options),
@@ -257,7 +271,7 @@ function buildDecisionRow(row = {}, options = {}) {
     missingEvidence,
     blockerCodes: state === "not_applicable"
       ? normalizeStringList(safeRow.smokeBlockers, ["candidate_gate_blocked"])
-      : blockers,
+      : normalizeStringList([...blockers, ...(state === "needs_more_evidence" ? missingEvidence : [])]),
     evidenceRefs: Array.isArray(safeRow.evidenceRefs) ? safeRow.evidenceRefs : [],
     negativeEvidence,
     freshness,
@@ -369,7 +383,7 @@ function validateDirectToolPromotionDecisionReport(report = {}) {
     if (!isPlainObject(row.scope) || !row.scope.toolClassId || !row.scope.toolSchemaVersion || !row.scope.requestShapeFamily || !row.scope.runtimeTier) {
       errors.push(`promotion_scope_incomplete:${row.scope?.toolClassId || row.decisionId || ""}`);
     }
-    if (!isPlainObject(row.negativeEvidence) || Object.values(row.negativeEvidence).some((value) => value !== true) && row.state !== "blocked") {
+    if (!isPlainObject(row.negativeEvidence) || (Object.values(row.negativeEvidence).some((value) => value !== true) && row.state !== "blocked")) {
       errors.push(`negative_evidence_failure_without_block:${row.scope?.toolClassId || ""}`);
     }
     for (const flag of ["rendererAuthorityGranted", "activationGranted", "runtimeDefaultChanged", "providerCallStartedByDecision", "workspaceMutationStartedByDecision", "rawPromptIncluded", "rawResultIncluded", "rawWorkspacePathIncluded", "rawSecretIncluded"]) {

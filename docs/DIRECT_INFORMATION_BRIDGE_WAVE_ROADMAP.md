@@ -2214,7 +2214,7 @@ Implemented slice:
 
 ### PR 42: WorkThread Thread Deck And New-Thread Operator UX
 
-Status: PR 70 implemented in branch `codex/direct-tool-promotion-decision-gate`.
+Status: planned.
 
 Purpose:
 

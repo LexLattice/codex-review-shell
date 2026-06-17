@@ -37,7 +37,8 @@ const {
 } = require("../src/main/direct/headless/tool-promotion-decision-report");
 
 function parseArgs(argv) {
-  const options = { flags: new Set() };
+  const options = Object.create(null);
+  options.flags = new Set();
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (!arg.startsWith("--")) continue;
@@ -148,6 +149,12 @@ assert.equal(planOnlyDecisionReport.summary.byState.needs_more_evidence, 5, "une
 assert.equal(planOnlyDecisionReport.summary.byState.not_applicable, 13, "blocked rows should remain not applicable");
 assert.equal(planOnlyDecisionReport.activationGranted, false, "promotion decision must not activate tools");
 assert.equal(planOnlyDecisionReport.matrixPromotionCandidate, false, "plan-only evidence must not become a matrix promotion candidate");
+assert(
+  planOnlyDecisionReport.decisions
+    .filter((row) => row.state === "needs_more_evidence")
+    .every((row) => row.blockerCodes.includes("live_smoke_execution_not_requested")),
+  "needs-more-evidence rows should expose explicit live-smoke blockers",
+);
 
 const restrictedSmokeReport = buildDirectHeadlessToolClassLiveSmokeReport({
   candidateGate,
@@ -206,6 +213,32 @@ assert.equal(realProviderDecisionReport.summary.byState.promotable, 5, "real-pro
 assert.equal(realProviderDecisionReport.summary.byEvidenceClass.real_provider_full_loop, 5, "real provider evidence class should be preserved");
 assert.equal(realProviderDecisionReport.matrixPromotionCandidate, true, "real-provider full-loop evidence may become matrix candidate evidence");
 assert.equal(realProviderDecisionReport.activationGranted, false, "promotable does not activate tools");
+
+const fullLoopEffectSmokeReport = buildDirectHeadlessToolClassLiveSmokeReport({
+  candidateGate,
+  executionMode: "execute_live_smoke",
+  smokeExecution: {
+    mode: "execute_live_smoke",
+    allowLiveProviderCall: true,
+    results: smokeResultsForGate(candidateGate, "real_provider_full_loop_evidence")
+      .map((result) => ({
+        ...result,
+        providerTransportStarted: true,
+        workspaceMutationStartedBySmoke: result.toolClassId === "workspace_process.patch_apply",
+      })),
+  },
+  nowMs: 0,
+});
+assert.deepEqual(validateDirectHeadlessToolClassLiveSmokeReport(fullLoopEffectSmokeReport), [], "full-loop effect smoke report should validate");
+const fullLoopEffectDecisionReport = buildDirectToolPromotionDecisionReport({
+  liveSmokeReport: fullLoopEffectSmokeReport,
+  nowMs: 0,
+});
+assert.deepEqual(validateDirectToolPromotionDecisionReport(fullLoopEffectDecisionReport), [], "full-loop effect promotion report should validate");
+assert.equal(fullLoopEffectDecisionReport.summary.byState.promotable, 5, "declared full-loop effects should not block promotion decisions");
+const patchDecision = fullLoopEffectDecisionReport.decisions.find((row) => row.scope.toolClassId === "workspace_process.patch_apply");
+assert.equal(patchDecision.negativeEvidence.noOutOfContractProviderTransport, true, "declared full-loop provider transport should be in contract");
+assert.equal(patchDecision.negativeEvidence.noOutOfContractWorkspaceEffect, true, "declared patch workspace effect should be in contract");
 
 const leakySmokeReport = structuredClone(realProviderSmokeReport);
 leakySmokeReport.rows = leakySmokeReport.rows.map((row, index) => index === 0
