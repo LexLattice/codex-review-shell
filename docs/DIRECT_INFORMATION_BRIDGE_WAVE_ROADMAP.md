@@ -2214,7 +2214,7 @@ Implemented slice:
 
 ### PR 42: WorkThread Thread Deck And New-Thread Operator UX
 
-Status: planned.
+Status: PR 70 implemented in branch `codex/direct-tool-promotion-decision-gate`.
 
 Purpose:
 
@@ -3454,7 +3454,7 @@ collapsing evidence, policy, and activation into one switch.
 
 ### PR 70: Tool Promotion Decision Gate
 
-Status: planned.
+Status: implemented in branch `codex/direct-tool-promotion-decision-gate`.
 
 Purpose:
 
@@ -3468,6 +3468,7 @@ Scope summary:
 - Add `direct_tool_promotion_decision_report@1`.
 - Add per-class `direct_tool_promotion_decision_row@1`.
 - Consume `direct_headless_tool_class_live_smoke_report@1`.
+- Add `direct:tool-promotion-decision-report` regression coverage.
 - Scope each decision by tool class, schema version, request-shape family,
   provider profile/model where relevant, runtime tier, executor version,
   authority envelope, and result envelope.
@@ -3491,6 +3492,8 @@ Scope summary:
 - Include operator/CI evidence posture but do not mutate runtime defaults.
 - Emit explicit blockers for missing evidence, stale report, failed smoke row,
   policy mismatch, class unsupported, or authority envelope gap.
+- Preserve no-activation/no-default-mutation/no-provider-call/no-workspace-
+  mutation/no-raw-payload guarantees.
 
 Non-goals:
 
