@@ -378,6 +378,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "Discovery remains non-executing: discovered tools are not provider-declared, resources are not read, MCP actions are not invoked, plugins are not installed, and external results are not trusted project evidence.",
   },
   {
+    id: "ic28.mcp-resource-tool-boundary",
+    name: "MCP resource read and dynamic tool boundary",
+    role: "authority_gate",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/external/mcp-boundary.js", "src/main/direct/bridge/tool-capability-registry.js", "src/main/direct/ui/settings-surface.js", "scripts/direct-mcp-resource-tool-boundary-regression.mjs", "src/main.js"],
+    ontology: ontologyShape(["mcp_external_source_provenance", "mcp_resource_read_boundary", "mcp_dynamic_tool_call_boundary", "mcp_resource_tool_boundary_status"], "connector", {
+      identityFields: ["projectId", "workThreadId", "serverIdentity", "resourceUriDigest", "toolSchemaDigest", "boundaryDigest"],
+      schema: "mcp_resource_tool_boundary_status@1",
+    }),
+    bridgeFit: "Separates MCP discovery from resource/action authority by recording source provenance, external side-effect class, sanitized resource URI digest/display, schema/input digests, future gates, and blocked result trust posture.",
+    realignment: "This slice executes no MCP read or dynamic tool call, injects no external payload into context, declares no provider tool, mutates no workspace, and exposes no raw resource URI, tool input, result payload, schema, or secret.",
+  },
+  {
     id: "ic8.usage-quota-readiness",
     name: "Usage, quota, model, and readiness evidence",
     role: "observability_surface",

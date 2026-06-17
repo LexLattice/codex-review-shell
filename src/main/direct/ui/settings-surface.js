@@ -633,6 +633,39 @@ function summarizeExternalCapabilityDiscovery(externalDiscovery = {}) {
   };
 }
 
+function summarizeMcpResourceToolBoundary(mcpBoundary = {}) {
+  const source = objectOrEmpty(mcpBoundary);
+  const status = normalizeString(source.schema, "") === "mcp_resource_tool_boundary_status@1"
+    ? source
+    : objectOrEmpty(source.mcpResourceToolBoundaryStatus || source.mcpBoundaryStatus || source.directMcpBoundary);
+  return {
+    available: normalizeString(status.schema, "") === "mcp_resource_tool_boundary_status@1",
+    schema: normalizeString(status.schema, "not_exposed"),
+    status: normalizeString(status.status, "not_exposed"),
+    statusId: normalizeString(status.statusId, ""),
+    statusDigest: normalizeString(status.statusDigest, ""),
+    resourceReadBoundaryCount: Number(status.resourceReadBoundaryCount || 0),
+    dynamicToolCallBoundaryCount: Number(status.dynamicToolCallBoundaryCount || 0),
+    blockedResourceReadCount: Number(status.blockedResourceReadCount || 0),
+    blockedDynamicToolCallCount: Number(status.blockedDynamicToolCallCount || 0),
+    sourceServerCount: Number(status.sourceServerCount || 0),
+    externalSideEffectClasses: arrayOrEmpty(status.externalSideEffectClasses).map((item) => normalizeString(item, "")).filter(Boolean),
+    requestAcceptedForExecution: status.requestAcceptedForExecution === true,
+    resourceReadAllowed: status.resourceReadAllowed === true,
+    dynamicToolCallAllowed: status.dynamicToolCallAllowed === true,
+    externalActionAllowed: status.externalActionAllowed === true,
+    providerDeclarationAllowed: status.providerDeclarationAllowed === true,
+    providerTransportAllowed: status.providerTransportAllowed === true,
+    workspaceMutationAllowed: status.workspaceMutationAllowed === true,
+    contextInjectionAllowed: status.contextInjectionAllowed === true,
+    rawUriIncluded: status.rawUriIncluded === true,
+    rawPayloadIncluded: status.rawPayloadIncluded === true,
+    rawSchemaIncluded: status.rawSchemaIncluded === true,
+    rawSecretIncluded: status.rawSecretIncluded === true,
+    rendererSafeSummary: boundedString(status.rendererSafeSummary || "MCP resource/tool boundary is not exposed.", 360),
+  };
+}
+
 function summarizeContinuity(input = {}) {
   const continuity = objectOrEmpty(input.continuityStatus || input.contextContinuityStatus);
   const runtimeContext = objectOrEmpty(input.runtimeStatus?.directContextMaintenance || input.runtimeStatus?.contextMaintenance);
@@ -898,6 +931,7 @@ function buildRows(sections) {
   const agentToolSurface = sections.agentToolSurface;
   const statefulExec = sections.statefulExec;
   const externalDiscovery = sections.externalDiscovery;
+  const mcpBoundary = sections.mcpBoundary;
   const continuity = sections.continuity;
   const contextPreview = sections.contextPreview;
   const memoryWorkbench = sections.memoryWorkbench;
@@ -1032,6 +1066,17 @@ function buildRows(sections) {
       statusRow("Discovered", externalDiscovery.discoveredCount, externalDiscovery.discoveredCount ? "diagnostic" : "ok"),
       statusRow("Digest", externalDiscovery.registryDigest || "none"),
       statusRow("Authority", externalDiscovery.providerDeclarationAllowed || externalDiscovery.externalToolExecutionAllowed || externalDiscovery.resourceReadAllowed || externalDiscovery.dynamicToolCallAllowed || externalDiscovery.pluginInstallAllowed || externalDiscovery.autoEnableDiscoveredToolsAllowed || externalDiscovery.rawSchemaIncluded || externalDiscovery.rawPayloadIncluded || externalDiscovery.rawSecretIncluded ? "unexpected grant" : "discovery only", externalDiscovery.providerDeclarationAllowed || externalDiscovery.externalToolExecutionAllowed || externalDiscovery.resourceReadAllowed || externalDiscovery.dynamicToolCallAllowed || externalDiscovery.pluginInstallAllowed || externalDiscovery.autoEnableDiscoveredToolsAllowed || externalDiscovery.rawSchemaIncluded || externalDiscovery.rawPayloadIncluded || externalDiscovery.rawSecretIncluded ? "blocked" : "ok"),
+    ],
+    mcpBoundary: [
+      statusRow("Surface", mcpBoundary.available ? "available" : "not exposed", mcpBoundary.available ? "diagnostic" : "missing"),
+      statusRow("Status", mcpBoundary.status),
+      statusRow("Resource reads", `${mcpBoundary.resourceReadBoundaryCount} boundaries · ${mcpBoundary.blockedResourceReadCount} blocked`),
+      statusRow("Dynamic calls", `${mcpBoundary.dynamicToolCallBoundaryCount} boundaries · ${mcpBoundary.blockedDynamicToolCallCount} blocked`),
+      statusRow("Servers", mcpBoundary.sourceServerCount),
+      statusRow("Side effects", mcpBoundary.externalSideEffectClasses.join(", ") || "none"),
+      statusRow("Digest", mcpBoundary.statusDigest || "none"),
+      statusRow("Authority", mcpBoundary.requestAcceptedForExecution || mcpBoundary.resourceReadAllowed || mcpBoundary.dynamicToolCallAllowed || mcpBoundary.externalActionAllowed || mcpBoundary.providerDeclarationAllowed || mcpBoundary.providerTransportAllowed || mcpBoundary.workspaceMutationAllowed || mcpBoundary.contextInjectionAllowed || mcpBoundary.rawUriIncluded || mcpBoundary.rawPayloadIncluded || mcpBoundary.rawSchemaIncluded || mcpBoundary.rawSecretIncluded ? "unexpected grant" : "boundary only", mcpBoundary.requestAcceptedForExecution || mcpBoundary.resourceReadAllowed || mcpBoundary.dynamicToolCallAllowed || mcpBoundary.externalActionAllowed || mcpBoundary.providerDeclarationAllowed || mcpBoundary.providerTransportAllowed || mcpBoundary.workspaceMutationAllowed || mcpBoundary.contextInjectionAllowed || mcpBoundary.rawUriIncluded || mcpBoundary.rawPayloadIncluded || mcpBoundary.rawSchemaIncluded || mcpBoundary.rawSecretIncluded ? "blocked" : "ok"),
+      statusRow("Summary", mcpBoundary.rendererSafeSummary),
     ],
     controlTools: [
       statusRow("Surface", controlTools.rowCount ? "available" : "not exposed", controlTools.rowCount ? "diagnostic" : "missing"),
@@ -1212,6 +1257,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
   const agentClasses = summarizeAgentClasses(input.agentClassStatus);
   const toolCapabilities = summarizeToolCapabilities(input.toolCapabilityStatus || input.toolCapabilityProjection || input.directToolCapabilityStatus || input);
   const externalDiscovery = summarizeExternalCapabilityDiscovery(input.externalDiscoveryStatus || input.externalCapabilityDiscovery || input.directExternalCapabilityDiscovery || input);
+  const mcpBoundary = summarizeMcpResourceToolBoundary(input.mcpBoundaryStatus || input.mcpResourceToolBoundaryStatus || input.directMcpBoundary || input);
   const controlTools = summarizeControlToolSubstrate(input.controlToolStatus || input.controlToolSubstrateStatus || input.directControlToolStatus || input);
   const agentRuntime = summarizeAgentRuntimeSubstrate(input.agentRuntimeStatus || input.agentRuntimeSubstrateStatus || input.directAgentRuntimeStatus || input);
   const agentToolSurface = summarizeTextSubAgentToolSurface(input.agentToolSurfaceStatus || input.textSubAgentToolSurface || input.directTextSubAgentToolSurface || input);
@@ -1265,6 +1311,14 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
     externalDiscoveryDynamicToolCallAllowed: false,
     externalDiscoveryPluginInstallAllowed: false,
     externalDiscoveryAutoEnableAllowed: false,
+    mcpBoundaryRequestExecutionAllowed: false,
+    mcpBoundaryResourceReadAllowed: false,
+    mcpBoundaryDynamicToolCallAllowed: false,
+    mcpBoundaryExternalActionAllowed: false,
+    mcpBoundaryProviderDeclarationAllowed: false,
+    mcpBoundaryProviderTransportAllowed: false,
+    mcpBoundaryWorkspaceMutationAllowed: false,
+    mcpBoundaryContextInjectionAllowed: false,
     controlToolLocalExecutionAllowed: false,
     controlToolProviderDeclarationAllowed: false,
     controlToolAuthorityGateAllowed: false,
@@ -1291,7 +1345,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
     rawPathIncluded: false,
     rawSecretIncluded: false,
   };
-  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, toolCapabilities, externalDiscovery, controlTools, agentRuntime, agentToolSurface, statefulExec, continuity, contextPreview, memoryWorkbench, runtimeWitness, agentUsage, appServerFallbackParity, manualSmokeGate, headlessDaemon };
+  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, toolCapabilities, externalDiscovery, mcpBoundary, controlTools, agentRuntime, agentToolSurface, statefulExec, continuity, contextPreview, memoryWorkbench, runtimeWitness, agentUsage, appServerFallbackParity, manualSmokeGate, headlessDaemon };
   const sourceDigest = digestFor("direct-settings-surface-source@1", sections);
   const projection = {
     schema: DIRECT_SETTINGS_SURFACE_PROJECTION_SCHEMA,
@@ -1313,6 +1367,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       "agent_class_specs",
       "direct_tool_capability_constitution",
       "external_capability_discovery_registry",
+      "mcp_resource_tool_boundary",
       "control_perception_human_decision_tool_substrate",
       "agent_runtime_substrate",
       "text_only_sub_agent_tool_surface",
@@ -1346,6 +1401,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       { kind: "agent_class_status", digest: normalizeString(input.agentClassStatus?.projectionDigest, ""), label: "Agent class status" },
       { kind: "direct_tool_capability_status", digest: normalizeString(toolCapabilities.registryDigest || input.toolCapabilityStatus?.projectionDigest, ""), label: "Direct tool capability constitution" },
       { kind: "external_capability_discovery_registry", digest: normalizeString(externalDiscovery.projectionDigest || externalDiscovery.registryDigest, ""), label: "External capability discovery registry" },
+      { kind: "mcp_resource_tool_boundary", digest: normalizeString(mcpBoundary.statusDigest, ""), label: "MCP resource/tool boundary" },
       { kind: "direct_control_tool_substrate_status", digest: normalizeString(controlTools.statusDigest, ""), label: "Control/perception/human-decision tool substrate" },
       { kind: "direct_agent_runtime_substrate_status", digest: normalizeString(agentRuntime.statusDigest, ""), label: "Agent runtime substrate" },
       { kind: "direct_text_sub_agent_tool_surface", digest: normalizeString(agentToolSurface.surfaceDigest, ""), label: "Text-only sub-agent tool surface" },
@@ -1411,6 +1467,14 @@ function assertDirectSettingsSurfaceRendererSafe(projection = {}) {
     "externalDiscoveryDynamicToolCallAllowed",
     "externalDiscoveryPluginInstallAllowed",
     "externalDiscoveryAutoEnableAllowed",
+    "mcpBoundaryRequestExecutionAllowed",
+    "mcpBoundaryResourceReadAllowed",
+    "mcpBoundaryDynamicToolCallAllowed",
+    "mcpBoundaryExternalActionAllowed",
+    "mcpBoundaryProviderDeclarationAllowed",
+    "mcpBoundaryProviderTransportAllowed",
+    "mcpBoundaryWorkspaceMutationAllowed",
+    "mcpBoundaryContextInjectionAllowed",
     "controlToolLocalExecutionAllowed",
     "controlToolProviderDeclarationAllowed",
     "controlToolAuthorityGateAllowed",
