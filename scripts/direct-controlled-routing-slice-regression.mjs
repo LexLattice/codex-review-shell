@@ -460,17 +460,22 @@ try {
     },
   };
   const implementationLaneThread = controller.startThread({ model: "gpt-5.4" }, { project: implementationLaneProject, surfaceSession });
-  await assert.rejects(
-    () => controller.startTurn({
-      threadId: implementationLaneThread.thread.id,
-      promptText: "continue controlled routing fixture",
-      clientTurnRequestId: "client_req_controlled_route_implementation_lane",
-      model: "gpt-5.4",
-      requireControlledRouting: true,
-      workThread,
-    }, { project: implementationLaneProject, surfaceSession }),
-    (error) => error.code === "controlled_routing_text_only_required",
+  const providerRequestsBeforeImplementationLane = providerRequestCount;
+  const implementationLaneAck = await controller.startTurn({
+    threadId: implementationLaneThread.thread.id,
+    promptText: "continue controlled routing fixture",
+    clientTurnRequestId: "client_req_controlled_route_implementation_lane",
+    model: "gpt-5.4",
+    requireControlledRouting: true,
+    workThread,
+  }, { project: implementationLaneProject, surfaceSession });
+  assert.equal(implementationLaneAck.turn.status, "inProgress");
+  await waitFor(
+    () => sessionStore.readTurn(implementationLaneThread.thread.id, implementationLaneAck.turn.id)?.state === "completed",
+    "implementation-lane controlled routed turn should complete",
   );
+  assert.equal(providerRequestCount, providerRequestsBeforeImplementationLane + 1);
+  assert.equal(capturedProviderBody.parallel_tool_calls, false);
   console.log(JSON.stringify({
     ok: true,
     routeId: turn.controlledRoutingSliceId,

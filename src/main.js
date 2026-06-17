@@ -2468,6 +2468,34 @@ function buildDirectRuntimeStatusForProject(project, options = {}) {
     blockers: implementationBlockers,
     missingImplementationOnlyGates: implementationBlockers,
   };
+  runtimeStatus.direct = {
+    ...(runtimeStatus.direct || {}),
+    status: runtimeStatus.directImplementationLane.selected
+      ? runtimeStatus.directImplementationLane.status
+      : runtimeStatus.directTextOnly?.selected
+        ? "degraded_text_only"
+        : runtimeStatus.directImplementationLane.canSelect || runtimeStatus.directImplementationLane.canEnable
+          ? "eligible"
+          : runtimeStatus.directTextOnly?.canEnable
+            ? "eligible_text_only_fallback"
+            : "blocked",
+    selected: runtimeStatus.directImplementationLane.selected === true || runtimeStatus.directTextOnly?.selected === true,
+    canSelect: runtimeStatus.directImplementationLane.canSelect === true ||
+      runtimeStatus.directImplementationLane.canEnable === true ||
+      runtimeStatus.directTextOnly?.canEnable === true,
+    toolMode: runtimeStatus.directImplementationLane.selected && runtimeStatus.liveTextRuntime?.toolsEnabled
+      ? "tool_capable"
+      : runtimeStatus.directTextOnly?.selected
+        ? "text_only_fallback"
+        : "unavailable",
+    toolsAvailable: runtimeStatus.directImplementationLane.selected === true && runtimeStatus.liveTextRuntime?.toolsEnabled === true,
+    textOnlyFallbackAvailable: runtimeStatus.directTextOnly?.canEnable === true,
+    blockers: runtimeStatus.directImplementationLane.canSelect || runtimeStatus.directImplementationLane.canEnable
+      ? []
+      : runtimeStatus.directImplementationLane.blockers,
+    fallbackBlockers: runtimeStatus.directTextOnly?.blockers || [],
+    userFacingLabel: "Direct",
+  };
   let threadStoreForContext = null;
   try {
     threadStoreForContext = ensureDirectThreadStore();
@@ -3919,6 +3947,15 @@ function directTextOnlyCanSelect(runtimeStatus = {}) {
   return status === "eligible" || status === "enabled";
 }
 
+function directImplementationCanSelect(runtimeStatus = {}) {
+  const implementation = runtimeStatus.directImplementationLane || {};
+  const status = normalizeString(implementation.status, "");
+  return implementation.canSelect === true ||
+    implementation.canEnable === true ||
+    status === "eligible" ||
+    status === "enabled";
+}
+
 function directLiveProbeModel(project = {}, runtimeStatus = {}) {
   return normalizeString(
     project?.surfaceBinding?.codex?.model ||
@@ -3992,7 +4029,7 @@ async function embarkDirectRuntime(payload = {}) {
     });
   }
 
-  if (!directTextOnlyCanSelect(runtimeStatus)) {
+  if (!directImplementationCanSelect(runtimeStatus) && !directTextOnlyCanSelect(runtimeStatus)) {
     steps.push(directEmbarkStep("probe_required"));
     try {
       const probe = await recordDirectEmbarkLiveProbe(project, runtimeStatus, steps);
@@ -4012,32 +4049,34 @@ async function embarkDirectRuntime(payload = {}) {
     runtimeStatus = buildDirectRuntimeStatusForProject(project);
   }
 
-  if (!directTextOnlyCanSelect(runtimeStatus)) {
+  if (!directImplementationCanSelect(runtimeStatus) && !directTextOnlyCanSelect(runtimeStatus)) {
     return directEmbarkResult(projectId, "probe_failed", {
       steps,
       authStatus,
       runtimeStatus,
       probeResult,
       error: {
-        code: "direct_text_only_not_eligible",
-        message: "Direct text-only gates are still blocked after probe.",
+        code: "direct_not_eligible",
+        message: "Direct gates are still blocked after probe.",
       },
     });
   }
 
   steps.push(directEmbarkStep("switching_backend", "started"));
   try {
+    const runtimePath = directImplementationCanSelect(runtimeStatus) ? "direct-implementation" : "direct-text";
     const selection = await setCodexRuntimePath({
       ...payload,
       projectId,
-      runtimePath: "direct-text",
+      runtimePath,
       clientOperationId,
-      expectedGateId: runtimeStatus.directTextOnly?.gateId || "",
-      expectedGateDigest: runtimeStatus.directTextOnly?.gateDigest || "",
+      expectedGateId: runtimePath === "direct-text" ? runtimeStatus.directTextOnly?.gateId || "" : "",
+      expectedGateDigest: runtimePath === "direct-text" ? runtimeStatus.directTextOnly?.gateDigest || "" : "",
     });
     steps.push(directEmbarkStep("switching_backend", "completed"));
     return directEmbarkResult(projectId, "direct_surface_ready", {
       duplicate: selection?.duplicate === true,
+      runtimePath,
       steps,
       authStatus: directRuntimeAuthStore().readStatus(),
       runtimeStatus: selection?.status || buildDirectRuntimeStatusForProject(selection?.project || project),
