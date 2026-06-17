@@ -601,6 +601,63 @@ function summarizeStatefulExecSurface(statefulExecSurface = {}) {
   };
 }
 
+function summarizeCodeModeExecutionLane(codeModeLane = {}) {
+  const source = objectOrEmpty(codeModeLane);
+  const status = normalizeString(source.schema, "") === "code_mode_execution_lane_status@1"
+    ? source
+    : objectOrEmpty(source.codeModeExecutionLaneStatus || source.codeModeLaneStatus || source.directCodeModeExecutionLane || source.codeModeExecutionLane);
+  const kernel = objectOrEmpty(status.kernelSession);
+  const execute = objectOrEmpty(status.executePosture);
+  const waitCancel = objectOrEmpty(status.waitCancelPolicy);
+  const artifact = objectOrEmpty(status.artifactOutputPolicy);
+  return {
+    available: normalizeString(status.schema, "") === "code_mode_execution_lane_status@1",
+    schema: normalizeString(status.schema, "not_exposed"),
+    mode: normalizeString(status.mode, "not_exposed"),
+    laneId: normalizeString(status.laneId, ""),
+    laneState: normalizeString(status.laneState, "unknown"),
+    statusDigest: normalizeString(status.statusDigest, ""),
+    authorityRequired: normalizeString(status.authorityRequired, "unknown"),
+    kernelSessionId: normalizeString(kernel.kernelSessionId, ""),
+    kernelState: normalizeString(kernel.state, "unknown"),
+    kernelKind: normalizeString(kernel.kernelKind, "unknown"),
+    language: normalizeString(kernel.language, "unknown"),
+    resourceClass: normalizeString(kernel.resourceClass, "unknown"),
+    maxWallTimeMs: Number(kernel.maxWallTimeMs || 0),
+    maxOutputBytes: Number(kernel.maxOutputBytes || 0),
+    executionState: normalizeString(execute.executionState, "unknown"),
+    requestShapeFamily: normalizeString(execute.requestShapeFamily, "unknown"),
+    waitState: normalizeString(waitCancel.waitState, "unknown"),
+    cancelState: normalizeString(waitCancel.cancelState, "unknown"),
+    waitTimeoutMs: Number(waitCancel.waitTimeoutMs || 0),
+    artifactState: normalizeString(artifact.artifactState, "unknown"),
+    artifactRefPolicy: normalizeString(artifact.artifactRefPolicy, "unknown"),
+    allowedArtifactKinds: arrayOrEmpty(artifact.allowedArtifactKinds).map((item) => normalizeString(item, "")).filter(Boolean),
+    kernelSessionCount: Number(status.kernelSessionCount || 0),
+    activeExecutionCount: Number(status.activeExecutionCount || 0),
+    artifactPolicyCount: Number(status.artifactPolicyCount || 0),
+    kernelStartEnabledInThisPr: status.kernelStartEnabledInThisPr === true,
+    executeToolEnabledInThisPr: status.executeToolEnabledInThisPr === true,
+    waitToolEnabledInThisPr: status.waitToolEnabledInThisPr === true,
+    cancelToolEnabledInThisPr: status.cancelToolEnabledInThisPr === true,
+    artifactWriteEnabledInThisPr: status.artifactWriteEnabledInThisPr === true,
+    providerDeclarationAllowed: status.providerDeclarationAllowed === true,
+    providerTransportAllowed: status.providerTransportAllowed === true,
+    localExecutionAllowed: status.localExecutionAllowed === true,
+    requestShapeMutationAllowed: status.requestShapeMutationAllowed === true,
+    shellApprovalProfileInherited: status.shellApprovalProfileInherited === true,
+    workspaceMutationAllowed: status.workspaceMutationAllowed === true,
+    providerContextInjectionAllowed: status.providerContextInjectionAllowed === true,
+    rawCodeIncluded: status.rawCodeIncluded === true,
+    rawInputIncluded: status.rawInputIncluded === true,
+    rawOutputIncluded: status.rawOutputIncluded === true,
+    rawArtifactIncluded: status.rawArtifactIncluded === true,
+    rawPathIncluded: status.rawPathIncluded === true,
+    rawSecretIncluded: status.rawSecretIncluded === true,
+    rendererSafeSummary: boundedString(status.rendererSafeSummary || "Code mode execution lane is not exposed.", 360),
+  };
+}
+
 function summarizeExternalCapabilityDiscovery(externalDiscovery = {}) {
   const source = objectOrEmpty(externalDiscovery);
   const status = normalizeString(source.schema, "") === "external_capability_discovery_status_projection@1"
@@ -999,6 +1056,7 @@ function buildRows(sections) {
   const agentRuntime = sections.agentRuntime;
   const agentToolSurface = sections.agentToolSurface;
   const statefulExec = sections.statefulExec;
+  const codeModeExecutionLane = sections.codeModeExecutionLane;
   const externalDiscovery = sections.externalDiscovery;
   const mcpBoundary = sections.mcpBoundary;
   const providerHostedTools = sections.providerHostedTools;
@@ -1225,6 +1283,19 @@ function buildRows(sections) {
       statusRow("Tools", `exec ${statefulExec.execCommandToolEnabledInThisPr ? "restricted" : "off"} / stdin ${statefulExec.writeStdinToolEnabledInThisPr ? "restricted" : "blocked"}`, statefulExec.execCommandToolEnabledInThisPr ? "diagnostic" : "missing"),
       statusRow("Authority", statefulExec.providerDeclarationAllowed || statefulExec.providerTransportAllowed || statefulExec.requestShapeMutationAllowed || statefulExec.runCommandAliasAllowed || statefulExec.terminalSuccessWithoutExitAllowed || statefulExec.rawCommandIncluded || statefulExec.rawOutputIncluded || statefulExec.rawInputIncluded || statefulExec.rawPathIncluded || statefulExec.rawSecretIncluded ? "unexpected grant" : "stateful gated", statefulExec.providerDeclarationAllowed || statefulExec.providerTransportAllowed || statefulExec.requestShapeMutationAllowed || statefulExec.runCommandAliasAllowed || statefulExec.terminalSuccessWithoutExitAllowed || statefulExec.rawCommandIncluded || statefulExec.rawOutputIncluded || statefulExec.rawInputIncluded || statefulExec.rawPathIncluded || statefulExec.rawSecretIncluded ? "blocked" : "ok"),
     ],
+    codeModeExecutionLane: [
+      statusRow("Surface", codeModeExecutionLane.available ? "available" : "not exposed", codeModeExecutionLane.available ? "diagnostic" : "missing"),
+      statusRow("Mode", codeModeExecutionLane.mode),
+      statusRow("Lane", codeModeExecutionLane.laneState, codeModeExecutionLane.laneState === "blocked_until_kernel_authority" ? "ok" : "blocked"),
+      statusRow("Kernel", `${codeModeExecutionLane.kernelSessionId || "none"} · ${codeModeExecutionLane.kernelState}`),
+      statusRow("Kernel kind", `${codeModeExecutionLane.kernelKind} · ${codeModeExecutionLane.language}`),
+      statusRow("Resources", `${codeModeExecutionLane.resourceClass} · wall ${codeModeExecutionLane.maxWallTimeMs}ms · out ${codeModeExecutionLane.maxOutputBytes}b`),
+      statusRow("Execute", `${codeModeExecutionLane.executionState} · ${codeModeExecutionLane.requestShapeFamily}`, codeModeExecutionLane.executionState.startsWith("blocked_") ? "ok" : "blocked"),
+      statusRow("Wait/cancel", `${codeModeExecutionLane.waitState} / ${codeModeExecutionLane.cancelState} · ${codeModeExecutionLane.waitTimeoutMs}ms`),
+      statusRow("Artifacts", `${codeModeExecutionLane.artifactState} · ${codeModeExecutionLane.artifactRefPolicy} · ${codeModeExecutionLane.allowedArtifactKinds.join(", ") || "none"}`),
+      statusRow("Tools", `execute ${codeModeExecutionLane.executeToolEnabledInThisPr ? "on" : "blocked"} / wait ${codeModeExecutionLane.waitToolEnabledInThisPr ? "on" : "blocked"} / cancel ${codeModeExecutionLane.cancelToolEnabledInThisPr ? "on" : "blocked"}`, codeModeExecutionLane.executeToolEnabledInThisPr || codeModeExecutionLane.waitToolEnabledInThisPr || codeModeExecutionLane.cancelToolEnabledInThisPr ? "blocked" : "ok"),
+      statusRow("Authority", codeModeExecutionLane.kernelStartEnabledInThisPr || codeModeExecutionLane.providerDeclarationAllowed || codeModeExecutionLane.providerTransportAllowed || codeModeExecutionLane.localExecutionAllowed || codeModeExecutionLane.requestShapeMutationAllowed || codeModeExecutionLane.shellApprovalProfileInherited || codeModeExecutionLane.workspaceMutationAllowed || codeModeExecutionLane.providerContextInjectionAllowed || codeModeExecutionLane.artifactWriteEnabledInThisPr || codeModeExecutionLane.rawCodeIncluded || codeModeExecutionLane.rawInputIncluded || codeModeExecutionLane.rawOutputIncluded || codeModeExecutionLane.rawArtifactIncluded || codeModeExecutionLane.rawPathIncluded || codeModeExecutionLane.rawSecretIncluded ? "unexpected grant" : "kernel gated", codeModeExecutionLane.kernelStartEnabledInThisPr || codeModeExecutionLane.providerDeclarationAllowed || codeModeExecutionLane.providerTransportAllowed || codeModeExecutionLane.localExecutionAllowed || codeModeExecutionLane.requestShapeMutationAllowed || codeModeExecutionLane.shellApprovalProfileInherited || codeModeExecutionLane.workspaceMutationAllowed || codeModeExecutionLane.providerContextInjectionAllowed || codeModeExecutionLane.artifactWriteEnabledInThisPr || codeModeExecutionLane.rawCodeIncluded || codeModeExecutionLane.rawInputIncluded || codeModeExecutionLane.rawOutputIncluded || codeModeExecutionLane.rawArtifactIncluded || codeModeExecutionLane.rawPathIncluded || codeModeExecutionLane.rawSecretIncluded ? "blocked" : "ok"),
+    ],
     continuity: [
       statusRow("Transition", continuity.transitionStatus),
       statusRow("Context loss", continuity.contextLossState),
@@ -1359,6 +1430,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
   const agentRuntime = summarizeAgentRuntimeSubstrate(input.agentRuntimeStatus || input.agentRuntimeSubstrateStatus || input.directAgentRuntimeStatus || input);
   const agentToolSurface = summarizeTextSubAgentToolSurface(input.agentToolSurfaceStatus || input.textSubAgentToolSurface || input.directTextSubAgentToolSurface || input);
   const statefulExec = summarizeStatefulExecSurface(input.statefulExecStatus || input.statefulExecSurface || input.directStatefulExecSurface || input);
+  const codeModeExecutionLane = summarizeCodeModeExecutionLane(input.codeModeExecutionLaneStatus || input.codeModeExecutionLane || input.directCodeModeExecutionLane || input);
   const continuity = summarizeContinuity(input);
   const contextPreview = summarizeContextPreview(input.contextPreview || input.contextPacketPreview || input.directContextPreview || input);
   const memoryWorkbench = summarizeMemoryWorkbench(input.memoryWorkbench || input.memoryReviewWorkbench || input.directMemoryWorkbench || input);
@@ -1453,11 +1525,24 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
     statefulExecRequestShapeMutationAllowed: false,
     statefulExecRunCommandAliasAllowed: false,
     statefulExecTerminalSuccessWithoutExitAllowed: false,
+    codeModeKernelStartAllowed: false,
+    codeModeProviderDeclarationAllowed: false,
+    codeModeProviderTransportAllowed: false,
+    codeModeLocalExecutionAllowed: false,
+    codeModeRequestShapeMutationAllowed: false,
+    codeModeShellApprovalProfileInherited: false,
+    codeModeWorkspaceMutationAllowed: false,
+    codeModeProviderContextInjectionAllowed: false,
+    codeModeArtifactWriteAllowed: false,
+    codeModeRawCodeIncluded: false,
+    codeModeRawInputIncluded: false,
+    codeModeRawOutputIncluded: false,
+    codeModeRawArtifactIncluded: false,
     rawTextIncluded: false,
     rawPathIncluded: false,
     rawSecretIncluded: false,
   };
-  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, toolCapabilities, externalDiscovery, mcpBoundary, providerHostedTools, pluginGovernance, controlTools, agentRuntime, agentToolSurface, statefulExec, continuity, contextPreview, memoryWorkbench, runtimeWitness, agentUsage, appServerFallbackParity, manualSmokeGate, headlessDaemon };
+  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, toolCapabilities, externalDiscovery, mcpBoundary, providerHostedTools, pluginGovernance, controlTools, agentRuntime, agentToolSurface, statefulExec, codeModeExecutionLane, continuity, contextPreview, memoryWorkbench, runtimeWitness, agentUsage, appServerFallbackParity, manualSmokeGate, headlessDaemon };
   const sourceDigest = digestFor("direct-settings-surface-source@1", sections);
   const projection = {
     schema: DIRECT_SETTINGS_SURFACE_PROJECTION_SCHEMA,
@@ -1486,6 +1571,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       "agent_runtime_substrate",
       "text_only_sub_agent_tool_surface",
       "stateful_exec_session_surface",
+      "code_mode_execution_lane",
       "memory_baton_omission_compaction",
       "context_packet_preview",
       "memory_review_workbench",
@@ -1522,6 +1608,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       { kind: "direct_agent_runtime_substrate_status", digest: normalizeString(agentRuntime.statusDigest, ""), label: "Agent runtime substrate" },
       { kind: "direct_text_sub_agent_tool_surface", digest: normalizeString(agentToolSurface.surfaceDigest, ""), label: "Text-only sub-agent tool surface" },
       { kind: "direct_stateful_exec_session_surface", digest: normalizeString(statefulExec.surfaceDigest, ""), label: "Stateful exec session surface" },
+      { kind: "code_mode_execution_lane", digest: normalizeString(codeModeExecutionLane.statusDigest, ""), label: "Code mode execution lane" },
       { kind: "continuity_status", digest: normalizeString(input.continuityStatus?.projectionDigest, ""), label: "Continuity status" },
       { kind: "context_packet_preview", digest: normalizeString(contextPreview.previewDigest, ""), label: "Context packet preview" },
       { kind: "memory_review_workbench", digest: normalizeString(memoryWorkbench.workbenchDigest, ""), label: "Memory review workbench" },
@@ -1628,6 +1715,19 @@ function assertDirectSettingsSurfaceRendererSafe(projection = {}) {
     "statefulExecRequestShapeMutationAllowed",
     "statefulExecRunCommandAliasAllowed",
     "statefulExecTerminalSuccessWithoutExitAllowed",
+    "codeModeKernelStartAllowed",
+    "codeModeProviderDeclarationAllowed",
+    "codeModeProviderTransportAllowed",
+    "codeModeLocalExecutionAllowed",
+    "codeModeRequestShapeMutationAllowed",
+    "codeModeShellApprovalProfileInherited",
+    "codeModeWorkspaceMutationAllowed",
+    "codeModeProviderContextInjectionAllowed",
+    "codeModeArtifactWriteAllowed",
+    "codeModeRawCodeIncluded",
+    "codeModeRawInputIncluded",
+    "codeModeRawOutputIncluded",
+    "codeModeRawArtifactIncluded",
     "rawTextIncluded",
     "rawPathIncluded",
     "rawSecretIncluded",

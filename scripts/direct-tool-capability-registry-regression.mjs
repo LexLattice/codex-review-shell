@@ -95,6 +95,8 @@ function main() {
   const followupTask = rows.get("vanilla.agent.followup_task");
   const interruptAgent = rows.get("vanilla.agent.interrupt_agent");
   const pluginInstall = rows.get("vanilla.request_plugin_install");
+  const codeModeExecute = rows.get("vanilla.code_mode_execute");
+  const codeModeWait = rows.get("vanilla.code_mode_wait");
   assert(directRead.schema === DIRECT_TOOL_CAPABILITY_ROW_SCHEMA, "tool row schema mismatch");
   assert(directRead.promotionState === "direct_restricted", "direct read should be restricted");
   assert(directRead.localExecutorState === "implemented_restricted", "direct read should cite restricted executor");
@@ -118,6 +120,11 @@ function main() {
   assert(interruptAgent.promotionState === "diagnostic_only", "interrupt_agent should remain provider-cancel disabled");
   assert(pluginInstall.sideEffectClass === "capability_mutation", "plugin install should be capability mutation");
   assert(pluginInstall.promotionState === "deferred_external_authority", "plugin install should defer external authority");
+  assert(codeModeExecute.odeuFamily === "structured_execution_lane", "code_mode_execute should be structured execution lane");
+  assert(codeModeExecute.promotionState === "diagnostic_only", "code_mode_execute should remain diagnostic-only");
+  assert(codeModeExecute.localExecutor === "src/main/direct/tools/code-mode-execution-lane.js", "code_mode_execute should cite code mode lane");
+  assert(codeModeExecute.requestShapeFamilies.includes("code_mode_execute_request_posture"), "code_mode_execute should declare execute posture");
+  assert(codeModeWait.requestShapeFamilies.includes("code_mode_wait_cancel_policy"), "code_mode_wait should declare wait/cancel policy");
 
   for (const row of registry.rows) {
     assert(row.toolEnabledInThisPr === false, `${row.toolId} must not enable tool`);
