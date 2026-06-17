@@ -700,6 +700,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "The report is plan-only by default, requires explicit smoke evidence for execution mode, grants no renderer authority, grants no promotion, and exposes no raw prompt/result/path/secret payloads.",
   },
   {
+    id: "ic13.direct-tool-promotion-decision-report",
+    name: "Direct tool promotion decision report",
+    role: "canonical_evidence",
+    implementationState: "partial",
+    directPathPosture: "keep_gated",
+    sourceFiles: ["src/main/direct/headless/tool-promotion-decision-report.js", "src/main/direct/headless/tool-class-live-smoke-report.js", "scripts/direct-tool-promotion-decision-report-regression.mjs", "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md"],
+    ontology: ontologyShape(["direct_tool_promotion_decision_report", "direct_tool_promotion_decision_row", "direct_tool_promotion_scope"], "harness", {
+      identityFields: ["reportId", "liveSmokeReportDigest", "decisionId", "toolClassId", "toolSchemaVersion", "requestShapeFamily"],
+      schema: "direct_tool_promotion_decision_report@1",
+    }),
+    bridgeFit: "Consumes live-smoke evidence and records scoped per-tool-class promotion decisions with evidence class, freshness, restrictions, blockers, and negative-evidence witnesses.",
+    realignment: "Promotion decisions do not activate tools, mutate defaults, grant renderer authority, start provider calls, or bypass per-call authority; fixture/headless evidence remains restricted rather than direct runtime enablement.",
+  },
+  {
     id: "ic14.skills-hooks-apps",
     name: "Skills, hooks, and app connectors as bridge modules",
     role: "governance_routing",

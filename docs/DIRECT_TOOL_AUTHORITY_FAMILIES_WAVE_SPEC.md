@@ -1339,6 +1339,8 @@ permission.
 
 ### PR 70: Tool Promotion Decision Gate
 
+Status: implemented in branch `codex/direct-tool-promotion-decision-gate`.
+
 Purpose:
 
 ```text
