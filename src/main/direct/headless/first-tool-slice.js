@@ -245,6 +245,22 @@ function normalizeRelativePath(value) {
     error.code = "invalid_read_file_path";
     throw error;
   }
+  let decoded = text;
+  try {
+    decoded = decodeURIComponent(text);
+  } catch {
+    const error = new Error("read_file tool path contains malformed encoding.");
+    error.code = "invalid_read_file_path";
+    throw error;
+  }
+  if (
+    decoded !== text &&
+    (decoded.includes("/") || decoded.includes("\\") || decoded.split(/[\\/]/).includes(".."))
+  ) {
+    const error = new Error("read_file tool path contains encoded traversal.");
+    error.code = "invalid_read_file_path";
+    throw error;
+  }
   return text.replace(/^\.\/+/, "");
 }
 
@@ -267,6 +283,8 @@ function buildDirectFirstToolCallGate(options = {}) {
   const slice = isPlainObject(options.slice) ? options.slice : buildDirectFirstToolSlice(options);
   const toolCall = isPlainObject(options.toolCall) ? options.toolCall : {};
   const toolName = normalizeString(toolCall.name || toolCall.toolName, "");
+  const callId = normalizeString(toolCall.callId || toolCall.call_id, "");
+  const providerItemId = normalizeString(toolCall.itemId || toolCall.item_id || toolCall.providerItemId || toolCall.id, "");
   const declaration = declarationForTool(slice, toolName);
   const errors = validateDirectFirstToolSlice(slice);
   const blockerCodes = [...errors.map((error) => `slice:${error}`)];
@@ -281,7 +299,7 @@ function buildDirectFirstToolCallGate(options = {}) {
     schema: DIRECT_FIRST_TOOL_CALL_GATE_SCHEMA,
     gateId: `first_tool_call_gate_${digestFor("direct-first-tool-call-gate-id@1", {
       sliceDigest: slice.sliceDigest,
-      callId: toolCall.callId,
+      callId,
       toolName,
       parsedArgs,
     }).slice(0, 24)}`,
@@ -294,8 +312,8 @@ function buildDirectFirstToolCallGate(options = {}) {
     declarationDigest: normalizeString(declaration?.declarationDigest, ""),
     activationRowId: normalizeString(declaration?.activationRowId, ""),
     toolName,
-    callId: normalizeString(toolCall.callId || toolCall.id, ""),
-    providerItemId: normalizeString(toolCall.itemId || toolCall.providerItemId, ""),
+    callId,
+    providerItemId,
     parsedArguments: parsedArgs,
     status: blockerCodes.length ? "blocked" : "accepted",
     blockerCodes: normalizeStringList(blockerCodes),

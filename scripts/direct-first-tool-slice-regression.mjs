@@ -210,6 +210,18 @@ const escapedReadGate = buildDirectFirstToolCallGate({
 assert.equal(escapedReadGate.status, "blocked", "path escape should be blocked before local execution");
 assert(escapedReadGate.blockerCodes.includes("invalid_read_file_path"), "path escape blocker should be explicit");
 
+const encodedEscapedReadGate = buildDirectFirstToolCallGate({
+  slice,
+  toolCall: {
+    itemId: "tool_item_encoded_escape",
+    callId: "call_encoded_escape",
+    name: "read_file",
+    arguments: JSON.stringify({ path: "%2e%2e%2fsecrets.txt" }),
+  },
+});
+assert.equal(encodedEscapedReadGate.status, "blocked", "encoded path escape should be blocked before local execution");
+assert(encodedEscapedReadGate.blockerCodes.includes("invalid_read_file_path"), "encoded path escape blocker should be explicit");
+
 const undeclaredGate = buildDirectFirstToolCallGate({
   slice,
   toolCall: {
@@ -233,6 +245,19 @@ const contextGate = buildDirectFirstToolCallGate({
 });
 assert.deepEqual(validateDirectFirstToolCallGate(contextGate), [], "context gate should validate");
 assert.equal(contextGate.status, "accepted", "get_context_remaining should be accepted when declared");
+
+const rawResponsesContextGate = buildDirectFirstToolCallGate({
+  slice,
+  toolCall: {
+    id: "provider_item_context",
+    call_id: "provider_call_context",
+    name: "get_context_remaining",
+    arguments: JSON.stringify({ detail: "compact" }),
+  },
+});
+assert.equal(rawResponsesContextGate.status, "accepted", "raw Responses tool call should be accepted when declared");
+assert.equal(rawResponsesContextGate.callId, "provider_call_context", "provider call_id should be echoed as callId");
+assert.equal(rawResponsesContextGate.providerItemId, "provider_item_context", "provider item id should stay distinct");
 
 const contextEnvelope = buildContextRemainingResultEnvelope({
   gate: contextGate,
