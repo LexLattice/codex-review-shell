@@ -79,6 +79,13 @@ assert(workerOne.schema === DIRECT_BATCH_AGENT_WORKER_ITEM_SCHEMA, "worker item 
 assert(workerOne.rawCsvRowIncluded === false, "worker item must not include raw CSV row");
 assert(workerOne.rawPromptIncluded === false, "worker item must not include raw prompt");
 
+const whitespaceWorker = buildBatchAgentWorkerItem({
+  workerItemId: "   ",
+  csvRowKey: "   ",
+}, 0);
+assert(whitespaceWorker.workerItemId === "batch_worker_1", "blank worker item id should use fallback");
+assert(whitespaceWorker.csvRowKey === "row_1", "blank CSV row key should use fallback");
+
 const jobPlan = buildBatchAgentJobPlan({
   projectId,
   primaryThreadId,
@@ -97,6 +104,12 @@ assert(jobPlan.fanOutState === "planned", "valid batch plan should be planned");
 assert(jobPlan.workerItemCount === 2, "job plan should retain worker count");
 assert(jobPlan.localSpawnAllowed === false, "job plan must not enable local spawn");
 assert(jobPlan.recursiveSpawnAllowed === false, "job plan must not enable recursive spawn");
+
+const whitespacePlan = buildBatchAgentJobPlan({
+  batchJobId: "   ",
+  csvEvidenceKey: "csv_fixture_ref",
+});
+assert(whitespacePlan.batchJobId.startsWith("batch_agent_job_"), "blank batch job id should use digest fallback");
 
 const blockedPlan = buildBatchAgentJobPlan({
   projectId,
@@ -123,6 +136,11 @@ assert(resultContract.schema === DIRECT_BATCH_AGENT_RESULT_CONTRACT_SCHEMA, "res
 assert(resultContract.workerMayReportOnlyOwnItem === true, "worker result contract must scope worker reporting");
 assert(resultContract.parentMaySynthesizeMissingResult === false, "parent must not synthesize missing worker result");
 
+const whitespaceContract = buildBatchAgentResultContract({
+  contractId: "   ",
+});
+assert(whitespaceContract.contractId.startsWith("batch_result_contract_"), "blank result contract id should use digest fallback");
+
 const aggregationLedger = buildBatchAgentAggregationLedger({
   batchJobId: jobPlan.batchJobId,
   expectedWorkerCount: 2,
@@ -133,6 +151,11 @@ assert(aggregationLedger.receivedResultCount === 1, "aggregation should count re
 assert(aggregationLedger.missingResultCount === 1, "aggregation should count missing results");
 assert(aggregationLedger.aggregationState === "partial", "aggregation should remain partial with missing result");
 assert(aggregationLedger.aggregationExportWriteAllowed === false, "aggregation must not write export");
+
+const whitespaceLedger = buildBatchAgentAggregationLedger({
+  ledgerId: "   ",
+});
+assert(whitespaceLedger.ledgerId.startsWith("batch_aggregation_"), "blank aggregation ledger id should use digest fallback");
 
 const surface = buildBatchAgentJobSurface({
   projectId,
@@ -152,6 +175,14 @@ assert(surface.reportAgentJobResultToolEnabledInThisPr === false, "worker result
 assert(surface.separateWorkerUsageAttributionRequired === true, "batch jobs require separate worker usage attribution");
 assertBatchAgentJobSurfaceSafe(surface);
 
+const whitespaceSurface = buildBatchAgentJobSurface({
+  surfaceId: "   ",
+  jobPlan: {
+    csvEvidenceKey: "csv_fixture_ref",
+  },
+});
+assert(whitespaceSurface.surfaceId.startsWith("batch_agent_surface_"), "blank surface id should use digest fallback");
+
 const duplicateResultLedger = buildBatchAgentAggregationLedger({
   batchJobId: "dup_result_batch",
   expectedWorkerCount: 2,
@@ -162,6 +193,33 @@ const duplicateResultLedger = buildBatchAgentAggregationLedger({
 });
 assert(duplicateResultLedger.duplicateResultCount === 1, "aggregation should detect duplicate result evidence");
 assert(duplicateResultLedger.aggregationState === "blocked", "duplicate results should block aggregation");
+
+const duplicateOverrideLedger = buildBatchAgentAggregationLedger({
+  batchJobId: "dup_result_override_batch",
+  expectedWorkerCount: 2,
+  aggregationState: "complete",
+  workerItems: [
+    { workerItemId: "dup_override_a", resultEvidenceKey: "same_result_override", resultState: "accepted" },
+    { workerItemId: "dup_override_b", resultEvidenceKey: "same_result_override", resultState: "accepted" },
+  ],
+});
+assert(duplicateOverrideLedger.aggregationState === "blocked", "caller must not override duplicate-result aggregation state");
+
+const detachedLedgerSurface = buildBatchAgentJobSurface({
+  projectId,
+  primaryThreadId,
+  workThreadId,
+  jobPlan,
+  aggregationLedger: {
+    expectedWorkerCount: 0,
+    workerItems: [],
+    aggregationState: "complete",
+  },
+  nowMs: 0,
+});
+assert(detachedLedgerSurface.aggregationLedger.expectedWorkerCount === jobPlan.workerItemCount, "surface aggregation should be tied to job-plan worker count");
+assert(detachedLedgerSurface.aggregationLedger.missingResultCount === 1, "surface aggregation should preserve missing worker result");
+assert(detachedLedgerSurface.aggregationLedger.aggregationState === "partial", "surface aggregation should not accept detached caller state");
 
 const settingsProjection = buildDirectSettingsSurfaceProjection({
   projectId,
@@ -207,6 +265,47 @@ const hostile = buildBatchAgentJobSurface({
 });
 hostile.localBatchExecutionAllowed = true;
 expectThrows(() => assertBatchAgentJobSurfaceSafe(hostile), "direct_batch_agent_job_surface_authority_leak");
+
+const hostilePlan = buildBatchAgentJobSurface({
+  projectId: "hostile_batch_plan",
+  jobPlan: {
+    csvEvidenceKey: "hostile_csv_ref",
+  },
+  nowMs: 0,
+});
+hostilePlan.jobPlan.providerTransportAllowed = true;
+expectThrows(() => assertBatchAgentJobSurfaceSafe(hostilePlan), "direct_batch_agent_job_plan_spawn_authority_leak");
+
+const hostileContract = buildBatchAgentJobSurface({
+  projectId: "hostile_batch_contract",
+  jobPlan: {
+    csvEvidenceKey: "hostile_csv_ref",
+  },
+  nowMs: 0,
+});
+hostileContract.resultContract.requestShapeMutationAllowed = true;
+expectThrows(() => assertBatchAgentJobSurfaceSafe(hostileContract), "direct_batch_agent_result_contract_authority_leak");
+
+const hostileLedger = buildBatchAgentJobSurface({
+  projectId: "hostile_batch_ledger",
+  jobPlan: {
+    csvEvidenceKey: "hostile_csv_ref",
+  },
+  nowMs: 0,
+});
+hostileLedger.aggregationLedger.rawExportIncluded = true;
+expectThrows(() => assertBatchAgentJobSurfaceSafe(hostileLedger), "direct_batch_agent_aggregation_authority_leak");
+
+const hostileWorkerItem = buildBatchAgentJobSurface({
+  projectId: "hostile_batch_worker_item",
+  jobPlan: {
+    csvEvidenceKey: "hostile_csv_ref",
+    workerItems: [{ workerItemId: "worker_item_valid" }],
+  },
+  nowMs: 0,
+});
+hostileWorkerItem.jobPlan.workerItems.push(null);
+expectThrows(() => assertBatchAgentJobSurfaceSafe(hostileWorkerItem), "direct_batch_agent_worker_item_schema_mismatch");
 
 const serialized = JSON.stringify({ surface, settingsProjection, registry, audit });
 for (const forbidden of [

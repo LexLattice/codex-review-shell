@@ -551,7 +551,7 @@ function summarizeBatchAgentJobSurface(batchAgentJobSurface = {}) {
   const source = objectOrEmpty(batchAgentJobSurface);
   const status = normalizeString(source.schema, "") === "direct_batch_agent_job_surface@1"
     ? source
-    : objectOrEmpty(source.batchAgentJobSurface || source.batchAgentJobStatus || source.directBatchAgentJobSurface);
+    : objectOrEmpty(source.batchAgentJobSurfaceStatus || source.batchAgentJobSurface || source.batchAgentJobStatus || source.directBatchAgentJobSurface);
   const jobPlan = objectOrEmpty(status.jobPlan);
   const resultContract = objectOrEmpty(status.resultContract);
   const aggregationLedger = objectOrEmpty(status.aggregationLedger);

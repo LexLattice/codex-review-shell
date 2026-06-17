@@ -57,6 +57,10 @@ function normalizeStringList(values, fallback = []) {
   return [...new Set(source.map((value) => normalizeString(value, "")).filter(Boolean))].sort((a, b) => a.localeCompare(b));
 }
 
+function boundedWithFallback(value, fallback, maxLength = 320) {
+  return boundedString(value, maxLength) || boundedString(fallback, maxLength);
+}
+
 function stableStringifyValue(value, seen) {
   if (value && typeof value.toJSON === "function") return stableStringifyValue(value.toJSON(), seen);
   if (value === null) return "null";
@@ -124,10 +128,10 @@ function buildBatchAgentWorkerItem(input = {}, index = 0) {
   const source = isPlainObject(input) ? input : {};
   const item = {
     schema: DIRECT_BATCH_AGENT_WORKER_ITEM_SCHEMA,
-    workerItemId: boundedString(source.workerItemId || `batch_worker_${index + 1}`, 180),
+    workerItemId: boundedWithFallback(source.workerItemId, `batch_worker_${index + 1}`, 180),
     batchJobId: boundedString(source.batchJobId, 180),
     itemOrdinal: nonNegativeInt(source.itemOrdinal, index + 1),
-    csvRowKey: boundedString(source.csvRowKey || source.rowKey || `row_${index + 1}`, 180),
+    csvRowKey: boundedWithFallback(source.csvRowKey || source.rowKey, `row_${index + 1}`, 180),
     agentThreadId: boundedString(source.agentThreadId, 180),
     agentClassKind: boundedString(source.agentClassKind || "sub_agent_worker", 120),
     model: boundedString(source.model || "runtime_default", 120),
@@ -161,7 +165,7 @@ function duplicateCount(values) {
 
 function buildBatchAgentJobPlan(input = {}) {
   const source = isPlainObject(input) ? input : {};
-  const batchJobId = boundedString(source.batchJobId || `batch_agent_job_${digestFor("direct-batch-agent-job-source@1", source).slice(0, 24)}`, 180);
+  const batchJobId = boundedWithFallback(source.batchJobId, `batch_agent_job_${digestFor("direct-batch-agent-job-source@1", source).slice(0, 24)}`, 180);
   const workerItems = arrayOrEmpty(source.workerItems).map((item, index) => buildBatchAgentWorkerItem({ ...item, batchJobId }, index));
   const maxWorkers = positiveInt(source.maxWorkers, 50);
   const rowCount = nonNegativeInt(source.rowCount, workerItems.length);
@@ -205,7 +209,7 @@ function buildBatchAgentResultContract(input = {}) {
   const source = isPlainObject(input) ? input : {};
   const contract = {
     schema: DIRECT_BATCH_AGENT_RESULT_CONTRACT_SCHEMA,
-    contractId: boundedString(source.contractId || `batch_result_contract_${digestFor("direct-batch-agent-result-contract-source@1", source).slice(0, 24)}`, 180),
+    contractId: boundedWithFallback(source.contractId, `batch_result_contract_${digestFor("direct-batch-agent-result-contract-source@1", source).slice(0, 24)}`, 180),
     batchJobId: boundedString(source.batchJobId, 180),
     resultEnvelopeType: boundedString(source.resultEnvelopeType || "batch_worker_result_ref", 140),
     requiredFields: normalizeStringList(source.requiredFields, ["workerItemId", "resultState", "resultEvidenceKey"]),
@@ -238,13 +242,13 @@ function buildBatchAgentAggregationLedger(input = {}) {
         : "partial";
   const ledger = {
     schema: DIRECT_BATCH_AGENT_AGGREGATION_LEDGER_SCHEMA,
-    ledgerId: boundedString(source.ledgerId || `batch_aggregation_${digestFor("direct-batch-agent-aggregation-source@1", source).slice(0, 24)}`, 180),
+    ledgerId: boundedWithFallback(source.ledgerId, `batch_aggregation_${digestFor("direct-batch-agent-aggregation-source@1", source).slice(0, 24)}`, 180),
     batchJobId: boundedString(source.batchJobId, 180),
     expectedWorkerCount,
     receivedResultCount,
     missingResultCount,
     duplicateResultCount,
-    aggregationState: normalizeEnum(source.aggregationState, AGGREGATION_STATES, aggregationState),
+    aggregationState,
     exportPolicy: boundedString(source.exportPolicy || "metadata_only", 120),
     exportEvidenceKey: boundedString(source.exportEvidenceKey, 180),
     workerResultRefs: workerItems
@@ -279,14 +283,14 @@ function buildBatchAgentJobSurface(input = {}) {
     ...(isPlainObject(source.resultContract) ? source.resultContract : {}),
   });
   const aggregationLedger = buildBatchAgentAggregationLedger({
+    ...(isPlainObject(source.aggregationLedger) ? source.aggregationLedger : {}),
     batchJobId: jobPlan.batchJobId,
     workerItems: jobPlan.workerItems,
     expectedWorkerCount: jobPlan.workerItemCount,
-    ...(isPlainObject(source.aggregationLedger) ? source.aggregationLedger : {}),
   });
   const surface = {
     schema: DIRECT_BATCH_AGENT_JOB_SURFACE_SCHEMA,
-    surfaceId: boundedString(source.surfaceId || `batch_agent_surface_${digestFor("direct-batch-agent-surface-source@1", { jobPlan, resultContract, aggregationLedger }).slice(0, 24)}`, 180),
+    surfaceId: boundedWithFallback(source.surfaceId, `batch_agent_surface_${digestFor("direct-batch-agent-surface-source@1", { jobPlan, resultContract, aggregationLedger }).slice(0, 24)}`, 180),
     projectId: boundedString(source.projectId || jobPlan.projectId, 160),
     primaryThreadId: boundedString(source.primaryThreadId || jobPlan.primaryThreadId, 180),
     workThreadId: boundedString(source.workThreadId || jobPlan.workThreadId, 180),
@@ -352,17 +356,41 @@ function assertBatchAgentJobSurfaceSafe(surface = {}) {
     if (surface[flag] !== false) throw new Error(`direct_batch_agent_job_surface_authority_leak:${flag}`);
   }
   if (surface.separateWorkerUsageAttributionRequired !== true) throw new Error("direct_batch_agent_usage_attribution_missing");
-  if (surface.jobPlan.localSpawnAllowed !== false || surface.jobPlan.recursiveSpawnAllowed !== false || surface.jobPlan.childToolsAllowed !== false) {
+  if (
+    surface.jobPlan.providerDeclarationAllowed !== false ||
+    surface.jobPlan.providerTransportAllowed !== false ||
+    surface.jobPlan.localSpawnAllowed !== false ||
+    surface.jobPlan.recursiveSpawnAllowed !== false ||
+    surface.jobPlan.childToolsAllowed !== false ||
+    surface.jobPlan.inheritedParentAuthorityAllowed !== false ||
+    surface.jobPlan.requestShapeMutationAllowed !== false ||
+    surface.jobPlan.rawCsvIncluded !== false ||
+    surface.jobPlan.rawPromptIncluded !== false ||
+    surface.jobPlan.rawSecretIncluded !== false
+  ) {
     throw new Error("direct_batch_agent_job_plan_spawn_authority_leak");
   }
-  if (surface.resultContract.parentMaySynthesizeMissingResult !== false || surface.resultContract.rawResultIncluded !== false) {
+  if (
+    surface.resultContract.providerTransportAllowed !== false ||
+    surface.resultContract.requestShapeMutationAllowed !== false ||
+    surface.resultContract.parentMaySynthesizeMissingResult !== false ||
+    surface.resultContract.rawResultIncluded !== false ||
+    surface.resultContract.rawSecretIncluded !== false
+  ) {
     throw new Error("direct_batch_agent_result_contract_authority_leak");
   }
-  if (surface.aggregationLedger.aggregationExportWriteAllowed !== false || surface.aggregationLedger.parentMayClaimWorkerSuccess !== false) {
+  if (
+    surface.aggregationLedger.aggregationExportWriteAllowed !== false ||
+    surface.aggregationLedger.parentMayClaimWorkerSuccess !== false ||
+    surface.aggregationLedger.rawResultIncluded !== false ||
+    surface.aggregationLedger.rawExportIncluded !== false ||
+    surface.aggregationLedger.rawPathIncluded !== false ||
+    surface.aggregationLedger.rawSecretIncluded !== false
+  ) {
     throw new Error("direct_batch_agent_aggregation_authority_leak");
   }
   for (const item of arrayOrEmpty(surface.jobPlan.workerItems)) {
-    if (item.schema !== DIRECT_BATCH_AGENT_WORKER_ITEM_SCHEMA) throw new Error("direct_batch_agent_worker_item_schema_mismatch");
+    if (!isPlainObject(item) || item.schema !== DIRECT_BATCH_AGENT_WORKER_ITEM_SCHEMA) throw new Error("direct_batch_agent_worker_item_schema_mismatch");
     if (item.rawCsvRowIncluded !== false || item.rawPromptIncluded !== false || item.rawResultIncluded !== false || item.rawSecretIncluded !== false) {
       throw new Error("direct_batch_agent_worker_item_raw_exposure");
     }
