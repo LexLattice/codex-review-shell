@@ -101,7 +101,14 @@ function displayUriFor(value) {
     const hash = parsed.hash ? "#..." : "";
     return boundedString(`${parsed.protocol}${host}${parsed.pathname}${query}${hash}`, 220);
   } catch {
-    return boundedString(uri.replace(/\/\/([^/@\s]+)@/g, "//…@"), 220);
+    const hashIndex = uri.indexOf("#");
+    const hasHash = hashIndex !== -1;
+    const beforeHash = hasHash ? uri.slice(0, hashIndex) : uri;
+    const queryIndex = beforeHash.indexOf("?");
+    const hasQuery = queryIndex !== -1;
+    const beforeQuery = hasQuery ? beforeHash.slice(0, queryIndex) : beforeHash;
+    const sanitizedBase = beforeQuery.replace(/\/\/([^/@\s]+)@/g, "//…@");
+    return boundedString(`${sanitizedBase}${hasQuery ? "?..." : ""}${hasHash ? "#..." : ""}`, 220);
   }
 }
 
@@ -135,7 +142,7 @@ function buildMcpResourceReadBoundary(input = {}) {
   const provenance = buildMcpExternalSourceProvenance(source.provenance || source);
   const boundary = {
     schema: MCP_RESOURCE_READ_BOUNDARY_SCHEMA,
-    boundaryId: boundedString(source.boundaryId || source.requestId, ""),
+    boundaryId: boundedString(source.boundaryId || source.requestId, 180),
     projectId: boundedString(source.projectId, 160),
     workThreadId: boundedString(source.workThreadId, 160),
     threadId: boundedString(source.threadId, 160),
@@ -183,7 +190,7 @@ function buildMcpDynamicToolCallBoundary(input = {}) {
   const provenance = buildMcpExternalSourceProvenance(source.provenance || source);
   const boundary = {
     schema: MCP_DYNAMIC_TOOL_CALL_BOUNDARY_SCHEMA,
-    boundaryId: boundedString(source.boundaryId || source.requestId, ""),
+    boundaryId: boundedString(source.boundaryId || source.requestId, 180),
     projectId: boundedString(source.projectId, 160),
     workThreadId: boundedString(source.workThreadId, 160),
     threadId: boundedString(source.threadId, 160),
@@ -228,12 +235,10 @@ function buildMcpDynamicToolCallBoundary(input = {}) {
 
 function buildMcpResourceToolBoundaryStatus(input = {}) {
   const source = isPlainObject(input) ? input : {};
-  const resourceReadBoundaries = (Array.isArray(source.resourceReadBoundaries) ? source.resourceReadBoundaries : [
-    buildMcpResourceReadBoundary({ projectId: source.projectId, workThreadId: source.workThreadId, nowMs: source.nowMs }),
-  ]).map((boundary) => boundary?.schema === MCP_RESOURCE_READ_BOUNDARY_SCHEMA ? boundary : buildMcpResourceReadBoundary(boundary));
-  const dynamicToolCallBoundaries = (Array.isArray(source.dynamicToolCallBoundaries) ? source.dynamicToolCallBoundaries : [
-    buildMcpDynamicToolCallBoundary({ projectId: source.projectId, workThreadId: source.workThreadId, nowMs: source.nowMs }),
-  ]).map((boundary) => boundary?.schema === MCP_DYNAMIC_TOOL_CALL_BOUNDARY_SCHEMA ? boundary : buildMcpDynamicToolCallBoundary(boundary));
+  const resourceReadBoundaries = (Array.isArray(source.resourceReadBoundaries) ? source.resourceReadBoundaries : [])
+    .map((boundary) => boundary?.schema === MCP_RESOURCE_READ_BOUNDARY_SCHEMA ? boundary : buildMcpResourceReadBoundary(boundary));
+  const dynamicToolCallBoundaries = (Array.isArray(source.dynamicToolCallBoundaries) ? source.dynamicToolCallBoundaries : [])
+    .map((boundary) => boundary?.schema === MCP_DYNAMIC_TOOL_CALL_BOUNDARY_SCHEMA ? boundary : buildMcpDynamicToolCallBoundary(boundary));
   const status = {
     schema: MCP_RESOURCE_TOOL_BOUNDARY_STATUS_SCHEMA,
     statusId: boundedString(source.statusId || "", 180),

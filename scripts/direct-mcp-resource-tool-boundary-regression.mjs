@@ -60,6 +60,7 @@ assert(provenance.rawSchemaIncluded === false, "provenance must not expose raw s
 assert(provenance.rawSecretIncluded === false, "provenance must not expose secrets");
 
 const resourceRead = buildMcpResourceReadBoundary({
+  boundaryId: "mcp-read-request-123",
   projectId: "project_mcp_boundary_fixture",
   workThreadId: "work_thread_mcp_boundary_fixture",
   requestSource: "model_tool_call",
@@ -68,6 +69,7 @@ const resourceRead = buildMcpResourceReadBoundary({
   nowMs: 0,
 });
 assert(resourceRead.schema === MCP_RESOURCE_READ_BOUNDARY_SCHEMA, "resource read schema mismatch");
+assert(resourceRead.boundaryId === "mcp-read-request-123", "resource boundary should preserve supplied id");
 assert(resourceRead.resourceUriDigest, "resource URI digest should exist");
 assert(resourceRead.resourceUriDisplay.includes("?..."), "resource display should sanitize query");
 assert(!resourceRead.resourceUriDisplay.includes("secret"), "resource display should strip credentials");
@@ -77,6 +79,7 @@ assert(resourceRead.rawUriIncluded === false, "raw URI must not be exposed");
 assert(resourceRead.rawResourcePayloadIncluded === false, "resource payload must not be exposed");
 
 const dynamicCall = buildMcpDynamicToolCallBoundary({
+  requestId: "mcp-dynamic-request-456",
   projectId: "project_mcp_boundary_fixture",
   workThreadId: "work_thread_mcp_boundary_fixture",
   requestSource: "model_tool_call",
@@ -88,6 +91,7 @@ const dynamicCall = buildMcpDynamicToolCallBoundary({
   nowMs: 0,
 });
 assert(dynamicCall.schema === MCP_DYNAMIC_TOOL_CALL_BOUNDARY_SCHEMA, "dynamic call schema mismatch");
+assert(dynamicCall.boundaryId === "mcp-dynamic-request-456", "dynamic boundary should preserve supplied id");
 assert(dynamicCall.toolNameDigest, "tool name digest should exist");
 assert(dynamicCall.inputShapeDigest, "input shape digest should exist");
 assert(dynamicCall.externalActionAllowed === false, "dynamic external action must not be allowed");
@@ -110,6 +114,24 @@ assert(status.dynamicToolCallAllowed === false, "status must not allow dynamic t
 assert(status.externalActionAllowed === false, "status must not allow external action");
 assert(status.contextInjectionAllowed === false, "status must not allow context injection");
 assertMcpResourceToolBoundarySafe(status);
+
+const emptyStatus = buildMcpResourceToolBoundaryStatus({
+  projectId: "project_mcp_boundary_fixture",
+  workThreadId: "work_thread_mcp_boundary_fixture",
+  nowMs: 0,
+});
+assert(emptyStatus.resourceReadBoundaryCount === 0, "default status should not create dummy resource boundaries");
+assert(emptyStatus.dynamicToolCallBoundaryCount === 0, "default status should not create dummy dynamic boundaries");
+assertMcpResourceToolBoundarySafe(emptyStatus);
+
+const malformedResourceRead = buildMcpResourceReadBoundary({
+  uri: "not a valid uri?api_key=secret#token=secret",
+  nowMs: 0,
+});
+assert(malformedResourceRead.resourceUriDisplay.includes("?..."), "malformed fallback should sanitize query");
+assert(malformedResourceRead.resourceUriDisplay.includes("#..."), "malformed fallback should sanitize hash");
+assert(!malformedResourceRead.resourceUriDisplay.includes("api_key=secret"), "malformed fallback should not expose query value");
+assert(!malformedResourceRead.resourceUriDisplay.includes("token=secret"), "malformed fallback should not expose hash value");
 
 const settingsProjection = buildDirectSettingsSurfaceProjection({
   projectId: status.projectId,
