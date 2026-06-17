@@ -155,4 +155,14 @@ for (const forbidden of [
   assert(!serialized.includes(forbidden), `serialized code-mode lane leaked ${forbidden}`);
 }
 
+const circular = { name: "circular_code_mode_fixture" };
+circular.self = circular;
+const circularStatus = buildCodeModeExecutionLaneStatus({
+  projectId: "project_circular_code_mode",
+  kernelSession: circular,
+  nowMs: 0,
+});
+assertCodeModeExecutionLaneSafe(circularStatus);
+assert(circularStatus.statusDigest && circularStatus.kernelSession.sessionDigest, "circular fixture should still produce digests");
+
 console.log("direct-code-mode-execution-lane regression passed");

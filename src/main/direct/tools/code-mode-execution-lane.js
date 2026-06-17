@@ -59,15 +59,27 @@ function normalizeStringList(values, fallback = []) {
   return [...new Set(source.map((value) => normalizeString(value, "")).filter(Boolean))].sort((a, b) => a.localeCompare(b));
 }
 
-function stableStringify(value) {
-  if (value && typeof value.toJSON === "function") return stableStringify(value.toJSON());
+function stableStringifyValue(value, seen) {
+  if (value && typeof value.toJSON === "function") return stableStringifyValue(value.toJSON(), seen);
   if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map((entry) => (entry === undefined ? "null" : stableStringify(entry))).join(",")}]`;
-  return `{${Object.keys(value)
+  if (seen.has(value)) return JSON.stringify("[Circular]");
+  seen.add(value);
+  if (Array.isArray(value)) {
+    const result = `[${value.map((entry) => (entry === undefined ? "null" : stableStringifyValue(entry, seen))).join(",")}]`;
+    seen.delete(value);
+    return result;
+  }
+  const result = `{${Object.keys(value)
     .filter((key) => value[key] !== undefined)
     .sort()
-    .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
+    .map((key) => `${JSON.stringify(key)}:${stableStringifyValue(value[key], seen)}`)
     .join(",")}}`;
+  seen.delete(value);
+  return result;
+}
+
+function stableStringify(value) {
+  return stableStringifyValue(value, new WeakSet());
 }
 
 function digestFor(domain, value) {
