@@ -547,6 +547,62 @@ function summarizeTextSubAgentToolSurface(agentToolSurface = {}) {
   };
 }
 
+function summarizeBatchAgentJobSurface(batchAgentJobSurface = {}) {
+  const source = objectOrEmpty(batchAgentJobSurface);
+  const status = normalizeString(source.schema, "") === "direct_batch_agent_job_surface@1"
+    ? source
+    : objectOrEmpty(source.batchAgentJobSurfaceStatus || source.batchAgentJobSurface || source.batchAgentJobStatus || source.directBatchAgentJobSurface);
+  const jobPlan = objectOrEmpty(status.jobPlan);
+  const resultContract = objectOrEmpty(status.resultContract);
+  const aggregationLedger = objectOrEmpty(status.aggregationLedger);
+  return {
+    available: normalizeString(status.schema, "") === "direct_batch_agent_job_surface@1",
+    schema: normalizeString(status.schema, "not_exposed"),
+    mode: normalizeString(status.mode, "not_exposed"),
+    surfaceId: normalizeString(status.surfaceId, ""),
+    surfaceDigest: normalizeString(status.surfaceDigest, ""),
+    batchJobId: normalizeString(jobPlan.batchJobId, ""),
+    fanOutState: normalizeString(jobPlan.fanOutState, "unknown"),
+    rowCount: Number(jobPlan.rowCount || 0),
+    workerItemCount: Number(jobPlan.workerItemCount || 0),
+    maxWorkers: Number(jobPlan.maxWorkers || 0),
+    concurrencyLimit: Number(jobPlan.concurrencyLimit || 0),
+    fanOutBlockers: arrayOrEmpty(jobPlan.fanOutBlockers).map((item) => normalizeString(item, "")).filter(Boolean),
+    spawnAgentsOnCsvAcceptedAsPlan: jobPlan.spawnAgentsOnCsvAcceptedAsPlan === true,
+    resultEnvelopeType: normalizeString(resultContract.resultEnvelopeType, "unknown"),
+    requiredFields: arrayOrEmpty(resultContract.requiredFields).map((item) => normalizeString(item, "")).filter(Boolean),
+    workerMayReportOnlyOwnItem: resultContract.workerMayReportOnlyOwnItem === true,
+    expectedWorkerCount: Number(aggregationLedger.expectedWorkerCount || 0),
+    receivedResultCount: Number(aggregationLedger.receivedResultCount || 0),
+    missingResultCount: Number(aggregationLedger.missingResultCount || 0),
+    duplicateResultCount: Number(aggregationLedger.duplicateResultCount || 0),
+    aggregationState: normalizeString(aggregationLedger.aggregationState, "unknown"),
+    exportPolicy: normalizeString(aggregationLedger.exportPolicy, "unknown"),
+    spawnAgentsOnCsvToolEnabledInThisPr: status.spawnAgentsOnCsvToolEnabledInThisPr === true,
+    reportAgentJobResultToolEnabledInThisPr: status.reportAgentJobResultToolEnabledInThisPr === true,
+    structuredBatchPlanAvailable: status.structuredBatchPlanAvailable === true,
+    workerResultContractExists: status.workerResultContractExists === true,
+    aggregationLedgerExists: status.aggregationLedgerExists === true,
+    separateWorkerUsageAttributionRequired: status.separateWorkerUsageAttributionRequired === true,
+    providerDeclarationAllowed: status.providerDeclarationAllowed === true,
+    providerTransportAllowed: status.providerTransportAllowed === true,
+    localBatchExecutionAllowed: status.localBatchExecutionAllowed === true,
+    requestShapeMutationAllowed: status.requestShapeMutationAllowed === true,
+    recursiveSpawnAllowed: status.recursiveSpawnAllowed === true,
+    childToolsAllowed: status.childToolsAllowed === true,
+    inheritedParentAuthorityAllowed: status.inheritedParentAuthorityAllowed === true,
+    aggregationExportWriteAllowed: status.aggregationExportWriteAllowed === true,
+    parentMayClaimWorkerSuccess: status.parentMayClaimWorkerSuccess === true,
+    rawCsvIncluded: status.rawCsvIncluded === true,
+    rawWorkerPromptIncluded: status.rawWorkerPromptIncluded === true,
+    rawResultIncluded: status.rawResultIncluded === true,
+    rawExportIncluded: status.rawExportIncluded === true,
+    rawPathIncluded: status.rawPathIncluded === true,
+    rawSecretIncluded: status.rawSecretIncluded === true,
+    rendererSafeSummary: boundedString(status.rendererSafeSummary || "Batch agent job surface is not exposed.", 360),
+  };
+}
+
 function summarizeStatefulExecSurface(statefulExecSurface = {}) {
   const source = objectOrEmpty(statefulExecSurface);
   const status = normalizeString(source.schema, "") === "direct_stateful_exec_session_surface@1"
@@ -1055,6 +1111,7 @@ function buildRows(sections) {
   const controlTools = sections.controlTools;
   const agentRuntime = sections.agentRuntime;
   const agentToolSurface = sections.agentToolSurface;
+  const batchAgentJobSurface = sections.batchAgentJobSurface;
   const statefulExec = sections.statefulExec;
   const codeModeExecutionLane = sections.codeModeExecutionLane;
   const externalDiscovery = sections.externalDiscovery;
@@ -1269,6 +1326,19 @@ function buildRows(sections) {
       statusRow("Usage", agentToolSurface.separateUsageAttributionRequired ? "separate child attribution required" : "missing", agentToolSurface.separateUsageAttributionRequired ? "ok" : "blocked"),
       statusRow("Authority", agentToolSurface.providerTransportAllowed || agentToolSurface.providerDeclarationAllowed || agentToolSurface.requestShapeMutationAllowed || agentToolSurface.recursiveSpawnAllowed || agentToolSurface.childToolsAllowed || agentToolSurface.inheritedParentAuthorityAllowed || agentToolSurface.childTranscriptPromotionAllowed || agentToolSurface.parentSpawnIntentMayClaimChildSuccess || agentToolSurface.interruptProviderCancelAllowed ? "unexpected grant" : "text-only gated", agentToolSurface.providerTransportAllowed || agentToolSurface.providerDeclarationAllowed || agentToolSurface.requestShapeMutationAllowed || agentToolSurface.recursiveSpawnAllowed || agentToolSurface.childToolsAllowed || agentToolSurface.inheritedParentAuthorityAllowed || agentToolSurface.childTranscriptPromotionAllowed || agentToolSurface.parentSpawnIntentMayClaimChildSuccess || agentToolSurface.interruptProviderCancelAllowed ? "blocked" : "ok"),
     ],
+    batchAgentJobSurface: [
+      statusRow("Surface", batchAgentJobSurface.available ? "available" : "not exposed", batchAgentJobSurface.available ? "diagnostic" : "missing"),
+      statusRow("Mode", batchAgentJobSurface.mode),
+      statusRow("Job", batchAgentJobSurface.batchJobId || "none"),
+      statusRow("Fan-out", `${batchAgentJobSurface.fanOutState} · rows ${batchAgentJobSurface.rowCount} · workers ${batchAgentJobSurface.workerItemCount}/${batchAgentJobSurface.maxWorkers}`, batchAgentJobSurface.fanOutBlockers.length ? "blocked" : "diagnostic"),
+      statusRow("Concurrency", batchAgentJobSurface.concurrencyLimit),
+      statusRow("Worker contract", `${batchAgentJobSurface.resultEnvelopeType} · ${batchAgentJobSurface.requiredFields.join(", ") || "none"}`, batchAgentJobSurface.workerResultContractExists ? "ok" : "blocked"),
+      statusRow("Aggregation", `${batchAgentJobSurface.aggregationState} · recv ${batchAgentJobSurface.receivedResultCount}/${batchAgentJobSurface.expectedWorkerCount} · missing ${batchAgentJobSurface.missingResultCount} · dup ${batchAgentJobSurface.duplicateResultCount}`, batchAgentJobSurface.duplicateResultCount ? "blocked" : "diagnostic"),
+      statusRow("Export", batchAgentJobSurface.exportPolicy),
+      statusRow("Usage", batchAgentJobSurface.separateWorkerUsageAttributionRequired ? "separate worker usage required" : "missing", batchAgentJobSurface.separateWorkerUsageAttributionRequired ? "ok" : "blocked"),
+      statusRow("Tools", `spawn_csv ${batchAgentJobSurface.spawnAgentsOnCsvToolEnabledInThisPr ? "on" : "blocked"} / report ${batchAgentJobSurface.reportAgentJobResultToolEnabledInThisPr ? "on" : "blocked"}`, batchAgentJobSurface.spawnAgentsOnCsvToolEnabledInThisPr || batchAgentJobSurface.reportAgentJobResultToolEnabledInThisPr ? "blocked" : "ok"),
+      statusRow("Authority", batchAgentJobSurface.providerDeclarationAllowed || batchAgentJobSurface.providerTransportAllowed || batchAgentJobSurface.localBatchExecutionAllowed || batchAgentJobSurface.requestShapeMutationAllowed || batchAgentJobSurface.recursiveSpawnAllowed || batchAgentJobSurface.childToolsAllowed || batchAgentJobSurface.inheritedParentAuthorityAllowed || batchAgentJobSurface.aggregationExportWriteAllowed || batchAgentJobSurface.parentMayClaimWorkerSuccess || batchAgentJobSurface.rawCsvIncluded || batchAgentJobSurface.rawWorkerPromptIncluded || batchAgentJobSurface.rawResultIncluded || batchAgentJobSurface.rawExportIncluded || batchAgentJobSurface.rawPathIncluded || batchAgentJobSurface.rawSecretIncluded ? "unexpected grant" : "batch gated", batchAgentJobSurface.providerDeclarationAllowed || batchAgentJobSurface.providerTransportAllowed || batchAgentJobSurface.localBatchExecutionAllowed || batchAgentJobSurface.requestShapeMutationAllowed || batchAgentJobSurface.recursiveSpawnAllowed || batchAgentJobSurface.childToolsAllowed || batchAgentJobSurface.inheritedParentAuthorityAllowed || batchAgentJobSurface.aggregationExportWriteAllowed || batchAgentJobSurface.parentMayClaimWorkerSuccess || batchAgentJobSurface.rawCsvIncluded || batchAgentJobSurface.rawWorkerPromptIncluded || batchAgentJobSurface.rawResultIncluded || batchAgentJobSurface.rawExportIncluded || batchAgentJobSurface.rawPathIncluded || batchAgentJobSurface.rawSecretIncluded ? "blocked" : "ok"),
+    ],
     statefulExec: [
       statusRow("Surface", statefulExec.available ? "available" : "not exposed", statefulExec.available ? "diagnostic" : "missing"),
       statusRow("Mode", statefulExec.mode),
@@ -1429,6 +1499,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
   const controlTools = summarizeControlToolSubstrate(input.controlToolStatus || input.controlToolSubstrateStatus || input.directControlToolStatus || input);
   const agentRuntime = summarizeAgentRuntimeSubstrate(input.agentRuntimeStatus || input.agentRuntimeSubstrateStatus || input.directAgentRuntimeStatus || input);
   const agentToolSurface = summarizeTextSubAgentToolSurface(input.agentToolSurfaceStatus || input.textSubAgentToolSurface || input.directTextSubAgentToolSurface || input);
+  const batchAgentJobSurface = summarizeBatchAgentJobSurface(input.batchAgentJobSurfaceStatus || input.batchAgentJobSurface || input.directBatchAgentJobSurface || input);
   const statefulExec = summarizeStatefulExecSurface(input.statefulExecStatus || input.statefulExecSurface || input.directStatefulExecSurface || input);
   const codeModeExecutionLane = summarizeCodeModeExecutionLane(input.codeModeExecutionLaneStatus || input.codeModeExecutionLane || input.directCodeModeExecutionLane || input);
   const continuity = summarizeContinuity(input);
@@ -1520,6 +1591,19 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
     agentToolSurfaceRecursiveSpawnAllowed: false,
     agentToolSurfaceChildToolAllowed: false,
     agentToolSurfaceInterruptProviderCancelAllowed: false,
+    batchAgentProviderDeclarationAllowed: false,
+    batchAgentProviderTransportAllowed: false,
+    batchAgentLocalExecutionAllowed: false,
+    batchAgentRequestShapeMutationAllowed: false,
+    batchAgentRecursiveSpawnAllowed: false,
+    batchAgentChildToolAllowed: false,
+    batchAgentInheritedAuthorityAllowed: false,
+    batchAgentAggregationExportWriteAllowed: false,
+    batchAgentParentMayClaimWorkerSuccess: false,
+    batchAgentRawCsvIncluded: false,
+    batchAgentRawWorkerPromptIncluded: false,
+    batchAgentRawResultIncluded: false,
+    batchAgentRawExportIncluded: false,
     statefulExecProviderDeclarationAllowed: false,
     statefulExecProviderTransportAllowed: false,
     statefulExecRequestShapeMutationAllowed: false,
@@ -1542,7 +1626,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
     rawPathIncluded: false,
     rawSecretIncluded: false,
   };
-  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, toolCapabilities, externalDiscovery, mcpBoundary, providerHostedTools, pluginGovernance, controlTools, agentRuntime, agentToolSurface, statefulExec, codeModeExecutionLane, continuity, contextPreview, memoryWorkbench, runtimeWitness, agentUsage, appServerFallbackParity, manualSmokeGate, headlessDaemon };
+  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, toolCapabilities, externalDiscovery, mcpBoundary, providerHostedTools, pluginGovernance, controlTools, agentRuntime, agentToolSurface, batchAgentJobSurface, statefulExec, codeModeExecutionLane, continuity, contextPreview, memoryWorkbench, runtimeWitness, agentUsage, appServerFallbackParity, manualSmokeGate, headlessDaemon };
   const sourceDigest = digestFor("direct-settings-surface-source@1", sections);
   const projection = {
     schema: DIRECT_SETTINGS_SURFACE_PROJECTION_SCHEMA,
@@ -1570,6 +1654,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       "control_perception_human_decision_tool_substrate",
       "agent_runtime_substrate",
       "text_only_sub_agent_tool_surface",
+      "batch_agent_job_surface",
       "stateful_exec_session_surface",
       "code_mode_execution_lane",
       "memory_baton_omission_compaction",
@@ -1607,6 +1692,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       { kind: "direct_control_tool_substrate_status", digest: normalizeString(controlTools.statusDigest, ""), label: "Control/perception/human-decision tool substrate" },
       { kind: "direct_agent_runtime_substrate_status", digest: normalizeString(agentRuntime.statusDigest, ""), label: "Agent runtime substrate" },
       { kind: "direct_text_sub_agent_tool_surface", digest: normalizeString(agentToolSurface.surfaceDigest, ""), label: "Text-only sub-agent tool surface" },
+      { kind: "direct_batch_agent_job_surface", digest: normalizeString(batchAgentJobSurface.surfaceDigest, ""), label: "Batch agent job surface" },
       { kind: "direct_stateful_exec_session_surface", digest: normalizeString(statefulExec.surfaceDigest, ""), label: "Stateful exec session surface" },
       { kind: "code_mode_execution_lane", digest: normalizeString(codeModeExecutionLane.statusDigest, ""), label: "Code mode execution lane" },
       { kind: "continuity_status", digest: normalizeString(input.continuityStatus?.projectionDigest, ""), label: "Continuity status" },
@@ -1710,6 +1796,19 @@ function assertDirectSettingsSurfaceRendererSafe(projection = {}) {
     "agentToolSurfaceRecursiveSpawnAllowed",
     "agentToolSurfaceChildToolAllowed",
     "agentToolSurfaceInterruptProviderCancelAllowed",
+    "batchAgentProviderDeclarationAllowed",
+    "batchAgentProviderTransportAllowed",
+    "batchAgentLocalExecutionAllowed",
+    "batchAgentRequestShapeMutationAllowed",
+    "batchAgentRecursiveSpawnAllowed",
+    "batchAgentChildToolAllowed",
+    "batchAgentInheritedAuthorityAllowed",
+    "batchAgentAggregationExportWriteAllowed",
+    "batchAgentParentMayClaimWorkerSuccess",
+    "batchAgentRawCsvIncluded",
+    "batchAgentRawWorkerPromptIncluded",
+    "batchAgentRawResultIncluded",
+    "batchAgentRawExportIncluded",
     "statefulExecProviderDeclarationAllowed",
     "statefulExecProviderTransportAllowed",
     "statefulExecRequestShapeMutationAllowed",

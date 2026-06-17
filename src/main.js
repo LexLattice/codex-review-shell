@@ -145,6 +145,10 @@ const {
   buildTextOnlySubAgentToolSurface,
 } = require("./main/direct/agents/text-tool-surface");
 const {
+  assertBatchAgentJobSurfaceSafe,
+  buildBatchAgentJobSurface,
+} = require("./main/direct/agents/batch-job-surface");
+const {
   assertStatefulExecSessionSurfaceSafe,
   buildStatefulExecSessionSurface,
 } = require("./main/direct/tools/stateful-exec-session");
@@ -2554,6 +2558,12 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     agentRuntimeStatus,
     generatedAt,
   });
+  const batchAgentJobSurfaceStatus = buildDirectBatchAgentJobSurfaceForProject({
+    project,
+    runtimeStatus,
+    workThreadBundle,
+    generatedAt,
+  });
   const statefulExecStatus = buildDirectStatefulExecSessionSurfaceForProject({
     project,
     runtimeStatus,
@@ -2594,6 +2604,7 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     controlToolStatus,
     agentRuntimeStatus,
     agentToolSurfaceStatus,
+    batchAgentJobSurfaceStatus,
     statefulExecStatus,
     codeModeExecutionLaneStatus,
     continuityStatus: runtimeStatus.directContextMaintenance,
@@ -2793,6 +2804,42 @@ function buildDirectStatefulExecSessionSurfaceForProject(input = {}) {
     generatedAt: normalizeString(input.generatedAt, nowIso()),
   });
   assertStatefulExecSessionSurfaceSafe(surface);
+  return surface;
+}
+
+function buildDirectBatchAgentJobSurfaceForProject(input = {}) {
+  const project = input.project || {};
+  const runtimeStatus = input.runtimeStatus || {};
+  const projectId = normalizeString(project.id || runtimeStatus.projectId, "");
+  const workThreadId = normalizeString(
+    input.workThreadBundle?.activeWorkThreadId ||
+      input.workThreadBundle?.projection?.activeWorkThreadId ||
+      project.workThreadId,
+    "work_thread_batch_agent_preview",
+  );
+  const surface = buildBatchAgentJobSurface({
+    projectId,
+    primaryThreadId: normalizeString(runtimeStatus.activeProviderThreadId || runtimeStatus.activeDirectSessionId || project.codexThreadId || project.threadId, ""),
+    workThreadId,
+    jobPlan: {
+      csvEvidenceKey: "planned_batch_csv_evidence_key",
+      csvHeaderDigest: "planned_batch_csv_header_digest",
+      rowCount: 0,
+      workerItems: [],
+      maxWorkers: 50,
+      concurrencyLimit: 4,
+    },
+    resultContract: {
+      resultEnvelopeType: "batch_worker_result_ref",
+      requiredFields: ["workerItemId", "resultState", "resultEvidenceKey"],
+    },
+    aggregationLedger: {
+      expectedWorkerCount: 0,
+      exportPolicy: "metadata_only",
+    },
+    generatedAt: normalizeString(input.generatedAt, nowIso()),
+  });
+  assertBatchAgentJobSurfaceSafe(surface);
   return surface;
 }
 
