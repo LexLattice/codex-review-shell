@@ -93,6 +93,9 @@ assert(webContract.schema === PROVIDER_WEB_SEARCH_EVIDENCE_CONTRACT_SCHEMA, "web
 assert(webContract.sourcePolicy.sourceUrlsRequired === true, "web contract should require source URLs");
 assert(webContract.sourcePolicy.rawPageContentAllowed === false, "web contract must not allow raw page content");
 assert(webContract.rawQueryIncluded === false, "web contract must not include raw query");
+assert(webContract.workspaceMutationAllowed === false, "web contract must not mutate workspace");
+assert(webContract.rawPromptIncluded === false, "web contract must not include raw prompt");
+assert(webContract.rawProviderPayloadIncluded === false, "web contract must not include raw provider payload");
 
 const imageContract = buildImageGenerationArtifactContract({
   projectId: providerMetadataProfile.projectId,
@@ -101,6 +104,7 @@ const imageContract = buildImageGenerationArtifactContract({
 assert(imageContract.schema === PROVIDER_IMAGE_GENERATION_ARTIFACT_CONTRACT_SCHEMA, "image contract schema mismatch");
 assert(imageContract.artifactPolicy.assetStorageRequired === true, "image contract should require asset storage policy");
 assert(imageContract.artifactPolicy.rawPromptStorageAllowed === false, "image contract must not allow raw prompt storage");
+assert(imageContract.rawResultIncluded === false, "image contract must not include raw result");
 assert(imageContract.rawImageBytesIncluded === false, "image contract must not include raw image bytes");
 
 const status = buildProviderHostedToolsStatus({
@@ -126,6 +130,45 @@ assert(unknownStatus.capabilityCount === 2, "unknown status should still expose 
 assert(unknownStatus.unknownCount === 2, "missing metadata should leave capabilities unknown");
 assert(unknownStatus.supportedCount === 0, "missing metadata should not claim support");
 assertProviderHostedToolsStatusSafe(unknownStatus);
+
+const syntheticMetadataStatus = buildProviderHostedToolsStatus({
+  projectId: "project_synthetic_provider_metadata_fixture",
+  providerMetadataProfile: {
+    schema: "direct_provider_metadata_profile@1",
+    projectId: "project_synthetic_provider_metadata_fixture",
+    generatedAt: "1970-01-01T00:00:00.000Z",
+    profileDigest: "synthetic_profile_digest_without_hosted_tool_evidence",
+    capabilities: {
+      provider: {},
+      tools: [],
+    },
+  },
+  nowMs: 0,
+});
+assert(syntheticMetadataStatus.unknownCount === 2, "schema-only metadata should leave hosted tools unknown");
+assert(syntheticMetadataStatus.unsupportedCount === 0, "schema-only metadata should not claim unsupported");
+assertProviderHostedToolsStatusSafe(syntheticMetadataStatus);
+
+const explicitUnsupportedStatus = buildProviderHostedToolsStatus({
+  projectId: "project_explicit_provider_unsupported_fixture",
+  providerMetadataProfile: {
+    schema: "direct_provider_metadata_profile@1",
+    projectId: "project_explicit_provider_unsupported_fixture",
+    generatedAt: "1970-01-01T00:00:00.000Z",
+    profileDigest: "explicit_profile_digest_without_hosted_tool_support",
+    capabilities: {
+      provider: {
+        webSearch: false,
+        imageGeneration: { status: "unsupported" },
+      },
+      tools: [],
+    },
+  },
+  nowMs: 0,
+});
+assert(explicitUnsupportedStatus.unsupportedCount === 2, "explicit provider negatives should mark hosted tools unsupported");
+assert(explicitUnsupportedStatus.unknownCount === 0, "explicit provider negatives should not remain unknown");
+assertProviderHostedToolsStatusSafe(explicitUnsupportedStatus);
 
 const settingsProjection = buildDirectSettingsSurfaceProjection({
   projectId: status.projectId,
@@ -167,6 +210,39 @@ const hostile = buildProviderHostedToolsStatus({
 });
 hostile.providerHostedToolCallAllowed = true;
 expectThrows(() => assertProviderHostedToolsStatusSafe(hostile), "provider_hosted_tools_authority_leak");
+
+const hostileWebContractStatus = buildProviderHostedToolsStatus({
+  projectId: "hostile_web_contract",
+  providerMetadataProfile,
+  webSearchContract: {
+    ...buildWebSearchEvidenceContract({ projectId: "hostile_web_contract", nowMs: 0 }),
+    rawPageContentIncluded: true,
+  },
+  nowMs: 0,
+});
+expectThrows(() => assertProviderHostedToolsStatusSafe(hostileWebContractStatus), "provider_hosted_contract_authority_leak");
+
+const hostileImageContractStatus = buildProviderHostedToolsStatus({
+  projectId: "hostile_image_contract",
+  providerMetadataProfile,
+  imageGenerationContract: {
+    ...buildImageGenerationArtifactContract({ projectId: "hostile_image_contract", nowMs: 0 }),
+    rawImageBytesIncluded: true,
+  },
+  nowMs: 0,
+});
+expectThrows(() => assertProviderHostedToolsStatusSafe(hostileImageContractStatus), "provider_hosted_contract_authority_leak");
+
+const incompleteContractStatus = buildProviderHostedToolsStatus({
+  projectId: "incomplete_contract",
+  providerMetadataProfile,
+  webSearchContract: {
+    ...buildWebSearchEvidenceContract({ projectId: "incomplete_contract", nowMs: 0 }),
+    rawPromptIncluded: undefined,
+  },
+  nowMs: 0,
+});
+expectThrows(() => assertProviderHostedToolsStatusSafe(incompleteContractStatus), "provider_hosted_contract_authority_leak");
 
 const serialized = JSON.stringify({ webCapability, imageCapability, webContract, imageContract, status, settingsProjection });
 for (const forbidden of [

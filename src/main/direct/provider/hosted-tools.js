@@ -25,7 +25,10 @@ function normalizeString(value, fallback = "") {
 
 function boundedString(value, maxLength = 320) {
   const text = normalizeString(value, "");
-  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}...` : text;
+  if (text.length <= maxLength) return text;
+  if (maxLength <= 0) return "";
+  if (maxLength <= 3) return ".".repeat(maxLength);
+  return `${text.slice(0, maxLength - 3)}...`;
 }
 
 function arrayOrEmpty(value) {
@@ -116,14 +119,34 @@ function providerCapabilityValue(profile = {}, toolKind) {
   return undefined;
 }
 
+function hasOwn(object, key) {
+  return isPlainObject(object) && Object.prototype.hasOwnProperty.call(object, key);
+}
+
+function hostedToolEvidenceIsPresent(profile = {}, toolKind) {
+  const provider = profile?.capabilities?.provider;
+  const providerKey = toolKind === "web_search" ? "webSearch" : "imageGeneration";
+  if (hasOwn(provider, providerKey)) return true;
+  const aliases = toolKind === "web_search"
+    ? new Set(["web_search", "web_search_preview", "webSearch"])
+    : new Set(["image_generation", "image_generation_call", "imageGeneration"]);
+  return arrayOrEmpty(profile?.capabilities?.tools).some((tool) => {
+    if (typeof tool === "string") return aliases.has(tool);
+    if (!isPlainObject(tool)) return false;
+    return aliases.has(normalizeString(tool.id || tool.name || tool.type || tool.tool, ""));
+  });
+}
+
 function hostedToolCapabilityFromProfile(profile = {}, toolKind) {
   const providerValue = providerCapabilityValue(profile, toolKind);
   const supported = capabilityValueIsSupported(providerValue) || profileToolListHas(profile, toolKind);
   const hasProfile = normalizeString(profile?.schema, "") === "direct_provider_metadata_profile@1";
+  const hasHostedToolEvidence = hostedToolEvidenceIsPresent(profile, toolKind);
+  const absentEvidenceState = hasProfile && hasHostedToolEvidence ? "unsupported" : "unknown";
   return {
     supported,
-    evidenceState: supported ? "profile_declared" : hasProfile ? "unsupported" : "unknown",
-    providerDeclarationState: supported ? "metadata_declared" : hasProfile ? "unsupported" : "unknown",
+    evidenceState: supported ? "profile_declared" : absentEvidenceState,
+    providerDeclarationState: supported ? "metadata_declared" : absentEvidenceState,
     sourceDigest: normalizeString(profile?.profileDigest, ""),
     generatedAt: normalizeString(profile?.generatedAt, ""),
   };
@@ -200,10 +223,13 @@ function buildWebSearchEvidenceContract(input = {}) {
     },
     evidenceRefs: normalizeEvidenceRefs(source.evidenceRefs, "provider_web_search_evidence_contract"),
     providerHostedToolCallAllowed: false,
+    workspaceMutationAllowed: false,
     contextInjectionAllowed: false,
     rawQueryIncluded: false,
+    rawPromptIncluded: false,
     rawResultIncluded: false,
     rawPageContentIncluded: false,
+    rawProviderPayloadIncluded: false,
     rawSecretIncluded: false,
     generatedAt: normalizeString(source.generatedAt, nowIso(source.nowMs)),
   };
@@ -234,6 +260,7 @@ function buildImageGenerationArtifactContract(input = {}) {
     workspaceMutationAllowed: false,
     contextInjectionAllowed: false,
     rawPromptIncluded: false,
+    rawResultIncluded: false,
     rawImageBytesIncluded: false,
     rawProviderPayloadIncluded: false,
     rawSecretIncluded: false,
@@ -334,6 +361,9 @@ function assertProviderHostedToolsStatusSafe(status = {}) {
   }
   for (const contract of [status.webSearchContract, status.imageGenerationContract]) {
     if (!isPlainObject(contract)) throw new Error("provider_hosted_contract_missing");
+    if (![PROVIDER_WEB_SEARCH_EVIDENCE_CONTRACT_SCHEMA, PROVIDER_IMAGE_GENERATION_ARTIFACT_CONTRACT_SCHEMA].includes(contract.schema)) {
+      throw new Error(`provider_hosted_contract_schema_mismatch:${contract.schema || "missing"}`);
+    }
     for (const flag of [
       "providerHostedToolCallAllowed",
       "contextInjectionAllowed",
@@ -343,7 +373,13 @@ function assertProviderHostedToolsStatusSafe(status = {}) {
       "rawProviderPayloadIncluded",
       "rawSecretIncluded",
     ]) {
-      if (contract[flag] === true) throw new Error(`provider_hosted_contract_authority_leak:${contract.schema}:${flag}`);
+      if (contract[flag] !== false) throw new Error(`provider_hosted_contract_authority_leak:${contract.schema}:${flag}`);
+    }
+    const contractSpecificFlags = contract.schema === PROVIDER_WEB_SEARCH_EVIDENCE_CONTRACT_SCHEMA
+      ? ["rawQueryIncluded", "rawPageContentIncluded"]
+      : ["rawImageBytesIncluded"];
+    for (const flag of contractSpecificFlags) {
+      if (contract[flag] !== false) throw new Error(`provider_hosted_contract_authority_leak:${contract.schema}:${flag}`);
     }
   }
   return true;
