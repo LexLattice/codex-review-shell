@@ -146,6 +146,10 @@ const {
   buildExternalCapabilityDiscoveryStatusProjection,
 } = require("./main/direct/external/capability-discovery");
 const {
+  assertMcpResourceToolBoundarySafe,
+  buildMcpResourceToolBoundaryStatus,
+} = require("./main/direct/external/mcp-boundary");
+const {
   assertControlToolSubstrateSafe,
   buildControlToolSubstrateStatus,
 } = require("./main/direct/tools/control-perception-decision-substrate");
@@ -2489,6 +2493,10 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     project,
     generatedAt,
   });
+  const mcpBoundaryStatus = buildDirectMcpBoundaryStatusForProject({
+    project,
+    generatedAt,
+  });
   const agentUsageStatus = buildDirectAgentUsageStatusForProject(projectId);
   const implementationLaneUiStatus = buildDirectImplementationLaneUiStatus({ project, runtimeStatus });
   const directProviderMetadata = directProviderMetadataStatusForProject(project);
@@ -2553,6 +2561,7 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     agentClassStatus,
     toolCapabilityStatus,
     externalDiscoveryStatus,
+    mcpBoundaryStatus,
     controlToolStatus,
     agentRuntimeStatus,
     agentToolSurfaceStatus,
@@ -2617,6 +2626,18 @@ function buildDirectExternalCapabilityDiscoveryStatusForProject(input = {}) {
   });
   assertExternalCapabilityDiscoveryRegistrySafe(registry);
   return buildExternalCapabilityDiscoveryStatusProjection(registry);
+}
+
+function buildDirectMcpBoundaryStatusForProject(input = {}) {
+  const project = input.project || {};
+  const projectId = normalizeString(project.id, "");
+  const status = buildMcpResourceToolBoundaryStatus({
+    projectId,
+    workThreadId: normalizeString(project.workThreadId, ""),
+    generatedAt: normalizeString(input.generatedAt, nowIso()),
+  });
+  assertMcpResourceToolBoundarySafe(status);
+  return status;
 }
 
 function buildDirectTextSubAgentToolSurfaceForProject(input = {}) {
