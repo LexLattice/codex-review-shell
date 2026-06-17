@@ -1996,6 +1996,12 @@ function ensureDirectCodexProfileDoc() {
 function ensureDirectSessionStore() {
   if (directSessionStore) return directSessionStore;
   directSessionStore = new DirectSessionStore({ rootDir: directSessionRootDir() });
+  try {
+    directSessionStore.ensure();
+    directSessionStore.recoverInterruptedTurns();
+  } catch (error) {
+    console.warn("[direct] session recovery failed", error);
+  }
   return directSessionStore;
 }
 
@@ -2177,6 +2183,7 @@ function ensureDirectLiveTextController() {
   directLiveTextController = new DirectLiveTextController({
     sessionStore: ensureDirectSessionStore(),
     directThreadStore: ensureDirectThreadStore(),
+    workThreadStore: ensureDirectWorkThreadStore(),
     profileDoc: ensureDirectCodexProfileDoc(),
     authStore: () => directRuntimeAuthStore(),
     refreshCredentials: () => refreshDirectRuntimeCredentials(),

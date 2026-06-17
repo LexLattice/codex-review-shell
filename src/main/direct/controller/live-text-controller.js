@@ -94,6 +94,7 @@ const TERMINAL_TURN_STATES = new Set([
   "empty_output_terminal",
 ]);
 const SAFE_TEXT_ONLY_FOLLOWUP_PREVIOUS_STATES = new Set(["completed"]);
+const BLOCKED_WORK_THREAD_LIFECYCLE_STATES = new Set(["archived", "stale"]);
 const DEFAULT_MAX_PROMPT_CHARS = 64_000;
 const DEFAULT_MAX_ASSISTANT_CHARS = 256_000;
 const DEFAULT_READONLY_WORKSPACE_TIMEOUT_MS = 30_000;
@@ -138,6 +139,20 @@ function directWorkThreadContextCarrier(...sources) {
     if (!carrier.bridgeInformationRefs.length && Array.isArray(source.bridgeInformationRefs)) carrier.bridgeInformationRefs = source.bridgeInformationRefs;
   }
   return carrier;
+}
+
+function isRoutableWorkThreadForProject(workThread = {}, projectId = "") {
+  if (!workThread) return false;
+  const normalizedProjectId = normalizeString(projectId, "");
+  const normalizedWorkThreadProjectId = normalizeString(workThread.projectId, "");
+  const lifecycleState = normalizeString(workThread.lifecycleState, "unknown");
+  return Boolean(
+    workThread &&
+    normalizedProjectId &&
+    normalizedWorkThreadProjectId &&
+    normalizedWorkThreadProjectId === normalizedProjectId &&
+    !BLOCKED_WORK_THREAD_LIFECYCLE_STATES.has(lifecycleState),
+  );
 }
 
 function userPromptTextFromTurn(turn = {}) {
@@ -796,6 +811,7 @@ class DirectLiveTextController {
     this.profileDoc = isPlainObject(options.profileDoc) ? options.profileDoc : {};
     this.authStore = options.authStore || null;
     this.directThreadStore = options.directThreadStore || options.threadStore || null;
+    this.workThreadStore = options.workThreadStore || null;
     this.refreshCredentials = typeof options.refreshCredentials === "function" ? options.refreshCredentials : null;
     this.modelEvidenceResolver = typeof options.modelEvidenceResolver === "function" ? options.modelEvidenceResolver : null;
     this.implementationProofEvidenceResolver = typeof options.implementationProofEvidenceResolver === "function" ? options.implementationProofEvidenceResolver : null;
@@ -817,6 +833,43 @@ class DirectLiveTextController {
     this.toolDecisionClaims = new Map();
     this.toolDecisionResults = new Map();
     this.forkStartLocks = new Map();
+  }
+
+  hydrateWorkThreadCarrier(carrier = {}, projectId = "") {
+    const hydrated = {
+      ...carrier,
+      bridgeInformationRefs: Array.isArray(carrier.bridgeInformationRefs) ? [...carrier.bridgeInformationRefs] : [],
+      openObligations: Array.isArray(carrier.openObligations) ? [...carrier.openObligations] : [],
+    };
+    const workThreadId = normalizeString(hydrated.workThread?.workThreadId || hydrated.workThreadId, "");
+    hydrated.workThreadId = workThreadId;
+    if (hydrated.workThread && !isRoutableWorkThreadForProject(hydrated.workThread, projectId)) {
+      hydrated.workThread = null;
+    }
+    if (
+      !hydrated.workThread &&
+      workThreadId &&
+      this.workThreadStore &&
+      typeof this.workThreadStore.readWorkThread === "function"
+    ) {
+      const workThread = this.workThreadStore.readWorkThread(workThreadId);
+      if (isRoutableWorkThreadForProject(workThread, projectId)) {
+        hydrated.workThread = workThread;
+      }
+    }
+    if (hydrated.workThread) {
+      hydrated.workThreadId = normalizeString(hydrated.workThread.workThreadId, hydrated.workThreadId);
+      if (!hydrated.authorityBoundary && isPlainObject(hydrated.workThread.authorityBoundary)) {
+        hydrated.authorityBoundary = hydrated.workThread.authorityBoundary;
+      }
+      if (!hydrated.openObligations.length && Array.isArray(hydrated.workThread.openObligations)) {
+        hydrated.openObligations = [...hydrated.workThread.openObligations];
+      }
+      if (!hydrated.bridgeInformationRefs.length && Array.isArray(hydrated.workThread.bridgeInformationRefs)) {
+        hydrated.bridgeInformationRefs = [...hydrated.workThread.bridgeInformationRefs];
+      }
+    }
+    return hydrated;
   }
 
   currentAuthStore() {
@@ -4210,7 +4263,10 @@ class DirectLiveTextController {
       error.code = "context_store_unhealthy";
       throw error;
     }
-    const workThreadCarrier = directWorkThreadContextCarrier(params, context);
+    const workThreadCarrier = this.hydrateWorkThreadCarrier(
+      directWorkThreadContextCarrier(params, session, context),
+      project.id,
+    );
     const requireControlledRouting = params.requireControlledRouting === true || params.controlledRouting?.required === true;
     const controlledRoutingRequested = Boolean(
       workThreadCarrier.workThread ||
@@ -4258,112 +4314,131 @@ class DirectLiveTextController {
     this.rememberClientTurnRequest(session.sessionId, clientTurnRequestId, turn.turnId);
     let contextResult = null;
     let controlledRoutingResult = null;
-    if (this.directThreadStore && typeof this.directThreadStore.buildAndPersistContextForTextTurn === "function") {
-      this.indexDirectThreadStoreSession(session.sessionId);
-      const hasControlledRoutingInput = controlledRoutingRequested && textOnlyTier;
-      if (hasControlledRoutingInput && typeof this.directThreadStore.buildAndPersistControlledRoutingForTextTurn === "function") {
-        controlledRoutingResult = this.directThreadStore.buildAndPersistControlledRoutingForTextTurn({
-          session,
+    let requestShape = null;
+    try {
+      if (this.directThreadStore && typeof this.directThreadStore.buildAndPersistContextForTextTurn === "function") {
+        this.indexDirectThreadStoreSession(session.sessionId);
+        const hasControlledRoutingInput = controlledRoutingRequested && textOnlyTier;
+        if (hasControlledRoutingInput && typeof this.directThreadStore.buildAndPersistControlledRoutingForTextTurn === "function") {
+          controlledRoutingResult = this.directThreadStore.buildAndPersistControlledRoutingForTextTurn({
+            session,
+            projectId: session.projectId,
+            threadId: session.sessionId,
+            turnId: turn.turnId,
+            requestPreview: prompt,
+            workThreads: Array.isArray(params.workThreads) ? params.workThreads : [],
+            requireControlledRouting,
+            ...workThreadCarrier,
+          });
+        }
+        contextResult = this.directThreadStore.buildAndPersistContextForTextTurn({
+          session: this.sessionStore.readSession(session.sessionId) || session,
           projectId: session.projectId,
           threadId: session.sessionId,
           turnId: turn.turnId,
-          requestPreview: prompt,
-          workThreads: Array.isArray(params.workThreads) ? params.workThreads : [],
-          requireControlledRouting,
-          ...workThreadCarrier,
+          currentUserPrompt: prompt,
+          useRecentDialogue,
+          requireRecentDialogue: useRecentDialogue,
+          sourceContextProjectionId: normalizeString(frozenContextProjection?.projectionId, ""),
+          expectedOperationLedgerHeadDigest: normalizeString(params.expectedOperationLedgerHeadDigest, ""),
+          expectedRendererProjectionId: normalizeString(params.expectedRendererProjectionId, ""),
+          expectedRendererProjectionDigest: normalizeString(params.expectedRendererProjectionDigest, ""),
+          expectedContextProjectionId: normalizeString(params.expectedContextProjectionId, frozenContextProjection?.projectionId || ""),
+          expectedContextProjectionDigest: normalizeString(params.expectedContextProjectionDigest, frozenContextProjection?.projectionDigest || ""),
+          model: requestBody.model,
+          requestShape: requestShapeForDiagnostic(requestBody),
+          endpointClass: "chatgpt-codex-responses",
+          endpointHash: this.endpoint ? sha256(this.endpoint) : "",
+          modelEvidenceRef: normalizeString(status.evidenceId, status.modelEvidenceId || ""),
+          requestShapeEvidenceRef: implementationTier
+            ? "direct_implementation_tool_initial@1"
+            : useRecentDialogue ? "direct_text_turn_recent_dialogue@1" : "direct_text_turn_empty_context@1",
+          endpointEvidenceRef: this.endpoint ? sha256(this.endpoint) : "",
+          governanceRefs: controlledRoutingResult?.governanceRefs || params.governanceRefs,
+          workThreadBinding: controlledRoutingResult?.workThreadBinding || workThreadCarrier.workThreadBinding,
+          workThread: workThreadCarrier.workThread,
+          workThreadId: controlledRoutingResult?.route?.selectedWorkThreadId || workThreadCarrier.workThreadId,
+          authorityBoundary: workThreadCarrier.authorityBoundary,
+          openObligations: workThreadCarrier.openObligations,
+          bridgeInformationRefs: [
+            ...(Array.isArray(workThreadCarrier.bridgeInformationRefs) ? workThreadCarrier.bridgeInformationRefs : []),
+            ...(controlledRoutingResult?.route?.bridgeInformationRef ? [controlledRoutingResult.route.bridgeInformationRef] : []),
+          ],
         });
+        requestBody = implementationTier
+          ? buildImplementationToolInitialRequest({
+              profileDoc: this.profileDoc,
+              model,
+              prompt: contextResult.providerInput.prompt,
+              instructions: implementationContextInstructions(contextResult.providerInput.instructions),
+              reasoningEffort,
+              tools: directImplementationToolSchemas(implementationToolNames),
+              toolChoicePolicy: "auto",
+            })
+          : buildTextOnlyProbeRequest({
+              profileDoc: this.profileDoc,
+              model,
+              prompt: contextResult.providerInput.prompt,
+              instructions: contextResult.providerInput.instructions,
+              reasoningEffort,
+            });
       }
-      contextResult = this.directThreadStore.buildAndPersistContextForTextTurn({
-        session: this.sessionStore.readSession(session.sessionId) || session,
-        projectId: session.projectId,
-        threadId: session.sessionId,
-        turnId: turn.turnId,
-        currentUserPrompt: prompt,
-        useRecentDialogue,
-        requireRecentDialogue: useRecentDialogue,
-        sourceContextProjectionId: normalizeString(frozenContextProjection?.projectionId, ""),
-        expectedOperationLedgerHeadDigest: normalizeString(params.expectedOperationLedgerHeadDigest, ""),
-        expectedRendererProjectionId: normalizeString(params.expectedRendererProjectionId, ""),
-        expectedRendererProjectionDigest: normalizeString(params.expectedRendererProjectionDigest, ""),
-        expectedContextProjectionId: normalizeString(params.expectedContextProjectionId, frozenContextProjection?.projectionId || ""),
-        expectedContextProjectionDigest: normalizeString(params.expectedContextProjectionDigest, frozenContextProjection?.projectionDigest || ""),
-        model: requestBody.model,
-        requestShape: requestShapeForDiagnostic(requestBody),
-        endpointClass: "chatgpt-codex-responses",
-        endpointHash: this.endpoint ? sha256(this.endpoint) : "",
-        modelEvidenceRef: normalizeString(status.evidenceId, status.modelEvidenceId || ""),
-        requestShapeEvidenceRef: implementationTier
-          ? "direct_implementation_tool_initial@1"
-          : useRecentDialogue ? "direct_text_turn_recent_dialogue@1" : "direct_text_turn_empty_context@1",
-        endpointEvidenceRef: this.endpoint ? sha256(this.endpoint) : "",
-        governanceRefs: controlledRoutingResult?.governanceRefs || params.governanceRefs,
-        workThreadBinding: controlledRoutingResult?.workThreadBinding || workThreadCarrier.workThreadBinding,
-        workThread: workThreadCarrier.workThread,
-        workThreadId: controlledRoutingResult?.route?.selectedWorkThreadId || workThreadCarrier.workThreadId,
-        authorityBoundary: workThreadCarrier.authorityBoundary,
-        openObligations: workThreadCarrier.openObligations,
-        bridgeInformationRefs: [
-          ...(Array.isArray(workThreadCarrier.bridgeInformationRefs) ? workThreadCarrier.bridgeInformationRefs : []),
-          ...(controlledRoutingResult?.route?.bridgeInformationRef ? [controlledRoutingResult.route.bridgeInformationRef] : []),
-        ],
+      requestShape = {
+        ...requestShapeForDiagnostic(requestBody),
+        directAttachmentCapabilityProjectionDigest: attachmentSubmit.capabilityProjection.projectionDigest,
+        directAttachmentSubmitPacketId: attachmentSubmit.packet.packetId,
+        directAttachmentSubmitPacketDigest: attachmentSubmit.packet.packetDigest,
+        directAttachmentDraftSetDigest: normalizeString(params.attachmentDraftSetDigest, ""),
+        directAttachmentDispositionSummary: attachmentSubmit.packet.summary,
+        directAttachmentRawPayloadIncluded: false,
+        directAttachmentRawPathIncluded: false,
+        ...(contextResult ? {
+          contextBuildId: contextResult.contextPack.contextBuildId,
+          contextPackContentHash: contextResult.contextPack.contextPackContentHash,
+          contextPackShapeHash: contextResult.contextPack.contextPackShapeHash,
+          requestManifestId: contextResult.requestManifest.requestManifestId,
+          providerInputShapeHash: contextResult.providerInput.projection.providerInputShapeHash,
+          rawRequestBodyStored: false,
+          previousResponseIdUsed: false,
+        } : {}),
+        ...(controlledRoutingResult ? {
+          controlledRoutingSliceId: controlledRoutingResult.route.routeId,
+          controlledRoutingSliceDigest: controlledRoutingResult.route.routeDigest,
+          controlledRoutingGateState: controlledRoutingResult.route.gateState,
+          controlledRoutingProviderScope: controlledRoutingResult.route.providerCallScope,
+        } : {}),
+      };
+      this.sessionStore.updateTurnState(session.sessionId, turn.turnId, "request_built", {
+        requestShape,
+        directAttachmentSubmitPacket: attachmentSubmit.packet,
+        directAttachmentTranscriptWitnesses: attachmentSubmit.packet.transcriptWitnesses,
+        ...(contextResult ? {
+          contextBuildId: contextResult.contextPack.contextBuildId,
+          requestManifestId: contextResult.requestManifest.requestManifestId,
+          contextSummary: contextResult.rendererSafeSummary,
+        } : {}),
+        ...(controlledRoutingResult ? {
+          controlledRoutingSliceId: controlledRoutingResult.route.routeId,
+          controlledRoutingGateState: controlledRoutingResult.route.gateState,
+        } : {}),
       });
-      requestBody = implementationTier
-        ? buildImplementationToolInitialRequest({
-            profileDoc: this.profileDoc,
-            model,
-            prompt: contextResult.providerInput.prompt,
-            instructions: implementationContextInstructions(contextResult.providerInput.instructions),
-            reasoningEffort,
-            tools: directImplementationToolSchemas(implementationToolNames),
-            toolChoicePolicy: "auto",
-          })
-        : buildTextOnlyProbeRequest({
-            profileDoc: this.profileDoc,
-            model,
-            prompt: contextResult.providerInput.prompt,
-            instructions: contextResult.providerInput.instructions,
-            reasoningEffort,
-          });
+    } catch (error) {
+      this.sessionStore.updateTurnState(session.sessionId, turn.turnId, "failed", {
+        error: {
+          code: error.code || "direct_turn_pre_transport_failed",
+          message: error.message || "Direct text turn failed before provider transport.",
+        },
+        requestShape: requestShape || requestShapeForDiagnostic(requestBody),
+        controlledRoutingGateState: controlledRoutingResult?.route?.gateState || "",
+        preTransportFailed: true,
+      });
+      if (this.directThreadStore) {
+        try {
+          this.indexDirectThreadStoreSession(session.sessionId);
+        } catch {}
+      }
+      throw error;
     }
-    const requestShape = {
-      ...requestShapeForDiagnostic(requestBody),
-      directAttachmentCapabilityProjectionDigest: attachmentSubmit.capabilityProjection.projectionDigest,
-      directAttachmentSubmitPacketId: attachmentSubmit.packet.packetId,
-      directAttachmentSubmitPacketDigest: attachmentSubmit.packet.packetDigest,
-      directAttachmentDraftSetDigest: normalizeString(params.attachmentDraftSetDigest, ""),
-      directAttachmentDispositionSummary: attachmentSubmit.packet.summary,
-      directAttachmentRawPayloadIncluded: false,
-      directAttachmentRawPathIncluded: false,
-      ...(contextResult ? {
-        contextBuildId: contextResult.contextPack.contextBuildId,
-        contextPackContentHash: contextResult.contextPack.contextPackContentHash,
-        contextPackShapeHash: contextResult.contextPack.contextPackShapeHash,
-        requestManifestId: contextResult.requestManifest.requestManifestId,
-        providerInputShapeHash: contextResult.providerInput.projection.providerInputShapeHash,
-        rawRequestBodyStored: false,
-        previousResponseIdUsed: false,
-      } : {}),
-      ...(controlledRoutingResult ? {
-        controlledRoutingSliceId: controlledRoutingResult.route.routeId,
-        controlledRoutingSliceDigest: controlledRoutingResult.route.routeDigest,
-        controlledRoutingGateState: controlledRoutingResult.route.gateState,
-        controlledRoutingProviderScope: controlledRoutingResult.route.providerCallScope,
-      } : {}),
-    };
-    this.sessionStore.updateTurnState(session.sessionId, turn.turnId, "request_built", {
-      requestShape,
-      directAttachmentSubmitPacket: attachmentSubmit.packet,
-      directAttachmentTranscriptWitnesses: attachmentSubmit.packet.transcriptWitnesses,
-      ...(contextResult ? {
-        contextBuildId: contextResult.contextPack.contextBuildId,
-        requestManifestId: contextResult.requestManifest.requestManifestId,
-        contextSummary: contextResult.rendererSafeSummary,
-      } : {}),
-      ...(controlledRoutingResult ? {
-        controlledRoutingSliceId: controlledRoutingResult.route.routeId,
-        controlledRoutingGateState: controlledRoutingResult.route.gateState,
-      } : {}),
-    });
 
     const userItem = {
       id: `${turn.turnId}_user`,
@@ -4614,48 +4689,12 @@ class DirectLiveTextController {
       abortController,
     } = options;
     let terminalSent = false;
-    const callerLifecycle = (event) => {
-      if (event.phase === "streaming") {
-        this.sessionStore.updateTurnState(sessionId, turnId, "streaming", {
-          streamStartedAt: event.at,
-          responseStatus: event.status,
-          responseContentType: event.contentType,
-        });
-      }
-    };
-    const probeOptions = {
-      endpoint: this.endpoint || undefined,
-      authStore: this.currentAuthStore(),
-      refreshCredentials: this.refreshCredentials,
-      profileDoc: this.profileDoc,
-      model,
-      reasoningEffort,
-      prompt,
-      instructions,
-      fetchImpl: this.fetchImpl || undefined,
-      signal: abortController.signal,
-      onLifecycle: callerLifecycle,
-    };
-    const result = requestKind === "implementation_tool_initial"
-      ? await runImplementationToolInitialProbe({
-          ...probeOptions,
-          requestBody,
-        })
-      : await runTextOnlyDirectProbe(probeOptions);
-    this.sessionStore.writeDiagnostic(sessionId, "direct_live_text_turn", {
-      ...result.diagnostic,
-      clientTurnRequestId,
-      directTransport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
-    });
-    if (result.normalizedEvents.length) {
-      this.sessionStore.appendNormalizedEvents(sessionId, turnId, result.normalizedEvents);
-    }
-    const terminal = result.terminal || { state: result.ok ? "completed" : "failed", error: result.error || null };
     const assistantItem = { id: `${turnId}_assistant`, type: "agentMessage", turnId, text: "" };
     let assistantStarted = false;
     let assistantCompleted = false;
+    let firstVisibleDeltaMarked = false;
     const emittedItems = [userItem];
-
+    const emittedMessageDeltaSequences = new Set();
     const emitAssistantStarted = () => {
       if (assistantStarted) return;
       assistantStarted = true;
@@ -4674,15 +4713,23 @@ class DirectLiveTextController {
         item: assistantItem,
       });
     };
-
-    for (const event of result.normalizedEvents) {
-      if (event.type !== "message_delta") continue;
+    const emitAssistantDelta = (event, observedAt = "") => {
+      if (event.type !== "message_delta") return;
+      const sequence = Number.isFinite(Number(event.sequence)) ? Number(event.sequence) : null;
+      if (sequence !== null && emittedMessageDeltaSequences.has(sequence)) return;
       emitAssistantStarted();
       if (assistantItem.text.length < this.maxAssistantChars) {
         const room = Math.max(0, this.maxAssistantChars - assistantItem.text.length);
         const truncatedDelta = String(event.text || "").slice(0, room);
-        if (!truncatedDelta) continue;
+        if (!truncatedDelta) return;
+        if (!firstVisibleDeltaMarked) {
+          firstVisibleDeltaMarked = true;
+          this.sessionStore.updateTurnState(sessionId, turnId, "streaming", {
+            firstVisibleDeltaAt: normalizeString(observedAt, nowIso()),
+          });
+        }
         assistantItem.text += truncatedDelta;
+        if (sequence !== null) emittedMessageDeltaSequences.add(sequence);
         this.emitNotification(surfaceSession, "item/agentMessage/delta", {
           threadId: sessionId,
           turnId,
@@ -4690,6 +4737,59 @@ class DirectLiveTextController {
           delta: truncatedDelta,
         });
       }
+    };
+    const callerLifecycle = (event) => {
+      if (event.phase === "streaming") {
+        this.sessionStore.updateTurnState(sessionId, turnId, "streaming", {
+          streamStartedAt: event.at,
+          responseStatus: event.status,
+          responseContentType: event.contentType,
+        });
+      }
+      if (event.phase === "first_sse_frame") {
+        this.sessionStore.updateTurnState(sessionId, turnId, "streaming", {
+          firstResponseByteAt: event.at,
+        });
+      }
+      if (event.phase === "first_normalized_event") {
+        this.sessionStore.updateTurnState(sessionId, turnId, "streaming", {
+          firstNormalizedEventAt: event.at,
+        });
+      }
+    };
+    const probeOptions = {
+      endpoint: this.endpoint || undefined,
+      authStore: this.currentAuthStore(),
+      refreshCredentials: this.refreshCredentials,
+      profileDoc: this.profileDoc,
+      model,
+      reasoningEffort,
+      prompt,
+      instructions,
+      fetchImpl: this.fetchImpl || undefined,
+      signal: abortController.signal,
+      onLifecycle: callerLifecycle,
+      onNormalizedEvents: (events, details = {}) => {
+        for (const event of Array.isArray(events) ? events : []) emitAssistantDelta(event, details.at);
+      },
+    };
+    const result = requestKind === "implementation_tool_initial"
+      ? await runImplementationToolInitialProbe({
+          ...probeOptions,
+          requestBody,
+        })
+      : await runTextOnlyDirectProbe(probeOptions);
+    this.sessionStore.writeDiagnostic(sessionId, "direct_live_text_turn", {
+      ...result.diagnostic,
+      clientTurnRequestId,
+      directTransport: DIRECT_LIVE_TEXT_SURFACE_TRANSPORT,
+    });
+    if (result.normalizedEvents.length) {
+      this.sessionStore.appendNormalizedEvents(sessionId, turnId, result.normalizedEvents);
+    }
+    const terminal = result.terminal || { state: result.ok ? "completed" : "failed", error: result.error || null };
+    for (const event of result.normalizedEvents) {
+      emitAssistantDelta(event);
     }
     if (assistantStarted) {
       emittedItems.push(assistantItem);

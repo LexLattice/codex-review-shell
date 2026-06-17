@@ -414,6 +414,145 @@ async function responseText(response) {
   return "";
 }
 
+function splitCompleteSseFrames(buffer) {
+  const frames = [];
+  let remaining = String(buffer || "");
+  for (;;) {
+    const match = /\r?\n\r?\n/.exec(remaining);
+    if (!match) break;
+    const frame = remaining.slice(0, match.index);
+    remaining = remaining.slice(match.index + match[0].length);
+    if (frame.trim()) frames.push(frame);
+  }
+  return { frames, remaining };
+}
+
+function parseSingleSseFrame(frame) {
+  const parsed = parseSseFixtureText(`${String(frame || "").trimEnd()}\n\n`);
+  return parsed.length ? parsed[0] : null;
+}
+
+function normalizeLiveRawEvent(rawEvent, rawIndex, requestBody) {
+  const normalizedResult = normalizeDirectCodexEvents([rawEvent], {
+    failOnUnknown: false,
+    model: requestBody.model,
+  });
+  return {
+    normalized: normalizedResult.normalized.map((event) => ({
+      ...event,
+      sequence: rawIndex,
+      source: {
+        ...(event.source || {}),
+        rawIndex,
+      },
+    })),
+    unknown: normalizedResult.unknown.map((event) => ({
+      ...event,
+      rawIndex,
+    })),
+  };
+}
+
+function emitNormalizedEvents(callback, events, details = {}) {
+  if (typeof callback !== "function") return;
+  if (!Array.isArray(events) || !events.length) return;
+  try {
+    callback(events, {
+      at: nowIso(),
+      ...details,
+    });
+  } catch {}
+}
+
+async function readStreamingSseResponse(response, options = {}, requestBody = {}) {
+  const rawEvents = [];
+  const normalizedEvents = [];
+  const unknownRawTypes = [];
+  const timing = {
+    firstSseFrameAt: "",
+    firstNormalizedEventAt: "",
+    streamCompletedAt: "",
+    rawEventCount: 0,
+    normalizedEventCount: 0,
+  };
+  const onLifecycle = options.onLifecycle;
+  const onNormalizedEvents = options.onNormalizedEvents;
+  let rawText = "";
+  let buffer = "";
+  let error = null;
+  const consumeFrame = (frame) => {
+    const rawEvent = parseSingleSseFrame(frame);
+    if (!rawEvent) return;
+    const rawIndex = rawEvents.length;
+    rawEvents.push(rawEvent);
+    timing.rawEventCount = rawEvents.length;
+    if (!timing.firstSseFrameAt) {
+      timing.firstSseFrameAt = nowIso();
+      notifyLifecycle(onLifecycle, "first_sse_frame", {
+        rawIndex,
+      });
+    }
+    const normalizedResult = normalizeLiveRawEvent(rawEvent, rawIndex, requestBody);
+    if (normalizedResult.unknown.length) {
+      unknownRawTypes.push(...normalizedResult.unknown.map((event) => event.rawType));
+    }
+    if (normalizedResult.normalized.length) {
+      if (!timing.firstNormalizedEventAt) {
+        timing.firstNormalizedEventAt = nowIso();
+        notifyLifecycle(onLifecycle, "first_normalized_event", {
+          rawIndex,
+          normalizedEventTypes: normalizedResult.normalized.map((event) => event.type),
+        });
+      }
+      normalizedEvents.push(...normalizedResult.normalized);
+      timing.normalizedEventCount = normalizedEvents.length;
+      emitNormalizedEvents(onNormalizedEvents, normalizedResult.normalized, {
+        rawIndex,
+      });
+    }
+  };
+  const consumeText = (text) => {
+    rawText += text;
+    buffer += text;
+    const split = splitCompleteSseFrames(buffer);
+    buffer = split.remaining;
+    for (const frame of split.frames) consumeFrame(frame);
+  };
+  try {
+    if (response?.body && typeof response.body.getReader === "function") {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        consumeText(decoder.decode(value, { stream: true }));
+      }
+      consumeText(decoder.decode());
+    } else if (response?.body && typeof response.body[Symbol.asyncIterator] === "function") {
+      const decoder = new TextDecoder();
+      for await (const chunk of response.body) consumeText(decodeTextChunk(decoder, chunk));
+      consumeText(decoder.decode());
+    } else if (response && typeof response.text === "function") {
+      consumeText(await response.text());
+    }
+    if (buffer.trim()) {
+      consumeFrame(buffer);
+      buffer = "";
+    }
+  } catch (caught) {
+    error = caught;
+  }
+  timing.streamCompletedAt = nowIso();
+  return {
+    rawText,
+    rawEvents,
+    normalizedEvents,
+    unknownRawTypes,
+    timing,
+    error,
+  };
+}
+
 function errorRawEvent(status, message, code = "") {
   return {
     event: "error",
@@ -439,6 +578,7 @@ function diagnosticFromResult(result = {}) {
     unknownRawTypes: Array.isArray(result.unknownRawTypes) ? result.unknownRawTypes : [],
     toolCallDetected: Boolean(result.toolDetection?.detected),
     toolObligationCount: Number(result.toolDetection?.obligationCount || 0),
+    lifecycle: result.lifecycle || {},
     error: result.error || null,
   });
 }
@@ -558,6 +698,14 @@ async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, re
   let credentialRefresh = { attempted: false, ok: false, reason: "", preStreamOnly: true };
   let resolvedCredentials = null;
   const attempts = [];
+  const timing = {
+    requestBuiltAt: startedAt,
+    firstAttemptAt: "",
+    responseHeadersAt: "",
+    firstSseFrameAt: "",
+    firstNormalizedEventAt: "",
+    streamCompletedAt: "",
+  };
   const maxPreStreamRetries = normalizeRetryLimit(options);
 
   for (let attempt = 0; attempt <= maxPreStreamRetries; attempt += 1) {
@@ -573,6 +721,7 @@ async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, re
         maxAttempts: maxPreStreamRetries + 1,
         credentialRefresh,
       });
+      if (!timing.firstAttemptAt) timing.firstAttemptAt = nowIso();
       response = await fetchImpl(endpoint, {
         method: "POST",
         headers: authHeaders(resolvedCredentials || {}),
@@ -584,17 +733,47 @@ async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, re
       responseOk = ok;
       if (ok) {
         streamStarted = true;
+        timing.responseHeadersAt = nowIso();
         notifyLifecycle(options.onLifecycle, "streaming", {
           attempt: attemptNumber,
           status,
           contentType: typeof response?.headers?.get === "function" ? normalizeString(response.headers.get("content-type"), "") : "",
         });
       }
-      rawText = await responseText(response);
       if (!ok) {
+        rawText = await responseText(response);
         rawEvents = [errorRawEvent(response.status, rawText || response.statusText || "HTTP request failed.")];
       } else {
-        rawEvents = parseSseFixtureText(rawText);
+        const streamed = await readStreamingSseResponse(response, options, requestBody);
+        rawText = streamed.rawText;
+        rawEvents = streamed.rawEvents;
+        normalizedEvents = streamed.normalizedEvents;
+        unknownRawTypes = streamed.unknownRawTypes;
+        timing.firstSseFrameAt = streamed.timing.firstSseFrameAt;
+        timing.firstNormalizedEventAt = streamed.timing.firstNormalizedEventAt;
+        timing.streamCompletedAt = streamed.timing.streamCompletedAt;
+        timing.rawEventCount = streamed.timing.rawEventCount;
+        timing.normalizedEventCount = streamed.timing.normalizedEventCount;
+        if (streamed.error) {
+          const caught = streamed.error;
+          const aborted = options.signal?.aborted === true || isAbortError(caught);
+          const code = errorCodeFromCaught(caught, streamStarted);
+          const message = caught?.message || String(caught || (aborted ? "Direct text probe was aborted." : "Direct text probe fetch failed."));
+          error = {
+            code,
+            message,
+          };
+          const errorEvent = aborted
+            ? { event: "aborted", data: { reason: error.message } }
+            : errorRawEvent(0, error.message, error.code);
+          const rawIndex = rawEvents.length;
+          rawEvents.push(errorEvent);
+          const normalizedError = normalizeLiveRawEvent(errorEvent, rawIndex, requestBody);
+          normalizedEvents.push(...normalizedError.normalized);
+          unknownRawTypes.push(...normalizedError.unknown.map((event) => event.rawType));
+          timing.rawEventCount = rawEvents.length;
+          timing.normalizedEventCount = normalizedEvents.length;
+        }
       }
       attempts.push({
         attempt: attemptNumber,
@@ -633,12 +812,15 @@ async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, re
     }
   }
 
-  const normalizedResult = normalizeDirectCodexEvents(rawEvents, {
-    failOnUnknown: false,
-    model: requestBody.model,
-  });
-  normalizedEvents = normalizedResult.normalized;
-  unknownRawTypes = normalizedResult.unknown.map((event) => event.rawType);
+  if (!normalizedEvents.length && rawEvents.length) {
+    const normalizedResult = normalizeDirectCodexEvents(rawEvents, {
+      failOnUnknown: false,
+      model: requestBody.model,
+    });
+    normalizedEvents = normalizedResult.normalized;
+    unknownRawTypes = normalizedResult.unknown.map((event) => event.rawType);
+  }
+  if (!timing.streamCompletedAt) timing.streamCompletedAt = nowIso();
   const terminal = terminalStateFromNormalizedEvents(normalizedEvents);
   const toolObligations = buildToolObligationsFromEvents("probe_unpersisted", "turn_unpersisted", normalizedEvents);
   const result = {
@@ -676,6 +858,7 @@ async function runDirectCodexStreamingRequest(options = {}, requestBody = {}, re
         maxPreStreamRetries,
         retriesAfterStreamStart: false,
       },
+      timing,
     },
     rawAuthHeadersExposed: false,
     rawBackendRequestsExposed: false,
