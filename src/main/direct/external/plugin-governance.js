@@ -292,7 +292,7 @@ function buildPluginGovernanceStatus(input = {}) {
   const projectId = boundedString(source.projectId, 160);
   const workThreadId = boundedString(source.workThreadId, 160);
   const generatedAt = normalizeString(source.generatedAt, nowIso(source.nowMs));
-  const catalogDescriptors = (Array.isArray(source.catalogDescriptors) && source.catalogDescriptors.length
+  const catalogDescriptorInputs = Array.isArray(source.catalogDescriptors)
     ? source.catalogDescriptors
     : [
       {
@@ -301,22 +301,29 @@ function buildPluginGovernanceStatus(input = {}) {
         sourceKind: "marketplace",
         sourcePinState: "missing",
       },
-    ]).map((descriptor) => buildPluginCatalogDescriptor(descriptor));
-  const installRequests = (Array.isArray(source.installRequests) ? source.installRequests : [
-    {
-      projectId,
-      workThreadId,
-      descriptor: catalogDescriptors[0],
-      capabilityDiff: null,
-      rollbackLaw: null,
-      generatedAt,
-    },
-  ]).map((request) => buildPluginInstallRequestPosture({
-    projectId,
-    workThreadId,
-    generatedAt,
-    ...request,
-  }));
+    ];
+  const catalogDescriptors = catalogDescriptorInputs.map((descriptor) => buildPluginCatalogDescriptor(descriptor));
+  const installRequestInputs = Array.isArray(source.installRequests)
+    ? source.installRequests
+    : catalogDescriptors[0]
+      ? [{
+        projectId,
+        workThreadId,
+        descriptor: catalogDescriptors[0],
+        capabilityDiff: null,
+        rollbackLaw: null,
+        generatedAt,
+      }]
+      : [];
+  const installRequests = installRequestInputs.map((request) => {
+    const requestSource = isPlainObject(request) ? request : {};
+    return buildPluginInstallRequestPosture({
+      ...requestSource,
+      projectId: normalizeString(requestSource.projectId, projectId),
+      workThreadId: normalizeString(requestSource.workThreadId, workThreadId),
+      generatedAt: normalizeString(requestSource.generatedAt, generatedAt),
+    });
+  });
   const status = {
     schema: PLUGIN_GOVERNANCE_STATUS_SCHEMA,
     statusId: boundedString(source.statusId || "", 180),

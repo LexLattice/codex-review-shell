@@ -113,6 +113,17 @@ assert(missingPinStatus.installRequests[0].installState === "blocked_missing_sou
 assert(missingPinStatus.blockedInstallRequestCount === 1, "missing pin should count as blocked");
 assertPluginGovernanceStatusSafe(missingPinStatus);
 
+const emptyCatalogStatus = buildPluginGovernanceStatus({
+  projectId: "project_empty_plugin_catalog_fixture",
+  workThreadId: "work_thread_empty_plugin_catalog_fixture",
+  catalogDescriptors: [],
+  nowMs: 0,
+});
+assert(emptyCatalogStatus.catalogDescriptorCount === 0, "explicit empty catalog should stay empty");
+assert(emptyCatalogStatus.installRequestCount === 0, "explicit empty catalog should not create synthetic install request");
+assert(emptyCatalogStatus.blockedInstallRequestCount === 0, "explicit empty catalog should not create blocked synthetic request");
+assertPluginGovernanceStatusSafe(emptyCatalogStatus);
+
 const missingDiff = buildPluginInstallRequestPosture({
   descriptor,
   capabilityDiff: null,
@@ -143,6 +154,24 @@ assert(status.pluginCatalogListAllowed === true, "status should permit catalog l
 assert(status.pluginInstallAllowed === false, "status must not permit plugin install");
 assert(status.autoEnableNewToolsAllowed === false, "status must not auto-enable new tools");
 assertPluginGovernanceStatusSafe(status);
+
+const scopedRequestStatus = buildPluginGovernanceStatus({
+  projectId: "project_scoped_plugin_governance_fixture",
+  workThreadId: "work_thread_scoped_plugin_governance_fixture",
+  catalogDescriptors: [descriptor],
+  installRequests: [
+    buildPluginInstallRequestPosture({
+      descriptor,
+      capabilityDiff,
+      rollbackLaw,
+      nowMs: 0,
+    }),
+  ],
+  nowMs: 0,
+});
+assert(scopedRequestStatus.installRequests[0].projectId === scopedRequestStatus.projectId, "blank request project should inherit status project");
+assert(scopedRequestStatus.installRequests[0].workThreadId === scopedRequestStatus.workThreadId, "blank request work thread should inherit status work thread");
+assertPluginGovernanceStatusSafe(scopedRequestStatus);
 
 const externalDiscovery = buildExternalCapabilityDiscoveryRegistry({ projectId: status.projectId, nowMs: 0 });
 assertExternalCapabilityDiscoveryRegistrySafe(externalDiscovery);
