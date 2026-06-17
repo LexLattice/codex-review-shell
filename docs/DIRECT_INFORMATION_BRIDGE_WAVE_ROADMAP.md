@@ -3012,7 +3012,7 @@ a repeatable readiness suite for future direct-path testing.
 
 ## Wave 10: Direct Tool Authority Families
 
-Status: merged through PR 67; PR 68 implemented in branch `codex/direct-headless-live-candidate-gate`.
+Status: merged through PR 68; PR 69 implemented in branch `codex/direct-headless-live-smoke-runner`.
 
 Dedicated spec:
 
@@ -3351,7 +3351,7 @@ No UI dashboard yet.
 
 ### PR 68: Headless Tool-Class Live Candidate Gate
 
-Status: implemented in branch `codex/direct-headless-live-candidate-gate`.
+Status: merged.
 
 Purpose:
 
@@ -3385,6 +3385,40 @@ No promotion of any class to direct-enabled.
 No new tool execution authority.
 No renderer authority.
 No workspace mutation.
+```
+
+### PR 69: Headless Tool-Class Live Smoke Runner
+
+Status: implemented in branch `codex/direct-headless-live-smoke-runner`.
+
+Purpose:
+
+```text
+Consume the PR 68 live-candidate gate and produce an explicit live-smoke report
+for eligible tool classes without promoting any class automatically.
+```
+
+Scope summary:
+
+- Add `direct_headless_tool_class_live_smoke_report@1`.
+- Add per-class `direct_headless_tool_class_live_smoke_row@1`.
+- Consume `direct_headless_tool_class_live_candidate_gate@1`.
+- Default to `plan_only`, with no live smoke and no provider transport.
+- Support explicit `execute_live_smoke` evidence mode.
+- Run only candidate rows marked `eligible_live_candidate`.
+- Preserve blocked rows as `blocked_by_candidate_gate`.
+- Require explicit opt-in evidence before accepting executed smoke results.
+- Record required/satisfied/missing live-smoke conditions per row.
+- Preserve no-promotion, no-renderer-authority, and no-raw-payload defaults.
+
+Non-goals:
+
+```text
+No automatic live provider call from default regression.
+No promotion of any class to direct-enabled.
+No new tool execution authority.
+No UI dashboard.
+No raw prompt/result/path/secret persistence.
 ```
 
 ## Update Rules
