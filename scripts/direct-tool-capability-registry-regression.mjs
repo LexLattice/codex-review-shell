@@ -97,6 +97,8 @@ function main() {
   const pluginInstall = rows.get("vanilla.request_plugin_install");
   const codeModeExecute = rows.get("vanilla.code_mode_execute");
   const codeModeWait = rows.get("vanilla.code_mode_wait");
+  const spawnAgentsOnCsv = rows.get("vanilla.spawn_agents_on_csv");
+  const reportAgentJobResult = rows.get("vanilla.report_agent_job_result");
   assert(directRead.schema === DIRECT_TOOL_CAPABILITY_ROW_SCHEMA, "tool row schema mismatch");
   assert(directRead.promotionState === "direct_restricted", "direct read should be restricted");
   assert(directRead.localExecutorState === "implemented_restricted", "direct read should cite restricted executor");
@@ -125,6 +127,12 @@ function main() {
   assert(codeModeExecute.localExecutor === "src/main/direct/tools/code-mode-execution-lane.js", "code_mode_execute should cite code mode lane");
   assert(codeModeExecute.requestShapeFamilies.includes("code_mode_execute_request_posture"), "code_mode_execute should declare execute posture");
   assert(codeModeWait.requestShapeFamilies.includes("code_mode_wait_cancel_policy"), "code_mode_wait should declare wait/cancel policy");
+  assert(spawnAgentsOnCsv.odeuFamily === "batch_agent_orchestration", "spawn_agents_on_csv should be batch orchestration");
+  assert(spawnAgentsOnCsv.promotionState === "diagnostic_only", "spawn_agents_on_csv should remain diagnostic-only");
+  assert(spawnAgentsOnCsv.localExecutor === "src/main/direct/agents/batch-job-surface.js", "spawn_agents_on_csv should cite batch job surface");
+  assert(spawnAgentsOnCsv.requestShapeFamilies.includes("direct_batch_agent_job_plan"), "spawn_agents_on_csv should declare job plan");
+  assert(reportAgentJobResult.agentEligibility === "batch_worker_only", "report_agent_job_result should be worker-only");
+  assert(reportAgentJobResult.requestShapeFamilies.includes("direct_batch_agent_result_contract"), "report_agent_job_result should declare result contract");
 
   for (const row of registry.rows) {
     assert(row.toolEnabledInThisPr === false, `${row.toolId} must not enable tool`);

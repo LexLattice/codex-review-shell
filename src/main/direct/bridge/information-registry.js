@@ -434,6 +434,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "This is not shell/process parity: kernel start, provider declaration, provider transport, local execution, request-shape mutation, shell approval inheritance, workspace artifact writes, and raw code/output/artifact exposure remain disabled.",
   },
   {
+    id: "ic32.batch-agent-job-surface",
+    name: "Batch agent fan-out/fan-in job surface",
+    role: "authority_gate",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/agents/batch-job-surface.js", "src/main/direct/agents/runtime-substrate.js", "src/main/direct/bridge/tool-capability-registry.js", "src/main/direct/ui/settings-surface.js", "scripts/direct-batch-agent-jobs-regression.mjs", "src/main.js"],
+    ontology: ontologyShape(["direct_batch_agent_job_surface", "direct_batch_agent_job_plan", "direct_batch_agent_worker_item", "direct_batch_agent_result_contract", "direct_batch_agent_aggregation_ledger"], "sub_agent", {
+      identityFields: ["projectId", "workThreadId", "primaryThreadId", "batchJobId", "workerItemId", "ledgerId"],
+      schema: "direct_batch_agent_job_surface@1",
+    }),
+    bridgeFit: "Models spawn_agents_on_csv/report_agent_job_result as structured fan-out/fan-in contracts with job identity, worker item identity, result report contracts, separate usage attribution, and aggregation/export ledger posture.",
+    realignment: "Batch jobs do not create uncontrolled recursive sub-agent execution: provider declaration, provider transport, local batch execution, request-shape mutation, child tools, inherited parent authority, export writes, raw CSV/prompts/results, and parent success laundering remain disabled.",
+  },
+  {
     id: "ic8.usage-quota-readiness",
     name: "Usage, quota, model, and readiness evidence",
     role: "observability_surface",
