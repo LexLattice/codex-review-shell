@@ -14,6 +14,7 @@ const {
 } = require("../src/main/direct/bridge/controlled-routing");
 const {
   buildWorkThread,
+  DirectWorkThreadRegistryStore,
 } = require("../src/main/direct/bridge/work-thread-registry");
 const {
   DirectLiveTextController,
@@ -140,12 +141,15 @@ const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "direct-controlled-route-
 try {
   const sessionStore = new DirectSessionStore({ rootDir: path.join(tempRoot, "sessions") });
   const directThreadStore = new DirectThreadStore({ rootDir: path.join(tempRoot, "threads") });
+  const workThreadStore = new DirectWorkThreadRegistryStore({ rootDir: path.join(tempRoot, "work-threads") });
+  workThreadStore.upsertWorkThread(workThread);
   const events = [];
   let providerRequestCount = 0;
   let capturedProviderBody = null;
   const controller = new DirectLiveTextController({
     sessionStore,
     directThreadStore,
+    workThreadStore,
     profileDoc,
     authStore: {
       readStatus: () => ({
@@ -199,6 +203,26 @@ try {
   assert.equal(requestManifest.workThreadId, workThread.workThreadId);
   assert(events.some((event) => event.method === "turn/completed" && event.params?.turnId === ack.turn.id));
   assert.equal(sessionStore.readSession(thread.thread.id).directTransport, DIRECT_LIVE_TEXT_SURFACE_TRANSPORT);
+
+  const idOnlyThread = controller.startThread({
+    model: "gpt-5.4",
+    workThreadId: workThread.workThreadId,
+  }, { project, surfaceSession });
+  const idOnlyAck = await controller.startTurn({
+    threadId: idOnlyThread.thread.id,
+    promptText: "continue id-only controlled routing fixture",
+    clientTurnRequestId: "client_req_controlled_route_id_only",
+    model: "gpt-5.4",
+    requireControlledRouting: true,
+  }, { project, surfaceSession });
+  assert.equal(idOnlyAck.turn.status, "inProgress");
+  await waitFor(() => sessionStore.readTurn(idOnlyThread.thread.id, idOnlyAck.turn.id)?.state === "completed", "id-only work thread routed turn should complete");
+  const idOnlyTurn = sessionStore.readTurn(idOnlyThread.thread.id, idOnlyAck.turn.id);
+  assert.equal(idOnlyTurn.controlledRoutingGateState, "ready_for_direct_text_turn");
+  assert.match(idOnlyTurn.controlledRoutingSliceId, /^controlled_route_/);
+  const idOnlyContextPack = directThreadStore.readContextPack(idOnlyTurn.contextBuildId);
+  assert.equal(idOnlyContextPack.workThreadId, workThread.workThreadId);
+  assert.equal(providerRequestCount, 2);
 
   const unsupportedStore = new DirectSessionStore({ rootDir: path.join(tempRoot, "unsupported-sessions") });
   const unsupportedController = new DirectLiveTextController({

@@ -796,6 +796,7 @@ class DirectLiveTextController {
     this.profileDoc = isPlainObject(options.profileDoc) ? options.profileDoc : {};
     this.authStore = options.authStore || null;
     this.directThreadStore = options.directThreadStore || options.threadStore || null;
+    this.workThreadStore = options.workThreadStore || null;
     this.refreshCredentials = typeof options.refreshCredentials === "function" ? options.refreshCredentials : null;
     this.modelEvidenceResolver = typeof options.modelEvidenceResolver === "function" ? options.modelEvidenceResolver : null;
     this.implementationProofEvidenceResolver = typeof options.implementationProofEvidenceResolver === "function" ? options.implementationProofEvidenceResolver : null;
@@ -817,6 +818,40 @@ class DirectLiveTextController {
     this.toolDecisionClaims = new Map();
     this.toolDecisionResults = new Map();
     this.forkStartLocks = new Map();
+  }
+
+  hydrateWorkThreadCarrier(carrier = {}, projectId = "") {
+    const hydrated = {
+      ...carrier,
+      bridgeInformationRefs: Array.isArray(carrier.bridgeInformationRefs) ? [...carrier.bridgeInformationRefs] : [],
+      openObligations: Array.isArray(carrier.openObligations) ? [...carrier.openObligations] : [],
+    };
+    const workThreadId = normalizeString(hydrated.workThread?.workThreadId || hydrated.workThreadId, "");
+    hydrated.workThreadId = workThreadId;
+    if (
+      !hydrated.workThread &&
+      workThreadId &&
+      this.workThreadStore &&
+      typeof this.workThreadStore.readWorkThread === "function"
+    ) {
+      const workThread = this.workThreadStore.readWorkThread(workThreadId);
+      if (workThread && normalizeString(workThread.projectId, "") === normalizeString(projectId, "")) {
+        hydrated.workThread = workThread;
+      }
+    }
+    if (hydrated.workThread) {
+      hydrated.workThreadId = normalizeString(hydrated.workThread.workThreadId, hydrated.workThreadId);
+      if (!hydrated.authorityBoundary && isPlainObject(hydrated.workThread.authorityBoundary)) {
+        hydrated.authorityBoundary = hydrated.workThread.authorityBoundary;
+      }
+      if (!hydrated.openObligations.length && Array.isArray(hydrated.workThread.openObligations)) {
+        hydrated.openObligations = hydrated.workThread.openObligations;
+      }
+      if (!hydrated.bridgeInformationRefs.length && Array.isArray(hydrated.workThread.bridgeInformationRefs)) {
+        hydrated.bridgeInformationRefs = hydrated.workThread.bridgeInformationRefs;
+      }
+    }
+    return hydrated;
   }
 
   currentAuthStore() {
@@ -4210,7 +4245,10 @@ class DirectLiveTextController {
       error.code = "context_store_unhealthy";
       throw error;
     }
-    const workThreadCarrier = directWorkThreadContextCarrier(params, context);
+    const workThreadCarrier = this.hydrateWorkThreadCarrier(
+      directWorkThreadContextCarrier(params, session, context),
+      project.id,
+    );
     const requireControlledRouting = params.requireControlledRouting === true || params.controlledRouting?.required === true;
     const controlledRoutingRequested = Boolean(
       workThreadCarrier.workThread ||

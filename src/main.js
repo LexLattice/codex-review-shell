@@ -2177,6 +2177,7 @@ function ensureDirectLiveTextController() {
   directLiveTextController = new DirectLiveTextController({
     sessionStore: ensureDirectSessionStore(),
     directThreadStore: ensureDirectThreadStore(),
+    workThreadStore: ensureDirectWorkThreadStore(),
     profileDoc: ensureDirectCodexProfileDoc(),
     authStore: () => directRuntimeAuthStore(),
     refreshCredentials: () => refreshDirectRuntimeCredentials(),
