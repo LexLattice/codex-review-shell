@@ -105,6 +105,7 @@ function requiredConditionsFor(gateStatus = "", row = {}) {
   if (gateStatus !== "eligible_live_candidate") {
     return [];
   }
+  const safeRow = isPlainObject(row) ? row : {};
   const conditions = [
     "explicit_live_smoke_mode_required",
     "operator_or_ci_authority_required",
@@ -113,50 +114,61 @@ function requiredConditionsFor(gateStatus = "", row = {}) {
     "raw_exposure_scan_required",
     "route_authority_review_required",
   ];
-  const forbidden = normalizeStringList(row.forbiddenSideEffects);
+  const forbidden = normalizeStringList(safeRow.forbiddenSideEffects);
+  const toolClassId = normalizeString(safeRow.toolClassId, "");
+  const toolIdsCovered = normalizeStringList(safeRow.toolIdsCovered);
   if (forbidden.includes("silent_workspace_write") || forbidden.includes("workspace_write") || forbidden.includes("path_escape")) {
     conditions.push("disposable_workspace_required");
   }
-  if (forbidden.includes("process_spawn") || forbidden.includes("unbounded_output") || forbidden.includes("shell_true_default")) {
+  const processAuthority =
+    forbidden.includes("process_spawn")
+    || forbidden.includes("unbounded_output")
+    || forbidden.includes("shell_true_default")
+    || toolClassId.includes("run_command")
+    || toolClassId.includes("exec_session")
+    || toolIdsCovered.some((toolId) => toolId.includes("run_command") || toolId.includes("exec_command") || toolId.includes("write_stdin"));
+  if (processAuthority) {
     conditions.push("process_spawn_policy_required");
   }
-  if (normalizeStringList(row.toolIdsCovered).some((toolId) => toolId.includes("agent"))) {
+  if (toolIdsCovered.some((toolId) => toolId.includes("agent"))) {
     conditions.push("agent_containment_profile_required");
   }
   return normalizeStringList(conditions);
 }
 
 function liveSmokeRouteFor(row = {}) {
-  const gateStatus = gateStatusForRealism(row.realismStatus);
+  const safeRow = isPlainObject(row) ? row : {};
+  const gateStatus = gateStatusForRealism(safeRow.realismStatus);
   if (gateStatus !== "eligible_live_candidate") return "";
-  const primaryScript = normalizeStringList(row.fixtureScripts)[0] || "";
-  return primaryScript ? `headless-live-smoke:${primaryScript}` : `headless-live-smoke:${normalizeString(row.toolClassId, "unknown")}`;
+  const primaryScript = normalizeStringList(safeRow.fixtureScripts)[0] || "";
+  return primaryScript ? `headless-live-smoke:${primaryScript}` : `headless-live-smoke:${normalizeString(safeRow.toolClassId, "unknown")}`;
 }
 
-function buildGateRow(row = {}) {
-  const gateStatus = gateStatusForRealism(row.realismStatus);
+function buildGateRow(row) {
+  const safeRow = isPlainObject(row) ? row : {};
+  const gateStatus = gateStatusForRealism(safeRow.realismStatus);
   const gateRow = {
     schema: DIRECT_HEADLESS_TOOL_CLASS_LIVE_CANDIDATE_ROW_SCHEMA,
     rowId: `live_candidate_${digestFor("direct-headless-tool-live-candidate-row-id@1", {
-      realismRowDigest: row.rowDigest,
-      exampleId: row.exampleId,
+      realismRowDigest: safeRow.rowDigest,
+      exampleId: safeRow.exampleId,
       gateStatus,
     }).slice(0, 24)}`,
-    sourceRealismRowDigest: normalizeString(row.rowDigest, ""),
-    exampleId: normalizeString(row.exampleId, ""),
-    exampleDigest: normalizeString(row.exampleDigest, ""),
-    toolClassId: normalizeString(row.toolClassId, ""),
-    toolIdsCovered: normalizeStringList(row.toolIdsCovered),
-    realismStatus: normalizeString(row.realismStatus, "unknown"),
-    realismPromotionReadiness: normalizeString(row.promotionReadiness, "unknown"),
+    sourceRealismRowDigest: normalizeString(safeRow.rowDigest, ""),
+    exampleId: normalizeString(safeRow.exampleId, ""),
+    exampleDigest: normalizeString(safeRow.exampleDigest, ""),
+    toolClassId: normalizeString(safeRow.toolClassId, ""),
+    toolIdsCovered: normalizeStringList(safeRow.toolIdsCovered),
+    realismStatus: normalizeString(safeRow.realismStatus, "unknown"),
+    realismPromotionReadiness: normalizeString(safeRow.promotionReadiness, "unknown"),
     gateStatus,
     eligibleForLiveSmoke: gateStatus === "eligible_live_candidate",
-    gateReasons: gateReasonsFor(gateStatus, row),
-    requiredConditions: requiredConditionsFor(gateStatus, row),
-    liveSmokeRoute: liveSmokeRouteFor(row),
-    fixtureScripts: normalizeStringList(row.fixtureScripts),
-    expectedEvidenceSchemas: normalizeStringList(row.expectedEvidenceSchemas),
-    forbiddenSideEffects: normalizeStringList(row.forbiddenSideEffects),
+    gateReasons: gateReasonsFor(gateStatus, safeRow),
+    requiredConditions: requiredConditionsFor(gateStatus, safeRow),
+    liveSmokeRoute: liveSmokeRouteFor(safeRow),
+    fixtureScripts: normalizeStringList(safeRow.fixtureScripts),
+    expectedEvidenceSchemas: normalizeStringList(safeRow.expectedEvidenceSchemas),
+    forbiddenSideEffects: normalizeStringList(safeRow.forbiddenSideEffects),
     providerTransportStarted: false,
     workspaceMutationStartedByGate: false,
     rendererAuthorityGranted: false,

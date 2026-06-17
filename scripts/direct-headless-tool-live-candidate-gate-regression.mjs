@@ -163,6 +163,17 @@ assert.deepEqual(validateDirectHeadlessToolClassLiveCandidateGate(failedGate), [
 assert.equal(failedGate.status, "failed", "gate should fail when source realism report failed");
 assert(failedGate.validationErrors.some((error) => error.startsWith("realism_report_not_passed")), "failed gate should cite source realism failure");
 
+const malformedRowGate = buildDirectHeadlessToolClassLiveCandidateGate({
+  realismReport: {
+    ...validateOnlyRealismReport,
+    rows: [null, ...validateOnlyRealismReport.rows],
+  },
+  nowMs: 0,
+});
+assert.deepEqual(validateDirectHeadlessToolClassLiveCandidateGate(malformedRowGate), [], "malformed-row gate should remain structurally valid");
+assert.equal(malformedRowGate.status, "failed", "malformed-row gate should fail from source validation");
+assert.equal(malformedRowGate.rows[0].gateStatus, "blocked_invalid_realism", "null realism rows should become invalid blocked rows");
+
 let fixtureExecution = {
   mode: "not_requested",
   results: [],
@@ -196,6 +207,8 @@ if (executeFixtures) {
   assert.equal(gate.summary.byGateStatus.blocked_projection_only, 10, "executed gate should preserve projection blocks");
   assert.equal(gate.summary.byGateStatus.blocked_unsupported, 3, "executed gate should preserve unsupported blocks");
   assert(gate.rows.filter((row) => row.eligibleForLiveSmoke).every((row) => row.requiredConditions.includes("explicit_live_smoke_mode_required")), "eligible rows should require explicit live smoke mode");
+  const execSessionRow = gate.rows.find((row) => row.toolClassId === "workspace_process.stateful_exec_session");
+  assert(execSessionRow?.requiredConditions.includes("process_spawn_policy_required"), "stateful exec candidate should require process policy");
 } else {
   assert.equal(gate.eligibleCandidateCount, 0, "default gate should not mark candidates without fixture execution");
   assert.equal(gate.summary.byGateStatus.blocked_fixture_not_executed, 5, "default gate should block unexecuted fixtures");
