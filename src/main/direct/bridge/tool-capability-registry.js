@@ -472,25 +472,36 @@ function defaultToolCapabilityInputs() {
       recoveryLaw: "Context-world transition remains blocked until omission ledger, frontier baton, request manifest, and source refs are wired.",
       failureClasses: ["projection_laundering", "authority_inflation", "context_smuggling", "silent_compression_loss"],
     },
-    ...["spawn_agent", "list_agents", "wait_agent", "send_message", "followup_task", "interrupt_agent"].map((name) => ({
-      toolId: `vanilla.agent.${name}`,
-      displayName: name,
-      vanillaNames: [name],
-      odeuFamily: "agent_runtime",
-      capabilityState: "vanilla_known",
-      implementationState: "projection_only",
-      promotionState: "diagnostic_only",
-      providerDeclarationState: "not_declared",
-      localExecutorState: "none",
-      sideEffectClass: name === "list_agents" ? "none" : "agent_graph",
-      requestShapeFamilies: ["none"],
-      approvalMode: name === "list_agents" ? "display_only" : "future_gate_required",
-      providerResultEnvelopeType: name === "list_agents" ? "agent_mailbox_event" : "none",
-      agentEligibility: "primary_only",
-      recoveryLaw: "Agent runtime requires graph, mailbox, lifecycle, context packet, authority boundary, and usage attribution before tool exposure.",
-      failureClasses: ["projection_laundering", "authority_inflation", "context_smuggling", "action_replay", "thread_flattening"],
-      rendererSafeSummary: `${name} is classified under agent runtime; direct spawning/messaging/waiting is not enabled by this PR.`,
-    })),
+    ...["spawn_agent", "list_agents", "wait_agent", "send_message", "followup_task", "interrupt_agent"].map((name) => {
+      const enabledInPr = name !== "interrupt_agent";
+      return {
+        toolId: `vanilla.agent.${name}`,
+        displayName: name,
+        vanillaNames: [name],
+        directNames: [name],
+        odeuFamily: "agent_runtime",
+        capabilityState: "runtime_probed",
+        implementationState: enabledInPr ? "restricted_executor" : "projection_only",
+        promotionState: enabledInPr ? "direct_restricted" : "diagnostic_only",
+        providerDeclarationState: "not_declared",
+        localExecutorState: enabledInPr ? "implemented_restricted" : "scaffolded",
+        localExecutor: "src/main/direct/agents/text-tool-surface.js",
+        sideEffectClass: name === "list_agents" ? "none" : "agent_graph",
+        requestShapeFamilies: ["local_agent_surface_envelope"],
+        approvalMode: name === "list_agents" ? "display_only" : "per_action",
+        providerResultEnvelopeType: "agent_mailbox_event",
+        agentEligibility: "primary_only",
+        recoveryLaw: name === "wait_agent"
+          ? "Wait is timeout-bounded, max-depth checked, cycle-checked, and never blocks the parent indefinitely."
+          : name === "interrupt_agent"
+            ? "Interrupt is mark-requested only until provider cancellation and partial-output recovery law are proved."
+            : "Text-only sub-agent surface requires graph, mailbox, lifecycle, context packet, authority boundary, and separate usage attribution.",
+        failureClasses: ["projection_laundering", "authority_inflation", "context_smuggling", "action_replay", "thread_flattening"],
+        rendererSafeSummary: enabledInPr
+          ? `${name} is exposed through the direct text-only sub-agent surface without provider tool declaration, recursive spawn, child tools, or inherited parent authority.`
+          : `${name} is scaffolded as mark-requested/diagnostic only; provider cancellation remains disabled.`,
+      };
+    }),
     ...["multi_agent_v1.spawn_agent", "multi_agent_v1.send_input", "multi_agent_v1.resume_agent", "multi_agent_v1.wait_agent", "multi_agent_v1.close_agent"].map((name) => ({
       toolId: `vanilla.${name}`,
       displayName: name,

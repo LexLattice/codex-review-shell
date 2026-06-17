@@ -89,6 +89,11 @@ function main() {
   const execCommand = rows.get("vanilla.exec_command");
   const newContext = rows.get("vanilla.new_context");
   const spawnAgent = rows.get("vanilla.agent.spawn_agent");
+  const listAgents = rows.get("vanilla.agent.list_agents");
+  const waitAgent = rows.get("vanilla.agent.wait_agent");
+  const sendMessage = rows.get("vanilla.agent.send_message");
+  const followupTask = rows.get("vanilla.agent.followup_task");
+  const interruptAgent = rows.get("vanilla.agent.interrupt_agent");
   const pluginInstall = rows.get("vanilla.request_plugin_install");
   assert(directRead.schema === DIRECT_TOOL_CAPABILITY_ROW_SCHEMA, "tool row schema mismatch");
   assert(directRead.promotionState === "direct_restricted", "direct read should be restricted");
@@ -100,7 +105,13 @@ function main() {
   assert(newContext.promotionState === "unsupported", "new_context should remain blocked");
   assert(newContext.authorityRequired === "context_maintenance_gate", "new_context should require context maintenance law");
   assert(spawnAgent.odeuFamily === "agent_runtime", "spawn_agent should be classified as agent runtime");
-  assert(spawnAgent.promotionState === "diagnostic_only", "spawn_agent should not be enabled by this PR");
+  assert(spawnAgent.promotionState === "direct_restricted", "spawn_agent should be restricted through the text-only sub-agent surface");
+  assert(spawnAgent.localExecutorState === "implemented_restricted", "spawn_agent should cite the restricted text-only executor");
+  assert(listAgents.promotionState === "direct_restricted", "list_agents should be restricted through the text-only sub-agent surface");
+  assert(waitAgent.promotionState === "direct_restricted", "wait_agent should be restricted through bounded wait plans");
+  assert(sendMessage.promotionState === "direct_restricted", "send_message should be restricted through mailbox write plans");
+  assert(followupTask.promotionState === "direct_restricted", "followup_task should be restricted through mailbox write plans");
+  assert(interruptAgent.promotionState === "diagnostic_only", "interrupt_agent should remain provider-cancel disabled");
   assert(pluginInstall.sideEffectClass === "capability_mutation", "plugin install should be capability mutation");
   assert(pluginInstall.promotionState === "deferred_external_authority", "plugin install should defer external authority");
 

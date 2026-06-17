@@ -128,8 +128,14 @@ const {
 } = require("./main/direct/usage/agent-ledger");
 const {
   assertAgentRuntimeSubstrateSafe,
+  buildAgentMailbox,
   buildAgentRuntimeSubstrateStatus,
+  buildAgentThreadGraph,
 } = require("./main/direct/agents/runtime-substrate");
+const {
+  assertTextOnlySubAgentToolSurfaceSafe,
+  buildTextOnlySubAgentToolSurface,
+} = require("./main/direct/agents/text-tool-surface");
 const {
   assertControlToolSubstrateSafe,
   buildControlToolSubstrateStatus,
@@ -2500,6 +2506,12 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     agentUsageStatus,
     generatedAt,
   });
+  const agentToolSurfaceStatus = buildDirectTextSubAgentToolSurfaceForProject({
+    project,
+    runtimeStatus,
+    agentRuntimeStatus,
+    generatedAt,
+  });
   const contextPreview = directContextPreviewForProject(project, {
     runtimeStatus,
     runtimeWitnessProjection,
@@ -2523,6 +2535,7 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     toolCapabilityStatus,
     controlToolStatus,
     agentRuntimeStatus,
+    agentToolSurfaceStatus,
     continuityStatus: runtimeStatus.directContextMaintenance,
     contextPreview,
     runtimeWitnessProjection,
@@ -2571,6 +2584,63 @@ function buildDirectAgentRuntimeSubstrateStatusForProject(input = {}) {
   });
   assertAgentRuntimeSubstrateSafe(status);
   return status;
+}
+
+function buildDirectTextSubAgentToolSurfaceForProject(input = {}) {
+  const project = input.project || {};
+  const projectId = normalizeString(project.id || input.runtimeStatus?.projectId || input.agentRuntimeStatus?.projectId, "");
+  const primaryThreadId = normalizeString(
+    input.agentRuntimeStatus?.primaryThreadId ||
+      input.runtimeStatus?.activeProviderThreadId ||
+      input.runtimeStatus?.activeDirectSessionId ||
+      project.codexThreadId ||
+      project.threadId,
+    "primary_agent",
+  );
+  const generatedAt = normalizeString(input.generatedAt, nowIso());
+  const graph = buildAgentThreadGraph({
+    projectId,
+    primaryThreadId,
+    nodes: [],
+    edges: [],
+  });
+  const mailbox = buildAgentMailbox({
+    projectId,
+    primaryThreadId,
+    graphId: graph.graphId,
+    messages: [],
+  });
+  const surface = buildTextOnlySubAgentToolSurface({
+    projectId,
+    primaryThreadId,
+    graph,
+    mailbox,
+    spawnRequest: {
+      childAgentId: "planned_text_child_agent",
+      promptChars: 120,
+      promptEvidenceId: "planned_text_child_spawn_prompt",
+    },
+    waitPlan: {
+      targetAgentIds: ["planned_text_child_agent"],
+      waitMode: "specific",
+      timeoutMs: 30000,
+      maxWaitDepth: 1,
+    },
+    sendMessagePlan: {
+      targetAgentId: "planned_text_child_agent",
+      payloadId: "planned_text_child_message",
+    },
+    followupTaskPlan: {
+      targetAgentId: "planned_text_child_agent",
+      payloadId: "planned_text_child_followup",
+    },
+    interruptRequest: {
+      targetAgentId: "planned_text_child_agent",
+    },
+    generatedAt,
+  });
+  assertTextOnlySubAgentToolSurfaceSafe(surface);
+  return surface;
 }
 
 function buildDirectAgentUsageStatusForProject(projectId) {
