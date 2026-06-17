@@ -1308,7 +1308,7 @@ Scope:
 - No default provider transport, renderer authority, raw payload persistence,
   or runtime activation.
 
-## Wave 11 Handoff: Promotion And Activation
+## Wave 11: Tool Promotion And Activation
 
 Wave 10 ends at evidence. It does not make any tool class usable by the model in
 the direct runtime.
@@ -1332,6 +1332,11 @@ activation != per-call authority
 per-call authority != provider-visible result
 ```
 
+Wave 11 must not be compressed. If promotion and activation are combined,
+evidence can silently become authority. If activation and first use are
+combined, enabled status can silently become provider declaration and per-call
+permission.
+
 ### PR 70: Tool Promotion Decision Gate
 
 Purpose:
@@ -1350,9 +1355,60 @@ Decision states:
 
 ```text
 promotable
+promotable_restricted
 blocked
 needs_more_evidence
 not_applicable
+```
+
+Evidence classes:
+
+```text
+fixture_only
+diagnostic_only
+real_provider_declaration
+real_provider_full_loop
+real_runtime_full_loop
+```
+
+Promotion decisions are scoped. They must not say:
+
+```text
+read_file is promotable
+```
+
+They must say:
+
+```text
+this tool class/schema/request-shape/provider/runtime/executor/envelope bundle
+is promotable under this exact evidence scope
+```
+
+Required scope fields:
+
+```ts
+type DirectToolPromotionScope = {
+  toolClassId: string;
+  toolName: string;
+  toolSchemaVersion: string;
+  authorityFamily:
+    | "local_perception"
+    | "workspace_mutation"
+    | "process_session"
+    | "session_control"
+    | "human_decision"
+    | "agent_runtime"
+    | "external_resource"
+    | "provider_hosted"
+    | "code_mode";
+  requestShapeFamily: string;
+  providerProfileId: string;
+  modelId?: string;
+  runtimeTier: "direct_text" | "direct_implementation" | "headless_direct";
+  localExecutorVersion?: string;
+  authorityEnvelopeVersion: string;
+  resultEnvelopeVersion: string;
+};
 ```
 
 Required checks:
@@ -1366,6 +1422,77 @@ Required checks:
 - No workspace/process/agent effect outside the class contract.
 - Tool constitution row still matches the source class and implementation
   state.
+- Fixture-only evidence normally yields `needs_more_evidence`, not activation
+  readiness.
+- Freshness is explicit and stale if the tool constitution digest, executor
+  digest, provider profile digest, or result envelope policy changes.
+- Negative evidence is explicit:
+  - no raw exposure;
+  - no renderer authority grant;
+  - no out-of-contract provider transport;
+  - no out-of-contract workspace effect;
+  - no context smuggling;
+  - no replay-unsafe state.
+
+Expected report shape:
+
+```ts
+type DirectToolPromotionDecisionReport = {
+  schema: "direct_tool_promotion_decision_report@1";
+  reportId: string;
+  generatedAt: string;
+  sourceEvidence: {
+    liveSmokeReportId: string;
+    liveSmokeReportDigest: string;
+    toolConstitutionDigest: string;
+    implementationDigest?: string;
+    providerProfileDigest?: string;
+  };
+  decisions: DirectToolPromotionDecision[];
+  rawExposureScan: {
+    passed: boolean;
+    blockedReasons: string[];
+  };
+  matrixPromotionCandidate: boolean;
+};
+```
+
+Expected row shape:
+
+```ts
+type DirectToolPromotionDecision = {
+  decisionId: string;
+  scope: DirectToolPromotionScope;
+  state:
+    | "promotable"
+    | "promotable_restricted"
+    | "blocked"
+    | "needs_more_evidence"
+    | "not_applicable";
+  evidenceClass:
+    | "fixture_only"
+    | "diagnostic_only"
+    | "real_provider_declaration"
+    | "real_provider_full_loop"
+    | "real_runtime_full_loop";
+  restrictions: DirectToolActivationRestriction[];
+  requiredConditionsSatisfied: boolean;
+  missingEvidence: string[];
+  blockerCodes: string[];
+  negativeEvidence: {
+    noRawExposure: boolean;
+    noRendererAuthorityGrant: boolean;
+    noOutOfContractProviderTransport: boolean;
+    noOutOfContractWorkspaceEffect: boolean;
+    noContextSmuggling: boolean;
+    noReplayUnsafeState: boolean;
+  };
+  freshness: {
+    generatedAt: string;
+    expiresAt?: string;
+  };
+};
+```
 
 Non-goal:
 
@@ -1387,6 +1514,17 @@ Expected artifact:
 direct_tool_activation_registry@1
 ```
 
+Activation states:
+
+```text
+inactive
+active
+shadow_only
+suspended
+revoked
+expired
+```
+
 Activation row must cite:
 
 - promotion decision digest;
@@ -1404,6 +1542,127 @@ global default
 project default
 work-thread override
 single-turn override
+```
+
+Scope precedence:
+
+```text
+single-turn override
+  > work-thread override
+  > project default
+  > global default
+```
+
+Precedence law:
+
+```text
+explicit deny/revoke at narrower scope wins over allow at broader scope
+emergency revoke wins over frozen turn activation
+normal activation changes apply next turn
+```
+
+Global positive activation is disabled in V0 except harmless diagnostic/status
+tools. Real workspace-reading activation should start at project, work-thread,
+or single-turn scope.
+
+Activation rows are eligibility, not permission:
+
+```text
+activation row means:
+  this tool may be declared to the provider for this request scope
+
+activation row does not mean:
+  any specific tool call may execute
+```
+
+Every provider request that declares tools must freeze:
+
+```text
+activationSnapshotId
+activationRegistryDigest
+toolDeclarationDigest
+```
+
+Per-call execution still requires:
+
+```text
+tool call matches declaration digest
+arguments validate
+authority envelope validates
+local executor validates
+recovery/replay state is safe
+policy/capability is still fresh
+```
+
+Expected registry shape:
+
+```ts
+type DirectToolActivationRegistry = {
+  schema: "direct_tool_activation_registry@1";
+  registryId: string;
+  generatedAt: string;
+  registryVersion: number;
+  registryDigest: string;
+  rows: DirectToolActivationRow[];
+  precedenceLaw: {
+    order: [
+      "single_turn_override",
+      "work_thread_override",
+      "project_default",
+      "global_default"
+    ];
+    denyWins: true;
+    emergencyRevokeWins: true;
+  };
+  rawExposureScan: {
+    passed: boolean;
+    blockedReasons: string[];
+  };
+};
+```
+
+Expected row shape:
+
+```ts
+type DirectToolActivationRow = {
+  activationRowId: string;
+  toolClassId: string;
+  toolName: string;
+  toolSchemaVersion: string;
+  state:
+    | "inactive"
+    | "active"
+    | "shadow_only"
+    | "suspended"
+    | "revoked"
+    | "expired";
+  scope:
+    | { kind: "global_default" }
+    | { kind: "project_default"; projectId: string }
+    | { kind: "work_thread_override"; workThreadId: string }
+    | { kind: "single_turn_override"; turnId: string };
+  promotionDecisionRef: {
+    decisionId: string;
+    decisionDigest: string;
+  };
+  activationDecision: {
+    activatedBy: "operator" | "project_policy" | "test_fixture" | "migration";
+    decisionId: string;
+    reason: string;
+  };
+  providerRequestShapeSupport: {
+    requestShapeFamily: string;
+    providerDeclarationState:
+      | "declared_live_accepted"
+      | "declared_live_unproved"
+      | "not_declared";
+  };
+  localExecutorState: string;
+  authorityEnvelopePolicyId: string;
+  recoveryReplayClassifierId: string;
+  contextResultEnvelopePolicyId: string;
+  revocationMode?: "next_turn" | "immediate_block_calls";
+};
 ```
 
 Non-goal:
@@ -1424,16 +1683,64 @@ registry.
 Recommended slice:
 
 ```text
-read-only workspace perception + context remaining
+read_file + get_context_remaining
 ```
 
 Required behavior:
 
 - Tool declarations are generated from activation rows.
+- Declaration generation is deterministic and cites activation snapshot,
+  request-shape family, provider profile, model, declaration digest, activation
+  row id, and result envelope policy id.
+- Provider calls must match the frozen declaration snapshot:
+  - declared tool name;
+  - schema version;
+  - argument schema;
+  - non-revoked activation row;
+  - authority envelope.
 - Tool calls route through existing authority envelopes.
 - Tool results are emitted through declared result/context envelopes.
 - Usage attribution and replay/recovery law are preserved.
 - Headless smoke covers the resulting model-visible path.
+- `read_file` is read-only but still sensitive. It requires path containment,
+  path allow/block policy, sensitive path deny list, max bytes/lines, binary
+  handling, redaction scan, truncation/omission markers, operation ledger entry,
+  and recovery classifier.
+- `get_context_remaining` is estimate/status only and cannot authorize
+  `new_context`, compaction, or large input continuation.
+- `view_image` stays metadata/projection only unless separate provider
+  image-input evidence exists.
+
+Required result path:
+
+```text
+local executor result
+  -> result envelope
+  -> raw-exposure scan
+  -> context/tool continuation packet
+  -> provider continuation
+  -> transcript/status projection
+```
+
+Invariant:
+
+```text
+tool result exists locally != provider saw tool result
+```
+
+Headless smoke must prove the full model-visible loop:
+
+```text
+activation row exists
+tool declaration built from activation row
+provider request sent with declaration digest
+provider emits supported tool call
+tool call routed through authority envelope
+local result envelope produced
+result envelope sent to provider
+provider completes or reaches lawful terminal
+usage/recovery evidence recorded
+```
 
 Non-goal:
 
@@ -1468,6 +1775,28 @@ activation in the first slice.
 - Every provider-hosted family declares provider capability evidence.
 - Unsupported and deferred tools render explicit status rather than disappearing.
 - Unsupported tools have visible reasons and no provider declaration.
+- Promotion decisions are scoped by tool class, schema version, request-shape
+  family, provider profile/model, runtime tier, executor version, authority
+  envelope, and result envelope.
+- Fixture-only evidence cannot produce active runtime activation.
+- Activation registry supports inactive, active, shadow-only, suspended,
+  revoked, and expired states.
+- Activation scope precedence is explicit and deny/revoke wins over allow.
+- Provider requests freeze an activation snapshot and tool declaration digest.
+- Tool calls must match the frozen declaration digest and current per-call
+  authority gate.
+- Emergency revocation blocks per-call execution even if a tool was declared
+  earlier.
+- Activation rows can permit declaration eligibility but never bypass per-call
+  authority.
+- First slice includes only `read_file` and `get_context_remaining` unless
+  separate provider visibility proof exists for `view_image`.
+- `read_file` result envelopes enforce sensitive-path, size, truncation,
+  redaction, and provider-visibility policy.
+- `get_context_remaining` result is estimate/status only and cannot authorize
+  `new_context` or compaction.
+- Headless smoke proves declaration, provider tool call, local authority route,
+  result envelope, provider continuation, and terminal state.
 
 ## Failure-Class Checklist
 
@@ -1505,6 +1834,28 @@ thread flattening:
 
 renderer authority leak:
   UI button/provider status enables undeclared tool
+
+promotion laundering:
+  smoke report interpreted as activation
+
+scope widening:
+  promotion for one request/model/project used globally
+
+declaration drift:
+  provider request declares a schema not matching activation row
+
+activation race:
+  registry changed mid-turn without frozen snapshot
+
+emergency revoke bypass:
+  tool call executes after immediate revocation
+
+result-envelope bypass:
+  tool output enters context/transcript outside declared envelope
+
+read-only exfiltration:
+  read_file sends sensitive workspace content because "not mutating" was
+  treated as safe
 ```
 
 ## Non-Goals For This Wave

@@ -3421,7 +3421,7 @@ No UI dashboard.
 No raw prompt/result/path/secret persistence.
 ```
 
-## Wave 11: Direct Tool Promotion And Activation
+## Wave 11: Tool Promotion And Activation
 
 Status: planned.
 
@@ -3441,10 +3441,10 @@ promotion decisions and guarded runtime activation.
 Governing principle:
 
 ```text
-live smoke evidence != runtime enablement
-promotion decision != default activation
-activation config != local execution authority
-tool call != provider-visible result until the transition is witnessed
+live smoke evidence != promotion decision
+promotion decision != activation
+activation != per-call authority
+per-call authority != provider-visible result
 ```
 
 Wave 10 produced the classification, examples, realism report, candidate gate,
@@ -3468,14 +3468,26 @@ Scope summary:
 - Add `direct_tool_promotion_decision_report@1`.
 - Add per-class `direct_tool_promotion_decision_row@1`.
 - Consume `direct_headless_tool_class_live_smoke_report@1`.
+- Scope each decision by tool class, schema version, request-shape family,
+  provider profile/model where relevant, runtime tier, executor version,
+  authority envelope, and result envelope.
 - Preserve decision states:
   - `promotable`;
+  - `promotable_restricted`;
   - `blocked`;
   - `needs_more_evidence`;
   - `not_applicable`.
+- Preserve evidence class:
+  - `fixture_only`;
+  - `diagnostic_only`;
+  - `real_provider_declaration`;
+  - `real_provider_full_loop`;
+  - `real_runtime_full_loop`.
 - Require passing live-smoke evidence, no raw-payload leaks, no renderer
   authority grant, no unexpected provider transport, and no workspace mutation
   outside the class contract.
+- Include restriction and freshness fields so stale or scope-specific evidence
+  cannot become global activation.
 - Include operator/CI evidence posture but do not mutate runtime defaults.
 - Emit explicit blockers for missing evidence, stale report, failed smoke row,
   policy mismatch, class unsupported, or authority envelope gap.
@@ -3504,6 +3516,13 @@ runtime-available direct tools.
 Scope summary:
 
 - Add `direct_tool_activation_registry@1`.
+- Preserve activation states:
+  - `inactive`;
+  - `active`;
+  - `shadow_only`;
+  - `suspended`;
+  - `revoked`;
+  - `expired`.
 - Activation row must cite:
   - promotion decision digest;
   - operator/project config;
@@ -3516,6 +3535,14 @@ Scope summary:
   - project default;
   - work-thread override;
   - single-turn override.
+- Apply scope precedence:
+  - single-turn override;
+  - work-thread override;
+  - project default;
+  - global default.
+- Deny/revoke wins over allow, and emergency revoke blocks per-call execution
+  immediately even if a prior request declared the tool.
+- Freeze activation snapshot and tool declaration digest per provider request.
 - Keep all activation disabled by default unless explicitly configured.
 - Expose renderer-safe activation status and blockers.
 
@@ -3524,6 +3551,7 @@ Non-goals:
 ```text
 No broad activation of all promoted classes.
 No implicit activation from passing smoke.
+No positive global activation in V0 except harmless diagnostic/status tools.
 No bypass of per-call authority gates.
 No UI dashboard beyond status projection.
 ```
@@ -3542,18 +3570,28 @@ model-visible tools.
 Recommended first slice:
 
 ```text
-read-only workspace perception + context remaining
+read_file + get_context_remaining
 ```
 
 Scope summary:
 
 - Wire only classes that pass PR70 and are enabled by PR71.
-- Start with read-only/context tools before mutation or agent lifecycle tools.
+- Start with `read_file` and `get_context_remaining` before mutation or agent
+  lifecycle tools.
+- Treat read-only as sensitive: enforce path containment, sensitive-path deny
+  list, size/line caps, redaction scan, result truncation markers, operation
+  ledger entry, and recovery classifier.
 - Produce provider request tool declarations from activation registry rows.
+- Require provider tool calls to match the frozen declaration snapshot.
 - Route model tool calls through existing authority envelopes.
-- Emit tool result envelopes and context-pack witnesses.
+- Emit tool result envelopes and context-pack witnesses only after raw-exposure
+  scanning; local result existence does not imply provider-visible result.
+- Treat `get_context_remaining` as estimate/status only; it cannot authorize
+  `new_context`, compaction, or large input continuation.
 - Preserve usage attribution and recovery/replay classification.
-- Add headless direct smoke coverage for the first usable slice.
+- Add headless direct smoke coverage for declaration, provider tool call,
+  local authority route, result envelope, provider continuation, and terminal
+  state.
 
 Non-goals:
 
@@ -3562,6 +3600,8 @@ No patch/command activation in this first slice.
 No sub-agent spawning activation.
 No MCP/plugin/provider-hosted activation.
 No recursive tool execution.
+No `view_image` payload visibility unless separate provider image-input proof
+exists.
 ```
 
 ## Update Rules
