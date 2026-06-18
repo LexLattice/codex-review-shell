@@ -760,7 +760,7 @@ No runtime/account mutation.
 
 ### PR 74: Resident Tool Epistemic Catalog
 
-Status: planned.
+Status: implemented in branch `codex/direct-resident-tool-epistemic-catalog`.
 
 Purpose:
 
