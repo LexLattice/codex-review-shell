@@ -449,7 +449,7 @@ const directRuntimeStatusWithLiveText = buildDirectRuntimeStatus({
     },
   },
 });
-assert(directRuntimeStatusWithLiveText.currentCodexLane === "direct text-only", "Expected legacy live text binding without tier to migrate conservatively to text-only routing.");
+assert(directRuntimeStatusWithLiveText.currentCodexLane === "direct", "Expected legacy live text binding without tier to remain on the unified Direct lane.");
 assert(directRuntimeStatusWithLiveText.directRuntime.turnRunnable === true, "Expected accepted live text runtime to enable direct turn status.");
 assert(directRuntimeStatusWithLiveText.liveTextRuntime.turnRunnable === true, "Expected live text runtime status to project turn runnable.");
 assert(directRuntimeStatusWithLiveText.transport.runnable === true, "Expected live text transport status to become runnable only through live runtime evidence.");
@@ -530,12 +530,18 @@ const missingReadLoopController = new DirectLiveTextController({
       rawBackendFramesExposed: false,
     },
   }),
-  implementationProofEvidenceResolver: () => implementationProofFixture(["read_file_loop"]),
+  implementationProofEvidenceResolver: () => implementationProofFixture(["read_file_loop", "apply_patch", "run_command"]),
 });
 const missingReadLoopStatus = missingReadLoopController.statusForProject(activationProject);
 const missingReadLoopCapabilities = buildDirectLiveTextCapabilities(missingReadLoopStatus);
-assert(missingReadLoopStatus.readOnlyToolContinuation.status !== "ready", "Read-only tool continuation must require both read_file and read_file_loop scoped proofs.");
-assert(!missingReadLoopCapabilities.requests.supportedServerMethods.includes("direct/tool/readOnly/requestApproval"), "Read-only approval method must not be advertised when read_file_loop proof is missing.");
+assert(missingReadLoopStatus.readOnlyToolContinuation.status === "ready", "Local read-only tool continuation should remain declared even when scoped proof is missing.");
+assert(missingReadLoopStatus.readOnlyToolContinuation.evidenceState === "local_declared", "Local read-only tool continuation should carry local-declared evidence.");
+assert(missingReadLoopStatus.implementationLaneProof.missingCapabilityIds.includes("read_file_loop"), "Scoped proof status must still report the missing read loop proof.");
+assert(missingReadLoopCapabilities.requests.supportedServerMethods.includes("direct/tool/readOnly/requestApproval"), "Read-only approval method should be advertised for the local implementation lane.");
+assert(missingReadLoopCapabilities.requests.supportedServerMethods.includes("direct/tool/patchApply/requestApproval"), "Patch tool request method should remain available for locally declared implementation tools.");
+assert(missingReadLoopCapabilities.requests.supportedServerMethods.includes("direct/tool/command/requestApproval"), "Command tool request method should remain available for locally declared implementation tools.");
+nodeAssert.equal(missingReadLoopCapabilities.authority.patchApplyApproval, false, "Patch approval must require authoritative scoped proof.");
+nodeAssert.equal(missingReadLoopCapabilities.authority.commandExecutionApproval, false, "Command approval must require authoritative scoped proof.");
 const activationLiveTextOnly = {
   status: "ready",
   turnRunnable: true,
@@ -571,6 +577,43 @@ const textOnlySelection = evaluateDirectTextOnlyRuntimeSelection({
 assert(textOnlySelection.status.state === "eligible", "Expected text-only runtime selection to be eligible without tool continuation evidence.");
 assert(textOnlySelection.status.canEnable === true, "Expected text-only runtime selection to be enableable.");
 assert(!textOnlySelection.status.gateSummary.blockers.some((item) => item.blockerCode === "tool_evidence_missing"), "Text-only selection must not require tool evidence.");
+const locallyDeclaredToolActivation = evaluateDirectExperimentalProjectActivation({
+  project: activationProject,
+  authStatus: activationAuthStatus,
+  liveTextStatus: {
+    ...activationLiveTextOnly,
+    toolsEnabled: true,
+    readOnlyToolContinuation: {
+      status: "ready",
+      evidenceState: "local_declared",
+      scopedProofAuthoritative: false,
+      scopedProofMissingCapabilityIds: ["read_file_loop"],
+    },
+    patchApplyContinuation: {
+      status: "ready",
+      evidenceState: "local_declared",
+      scopedProofAuthoritative: false,
+      scopedProofMissingCapabilityIds: ["apply_patch"],
+    },
+    commandExecutionContinuation: {
+      status: "ready",
+      evidenceState: "local_declared",
+      scopedProofAuthoritative: false,
+      scopedProofMissingCapabilityIds: ["run_command"],
+    },
+    implementationLaneProof: {
+      status: "partial",
+      evidenceState: "partial",
+      missingCapabilityIds: ["read_file_loop", "apply_patch", "run_command"],
+      requiredCapabilities: [],
+    },
+  },
+  sessionStore: activationSessionStoreStatus,
+  imports: {},
+  workspaceStatus: activationWorkspaceStatus,
+});
+assert(locallyDeclaredToolActivation.status.state === "eligible", "Direct implementation should be selectable when local tool schemas are declared.");
+assert(locallyDeclaredToolActivation.status.gateSummary.blockers.some((item) => item.blockerCode === "read_tool_proof_missing"), "Missing scoped proof should remain visible as a degraded implementation witness.");
 const activationLiveWithTool = {
   ...activationLiveTextOnly,
   toolsEnabled: true,
@@ -599,7 +642,7 @@ const profileOnlyImplementationActivation = evaluateDirectExperimentalProjectAct
   imports: {},
   workspaceStatus: activationWorkspaceStatus,
 });
-assert(profileOnlyImplementationActivation.status.state === "text_only_eligible", "Profile-level tool support must not enable Direct Tools without scoped implementation proof.");
+assert(profileOnlyImplementationActivation.status.state === "eligible", "Declared local tool support should enable Direct implementation even without scoped proof artifacts.");
 assert(profileOnlyImplementationActivation.status.gateSummary.blockers.some((item) => item.blockerCode === "read_tool_proof_missing"), "Expected missing scoped read proof blocker.");
 assert(profileOnlyImplementationActivation.status.gateSummary.blockers.some((item) => item.blockerCode === "patch_tool_proof_missing"), "Expected missing scoped patch proof blocker.");
 const activationLiveWithScopedProof = {

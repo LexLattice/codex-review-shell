@@ -95,8 +95,22 @@ function main() {
     requestShape: { requestShapeClass: "direct_text_turn_recent_dialogue@1" },
     nowMs,
   });
+  const implementationRequest = buildRequestManifest({
+    contextPack,
+    model: "gpt-5.3",
+    requestShape: {
+      requestShapeClass: "direct_implementation_initial@1",
+      tools: true,
+      declaredToolNames: ["read_file", "apply_patch", "run_command"],
+    },
+    nowMs,
+  });
   assert(requestManifest.workThreadId === workThread.workThreadId, "request manifest must cite WorkThread id");
   assert(requestManifest.capabilityEvidence.workThreadBindingDigest === binding.bindingDigest, "request manifest must cite binding digest");
+  assert(
+    implementationRequest.requestManifest.enabledFeatures.toolDeclarationCount === 3,
+    "boolean tools request shapes must count declaredToolNames accurately",
+  );
   assert(!providerInput.prompt.includes(workThread.workThreadId), "provider input should not receive WorkThread ids as prompt text");
 
   const summary = rendererSafeContextSummary(contextPack, requestManifest);

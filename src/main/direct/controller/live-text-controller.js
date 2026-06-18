@@ -444,6 +444,14 @@ function proofCapabilitiesReady(proof = {}, capabilityIds = []) {
   return ids.length > 0 && ids.every((capabilityId) => proofCapabilityReady(proof, capabilityId));
 }
 
+function continuationStatusReady(evidence = {}) {
+  return normalizeString(evidence?.status, "") === "ready";
+}
+
+function scopedProofApprovalReady(evidence = {}) {
+  return continuationStatusReady(evidence) && evidence?.scopedProofAuthoritative === true;
+}
+
 function mergeScopedProofWithProfileEvidence(profileEvidence = {}, proof = {}, capabilityIds = "", missingReason = "") {
   const ids = capabilityIdsList(capabilityIds);
   const primaryCapabilityId = ids[0] || "";
@@ -466,12 +474,21 @@ function mergeScopedProofWithProfileEvidence(profileEvidence = {}, proof = {}, c
   const missingRow = rows.find((row) => row?.status !== "ready" || row?.evidenceState !== "runtime_probed") || null;
   return {
     ...profileEvidence,
-    accepted: false,
-    status: missingRow?.status === "expired" ? "evidence_expired" : "proof_required",
-    evidenceState: missingRow?.evidenceState || proof.evidenceState || "missing",
+    accepted: true,
+    status: "ready",
+    evidenceState: "local_declared",
+    scopedProofEvidenceId: "",
+    scopedProofEvidenceIds: [],
+    scopedProofSourceCaseId: "",
     scopedProofCapabilityId: primaryCapabilityId,
     scopedProofCapabilityIds: ids,
-    reason: normalizeString(missingRow?.reason, "") || missingReason,
+    scopedProofAuthoritative: false,
+    scopedProofMissingCapabilityIds: ids.filter((capabilityId) => !proofCapabilityReady(proof, capabilityId)),
+    localImplementationToolDeclared: true,
+    proofStatus: missingRow?.status === "expired" ? "evidence_expired" : "proof_required",
+    proofEvidenceState: missingRow?.evidenceState || proof.evidenceState || "missing",
+    proofReason: normalizeString(missingRow?.reason, "") || missingReason,
+    reason: "",
   };
 }
 
@@ -495,6 +512,8 @@ function buildDirectLiveTextCapabilities(status = {}) {
   const readOnlyToolReady = ready && status.readOnlyToolContinuation?.status === "ready";
   const patchApplyReady = ready && status.patchApplyContinuation?.status === "ready";
   const commandExecutionReady = ready && status.commandExecutionContinuation?.status === "ready";
+  const patchApplyApprovalReady = ready && scopedProofApprovalReady(status.patchApplyContinuation);
+  const commandExecutionApprovalReady = ready && scopedProofApprovalReady(status.commandExecutionContinuation);
   const toolMethods = [];
   if (readOnlyToolReady) toolMethods.push("direct/tool/readOnly/requestApproval");
   if (patchApplyReady) toolMethods.push("direct/tool/patchApply/requestApproval");
@@ -538,18 +557,18 @@ function buildDirectLiveTextCapabilities(status = {}) {
       canUseOutputSchema: false,
     },
     authority: {
-      commandApproval: commandExecutionReady,
-      fileChangeApproval: patchApplyReady,
+      commandApproval: commandExecutionApprovalReady,
+      fileChangeApproval: patchApplyApprovalReady,
       permissionsApproval: false,
       approvalPolicies: [
         ...(readOnlyToolReady ? ["explicit-read-only-tool"] : []),
-        ...(patchApplyReady ? ["explicit-patch-apply"] : []),
-        ...(commandExecutionReady ? ["explicit-command-execution"] : []),
+        ...(patchApplyApprovalReady ? ["explicit-patch-apply"] : []),
+        ...(commandExecutionApprovalReady ? ["explicit-command-execution"] : []),
       ],
       sandboxModes: [],
       readOnlyToolApproval: readOnlyToolReady,
-      patchApplyApproval: patchApplyReady,
-      commandExecutionApproval: commandExecutionReady,
+      patchApplyApproval: patchApplyApprovalReady,
+      commandExecutionApproval: commandExecutionApprovalReady,
     },
     requests: {
       supportedServerMethods: toolMethods,
@@ -627,6 +646,23 @@ function implementationContextInstructions(contextInstructions = "") {
   const contextText = normalizeString(contextInstructions, "");
   if (!contextText) return DEFAULT_IMPLEMENTATION_TOOL_INSTRUCTIONS;
   return `${contextText}\n\n${DEFAULT_IMPLEMENTATION_TOOL_INSTRUCTIONS}`;
+}
+
+function initialDirectTurnRequestShape(requestBody = {}, options = {}) {
+  const implementationTier = options.implementationTier === true;
+  const useRecentDialogue = options.useRecentDialogue === true;
+  const shape = requestShapeForDiagnostic(requestBody);
+  const declaredToolNames = Array.isArray(requestBody.tools)
+    ? requestBody.tools.map((tool) => normalizeString(tool?.name, "")).filter(Boolean)
+    : [];
+  return {
+    ...shape,
+    requestShapeClass: implementationTier
+      ? "direct_implementation_tool_initial@1"
+      : useRecentDialogue ? "direct_text_turn_recent_dialogue@1" : "direct_text_turn_empty_context@1",
+    tools: declaredToolNames.length > 0,
+    declaredToolNames,
+  };
 }
 
 function threadSnapshotFromSession(session = {}) {
@@ -2544,7 +2580,7 @@ class DirectLiveTextController {
       hasContinuityHandle &&
       supportedCallType &&
       supportedNamespace &&
-      patchEvidence.status === "ready" &&
+      scopedProofApprovalReady(patchEvidence) &&
       patchPlan?.status === "dry_run_passed" &&
       patchPlan?.preview?.truncated !== true;
     const obligationDigest = sha256(stableStringify({
@@ -2621,7 +2657,7 @@ class DirectLiveTextController {
       hasContinuityHandle &&
       supportedCallType &&
       supportedNamespace &&
-      commandEvidence.status === "ready" &&
+      scopedProofApprovalReady(commandEvidence) &&
       commandPlan?.status === "planned";
     const obligationDigest = sha256(stableStringify({
       obligationId: normalizeString(obligation.obligationId, ""),
@@ -4309,7 +4345,7 @@ class DirectLiveTextController {
       model: requestBody.model,
       reasoningEffort,
       clientTurnRequestId,
-      requestShape: requestShapeForDiagnostic(requestBody),
+      requestShape: initialDirectTurnRequestShape(requestBody, { implementationTier, useRecentDialogue }),
     });
     this.rememberClientTurnRequest(session.sessionId, clientTurnRequestId, turn.turnId);
     let contextResult = null;
@@ -4326,6 +4362,7 @@ class DirectLiveTextController {
             threadId: session.sessionId,
             turnId: turn.turnId,
             requestPreview: prompt,
+            runtimePath: implementationTier ? "direct-implementation" : "direct-text",
             workThreads: Array.isArray(params.workThreads) ? params.workThreads : [],
             requireControlledRouting,
             ...workThreadCarrier,
@@ -4346,7 +4383,7 @@ class DirectLiveTextController {
           expectedContextProjectionId: normalizeString(params.expectedContextProjectionId, frozenContextProjection?.projectionId || ""),
           expectedContextProjectionDigest: normalizeString(params.expectedContextProjectionDigest, frozenContextProjection?.projectionDigest || ""),
           model: requestBody.model,
-          requestShape: requestShapeForDiagnostic(requestBody),
+          requestShape: initialDirectTurnRequestShape(requestBody, { implementationTier, useRecentDialogue }),
           endpointClass: "chatgpt-codex-responses",
           endpointHash: this.endpoint ? sha256(this.endpoint) : "",
           modelEvidenceRef: normalizeString(status.evidenceId, status.modelEvidenceId || ""),
@@ -4384,7 +4421,7 @@ class DirectLiveTextController {
             });
       }
       requestShape = {
-        ...requestShapeForDiagnostic(requestBody),
+        ...initialDirectTurnRequestShape(requestBody, { implementationTier, useRecentDialogue }),
         directAttachmentCapabilityProjectionDigest: attachmentSubmit.capabilityProjection.projectionDigest,
         directAttachmentSubmitPacketId: attachmentSubmit.packet.packetId,
         directAttachmentSubmitPacketDigest: attachmentSubmit.packet.packetDigest,
@@ -4428,7 +4465,7 @@ class DirectLiveTextController {
           code: error.code || "direct_turn_pre_transport_failed",
           message: error.message || "Direct text turn failed before provider transport.",
         },
-        requestShape: requestShape || requestShapeForDiagnostic(requestBody),
+        requestShape: requestShape || initialDirectTurnRequestShape(requestBody, { implementationTier, useRecentDialogue }),
         controlledRoutingGateState: controlledRoutingResult?.route?.gateState || "",
         preTransportFailed: true,
       });

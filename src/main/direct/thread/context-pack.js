@@ -1231,6 +1231,14 @@ function buildRequestManifest({
   const shapeHash = normalizeString(requestShapeHash, "") || sha256(stableStringify(requestShape));
   const requestManifestId = `request_manifest_${sha256(`${contextPack.contextBuildId}:${model}:${shapeHash}:${providerInput.projection.providerInputTextHash}`).slice(0, 24)}`;
   const builtAt = nowIso(nowMs);
+  const toolDeclarationCount = Array.isArray(requestShape.declaredToolNames)
+    ? requestShape.declaredToolNames.filter(Boolean).length
+    : Array.isArray(requestShape.tools)
+      ? requestShape.tools.filter(Boolean).length
+      : Number(requestShape.toolCount || 0) > 0
+        ? Number(requestShape.toolCount || 0)
+        : 0;
+  const hasToolDeclarations = toolDeclarationCount > 0 || requestShape.tools === true;
   const manifest = {
     schema: DIRECT_REQUEST_MANIFEST_SCHEMA,
     requestManifestId,
@@ -1248,7 +1256,9 @@ function buildRequestManifest({
     endpointHash: normalizeString(endpointHash, ""),
     enabledFeatures: {
       store: false,
-      tools: false,
+      tools: hasToolDeclarations,
+      toolDeclarations: hasToolDeclarations,
+      toolDeclarationCount,
       previousResponseId: false,
       reasoning: false,
       structuredOutput: false,

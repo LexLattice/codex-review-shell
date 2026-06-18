@@ -41,7 +41,7 @@ function normalizeCodexBinding(raw = {}) {
   const defaultProvider = runtimeMode === "legacy-app-server" ? "codex-compatible" : "direct-chatgpt-codex";
   const rawProvider = binding.bindingProvider || (typeof binding.provider === "string" ? binding.provider : "");
   const directTransport = normalizeString(binding.directTransport, "fixture").toLowerCase() === "live-text" ? "live-text" : "fixture";
-  const tierFallback = runtimeMode === "direct-experimental" && directTransport === "live-text" ? "text-only" : "none";
+  const tierFallback = runtimeMode === "direct-experimental" && directTransport === "live-text" ? "implementation-lane" : "none";
   const directTier = runtimeMode === "direct-experimental"
     ? normalizeDirectExperimentalRuntimeTier(binding.directTier || binding.activationTier || binding.runtimeTier, tierFallback)
     : "none";
@@ -154,6 +154,10 @@ function directTextOnlyReadiness({ binding = {}, authStatus = {}, liveTextStatus
   };
 }
 
+function scopedProofApprovalReady(evidence = {}) {
+  return normalizeString(evidence?.status, "") === "ready" && evidence?.scopedProofAuthoritative === true;
+}
+
 function directImplementationLaneReadiness({ activation = {}, sessionStore = {}, liveTextStatus = {} } = {}) {
   const blockers = activation.gateSummary?.blockers;
   const safeBlockers = Array.isArray(blockers)
@@ -177,11 +181,11 @@ function directImplementationLaneReadiness({ activation = {}, sessionStore = {},
   const canApproveReadFile = selected && !hasLiveBlocker && !hasToolBlocker && !degraded ||
     degradedCapabilities.canApproveReadOnlyTool === true;
   const canApproveCommand = selected &&
-    normalizeString(liveTextStatus.commandExecutionContinuation?.status, "") === "ready" &&
+    scopedProofApprovalReady(liveTextStatus.commandExecutionContinuation) &&
     !hasLiveBlocker &&
     !degraded;
   const canApprovePatch = selected &&
-    normalizeString(liveTextStatus.patchApplyContinuation?.status, "") === "ready" &&
+    scopedProofApprovalReady(liveTextStatus.patchApplyContinuation) &&
     !hasLiveBlocker &&
     !degraded;
   return {
