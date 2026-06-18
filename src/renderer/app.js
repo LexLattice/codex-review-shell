@@ -2758,21 +2758,21 @@ function directRuntimePathFromCodex(codex = {}) {
     return "direct-implementation";
   }
   if (directTransport === "live-text" && (directTier === "text-only" || directTier === "text_only")) {
-    return "direct-implementation";
+    return "direct-text";
   }
   return "app-server";
 }
 
 function directRuntimeBindingFieldsForPath(runtimePath, currentCodex = null) {
-  if (runtimePath === "direct-text" || runtimePath === "direct") {
+  if (runtimePath === "direct-text") {
     return {
       bindingProvider: "direct-chatgpt-codex",
       runtimeMode: "direct-experimental",
       directTransport: "live-text",
-      directTier: "implementation-lane",
+      directTier: "text-only",
     };
   }
-  if (runtimePath === "direct-implementation") {
+  if (runtimePath === "direct-implementation" || runtimePath === "direct") {
     return {
       bindingProvider: "direct-chatgpt-codex",
       runtimeMode: "direct-experimental",

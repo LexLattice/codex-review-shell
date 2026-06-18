@@ -593,7 +593,13 @@ async function main() {
     });
     const directImplementationOption = await optionState(window, "direct-implementation");
     const directAuthReady = appServerGateStatus.authStatus === "authenticated";
-    if (liveEvidence.copied && directAuthReady && directImplementationOption && !directImplementationOption.disabled) {
+    if (
+      liveEvidence.copied &&
+      directAuthReady &&
+      appServerGateStatus.directImplementationCanSelect &&
+      directImplementationOption &&
+      !directImplementationOption.disabled
+    ) {
       await selectRuntimePathViaUi(window, "direct-implementation");
       config = readJson(configPath(tempRoot));
       binding = projectBinding(config);
@@ -601,7 +607,7 @@ async function main() {
       assertCase(cases, "electron_app_server_to_direct_switch_active", await selectedRuntimePath(window) === "direct-implementation", {
         selectedRuntimePath: await selectedRuntimePath(window),
       });
-      assertCase(cases, "electron_active_switch_preserves_persisted_default", binding.runtimeMode === "legacy-app-server" && binding.directTier === "none", {
+      assertCase(cases, "electron_direct_switch_commits_activation", binding.runtimeMode === "direct-experimental" && binding.directTier === "implementation-lane", {
         runtimeMode: binding.runtimeMode,
         directTier: binding.directTier,
       });
@@ -625,13 +631,17 @@ async function main() {
       });
     } else {
       directSelectionSkippedReason = liveEvidence.copied
-        ? (directAuthReady ? "direct_text_option_blocked_despite_copied_live_probe_evidence" : "direct_auth_missing_for_embark")
+        ? (directAuthReady
+            ? appServerGateStatus.directImplementationCanSelect
+              ? "direct_option_blocked_despite_selectable_gate"
+              : "direct_implementation_gate_not_selectable"
+            : "direct_auth_missing_for_embark")
         : liveEvidence.reason;
       assertCase(cases, "electron_direct_text_switch_not_faked_without_gate", true, {
         evidenceCopied: liveEvidence.copied,
         authReady: directAuthReady,
-        optionPresent: Boolean(directTextOption),
-        optionDisabled: directTextOption ? directTextOption.disabled : true,
+        optionPresent: Boolean(directImplementationOption),
+        optionDisabled: directImplementationOption ? directImplementationOption.disabled : true,
         skippedReason: directSelectionSkippedReason,
       });
     }

@@ -4122,6 +4122,16 @@ async function setCodexRuntimePath(payload = {}) {
     };
   }
 
+  if (runtimePath === "direct-implementation") {
+    return enableDirectExperimentalProject({
+      ...payload,
+      projectId,
+      clientActivationId: payload.clientActivationId || payload.clientOperationId,
+      expectedRuntimeMode: "direct-experimental",
+      expectedDirectTransport: "live-text",
+    });
+  }
+
   if (!persistDefault) {
     return switchActiveCodexRuntimePath(project, runtimePath, `active-runtime-path-${runtimePath}`);
   }
@@ -4131,16 +4141,6 @@ async function setCodexRuntimePath(payload = {}) {
       ...payload,
       projectId,
       clientOperationId: payload.clientOperationId || payload.clientSelectionId,
-    });
-  }
-
-  if (runtimePath === "direct-implementation") {
-    return enableDirectExperimentalProject({
-      ...payload,
-      projectId,
-      clientActivationId: payload.clientActivationId || payload.clientOperationId,
-      expectedRuntimeMode: "direct-experimental",
-      expectedDirectTransport: "live-text",
     });
   }
 

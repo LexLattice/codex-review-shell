@@ -4200,7 +4200,6 @@ class DirectLiveTextController {
     const directLiveTier = binding.runtimeMode === "direct-experimental" &&
       binding.directTransport === "live-text";
     const textOnlyTier = directLiveTier &&
-      binding.directTransport === "live-text" &&
       binding.directTier === "text-only";
     const implementationTier = directLiveTier &&
       binding.directTier === "implementation-lane";

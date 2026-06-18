@@ -421,17 +421,17 @@ function buildDirectRuntimeStatus(options = {}) {
         ? directImplementationLane.status
         : directTextOnly.selected
           ? "degraded_text_only"
-          : directImplementationLane.canSelect
+          : directImplementationLane.canSelect || directImplementationLane.canEnable
             ? "eligible"
             : directTextOnly.canEnable
               ? "eligible_text_only_fallback"
               : "blocked",
       selected: directImplementationLane.selected || directTextOnly.selected,
-      canSelect: directImplementationLane.canSelect || directTextOnly.canEnable,
+      canSelect: directImplementationLane.canSelect || directImplementationLane.canEnable || directTextOnly.canEnable,
       toolMode: directToolsAvailable ? "tool_capable" : directTextOnly.selected ? "text_only_fallback" : "unavailable",
       toolsAvailable: directToolsAvailable,
       textOnlyFallbackAvailable: directTextOnly.canEnable,
-      blockers: directImplementationLane.canSelect ? [] : directImplementationLane.blockers,
+      blockers: directImplementationLane.canSelect || directImplementationLane.canEnable ? [] : directImplementationLane.blockers,
       fallbackBlockers: directTextOnly.blockers,
       userFacingLabel: "Direct",
     },
