@@ -2214,7 +2214,7 @@ Implemented slice:
 
 ### PR 42: WorkThread Thread Deck And New-Thread Operator UX
 
-Status: planned.
+Status: implemented in branch `codex/direct-sub-agent-e-channel-governance`.
 
 Purpose:
 
@@ -3731,6 +3731,22 @@ Purpose:
 Give orchestrators resident-visible sub-agent state while separating observation
 from interference permission.
 ```
+
+Implemented scope:
+
+- Added `sub_agent_governance_envelope@1` and
+  `sub_agent_governance_agent_row@1`.
+- Added `sub_agent_e_channel_snapshot@1` over the resident epistemic snapshot
+  substrate.
+- Projected graph, progress, inspect, transcript-witness, policy, release, and
+  blocker evidence into resident-visible sub-agent rows.
+- Added no-interference policy handling for `observe_only`, `sealed_audit`,
+  `blind_run`, `operator_locked`, `time_boxed`, and `handoff_only`.
+- Preserved provider declaration, provider transport, workspace mutation,
+  child transcript promotion, raw transcript/prompt/provider frame, and context
+  injection blocking.
+- Added `direct:sub-agent-governance-envelope` regression coverage and wired the
+  new module/script into syntax checks.
 
 ### PR 76: Bridge-System Epistemic Classes
 

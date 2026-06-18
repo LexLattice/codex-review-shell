@@ -806,7 +806,7 @@ No default context injection except explicit debug/test mode.
 
 ### PR 75: Sub-Agent E-Channel And Governance Envelope
 
-Status: planned.
+Status: implemented in branch `codex/direct-sub-agent-e-channel-governance`.
 
 Purpose:
 
@@ -830,6 +830,9 @@ Scope:
   transcripts.
 - Add tests for observe-only spawn, stale child status, child completion, release
   conditions, provider-declaration blocking, and no child transcript flattening.
+- Added `sub_agent_e_channel_snapshot@1` as the resident-visible projection over
+  governance rows.
+- Added `direct:sub-agent-governance-envelope` regression coverage.
 
 Non-goals:
 

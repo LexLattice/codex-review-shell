@@ -910,6 +910,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "The catalog is epistemic only: it does not activate tools, materialize declarations, execute local routes, inject context by default, bypass per-call authority, or mutate request shape.",
   },
   {
+    id: "ic23.sub-agent-e-channel-governance",
+    name: "Sub-agent E-channel governance envelope",
+    role: "observability_surface",
+    implementationState: "partial",
+    directPathPosture: "keep_readonly",
+    sourceFiles: ["src/main/direct/bridge/sub-agent-governance-envelope.js", "src/main/direct/agents/observability.js", "src/main/direct/agents/inspect-wait-containment.js", "scripts/direct-sub-agent-governance-envelope-regression.mjs", "docs/DIRECT_RESIDENT_AGENT_EPISTEMIC_ACCESS_SPEC.md"],
+    ontology: ontologyShape(["sub_agent_governance_envelope", "sub_agent_governance_agent_row", "sub_agent_e_channel_snapshot", "resident_epistemic_row"], "harness", {
+      identityFields: ["workThreadId", "primaryThreadId", "agentThreadId", "envelopeId", "snapshotId"],
+      schema: "sub_agent_governance_envelope@1",
+    }),
+    bridgeFit: "Projects sub-agent graph, progress, inspect, transcript-witness, policy, release, and blocker evidence into resident-visible E-channel rows.",
+    realignment: "This slice enforces observation-only posture: no spawn/send/resume/close/wait activation, no provider declaration, no provider transport, no workspace mutation, no child transcript flattening, no prompt/raw frame exposure, and no context injection by default.",
+  },
+  {
     id: "ic23.control-perception-human-decision-tool-substrate",
     name: "Control, perception, and human-decision tool substrate",
     role: "authority_gate",
