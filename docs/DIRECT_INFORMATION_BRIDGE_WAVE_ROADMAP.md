@@ -3961,7 +3961,7 @@ Implemented scope:
 
 ### PR 80: Headless Resident-Agent Smoke Runner
 
-Status: planned.
+Status: implemented in branch `codex/direct-headless-resident-smoke-runner`.
 
 Purpose:
 
@@ -3988,6 +3988,22 @@ Live smoke is opt-in and should use short bounded prompts. It must not require
 workspace mutation unless a scenario explicitly declares and authorizes that
 transition.
 ```
+
+Implemented scope:
+
+- Added `headless_resident_smoke_case@1`.
+- Added `headless_resident_smoke_case_report@1`.
+- Added `headless_resident_smoke_suite@1`.
+- Added `headless_resident_smoke_suite_report@1`.
+- Added a default resident smoke bundle containing tool, runtime, model, quota,
+  context, and sub-agent E-channel knowledge rows.
+- Added bounded resident smoke prompts that include the compact resident
+  epistemic witness but do not expose raw prompt/provider payloads in reports.
+- Added fixture-safe self-report comparison through the existing
+  `resident_epistemic_self_report_diagnostic@1` primitive.
+- Added an explicit overclaim guard where a model claim that a disabled tool is
+  callable is recorded as a diagnostic mismatch, not promoted into authority.
+- Added `direct:headless-resident-smoke-runner` regression coverage.
 
 ## Update Rules
 
