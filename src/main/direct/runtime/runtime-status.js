@@ -65,8 +65,7 @@ function directRuntimeModeLabel(runtimeMode) {
 function directRuntimeLaneLabel(codex = {}) {
   const binding = normalizeCodexBinding(codex);
   if (binding.runtimeMode === "direct") return "direct runtime";
-  if (binding.runtimeMode === "direct-experimental" && binding.directTransport === "live-text" && binding.directTier === "text-only") return "direct text-only";
-  if (binding.runtimeMode === "direct-experimental" && binding.directTransport === "live-text") return "direct implementation lane";
+  if (binding.runtimeMode === "direct-experimental" && binding.directTransport === "live-text") return "direct";
   if (binding.runtimeMode === "direct-experimental") return "direct experimental scaffold";
   return codex.mode === "managed" ? "legacy app-server bridge" : codex.mode || "legacy app-server";
 }
@@ -291,6 +290,18 @@ function buildDirectRuntimeStatus(options = {}) {
       : liveTextSelected
         ? (liveTextStatus.status === "ready" ? "" : normalizeString(liveTextStatus.reason, "direct_live_text_not_ready"))
         : "direct_session_engine_not_implemented";
+  const directTextOnly = directTextOnlyReadiness({
+    binding,
+    authStatus,
+    liveTextStatus,
+    sessionStore: sessionStore || {},
+  });
+  const directImplementationLane = directImplementationLaneReadiness({
+    activation,
+    sessionStore: sessionStore || {},
+    liveTextStatus,
+  });
+  const directToolsAvailable = directImplementationLane.selected && liveTextStatus.toolsEnabled === true;
 
   return {
     schema: DIRECT_RUNTIME_STATUS_SCHEMA,
@@ -405,17 +416,27 @@ function buildDirectRuntimeStatus(options = {}) {
       reason: normalizeString(liveTextStatus.reason, ""),
       rawBackendFramesExposed: false,
     },
-    directTextOnly: directTextOnlyReadiness({
-      binding,
-      authStatus,
-      liveTextStatus,
-      sessionStore: sessionStore || {},
-    }),
-    directImplementationLane: directImplementationLaneReadiness({
-      activation,
-      sessionStore: sessionStore || {},
-      liveTextStatus,
-    }),
+    direct: {
+      status: directImplementationLane.selected
+        ? directImplementationLane.status
+        : directTextOnly.selected
+          ? "degraded_text_only"
+          : directImplementationLane.canSelect || directImplementationLane.canEnable
+            ? "eligible"
+            : directTextOnly.canEnable
+              ? "eligible_text_only_fallback"
+              : "blocked",
+      selected: directImplementationLane.selected || directTextOnly.selected,
+      canSelect: directImplementationLane.canSelect || directImplementationLane.canEnable || directTextOnly.canEnable,
+      toolMode: directToolsAvailable ? "tool_capable" : directTextOnly.selected ? "text_only_fallback" : "unavailable",
+      toolsAvailable: directToolsAvailable,
+      textOnlyFallbackAvailable: directTextOnly.canEnable,
+      blockers: directImplementationLane.canSelect || directImplementationLane.canEnable ? [] : directImplementationLane.blockers,
+      fallbackBlockers: directTextOnly.blockers,
+      userFacingLabel: "Direct",
+    },
+    directTextOnly,
+    directImplementationLane,
     transport: {
       kind: "sse",
       endpoint: "chatgpt-codex-responses",

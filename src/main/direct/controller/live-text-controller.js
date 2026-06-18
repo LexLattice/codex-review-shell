@@ -4197,11 +4197,11 @@ class DirectLiveTextController {
     const previousSummary = summaries.length ? summaries[summaries.length - 1] : null;
     const previousTurn = previousSummary?.turnId ? this.sessionStore.readTurn(session.sessionId, previousSummary.turnId) : null;
     const binding = normalizeCodexBinding(project.surfaceBinding?.codex || {});
-    const textOnlyTier = binding.runtimeMode === "direct-experimental" &&
-      binding.directTransport === "live-text" &&
+    const directLiveTier = binding.runtimeMode === "direct-experimental" &&
+      binding.directTransport === "live-text";
+    const textOnlyTier = directLiveTier &&
       binding.directTier === "text-only";
-    const implementationTier = binding.runtimeMode === "direct-experimental" &&
-      binding.directTransport === "live-text" &&
+    const implementationTier = directLiveTier &&
       binding.directTier === "implementation-lane";
     const implementationToolNames = implementationTier ? implementationInitialToolNames(status, prompt) : [];
     const useRecentDialogue = existingTurnCount > 0;
@@ -4276,9 +4276,9 @@ class DirectLiveTextController {
       requireControlledRouting ||
       params.controlledRouting?.enabled === true,
     );
-    if (requireControlledRouting && !textOnlyTier) {
-      const error = new Error("Controlled routing currently supports only direct text-only turns.");
-      error.code = "controlled_routing_text_only_required";
+    if (requireControlledRouting && !directLiveTier) {
+      const error = new Error("Controlled routing requires the Direct live backend.");
+      error.code = "controlled_routing_direct_live_required";
       throw error;
     }
     if (
@@ -4318,7 +4318,7 @@ class DirectLiveTextController {
     try {
       if (this.directThreadStore && typeof this.directThreadStore.buildAndPersistContextForTextTurn === "function") {
         this.indexDirectThreadStoreSession(session.sessionId);
-        const hasControlledRoutingInput = controlledRoutingRequested && textOnlyTier;
+        const hasControlledRoutingInput = controlledRoutingRequested;
         if (hasControlledRoutingInput && typeof this.directThreadStore.buildAndPersistControlledRoutingForTextTurn === "function") {
           controlledRoutingResult = this.directThreadStore.buildAndPersistControlledRoutingForTextTurn({
             session,

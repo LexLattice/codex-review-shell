@@ -371,7 +371,7 @@ async function launchApp(tempRoot) {
   await window.waitForSelector("#directRuntimePathSelect", { timeout: 20_000 });
   await window.waitForFunction(() => {
     const select = document.querySelector("#directRuntimePathSelect");
-    return select && ["app-server", "direct-text"].includes(select.value);
+    return select && ["app-server", "direct-implementation"].includes(select.value);
   }, null, { timeout: 20_000 });
   return { app, window };
 }
@@ -555,7 +555,7 @@ async function main() {
   let directTextSelectionExercised = false;
   let directImplementationSelectionExercised = false;
   let directSelectionSkippedReason = "";
-  let directImplementationSkippedReason = "implementation_lane_internal_not_user_selectable";
+  let directImplementationSkippedReason = "";
   let app = null;
   try {
     seedConfig(tempRoot, { ...options, "initial-runtime-path": "app-server" });
@@ -564,10 +564,10 @@ async function main() {
     let window = launched.window;
     assertCase(cases, "electron_app_server_readback", await selectedRuntimePath(window) === "app-server");
     const directOptions = await optionStates(window);
-    assertCase(cases, "electron_runtime_backend_options_visible", ["app-server", "direct-text"].every((value) =>
+    assertCase(cases, "electron_runtime_backend_options_visible", ["app-server", "direct-implementation"].every((value) =>
       directOptions.some((option) => option.value === value)) &&
-      !directOptions.some((option) => option.value === "direct-implementation") &&
-      directOptions.some((option) => option.value === "direct-text" && option.text.includes("Direct")), {
+      !directOptions.some((option) => option.value === "direct-text") &&
+      directOptions.some((option) => option.value === "direct-implementation" && option.text.includes("Direct")), {
       options: directOptions,
     });
     let config = readJson(configPath(tempRoot));
@@ -591,21 +591,27 @@ async function main() {
       hasBridge: appServerGateStatus.hasBridge,
       projectIdPresent: appServerGateStatus.projectIdPresent,
     });
-    const directTextOption = await optionState(window, "direct-text");
+    const directImplementationOption = await optionState(window, "direct-implementation");
     const directAuthReady = appServerGateStatus.authStatus === "authenticated";
-    if (liveEvidence.copied && directAuthReady && directTextOption && !directTextOption.disabled) {
-      await selectRuntimePathViaUi(window, "direct-text");
+    if (
+      liveEvidence.copied &&
+      directAuthReady &&
+      appServerGateStatus.directImplementationCanSelect &&
+      directImplementationOption &&
+      !directImplementationOption.disabled
+    ) {
+      await selectRuntimePathViaUi(window, "direct-implementation");
       config = readJson(configPath(tempRoot));
       binding = projectBinding(config);
-      directTextSelectionExercised = true;
-      assertCase(cases, "electron_app_server_to_direct_text_switch_active", await selectedRuntimePath(window) === "direct-text", {
+      directImplementationSelectionExercised = true;
+      assertCase(cases, "electron_app_server_to_direct_switch_active", await selectedRuntimePath(window) === "direct-implementation", {
         selectedRuntimePath: await selectedRuntimePath(window),
       });
-      assertCase(cases, "electron_active_switch_preserves_persisted_default", binding.runtimeMode === "legacy-app-server" && binding.directTier === "none", {
+      assertCase(cases, "electron_direct_switch_commits_activation", binding.runtimeMode === "direct-experimental" && binding.directTier === "implementation-lane", {
         runtimeMode: binding.runtimeMode,
         directTier: binding.directTier,
       });
-      assertCase(cases, "electron_direct_text_switch_preserved_model_reasoning", binding.model === expectedModel && binding.reasoningEffort === "high", {
+      assertCase(cases, "electron_direct_switch_preserved_model_reasoning", binding.model === expectedModel && binding.reasoningEffort === "high", {
         modelPreserved: binding.model === expectedModel,
         reasoningPreserved: binding.reasoningEffort === "high",
       });
@@ -625,13 +631,17 @@ async function main() {
       });
     } else {
       directSelectionSkippedReason = liveEvidence.copied
-        ? (directAuthReady ? "direct_text_option_blocked_despite_copied_live_probe_evidence" : "direct_auth_missing_for_embark")
+        ? (directAuthReady
+            ? appServerGateStatus.directImplementationCanSelect
+              ? "direct_option_blocked_despite_selectable_gate"
+              : "direct_implementation_gate_not_selectable"
+            : "direct_auth_missing_for_embark")
         : liveEvidence.reason;
       assertCase(cases, "electron_direct_text_switch_not_faked_without_gate", true, {
         evidenceCopied: liveEvidence.copied,
         authReady: directAuthReady,
-        optionPresent: Boolean(directTextOption),
-        optionDisabled: directTextOption ? directTextOption.disabled : true,
+        optionPresent: Boolean(directImplementationOption),
+        optionDisabled: directImplementationOption ? directImplementationOption.disabled : true,
         skippedReason: directSelectionSkippedReason,
       });
     }

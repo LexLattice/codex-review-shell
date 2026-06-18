@@ -2731,13 +2731,13 @@ function directAuthModeSignature(modes) {
 function directRuntimeStatusLabel(status) {
   const textOnly = status?.directTextOnly || {};
   const activation = status?.activation || {};
-  if (activation.state === "enabled") return "direct experimental enabled";
-  if (activation.state === "eligible") return "direct experimental eligible";
-  if (activation.state === "degraded") return "direct experimental degraded";
+  if (activation.state === "enabled") return "Direct enabled";
+  if (activation.state === "eligible") return "Direct eligible";
+  if (activation.state === "degraded") return "Direct degraded";
   if (activation.state === "rollback_required") return "rollback required";
-  if (textOnly.status === "enabled") return "direct text-only selected";
-  if (textOnly.status === "eligible") return "direct text-only ready";
-  if (activation.state === "text_only_eligible") return "text-only preview";
+  if (textOnly.status === "enabled") return "Direct selected (tools unavailable)";
+  if (textOnly.status === "eligible") return "Direct ready (text fallback)";
+  if (activation.state === "text_only_eligible") return "Direct text fallback";
   const runtime = status?.directRuntime || {};
   if (runtime.turnRunnable) return "turns runnable";
   if (runtime.status === "not_selected") return "legacy bridge active";
@@ -2754,35 +2754,25 @@ function directRuntimePathFromCodex(codex = {}) {
   const directTransport = String(codex.directTransport || "fixture").toLowerCase();
   const directTier = String(codex.directTier || codex.activationTier || codex.runtimeTier || "none").toLowerCase();
   if (runtimeMode !== "direct-experimental") return "app-server";
-  if (directTransport === "live-text" && (directTier === "text-only" || directTier === "text_only")) {
-    return "direct-text";
-  }
   if (directTransport === "live-text" && (directTier === "implementation-lane" || directTier === "implementation_lane")) {
+    return "direct-implementation";
+  }
+  if (directTransport === "live-text" && (directTier === "text-only" || directTier === "text_only")) {
     return "direct-text";
   }
   return "app-server";
 }
 
-function codexBindingUsesDirectImplementationLane(codex = {}) {
-  const runtimeMode = String(codex.runtimeMode || "legacy-app-server").toLowerCase();
-  const directTransport = String(codex.directTransport || "fixture").toLowerCase();
-  const directTier = String(codex.directTier || codex.activationTier || codex.runtimeTier || "none").toLowerCase();
-  return runtimeMode === "direct-experimental" &&
-    directTransport === "live-text" &&
-    (directTier === "implementation-lane" || directTier === "implementation_lane");
-}
-
 function directRuntimeBindingFieldsForPath(runtimePath, currentCodex = null) {
-  if (runtimePath === "direct-text" || runtimePath === "direct") {
-    const preserveImplementationLane = codexBindingUsesDirectImplementationLane(currentCodex || {});
+  if (runtimePath === "direct-text") {
     return {
       bindingProvider: "direct-chatgpt-codex",
       runtimeMode: "direct-experimental",
       directTransport: "live-text",
-      directTier: preserveImplementationLane ? "implementation-lane" : "text-only",
+      directTier: "text-only",
     };
   }
-  if (runtimePath === "direct-implementation") {
+  if (runtimePath === "direct-implementation" || runtimePath === "direct") {
     return {
       bindingProvider: "direct-chatgpt-codex",
       runtimeMode: "direct-experimental",
@@ -2837,9 +2827,10 @@ function syncDirectRuntimePathControl(selectEl, applyButton, _status = state.dir
   const directTextOption = [...selectEl.options].find((option) => option.value === "direct-text");
   const directImplementationOption = [...selectEl.options].find((option) => option.value === "direct-implementation");
   if (directTextOption) directTextOption.disabled = false;
-  if (directImplementationOption) directImplementationOption.disabled = true;
-  if (document.activeElement !== selectEl) selectEl.value = currentPath;
-  const selectedPath = selectEl.value || currentPath;
+  if (directImplementationOption) directImplementationOption.disabled = false;
+  const visiblePath = currentPath === "direct-text" && !directTextOption ? "direct-implementation" : currentPath;
+  if (document.activeElement !== selectEl) selectEl.value = visiblePath;
+  const selectedPath = selectEl.value || visiblePath;
   if (applyButton) {
     applyButton.disabled =
       state.directRuntimeLoading ||
@@ -2853,7 +2844,7 @@ function syncDirectRuntimePathControl(selectEl, applyButton, _status = state.dir
           : "This Codex backend is already active for this session.")
       : selectedPath === "direct-text"
         ? `${prefix}, validate Direct gates, and reload the Codex lane.`
-        : `${prefix} and reload the Codex lane.`;
+        : `${prefix}, validate Direct tool gates, and reload the Codex lane.`;
   }
 }
 
@@ -3549,16 +3540,16 @@ function renderDirectRuntimeStatus() {
     const canEnableTextOnly = (status.directTextOnly?.status === "eligible" || status.directTextOnly?.status === "enabled") && canUseTextOnlyAction;
     els.directTextOnlyEnableButton.disabled = !canEnableTextOnly || status.directTextOnly?.status === "enabled";
     els.directTextOnlyEnableButton.title = canEnableTextOnly
-      ? "Use Direct text-only. This can answer prompts but cannot read files, run commands, apply patches, or continue tools."
-      : `Check direct text-only gates: ${directTextOnlyBlockedDetail(status)}`;
+      ? "Use Direct text fallback when the tool-capable Direct lane is unavailable."
+      : `Check Direct fallback gates: ${directTextOnlyBlockedDetail(status)}`;
   }
   if (els.directExperimentalEnableButton) {
     const canUseEnableAction = Boolean(activeProject()) && Boolean(bridge.enableDirectExperimentalRuntime) && !state.directRuntimeLoading;
     const canEnable = (status.directImplementationLane?.canSelect === true || activation.state === "eligible") && canUseEnableAction;
     els.directExperimentalEnableButton.disabled = !canEnable;
     els.directExperimentalEnableButton.title = canEnable
-      ? "Enable the stricter Direct implementation lane for this project."
-      : `Check direct implementation-lane gates: ${directActivationBlockedDetail(status)}`;
+      ? "Enable Direct for this project with tool-capable routing."
+      : `Check Direct tool gates: ${directActivationBlockedDetail(status)}`;
   }
   if (els.directExperimentalRollbackButton) {
     const canRollback = activation.rollbackAvailable === true && !state.directRuntimeLoading;
@@ -7148,11 +7139,11 @@ async function selectDirectTextOnlyRuntime() {
   await refreshDirectRuntimeStatus(project.id);
   const textOnly = state.directRuntimeStatus?.directTextOnly || {};
   if (textOnly.state !== "eligible" && textOnly.status !== "eligible" && textOnly.status !== "enabled") {
-    setLastEvent(`Direct text-only blocked: ${directTextOnlyBlockedDetail(state.directRuntimeStatus)}`);
+    setLastEvent(`Direct text fallback blocked: ${directTextOnlyBlockedDetail(state.directRuntimeStatus)}`);
     return;
   }
   if (textOnly.status !== "enabled") {
-    const confirmed = window.confirm("Use Direct text-only for this project? It can answer prompts but cannot read files, run commands, apply patches, or continue tools.");
+    const confirmed = window.confirm("Use Direct text fallback for this project? This is only intended when tool-capable Direct is unavailable.");
     if (!confirmed) return;
   }
   state.directRuntimeLoading = true;
@@ -7168,10 +7159,10 @@ async function selectDirectTextOnlyRuntime() {
       render();
     }
     await refreshDirectRuntimeStatus(project.id);
-    setLastEvent(result?.duplicate ? "Direct text-only was already selected for this project." : "Direct text-only selected for this project.");
+    setLastEvent(result?.duplicate ? "Direct text fallback was already selected for this project." : "Direct text fallback selected for this project.");
   } catch (error) {
-    state.directRuntimeError = error.message || "Direct text-only selection failed.";
-    setLastEvent(`Direct text-only selection failed: ${state.directRuntimeError}`);
+    state.directRuntimeError = error.message || "Direct text fallback selection failed.";
+    setLastEvent(`Direct text fallback selection failed: ${state.directRuntimeError}`);
   } finally {
     state.directRuntimeLoading = false;
     renderDirectRuntimeStatus();
@@ -7186,8 +7177,9 @@ async function setDirectRuntimePathFromControl(selectEl = els.directRuntimePathS
   const currentPath = selectedDirectRuntimePath({ scope: persistDefault ? "default" : "active" });
   if (runtimePath === currentPath) return;
   let requestRuntimePath = runtimePath;
+  const isDirectPath = runtimePath === "direct-text" || runtimePath === "direct-implementation";
   const options = {
-    clientOperationId: directActivationClientId(runtimePath === "direct-text" ? "client_direct_embark" : "client_runtime_path"),
+    clientOperationId: directActivationClientId(isDirectPath ? "client_direct_embark" : "client_runtime_path"),
     persistDefault,
   };
   const label = runtimePath === "app-server" ? "App Server" : "Direct";
@@ -7195,14 +7187,14 @@ async function setDirectRuntimePathFromControl(selectEl = els.directRuntimePathS
   renderDirectRuntimeStatus();
   try {
     let result;
-    if (runtimePath === "direct-text" && bridge.embarkDirectRuntime) {
+    if (isDirectPath && bridge.embarkDirectRuntime) {
       result = await embarkDirectRuntimeFromControl(project, {
         ...options,
         clientEmbarkId: options.clientOperationId,
         requestedFrom: selectEl?.id || "runtime-selector",
       });
       if (!result?.ok) throw new Error(directEmbarkFailureMessage(result));
-      requestRuntimePath = "direct-text";
+      requestRuntimePath = result.runtimePath || runtimePath;
     } else {
       result = await bridge.setDirectRuntimePath(project.id, requestRuntimePath, options);
     }
