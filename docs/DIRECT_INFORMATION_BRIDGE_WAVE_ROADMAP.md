@@ -3868,6 +3868,7 @@ Planned PR sequence:
 - PR 78: Headless Affordance Command Surface.
 - PR 79: ODEU Affordance Scenario Fixtures.
 - PR 80: Headless Resident-Agent Smoke Runner.
+- PR 81: Live Resident Self-Report Harness.
 
 ### PR 78: Headless Affordance Command Surface
 
@@ -4004,6 +4005,52 @@ Implemented scope:
 - Added an explicit overclaim guard where a model claim that a disabled tool is
   callable is recorded as a diagnostic mismatch, not promoted into authority.
 - Added `direct:headless-resident-smoke-runner` regression coverage.
+
+### PR 81: Live Resident Self-Report Harness
+
+Status: implemented in branch `codex/direct-live-resident-self-report`.
+
+Purpose:
+
+```text
+Run an opt-in real-provider resident self-report through the headless bridge,
+then parse the model's JSON claims and compare them to the selected resident
+epistemic bundle.
+```
+
+Checks:
+
+- Live provider transport starts and completes through the same headless real
+  smoke route used for text turns.
+- The prompt includes the resident epistemic witness and requires claims for
+  selected subject keys.
+- The model's returned JSON is parsed into a self-report artifact.
+- Required resident subjects are present in the bundle and in the model claim
+  set.
+- Mismatches and unknown subjects are reported through
+  `resident_epistemic_self_report_diagnostic@1`.
+- Raw prompt, raw response, provider payload, auth material, and authority
+  grants remain excluded from the summary report.
+
+Safety:
+
+```text
+Live resident self-report is opt-in. The default case is small and read-only:
+it verifies resident awareness of declared tool epistemic rows but does not
+grant tool execution authority or mutate the workspace.
+```
+
+Implemented scope:
+
+- Added `headless_live_resident_self_report_case@1`.
+- Added `headless_live_resident_self_report_suite@1`.
+- Added a pure report builder over the existing resident epistemic bundle and
+  self-report diagnostic primitive.
+- Added a live CLI wrapper over `direct-headless-real-smoke.mjs` so the same
+  headless bridge/runtime route is exercised before claims are inspected.
+- Added deterministic parser/diagnostic regression coverage through
+  `direct:headless-live-resident-self-report:regression`.
+- Added opt-in live command `direct:headless-live-resident-self-report`.
 
 ## Update Rules
 
