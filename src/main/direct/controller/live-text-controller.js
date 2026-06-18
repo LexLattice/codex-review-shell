@@ -444,6 +444,14 @@ function proofCapabilitiesReady(proof = {}, capabilityIds = []) {
   return ids.length > 0 && ids.every((capabilityId) => proofCapabilityReady(proof, capabilityId));
 }
 
+function continuationStatusReady(evidence = {}) {
+  return normalizeString(evidence?.status, "") === "ready";
+}
+
+function scopedProofApprovalReady(evidence = {}) {
+  return continuationStatusReady(evidence) && evidence?.scopedProofAuthoritative === true;
+}
+
 function mergeScopedProofWithProfileEvidence(profileEvidence = {}, proof = {}, capabilityIds = "", missingReason = "") {
   const ids = capabilityIdsList(capabilityIds);
   const primaryCapabilityId = ids[0] || "";
@@ -504,6 +512,8 @@ function buildDirectLiveTextCapabilities(status = {}) {
   const readOnlyToolReady = ready && status.readOnlyToolContinuation?.status === "ready";
   const patchApplyReady = ready && status.patchApplyContinuation?.status === "ready";
   const commandExecutionReady = ready && status.commandExecutionContinuation?.status === "ready";
+  const patchApplyApprovalReady = ready && scopedProofApprovalReady(status.patchApplyContinuation);
+  const commandExecutionApprovalReady = ready && scopedProofApprovalReady(status.commandExecutionContinuation);
   const toolMethods = [];
   if (readOnlyToolReady) toolMethods.push("direct/tool/readOnly/requestApproval");
   if (patchApplyReady) toolMethods.push("direct/tool/patchApply/requestApproval");
@@ -547,18 +557,18 @@ function buildDirectLiveTextCapabilities(status = {}) {
       canUseOutputSchema: false,
     },
     authority: {
-      commandApproval: commandExecutionReady,
-      fileChangeApproval: patchApplyReady,
+      commandApproval: commandExecutionApprovalReady,
+      fileChangeApproval: patchApplyApprovalReady,
       permissionsApproval: false,
       approvalPolicies: [
         ...(readOnlyToolReady ? ["explicit-read-only-tool"] : []),
-        ...(patchApplyReady ? ["explicit-patch-apply"] : []),
-        ...(commandExecutionReady ? ["explicit-command-execution"] : []),
+        ...(patchApplyApprovalReady ? ["explicit-patch-apply"] : []),
+        ...(commandExecutionApprovalReady ? ["explicit-command-execution"] : []),
       ],
       sandboxModes: [],
       readOnlyToolApproval: readOnlyToolReady,
-      patchApplyApproval: patchApplyReady,
-      commandExecutionApproval: commandExecutionReady,
+      patchApplyApproval: patchApplyApprovalReady,
+      commandExecutionApproval: commandExecutionApprovalReady,
     },
     requests: {
       supportedServerMethods: toolMethods,
@@ -2570,7 +2580,7 @@ class DirectLiveTextController {
       hasContinuityHandle &&
       supportedCallType &&
       supportedNamespace &&
-      patchEvidence.status === "ready" &&
+      scopedProofApprovalReady(patchEvidence) &&
       patchPlan?.status === "dry_run_passed" &&
       patchPlan?.preview?.truncated !== true;
     const obligationDigest = sha256(stableStringify({
@@ -2647,7 +2657,7 @@ class DirectLiveTextController {
       hasContinuityHandle &&
       supportedCallType &&
       supportedNamespace &&
-      commandEvidence.status === "ready" &&
+      scopedProofApprovalReady(commandEvidence) &&
       commandPlan?.status === "planned";
     const obligationDigest = sha256(stableStringify({
       obligationId: normalizeString(obligation.obligationId, ""),

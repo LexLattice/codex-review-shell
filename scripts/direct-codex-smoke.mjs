@@ -530,7 +530,7 @@ const missingReadLoopController = new DirectLiveTextController({
       rawBackendFramesExposed: false,
     },
   }),
-  implementationProofEvidenceResolver: () => implementationProofFixture(["read_file_loop"]),
+  implementationProofEvidenceResolver: () => implementationProofFixture(["read_file_loop", "apply_patch", "run_command"]),
 });
 const missingReadLoopStatus = missingReadLoopController.statusForProject(activationProject);
 const missingReadLoopCapabilities = buildDirectLiveTextCapabilities(missingReadLoopStatus);
@@ -538,6 +538,10 @@ assert(missingReadLoopStatus.readOnlyToolContinuation.status === "ready", "Local
 assert(missingReadLoopStatus.readOnlyToolContinuation.evidenceState === "local_declared", "Local read-only tool continuation should carry local-declared evidence.");
 assert(missingReadLoopStatus.implementationLaneProof.missingCapabilityIds.includes("read_file_loop"), "Scoped proof status must still report the missing read loop proof.");
 assert(missingReadLoopCapabilities.requests.supportedServerMethods.includes("direct/tool/readOnly/requestApproval"), "Read-only approval method should be advertised for the local implementation lane.");
+assert(missingReadLoopCapabilities.requests.supportedServerMethods.includes("direct/tool/patchApply/requestApproval"), "Patch tool request method should remain available for locally declared implementation tools.");
+assert(missingReadLoopCapabilities.requests.supportedServerMethods.includes("direct/tool/command/requestApproval"), "Command tool request method should remain available for locally declared implementation tools.");
+nodeAssert.equal(missingReadLoopCapabilities.authority.patchApplyApproval, false, "Patch approval must require authoritative scoped proof.");
+nodeAssert.equal(missingReadLoopCapabilities.authority.commandExecutionApproval, false, "Command approval must require authoritative scoped proof.");
 const activationLiveTextOnly = {
   status: "ready",
   turnRunnable: true,

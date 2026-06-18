@@ -113,6 +113,23 @@ assert.equal(implementationRoute.route.controlledProviderCallAllowed, true);
 assert.equal(implementationRoute.route.providerCallScope, "direct_implementation_tool_initial_turn_start");
 assert.equal(implementationRoute.semanticBrokerPreflight.selectedCandidateId, "controlled_implementation_tool_initial_turn");
 
+const missingToolSurfaceRoute = buildControlledRoutingSlice({
+  projectId,
+  threadId: "thread_controlled_route",
+  turnId: "turn_missing_tool_surface",
+  requestPreview: "continue controlled routing fixture with tools",
+  runtimePath: "direct-implementation",
+  workThread,
+  semanticBrokerPreflight: {
+    ...implementationRoute.semanticBrokerPreflight,
+    selectedToolSurface: "",
+  },
+}, { nowMs });
+validateControlledRoutingSlice(missingToolSurfaceRoute.route);
+assert.equal(missingToolSurfaceRoute.route.gateState, "blocked");
+assert.equal(missingToolSurfaceRoute.route.controlledProviderCallAllowed, false);
+assert(missingToolSurfaceRoute.route.blockerCodes.includes("tool_surface_not_enabled"));
+
 const blockedRoute = buildControlledRoutingSlice({
   projectId,
   threadId: "thread_controlled_route",

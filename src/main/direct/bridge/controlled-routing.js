@@ -309,7 +309,7 @@ function buildControlledRoutingSlice(input = {}, options = {}) {
   if (semanticBrokerPreflight.selectedRouteKind !== routeConfig.routeKind) {
     blockerCodes.push(`route_kind_not_${routeConfig.routeKind}`);
   }
-  if (normalizeString(semanticBrokerPreflight.selectedToolSurface, routeConfig.toolSurface) !== routeConfig.toolSurface) {
+  if (normalizeString(semanticBrokerPreflight.selectedToolSurface, "none") !== routeConfig.toolSurface) {
     blockerCodes.push("tool_surface_not_enabled");
   }
   const gateState = blockerCodes.length ? "blocked" : routeConfig.readyGateState;
