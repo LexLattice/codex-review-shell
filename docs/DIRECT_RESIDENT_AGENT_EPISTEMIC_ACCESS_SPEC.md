@@ -882,7 +882,7 @@ No route execution.
 
 ### PR 77: Resident Epistemic Context Policy And UX
 
-Status: planned.
+Status: implemented in branch `codex/direct-resident-epistemic-context-policy`.
 
 Purpose:
 
@@ -908,6 +908,11 @@ Scope:
   omitted class counts, compact text digest, stale warnings, and no authority
   grants.
 - Add model self-report smoke tests as supplemental coverage.
+- Added `resident_epistemic_context_policy@1`.
+- Added `resident_epistemic_context_bundle@1`.
+- Added `resident_epistemic_settings_projection@1`.
+- Added `resident_epistemic_self_report_diagnostic@1`.
+- Added `direct:resident-epistemic-context-policy` regression coverage.
 
 Non-goals:
 

@@ -938,6 +938,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "This slice is read-only and grants no account mutation, memory mutation, browser automation, MCP execution, route execution, provider tool declaration, local executor authority, or context injection.",
   },
   {
+    id: "ic23.resident-epistemic-context-policy",
+    name: "Resident epistemic context policy and status projection",
+    role: "context_construction",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/bridge/resident-epistemic-context-policy.js", "src/main/direct/bridge/resident-epistemic-snapshot.js", "scripts/direct-resident-epistemic-context-policy-regression.mjs", "docs/DIRECT_RESIDENT_AGENT_EPISTEMIC_ACCESS_SPEC.md"],
+    ontology: ontologyShape(["resident_epistemic_context_policy", "resident_epistemic_context_bundle", "resident_epistemic_settings_projection", "resident_epistemic_self_report_diagnostic"], "harness", {
+      identityFields: ["workThreadId", "snapshotId", "policyId", "bundleId", "projectionId"],
+      schema: "resident_epistemic_context_policy@1",
+    }),
+    bridgeFit: "Applies project/work-thread policy, stale behavior, budgeted row selection, context-item construction, settings/status projection, and self-report diagnostics to resident epistemic snapshots.",
+    realignment: "This slice constructs sanitized context witnesses only: no manual raw-row editing, no arbitrary prompt injection, no disabled capability promotion, no authority grant, and no hidden merge into system/developer text.",
+  },
+  {
     id: "ic23.control-perception-human-decision-tool-substrate",
     name: "Control, perception, and human-decision tool substrate",
     role: "authority_gate",
