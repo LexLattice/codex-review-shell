@@ -672,6 +672,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "Scenario fixtures do not run live resident self-report, sub-agent graph providers, context injection, analytics attribution probes, provider transport beyond the fixture controller, or workspace mutation unless later scenarios explicitly add those authority contracts.",
   },
   {
+    id: "ic13.headless-resident-smoke-runner",
+    name: "Headless resident-agent smoke runner",
+    role: "observability_surface",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/headless/resident-smoke-runner.js", "src/main/direct/headless/affordance-command-surface.js", "scripts/direct-headless-resident-smoke-runner-regression.mjs", "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md"],
+    ontology: ontologyShape(["headless_resident_smoke_case", "headless_resident_smoke_case_report", "headless_resident_smoke_suite_report", "resident_epistemic_self_report_diagnostic"], "harness", {
+      identityFields: ["suiteId", "caseId", "caseClass", "bundleDigest"],
+      schema: "headless_resident_smoke_suite_report@1",
+    }),
+    bridgeFit: "Runs bounded headless smoke checks that submit resident epistemic witness prompts, compare resident self-report claims against the sanitized bundle, and record overclaims as diagnostics rather than authority.",
+    realignment: "The runner uses fixture-safe provider posture by default, does not expose raw prompts or payloads, grants no tool/sub-agent/workspace authority from self-report, and leaves live-provider self-report expansion opt-in for later slices.",
+  },
+  {
     id: "ic13.headless-tool-class-examples",
     name: "Headless tool-class example pack and runner",
     role: "observability_surface",
