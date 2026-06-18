@@ -59,8 +59,17 @@ const graph = {
       parentThreadId: "primary_thread_pr75",
       displayLabel: "Curie",
       role: "probe",
-      lifecycleState: "waiting",
+      lifecycleState: "discovered",
       activityState: "responding",
+    },
+    {
+      agentThreadId: "agent_future",
+      agentNodeId: "node_future",
+      parentThreadId: "primary_thread_pr75",
+      displayLabel: "Feynman",
+      role: "worker",
+      lifecycleState: "created",
+      activityState: "active",
     },
   ],
 };
@@ -75,7 +84,8 @@ const progressRegistry = {
     },
     { agentThreadId: "agent_stale", progressWitnessId: "progress_stale", phase: "stale" },
     { agentThreadId: "agent_done", progressWitnessId: "progress_done", phase: "completed" },
-    { agentThreadId: "agent_blind", progressWitnessId: "progress_blind", phase: "waiting" },
+    { agentThreadId: "agent_blind", progressWitnessId: "progress_blind", phase: "input_sent" },
+    { agentThreadId: "agent_future", progressWitnessId: "progress_future", phase: "created" },
   ],
 };
 
@@ -122,16 +132,17 @@ const envelope = buildSubAgentGovernanceEnvelope({
     {
       agentThreadId: "agent_done",
       noInterferencePolicy: "time_boxed",
-      releaseAt: "2026-06-18T13:00:00.000Z",
+      releaseAt: "2026-06-18T11:00:00.000Z",
       releaseEvidenceRefs: [{ refId: "release_done", source: "sub_agent_e_channel", digest: "sha256:release_done" }],
     },
     { agentThreadId: "agent_blind", noInterferencePolicy: "blind_run" },
+    { agentThreadId: "agent_future", noInterferencePolicy: "time_boxed", releaseAt: "2026-06-18T13:00:00.000Z" },
   ],
 });
 
 assert.deepEqual(validateSubAgentGovernanceEnvelope(envelope), []);
 assert.equal(envelope.schema, "sub_agent_governance_envelope@1");
-assert.equal(envelope.rowCount, 4);
+assert.equal(envelope.rowCount, 5);
 assert.equal(envelope.contextInjectionEnabled, false);
 assert.equal(envelope.providerDeclarationsBlocked, true);
 assert.equal(envelope.childTranscriptPromotionBlocked, true);
@@ -168,11 +179,17 @@ assert.equal(done.releaseEvidenceRefs.length, 1);
 
 const blind = byAgent.get("agent_blind");
 assert.equal(blind.noInterferencePolicy, "blind_run");
+assert.equal(blind.governanceStatus, "observing");
 assert.deepEqual(blind.observableActions, ["observe_summary"]);
 assert.ok(blind.blockedActions.includes("inspect_full_transcript"));
 
+const future = byAgent.get("agent_future");
+assert.equal(future.governanceStatus, "observing");
+assert.equal(future.releaseState, "not_releasable");
+assert.ok(future.blockedActions.includes("send_input"));
+
 const rows = buildSubAgentEpistemicRows({ envelope });
-assert.equal(rows.length, 4);
+assert.equal(rows.length, 5);
 const runningResident = rows.find((row) => row.subjectId === "agent_running");
 assert.equal(runningResident.subjectKind, "sub_agent");
 assert.equal(runningResident.callableInCurrentRequest, false);
@@ -191,7 +208,7 @@ assert.deepEqual(validateSubAgentEChannelSnapshot(snapshot), []);
 assert.equal(snapshot.schema, "sub_agent_e_channel_snapshot@1");
 assert.equal(snapshot.controlAuthorityGranted, false);
 assert.equal(snapshot.contextInjectionEnabled, false);
-assert.equal(snapshot.residentSnapshot.rows.length, 4);
+assert.equal(snapshot.residentSnapshot.rows.length, 5);
 
 const providerLeak = structuredClone(envelope);
 providerLeak.providerDeclarationsBlocked = false;
@@ -204,5 +221,23 @@ assert.ok(validateSubAgentGovernanceEnvelope(flattened).includes("sub_agent_gove
 const missingBlock = structuredClone(envelope);
 missingBlock.rows[0].blockedActions = missingBlock.rows[0].blockedActions.filter((action) => action !== "provider_transport");
 assert.ok(validateSubAgentGovernanceEnvelope(missingBlock).includes("sub_agent_governance_interference_action_not_blocked:agent_running:provider_transport"));
+
+const malformedBlock = structuredClone(envelope);
+malformedBlock.rows[0].blockedActions = null;
+assert.ok(validateSubAgentGovernanceEnvelope(malformedBlock).includes("sub_agent_governance_interference_action_not_blocked:agent_running:provider_declaration"));
+
+const partialEnvelopeRows = buildSubAgentEpistemicRows({
+  envelope: {
+    ...envelope,
+    rows: [
+      {
+        ...running,
+        transcriptWitness: undefined,
+      },
+    ],
+  },
+});
+assert.equal(partialEnvelopeRows[0].transcriptSourceRefs.length, 0);
+assert.equal(partialEnvelopeRows[0].extensions.transcriptItemCount, undefined);
 
 console.log("direct-sub-agent-governance-envelope regression passed");

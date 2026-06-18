@@ -38,11 +38,6 @@ function boundedString(value, maxLength = 320) {
   return text.length > maxLength ? `${text.slice(0, maxLength - 1).trim()}…` : text;
 }
 
-function normalizeStringList(values, fallback = []) {
-  const source = Array.isArray(values) ? values : fallback;
-  return [...new Set(source.map((value) => normalizeString(value, "")).filter(Boolean))].sort((a, b) => a.localeCompare(b));
-}
-
 function stableStringify(value) {
   if (value && typeof value.toJSON === "function") return stableStringify(value.toJSON());
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -112,7 +107,7 @@ function normalizeNode(input = {}, index = 0) {
 }
 
 function progressFor(agentThreadId, progressRegistry = {}) {
-  return (Array.isArray(progressRegistry.entries) ? progressRegistry.entries : [])
+  return (progressRegistry && Array.isArray(progressRegistry.entries) ? progressRegistry.entries : [])
     .find((entry) => entry?.agentThreadId === agentThreadId) || null;
 }
 
@@ -144,12 +139,22 @@ function governanceStatusFor(node = {}, progress = {}) {
   if (lifecycle === "failed") return "failed";
   if (lifecycle === "stale") return "stale";
   if (node.activityState === "blocked" || node.activityState === "attention_required") return "blocked";
-  if (["running", "waiting", "starting", "discovered"].includes(lifecycle)) return "observing";
+  if (["created", "input_sent", "running", "waiting", "starting", "discovered"].includes(lifecycle)) return "observing";
   return "unknown";
+}
+
+function isReleaseDeadlineSatisfied(releaseAt, generatedAt) {
+  const releaseMs = Date.parse(releaseAt);
+  const nowMs = Date.parse(generatedAt);
+  if (!Number.isFinite(releaseMs) || !Number.isFinite(nowMs)) return false;
+  return releaseMs <= nowMs;
 }
 
 function releaseStateFor(policy, node = {}, progress = {}, input = {}) {
   const explicit = normalizeString(input.releaseState, "");
+  if (policy === "time_boxed" && input.releaseAt && !isReleaseDeadlineSatisfied(input.releaseAt, input.generatedAt)) {
+    return "not_releasable";
+  }
   if (RELEASE_STATES.has(explicit)) return explicit;
   if (policy === "operator_locked") return "operator_required";
   if (policy === "time_boxed" && input.releaseAt) return "release_available";
@@ -164,7 +169,6 @@ function blockedActionsFor(policy, status) {
   if (policy === "blind_run") return [...new Set([...base, ...interference, "inspect_full_transcript"])].sort();
   if (policy === "sealed_audit") return [...new Set([...base, ...interference, "release_without_audit"])].sort();
   if (policy === "operator_locked") return [...new Set([...base, ...interference, "release_without_operator"])].sort();
-  if (status === "completed") return [...new Set([...base, ...interference])].sort();
   return [...new Set([...base, ...interference])].sort();
 }
 
@@ -179,6 +183,7 @@ function normalizeAgentPolicy(inputPolicy, defaultPolicy) {
     noInterferencePolicy: normalizePolicy(source.noInterferencePolicy || source.policy, defaultPolicy),
     releaseState: normalizeString(source.releaseState, ""),
     releaseAt: normalizeString(source.releaseAt, ""),
+    generatedAt: normalizeString(source.generatedAt, ""),
     releaseEvidenceRefs: normalizeEvidenceRefs(source.releaseEvidenceRefs, "sub_agent_release"),
   };
 }
@@ -188,6 +193,7 @@ function buildSubAgentGovernanceRow({ node, index = 0, progressRegistry = {}, in
   const progress = progressFor(normalizedNode.agentThreadId, progressRegistry) || {};
   const inspectPacket = inspectFor(normalizedNode.agentThreadId, inspectPackets);
   const selectedPolicy = normalizeAgentPolicy(policy, defaultPolicy);
+  selectedPolicy.generatedAt = selectedPolicy.generatedAt || generatedAt;
   const noInterferencePolicy = selectedPolicy.noInterferencePolicy;
   const status = governanceStatusFor(normalizedNode, progress);
   const releaseState = releaseStateFor(noInterferencePolicy, normalizedNode, progress, selectedPolicy);
@@ -329,9 +335,9 @@ function buildSubAgentEpistemicRows(input = {}) {
     controlAvailable: false,
     controlAuthorityRequired: false,
     epistemicVisibility: row.noInterferencePolicy === "blind_run" ? "summary_only" : "full_status",
-    transcriptVisible: row.transcriptWitness.visibility,
-    transcriptSourceRefs: row.transcriptWitness.transcriptDigest
-      ? [{ refId: row.transcriptWitness.transcriptProjectionId || row.agentThreadId, source: "sub_agent_e_channel", digest: row.transcriptWitness.transcriptDigest }]
+    transcriptVisible: row.transcriptWitness?.visibility,
+    transcriptSourceRefs: row.transcriptWitness?.transcriptDigest
+      ? [{ refId: row.transcriptWitness?.transcriptProjectionId || row.agentThreadId, source: "sub_agent_e_channel", digest: row.transcriptWitness?.transcriptDigest }]
       : [],
     epistemicUse: "planning_context",
     authorityUse: "may_not_act",
@@ -348,7 +354,7 @@ function buildSubAgentEpistemicRows(input = {}) {
       governanceStatus: row.governanceStatus,
       releaseState: row.releaseState,
       observableActions: row.observableActions,
-      transcriptItemCount: row.transcriptWitness.itemCount,
+      transcriptItemCount: row.transcriptWitness?.itemCount,
       parentSelfBindingEnforced: row.parentSelfBindingEnforced,
     },
   }));
@@ -415,7 +421,7 @@ function validateSubAgentGovernanceEnvelope(envelope = {}) {
     if (!GOVERNANCE_STATUSES.has(row.governanceStatus)) errors.push(`sub_agent_governance_invalid_status:${row.agentThreadId || ""}`);
     if (row.parentSelfBindingEnforced !== true) errors.push(`sub_agent_governance_self_binding_missing:${row.agentThreadId || ""}`);
     for (const action of ["provider_declaration", "provider_transport", "workspace_mutation", "child_transcript_promotion"]) {
-      if (!row.blockedActions.includes(action)) errors.push(`sub_agent_governance_interference_action_not_blocked:${row.agentThreadId || ""}:${action}`);
+      if (!Array.isArray(row.blockedActions) || !row.blockedActions.includes(action)) errors.push(`sub_agent_governance_interference_action_not_blocked:${row.agentThreadId || ""}:${action}`);
     }
     for (const flag of ["providerDeclarationBlocked", "providerTransportBlocked", "workspaceMutationBlocked", "childTranscriptPromotionBlocked", "rawTranscriptIncluded", "rawPromptIncluded", "rawProviderFrameIncluded"]) {
       if (row[flag] !== (flag.startsWith("raw") ? false : true)) errors.push(`sub_agent_governance_row_flag_invalid:${row.agentThreadId || ""}:${flag}`);
