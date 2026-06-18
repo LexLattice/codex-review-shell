@@ -882,6 +882,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "The constitution is read-only in this slice: it declares no new provider tools, exposes no local executor, grants no authority gate, mutates no request shape, and only surfaces status rows in settings.",
   },
   {
+    id: "ic23.resident-agent-epistemic-snapshot",
+    name: "Resident agent epistemic snapshot foundation",
+    role: "observability_surface",
+    implementationState: "partial",
+    directPathPosture: "keep_readonly",
+    sourceFiles: ["src/main/direct/bridge/resident-epistemic-snapshot.js", "scripts/direct-resident-epistemic-snapshot-regression.mjs", "docs/DIRECT_RESIDENT_AGENT_EPISTEMIC_ACCESS_SPEC.md"],
+    ontology: ontologyShape(["resident_epistemic_snapshot", "resident_epistemic_row", "resident_epistemic_context_item"], "harness", {
+      identityFields: ["workThreadId", "snapshotId", "rowId", "snapshotDigest"],
+      schema: "resident_epistemic_snapshot@1",
+    }),
+    bridgeFit: "Defines the sanitized E/C/T-separated witness grammar that can tell the resident agent what the harness knows without turning knowledge into control authority.",
+    realignment: "This foundation builds schemas, normalization, compact previews, context-item envelopes, freshness/conflict/omission metadata, and raw-exposure checks only; it injects no context, declares no tools, and grants no authority.",
+  },
+  {
     id: "ic23.control-perception-human-decision-tool-substrate",
     name: "Control, perception, and human-decision tool substrate",
     role: "authority_gate",
