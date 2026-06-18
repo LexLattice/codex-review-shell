@@ -844,7 +844,7 @@ No parent override without release authority.
 
 ### PR 76: Bridge-System Epistemic Classes
 
-Status: planned.
+Status: implemented in branch `codex/direct-bridge-system-epistemic-classes`.
 
 Purpose:
 
@@ -863,6 +863,12 @@ Scope:
 - Keep all rows read-only witnesses.
 - Add class-specific compact summaries and fixture coverage for blocked,
   stale, unknown, unsupported, and exact-runtime states.
+- Added `bridge_system_epistemic_snapshot@1`.
+- Added `bridge_system_epistemic_preview@1`.
+- Extended resident row subject/source vocabularies for model, artifact, stash,
+  MCP, external capability, goal, orchestration, route, module, and workspace
+  evidence classes.
+- Added `direct:bridge-system-epistemic-classes` regression coverage.
 
 Non-goals:
 

@@ -924,6 +924,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "This slice enforces observation-only posture: no spawn/send/resume/close/wait activation, no provider declaration, no provider transport, no workspace mutation, no child transcript flattening, no prompt/raw frame exposure, and no context injection by default.",
   },
   {
+    id: "ic23.bridge-system-epistemic-classes",
+    name: "Bridge-system resident epistemic classes",
+    role: "observability_surface",
+    implementationState: "partial",
+    directPathPosture: "keep_readonly",
+    sourceFiles: ["src/main/direct/bridge/bridge-system-epistemic-classes.js", "src/main/direct/bridge/resident-epistemic-snapshot.js", "scripts/direct-bridge-system-epistemic-classes-regression.mjs", "docs/DIRECT_RESIDENT_AGENT_EPISTEMIC_ACCESS_SPEC.md"],
+    ontology: ontologyShape(["bridge_system_epistemic_snapshot", "bridge_system_epistemic_preview", "resident_epistemic_row"], "harness", {
+      identityFields: ["workThreadId", "codexThreadId", "snapshotId", "subjectKind", "subjectId"],
+      schema: "bridge_system_epistemic_snapshot@1",
+    }),
+    bridgeFit: "Projects runtime/provider/model/quota/account, context/memory/baton/compaction, workspace/artifact/stash, skills/hooks/apps/MCP/external, browser/headless, and thread/work-thread/orchestration witnesses into resident-visible rows.",
+    realignment: "This slice is read-only and grants no account mutation, memory mutation, browser automation, MCP execution, route execution, provider tool declaration, local executor authority, or context injection.",
+  },
+  {
     id: "ic23.control-perception-human-decision-tool-substrate",
     name: "Control, perception, and human-decision tool substrate",
     role: "authority_gate",

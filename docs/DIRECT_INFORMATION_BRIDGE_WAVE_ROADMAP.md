@@ -2419,7 +2419,7 @@ Standing Wave 8 constraints:
 
 ### PR 46: Direct Metadata Adapter And Startup Drift Sentinel
 
-Status: planned.
+Status: implemented in branch `codex/direct-bridge-system-epistemic-classes`.
 
 Purpose:
 
@@ -3758,6 +3758,21 @@ Purpose:
 Extend resident epistemic access beyond tools/sub-agents to runtime, context,
 memory, workspace, module, browser/headless, and orchestration surfaces.
 ```
+
+Implemented scope:
+
+- Added `bridge_system_epistemic_snapshot@1` and
+  `bridge_system_epistemic_preview@1`.
+- Added bridge-system resident rows for runtime, provider, model, quota,
+  account actions, context, memory, baton, compaction, workspace, artifacts,
+  stash, skills, hooks, apps, MCP, external capabilities, browser routes,
+  headless routes, thread, WorkThread, goal, and orchestration state.
+- Extended resident row subject/source vocabularies for the new PR76 classes.
+- Preserved read-only posture: no account mutation, memory mutation, browser
+  automation, MCP execution, route execution, provider declaration, local
+  executor authority, or context injection.
+- Added `direct:bridge-system-epistemic-classes` regression coverage and wired
+  the new module/script into syntax checks.
 
 ### PR 77: Resident Epistemic Context Policy And UX
 
