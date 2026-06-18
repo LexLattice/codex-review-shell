@@ -3623,9 +3623,9 @@ No `view_image` payload visibility unless separate provider image-input proof
 exists.
 ```
 
-## Future Wave: Resident Agent Epistemic Access
+## Wave 12: Resident Agent Epistemic Access
 
-Status: drafted.
+Status: active. PR 73 is merged; PR 74-77 remain planned.
 
 Detailed handoff:
 
@@ -3653,11 +3653,91 @@ sub-agent status visibility != interference permission
 
 Planned PR sequence:
 
-- PR A: Epistemic Snapshot Foundation.
-- PR B: Tool Epistemic Catalog.
-- PR C: Sub-Agent E-Channel And Governance Envelope.
-- PR D: Bridge-System Epistemic Classes.
-- PR E: Resident Epistemic Context Policy And UX.
+- PR 73: Resident Epistemic Snapshot Foundation.
+- PR 74: Resident Tool Epistemic Catalog.
+- PR 75: Sub-Agent E-Channel And Governance Envelope.
+- PR 76: Bridge-System Epistemic Classes.
+- PR 77: Resident Epistemic Context Policy And UX.
+
+### PR 73: Resident Epistemic Snapshot Foundation
+
+Status: merged in branch `codex/direct-resident-epistemic-snapshot`.
+
+Purpose:
+
+```text
+Create the generic resident epistemic snapshot schema, row taxonomy, serializer,
+privacy scanner, compact renderer, context item witness, and regression tests.
+```
+
+Result:
+
+- Added `resident_epistemic_snapshot@1`.
+- Added `resident_epistemic_row@1`.
+- Added `resident_epistemic_context_item@1`.
+- Added deterministic compact resident text rendering with source-row witnesses,
+  omitted class counts, stale/conflict labels, digest validation, and
+  non-omittable row preservation.
+- Added E/C/T channel fields separating epistemic visibility, control
+  availability, and transcript visibility.
+- Added validation for renderer-safe compact text, raw-payload exclusion,
+  callable/status consistency, source-row references, and digest mismatch
+  detection.
+- Added `direct:resident-epistemic-snapshot` regression coverage and included
+  the new module in direct syntax checks and the information-bridge audit.
+
+Non-goals preserved:
+
+```text
+No context policy UI yet.
+No new tool declarations.
+No sub-agent control changes.
+No runtime/account mutation.
+```
+
+### PR 74: Resident Tool Epistemic Catalog
+
+Status: planned.
+
+Purpose:
+
+```text
+Project activation registry, promotion decision, declaration snapshot, and
+per-call gate state into resident-visible tool epistemic rows.
+```
+
+### PR 75: Sub-Agent E-Channel And Governance Envelope
+
+Status: planned.
+
+Purpose:
+
+```text
+Give orchestrators resident-visible sub-agent state while separating observation
+from interference permission.
+```
+
+### PR 76: Bridge-System Epistemic Classes
+
+Status: planned.
+
+Purpose:
+
+```text
+Extend resident epistemic access beyond tools/sub-agents to runtime, context,
+memory, workspace, module, browser/headless, and orchestration surfaces.
+```
+
+### PR 77: Resident Epistemic Context Policy And UX
+
+Status: planned.
+
+Purpose:
+
+```text
+Make epistemic access operator-visible and reliably included in resident context
+under explicit policy.
+```
 
 ## Update Rules
 

@@ -719,9 +719,13 @@ If a capability is missing from the snapshot, the agent should treat it as
 unknown, not unavailable.
 ```
 
-## PR Wave Plan
+## Wave 12 PR Plan
 
-### PR A: Epistemic Snapshot Foundation
+This sequence is tracked in the main roadmap as Wave 12 / PR 73-77.
+
+### PR 73: Resident Epistemic Snapshot Foundation
+
+Status: merged in branch `codex/direct-resident-epistemic-snapshot`.
 
 Purpose:
 
@@ -754,7 +758,9 @@ No sub-agent control changes.
 No runtime/account mutation.
 ```
 
-### PR B: Tool Epistemic Catalog
+### PR 74: Resident Tool Epistemic Catalog
+
+Status: planned.
 
 Purpose:
 
@@ -798,7 +804,9 @@ No per-call authority bypass.
 No default context injection except explicit debug/test mode.
 ```
 
-### PR C: Sub-Agent E-Channel And Governance Envelope
+### PR 75: Sub-Agent E-Channel And Governance Envelope
+
+Status: planned.
 
 Purpose:
 
@@ -831,7 +839,9 @@ No hidden transcript exposure.
 No parent override without release authority.
 ```
 
-### PR D: Bridge-System Epistemic Classes
+### PR 76: Bridge-System Epistemic Classes
+
+Status: planned.
 
 Purpose:
 
@@ -861,7 +871,9 @@ No MCP execution.
 No route execution.
 ```
 
-### PR E: Resident Epistemic Context Policy And UX
+### PR 77: Resident Epistemic Context Policy And UX
+
+Status: planned.
 
 Purpose:
 
