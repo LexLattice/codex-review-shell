@@ -121,18 +121,19 @@ class FixtureDirectTextController {
 }
 
 const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "direct-headless-affordance-scenarios-"));
-const controller = new FixtureDirectTextController(150);
-const daemon = new DirectHeadlessBridgeDaemon(fixtureConfig(rootDir));
-daemon.textRuntime = new DirectHeadlessTextRuntime({
-  store: daemon.store,
-  controller,
-  project: {
-    id: "project_affordance_scenario",
-    name: "Affordance scenario fixture",
-  },
-});
-
+let daemon;
 try {
+  const controller = new FixtureDirectTextController(150);
+  daemon = new DirectHeadlessBridgeDaemon(fixtureConfig(rootDir));
+  daemon.textRuntime = new DirectHeadlessTextRuntime({
+    store: daemon.store,
+    controller,
+    project: {
+      id: "project_affordance_scenario",
+      name: "Affordance scenario fixture",
+    },
+  });
+
   await daemon.listen();
   const suite = buildDefaultHeadlessAffordanceScenarioSuite();
   assert.equal(suite.schema, "headless_affordance_scenario_suite@1");
@@ -186,6 +187,12 @@ try {
     suiteDigest: report.suiteDigest,
   }, null, 2));
 } finally {
-  await daemon.close();
+  if (daemon) {
+    try {
+      await daemon.close();
+    } catch (error) {
+      console.error("Failed to close daemon:", error);
+    }
+  }
   await fs.rm(rootDir, { recursive: true, force: true });
 }

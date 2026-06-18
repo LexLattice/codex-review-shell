@@ -86,6 +86,12 @@ function buildScenario(input = {}, index = 0) {
 
 function buildDefaultHeadlessAffordanceScenarioSuite(options = {}) {
   const commandBase = defaultCommandBase(options);
+  const commandRunId = normalizeString(
+    options.commandRunId,
+    shortDigest(`${Date.now()}:${crypto.randomUUID()}`),
+  );
+  const commandId = (value) => `${value}_${commandRunId}`;
+  const idempotencyKey = (value) => `${value}-${commandRunId}`;
   const scenarios = [
     {
       scenarioClass: "direct_session_creation_resume",
@@ -105,8 +111,8 @@ function buildDefaultHeadlessAffordanceScenarioSuite(options = {}) {
           command: {
             ...commandBase,
             commandKind: "submit_text_turn",
-            commandId: "scenario_direct_session_submit",
-            idempotencyKey: "scenario-direct-session-submit",
+            commandId: commandId("scenario_direct_session_submit"),
+            idempotencyKey: idempotencyKey("scenario-direct-session-submit"),
             text: "Scenario: submit a direct text turn.",
             model: "gpt-5.5",
             reasoningEffort: "medium",
@@ -119,7 +125,7 @@ function buildDefaultHeadlessAffordanceScenarioSuite(options = {}) {
           command: {
             ...commandBase,
             commandKind: "read_turn_packet",
-            commandId: "scenario_direct_session_read_packet",
+            commandId: commandId("scenario_direct_session_read_packet"),
             targetFrom: {
               packetRef: "primaryPacket",
             },
@@ -155,8 +161,8 @@ function buildDefaultHeadlessAffordanceScenarioSuite(options = {}) {
           command: {
             ...commandBase,
             commandKind: "submit_text_turn",
-            commandId: "scenario_active_submit_first",
-            idempotencyKey: "scenario-active-submit-first",
+            commandId: commandId("scenario_active_submit_first"),
+            idempotencyKey: idempotencyKey("scenario-active-submit-first"),
             text: "Scenario: first active turn.",
           },
           expectStatus: "accepted",
@@ -167,8 +173,8 @@ function buildDefaultHeadlessAffordanceScenarioSuite(options = {}) {
           command: {
             ...commandBase,
             commandKind: "queue_text_turn",
-            commandId: "scenario_active_queue_second",
-            idempotencyKey: "scenario-active-queue-second",
+            commandId: commandId("scenario_active_queue_second"),
+            idempotencyKey: idempotencyKey("scenario-active-queue-second"),
             text: "Scenario: queued turn.",
           },
           expectStatus: "accepted",
@@ -180,7 +186,7 @@ function buildDefaultHeadlessAffordanceScenarioSuite(options = {}) {
           command: {
             ...commandBase,
             commandKind: "steer_text_turn",
-            commandId: "scenario_active_steer",
+            commandId: commandId("scenario_active_steer"),
             text: "Scenario: steer current turn.",
             target: {
               threadId: normalizeString(options.threadId, DEFAULT_THREAD_ID),
@@ -194,7 +200,7 @@ function buildDefaultHeadlessAffordanceScenarioSuite(options = {}) {
           command: {
             ...commandBase,
             commandKind: "stop_active_turn",
-            commandId: "scenario_active_stop",
+            commandId: commandId("scenario_active_stop"),
             target: {
               threadId: normalizeString(options.threadId, DEFAULT_THREAD_ID),
             },
@@ -224,7 +230,7 @@ function buildDefaultHeadlessAffordanceScenarioSuite(options = {}) {
           command: {
             ...commandBase,
             commandKind: "read_bridge_status",
-            commandId: "scenario_runtime_status",
+            commandId: commandId("scenario_runtime_status"),
           },
           expectStatus: "completed",
           expectResultSchema: "bridge_daemon_status_projection@1",
@@ -379,7 +385,9 @@ async function runScenarioCommand({ daemon, scenario, step, captures }) {
     }));
   }
   if (step.expectRawPromptHidden) {
-    const rawPromptHidden = result?.result?.promptText === undefined && result?.result?.rawPrompt === undefined;
+    const rawPromptHidden = result?.result?.promptText === undefined
+      && result?.result?.rawPrompt === undefined
+      && result?.result?.rawPromptText === undefined;
     assertions.push(assertionRow({
       assertionId: `${step.stepId}_raw_prompt_hidden`,
       expected: true,
@@ -437,6 +445,9 @@ async function runHeadlessAffordanceScenario({ daemon, scenario }) {
       blockerCode: observed?.blockerCode || "",
     }));
   }
+  const latestCapturedPackets = Array.from(captures.values())
+    .map((packet) => daemon.store.readTurnPacket(packet?.packetId))
+    .filter(Boolean);
   const status = statusFromAssertions(scenario, assertions);
   return {
     schema: HEADLESS_AFFORDANCE_SCENARIO_REPORT_SCHEMA,
@@ -449,7 +460,8 @@ async function runHeadlessAffordanceScenario({ daemon, scenario }) {
     commandResults,
     evidenceRefs: scenario.evidenceRefs,
     rawPayloadIncluded: commandResults.some((row) => row.rawPayloadIncluded === true),
-    providerTransportStarted: commandResults.some((row) => row.providerRequestStarted === true),
+    providerTransportStarted: commandResults.some((row) => row.providerRequestStarted === true)
+      || latestCapturedPackets.some((packet) => packet.providerStarted === true),
     workspaceMutationStarted: false,
   };
 }
@@ -510,7 +522,7 @@ function validateHeadlessAffordanceScenarioSuiteReport(report = {}) {
   if (!Array.isArray(report.reports)) errors.push("missing_reports");
   for (const scenarioReport of Array.isArray(report.reports) ? report.reports : []) {
     for (const error of validateHeadlessAffordanceScenarioReport(scenarioReport)) {
-      errors.push(`${scenarioReport.scenarioId || "unknown"}:${error}`);
+      errors.push(`${scenarioReport?.scenarioId || "unknown"}:${error}`);
     }
   }
   if (report.rawPayloadIncluded === true) errors.push("suite_raw_payload_included");
