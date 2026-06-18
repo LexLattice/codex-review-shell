@@ -35,6 +35,11 @@ function normalizeStringList(values, fallback = []) {
   return [...new Set(source.map((value) => normalizeString(value, "")).filter(Boolean))].sort((a, b) => a.localeCompare(b));
 }
 
+function finiteNumber(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
 function stableStringify(value) {
   if (value && typeof value.toJSON === "function") return stableStringify(value.toJSON());
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -70,7 +75,7 @@ function normalizeClassPolicies(values = []) {
       family: normalizeString(entry.family, ""),
       include: entry.include !== false,
       staleBehavior: normalizeStaleBehavior(entry.staleBehavior),
-      maxRows: Math.max(0, Number(entry.maxRows || 0)),
+      maxRows: Math.max(0, finiteNumber(entry.maxRows, 0)),
       priorityFloor: normalizeString(entry.priorityFloor, ""),
     }))
     .filter((entry) => entry.key || entry.subjectKind || entry.family)
@@ -94,8 +99,8 @@ function buildResidentEpistemicContextPolicy(input = {}) {
     defaultStaleBehavior: normalizeStaleBehavior(source.defaultStaleBehavior, "include_with_warning"),
     classPolicies: normalizeClassPolicies(source.classPolicies),
     projectionBudget: {
-      maxRows: Math.max(1, Number(projectionBudget.maxRows || source.maxRows || 12)),
-      maxChars: Math.max(200, Number(projectionBudget.maxChars || source.maxChars || 2400)),
+      maxRows: Math.max(1, finiteNumber(projectionBudget.maxRows ?? source.maxRows, 12)),
+      maxChars: Math.max(200, finiteNumber(projectionBudget.maxChars ?? source.maxChars, 2400)),
       truncationPolicy: normalizeString(projectionBudget.truncationPolicy || source.truncationPolicy, "priority_then_summary"),
     },
     contextInjectionEnabled: source.contextInjectionEnabled !== false,
@@ -122,10 +127,10 @@ function classPolicyFor(row = {}, policy = {}) {
 function shouldIncludeRow(row = {}, policy = {}) {
   const classPolicy = classPolicyFor(row, policy);
   if (classPolicy?.include === false) return false;
-  if (policy.excludeSubjectKinds?.includes(row.subjectKind)) return false;
-  if (row.family && policy.excludeFamilies?.includes(row.family)) return false;
-  if (policy.includeSubjectKinds?.length && !policy.includeSubjectKinds.includes(row.subjectKind)) return false;
-  if (policy.includeFamilies?.length && (!row.family || !policy.includeFamilies.includes(row.family))) return false;
+  if (Array.isArray(policy.excludeSubjectKinds) && policy.excludeSubjectKinds.includes(row.subjectKind)) return false;
+  if (row.family && Array.isArray(policy.excludeFamilies) && policy.excludeFamilies.includes(row.family)) return false;
+  if (Array.isArray(policy.includeSubjectKinds) && policy.includeSubjectKinds.length && !policy.includeSubjectKinds.includes(row.subjectKind)) return false;
+  if (Array.isArray(policy.includeFamilies) && policy.includeFamilies.length && (!row.family || !policy.includeFamilies.includes(row.family))) return false;
   if (row.subjectKind === "account_action" && !(policy.includeAccountActionsWhenQuotaPressure && policy.quotaPressure)) return false;
   return row.residentVisible !== false;
 }
@@ -165,10 +170,22 @@ function projectRowForPolicy(row = {}, policy = {}) {
 function summarizeCounts(rows = []) {
   const counts = {};
   for (const row of rows) {
+    if (!isPlainObject(row)) continue;
     const key = normalizeString(row.subjectKind, "unknown");
     counts[key] = Number(counts[key] || 0) + 1;
   }
   return Object.fromEntries(Object.entries(counts).sort(([a], [b]) => a.localeCompare(b)));
+}
+
+function mergeCounts(...countMaps) {
+  const merged = {};
+  for (const counts of countMaps) {
+    if (!isPlainObject(counts)) continue;
+    for (const [key, value] of Object.entries(counts)) {
+      merged[key] = Number(merged[key] || 0) + Math.max(0, Number(value) || 0);
+    }
+  }
+  return Object.fromEntries(Object.entries(merged).filter(([, value]) => value > 0).sort(([a], [b]) => a.localeCompare(b)));
 }
 
 function applyResidentEpistemicContextPolicy({ snapshot, policy } = {}) {
@@ -181,6 +198,7 @@ function applyResidentEpistemicContextPolicy({ snapshot, policy } = {}) {
   const staleWarnings = [];
   let contextInjectionBlocked = contextPolicy.contextInjectionEnabled === false;
   for (const row of snapshot.rows) {
+    if (!isPlainObject(row)) continue;
     if (!shouldIncludeRow(row, contextPolicy)) {
       omittedRows.push({ row, reason: "class_or_visibility_policy" });
       continue;
@@ -201,7 +219,7 @@ function applyResidentEpistemicContextPolicy({ snapshot, policy } = {}) {
     }
     includedRows.push(projected.row);
   }
-  const policySnapshot = buildResidentEpistemicSnapshot({
+  const snapshotInput = {
     workThreadId: snapshot.workThreadId,
     codexThreadId: snapshot.codexThreadId,
     runtimeFamily: snapshot.runtimeFamily,
@@ -211,8 +229,16 @@ function applyResidentEpistemicContextPolicy({ snapshot, policy } = {}) {
     sourceDigests: [snapshot.snapshotDigest, contextPolicy.policyDigest, ...(Array.isArray(snapshot.sourceDigests) ? snapshot.sourceDigests : [])],
     projectionBudget: contextPolicy.projectionBudget,
     rows: includedRows,
-    omittedClassCounts: summarizeCounts(omittedRows.map((entry) => entry.row)),
-    snapshotCompleteness: omittedRows.length || staleWarnings.length ? "budgeted_with_omissions" : "complete",
+  };
+  const provisionalSnapshot = buildResidentEpistemicSnapshot(snapshotInput);
+  const omittedClassCounts = mergeCounts(
+    summarizeCounts(omittedRows.map((entry) => entry.row)),
+    provisionalSnapshot.omittedClassCounts,
+  );
+  const policySnapshot = buildResidentEpistemicSnapshot({
+    ...snapshotInput,
+    omittedClassCounts,
+    snapshotCompleteness: Object.keys(omittedClassCounts).length || staleWarnings.length ? "budgeted_with_omissions" : "complete",
   });
   const contextItem = contextInjectionBlocked
     ? null
@@ -300,7 +326,7 @@ function normalizeClaims(selfReport = {}) {
 
 function buildResidentSelfReportDiagnostics({ snapshot, selfReport } = {}) {
   const rows = Array.isArray(snapshot?.rows) ? snapshot.rows : [];
-  const rowByKey = new Map(rows.map((row) => [rowKey(row), row]));
+  const rowByKey = new Map(rows.filter(isPlainObject).map((row) => [rowKey(row), row]));
   const findings = normalizeClaims(selfReport).map((claim) => {
     const row = rowByKey.get(`${claim.subjectKind}:${claim.subjectId}`);
     if (!row) {

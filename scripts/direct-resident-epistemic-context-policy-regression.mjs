@@ -107,6 +107,14 @@ assert.equal(policy.manualRawRowEditingAllowed, false);
 assert.equal(policy.arbitraryPromptInjectionAllowed, false);
 assert.equal(policy.disabledCapabilityPromotionAllowed, false);
 
+const malformedBudgetPolicy = buildResidentEpistemicContextPolicy({
+  classPolicies: [{ subjectKind: "runtime", maxRows: "abc" }],
+  projectionBudget: { maxRows: "abc", maxChars: "not-a-number" },
+});
+assert.equal(malformedBudgetPolicy.classPolicies[0].maxRows, 0);
+assert.equal(malformedBudgetPolicy.projectionBudget.maxRows, 12);
+assert.equal(malformedBudgetPolicy.projectionBudget.maxChars, 2400);
+
 const bundle = applyResidentEpistemicContextPolicy({
   snapshot: baseSnapshot.residentSnapshot,
   policy,
@@ -177,8 +185,41 @@ assert.equal(blockedBundle.contextInjectionBlocked, true);
 assert.equal(blockedBundle.contextItem, null);
 assert.equal(blockedBundle.staleWarnings.length, 1);
 
+const budgetPolicy = buildResidentEpistemicContextPolicy({
+  includeSubjectKinds: ["runtime", "model", "context", "memory", "browser", "mcp", "goal"],
+  projectionBudget: { maxRows: 2, maxChars: 500 },
+});
+const budgetBundle = applyResidentEpistemicContextPolicy({
+  snapshot: baseSnapshot.residentSnapshot,
+  policy: budgetPolicy,
+});
+assert.deepEqual(validateResidentEpistemicContextBundle(budgetBundle), []);
+assert.equal(budgetBundle.contextInjectionBlocked, false);
+assert.ok(Object.values(budgetBundle.omittedClassCounts).reduce((total, count) => total + count, 0) > 0);
+assert.equal(budgetBundle.policySnapshot.snapshotCompleteness, "budgeted_with_omissions");
+
+const plainPolicyWithBadArrays = {
+  includeSubjectKinds: "runtime",
+  excludeSubjectKinds: 7,
+  includeFamilies: null,
+  excludeFamilies: false,
+  projectionBudget: { maxRows: 4, maxChars: 900 },
+};
+const malformedRowsSnapshot = {
+  ...baseSnapshot.residentSnapshot,
+  rows: [null, ...baseSnapshot.residentSnapshot.rows, "bad-row"],
+};
+const malformedBundle = applyResidentEpistemicContextPolicy({
+  snapshot: malformedRowsSnapshot,
+  policy: plainPolicyWithBadArrays,
+});
+assert.deepEqual(validateResidentEpistemicContextBundle(malformedBundle), []);
+
 const diagnostic = buildResidentSelfReportDiagnostics({
-  snapshot: bundle.policySnapshot,
+  snapshot: {
+    ...bundle.policySnapshot,
+    rows: [null, ...bundle.policySnapshot.rows],
+  },
   selfReport: {
     claims: [
       { subjectKind: "runtime", subjectId: "runtime-route", field: "status", value: "known_available" },
