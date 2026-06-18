@@ -139,6 +139,15 @@ function requiredClaimPresenceAssertions(smokeCase = {}, selfReport = {}) {
     assertionRow(`required_claim_present:${key}`, true, claimed.has(key), claimed.has(key), "resident_required_claim_missing"));
 }
 
+function requiredEvaluatedClaimAssertions(smokeCase = {}, diagnostic = {}) {
+  const findings = Array.isArray(diagnostic.findings) ? diagnostic.findings : [];
+  const evaluated = new Set(findings
+    .filter((finding) => finding?.status === "matched" || finding?.status === "mismatch")
+    .map((finding) => claimSubjectKey(finding.claim)));
+  return normalizeStringList(smokeCase.requiredBundleSubjects).map((key) =>
+    assertionRow(`required_claim_evaluated:${key}`, true, evaluated.has(key), evaluated.has(key), "resident_required_claim_not_evaluated"));
+}
+
 function safeTransportSummary(transportReport = {}) {
   const source = isPlainObject(transportReport) ? transportReport : {};
   return {
@@ -180,6 +189,7 @@ function buildLiveResidentSelfReportCaseReport({
     assertionRow("expected_unknown_subject_count", Math.max(0, Number(safeCase.expectedUnknownSubjectCount || 0) || 0), diagnostic.unknownSubjectCount, diagnostic.unknownSubjectCount === Math.max(0, Number(safeCase.expectedUnknownSubjectCount || 0) || 0), "resident_unknown_subject_count_unexpected"),
     ...requiredSubjectPresenceAssertions(safeCase, bundle),
     ...requiredClaimPresenceAssertions(safeCase, parse.selfReport),
+    ...requiredEvaluatedClaimAssertions(safeCase, diagnostic),
   ];
   const rawTransportLeak = transportReport?.rawPromptIncluded === true ||
     transportReport?.rawResponseIncluded === true ||

@@ -213,6 +213,14 @@ function spawnNode(args, options = {}) {
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString("utf8");
     });
+    child.on("error", (error) => {
+      resolve({
+        code: -1,
+        signal: null,
+        stdout,
+        stderr: `${stderr}${stderr ? "\n" : ""}${error.message}`,
+      });
+    });
     child.on("close", (code, signal) => {
       resolve({ code, signal, stdout, stderr });
     });
@@ -264,7 +272,7 @@ async function runCase({ options, outputRoot, appUserDataRoot, suite, bundle, sm
       rendererSafeMessage: child.stderr.slice(0, 500),
     },
   };
-  const session = readJsonFile(path.join(sessionRoot, "sessions", threadId, "session.json")) || {};
+  const session = readJsonFile(path.join(sessionRoot, threadId, "session.json")) || {};
   const assistantText = assistantTextFromSession(session, transportReport.turnId);
   return buildLiveResidentSelfReportCaseReport({
     smokeCase,

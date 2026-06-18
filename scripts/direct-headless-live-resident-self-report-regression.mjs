@@ -85,6 +85,22 @@ const missingRequiredClaim = buildLiveResidentSelfReportCaseReport({
 assert.equal(missingRequiredClaim.status, "fail", "omitting a required subject claim should fail");
 assert(missingRequiredClaim.assertions.some((entry) => entry.assertionId === "required_claim_present:tool:direct.patch_apply" && entry.passed === false));
 
+const unsupportedFieldRequiredClaim = buildLiveResidentSelfReportCaseReport({
+  smokeCase: toolCase,
+  bundle,
+  assistantText: JSON.stringify({
+    claims: [
+      claim("tool", "direct.read_file", "unsupportedField", true),
+      claim("tool", "direct.patch_apply", "status", "known_disabled"),
+    ],
+  }),
+  transportReport,
+  promptText: prompt,
+});
+assert.equal(unsupportedFieldRequiredClaim.status, "fail", "unsupported fields must not satisfy required claim coverage");
+assert(unsupportedFieldRequiredClaim.assertions.some((entry) => entry.assertionId === "required_claim_present:tool:direct.read_file" && entry.passed === true));
+assert(unsupportedFieldRequiredClaim.assertions.some((entry) => entry.assertionId === "required_claim_evaluated:tool:direct.read_file" && entry.passed === false));
+
 const invalidJson = buildLiveResidentSelfReportCaseReport({
   smokeCase: toolCase,
   bundle,
