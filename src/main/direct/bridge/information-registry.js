@@ -644,6 +644,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "Controls are limited to daemon intake pause/resume/drain/shutdown request and do not mutate route authority, start provider calls, deliver external actions, approve requests, or expose raw payloads.",
   },
   {
+    id: "ic13.headless-affordance-command-surface",
+    name: "Headless affordance command surface",
+    role: "governance_routing",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/headless/affordance-command-surface.js", "src/main/direct/headless/bridge-daemon.js", "scripts/direct-headless-affordance-command-surface-regression.mjs", "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md"],
+    ontology: ontologyShape(["headless_affordance_command", "headless_affordance_command_result", "headless_affordance_authority_decision"], "harness", {
+      identityFields: ["commandId", "commandKind", "clientId", "workThreadId"],
+      schema: "headless_affordance_command@1",
+    }),
+    bridgeFit: "Provides an authenticated backend-only command surface that maps operator-like affordances to existing headless bridge transitions, returns sanitized command results, and preserves blocked evidence for unsupported steer/stop semantics.",
+    realignment: "This slice does not bypass route/client authority, does not expose raw prompts or provider payloads in command results, and does not claim true steer/stop support until the headless runtime exposes those transitions.",
+  },
+  {
     id: "ic13.headless-tool-class-examples",
     name: "Headless tool-class example pack and runner",
     role: "observability_surface",

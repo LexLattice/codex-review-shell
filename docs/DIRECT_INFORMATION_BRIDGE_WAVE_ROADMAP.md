@@ -3871,7 +3871,7 @@ Planned PR sequence:
 
 ### PR 78: Headless Affordance Command Surface
 
-Status: planned.
+Status: implemented in branch `codex/direct-headless-affordance-command-surface`.
 
 Purpose:
 
@@ -3899,6 +3899,20 @@ No bypass of UI-equivalent authority gates.
 No hidden mutation of WorkThread/default/runtime settings.
 No synthetic success when the backend transition failed.
 ```
+
+Implemented scope:
+
+- Added `headless_affordance_command@1`.
+- Added `headless_affordance_command_result@1`.
+- Added an authenticated `/v1/bridge/affordance-commands` endpoint.
+- Added high-level command handling for status reads, text submit, queue submit,
+  daemon controls, and safe reads of events/turn packets/reduced results/outbox
+  actions/human decisions.
+- Kept true steer and active-turn stop as explicit blocked affordances until the
+  headless runtime exposes those semantics.
+- Sanitized returned turn packets so prompt text and provider payloads are not
+  returned through the affordance result.
+- Added `direct:headless-affordance-command-surface` regression coverage.
 
 ### PR 79: ODEU Affordance Scenario Fixtures
 
