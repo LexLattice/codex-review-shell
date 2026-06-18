@@ -3623,6 +3623,42 @@ No `view_image` payload visibility unless separate provider image-input proof
 exists.
 ```
 
+## Future Wave: Resident Agent Epistemic Access
+
+Status: drafted.
+
+Detailed handoff:
+
+```text
+docs/DIRECT_RESIDENT_AGENT_EPISTEMIC_ACCESS_SPEC.md
+```
+
+Goal:
+
+```text
+Make the resident agent lawfully in the know about the bridge world: callable
+tools, known disabled capabilities, sub-agent E-channel state, runtime/account
+posture, context/memory/baton state, workspace/artifact surfaces, external
+modules, browser/headless routes, and orchestration state.
+```
+
+Governing principle:
+
+```text
+epistemic access != control authority
+control availability != per-call authorization
+tool catalog != model-visible declaration
+sub-agent status visibility != interference permission
+```
+
+Planned PR sequence:
+
+- PR A: Epistemic Snapshot Foundation.
+- PR B: Tool Epistemic Catalog.
+- PR C: Sub-Agent E-Channel And Governance Envelope.
+- PR D: Bridge-System Epistemic Classes.
+- PR E: Resident Epistemic Context Policy And UX.
+
 ## Update Rules
 
 After each PR:
@@ -3649,3 +3685,14 @@ Items that are real but not yet assigned to a wave:
 - Project-scoped persistent web/session policy for future governed browser
   surfaces.
 - Direct-native import/migration strategy for selected app-server transcripts.
+- ChatGPT account rate-limit reset credits. Upstream Codex `rust-v0.141.0`
+  exposes reset-bank evidence through `account/rateLimits/read`
+  (`rateLimitResetCredits.availableCount`) and the mutation
+  `account/rateLimitResetCredit/consume` with `{ idempotencyKey }`.
+  Backend paths observed in 0.141 are `/api/codex/rate-limit-reset-credits/consume`
+  for Codex API style and `/wham/rate-limit-reset-credits/consume` for ChatGPT
+  API style. Outcomes are `reset`, `nothingToReset`, `noCredit`, and
+  `alreadyRedeemed`. This requires ChatGPT account auth, not API-key auth. Direct
+  implementation should treat it as an explicit account mutation: read current
+  limits/available reset count, require operator confirmation, consume with a UUID
+  idempotency key, refetch limits afterward, and record an authority/evidence row.
