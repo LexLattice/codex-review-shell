@@ -3625,7 +3625,7 @@ exists.
 
 ## Wave 12: Resident Agent Epistemic Access
 
-Status: active. PR 73 is merged; PR 74-77 remain planned.
+Status: complete. PR 73-77 are merged.
 
 Detailed handoff:
 
@@ -3653,11 +3653,11 @@ sub-agent status visibility != interference permission
 
 Planned PR sequence:
 
-- PR 73: Resident Epistemic Snapshot Foundation.
-- PR 74: Resident Tool Epistemic Catalog.
-- PR 75: Sub-Agent E-Channel And Governance Envelope.
-- PR 76: Bridge-System Epistemic Classes.
-- PR 77: Resident Epistemic Context Policy And UX.
+- PR 73: Resident Epistemic Snapshot Foundation. Merged.
+- PR 74: Resident Tool Epistemic Catalog. Merged.
+- PR 75: Sub-Agent E-Channel And Governance Envelope. Merged.
+- PR 76: Bridge-System Epistemic Classes. Merged.
+- PR 77: Resident Epistemic Context Policy And UX. Merged.
 
 ### PR 73: Resident Epistemic Snapshot Foundation
 
@@ -3697,7 +3697,7 @@ No runtime/account mutation.
 
 ### PR 74: Resident Tool Epistemic Catalog
 
-Status: implemented in branch `codex/direct-resident-tool-epistemic-catalog`.
+Status: merged in branch `codex/direct-resident-tool-epistemic-catalog`.
 
 Purpose:
 
@@ -3723,7 +3723,7 @@ Scope summary:
 
 ### PR 75: Sub-Agent E-Channel And Governance Envelope
 
-Status: planned.
+Status: merged in branch `codex/direct-sub-agent-e-channel-governance`.
 
 Purpose:
 
@@ -3750,7 +3750,7 @@ Implemented scope:
 
 ### PR 76: Bridge-System Epistemic Classes
 
-Status: planned.
+Status: merged in branch `codex/direct-bridge-system-epistemic-classes`.
 
 Purpose:
 
@@ -3776,7 +3776,7 @@ Implemented scope:
 
 ### PR 77: Resident Epistemic Context Policy And UX
 
-Status: planned.
+Status: merged in branch `codex/direct-resident-epistemic-context-policy`.
 
 Purpose:
 
@@ -3801,6 +3801,164 @@ Implemented scope:
   system/developer text.
 - Added `direct:resident-epistemic-context-policy` regression coverage and wired
   the new module/script into syntax checks.
+
+Wave 12 result:
+
+```text
+The direct bridge can now produce resident-safe epistemic snapshots for tools,
+sub-agents, bridge-system state, and context-policy-selected resident context.
+The resident agent can be told what is available, disabled, stale, omitted,
+blocked, or observable without that knowledge itself becoming authority.
+```
+
+Remaining scope moves to later waves:
+
+```text
+- Inject policy-selected resident context into live direct model requests by
+  default once the runtime path is ready for broad end-to-end testing.
+- Add live self-report smoke checks that compare model-visible claims against
+  the current resident epistemic bundle.
+- Use the same snapshot grammar for headless affordance tests so backend
+  behavior can be validated without requiring UI interaction.
+```
+
+## Wave 13: Headless Affordance Verification Harness
+
+Status: planned.
+
+Detailed handoff:
+
+```text
+docs/DIRECT_HEADLESS_DAEMON_SERVICE_SPEC.md
+docs/DIRECT_RESIDENT_AGENT_EPISTEMIC_ACCESS_SPEC.md
+```
+
+Goal:
+
+```text
+Use the headless direct bridge as a backend-only test harness that can simulate
+operator-facing affordance transitions, exercise direct runtime behavior, and
+verify ODEU witnesses without requiring the desktop UI.
+```
+
+Core stance:
+
+```text
+headless test != UI automation
+headless command != unrestricted backend mutation
+affordance simulation != human authority bypass
+backend witness != semantic success by itself
+```
+
+Why this wave exists:
+
+```text
+The desktop UX is the human-facing projection, but most direct-path affordances
+have a deeper backend contract: target resolution, context construction,
+authority envelopes, tool catalog availability, sub-agent E-channel state,
+runtime metadata, analytics facts, and resident epistemic bundles.
+
+Those contracts should be testable directly through headless commands so the
+agent in this development thread can verify backend behavior without manually
+clicking through the UI for every iteration.
+```
+
+Planned PR sequence:
+
+- PR 78: Headless Affordance Command Surface.
+- PR 79: ODEU Affordance Scenario Fixtures.
+- PR 80: Headless Resident-Agent Smoke Runner.
+
+### PR 78: Headless Affordance Command Surface
+
+Status: planned.
+
+Purpose:
+
+```text
+Expose a narrow set of headless commands that mirror high-level operator
+affordances while preserving the same backend authority checks used by the UI.
+```
+
+Candidate command families:
+
+- Start or resume a direct session for a WorkThread.
+- Send text, steer, queue, and stop through the same transition envelopes as
+  the desktop composer.
+- Read runtime facts, context facts, quota facts, analytics facts, and resident
+  epistemic snapshots.
+- Request tool catalog previews and sub-agent E-channel snapshots.
+- Produce a structured affordance result report with evidence refs and
+  authority decisions.
+
+Non-goals:
+
+```text
+No raw provider payload dumps.
+No bypass of UI-equivalent authority gates.
+No hidden mutation of WorkThread/default/runtime settings.
+No synthetic success when the backend transition failed.
+```
+
+### PR 79: ODEU Affordance Scenario Fixtures
+
+Status: planned.
+
+Purpose:
+
+```text
+Define reusable scenario fixtures that exercise direct-path affordance classes
+against deterministic expectations and fixture-safe provider/runtime posture.
+```
+
+Scenario classes:
+
+- Direct session creation and resume.
+- Active-turn steer/queue/stop semantics.
+- Runtime metadata and context-pressure projection.
+- Tool availability self-report parity.
+- Sub-agent observable-state governance.
+- Context/memory/baton/compaction witness inclusion and omission.
+- Analytics fact persistence and turn attribution.
+
+Acceptance posture:
+
+```text
+Each scenario produces an explicit expected/observed report. A scenario may
+pass, fail, skip for missing provider evidence, or degrade for unsupported
+runtime capability. Skips and degraded outcomes are first-class evidence, not
+silent success.
+```
+
+### PR 80: Headless Resident-Agent Smoke Runner
+
+Status: planned.
+
+Purpose:
+
+```text
+Run small live/direct smoke checks through the headless bridge to verify what
+the resident model actually sees and can do, then compare model self-report
+against the expected resident epistemic bundle.
+```
+
+Checks:
+
+- Model-visible tool declarations match the selected direct mode.
+- Resident self-report does not claim unavailable tools as callable.
+- Disabled capabilities include enablement paths when known.
+- Runtime/model/reasoning/quota/context facts are visible when policy includes
+  them.
+- Sub-agent observation/interference status is rendered as knowledge, not as
+  authority.
+
+Safety:
+
+```text
+Live smoke is opt-in and should use short bounded prompts. It must not require
+workspace mutation unless a scenario explicitly declares and authorizes that
+transition.
+```
 
 ## Update Rules
 
