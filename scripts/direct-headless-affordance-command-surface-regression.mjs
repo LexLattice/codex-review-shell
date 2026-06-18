@@ -9,6 +9,11 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { DirectHeadlessBridgeDaemon } = require("../src/main/direct/headless/bridge-daemon.js");
 const { DirectHeadlessTextRuntime } = require("../src/main/direct/headless/text-runtime.js");
+const {
+  normalizeCommand,
+  sanitizeBridgeResult,
+  sanitizeTurnPacket,
+} = require("../src/main/direct/headless/affordance-command-surface.js");
 
 const TOKEN = "fixture-token";
 
@@ -27,7 +32,7 @@ function fixtureConfig(rootDir) {
       authMode: "capability_token",
       capabilityToken: TOKEN,
       allowedIngressContracts: ["headless_text_event@1"],
-      allowedRoutes: ["route_text"],
+      allowedRoutes: ["route_text", "route_bad_runtime"],
     }],
     workThreads: [{
       workThreadId: "wt_affordance",
@@ -48,6 +53,21 @@ function fixtureConfig(rootDir) {
       modelPolicyRef: "fixture-model-policy",
       outputReducerRef: "terminal-result-only",
       authorityBoundaryRef: "headless-affordance-no-tools",
+      toolAuthorityMode: "disabled",
+    }, {
+      routeId: "route_bad_runtime",
+      routeVersion: "v1",
+      status: "active",
+      ingressContractRef: "headless_text_event@1",
+      workThreadId: "wt_affordance",
+      targetThreadRef: {
+        runtimePath: "unsupported-runtime",
+        threadId: "direct_session_headless_affordance_bad_runtime",
+      },
+      contextPolicyRef: "direct_text_turn_empty_context@1",
+      modelPolicyRef: "fixture-model-policy",
+      outputReducerRef: "terminal-result-only",
+      authorityBoundaryRef: "headless-affordance-bad-runtime",
       toolAuthorityMode: "disabled",
     }],
   };
@@ -166,6 +186,45 @@ const textRuntime = new DirectHeadlessTextRuntime({
 daemon.textRuntime = textRuntime;
 
 try {
+  const epochCommand = normalizeCommand({
+    clientId: "affordance_client",
+    commandKind: "read_bridge_status",
+  }, { nowMs: 0 });
+  assert.equal(epochCommand.createdAt, "1970-01-01T00:00:00.000Z");
+
+  const sanitizedPacket = sanitizeTurnPacket({
+    packetId: "packet_raw",
+    promptText: "secret prompt",
+    rawPrompt: "secret raw prompt",
+    rawPromptText: "secret raw prompt text",
+    rawPayload: "secret payload",
+    rawEventPayload: "secret event payload",
+    rawProviderPayload: "secret provider payload",
+    rawProviderFrame: "secret provider frame",
+    rawToolOutput: "secret tool output",
+  });
+  assert.equal(sanitizedPacket.promptText, undefined);
+  assert.equal(sanitizedPacket.rawPrompt, undefined);
+  assert.equal(sanitizedPacket.rawEventPayload, undefined);
+  assert.equal(sanitizedPacket.rawProviderPayload, undefined);
+
+  const sanitizedResult = sanitizeBridgeResult({
+    ok: true,
+    rawPayload: "secret payload",
+    rawPrompt: "secret prompt",
+    rawProviderPayload: "secret provider",
+    rawProviderFrame: "secret frame",
+    turnPacket: {
+      packetId: "packet_nested_raw",
+      promptText: "nested secret",
+      rawProviderPayload: "nested provider secret",
+    },
+  });
+  assert.equal(sanitizedResult.rawPayload, undefined);
+  assert.equal(sanitizedResult.rawPrompt, undefined);
+  assert.equal(sanitizedResult.turnPacket.promptText, undefined);
+  assert.equal(sanitizedResult.turnPacket.rawProviderPayload, undefined);
+
   const address = await daemon.listen();
   const baseUrl = `http://${address.host}:${address.port}`;
 
@@ -257,6 +316,46 @@ try {
     "second affordance turn completion",
   );
   assert.equal(secondTerminal.providerCompleted, true);
+
+  const noIdFirst = await command(baseUrl, {
+    commandKind: "submit_text_turn",
+    text: "first no-id affordance turn",
+  });
+  const noIdSecond = await command(baseUrl, {
+    commandKind: "submit_text_turn",
+    text: "second no-id affordance turn",
+  });
+  assert.equal(noIdFirst.response.status, 202);
+  assert.equal(noIdSecond.response.status, 202);
+  assert.notEqual(noIdFirst.body.commandId, noIdSecond.body.commandId);
+  assert.notEqual(noIdFirst.body.result.turnPacket.packetId, noIdSecond.body.result.turnPacket.packetId);
+  await waitForPacket(
+    baseUrl,
+    noIdFirst.body.result.turnPacket.packetId,
+    (packet) => packet.state === "provider_completed",
+    "first no-id affordance turn completion",
+  );
+  await waitForPacket(
+    baseUrl,
+    noIdSecond.body.result.turnPacket.packetId,
+    (packet) => packet.state === "provider_completed",
+    "second no-id affordance turn completion",
+  );
+
+  const badRuntime = await command(baseUrl, {
+    commandKind: "submit_text_turn",
+    commandId: "cmd_bad_runtime",
+    idempotencyKey: "affordance-bad-runtime",
+    requestedRouteId: "route_bad_runtime",
+    text: "blocked unsupported runtime",
+  });
+  assert.equal(badRuntime.response.status, 400);
+  assert.equal(badRuntime.body.ok, false);
+  assert.equal(badRuntime.body.status, "blocked");
+  assert.equal(badRuntime.body.blockerCode, "unsupported_runtime_path");
+  assert.equal(badRuntime.body.authorityDecision.status, "blocked");
+  assert.equal(badRuntime.body.result.turnPacket.state, "failed");
+  assert.equal(badRuntime.body.result.turnPacket.promptText, undefined);
 
   const pause = await command(baseUrl, {
     commandKind: "pause_intake",

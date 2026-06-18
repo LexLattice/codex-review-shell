@@ -25,6 +25,17 @@ const COMMAND_KINDS = new Set([
   "read_outbox_action",
   "read_human_decision",
 ]);
+const FAILED_TURN_PACKET_STATES = new Set(["failed"]);
+const RAW_RESULT_KEYS = [
+  "promptText",
+  "rawPrompt",
+  "rawPromptText",
+  "rawPayload",
+  "rawEventPayload",
+  "rawProviderPayload",
+  "rawProviderFrame",
+  "rawToolOutput",
+];
 
 function isPlainObject(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -39,7 +50,8 @@ function shortDigest(value) {
 }
 
 function nowIso(nowMs = Date.now()) {
-  return new Date(Number(nowMs) || Date.now()).toISOString();
+  const timestamp = nowMs !== undefined && nowMs !== null ? Number(nowMs) : Date.now();
+  return new Date(Number.isFinite(timestamp) ? timestamp : Date.now()).toISOString();
 }
 
 function evidenceRef(kind, label, extra = {}) {
@@ -53,11 +65,7 @@ function evidenceRef(kind, label, extra = {}) {
 function sanitizeTurnPacket(packet = {}) {
   if (!isPlainObject(packet)) return null;
   const sanitized = { ...packet };
-  delete sanitized.promptText;
-  delete sanitized.rawPromptText;
-  delete sanitized.rawProviderPayload;
-  delete sanitized.rawProviderFrame;
-  delete sanitized.rawToolOutput;
+  for (const key of RAW_RESULT_KEYS) delete sanitized[key];
   sanitized.rawEventPayloadIncluded = false;
   sanitized.rawPromptIncluded = false;
   sanitized.rawProviderPayloadIncluded = false;
@@ -70,6 +78,7 @@ function sanitizeBridgeResult(result = {}) {
   const sanitized = { ...result };
   if (isPlainObject(sanitized.turnPacket)) sanitized.turnPacket = sanitizeTurnPacket(sanitized.turnPacket);
   if (isPlainObject(sanitized.packet)) sanitized.packet = sanitizeTurnPacket(sanitized.packet);
+  for (const key of RAW_RESULT_KEYS) delete sanitized[key];
   sanitized.rawPayloadIncluded = false;
   sanitized.rawPromptIncluded = false;
   sanitized.rawProviderPayloadIncluded = false;
@@ -80,23 +89,28 @@ function sanitizeBridgeResult(result = {}) {
 function normalizeCommand(input = {}, options = {}) {
   const source = isPlainObject(input) ? input : {};
   const commandKind = normalizeString(source.commandKind || source.command_kind || source.action || source.affordance, "");
-  const commandId = normalizeString(
-    source.commandId || source.command_id,
-    `headless_affordance_cmd_${shortDigest(stableStringify({
+  const text = normalizeString(source.text || source.promptText || source.prompt_text || source.message, "");
+  const idempotencyKey = normalizeString(source.idempotencyKey || source.idempotency_key, "");
+  const createdAt = normalizeString(source.createdAt || source.created_at, nowIso(options.nowMs));
+  const fallbackIdentity = idempotencyKey
+    ? stableStringify({
       commandKind,
       clientId: source.clientId || source.client_id || options.clientId || "",
-      idempotencyKey: source.idempotencyKey || source.idempotency_key || "",
-      at: source.createdAt || source.created_at || "",
-    }))}`,
+      idempotencyKey,
+      textDigest: text ? sha256(text) : "",
+    })
+    : `${createdAt}:${crypto.randomUUID()}`;
+  const commandId = normalizeString(
+    source.commandId || source.command_id,
+    `headless_affordance_cmd_${shortDigest(fallbackIdentity)}`,
   );
-  const text = normalizeString(source.text || source.promptText || source.prompt_text || source.message, "");
   const target = isPlainObject(source.target) ? source.target : {};
   return {
     schema: HEADLESS_AFFORDANCE_COMMAND_SCHEMA,
     commandId,
     commandKind,
     clientId: normalizeString(source.clientId || source.client_id || options.clientId, ""),
-    idempotencyKey: normalizeString(source.idempotencyKey || source.idempotency_key, ""),
+    idempotencyKey,
     requestedRouteId: normalizeString(source.requestedRouteId || source.requested_route_id || source.routeId || source.route_id, ""),
     routeVersion: normalizeString(source.routeVersion || source.route_version, ""),
     workThreadId: normalizeString(source.workThreadId || source.work_thread_id || source.declaredWorkThreadId || source.declared_work_thread_id, ""),
@@ -122,7 +136,7 @@ function normalizeCommand(input = {}, options = {}) {
       }),
       ...(Array.isArray(source.evidenceRefs) ? source.evidenceRefs : []),
     ],
-    createdAt: normalizeString(source.createdAt || source.created_at, nowIso(options.nowMs)),
+    createdAt,
     rawPayloadIncluded: false,
   };
 }
@@ -187,6 +201,43 @@ function eventBodyForTextCommand(command = {}) {
   };
 }
 
+function submitOutcome(result = null) {
+  if (!isPlainObject(result)) {
+    return {
+      status: "blocked",
+      error: "submit_result_unavailable",
+      blockerCode: "submit_result_unavailable",
+      providerRequestStarted: false,
+    };
+  }
+  if (!result.ok) {
+    const error = normalizeString(result.error, "submit_blocked");
+    return {
+      status: "blocked",
+      error,
+      blockerCode: error,
+      providerRequestStarted: Boolean(result.turnPacket?.providerStarted),
+    };
+  }
+  const packet = isPlainObject(result.turnPacket) ? result.turnPacket : {};
+  const packetState = normalizeString(packet.state, "");
+  const packetBlocker = normalizeString(packet.blockerCode || packet.error?.code || packet.reason, "");
+  if (FAILED_TURN_PACKET_STATES.has(packetState) || packetBlocker) {
+    return {
+      status: "blocked",
+      error: packetBlocker || "turn_packet_failed",
+      blockerCode: packetBlocker || "turn_packet_failed",
+      providerRequestStarted: Boolean(packet.providerStarted),
+    };
+  }
+  return {
+    status: "accepted",
+    error: "",
+    blockerCode: "",
+    providerRequestStarted: Boolean(packet.providerStarted),
+  };
+}
+
 function executeHeadlessAffordanceCommand({ daemon, command: input } = {}) {
   if (!daemon) throw new Error("headless_affordance_missing_daemon");
   const command = normalizeCommand(input);
@@ -216,11 +267,12 @@ function executeHeadlessAffordanceCommand({ daemon, command: input } = {}) {
       });
     }
     const result = sanitizeBridgeResult(daemon.submitEvent(eventBodyForTextCommand(command)));
+    const outcome = submitOutcome(result);
     return commandResult(command, {
-      status: result.ok ? "accepted" : "blocked",
-      error: result.ok ? "" : normalizeString(result.error, "submit_blocked"),
-      blockerCode: result.ok ? "" : normalizeString(result.error, "submit_blocked"),
-      providerRequestStarted: Boolean(result.turnPacket?.providerStarted),
+      status: outcome.status,
+      error: outcome.error,
+      blockerCode: outcome.blockerCode,
+      providerRequestStarted: outcome.providerRequestStarted,
       result,
       evidenceRefs: [evidenceRef("bridge_event", "Affordance command submitted through bridge event ingress")],
     });
@@ -243,9 +295,9 @@ function executeHeadlessAffordanceCommand({ daemon, command: input } = {}) {
         commandId: command.commandId,
       }));
       return commandResult(command, {
-        status: result.ok ? "completed" : "blocked",
-        error: result.ok ? "" : normalizeString(result.error, "stop_blocked"),
-        blockerCode: result.ok ? "" : normalizeString(result.error, "stop_blocked"),
+        status: result?.ok ? "completed" : "blocked",
+        error: result?.ok ? "" : normalizeString(result?.error, "stop_blocked"),
+        blockerCode: result?.ok ? "" : normalizeString(result?.error, "stop_blocked"),
         result,
       });
     }
@@ -263,9 +315,9 @@ function executeHeadlessAffordanceCommand({ daemon, command: input } = {}) {
       action: command.commandKind,
     }));
     return commandResult(command, {
-      status: result.ok ? "completed" : "blocked",
-      error: result.ok ? "" : normalizeString(result.error, "control_blocked"),
-      blockerCode: result.ok ? "" : normalizeString(result.error, "control_blocked"),
+      status: result?.ok ? "completed" : "blocked",
+      error: result?.ok ? "" : normalizeString(result?.error, "control_blocked"),
+      blockerCode: result?.ok ? "" : normalizeString(result?.error, "control_blocked"),
       result,
       evidenceRefs: [evidenceRef("headless_daemon_control", "Affordance command applied through daemon control surface")],
     });
