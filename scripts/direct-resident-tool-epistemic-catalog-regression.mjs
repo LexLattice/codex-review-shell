@@ -242,6 +242,23 @@ const noDeclarationCatalog = buildResidentToolEpistemicCatalog({
 assert.deepEqual(validateResidentToolEpistemicCatalog(noDeclarationCatalog), [], "no-declaration catalog should validate");
 assert.equal(catalogRow(noDeclarationCatalog, "direct.read_file").status, "blocked_by_missing_evidence", "active registry without request declaration is not callable");
 
+const failedSliceCatalog = buildResidentToolEpistemicCatalog({
+  capabilityRegistry,
+  activationRegistry: activeRegistry,
+  firstToolSlice: {
+    ...firstToolSlice,
+    status: "failed",
+    validationErrors: ["forced_failed_slice_fixture"],
+  },
+  projectId: "project_resident_tool_fixture",
+  workThreadId: "work_thread_resident_tool_fixture",
+  nowMs: 0,
+});
+assert.deepEqual(validateResidentToolEpistemicCatalog(failedSliceCatalog), [], "failed source catalog should validate as blocked evidence");
+assert.equal(catalogRow(failedSliceCatalog, "direct.read_file").status, "blocked_by_missing_evidence", "failed first-tool slice must not produce callable row");
+assert.equal(catalogRow(failedSliceCatalog, "direct.read_file").callableInCurrentRequest, false, "failed source row must not be callable");
+assert(catalogRow(failedSliceCatalog, "direct.read_file").blockerCodes.includes("first_tool_slice_not_passed:failed"), "failed source blocker should be resident-visible");
+
 const blockedGate = buildDirectFirstToolCallGate({
   slice: firstToolSlice,
   toolCall: {
@@ -296,6 +313,25 @@ const restrictedCatalog = buildResidentToolEpistemicCatalog({
 assert.equal(catalogRow(restrictedCatalog, "direct.read_file").status, "shadow_only", "restricted activation should be resident-visible as shadow-only");
 assert(catalogRow(restrictedCatalog, "direct.read_file").enablementPath.some((step) => step.kind === "live_probe"), "shadow row should expose evidence enablement path");
 
+const expiredRegistry = buildDirectToolActivationRegistry({
+  promotionReport: fullLoopReport,
+  projectId: "project_resident_tool_fixture",
+  activationRequests: [activationRequest("local_perception.workspace_read", "expired", "project_default")],
+  nowMs: 0,
+});
+assert.deepEqual(validateDirectToolActivationRegistry(expiredRegistry), [], "expired activation registry should validate");
+const expiredCatalog = buildResidentToolEpistemicCatalog({
+  capabilityRegistry,
+  activationRegistry: expiredRegistry,
+  firstToolSlice,
+  projectId: "project_resident_tool_fixture",
+  workThreadId: "work_thread_resident_tool_fixture",
+  nowMs: 0,
+});
+assert.equal(catalogRow(expiredCatalog, "direct.read_file").status, "known_disabled", "expired activation should not be requestable");
+assert.equal(catalogRow(expiredCatalog, "direct.read_file").callableInCurrentRequest, false, "expired activation must not be callable");
+assert(catalogRow(expiredCatalog, "direct.read_file").blockerCodes.includes("activation_expired"), "expired blocker should be resident-visible");
+
 const disabledRow = catalogRow(callableCatalog, "vanilla.apply_patch");
 assert(["known_available", "known_disabled", "not_implemented", "blocked_by_missing_evidence"].includes(disabledRow.status), "non-active tools should be visibly non-callable");
 assert.equal(disabledRow.callableInCurrentRequest, false, "disabled tool must not be callable");
@@ -312,5 +348,17 @@ assert(validateResidentToolEpistemicCatalog(mutated).includes("resident_tool_epi
 
 const rowsOnly = buildResidentToolEpistemicRows({ capabilityRegistry, activationRegistry: activeRegistry, firstToolSlice });
 assert(rowsOnly.some((row) => row.subjectId === "direct.read_file" && row.status === "callable_now"), "row builder should work independently");
+
+assert(Array.isArray(buildResidentToolEpistemicRows(null)), "null input should not crash row builder");
+const malformedCatalog = buildResidentToolEpistemicCatalog({
+  capabilityRegistry: { ...capabilityRegistry, rows: [null, ...capabilityRegistry.rows.slice(0, 1)] },
+  activationRegistry: { ...activeRegistry, rows: [null, ...activeRegistry.rows.slice(0, 1)] },
+  firstToolSlice: { ...firstToolSlice, declarations: [null, ...firstToolSlice.declarations.slice(0, 1)] },
+  perCallGates: [null],
+  projectId: "project_resident_tool_fixture",
+  workThreadId: "work_thread_resident_tool_fixture",
+  nowMs: 0,
+});
+assert.deepEqual(validateResidentToolEpistemicCatalog(malformedCatalog), [], "malformed null rows should be ignored safely");
 
 console.log("direct resident tool epistemic catalog regression passed");

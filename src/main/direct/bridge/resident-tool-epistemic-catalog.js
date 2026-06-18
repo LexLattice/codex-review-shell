@@ -60,15 +60,17 @@ function countBy(rows, field) {
 }
 
 function rowNames(capabilityRow = {}) {
+  const row = isPlainObject(capabilityRow) ? capabilityRow : {};
   return normalizeStringList([
-    capabilityRow.toolId,
-    ...(Array.isArray(capabilityRow.directNames) ? capabilityRow.directNames : []),
-    ...(Array.isArray(capabilityRow.vanillaNames) ? capabilityRow.vanillaNames : []),
+    row.toolId,
+    ...(Array.isArray(row.directNames) ? row.directNames : []),
+    ...(Array.isArray(row.vanillaNames) ? row.vanillaNames : []),
   ]);
 }
 
 function capabilityAliases(capabilityRow = {}) {
-  const toolId = normalizeString(capabilityRow.toolId, "");
+  const row = isPlainObject(capabilityRow) ? capabilityRow : {};
+  const toolId = normalizeString(row.toolId, "");
   const aliases = [];
   if (toolId === "vanilla.get_context_remaining") {
     aliases.push("get_context_remaining", "session_control.plan_and_context_witness", "context_status_or_control");
@@ -77,16 +79,19 @@ function capabilityAliases(capabilityRow = {}) {
 }
 
 function activationNames(activationRow = {}) {
+  const row = isPlainObject(activationRow) ? activationRow : {};
   return normalizeStringList([
-    activationRow.toolName,
-    activationRow.toolClassId,
-    activationRow.providerRequestShapeSupport?.requestShapeFamily,
+    row.toolName,
+    row.toolClassId,
+    row.providerRequestShapeSupport?.requestShapeFamily,
   ]);
 }
 
 function buildActivationIndex(activationRegistry = {}) {
+  const registry = isPlainObject(activationRegistry) ? activationRegistry : {};
   const byKey = new Map();
-  for (const row of Array.isArray(activationRegistry.rows) ? activationRegistry.rows : []) {
+  for (const row of Array.isArray(registry.rows) ? registry.rows : []) {
+    if (!isPlainObject(row)) continue;
     for (const key of activationNames(row)) {
       if (!byKey.has(key)) byKey.set(key, row);
     }
@@ -95,8 +100,10 @@ function buildActivationIndex(activationRegistry = {}) {
 }
 
 function buildDeclarationIndex(firstToolSlice = {}) {
+  const slice = isPlainObject(firstToolSlice) ? firstToolSlice : {};
   const byKey = new Map();
-  for (const row of Array.isArray(firstToolSlice.declarations) ? firstToolSlice.declarations : []) {
+  for (const row of Array.isArray(slice.declarations) ? slice.declarations : []) {
+    if (!isPlainObject(row)) continue;
     for (const key of normalizeStringList([
       row.toolName,
       row.toolClassId,
@@ -112,6 +119,7 @@ function buildDeclarationIndex(firstToolSlice = {}) {
 function buildGateIndex(perCallGates = []) {
   const byKey = new Map();
   for (const gate of Array.isArray(perCallGates) ? perCallGates : []) {
+    if (!isPlainObject(gate)) continue;
     for (const key of normalizeStringList([
       gate.toolName,
       gate.activationRowId,
@@ -125,10 +133,11 @@ function buildGateIndex(perCallGates = []) {
 }
 
 function findActivationRow(capabilityRow = {}, activationIndex = new Map()) {
+  const row = isPlainObject(capabilityRow) ? capabilityRow : {};
   for (const key of [
-    ...rowNames(capabilityRow),
-    ...capabilityAliases(capabilityRow),
-    ...(Array.isArray(capabilityRow.requestShapeFamilies) ? capabilityRow.requestShapeFamilies : []),
+    ...rowNames(row),
+    ...capabilityAliases(row),
+    ...(Array.isArray(row.requestShapeFamilies) ? row.requestShapeFamilies : []),
   ]) {
     if (activationIndex.has(key)) return activationIndex.get(key);
   }
@@ -136,10 +145,11 @@ function findActivationRow(capabilityRow = {}, activationIndex = new Map()) {
 }
 
 function findDeclaration(capabilityRow = {}, activationRow = null, declarationIndex = new Map()) {
+  const row = isPlainObject(capabilityRow) ? capabilityRow : {};
   const keys = normalizeStringList([
-    ...rowNames(capabilityRow),
-    ...capabilityAliases(capabilityRow),
-    ...(Array.isArray(capabilityRow.requestShapeFamilies) ? capabilityRow.requestShapeFamilies : []),
+    ...rowNames(row),
+    ...capabilityAliases(row),
+    ...(Array.isArray(row.requestShapeFamilies) ? row.requestShapeFamilies : []),
     activationRow?.toolName,
     activationRow?.toolClassId,
     activationRow?.activationRowId,
@@ -152,9 +162,10 @@ function findDeclaration(capabilityRow = {}, activationRow = null, declarationIn
 }
 
 function findGate(capabilityRow = {}, activationRow = null, declaration = null, gateIndex = new Map()) {
+  const row = isPlainObject(capabilityRow) ? capabilityRow : {};
   const keys = normalizeStringList([
-    ...rowNames(capabilityRow),
-    ...capabilityAliases(capabilityRow),
+    ...rowNames(row),
+    ...capabilityAliases(row),
     activationRow?.toolName,
     activationRow?.activationRowId,
     declaration?.toolName,
@@ -179,11 +190,32 @@ function hasMissingEvidenceBlocker(blockers = []) {
   return normalizeStringList(blockers).some((code) => code.includes("evidence") || code.includes("smoke") || code.includes("fixture"));
 }
 
-function statusFor({ capabilityRow = {}, activationRow = null, declaration = null, gate = null } = {}) {
+function sourceHealthBlockersFor(input = {}) {
+  const blockers = [];
+  const activationRegistry = isPlainObject(input.activationRegistry) ? input.activationRegistry : {};
+  const firstToolSlice = isPlainObject(input.firstToolSlice) ? input.firstToolSlice : null;
+  if (activationRegistry.status && activationRegistry.status !== "passed") {
+    blockers.push(`activation_registry_not_passed:${normalizeString(activationRegistry.status, "unknown")}`);
+  }
+  for (const error of normalizeStringList(activationRegistry.validationErrors)) {
+    blockers.push(`activation_registry:${error}`);
+  }
+  if (firstToolSlice && firstToolSlice.status && firstToolSlice.status !== "passed") {
+    blockers.push(`first_tool_slice_not_passed:${normalizeString(firstToolSlice.status, "unknown")}`);
+  }
+  for (const error of normalizeStringList(firstToolSlice?.validationErrors)) {
+    blockers.push(`first_tool_slice:${error}`);
+  }
+  return normalizeStringList(blockers);
+}
+
+function statusFor({ capabilityRow = {}, activationRow = null, declaration = null, gate = null, sourceBlockers = [] } = {}) {
   const blockers = normalizeStringList([
     ...(Array.isArray(activationRow?.blockerCodes) ? activationRow.blockerCodes : []),
     ...(Array.isArray(gate?.blockerCodes) ? gate.blockerCodes : []),
+    ...sourceBlockers,
   ]);
+  if (sourceBlockers.length && (declaration || activationRow?.state === "active")) return "blocked_by_missing_evidence";
   if (gate?.status === "blocked") {
     if (hasAuthBlocker(blockers)) return "blocked_by_auth";
     if (hasRuntimeBlocker(blockers)) return "blocked_by_runtime";
@@ -198,6 +230,7 @@ function statusFor({ capabilityRow = {}, activationRow = null, declaration = nul
     if (hasMissingEvidenceBlocker(blockers)) return "blocked_by_missing_evidence";
     return "blocked_by_policy";
   }
+  if (activationRow?.state === "expired") return "known_disabled";
   if (activationRow?.state === "active" && !declaration) return "blocked_by_missing_evidence";
   if (capabilityRow.promotionState === "unsupported" || capabilityRow.implementationState === "none") return "not_implemented";
   if (hasMissingEvidenceBlocker(blockers) || capabilityRow.promotionState === "fixture_only" || capabilityRow.promotionState === "diagnostic_only") return "blocked_by_missing_evidence";
@@ -321,13 +354,15 @@ function evidenceRefsFor({ capabilityRow = {}, activationRow = null, declaration
 }
 
 function residentToolRowFor(input = {}) {
-  const { capabilityRow = {}, activationRow = null, declaration = null, gate = null } = input;
+  const { capabilityRow = {}, activationRow = null, declaration = null, gate = null, sourceBlockers = [] } = input;
   const status = statusFor(input);
   const callable = status === "callable_now";
   const blockers = normalizeStringList([
     ...(Array.isArray(activationRow?.blockerCodes) ? activationRow.blockerCodes : []),
     ...(Array.isArray(gate?.blockerCodes) ? gate.blockerCodes : []),
+    ...sourceBlockers,
     ...(status === "known_disabled" ? ["activation_inactive"] : []),
+    ...(activationRow?.state === "expired" ? ["activation_expired"] : []),
     ...(status === "not_implemented" ? ["implementation_missing"] : []),
     ...(status === "blocked_by_missing_evidence" && !activationRow?.blockerCodes?.length ? ["provider_declaration_or_promotion_evidence_missing"] : []),
   ]);
@@ -373,42 +408,47 @@ function residentToolRowFor(input = {}) {
 }
 
 function buildResidentToolEpistemicRows(input = {}) {
-  const capabilityRegistry = isPlainObject(input.capabilityRegistry)
-    ? input.capabilityRegistry
-    : buildToolCapabilityRegistry(input);
-  const activationRegistry = isPlainObject(input.activationRegistry)
-    ? input.activationRegistry
-    : buildDirectToolActivationRegistry(input);
+  const safeInput = isPlainObject(input) ? input : {};
+  const capabilityRegistry = isPlainObject(safeInput.capabilityRegistry)
+    ? safeInput.capabilityRegistry
+    : buildToolCapabilityRegistry(safeInput);
+  const activationRegistry = isPlainObject(safeInput.activationRegistry)
+    ? safeInput.activationRegistry
+    : buildDirectToolActivationRegistry(safeInput);
   const activationIndex = buildActivationIndex(activationRegistry);
-  const declarationIndex = buildDeclarationIndex(input.firstToolSlice || input.declarationSlice || {});
-  const gateIndex = buildGateIndex(input.perCallGates || input.toolCallGates || []);
+  const firstToolSlice = safeInput.firstToolSlice || safeInput.declarationSlice || {};
+  const declarationIndex = buildDeclarationIndex(firstToolSlice);
+  const gateIndex = buildGateIndex(safeInput.perCallGates || safeInput.toolCallGates || []);
+  const sourceBlockers = sourceHealthBlockersFor({ activationRegistry, firstToolSlice });
   return (Array.isArray(capabilityRegistry.rows) ? capabilityRegistry.rows : [])
+    .filter(isPlainObject)
     .map((capabilityRow) => {
       const activationRow = findActivationRow(capabilityRow, activationIndex);
       const declaration = findDeclaration(capabilityRow, activationRow, declarationIndex);
       const gate = findGate(capabilityRow, activationRow, declaration, gateIndex);
-      return residentToolRowFor({ capabilityRow, activationRow, declaration, gate });
+      return residentToolRowFor({ capabilityRow, activationRow, declaration, gate, sourceBlockers });
     });
 }
 
 function buildResidentToolEpistemicCatalog(input = {}) {
-  const generatedAt = normalizeString(input.generatedAt, nowIso(input.nowMs));
-  const capabilityRegistry = isPlainObject(input.capabilityRegistry)
-    ? input.capabilityRegistry
-    : buildToolCapabilityRegistry(input);
-  const activationRegistry = isPlainObject(input.activationRegistry)
-    ? input.activationRegistry
-    : buildDirectToolActivationRegistry(input);
-  const firstToolSlice = isPlainObject(input.firstToolSlice) ? input.firstToolSlice : null;
+  const safeInput = isPlainObject(input) ? input : {};
+  const generatedAt = normalizeString(safeInput.generatedAt, nowIso(safeInput.nowMs));
+  const capabilityRegistry = isPlainObject(safeInput.capabilityRegistry)
+    ? safeInput.capabilityRegistry
+    : buildToolCapabilityRegistry(safeInput);
+  const activationRegistry = isPlainObject(safeInput.activationRegistry)
+    ? safeInput.activationRegistry
+    : buildDirectToolActivationRegistry(safeInput);
+  const firstToolSlice = isPlainObject(safeInput.firstToolSlice) ? safeInput.firstToolSlice : null;
   const rows = buildResidentToolEpistemicRows({
-    ...input,
+    ...safeInput,
     capabilityRegistry,
     activationRegistry,
     firstToolSlice,
   });
   const snapshot = buildResidentEpistemicSnapshot({
-    workThreadId: normalizeString(input.workThreadId, capabilityRegistry.workThreadId || "work_thread_unknown"),
-    codexThreadId: normalizeString(input.codexThreadId, ""),
+    workThreadId: normalizeString(safeInput.workThreadId, capabilityRegistry.workThreadId || "work_thread_unknown"),
+    codexThreadId: normalizeString(safeInput.codexThreadId, ""),
     runtimeFamily: "direct",
     generatedAt,
     declarationDigest: normalizeString(firstToolSlice?.toolDeclarationDigest, "") || undefined,
@@ -417,7 +457,7 @@ function buildResidentToolEpistemicCatalog(input = {}) {
       activationRegistry.registryDigest,
       firstToolSlice?.sliceDigest,
     ]),
-    projectionBudget: input.projectionBudget || { maxRows: 12, maxChars: 2400, truncationPolicy: "priority_then_summary" },
+    projectionBudget: safeInput.projectionBudget || { maxRows: 12, maxChars: 2400, truncationPolicy: "priority_then_summary" },
     rows,
   });
   const compactRows = snapshot.rows.filter((row) => snapshot.compactTextSourceRowIds.includes(row.rowId));
@@ -439,13 +479,13 @@ function buildResidentToolEpistemicCatalog(input = {}) {
   preview.previewDigest = digestFor("resident-tool-epistemic-preview@1", preview);
   const catalog = {
     schema: RESIDENT_TOOL_EPISTEMIC_CATALOG_SCHEMA,
-    catalogId: normalizeString(input.catalogId, `resident_tool_epistemic_catalog_${digestFor("resident-tool-epistemic-catalog-id@1", {
+    catalogId: normalizeString(safeInput.catalogId, `resident_tool_epistemic_catalog_${digestFor("resident-tool-epistemic-catalog-id@1", {
       capabilityRegistryDigest: capabilityRegistry.registryDigest,
       activationRegistryDigest: activationRegistry.registryDigest,
       firstToolSliceDigest: firstToolSlice?.sliceDigest,
     }).slice(0, 24)}`),
     generatedAt,
-    projectId: normalizeString(input.projectId, capabilityRegistry.projectId || ""),
+    projectId: normalizeString(safeInput.projectId, capabilityRegistry.projectId || ""),
     workThreadId: snapshot.workThreadId,
     capabilityRegistryDigest: normalizeString(capabilityRegistry.registryDigest, ""),
     activationRegistryDigest: normalizeString(activationRegistry.registryDigest, ""),
