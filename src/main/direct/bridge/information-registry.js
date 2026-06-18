@@ -896,6 +896,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "This foundation builds schemas, normalization, compact previews, context-item envelopes, freshness/conflict/omission metadata, and raw-exposure checks only; it injects no context, declares no tools, and grants no authority.",
   },
   {
+    id: "ic23.resident-tool-epistemic-catalog",
+    name: "Resident tool epistemic catalog",
+    role: "observability_surface",
+    implementationState: "partial",
+    directPathPosture: "keep_readonly",
+    sourceFiles: ["src/main/direct/bridge/resident-tool-epistemic-catalog.js", "src/main/direct/bridge/resident-epistemic-snapshot.js", "src/main/direct/headless/tool-activation-registry.js", "src/main/direct/headless/first-tool-slice.js", "scripts/direct-resident-tool-epistemic-catalog-regression.mjs", "docs/DIRECT_RESIDENT_AGENT_EPISTEMIC_ACCESS_SPEC.md"],
+    ontology: ontologyShape(["resident_tool_epistemic_catalog", "resident_tool_epistemic_preview", "resident_epistemic_row"], "harness", {
+      identityFields: ["workThreadId", "catalogId", "snapshotId", "rowId", "catalogDigest"],
+      schema: "resident_tool_epistemic_catalog@1",
+    }),
+    bridgeFit: "Projects capability registry, promotion decision, activation registry, first-slice declaration, and per-call gate evidence into resident-visible tool status rows with enablement paths.",
+    realignment: "The catalog is epistemic only: it does not activate tools, materialize declarations, execute local routes, inject context by default, bypass per-call authority, or mutate request shape.",
+  },
+  {
     id: "ic23.control-perception-human-decision-tool-substrate",
     name: "Control, perception, and human-decision tool substrate",
     role: "authority_gate",

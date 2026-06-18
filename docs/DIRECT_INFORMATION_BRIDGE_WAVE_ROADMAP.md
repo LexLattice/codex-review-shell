@@ -3697,7 +3697,7 @@ No runtime/account mutation.
 
 ### PR 74: Resident Tool Epistemic Catalog
 
-Status: planned.
+Status: implemented in branch `codex/direct-resident-tool-epistemic-catalog`.
 
 Purpose:
 
@@ -3705,6 +3705,21 @@ Purpose:
 Project activation registry, promotion decision, declaration snapshot, and
 per-call gate state into resident-visible tool epistemic rows.
 ```
+
+Scope summary:
+
+- Added `resident_tool_epistemic_catalog@1`.
+- Added `resident_tool_epistemic_preview@1`.
+- Projected tool capability rows, activation rows, promotion decisions,
+  first-slice declarations, and per-call gate state into resident epistemic
+  tool rows.
+- Distinguished callable, shadow-only, known disabled/available, missing
+  evidence, policy-blocked, runtime/auth-blocked, and not-implemented states.
+- Added enablement paths as operator-explanation evidence, not as authority
+  grants.
+- Kept context injection disabled until PR 77.
+- Preserved no new activation, no automatic promotion, no per-call bypass, no
+  provider declaration materialization by the catalog, and no local execution.
 
 ### PR 75: Sub-Agent E-Channel And Governance Envelope
 
