@@ -236,13 +236,19 @@ function normalizeChannels(input = {}) {
     },
     control: {
       controlAvailable: normalizeBoolean(input.channels.control?.controlAvailable, defaults.control.controlAvailable),
-      availableActions: normalizeStringList(input.channels.control?.availableActions),
-      blockedActions: normalizeStringList(input.channels.control?.blockedActions),
+      availableActions: input.channels.control?.availableActions !== undefined
+        ? normalizeStringList(input.channels.control.availableActions)
+        : defaults.control.availableActions,
+      blockedActions: input.channels.control?.blockedActions !== undefined
+        ? normalizeStringList(input.channels.control.blockedActions)
+        : defaults.control.blockedActions,
       authorityRequired: normalizeBoolean(input.channels.control?.authorityRequired, defaults.control.authorityRequired),
     },
     transcript: {
       transcriptVisible: normalizeEnum(input.channels.transcript?.transcriptVisible, TRANSCRIPT_VISIBILITIES, defaults.transcript.transcriptVisible),
-      transcriptSourceRefs: normalizeEvidenceRefs(input.channels.transcript?.transcriptSourceRefs),
+      transcriptSourceRefs: input.channels.transcript?.transcriptSourceRefs !== undefined
+        ? normalizeEvidenceRefs(input.channels.transcript.transcriptSourceRefs)
+        : defaults.transcript.transcriptSourceRefs,
     },
   };
 }
@@ -406,14 +412,28 @@ function renderCompactResidentText(rows, options = {}) {
   const maxChars = Math.max(200, Number(options.maxChars || 2400));
   const selected = [];
   let currentLength = "Harness epistemic witness:".length;
+  const renderedLine = (row) => {
+    const stale = row.freshness === "stale" ? " stale" : "";
+    const conflict = row.conflictState !== "none" ? ` conflict=${row.conflictState}` : "";
+    return `- ${row.displayLabel}: ${row.status}${stale}${conflict}; ${row.compactText}`;
+  };
+  const selectedLength = () => "Harness epistemic witness:".length + selected.reduce((total, row) => total + renderedLine(row).length + 1, 0);
   for (const row of sortRows(rows)) {
     if (!row.residentVisible) continue;
-    if (selected.length >= maxRows && row.omitWhenBudgeted) continue;
-    const line = `- ${row.displayLabel}: ${row.status}; ${row.compactText}`;
+    const line = renderedLine(row);
     if (selected.length >= maxRows || currentLength + line.length + 1 > maxChars) {
       if (!row.omitWhenBudgeted && selected.length < maxRows) {
         selected.push(row);
         currentLength += line.length + 1;
+      } else if (!row.omitWhenBudgeted) {
+        const replaceIndex = selected.map((entry, index) => ({ entry, index })).reverse().find(({ entry }) => entry.omitWhenBudgeted)?.index;
+        if (replaceIndex !== undefined) {
+          selected.splice(replaceIndex, 1, row);
+          currentLength = selectedLength();
+        } else {
+          selected.push(row);
+          currentLength = selectedLength();
+        }
       }
       continue;
     }
@@ -422,9 +442,7 @@ function renderCompactResidentText(rows, options = {}) {
   }
   const lines = ["Harness epistemic witness:"];
   for (const row of selected) {
-    const stale = row.freshness === "stale" ? " stale" : "";
-    const conflict = row.conflictState !== "none" ? ` conflict=${row.conflictState}` : "";
-    lines.push(`- ${row.displayLabel}: ${row.status}${stale}${conflict}; ${row.compactText}`);
+    lines.push(renderedLine(row));
   }
   return {
     text: boundedString(lines.join("\n"), maxChars),
@@ -443,7 +461,7 @@ function buildResidentEpistemicSnapshot(input = {}) {
   const compact = renderCompactResidentText(normalizedRows, projectionBudget);
   const omittedClassCounts = input.omittedClassCounts && isPlainObject(input.omittedClassCounts)
     ? Object.fromEntries(Object.entries(input.omittedClassCounts).map(([key, value]) => [key, Math.max(0, Number(value) || 0)]).sort(([a], [b]) => a.localeCompare(b)))
-    : summarizeOmissions(normalizedRows, normalizedRows.filter((row) => row.omitWhenBudgeted && !compact.sourceRowIds.includes(row.rowId)));
+    : summarizeOmissions(normalizedRows, normalizedRows.filter((row) => row.residentVisible && !compact.sourceRowIds.includes(row.rowId)));
   const snapshot = {
     schema: RESIDENT_EPISTEMIC_SNAPSHOT_SCHEMA,
     snapshotId: normalizeString(input.snapshotId, "") || digestFor("resident-epistemic-snapshot-id", {
@@ -503,6 +521,12 @@ function validateResidentEpistemicSnapshot(snapshot) {
   if (!snapshot.snapshotId || !snapshot.workThreadId) throw new Error("resident_epistemic_snapshot_missing_identity");
   if (!Array.isArray(snapshot.rows)) throw new Error("resident_epistemic_snapshot_rows_missing");
   if (!snapshot.compactTextDigest || !snapshot.snapshotDigest) throw new Error("resident_epistemic_snapshot_missing_digest");
+  if (snapshot.compactTextDigest !== digestFor("resident-epistemic-compact-text", snapshot.compactResidentText)) {
+    throw new Error("resident_epistemic_compact_text_digest_mismatch");
+  }
+  if (snapshot.snapshotDigest !== digestFor("resident-epistemic-snapshot", snapshot)) {
+    throw new Error("resident_epistemic_snapshot_digest_mismatch");
+  }
   const rowIds = new Set();
   for (const row of snapshot.rows) {
     if (row.schema !== RESIDENT_EPISTEMIC_ROW_SCHEMA) throw new Error("resident_epistemic_row_schema_mismatch");
@@ -512,7 +536,6 @@ function validateResidentEpistemicSnapshot(snapshot) {
     if (row.status === "callable_now" && row.freshness === "stale") throw new Error("resident_epistemic_stale_callable");
     if (row.status === "callable_now" && !row.callableInCurrentRequest) throw new Error("resident_epistemic_callable_status_without_callable_flag");
     if (row.callableInCurrentRequest && row.status !== "callable_now") throw new Error("resident_epistemic_callable_flag_without_callable_status");
-    if (row.declaredAsProviderTool && !row.callableInCurrentRequest && row.status === "callable_now") throw new Error("resident_epistemic_provider_declaration_mismatch");
     if (!row.channels || !row.channels.epistemic || !row.channels.control || !row.channels.transcript) {
       throw new Error("resident_epistemic_missing_channels");
     }

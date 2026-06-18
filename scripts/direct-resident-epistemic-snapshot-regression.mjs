@@ -12,6 +12,7 @@ const {
   buildResidentEpistemicRow,
   buildResidentEpistemicSnapshot,
   buildUnknownOmittedClassRow,
+  digestFor,
   validateResidentEpistemicSnapshot,
 } = require("../src/main/direct/bridge/resident-epistemic-snapshot");
 
@@ -29,6 +30,22 @@ function expectThrows(fn, expectedMessage) {
     return;
   }
   throw new Error(`expected throw: ${expectedMessage}`);
+}
+
+function withFreshSnapshotDigest(snapshot) {
+  return {
+    ...snapshot,
+    snapshotDigest: digestFor("resident-epistemic-snapshot", snapshot),
+  };
+}
+
+function withFreshCompactAndSnapshotDigest(snapshot) {
+  const compactTextDigest = digestFor("resident-epistemic-compact-text", snapshot.compactResidentText);
+  const withCompact = { ...snapshot, compactTextDigest };
+  return {
+    ...withCompact,
+    snapshotDigest: digestFor("resident-epistemic-snapshot", withCompact),
+  };
 }
 
 function main() {
@@ -66,6 +83,23 @@ function main() {
   assert(callableRead.callableInCurrentRequest === true, "callable flag should be explicit");
   assert(callableRead.declaredAsProviderTool === true, "provider declaration flag should be explicit");
   assert(callableRead.channels.transcript.transcriptVisible === "not_applicable", "tool transcript channel should be not applicable");
+
+  const partialChannelFallback = buildResidentEpistemicRow({
+    subjectKind: "tool",
+    subjectId: "direct.partial_channel",
+    displayLabel: "partial channel fallback",
+    status: "known_available",
+    availableActions: ["top_level_action"],
+    blockedActions: ["top_level_blocked"],
+    transcriptSourceRefs: [{ refId: "transcript-ref", source: "audit_row", digest: "sha256:transcript" }],
+    channels: {
+      epistemic: { visibleToResident: true, visibility: "summary_only" },
+    },
+    compactText: "partial nested channel object should preserve top-level channel defaults.",
+  });
+  assert(partialChannelFallback.channels.control.availableActions.includes("top_level_action"), "partial channel should fallback to top-level availableActions");
+  assert(partialChannelFallback.channels.control.blockedActions.includes("top_level_blocked"), "partial channel should fallback to top-level blockedActions");
+  assert(partialChannelFallback.channels.transcript.transcriptSourceRefs[0]?.refId === "transcript-ref", "partial channel should fallback to top-level transcript refs");
 
   const staleCallable = buildResidentEpistemicRow({
     subjectKind: "tool",
@@ -199,6 +233,31 @@ function main() {
   assert(snapshot.compactResidentText.includes("Harness epistemic witness:"), "compact text should be typed witness text");
   validateResidentEpistemicSnapshot(snapshot);
 
+  const largeVisibleRow = buildResidentEpistemicRow({
+    subjectKind: "tool",
+    subjectId: "direct.large_visible",
+    displayLabel: "large visible row",
+    status: "known_disabled",
+    residentVisible: true,
+    priority: "low",
+    omitWhenBudgeted: true,
+    compactText: "this visible row is expected to be omitted by a tiny row budget.",
+  });
+  const nonOmittableUnknown = buildUnknownOmittedClassRow({
+    subjectKind: "tool",
+    family: "must_show_unknown",
+    omittedCount: 2,
+  });
+  const budgetedSnapshot = buildResidentEpistemicSnapshot({
+    workThreadId: "work_thread_budget_fixture",
+    projectionBudget: { maxRows: 2, maxChars: 380, truncationPolicy: "priority_then_summary" },
+    rows: [callableRead, subAgent, largeVisibleRow, nonOmittableUnknown],
+  });
+  validateResidentEpistemicSnapshot(budgetedSnapshot);
+  assert(budgetedSnapshot.compactTextSourceRowIds.includes(nonOmittableUnknown.rowId), "non-omittable unknown row should be preserved in compact text");
+  assert(budgetedSnapshot.omittedClassCounts.tool >= 1, "all visible rows omitted by budget should be counted");
+  assert(budgetedSnapshot.compactResidentText.length <= 380, "compact text should respect maxChars after stale/conflict labels");
+
   const contextItem = buildResidentEpistemicContextItem(snapshot);
   assert(contextItem.schema === RESIDENT_EPISTEMIC_CONTEXT_ITEM_SCHEMA, "context item schema mismatch");
   assert(contextItem.authority === "harness_epistemic_witness", "context item authority should be witness");
@@ -206,20 +265,30 @@ function main() {
   assert(contextItem.snapshotDigest === snapshot.snapshotDigest, "context item should cite snapshot digest");
   assert(contextItem.compactTextDigest === snapshot.compactTextDigest, "context item should cite compact text digest");
 
-  expectThrows(() => validateResidentEpistemicSnapshot({
+  expectThrows(() => validateResidentEpistemicSnapshot(withFreshSnapshotDigest({
     ...snapshot,
     rows: [{ ...callableRead, rawPayloadExposed: true }],
-  }), "resident_epistemic_raw_payload_exposed");
+  })), "resident_epistemic_raw_payload_exposed");
 
-  expectThrows(() => validateResidentEpistemicSnapshot({
+  expectThrows(() => validateResidentEpistemicSnapshot(withFreshSnapshotDigest({
     ...snapshot,
     compactTextSourceRowIds: ["missing-row"],
-  }), "resident_epistemic_compact_source_row_missing");
+  })), "resident_epistemic_compact_source_row_missing");
+
+  expectThrows(() => validateResidentEpistemicSnapshot(withFreshCompactAndSnapshotDigest({
+    ...snapshot,
+    compactResidentText: "Bearer abcdefghijklmnopqrstuvwxyz0123456789",
+  })), "sensitive material");
 
   expectThrows(() => validateResidentEpistemicSnapshot({
     ...snapshot,
-    compactResidentText: "Bearer abcdefghijklmnopqrstuvwxyz0123456789",
-  }), "sensitive material");
+    compactResidentText: `${snapshot.compactResidentText}\nmutated without digest update`,
+  }), "resident_epistemic_compact_text_digest_mismatch");
+
+  expectThrows(() => validateResidentEpistemicSnapshot({
+    ...snapshot,
+    rows: snapshot.rows.map((row) => row.rowId === callableRead.rowId ? { ...row, compactText: "mutated row without digest update" } : row),
+  }), "resident_epistemic_snapshot_digest_mismatch");
 
   console.log("direct resident epistemic snapshot regression passed");
 }
