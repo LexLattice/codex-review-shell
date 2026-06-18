@@ -2637,7 +2637,7 @@ live descriptors and evidence-backed usage facts.
 
 ## Wave 9: Headless Direct Bridge Service
 
-Status: planned.
+Status: implemented in branch `codex/direct-resident-epistemic-context-policy`.
 
 Review posture after Wave 8:
 
@@ -3784,6 +3784,23 @@ Purpose:
 Make epistemic access operator-visible and reliably included in resident context
 under explicit policy.
 ```
+
+Implemented scope:
+
+- Added `resident_epistemic_context_policy@1`.
+- Added `resident_epistemic_context_bundle@1` over the existing
+  `resident_epistemic_context_item@1` witness.
+- Added `resident_epistemic_settings_projection@1` for operator/status display.
+- Added `resident_epistemic_self_report_diagnostic@1` for comparing model
+  self-reports against the current sanitized snapshot.
+- Added per-class include/exclude policy, quota-pressure-gated account-action
+  inclusion, stale behavior handling, context-budget-aware row projection, and
+  omitted-class counts.
+- Preserved no manual raw-row editing, no arbitrary prompt injection, no
+  disabled capability promotion, no authority grant, and no hidden merge into
+  system/developer text.
+- Added `direct:resident-epistemic-context-policy` regression coverage and wired
+  the new module/script into syntax checks.
 
 ## Update Rules
 
