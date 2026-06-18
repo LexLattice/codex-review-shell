@@ -85,6 +85,7 @@ const pureRoute = buildControlledRoutingSlice({
   threadId: "thread_controlled_route",
   turnId: "turn_controlled_route",
   requestPreview: "continue controlled routing fixture",
+  runtimePath: "direct-text",
   workThread,
 }, { nowMs });
 validateControlledRoutingSlice(pureRoute.route);
@@ -95,6 +96,22 @@ assert.equal(pureRoute.route.workspaceMutationAllowed, false);
 assert.equal(pureRoute.route.toolExecutionAllowed, false);
 assert.equal(pureRoute.route.selectedAgentClass.agentClassKind, "primary_agent");
 assert.equal(pureRoute.semanticBrokerPreflight.recommendationClass, "allow");
+
+const implementationRoute = buildControlledRoutingSlice({
+  projectId,
+  threadId: "thread_controlled_route",
+  turnId: "turn_controlled_implementation_route",
+  requestPreview: "continue controlled routing fixture with tools",
+  runtimePath: "direct-implementation",
+  workThread,
+}, { nowMs });
+validateControlledRoutingSlice(implementationRoute.route);
+assert.equal(implementationRoute.route.selectedRouteKind, "implementation_tool_initial");
+assert.equal(implementationRoute.route.selectedToolSurface, "direct_implementation_tools");
+assert.equal(implementationRoute.route.gateState, "ready_for_direct_implementation_turn");
+assert.equal(implementationRoute.route.controlledProviderCallAllowed, true);
+assert.equal(implementationRoute.route.providerCallScope, "direct_implementation_tool_initial_turn_start");
+assert.equal(implementationRoute.semanticBrokerPreflight.selectedCandidateId, "controlled_implementation_tool_initial_turn");
 
 const blockedRoute = buildControlledRoutingSlice({
   projectId,
@@ -476,6 +493,16 @@ try {
   );
   assert.equal(providerRequestCount, providerRequestsBeforeImplementationLane + 1);
   assert.equal(capturedProviderBody.parallel_tool_calls, false);
+  assert.deepEqual(
+    capturedProviderBody.tools.map((tool) => tool.name),
+    ["read_file", "apply_patch", "run_command"],
+  );
+  const implementationLaneTurn = sessionStore.readTurn(implementationLaneThread.thread.id, implementationLaneAck.turn.id);
+  assert.equal(implementationLaneTurn.controlledRoutingGateState, "ready_for_direct_implementation_turn");
+  assert.equal(implementationLaneTurn.requestShape.controlledRoutingProviderScope, "direct_implementation_tool_initial_turn_start");
+  const implementationLaneManifest = directThreadStore.readRequestManifest(implementationLaneTurn.requestManifestId);
+  assert.equal(implementationLaneManifest.enabledFeatures.tools, true);
+  assert.equal(implementationLaneManifest.requestShapeClass, "direct_implementation_tool_initial@1");
   console.log(JSON.stringify({
     ok: true,
     routeId: turn.controlledRoutingSliceId,

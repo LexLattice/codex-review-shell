@@ -27,6 +27,8 @@ const {
 
 const DIRECT_CONTROLLED_ROUTING_SLICE_SCHEMA = "direct_controlled_routing_slice@1";
 const DIRECT_CONTROLLED_ROUTING_SLICE_VERSION = "direct-controlled-routing-slice@1";
+const READY_GATE_STATES = new Set(["ready_for_direct_text_turn", "ready_for_direct_implementation_turn"]);
+const PROVIDER_CALL_SCOPES = new Set(["existing_direct_text_turn_start_only", "direct_implementation_tool_initial_turn_start"]);
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -52,24 +54,66 @@ function digestFor(prefix, value) {
   return `sha256:${sha256(`${prefix}\0${stableStringify(value)}`)}`;
 }
 
-function textOnlyRouteCandidate(registrySnapshot, refs = {}) {
+function normalizeRuntimePath(value = "") {
+  const text = normalizeString(value, "").toLowerCase();
+  if (text === "direct-implementation" || text === "implementation" || text === "implementation-lane" || text === "implementation_lane") {
+    return "direct-implementation";
+  }
+  return "direct-text";
+}
+
+function routeConfigForRuntimePath(runtimePath = "") {
+  if (normalizeRuntimePath(runtimePath) === "direct-implementation") {
+    return {
+      runtimePath: "direct-implementation",
+      routeKind: "implementation_tool_initial",
+      toolSurface: "direct_implementation_tools",
+      contextPolicyKinds: ["direct_implementation"],
+      runtimeTierKinds: ["implementation_lane"],
+      candidateId: "controlled_implementation_tool_initial_turn",
+      readyGateState: "ready_for_direct_implementation_turn",
+      providerCallScope: "direct_implementation_tool_initial_turn_start",
+      providerSummary: "Controlled route to direct implementation initial tool turn.",
+      selectedSummary: "Controlled routing selected the primary agent direct implementation path.",
+      blockedSummary: "Controlled routing blocked the direct implementation path.",
+    };
+  }
+  return {
+    runtimePath: "direct-text",
+    routeKind: "text_only",
+    toolSurface: "none",
+    contextPolicyKinds: ["direct_text"],
+    runtimeTierKinds: ["direct_text"],
+    candidateId: "controlled_text_only_direct_turn",
+    readyGateState: "ready_for_direct_text_turn",
+    providerCallScope: "existing_direct_text_turn_start_only",
+    providerSummary: "Controlled route to existing direct text turn.",
+    selectedSummary: "Controlled routing selected the primary agent direct text path.",
+    blockedSummary: "Controlled routing blocked the direct text path.",
+  };
+}
+
+function routeCandidate(registrySnapshot, routeConfig, refs = {}) {
   const route = (Array.isArray(registrySnapshot?.routes) ? registrySnapshot.routes : [])
-    .find((entry) => entry.routeKind === "text_only") || {
-      routeKind: "text_only",
-      toolSurface: "none",
-      contextPolicyKinds: ["direct_text"],
-      runtimeTierKinds: ["direct_text"],
+    .find((entry) => entry.routeKind === routeConfig.routeKind) || {
+      routeKind: routeConfig.routeKind,
+      toolSurface: routeConfig.toolSurface,
+      contextPolicyKinds: routeConfig.contextPolicyKinds,
+      runtimeTierKinds: routeConfig.runtimeTierKinds,
     };
   return candidateFromRoute(route, {
-    candidateId: "controlled_text_only_direct_turn",
+    candidateId: routeConfig.candidateId,
     requiredEvidenceRefs: [
       refs.runtimeTierRef,
       refs.currentUserIntentRef,
       refs.workThreadBindingRef,
     ].filter(Boolean),
     confidence: "high",
-    reasonCodes: ["selected_work_thread", "primary_agent_text_turn"],
-    rendererSafeSummary: "Controlled route to existing direct text turn.",
+    reasonCodes: [
+      "selected_work_thread",
+      routeConfig.runtimePath === "direct-implementation" ? "primary_agent_implementation_turn" : "primary_agent_text_turn",
+    ],
+    rendererSafeSummary: routeConfig.providerSummary,
   });
 }
 
@@ -95,6 +139,15 @@ function buildControlledRoutingSlice(input = {}, options = {}) {
   const requestPreview = normalizeString(source.requestPreview, "");
   const nowMs = options.nowMs ?? source.nowMs;
   const createdAt = normalizeString(source.createdAt, nowIso(nowMs));
+  const runtimePath = normalizeRuntimePath(
+    source.runtimePath ||
+    source.activeRuntimePath ||
+    source.directRuntimePath ||
+    source.runtimeSelection?.runtimePath ||
+    source.workThreadBinding?.activeRuntimePath ||
+    "",
+  );
+  const routeConfig = routeConfigForRuntimePath(runtimePath);
   const workThread = isPlainObject(source.workThread)
     ? buildWorkThread({ ...source.workThread, projectId: source.workThread.projectId || projectId }, { nowMs })
     : null;
@@ -153,9 +206,14 @@ function buildControlledRoutingSlice(input = {}, options = {}) {
   );
   const runtimeTierRef = sourceRefForArtifact(
     "runtime_tier",
-    "direct_live_text_runtime",
-    digestFor("direct-controlled-routing-runtime-tier@1", { runtimeMode: "direct-experimental", transport: "live-text" }),
-    "Direct live text runtime",
+    routeConfig.runtimePath === "direct-implementation" ? "direct_implementation_runtime" : "direct_live_text_runtime",
+    digestFor("direct-controlled-routing-runtime-tier@1", {
+      runtimeMode: "direct-experimental",
+      transport: "live-text",
+      runtimePath: routeConfig.runtimePath,
+      routeKind: routeConfig.routeKind,
+    }),
+    routeConfig.runtimePath === "direct-implementation" ? "Direct implementation runtime" : "Direct live text runtime",
     "accepted",
   );
   const workThreadBindingRef = sourceRefForArtifact(
@@ -170,11 +228,11 @@ function buildControlledRoutingSlice(input = {}, options = {}) {
     : buildSemanticBrokerRegistrySnapshot({
         projectId,
         routes: [{
-          routeKind: "text_only",
-          toolSurface: "none",
+          routeKind: routeConfig.routeKind,
+          toolSurface: routeConfig.toolSurface,
           requiredEvidenceKinds: ["runtime_tier", "current_user_intent", "work_thread_binding"],
-          contextPolicyKinds: ["direct_text"],
-          runtimeTierKinds: ["direct_text"],
+          contextPolicyKinds: routeConfig.contextPolicyKinds,
+          runtimeTierKinds: routeConfig.runtimeTierKinds,
         }],
       });
   const brokerInputSnapshot = isPlainObject(source.semanticBrokerInputSnapshot)
@@ -195,7 +253,7 @@ function buildControlledRoutingSlice(input = {}, options = {}) {
         turnId,
         registrySnapshot,
         inputSnapshot: brokerInputSnapshot,
-        candidates: [textOnlyRouteCandidate(registrySnapshot, { runtimeTierRef, currentUserIntentRef, workThreadBindingRef })],
+        candidates: [routeCandidate(registrySnapshot, routeConfig, { runtimeTierRef, currentUserIntentRef, workThreadBindingRef })],
       });
   const agentClassRegistry = isPlainObject(source.agentClassRegistry)
     ? source.agentClassRegistry
@@ -248,13 +306,13 @@ function buildControlledRoutingSlice(input = {}, options = {}) {
   if (semanticBrokerPreflight.recommendedAgentClass?.agentClassKind !== "primary_agent") {
     blockerCodes.push("non_primary_agent_route_not_enabled");
   }
-  if (semanticBrokerPreflight.selectedRouteKind !== "text_only") {
-    blockerCodes.push("route_kind_not_text_only");
+  if (semanticBrokerPreflight.selectedRouteKind !== routeConfig.routeKind) {
+    blockerCodes.push(`route_kind_not_${routeConfig.routeKind}`);
   }
-  if (semanticBrokerPreflight.selectedToolSurface && semanticBrokerPreflight.selectedToolSurface !== "none") {
+  if (normalizeString(semanticBrokerPreflight.selectedToolSurface, routeConfig.toolSurface) !== routeConfig.toolSurface) {
     blockerCodes.push("tool_surface_not_enabled");
   }
-  const gateState = blockerCodes.length ? "blocked" : "ready_for_direct_text_turn";
+  const gateState = blockerCodes.length ? "blocked" : routeConfig.readyGateState;
   const sourceDigest = digestFor("direct-controlled-routing-slice-source@1", {
     projectId,
     threadId,
@@ -276,7 +334,7 @@ function buildControlledRoutingSlice(input = {}, options = {}) {
     threadId,
     turnId,
     createdAt,
-    selectedWorkThreadId: gateState === "ready_for_direct_text_turn" ? workTargetResolutionReport.selectedWorkThreadId : "",
+    selectedWorkThreadId: gateState === routeConfig.readyGateState ? workTargetResolutionReport.selectedWorkThreadId : "",
     selectedRouteKind: normalizeString(semanticBrokerPreflight.selectedRouteKind, ""),
     selectedToolSurface: normalizeString(semanticBrokerPreflight.selectedToolSurface, "none"),
     selectedAgentClass: {
@@ -310,8 +368,8 @@ function buildControlledRoutingSlice(input = {}, options = {}) {
     workThreadBinding,
     gateState,
     blockerCodes,
-    controlledProviderCallAllowed: gateState === "ready_for_direct_text_turn",
-    providerCallScope: gateState === "ready_for_direct_text_turn" ? "existing_direct_text_turn_start_only" : "none",
+    controlledProviderCallAllowed: gateState === routeConfig.readyGateState,
+    providerCallScope: gateState === routeConfig.readyGateState ? routeConfig.providerCallScope : "none",
     workspaceMutationAllowed: false,
     toolExecutionAllowed: false,
     autonomousRoutingAllowed: false,
@@ -333,11 +391,11 @@ function buildControlledRoutingSlice(input = {}, options = {}) {
       artifactKind: "controlled_routing_slice",
       artifactId: routeId,
       artifactDigest: sourceDigest,
-      confidence: gateState === "ready_for_direct_text_turn" ? "accepted" : "diagnostic",
+      confidence: gateState === routeConfig.readyGateState ? "accepted" : "diagnostic",
     }),
-    rendererSafeSummary: gateState === "ready_for_direct_text_turn"
-      ? "Controlled routing selected the primary agent direct text path."
-      : "Controlled routing blocked the direct text path.",
+    rendererSafeSummary: gateState === routeConfig.readyGateState
+      ? routeConfig.selectedSummary
+      : routeConfig.blockedSummary,
     sourceDigest,
   };
   route.routeDigest = digestFor("direct-controlled-routing-slice@1", route);
@@ -380,13 +438,13 @@ function validateControlledRoutingSlice(route = {}) {
   if (route.workspaceMutationAllowed !== false || route.toolExecutionAllowed !== false || route.autonomousRoutingAllowed !== false || route.multiAgentOrchestrationAllowed !== false) {
     throw new Error("direct_controlled_routing_slice_authority_leak");
   }
-  if (route.controlledProviderCallAllowed === true && route.providerCallScope !== "existing_direct_text_turn_start_only") {
+  if (route.controlledProviderCallAllowed === true && !PROVIDER_CALL_SCOPES.has(route.providerCallScope)) {
     throw new Error("direct_controlled_routing_slice_provider_scope_invalid");
   }
-  if (route.gateState === "ready_for_direct_text_turn" && !normalizeString(route.selectedWorkThreadId, "")) {
+  if (READY_GATE_STATES.has(route.gateState) && !normalizeString(route.selectedWorkThreadId, "")) {
     throw new Error("direct_controlled_routing_slice_missing_work_thread");
   }
-  if (route.gateState !== "ready_for_direct_text_turn" && route.controlledProviderCallAllowed === true) {
+  if (!READY_GATE_STATES.has(route.gateState) && route.controlledProviderCallAllowed === true) {
     throw new Error("direct_controlled_routing_slice_blocked_provider_allowed");
   }
   return true;

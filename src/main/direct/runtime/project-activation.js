@@ -538,7 +538,9 @@ function evaluateDirectExperimentalProjectActivation(options = {}) {
   const enabledBinding = binding.runtimeMode === "direct-experimental" && binding.directTransport === "live-text" && currentTier === "implementation-lane";
   const committedActivation = latestActivation?.transactionState === "committed";
   let state = "blocked";
-  if (textOnlyPass && !toolOk) state = "text_only_eligible";
+  if (textOnlyPass && !toolOk) {
+    state = liveTextStatus.toolsEnabled === true ? "eligible" : "text_only_eligible";
+  }
   if (hardPass) state = "eligible";
   if (enabledBinding) {
     if (!committedActivation) state = "rollback_required";

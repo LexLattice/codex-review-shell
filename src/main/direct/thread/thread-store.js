@@ -3309,8 +3309,8 @@ class DirectThreadStore {
   buildAndPersistControlledRoutingForTextTurn(input = {}, options = {}) {
     const routeResult = buildControlledRoutingSlice(input, options);
     validateControlledRoutingSlice(routeResult.route);
-    if (input.requireControlledRouting === true && routeResult.route.gateState !== "ready_for_direct_text_turn") {
-      const error = new Error("Direct controlled routing blocked the text turn.");
+    if (input.requireControlledRouting === true && routeResult.route.controlledProviderCallAllowed !== true) {
+      const error = new Error("Direct controlled routing blocked the turn.");
       error.code = "controlled_routing_blocked";
       error.blockerCodes = routeResult.route.blockerCodes || [];
       throw error;

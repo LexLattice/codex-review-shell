@@ -466,12 +466,21 @@ function mergeScopedProofWithProfileEvidence(profileEvidence = {}, proof = {}, c
   const missingRow = rows.find((row) => row?.status !== "ready" || row?.evidenceState !== "runtime_probed") || null;
   return {
     ...profileEvidence,
-    accepted: false,
-    status: missingRow?.status === "expired" ? "evidence_expired" : "proof_required",
-    evidenceState: missingRow?.evidenceState || proof.evidenceState || "missing",
+    accepted: true,
+    status: "ready",
+    evidenceState: "local_declared",
+    scopedProofEvidenceId: "",
+    scopedProofEvidenceIds: [],
+    scopedProofSourceCaseId: "",
     scopedProofCapabilityId: primaryCapabilityId,
     scopedProofCapabilityIds: ids,
-    reason: normalizeString(missingRow?.reason, "") || missingReason,
+    scopedProofAuthoritative: false,
+    scopedProofMissingCapabilityIds: ids.filter((capabilityId) => !proofCapabilityReady(proof, capabilityId)),
+    localImplementationToolDeclared: true,
+    proofStatus: missingRow?.status === "expired" ? "evidence_expired" : "proof_required",
+    proofEvidenceState: missingRow?.evidenceState || proof.evidenceState || "missing",
+    proofReason: normalizeString(missingRow?.reason, "") || missingReason,
+    reason: "",
   };
 }
 
@@ -627,6 +636,23 @@ function implementationContextInstructions(contextInstructions = "") {
   const contextText = normalizeString(contextInstructions, "");
   if (!contextText) return DEFAULT_IMPLEMENTATION_TOOL_INSTRUCTIONS;
   return `${contextText}\n\n${DEFAULT_IMPLEMENTATION_TOOL_INSTRUCTIONS}`;
+}
+
+function initialDirectTurnRequestShape(requestBody = {}, options = {}) {
+  const implementationTier = options.implementationTier === true;
+  const useRecentDialogue = options.useRecentDialogue === true;
+  const shape = requestShapeForDiagnostic(requestBody);
+  const declaredToolNames = Array.isArray(requestBody.tools)
+    ? requestBody.tools.map((tool) => normalizeString(tool?.name, "")).filter(Boolean)
+    : [];
+  return {
+    ...shape,
+    requestShapeClass: implementationTier
+      ? "direct_implementation_tool_initial@1"
+      : useRecentDialogue ? "direct_text_turn_recent_dialogue@1" : "direct_text_turn_empty_context@1",
+    tools: declaredToolNames.length > 0,
+    declaredToolNames,
+  };
 }
 
 function threadSnapshotFromSession(session = {}) {
@@ -4309,7 +4335,7 @@ class DirectLiveTextController {
       model: requestBody.model,
       reasoningEffort,
       clientTurnRequestId,
-      requestShape: requestShapeForDiagnostic(requestBody),
+      requestShape: initialDirectTurnRequestShape(requestBody, { implementationTier, useRecentDialogue }),
     });
     this.rememberClientTurnRequest(session.sessionId, clientTurnRequestId, turn.turnId);
     let contextResult = null;
@@ -4326,6 +4352,7 @@ class DirectLiveTextController {
             threadId: session.sessionId,
             turnId: turn.turnId,
             requestPreview: prompt,
+            runtimePath: implementationTier ? "direct-implementation" : "direct-text",
             workThreads: Array.isArray(params.workThreads) ? params.workThreads : [],
             requireControlledRouting,
             ...workThreadCarrier,
@@ -4346,7 +4373,7 @@ class DirectLiveTextController {
           expectedContextProjectionId: normalizeString(params.expectedContextProjectionId, frozenContextProjection?.projectionId || ""),
           expectedContextProjectionDigest: normalizeString(params.expectedContextProjectionDigest, frozenContextProjection?.projectionDigest || ""),
           model: requestBody.model,
-          requestShape: requestShapeForDiagnostic(requestBody),
+          requestShape: initialDirectTurnRequestShape(requestBody, { implementationTier, useRecentDialogue }),
           endpointClass: "chatgpt-codex-responses",
           endpointHash: this.endpoint ? sha256(this.endpoint) : "",
           modelEvidenceRef: normalizeString(status.evidenceId, status.modelEvidenceId || ""),
@@ -4384,7 +4411,7 @@ class DirectLiveTextController {
             });
       }
       requestShape = {
-        ...requestShapeForDiagnostic(requestBody),
+        ...initialDirectTurnRequestShape(requestBody, { implementationTier, useRecentDialogue }),
         directAttachmentCapabilityProjectionDigest: attachmentSubmit.capabilityProjection.projectionDigest,
         directAttachmentSubmitPacketId: attachmentSubmit.packet.packetId,
         directAttachmentSubmitPacketDigest: attachmentSubmit.packet.packetDigest,
@@ -4428,7 +4455,7 @@ class DirectLiveTextController {
           code: error.code || "direct_turn_pre_transport_failed",
           message: error.message || "Direct text turn failed before provider transport.",
         },
-        requestShape: requestShape || requestShapeForDiagnostic(requestBody),
+        requestShape: requestShape || initialDirectTurnRequestShape(requestBody, { implementationTier, useRecentDialogue }),
         controlledRoutingGateState: controlledRoutingResult?.route?.gateState || "",
         preTransportFailed: true,
       });
