@@ -5,6 +5,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const { DirectHeadlessBridgeStore, clientCapabilityTokenDigest, normalizeString } = require("./bridge-store");
+const { executeHeadlessAffordanceCommand } = require("./affordance-command-surface");
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 
@@ -488,6 +489,25 @@ class DirectHeadlessBridgeDaemon {
       }
       const result = this.controlDaemon(body);
       return jsonResponse(res, result.ok ? 202 : 400, result);
+    }
+    if (req.method === "POST" && url.pathname === "/v1/bridge/affordance-commands") {
+      const body = requestBodyObject(await readRequestJson(req, this.maxBodyBytes));
+      const auth = this.authenticateKnownClientRequest(req, body);
+      if (!auth.ok) {
+        return jsonResponse(res, 401, {
+          ok: false,
+          status: "affordance_blocked",
+          error: auth.reason,
+          providerRequestStarted: false,
+          routeAuthorityMutable: false,
+          rawPayloadIncluded: false,
+        });
+      }
+      const result = executeHeadlessAffordanceCommand({ daemon: this, command: body });
+      return jsonResponse(res, result.status === "completed" || result.status === "accepted" ? 202 : 400, {
+        ok: result.status === "completed" || result.status === "accepted",
+        ...result,
+      });
     }
     if (req.method === "POST" && url.pathname === "/v1/bridge/events") {
       const body = requestBodyObject(await readRequestJson(req, this.maxBodyBytes));
