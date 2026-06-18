@@ -41,9 +41,9 @@ function shortDigest(value) {
   return sha256(value).slice(7, 31);
 }
 
-function nowIso(nowMs = Date.now()) {
-  const timestamp = Number(nowMs);
-  return new Date(Number.isFinite(timestamp) ? timestamp : Date.now()).toISOString();
+function nowIso(nowMs) {
+  const ms = typeof nowMs === "number" && Number.isFinite(nowMs) ? nowMs : Date.now();
+  return new Date(ms).toISOString();
 }
 
 function normalizeStringList(values) {
@@ -252,7 +252,7 @@ function buildResidentSmokeCase(input = {}, index = 0) {
     expectedMismatchCount: Math.max(0, Number(input.expectedMismatchCount) || 0),
     expectedUnknownSubjectCount: Math.max(0, Number(input.expectedUnknownSubjectCount) || 0),
     submitThroughBridge: input.submitThroughBridge !== false,
-    maxPromptChars: Math.max(200, Number(input.maxPromptChars) || 1600),
+    maxPromptChars: Math.max(200, Number(input.maxPromptChars) || 2200),
     selfReport: isPlainObject(input.selfReport) ? input.selfReport : defaultSelfReportFor(caseClass),
     requiredBundleSubjects: normalizeStringList(input.requiredBundleSubjects),
     evidenceRefs: [
@@ -308,6 +308,22 @@ function subjectKey(row = {}) {
   return `${normalizeString(row.subjectKind, "unknown")}:${normalizeString(row.subjectId, "")}`;
 }
 
+function renderSubjectKeyHints(bundle = {}) {
+  const rows = Array.isArray(bundle?.policySnapshot?.rows) ? bundle.policySnapshot.rows : [];
+  const lines = ["Exact claim keys available in this witness:"];
+  for (const row of rows) {
+    lines.push([
+      `- subjectKind=${row.subjectKind}`,
+      `subjectId=${row.subjectId}`,
+      `fields: status=${JSON.stringify(row.status)}`,
+      `callableInCurrentRequest=${JSON.stringify(row.callableInCurrentRequest)}`,
+      `controlState=${JSON.stringify(row.controlState)}`,
+      `declaredAsProviderTool=${JSON.stringify(row.declaredAsProviderTool)}`,
+    ].join("; "));
+  }
+  return lines.join("\n");
+}
+
 function boundedPrompt(text = "", maxChars = 1600) {
   const source = normalizeString(text, "");
   if (source.length <= maxChars) return source;
@@ -321,6 +337,9 @@ function buildResidentSmokePrompt({ bundle, smokeCase } = {}) {
     "Each claim must use subjectKind, subjectId, field, and value.",
     "Do not claim a tool is callable unless the witness says callableInCurrentRequest=true.",
     "Do not treat sub-agent observation as control authority.",
+    "Use only the exact subjectKind/subjectId pairs and field names listed below.",
+    "",
+    renderSubjectKeyHints(bundle),
     "",
     compactText,
     "",
@@ -340,12 +359,13 @@ function assertionRow(input = {}) {
   };
 }
 
-async function waitForPacketState({ store, packetId, expectedState, timeoutMs = 5000 }) {
+async function waitForPacketState({ store, packetId, expectedState, timeoutMs = 5000, intervalMs = 50 }) {
   const deadline = Date.now() + Math.max(1, Number(timeoutMs) || 5000);
+  const delay = Math.max(1, Number(intervalMs) || 50);
   while (Date.now() < deadline) {
     const packet = store.readTurnPacket(packetId);
     if (packet?.state === expectedState) return packet;
-    await new Promise((resolve) => setTimeout(resolve, 25));
+    await new Promise((resolve) => setTimeout(resolve, delay));
   }
   return store.readTurnPacket(packetId);
 }
@@ -367,7 +387,7 @@ async function submitSmokePrompt({ daemon, smokeCase, bundle, commandBase, comma
       eventKind: "resident_self_report_smoke",
       factSourcePosture: "harness_diagnostic",
       model: "gpt-5.5",
-      reasoningEffort: "low",
+      reasoningEffort: "medium",
     },
   });
   const packet = result?.result?.turnPacket || null;
@@ -404,41 +424,56 @@ async function runHeadlessResidentSmokeCase({ daemon, smokeCase, bundle, selfRep
   const safeCase = isPlainObject(smokeCase) ? smokeCase : buildResidentSmokeCase({ caseClass: "unknown" });
   const assertions = [];
   let submit = null;
-  if (safeCase.submitThroughBridge) {
-    submit = await submitSmokePrompt({ daemon, smokeCase: safeCase, bundle, commandBase, commandRunId });
+  let diagnostic = null;
+  try {
+    if (safeCase.submitThroughBridge) {
+      submit = await submitSmokePrompt({ daemon, smokeCase: safeCase, bundle, commandBase, commandRunId });
+      assertions.push(assertionRow({
+        assertionId: "prompt_submit_accepted",
+        expected: "accepted",
+        observed: submit.result?.status,
+        passed: submit.result?.status === "accepted",
+        blockerCode: submit.result?.blockerCode,
+      }));
+      assertions.push(assertionRow({
+        assertionId: "prompt_terminal",
+        expected: "provider_completed",
+        observed: submit.terminalPacket?.state || "",
+        passed: submit.terminalPacket?.state === "provider_completed",
+        blockerCode: submit.terminalPacket?.blockerCode,
+      }));
+    }
+    assertions.push(...requiredSubjectsAssertions(safeCase, bundle));
+    const selfReport = await (selfReportProvider || defaultSelfReportProvider)({ smokeCase: safeCase, bundle, submit });
+    diagnostic = buildResidentSelfReportDiagnostics({
+      snapshot: bundle.policySnapshot,
+      selfReport,
+    });
     assertions.push(assertionRow({
-      assertionId: "prompt_submit_accepted",
-      expected: "accepted",
-      observed: submit.result?.status,
-      passed: submit.result?.status === "accepted",
-      blockerCode: submit.result?.blockerCode,
+      assertionId: "expected_mismatch_count",
+      expected: safeCase.expectedMismatchCount,
+      observed: diagnostic.mismatchCount,
+      passed: diagnostic.mismatchCount === safeCase.expectedMismatchCount,
     }));
     assertions.push(assertionRow({
-      assertionId: "prompt_terminal",
-      expected: "provider_completed",
-      observed: submit.terminalPacket?.state || "",
-      passed: submit.terminalPacket?.state === "provider_completed",
-      blockerCode: submit.terminalPacket?.blockerCode,
+      assertionId: "expected_unknown_subject_count",
+      expected: safeCase.expectedUnknownSubjectCount,
+      observed: diagnostic.unknownSubjectCount,
+      passed: diagnostic.unknownSubjectCount === safeCase.expectedUnknownSubjectCount,
+    }));
+  } catch (error) {
+    diagnostic = buildResidentSelfReportDiagnostics({
+      snapshot: bundle?.policySnapshot,
+      selfReport: { source: "case_execution_failed", claims: [] },
+    });
+    assertions.push(assertionRow({
+      assertionId: "case_execution",
+      expected: "completed",
+      observed: normalizeString(error?.code || error?.message, "case_execution_failed"),
+      passed: false,
+      blockerCode: normalizeString(error?.code, "case_execution_failed"),
     }));
   }
-  assertions.push(...requiredSubjectsAssertions(safeCase, bundle));
-  const selfReport = await (selfReportProvider || defaultSelfReportProvider)({ smokeCase: safeCase, bundle, submit });
-  const diagnostic = buildResidentSelfReportDiagnostics({
-    snapshot: bundle.policySnapshot,
-    selfReport,
-  });
-  assertions.push(assertionRow({
-    assertionId: "expected_mismatch_count",
-    expected: safeCase.expectedMismatchCount,
-    observed: diagnostic.mismatchCount,
-    passed: diagnostic.mismatchCount === safeCase.expectedMismatchCount,
-  }));
-  assertions.push(assertionRow({
-    assertionId: "expected_unknown_subject_count",
-    expected: safeCase.expectedUnknownSubjectCount,
-    observed: diagnostic.unknownSubjectCount,
-    passed: diagnostic.unknownSubjectCount === safeCase.expectedUnknownSubjectCount,
-  }));
   const status = assertions.some((entry) => entry.passed === false)
     ? "fail"
     : (safeCase.expectedStatus === "degraded" ? "degraded" : "pass");
