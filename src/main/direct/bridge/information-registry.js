@@ -658,6 +658,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "This slice does not bypass route/client authority, does not expose raw prompts or provider payloads in command results, and does not claim true steer/stop support until the headless runtime exposes those transitions.",
   },
   {
+    id: "ic13.headless-affordance-scenario-fixtures",
+    name: "Headless ODEU affordance scenario fixtures",
+    role: "governance_routing",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/headless/affordance-scenarios.js", "src/main/direct/headless/affordance-command-surface.js", "scripts/direct-headless-affordance-scenarios-regression.mjs", "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md"],
+    ontology: ontologyShape(["headless_affordance_scenario", "headless_affordance_scenario_report", "headless_affordance_scenario_suite_report"], "harness", {
+      identityFields: ["suiteId", "scenarioId", "scenarioClass", "commandId"],
+      schema: "headless_affordance_scenario_suite_report@1",
+    }),
+    bridgeFit: "Defines fixture-safe expected/observed scenario reports over the command surface so backend affordance behavior can be tested without UI interaction while preserving skip and degraded capability gaps as first-class evidence.",
+    realignment: "Scenario fixtures do not run live resident self-report, sub-agent graph providers, context injection, analytics attribution probes, provider transport beyond the fixture controller, or workspace mutation unless later scenarios explicitly add those authority contracts.",
+  },
+  {
     id: "ic13.headless-tool-class-examples",
     name: "Headless tool-class example pack and runner",
     role: "observability_surface",

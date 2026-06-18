@@ -3916,7 +3916,7 @@ Implemented scope:
 
 ### PR 79: ODEU Affordance Scenario Fixtures
 
-Status: planned.
+Status: implemented in branch `codex/direct-headless-affordance-scenarios`.
 
 Purpose:
 
@@ -3943,6 +3943,21 @@ pass, fail, skip for missing provider evidence, or degrade for unsupported
 runtime capability. Skips and degraded outcomes are first-class evidence, not
 silent success.
 ```
+
+Implemented scope:
+
+- Added `headless_affordance_scenario@1`.
+- Added `headless_affordance_scenario_report@1`.
+- Added `headless_affordance_scenario_suite@1`.
+- Added `headless_affordance_scenario_suite_report@1`.
+- Added a default fixture-safe scenario suite over the headless affordance
+  command surface covering direct session submit/read, active-turn queue with
+  steer/stop blockers, bridge status projection, resident tool self-report
+  placeholder, sub-agent E-channel placeholder, context/memory/baton/compaction
+  witness placeholder, and analytics attribution placeholder.
+- Preserved skip and degraded scenario outcomes as first-class evidence instead
+  of treating missing capability as success.
+- Added `direct:headless-affordance-scenarios` regression coverage.
 
 ### PR 80: Headless Resident-Agent Smoke Runner
 
