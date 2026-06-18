@@ -317,6 +317,33 @@ assert.deepEqual(validateBridgeSystemEpistemicSnapshot(defaultSnapshot), []);
 assert.ok(defaultSnapshot.rowCount >= 20);
 assert.ok(defaultSnapshot.byStatus.unknown >= 1);
 
+const nullRows = buildBridgeSystemEpistemicRows(null);
+assert.ok(nullRows.length >= 20);
+
+const nonObjectSnapshot = buildBridgeSystemEpistemicSnapshot(null);
+assert.deepEqual(validateBridgeSystemEpistemicSnapshot(nonObjectSnapshot), []);
+assert.equal(nonObjectSnapshot.workThreadId, "work_thread_unknown");
+
+const unsupportedSnapshot = buildBridgeSystemEpistemicSnapshot({
+  generatedAt,
+  includeDefaultRows: false,
+  facts: [
+    {
+      subjectKind: "external_capability",
+      subjectId: "unsupported-provider-hosted-tool",
+      displayLabel: "Unsupported provider-hosted tool",
+      status: "not_implemented",
+      blockerCodes: null,
+      compactText: "Known unsupported provider-hosted tool.",
+    },
+  ],
+});
+assert.deepEqual(validateBridgeSystemEpistemicSnapshot(unsupportedSnapshot), []);
+assert.equal(unsupportedSnapshot.byStatus.not_implemented, 1);
+const unsupportedRow = unsupportedSnapshot.residentSnapshot.rows[0];
+assert.equal(unsupportedRow.status, "not_implemented");
+assert.ok(unsupportedRow.blockerCodes.includes("execution_requires_promotion"));
+
 const authorityLeak = structuredClone(snapshot);
 authorityLeak.accountMutationAllowed = true;
 assert.ok(validateBridgeSystemEpistemicSnapshot(authorityLeak).includes("bridge_system_epistemic_authority_or_raw_leak:accountMutationAllowed"));

@@ -43,6 +43,7 @@ const STATUSES = new Set([
   "blocked_by_runtime",
   "blocked_by_workthread",
   "temporarily_unavailable",
+  "not_implemented",
   "stale",
   "unknown",
 ]);
@@ -328,15 +329,16 @@ function normalizeEvidenceRefs(values, fallbackSource) {
 }
 
 function inputFactsFor(input = {}) {
+  const target = isPlainObject(input) ? input : {};
   const groups = [
-    input.facts,
-    input.runtimeFacts,
-    input.providerFacts,
-    input.contextFacts,
-    input.workspaceFacts,
-    input.moduleFacts,
-    input.routeFacts,
-    input.orchestrationFacts,
+    target.facts,
+    target.runtimeFacts,
+    target.providerFacts,
+    target.contextFacts,
+    target.workspaceFacts,
+    target.moduleFacts,
+    target.routeFacts,
+    target.orchestrationFacts,
   ];
   return groups.flatMap((group) => (Array.isArray(group) ? group : [])).filter(isPlainObject);
 }
@@ -346,9 +348,10 @@ function factKey(fact = {}) {
 }
 
 function mergeDefaultFacts(input = {}) {
-  const defaultsEnabled = input.includeDefaultRows !== false;
+  const target = isPlainObject(input) ? input : {};
+  const defaultsEnabled = target.includeDefaultRows !== false;
   const defaults = defaultsEnabled ? CLASS_DEFAULTS.map((entry) => ({ ...entry })) : [];
-  const supplied = inputFactsFor(input).map((entry) => ({ ...entry }));
+  const supplied = inputFactsFor(target).map((entry) => ({ ...entry }));
   const byKey = new Map(defaults.map((entry) => [factKey(entry), entry]));
   for (const fact of supplied) {
     const key = factKey(fact);
@@ -363,7 +366,7 @@ function sourceForKind(subjectKind) {
 }
 
 function defaultBlockersFor(subjectKind, status, explicitBlockers = []) {
-  const blockers = [...explicitBlockers];
+  const blockers = Array.isArray(explicitBlockers) ? [...explicitBlockers] : [];
   if (status === "unknown") blockers.push("status_unknown");
   if (status === "stale") blockers.push("stale_epistemic_row");
   if (subjectKind === "account_action") blockers.push("account_mutation_requires_operator");
@@ -391,8 +394,9 @@ function priorityFor(subjectKind, status) {
 }
 
 function buildBridgeSystemEpistemicRows(input = {}) {
-  const generatedAt = normalizeString(input.generatedAt, nowIso(input.nowMs));
-  return mergeDefaultFacts(input).map((fact, index) => {
+  const target = isPlainObject(input) ? input : {};
+  const generatedAt = normalizeString(target.generatedAt, nowIso(target.nowMs));
+  return mergeDefaultFacts(target).map((fact, index) => {
     const subjectKind = normalizeEnum(fact.subjectKind, SUBJECT_KINDS, "external_capability");
     const subjectId = normalizeString(fact.subjectId || fact.id, `${subjectKind}_${index + 1}`);
     const status = normalizeEnum(fact.status, STATUSES, "unknown");
@@ -457,10 +461,11 @@ function countBy(rows, field) {
 }
 
 function buildBridgeSystemEpistemicPreview(snapshot = {}) {
-  const rows = Array.isArray(snapshot.residentSnapshot?.rows) ? snapshot.residentSnapshot.rows : [];
+  const target = isPlainObject(snapshot) ? snapshot : {};
+  const rows = Array.isArray(target.residentSnapshot?.rows) ? target.residentSnapshot.rows : [];
   const preview = {
     schema: BRIDGE_SYSTEM_EPISTEMIC_PREVIEW_SCHEMA,
-    snapshotId: normalizeString(snapshot.snapshotId, ""),
+    snapshotId: normalizeString(target.snapshotId, ""),
     rowCount: rows.length,
     bySubjectKind: countBy(rows, "subjectKind"),
     byStatus: countBy(rows, "status"),
@@ -479,16 +484,17 @@ function buildBridgeSystemEpistemicPreview(snapshot = {}) {
 }
 
 function buildBridgeSystemEpistemicSnapshot(input = {}) {
-  const generatedAt = normalizeString(input.generatedAt, nowIso(input.nowMs));
-  const rowInputs = buildBridgeSystemEpistemicRows({ ...input, generatedAt });
+  const target = isPlainObject(input) ? input : {};
+  const generatedAt = normalizeString(target.generatedAt, nowIso(target.nowMs));
+  const rowInputs = buildBridgeSystemEpistemicRows({ ...target, generatedAt });
   const residentSnapshot = buildResidentEpistemicSnapshot({
-    workThreadId: normalizeString(input.workThreadId, "work_thread_unknown"),
-    codexThreadId: normalizeString(input.codexThreadId || input.threadId, ""),
+    workThreadId: normalizeString(target.workThreadId, "work_thread_unknown"),
+    codexThreadId: normalizeString(target.codexThreadId || target.threadId, ""),
     runtimeFamily: "direct",
     generatedAt,
-    snapshotCompleteness: normalizeString(input.snapshotCompleteness, "stale_or_partial"),
-    projectionBudget: input.projectionBudget || { maxRows: 48, maxChars: 6000, truncationPolicy: "priority_then_summary" },
-    sourceDigests: normalizeStringList(input.sourceDigests),
+    snapshotCompleteness: normalizeString(target.snapshotCompleteness, "stale_or_partial"),
+    projectionBudget: target.projectionBudget || { maxRows: 48, maxChars: 6000, truncationPolicy: "priority_then_summary" },
+    sourceDigests: normalizeStringList(target.sourceDigests),
     rows: rowInputs,
   });
   const snapshot = {
