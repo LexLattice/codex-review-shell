@@ -4242,7 +4242,7 @@ Implemented scope:
 
 ## Wave 14.5: Shared ODEU Live-Capability Kernel
 
-Status: planned.
+Status: complete through PR 91.
 
 Dedicated spec:
 
@@ -4282,11 +4282,11 @@ family-specific = executor semantics, side-effect semantics, result semantics,
 
 | PR | Status | Branch | Purpose | Planned deliverable | Explicit non-goals |
 | --- | --- | --- | --- | --- | --- |
-| `#87` | implemented | `codex/direct-odeu-artifact-kernel` | ODEU artifact kernel | Shared artifact refs, source refs, digests, validation, raw-exposure scan shape | No executor behavior |
-| `#88` | implemented | `codex/direct-odeu-capability-lifecycle` | Capability lifecycle kernel | Shared capability row, promotion decision, activation row, declaration/callable surface | No per-call authorization |
+| `#87` | merged | `codex/direct-odeu-artifact-kernel` | ODEU artifact kernel | Shared artifact refs, source refs, digests, validation, raw-exposure scan shape | No executor behavior |
+| `#88` | merged | `codex/direct-odeu-capability-lifecycle` | Capability lifecycle kernel | Shared capability row, promotion decision, activation row, declaration/callable surface | No per-call authorization |
 | `#89` | merged | `codex/direct-odeu-per-call-authority-transaction` | Per-call authority and transaction kernel | Shared authority decision, side-effect class, transaction/recovery lifecycle | No family-specific live promotion |
 | `#90` | merged | `codex/direct-odeu-result-admission-kernel` | Result envelope and context admission kernel | Shared result envelope, context admission record, provider/local visibility split | No result smuggling into memory/project truth |
-| `#91` | in progress | `codex/direct-odeu-usability-proof-witness` | Usability proof and resident witness kernel | Shared capability usability proof and resident/operator witness projection | No resident self-report as proof source |
+| `#91` | merged | `codex/direct-odeu-usability-proof-witness` | Usability proof and resident witness kernel | Shared capability usability proof and resident/operator witness projection | No resident self-report as proof source |
 
 Dependency:
 
@@ -4294,6 +4294,61 @@ Dependency:
 Wave 14 provider-backed sub-agent execution remains the implemented baseline.
 Wave 15 and later live capability waves should consume this kernel rather than
 invent family-local activation, authority, result, or proof grammars.
+```
+
+## Wave 15: Resident-Callable Sub-Agent MVP
+
+Status: planned.
+
+Dedicated spec:
+
+```text
+docs/DIRECT_WAVE15_RESIDENT_SUB_AGENT_MVP_SPEC.md
+```
+
+Purpose:
+
+```text
+Promote the existing direct sub-agent substrate into the first resident-callable
+live capability family.
+```
+
+First usable slice:
+
+```text
+spawn_agent
+list_agents
+inspect_agent
+bounded wait_agent
+sanitized child result admission
+child usage attribution when provider evidence exists
+```
+
+Standing non-goals:
+
+```text
+no send/followup
+no close/interrupt/resume
+no recursive spawn
+no child inherited tools
+no child output flattening into primary transcript
+no batch fan-out
+```
+
+| PR | Status | Branch | Purpose | Planned deliverable | Explicit non-goals |
+| --- | --- | --- | --- | --- | --- |
+| `#92` | planned | TBD | Sub-agent capability profile and ODEU lifecycle adapter | Capability rows, promotion decisions, activation rows, declaration snapshots, blocked rows for deferred controls | No provider transport or resident-callable declaration |
+| `#93` | planned | TBD | Sub-agent per-call authority, idempotency, and wait policy | Authority decisions, transaction rows, duplicate-spawn ledger, target validation, wait timeout/deadlock policy | No provider-backed child execution |
+| `#94` | planned | TBD | Provider-backed spawn/run result envelope and admission | Provider-backed child run adapter, child result envelope, context admission, usage attribution | No child transcript full-history view or child tools |
+| `#95` | planned | TBD | Resident tool declaration, witness, and headless smoke | Resident sub-agent tool declarations, epistemic rows, usability proofs, headless spawn/list/inspect/wait smoke | No UI-first implementation or interference controls |
+| `#96` | planned | TBD | Operator projection and manual usability gate | Primary transcript activity summary, operator proof/status rows, manual smoke gate, analytics hook | No right-pane/sub-agent UX overhaul |
+
+Wave 15 completion gate:
+
+```text
+Resident can spawn one bounded child agent, list/inspect/wait for it, and
+consume a sanitized child result through ODEU result/context admission without
+flattening child work into the primary transcript.
 ```
 
 

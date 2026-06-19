@@ -1,6 +1,7 @@
 # Direct ODEU Live-Capability Kernel Wave Spec
 
-Status: planning spec for Wave 14.5, to be implemented before the remaining
+Status: completed implementation-wave spec for Wave 14.5. PRs 87-91 are merged
+and should be treated as the shared kernel substrate for remaining
 live-capability promotion waves.
 
 Primary branch:
