@@ -4240,6 +4240,63 @@ Implemented scope:
   send blocking, duplicate child blocking, token usage projection, and raw
   prompt exclusion.
 
+## Wave 14.5: Shared ODEU Live-Capability Kernel
+
+Status: planned.
+
+Dedicated spec:
+
+```text
+docs/DIRECT_ODEU_LIVE_CAPABILITY_KERNEL_WAVE_SPEC.md
+```
+
+Purpose:
+
+```text
+Extract the shared ODEU live-capability lifecycle before promoting the next
+families to resident/operator live capabilities.
+```
+
+Kernel lifecycle:
+
+```text
+capability constitution row
+  -> promotion decision
+  -> activation row
+  -> declaration / callable surface
+  -> per-call authority decision
+  -> execution transaction
+  -> result envelope
+  -> context admission
+  -> projection / resident epistemic witness
+  -> usability proof
+```
+
+Doctrine:
+
+```text
+shared kernel = activation, authority, transaction, envelope, admission, proof
+family-specific = executor semantics, side-effect semantics, result semantics,
+                  UI/resident wording
+```
+
+| PR | Status | Branch | Purpose | Planned deliverable | Explicit non-goals |
+| --- | --- | --- | --- | --- | --- |
+| `#87` | planned | TBD | ODEU artifact kernel | Shared artifact refs, source refs, digests, validation, raw-exposure scan shape | No executor behavior |
+| `#88` | planned | TBD | Capability lifecycle kernel | Shared capability row, promotion decision, activation row, declaration/callable surface | No per-call authorization |
+| `#89` | planned | TBD | Per-call authority and transaction kernel | Shared authority decision, side-effect class, transaction/recovery lifecycle | No family-specific live promotion |
+| `#90` | planned | TBD | Result envelope and context admission kernel | Shared result envelope, context admission record, provider/local visibility split | No result smuggling into memory/project truth |
+| `#91` | planned | TBD | Usability proof and resident witness kernel | Shared capability usability proof and resident/operator witness projection | No resident self-report as proof source |
+
+Dependency:
+
+```text
+Wave 14 provider-backed sub-agent execution remains the implemented baseline.
+Wave 15 and later live capability waves should consume this kernel rather than
+invent family-local activation, authority, result, or proof grammars.
+```
+
+
 ## Update Rules
 
 After each PR:

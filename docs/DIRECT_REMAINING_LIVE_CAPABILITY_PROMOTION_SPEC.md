@@ -13,6 +13,7 @@ Related docs:
 ```text
 docs/DIRECT_INFORMATION_BRIDGE_CONSTITUTION.md
 docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md
+docs/DIRECT_ODEU_LIVE_CAPABILITY_KERNEL_WAVE_SPEC.md
 docs/DIRECT_TOOL_AUTHORITY_FAMILIES_WAVE_SPEC.md
 docs/DIRECT_RESIDENT_AGENT_EPISTEMIC_ACCESS_SPEC.md
 docs/CODEX_DIRECT_HARNESS_ODEU_MATRIX_v0_2.md
@@ -963,11 +964,37 @@ No connector mutation without external authority packet.
 No module result context admission without provenance envelope.
 ```
 
+
+## Kernel Dependency
+
+Before starting Wave 15 and the remaining family-specific live promotions,
+implement Wave 14.5 from:
+
+```text
+docs/DIRECT_ODEU_LIVE_CAPABILITY_KERNEL_WAVE_SPEC.md
+```
+
+Reason:
+
+```text
+Every live capability family needs the same bridge lifecycle:
+capability row -> promotion -> activation -> declaration/callable surface
+-> per-call authority -> transaction -> result envelope -> context admission
+-> usability proof -> resident/operator witness.
+```
+
+The family-specific waves should then define only their executor semantics,
+argument schema, side-effect semantics, result contract, and UI/resident wording.
+
 ## Suggested Wave Order
 
 Recommended next waves:
 
 ```text
+Wave 14.5: Shared ODEU live-capability kernel
+  artifact/source/digest/raw-exposure -> lifecycle -> per-call authority
+  -> transaction -> result/context admission -> usability proof/witness.
+
 Wave 15: Resident-callable sub-agent MVP
   spawn/list/inspect/wait/result admission; no child tools, no recursive spawn.
 
@@ -1007,6 +1034,8 @@ Wave 24: Bridge module runner / hooks execution
 Why this order:
 
 ```text
+Wave 14.5 prevents every later family from inventing local activation,
+authority, result-admission, and proof grammars
 sub-agents are already closest to live after PR85/86
 human/control/context read-only tools improve resident self-knowledge
 external tools need authority hardening before action
