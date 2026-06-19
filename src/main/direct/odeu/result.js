@@ -102,6 +102,7 @@ function buildResultArtifactBase(input = {}, options = {}, artifactKind) {
       callId: input.callId,
       transactionId: input.transactionId,
       rendererSafeSummary: input.rendererSafeSummary,
+      familyExtension: input.familyExtension,
     },
   }, options);
 }
@@ -110,8 +111,12 @@ function buildOdeuResultEnvelope(input = {}, options = {}) {
   input = isPlainObject(input) ? input : {};
   options = isPlainObject(options) ? options : {};
   const resultEnvelopeId = normalizeId(input.resultEnvelopeId, "odeu_result_envelope");
+  const capabilityId = normalizeId(input.capabilityId, "odeu_capability");
+  const callId = normalizeId(input.callId, "odeu_capability_call");
   const sourceRefs = normalizeOdeuSourceRefs(input.sourceRefs, options);
   const familyExtension = isPlainObject(input.familyExtension) ? { ...input.familyExtension } : undefined;
+  const rendererSafeSummary = normalizeString(input.rendererSafeSummary, "Result recorded.");
+  const transactionId = normalizeString(input.transactionId, "");
   const envelope = {
     ...buildResultArtifactBase({
       ...input,
@@ -119,14 +124,18 @@ function buildOdeuResultEnvelope(input = {}, options = {}) {
       artifactId: input.artifactId || resultEnvelopeId,
       sourceRefs,
       familyExtension,
+      capabilityId,
+      callId,
+      transactionId,
+      rendererSafeSummary,
     }, options, "odeu_result_envelope"),
     schema: ODEU_RESULT_ENVELOPE_SCHEMA,
     resultEnvelopeId,
-    capabilityId: normalizeId(input.capabilityId, "odeu_capability"),
-    callId: normalizeId(input.callId, "odeu_capability_call"),
+    capabilityId,
+    callId,
     resultKind: pickEnum(input.resultKind, ODEU_RESULT_KINDS, "status"),
     sourceRefs,
-    rendererSafeSummary: normalizeString(input.rendererSafeSummary, "Result recorded."),
+    rendererSafeSummary,
     visibility: normalizeVisibility(input.visibility),
     payloadPolicy: normalizePayloadPolicy(input.payloadPolicy),
     rawTextIncluded: input.rawTextIncluded === true,
@@ -134,7 +143,6 @@ function buildOdeuResultEnvelope(input = {}, options = {}) {
     rawProviderPayloadIncluded: input.rawProviderPayloadIncluded === true,
     confidence: pickEnum(input.confidence, ODEU_RESULT_CONFIDENCE, "unknown"),
   };
-  const transactionId = normalizeString(input.transactionId, "");
   if (transactionId) envelope.transactionId = transactionId;
   const familyResultKind = normalizeString(input.familyResultKind, "");
   if (familyResultKind) envelope.familyResultKind = familyResultKind;
@@ -218,7 +226,7 @@ function validateBase(value, errors) {
   }
 }
 
-function validateVisibility(value = {}, errors) {
+function validateVisibility(value, errors) {
   if (!isPlainObject(value)) {
     errors.push("missing_required_object:visibility");
     return;
@@ -230,7 +238,7 @@ function validateVisibility(value = {}, errors) {
   validateEnum(value.transcriptVisible, ODEU_TRANSCRIPT_VISIBILITY, "visibility.transcriptVisible", errors);
 }
 
-function validatePayloadPolicy(value = {}, errors) {
+function validatePayloadPolicy(value, errors) {
   if (!isPlainObject(value)) {
     errors.push("missing_required_object:payloadPolicy");
     return;
@@ -245,11 +253,11 @@ function validatePayloadPolicy(value = {}, errors) {
 
 function validateOdeuResultEnvelope(value = {}) {
   const errors = [];
-  validateBase(value, errors);
   if (!isPlainObject(value)) {
     errors.push("missing_required_object:resultEnvelope");
     throw new Error(`odeu_result_envelope_validation_failed:${errors.join(",")}`);
   }
+  validateBase(value, errors);
   validateRequiredString(value.resultEnvelopeId, "resultEnvelopeId", errors);
   validateRequiredString(value.capabilityId, "capabilityId", errors);
   validateRequiredString(value.callId, "callId", errors);
@@ -272,6 +280,7 @@ function validateOdeuResultEnvelope(value = {}) {
   if (value.rawTextIncluded) errors.push("raw_text_included");
   if (value.rawPathIncluded) errors.push("raw_path_included");
   if (value.rawProviderPayloadIncluded) errors.push("raw_provider_payload_included");
+  if (value.rawExposureScan?.passed !== true) errors.push("raw_exposure_scan_failed");
   if (visibility.transcriptVisible === "transcript_safe" && (value.rawTextIncluded || value.rawPathIncluded || value.rawProviderPayloadIncluded)) {
     errors.push("transcript_safe_requires_no_raw_payload");
   }
@@ -287,11 +296,11 @@ function validateOdeuResultEnvelope(value = {}) {
 
 function validateOdeuContextAdmissionRecord(value = {}) {
   const errors = [];
-  validateBase(value, errors);
   if (!isPlainObject(value)) {
     errors.push("missing_required_object:contextAdmission");
     throw new Error(`odeu_context_admission_validation_failed:${errors.join(",")}`);
   }
+  validateBase(value, errors);
   validateRequiredString(value.admissionId, "admissionId", errors);
   validateRequiredString(value.resultEnvelopeId, "resultEnvelopeId", errors);
   validateEnum(value.admissionDecision, ODEU_ADMISSION_DECISIONS, "admissionDecision", errors);
@@ -310,7 +319,7 @@ function validateOdeuContextAdmissionRecord(value = {}) {
   if (value.admissionDecision !== "admit" && value.admittedAs !== "not_admitted") {
     errors.push("non_admit_requires_not_admitted");
   }
-  if (["blocked_raw_exposure", "blocked_policy", "blocked_stale"].includes(value.admissionDecision) && value.omissionLedgerRefs.length === 0) {
+  if (["blocked_raw_exposure", "blocked_policy", "blocked_stale"].includes(value.admissionDecision) && (!Array.isArray(value.omissionLedgerRefs) || value.omissionLedgerRefs.length === 0)) {
     errors.push("blocked_admission_requires_omission_ref");
   }
   if (!errors.length) return true;

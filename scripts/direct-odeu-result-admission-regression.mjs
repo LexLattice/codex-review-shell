@@ -112,6 +112,25 @@ assert(admission.admissionDecision === "admit", "admission decision mismatch");
 assert(admission.admittedAs === "tool_result_evidence", "admittedAs mismatch");
 validateOdeuContextAdmissionRecord(admission);
 
+const normalizedInputEnvelope = buildOdeuResultEnvelope({
+  resultEnvelopeId: "raw result envelope id fixture",
+  capabilityId: "capability with spaces",
+  callId: "call with spaces",
+  transactionId: "transaction_fixture",
+  rendererSafeSummary: "",
+  sourceRefs: [sourceRef],
+}, { now: fixedNow });
+assert(normalizedInputEnvelope.resultEnvelopeId.startsWith("odeu_result_envelope_"), "resultEnvelopeId should normalize");
+assert(normalizedInputEnvelope.capabilityId.startsWith("odeu_capability_"), "capabilityId should normalize");
+assert(normalizedInputEnvelope.callId.startsWith("odeu_capability_call_"), "callId should normalize");
+assert(normalizedInputEnvelope.resultEnvelopeId !== "raw result envelope id fixture", "raw resultEnvelopeId must not survive normalization");
+assert(normalizedInputEnvelope.capabilityId !== "capability with spaces", "raw capabilityId must not survive normalization");
+assert(normalizedInputEnvelope.callId !== "call with spaces", "raw callId must not survive normalization");
+assert(normalizedInputEnvelope.transactionId === "transaction_fixture", "transactionId should preserve safe string values");
+assert(normalizedInputEnvelope.rendererSafeSummary === "Result recorded.", "summary fallback should normalize before scan");
+assert(normalizedInputEnvelope.rawExposureScan.passed === true, "normalized safe envelope should pass raw exposure scan");
+validateOdeuResultEnvelope(normalizedInputEnvelope);
+
 const providerPayloadEnvelope = buildOdeuResultEnvelope({
   resultEnvelopeId: "result_envelope_provider_payload_fixture",
   capabilityId: "capability_provider_fixture",
@@ -184,6 +203,18 @@ expectThrows(() => buildOdeuResultEnvelope({
 }), "raw_payload_renderer_visible");
 
 expectThrows(() => buildOdeuResultEnvelope({
+  resultEnvelopeId: "result_envelope_unsafe_extension_fixture",
+  capabilityId: "capability_read_file_fixture",
+  callId: "call_unsafe_extension_fixture",
+  resultKind: "local_perception",
+  rendererSafeSummary: "Unsafe extension.",
+  familyExtension: {
+    localPath: "/home/rose/private.txt",
+  },
+  sourceRefs: [sourceRef],
+}), "raw_exposure_scan_failed");
+
+expectThrows(() => buildOdeuResultEnvelope({
   resultEnvelopeId: "result_envelope_bad_provider_fixture",
   capabilityId: "capability_provider_fixture",
   callId: "call_bad_provider_fixture",
@@ -201,6 +232,11 @@ expectThrows(() => validateOdeuResultEnvelope({
   ...resultEnvelope,
   visibility: null,
 }), "missing_required_object:visibility");
+
+expectThrows(() => validateOdeuResultEnvelope({
+  ...resultEnvelope,
+  payloadPolicy: null,
+}), "missing_required_object:payloadPolicy");
 
 expectThrows(() => validateOdeuResultEnvelope({
   ...resultEnvelope,
@@ -223,6 +259,11 @@ expectThrows(() => buildOdeuContextAdmissionRecord({
   admissionDecision: "blocked_policy",
   admittedAs: "not_admitted",
   omissionLedgerRefs: [],
+}), "blocked_admission_requires_omission_ref");
+
+expectThrows(() => validateOdeuContextAdmissionRecord({
+  ...blockedAdmission,
+  omissionLedgerRefs: "omission_raw_exposure_fixture",
 }), "blocked_admission_requires_omission_ref");
 
 expectThrows(() => validateOdeuResultEnvelope(null), "missing_required_object:resultEnvelope");
