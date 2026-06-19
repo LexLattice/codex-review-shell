@@ -4214,7 +4214,7 @@ Implemented scope:
 
 ### PR 86: Headless Provider-Backed Sub-Agent Command
 
-Status: implemented in branch `codex/direct-headless-provider-sub-agent-command`.
+Status: merged.
 
 Planned scope:
 
@@ -4259,6 +4259,8 @@ npm run direct:information-bridge-audit
 
 Items that are real but not yet assigned to a wave:
 
+- Remaining live capability promotion tracker:
+  `docs/DIRECT_REMAINING_LIVE_CAPABILITY_PROMOTION_SPEC.md`.
 - Mature skill/hook marketplace or installation UI.
 - Bridge module runner V0 after execution gates, with explicit authority
   transition and no auto-invocation.
