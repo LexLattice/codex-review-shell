@@ -69,6 +69,7 @@ function main() {
     "vanilla.get_context_remaining",
     "vanilla.new_context",
     "vanilla.agent.spawn_agent",
+    "vanilla.agent.inspect_agent",
     "vanilla.agent.wait_agent",
     "vanilla.multi_agent_v1.spawn_agent",
     "vanilla.spawn_agents_on_csv",
@@ -90,6 +91,7 @@ function main() {
   const newContext = rows.get("vanilla.new_context");
   const spawnAgent = rows.get("vanilla.agent.spawn_agent");
   const listAgents = rows.get("vanilla.agent.list_agents");
+  const inspectAgent = rows.get("vanilla.agent.inspect_agent");
   const waitAgent = rows.get("vanilla.agent.wait_agent");
   const sendMessage = rows.get("vanilla.agent.send_message");
   const followupTask = rows.get("vanilla.agent.followup_task");
@@ -115,10 +117,19 @@ function main() {
   assert(spawnAgent.odeuFamily === "agent_runtime", "spawn_agent should be classified as agent runtime");
   assert(spawnAgent.promotionState === "direct_restricted", "spawn_agent should be restricted through the text-only sub-agent surface");
   assert(spawnAgent.localExecutorState === "implemented_restricted", "spawn_agent should cite the restricted text-only executor");
+  assert(spawnAgent.localExecutor === "src/main/direct/agents/live-tool-surface.js", "spawn_agent should cite the live sub-agent executor");
   assert(listAgents.promotionState === "direct_restricted", "list_agents should be restricted through the text-only sub-agent surface");
+  assert(listAgents.localExecutor === "src/main/direct/agents/live-tool-surface.js", "list_agents should cite the live sub-agent executor");
+  assert(inspectAgent.promotionState === "direct_restricted", "inspect_agent should be restricted through the E-channel inspect surface");
+  assert(inspectAgent.localExecutor === "src/main/direct/agents/live-tool-surface.js", "inspect_agent should cite the live sub-agent executor");
+  assert(inspectAgent.sideEffectClass === "none", "inspect_agent should remain read-only/no-side-effect");
+  assert(inspectAgent.approvalMode === "display_only", "inspect_agent should not require interference approval");
   assert(waitAgent.promotionState === "direct_restricted", "wait_agent should be restricted through bounded wait plans");
+  assert(waitAgent.localExecutor === "src/main/direct/agents/live-tool-surface.js", "wait_agent should cite the live sub-agent executor");
   assert(sendMessage.promotionState === "direct_restricted", "send_message should be restricted through mailbox write plans");
+  assert(sendMessage.localExecutor === "src/main/direct/agents/live-tool-surface.js", "send_message should cite the live sub-agent executor");
   assert(followupTask.promotionState === "direct_restricted", "followup_task should be restricted through mailbox write plans");
+  assert(followupTask.localExecutor === "src/main/direct/agents/text-tool-surface.js", "followup_task should stay on the plan-only text surface");
   assert(interruptAgent.promotionState === "diagnostic_only", "interrupt_agent should remain provider-cancel disabled");
   assert(pluginInstall.sideEffectClass === "capability_mutation", "plugin install should be capability mutation");
   assert(pluginInstall.promotionState === "deferred_external_authority", "plugin install should defer external authority");

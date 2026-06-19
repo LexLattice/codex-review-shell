@@ -4139,7 +4139,7 @@ Implemented scope:
 
 ### PR 84: Live Sub-Agent Tool Surface
 
-Status: planned.
+Status: implemented in branch `codex/direct-live-sub-agent-tool-surface`.
 
 Purpose:
 
@@ -4157,6 +4157,22 @@ Planned scope:
 - Report sub-agent capability availability to the resident epistemic catalog.
 - Keep unavailable or shadow-only sub-agent tools truthful in model-visible
   self-report prompts until they are actually executable.
+
+Implemented scope:
+
+- Added a deterministic direct live sub-agent tool surface for local
+  `spawn_agent`, `list_agents`, `inspect_agent`, `wait_agent`, and
+  `send_message` affordances.
+- Preserved provider/tool declaration boundaries: the surface mutates only the
+  local agent graph/mailbox/lifecycle witness and never starts provider
+  transport directly.
+- Added target-scoped no-interference self-binding: agents spawned with a
+  no-interference policy remain observable through inspect/E-channel, while
+  interfering `send_message` is blocked and reported in the resident-visible
+  tool catalog.
+- Added `inspect_agent` to the direct tool capability registry as a read-only,
+  display-only, restricted local executor.
+- Added regression coverage in `direct:live-sub-agent-tool-surface`.
 
 ## Update Rules
 
