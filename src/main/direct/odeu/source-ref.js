@@ -38,6 +38,7 @@ function normalizeOdeuSourceRef(input = {}, options = {}) {
     : digestCanonicalJson({
       sourceKind,
       sourceId: sourceRef.sourceId || "",
+      sourcePathEvidenceKey: sourceRef.sourcePathEvidenceKey || "",
       rowId: sourceRef.rowId || "",
       itemId: sourceRef.itemId || "",
       callId: sourceRef.callId || "",

@@ -42,10 +42,14 @@ function buildOdeuArtifactBase(input = {}, options = {}) {
   const artifactKind = normalizeString(input.artifactKind, "unknown");
   const artifactId = normalizeId(input.artifactId, `odeu_${artifactKind}`);
   const sourceRefs = normalizeOdeuSourceRefs(input.sourceRefs, options);
+  const familyExtension = input.familyExtension && typeof input.familyExtension === "object" && !Array.isArray(input.familyExtension)
+    ? { ...input.familyExtension }
+    : null;
   const rawExposureScan = input.rawExposureScan || buildOdeuRawExposureScan(input.rawExposureValue || {
     artifactKind,
     artifactId,
     sourceRefs,
+    ...(familyExtension ? { familyExtension } : {}),
   }, {
     scanScope: input.rawExposureScanScope || "artifact",
     now: options.now,
@@ -68,9 +72,7 @@ function buildOdeuArtifactBase(input = {}, options = {}) {
   const statusReason = normalizeString(input.statusReason, "");
   if (statusReason) artifact.statusReason = statusReason;
   if (Array.isArray(input.blockers)) artifact.blockers = input.blockers.map((entry) => normalizeString(entry, "")).filter(Boolean);
-  if (input.familyExtension && typeof input.familyExtension === "object" && !Array.isArray(input.familyExtension)) {
-    artifact.familyExtension = { ...input.familyExtension };
-  }
+  if (familyExtension) artifact.familyExtension = familyExtension;
   artifact.artifactDigest = input.artifactDigest && typeof input.artifactDigest === "object"
     ? buildOdeuDigest(input.artifactDigest)
     : artifactDigest({

@@ -48,6 +48,7 @@ const sourceRef = normalizeOdeuSourceRef({
   sourceId: "request_manifest_fixture",
   sourceConfidence: "exact",
   freshness: "fresh",
+  sourcePathEvidenceKey: "path_evidence_a",
   rowId: "row_1",
 }, { now: fixedNow });
 
@@ -57,6 +58,20 @@ assert(sourceRef.sourceConfidence === "exact", "source confidence mismatch");
 assert(sourceRef.freshness === "fresh", "source freshness mismatch");
 assert(sourceRef.sourceDigest.algorithm === "sha256", "source digest should be computed");
 assert(sourceRef.sourceDigest.digestOf === "metadata", "source digest posture mismatch");
+
+const sourceRefDifferentPath = normalizeOdeuSourceRef({
+  sourceRefId: "source_fixture_2",
+  sourceKind: "request_manifest",
+  sourceId: "request_manifest_fixture",
+  sourceConfidence: "exact",
+  freshness: "fresh",
+  sourcePathEvidenceKey: "path_evidence_b",
+  rowId: "row_1",
+}, { now: fixedNow });
+assert(
+  sourceRefDifferentPath.sourceDigest.value !== sourceRef.sourceDigest.value,
+  "source digest should include sourcePathEvidenceKey",
+);
 
 const fallbackSourceRef = normalizeOdeuSourceRef({
   sourceKind: "unexpected_kind",
@@ -138,6 +153,15 @@ assert(unsafeScan.rawWorkspaceContentIncluded === true, "workspace content flag 
 assert(unsafeScan.rawExternalResourceIncluded === true, "external resource flag missing");
 assert(unsafeScan.rawImagePayloadIncluded === true, "image payload flag missing");
 
+const manualUnsafeScan = buildOdeuRawExposureScan({
+  rendererSafeSummary: "summary without scanner-detectable payload",
+}, {
+  rawWorkspaceContentIncluded: true,
+  now: fixedNow,
+});
+assert(manualUnsafeScan.passed === false, "manual raw exposure flags should block");
+assert(manualUnsafeScan.blockers.includes("raw_workspace_content_included"), "manual blocker missing");
+
 const thrown = expectThrows(() => assertOdeuRawExposureSafe({ path: "C:\\Users\\Rose\\secret.txt" }), "odeu_raw_exposure_blocked");
 assert(thrown.scan.rawPathIncluded === true, "thrown scan should include path flag");
 
@@ -159,6 +183,26 @@ assert(artifact.scope.workThreadId === "work_thread_fixture", "artifact scope mi
 assert(artifact.artifactDigest.algorithm === "sha256", "artifact digest missing");
 assert(artifact.rawExposureScan.passed === true, "artifact raw scan should pass");
 validateOdeuArtifactBase(artifact);
+
+const extensionScanArtifact = buildOdeuArtifactBase({
+  artifactId: "artifact_extension_scan_fixture",
+  artifactKind: "kernel_fixture",
+  sourceRefs: [sourceRef],
+  familyExtension: {
+    internalPath: "/home/rose/private/family-extension.txt",
+  },
+}, { now: fixedNow });
+assert(extensionScanArtifact.rawExposureScan.rawPathIncluded === true, "family extension should be scanned");
+assert(extensionScanArtifact.rawExposureScan.passed === false, "family extension raw path should block scan");
+
+expectThrows(() => validateOdeuArtifactBase({
+  ...artifact,
+  rawExposureScan: { passed: true },
+}), "missing_required_string:schema");
+expectThrows(() => validateOdeuArtifactBase({
+  ...artifact,
+  artifactDigest: { digestOf: "metadata", canonicalizationVersion: "odeu_canonical_json@1" },
+}), "missing_required_digest_value:artifactDigest");
 
 const artifactRef = buildOdeuArtifactRef({
   artifactKind: artifact.artifactKind,

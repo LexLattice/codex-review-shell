@@ -17,6 +17,21 @@ const FINDING_TO_FLAG = Object.freeze({
   tool_output: "rawToolOutputIncluded",
 });
 
+const MANUAL_EXPOSURE_FLAG_BLOCKERS = Object.freeze({
+  rawPromptIncluded: "raw_prompt_included",
+  rawAssistantOutputIncluded: "raw_assistant_output_included",
+  rawProviderPayloadIncluded: "raw_provider_payload_included",
+  rawAuthIncluded: "raw_auth_included",
+  rawAccountIdentifierIncluded: "raw_account_identifier_included",
+  rawPathIncluded: "raw_path_included",
+  rawUrlIncluded: "raw_url_included",
+  rawToolOutputIncluded: "raw_tool_output_included",
+  rawWorkspaceContentIncluded: "raw_workspace_content_included",
+  rawExternalResourceIncluded: "raw_external_resource_included",
+  rawImagePayloadIncluded: "raw_image_payload_included",
+  rawSecretLikeIncluded: "raw_secret_like_included",
+});
+
 function emptyFlags() {
   return {
     rawPromptIncluded: false,
@@ -41,12 +56,15 @@ function buildOdeuRawExposureScan(value, options = {}) {
     const flag = FINDING_TO_FLAG[finding.findingKind];
     if (flag) flags[flag] = true;
   }
-  if (options.rawAccountIdentifierIncluded === true) flags.rawAccountIdentifierIncluded = true;
-  if (options.rawWorkspaceContentIncluded === true) flags.rawWorkspaceContentIncluded = true;
-  if (options.rawExternalResourceIncluded === true) flags.rawExternalResourceIncluded = true;
-  if (options.rawImagePayloadIncluded === true) flags.rawImagePayloadIncluded = true;
+  for (const flag of Object.keys(MANUAL_EXPOSURE_FLAG_BLOCKERS)) {
+    if (options[flag] === true) flags[flag] = true;
+  }
+  const manualBlockers = Object.entries(MANUAL_EXPOSURE_FLAG_BLOCKERS)
+    .filter(([flag]) => options[flag] === true)
+    .map(([, blocker]) => blocker);
   const blockers = Array.from(new Set([
     ...findings.map((finding) => finding.findingKind),
+    ...manualBlockers,
     ...(Array.isArray(options.blockers) ? options.blockers : []),
   ])).sort();
   const warnings = Array.from(new Set(Array.isArray(options.warnings) ? options.warnings : [])).sort();

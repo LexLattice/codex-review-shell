@@ -21,6 +21,21 @@ function validateArray(value, label) {
   throw new Error(`missing_required_array:${label}`);
 }
 
+function validateOdeuDigest(value, label = "digest") {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`missing_required_object:${label}`);
+  }
+  validateRequiredString(value.digestOf, `${label}.digestOf`);
+  validateRequiredString(value.canonicalizationVersion, `${label}.canonicalizationVersion`);
+  const hasComputedDigest = typeof value.algorithm === "string"
+    && value.algorithm.trim()
+    && typeof value.value === "string"
+    && value.value.trim();
+  const hasUnavailableReason = typeof value.unavailableReason === "string" && value.unavailableReason.trim();
+  if (hasComputedDigest || hasUnavailableReason) return true;
+  throw new Error(`missing_required_digest_value:${label}`);
+}
+
 function validateOdeuArtifactBase(value) {
   validateRequiredString(value?.schema, "schema");
   validateRequiredString(value?.kernelVersion, "kernelVersion");
@@ -30,6 +45,8 @@ function validateOdeuArtifactBase(value) {
   validateRequiredString(value?.createdBy, "createdBy");
   validateRequiredString(value?.status, "status");
   validateArray(value?.sourceRefs, "sourceRefs");
+  validateOdeuRawExposureScan(value?.rawExposureScan);
+  validateOdeuDigest(value?.artifactDigest, "artifactDigest");
   return true;
 }
 
@@ -69,6 +86,7 @@ module.exports = {
   validateArray,
   validateBoolean,
   validateOdeuArtifactBase,
+  validateOdeuDigest,
   validateOdeuRawExposureScan,
   validateRequiredString,
 };
