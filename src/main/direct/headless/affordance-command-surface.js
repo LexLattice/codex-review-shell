@@ -13,6 +13,8 @@ const COMMAND_KINDS = new Set([
   "read_bridge_status",
   "submit_text_turn",
   "queue_text_turn",
+  "submit_implementation_turn",
+  "queue_implementation_turn",
   "steer_text_turn",
   "stop_active_turn",
   "pause_intake",
@@ -25,6 +27,8 @@ const COMMAND_KINDS = new Set([
   "read_outbox_action",
   "read_human_decision",
 ]);
+const TEXT_TURN_COMMAND_KINDS = new Set(["submit_text_turn", "queue_text_turn"]);
+const IMPLEMENTATION_TURN_COMMAND_KINDS = new Set(["submit_implementation_turn", "queue_implementation_turn"]);
 const FAILED_TURN_PACKET_STATES = new Set(["failed"]);
 const RAW_RESULT_KEYS = [
   "promptText",
@@ -195,10 +199,38 @@ function eventBodyForTextCommand(command = {}) {
       textChars: command.text.length,
       model: command.model,
       reasoningEffort: command.reasoningEffort,
+      implementationRequested: IMPLEMENTATION_TURN_COMMAND_KINDS.has(command.commandKind),
     },
     evidenceRefs: command.evidenceRefs,
     rawPayloadIncluded: false,
   };
+}
+
+function routeRuntimePath(route = {}) {
+  const ref = isPlainObject(route.targetThreadRef) ? route.targetThreadRef : {};
+  return normalizeString(ref.runtimePath || ref.runtime_path, "direct-text");
+}
+
+function validateImplementationCommandRoute(daemon, command = {}) {
+  const route = daemon?.store?.readRoute?.(command.requestedRouteId, command.routeVersion);
+  if (!route) return null;
+  const runtimePath = routeRuntimePath(route);
+  if (runtimePath !== "direct-implementation") {
+    return commandResult(command, {
+      status: "blocked",
+      error: "implementation_command_requires_direct_implementation_route",
+      blockerCode: "implementation_command_requires_direct_implementation_route",
+      providerRequestStarted: false,
+      result: {
+        routeId: route.routeId || command.requestedRouteId,
+        routeVersion: route.routeVersion || command.routeVersion,
+        runtimePath,
+        rawPayloadIncluded: false,
+      },
+      evidenceRefs: [evidenceRef("headless_route_policy", "Implementation command rejected for non-implementation route")],
+    });
+  }
+  return null;
 }
 
 function submitOutcome(result = null) {
@@ -258,13 +290,17 @@ function executeHeadlessAffordanceCommand({ daemon, command: input } = {}) {
     });
   }
 
-  if (command.commandKind === "submit_text_turn" || command.commandKind === "queue_text_turn") {
+  if (TEXT_TURN_COMMAND_KINDS.has(command.commandKind) || IMPLEMENTATION_TURN_COMMAND_KINDS.has(command.commandKind)) {
     if (!command.text) {
       return commandResult(command, {
         status: "blocked",
         error: "missing_text",
         blockerCode: "missing_text",
       });
+    }
+    if (IMPLEMENTATION_TURN_COMMAND_KINDS.has(command.commandKind)) {
+      const routeBlock = validateImplementationCommandRoute(daemon, command);
+      if (routeBlock) return routeBlock;
     }
     const result = sanitizeBridgeResult(daemon.submitEvent(eventBodyForTextCommand(command)));
     const outcome = submitOutcome(result);
