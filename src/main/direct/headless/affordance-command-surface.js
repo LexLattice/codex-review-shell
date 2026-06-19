@@ -2,6 +2,9 @@
 
 const crypto = require("node:crypto");
 const {
+  createDirectProviderBackedSubAgentRoute,
+} = require("../agents/provider-backed-route");
+const {
   normalizeString,
   stableStringify,
 } = require("./bridge-store");
@@ -15,6 +18,7 @@ const COMMAND_KINDS = new Set([
   "queue_text_turn",
   "submit_implementation_turn",
   "queue_implementation_turn",
+  "spawn_provider_backed_sub_agent",
   "steer_text_turn",
   "stop_active_turn",
   "pause_intake",
@@ -121,6 +125,11 @@ function normalizeCommand(input = {}, options = {}) {
     text,
     model: normalizeString(source.model || source.modelId || source.model_id, ""),
     reasoningEffort: normalizeString(source.reasoningEffort || source.reasoning_effort || source.effort, ""),
+    childAgentId: normalizeString(source.childAgentId || source.child_agent_id || target.childAgentId || target.child_agent_id, ""),
+    displayLabel: normalizeString(source.displayLabel || source.display_label || source.nickname || target.displayLabel || target.display_label, ""),
+    role: normalizeString(source.role || source.agentRole || source.agent_role || target.role, ""),
+    noInterferencePolicy: normalizeString(source.noInterferencePolicy || source.no_interference_policy || source.selfBindingPolicy || source.self_binding_policy, ""),
+    instructions: normalizeString(source.instructions || source.systemInstructions || source.system_instructions, ""),
     eventSchema: normalizeString(source.eventSchema || source.event_schema, "headless_text_event@1"),
     eventClass: normalizeString(source.eventClass || source.event_class, "operator_affordance"),
     eventKind: normalizeString(source.eventKind || source.event_kind, commandKind || "unknown"),
@@ -246,6 +255,64 @@ function validateImplementationCommandRoute(daemon, command = {}, eventBody = {}
   return null;
 }
 
+function validateAffordanceRoute(daemon, command = {}) {
+  const eventBody = eventBodyForTextCommand(command);
+  const validation = daemon?.store?.validateIngress?.(eventBody);
+  if (!validation?.ok) {
+    const error = normalizeString(validation?.errorCode, "route_validation_blocked");
+    return {
+      ok: false,
+      result: commandResult(command, {
+        status: "blocked",
+        error,
+        blockerCode: error,
+        providerRequestStarted: false,
+        result: sanitizeBridgeResult({
+          status: validation?.lifecycle || "route_blocked",
+          routeId: validation?.requestedRouteId || command.requestedRouteId,
+          routeVersion: validation?.routeVersion || command.routeVersion,
+          workThreadId: validation?.workThreadId || command.workThreadId,
+          rawPayloadIncluded: false,
+        }),
+        evidenceRefs: [evidenceRef("bridge_ingress", "Affordance command rejected by shared bridge ingress validation")],
+      }),
+    };
+  }
+  return { ok: true, validation, eventBody };
+}
+
+function providerBackedSubAgentRunnerFor(daemon) {
+  if (typeof daemon?.providerBackedSubAgentRunner === "function") return daemon.providerBackedSubAgentRunner.bind(daemon);
+  if (typeof daemon?.providerTurnRunner === "function") return daemon.providerTurnRunner.bind(daemon);
+  if (typeof daemon?.turnRuntime?.runProviderBackedSubAgent === "function") {
+    return daemon.turnRuntime.runProviderBackedSubAgent.bind(daemon.turnRuntime);
+  }
+  return null;
+}
+
+function providerBackedSubAgentRouteFor(daemon, validation = {}) {
+  const route = validation.route || {};
+  const routeKey = stableStringify({
+    routeId: route.routeId || validation.requestedRouteId || "",
+    routeVersion: route.routeVersion || validation.routeVersion || "",
+    workThreadId: validation.workThreadId || "",
+    targetThreadId: validation.targetThreadId || "",
+  });
+  if (!daemon.providerBackedSubAgentRoutes) daemon.providerBackedSubAgentRoutes = new Map();
+  if (!daemon.providerBackedSubAgentRoutes.has(routeKey)) {
+    daemon.providerBackedSubAgentRoutes.set(routeKey, createDirectProviderBackedSubAgentRoute({
+      projectId: route.projectId || validation.projectId || "project_headless_provider_backed_sub_agent",
+      workThreadId: validation.workThreadId,
+      primaryThreadId: validation.targetThreadId,
+      routeId: `headless_${route.routeId || "provider_backed_sub_agent_route"}`,
+      defaultModel: route.defaultModel || route.model || route.modelPolicyRef,
+      defaultReasoningEffort: route.defaultReasoningEffort || route.reasoningEffort,
+      providerTurnRunner: providerBackedSubAgentRunnerFor(daemon),
+    }));
+  }
+  return daemon.providerBackedSubAgentRoutes.get(routeKey);
+}
+
 function submitOutcome(result = null) {
   if (!isPlainObject(result)) {
     return {
@@ -283,7 +350,7 @@ function submitOutcome(result = null) {
   };
 }
 
-function executeHeadlessAffordanceCommand({ daemon, command: input } = {}) {
+async function executeHeadlessAffordanceCommand({ daemon, command: input } = {}) {
   if (!daemon) throw new Error("headless_affordance_missing_daemon");
   const command = normalizeCommand(input);
   if (!COMMAND_KINDS.has(command.commandKind)) {
@@ -325,6 +392,37 @@ function executeHeadlessAffordanceCommand({ daemon, command: input } = {}) {
       providerRequestStarted: outcome.providerRequestStarted,
       result,
       evidenceRefs: [evidenceRef("bridge_event", "Affordance command submitted through bridge event ingress")],
+    });
+  }
+
+  if (command.commandKind === "spawn_provider_backed_sub_agent") {
+    if (!command.text) {
+      return commandResult(command, {
+        status: "blocked",
+        error: "missing_text",
+        blockerCode: "missing_text",
+      });
+    }
+    const validation = validateAffordanceRoute(daemon, command);
+    if (!validation.ok) return validation.result;
+    const route = providerBackedSubAgentRouteFor(daemon, validation.validation);
+    const result = sanitizeBridgeResult(await route.spawnAndRun({
+      childAgentId: command.childAgentId,
+      displayLabel: command.displayLabel,
+      role: command.role,
+      noInterferencePolicy: command.noInterferencePolicy,
+      prompt: command.text,
+      model: command.model,
+      reasoningEffort: command.reasoningEffort,
+      instructions: command.instructions,
+    }));
+    return commandResult(command, {
+      status: result.status,
+      error: result.blockerCode,
+      blockerCode: result.blockerCode,
+      providerRequestStarted: result.providerRequestStarted === true,
+      result,
+      evidenceRefs: [evidenceRef("provider_backed_sub_agent_route", "Provider-backed sub-agent command executed through direct route")],
     });
   }
 

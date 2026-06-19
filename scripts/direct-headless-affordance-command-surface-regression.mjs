@@ -267,7 +267,24 @@ async function waitForPacket(baseUrl, packetId, predicate, label) {
 
 const rootDir = await fs.mkdtemp(path.join(writableTmpDir(), "direct-headless-affordance-"));
 const controller = new FixtureDirectTextController(150);
+const providerBackedSubAgentCalls = [];
 const daemon = new DirectHeadlessBridgeDaemon(fixtureConfig(rootDir));
+daemon.providerBackedSubAgentRunner = async (request) => {
+  providerBackedSubAgentCalls.push(request);
+  return {
+    ok: true,
+    responseId: "resp_headless_child_fixture",
+    upstreamRequestId: "upstream_headless_child_fixture",
+    outputText: "Headless child completed.",
+    tokenUsage: {
+      input_tokens: 31,
+      cached_input_tokens: 11,
+      output_tokens: 7,
+      reasoning_output_tokens: 2,
+      total_tokens: 38,
+    },
+  };
+};
 const textRuntime = new DirectHeadlessTextRuntime({
   store: daemon.store,
   controller,
@@ -331,6 +348,52 @@ try {
   assert.equal(status.body.result.schema, "bridge_daemon_status_projection@1");
   assert.equal(status.body.rawPayloadIncluded, false);
   assert.equal(status.body.authorityDecision.status, "allowed");
+
+  const childPrompt = "UNIQUE_HEADLESS_PROVIDER_CHILD_PROMPT_3341";
+  const providerChild = await command(baseUrl, {
+    commandKind: "spawn_provider_backed_sub_agent",
+    commandId: "cmd_provider_child",
+    idempotencyKey: "affordance-provider-child-1",
+    childAgentId: "headless_provider_child",
+    displayLabel: "Headless provider child",
+    role: "worker",
+    noInterferencePolicy: "sealed_audit",
+    text: childPrompt,
+    model: "gpt-5.4-mini",
+    reasoningEffort: "high",
+  });
+  assert.equal(providerChild.response.status, 202);
+  assert.equal(providerChild.body.ok, true);
+  assert.equal(providerChild.body.status, "completed");
+  assert.equal(providerChild.body.providerRequestStarted, true);
+  assert.equal(providerChild.body.result.agentThreadId, "headless_provider_child");
+  assert.equal(providerChild.body.result.requestShape.model, "gpt-5.4-mini");
+  assert.equal(providerChild.body.result.requestShape.reasoningEffort, "high");
+  assert.equal(providerChild.body.result.requestShape.toolCount, 0);
+  assert.equal(providerChild.body.result.tokenUsage.inputTokens, 31);
+  assert.equal(providerChild.body.result.tokenUsage.cachedInputTokens, 11);
+  assert.equal(providerChild.body.result.usageAttribution, "agent_thread");
+  assert(providerChild.body.result.liveToolCatalog.blockedToolIds.includes("vanilla.agent.send_message"));
+  assert.equal(providerBackedSubAgentCalls.length, 1);
+  assert.equal(providerBackedSubAgentCalls[0].requestBody.model, "gpt-5.4-mini");
+  assert.equal(providerBackedSubAgentCalls[0].requestBody.reasoning.effort, "high");
+  assert.equal(providerBackedSubAgentCalls[0].requestShape.toolCount, 0);
+  assert.equal(JSON.stringify(providerChild.body).includes(childPrompt), false);
+  assert.equal(providerChild.body.rawPromptIncluded, false);
+  assert.equal(providerChild.body.rawProviderPayloadIncluded, false);
+
+  const duplicateProviderChild = await command(baseUrl, {
+    commandKind: "spawn_provider_backed_sub_agent",
+    commandId: "cmd_provider_child_duplicate",
+    idempotencyKey: "affordance-provider-child-duplicate",
+    childAgentId: "headless_provider_child",
+    text: "UNIQUE_DUPLICATE_HEADLESS_PROVIDER_CHILD_PROMPT",
+  });
+  assert.equal(duplicateProviderChild.response.status, 400);
+  assert.equal(duplicateProviderChild.body.status, "blocked");
+  assert.equal(duplicateProviderChild.body.blockerCode, "duplicate_child_agent_id");
+  assert.equal(providerBackedSubAgentCalls.length, 1);
+  assert.equal(JSON.stringify(duplicateProviderChild.body).includes("UNIQUE_DUPLICATE_HEADLESS_PROVIDER_CHILD_PROMPT"), false);
 
   const first = await command(baseUrl, {
     commandKind: "submit_text_turn",

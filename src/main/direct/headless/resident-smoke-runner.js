@@ -376,7 +376,7 @@ function defaultSelfReportProvider({ smokeCase }) {
 
 async function submitSmokePrompt({ daemon, smokeCase, bundle, commandBase, commandRunId }) {
   const prompt = buildResidentSmokePrompt({ bundle, smokeCase });
-  const result = executeHeadlessAffordanceCommand({
+  const result = await executeHeadlessAffordanceCommand({
     daemon,
     command: {
       ...commandBase,
