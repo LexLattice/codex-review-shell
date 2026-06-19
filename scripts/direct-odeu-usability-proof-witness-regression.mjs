@@ -131,6 +131,63 @@ assert(providerDeclaredRequirements.declarationRequired === true, "provider_decl
 assert(providerDeclaredRequirements.authorityDecisionRequired === false, "provider_declared should not require authority by default");
 
 expectThrows(() => buildOdeuCapabilityUsabilityProof({
+  proofId: "proof_missing_capability_fixture",
+  family: "workspace_read",
+  firstUsableSlice: {
+    sliceId: "first_slice_missing_capability_fixture",
+    description: "Invalid proof missing capability id.",
+    capabilitiesIncluded: ["read_file"],
+  },
+  promotionDecisionId: "promotion_missing_capability_fixture",
+  activationSnapshotId: "activation_snapshot_missing_capability_fixture",
+  usableFor: "resident_visible",
+  proofClass: "fixture",
+  proofEvidence: {
+    deterministicChecksPassed: true,
+  },
+  rawExposurePassed: true,
+  sourceRefs: [sourceRef],
+}), "missing_required_string:capabilityId");
+
+expectThrows(() => buildOdeuCapabilityUsabilityProof({
+  proofId: "proof_missing_promotion_fixture",
+  capabilityId: "capability_missing_promotion_fixture",
+  family: "workspace_read",
+  firstUsableSlice: {
+    sliceId: "first_slice_missing_promotion_fixture",
+    description: "Invalid proof missing promotion decision id.",
+    capabilitiesIncluded: ["read_file"],
+  },
+  activationSnapshotId: "activation_snapshot_missing_promotion_fixture",
+  usableFor: "resident_visible",
+  proofClass: "fixture",
+  proofEvidence: {
+    deterministicChecksPassed: true,
+  },
+  rawExposurePassed: true,
+  sourceRefs: [sourceRef],
+}), "missing_required_string:promotionDecisionId");
+
+expectThrows(() => buildOdeuCapabilityUsabilityProof({
+  proofId: "proof_missing_activation_fixture",
+  capabilityId: "capability_missing_activation_fixture",
+  family: "workspace_read",
+  firstUsableSlice: {
+    sliceId: "first_slice_missing_activation_fixture",
+    description: "Invalid proof missing activation snapshot id.",
+    capabilitiesIncluded: ["read_file"],
+  },
+  promotionDecisionId: "promotion_missing_activation_fixture",
+  usableFor: "resident_visible",
+  proofClass: "fixture",
+  proofEvidence: {
+    deterministicChecksPassed: true,
+  },
+  rawExposurePassed: true,
+  sourceRefs: [sourceRef],
+}), "missing_required_string:activationSnapshotId");
+
+expectThrows(() => buildOdeuCapabilityUsabilityProof({
   proofId: "proof_self_report_only_fixture",
   capabilityId: "capability_self_report_only_fixture",
   family: "workspace_read",
@@ -203,6 +260,25 @@ expectThrows(() => buildOdeuCapabilityUsabilityProof({
   sourceRefs: [sourceRef],
 }), "raw_exposure_not_passed");
 
+expectThrows(() => validateOdeuCapabilityUsabilityProof({
+  ...residentCallableProof,
+  contextAdmissionId: undefined,
+  proofRequirements: {
+    ...residentCallableProof.proofRequirements,
+    contextAdmissionRequired: false,
+  },
+}), "proof_requirement_weakened:contextAdmissionRequired");
+
+expectThrows(() => validateOdeuCapabilityUsabilityProof({
+  ...residentCallableProof,
+  proofClass: "headless_live",
+  recoveryTested: false,
+  proofRequirements: {
+    ...residentCallableProof.proofRequirements,
+    recoveryTestRequired: false,
+  },
+}), "proof_requirement_weakened:recoveryTestRequired");
+
 expectThrows(() => buildOdeuCapabilityWitnessRow({
   witnessRowId: "witness_uncited_fixture",
   capabilityId: "capability_uncited_fixture",
@@ -227,6 +303,18 @@ expectThrows(() => buildOdeuCapabilityWitnessRow({
   compactText: "Callable witness must be callable_now.",
   sourceRefs: [sourceRef],
 }), "resident_callable_requires_callable_status");
+
+expectThrows(() => buildOdeuCapabilityWitnessRow({
+  witnessRowId: "witness_missing_capability_fixture",
+  usabilityProofId: residentCallableProof.proofId,
+  residentVisible: true,
+  residentCallable: false,
+  operatorVisible: false,
+  operatorCallable: false,
+  status: "known_available",
+  compactText: "Witness without capability id should fail.",
+  sourceRefs: [sourceRef],
+}), "missing_required_string:capabilityId");
 
 expectThrows(() => validateOdeuCapabilityUsabilityProof(null), "missing_required_object:capabilityUsabilityProof");
 expectThrows(() => validateOdeuCapabilityWitnessRow(null), "missing_required_object:capabilityWitnessRow");

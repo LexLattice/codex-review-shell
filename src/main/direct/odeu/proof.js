@@ -77,9 +77,6 @@ function normalizeProofRequirements(input = {}, usableFor = "resident_visible", 
     requirements.contextAdmissionRequired = true;
     requirements.residentWitnessRequired = true;
   }
-  if (usableFor === "provider_declared") {
-    requirements.declarationRequired = true;
-  }
   if (usableFor === "operator_ui_live") {
     requirements.operatorSurfaceRequired = true;
   }
@@ -135,7 +132,7 @@ function buildOdeuCapabilityUsabilityProof(input = {}, options = {}) {
   input = isPlainObject(input) ? input : {};
   options = isPlainObject(options) ? options : {};
   const proofId = normalizeId(input.proofId, "odeu_capability_usability_proof");
-  const capabilityId = normalizeId(input.capabilityId, "odeu_capability");
+  const capabilityId = normalizeString(input.capabilityId, "");
   const usableFor = pickEnum(input.usableFor, ODEU_USABLE_FOR_VALUES, "resident_visible");
   const proofClass = pickEnum(input.proofClass, ODEU_PROOF_CLASSES, "fixture");
   const sourceRefs = normalizeOdeuSourceRefs(input.sourceRefs, options);
@@ -157,8 +154,8 @@ function buildOdeuCapabilityUsabilityProof(input = {}, options = {}) {
     capabilityId,
     family: normalizeString(input.family, "unknown"),
     firstUsableSlice,
-    promotionDecisionId: normalizeId(input.promotionDecisionId, "odeu_promotion_decision"),
-    activationSnapshotId: normalizeId(input.activationSnapshotId, "odeu_activation_snapshot"),
+    promotionDecisionId: normalizeString(input.promotionDecisionId, ""),
+    activationSnapshotId: normalizeString(input.activationSnapshotId, ""),
     usableFor,
     proofClass,
     proofRequirements,
@@ -207,7 +204,7 @@ function buildOdeuCapabilityWitnessRow(input = {}, options = {}) {
     }, options, "odeu_capability_witness_row"),
     schema: ODEU_CAPABILITY_WITNESS_ROW_SCHEMA,
     witnessRowId,
-    capabilityId: normalizeId(input.capabilityId, "odeu_capability"),
+    capabilityId: normalizeString(input.capabilityId, ""),
     residentVisible: input.residentVisible === true,
     residentCallable,
     operatorVisible: input.operatorVisible === true,
@@ -292,6 +289,12 @@ function validateProofEvidence(value, errors) {
 
 function validateRequirementRefs(value, errors) {
   const requirements = isPlainObject(value.proofRequirements) ? value.proofRequirements : {};
+  const expectedRequirements = normalizeProofRequirements(requirements, value.usableFor, value.proofClass);
+  for (const key of ODEU_PROOF_REQUIREMENT_KEYS) {
+    if (expectedRequirements[key] === true && requirements[key] !== true) {
+      errors.push(`proof_requirement_weakened:${key}`);
+    }
+  }
   const requiredRefs = [
     ["promotionDecisionRequired", "promotionDecisionId"],
     ["activationRequired", "activationSnapshotId"],
@@ -304,9 +307,9 @@ function validateRequirementRefs(value, errors) {
     ["operatorSurfaceRequired", "operatorSurfaceId"],
   ];
   for (const [requirement, refField] of requiredRefs) {
-    if (requirements[requirement] === true) validateRequiredString(value[refField], refField, errors);
+    if (expectedRequirements[requirement] === true) validateRequiredString(value[refField], refField, errors);
   }
-  if (requirements.recoveryTestRequired === true && value.recoveryTested !== true) {
+  if (expectedRequirements.recoveryTestRequired === true && value.recoveryTested !== true) {
     errors.push("recovery_test_required");
   }
   if (value.usableFor === "resident_callable") {
