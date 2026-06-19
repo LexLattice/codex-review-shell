@@ -13,6 +13,8 @@ const COMMAND_KINDS = new Set([
   "read_bridge_status",
   "submit_text_turn",
   "queue_text_turn",
+  "submit_implementation_turn",
+  "queue_implementation_turn",
   "steer_text_turn",
   "stop_active_turn",
   "pause_intake",
@@ -25,6 +27,8 @@ const COMMAND_KINDS = new Set([
   "read_outbox_action",
   "read_human_decision",
 ]);
+const TEXT_TURN_COMMAND_KINDS = new Set(["submit_text_turn", "queue_text_turn"]);
+const IMPLEMENTATION_TURN_COMMAND_KINDS = new Set(["submit_implementation_turn", "queue_implementation_turn"]);
 const FAILED_TURN_PACKET_STATES = new Set(["failed"]);
 const RAW_RESULT_KEYS = [
   "promptText",
@@ -195,10 +199,51 @@ function eventBodyForTextCommand(command = {}) {
       textChars: command.text.length,
       model: command.model,
       reasoningEffort: command.reasoningEffort,
+      implementationRequested: IMPLEMENTATION_TURN_COMMAND_KINDS.has(command.commandKind),
     },
     evidenceRefs: command.evidenceRefs,
     rawPayloadIncluded: false,
   };
+}
+
+function routeRuntimePath(route = {}) {
+  const ref = isPlainObject(route.targetThreadRef) ? route.targetThreadRef : {};
+  return normalizeString(ref.runtimePath || ref.runtime_path, "direct-text");
+}
+
+function validateImplementationCommandRoute(daemon, command = {}, eventBody = {}) {
+  const validation = daemon?.store?.validateIngress?.(eventBody);
+  if (!validation?.ok) {
+    const auditResult = sanitizeBridgeResult(daemon?.store?.submitEvent?.(eventBody));
+    const error = normalizeString(auditResult?.error || validation?.errorCode, "route_validation_blocked");
+    return commandResult(command, {
+      status: "blocked",
+      error,
+      blockerCode: error,
+      providerRequestStarted: false,
+      result: auditResult,
+      evidenceRefs: [evidenceRef("bridge_ingress", "Implementation command rejected by shared bridge ingress validation")],
+    });
+  }
+  const runtimePath = routeRuntimePath(validation.route);
+  if (runtimePath !== "direct-implementation") {
+    const auditResult = sanitizeBridgeResult(daemon?.store?.submitEvent?.(eventBody));
+    return commandResult(command, {
+      status: "blocked",
+      error: "implementation_command_requires_direct_implementation_route",
+      blockerCode: "implementation_command_requires_direct_implementation_route",
+      providerRequestStarted: false,
+      result: {
+        audit: auditResult,
+        routeId: validation.route?.routeId || command.requestedRouteId,
+        routeVersion: validation.route?.routeVersion || command.routeVersion,
+        runtimePath,
+        rawPayloadIncluded: false,
+      },
+      evidenceRefs: [evidenceRef("headless_route_policy", "Implementation command rejected for non-implementation route")],
+    });
+  }
+  return null;
 }
 
 function submitOutcome(result = null) {
@@ -258,7 +303,7 @@ function executeHeadlessAffordanceCommand({ daemon, command: input } = {}) {
     });
   }
 
-  if (command.commandKind === "submit_text_turn" || command.commandKind === "queue_text_turn") {
+  if (TEXT_TURN_COMMAND_KINDS.has(command.commandKind) || IMPLEMENTATION_TURN_COMMAND_KINDS.has(command.commandKind)) {
     if (!command.text) {
       return commandResult(command, {
         status: "blocked",
@@ -266,7 +311,12 @@ function executeHeadlessAffordanceCommand({ daemon, command: input } = {}) {
         blockerCode: "missing_text",
       });
     }
-    const result = sanitizeBridgeResult(daemon.submitEvent(eventBodyForTextCommand(command)));
+    const eventBody = eventBodyForTextCommand(command);
+    if (IMPLEMENTATION_TURN_COMMAND_KINDS.has(command.commandKind)) {
+      const routeBlock = validateImplementationCommandRoute(daemon, command, eventBody);
+      if (routeBlock) return routeBlock;
+    }
+    const result = sanitizeBridgeResult(daemon.submitEvent(eventBody));
     const outcome = submitOutcome(result);
     return commandResult(command, {
       status: outcome.status,

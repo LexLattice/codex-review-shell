@@ -4102,7 +4102,7 @@ Implemented scope:
 
 ### PR 83: Public Headless Implementation Route
 
-Status: planned.
+Status: implemented in branch `codex/direct-headless-implementation-route`.
 
 Purpose:
 
@@ -4122,6 +4122,20 @@ Planned scope:
   authorized workspace boundary.
 - Preserve separate text-only and implementation-capable backend routes as an
   internal routing decision, not as a user-facing runtime mode split.
+
+Implemented scope:
+
+- Added explicit `submit_implementation_turn` and `queue_implementation_turn`
+  headless affordance commands.
+- Kept implementation turns on the same bridge ingress path as text turns so
+  route resolution, WorkThread checks, queueing, packet storage, and output
+  reduction stay shared.
+- Added command-surface validation that implementation commands must target a
+  route whose runtime path is `direct-implementation`.
+- Preserved text-vs-tool as a backend route/policy distinction, not a
+  user-facing runtime selector split.
+- Added regression coverage for accepted implementation turns, non-implementation
+  route rejection, unsafe auto-approval blocking, and raw prompt sanitization.
 
 ### PR 84: Live Sub-Agent Tool Surface
 

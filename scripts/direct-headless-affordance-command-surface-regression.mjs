@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -17,6 +18,19 @@ const {
 
 const TOKEN = "fixture-token";
 
+function writableTmpDir() {
+  for (const candidate of [process.env.CODEX_DIRECT_TEST_TMPDIR, process.env.TMPDIR, os.tmpdir(), "/tmp"].filter(Boolean)) {
+    try {
+      fsSync.mkdirSync(candidate, { recursive: true });
+      fsSync.accessSync(candidate, fsSync.constants.W_OK);
+      return candidate;
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return os.tmpdir();
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -32,7 +46,7 @@ function fixtureConfig(rootDir) {
       authMode: "capability_token",
       capabilityToken: TOKEN,
       allowedIngressContracts: ["headless_text_event@1"],
-      allowedRoutes: ["route_text", "route_bad_runtime"],
+      allowedRoutes: ["route_text", "route_impl", "route_impl_unsafe_auto", "route_bad_runtime"],
     }],
     workThreads: [{
       workThreadId: "wt_affordance",
@@ -54,6 +68,69 @@ function fixtureConfig(rootDir) {
       outputReducerRef: "terminal-result-only",
       authorityBoundaryRef: "headless-affordance-no-tools",
       toolAuthorityMode: "disabled",
+    }, {
+      routeId: "route_impl",
+      routeVersion: "v1",
+      status: "active",
+      ingressContractRef: "headless_text_event@1",
+      workThreadId: "wt_affordance",
+      targetThreadRef: {
+        runtimePath: "direct-implementation",
+        threadId: "direct_session_headless_impl_affordance",
+      },
+      contextPolicyRef: "direct_implementation_turn_empty_context@1",
+      modelPolicyRef: "fixture-model-policy",
+      outputReducerRef: "terminal-result-only",
+      authorityBoundaryRef: "headless-affordance-implementation-disabled-tools",
+      toolAuthorityMode: "disabled",
+      headlessImplementationPolicy: {
+        autoDecisionMode: "disabled",
+        disposableWorkspace: false,
+        allowedMethods: [],
+        maxAutoDecisions: 0,
+      },
+    }, {
+      routeId: "route_impl_unsafe_auto",
+      routeVersion: "v1",
+      status: "active",
+      ingressContractRef: "headless_text_event@1",
+      workThreadId: "wt_affordance",
+      targetThreadRef: {
+        runtimePath: "direct-implementation",
+        threadId: "direct_session_headless_impl_unsafe",
+      },
+      contextPolicyRef: "direct_implementation_turn_empty_context@1",
+      modelPolicyRef: "fixture-model-policy",
+      outputReducerRef: "terminal-result-only",
+      authorityBoundaryRef: "headless-affordance-implementation-unsafe-auto",
+      toolAuthorityMode: "limited",
+      headlessImplementationPolicy: {
+        autoDecisionMode: "approve",
+        disposableWorkspace: false,
+        allowedMethods: ["direct/tool/readOnly/requestApproval"],
+        maxAutoDecisions: 1,
+      },
+    }, {
+      routeId: "route_impl_restricted",
+      routeVersion: "v1",
+      status: "active",
+      ingressContractRef: "headless_text_event@1",
+      workThreadId: "wt_affordance",
+      targetThreadRef: {
+        runtimePath: "direct-implementation",
+        threadId: "direct_session_headless_impl_restricted",
+      },
+      contextPolicyRef: "direct_implementation_turn_empty_context@1",
+      modelPolicyRef: "fixture-model-policy",
+      outputReducerRef: "terminal-result-only",
+      authorityBoundaryRef: "headless-affordance-implementation-restricted",
+      toolAuthorityMode: "disabled",
+      headlessImplementationPolicy: {
+        autoDecisionMode: "disabled",
+        disposableWorkspace: false,
+        allowedMethods: [],
+        maxAutoDecisions: 0,
+      },
     }, {
       routeId: "route_bad_runtime",
       routeVersion: "v1",
@@ -102,6 +179,22 @@ class FixtureDirectTextController {
       });
     }
     return { thread: { id }, model: params.model || "gpt-5.5" };
+  }
+
+  statusForProject() {
+    return {
+      status: "available",
+      directAvailable: true,
+      implementationLaneAvailable: true,
+    };
+  }
+
+  async handleRequest(method, params = {}) {
+    if (method === "thread/start") return this.startThread(params);
+    if (method === "turn/start") return this.startTurn(params);
+    const error = new Error(`Unsupported fixture request: ${method}`);
+    error.code = "unsupported_fixture_request";
+    throw error;
   }
 
   async startTurn(params = {}) {
@@ -172,7 +265,7 @@ async function waitForPacket(baseUrl, packetId, predicate, label) {
   throw new Error(`Timed out waiting for ${label}`);
 }
 
-const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), "direct-headless-affordance-"));
+const rootDir = await fs.mkdtemp(path.join(writableTmpDir(), "direct-headless-affordance-"));
 const controller = new FixtureDirectTextController(150);
 const daemon = new DirectHeadlessBridgeDaemon(fixtureConfig(rootDir));
 const textRuntime = new DirectHeadlessTextRuntime({
@@ -342,6 +435,74 @@ try {
     "second no-id affordance turn completion",
   );
 
+  const implWrongRoute = await command(baseUrl, {
+    commandKind: "submit_implementation_turn",
+    commandId: "cmd_impl_wrong_route",
+    requestedRouteId: "route_text",
+    text: "implementation command on text route",
+  });
+  assert.equal(implWrongRoute.response.status, 400);
+  assert.equal(implWrongRoute.body.status, "blocked");
+  assert.equal(implWrongRoute.body.blockerCode, "implementation_command_requires_direct_implementation_route");
+  assert.equal(implWrongRoute.body.result.runtimePath, "direct-text");
+  assert.equal(implWrongRoute.body.providerRequestStarted, false);
+
+  const impl = await command(baseUrl, {
+    commandKind: "submit_implementation_turn",
+    commandId: "cmd_impl_submit",
+    idempotencyKey: "affordance-implementation-turn-1",
+    requestedRouteId: "route_impl",
+    text: "implementation affordance turn",
+    model: "gpt-5.5",
+    reasoningEffort: "low",
+  });
+  assert.equal(impl.response.status, 202);
+  assert.equal(impl.body.ok, true);
+  assert.equal(impl.body.status, "accepted");
+  assert.equal(impl.body.result.turnPacket.runtimePath, "direct-implementation");
+  assert.equal(impl.body.result.turnPacket.headlessImplementationPolicy.toolAuthorityMode, "disabled");
+  assert.equal(impl.body.result.turnPacket.headlessImplementationPolicy.autoDecisionMode, "disabled");
+  assert.equal(impl.body.result.turnPacket.promptText, undefined);
+  const implTerminal = await waitForPacket(
+    baseUrl,
+    impl.body.result.turnPacket.packetId,
+    (packet) => packet.state === "provider_completed",
+    "implementation affordance turn completion",
+  );
+  assert.equal(implTerminal.providerCompleted, true);
+  assert.equal(implTerminal.runtimePath, "direct-implementation");
+
+  const implUnsafe = await command(baseUrl, {
+    commandKind: "submit_implementation_turn",
+    commandId: "cmd_impl_unsafe_auto",
+    idempotencyKey: "affordance-implementation-unsafe-auto",
+    requestedRouteId: "route_impl_unsafe_auto",
+    text: "implementation unsafe auto approval",
+  });
+  assert.equal(implUnsafe.response.status, 400);
+  assert.equal(implUnsafe.body.status, "blocked");
+  assert.equal(implUnsafe.body.blockerCode, "headless_implementation_auto_approval_requires_disposable_workspace");
+  assert.equal(implUnsafe.body.result.turnPacket.runtimePath, "direct-implementation");
+  assert.equal(implUnsafe.body.result.turnPacket.headlessImplementationPolicy.autoDecisionMode, "approve");
+  assert.equal(implUnsafe.body.result.turnPacket.headlessImplementationPolicy.disposableWorkspace, false);
+  assert.equal(implUnsafe.body.providerRequestStarted, false);
+
+  const implRestricted = await command(baseUrl, {
+    commandKind: "submit_implementation_turn",
+    commandId: "cmd_impl_restricted",
+    idempotencyKey: "affordance-implementation-restricted",
+    requestedRouteId: "route_impl_restricted",
+    text: "implementation restricted route",
+  });
+  assert.equal(implRestricted.response.status, 400);
+  assert.equal(implRestricted.body.status, "blocked");
+  assert.equal(implRestricted.body.blockerCode, "route_not_allowed_for_client");
+  assert.equal(implRestricted.body.providerRequestStarted, false);
+  assert.equal(implRestricted.body.result.status, "route_blocked");
+  assert.equal(implRestricted.body.result.route, undefined);
+  assert.equal(JSON.stringify(implRestricted.body).includes("direct_session_headless_impl_restricted"), false);
+  assert.equal(JSON.stringify(implRestricted.body).includes("direct-implementation"), false);
+
   const badRuntime = await command(baseUrl, {
     commandKind: "submit_text_turn",
     commandId: "cmd_bad_runtime",
@@ -404,6 +565,10 @@ try {
     unsupported: [steer.body.blockerCode, stop.body.blockerCode],
   }, null, 2));
 } finally {
-  await daemon.close();
+  try {
+    await daemon.close();
+  } catch (error) {
+    if (error?.code !== "ERR_SERVER_NOT_RUNNING") throw error;
+  }
   await fs.rm(rootDir, { recursive: true, force: true });
 }
