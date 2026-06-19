@@ -43,13 +43,13 @@ capability. "Inherited" is not a defect when it is explicit and law-compatible.
 
 ## Current Executable Audit Snapshot
 
-Last reviewed after Wave 14.5 / PR 87 on `2026-06-19`.
+Last reviewed after Wave 14.5 / PR 88 on `2026-06-19`.
 
 ```text
-registry rows: 70
+registry rows: 71
 valid: yes
 missing source files: 0
-implemented rows: 11
+implemented rows: 12
 partial rows: 57
 inherited rows: 2
 ```
@@ -143,6 +143,7 @@ governance/observability:
   context maintenance execution gate
   live promotion report
   ODEU live-capability artifact/source/digest/raw-exposure kernel
+  ODEU capability lifecycle kernel
 ```
 
 The first version of the key abstraction now exists as a shadow substrate:
@@ -211,6 +212,7 @@ The executable registry currently tracks these bridge rows:
 | `ic20.context-maintenance-execution-gate` | memory/continuity | partial | keep guarded |
 | `ic21.direct-manual-smoke-gate` | observability surface | partial | keep read-only |
 | `ic33.odeu-live-capability-artifact-kernel` | canonical evidence | implemented | keep |
+| `ic34.odeu-capability-lifecycle-kernel` | canonical evidence | implemented | keep |
 
 ## Keep
 

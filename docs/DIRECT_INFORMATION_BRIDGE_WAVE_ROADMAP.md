@@ -4283,7 +4283,7 @@ family-specific = executor semantics, side-effect semantics, result semantics,
 | PR | Status | Branch | Purpose | Planned deliverable | Explicit non-goals |
 | --- | --- | --- | --- | --- | --- |
 | `#87` | implemented | `codex/direct-odeu-artifact-kernel` | ODEU artifact kernel | Shared artifact refs, source refs, digests, validation, raw-exposure scan shape | No executor behavior |
-| `#88` | planned | TBD | Capability lifecycle kernel | Shared capability row, promotion decision, activation row, declaration/callable surface | No per-call authorization |
+| `#88` | implemented | `codex/direct-odeu-capability-lifecycle` | Capability lifecycle kernel | Shared capability row, promotion decision, activation row, declaration/callable surface | No per-call authorization |
 | `#89` | planned | TBD | Per-call authority and transaction kernel | Shared authority decision, side-effect class, transaction/recovery lifecycle | No family-specific live promotion |
 | `#90` | planned | TBD | Result envelope and context admission kernel | Shared result envelope, context admission record, provider/local visibility split | No result smuggling into memory/project truth |
 | `#91` | planned | TBD | Usability proof and resident witness kernel | Shared capability usability proof and resident/operator witness projection | No resident self-report as proof source |
