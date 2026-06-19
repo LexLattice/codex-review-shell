@@ -395,6 +395,18 @@ try {
   assert.equal(providerBackedSubAgentCalls.length, 1);
   assert.equal(JSON.stringify(duplicateProviderChild.body).includes("UNIQUE_DUPLICATE_HEADLESS_PROVIDER_CHILD_PROMPT"), false);
 
+  const missingChildIdProviderChild = await command(baseUrl, {
+    commandKind: "spawn_provider_backed_sub_agent",
+    commandId: "cmd_provider_child_missing_id",
+    idempotencyKey: "affordance-provider-child-missing-id",
+    text: "UNIQUE_MISSING_ID_HEADLESS_PROVIDER_CHILD_PROMPT",
+  });
+  assert.equal(missingChildIdProviderChild.response.status, 400);
+  assert.equal(missingChildIdProviderChild.body.status, "blocked");
+  assert.equal(missingChildIdProviderChild.body.blockerCode, "missing_child_agent_id");
+  assert.equal(providerBackedSubAgentCalls.length, 1);
+  assert.equal(JSON.stringify(missingChildIdProviderChild.body).includes("UNIQUE_MISSING_ID_HEADLESS_PROVIDER_CHILD_PROMPT"), false);
+
   const first = await command(baseUrl, {
     commandKind: "submit_text_turn",
     commandId: "cmd_submit_1",
@@ -598,6 +610,19 @@ try {
   });
   assert.equal(blockedSubmit.response.status, 400);
   assert.equal(blockedSubmit.body.blockerCode, "intake_paused");
+
+  const blockedProviderChildWhilePaused = await command(baseUrl, {
+    commandKind: "spawn_provider_backed_sub_agent",
+    commandId: "cmd_provider_child_paused",
+    idempotencyKey: "affordance-provider-child-paused",
+    childAgentId: "paused_provider_child",
+    text: "UNIQUE_PAUSED_HEADLESS_PROVIDER_CHILD_PROMPT",
+  });
+  assert.equal(blockedProviderChildWhilePaused.response.status, 400);
+  assert.equal(blockedProviderChildWhilePaused.body.blockerCode, "intake_paused");
+  assert.equal(blockedProviderChildWhilePaused.body.providerRequestStarted, false);
+  assert.equal(providerBackedSubAgentCalls.length, 1);
+  assert.equal(JSON.stringify(blockedProviderChildWhilePaused.body).includes("UNIQUE_PAUSED_HEADLESS_PROVIDER_CHILD_PROMPT"), false);
 
   const resume = await command(baseUrl, {
     commandKind: "resume_intake",

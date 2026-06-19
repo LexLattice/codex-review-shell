@@ -44,6 +44,7 @@ const RAW_RESULT_KEYS = [
   "rawProviderFrame",
   "rawToolOutput",
 ];
+const providerBackedSubAgentRoutesByDaemon = new WeakMap();
 
 function isPlainObject(value) {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -281,6 +282,39 @@ function validateAffordanceRoute(daemon, command = {}) {
   return { ok: true, validation, eventBody };
 }
 
+function validateDaemonIngressGate(daemon, command = {}) {
+  if (daemon?.draining) {
+    return commandResult(command, {
+      status: "blocked",
+      error: "daemon_draining",
+      blockerCode: "daemon_draining",
+      providerRequestStarted: false,
+      evidenceRefs: [evidenceRef("headless_daemon_control", "Provider-backed sub-agent command blocked while daemon is draining")],
+    });
+  }
+  if (daemon?.intakePaused) {
+    return commandResult(command, {
+      status: "blocked",
+      error: "intake_paused",
+      blockerCode: "intake_paused",
+      providerRequestStarted: false,
+      evidenceRefs: [evidenceRef("headless_daemon_control", "Provider-backed sub-agent command blocked while intake is paused")],
+    });
+  }
+  if (Number.isFinite(Number(daemon?.maxInboxEvents))
+    && typeof daemon?.store?.count === "function"
+    && daemon.store.count("direct_bridge_inbox_events") >= Number(daemon.maxInboxEvents)) {
+    return commandResult(command, {
+      status: "blocked",
+      error: "queue_full",
+      blockerCode: "queue_full",
+      providerRequestStarted: false,
+      evidenceRefs: [evidenceRef("headless_daemon_control", "Provider-backed sub-agent command blocked by daemon queue capacity")],
+    });
+  }
+  return null;
+}
+
 function providerBackedSubAgentRunnerFor(daemon) {
   if (typeof daemon?.providerBackedSubAgentRunner === "function") return daemon.providerBackedSubAgentRunner.bind(daemon);
   if (typeof daemon?.providerTurnRunner === "function") return daemon.providerTurnRunner.bind(daemon);
@@ -298,9 +332,13 @@ function providerBackedSubAgentRouteFor(daemon, validation = {}) {
     workThreadId: validation.workThreadId || "",
     targetThreadId: validation.targetThreadId || "",
   });
-  if (!daemon.providerBackedSubAgentRoutes) daemon.providerBackedSubAgentRoutes = new Map();
-  if (!daemon.providerBackedSubAgentRoutes.has(routeKey)) {
-    daemon.providerBackedSubAgentRoutes.set(routeKey, createDirectProviderBackedSubAgentRoute({
+  let routes = providerBackedSubAgentRoutesByDaemon.get(daemon);
+  if (!routes) {
+    routes = new Map();
+    providerBackedSubAgentRoutesByDaemon.set(daemon, routes);
+  }
+  if (!routes.has(routeKey)) {
+    routes.set(routeKey, createDirectProviderBackedSubAgentRoute({
       projectId: route.projectId || validation.projectId || "project_headless_provider_backed_sub_agent",
       workThreadId: validation.workThreadId,
       primaryThreadId: validation.targetThreadId,
@@ -310,7 +348,7 @@ function providerBackedSubAgentRouteFor(daemon, validation = {}) {
       providerTurnRunner: providerBackedSubAgentRunnerFor(daemon),
     }));
   }
-  return daemon.providerBackedSubAgentRoutes.get(routeKey);
+  return routes.get(routeKey);
 }
 
 function submitOutcome(result = null) {
@@ -403,6 +441,15 @@ async function executeHeadlessAffordanceCommand({ daemon, command: input } = {})
         blockerCode: "missing_text",
       });
     }
+    if (!command.childAgentId) {
+      return commandResult(command, {
+        status: "blocked",
+        error: "missing_child_agent_id",
+        blockerCode: "missing_child_agent_id",
+      });
+    }
+    const daemonGate = validateDaemonIngressGate(daemon, command);
+    if (daemonGate) return daemonGate;
     const validation = validateAffordanceRoute(daemon, command);
     if (!validation.ok) return validation.result;
     const route = providerBackedSubAgentRouteFor(daemon, validation.validation);
