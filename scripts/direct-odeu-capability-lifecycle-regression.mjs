@@ -59,6 +59,14 @@ const evidenceRef = buildOdeuEvidenceRef({
   sourceRefs: [sourceRef],
 }, { now: fixedNow });
 
+const rawSourceRef = {
+  sourceRefId: "raw_source_lifecycle_fixture",
+  sourceKind: "request_manifest",
+  sourceId: "request_manifest_fixture",
+  sourceConfidence: "fixture",
+  freshness: "fresh",
+};
+
 const capability = buildOdeuCapabilityRow({
   capabilityId: "capability_read_file_fixture",
   family: "local_perception",
@@ -112,6 +120,23 @@ const blockedPromotion = buildOdeuPromotionDecision({
 assert(blockedPromotion.decision === "blocked", "failed negative evidence should block promotion");
 assert(blockedPromotion.blockers.includes("negative_evidence_failed:noRawExposure"), "negative-evidence blocker missing");
 
+const partialNegativeEvidencePromotion = buildOdeuPromotionDecision({
+  promotionDecisionId: "promotion_partial_negative_evidence_fixture",
+  capabilityId: capability.capabilityId,
+  promotionClass: "partial_negative_evidence",
+  evidenceClass: "fixture_only",
+  decision: "promotable",
+  freshness: "fresh",
+  negativeEvidence: {
+    noRawExposure: true,
+  },
+  evidenceRefs: [evidenceRef],
+  sourceRefs: [rawSourceRef],
+}, { now: fixedNow });
+assert(partialNegativeEvidencePromotion.decision === "blocked", "partial negative evidence must fail closed");
+assert(partialNegativeEvidencePromotion.blockers.includes("negative_evidence_failed:noRendererAuthorityGrant"), "missing negative-evidence blocker absent");
+assert(partialNegativeEvidencePromotion.sourceRefs[0].schema === "odeu_source_ref@1", "promotion source refs should normalize");
+
 const promotion = buildOdeuPromotionDecision({
   promotionDecisionId: "promotion_read_file_fixture",
   capabilityId: capability.capabilityId,
@@ -132,13 +157,14 @@ const promotion = buildOdeuPromotionDecision({
     noReplayUnsafeState: true,
   },
   evidenceRefs: [evidenceRef],
-  sourceRefs: [sourceRef],
+  sourceRefs: [rawSourceRef],
 }, { now: fixedNow });
 
 assert(promotion.schema === ODEU_PROMOTION_DECISION_SCHEMA, "promotion schema mismatch");
 assert(promotion.decision === "promotable_restricted", "promotion decision mismatch");
 assert(promotion.restrictions.length === 2, "promotion restrictions should normalize");
 assert(promotion.blockers.length === 0, "valid negative evidence should not add blockers");
+assert(promotion.sourceRefs[0].schema === "odeu_source_ref@1", "promotion normalized source ref missing");
 validateOdeuPromotionDecision(promotion);
 
 const scope = normalizeActivationScope({
@@ -161,7 +187,7 @@ const activation = buildOdeuActivationRow({
     decisionId: "activation_decision_fixture",
     reason: "PR88 fixture-only lifecycle activation",
   },
-  sourceRefs: [sourceRef],
+  sourceRefs: [rawSourceRef],
 }, { now: fixedNow });
 
 assert(activation.schema === ODEU_ACTIVATION_ROW_SCHEMA, "activation row schema mismatch");
@@ -171,6 +197,7 @@ assert(activation.scope.kind === "work_thread_override", "activation scope shoul
 assert(JSON.stringify(activation.precedenceLaw.order) === JSON.stringify(ODEU_ACTIVATION_PRECEDENCE_LAW.order), "precedence order mismatch");
 assert(activation.precedenceLaw.denyWins === true, "deny-wins law missing");
 assert(activation.precedenceLaw.emergencyRevokeWins === true, "emergency revoke law missing");
+assert(activation.sourceRefs[0].schema === "odeu_source_ref@1", "activation normalized source ref missing");
 validateOdeuActivationRow(activation);
 
 const activationRegistryDigest = digestCanonicalJson({
@@ -201,7 +228,7 @@ const declaration = buildOdeuDeclarationSnapshot({
   rendererVisible: true,
   providerDeclared: false,
   modelCallable: false,
-  sourceRefs: [sourceRef],
+  sourceRefs: [rawSourceRef],
 }, { now: fixedNow });
 
 assert(declaration.schema === ODEU_DECLARATION_SNAPSHOT_SCHEMA, "declaration schema mismatch");
@@ -210,6 +237,7 @@ assert(declaration.declarationDigest.value === declarationDigest.value, "declara
 assert(declaration.requestShapeFamily === "read_file", "request shape family mismatch");
 assert(declaration.providerDeclared === false, "provider declaration should remain false");
 assert(declaration.modelCallable === false, "model callable should remain false");
+assert(declaration.sourceRefs[0].schema === "odeu_source_ref@1", "declaration normalized source ref missing");
 validateOdeuDeclarationSnapshot(declaration);
 
 expectThrows(() => validateOdeuCapabilityRow({
@@ -220,10 +248,42 @@ expectThrows(() => validateOdeuActivationRow({
   ...activation,
   scope: null,
 }), "missing_required_object:scope");
+expectThrows(() => buildOdeuActivationRow({
+  activationId: "activation_missing_turn_fixture",
+  capabilityId: capability.capabilityId,
+  promotionDecisionId: promotion.promotionDecisionId,
+  state: "active",
+  activationScope: {
+    kind: "single_turn_override",
+    projectId: "project_lifecycle_fixture",
+    workThreadId: "work_thread_lifecycle_fixture",
+  },
+  activationDecision: {
+    activatedBy: "test_fixture",
+    decisionId: "activation_missing_turn_decision",
+    reason: "missing turn should block",
+  },
+}), "missing_required_string:scope.turnId");
+expectThrows(() => validateOdeuPromotionDecision({
+  ...promotion,
+  restrictions: [{ restrictionId: "bad_restriction", reason: "bad", appliesTo: "invalid" }],
+}), "invalid_enum:restrictions[0].appliesTo");
+expectThrows(() => validateOdeuActivationRow({
+  ...activation,
+  precedenceLaw: { order: ["global_default"], denyWins: true, emergencyRevokeWins: true },
+}), "invalid_precedence_order");
+expectThrows(() => validateOdeuActivationRow({
+  ...activation,
+  activationDecision: { activatedBy: "operator", decisionId: "", reason: "missing decision id" },
+}), "missing_required_string:activationDecision.decisionId");
 expectThrows(() => validateOdeuDeclarationSnapshot({
   ...declaration,
   activationRegistryDigest: { digestOf: "metadata", canonicalizationVersion: "odeu_canonical_json@1" },
 }), "missing_required_digest_value:activationRegistryDigest");
+expectThrows(() => validateOdeuDeclarationSnapshot({
+  ...declaration,
+  requestShapeDigest: { digestOf: "metadata", canonicalizationVersion: "odeu_canonical_json@1" },
+}), "missing_required_digest_value:requestShapeDigest");
 expectThrows(() => validateOdeuDeclarationSnapshot({
   ...declaration,
   providerDeclared: false,

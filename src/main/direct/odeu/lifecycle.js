@@ -161,6 +161,10 @@ function normalizeActivationScope(input = {}) {
   return normalized;
 }
 
+function negativeEvidenceValue(input = {}, field) {
+  return input.negativeEvidence?.[field] === true;
+}
+
 function attachDigest(artifact, artifactKind) {
   artifact.artifactDigest = artifactDigest({
     schema: artifact.schema,
@@ -216,24 +220,27 @@ function buildOdeuCapabilityRow(input = {}, options = {}) {
 
 function buildOdeuPromotionDecision(input = {}, options = {}) {
   const promotionDecisionId = normalizeId(input.promotionDecisionId, "odeu_promotion_decision");
+  const sourceRefs = normalizeOdeuSourceRefs(input.sourceRefs, options);
   const evidenceRefs = normalizeEvidenceRefs(input.evidenceRefs, options);
   const negativeEvidence = {
-    noRawExposure: input.negativeEvidence?.noRawExposure === true,
-    noRendererAuthorityGrant: input.negativeEvidence?.noRendererAuthorityGrant !== false,
-    noOutOfContractProviderTransport: input.negativeEvidence?.noOutOfContractProviderTransport !== false,
-    noOutOfContractSideEffect: input.negativeEvidence?.noOutOfContractSideEffect !== false,
-    noContextSmuggling: input.negativeEvidence?.noContextSmuggling !== false,
-    noReplayUnsafeState: input.negativeEvidence?.noReplayUnsafeState !== false,
+    noRawExposure: negativeEvidenceValue(input, "noRawExposure"),
+    noRendererAuthorityGrant: negativeEvidenceValue(input, "noRendererAuthorityGrant"),
+    noOutOfContractProviderTransport: negativeEvidenceValue(input, "noOutOfContractProviderTransport"),
+    noOutOfContractSideEffect: negativeEvidenceValue(input, "noOutOfContractSideEffect"),
+    noContextSmuggling: negativeEvidenceValue(input, "noContextSmuggling"),
+    noReplayUnsafeState: negativeEvidenceValue(input, "noReplayUnsafeState"),
   };
-  const blockers = normalizeStringList(input.blockers);
+  const rawBlockers = Array.isArray(input.blockers) ? [...input.blockers] : [];
   for (const [key, value] of Object.entries(negativeEvidence)) {
-    if (value !== true) blockers.push(`negative_evidence_failed:${key}`);
+    if (value !== true) rawBlockers.push(`negative_evidence_failed:${key}`);
   }
+  const blockers = normalizeStringList(rawBlockers);
   const decision = {
     ...buildLifecycleArtifactBase({
       ...input,
       schema: ODEU_PROMOTION_DECISION_SCHEMA,
       artifactId: input.artifactId || promotionDecisionId,
+      sourceRefs,
       evidenceRefs,
       blockers,
     }, options, "odeu_promotion_decision"),
@@ -247,7 +254,7 @@ function buildOdeuPromotionDecision(input = {}, options = {}) {
     freshness: pickEnum(input.freshness, ODEU_FRESHNESS_VALUES, "unknown"),
     negativeEvidence,
     evidenceRefs,
-    blockers: normalizeStringList(blockers),
+    blockers,
     decidedAt: normalizeString(input.decidedAt, nowIso(options.now || Date.now)),
   };
   attachDigest(decision, "odeu_promotion_decision");
@@ -258,12 +265,14 @@ function buildOdeuPromotionDecision(input = {}, options = {}) {
 function buildOdeuActivationRow(input = {}, options = {}) {
   const activationId = normalizeId(input.activationId, "odeu_activation");
   const state = pickEnum(input.state, ODEU_ACTIVATION_STATES, "inactive");
+  const sourceRefs = normalizeOdeuSourceRefs(input.sourceRefs, options);
   const activation = {
     ...buildLifecycleArtifactBase({
       ...input,
       schema: ODEU_ACTIVATION_ROW_SCHEMA,
       artifactId: input.artifactId || activationId,
       scope: input.artifactScope || {},
+      sourceRefs,
     }, options, "odeu_activation_row"),
     schema: ODEU_ACTIVATION_ROW_SCHEMA,
     activationId,
@@ -293,11 +302,13 @@ function buildOdeuActivationRow(input = {}, options = {}) {
 
 function buildOdeuDeclarationSnapshot(input = {}, options = {}) {
   const declarationSnapshotId = normalizeId(input.declarationSnapshotId, "odeu_declaration_snapshot");
+  const sourceRefs = normalizeOdeuSourceRefs(input.sourceRefs, options);
   const snapshot = {
     ...buildLifecycleArtifactBase({
       ...input,
       schema: ODEU_DECLARATION_SNAPSHOT_SCHEMA,
       artifactId: input.artifactId || declarationSnapshotId,
+      sourceRefs,
     }, options, "odeu_declaration_snapshot"),
     schema: ODEU_DECLARATION_SNAPSHOT_SCHEMA,
     declarationSnapshotId,
@@ -341,6 +352,62 @@ function validateArray(value, label, errors) {
   errors.push(`missing_required_array:${label}`);
 }
 
+function validateBoolean(value, label, errors) {
+  if (typeof value === "boolean") return;
+  errors.push(`missing_required_boolean:${label}`);
+}
+
+function validateActivationRestriction(value, index, errors) {
+  if (!isPlainObject(value)) {
+    errors.push(`restrictions[${index}]:not_an_object`);
+    return;
+  }
+  validateRequiredString(value.restrictionId, `restrictions[${index}].restrictionId`, errors);
+  validateRequiredString(value.reason, `restrictions[${index}].reason`, errors);
+  validateEnum(value.appliesTo, ["activation", "declaration", "per_call", "result_admission"], `restrictions[${index}].appliesTo`, errors);
+}
+
+function validateActivationScope(value = {}, errors) {
+  if (!isPlainObject(value)) {
+    errors.push("missing_required_object:scope");
+    return;
+  }
+  validateEnum(value.kind, ODEU_ACTIVATION_SCOPE_KINDS, "scope.kind", errors);
+  if (["project_default", "work_thread_override", "single_turn_override"].includes(value.kind)) {
+    validateRequiredString(value.projectId, "scope.projectId", errors);
+  }
+  if (["work_thread_override", "single_turn_override"].includes(value.kind)) {
+    validateRequiredString(value.workThreadId, "scope.workThreadId", errors);
+  }
+  if (value.kind === "single_turn_override") {
+    validateRequiredString(value.turnId, "scope.turnId", errors);
+  }
+}
+
+function validatePrecedenceLaw(value = {}, errors) {
+  if (!isPlainObject(value)) {
+    errors.push("missing_required_object:precedenceLaw");
+    return;
+  }
+  validateArray(value.order, "precedenceLaw.order", errors);
+  if (Array.isArray(value.order)) {
+    const expected = JSON.stringify(ODEU_ACTIVATION_PRECEDENCE_LAW.order);
+    if (JSON.stringify(value.order) !== expected) errors.push("invalid_precedence_order");
+  }
+  validateBoolean(value.denyWins, "precedenceLaw.denyWins", errors);
+  validateBoolean(value.emergencyRevokeWins, "precedenceLaw.emergencyRevokeWins", errors);
+}
+
+function validateActivationDecision(value = {}, errors) {
+  if (!isPlainObject(value)) {
+    errors.push("missing_required_object:activationDecision");
+    return;
+  }
+  validateEnum(value.activatedBy, ODEU_ACTIVATED_BY_VALUES, "activationDecision.activatedBy", errors);
+  validateRequiredString(value.decisionId, "activationDecision.decisionId", errors);
+  validateRequiredString(value.reason, "activationDecision.reason", errors);
+}
+
 function validateBase(value, errors) {
   try {
     validateOdeuArtifactBase(value);
@@ -381,8 +448,24 @@ function validateOdeuPromotionDecision(value = {}) {
   validateRequiredString(value.promotionClass, "promotionClass", errors);
   validateEnum(value.evidenceClass, ODEU_EVIDENCE_CLASSES, "evidenceClass", errors);
   validateArray(value.restrictions, "restrictions", errors);
+  if (Array.isArray(value.restrictions)) {
+    value.restrictions.forEach((restriction, index) => validateActivationRestriction(restriction, index, errors));
+  }
   validateEnum(value.freshness, ODEU_FRESHNESS_VALUES, "freshness", errors);
-  if (!isPlainObject(value.negativeEvidence)) errors.push("missing_required_object:negativeEvidence");
+  if (!isPlainObject(value.negativeEvidence)) {
+    errors.push("missing_required_object:negativeEvidence");
+  } else {
+    for (const field of [
+      "noRawExposure",
+      "noRendererAuthorityGrant",
+      "noOutOfContractProviderTransport",
+      "noOutOfContractSideEffect",
+      "noContextSmuggling",
+      "noReplayUnsafeState",
+    ]) {
+      validateBoolean(value.negativeEvidence[field], `negativeEvidence.${field}`, errors);
+    }
+  }
   validateArray(value.evidenceRefs, "evidenceRefs", errors);
   validateArray(value.blockers, "blockers", errors);
   validateRequiredString(value.decidedAt, "decidedAt", errors);
@@ -396,10 +479,10 @@ function validateOdeuActivationRow(value = {}) {
   validateRequiredString(value.capabilityId, "capabilityId", errors);
   validateRequiredString(value.promotionDecisionId, "promotionDecisionId", errors);
   validateEnum(value.state, ODEU_ACTIVATION_STATES, "state", errors);
-  if (!isPlainObject(value.scope)) errors.push("missing_required_object:scope");
+  validateActivationScope(value.scope, errors);
   validateEnum(value.effect, ODEU_ACTIVATION_EFFECTS, "effect", errors);
-  if (!isPlainObject(value.precedenceLaw)) errors.push("missing_required_object:precedenceLaw");
-  if (!isPlainObject(value.activationDecision)) errors.push("missing_required_object:activationDecision");
+  validatePrecedenceLaw(value.precedenceLaw, errors);
+  validateActivationDecision(value.activationDecision, errors);
   validateRequiredString(value.activatedAt, "activatedAt", errors);
   return throwIfErrors(errors);
 }
@@ -413,6 +496,8 @@ function validateOdeuDeclarationSnapshot(value = {}) {
   try {
     validateOdeuDigest(value.activationRegistryDigest, "activationRegistryDigest");
     validateOdeuDigest(value.declarationDigest, "declarationDigest");
+    if (value.toolSchemaDigest) validateOdeuDigest(value.toolSchemaDigest, "toolSchemaDigest");
+    if (value.requestShapeDigest) validateOdeuDigest(value.requestShapeDigest, "requestShapeDigest");
   } catch (error) {
     errors.push(error.message || String(error));
   }
