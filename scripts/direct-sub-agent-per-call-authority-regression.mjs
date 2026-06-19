@@ -15,6 +15,9 @@ const {
 const {
   buildSubAgentCapabilityProfile,
 } = require("../src/main/direct/agents/sub-agent-capability-profile");
+const {
+  digestCanonicalJson,
+} = require("../src/main/direct/odeu");
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -30,6 +33,11 @@ function expectThrows(fn, expectedCode) {
     return error;
   }
   throw new Error(`expected throw: ${expectedCode}`);
+}
+
+function recomputeSpawnPlanDigest(plan) {
+  const { spawnPlanDigest, ...digestablePlan } = plan;
+  return digestCanonicalJson(digestablePlan, { domain: "sub-agent-spawn-plan@1", digestOf: "metadata" });
 }
 
 const fixedNow = () => Date.UTC(2026, 5, 20, 9, 0, 0);
@@ -74,6 +82,7 @@ assert(spawn.spawnPlan.childToolsEnabled === false, "spawn must not enable child
 assert(spawn.spawnPlan.recursiveSpawnEnabled === false, "spawn must not enable recursion");
 assert(spawn.spawnPlan.inheritedParentAuthority === false, "spawn must not inherit parent authority");
 assert(spawn.spawnPlan.perCallAuthorityDecisionId === spawn.authorityDecision.authorityDecisionId, "spawn plan must cite authority decision");
+assert(spawn.spawnPlan.spawnPlanDigest.value === recomputeSpawnPlanDigest(spawn.spawnPlan).value, "authority-bound spawn plan digest must verify");
 assert(spawn.authorityDecision.finalDecision === "shadow_only", "PR93 accepted spawn should remain shadow-only before resident declaration");
 assert(spawn.transaction.lifecycle === "planned", "accepted PR93 spawn should remain planned");
 assert(spawn.transaction.replayAllowed === false, "PR93 transaction should not replay execution");
@@ -192,6 +201,12 @@ const agents = [
     lifecycleState: "running",
     ancestors: [parentThreadId],
   },
+  {
+    agentThreadId: "child_handoff_unknown_fixture",
+    workThreadId,
+    parentThreadId,
+    lifecycleState: "handoff_unknown",
+  },
 ];
 
 const inspect = buildSubAgentPerCallAuthorityPacket({
@@ -274,6 +289,22 @@ const cycleWait = buildSubAgentPerCallAuthorityPacket({
 assert(cycleWait.waitPlan.cycleCheck === "failed", "ancestor cycle should fail");
 assert(cycleWait.waitPlan.blockers.includes("wait_cycle_ancestor"), "ancestor cycle blocker missing");
 assert(cycleWait.authorityDecision.finalDecision === "block", "cycle wait should block authority");
+
+const handoffUnknownWait = buildSubAgentPerCallAuthorityPacket({
+  ...common,
+  toolName: "wait_agent",
+  callId: "call_wait_handoff_unknown_fixture",
+  agents,
+  arguments: {
+    agentThreadId: "child_handoff_unknown_fixture",
+    timeoutMs: 30000,
+    maxWaitDepth: 1,
+  },
+}, { now: fixedNow });
+assert(handoffUnknownWait.waitPlan.targetLifecycleAtStart === "handoff_unknown", "handoff-unknown lifecycle should be preserved");
+assert(handoffUnknownWait.waitPlan.blockers.includes("wait_lifecycle_unknown"), "handoff-unknown wait should block");
+assert(handoffUnknownWait.waitPlan.lifecycle === "blocked", "handoff-unknown wait must not be planned");
+assert(handoffUnknownWait.authorityDecision.finalDecision === "block", "handoff-unknown wait should block authority");
 
 const timeoutWait = buildSubAgentPerCallAuthorityPacket({
   ...common,

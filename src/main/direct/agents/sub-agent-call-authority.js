@@ -51,6 +51,11 @@ function digestValue(value, domain) {
   return digestCanonicalJson(value, { domain, digestOf: "metadata" }).value;
 }
 
+function digestSpawnPlan(plan = {}) {
+  const { spawnPlanDigest, ...digestablePlan } = plan;
+  return digestCanonicalJson(digestablePlan, { domain: "sub-agent-spawn-plan@1", digestOf: "metadata" });
+}
+
 function sourceRefFor(toolName, options = {}) {
   return normalizeOdeuSourceRef({
     sourceRefId: `source_sub_agent_per_call_${toolName}`,
@@ -111,7 +116,7 @@ function validateRoleModelEffort(args = {}, options = {}) {
   if (!ALLOWED_AGENT_ROLES.includes(agentRole)) blockers.push("unknown_agent_role");
   if (!allowedModels.includes(model)) blockers.push("model_not_allowed");
   if (!ALLOWED_REASONING_EFFORTS.includes(reasoningEffort)) blockers.push("reasoning_effort_not_allowed");
-  return { agentRole, model, reasoningEffort, blockers };
+  return { agentRole, model, reasoningEffort, allowedModels, blockers };
 }
 
 function canonicalSpawnInput(args = {}, scope = {}, policyDigest = "") {
@@ -164,7 +169,7 @@ function buildSpawnPlan(args = {}, scope = {}, options = {}) {
   const policyDigest = digestValue({
     allowedRoles: ALLOWED_AGENT_ROLES,
     allowedReasoningEfforts: ALLOWED_REASONING_EFFORTS,
-    allowedModels: Array.isArray(options.allowedModels) && options.allowedModels.length ? options.allowedModels : DEFAULT_ALLOWED_MODELS,
+    allowedModels: policy.allowedModels,
   }, "sub-agent-spawn-policy@1");
   const canonicalInput = canonicalSpawnInput({
     ...args,
@@ -201,7 +206,7 @@ function buildSpawnPlan(args = {}, scope = {}, options = {}) {
     blockers,
     rawTaskIncluded: false,
   };
-  plan.spawnPlanDigest = digestCanonicalJson(plan, { domain: "sub-agent-spawn-plan@1", digestOf: "metadata" });
+  plan.spawnPlanDigest = digestSpawnPlan(plan);
   return plan;
 }
 
@@ -220,12 +225,13 @@ function validateTarget(toolName, args = {}, scope = {}, agentIndex = new Map())
 function buildWaitPlan(args = {}, scope = {}, targetValidation = {}, options = {}) {
   const timeoutMs = Number.isFinite(Number(args.timeoutMs)) ? Number(args.timeoutMs) : 30000;
   const maxWaitDepth = Number.isFinite(Number(args.maxWaitDepth)) ? Number(args.maxWaitDepth) : 1;
-  const targetLifecycle = targetValidation.target?.lifecycleState || (targetValidation.targetAgentThreadId ? "missing" : "missing");
+  const targetLifecycle = targetValidation.target?.lifecycleState || "missing";
   const blockers = [...(targetValidation.blockers || [])];
   if (timeoutMs <= 0 || timeoutMs > 120000) blockers.push("invalid_timeout");
   if (maxWaitDepth < 1 || maxWaitDepth > 3) blockers.push("invalid_max_wait_depth");
   if (targetValidation.targetAgentThreadId === scope.threadId) blockers.push("wait_cycle_parent");
   if (targetValidation.target?.ancestors?.includes(scope.threadId)) blockers.push("wait_cycle_ancestor");
+  if (["handoff_unknown", "unknown"].includes(targetLifecycle)) blockers.push("wait_lifecycle_unknown");
   const cycleCheck = blockers.some((blocker) => blocker.startsWith("wait_cycle")) ? "failed" : "passed";
   const lifecycle = blockers.length ? "blocked"
     : ["completed", "failed"].includes(targetLifecycle) ? `target_${targetLifecycle}`
@@ -352,6 +358,7 @@ function buildSubAgentPerCallAuthorityPacket(input = {}, options = {}) {
   }, options);
   if (plan && Object.prototype.hasOwnProperty.call(plan, "perCallAuthorityDecisionId")) {
     plan.perCallAuthorityDecisionId = authorityDecision.authorityDecisionId;
+    plan.spawnPlanDigest = digestSpawnPlan(plan);
   }
   const transaction = buildOdeuLiveCapabilityTransaction({
     transactionId: `transaction_${callId}`,
