@@ -4339,7 +4339,7 @@ no batch fan-out
 
 | PR | Status | Branch | Purpose | Planned deliverable | Explicit non-goals |
 | --- | --- | --- | --- | --- | --- |
-| `#92` | planned | TBD | Sub-agent capability profile and ODEU lifecycle adapter | Capability rows, promotion decisions, shadow/test activation rows, declaration snapshots, blocked rows with reason/future owner | No provider transport or resident-callable declaration |
+| `#92` | in review | `codex/direct-subagent-capability-profile` | Sub-agent capability profile and ODEU lifecycle adapter | Capability rows, promotion decisions, shadow/test activation rows, declaration snapshots, blocked rows with reason/future owner | No provider transport or resident-callable declaration |
 | `#93` | planned | TBD | Sub-agent per-call authority, idempotency, and wait policy | Authority decisions, transaction rows, spawn/wait plans, canonical idempotency, target validation, wait timeout/deadlock policy | No provider-backed child execution |
 | `#94` | planned | TBD | Provider-backed spawn/run, result envelope, and context admission | Provider-backed child run adapter, result reducer, child result envelope, admission envelope, context admission, usage attribution | No child transcript full-history view or child tools |
 | `#95` | planned | TBD | Resident tool declaration, witness, and headless smoke | Resident sub-agent tool declarations, frozen declaration digest, epistemic rows, usability proofs, positive/negative headless smoke | No UI-first implementation or interference controls |

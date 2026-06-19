@@ -1106,6 +1106,24 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     bridgeFit: "Provides the shared usability proof and resident/operator witness row so later live families prove callable status with deterministic evidence before resident or operator surfaces claim availability.",
     realignment: "This kernel remains proof/projection only: resident self-report is supplemental, no executor is called, no capability is declared to a provider, and no context admission or project truth mutation is performed.",
   },
+  {
+    id: "ic38.sub-agent-capability-profile",
+    name: "Wave 15 sub-agent capability profile",
+    role: "authority_gate",
+    implementationState: "implemented",
+    directPathPosture: "keep",
+    sourceFiles: [
+      "src/main/direct/agents/sub-agent-capability-profile.js",
+      "scripts/direct-sub-agent-capability-profile-regression.mjs",
+      "docs/DIRECT_WAVE15_RESIDENT_SUB_AGENT_MVP_SPEC.md",
+    ],
+    ontology: ontologyShape(["sub_agent_capability_profile", "odeu_capability_row", "odeu_promotion_decision", "odeu_activation_row", "odeu_declaration_snapshot"], "harness", {
+      identityFields: ["profileId", "capabilityId", "promotionDecisionId", "activationId", "declarationSnapshotId"],
+      schema: "sub_agent_capability_profile@1",
+    }),
+    bridgeFit: "Maps spawn/list/inspect/wait and deferred sub-agent controls into shared ODEU lifecycle rows before any provider-backed child execution or resident-callable declaration exists.",
+    realignment: "This PR 92 slice is shadow/test only: activation rows remain non-callable, declaration snapshots are resident-visible but not provider-declared, blocked controls cite future wave owners, and regression sentinels prove no executor, provider transport, workspace mutation, or raw child payload exposure occurs.",
+  },
 ]);
 
 function isPlainObject(value) {
