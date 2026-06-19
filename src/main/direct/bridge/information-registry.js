@@ -1068,6 +1068,25 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     bridgeFit: "Provides the shared per-call authority decision and live transaction lifecycle so later tool families cite one authority gate before any executor, provider result, recovery, or context admission transition.",
     realignment: "This kernel is still non-executing: it models authority and transaction state only, with regression sentinels proving no executor call, workspace mutation, provider transport, approval mutation, or context admission is performed.",
   },
+  {
+    id: "ic36.odeu-result-envelope-context-admission-kernel",
+    name: "ODEU result envelope and context admission kernel",
+    role: "context_construction",
+    implementationState: "implemented",
+    directPathPosture: "keep",
+    sourceFiles: [
+      "src/main/direct/odeu/result.js",
+      "src/main/direct/odeu/index.js",
+      "scripts/direct-odeu-result-admission-regression.mjs",
+      "docs/DIRECT_ODEU_LIVE_CAPABILITY_KERNEL_WAVE_SPEC.md",
+    ],
+    ontology: ontologyShape(["odeu_result_envelope", "odeu_context_admission_record"], "harness", {
+      identityFields: ["resultEnvelopeId", "admissionId", "capabilityId", "callId"],
+      schema: "odeu_result_envelope@1",
+    }),
+    bridgeFit: "Provides the shared result envelope and context admission record so later live families separate local result evidence, renderer projection, resident/provider visibility, transcript safety, and context admission.",
+    realignment: "This kernel does not send provider results, mutate context, write memory, or promote project truth; it only records validated visibility, payload policy, omission, and admission posture.",
+  },
 ]);
 
 function isPlainObject(value) {

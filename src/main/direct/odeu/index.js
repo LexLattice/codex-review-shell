@@ -6,6 +6,7 @@ module.exports = {
   ...require("./digest"),
   ...require("./lifecycle"),
   ...require("./raw-exposure"),
+  ...require("./result"),
   ...require("./schema"),
   ...require("./source-ref"),
   ...require("./status"),
