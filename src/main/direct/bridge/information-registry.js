@@ -1030,6 +1030,25 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     bridgeFit: "Provides the first shared live-capability kernel substrate for canonical artifact refs, scoped source/evidence refs, digest absence reasons, and raw-exposure scan posture without introducing executor behavior.",
     realignment: "Later Wave 14.5 slices should reuse this substrate for capability lifecycle, authority transactions, result admission, and usability proofs instead of creating family-local ref/digest/raw-exposure grammars.",
   },
+  {
+    id: "ic34.odeu-capability-lifecycle-kernel",
+    name: "ODEU capability lifecycle kernel",
+    role: "canonical_evidence",
+    implementationState: "implemented",
+    directPathPosture: "keep",
+    sourceFiles: [
+      "src/main/direct/odeu/lifecycle.js",
+      "src/main/direct/odeu/index.js",
+      "scripts/direct-odeu-capability-lifecycle-regression.mjs",
+      "docs/DIRECT_ODEU_LIVE_CAPABILITY_KERNEL_WAVE_SPEC.md",
+    ],
+    ontology: ontologyShape(["odeu_capability_row", "odeu_promotion_decision", "odeu_activation_row", "odeu_declaration_snapshot"], "harness", {
+      identityFields: ["capabilityId", "promotionDecisionId", "activationId", "declarationSnapshotId"],
+      schema: "odeu_capability_row@1",
+    }),
+    bridgeFit: "Defines the shared capability row, promotion decision, activation row, and declaration snapshot lifecycle so later live families do not invent local enabled booleans or provider-callable states.",
+    realignment: "This kernel remains pre-call evidence only: it introduces no per-call authority decision, no transaction lifecycle, no provider declaration side effect, no executor call, and no workspace mutation.",
+  },
 ]);
 
 function isPlainObject(value) {
