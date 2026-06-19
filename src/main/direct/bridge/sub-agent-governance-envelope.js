@@ -18,7 +18,7 @@ const NO_INTERFERENCE_POLICIES = new Set([
   "time_boxed",
   "handoff_only",
 ]);
-const LIFECYCLE_STATES = new Set(["discovered", "starting", "running", "waiting", "completed", "failed", "closed", "stale", "not_found", "unknown"]);
+const LIFECYCLE_STATES = new Set(["discovered", "starting", "running", "waiting", "completed", "failed", "timeout", "cancelled", "closed", "handoff_unknown", "stale", "not_found", "unknown"]);
 const ACTIVITY_STATES = new Set(["idle", "active", "responding", "blocked", "attention_required", "unknown"]);
 const RELEASE_STATES = new Set(["not_releasable", "release_available", "released", "expired", "operator_required", "unknown"]);
 const GOVERNANCE_STATUSES = new Set(["observing", "completed", "failed", "stale", "blocked", "sealed", "unknown"]);
@@ -136,7 +136,8 @@ function transcriptWitnessFor(agentThreadId, transcriptProjections = []) {
 function governanceStatusFor(node = {}, progress = {}) {
   const lifecycle = normalizeString(progress?.phase || node.lifecycleState, "unknown");
   if (["completed", "closed"].includes(lifecycle)) return "completed";
-  if (lifecycle === "failed") return "failed";
+  if (["failed", "timeout", "cancelled"].includes(lifecycle)) return "failed";
+  if (lifecycle === "handoff_unknown") return "unknown";
   if (lifecycle === "stale") return "stale";
   if (node.activityState === "blocked" || node.activityState === "attention_required") return "blocked";
   if (["created", "input_sent", "running", "waiting", "starting", "discovered"].includes(lifecycle)) return "observing";
@@ -158,7 +159,7 @@ function releaseStateFor(policy, node = {}, progress = {}, input = {}) {
   if (RELEASE_STATES.has(explicit)) return explicit;
   if (policy === "operator_locked") return "operator_required";
   if (policy === "time_boxed" && input.releaseAt) return "release_available";
-  if (["completed", "closed", "failed"].includes(progress?.phase || node.lifecycleState)) return "not_releasable";
+  if (["completed", "closed", "failed", "timeout", "cancelled", "handoff_unknown"].includes(progress?.phase || node.lifecycleState)) return "not_releasable";
   return "not_releasable";
 }
 

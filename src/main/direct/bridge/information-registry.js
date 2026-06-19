@@ -1142,6 +1142,24 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     bridgeFit: "Wraps spawn/list/inspect/wait requests in shared ODEU authority decisions and transactions, with canonical spawn idempotency, role/model/effort validation, scoped inspect/wait target checks, and bounded wait plans.",
     realignment: "This PR 93 slice remains pre-execution: accepted calls are shadow/planned, blocked calls are authority-blocked, and regression sentinels prove no provider transport, provider declaration, executor start, child provider run, workspace mutation, or raw child payload exposure occurs.",
   },
+  {
+    id: "ic40.sub-agent-provider-backed-result-admission",
+    name: "Wave 15 provider-backed sub-agent spawn/run and result admission",
+    role: "context_construction",
+    implementationState: "implemented",
+    directPathPosture: "keep_guarded",
+    sourceFiles: [
+      "src/main/direct/agents/provider-backed-route.js",
+      "scripts/direct-provider-backed-sub-agent-route-regression.mjs",
+      "docs/DIRECT_WAVE15_RESIDENT_SUB_AGENT_MVP_SPEC.md",
+    ],
+    ontology: ontologyShape(["direct_provider_backed_sub_agent_route", "sub_agent_result_reducer_policy", "odeu_result_envelope", "odeu_context_admission_record", "sub_agent_result_admission_envelope", "sub_agent_usage_attribution_row"], "harness", {
+      identityFields: ["routeId", "policyId", "resultEnvelopeId", "admissionId", "envelopeId", "usageAttributionId"],
+      schema: "direct_provider_backed_sub_agent_route@1",
+    }),
+    bridgeFit: "Adapts the existing provider-backed child route to produce sanitized child-result summaries, ODEU result envelopes, context-admission records, family-specific admission envelopes, and child usage attribution/unavailable rows.",
+    realignment: "This PR 94 slice does not declare a resident provider tool yet: child tools, recursive spawn, workspace mutation, primary transcript promotion, raw child prompt/transcript/output, and raw provider payload exposure remain blocked; handoff_unknown returns status-only evidence and is not admitted to parent context.",
+  },
 ]);
 
 function isPlainObject(value) {

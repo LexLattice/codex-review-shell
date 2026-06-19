@@ -4298,7 +4298,7 @@ invent family-local activation, authority, result, or proof grammars.
 
 ## Wave 15: Resident-Callable Sub-Agent MVP
 
-Status: planned.
+Status: active; complete through PR 93, PR 94 in review.
 
 Dedicated spec:
 
@@ -4339,9 +4339,9 @@ no batch fan-out
 
 | PR | Status | Branch | Purpose | Planned deliverable | Explicit non-goals |
 | --- | --- | --- | --- | --- | --- |
-| `#92` | in review | `codex/direct-subagent-capability-profile` | Sub-agent capability profile and ODEU lifecycle adapter | Capability rows, promotion decisions, shadow/test activation rows, declaration snapshots, blocked rows with reason/future owner | No provider transport or resident-callable declaration |
-| `#93` | in review | `codex/direct-subagent-authority-idempotency-wait` | Sub-agent per-call authority, idempotency, and wait policy | Authority decisions, transaction rows, spawn/wait plans, canonical idempotency, target validation, wait timeout/deadlock policy | No provider-backed child execution |
-| `#94` | planned | TBD | Provider-backed spawn/run, result envelope, and context admission | Provider-backed child run adapter, result reducer, child result envelope, admission envelope, context admission, usage attribution | No child transcript full-history view or child tools |
+| `#92` | complete | `codex/direct-subagent-capability-profile` | Sub-agent capability profile and ODEU lifecycle adapter | Capability rows, promotion decisions, shadow/test activation rows, declaration snapshots, blocked rows with reason/future owner | No provider transport or resident-callable declaration |
+| `#93` | complete | `codex/direct-subagent-authority-idempotency-wait` | Sub-agent per-call authority, idempotency, and wait policy | Authority decisions, transaction rows, spawn/wait plans, canonical idempotency, target validation, wait timeout/deadlock policy | No provider-backed child execution |
+| `#94` | in review | `codex/direct-subagent-provider-backed-spawn` | Provider-backed spawn/run, result envelope, and context admission | Provider-backed child run adapter, result reducer, child result envelope, admission envelope, context admission, usage attribution | No child transcript full-history view or child tools |
 | `#95` | planned | TBD | Resident tool declaration, witness, and headless smoke | Resident sub-agent tool declarations, frozen declaration digest, epistemic rows, usability proofs, positive/negative headless smoke | No UI-first implementation or interference controls |
 | `#96` | planned | TBD | Operator projection and manual usability gate | Primary transcript activity summary, operator proof/status rows, manual smoke gate, analytics hook, proof-only operator projection | No right-pane/sub-agent UX overhaul or operator authority expansion |
 

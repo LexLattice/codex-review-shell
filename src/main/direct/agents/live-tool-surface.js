@@ -38,6 +38,7 @@ const NO_INTERFERENCE_POLICIES = new Set([
   "handoff_only",
 ]);
 const TOOL_NAMES = new Set(["spawn_agent", "list_agents", "inspect_agent", "wait_agent", "send_message"]);
+const CHILD_RESULT_TERMINAL_STATES = new Set(["completed", "failed", "timeout", "cancelled", "handoff_unknown"]);
 
 function isPlainObject(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -155,11 +156,24 @@ function lifecycleEntryFromAgent(agent) {
     startedAt: agent.createdAt,
     lastEventAt: agent.updatedAt,
     completedAt: agent.completedAt || "",
-    terminal: ["completed", "failed", "closed"].includes(agent.lifecycleState),
+    terminal: ["completed", "failed", "timeout", "cancelled", "closed"].includes(agent.lifecycleState),
     parentNotified: false,
     resultAccepted: false,
     evidenceRefs: agent.evidenceRefs,
   };
+}
+
+function normalizeChildTerminalState(status) {
+  const normalized = normalizeString(status, "completed").toLowerCase();
+  if (normalized === "canceled") return "cancelled";
+  if (normalized === "timed_out") return "timeout";
+  return CHILD_RESULT_TERMINAL_STATES.has(normalized) ? normalized : "failed";
+}
+
+function activityStateForTerminal(terminalState) {
+  if (terminalState === "completed") return "idle";
+  if (terminalState === "handoff_unknown") return "attention_required";
+  return "blocked";
 }
 
 function messageFor(input = {}) {
@@ -537,7 +551,8 @@ class DirectLiveSubAgentToolSurface {
   recordChildResult(input = {}) {
     const targetAgentId = normalizeString(input.targetAgentId || input.agentThreadId || input.childAgentId, "");
     const resultText = normalizeString(input.resultText || input.text || input.message, "");
-    const status = normalizeString(input.status, "completed");
+    const terminalState = normalizeChildTerminalState(input.status);
+    const statusOnly = input.statusOnly === true || terminalState === "handoff_unknown";
     const agent = this.agents.get(targetAgentId);
     if (!agent) {
       return resultFor(this, "record_child_result", {
@@ -545,20 +560,24 @@ class DirectLiveSubAgentToolSurface {
         blockerCode: "target_agent_missing",
       });
     }
-    const terminalState = status === "failed" ? "failed" : "completed";
     const resultSeq = this.nextSequence();
     this.messages.push(messageFor({
-      messageId: `mailbox_child_result_${targetAgentId}_${resultSeq}`,
+      messageId: `mailbox_child_${statusOnly ? "status" : "result"}_${targetAgentId}_${resultSeq}`,
       sequence: resultSeq,
-      messageKind: "child_result",
+      messageKind: statusOnly ? "status_update" : "child_result",
       direction: "child_to_parent",
       parentAgentId: this.parentAgentId,
       childAgentId: targetAgentId,
       createdAt: this.now(),
-      payloadRef: textEvidenceRef("child_result_ref", `child_result_${targetAgentId}_${resultSeq}`, resultText, "Bounded direct child result"),
+      payloadRef: textEvidenceRef(
+        statusOnly ? "child_status_ref" : "child_result_ref",
+        `${statusOnly ? "child_status" : "child_result"}_${targetAgentId}_${resultSeq}`,
+        statusOnly ? terminalState : resultText,
+        statusOnly ? "Bounded direct child status" : "Bounded direct child result",
+      ),
     }));
     agent.lifecycleState = terminalState;
-    agent.activityState = terminalState === "failed" ? "blocked" : "idle";
+    agent.activityState = activityStateForTerminal(terminalState);
     agent.completedAt = this.now();
     agent.updatedAt = this.now();
     this.graphRevision += 1;
@@ -567,6 +586,7 @@ class DirectLiveSubAgentToolSurface {
       result: {
         targetAgentId,
         terminalState,
+        statusOnly,
         mailbox: this.mailbox(),
         eChannelSnapshot: this.eChannelSnapshot(),
         liveToolCatalog: this.liveToolCatalog({ targetAgentId }),

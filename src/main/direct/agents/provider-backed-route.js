@@ -4,9 +4,25 @@ const crypto = require("node:crypto");
 const {
   createDirectLiveSubAgentToolSurface,
 } = require("./live-tool-surface");
+const {
+  buildOdeuContextAdmissionRecord,
+  buildOdeuDigest,
+  buildOdeuResultEnvelope,
+  digestCanonicalJson,
+  normalizeOdeuSourceRef,
+  validateOdeuContextAdmissionRecord,
+  validateOdeuResultEnvelope,
+} = require("../odeu");
 
 const DIRECT_PROVIDER_BACKED_SUB_AGENT_ROUTE_SCHEMA = "direct_provider_backed_sub_agent_route@1";
 const DIRECT_PROVIDER_BACKED_SUB_AGENT_RESULT_SCHEMA = "direct_provider_backed_sub_agent_result@1";
+const SUB_AGENT_RESULT_REDUCER_POLICY_SCHEMA = "sub_agent_result_reducer_policy@1";
+const SUB_AGENT_RESULT_ADMISSION_ENVELOPE_SCHEMA = "sub_agent_result_admission_envelope@1";
+const SUB_AGENT_USAGE_ATTRIBUTION_ROW_SCHEMA = "sub_agent_usage_attribution_row@1";
+const SUB_AGENT_USAGE_UNAVAILABLE_ROW_SCHEMA = "sub_agent_usage_unavailable_row@1";
+
+const EXACT_TERMINAL_STATES = Object.freeze(["completed", "failed", "timeout", "cancelled"]);
+const TERMINAL_STATES = Object.freeze([...EXACT_TERMINAL_STATES, "handoff_unknown"]);
 
 function isPlainObject(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -67,6 +83,236 @@ function safeTokenUsage(input = {}) {
     totalTokens: toFiniteNumber(source.totalTokens ?? source.total_tokens),
   };
   return Object.fromEntries(Object.entries(usage).filter(([, value]) => value !== undefined));
+}
+
+function sourceRefFor(route, callId, sourceKind = "provider_response") {
+  return normalizeOdeuSourceRef({
+    sourceRefId: `source_sub_agent_provider_backed_${callId}`,
+    sourceKind,
+    sourceId: route.routeId,
+    sourceConfidence: "provider_reported",
+    freshness: "fresh",
+    callId,
+  }, { now: route.nowMs });
+}
+
+function buildSubAgentResultReducerPolicy(input = {}) {
+  const maxSummaryChars = Number.isFinite(Number(input.maxSummaryChars)) ? Number(input.maxSummaryChars) : 420;
+  const policy = {
+    schema: SUB_AGENT_RESULT_REDUCER_POLICY_SCHEMA,
+    policyId: normalizeString(input.policyId, "sub_agent_result_reducer_policy_default"),
+    maxSummaryChars: Math.max(80, Math.min(1200, maxSummaryChars)),
+    includeArtifactRefs: input.includeArtifactRefs !== false,
+    includeUsageSummary: input.includeUsageSummary !== false,
+    includeTranscriptQuotes: false,
+    includeRawProviderPayload: false,
+    includeRawPrompt: false,
+  };
+  policy.policyDigest = digestCanonicalJson(policy, { domain: "sub-agent-result-reducer-policy@1", digestOf: "metadata" });
+  return policy;
+}
+
+function normalizeTerminalState(value, ok = true, fallback = "") {
+  const normalized = normalizeString(value, "");
+  if (TERMINAL_STATES.includes(normalized)) return normalized;
+  if (normalized === "canceled") return "cancelled";
+  if (normalized === "timed_out") return "timeout";
+  if (normalized === "unknown") return "handoff_unknown";
+  if (fallback && TERMINAL_STATES.includes(fallback)) return fallback;
+  return ok ? "completed" : "failed";
+}
+
+function reduceSubAgentResult(input = {}) {
+  const policy = buildSubAgentResultReducerPolicy(input.policy || {});
+  const terminalState = normalizeTerminalState(input.terminalState, input.ok !== false);
+  const sourceText = normalizeString(input.outputText || input.errorCode, "");
+  const fallback = terminalState === "completed" ? "Child agent completed."
+    : terminalState === "handoff_unknown" ? "Child agent handoff state is unknown."
+      : `Child agent ended with status: ${terminalState}.`;
+  const summaryText = boundedString(sourceText || fallback, policy.maxSummaryChars);
+  const truncationState = sourceText && summaryText !== sourceText ? "truncated" : "none";
+  const summary = {
+    summaryText,
+    summaryPolicyId: policy.policyId,
+    sourceResultDigest: digestFor("sub-agent-result-source-metadata@1", {
+      terminalState,
+      outputChars: sourceText.length,
+      responseId: normalizeString(input.responseId, ""),
+      upstreamRequestId: normalizeString(input.upstreamRequestId, ""),
+    }),
+    summaryDigest: digestFor("sub-agent-result-summary@1", {
+      terminalState,
+      summaryText,
+      truncationState,
+    }),
+    truncationState,
+    redactionState: "none_needed",
+    rawChildOutputIncluded: false,
+    rawChildPromptIncluded: false,
+    rawProviderPayloadIncluded: false,
+  };
+  return { policy, summary, terminalState };
+}
+
+function usageRowFor(route, input = {}) {
+  const tokenUsage = safeTokenUsage(input.tokenUsage);
+  const childAgentId = normalizeString(input.childAgentId, "");
+  const childThreadId = normalizeString(input.childThreadId, childAgentId);
+  if (Object.keys(tokenUsage).length) {
+    const row = {
+      schema: SUB_AGENT_USAGE_ATTRIBUTION_ROW_SCHEMA,
+      usageAttributionId: `sub_agent_usage_${digestFor("sub-agent-usage-row-id@1", { childAgentId, tokenUsage }).slice(7, 23)}`,
+      projectId: route.projectId,
+      workThreadId: route.workThreadId,
+      primaryThreadId: route.primaryThreadId,
+      childAgentId,
+      childThreadId,
+      model: normalizeString(input.model, route.defaultModel),
+      reasoningEffort: normalizeString(input.reasoningEffort, route.defaultReasoningEffort),
+      sourceKind: "provider_reported",
+      tokenUsage,
+      confidence: "provider_reported",
+      rawProviderPayloadIncluded: false,
+      observedAt: nowIso(route.nowMs),
+    };
+    row.usageDigest = digestCanonicalJson(row, { domain: "sub-agent-usage-attribution-row@1", digestOf: "metadata" });
+    return { usageAttributionRow: row, usageUnavailableRow: null };
+  }
+  const row = {
+    schema: SUB_AGENT_USAGE_UNAVAILABLE_ROW_SCHEMA,
+    usageUnavailableId: `sub_agent_usage_unavailable_${digestFor("sub-agent-usage-unavailable-row-id@1", { childAgentId, childThreadId }).slice(7, 23)}`,
+    projectId: route.projectId,
+    workThreadId: route.workThreadId,
+    primaryThreadId: route.primaryThreadId,
+    childAgentId,
+    childThreadId,
+    unavailableKind: "token_usage_missing",
+    targetKind: "agent",
+    reason: "provider_usage_not_exposed",
+    confidence: "unavailable",
+    rawProviderPayloadIncluded: false,
+    observedAt: nowIso(route.nowMs),
+  };
+  row.unavailableDigest = digestCanonicalJson(row, { domain: "sub-agent-usage-unavailable-row@1", digestOf: "metadata" });
+  return { usageAttributionRow: null, usageUnavailableRow: row };
+}
+
+function buildResultAdmissionArtifacts(route, input = {}) {
+  const callId = normalizeString(input.callId, `sub_agent_provider_${normalizeString(input.childAgentId, "unknown")}`);
+  const childAgentId = normalizeString(input.childAgentId, "");
+  const childThreadId = normalizeString(input.childThreadId, childAgentId);
+  const sourceRef = sourceRefFor(route, callId);
+  const terminalState = normalizeTerminalState(input.terminalState, input.ok !== false, input.fallbackTerminalState);
+  const terminalExact = EXACT_TERMINAL_STATES.includes(terminalState);
+  const { policy, summary } = reduceSubAgentResult({
+    policy: input.reducerPolicy,
+    terminalState,
+    ok: input.ok,
+    outputText: terminalExact ? input.outputText : "",
+    errorCode: input.errorCode,
+    responseId: input.responseId,
+    upstreamRequestId: input.upstreamRequestId,
+  });
+  const { usageAttributionRow, usageUnavailableRow } = usageRowFor(route, {
+    childAgentId,
+    childThreadId,
+    model: input.model,
+    reasoningEffort: input.reasoningEffort,
+    tokenUsage: input.tokenUsage,
+  });
+  const familyExtension = {
+    childAgentId,
+    childThreadId,
+    terminalState,
+    terminalExact,
+    summaryPolicyId: policy.policyId,
+    summaryDigest: summary.summaryDigest,
+    usageAttributionId: usageAttributionRow?.usageAttributionId || "",
+    usageUnavailableId: usageUnavailableRow?.usageUnavailableId || "",
+    childTranscriptFlattened: false,
+    admittedToPrimaryTranscript: "activity_summary_only",
+    rawChildPromptIncluded: false,
+    rawChildTranscriptIncluded: false,
+    rawProviderPayloadIncluded: false,
+  };
+  const resultEnvelope = buildOdeuResultEnvelope({
+    resultEnvelopeId: `sub_agent_result_envelope_${digestFor("sub-agent-result-envelope-id@1", { routeId: route.routeId, callId, childAgentId }).slice(7, 23)}`,
+    capabilityId: "capability_sub_agent_provider_backed_spawn_run",
+    callId,
+    resultKind: terminalExact ? "agent_result" : "status",
+    familyResultKind: "sub_agent_child_result_summary",
+    familyExtension,
+    sourceRefs: [sourceRef],
+    resultDigest: digestCanonicalJson(familyExtension, { domain: "sub-agent-result-family-extension@1", digestOf: "metadata" }),
+    rendererSafeSummary: summary.summaryText,
+    providerVisibleSummary: terminalExact ? summary.summaryText : "",
+    visibility: {
+      localRecorded: true,
+      rendererVisible: "summary",
+      residentVisible: terminalExact ? "summary" : "status_only",
+      providerVisible: terminalExact ? "summary_only" : "not_seen",
+      transcriptVisible: "summary",
+    },
+    payloadPolicy: {
+      rawPayloadStored: false,
+      rawPayloadProviderSent: false,
+      rawPayloadRendererVisible: false,
+      redactionState: summary.redactionState,
+      truncationState: summary.truncationState,
+    },
+    rawTextIncluded: false,
+    rawPathIncluded: false,
+    rawProviderPayloadIncluded: false,
+    confidence: terminalExact ? "exact" : "partial",
+  }, { now: route.nowMs });
+  const admission = buildOdeuContextAdmissionRecord({
+    admissionId: `sub_agent_result_admission_${digestFor("sub-agent-result-admission-id@1", { resultEnvelopeId: resultEnvelope.resultEnvelopeId }).slice(7, 23)}`,
+    resultEnvelopeId: resultEnvelope.resultEnvelopeId,
+    contextPackId: normalizeString(input.contextPackId, ""),
+    requestManifestId: normalizeString(input.requestManifestId, ""),
+    admissionDecision: terminalExact ? "admit" : "do_not_admit",
+    admittedAs: terminalExact ? "agent_result_summary" : "not_admitted",
+    providerSawResult: terminalExact ? "summary_only" : "not_seen",
+    omissionLedgerRefs: [],
+    admissionPolicyDigest: buildOdeuDigest({
+      digestOf: "metadata",
+      unavailableReason: terminalExact ? "not_applicable" : "source_unavailable",
+    }),
+    sourceRefs: [sourceRef],
+  }, { now: route.nowMs });
+  const resultAdmissionEnvelope = {
+    schema: SUB_AGENT_RESULT_ADMISSION_ENVELOPE_SCHEMA,
+    envelopeId: `sub_agent_result_admission_envelope_${digestFor("sub-agent-result-admission-envelope-id@1", { childAgentId, resultEnvelopeId: resultEnvelope.resultEnvelopeId }).slice(7, 23)}`,
+    childAgentId,
+    childThreadId,
+    spawnPlanId: normalizeString(input.spawnPlanId, ""),
+    waitPlanId: normalizeString(input.waitPlanId, ""),
+    terminalState,
+    terminalExact,
+    resultEnvelopeId: resultEnvelope.resultEnvelopeId,
+    contextAdmissionId: admission.admissionId,
+    admittedToParentContext: terminalExact,
+    admittedToPrimaryTranscript: "activity_summary_only",
+    childTranscriptFlattened: false,
+    rawChildPromptIncluded: false,
+    rawChildTranscriptIncluded: false,
+    rawProviderPayloadIncluded: false,
+    summary,
+    usageAttributionRef: usageAttributionRow?.usageAttributionId || usageUnavailableRow?.usageUnavailableId || "",
+    observedAt: nowIso(route.nowMs),
+  };
+  resultAdmissionEnvelope.envelopeDigest = digestCanonicalJson(resultAdmissionEnvelope, { domain: "sub-agent-result-admission-envelope@1", digestOf: "metadata" });
+  validateOdeuResultEnvelope(resultEnvelope);
+  validateOdeuContextAdmissionRecord(admission);
+  return {
+    reducerPolicy: policy,
+    reducedSummary: summary,
+    resultEnvelope,
+    contextAdmission: admission,
+    resultAdmissionEnvelope,
+    usageAttributionRow,
+    usageUnavailableRow,
+  };
 }
 
 function requestShapeFor(requestBody = {}) {
@@ -157,12 +403,13 @@ function resultFor(route, patch = {}) {
 
 function normalizeProviderOutcome(outcome = {}) {
   const source = isPlainObject(outcome) ? outcome : {};
+  const ok = source.ok !== false;
   return {
-    ok: source.ok !== false,
+    ok,
     responseId: normalizeString(source.responseId || source.response_id, ""),
     upstreamRequestId: normalizeString(source.upstreamRequestId || source.upstream_request_id, ""),
     outputText: normalizeString(source.outputText || source.finalText || source.text, ""),
-    terminalState: normalizeString(source.terminalState || source.state, source.ok === false ? "failed" : "completed"),
+    terminalState: normalizeTerminalState(source.terminalState || source.state, ok),
     tokenUsage: safeTokenUsage(source.tokenUsage || source.usage),
     errorCode: normalizeString(source.errorCode || source.error?.code, ""),
   };
@@ -259,17 +506,37 @@ class DirectProviderBackedSubAgentRoute {
         promptDigest: request.promptDigest,
         promptChars: request.promptChars,
       }));
-      const terminalStatus = providerOutcome.ok ? "completed" : "failed";
+      const terminalStatus = providerOutcome.terminalState;
+      const terminalExact = EXACT_TERMINAL_STATES.includes(terminalStatus);
       const childResult = this.surface.recordChildResult({
         targetAgentId: agent.agentThreadId,
         status: terminalStatus,
-        resultText: providerOutcome.outputText || providerOutcome.errorCode || terminalStatus,
+        statusOnly: terminalStatus === "handoff_unknown",
+        resultText: terminalExact ? providerOutcome.outputText || providerOutcome.errorCode || terminalStatus : terminalStatus,
+      });
+      const admissionArtifacts = buildResultAdmissionArtifacts(this, {
+        callId: normalizeString(input.callId, `call_provider_backed_${agent.agentThreadId}`),
+        childAgentId: agent.agentThreadId,
+        childThreadId: agent.agentThreadId,
+        spawnPlanId: normalizeString(input.spawnPlanId, ""),
+        waitPlanId: normalizeString(input.waitPlanId, ""),
+        contextPackId: normalizeString(input.contextPackId, ""),
+        requestManifestId: normalizeString(input.requestManifestId, ""),
+        terminalState: terminalStatus,
+        ok: providerOutcome.ok,
+        outputText: providerOutcome.outputText,
+        errorCode: providerOutcome.errorCode,
+        responseId: providerOutcome.responseId,
+        upstreamRequestId: providerOutcome.upstreamRequestId,
+        model: request.requestShape.model,
+        reasoningEffort: request.requestShape.reasoningEffort,
+        tokenUsage: providerOutcome.tokenUsage,
       });
       return resultFor(this, {
-        status: providerOutcome.ok ? "completed" : "failed",
-        blockerCode: providerOutcome.ok ? "" : providerOutcome.errorCode || "provider_child_turn_failed",
+        status: terminalStatus,
+        blockerCode: terminalStatus === "completed" ? "" : providerOutcome.errorCode || `provider_child_turn_${terminalStatus}`,
         providerRequestStarted: true,
-        providerCompleted: providerOutcome.ok,
+        providerCompleted: providerOutcome.ok && terminalStatus === "completed",
         requestShape: request.requestShape,
         promptDigest: request.promptDigest,
         agentThreadId: agent.agentThreadId,
@@ -277,9 +544,12 @@ class DirectProviderBackedSubAgentRoute {
         upstreamRequestId: providerOutcome.upstreamRequestId,
         tokenUsage: providerOutcome.tokenUsage,
         childResultDigest: childResult.resultDigest,
-        childResultPreview: boundedString(providerOutcome.outputText, 240),
+        childResultPreview: terminalExact ? admissionArtifacts.reducedSummary.summaryText : "",
+        ...admissionArtifacts,
         eChannelSnapshot: this.surface.eChannelSnapshot(),
         liveToolCatalog: this.surface.liveToolCatalog({ targetAgentId: agent.agentThreadId }),
+        childOutputPromotedToPrimaryTranscript: false,
+        primaryTranscriptMutationStarted: false,
       });
     } catch (error) {
       const errorCode = normalizeString(error?.code, "provider_child_turn_exception");
@@ -297,8 +567,26 @@ class DirectProviderBackedSubAgentRoute {
         promptDigest: request.promptDigest,
         agentThreadId: agent.agentThreadId,
         childResultDigest: childResult.resultDigest,
+        ...buildResultAdmissionArtifacts(this, {
+          callId: normalizeString(input.callId, `call_provider_backed_${agent.agentThreadId}`),
+          childAgentId: agent.agentThreadId,
+          childThreadId: agent.agentThreadId,
+          spawnPlanId: normalizeString(input.spawnPlanId, ""),
+          waitPlanId: normalizeString(input.waitPlanId, ""),
+          contextPackId: normalizeString(input.contextPackId, ""),
+          requestManifestId: normalizeString(input.requestManifestId, ""),
+          terminalState: "failed",
+          ok: false,
+          outputText: "",
+          errorCode,
+          model: request.requestShape.model,
+          reasoningEffort: request.requestShape.reasoningEffort,
+          tokenUsage: {},
+        }),
         eChannelSnapshot: this.surface.eChannelSnapshot(),
         liveToolCatalog: this.surface.liveToolCatalog({ targetAgentId: agent.agentThreadId }),
+        childOutputPromotedToPrimaryTranscript: false,
+        primaryTranscriptMutationStarted: false,
       });
     }
   }
@@ -341,6 +629,20 @@ function assertDirectProviderBackedSubAgentRouteSafe(route = {}, result = null) 
     ]) {
       if (result[flag] !== false) throw new Error(`direct_provider_backed_sub_agent_result_authority_or_raw_leak:${flag}`);
     }
+    for (const flag of ["childOutputPromotedToPrimaryTranscript", "primaryTranscriptMutationStarted"]) {
+      if (Object.prototype.hasOwnProperty.call(result, flag) && result[flag] !== false) {
+        throw new Error(`direct_provider_backed_sub_agent_result_authority_or_raw_leak:${flag}`);
+      }
+    }
+    if (result.resultEnvelope) validateOdeuResultEnvelope(result.resultEnvelope);
+    if (result.contextAdmission) validateOdeuContextAdmissionRecord(result.contextAdmission);
+    if (result.resultAdmissionEnvelope) {
+      for (const flag of ["childTranscriptFlattened", "rawChildPromptIncluded", "rawChildTranscriptIncluded", "rawProviderPayloadIncluded"]) {
+        if (result.resultAdmissionEnvelope[flag] !== false) {
+          throw new Error(`sub_agent_result_admission_boundary_leak:${flag}`);
+        }
+      }
+    }
   }
   return true;
 }
@@ -348,8 +650,13 @@ function assertDirectProviderBackedSubAgentRouteSafe(route = {}, result = null) 
 module.exports = {
   DIRECT_PROVIDER_BACKED_SUB_AGENT_RESULT_SCHEMA,
   DIRECT_PROVIDER_BACKED_SUB_AGENT_ROUTE_SCHEMA,
+  SUB_AGENT_RESULT_ADMISSION_ENVELOPE_SCHEMA,
+  SUB_AGENT_RESULT_REDUCER_POLICY_SCHEMA,
+  SUB_AGENT_USAGE_ATTRIBUTION_ROW_SCHEMA,
+  SUB_AGENT_USAGE_UNAVAILABLE_ROW_SCHEMA,
   DirectProviderBackedSubAgentRoute,
   assertDirectProviderBackedSubAgentRouteSafe,
   buildProviderBackedSubAgentRequest,
+  buildSubAgentResultReducerPolicy,
   createDirectProviderBackedSubAgentRoute,
 };
