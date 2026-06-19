@@ -478,7 +478,7 @@ function defaultToolCapabilityInputs() {
       recoveryLaw: "Context-world transition remains blocked until omission ledger, frontier baton, request manifest, and source refs are wired.",
       failureClasses: ["projection_laundering", "authority_inflation", "context_smuggling", "silent_compression_loss"],
     },
-    ...["spawn_agent", "list_agents", "wait_agent", "send_message", "followup_task", "interrupt_agent"].map((name) => {
+    ...["spawn_agent", "list_agents", "inspect_agent", "wait_agent", "send_message", "followup_task", "interrupt_agent"].map((name) => {
       const enabledInPr = name !== "interrupt_agent";
       return {
         toolId: `vanilla.agent.${name}`,
@@ -492,13 +492,15 @@ function defaultToolCapabilityInputs() {
         providerDeclarationState: "not_declared",
         localExecutorState: enabledInPr ? "implemented_restricted" : "scaffolded",
         localExecutor: "src/main/direct/agents/text-tool-surface.js",
-        sideEffectClass: name === "list_agents" ? "none" : "agent_graph",
+        sideEffectClass: ["list_agents", "inspect_agent"].includes(name) ? "none" : "agent_graph",
         requestShapeFamilies: ["local_agent_surface_envelope"],
-        approvalMode: name === "list_agents" ? "display_only" : "per_action",
+        approvalMode: ["list_agents", "inspect_agent"].includes(name) ? "display_only" : "per_action",
         providerResultEnvelopeType: "agent_mailbox_event",
         agentEligibility: "primary_only",
         recoveryLaw: name === "wait_agent"
           ? "Wait is timeout-bounded, max-depth checked, cycle-checked, and never blocks the parent indefinitely."
+          : name === "inspect_agent"
+            ? "Inspect is an E-channel/read-only status witness and must not interfere with child execution."
           : name === "interrupt_agent"
             ? "Interrupt is mark-requested only until provider cancellation and partial-output recovery law are proved."
             : "Text-only sub-agent surface requires graph, mailbox, lifecycle, context packet, authority boundary, and separate usage attribution.",
