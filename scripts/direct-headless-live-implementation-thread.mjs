@@ -16,7 +16,6 @@ const repoRoot = path.resolve(__dirname, "..");
 const LIVE_OPT_IN_ENV_VAR = "CODEX_DIRECT_HEADLESS_LIVE_IMPLEMENTATION_THREAD";
 const DEFAULT_MODEL = "gpt-5.5";
 const DEFAULT_REASONING_EFFORT = "low";
-const DEFAULT_APP_USER_DATA_ROOT = "/mnt/c/Users/Rose/AppData/Roaming/codex-review-shell-direct";
 const REPORT_SCHEMA = "direct_live_implementation_thread_test@1";
 
 const { createDirectAuthStore } = require("../src/main/direct/auth/auth-store.js");
@@ -104,6 +103,26 @@ function optionFlag(options, name, fallback = false) {
 
 function envFlag(name) {
   return /^(1|true|yes)$/i.test(String(process.env[name] || "").trim());
+}
+
+function defaultAppUserDataRoot() {
+  if (process.env.CODEX_DIRECT_APP_USER_DATA_ROOT) return process.env.CODEX_DIRECT_APP_USER_DATA_ROOT;
+  if (process.env.APPDATA) return path.join(process.env.APPDATA, "codex-review-shell-direct");
+  if (process.env.XDG_CONFIG_HOME) return path.join(process.env.XDG_CONFIG_HOME, "codex-review-shell-direct");
+  return path.join(os.homedir(), ".config", "codex-review-shell-direct");
+}
+
+function writableTmpDir() {
+  for (const candidate of [process.env.CODEX_DIRECT_TEST_TMPDIR, process.env.TMPDIR, os.tmpdir(), "/tmp"].filter(Boolean)) {
+    try {
+      fs.mkdirSync(candidate, { recursive: true });
+      fs.accessSync(candidate, fs.constants.W_OK);
+      return candidate;
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return os.tmpdir();
 }
 
 function ensureDirectory(directory) {
@@ -477,16 +496,17 @@ function buildFixturePassingReport() {
 
 async function runLive(options = {}) {
   const runId = optionString(options, "run-id", `direct_live_impl_${Date.now()}`);
-  const outputRoot = path.resolve(optionString(options, "output-root", path.join(os.tmpdir(), runId)));
+  const outputRoot = path.resolve(optionString(options, "output-root", path.join(writableTmpDir(), runId)));
   const workspaceRoot = path.join(outputRoot, "workspace");
   const sessionRoot = path.join(outputRoot, "sessions");
   const reportPath = path.join(outputRoot, "live-implementation-thread-report.json");
   createFixtureWorkspace(workspaceRoot);
+  const initialPackageDigest = sha256(fs.readFileSync(path.join(workspaceRoot, "package.json")));
 
   const appUserDataRoot = path.resolve(optionString(
     options,
     "app-user-data-root",
-    process.env.CODEX_DIRECT_APP_USER_DATA_ROOT || DEFAULT_APP_USER_DATA_ROOT,
+    defaultAppUserDataRoot(),
   ));
   const authStore = createDirectAuthCompositeStore({
     primaryStore: createDirectAuthStore({ mode: "file", rootDir: path.join(appUserDataRoot, "direct-auth") }),
@@ -664,7 +684,16 @@ async function runLive(options = {}) {
     if (!pending.length && continuation.terminal?.state === "completed") break;
   }
 
-  const finalTest = spawnProcess("npm", ["test"], { cwd: workspaceRoot, timeoutMs: 120000 });
+  const packageDigest = sha256(fs.readFileSync(path.join(workspaceRoot, "package.json")));
+  const packageManifestUnchanged = packageDigest === initialPackageDigest;
+  const finalTest = packageManifestUnchanged
+    ? spawnProcess(process.execPath, ["test.js"], { cwd: workspaceRoot, timeoutMs: 120000 })
+    : {
+        exitCode: null,
+        stdout: "",
+        stderr: "Final fixture test blocked because package.json changed; refusing to execute package scripts after model-controlled patches.",
+        timedOut: false,
+      };
   const turnAfter = sessionStore.readTurn(session.sessionId, turn.turnId) || {};
   const report = {
     schema: REPORT_SCHEMA,
@@ -688,6 +717,8 @@ async function runLive(options = {}) {
       exitCode: finalTest.exitCode,
       stdoutPreview: finalTest.stdout.slice(0, 2000),
       stderrPreview: finalTest.stderr.slice(0, 2000),
+      command: packageManifestUnchanged ? `${process.execPath} test.js` : "",
+      packageManifestUnchanged,
     },
     workspaceFiles: Object.fromEntries(listFiles(workspaceRoot).map((relPath) => [relPath, fs.readFileSync(path.join(workspaceRoot, relPath), "utf8")])),
     turnSummary: {
@@ -764,4 +795,5 @@ export {
   providerBlockFromEvents,
   reportAssertions,
   reportPassed,
+  writableTmpDir,
 };
