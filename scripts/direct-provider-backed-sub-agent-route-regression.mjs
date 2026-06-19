@@ -8,6 +8,10 @@ const require = createRequire(import.meta.url);
 const {
   DIRECT_PROVIDER_BACKED_SUB_AGENT_RESULT_SCHEMA,
   DIRECT_PROVIDER_BACKED_SUB_AGENT_ROUTE_SCHEMA,
+  SUB_AGENT_RESULT_ADMISSION_ENVELOPE_SCHEMA,
+  SUB_AGENT_RESULT_REDUCER_POLICY_SCHEMA,
+  SUB_AGENT_USAGE_ATTRIBUTION_ROW_SCHEMA,
+  SUB_AGENT_USAGE_UNAVAILABLE_ROW_SCHEMA,
   assertDirectProviderBackedSubAgentRouteSafe,
   createDirectProviderBackedSubAgentRoute,
 } = require("../src/main/direct/agents/provider-backed-route");
@@ -108,6 +112,30 @@ assert.equal(completed.tokenUsage.inputTokens, 42, "provider token usage should 
 assert.equal(completed.tokenUsage.cachedInputTokens, 12, "provider token usage should preserve cached input tokens");
 assert.equal(completed.tokenUsage.reasoningOutputTokens, 3, "provider token usage should preserve reasoning output tokens");
 assert.equal(completed.usageAttribution, "agent_thread", "usage should be attributed to child agent thread");
+assert.equal(completed.reducerPolicy.schema, SUB_AGENT_RESULT_REDUCER_POLICY_SCHEMA, "reducer policy schema mismatch");
+assert.equal(completed.reducerPolicy.includeRawPrompt, false, "reducer policy must not include raw prompt");
+assert.equal(completed.reducerPolicy.includeRawProviderPayload, false, "reducer policy must not include raw provider payload");
+assert.equal(completed.resultEnvelope.schema, "odeu_result_envelope@1", "ODEU result envelope missing");
+assert.equal(completed.resultEnvelope.resultKind, "agent_result", "completed child should emit agent result envelope");
+assert.equal(completed.resultEnvelope.visibility.providerVisible, "summary_only", "completed result should be admissible as summary");
+assert.equal(completed.contextAdmission.schema, "odeu_context_admission_record@1", "context admission missing");
+assert.equal(completed.contextAdmission.admissionDecision, "admit", "completed child summary should be admitted");
+assert.equal(completed.contextAdmission.admittedAs, "agent_result_summary", "completed child should admit as agent result summary");
+assert.equal(completed.resultAdmissionEnvelope.schema, SUB_AGENT_RESULT_ADMISSION_ENVELOPE_SCHEMA, "sub-agent result admission envelope missing");
+assert.equal(completed.resultAdmissionEnvelope.terminalState, "completed", "terminal state mismatch");
+assert.equal(completed.resultAdmissionEnvelope.terminalExact, true, "completed terminal state should be exact");
+assert.equal(completed.resultAdmissionEnvelope.admittedToParentContext, true, "completed summary should be admitted to parent context");
+assert.equal(completed.resultAdmissionEnvelope.admittedToPrimaryTranscript, "activity_summary_only", "primary transcript admission must remain summary-only");
+assert.equal(completed.resultAdmissionEnvelope.childTranscriptFlattened, false, "child transcript must not be flattened");
+assert.equal(completed.resultAdmissionEnvelope.rawChildPromptIncluded, false, "raw child prompt must not be included");
+assert.equal(completed.resultAdmissionEnvelope.rawChildTranscriptIncluded, false, "raw child transcript must not be included");
+assert.equal(completed.resultAdmissionEnvelope.rawProviderPayloadIncluded, false, "raw provider payload must not be included");
+assert.equal(completed.usageAttributionRow.schema, SUB_AGENT_USAGE_ATTRIBUTION_ROW_SCHEMA, "usage attribution row missing");
+assert.equal(completed.usageAttributionRow.childAgentId, "provider_child", "usage attribution should target child agent");
+assert.equal(completed.usageAttributionRow.tokenUsage.totalTokens, 51, "usage attribution should preserve provider total tokens");
+assert.equal(completed.usageUnavailableRow, null, "usage unavailable should be absent when provider usage exists");
+assert.equal(completed.childOutputPromotedToPrimaryTranscript, false, "child output must not be promoted as primary answer");
+assert.equal(completed.primaryTranscriptMutationStarted, false, "route must not mutate primary transcript");
 assert.equal(runnerCalls.length, 1, "provider runner should be called once");
 assert.equal(runnerCalls[0].requestBody.model, "gpt-5.4-mini", "runner should receive model");
 assert.equal(runnerCalls[0].requestBody.reasoning.effort, "high", "runner should receive effort");
@@ -156,7 +184,27 @@ assert.deepEqual(defaulted.tokenUsage, {
   inputTokens: 17,
   totalTokens: 23,
 }, "token usage should accept numbers/numeric strings and reject null/boolean/empty values");
+assert.equal(defaulted.usageAttributionRow.schema, SUB_AGENT_USAGE_ATTRIBUTION_ROW_SCHEMA, "numeric-string usage should produce attribution row");
 assertNoRawPrompt(defaulted, defaultPrompt);
+
+const unavailableUsageRoute = createDirectProviderBackedSubAgentRoute({
+  projectId: "project_provider_child_fixture",
+  workThreadId: "work_thread_provider_child_fixture",
+  primaryThreadId: "primary_provider_child_fixture",
+  nowMs: 0,
+  providerTurnRunner: async () => ({
+    ok: true,
+    outputText: "Usage is intentionally unavailable for this child.",
+  }),
+});
+const unavailableUsage = await unavailableUsageRoute.spawnAndRun({
+  childAgentId: "usage_unavailable_child",
+  prompt: "UNIQUE_USAGE_UNAVAILABLE_CHILD_PROMPT_34ad",
+});
+assert.equal(unavailableUsage.status, "completed", "usage-unavailable child should still complete");
+assert.equal(unavailableUsage.usageAttributionRow, null, "missing token usage must not produce attribution row");
+assert.equal(unavailableUsage.usageUnavailableRow.schema, SUB_AGENT_USAGE_UNAVAILABLE_ROW_SCHEMA, "missing token usage should produce unavailable row");
+assert.equal(unavailableUsage.usageUnavailableRow.reason, "provider_usage_not_exposed", "usage unavailable reason mismatch");
 
 const duplicate = await liveRoute.spawnAndRun({
   childAgentId: "provider_child",
@@ -191,21 +239,54 @@ assert.equal(failed.providerRequestStarted, true, "failed route should report pr
 assert.equal(failed.providerCompleted, false, "failed route should not report provider completion");
 assert.equal(failingRunnerCalls, 1, "failing runner should be called once");
 assert(failed.eChannelSnapshot.residentSnapshot.rows.some((row) => row.subjectId === "failing_child" && row.status !== "unknown"), "failed child should remain observable");
+assert.equal(failed.resultEnvelope.resultKind, "agent_result", "failed exact terminal should still produce agent result envelope");
+assert.equal(failed.contextAdmission.admissionDecision, "admit", "failed exact terminal summary should be admissible");
+assert.equal(failed.usageUnavailableRow.schema, SUB_AGENT_USAGE_UNAVAILABLE_ROW_SCHEMA, "provider exception should record usage unavailable");
 assertNoRawPrompt(failed, failedPrompt);
 
-const serialized = JSON.stringify({ descriptor, blocked, liveDescriptor, completed, defaulted, duplicate, failed });
+const handoffRoute = createDirectProviderBackedSubAgentRoute({
+  projectId: "project_provider_child_fixture",
+  workThreadId: "work_thread_provider_child_fixture",
+  primaryThreadId: "primary_provider_child_fixture",
+  nowMs: 0,
+  providerTurnRunner: async () => ({
+    ok: false,
+    terminalState: "handoff_unknown",
+    outputText: "UNIQUE_HANDOFF_RAW_OUTPUT_SHOULD_NOT_APPEAR_55ac",
+  }),
+});
+const handoff = await handoffRoute.spawnAndRun({
+  childAgentId: "handoff_unknown_child",
+  prompt: "UNIQUE_HANDOFF_CHILD_PROMPT_55ac",
+});
+assert.equal(handoff.status, "handoff_unknown", "handoff_unknown status should be preserved");
+assert.equal(handoff.resultEnvelope.resultKind, "status", "handoff_unknown should emit status envelope only");
+assert.equal(handoff.resultEnvelope.visibility.providerVisible, "not_seen", "handoff_unknown must not admit provider-visible result");
+assert.equal(handoff.contextAdmission.admissionDecision, "do_not_admit", "handoff_unknown must not be context-admitted");
+assert.equal(handoff.resultAdmissionEnvelope.terminalExact, false, "handoff_unknown terminal is not exact");
+assert.equal(handoff.resultAdmissionEnvelope.admittedToParentContext, false, "handoff_unknown must not enter parent context");
+assert.equal(handoff.childResultDigest, "", "handoff_unknown must not record a child result payload");
+assert(!JSON.stringify(handoff).includes("UNIQUE_HANDOFF_RAW_OUTPUT_SHOULD_NOT_APPEAR_55ac"), "handoff_unknown must not expose raw child output");
+assertNoRawPrompt(handoff, "UNIQUE_HANDOFF_CHILD_PROMPT_55ac");
+
+const serialized = JSON.stringify({ descriptor, blocked, liveDescriptor, completed, defaulted, unavailableUsage, duplicate, failed, handoff });
 assert(!serialized.includes("UNIQUE_PROVIDER_CHILD_PROMPT_c6b7"), "serialized fixture must not contain successful raw prompt");
 assert(!serialized.includes("UNIQUE_BLOCKED_CHILD_PROMPT_8f5a"), "serialized fixture must not contain blocked raw prompt");
 assert(!serialized.includes("UNIQUE_FAILING_CHILD_PROMPT_ea22"), "serialized fixture must not contain failed raw prompt");
 assert(!serialized.includes("UNIQUE_DEFAULTED_CHILD_PROMPT_916b"), "serialized fixture must not contain defaulted raw prompt");
+assert(!serialized.includes("UNIQUE_USAGE_UNAVAILABLE_CHILD_PROMPT_34ad"), "serialized fixture must not contain usage-unavailable raw prompt");
+assert(!serialized.includes("UNIQUE_HANDOFF_CHILD_PROMPT_55ac"), "serialized fixture must not contain handoff raw prompt");
 assert(!serialized.includes("\"providerDeclarationAllowed\":true"), "provider declaration must never be enabled");
 assert(!serialized.includes("\"workspaceMutationStarted\":true"), "workspace mutation must never start");
 assert(!serialized.includes("\"childTranscriptPromotionStarted\":true"), "child transcript promotion must never start");
+assert(!serialized.includes("\"childOutputPromotedToPrimaryTranscript\":true"), "child output must not become primary transcript output");
+assert(!serialized.includes("\"primaryTranscriptMutationStarted\":true"), "primary transcript mutation must not start");
 
 console.log(JSON.stringify({
   ok: true,
   routeDigest: liveDescriptor.routeDigest,
   completedDigest: completed.resultDigest,
   failedDigest: failed.resultDigest,
+  handoffDigest: handoff.resultDigest,
   runnerCalls: runnerCalls.length,
 }, null, 2));
