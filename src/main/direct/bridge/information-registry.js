@@ -1087,6 +1087,25 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     bridgeFit: "Provides the shared result envelope and context admission record so later live families separate local result evidence, renderer projection, resident/provider visibility, transcript safety, and context admission.",
     realignment: "This kernel does not send provider results, mutate context, write memory, or promote project truth; it only records validated visibility, payload policy, omission, and admission posture.",
   },
+  {
+    id: "ic37.odeu-usability-proof-resident-witness-kernel",
+    name: "ODEU capability usability proof and resident witness kernel",
+    role: "observability_surface",
+    implementationState: "implemented",
+    directPathPosture: "keep",
+    sourceFiles: [
+      "src/main/direct/odeu/proof.js",
+      "src/main/direct/odeu/index.js",
+      "scripts/direct-odeu-usability-proof-witness-regression.mjs",
+      "docs/DIRECT_ODEU_LIVE_CAPABILITY_KERNEL_WAVE_SPEC.md",
+    ],
+    ontology: ontologyShape(["odeu_capability_usability_proof", "odeu_capability_witness_row"], "harness", {
+      identityFields: ["proofId", "witnessRowId", "capabilityId"],
+      schema: "odeu_capability_usability_proof@1",
+    }),
+    bridgeFit: "Provides the shared usability proof and resident/operator witness row so later live families prove callable status with deterministic evidence before resident or operator surfaces claim availability.",
+    realignment: "This kernel remains proof/projection only: resident self-report is supplemental, no executor is called, no capability is declared to a provider, and no context admission or project truth mutation is performed.",
+  },
 ]);
 
 function isPlainObject(value) {
