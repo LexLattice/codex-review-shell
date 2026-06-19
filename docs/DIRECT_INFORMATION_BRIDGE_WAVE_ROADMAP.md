@@ -3872,6 +3872,7 @@ Planned PR sequence:
 - PR 82: Live Implementation Thread Harness.
 - PR 83: Public Headless Implementation Route.
 - PR 84: Live Sub-Agent Tool Surface.
+- PR 85: Provider-Backed Sub-Agent Execution Route.
 
 ### PR 78: Headless Affordance Command Surface
 
@@ -4139,7 +4140,7 @@ Implemented scope:
 
 ### PR 84: Live Sub-Agent Tool Surface
 
-Status: implemented in branch `codex/direct-live-sub-agent-tool-surface`.
+Status: merged.
 
 Purpose:
 
@@ -4173,6 +4174,42 @@ Implemented scope:
 - Added `inspect_agent` to the direct tool capability registry as a read-only,
   display-only, restricted local executor.
 - Added regression coverage in `direct:live-sub-agent-tool-surface`.
+
+## Wave 14: Provider-Backed Sub-Agent Execution
+
+Purpose:
+
+```text
+Turn local direct sub-agent affordances into executable provider-backed child
+turns while preserving E-channel observation, usage attribution, and
+no-interference policy semantics.
+```
+
+### PR 85: Provider-Backed Sub-Agent Execution Route
+
+Status: implemented in branch `codex/direct-provider-backed-sub-agent-route`.
+
+Planned scope:
+
+- Add an opt-in provider-backed sub-agent route over the local live sub-agent
+  tool surface.
+- Call child provider turns through an injected runtime/transport runner.
+- Record provider completion/failure back into the child graph, mailbox, and
+  lifecycle witness.
+- Preserve separate child-agent usage attribution.
+- Keep child tools, recursive spawn, workspace mutation, provider declaration,
+  and child transcript promotion disabled.
+
+Implemented scope:
+
+- Added `direct_provider_backed_sub_agent_route@1` with explicit route
+  descriptor and safety flags.
+- Added `direct_provider_backed_sub_agent_result@1` for sanitized child turn
+  request shape, provider completion, token usage, and E-channel evidence.
+- Added fixture-backed provider runner regression coverage for success,
+  duplicate child blocking, provider-runner absence, provider failure, raw
+  prompt exclusion, no-interference blocking, and child-agent usage
+  attribution.
 
 ## Update Rules
 

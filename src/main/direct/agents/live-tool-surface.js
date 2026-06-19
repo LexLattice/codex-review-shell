@@ -534,6 +534,46 @@ class DirectLiveSubAgentToolSurface {
     });
   }
 
+  recordChildResult(input = {}) {
+    const targetAgentId = normalizeString(input.targetAgentId || input.agentThreadId || input.childAgentId, "");
+    const resultText = normalizeString(input.resultText || input.text || input.message, "");
+    const status = normalizeString(input.status, "completed");
+    const agent = this.agents.get(targetAgentId);
+    if (!agent) {
+      return resultFor(this, "record_child_result", {
+        status: "blocked",
+        blockerCode: "target_agent_missing",
+      });
+    }
+    const terminalState = status === "failed" ? "failed" : "completed";
+    const resultSeq = this.nextSequence();
+    this.messages.push(messageFor({
+      messageId: `mailbox_child_result_${targetAgentId}_${resultSeq}`,
+      sequence: resultSeq,
+      messageKind: "child_result",
+      direction: "child_to_parent",
+      parentAgentId: this.parentAgentId,
+      childAgentId: targetAgentId,
+      createdAt: this.now(),
+      payloadRef: textEvidenceRef("child_result_ref", `child_result_${targetAgentId}_${resultSeq}`, resultText, "Bounded direct child result"),
+    }));
+    agent.lifecycleState = terminalState;
+    agent.activityState = terminalState === "failed" ? "blocked" : "idle";
+    agent.completedAt = this.now();
+    agent.updatedAt = this.now();
+    this.graphRevision += 1;
+    return resultFor(this, "record_child_result", {
+      status: "completed",
+      result: {
+        targetAgentId,
+        terminalState,
+        mailbox: this.mailbox(),
+        eChannelSnapshot: this.eChannelSnapshot(),
+        liveToolCatalog: this.liveToolCatalog({ targetAgentId }),
+      },
+    });
+  }
+
   inspectAgent(input = {}) {
     const targetAgentId = normalizeString(input.targetAgentId || input.agentThreadId || input.childAgentId, "");
     const packet = this.inspectPacketFor(targetAgentId, "operator_focus");
