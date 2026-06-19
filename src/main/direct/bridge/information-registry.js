@@ -1007,6 +1007,29 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     bridgeFit: "Adds non-executable substrate artifacts for get_context_remaining, update_plan, view_image metadata/provider visibility, request_user_input human-decision packet law, request_permissions widening posture, and blocked new_context.",
     realignment: "The substrate exposes no provider tool declarations, no local tool execution, no workspace mutation, no agent spawning, no external action, no free-text authority widening, and no plan-derived task-completion proof.",
   },
+  {
+    id: "ic33.odeu-live-capability-artifact-kernel",
+    name: "ODEU live-capability artifact/source/digest/raw-exposure kernel",
+    role: "canonical_evidence",
+    implementationState: "implemented",
+    directPathPosture: "keep",
+    sourceFiles: [
+      "src/main/direct/odeu/artifact.js",
+      "src/main/direct/odeu/source-ref.js",
+      "src/main/direct/odeu/digest.js",
+      "src/main/direct/odeu/raw-exposure.js",
+      "src/main/direct/odeu/schema.js",
+      "src/main/direct/odeu/status.js",
+      "src/main/direct/odeu/index.js",
+      "scripts/direct-odeu-artifact-kernel-regression.mjs",
+    ],
+    ontology: ontologyShape(["odeu_artifact_base", "odeu_source_ref", "odeu_evidence_ref", "odeu_digest", "odeu_raw_exposure_scan"], "harness", {
+      identityFields: ["artifactId", "sourceRefId", "evidenceId", "kernelVersion"],
+      schema: "odeu_artifact_base@1",
+    }),
+    bridgeFit: "Provides the first shared live-capability kernel substrate for canonical artifact refs, scoped source/evidence refs, digest absence reasons, and raw-exposure scan posture without introducing executor behavior.",
+    realignment: "Later Wave 14.5 slices should reuse this substrate for capability lifecycle, authority transactions, result admission, and usability proofs instead of creating family-local ref/digest/raw-exposure grammars.",
+  },
 ]);
 
 function isPlainObject(value) {
