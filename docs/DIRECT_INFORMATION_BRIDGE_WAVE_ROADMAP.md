@@ -3824,7 +3824,7 @@ Remaining scope moves to later waves:
 
 ## Wave 13: Headless Affordance Verification Harness
 
-Status: planned.
+Status: in progress.
 
 Detailed handoff:
 
@@ -3869,6 +3869,9 @@ Planned PR sequence:
 - PR 79: ODEU Affordance Scenario Fixtures.
 - PR 80: Headless Resident-Agent Smoke Runner.
 - PR 81: Live Resident Self-Report Harness.
+- PR 82: Live Implementation Thread Harness.
+- PR 83: Public Headless Implementation Route.
+- PR 84: Live Sub-Agent Tool Surface.
 
 ### PR 78: Headless Affordance Command Surface
 
@@ -4051,6 +4054,95 @@ Implemented scope:
 - Added deterministic parser/diagnostic regression coverage through
   `direct:headless-live-resident-self-report:regression`.
 - Added opt-in live command `direct:headless-live-resident-self-report`.
+
+### PR 82: Live Implementation Thread Harness
+
+Status: implemented in branch `codex/direct-live-implementation-thread-harness`.
+
+Purpose:
+
+```text
+Productize the temporary live implementation-thread runner into a maintained
+opt-in headless harness that can verify real read/patch/command behavior
+against a disposable fixture workspace.
+```
+
+Checks:
+
+- Provider receives an implementation request with read, patch, and command
+  tools declared through the direct implementation tool route.
+- The resident model reads fixture files before mutation.
+- The resident model applies a scoped patch to fix deliberately broken fixture
+  code.
+- The resident model runs the allowed test command and observes success.
+- The final report distinguishes available implementation tools from
+  unavailable sub-agent tools.
+- Raw prompt text, raw provider payloads, and auth material remain excluded
+  from the summary report.
+
+Safety:
+
+```text
+Live implementation-thread testing is opt-in. The harness creates and mutates
+only a disposable fixture workspace and requires either the explicit live flag
+or CODEX_DIRECT_HEADLESS_LIVE_IMPLEMENTATION_THREAD=true before it starts a
+provider call.
+```
+
+Implemented scope:
+
+- Added `direct_live_implementation_thread_test@1`.
+- Added opt-in live command `direct:headless-live-implementation-thread`.
+- Added deterministic fixture mode and opt-in blocker reports so CI/regression
+  checks can run without provider calls.
+- Added report assertions for declared read/patch/command tools, multi-read
+  activity, patch application, command success, final fixture test success,
+  truthful unavailable-sub-agent posture, and raw-exposure flags.
+- Added `direct:headless-live-implementation-thread:regression` coverage.
+
+### PR 83: Public Headless Implementation Route
+
+Status: planned.
+
+Purpose:
+
+```text
+Expose the implementation-capable route through the normal headless command
+surface so a user or automation can start a direct implementation turn without
+using a one-off live harness script.
+```
+
+Planned scope:
+
+- Add a governed `implementation_turn` command to the headless affordance
+  command surface.
+- Reuse the same authority envelopes as the desktop direct implementation lane.
+- Return reduced turn/result reports rather than raw provider payloads.
+- Keep workspace mutation opt-in and scoped to the resolved WorkThread and
+  authorized workspace boundary.
+- Preserve separate text-only and implementation-capable backend routes as an
+  internal routing decision, not as a user-facing runtime mode split.
+
+### PR 84: Live Sub-Agent Tool Surface
+
+Status: planned.
+
+Purpose:
+
+```text
+Start exposing live direct sub-agent control as tool affordances with explicit
+governance, E-channel observation, and no-interference policy semantics.
+```
+
+Planned scope:
+
+- Add first live sub-agent tool declarations for spawn/list/send/wait/inspect.
+- Keep inspect/E-channel observation separate from interfering control actions.
+- Support no-interference self-binding where selected follow-up actions become
+  unavailable after agent spawn.
+- Report sub-agent capability availability to the resident epistemic catalog.
+- Keep unavailable or shadow-only sub-agent tools truthful in model-visible
+  self-report prompts until they are actually executable.
 
 ## Update Rules
 
