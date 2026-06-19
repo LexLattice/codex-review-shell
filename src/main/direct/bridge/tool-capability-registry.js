@@ -480,6 +480,7 @@ function defaultToolCapabilityInputs() {
     },
     ...["spawn_agent", "list_agents", "inspect_agent", "wait_agent", "send_message", "followup_task", "interrupt_agent"].map((name) => {
       const enabledInPr = name !== "interrupt_agent";
+      const liveSurfaceTool = ["spawn_agent", "list_agents", "inspect_agent", "wait_agent", "send_message"].includes(name);
       return {
         toolId: `vanilla.agent.${name}`,
         displayName: name,
@@ -491,7 +492,7 @@ function defaultToolCapabilityInputs() {
         promotionState: enabledInPr ? "direct_restricted" : "diagnostic_only",
         providerDeclarationState: "not_declared",
         localExecutorState: enabledInPr ? "implemented_restricted" : "scaffolded",
-        localExecutor: "src/main/direct/agents/text-tool-surface.js",
+        localExecutor: liveSurfaceTool ? "src/main/direct/agents/live-tool-surface.js" : "src/main/direct/agents/text-tool-surface.js",
         sideEffectClass: ["list_agents", "inspect_agent"].includes(name) ? "none" : "agent_graph",
         requestShapeFamilies: ["local_agent_surface_envelope"],
         approvalMode: ["list_agents", "inspect_agent"].includes(name) ? "display_only" : "per_action",
@@ -506,7 +507,7 @@ function defaultToolCapabilityInputs() {
             : "Text-only sub-agent surface requires graph, mailbox, lifecycle, context packet, authority boundary, and separate usage attribution.",
         failureClasses: ["projection_laundering", "authority_inflation", "context_smuggling", "action_replay", "thread_flattening"],
         rendererSafeSummary: enabledInPr
-          ? `${name} is exposed through the direct text-only sub-agent surface without provider tool declaration, recursive spawn, child tools, or inherited parent authority.`
+          ? `${name} is exposed through the direct sub-agent surface without provider tool declaration, recursive spawn, child tools, or inherited parent authority.`
           : `${name} is scaffolded as mark-requested/diagnostic only; provider cancellation remains disabled.`,
       };
     }),

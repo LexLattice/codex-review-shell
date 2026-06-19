@@ -88,6 +88,16 @@ assert.equal(sealedSpawn.status, "completed", "sealed spawn should complete");
 assert.equal(sealedSpawn.result.agent.parentSelfBindingEnforced, true, "sealed spawn should enforce parent self-binding");
 assert.equal(sealedSpawn.result.agent.noInterferencePolicy, "sealed_audit", "sealed policy should be preserved");
 
+const duplicateSealedSpawn = surface.spawnAgent({
+  childAgentId: "agent_sealed_audit",
+  displayLabel: "Attempted duplicate sealed audit worker",
+  role: "auditor",
+  prompt: "Attempt to overwrite the sealed worker without no-interference policy.",
+});
+assert.equal(duplicateSealedSpawn.status, "blocked", "duplicate child agent ids must be blocked");
+assert.equal(duplicateSealedSpawn.blockerCode, "duplicate_child_agent_id", "duplicate spawn should cite duplicate_child_agent_id");
+assert.equal(surface.inspectAgent({ targetAgentId: "agent_sealed_audit" }).result.inspectPacket.agent.displayLabel, "Sealed audit worker", "duplicate spawn must not overwrite existing agent identity");
+
 const blockedSend = surface.sendMessage({
   targetAgentId: "agent_sealed_audit",
   text: "This should be blocked by the no-interference policy.",
@@ -101,6 +111,12 @@ const sealedInspect = surface.inspectAgent({ targetAgentId: "agent_sealed_audit"
 assert.equal(sealedInspect.status, "completed", "inspect should remain available under no-interference");
 assert(sealedInspect.result.liveToolCatalog.callableToolIds.includes("vanilla.agent.inspect_agent"), "inspect should remain callable for sealed target");
 assert(sealedInspect.result.eChannelSnapshot.residentSnapshot.rows.some((row) => row.subjectId === "agent_sealed_audit"), "E-channel should include sealed agent row");
+
+const missingCatalog = surface.liveToolCatalog({ targetAgentId: "agent_missing" });
+assert(missingCatalog.blockedToolIds.includes("vanilla.agent.inspect_agent"), "missing target catalog should block inspect");
+assert(missingCatalog.blockedToolIds.includes("vanilla.agent.wait_agent"), "missing target catalog should block wait");
+assert(missingCatalog.blockedToolIds.includes("vanilla.agent.send_message"), "missing target catalog should block send");
+assert(!missingCatalog.callableToolIds.includes("vanilla.agent.send_message"), "missing target catalog must not advertise send_message callable");
 
 const finalSnapshot = surface.snapshot();
 assert.equal(finalSnapshot.agentCount, 2, "final surface should include two agents");

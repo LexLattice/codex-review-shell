@@ -119,6 +119,16 @@ function isNoInterferencePolicy(value) {
   return NO_INTERFERENCE_POLICIES.has(normalizeString(value, ""));
 }
 
+function shouldBlockTargetedInterference(targetAgentId, target) {
+  if (targetAgentId && !target) {
+    return { blocked: true, reason: "target_agent_missing" };
+  }
+  if (target?.parentSelfBindingEnforced === true) {
+    return { blocked: true, reason: `no_interference_policy:${target.noInterferencePolicy}` };
+  }
+  return { blocked: false, reason: "" };
+}
+
 function nodeFromAgent(agent) {
   return {
     agentThreadId: agent.agentThreadId,
@@ -430,14 +440,27 @@ class DirectLiveSubAgentToolSurface {
     if (spawnRequest.acceptedAsTextOnlyIntent !== true) {
       return resultFor(this, "spawn_agent", {
         status: "blocked",
-        blockerCode: spawnRequest.blockerCodes[0] || "spawn_request_not_accepted",
+        blockerCode: spawnRequest.blockerCodes?.[0] || "spawn_request_not_accepted",
         result: { spawnRequest },
       });
     }
+    if (this.agents.has(agent.agentThreadId)) {
+      return resultFor(this, "spawn_agent", {
+        status: "blocked",
+        blockerCode: "duplicate_child_agent_id",
+        result: {
+          spawnRequest,
+          existingAgentId: agent.agentThreadId,
+          liveToolCatalog: this.liveToolCatalog({ targetAgentId: agent.agentThreadId }),
+          eChannelSnapshot: this.eChannelSnapshot(),
+        },
+      });
+    }
     this.agents.set(agent.agentThreadId, agent);
+    const spawnSeq = this.nextSequence();
     this.messages.push(messageFor({
       messageId: `mailbox_spawn_${agent.agentThreadId}`,
-      sequence: this.nextSequence(),
+      sequence: spawnSeq,
       messageKind: "spawn_intent",
       direction: "parent_to_child",
       parentAgentId: this.parentAgentId,
@@ -484,15 +507,16 @@ class DirectLiveSubAgentToolSurface {
         blockerCode: "missing_message_text",
       });
     }
+    const nextSeq = this.nextSequence();
     this.messages.push(messageFor({
-      messageId: `mailbox_send_${targetAgentId}_${this.sequence + 1}`,
-      sequence: this.nextSequence(),
+      messageId: `mailbox_send_${targetAgentId}_${nextSeq}`,
+      sequence: nextSeq,
       messageKind: "parent_prompt",
       direction: "parent_to_child",
       parentAgentId: this.parentAgentId,
       childAgentId: targetAgentId,
       createdAt: this.now(),
-      payloadRef: textEvidenceRef("agent_message_ref", `agent_message_${targetAgentId}_${this.sequence}`, text, "Bounded direct parent-to-child message"),
+      payloadRef: textEvidenceRef("agent_message_ref", `agent_message_${targetAgentId}_${nextSeq}`, text, "Bounded direct parent-to-child message"),
     }));
     agent.lifecycleState = "running";
     agent.activityState = "active";
@@ -555,8 +579,8 @@ class DirectLiveSubAgentToolSurface {
       providerDeclarationAllowed: false,
     };
     return resultFor(this, "wait_agent", {
-      status: waitPlan.noDeadlockLawSatisfied ? "completed" : "blocked",
-      blockerCode: waitPlan.noDeadlockLawSatisfied ? "" : "wait_deadlock_or_target_law_failed",
+      status: waitPlan?.noDeadlockLawSatisfied ? "completed" : "blocked",
+      blockerCode: waitPlan?.noDeadlockLawSatisfied ? "" : "wait_deadlock_or_target_law_failed",
       result: {
         waitPlan,
         waitStatus,
@@ -569,7 +593,7 @@ class DirectLiveSubAgentToolSurface {
   liveToolCatalog(input = {}) {
     const targetAgentId = normalizeString(input.targetAgentId, "");
     const target = this.agents.get(targetAgentId) || null;
-    const targetBlocked = target?.parentSelfBindingEnforced === true;
+    const sendBlock = shouldBlockTargetedInterference(targetAgentId, target);
     const rows = [
       capabilityRow({ toolName: "spawn_agent", status: "callable_now" }),
       capabilityRow({ toolName: "list_agents", status: "callable_now" }),
@@ -577,8 +601,8 @@ class DirectLiveSubAgentToolSurface {
       capabilityRow({ toolName: "wait_agent", status: targetAgentId && !target ? "blocked_by_policy" : "callable_now", blockerCodes: targetAgentId && !target ? ["target_agent_missing"] : [], targetAgentId }),
       capabilityRow({
         toolName: "send_message",
-        status: targetBlocked ? "blocked_by_policy" : "callable_now",
-        blockerCodes: targetBlocked ? [`no_interference_policy:${target.noInterferencePolicy}`] : [],
+        status: sendBlock.blocked ? "blocked_by_policy" : "callable_now",
+        blockerCodes: sendBlock.blocked ? [sendBlock.reason] : [],
         targetAgentId,
       }),
     ];
