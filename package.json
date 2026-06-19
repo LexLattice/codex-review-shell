@@ -134,6 +134,7 @@
     "typed-markdown:smoke": "node ./scripts/smoke-typed-markdown-fixtures.mjs",
     "direct:provider-compact-gate": "node ./scripts/direct-provider-compact-gate-regression.mjs",
     "direct:appserver-sub-agent-source": "node ./scripts/direct-appserver-sub-agent-source-regression.mjs",
+    "direct:sub-agent-capability-profile": "node ./scripts/direct-sub-agent-capability-profile-regression.mjs",
     "direct:meta-session-control-plane": "node ./scripts/direct-meta-session-control-plane-regression.mjs",
     "direct:command-tool-loop": "node ./scripts/direct-command-tool-loop-regression.mjs",
     "direct:tool-repair-loop": "node ./scripts/direct-tool-continuation-repair-loop-regression.mjs",
