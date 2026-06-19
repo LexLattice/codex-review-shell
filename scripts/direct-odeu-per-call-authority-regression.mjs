@@ -10,6 +10,7 @@ const {
   buildOdeuDigest,
   buildOdeuLiveCapabilityTransaction,
   buildOdeuPerCallAuthorityDecision,
+  decideFinalAuthority,
   digestCanonicalJson,
   normalizeOdeuSourceRef,
   validateOdeuLiveCapabilityTransaction,
@@ -205,6 +206,34 @@ const suspendedDecision = buildOdeuPerCallAuthorityDecision({
 }, { now: fixedNow });
 assert(suspendedDecision.finalDecision === "block", "suspended activation must not allow execution");
 
+assert(decideFinalAuthority(null) === "block", "null authority basis should fail closed");
+assert(decideFinalAuthority({
+  argumentValidation: { state: "valid", blockers: [] },
+  activationDecision: "active",
+  policyDecision: "allow",
+  executorState: "ready",
+}) === "allow_read_only", "missing sideEffectClass should default to read-only");
+
+const noDigestDecision = buildOdeuPerCallAuthorityDecision({
+  authorityDecisionId: "authority_decision_no_digest_fixture",
+  callId: "call_no_digest_fixture",
+  capabilityId: "capability_no_digest_fixture",
+  scope: {
+    projectId: "project_authority_fixture",
+  },
+  argumentValidation: {
+    state: "valid",
+    schemaDigest: null,
+    argumentsDigest: [],
+    blockers: [],
+  },
+  activationDecision: "active",
+  policyDecision: "allow",
+  executorState: "ready",
+  sideEffectClass: "workspace_read",
+}, { now: fixedNow });
+assert(noDigestDecision.finalDecision === "allow_read_only", "non-object digests should be ignored safely");
+
 expectThrows(() => buildOdeuPerCallAuthorityDecision({
   ...allowReadDecision,
   authorityDecisionId: "authority_decision_bad_final_fixture",
@@ -229,6 +258,24 @@ expectThrows(() => buildOdeuLiveCapabilityTransaction({
   lifecycle: "executor_started",
 }), "executor_lifecycle_requires_allowing_authority_decision");
 
+expectThrows(() => buildOdeuLiveCapabilityTransaction({
+  transactionId: "transaction_mismatched_call_fixture",
+  authorityDecision: allowReadDecision,
+  callId: "call_different_fixture",
+}), "authority_call_id_mismatch");
+
+expectThrows(() => buildOdeuLiveCapabilityTransaction({
+  transactionId: "transaction_mismatched_capability_fixture",
+  authorityDecision: allowReadDecision,
+  capabilityId: "capability_different_fixture",
+}), "authority_capability_id_mismatch");
+
+expectThrows(() => buildOdeuLiveCapabilityTransaction({
+  transactionId: "transaction_mismatched_side_effect_fixture",
+  authorityDecision: allowReadDecision,
+  sideEffectClass: "workspace_write",
+}), "authority_side_effect_class_mismatch");
+
 expectThrows(() => validateOdeuLiveCapabilityTransaction({
   ...readTransaction,
   replayAllowed: true,
@@ -242,6 +289,9 @@ expectThrows(() => validateOdeuPerCallAuthorityDecision({
     blockers: ["should_not_exist"],
   },
 }), "valid_arguments_cannot_have_blockers");
+
+expectThrows(() => validateOdeuPerCallAuthorityDecision(null), "missing_required_object:decision");
+expectThrows(() => validateOdeuLiveCapabilityTransaction(null), "missing_required_object:transaction");
 
 const report = {
   schema: "direct_odeu_per_call_authority_regression@1",

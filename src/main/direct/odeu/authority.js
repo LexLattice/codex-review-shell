@@ -134,16 +134,17 @@ function normalizeArgumentValidation(input = {}) {
     state: blockers.length ? "invalid" : state,
     blockers,
   };
-  if (value.schemaDigest && typeof value.schemaDigest === "object") {
+  if (isPlainObject(value.schemaDigest)) {
     normalized.schemaDigest = buildOdeuDigest(value.schemaDigest);
   }
-  if (value.argumentsDigest && typeof value.argumentsDigest === "object") {
+  if (isPlainObject(value.argumentsDigest)) {
     normalized.argumentsDigest = buildOdeuDigest(value.argumentsDigest);
   }
   return normalized;
 }
 
 function normalizeAuthorityScope(input = {}) {
+  const basis = isPlainObject(input) ? input : {};
   const scope = {};
   for (const field of [
     "projectId",
@@ -154,32 +155,36 @@ function normalizeAuthorityScope(input = {}) {
     "providerProfileId",
     "modelId",
   ]) {
-    const value = normalizeString(input[field], "");
+    const value = normalizeString(basis[field], "");
     if (value) scope[field] = value;
   }
-  const activationScopeKind = normalizeString(input.activationScopeKind || input.kind, "");
+  const activationScopeKind = normalizeString(basis.activationScopeKind || basis.kind, "");
   if (activationScopeKind) scope.activationScopeKind = activationScopeKind;
   return scope;
 }
 
 function decideFinalAuthority(input = {}) {
-  const argumentValidation = input.argumentValidation || {};
+  const basis = isPlainObject(input) ? input : {};
+  const argumentValidation = basis.argumentValidation || {};
   if (argumentValidation.state === "invalid" || argumentValidation.state === "stale") return "block";
-  if (input.activationDecision !== "active") {
-    if (input.activationDecision === "shadow_only") return "shadow_only";
-    if (input.activationDecision === "not_found" || input.activationDecision === "inactive") return "block";
-    if (input.activationDecision === "revoked" || input.activationDecision === "expired") return "block";
+  if (basis.activationDecision !== "active") {
+    if (basis.activationDecision === "shadow_only") return "shadow_only";
+    if (basis.activationDecision === "not_found" || basis.activationDecision === "inactive") return "block";
+    if (basis.activationDecision === "revoked" || basis.activationDecision === "expired") return "block";
     return "block";
   }
-  if (input.policyDecision === "unsupported" || input.executorState === "unavailable") return "unsupported";
-  if (input.policyDecision === "needs_human") return "needs_human";
-  if (input.policyDecision === "shadow_only") return "shadow_only";
-  if (input.policyDecision === "block" || input.policyDecision === "stale") return "block";
-  if (input.executorState !== "ready" && input.executorState !== "degraded") return "block";
-  return READ_ONLY_SIDE_EFFECT_CLASSES.has(input.sideEffectClass) ? "allow_read_only" : "allow_execute";
+  if (basis.policyDecision === "unsupported" || basis.executorState === "unavailable") return "unsupported";
+  if (basis.policyDecision === "needs_human") return "needs_human";
+  if (basis.policyDecision === "shadow_only") return "shadow_only";
+  if (basis.policyDecision === "block" || basis.policyDecision === "stale") return "block";
+  if (basis.executorState !== "ready" && basis.executorState !== "degraded") return "block";
+  const sideEffectClass = basis.sideEffectClass || "none";
+  return READ_ONLY_SIDE_EFFECT_CLASSES.has(sideEffectClass) ? "allow_read_only" : "allow_execute";
 }
 
 function buildAuthorityArtifactBase(input = {}, options = {}, artifactKind) {
+  input = isPlainObject(input) ? input : {};
+  options = isPlainObject(options) ? options : {};
   return buildOdeuArtifactBase({
     ...input,
     artifactKind,
@@ -194,6 +199,8 @@ function buildAuthorityArtifactBase(input = {}, options = {}, artifactKind) {
 }
 
 function buildOdeuPerCallAuthorityDecision(input = {}, options = {}) {
+  input = isPlainObject(input) ? input : {};
+  options = isPlainObject(options) ? options : {};
   const authorityDecisionId = normalizeId(input.authorityDecisionId, "odeu_authority_decision");
   const callId = normalizeId(input.callId, "odeu_capability_call");
   const capabilityId = normalizeId(input.capabilityId, "odeu_capability");
@@ -262,6 +269,8 @@ function inferLifecycleFromDecision(authorityDecision) {
 }
 
 function buildOdeuLiveCapabilityTransaction(input = {}, options = {}) {
+  input = isPlainObject(input) ? input : {};
+  options = isPlainObject(options) ? options : {};
   const authorityDecision = isPlainObject(input.authorityDecision) ? input.authorityDecision : null;
   const transactionId = normalizeId(input.transactionId, "odeu_live_capability_transaction");
   const capabilityId = normalizeId(input.capabilityId || authorityDecision?.capabilityId, "odeu_capability");
@@ -358,9 +367,30 @@ function authorityAllowsExecutorStart(authorityDecision) {
   return ["allow_execute", "allow_read_only"].includes(authorityDecision?.finalDecision);
 }
 
+function validateTransactionAuthorityBinding(value, authorityDecision, errors) {
+  if (!isPlainObject(authorityDecision)) return;
+  const bindings = [
+    ["authorityDecisionId", "authority_decision_id_mismatch"],
+    ["callId", "authority_call_id_mismatch"],
+    ["capabilityId", "authority_capability_id_mismatch"],
+    ["sideEffectClass", "authority_side_effect_class_mismatch"],
+  ];
+  for (const [field, blocker] of bindings) {
+    const transactionValue = normalizeString(value[field], "");
+    const authorityValue = normalizeString(authorityDecision[field], "");
+    if (transactionValue && authorityValue && transactionValue !== authorityValue) {
+      errors.push(blocker);
+    }
+  }
+}
+
 function validateOdeuPerCallAuthorityDecision(value = {}) {
   const errors = [];
   validateBase(value, errors);
+  if (!isPlainObject(value)) {
+    errors.push("missing_required_object:decision");
+    throw new Error(`odeu_authority_validation_failed:${errors.join(",")}`);
+  }
   validateRequiredString(value.authorityDecisionId, "authorityDecisionId", errors);
   validateRequiredString(value.callId, "callId", errors);
   validateRequiredString(value.capabilityId, "capabilityId", errors);
@@ -391,20 +421,26 @@ function validateOdeuPerCallAuthorityDecision(value = {}) {
 function validateOdeuLiveCapabilityTransaction(value = {}, options = {}) {
   const errors = [];
   validateBase(value, errors);
+  if (!isPlainObject(value)) {
+    errors.push("missing_required_object:transaction");
+    throw new Error(`odeu_transaction_validation_failed:${errors.join(",")}`);
+  }
   validateRequiredString(value.transactionId, "transactionId", errors);
   validateRequiredString(value.capabilityId, "capabilityId", errors);
   validateRequiredString(value.callId, "callId", errors);
   validateEnum(value.sideEffectClass, ODEU_SIDE_EFFECT_CLASSES, "sideEffectClass", errors);
   validateEnum(value.lifecycle, ODEU_TRANSACTION_LIFECYCLES, "lifecycle", errors);
   validateBoolean(value.replayAllowed, "replayAllowed", errors);
+  const authorityDecision = options?.authorityDecision;
+  validateTransactionAuthorityBinding(value, authorityDecision, errors);
   if (value.replayAllowed && !value.idempotencyKey) errors.push("replay_allowed_requires_idempotency_key");
-  if (value.replayAllowed && options.authorityDecision?.replayPolicy !== "idempotent_same_key") {
+  if (value.replayAllowed && authorityDecision?.replayPolicy !== "idempotent_same_key") {
     errors.push("replay_allowed_requires_idempotent_authority");
   }
-  if (EXECUTOR_STARTED_LIFECYCLES.has(value.lifecycle) && !authorityAllowsExecutorStart(options.authorityDecision)) {
+  if (EXECUTOR_STARTED_LIFECYCLES.has(value.lifecycle) && !authorityAllowsExecutorStart(authorityDecision)) {
     errors.push("executor_lifecycle_requires_allowing_authority_decision");
   }
-  if (value.lifecycle === "authority_blocked" && authorityAllowsExecutorStart(options.authorityDecision)) {
+  if (value.lifecycle === "authority_blocked" && authorityAllowsExecutorStart(authorityDecision)) {
     errors.push("authority_blocked_conflicts_with_allowing_decision");
   }
   if (!errors.length) return true;
