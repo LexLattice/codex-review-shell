@@ -4316,6 +4316,7 @@ live capability family.
 First usable slice:
 
 ```text
+single-shot text-only child worker
 spawn_agent
 list_agents
 inspect_agent
@@ -4331,17 +4332,18 @@ no send/followup
 no close/interrupt/resume
 no recursive spawn
 no child inherited tools
+no continuing child conversation
 no child output flattening into primary transcript
 no batch fan-out
 ```
 
 | PR | Status | Branch | Purpose | Planned deliverable | Explicit non-goals |
 | --- | --- | --- | --- | --- | --- |
-| `#92` | planned | TBD | Sub-agent capability profile and ODEU lifecycle adapter | Capability rows, promotion decisions, activation rows, declaration snapshots, blocked rows for deferred controls | No provider transport or resident-callable declaration |
-| `#93` | planned | TBD | Sub-agent per-call authority, idempotency, and wait policy | Authority decisions, transaction rows, duplicate-spawn ledger, target validation, wait timeout/deadlock policy | No provider-backed child execution |
-| `#94` | planned | TBD | Provider-backed spawn/run result envelope and admission | Provider-backed child run adapter, child result envelope, context admission, usage attribution | No child transcript full-history view or child tools |
-| `#95` | planned | TBD | Resident tool declaration, witness, and headless smoke | Resident sub-agent tool declarations, epistemic rows, usability proofs, headless spawn/list/inspect/wait smoke | No UI-first implementation or interference controls |
-| `#96` | planned | TBD | Operator projection and manual usability gate | Primary transcript activity summary, operator proof/status rows, manual smoke gate, analytics hook | No right-pane/sub-agent UX overhaul |
+| `#92` | planned | TBD | Sub-agent capability profile and ODEU lifecycle adapter | Capability rows, promotion decisions, shadow/test activation rows, declaration snapshots, blocked rows with reason/future owner | No provider transport or resident-callable declaration |
+| `#93` | planned | TBD | Sub-agent per-call authority, idempotency, and wait policy | Authority decisions, transaction rows, spawn/wait plans, canonical idempotency, target validation, wait timeout/deadlock policy | No provider-backed child execution |
+| `#94` | planned | TBD | Provider-backed spawn/run, result envelope, and context admission | Provider-backed child run adapter, result reducer, child result envelope, admission envelope, context admission, usage attribution | No child transcript full-history view or child tools |
+| `#95` | planned | TBD | Resident tool declaration, witness, and headless smoke | Resident sub-agent tool declarations, frozen declaration digest, epistemic rows, usability proofs, positive/negative headless smoke | No UI-first implementation or interference controls |
+| `#96` | planned | TBD | Operator projection and manual usability gate | Primary transcript activity summary, operator proof/status rows, manual smoke gate, analytics hook, proof-only operator projection | No right-pane/sub-agent UX overhaul or operator authority expansion |
 
 Wave 15 completion gate:
 
