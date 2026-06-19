@@ -347,7 +347,7 @@ async function runScenarioCommand({ daemon, scenario, step, captures }) {
     };
     delete command.targetFrom;
   }
-  const result = executeHeadlessAffordanceCommand({ daemon, command });
+  const result = await executeHeadlessAffordanceCommand({ daemon, command });
   const turnPacket = isPlainObject(result?.result?.turnPacket) ? result.result.turnPacket : null;
   if (step.captureTurnPacketAs && turnPacket) captures.set(step.captureTurnPacketAs, turnPacket);
   const assertions = [

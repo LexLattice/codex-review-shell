@@ -503,7 +503,7 @@ class DirectHeadlessBridgeDaemon {
           rawPayloadIncluded: false,
         });
       }
-      const result = executeHeadlessAffordanceCommand({ daemon: this, command: body });
+      const result = await executeHeadlessAffordanceCommand({ daemon: this, command: body });
       return jsonResponse(res, result.status === "completed" || result.status === "accepted" ? 202 : 400, {
         ok: result.status === "completed" || result.status === "accepted",
         ...result,

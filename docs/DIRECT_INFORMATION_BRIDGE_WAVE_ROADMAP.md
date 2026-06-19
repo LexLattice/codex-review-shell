@@ -3873,6 +3873,7 @@ Planned PR sequence:
 - PR 83: Public Headless Implementation Route.
 - PR 84: Live Sub-Agent Tool Surface.
 - PR 85: Provider-Backed Sub-Agent Execution Route.
+- PR 86: Headless Provider-Backed Sub-Agent Command.
 
 ### PR 78: Headless Affordance Command Surface
 
@@ -4187,7 +4188,7 @@ no-interference policy semantics.
 
 ### PR 85: Provider-Backed Sub-Agent Execution Route
 
-Status: implemented in branch `codex/direct-provider-backed-sub-agent-route`.
+Status: merged.
 
 Planned scope:
 
@@ -4210,6 +4211,34 @@ Implemented scope:
   duplicate child blocking, provider-runner absence, provider failure, raw
   prompt exclusion, no-interference blocking, and child-agent usage
   attribution.
+
+### PR 86: Headless Provider-Backed Sub-Agent Command
+
+Status: implemented in branch `codex/direct-headless-provider-sub-agent-command`.
+
+Planned scope:
+
+- Expose provider-backed sub-agent execution as a governed headless affordance
+  command.
+- Validate client, route, and WorkThread eligibility through the existing
+  bridge route validation path before starting a child provider turn.
+- Reuse the PR85 provider-backed route and return sanitized command-result
+  evidence.
+- Keep child tools, recursive spawn, workspace mutation, provider declaration,
+  and child transcript promotion disabled.
+
+Implemented scope:
+
+- Added `spawn_provider_backed_sub_agent` to the headless affordance command
+  surface.
+- Made command execution awaitable so provider-backed child turns can complete
+  through the same command endpoint without changing existing synchronous
+  command semantics.
+- Added daemon-level provider-backed route caching keyed by route/work-thread
+  identity so duplicate child ids are blocked consistently.
+- Added HTTP regression coverage for successful child spawn/run, no-interference
+  send blocking, duplicate child blocking, token usage projection, and raw
+  prompt exclusion.
 
 ## Update Rules
 
