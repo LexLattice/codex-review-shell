@@ -111,6 +111,27 @@ function fixtureConfig(rootDir) {
         maxAutoDecisions: 1,
       },
     }, {
+      routeId: "route_impl_restricted",
+      routeVersion: "v1",
+      status: "active",
+      ingressContractRef: "headless_text_event@1",
+      workThreadId: "wt_affordance",
+      targetThreadRef: {
+        runtimePath: "direct-implementation",
+        threadId: "direct_session_headless_impl_restricted",
+      },
+      contextPolicyRef: "direct_implementation_turn_empty_context@1",
+      modelPolicyRef: "fixture-model-policy",
+      outputReducerRef: "terminal-result-only",
+      authorityBoundaryRef: "headless-affordance-implementation-restricted",
+      toolAuthorityMode: "disabled",
+      headlessImplementationPolicy: {
+        autoDecisionMode: "disabled",
+        disposableWorkspace: false,
+        allowedMethods: [],
+        maxAutoDecisions: 0,
+      },
+    }, {
       routeId: "route_bad_runtime",
       routeVersion: "v1",
       status: "active",
@@ -465,6 +486,22 @@ try {
   assert.equal(implUnsafe.body.result.turnPacket.headlessImplementationPolicy.autoDecisionMode, "approve");
   assert.equal(implUnsafe.body.result.turnPacket.headlessImplementationPolicy.disposableWorkspace, false);
   assert.equal(implUnsafe.body.providerRequestStarted, false);
+
+  const implRestricted = await command(baseUrl, {
+    commandKind: "submit_implementation_turn",
+    commandId: "cmd_impl_restricted",
+    idempotencyKey: "affordance-implementation-restricted",
+    requestedRouteId: "route_impl_restricted",
+    text: "implementation restricted route",
+  });
+  assert.equal(implRestricted.response.status, 400);
+  assert.equal(implRestricted.body.status, "blocked");
+  assert.equal(implRestricted.body.blockerCode, "route_not_allowed_for_client");
+  assert.equal(implRestricted.body.providerRequestStarted, false);
+  assert.equal(implRestricted.body.result.status, "route_blocked");
+  assert.equal(implRestricted.body.result.route, undefined);
+  assert.equal(JSON.stringify(implRestricted.body).includes("direct_session_headless_impl_restricted"), false);
+  assert.equal(JSON.stringify(implRestricted.body).includes("direct-implementation"), false);
 
   const badRuntime = await command(baseUrl, {
     commandKind: "submit_text_turn",

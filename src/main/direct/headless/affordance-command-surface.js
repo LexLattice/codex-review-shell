@@ -211,19 +211,32 @@ function routeRuntimePath(route = {}) {
   return normalizeString(ref.runtimePath || ref.runtime_path, "direct-text");
 }
 
-function validateImplementationCommandRoute(daemon, command = {}) {
-  const route = daemon?.store?.readRoute?.(command.requestedRouteId, command.routeVersion);
-  if (!route) return null;
-  const runtimePath = routeRuntimePath(route);
+function validateImplementationCommandRoute(daemon, command = {}, eventBody = {}) {
+  const validation = daemon?.store?.validateIngress?.(eventBody);
+  if (!validation?.ok) {
+    const auditResult = sanitizeBridgeResult(daemon?.store?.submitEvent?.(eventBody));
+    const error = normalizeString(auditResult?.error || validation?.errorCode, "route_validation_blocked");
+    return commandResult(command, {
+      status: "blocked",
+      error,
+      blockerCode: error,
+      providerRequestStarted: false,
+      result: auditResult,
+      evidenceRefs: [evidenceRef("bridge_ingress", "Implementation command rejected by shared bridge ingress validation")],
+    });
+  }
+  const runtimePath = routeRuntimePath(validation.route);
   if (runtimePath !== "direct-implementation") {
+    const auditResult = sanitizeBridgeResult(daemon?.store?.submitEvent?.(eventBody));
     return commandResult(command, {
       status: "blocked",
       error: "implementation_command_requires_direct_implementation_route",
       blockerCode: "implementation_command_requires_direct_implementation_route",
       providerRequestStarted: false,
       result: {
-        routeId: route.routeId || command.requestedRouteId,
-        routeVersion: route.routeVersion || command.routeVersion,
+        audit: auditResult,
+        routeId: validation.route?.routeId || command.requestedRouteId,
+        routeVersion: validation.route?.routeVersion || command.routeVersion,
         runtimePath,
         rawPayloadIncluded: false,
       },
@@ -298,11 +311,12 @@ function executeHeadlessAffordanceCommand({ daemon, command: input } = {}) {
         blockerCode: "missing_text",
       });
     }
+    const eventBody = eventBodyForTextCommand(command);
     if (IMPLEMENTATION_TURN_COMMAND_KINDS.has(command.commandKind)) {
-      const routeBlock = validateImplementationCommandRoute(daemon, command);
+      const routeBlock = validateImplementationCommandRoute(daemon, command, eventBody);
       if (routeBlock) return routeBlock;
     }
-    const result = sanitizeBridgeResult(daemon.submitEvent(eventBodyForTextCommand(command)));
+    const result = sanitizeBridgeResult(daemon.submitEvent(eventBody));
     const outcome = submitOutcome(result);
     return commandResult(command, {
       status: outcome.status,
