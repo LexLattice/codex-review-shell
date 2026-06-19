@@ -340,13 +340,32 @@ function buildDeclaration(toolName, capability, activation, context, options = {
 
 function validateProfile(profile = {}) {
   if (profile.schema !== SUB_AGENT_CAPABILITY_PROFILE_SCHEMA) throw new Error("sub_agent_capability_profile_schema_mismatch");
-  for (const row of profile.capabilityRows || []) validateOdeuCapabilityRow(row);
-  for (const row of profile.promotionDecisions || []) validateOdeuPromotionDecision(row);
-  for (const row of profile.activationRows || []) validateOdeuActivationRow(row);
-  for (const row of profile.declarationSnapshots || []) validateOdeuDeclarationSnapshot(row);
+  const expectedTools = [...RESIDENT_FIRST_SLICE_TOOLS, ...DEFERRED_SUB_AGENT_CONTROLS];
+  for (const field of ["capabilityRows", "promotionDecisions", "activationRows", "declarationSnapshots"]) {
+    if (!Array.isArray(profile[field])) throw new Error(`sub_agent_capability_profile_missing_array:${field}`);
+    if (profile[field].length < expectedTools.length) throw new Error(`sub_agent_capability_profile_incomplete_array:${field}`);
+  }
+  for (const row of profile.capabilityRows) validateOdeuCapabilityRow(row);
+  for (const row of profile.promotionDecisions) validateOdeuPromotionDecision(row);
+  for (const row of profile.activationRows) validateOdeuActivationRow(row);
+  for (const row of profile.declarationSnapshots) validateOdeuDeclarationSnapshot(row);
+  const capabilityByKind = new Map(profile.capabilityRows.map((row) => [row.capabilityKind, row]));
+  const promotionByCapability = new Map(profile.promotionDecisions.map((row) => [row.capabilityId, row]));
+  const activationByCapability = new Map(profile.activationRows.map((row) => [row.capabilityId, row]));
+  const declarationByActivation = new Map(profile.declarationSnapshots.map((row) => [row.activationId, row]));
+  for (const toolName of expectedTools) {
+    const capability = capabilityByKind.get(toolName);
+    if (!capability) throw new Error(`sub_agent_capability_profile_capability_row_missing:${toolName}`);
+    if (!promotionByCapability.has(capability.capabilityId)) throw new Error(`sub_agent_capability_profile_promotion_row_missing:${toolName}`);
+    const activation = activationByCapability.get(capability.capabilityId);
+    if (!activation) throw new Error(`sub_agent_capability_profile_activation_row_missing:${toolName}`);
+    if (!declarationByActivation.has(activation.activationId)) throw new Error(`sub_agent_capability_profile_declaration_row_missing:${toolName}`);
+  }
   if (profile.providerTransportStarted !== false) throw new Error("sub_agent_capability_profile_provider_transport_started");
   if (profile.providerDeclarationEnabled !== false) throw new Error("sub_agent_capability_profile_provider_declaration_enabled");
   if (profile.residentCallableEnabled !== false) throw new Error("sub_agent_capability_profile_resident_callable_enabled");
+  if (profile.executorCallsStarted !== false) throw new Error("sub_agent_capability_profile_executor_calls_started");
+  if (profile.workspaceMutationStarted !== false) throw new Error("sub_agent_capability_profile_workspace_mutation_started");
   if (profile.rawPromptIncluded !== false || profile.rawTranscriptIncluded !== false || profile.rawProviderPayloadIncluded !== false) {
     throw new Error("sub_agent_capability_profile_raw_exposure");
   }

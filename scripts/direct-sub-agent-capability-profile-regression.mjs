@@ -137,6 +137,41 @@ expectThrows(() => validateSubAgentCapabilityProfile({
 }), "sub_agent_capability_profile_provider_transport_started");
 expectThrows(() => validateSubAgentCapabilityProfile({
   ...profile,
+  executorCallsStarted: true,
+}), "sub_agent_capability_profile_executor_calls_started");
+expectThrows(() => validateSubAgentCapabilityProfile({
+  ...profile,
+  workspaceMutationStarted: true,
+}), "sub_agent_capability_profile_workspace_mutation_started");
+expectThrows(() => validateSubAgentCapabilityProfile({
+  ...profile,
+  capabilityRows: [],
+}), "sub_agent_capability_profile_incomplete_array:capabilityRows");
+expectThrows(() => validateSubAgentCapabilityProfile({
+  ...profile,
+  capabilityRows: profile.capabilityRows.filter((row) => row.capabilityKind !== "wait_agent"),
+}), "sub_agent_capability_profile_incomplete_array:capabilityRows");
+expectThrows(() => validateSubAgentCapabilityProfile({
+  ...profile,
+  capabilityRows: [
+    ...profile.capabilityRows.filter((row) => row.capabilityKind !== "wait_agent"),
+    { ...profile.capabilityRows[0], capabilityKind: "duplicate_spawn_agent" },
+  ],
+}), "sub_agent_capability_profile_capability_row_missing:wait_agent");
+expectThrows(() => validateSubAgentCapabilityProfile({
+  ...profile,
+  promotionDecisions: profile.promotionDecisions.filter((row) => row.capabilityId !== "sub_agent_wait_agent"),
+}), "sub_agent_capability_profile_incomplete_array:promotionDecisions");
+expectThrows(() => validateSubAgentCapabilityProfile({
+  ...profile,
+  activationRows: profile.activationRows.filter((row) => row.capabilityId !== "sub_agent_wait_agent"),
+}), "sub_agent_capability_profile_incomplete_array:activationRows");
+expectThrows(() => validateSubAgentCapabilityProfile({
+  ...profile,
+  declarationSnapshots: profile.declarationSnapshots.filter((row) => row.activationId !== "activation_sub_agent_wait_agent"),
+}), "sub_agent_capability_profile_incomplete_array:declarationSnapshots");
+expectThrows(() => validateSubAgentCapabilityProfile({
+  ...profile,
   blockedControls: profile.blockedControls.filter((row) => row.toolName !== "recursive_spawn"),
 }), "sub_agent_capability_profile_blocked_control_missing:recursive_spawn");
 
