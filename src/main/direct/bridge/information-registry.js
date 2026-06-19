@@ -1049,6 +1049,25 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     bridgeFit: "Defines the shared capability row, promotion decision, activation row, and declaration snapshot lifecycle so later live families do not invent local enabled booleans or provider-callable states.",
     realignment: "This kernel remains pre-call evidence only: it introduces no per-call authority decision, no transaction lifecycle, no provider declaration side effect, no executor call, and no workspace mutation.",
   },
+  {
+    id: "ic35.odeu-per-call-authority-transaction-kernel",
+    name: "ODEU per-call authority and transaction kernel",
+    role: "authority_gate",
+    implementationState: "implemented",
+    directPathPosture: "keep",
+    sourceFiles: [
+      "src/main/direct/odeu/authority.js",
+      "src/main/direct/odeu/index.js",
+      "scripts/direct-odeu-per-call-authority-regression.mjs",
+      "docs/DIRECT_ODEU_LIVE_CAPABILITY_KERNEL_WAVE_SPEC.md",
+    ],
+    ontology: ontologyShape(["odeu_per_call_authority_decision", "odeu_live_capability_transaction"], "harness", {
+      identityFields: ["authorityDecisionId", "transactionId", "capabilityId", "callId"],
+      schema: "odeu_per_call_authority_decision@1",
+    }),
+    bridgeFit: "Provides the shared per-call authority decision and live transaction lifecycle so later tool families cite one authority gate before any executor, provider result, recovery, or context admission transition.",
+    realignment: "This kernel is still non-executing: it models authority and transaction state only, with regression sentinels proving no executor call, workspace mutation, provider transport, approval mutation, or context admission is performed.",
+  },
 ]);
 
 function isPlainObject(value) {

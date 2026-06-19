@@ -1,6 +1,7 @@
 "use strict";
 
 module.exports = {
+  ...require("./authority"),
   ...require("./artifact"),
   ...require("./digest"),
   ...require("./lifecycle"),
