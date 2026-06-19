@@ -244,6 +244,27 @@ assert.equal(failed.contextAdmission.admissionDecision, "admit", "failed exact t
 assert.equal(failed.usageUnavailableRow.schema, SUB_AGENT_USAGE_UNAVAILABLE_ROW_SCHEMA, "provider exception should record usage unavailable");
 assertNoRawPrompt(failed, failedPrompt);
 
+const timeoutRoute = createDirectProviderBackedSubAgentRoute({
+  projectId: "project_provider_child_fixture",
+  workThreadId: "work_thread_provider_child_fixture",
+  primaryThreadId: "primary_provider_child_fixture",
+  nowMs: 0,
+  providerTurnRunner: async () => ({
+    ok: false,
+    terminalState: "timeout",
+    errorCode: "provider_child_timeout",
+  }),
+});
+const timeout = await timeoutRoute.spawnAndRun({
+  childAgentId: "timeout_child",
+  prompt: "UNIQUE_TIMEOUT_CHILD_PROMPT_e87d",
+});
+assert.equal(timeout.status, "timeout", "timeout terminal status should be preserved");
+assert.equal(timeout.resultAdmissionEnvelope.terminalExact, true, "timeout should be an exact terminal state");
+assert.equal(timeout.contextAdmission.admissionDecision, "admit", "timeout summary should be admitted as terminal evidence");
+assert(timeout.eChannelSnapshot.residentSnapshot.rows.some((row) => row.subjectId === "timeout_child" && row.compactText.includes("timeout/blocked")), "timeout child should be visible in E-channel as timeout/blocked");
+assertNoRawPrompt(timeout, "UNIQUE_TIMEOUT_CHILD_PROMPT_e87d");
+
 const handoffRoute = createDirectProviderBackedSubAgentRoute({
   projectId: "project_provider_child_fixture",
   workThreadId: "work_thread_provider_child_fixture",
@@ -265,16 +286,18 @@ assert.equal(handoff.resultEnvelope.visibility.providerVisible, "not_seen", "han
 assert.equal(handoff.contextAdmission.admissionDecision, "do_not_admit", "handoff_unknown must not be context-admitted");
 assert.equal(handoff.resultAdmissionEnvelope.terminalExact, false, "handoff_unknown terminal is not exact");
 assert.equal(handoff.resultAdmissionEnvelope.admittedToParentContext, false, "handoff_unknown must not enter parent context");
-assert.equal(handoff.childResultDigest, "", "handoff_unknown must not record a child result payload");
+assert(handoff.childResultDigest, "handoff_unknown should record a status-only child update");
+assert(handoff.eChannelSnapshot.residentSnapshot.rows.some((row) => row.subjectId === "handoff_unknown_child" && row.compactText.includes("handoff_unknown/attention_required")), "handoff_unknown child should be visible in E-channel as status-only handoff");
 assert(!JSON.stringify(handoff).includes("UNIQUE_HANDOFF_RAW_OUTPUT_SHOULD_NOT_APPEAR_55ac"), "handoff_unknown must not expose raw child output");
 assertNoRawPrompt(handoff, "UNIQUE_HANDOFF_CHILD_PROMPT_55ac");
 
-const serialized = JSON.stringify({ descriptor, blocked, liveDescriptor, completed, defaulted, unavailableUsage, duplicate, failed, handoff });
+const serialized = JSON.stringify({ descriptor, blocked, liveDescriptor, completed, defaulted, unavailableUsage, duplicate, failed, timeout, handoff });
 assert(!serialized.includes("UNIQUE_PROVIDER_CHILD_PROMPT_c6b7"), "serialized fixture must not contain successful raw prompt");
 assert(!serialized.includes("UNIQUE_BLOCKED_CHILD_PROMPT_8f5a"), "serialized fixture must not contain blocked raw prompt");
 assert(!serialized.includes("UNIQUE_FAILING_CHILD_PROMPT_ea22"), "serialized fixture must not contain failed raw prompt");
 assert(!serialized.includes("UNIQUE_DEFAULTED_CHILD_PROMPT_916b"), "serialized fixture must not contain defaulted raw prompt");
 assert(!serialized.includes("UNIQUE_USAGE_UNAVAILABLE_CHILD_PROMPT_34ad"), "serialized fixture must not contain usage-unavailable raw prompt");
+assert(!serialized.includes("UNIQUE_TIMEOUT_CHILD_PROMPT_e87d"), "serialized fixture must not contain timeout raw prompt");
 assert(!serialized.includes("UNIQUE_HANDOFF_CHILD_PROMPT_55ac"), "serialized fixture must not contain handoff raw prompt");
 assert(!serialized.includes("\"providerDeclarationAllowed\":true"), "provider declaration must never be enabled");
 assert(!serialized.includes("\"workspaceMutationStarted\":true"), "workspace mutation must never start");

@@ -116,10 +116,8 @@ function normalizeTerminalState(value, ok = true, fallback = "") {
   const normalized = normalizeString(value, "");
   if (TERMINAL_STATES.includes(normalized)) return normalized;
   if (normalized === "canceled") return "cancelled";
-  if (normalized === "cancelled") return "cancelled";
   if (normalized === "timed_out") return "timeout";
-  if (normalized === "timeout") return "timeout";
-  if (normalized === "unknown" || normalized === "handoff_unknown") return "handoff_unknown";
+  if (normalized === "unknown") return "handoff_unknown";
   if (fallback && TERMINAL_STATES.includes(fallback)) return fallback;
   return ok ? "completed" : "failed";
 }
@@ -510,10 +508,11 @@ class DirectProviderBackedSubAgentRoute {
       }));
       const terminalStatus = providerOutcome.terminalState;
       const terminalExact = EXACT_TERMINAL_STATES.includes(terminalStatus);
-      const childResult = terminalStatus === "handoff_unknown" ? null : this.surface.recordChildResult({
+      const childResult = this.surface.recordChildResult({
         targetAgentId: agent.agentThreadId,
-        status: terminalStatus === "completed" ? "completed" : "failed",
-        resultText: providerOutcome.outputText || providerOutcome.errorCode || terminalStatus,
+        status: terminalStatus,
+        statusOnly: terminalStatus === "handoff_unknown",
+        resultText: terminalExact ? providerOutcome.outputText || providerOutcome.errorCode || terminalStatus : terminalStatus,
       });
       const admissionArtifacts = buildResultAdmissionArtifacts(this, {
         callId: normalizeString(input.callId, `call_provider_backed_${agent.agentThreadId}`),
@@ -544,7 +543,7 @@ class DirectProviderBackedSubAgentRoute {
         responseId: providerOutcome.responseId,
         upstreamRequestId: providerOutcome.upstreamRequestId,
         tokenUsage: providerOutcome.tokenUsage,
-        childResultDigest: childResult?.resultDigest || "",
+        childResultDigest: childResult.resultDigest,
         childResultPreview: terminalExact ? admissionArtifacts.reducedSummary.summaryText : "",
         ...admissionArtifacts,
         eChannelSnapshot: this.surface.eChannelSnapshot(),

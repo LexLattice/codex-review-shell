@@ -24,7 +24,7 @@ const AGENT_CLASS_KINDS = new Set([
   "governance_broker",
   "sub_agent_worker",
 ]);
-const AGENT_NODE_STATES = new Set(["planned", "created", "request_started", "running", "waiting", "completed", "failed", "closed", "handoff_unknown", "recovery_required", "unknown"]);
+const AGENT_NODE_STATES = new Set(["planned", "created", "request_started", "running", "waiting", "completed", "failed", "timeout", "cancelled", "closed", "handoff_unknown", "recovery_required", "unknown"]);
 const MAILBOX_MESSAGE_KINDS = new Set(["spawn_intent", "parent_prompt", "child_result", "followup", "wait_request", "interrupt_request", "status_update", "diagnostic"]);
 const MAILBOX_DIRECTIONS = new Set(["parent_to_child", "child_to_parent", "runtime_to_parent", "operator_to_agent", "unknown"]);
 const CONTEXT_PACKET_FAMILIES = new Set(["primary_agent_context", "text_only_child_context", "audit_worker_context", "implementation_worker_context", "diagnostic_only_context"]);
@@ -251,6 +251,7 @@ function buildAgentThreadGraph(input = {}) {
       model: normalizeString(safeNode.model, ""),
       reasoningEffort: normalizeString(safeNode.reasoningEffort, ""),
       nodeState,
+      activityState: normalizeString(safeNode.activityState, ""),
       contextPacketFamilyId: normalizeString(safeNode.contextPacketFamilyId, "text_only_child_context"),
       authorityBoundaryId: normalizeString(safeNode.authorityBoundaryId, ""),
       usageScopeId: normalizeString(safeNode.usageScopeId, `agent_usage_${agentThreadId}`),
@@ -368,7 +369,7 @@ function buildAgentLifecycleRegistry(input = {}) {
       startedAt: normalizeString(safeEntry.startedAt, ""),
       completedAt: normalizeString(safeEntry.completedAt, ""),
       lastEventAt: normalizeString(safeEntry.lastEventAt, ""),
-      terminal: ["completed", "failed", "closed"].includes(state),
+      terminal: ["completed", "failed", "timeout", "cancelled", "closed"].includes(state),
       parentNotified: safeEntry.parentNotified === true,
       resultAccepted: safeEntry.resultAccepted === true,
       evidenceRefs: normalizeEvidenceRefs(safeEntry.evidenceRefs, "agent_lifecycle_entry"),
@@ -397,9 +398,9 @@ function classifyAgentRuntimeRecovery(input = {}) {
   const lifecycleState = normalizeString(input.lifecycleState, "unknown");
   if (lifecycleState === "handoff_unknown") return "handoff_unknown";
   if (lifecycleState === "recovery_required") return "recovery_required";
-  const hasCreateEvidence = input.hasCreateEvidence === true || ["created", "request_started", "running", "waiting", "completed", "failed", "closed"].includes(lifecycleState);
-  const hasRequestStart = input.hasRequestStart === true || ["request_started", "running", "waiting", "completed", "failed", "closed"].includes(lifecycleState);
-  const hasResult = input.hasResult === true || ["completed", "failed", "closed"].includes(lifecycleState);
+  const hasCreateEvidence = input.hasCreateEvidence === true || ["created", "request_started", "running", "waiting", "completed", "failed", "timeout", "cancelled", "closed"].includes(lifecycleState);
+  const hasRequestStart = input.hasRequestStart === true || ["request_started", "running", "waiting", "completed", "failed", "timeout", "cancelled", "closed"].includes(lifecycleState);
+  const hasResult = input.hasResult === true || ["completed", "failed", "timeout", "cancelled", "closed"].includes(lifecycleState);
   if (!hasCreateEvidence) return "not_started";
   if (hasResult) return "terminal_known";
   if (hasRequestStart) return "result_pending";

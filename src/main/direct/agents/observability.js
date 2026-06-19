@@ -38,12 +38,12 @@ const EVIDENCE_REF_KINDS = new Set([
 const SOURCE_CONFIDENCE = new Set(["exact", "accepted", "derived", "diagnostic", "future"]);
 const IDENTITY_SOURCES = new Set(["thread_id", "agent_run_record", "agent_thread_ref", "collab_tool_call", "session_metadata", "fixture"]);
 const IDENTITY_COLLISIONS = new Set(["none", "duplicate_label", "duplicate_thread_ref", "conflicting_sources", "unknown"]);
-const LIFECYCLE_STATES = new Set(["discovered", "starting", "running", "waiting", "completed", "failed", "closed", "stale", "not_found", "unknown"]);
+const LIFECYCLE_STATES = new Set(["discovered", "starting", "running", "waiting", "completed", "failed", "timeout", "cancelled", "closed", "handoff_unknown", "stale", "not_found", "unknown"]);
 const ACTIVITY_STATES = new Set(["idle", "active", "responding", "blocked", "attention_required", "unknown"]);
 const CONTAINMENT_STATES = new Set(["known_contained", "observed_external", "unknown", "violated", "not_applicable"]);
 const EDGE_KINDS = new Set(["spawned_child", "sent_input", "resumed", "waited_on", "closed", "reported_progress", "derived_from_fixture"]);
 const EDGE_STATUS = new Set(["in_progress", "completed", "failed", "unknown"]);
-const PROGRESS_PHASES = new Set(["discovered", "created", "input_sent", "running", "waiting", "completed", "failed", "closed", "stale", "unknown"]);
+const PROGRESS_PHASES = new Set(["discovered", "created", "input_sent", "running", "waiting", "completed", "failed", "timeout", "cancelled", "closed", "handoff_unknown", "stale", "unknown"]);
 const ATTENTION_STATES = new Set(["none", "unread", "active", "blocked", "failed", "stale", "unknown"]);
 const ATTENTION_PROJECTION_STATES = new Set(["none", "unread", "active", "failed", "blocked", "stale"]);
 const MODEL_SAFE_USES = new Set(["future_tool_candidate_only", "diagnostic_only", "blocked"]);
@@ -81,13 +81,13 @@ const PROGRESS_TRANSITIONS = {
   discovered: new Set(["created", "running", "unknown"]),
   created: new Set(["input_sent", "running", "failed", "stale"]),
   input_sent: new Set(["running", "waiting", "failed", "stale"]),
-  running: new Set(["waiting", "completed", "failed", "stale"]),
-  waiting: new Set(["running", "completed", "failed", "stale"]),
+  running: new Set(["waiting", "completed", "failed", "timeout", "cancelled", "handoff_unknown", "stale"]),
+  waiting: new Set(["running", "completed", "failed", "timeout", "cancelled", "handoff_unknown", "stale"]),
   completed: new Set(["closed", "stale"]),
   failed: new Set(["closed", "stale"]),
   closed: new Set(["stale"]),
   stale: new Set(["running", "completed", "failed", "closed", "unknown"]),
-  unknown: new Set(["discovered", "created", "running", "waiting", "completed", "failed", "stale"]),
+  unknown: new Set(["discovered", "created", "running", "waiting", "completed", "failed", "timeout", "cancelled", "handoff_unknown", "stale"]),
 };
 
 function isPlainObject(value) {
@@ -287,7 +287,7 @@ function graphCounts(nodes) {
     if (node.lifecycleState === "running" || node.activityState === "active" || node.activityState === "responding") counts.active += 1;
     else if (node.lifecycleState === "waiting") counts.waiting += 1;
     else if (node.lifecycleState === "completed" || node.lifecycleState === "closed") counts.completed += 1;
-    else if (node.lifecycleState === "failed") counts.failed += 1;
+    else if (["failed", "timeout", "cancelled"].includes(node.lifecycleState)) counts.failed += 1;
     else if (node.lifecycleState === "stale") counts.stale += 1;
     else counts.unknown += 1;
   }
@@ -416,7 +416,8 @@ function progressPhaseFromNode(node = {}) {
   if (node.lifecycleState === "running") return "running";
   if (node.lifecycleState === "waiting") return "waiting";
   if (node.lifecycleState === "completed") return "completed";
-  if (node.lifecycleState === "failed") return "failed";
+  if (["failed", "timeout", "cancelled"].includes(node.lifecycleState)) return node.lifecycleState;
+  if (node.lifecycleState === "handoff_unknown") return "handoff_unknown";
   if (node.lifecycleState === "closed") return "closed";
   if (node.lifecycleState === "stale") return "stale";
   return "discovered";

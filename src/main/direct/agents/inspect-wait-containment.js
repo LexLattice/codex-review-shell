@@ -6,7 +6,7 @@ const DIRECT_SUB_AGENT_INSPECT_PACKET_SCHEMA = "direct_sub_agent_inspect_packet@
 const DIRECT_SUB_AGENT_WAIT_STATUS_PACKET_SCHEMA = "direct_sub_agent_wait_status_packet@1";
 const DIRECT_SUB_AGENT_CONTAINED_TAB_PROJECTION_SCHEMA = "direct_sub_agent_contained_tab_projection@1";
 
-const LIFECYCLE_STATES = new Set(["discovered", "starting", "running", "waiting", "completed", "failed", "closed", "stale", "not_found", "unknown"]);
+const LIFECYCLE_STATES = new Set(["discovered", "starting", "running", "waiting", "completed", "failed", "timeout", "cancelled", "closed", "handoff_unknown", "stale", "not_found", "unknown"]);
 const ACTIVITY_STATES = new Set(["idle", "active", "responding", "blocked", "attention_required", "unknown"]);
 const WAIT_STATES = new Set(["not_waiting", "waiting", "completed", "failed", "stale", "deadlock_risk", "unknown"]);
 const ATTENTION_STATES = new Set(["none", "active", "blocked", "failed", "stale", "unknown"]);
@@ -144,7 +144,8 @@ function witnessFor(agentThreadId, witnesses = []) {
 function attentionStateFor(node = {}, progressEntry = {}, witness = {}) {
   const phase = normalizeString(progressEntry?.phase || witness?.phase || node.lifecycleState, "unknown");
   const blockers = arrayOrEmpty(progressEntry?.blockerCodes);
-  if (phase === "failed" || node.lifecycleState === "failed") return "failed";
+  if (["failed", "timeout", "cancelled"].includes(phase) || ["failed", "timeout", "cancelled"].includes(node.lifecycleState)) return "failed";
+  if (phase === "handoff_unknown" || node.lifecycleState === "handoff_unknown") return "blocked";
   if (phase === "stale" || node.lifecycleState === "stale") return "stale";
   if (blockers.length || node.activityState === "blocked" || node.activityState === "attention_required") return "blocked";
   if (["running", "waiting"].includes(phase) || ["active", "responding"].includes(node.activityState)) return "active";
@@ -155,7 +156,8 @@ function attentionStateFor(node = {}, progressEntry = {}, witness = {}) {
 function waitStateFor(node = {}, progressEntry = {}, options = {}) {
   const phase = normalizeString(progressEntry?.phase || node.lifecycleState, "unknown");
   const blockers = arrayOrEmpty(progressEntry?.blockerCodes);
-  if (phase === "failed" || node.lifecycleState === "failed") return "failed";
+  if (["failed", "timeout", "cancelled"].includes(phase) || ["failed", "timeout", "cancelled"].includes(node.lifecycleState)) return "failed";
+  if (phase === "handoff_unknown" || node.lifecycleState === "handoff_unknown") return "unknown";
   if (phase === "stale" || node.lifecycleState === "stale") return "stale";
   if (phase === "completed" || node.lifecycleState === "completed" || node.lifecycleState === "closed") return "completed";
   if (blockers.includes("wait_deadlock_risk") || blockers.includes("deadlock_risk")) return "deadlock_risk";
