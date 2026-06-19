@@ -1124,6 +1124,24 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     bridgeFit: "Maps spawn/list/inspect/wait and deferred sub-agent controls into shared ODEU lifecycle rows before any provider-backed child execution or resident-callable declaration exists.",
     realignment: "This PR 92 slice is shadow/test only: activation rows remain non-callable, declaration snapshots are resident-visible but not provider-declared, blocked controls cite future wave owners, and regression sentinels prove no executor, provider transport, workspace mutation, or raw child payload exposure occurs.",
   },
+  {
+    id: "ic39.sub-agent-per-call-authority",
+    name: "Wave 15 sub-agent per-call authority and wait policy",
+    role: "authority_gate",
+    implementationState: "implemented",
+    directPathPosture: "keep",
+    sourceFiles: [
+      "src/main/direct/agents/sub-agent-call-authority.js",
+      "scripts/direct-sub-agent-per-call-authority-regression.mjs",
+      "docs/DIRECT_WAVE15_RESIDENT_SUB_AGENT_MVP_SPEC.md",
+    ],
+    ontology: ontologyShape(["sub_agent_per_call_authority_packet", "sub_agent_spawn_plan", "sub_agent_spawn_idempotency_ledger", "sub_agent_wait_plan", "odeu_per_call_authority_decision", "odeu_live_capability_transaction"], "harness", {
+      identityFields: ["packetId", "callId", "spawnPlanId", "waitId", "authorityDecisionId", "transactionId"],
+      schema: "sub_agent_per_call_authority_packet@1",
+    }),
+    bridgeFit: "Wraps spawn/list/inspect/wait requests in shared ODEU authority decisions and transactions, with canonical spawn idempotency, role/model/effort validation, scoped inspect/wait target checks, and bounded wait plans.",
+    realignment: "This PR 93 slice remains pre-execution: accepted calls are shadow/planned, blocked calls are authority-blocked, and regression sentinels prove no provider transport, provider declaration, executor start, child provider run, workspace mutation, or raw child payload exposure occurs.",
+  },
 ]);
 
 function isPlainObject(value) {
