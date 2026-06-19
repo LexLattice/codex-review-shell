@@ -26,12 +26,18 @@ function boundedString(value, maxLength = 420) {
 function stableStringify(value) {
   if (value && typeof value.toJSON === "function") return stableStringify(value.toJSON());
   if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map((entry) => (entry === undefined ? "null" : stableStringify(entry))).join(",")}]`;
-  return `{${Object.keys(value)
-    .filter((key) => value[key] !== undefined && !["routeDigest", "resultDigest"].includes(key))
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
-    .join(",")}}`;
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => {
+      const serialized = stableStringify(entry);
+      return serialized === undefined ? "null" : serialized;
+    }).join(",")}]`;
+  }
+  const parts = [];
+  for (const key of Object.keys(value).filter((entry) => !["routeDigest", "resultDigest"].includes(entry)).sort()) {
+    const serialized = stableStringify(value[key]);
+    if (serialized !== undefined) parts.push(`${JSON.stringify(key)}:${serialized}`);
+  }
+  return `{${parts.join(",")}}`;
 }
 
 function digestFor(domain, value) {
@@ -45,12 +51,20 @@ function nowIso(nowMs) {
 
 function safeTokenUsage(input = {}) {
   const source = isPlainObject(input) ? input : {};
+  const toFiniteNumber = (value) => {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim()) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+    return undefined;
+  };
   const usage = {
-    inputTokens: Number.isFinite(Number(source.inputTokens ?? source.input_tokens)) ? Number(source.inputTokens ?? source.input_tokens) : undefined,
-    cachedInputTokens: Number.isFinite(Number(source.cachedInputTokens ?? source.cached_input_tokens)) ? Number(source.cachedInputTokens ?? source.cached_input_tokens) : undefined,
-    outputTokens: Number.isFinite(Number(source.outputTokens ?? source.output_tokens)) ? Number(source.outputTokens ?? source.output_tokens) : undefined,
-    reasoningOutputTokens: Number.isFinite(Number(source.reasoningOutputTokens ?? source.reasoning_output_tokens)) ? Number(source.reasoningOutputTokens ?? source.reasoning_output_tokens) : undefined,
-    totalTokens: Number.isFinite(Number(source.totalTokens ?? source.total_tokens)) ? Number(source.totalTokens ?? source.total_tokens) : undefined,
+    inputTokens: toFiniteNumber(source.inputTokens ?? source.input_tokens),
+    cachedInputTokens: toFiniteNumber(source.cachedInputTokens ?? source.cached_input_tokens),
+    outputTokens: toFiniteNumber(source.outputTokens ?? source.output_tokens),
+    reasoningOutputTokens: toFiniteNumber(source.reasoningOutputTokens ?? source.reasoning_output_tokens),
+    totalTokens: toFiniteNumber(source.totalTokens ?? source.total_tokens),
   };
   return Object.fromEntries(Object.entries(usage).filter(([, value]) => value !== undefined));
 }
@@ -73,8 +87,11 @@ function requestShapeFor(requestBody = {}) {
 
 function buildProviderBackedSubAgentRequest(input = {}) {
   const prompt = normalizeString(input.prompt || input.text || input.task, "");
-  const model = normalizeString(input.model, "gpt-5.5");
-  const reasoningEffort = normalizeString(input.reasoningEffort || input.reasoning_effort || input.effort, "medium");
+  const model = normalizeString(input.model, normalizeString(input.defaultModel, "gpt-5.5"));
+  const reasoningEffort = normalizeString(
+    input.reasoningEffort || input.reasoning_effort || input.effort,
+    normalizeString(input.defaultReasoningEffort || input.default_reasoning_effort, "medium"),
+  );
   const instructions = normalizeString(input.instructions, [
     "You are a bounded direct child agent.",
     "Answer only the delegated task.",
@@ -158,13 +175,15 @@ class DirectProviderBackedSubAgentRoute {
     this.primaryThreadId = normalizeString(input.primaryThreadId, "primary_provider_backed_sub_agents");
     this.routeId = normalizeString(input.routeId, "direct_provider_backed_sub_agent_route");
     this.nowMs = input.nowMs;
+    this.defaultModel = normalizeString(input.defaultModel || input.model, "gpt-5.5");
+    this.defaultReasoningEffort = normalizeString(input.defaultReasoningEffort || input.reasoningEffort, "medium");
     this.providerTurnRunner = typeof input.providerTurnRunner === "function" ? input.providerTurnRunner : null;
     this.surface = input.surface || createDirectLiveSubAgentToolSurface({
       projectId: this.projectId,
       workThreadId: this.workThreadId,
       primaryThreadId: this.primaryThreadId,
-      defaultModel: input.defaultModel || input.model,
-      defaultReasoningEffort: input.defaultReasoningEffort || input.reasoningEffort,
+      defaultModel: this.defaultModel,
+      defaultReasoningEffort: this.defaultReasoningEffort,
       nowMs: input.nowMs,
     });
     this.providerTransportAllowed = this.providerTurnRunner !== null;
@@ -195,7 +214,11 @@ class DirectProviderBackedSubAgentRoute {
   }
 
   async spawnAndRun(input = {}) {
-    const request = buildProviderBackedSubAgentRequest(input);
+    const request = buildProviderBackedSubAgentRequest({
+      defaultModel: this.defaultModel,
+      defaultReasoningEffort: this.defaultReasoningEffort,
+      ...input,
+    });
     if (!request.promptDigest) {
       return resultFor(this, {
         status: "blocked",

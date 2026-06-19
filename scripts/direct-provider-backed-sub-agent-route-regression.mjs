@@ -119,6 +119,45 @@ assert(!completed.liveToolCatalog.callableToolIds.includes("vanilla.agent.send_m
 assertNoRawPrompt(completed, childPrompt);
 assertDirectProviderBackedSubAgentRouteSafe(liveDescriptor, completed);
 
+const defaultRunnerCalls = [];
+const defaultedRoute = createDirectProviderBackedSubAgentRoute({
+  projectId: "project_provider_child_fixture",
+  workThreadId: "work_thread_provider_child_fixture",
+  primaryThreadId: "primary_provider_child_fixture",
+  defaultModel: "gpt-5.4-mini",
+  defaultReasoningEffort: "xhigh",
+  nowMs: 0,
+  providerTurnRunner: async (request) => {
+    defaultRunnerCalls.push(request);
+    return {
+      ok: true,
+      outputText: "Defaulted child completed.",
+      tokenUsage: {
+        input_tokens: "17",
+        cached_input_tokens: "",
+        output_tokens: null,
+        reasoning_output_tokens: true,
+        total_tokens: "23",
+      },
+    };
+  },
+});
+const defaultPrompt = "UNIQUE_DEFAULTED_CHILD_PROMPT_916b";
+const defaulted = await defaultedRoute.spawnAndRun({
+  childAgentId: "defaulted_child",
+  prompt: defaultPrompt,
+});
+assert.equal(defaulted.status, "completed", "defaulted route should complete");
+assert.equal(defaulted.requestShape.model, "gpt-5.4-mini", "route default model should be used without child override");
+assert.equal(defaulted.requestShape.reasoningEffort, "xhigh", "route default effort should be used without child override");
+assert.equal(defaultRunnerCalls[0].requestBody.model, "gpt-5.4-mini", "runner should receive route default model");
+assert.equal(defaultRunnerCalls[0].requestBody.reasoning.effort, "xhigh", "runner should receive route default effort");
+assert.deepEqual(defaulted.tokenUsage, {
+  inputTokens: 17,
+  totalTokens: 23,
+}, "token usage should accept numbers/numeric strings and reject null/boolean/empty values");
+assertNoRawPrompt(defaulted, defaultPrompt);
+
 const duplicate = await liveRoute.spawnAndRun({
   childAgentId: "provider_child",
   prompt: "UNIQUE_DUPLICATE_PROMPT_ba29",
@@ -154,10 +193,11 @@ assert.equal(failingRunnerCalls, 1, "failing runner should be called once");
 assert(failed.eChannelSnapshot.residentSnapshot.rows.some((row) => row.subjectId === "failing_child" && row.status !== "unknown"), "failed child should remain observable");
 assertNoRawPrompt(failed, failedPrompt);
 
-const serialized = JSON.stringify({ descriptor, blocked, liveDescriptor, completed, duplicate, failed });
+const serialized = JSON.stringify({ descriptor, blocked, liveDescriptor, completed, defaulted, duplicate, failed });
 assert(!serialized.includes("UNIQUE_PROVIDER_CHILD_PROMPT_c6b7"), "serialized fixture must not contain successful raw prompt");
 assert(!serialized.includes("UNIQUE_BLOCKED_CHILD_PROMPT_8f5a"), "serialized fixture must not contain blocked raw prompt");
 assert(!serialized.includes("UNIQUE_FAILING_CHILD_PROMPT_ea22"), "serialized fixture must not contain failed raw prompt");
+assert(!serialized.includes("UNIQUE_DEFAULTED_CHILD_PROMPT_916b"), "serialized fixture must not contain defaulted raw prompt");
 assert(!serialized.includes("\"providerDeclarationAllowed\":true"), "provider declaration must never be enabled");
 assert(!serialized.includes("\"workspaceMutationStarted\":true"), "workspace mutation must never start");
 assert(!serialized.includes("\"childTranscriptPromotionStarted\":true"), "child transcript promotion must never start");
