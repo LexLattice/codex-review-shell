@@ -52,6 +52,13 @@ function boundedString(value, maxLength = 320) {
   return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
 }
 
+function scalarString(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value);
+  return "";
+}
+
 function stableStringify(value) {
   if (value && typeof value.toJSON === "function") return stableStringify(value.toJSON());
   if (value === null) return "null";
@@ -118,9 +125,11 @@ function normalizeChoices(value) {
         return { choiceId: `choice_${index + 1}`, label: boundedString(choice, 120), carriesAuthority: false, authorityScope: "none" };
       }
       if (!isPlainObject(choice)) return null;
+      const choiceId = scalarString(choice.choiceId).trim() || scalarString(choice.id).trim() || `choice_${index + 1}`;
+      const label = scalarString(choice.label).trim() || scalarString(choice.text).trim() || scalarString(choice.value).trim();
       return {
-        choiceId: boundedString(choice.choiceId || choice.id || `choice_${index + 1}`, 80),
-        label: boundedString(choice.label || choice.text || choice.value, 160),
+        choiceId: boundedString(choiceId, 80),
+        label: boundedString(label, 160),
         carriesAuthority: false,
         authorityScope: "none",
       };
@@ -536,6 +545,12 @@ function packetScopeKey(packet = {}, policy = "single_pending_per_turn") {
   return `packet:${packet.decisionPacketId || packet.decisionId}`;
 }
 
+function isHumanDecisionPacketExpired(packet = {}, nowMs) {
+  if (!normalizeString(packet.expiresAt, "")) return false;
+  const expiresAtMs = Date.parse(packet.expiresAt);
+  return Number.isFinite(expiresAtMs) && Number.isFinite(nowMs) && expiresAtMs <= nowMs;
+}
+
 function buildHumanDecisionLedger(input = {}) {
   input = isPlainObject(input) ? input : {};
   const packets = (Array.isArray(input.packets) ? input.packets : [])
@@ -550,6 +565,10 @@ function buildHumanDecisionLedger(input = {}) {
   for (const packet of ledgerPackets) {
     if (resultByPacket.has(packet.decisionPacketId)) {
       packet.status = resultByPacket.get(packet.decisionPacketId).resultState;
+      continue;
+    }
+    if (packet.status === "pending" && isHumanDecisionPacketExpired(packet, input.nowMs)) {
+      packet.status = "expired";
       continue;
     }
     if (packet.status !== "pending") continue;
@@ -574,6 +593,7 @@ function buildHumanDecisionLedger(input = {}) {
     results,
     pendingPacketCount: ledgerPackets.filter((packet) => packet.status === "pending").length,
     answeredPacketCount: ledgerPackets.filter((packet) => packet.status === "answered").length,
+    expiredPacketCount: ledgerPackets.filter((packet) => packet.status === "expired").length,
     supersededPacketCount: ledgerPackets.filter((packet) => packet.status === "superseded").length,
     authorityGranted: false,
     mayStartProviderTurn: false,

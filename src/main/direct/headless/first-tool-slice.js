@@ -41,6 +41,13 @@ function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
+function scalarString(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value);
+  return "";
+}
+
 function normalizeStringList(values, fallback = []) {
   const source = Array.isArray(values) ? values : fallback;
   return [...new Set(source.map((value) => normalizeString(value, "")).filter(Boolean))].sort((a, b) => a.localeCompare(b));
@@ -386,10 +393,12 @@ function normalizeHumanChoice(choice, index = 0) {
     };
   }
   if (!isPlainObject(choice)) return null;
+  const choiceId = scalarString(choice.choiceId).trim() || scalarString(choice.id).trim() || `choice_${index + 1}`;
+  const label = scalarString(choice.label).trim() || scalarString(choice.text).trim() || scalarString(choice.value).trim();
   return {
-    choiceId: normalizeString(choice.choiceId || choice.id, `choice_${index + 1}`).slice(0, 80),
-    label: normalizeString(choice.label || choice.text || choice.value, "").slice(0, 160),
-    description: normalizeString(choice.description, "").slice(0, 240),
+    choiceId: normalizeString(choiceId, `choice_${index + 1}`).slice(0, 80),
+    label: normalizeString(label, "").slice(0, 160),
+    description: normalizeString(scalarString(choice.description), "").slice(0, 240),
   };
 }
 
@@ -659,23 +668,22 @@ function buildRequestUserInputResultEnvelope(options = {}) {
     status: "pending",
     nowMs: options.nowMs,
   });
-  const decisionLedger = buildHumanDecisionLedger({
-    ...(options.humanDecisionLedgerInput || {}),
-    projectId: decisionPacket.projectId,
-    workThreadId: decisionPacket.workThreadId,
-    threadId: decisionPacket.threadId,
-    packets: [
-      ...(Array.isArray(options.humanDecisionLedgerInput?.packets) ? options.humanDecisionLedgerInput.packets : []),
-      decisionPacket,
-    ],
-    results: Array.isArray(options.humanDecisionLedgerInput?.results) ? options.humanDecisionLedgerInput.results : [],
-    nowMs: options.nowMs,
-  });
   const blockerCodes = [];
   if (gate.status !== "accepted") blockerCodes.push("tool_call_gate_not_accepted");
   if (gate.toolName !== "request_user_input") blockerCodes.push("wrong_tool_for_request_user_input_envelope");
   if (!decisionPacket.promptPreview) blockerCodes.push("human_decision_missing_prompt");
   if (decisionPacket.boundedChoiceCount < 1) blockerCodes.push("human_decision_missing_bounded_choices");
+  const existingPackets = Array.isArray(options.humanDecisionLedgerInput?.packets) ? options.humanDecisionLedgerInput.packets : [];
+  const ledgerPackets = blockerCodes.length ? existingPackets : [...existingPackets, decisionPacket];
+  const decisionLedger = buildHumanDecisionLedger({
+    ...(options.humanDecisionLedgerInput || {}),
+    projectId: decisionPacket.projectId,
+    workThreadId: decisionPacket.workThreadId,
+    threadId: decisionPacket.threadId,
+    packets: ledgerPackets,
+    results: Array.isArray(options.humanDecisionLedgerInput?.results) ? options.humanDecisionLedgerInput.results : [],
+    nowMs: options.nowMs,
+  });
   const envelope = {
     schema: DIRECT_FIRST_TOOL_RESULT_ENVELOPE_SCHEMA,
     envelopeId: `first_tool_result_${digestFor("direct-first-tool-human-decision-result-id@1", {
@@ -709,7 +717,7 @@ function buildRequestUserInputResultEnvelope(options = {}) {
     decisionLedger,
     contextAdmission: {
       admittedAs: "operator_decision",
-      admissionState: "pending",
+      admissionState: blockerCodes.length ? "blocked" : "pending",
       rawTextIncluded: false,
       authorityGranted: false,
       mayStartProviderTurn: false,

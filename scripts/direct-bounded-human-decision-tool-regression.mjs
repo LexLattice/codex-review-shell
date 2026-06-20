@@ -75,6 +75,20 @@ assert.equal(packet.boundedChoiceMayCarryAuthority, false, "bounded choices may 
 assert.equal(packet.freeTextCanWidenAuthority, false, "free text must not widen authority");
 assert.equal(packet.mayStartProviderTurn, false, "packet must not start provider turn");
 
+const numericChoicePacket = buildHumanDecisionToolPacket({
+  projectId: "project_human_decision_fixture",
+  workThreadId: "work_thread_human_decision_fixture",
+  threadId: "thread_human_decision_fixture",
+  turnId: "turn_human_decision_fixture",
+  promptPreview: "Numeric choices should normalize.",
+  choices: [
+    { choiceId: 7, label: 42, description: false },
+  ],
+  nowMs: 0,
+});
+assert.equal(numericChoicePacket.choices[0].choiceId, "7", "numeric choice id should normalize to string");
+assert.equal(numericChoicePacket.choices[0].label, "42", "numeric choice label should normalize to string");
+
 const answer = buildHumanDecisionResultEnvelope({
   decisionPacketId: packet.decisionPacketId,
   selectedChoiceIds: ["continue"],
@@ -112,6 +126,27 @@ assert.equal(ledger.packets[0].status, "superseded", "first packet should be sup
 assert.equal(ledger.packets[1].status, "pending", "second packet should remain pending");
 assert.equal(ledger.authorityGranted, false, "ledger must not grant authority");
 
+const expiredPacket = buildHumanDecisionToolPacket({
+  projectId: "project_human_decision_fixture",
+  workThreadId: "work_thread_human_decision_fixture",
+  threadId: "thread_human_decision_fixture",
+  turnId: "turn_human_decision_expired",
+  promptPreview: "Expired question.",
+  choices: ["Expired"],
+  expiresAt: "1970-01-01T00:00:00.001Z",
+  nowMs: 0,
+});
+const expiredLedger = buildHumanDecisionLedger({
+  projectId: "project_human_decision_fixture",
+  workThreadId: "work_thread_human_decision_fixture",
+  threadId: "thread_human_decision_fixture",
+  packets: [expiredPacket],
+  nowMs: 2,
+});
+assert.equal(expiredLedger.pendingPacketCount, 0, "expired packet should not remain pending");
+assert.equal(expiredLedger.expiredPacketCount, 1, "expired packet should be counted as expired");
+assert.equal(expiredLedger.packets[0].status, "expired", "expired packet status should be explicit");
+
 const slice = buildDirectFirstToolSlice({
   activationRegistry: {
     schema: "direct_tool_activation_registry@1",
@@ -138,7 +173,7 @@ const gate = buildDirectFirstToolCallGate({
     arguments: JSON.stringify({
       prompt: "Should I continue?",
       choices: [
-        { choiceId: "yes", label: "Yes" },
+        { choiceId: 1, label: 100 },
         { choiceId: "no", label: "No" },
       ],
       freeTextAllowed: true,
@@ -146,6 +181,8 @@ const gate = buildDirectFirstToolCallGate({
   },
 });
 assert.equal(gate.status, "accepted", "bounded request_user_input call should be accepted");
+assert.equal(gate.parsedArguments.choices[0].choiceId, "1", "numeric provider choice id should normalize to string");
+assert.equal(gate.parsedArguments.choices[0].label, "100", "numeric provider choice label should normalize to string");
 
 const requestEnvelope = buildRequestUserInputResultEnvelope({
   gate,
@@ -187,10 +224,17 @@ const blockedEnvelope = buildRequestUserInputResultEnvelope({
   workThreadId: "work_thread_human_decision_fixture",
   threadId: "thread_human_decision_fixture",
   turnId: "turn_human_decision_fixture",
+  humanDecisionLedgerInput: {
+    packets: [requestEnvelope.decisionPacket],
+  },
   nowMs: 0,
 });
 assert.equal(blockedEnvelope.status, "blocked", "request without bounded choices should be blocked");
 assert(blockedEnvelope.blockerCodes.includes("human_decision_missing_bounded_choices"), "missing choices blocker should be explicit");
+assert.equal(blockedEnvelope.decisionLedger.pendingPacketCount, 1, "blocked request should not add a pending packet");
+assert.equal(blockedEnvelope.decisionLedger.packets.length, 1, "blocked request should not append a ledger packet");
+assert.equal(blockedEnvelope.decisionLedger.packets[0].decisionPacketId, requestEnvelope.decisionPacket.decisionPacketId, "blocked request should preserve existing pending packet");
+assert.equal(blockedEnvelope.contextAdmission.admissionState, "blocked", "blocked request context admission should be blocked");
 
 console.log(JSON.stringify({
   ok: true,
