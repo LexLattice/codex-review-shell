@@ -475,6 +475,57 @@ const unsafeUrlAdmission = buildProviderHostedResultContextAdmission({
 assert(unsafeUrlAdmission.admissionDecision === "block_raw_exposure", "blocked web result should not be admitted");
 assertProviderHostedResultContextAdmissionSafe(unsafeUrlAdmission);
 
+const credentialedQueryUrlWebResult = buildProviderHostedWebSearchResultEnvelope({
+  callEnvelope: webCallEnvelope,
+  providerResultRef: "provider_web_result_secret_query_url_fixture",
+  resultSummary: "Credentialed query URL should not be admitted.",
+  sourceRefs: [{ sourceId: "secret_query", url: "https://example.com/result?api_key=secret123456789", title: "secret query" }],
+  admittedSourceIds: ["secret_query"],
+  nowMs: 0,
+});
+assert(credentialedQueryUrlWebResult.redactionState === "blocked", "credential-bearing query URL should block result envelope");
+assert(credentialedQueryUrlWebResult.sourceRefs.length === 0, "credential-bearing query URL should not become a source ref");
+assertProviderHostedWebSearchResultEnvelopeSafe(credentialedQueryUrlWebResult);
+
+const filteredBeforeLimitWebResult = buildProviderHostedWebSearchResultEnvelope({
+  callEnvelope: webCallEnvelope,
+  providerResultRef: "provider_web_result_filter_before_limit_fixture",
+  resultSummary: "Valid sources after invalid entries should still be retained.",
+  webSearchLimits: { maxSources: 1 },
+  sourceRefs: [
+    { sourceId: "unsafe_first", url: "javascript:alert(1)", title: "unsafe first" },
+    { sourceId: "safe_second", url: "https://example.com/safe", title: "safe second" },
+  ],
+  admittedSourceIds: ["safe_second"],
+  nowMs: 0,
+});
+assert(filteredBeforeLimitWebResult.redactionState === "not_needed", "valid source after invalid entry should be admitted before limit");
+assert(filteredBeforeLimitWebResult.sourceRefs.length === 1, "source limit should apply after filtering invalid sources");
+assert(filteredBeforeLimitWebResult.sourceRefs[0].sourceId === "safe_second", "filtered source should retain the valid source");
+assertProviderHostedWebSearchResultEnvelopeSafe(filteredBeforeLimitWebResult);
+
+const emptyAdmittedSourcesWebResult = buildProviderHostedWebSearchResultEnvelope({
+  callEnvelope: webCallEnvelope,
+  providerResultRef: "provider_web_result_empty_admitted_fixture",
+  resultSummary: "Explicit empty admitted source list should not fall back to all sources.",
+  sourceRefs: [{ sourceId: "source_available", url: "https://example.com/available", title: "available" }],
+  admittedSourceIds: [],
+  nowMs: 0,
+});
+assert(emptyAdmittedSourcesWebResult.redactionState === "blocked", "empty admitted source list should block result envelope");
+assert(emptyAdmittedSourcesWebResult.citationParity.admittedSourceIds.length === 0, "empty admitted source list should stay empty");
+assert(emptyAdmittedSourcesWebResult.blockerCodes.includes("admitted_source_refs_missing"), "empty admitted source list should record blocker");
+assertProviderHostedWebSearchResultEnvelopeSafe(emptyAdmittedSourcesWebResult);
+
+const explicitlyBlockedAdmission = buildProviderHostedResultContextAdmission({
+  resultEnvelope: webSearchResultEnvelope,
+  admissionKind: "blocked",
+  nowMs: 0,
+});
+assert(explicitlyBlockedAdmission.admissionDecision === "block_policy", "explicit blocked admission kind must remain blocked");
+assert(explicitlyBlockedAdmission.visibility.residentContext === "none", "explicit blocked admission must not expose resident context");
+assertProviderHostedResultContextAdmissionSafe(explicitlyBlockedAdmission);
+
 const inventedCitationWebResult = buildProviderHostedWebSearchResultEnvelope({
   callEnvelope: webCallEnvelope,
   providerResultRef: "provider_web_result_invented_citation_fixture",

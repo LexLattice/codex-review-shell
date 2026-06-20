@@ -71,6 +71,7 @@ const SECRET_PATTERN = /\b(?:bearer\s+[a-z0-9._~+/=-]{12,}|sk-[a-z0-9_-]{12,}|ap
 const PRIVATE_PATH_PATTERN = /(?:^|\s)(?:\/home\/[^/\s]+|\/mnt\/[a-z]\/Users\/[^/\s]+|[A-Z]:\\Users\\[^\\\s]+)/i;
 const PROVIDER_PAYLOAD_PATTERN = /(?:\"rawProviderPayload\"|\"messages\"\s*:\s*\[|\"authorization\"\s*:|\"cookie\"\s*:)/i;
 const PERSONAL_DATA_PATTERN = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b|\b(?:\+?\d[\d .()-]{7,}\d)\b/i;
+const URL_QUERY_SECRET_PATTERN = /(?:^|[?&;])(?:token|api[_-]?key|password|secret|signature|sig|access[_-]?token)=/i;
 const UNSAFE_URL_SCHEMES = new Set(["javascript:", "data:", "blob:", "file:"]);
 
 function isPlainObject(value) {
@@ -242,6 +243,7 @@ function safeWebUrlParts(rawUrl) {
     if (!["http:", "https:"].includes(parsed.protocol)) return null;
     if (UNSAFE_URL_SCHEMES.has(parsed.protocol)) return null;
     if (parsed.username || parsed.password) return null;
+    if (URL_QUERY_SECRET_PATTERN.test(parsed.search)) return null;
     return {
       display: boundedString(parsed.toString(), 360),
       evidenceKey: `web_url_${digestFor("provider-hosted-web-url@1", parsed.toString()).slice(0, 32)}`,
@@ -925,17 +927,19 @@ function buildProviderHostedWebSearchResultEnvelope(input = {}) {
   const retrievedAt = normalizeIsoTimestamp(source.retrievedAt, generatedAt);
   const limits = normalizeWebSearchLimits(source.webSearchLimits || source.limits);
   const sourceRefs = arrayOrEmpty(source.sourceRefs || source.sources)
-    .slice(0, limits.maxSources)
     .map((entry, index) => normalizeWebSearchSourceRef(entry, index, retrievedAt))
-    .filter(Boolean);
+    .filter(Boolean)
+    .slice(0, limits.maxSources);
   const droppedSourceCount = Math.max(0, arrayOrEmpty(source.sourceRefs || source.sources).length - sourceRefs.length);
   const callAllowed = callEnvelope.toolKind === "web_search" && callEnvelope.authorityDecision === "allowed";
   const providerResultRef = boundedString(source.providerResultRef || "", 180);
-  const requestedSourceIds = normalizeStringList(source.admittedSourceIds, sourceRefs.map((ref) => ref.sourceId));
+  const requestedSourceIds = Array.isArray(source.admittedSourceIds)
+    ? normalizeStringList(source.admittedSourceIds, [])
+    : sourceRefs.map((ref) => ref.sourceId);
   const sourceIds = new Set(sourceRefs.map((ref) => ref.sourceId));
   const admittedSourceIds = requestedSourceIds.filter((id) => sourceIds.has(id));
   const missingSourceIds = requestedSourceIds.filter((id) => !sourceIds.has(id));
-  const redactionState = callAllowed && sourceRefs.length && providerResultRef && !missingSourceIds.length ? "not_needed" : "blocked";
+  const redactionState = callAllowed && sourceRefs.length && admittedSourceIds.length && providerResultRef && !missingSourceIds.length ? "not_needed" : "blocked";
   const summaryKind = normalizeEnum(
     source.resultSummary || source.summary ? source.summaryKind : "none",
     WEB_SEARCH_SUMMARY_KINDS,
@@ -976,6 +980,7 @@ function buildProviderHostedWebSearchResultEnvelope(input = {}) {
       ...(callAllowed ? [] : ["call_not_allowed"]),
       ...(providerResultRef ? [] : ["provider_result_ref_missing"]),
       ...(sourceRefs.length ? [] : ["source_refs_missing"]),
+      ...(admittedSourceIds.length ? [] : ["admitted_source_refs_missing"]),
       ...(missingSourceIds.length ? ["citation_parity_missing_source"] : []),
     ],
     redactionState,
@@ -1015,6 +1020,8 @@ function buildProviderHostedResultContextAdmission(input = {}) {
     admissionDecision = "block_policy";
   } else if (requestedKind === "artifact_ref") {
     admissionKind = "blocked";
+    admissionDecision = "block_policy";
+  } else if (requestedKind === "blocked") {
     admissionDecision = "block_policy";
   } else if (resultBlocked) {
     admissionKind = "blocked";
