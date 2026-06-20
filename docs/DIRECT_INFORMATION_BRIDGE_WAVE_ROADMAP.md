@@ -4516,7 +4516,7 @@ no raw external URI/payload/secret exposure
 | `#110` | merged | `codex/direct-external-discovery-tools` | Resident external discovery tools | Resident-callable discovery declarations for `tool_search`, `list_mcp_resources`, `list_mcp_resource_templates`, ExternalToolSearchInput, plugin candidate discovery-only descriptors, schema/source digests, unavailable/degraded evidence | No `read_mcp_resource`, dynamic MCP calls, plugin install, or discovered-tool auto-promotion |
 | `#111` | merged | `codex/direct-mcp-resource-read-envelope` | MCP resource read envelope | McpServerIdentityWitness, McpResourceIdentity, guarded McpResourceReadEnvelope, URI digest/display policy, MIME/size caps, status/redaction/truncation separation, readReplayPolicy, payloadRetention, blocked binary/oversize/unknown-source rows | No dynamic MCP action calls, workspace staging, raw full payload admission, automatic replay after ambiguity, or project-truth mutation |
 | `#112` | merged | `codex/direct-external-result-context-admission` | External result context admission | ExternalResultContextAdmissionPolicy, resident/operator/provider visibility channels, summary/ref/excerpt/blocked rows, trust/freshness projection, trust warning, no-memory-admission law, raw-leak negative tests | No MCP resource browser UI, persistent artifact import/staging, durable memory admission, or external action approval |
-| `#113` | in review | `codex/direct-external-wave18-usability-gate` | Wave 18 usability proof gate | ExternalToolUsabilityProof, resident/operator witness rows, manual gate, headless scenarios, negative matrix for server ambiguity, raw leaks, replay, memory smuggling, dynamic actions, plugin install, registry/roadmap update | No Wave 19 provider-hosted tools, Wave 20 new_context/compaction, or Wave 21 code-mode execution |
+| `#113` | merged | `codex/direct-external-wave18-usability-gate` | Wave 18 usability proof gate | ExternalToolUsabilityProof, resident/operator witness rows, manual gate, headless scenarios, negative matrix for server ambiguity, raw leaks, replay, memory smuggling, dynamic actions, plugin install, registry/roadmap update | No Wave 19 provider-hosted tools, Wave 20 new_context/compaction, or Wave 21 code-mode execution |
 
 Wave 18 completion gate:
 
@@ -4526,6 +4526,72 @@ read-only MCP resource perception with source identity, caps, redaction,
 provenance, and context-admission witnesses, while dynamic external actions,
 plugin installation, provider-hosted tools, and context-world transitions stay
 blocked until later waves.
+```
+
+
+## Wave 19: Provider-Hosted Tools
+
+Detailed spec:
+
+```text
+docs/DIRECT_WAVE19_PROVIDER_HOSTED_TOOLS_SPEC.md
+```
+
+Purpose:
+
+```text
+Promote provider-hosted tools from diagnostic posture into lawful direct-path
+capability only when exact upstream account/model/runtime evidence supports the
+tool declaration and result-admission path.
+```
+
+First usable slice:
+
+```text
+provider-hosted activation snapshot, invocation mode, request-shape proof, and
+declaration gate
+per-call hosted tool envelope, outbound input policy, and raw-exposure scanner
+resident-callable web_search where provider evidence supports it
+web-search query governance and result envelope with citations,
+retrieval/freshness posture, citation parity, and context-admission law
+image_generation artifact governance with operator-gated default, artifact
+refs, generation limits, staging manifest, storage/retention law, and
+blocked/deferred posture when provider support is absent
+hosted usage attribution distinct from model inference, local tools, MCP reads,
+and workspace actions
+```
+
+Standing non-goals:
+
+```text
+no hosted tool declaration from static labels or model name alone
+no browser navigation or browser-session authority
+no raw provider payload, raw page HTML, raw image bytes, or secrets in
+resident/renderer state
+no generated artifact as automatic workspace/source mutation
+no durable memory admission from hosted results
+no automatic replay after unknown/restart/handoff
+```
+
+| PR | Status | Branch | Purpose | Planned deliverable | Explicit non-goals |
+| --- | --- | --- | --- | --- | --- |
+| `#114` | planned | `codex/direct-provider-hosted-activation` | Provider-hosted activation snapshot | ProviderHostedToolCapabilityProbe, ProviderHostedRequestShapeProof, ProviderHostedToolActivationSnapshot, invocationMode, ProviderHostedToolDeclarationPolicy, profile/runtime evidence normalization, profile_declared not callable, staleness/blockers, resident/operator status projection, registry posture from diagnostic_only to activation_gated | No provider-hosted tool execution, web result admission, image artifact staging, or static-label request-shape mutation |
+| `#115` | planned | `codex/direct-provider-hosted-call-envelope` | Hosted call envelope and raw scanner | ProviderHostedToolCallEnvelope, per-call authority gate, declaration digest matching, web/image side-effect split, query/prompt policies and envelopes, outbound disclosure scan, replay/idempotency law, blocked-call rows for unknown/stale/missing declaration/operator gate/raw risk | No real web_search execution, real image_generation execution, generated artifact storage, or durable memory admission |
+| `#116` | planned | `codex/direct-provider-hosted-web-search` | Hosted web search result/context admission | ProviderHostedWebSearchResultEnvelope, source URL display/evidence-key policy, sourceType/retrievalConfidence/contentAccess, retrieved-at/freshness/citation posture, summary authority, limits, citation parity, quote/raw-page policy, ProviderHostedResultContextAdmission, resident-callable web_search only when activation says callable | No browser navigation, local web cache ingestion, raw page HTML admission, durable memory, or project-truth mutation |
+| `#117` | planned | `codex/direct-provider-hosted-image-artifacts` | Hosted image artifact governance | ProviderHostedImageGenerationArtifactEnvelope, operator-gated default, resident-callable disabled unless explicitly activated later, artifact refs/projection policy, generation limits/provenance/state/safety posture, storage/retention/staging manifest contract, prompt evidence policy, unsupported/operator-gated scenarios | No automatic workspace insertion, raw image bytes in renderer state, image editor workflow, durable memory admission, or provider safety bypass |
+| `#118` | planned | `codex/direct-provider-hosted-usage-attribution` | Hosted usage attribution and analytics | ProviderHostedUsageAttribution, per-call analytics rows, usageKind/usageState/unavailableReason, thread/turn/agent attribution, unknown/unavailable evidence rows, analytics/runtime witness integration, parent-turn breakdown, fixtures proving hosted usage is distinct from inference/local tools/MCP | No billing-grade cost unless provider reports it, no missing usage as zero, no retroactive exact usage for old transcripts |
+| `#119` | planned | `codex/direct-provider-hosted-wave19-usability-gate` | Wave 19 usability proof gate | ProviderHostedUsabilityProof, resident/operator/headless scenarios, web_search available/blocked and image_generation available/operator-gated/blocked proofs, negative matrix for profile-declared-but-unprobed calls, static labels, outbound query leaks, invented citations, raw prompt retention, missing staging manifests, provider-blocked generations, image bytes, workspace insertion, durable memory, replay, stale activation, undeclared calls, registry/roadmap/audit update | No Wave 20 new_context/compaction, Wave 21 code-mode execution, Wave 22 batch orchestration, plugin install, or dynamic MCP action execution |
+
+Wave 19 completion gate:
+
+```text
+The resident can accurately know provider-hosted web-search and
+image-generation posture, use provider-hosted web_search where exact activation
+evidence supports it, and route image_generation through operator-gated artifact
+governance by default, with per-call authority envelopes, sanitized
+result/artifact envelopes, explicit context admission, and usage attribution.
+Unsupported or unsafe hosted paths remain visible as blocked/deferred with
+reasons.
 ```
 
 
