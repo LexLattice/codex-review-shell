@@ -143,7 +143,7 @@ const resourceResult = buildExternalDiscoveryResultEnvelope({
   declaration,
   gate: cappedGate,
   resourceDescriptors: [
-    { name: "alpha", uri: "mcp://fixture/resource/alpha?token=secret" },
+    { uri: "mcp://user:secret@fixture/resource/alpha?token=secret" },
     { name: "beta", uri: "mcp://fixture/resource/beta" },
     { name: "gamma", uri: "mcp://fixture/resource/gamma" },
   ],
@@ -155,6 +155,8 @@ assert.equal(resourceResult.truncated, true, "resource list should mark truncati
 assert.equal(resourceResult.serverSelector.serverIdentityId, "mcp_server_project_fixture", "resource list should cite exact server");
 assert.equal(resourceResult.rawResourceUriIncluded, false, "resource result must not include raw URI");
 assert(resourceResult.descriptors.every((row) => row.resourceReadAllowed === false), "resource descriptors must not imply read authority");
+assert(!JSON.stringify(resourceResult.descriptors).includes("secret"), "resource descriptors must not expose URI credentials");
+assert(!JSON.stringify(resourceResult.descriptors).includes("token=secret"), "resource descriptors must not expose raw URI query tokens");
 validateExternalDiscoveryResultEnvelope(resourceResult);
 
 const templateGate = buildExternalDiscoveryToolCallGate({
@@ -212,6 +214,24 @@ assert.equal(unavailableResult.descriptorCount, 0, "unavailable should not masqu
 assert(unavailableResult.unavailableReason, "unavailable result should cite reason");
 validateExternalDiscoveryResultEnvelope(unavailableResult);
 
+const invalidArgumentsGate = buildExternalDiscoveryToolCallGate({
+  declaration,
+  toolCall: {
+    name: "tool_search",
+    callId: "call_tool_search_bad_arguments_fixture",
+    arguments: "{not-json",
+  },
+});
+assert.equal(invalidArgumentsGate.status, "blocked", "invalid JSON arguments should block gate");
+const invalidArgumentsResult = buildExternalDiscoveryResultEnvelope({
+  profile,
+  declaration,
+  gate: invalidArgumentsGate,
+});
+assert.equal(invalidArgumentsResult.status, "blocked", "blocked gate should produce blocked envelope");
+assert.equal(invalidArgumentsResult.descriptorCount, 0, "blocked gate must not return discovery descriptors");
+validateExternalDiscoveryResultEnvelope(invalidArgumentsResult);
+
 const blockedReadGate = buildExternalDiscoveryToolCallGate({
   declaration,
   toolCall: {
@@ -237,6 +257,10 @@ expectThrows(() => validateExternalDiscoveryToolCallGate(malformedGate), "extern
 const malformedEnvelope = clone(searchResult);
 malformedEnvelope.providerDeclarationGranted = true;
 expectThrows(() => validateExternalDiscoveryResultEnvelope(malformedEnvelope), "external_discovery_result_authority_leak:providerDeclarationGranted");
+
+const malformedMissingSelector = clone(resourceResult);
+malformedMissingSelector.serverSelector = null;
+expectThrows(() => validateExternalDiscoveryResultEnvelope(malformedMissingSelector), "external_discovery_mcp_result_missing_server_selector");
 
 const rawDescriptorEnvelope = clone(searchResult);
 rawDescriptorEnvelope.descriptors[0].rawPayloadIncluded = true;

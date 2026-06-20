@@ -468,7 +468,9 @@ function sanitizeDisplayUri(value = "") {
 function descriptorFromMcpListEntry(entry = {}, serverIdentityId = "", sourceKind = "mcp_resource") {
   const source = isPlainObject(entry) ? entry : {};
   const uri = normalizeString(source.uri || source.resourceUri || source.templateUri || source.uriTemplate, "");
-  const name = boundedString(source.name || source.displayName || source.title || uri || sourceKind, 180);
+  const explicitLabel = normalizeString(source.name || source.displayName || source.title, "");
+  const fallbackLabel = `${sourceKind} ${digestFor("mcp-list-entry-label@1", { serverIdentityId, sourceKind, uri }).slice(0, 12)}`;
+  const name = boundedString(explicitLabel || fallbackLabel, 180);
   return buildExternalCapabilityDescriptor({
     descriptorId: boundedString(source.descriptorId || `${serverIdentityId}.${sourceKind}.${digestFor("mcp-list-entry@1", { uri, name }).slice(0, 16)}`, 180),
     sourceKind,
@@ -542,7 +544,7 @@ function buildExternalDiscoveryResultEnvelope(input = {}) {
   let unavailable = source.discoveryBackendAvailable === false;
   let degraded = false;
   let serverSelector = null;
-  if (toolName === "tool_search") {
+  if (toolName === "tool_search" && !blockerCodes.length) {
     descriptors = unavailable ? [] : profileDescriptorsForSearch(profile, searchInput);
   } else if (toolName === "list_mcp_resources" || toolName === "list_mcp_resource_templates") {
     const serverIdentityId = normalizeString(parsed.serverIdentityId || source.serverIdentityId, "");
@@ -635,8 +637,11 @@ function validateExternalDiscoveryResultEnvelope(envelope = {}) {
   if (envelope.status === "unavailable" && !envelope.unavailableReason) errors.push("external_discovery_unavailable_missing_reason");
   if (envelope.status === "blocked" && !arrayOrEmpty(envelope.blockerCodes).length) errors.push("external_discovery_blocked_missing_blocker");
   if (envelope.toolName !== "tool_search") {
-    if (!isPlainObject(envelope.serverSelector)) errors.push("external_discovery_mcp_result_missing_server_selector");
-    if (envelope.serverSelector?.rawEndpointIncluded !== false || envelope.serverSelector?.rawCredentialIncluded !== false) errors.push("external_discovery_server_selector_raw_leak");
+    if (!isPlainObject(envelope.serverSelector)) {
+      errors.push("external_discovery_mcp_result_missing_server_selector");
+    } else if (envelope.serverSelector.rawEndpointIncluded !== false || envelope.serverSelector.rawCredentialIncluded !== false) {
+      errors.push("external_discovery_server_selector_raw_leak");
+    }
   }
   if (Number(envelope.descriptorCount) !== arrayOrEmpty(envelope.descriptors).length) errors.push("external_discovery_descriptor_count_mismatch");
   for (const descriptor of arrayOrEmpty(envelope.descriptors)) {
