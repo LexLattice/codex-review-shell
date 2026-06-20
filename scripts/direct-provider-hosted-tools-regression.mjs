@@ -10,12 +10,14 @@ const {
   PROVIDER_HOSTED_IMAGE_PROMPT_ENVELOPE_SCHEMA,
   PROVIDER_HOSTED_IMAGE_PROMPT_POLICY_SCHEMA,
   PROVIDER_HOSTED_RAW_EXPOSURE_SCAN_SCHEMA,
+  PROVIDER_HOSTED_RESULT_CONTEXT_ADMISSION_SCHEMA,
   PROVIDER_HOSTED_REQUEST_SHAPE_PROOF_SCHEMA,
   PROVIDER_HOSTED_TOOL_CALL_ENVELOPE_SCHEMA,
   PROVIDER_HOSTED_TOOL_CAPABILITY_SCHEMA,
   PROVIDER_HOSTED_TOOLS_STATUS_SCHEMA,
   PROVIDER_HOSTED_WEB_SEARCH_QUERY_ENVELOPE_SCHEMA,
   PROVIDER_HOSTED_WEB_SEARCH_QUERY_POLICY_SCHEMA,
+  PROVIDER_HOSTED_WEB_SEARCH_RESULT_ENVELOPE_SCHEMA,
   PROVIDER_IMAGE_GENERATION_ARTIFACT_CONTRACT_SCHEMA,
   PROVIDER_WEB_SEARCH_EVIDENCE_CONTRACT_SCHEMA,
   buildProviderHostedActivationSnapshot,
@@ -23,6 +25,7 @@ const {
   buildProviderHostedImagePromptEnvelope,
   buildProviderHostedImagePromptPolicy,
   buildProviderHostedRawExposureScan,
+  buildProviderHostedResultContextAdmission,
   buildProviderHostedRequestShapeProof,
   buildProviderHostedToolCallEnvelope,
   buildImageGenerationArtifactContract,
@@ -30,8 +33,11 @@ const {
   buildProviderHostedToolsStatus,
   buildProviderHostedWebSearchQueryEnvelope,
   buildProviderHostedWebSearchQueryPolicy,
+  buildProviderHostedWebSearchResultEnvelope,
   buildWebSearchEvidenceContract,
+  assertProviderHostedResultContextAdmissionSafe,
   assertProviderHostedToolCallEnvelopeSafe,
+  assertProviderHostedWebSearchResultEnvelopeSafe,
   assertProviderHostedToolsStatusSafe,
 } = require("../src/main/direct/provider/hosted-tools");
 const {
@@ -392,6 +398,145 @@ assert(webCallEnvelope.providerTransportAllowed === false, "PR115 must not enabl
 assert(webCallEnvelope.providerHostedToolCallAllowed === false, "PR115 must not execute hosted call");
 assert(webCallEnvelope.replayPolicy.mayAutoRetry === false, "web call must not auto-retry");
 assertProviderHostedToolCallEnvelopeSafe(webCallEnvelope);
+
+const webSearchResultEnvelope = buildProviderHostedWebSearchResultEnvelope({
+  callEnvelope: webCallEnvelope,
+  providerResultRef: "provider_web_result_ref_fixture",
+  resultSummary: "OpenAI Codex app-server documentation describes thread and turn event surfaces.",
+  summaryKind: "provider_reported_summary",
+  sourceRefs: [
+    {
+      sourceId: "source_docs",
+      url: "https://developers.openai.com/codex/app-server",
+      title: "Codex app-server docs",
+      sourceType: "documentation",
+      retrievalConfidence: "provider_cited",
+      contentAccess: "provider_citation_only",
+      trustPosture: "provider_reported",
+    },
+  ],
+  admittedSourceIds: ["source_docs"],
+  nowMs: 0,
+});
+assert(webSearchResultEnvelope.schema === PROVIDER_HOSTED_WEB_SEARCH_RESULT_ENVELOPE_SCHEMA, "web search result envelope schema mismatch");
+assert(webSearchResultEnvelope.redactionState === "not_needed", "safe web result should be admissible");
+assert(webSearchResultEnvelope.sourceRefs.length === 1, "safe web result should retain one source ref");
+assert(webSearchResultEnvelope.sourceRefs[0].urlEvidenceKey.startsWith("web_url_"), "source URL should be evidence-keyed");
+assert(webSearchResultEnvelope.rawPageContentIncluded === false, "web result must not include raw page content");
+assert(webSearchResultEnvelope.rawProviderPayloadIncluded === false, "web result must not include raw provider payload");
+assertProviderHostedWebSearchResultEnvelopeSafe(webSearchResultEnvelope);
+
+const webSearchAdmission = buildProviderHostedResultContextAdmission({
+  resultEnvelope: webSearchResultEnvelope,
+  admissionKind: "summary",
+  nowMs: 0,
+});
+assert(webSearchAdmission.schema === PROVIDER_HOSTED_RESULT_CONTEXT_ADMISSION_SCHEMA, "web search admission schema mismatch");
+assert(webSearchAdmission.admissionDecision === "admit", "safe web result summary should be admitted");
+assert(webSearchAdmission.visibility.residentContext === "summary", "summary admission should expose resident summary");
+assert(webSearchAdmission.durableMemoryAdmission === false, "web result admission must not start durable memory");
+assert(webSearchAdmission.projectTruthGranted === false, "web result admission must not grant project truth");
+assertProviderHostedResultContextAdmissionSafe(webSearchAdmission);
+
+const webSearchSourceRefAdmission = buildProviderHostedResultContextAdmission({
+  resultEnvelope: webSearchResultEnvelope,
+  admissionKind: "source_refs",
+  nowMs: 0,
+});
+assert(webSearchSourceRefAdmission.admissionDecision === "admit", "source refs should be admissible when citations exist");
+assert(webSearchSourceRefAdmission.visibility.residentContext === "source_refs", "source refs admission should expose resident source refs");
+assertProviderHostedResultContextAdmissionSafe(webSearchSourceRefAdmission);
+
+const boundedExcerptAdmission = buildProviderHostedResultContextAdmission({
+  resultEnvelope: webSearchResultEnvelope,
+  admissionKind: "bounded_excerpt",
+  nowMs: 0,
+});
+assert(boundedExcerptAdmission.admissionDecision === "admit_degraded", "bounded excerpt should degrade without raw page content");
+assert(boundedExcerptAdmission.visibility.residentContext === "bounded_excerpt", "bounded excerpt admission should be explicit");
+assertProviderHostedResultContextAdmissionSafe(boundedExcerptAdmission);
+
+const unsafeUrlWebResult = buildProviderHostedWebSearchResultEnvelope({
+  callEnvelope: webCallEnvelope,
+  providerResultRef: "provider_web_result_unsafe_url_fixture",
+  resultSummary: "Unsafe source URL should not be admitted.",
+  sourceRefs: [{ sourceId: "unsafe", url: "javascript:alert(1)", title: "unsafe" }],
+  admittedSourceIds: ["unsafe"],
+  nowMs: 0,
+});
+assert(unsafeUrlWebResult.redactionState === "blocked", "unsafe source URL should block result envelope");
+assert(unsafeUrlWebResult.sourceRefs.length === 0, "unsafe source URL should not become a source ref");
+assertProviderHostedWebSearchResultEnvelopeSafe(unsafeUrlWebResult);
+const unsafeUrlAdmission = buildProviderHostedResultContextAdmission({
+  resultEnvelope: unsafeUrlWebResult,
+  admissionKind: "summary",
+  nowMs: 0,
+});
+assert(unsafeUrlAdmission.admissionDecision === "block_raw_exposure", "blocked web result should not be admitted");
+assertProviderHostedResultContextAdmissionSafe(unsafeUrlAdmission);
+
+const credentialedQueryUrlWebResult = buildProviderHostedWebSearchResultEnvelope({
+  callEnvelope: webCallEnvelope,
+  providerResultRef: "provider_web_result_secret_query_url_fixture",
+  resultSummary: "Credentialed query URL should not be admitted.",
+  sourceRefs: [{ sourceId: "secret_query", url: "https://example.com/result?api_key=secret123456789", title: "secret query" }],
+  admittedSourceIds: ["secret_query"],
+  nowMs: 0,
+});
+assert(credentialedQueryUrlWebResult.redactionState === "blocked", "credential-bearing query URL should block result envelope");
+assert(credentialedQueryUrlWebResult.sourceRefs.length === 0, "credential-bearing query URL should not become a source ref");
+assertProviderHostedWebSearchResultEnvelopeSafe(credentialedQueryUrlWebResult);
+
+const filteredBeforeLimitWebResult = buildProviderHostedWebSearchResultEnvelope({
+  callEnvelope: webCallEnvelope,
+  providerResultRef: "provider_web_result_filter_before_limit_fixture",
+  resultSummary: "Valid sources after invalid entries should still be retained.",
+  webSearchLimits: { maxSources: 1 },
+  sourceRefs: [
+    { sourceId: "unsafe_first", url: "javascript:alert(1)", title: "unsafe first" },
+    { sourceId: "safe_second", url: "https://example.com/safe", title: "safe second" },
+  ],
+  admittedSourceIds: ["safe_second"],
+  nowMs: 0,
+});
+assert(filteredBeforeLimitWebResult.redactionState === "not_needed", "valid source after invalid entry should be admitted before limit");
+assert(filteredBeforeLimitWebResult.sourceRefs.length === 1, "source limit should apply after filtering invalid sources");
+assert(filteredBeforeLimitWebResult.sourceRefs[0].sourceId === "safe_second", "filtered source should retain the valid source");
+assertProviderHostedWebSearchResultEnvelopeSafe(filteredBeforeLimitWebResult);
+
+const emptyAdmittedSourcesWebResult = buildProviderHostedWebSearchResultEnvelope({
+  callEnvelope: webCallEnvelope,
+  providerResultRef: "provider_web_result_empty_admitted_fixture",
+  resultSummary: "Explicit empty admitted source list should not fall back to all sources.",
+  sourceRefs: [{ sourceId: "source_available", url: "https://example.com/available", title: "available" }],
+  admittedSourceIds: [],
+  nowMs: 0,
+});
+assert(emptyAdmittedSourcesWebResult.redactionState === "blocked", "empty admitted source list should block result envelope");
+assert(emptyAdmittedSourcesWebResult.citationParity.admittedSourceIds.length === 0, "empty admitted source list should stay empty");
+assert(emptyAdmittedSourcesWebResult.blockerCodes.includes("admitted_source_refs_missing"), "empty admitted source list should record blocker");
+assertProviderHostedWebSearchResultEnvelopeSafe(emptyAdmittedSourcesWebResult);
+
+const explicitlyBlockedAdmission = buildProviderHostedResultContextAdmission({
+  resultEnvelope: webSearchResultEnvelope,
+  admissionKind: "blocked",
+  nowMs: 0,
+});
+assert(explicitlyBlockedAdmission.admissionDecision === "block_policy", "explicit blocked admission kind must remain blocked");
+assert(explicitlyBlockedAdmission.visibility.residentContext === "none", "explicit blocked admission must not expose resident context");
+assertProviderHostedResultContextAdmissionSafe(explicitlyBlockedAdmission);
+
+const inventedCitationWebResult = buildProviderHostedWebSearchResultEnvelope({
+  callEnvelope: webCallEnvelope,
+  providerResultRef: "provider_web_result_invented_citation_fixture",
+  resultSummary: "Invented citation should be blocked.",
+  sourceRefs: [{ sourceId: "source_real", url: "https://example.com/real", title: "real" }],
+  admittedSourceIds: ["source_real", "source_missing"],
+  nowMs: 0,
+});
+assert(inventedCitationWebResult.redactionState === "blocked", "invented citation parity should block result envelope");
+assert(inventedCitationWebResult.citationParity.inventedCitationDetected === true, "invented citation should be detected");
+assertProviderHostedWebSearchResultEnvelopeSafe(inventedCitationWebResult);
 
 const blockedSecretWebCall = buildProviderHostedToolCallEnvelope({
   toolKind: "web_search",
