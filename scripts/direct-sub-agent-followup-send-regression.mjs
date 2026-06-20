@@ -143,6 +143,18 @@ assert.equal(duplicate.authorityDecision.duplicateSuppressed, true);
 assert.equal(duplicate.mailboxLedgerRow.status, "duplicate_suppressed");
 assert.equal(duplicate.resultEnvelope.providerTransportStarted, false);
 
+const secondDistinct = buildSubAgentControlledContinuation({
+  ...commonInput,
+  writeKind: "send_message",
+  text: "Distinct follow-up after the first accepted message.",
+  idempotencyKey: "idem_send_carver_2",
+  otherwiseAuthorizedActions: ["list_agents", "inspect_agent", "status_agent", "wait_agent", "send_message"],
+  existingLedgerRows: [send.mailboxLedgerRow],
+}, { nowMs });
+
+assert.equal(secondDistinct.mailboxLedgerRow.status, "accepted");
+assert.equal(secondDistinct.mailboxLedgerRow.sequence, send.mailboxLedgerRow.sequence + 1, "accepted ledger rows should advance sequence from prior accepted rows");
+
 const conflict = buildSubAgentControlledContinuation({
   ...commonInput,
   writeKind: "send_message",
@@ -156,6 +168,26 @@ assert.equal(conflict.authorityDecision.finalDecision, "block");
 assert(conflict.authorityDecision.blockerCodes.includes("idempotency_conflict"));
 assert.equal(conflict.mailboxLedgerRow.status, "blocked");
 assert.equal(conflict.resultEnvelope.providerTransportStarted, false);
+
+const sharedPrefix = `${"x".repeat(300)} tail `;
+const longFirst = buildSubAgentControlledContinuation({
+  ...commonInput,
+  writeKind: "send_message",
+  text: `${sharedPrefix}one`,
+  idempotencyKey: "idem_long_payload",
+  otherwiseAuthorizedActions: ["list_agents", "inspect_agent", "status_agent", "wait_agent", "send_message"],
+}, { nowMs });
+const longConflict = buildSubAgentControlledContinuation({
+  ...commonInput,
+  writeKind: "send_message",
+  text: `${sharedPrefix}two`,
+  idempotencyKey: "idem_long_payload",
+  otherwiseAuthorizedActions: ["list_agents", "inspect_agent", "status_agent", "wait_agent", "send_message"],
+  existingLedgerRows: [longFirst.mailboxLedgerRow],
+}, { nowMs });
+
+assert.equal(longConflict.authorityDecision.finalDecision, "block");
+assert(longConflict.authorityDecision.blockerCodes.includes("idempotency_conflict"), "full payload digest should distinguish long same-prefix messages");
 
 const policyBlockedEnvelope = buildSubAgentInteractionPolicyEnvelope({
   actorKind: "resident_model",
@@ -177,6 +209,20 @@ assert.equal(policyBlocked.authorityDecision.finalDecision, "block");
 assert(policyBlocked.authorityDecision.blockerCodes.includes("policy_blocks_followup_action"));
 assert.equal(policyBlocked.resultEnvelope.providerTransportStarted, false);
 
+const invalidPolicyEnvelope = clone(policyBlockedEnvelope);
+invalidPolicyEnvelope.schema = "bad_policy_envelope@1";
+const invalidPolicy = buildSubAgentControlledContinuation({
+  ...commonInput,
+  writeKind: "send_message",
+  text: "Invalid policy envelope should become a blocker, not a crash.",
+  idempotencyKey: "idem_invalid_policy",
+  policyEnvelope: invalidPolicyEnvelope,
+}, { nowMs });
+
+assert.equal(invalidPolicy.authorityDecision.finalDecision, "block");
+assert(invalidPolicy.authorityDecision.blockerCodes.includes("policy_envelope_invalid"));
+assert.equal(invalidPolicy.resultEnvelope.providerTransportStarted, false);
+
 const unsupportedDelivery = buildSubAgentControlledContinuation({
   ...commonInput,
   writeKind: "send_message",
@@ -193,6 +239,35 @@ assert.equal(unsupportedDelivery.authorityDecision.finalDecision, "block");
 assert(unsupportedDelivery.authorityDecision.blockerCodes.includes("delivery_not_supported"));
 assert.equal(unsupportedDelivery.deliverySupportWitness.fallbackSpawnAllowed, false);
 assert.equal(unsupportedDelivery.resultEnvelope.fallbackSpawnStarted, false);
+
+const invalidAction = buildSubAgentControlledContinuation({
+  ...commonInput,
+  writeKind: "close_agent",
+  text: "This must not be coerced into send_message.",
+  idempotencyKey: "idem_invalid_action",
+  otherwiseAuthorizedActions: ["list_agents", "inspect_agent", "status_agent", "wait_agent", "send_message"],
+}, { nowMs });
+
+assert.equal(invalidAction.writeKind, "close_agent");
+assert.equal(invalidAction.authorityDecision.finalDecision, "block");
+assert(invalidAction.authorityDecision.blockerCodes.includes("invalid_followup_write_kind"));
+assert.equal(invalidAction.resultEnvelope.providerTransportStarted, false);
+
+const failedDelivery = buildSubAgentControlledContinuation({
+  ...commonInput,
+  writeKind: "send_message",
+  text: "Adapter will fail this delivery.",
+  idempotencyKey: "idem_failed_delivery",
+  otherwiseAuthorizedActions: ["list_agents", "inspect_agent", "status_agent", "wait_agent", "send_message"],
+  providerDeliveryResult: {
+    status: "failed",
+    deliveryReceiptId: "receipt_failed_delivery",
+  },
+}, { nowMs });
+
+assert.equal(failedDelivery.authorityDecision.finalDecision, "allow");
+assert.equal(failedDelivery.resultEnvelope.providerDelivery.status, "failed");
+assert.equal(failedDelivery.resultEnvelope.status, "failed", "failed provider delivery must not be reported as completed");
 
 const missingTarget = buildSubAgentControlledContinuation({
   ...commonInput,
@@ -262,9 +337,14 @@ const serialized = JSON.stringify({
   send,
   followup,
   duplicate,
+  secondDistinct,
   conflict,
+  longConflict,
   policyBlocked,
+  invalidPolicy,
   unsupportedDelivery,
+  invalidAction,
+  failedDelivery,
   missingTarget,
   staleTarget,
 });
@@ -280,8 +360,11 @@ console.log(JSON.stringify({
   duplicateStatus: duplicate.mailboxLedgerRow.status,
   blockedCases: [
     conflict.authorityDecision.blockerCodes[0],
+    longConflict.authorityDecision.blockerCodes[0],
     policyBlocked.authorityDecision.blockerCodes[0],
+    invalidPolicy.authorityDecision.blockerCodes[0],
     unsupportedDelivery.authorityDecision.blockerCodes[0],
+    invalidAction.authorityDecision.blockerCodes[0],
     missingTarget.authorityDecision.blockerCodes[0],
     staleTarget.authorityDecision.blockerCodes[0],
   ],

@@ -44,19 +44,23 @@ function arrayOrEmpty(value) {
 
 function stableStringify(value) {
   if (value && typeof value.toJSON === "function") return stableStringify(value.toJSON());
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map((entry) => (entry === undefined ? "null" : stableStringify(entry))).join(",")}]`;
+  if (value === null) return "null";
+  if (value === undefined || typeof value === "function" || typeof value === "symbol") return undefined;
+  if (typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => {
+      const serialized = stableStringify(entry);
+      return serialized === undefined ? "null" : serialized;
+    }).join(",")}]`;
+  }
   return `{${Object.keys(value)
-    .filter((key) => value[key] !== undefined && ![
-      "decisionDigest",
-      "ledgerDigest",
-      "planDigest",
-      "resultDigest",
-      "witnessDigest",
-      "continuationDigest",
-    ].includes(key))
+    .filter((key) => !key.endsWith("Digest") && stableStringify(value[key]) !== undefined)
     .sort()
-    .map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`)
+    .map((key) => {
+      const serialized = stableStringify(value[key]);
+      return serialized === undefined ? "" : `${JSON.stringify(key)}:${serialized}`;
+    })
+    .filter(Boolean)
     .join(",")}}`;
 }
 
@@ -106,11 +110,17 @@ function findTargetNode(graph, targetAgentId) {
   return graphNodes(graph).find((node) => normalizeString(node.agentThreadId || node.childAgentId, "") === safeTarget) || null;
 }
 
-function nextMailboxSequence(mailbox = {}) {
-  return mailboxMessages(mailbox).reduce((max, message) => {
+function nextMailboxSequence(mailbox = {}, existingLedgerRows = []) {
+  const mailboxMax = mailboxMessages(mailbox).reduce((max, message) => {
     const sequence = Number(message?.sequence || 0);
     return Number.isFinite(sequence) ? Math.max(max, sequence) : max;
-  }, 0) + 1;
+  }, 0);
+  const ledgerMax = arrayOrEmpty(existingLedgerRows).reduce((max, row) => {
+    if (row?.status !== "accepted") return max;
+    const sequence = Number(row?.sequence || 0);
+    return Number.isFinite(sequence) ? Math.max(max, sequence) : max;
+  }, 0);
+  return Math.max(mailboxMax, ledgerMax) + 1;
 }
 
 function payloadEvidenceRef(input = {}, writeKind = "send_message") {
@@ -120,7 +130,7 @@ function payloadEvidenceRef(input = {}, writeKind = "send_message") {
     id: payloadRef.id || input.payloadId || `${writeKind}_payload`,
     digest: payloadRef.digest || input.payloadDigest || digestFor("sub-agent-followup-payload@1", {
       writeKind,
-      textPreview: boundedString(input.text || input.message || input.prompt || input.task, 280),
+      text: normalizeString(input.text || input.message || input.prompt || input.task, ""),
     }),
     label: payloadRef.label || (writeKind === "followup_task" ? "Follow-up task payload" : "Sub-agent message payload"),
     confidence: payloadRef.confidence || "operator_declared",
@@ -145,7 +155,7 @@ function buildPlan(input = {}, { writeKind, graph, mailbox, targetNode, generate
     targetExists: Boolean(targetNode),
     targetLifecycleState: normalizeString(targetNode?.lifecycleState || targetNode?.nodeState, targetNode ? "running" : "not_found"),
     targetStale: input.targetStale === true || !targetNode || TERMINAL_TARGET_STATES.includes(normalizeString(targetNode?.lifecycleState || targetNode?.nodeState, "")),
-    sequence: nextMailboxSequence(mailbox),
+    sequence: nextMailboxSequence(mailbox, input.existingLedgerRows),
     idempotencyKey: normalizeString(input.idempotencyKey, ""),
     payloadRef,
     messageKind: writeKind === "followup_task" ? "followup" : "parent_prompt",
@@ -169,7 +179,7 @@ function buildPlan(input = {}, { writeKind, graph, mailbox, targetNode, generate
     workThreadId: plan.workThreadId,
     parentAgentId: plan.parentAgentId,
     targetAgentId: plan.targetAgentId,
-    payloadDigest: payloadRef.refDigest,
+    payloadHash: payloadRef.refDigest,
   });
   plan.planId = plan.planId || `sub_agent_${writeKind}_plan_${digestFor("sub-agent-followup-plan-id@1", plan).slice(7, 23)}`;
   plan.canonicalInputDigest = digestFor("sub-agent-followup-canonical-input@1", {
@@ -179,7 +189,7 @@ function buildPlan(input = {}, { writeKind, graph, mailbox, targetNode, generate
     primaryThreadId: plan.primaryThreadId,
     parentAgentId: plan.parentAgentId,
     targetAgentId: plan.targetAgentId,
-    payloadRefDigest: payloadRef.refDigest,
+    payloadRefHash: payloadRef.refDigest,
   });
   plan.planDigest = digestFor(schema, plan);
   return plan;
@@ -233,14 +243,20 @@ function buildDeliverySupportWitness(input = {}, { plan, generatedAt }) {
 
 function buildAuthorityDecision({ plan, policyEnvelope, deliveryWitness, idem, generatedAt }) {
   const blockers = [];
-  validateSubAgentInteractionPolicyEnvelope(policyEnvelope);
+  let policyValid = false;
+  try {
+    validateSubAgentInteractionPolicyEnvelope(policyEnvelope);
+    policyValid = true;
+  } catch (error) {
+    blockers.push("policy_envelope_invalid");
+  }
   if (!plan.workThreadId) blockers.push("missing_work_thread_scope");
   if (!plan.targetAgentId) blockers.push("missing_stable_child_id");
   if (!plan.targetExists) blockers.push("target_not_found");
   if (plan.targetStale) blockers.push("target_stale_or_terminal");
   if (!FOLLOWUP_ACTIONS.includes(plan.writeKind)) blockers.push("invalid_followup_write_kind");
-  if (!arrayOrEmpty(policyEnvelope.allowedActions).includes(plan.writeKind)) blockers.push("policy_blocks_followup_action");
-  if (policyEnvelope.targetId !== plan.targetAgentId) blockers.push("policy_target_mismatch");
+  if (!policyValid || !arrayOrEmpty(policyEnvelope?.allowedActions).includes(plan.writeKind)) blockers.push("policy_blocks_followup_action");
+  if (!policyValid || policyEnvelope?.targetId !== plan.targetAgentId) blockers.push("policy_target_mismatch");
   if (idem.status === "idempotency_conflict") blockers.push("idempotency_conflict");
   if (deliveryWitness.providerSupportsExistingChildDelivery !== true) blockers.push("delivery_not_supported");
 
@@ -254,13 +270,13 @@ function buildAuthorityDecision({ plan, policyEnvelope, deliveryWitness, idem, g
     writeKind: plan.writeKind,
     finalDecision: blockers.length ? "block" : "allow",
     blockerCodes: blockers,
-    actorKind: policyEnvelope.actorKind,
+    actorKind: normalizeString(policyEnvelope?.actorKind, "unknown"),
     targetAgentId: plan.targetAgentId,
     workThreadId: plan.workThreadId,
     planId: plan.planId,
     planDigest: plan.planDigest,
-    policyId: policyEnvelope.policyId,
-    policyDigest: policyEnvelope.policyDigest,
+    policyId: normalizeString(policyEnvelope?.policyId, ""),
+    policyDigest: normalizeString(policyEnvelope?.policyDigest, ""),
     deliveryWitnessId: deliveryWitness.witnessId,
     deliveryWitnessDigest: deliveryWitness.witnessDigest,
     idempotencyStatus: idem.status,
@@ -351,6 +367,12 @@ function buildProviderDeliveryResult(input = {}, { decision, ledgerRow, delivery
 }
 
 function buildResultEnvelope({ plan, decision, ledgerRow, deliveryWitness, providerDelivery, generatedAt }) {
+  const successfulDelivery = providerDelivery.status === "delivered";
+  const envelopeStatus = decision.finalDecision === "block"
+    ? "blocked"
+    : decision.duplicateSuppressed
+      ? "duplicate_suppressed"
+      : successfulDelivery ? "completed" : normalizeString(providerDelivery.status, "failed");
   const envelope = {
     schema: SUB_AGENT_FOLLOWUP_RESULT_ENVELOPE_SCHEMA,
     resultEnvelopeId: `sub_agent_followup_result_${digestFor("sub-agent-followup-result-id@1", {
@@ -359,7 +381,7 @@ function buildResultEnvelope({ plan, decision, ledgerRow, deliveryWitness, provi
       ledgerDigest: ledgerRow.ledgerDigest,
     }).slice(7, 23)}`,
     writeKind: plan.writeKind,
-    status: decision.finalDecision === "allow" ? (decision.duplicateSuppressed ? "duplicate_suppressed" : "completed") : "blocked",
+    status: envelopeStatus,
     blockerCodes: decision.blockerCodes,
     targetAgentId: plan.targetAgentId,
     workThreadId: plan.workThreadId,
@@ -433,7 +455,7 @@ function buildResidentWitnessRows({ plan, decision, ledgerRow, deliveryWitness, 
 function buildSubAgentControlledContinuation(input = {}, options = {}) {
   const generatedAt = nowIso(options.nowMs || input.nowMs);
   const writeKindCandidate = normalizeString(input.writeKind || input.action, "send_message");
-  const writeKind = FOLLOWUP_WRITE_KINDS.includes(writeKindCandidate) ? writeKindCandidate : "send_message";
+  const writeKind = writeKindCandidate;
   const graph = isPlainObject(input.graph) ? input.graph : buildAgentThreadGraph(input);
   const mailbox = isPlainObject(input.mailbox) ? input.mailbox : buildAgentMailbox({
     projectId: input.projectId || graph.projectId,
@@ -511,7 +533,13 @@ function validateSubAgentControlledContinuation(continuation = {}) {
   const errors = [];
   if (!isPlainObject(continuation)) throw new Error("sub_agent_controlled_continuation_invalid_object");
   if (continuation.schema !== SUB_AGENT_CONTROLLED_CONTINUATION_SCHEMA) throw new Error("sub_agent_controlled_continuation_schema_mismatch");
-  if (!FOLLOWUP_WRITE_KINDS.includes(continuation.writeKind)) errors.push(`invalid_write_kind:${continuation.writeKind || ""}`);
+  const decisionBlockers = arrayOrEmpty(continuation.authorityDecision?.blockerCodes);
+  const invalidWriteKindBlocked = !FOLLOWUP_WRITE_KINDS.includes(continuation.writeKind) &&
+    continuation.authorityDecision?.finalDecision === "block" &&
+    decisionBlockers.includes("invalid_followup_write_kind");
+  if (!FOLLOWUP_WRITE_KINDS.includes(continuation.writeKind) && !invalidWriteKindBlocked) {
+    errors.push(`invalid_write_kind:${continuation.writeKind || ""}`);
+  }
   const plan = continuation.plan;
   const decision = continuation.authorityDecision;
   const ledger = continuation.mailboxLedgerRow;
@@ -526,7 +554,9 @@ function validateSubAgentControlledContinuation(continuation = {}) {
     try {
       validateSubAgentInteractionPolicyEnvelope(continuation.policyEnvelope);
     } catch (error) {
-      errors.push(`policy_envelope_invalid:${error.message}`);
+      if (continuation.authorityDecision?.finalDecision !== "block" || !decisionBlockers.includes("policy_envelope_invalid")) {
+        errors.push(`policy_envelope_invalid:${error.message}`);
+      }
     }
   } else {
     errors.push("policy_envelope_missing");
