@@ -435,11 +435,11 @@ function defaultToolCapabilityInputs() {
       localExecutor: "src/main/direct/tools/control-perception-decision-substrate.js",
       sideEffectClass: "human_decision",
       authorityRequired: "human_decision_packet",
-      requestShapeFamilies: ["none"],
+      requestShapeFamilies: ["direct_human_decision_tool_packet@1"],
       approvalMode: "human_decision",
       contextVisibility: "human_decision_ref",
       providerResultEnvelopeType: "human_decision_packet",
-      recoveryLaw: "Bounded choices may carry authority; free text is context only and cannot widen tool authority.",
+      recoveryLaw: "Bounded choices and free text are context-only in Wave 17 and cannot grant authority, approve tools, or start provider turns.",
       failureClasses: ["projection_laundering", "authority_inflation", "context_smuggling"],
     },
     {

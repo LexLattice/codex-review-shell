@@ -10,6 +10,9 @@ const {
 } = require("../transport/codex-responses-transport");
 const {
   buildContextRemainingWitness,
+  buildHumanDecisionLedger,
+  buildHumanDecisionResultEnvelope,
+  buildHumanDecisionToolPacket,
   buildPlanProjectionMutationEnvelope,
   buildPlanProjectionStore,
 } = require("../tools/control-perception-decision-substrate");
@@ -19,12 +22,13 @@ const DIRECT_FIRST_TOOL_DECLARATION_ROW_SCHEMA = "direct_first_tool_declaration_
 const DIRECT_FIRST_TOOL_CALL_GATE_SCHEMA = "direct_first_tool_call_gate@1";
 const DIRECT_FIRST_TOOL_RESULT_ENVELOPE_SCHEMA = "direct_first_tool_result_envelope@1";
 
-const FIRST_SLICE_TOOLS = new Set(["read_file", "get_context_remaining", "update_plan"]);
+const FIRST_SLICE_TOOLS = new Set(["read_file", "get_context_remaining", "update_plan", "request_user_input"]);
 const TOOL_CLASS_TO_TOOL_NAME = new Map([
   ["local_perception.workspace_read", "read_file"],
   ["session_control.plan_and_context_witness", "get_context_remaining"],
   ["session_control.get_context_remaining", "get_context_remaining"],
   ["session_control.update_plan", "update_plan"],
+  ["human_decision.request_user_input", "request_user_input"],
 ]);
 
 function isPlainObject(value) {
@@ -71,6 +75,7 @@ function firstSliceToolName(row = {}) {
   if (requestShape === "read_file") return "read_file";
   if (requestShape === "context_status_or_control") return "get_context_remaining";
   if (requestShape === "plan_projection") return "update_plan";
+  if (requestShape === "direct_human_decision_tool_packet@1") return "request_user_input";
   return "";
 }
 
@@ -151,10 +156,57 @@ function updatePlanDeclarationSchema() {
   };
 }
 
+function requestUserInputDeclarationSchema() {
+  return {
+    type: "function",
+    name: "request_user_input",
+    description: "Ask the operator a bounded, non-authoritative question. Choices and free text are context only; this cannot approve tools, widen permissions, mutate workspace, or start a provider turn.",
+    parameters: {
+      type: "object",
+      properties: {
+        prompt: {
+          type: "string",
+          description: "Short operator-facing question or prompt.",
+        },
+        choices: {
+          type: "array",
+          minItems: 1,
+          maxItems: 6,
+          items: {
+            type: "object",
+            properties: {
+              choiceId: { type: "string" },
+              label: { type: "string" },
+              description: { type: "string" },
+            },
+            required: ["label"],
+            additionalProperties: false,
+          },
+        },
+        freeTextAllowed: {
+          type: "boolean",
+          description: "Whether the operator may add context-only free text.",
+        },
+        pendingPolicy: {
+          type: "string",
+          enum: ["single_pending_per_turn", "single_pending_per_work_thread", "multiple_allowed"],
+        },
+        expiresAt: {
+          type: "string",
+          description: "Optional ISO timestamp after which the packet should expire.",
+        },
+      },
+      required: ["prompt", "choices"],
+      additionalProperties: false,
+    },
+  };
+}
+
 function providerToolSchemaFor(toolName) {
   if (toolName === "read_file") return readFileDeclarationSchema();
   if (toolName === "get_context_remaining") return contextRemainingDeclarationSchema();
   if (toolName === "update_plan") return updatePlanDeclarationSchema();
+  if (toolName === "request_user_input") return requestUserInputDeclarationSchema();
   return null;
 }
 
@@ -260,6 +312,7 @@ function buildDirectFirstToolSlice(options = {}) {
       readFileDeclared: declarations.some((row) => row.toolName === "read_file"),
       contextRemainingDeclared: declarations.some((row) => row.toolName === "get_context_remaining"),
       updatePlanDeclared: declarations.some((row) => row.toolName === "update_plan"),
+      requestUserInputDeclared: declarations.some((row) => row.toolName === "request_user_input"),
     },
     rawPromptIncluded: false,
     rawResultIncluded: false,
@@ -324,6 +377,22 @@ function normalizeRelativePath(value) {
   return text.replace(/^\.\/+/, "");
 }
 
+function normalizeHumanChoice(choice, index = 0) {
+  if (typeof choice === "string") {
+    return {
+      choiceId: `choice_${index + 1}`,
+      label: normalizeString(choice, "").slice(0, 160),
+      description: "",
+    };
+  }
+  if (!isPlainObject(choice)) return null;
+  return {
+    choiceId: normalizeString(choice.choiceId || choice.id, `choice_${index + 1}`).slice(0, 80),
+    label: normalizeString(choice.label || choice.text || choice.value, "").slice(0, 160),
+    description: normalizeString(choice.description, "").slice(0, 240),
+  };
+}
+
 function validateToolArguments(toolName, args) {
   if (toolName === "read_file") {
     return {
@@ -359,6 +428,22 @@ function validateToolArguments(toolName, args) {
       stepId: normalizeString(args.stepId, ""),
       stepStatus: stepStatus ? normalizePlanArgumentStatus(stepStatus, "") : "",
       steps,
+    };
+  }
+  if (toolName === "request_user_input") {
+    const pendingPolicy = normalizeString(args.pendingPolicy, "single_pending_per_turn");
+    const choices = (Array.isArray(args.choices) ? args.choices : [])
+      .slice(0, 6)
+      .map((choice, index) => normalizeHumanChoice(choice, index))
+      .filter((choice) => choice && choice.label);
+    return {
+      promptPreview: normalizeString(args.prompt || args.promptPreview || args.question, "").slice(0, 240),
+      choices,
+      freeTextAllowed: args.freeTextAllowed === true,
+      pendingPolicy: ["single_pending_per_turn", "single_pending_per_work_thread", "multiple_allowed"].includes(pendingPolicy)
+        ? pendingPolicy
+        : "single_pending_per_turn",
+      expiresAt: normalizeString(args.expiresAt, ""),
     };
   }
   return {};
@@ -560,6 +645,115 @@ function buildUpdatePlanResultEnvelope(options = {}) {
   return envelope;
 }
 
+function buildRequestUserInputResultEnvelope(options = {}) {
+  const gate = isPlainObject(options.gate) ? options.gate : buildDirectFirstToolCallGate(options);
+  const parsed = isPlainObject(gate.parsedArguments) ? gate.parsedArguments : {};
+  const decisionPacket = buildHumanDecisionToolPacket({
+    ...(options.humanDecisionInput || {}),
+    ...parsed,
+    projectId: normalizeString(options.projectId, options.humanDecisionInput?.projectId || ""),
+    workThreadId: normalizeString(options.workThreadId, options.humanDecisionInput?.workThreadId || ""),
+    threadId: normalizeString(options.threadId, options.humanDecisionInput?.threadId || ""),
+    turnId: normalizeString(options.turnId, options.humanDecisionInput?.turnId || ""),
+    toolKind: "request_user_input",
+    status: "pending",
+    nowMs: options.nowMs,
+  });
+  const decisionLedger = buildHumanDecisionLedger({
+    ...(options.humanDecisionLedgerInput || {}),
+    projectId: decisionPacket.projectId,
+    workThreadId: decisionPacket.workThreadId,
+    threadId: decisionPacket.threadId,
+    packets: [
+      ...(Array.isArray(options.humanDecisionLedgerInput?.packets) ? options.humanDecisionLedgerInput.packets : []),
+      decisionPacket,
+    ],
+    results: Array.isArray(options.humanDecisionLedgerInput?.results) ? options.humanDecisionLedgerInput.results : [],
+    nowMs: options.nowMs,
+  });
+  const blockerCodes = [];
+  if (gate.status !== "accepted") blockerCodes.push("tool_call_gate_not_accepted");
+  if (gate.toolName !== "request_user_input") blockerCodes.push("wrong_tool_for_request_user_input_envelope");
+  if (!decisionPacket.promptPreview) blockerCodes.push("human_decision_missing_prompt");
+  if (decisionPacket.boundedChoiceCount < 1) blockerCodes.push("human_decision_missing_bounded_choices");
+  const envelope = {
+    schema: DIRECT_FIRST_TOOL_RESULT_ENVELOPE_SCHEMA,
+    envelopeId: `first_tool_result_${digestFor("direct-first-tool-human-decision-result-id@1", {
+      gateDigest: gate.gateDigest,
+      packetDigest: decisionPacket.packetDigest,
+      ledgerDigest: decisionLedger.ledgerDigest,
+    }).slice(0, 24)}`,
+    toolName: "request_user_input",
+    callId: normalizeString(gate.callId, ""),
+    gateId: normalizeString(gate.gateId, ""),
+    gateDigest: normalizeString(gate.gateDigest, ""),
+    resultKind: "human_decision_packet",
+    status: blockerCodes.length ? "blocked" : "waiting_for_human",
+    blockerCodes: normalizeStringList(blockerCodes),
+    providerOutput: {
+      kind: "request_user_input_result",
+      decisionPacketId: decisionPacket.decisionPacketId,
+      status: blockerCodes.length ? "blocked" : decisionPacket.status,
+      boundedChoiceCount: decisionPacket.boundedChoiceCount,
+      pendingPolicy: decisionPacket.pendingPolicy,
+      freeTextAllowed: decisionPacket.freeTextAllowed,
+      freeTextPolicy: "context_only",
+      authorityGranted: false,
+      mayStartProviderTurn: false,
+      mayApproveToolAction: false,
+      mayMutateWorkspace: false,
+      freeTextCanWidenAuthority: false,
+      pendingPacketCount: decisionLedger.pendingPacketCount,
+    },
+    decisionPacket,
+    decisionLedger,
+    contextAdmission: {
+      admittedAs: "operator_decision",
+      admissionState: "pending",
+      rawTextIncluded: false,
+      authorityGranted: false,
+      mayStartProviderTurn: false,
+    },
+    rawPromptIncluded: false,
+    rawResultIncluded: false,
+    rawWorkspacePathIncluded: false,
+    rawSecretIncluded: false,
+  };
+  envelope.envelopeDigest = digestFor("direct-first-tool-result-envelope@1", envelope);
+  return envelope;
+}
+
+function buildHumanDecisionAnswerResultEnvelope(input = {}) {
+  const result = buildHumanDecisionResultEnvelope(input);
+  const envelope = {
+    schema: DIRECT_FIRST_TOOL_RESULT_ENVELOPE_SCHEMA,
+    envelopeId: `first_tool_result_${digestFor("direct-first-tool-human-decision-answer-id@1", result).slice(0, 24)}`,
+    toolName: "request_user_input",
+    callId: normalizeString(input.callId, ""),
+    gateId: normalizeString(input.gateId, ""),
+    gateDigest: normalizeString(input.gateDigest, ""),
+    resultKind: "human_decision_result",
+    status: result.resultState,
+    blockerCodes: [],
+    providerOutput: {
+      kind: "request_user_input_answer",
+      decisionPacketId: result.decisionPacketId,
+      selectedChoiceIds: result.selectedChoiceIds,
+      freeTextPresent: result.freeTextPresent,
+      freeTextAdmittedAs: result.freeTextAdmittedAs,
+      authorityGranted: false,
+      mayStartProviderTurn: false,
+    },
+    humanDecisionResult: result,
+    rawPromptIncluded: false,
+    rawResultIncluded: false,
+    rawWorkspacePathIncluded: false,
+    rawSecretIncluded: false,
+  };
+  envelope.envelopeDigest = digestFor("direct-first-tool-result-envelope@1", envelope);
+  return envelope;
+}
+
 function validateDirectFirstToolSlice(slice = {}) {
   const errors = [];
   if (!isPlainObject(slice) || slice.schema !== DIRECT_FIRST_TOOL_SLICE_SCHEMA) return ["direct_first_tool_slice_schema_mismatch"];
@@ -611,6 +805,8 @@ module.exports = {
   buildContextRemainingResultEnvelope,
   buildDirectFirstToolCallGate,
   buildDirectFirstToolSlice,
+  buildHumanDecisionAnswerResultEnvelope,
+  buildRequestUserInputResultEnvelope,
   buildUpdatePlanResultEnvelope,
   validateDirectFirstToolCallGate,
   validateDirectFirstToolSlice,

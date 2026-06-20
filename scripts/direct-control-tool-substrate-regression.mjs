@@ -162,6 +162,7 @@ function main() {
 
   const userInput = buildHumanDecisionToolPacket({
     projectId,
+    workThreadId: "work_thread_control_tool_fixture",
     threadId,
     toolKind: "request_user_input",
     promptPreview: "Choose one",
@@ -170,7 +171,11 @@ function main() {
     nowMs: 0,
   });
   assert(userInput.schema === DIRECT_HUMAN_DECISION_TOOL_PACKET_SCHEMA, "human decision schema mismatch");
-  assert(userInput.boundedChoiceMayCarryAuthority === true, "bounded choices may carry authority");
+  assert(userInput.status === "pending", "human decision should default to pending");
+  assert(userInput.pendingPolicy === "single_pending_per_turn", "human decision should default to single-pending per turn");
+  assert(userInput.choices[0].carriesAuthority === false, "bounded choices must not carry authority in Wave 17");
+  assert(userInput.choices[0].authorityScope === "none", "bounded choices must use no authority scope");
+  assert(userInput.boundedChoiceMayCarryAuthority === false, "bounded choices must not carry authority");
   assert(userInput.freeTextPolicy === "context_only", "free text should be context only");
   assert(userInput.freeTextCanWidenAuthority === false, "free text must not widen authority");
   assert(userInput.mayApproveToolAction === false, "packet alone must not approve tool action");
