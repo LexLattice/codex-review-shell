@@ -120,6 +120,42 @@ assert.equal(providerNotSentAdmission.visibility.providerContinuation, "not_sent
 assert.equal(providerNotSentAdmission.providerProjection.text, "", "not_sent provider projection must have no text");
 validateExternalResultContextAdmission(providerNotSentAdmission);
 
+const providerSummaryOnlyPolicy = buildExternalResultContextAdmissionPolicy({
+  providerContinuationMode: "summary_only",
+  excerptByteLimit: 256,
+});
+const providerSummaryOnlyAdmission = buildExternalResultContextAdmission({
+  policy: providerSummaryOnlyPolicy,
+  envelope: readEnvelope,
+});
+assert.equal(providerSummaryOnlyAdmission.visibility.providerContinuation, "summary_only", "summary policy should downgrade provider excerpt");
+assert(!providerSummaryOnlyAdmission.providerProjection.text.includes("safe content"), "summary-only provider projection must not include read excerpt");
+validateExternalResultContextAdmission(providerSummaryOnlyAdmission);
+
+const providerRefOnlyPolicy = buildExternalResultContextAdmissionPolicy({
+  providerContinuationMode: "ref_only",
+  excerptByteLimit: 256,
+});
+const providerRefOnlyAdmission = buildExternalResultContextAdmission({
+  policy: providerRefOnlyPolicy,
+  envelope: readEnvelope,
+});
+assert.equal(providerRefOnlyAdmission.visibility.providerContinuation, "ref_only", "ref-only policy should downgrade provider continuation");
+assert(providerRefOnlyAdmission.providerProjection.text.includes("reference only"), "ref-only provider projection should expose only reference posture");
+assert(!providerRefOnlyAdmission.providerProjection.text.includes("safe content"), "ref-only provider projection must not include read excerpt");
+validateExternalResultContextAdmission(providerRefOnlyAdmission);
+
+const discoveryOnlyPolicy = buildExternalResultContextAdmissionPolicy({
+  resultKinds: ["external_discovery"],
+});
+const scopedOutAdmission = buildExternalResultContextAdmission({
+  policy: discoveryOnlyPolicy,
+  envelope: readEnvelope,
+});
+assert.equal(scopedOutAdmission.admissionState, "blocked", "policy resultKinds should block excluded result families");
+assert.equal(scopedOutAdmission.visibility.providerContinuation, "not_sent", "scoped-out result must not reach provider");
+validateExternalResultContextAdmission(scopedOutAdmission);
+
 const binaryEnvelope = buildMcpResourceReadEnvelope({
   profile,
   serverIdentityId: "mcp_server_project_fixture",
@@ -168,6 +204,22 @@ assert.equal(noExcerptAdmission.visibility.residentContext, "ref_only", "downgra
 assert(!noExcerptAdmission.residentVisibleText.includes("[REDACTED]"), "ref-only downgrade must not include excerpt");
 validateExternalResultContextAdmission(noExcerptAdmission);
 
+const multibyteEnvelope = buildMcpResourceReadEnvelope({
+  profile,
+  serverIdentityId: "mcp_server_project_fixture",
+  resourceUri: "mcp://fixture/resource/multibyte",
+  mimeType: "text/plain",
+  payload: "語".repeat(3000),
+  callId: "call_context_admission_multibyte_fixture",
+});
+const multibyteAdmission = buildExternalResultContextAdmission({
+  policy: buildExternalResultContextAdmissionPolicy({ excerptByteLimit: 4096 }),
+  envelope: multibyteEnvelope,
+});
+assert(Buffer.byteLength(multibyteAdmission.residentVisibleText, "utf8") <= 5120, "resident visible text should remain byte bounded");
+assert(Buffer.byteLength(multibyteAdmission.providerProjection.text, "utf8") <= 4096, "provider projection should remain byte bounded");
+validateExternalResultContextAdmission(multibyteAdmission);
+
 const malformedTruth = clone(readAdmission);
 malformedTruth.projectTruthGranted = true;
 expectThrows(() => validateExternalResultContextAdmission(malformedTruth), "external_context_admission_authority_leak:projectTruthGranted");
@@ -191,9 +243,13 @@ const serialized = JSON.stringify({
   discoveryAdmission,
   readAdmission,
   providerNotSentAdmission,
+  providerSummaryOnlyAdmission,
+  providerRefOnlyAdmission,
+  scopedOutAdmission,
   binaryAdmission,
   blockedAdmission,
   noExcerptAdmission,
+  multibyteAdmission,
 });
 for (const forbidden of [
   "\"projectTruthGranted\":true",

@@ -110,10 +110,22 @@ function byteLengthFor(value = "") {
 
 function utf8ByteTruncate(text = "", maxBytes = DEFAULT_EXCERPT_BYTE_LIMIT) {
   const source = String(text || "");
-  if (byteLengthFor(source) <= maxBytes) return source;
-  let end = Math.min(source.length, maxBytes);
-  while (end > 0 && byteLengthFor(source.slice(0, end)) > maxBytes) end -= 1;
-  return source.slice(0, end);
+  const limit = Math.max(0, Math.floor(Number(maxBytes) || 0));
+  if (!limit) return "";
+  const buffer = Buffer.from(source, "utf8");
+  if (buffer.length <= limit) return source;
+  let slice = buffer.subarray(0, limit);
+  let boundary = slice.length - 1;
+  while (boundary >= 0 && (slice[boundary] & 0xc0) === 0x80) boundary -= 1;
+  if (boundary >= 0 && (slice[boundary] & 0xc0) === 0xc0) {
+    const lead = slice[boundary];
+    let expectedLength = 1;
+    if ((lead & 0xe0) === 0xc0) expectedLength = 2;
+    else if ((lead & 0xf0) === 0xe0) expectedLength = 3;
+    else if ((lead & 0xf8) === 0xf0) expectedLength = 4;
+    if (slice.length - boundary < expectedLength) slice = slice.subarray(0, boundary);
+  }
+  return slice.toString("utf8");
 }
 
 function normalizeEvidenceRef(input = {}, fallbackKind = "external_context_admission") {
@@ -238,6 +250,23 @@ function visibilityFor(admissionState = "blocked") {
   };
 }
 
+function applyProviderContinuationPolicy(visibility = {}, policy = {}) {
+  const mode = normalizeEnum(policy.providerContinuationMode, PROVIDER_VISIBILITIES, "bounded_excerpt");
+  if (visibility.providerContinuation === "not_sent") return visibility;
+  if (mode === "not_sent") visibility.providerContinuation = "not_sent";
+  else if (mode === "summary_only" && visibility.providerContinuation === "bounded_excerpt") visibility.providerContinuation = "summary_only";
+  else if (mode === "ref_only" && visibility.providerContinuation !== "not_sent") visibility.providerContinuation = "ref_only";
+  return visibility;
+}
+
+function providerProjectionTextFor({ visibility, admissionState, trustWarning, summary, excerpt, sourceEnvelopeId }) {
+  if (visibility.providerContinuation === "not_sent" || admissionState === "blocked") return "";
+  if (visibility.providerContinuation === "ref_only") {
+    return utf8ByteTruncate(`${trustWarning}\nExternal result available by reference only: ${sourceEnvelopeId || "unknown"}.`, 4096);
+  }
+  return utf8ByteTruncate(`${trustWarning}\n${summary}${visibility.providerContinuation === "bounded_excerpt" && excerpt ? `\n\n${excerpt}` : ""}`, 4096);
+}
+
 function buildExternalResultContextAdmissionPolicy(input = {}) {
   const source = isPlainObject(input) ? input : {};
   const policy = {
@@ -300,24 +329,23 @@ function buildExternalResultContextAdmission(input = {}) {
   const resultKind = normalizeEnum(source.resultKind || inferResultKind(envelope), RESULT_KINDS, "dynamic_mcp_action_blocked");
   const preliminaryState = baseAdmissionState(envelope, resultKind);
   let admissionState = preliminaryState;
+  if (!policy.resultKinds.includes(resultKind)) admissionState = "blocked";
   if (resultKind === "external_discovery" && !policy.allowDiscoverySummary) admissionState = "blocked";
   if (resultKind === "mcp_resource_read" && admissionState === "excerpt_admitted" && !policy.allowReadExcerpt) admissionState = policy.allowRefOnly ? "ref_only" : "blocked";
   if (admissionState === "ref_only" && !policy.allowRefOnly) admissionState = "blocked";
-  const visibility = visibilityFor(admissionState);
-  if (visibility.providerContinuation !== "not_sent" && policy.providerContinuationMode === "not_sent") {
-    visibility.providerContinuation = "not_sent";
-  }
+  const visibility = applyProviderContinuationPolicy(visibilityFor(admissionState), policy);
   const excerpt = admissionState === "excerpt_admitted" ? excerptFor(envelope, policy) : "";
   const summary = admissionState === "summary_admitted" || admissionState === "excerpt_admitted" || admissionState === "ref_only"
     ? summaryFor(envelope, resultKind)
     : "";
   const trustWarning = warningFor(envelope, resultKind);
+  const envelopeId = sourceEnvelopeId(envelope);
   const admission = {
     schema: EXTERNAL_RESULT_CONTEXT_ADMISSION_SCHEMA,
     admissionId: boundedString(source.admissionId, 180),
     policyId: policy.policyId,
     policyDigest: policy.policyDigest,
-    sourceEnvelopeId: sourceEnvelopeId(envelope),
+    sourceEnvelopeId: envelopeId,
     sourceEnvelopeDigest: boundedString(envelope.envelopeDigest || envelope.statusDigest || envelope.profileDigest, 180),
     resultKind,
     admissionState,
@@ -330,11 +358,11 @@ function buildExternalResultContextAdmission(input = {}) {
     freshness: freshnessFor(envelope, resultKind),
     trustWarning,
     residentVisibleText: admissionState === "blocked"
-      ? boundedString(`${trustWarning} Context admission blocked.`, 1000)
-      : boundedString(`${trustWarning}\n${summary}${excerpt ? `\n\n${excerpt}` : ""}`, 4096),
+      ? utf8ByteTruncate(`${trustWarning} Context admission blocked.`, 1000)
+      : utf8ByteTruncate(`${trustWarning}\n${summary}${excerpt ? `\n\n${excerpt}` : ""}`, 4096),
     operatorProjection: {
       summary: summary || boundedString(`${resultKind} admission blocked.`, 640),
-      sourceEnvelopeId: sourceEnvelopeId(envelope),
+      sourceEnvelopeId: envelopeId,
       trustLevel: trustLevelFor(envelope, resultKind),
       freshness: freshnessFor(envelope, resultKind),
       admissionState,
@@ -344,9 +372,7 @@ function buildExternalResultContextAdmission(input = {}) {
     },
     providerProjection: {
       visibility: visibility.providerContinuation,
-      text: visibility.providerContinuation === "not_sent" || admissionState === "blocked"
-        ? ""
-        : boundedString(`${trustWarning}\n${summary}${visibility.providerContinuation === "bounded_excerpt" && excerpt ? `\n\n${excerpt}` : ""}`, 4096),
+      text: providerProjectionTextFor({ visibility, admissionState, trustWarning, summary, excerpt, sourceEnvelopeId: envelopeId }),
       rawPayloadIncluded: false,
       rawUriIncluded: false,
       rawSecretIncluded: false,
