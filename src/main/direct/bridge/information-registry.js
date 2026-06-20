@@ -1362,6 +1362,37 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     bridgeFit: "Adds PR 101 operator-gated close/interrupt/resume lifecycle controls with per-call authority, provider-support witnesses, before/after transition ledger rows, cancellation/resume witnesses, and safe unsupported/idempotent states.",
     realignment: "This PR 101 slice keeps lifecycle mutation operator-gated first: resident-callable lifecycle controls remain disabled, unsupported provider actions are not simulated, and no child transcript or inherited child tools enter the parent context.",
   },
+  {
+    id: "ic48.sub-agent-wave16-usability-gate",
+    name: "Wave 16 sub-agent usability gate and headless scenario suite",
+    role: "observability_surface",
+    implementationState: "implemented",
+    directPathPosture: "keep_guarded",
+    sourceFiles: [
+      "src/main/direct/agents/sub-agent-wave16-usability-gate.js",
+      "scripts/direct-sub-agent-wave16-usability-gate-regression.mjs",
+      "docs/DIRECT_WAVE16_SUB_AGENT_LIFECYCLE_FOLLOWUP_TRANSCRIPT_SPEC.md",
+      "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md",
+    ],
+    ontology: ontologyShape(
+      [
+        "sub_agent_wave16_usability_proof",
+        "sub_agent_operator_lifecycle_projection",
+        "sub_agent_resident_capability_witness_row",
+        "sub_agent_headless_scenario_suite",
+        "sub_agent_negative_scenario_matrix",
+        "sub_agent_manual_usability_gate_row",
+        "sub_agent_wave16_analytics_hook_row",
+      ],
+      "harness",
+      {
+        identityFields: ["proofId", "scenarioId", "rowId", "workThreadId", "primaryThreadId"],
+        schema: "sub_agent_wave16_usability_proof@1",
+      }
+    ),
+    bridgeFit: "Closes Wave 16 by composing lifecycle, compatibility, transcript, interaction-policy, follow-up, and lifecycle-control artifacts into a proof-backed headless scenario suite with resident/operator witness rows.",
+    realignment: "This PR 102 slice is a usability/proof gate only: it starts no new provider transport beyond lower-level allowed fixture rows, mints no authority in operator projection, keeps child full history context-inadmissible, and does not implement Wave 17 human/control/read-only tools or Wave 18 external discovery tools.",
+  },
 ]);
 
 function isPlainObject(value) {
