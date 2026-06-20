@@ -4298,7 +4298,7 @@ invent family-local activation, authority, result, or proof grammars.
 
 ## Wave 15: Resident-Callable Sub-Agent MVP
 
-Status: active; complete through PR 95, PR 96 in review.
+Status: complete through PR 96.
 
 Dedicated spec:
 
@@ -4343,7 +4343,7 @@ no batch fan-out
 | `#93` | complete | `codex/direct-subagent-authority-idempotency-wait` | Sub-agent per-call authority, idempotency, and wait policy | Authority decisions, transaction rows, spawn/wait plans, canonical idempotency, target validation, wait timeout/deadlock policy | No provider-backed child execution |
 | `#94` | complete | `codex/direct-subagent-provider-backed-spawn` | Provider-backed spawn/run, result envelope, and context admission | Provider-backed child run adapter, result reducer, child result envelope, admission envelope, context admission, usage attribution | No child transcript full-history view or child tools |
 | `#95` | complete | `codex/direct-subagent-resident-declaration` | Resident tool declaration, witness, and headless smoke | Resident sub-agent tool declarations, frozen declaration digest, epistemic rows, usability proofs, positive/negative headless smoke | No UI-first implementation or interference controls |
-| `#96` | in review | `codex/direct-subagent-operator-projection` | Operator projection and manual usability gate | Primary transcript activity summary, operator proof/status rows, manual smoke gate, analytics hook, proof-only operator projection | No right-pane/sub-agent UX overhaul or operator authority expansion |
+| `#96` | complete | `codex/direct-subagent-operator-projection` | Operator projection and manual usability gate | Primary transcript activity summary, operator proof/status rows, manual smoke gate, analytics hook, proof-only operator projection | No right-pane/sub-agent UX overhaul or operator authority expansion |
 
 Wave 15 completion gate:
 
@@ -4351,6 +4351,66 @@ Wave 15 completion gate:
 Resident can spawn one bounded child agent, list/inspect/wait for it, and
 consume a sanitized child result through ODEU result/context admission without
 flattening child work into the primary transcript.
+```
+
+## Wave 16: Sub-Agent Lifecycle, Follow-Up, Compatibility, And Transcript Maturity
+
+Status: planned.
+
+Dedicated spec:
+
+```text
+docs/DIRECT_WAVE16_SUB_AGENT_LIFECYCLE_FOLLOWUP_TRANSCRIPT_SPEC.md
+```
+
+Purpose:
+
+```text
+Mature the Wave 15 sub-agent MVP into a controlled multi-turn sub-agent surface
+with explicit lifecycle truth, compatibility mapping, transcript views,
+no-interference policy, follow-up/send, and lifecycle mutation gates.
+```
+
+First usable slice:
+
+```text
+direct-native lifecycle state rows
+legacy compatibility mapping without authority bypass
+turn-scoped and full-history child transcript projection
+explicit no-interference / observe-only policy witness
+policy-gated send_message / followup_task
+provider-supported or explicitly unavailable close/interrupt/resume
+headless scenario coverage
+```
+
+Standing non-goals:
+
+```text
+no recursive spawn
+no child inherited tools
+no bulk fan-out
+no unbounded wait
+no child transcript flattening into the primary transcript
+no legacy v1 names as governing ontology
+no lifecycle mutation without per-call authority
+```
+
+| PR | Status | Branch | Purpose | Planned deliverable | Explicit non-goals |
+| --- | --- | --- | --- | --- | --- |
+| `#97` | planned | `codex/direct-subagent-lifecycle-compatibility` | Lifecycle state model and compatibility mapper | Direct-native lifecycle/readiness/control/transport/mailbox/transcript/usage/conflict axes, state precedence law, compatibility-only legacy mapping rows, negative tests for alias bypass | No send/follow-up or lifecycle mutation |
+| `#98` | planned | `codex/direct-subagent-transcript-projection-v2` | Child transcript projection maturity | Turn-activity, projection-only full-history, and result-summary projections with visibility metadata, pagination, author identity, source refs, and raw-exposure sentinels | No primary transcript flattening, context admission of full child history, or right-pane redesign |
+| `#99` | planned | `codex/direct-subagent-interaction-policy` | Interaction policy and no-interference envelope | Actor/target/scope policy witness, declaration/catalog removal or blocked-result proof, blocked-control projection, resident catalog policy rows, self-binding negative tests | No follow-up or lifecycle transport |
+| `#100` | planned | `codex/direct-subagent-followup-send` | Follow-up and send controlled continuation | `send_message` / `followup_task` plans, authority decisions, mailbox ledger, delivery support/mode witness, idempotency, stale-target blocking, summary result admission | No fallback spawn, close/interrupt/resume, or child tool inheritance |
+| `#101` | planned | `codex/direct-subagent-lifecycle-controls` | Operator-gated lifecycle mutation controls | Close/interrupt/resume authority gates, before/after transition ledger, cancellation/resume witnesses, closeMode rows, unsupported-provider rows | No simulated provider support, resident-callable lifecycle mutation by default, or mutation without per-call authority |
+| `#102` | planned | `codex/direct-subagent-wave16-usability-gate` | Wave 16 usability gate and headless scenario suite | Usability proof, resident/operator witness rows, manual gate, negative scenario matrix, headless scenarios, analytics hooks, roadmap/audit completion update | No Wave 17 human/control tools or Wave 18 external discovery tools |
+
+Wave 16 completion gate:
+
+```text
+Resident and operator can see lifecycle, compatibility, transcript, policy, and
+follow-up/lifecycle-control posture for direct sub-agents; any mutating action
+is per-call-authorized, provider-supported or explicitly unavailable, and child
+work still never flattens into the primary transcript.
 ```
 
 

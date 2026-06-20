@@ -50,6 +50,7 @@
 - [Direct Context Maintenance, Memory, And Frontier Baton Spec](./DIRECT_CONTEXT_MAINTENANCE_MEMORY_FRONTIER_BATON_SPEC.md)
 - [Direct Sub-Agent Observability And Containment Spec](./DIRECT_SUB_AGENT_OBSERVABILITY_AND_CONTAINMENT_SPEC.md)
 - [Direct Usage, Quota, Model Evidence, And Mainline Readiness Spec](./DIRECT_USAGE_QUOTA_MODEL_EVIDENCE_AND_MAINLINE_READINESS_SPEC.md)
+- [Direct Wave 16 Sub-Agent Lifecycle, Follow-Up, Compatibility, And Transcript Maturity Spec](./DIRECT_WAVE16_SUB_AGENT_LIFECYCLE_FOLLOWUP_TRANSCRIPT_SPEC.md)
 - [Direct Documentation Hygiene Backlog](./DIRECT_DOC_HYGIENE_BACKLOG.md)
 - [OAI Codex Upstream ODEU Profile](./OAI_CODEX_UPSTREAM_ODEU_PROFILE.md)
 - [Meta-Orchestrator Loop ODEU Spec](./META_ORCHESTRATOR_LOOP_ODEU_SPEC.md)
