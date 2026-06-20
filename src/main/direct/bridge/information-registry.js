@@ -1099,6 +1099,35 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "Choices and free text are context-only in Wave 17: no permission widening, no tool approval, no workspace mutation, no provider turn auto-start, and no request-as-grant collapse.",
   },
   {
+    id: "ic52.permission-widening-request-gate",
+    name: "Wave 17 permission widening request gate",
+    role: "authority_gate",
+    implementationState: "implemented",
+    directPathPosture: "keep_guarded",
+    sourceFiles: [
+      "src/main/direct/tools/control-perception-decision-substrate.js",
+      "src/main/direct/headless/first-tool-slice.js",
+      "scripts/direct-permission-widening-request-gate-regression.mjs",
+      "scripts/direct-control-tool-substrate-regression.mjs",
+      "docs/DIRECT_WAVE17_HUMAN_CONTROL_READONLY_TOOLS_SPEC.md",
+      "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md",
+    ],
+    ontology: ontologyShape(
+      [
+        "permission_widening_request",
+        "permission_widening_decision",
+        "direct_first_tool_result_envelope",
+      ],
+      "harness",
+      {
+        identityFields: ["requestId", "decisionId", "workThreadId", "threadId", "turnId", "targetCapability", "proposedCallId", "gateId", "callId"],
+        schema: "permission_widening_request@1",
+      }
+    ),
+    bridgeFit: "Promotes guarded request_permissions into a first-slice resident-callable declaration when activated, producing single-action operator-confirmation-required request packets or deterministic blocked envelopes.",
+    realignment: "Resident permission requests are never grants: broad/session/project/workspace/full-access widening is blocked, single-action requests must name a target capability and proposed call id, and a separate operator decision artifact is required before any future authority mutation.",
+  },
+  {
     id: "ic33.odeu-live-capability-artifact-kernel",
     name: "ODEU live-capability artifact/source/digest/raw-exposure kernel",
     role: "canonical_evidence",
