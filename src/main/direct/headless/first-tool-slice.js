@@ -431,9 +431,10 @@ function parseArguments(value) {
   }
 }
 
-function normalizeRelativePath(value) {
+function normalizeRelativePath(value, toolName = "read_file") {
   const original = normalizeString(value, "");
   const text = original.replace(/\\/g, "/");
+  const toolLabel = toolName === "view_image" ? "view_image" : "read_file";
   if (
     !text ||
     /[\0-\x1f\x7f]/.test(text) ||
@@ -443,7 +444,7 @@ function normalizeRelativePath(value) {
     text.includes("://") ||
     text.split("/").includes("..")
   ) {
-    const error = new Error("read_file tool requires a relative workspace path.");
+    const error = new Error(`${toolLabel} tool requires a relative workspace path.`);
     error.code = "invalid_read_file_path";
     throw error;
   }
@@ -459,7 +460,7 @@ function normalizeRelativePath(value) {
     decoded !== text &&
     (decoded.includes("/") || decoded.includes("\\") || decoded.split(/[\\/]/).includes(".."))
   ) {
-    const error = new Error("read_file tool path contains encoded traversal.");
+    const error = new Error(`${toolLabel} tool path contains encoded traversal.`);
     error.code = "invalid_read_file_path";
     throw error;
   }
@@ -557,7 +558,7 @@ function validateToolArguments(toolName, args) {
     };
   }
   if (toolName === "view_image") {
-    const path = normalizeRelativePath(args.path || args.relPath || args.relativePath || args.fileRef);
+    const path = normalizeRelativePath(args.path || args.relPath || args.relativePath || args.fileRef, "view_image");
     return {
       path,
       pathEvidenceKey: `image_path_${digestFor("direct-view-image-path@1", path).slice(0, 24)}`,

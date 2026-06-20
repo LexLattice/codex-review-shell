@@ -37,7 +37,7 @@ const PROVIDER_VISIBILITY_EVIDENCE = new Set([
 const IMAGE_VIEW_STAGING_ENVELOPE_SCHEMA = "image_view_staging_envelope@1";
 const IMAGE_VIEW_STATUSES = new Set(["metadata_only", "blocked"]);
 const IMAGE_RESIDENT_PERCEPTION_LEVELS = new Set(["metadata_only", "renderer_preview_only", "not_available"]);
-const IMAGE_TYPE_RISKS = new Set(["normal", "active_content", "binary_unknown", "unsupported", "too_large", "path_escape"]);
+const IMAGE_TYPE_RISKS = new Set(["normal", "active_content", "extension_mismatch", "binary_unknown", "unsupported", "too_large", "path_escape"]);
 const IMAGE_SAFE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp"]);
 const IMAGE_ACTIVE_MIME_TYPES = new Set(["image/svg+xml"]);
 const DEFAULT_IMAGE_MAX_DECODED_PIXELS = 40_000_000;
@@ -479,15 +479,16 @@ function positiveNumber(value) {
 
 function buildImageTypeEvidence(input = {}, displayName = "") {
   const extensionMime = boundedString(input.extensionMime || imageMimeFromName(displayName), 120);
-  const browserMime = boundedString(input.browserMime, 120);
-  const sniffedMime = boundedString(input.sniffedMime || input.mimeType, 120);
+  const browserMime = boundedString(input.browserMime || input.mimeType, 120);
+  const sniffedMime = boundedString(input.sniffedMime, 120);
   const finalMime = boundedString(sniffedMime || browserMime || extensionMime || "unknown", 120);
   const mismatch = Boolean(
     (extensionMime && finalMime !== "unknown" && extensionMime !== finalMime)
     || (browserMime && finalMime !== "unknown" && browserMime !== finalMime)
   );
   let risk = "normal";
-  if (IMAGE_ACTIVE_MIME_TYPES.has(finalMime)) risk = "active_content";
+  if (IMAGE_ACTIVE_MIME_TYPES.has(extensionMime) || IMAGE_ACTIVE_MIME_TYPES.has(browserMime) || IMAGE_ACTIVE_MIME_TYPES.has(sniffedMime) || IMAGE_ACTIVE_MIME_TYPES.has(finalMime)) risk = "active_content";
+  else if (mismatch) risk = "extension_mismatch";
   else if (finalMime === "unknown") risk = "binary_unknown";
   else if (!IMAGE_SAFE_MIME_TYPES.has(finalMime)) risk = "unsupported";
   return {
@@ -539,11 +540,13 @@ function buildViewImageProjection(input = {}) {
   if (!pathContained) blockerCodes.push("image_path_not_contained");
   if (providerPayloadRequested) blockerCodes.push("provider_image_payload_unsupported");
   if (typeEvidence.risk === "active_content") blockerCodes.push("image_active_content_blocked");
+  if (typeEvidence.risk === "extension_mismatch") blockerCodes.push("image_type_evidence_mismatch");
   if (typeEvidence.risk === "unsupported") blockerCodes.push("image_mime_unsupported");
   if (typeEvidence.risk === "binary_unknown") blockerCodes.push("image_mime_unknown");
   if (!decodeCaps.withinCaps) blockerCodes.push("image_decoded_pixel_cap_exceeded");
   const requestedStatus = normalizeEnum(input.status, IMAGE_VIEW_STATUSES, "");
   const status = blockerCodes.length ? "blocked" : (requestedStatus || "metadata_only");
+  if (status === "blocked" && !blockerCodes.length) blockerCodes.push("image_explicitly_blocked");
   const rendererPreviewAvailable = input.rendererPreviewAvailable === true && status === "metadata_only" && typeEvidence.risk === "normal";
   const residentPerceptionLevel = normalizeEnum(
     input.residentPerceptionLevel,

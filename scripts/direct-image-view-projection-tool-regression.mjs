@@ -160,6 +160,29 @@ assert(svgProjection.blockerCodes.includes("image_active_content_blocked"), "SVG
 assert.equal(svgProjection.inlineSvgRendered, false, "SVG must not be rendered inline");
 assert.equal(svgProjection.modelSawPixels, false, "SVG block must not imply model vision");
 
+const spoofedSvgProjection = buildViewImageProjection({
+  pathEvidenceKey: "path_evidence_spoofed_svg",
+  displayName: "diagram.svg",
+  mimeType: "image/png",
+  rendererPreviewAvailable: true,
+  nowMs: 0,
+});
+assert.equal(spoofedSvgProjection.status, "blocked", "SVG extension must not be bypassed by safe MIME hint");
+assert(spoofedSvgProjection.blockerCodes.includes("image_active_content_blocked"), "spoofed SVG should keep active-content blocker");
+assert.equal(spoofedSvgProjection.typeEvidence.extensionMime, "image/svg+xml", "extension evidence should be preserved");
+assert.equal(spoofedSvgProjection.typeEvidence.browserMime, "image/png", "untrusted MIME hint should remain browser evidence");
+assert.equal(spoofedSvgProjection.typeEvidence.risk, "active_content", "spoofed active type should not classify as normal");
+
+const explicitBlockedProjection = buildViewImageProjection({
+  pathEvidenceKey: "path_evidence_explicit_block",
+  displayName: "diagram.png",
+  mimeType: "image/png",
+  status: "blocked",
+  nowMs: 0,
+});
+assert.equal(explicitBlockedProjection.status, "blocked", "explicit blocked status should be retained");
+assert(explicitBlockedProjection.blockerCodes.includes("image_explicitly_blocked"), "explicit blocked projection should include a blocker code");
+
 const hugeProjection = buildViewImageProjection({
   pathEvidenceKey: "path_evidence_huge",
   displayName: "huge.png",
@@ -284,6 +307,18 @@ const escapedGate = buildDirectFirstToolCallGate({
 });
 assert.equal(escapedGate.status, "blocked", "escaped image path should be blocked");
 assert(escapedGate.blockerCodes.includes("invalid_read_file_path"), "escaped image path should cite containment blocker");
+
+const malformedPathErrorGate = buildDirectFirstToolCallGate({
+  slice,
+  toolCall: {
+    itemId: "tool_item_escape_message",
+    callId: "call_escape_message",
+    name: "view_image",
+    arguments: JSON.stringify({ path: "/tmp/outside.png", mimeType: "image/png" }),
+  },
+});
+assert.equal(malformedPathErrorGate.status, "blocked", "absolute image path should be blocked");
+assert(malformedPathErrorGate.blockerCodes.includes("invalid_read_file_path"), "absolute image path should cite invalid path blocker");
 
 console.log(JSON.stringify({
   ok: true,
