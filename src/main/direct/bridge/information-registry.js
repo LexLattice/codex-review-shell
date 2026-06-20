@@ -1157,6 +1157,38 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "Wave 17 view_image never sends provider image payloads, never claims model pixel vision, never renders inline SVG, and exposes only evidence keys/metadata rather than raw paths or image bytes.",
   },
   {
+    id: "ic54.human-control-wave17-usability-gate",
+    name: "Wave 17 human-control usability proof gate",
+    role: "observability_surface",
+    implementationState: "implemented",
+    directPathPosture: "keep_guarded",
+    sourceFiles: [
+      "src/main/direct/tools/human-control-wave17-usability-gate.js",
+      "scripts/direct-human-control-wave17-usability-gate-regression.mjs",
+      "src/main/direct/tools/human-control-capability-profile.js",
+      "src/main/direct/headless/first-tool-slice.js",
+      "docs/DIRECT_WAVE17_HUMAN_CONTROL_READONLY_TOOLS_SPEC.md",
+      "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md",
+    ],
+    ontology: ontologyShape(
+      [
+        "human_control_wave17_usability_proof",
+        "human_control_operator_projection",
+        "human_control_capability_witness_row",
+        "human_control_headless_scenario_suite",
+        "human_control_negative_scenario_matrix",
+        "human_control_manual_usability_gate_row",
+      ],
+      "harness",
+      {
+        identityFields: ["proofId", "projectionId", "rowId", "scenarioId", "gateId", "toolName"],
+        schema: "human_control_wave17_usability_proof@1",
+      }
+    ),
+    bridgeFit: "Closes Wave 17 with a deterministic usability proof over resident-visible human-control tools, operator projection, witness rows, positive headless scenarios, negative scenario matrix, and manual gate rows.",
+    realignment: "This gate observes and proves readiness only: it starts no provider transport, grants no permission, mutates no workspace/context truth, and does not begin Wave 18 external discovery, Wave 19 hosted tools, or Wave 20 new_context execution.",
+  },
+  {
     id: "ic33.odeu-live-capability-artifact-kernel",
     name: "ODEU live-capability artifact/source/digest/raw-exposure kernel",
     role: "canonical_evidence",
