@@ -55,15 +55,13 @@ function stableStringify(value) {
       return serialized === undefined ? "null" : serialized;
     }).join(",")}]`;
   }
-  return `{${Object.keys(value)
-    .filter((key) => !key.endsWith("Digest") && stableStringify(value[key]) !== undefined)
-    .sort()
-    .map((key) => {
-      const serialized = stableStringify(value[key]);
-      return serialized === undefined ? "" : `${JSON.stringify(key)}:${serialized}`;
-    })
-    .filter(Boolean)
-    .join(",")}}`;
+  const parts = [];
+  for (const key of Object.keys(value).sort()) {
+    if (key.endsWith("Digest")) continue;
+    const serialized = stableStringify(value[key]);
+    if (serialized !== undefined) parts.push(`${JSON.stringify(key)}:${serialized}`);
+  }
+  return `{${parts.join(",")}}`;
 }
 
 function digestFor(domain, value) {
@@ -113,8 +111,13 @@ function lifecycleForNode(node) {
 }
 
 function normalizeLifecycleAction(value) {
-  const action = normalizeString(value, "close_agent");
-  return LIFECYCLE_ACTIONS.includes(action) ? action : action;
+  return normalizeString(value, "close_agent");
+}
+
+function resolveBeforeLifecycleState(input, targetNode) {
+  const graphState = lifecycleForNode(targetNode);
+  if (TERMINAL_STATES.includes(graphState) || ["not_found", "stale"].includes(graphState)) return graphState;
+  return normalizeString(input.targetLifecycleState || input.beforeLifecycleState, graphState);
 }
 
 function targetIsStale(input, node) {
@@ -142,7 +145,7 @@ function lifecycleBlockers(action, beforeState, targetStaleFlag) {
 function buildLifecycleControlPlan(input = {}, { graph, targetNode, generatedAt }) {
   const action = normalizeLifecycleAction(input.action || input.writeKind || input.lifecycleAction);
   const targetAgentId = normalizeString(input.targetAgentId || input.childAgentId || input.agentThreadId, "");
-  const beforeLifecycleState = normalizeString(input.targetLifecycleState || input.beforeLifecycleState, lifecycleForNode(targetNode));
+  const beforeLifecycleState = resolveBeforeLifecycleState(input, targetNode);
   const stale = targetIsStale(input, targetNode) || beforeLifecycleState === "stale";
   const plan = {
     schema: SUB_AGENT_LIFECYCLE_CONTROL_PLAN_SCHEMA,
@@ -190,6 +193,15 @@ function buildProviderSupportWitness(input = {}, { plan, generatedAt }) {
   const support = isPlainObject(input.providerSupport) ? input.providerSupport : {};
   const supported = support.supported === true || input.providerSupportsLifecycleControl === true;
   const closeModes = arrayOrEmpty(support.closeModes || input.closeModes).map((mode) => normalizeString(mode, "")).filter(Boolean);
+  const closeModeRows = plan.action === "close_agent"
+    ? (closeModes.length ? closeModes : ["graceful"]).map((mode) => ({
+      mode,
+      supported: supported && mode === plan.closeMode,
+      selected: mode === plan.closeMode,
+    }))
+    : [];
+  const selectedCloseModeSupported = plan.action !== "close_agent" ||
+    closeModeRows.some((row) => row.selected === true && row.supported === true);
   const witness = {
     schema: SUB_AGENT_LIFECYCLE_PROVIDER_SUPPORT_WITNESS_SCHEMA,
     witnessId: normalizeString(support.witnessId, ""),
@@ -197,14 +209,9 @@ function buildProviderSupportWitness(input = {}, { plan, generatedAt }) {
     targetAgentId: plan.targetAgentId,
     supportState: supported ? "supported" : normalizeString(support.supportState, "unsupported"),
     providerPrimitive: supported ? normalizeString(support.providerPrimitive || input.providerPrimitive, `${plan.action}_provider_primitive`) : "",
-    closeModeRows: plan.action === "close_agent"
-      ? (closeModes.length ? closeModes : ["graceful"]).map((mode) => ({
-        mode,
-        supported: supported && mode === plan.closeMode,
-        selected: mode === plan.closeMode,
-      }))
-      : [],
-    providerTransportMayStart: supported,
+    closeModeRows,
+    selectedCloseModeSupported,
+    providerTransportMayStart: supported && selectedCloseModeSupported,
     simulatedSuccessAllowed: false,
     rawProviderPayloadIncluded: false,
     generatedAt,
@@ -274,6 +281,9 @@ function buildAuthorityDecision({ plan, policyEnvelope, providerSupportWitness, 
     .filter((code) => code !== "close_already_terminal_idempotent"));
   const idempotentNoop = plan.action === "close_agent" && plan.beforeLifecycleState === "closed" && plan.targetExists && !plan.targetStale;
   if (providerSupportWitness.supportState !== "supported" && !idempotentNoop) blockers.push("provider_lifecycle_control_unsupported");
+  if (plan.action === "close_agent" && providerSupportWitness.selectedCloseModeSupported !== true && !idempotentNoop) {
+    blockers.push("provider_close_mode_unsupported");
+  }
   const finalDecision = blockers.length ? "block" : idempotentNoop ? "idempotent_noop" : "allow";
   const decision = {
     schema: SUB_AGENT_LIFECYCLE_AUTHORITY_DECISION_SCHEMA,

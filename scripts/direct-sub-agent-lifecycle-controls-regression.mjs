@@ -158,6 +158,25 @@ assert.equal(unsupported.transitionLedger.providerTransportStarted, false);
 assert.equal(unsupported.transitionLedger.lifecycleMutationStarted, false);
 assert.equal(unsupported.transitionLedger.simulatedSuccessStarted, false);
 
+const unsupportedCloseMode = buildSubAgentLifecycleControlPacket({
+  ...commonInput,
+  action: "close_agent",
+  targetAgentId: "agent_running",
+  closeMode: "force",
+  providerSupport: {
+    supported: true,
+    providerPrimitive: "provider_lifecycle_fixture",
+    closeModes: ["graceful"],
+  },
+  otherwiseAuthorizedActions: ["list_agents", "inspect_agent", "status_agent", "wait_agent", "close_agent"],
+}, { nowMs });
+
+assert.equal(unsupportedCloseMode.providerSupportWitness.supportState, "supported");
+assert.equal(unsupportedCloseMode.providerSupportWitness.selectedCloseModeSupported, false);
+assert.equal(unsupportedCloseMode.authorityDecision.finalDecision, "block");
+assert(unsupportedCloseMode.authorityDecision.blockerCodes.includes("provider_close_mode_unsupported"));
+assert.equal(unsupportedCloseMode.transitionLedger.providerTransportStarted, false);
+
 const residentBlocked = buildSubAgentLifecycleControlPacket({
   ...commonInput,
   action: "close_agent",
@@ -222,6 +241,19 @@ assert.equal(resumeCompleted.authorityDecision.finalDecision, "block");
 assert(resumeCompleted.authorityDecision.blockerCodes.includes("target_not_resumable"));
 assert.equal(resumeCompleted.resumeViabilityWitness.viable, false);
 
+const terminalOverrideBlocked = buildSubAgentLifecycleControlPacket({
+  ...commonInput,
+  action: "interrupt_agent",
+  targetAgentId: "agent_completed",
+  targetLifecycleState: "running",
+  otherwiseAuthorizedActions: ["list_agents", "inspect_agent", "status_agent", "wait_agent", "interrupt_agent"],
+}, { nowMs });
+
+assert.equal(terminalOverrideBlocked.plan.beforeLifecycleState, "completed", "graph terminal state should outrank request override");
+assert.equal(terminalOverrideBlocked.authorityDecision.finalDecision, "block");
+assert(terminalOverrideBlocked.authorityDecision.blockerCodes.includes("terminal_target_not_interruptible"));
+assert.equal(terminalOverrideBlocked.transitionLedger.providerTransportStarted, false);
+
 const stale = buildSubAgentLifecycleControlPacket({
   ...commonInput,
   action: "interrupt_agent",
@@ -283,10 +315,12 @@ const serialized = JSON.stringify({
   interrupt,
   resume,
   unsupported,
+  unsupportedCloseMode,
   residentBlocked,
   noInterferenceBlocked,
   idempotentClose,
   resumeCompleted,
+  terminalOverrideBlocked,
   stale,
   missing,
   invalidAction,
