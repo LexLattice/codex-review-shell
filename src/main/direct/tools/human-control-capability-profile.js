@@ -245,17 +245,18 @@ function buildPromotion(toolName, config, capability, context, options = {}) {
 
 function buildActivation(toolName, config, capability, promotion, context, options = {}) {
   const sourceRef = context.sourceRef;
+  const blocked = config.decision === "blocked";
   return buildOdeuActivationRow({
     activationId: `activation_${capability.capabilityId}`,
     capabilityId: capability.capabilityId,
     promotionDecisionId: promotion.promotionDecisionId,
-    state: "shadow_only",
+    state: blocked ? "suspended" : "shadow_only",
     activationScope: {
       kind: "work_thread_override",
       projectId: context.projectId,
       workThreadId: context.workThreadId,
     },
-    effect: "shadow",
+    effect: blocked ? "deny" : "shadow",
     activationDecision: {
       activatedBy: "test_fixture",
       decisionId: `activation_decision_${capability.capabilityId}`,
@@ -267,6 +268,7 @@ function buildActivation(toolName, config, capability, promotion, context, optio
       toolName,
       activationPosture: config.profileStatus,
       unavailableReason: config.unavailableReason,
+      blockedActivation: blocked,
       residentCallableAllowedInPr103: false,
       providerDeclarationAllowedInPr103: false,
       localExecutorAllowedInPr103: false,
@@ -349,6 +351,12 @@ function expectedTools() {
   ];
 }
 
+function artifactDigestValue(row, label) {
+  const value = row?.artifactDigest?.value;
+  if (typeof value === "string" && value) return value;
+  throw new Error(`human_control_capability_profile_missing_artifact_digest:${label}`);
+}
+
 function validateHumanControlCapabilityProfile(profile = {}) {
   if (!profile || profile.schema !== HUMAN_CONTROL_CAPABILITY_PROFILE_SCHEMA) {
     throw new Error("human_control_capability_profile_schema_mismatch");
@@ -424,6 +432,8 @@ function validateHumanControlCapabilityProfile(profile = {}) {
 }
 
 function buildHumanControlCapabilityProfile(input = {}, options = {}) {
+  input = input || {};
+  options = options || {};
   const projectId = normalizeString(input.projectId, "project_human_control_capability_profile");
   const workThreadId = normalizeString(input.workThreadId, "work_thread_human_control_capability_profile");
   const profileId = normalizeString(input.profileId, "human_control_capability_profile_wave17_pr103");
@@ -497,10 +507,10 @@ function buildHumanControlCapabilityProfile(input = {}, options = {}) {
     residentProfileTools: profile.residentProfileTools,
     guardedTools,
     knownDisabledTools: profile.knownDisabledTools,
-    capabilityDigests: capabilityRows.map((row) => row.artifactDigest.value),
-    promotionDigests: promotionDecisions.map((row) => row.artifactDigest.value),
-    activationDigests: activationRows.map((row) => row.artifactDigest.value),
-    declarationDigests: declarationSnapshots.map((row) => row.artifactDigest.value),
+    capabilityDigests: capabilityRows.map((row) => artifactDigestValue(row, "capability")),
+    promotionDigests: promotionDecisions.map((row) => artifactDigestValue(row, "promotion")),
+    activationDigests: activationRows.map((row) => artifactDigestValue(row, "activation")),
+    declarationDigests: declarationSnapshots.map((row) => artifactDigestValue(row, "declaration")),
     eligibilityRows: declarationEligibilityRows,
   }, { domain: "human-control-capability-profile@1", digestOf: "metadata" });
   validateHumanControlCapabilityProfile(profile);

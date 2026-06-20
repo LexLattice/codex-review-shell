@@ -42,6 +42,8 @@ const profile = buildHumanControlCapabilityProfile({
   workThreadId: "work_thread_wave17_pr103_fixture",
   profileId: "human_control_capability_profile_wave17_pr103_fixture",
 }, { now: fixedNow });
+const nullArgProfile = buildHumanControlCapabilityProfile(null, null);
+assert(nullArgProfile.schema === HUMAN_CONTROL_CAPABILITY_PROFILE_SCHEMA, "null args should be safely normalized");
 
 assert(profile.schema === HUMAN_CONTROL_CAPABILITY_PROFILE_SCHEMA, "profile schema mismatch");
 assert(profile.residentProfileTools.length === RESIDENT_PROFILE_TOOLS.length, "resident profile tool count mismatch");
@@ -112,7 +114,12 @@ for (const toolName of GUARDED_PROFILE_TOOLS) {
   assert(promotion.blockers.length >= 1, "guarded promotion should include blocker");
   assert(promotion.restrictions.some((row) => row.reason.includes("owner=PR")), "guarded restriction should cite PR owner");
 
-  const declaration = declarationByActivation.get(activationByCapability.get(capability.capabilityId).activationId);
+  const activation = activationByCapability.get(capability.capabilityId);
+  assert(activation.state === "suspended", "guarded activation should be suspended");
+  assert(activation.effect === "deny", "guarded activation should deny");
+  assert(activation.familyExtension.blockedActivation === true, "guarded activation should carry blockedActivation");
+
+  const declaration = declarationByActivation.get(activation.activationId);
   assert(declaration.familyExtension.declarationPosture === "resident_visible_guarded_blocked", "guarded declaration posture mismatch");
 
   const eligibility = eligibilityByTool.get(toolName);
@@ -130,7 +137,12 @@ for (const toolName of KNOWN_DISABLED_PROFILE_TOOLS) {
   assert(promotion?.decision === "blocked", "known-disabled promotion should block");
   assert(promotion.blockers.includes("context_transition_law_missing"), "new_context should cite missing transition law");
 
-  const declaration = declarationByActivation.get(activationByCapability.get(capability.capabilityId).activationId);
+  const activation = activationByCapability.get(capability.capabilityId);
+  assert(activation.state === "suspended", "known-disabled activation should be suspended");
+  assert(activation.effect === "deny", "known-disabled activation should deny");
+  assert(activation.familyExtension.blockedActivation === true, "known-disabled activation should carry blockedActivation");
+
+  const declaration = declarationByActivation.get(activation.activationId);
   assert(declaration.providerDeclared === false, "known-disabled declaration must not provider-declare");
   assert(declaration.modelCallable === false, "known-disabled declaration must not be callable");
 
