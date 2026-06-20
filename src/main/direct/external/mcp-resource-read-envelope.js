@@ -166,13 +166,22 @@ function sanitizeResourceDisplay(uri = "", fallback = "") {
   if (!text) return boundedString(fallback || "MCP resource", 220);
   try {
     const parsed = new URL(text);
-    const host = parsed.host ? `//${parsed.host}` : "";
-    return boundedString(`${parsed.protocol}${host}${parsed.pathname}${parsed.search ? "?..." : ""}${parsed.hash ? "#..." : ""}`.replace(/\/\/([^/@\s]+)@/g, "//...@"), 220);
+    const hasSlashes = text.startsWith(`${parsed.protocol}//`);
+    const host = parsed.host ? `//${parsed.host}` : hasSlashes ? "//" : "";
+    return boundedString(`${parsed.protocol}${host}${parsed.pathname}${parsed.search ? "?..." : ""}${parsed.hash ? "#..." : ""}`, 220);
   } catch {
     const [beforeHash, hash = ""] = text.split("#");
     const [beforeQuery, query = ""] = beforeHash.split("?");
     return boundedString(`${beforeQuery}${query ? "?..." : ""}${hash ? "#..." : ""}`.replace(/\/\/([^/@\s]+)@/g, "//...@"), 220);
   }
+}
+
+function payloadToText(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  if (Buffer.isBuffer(value)) return value.toString("utf8");
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
 }
 
 function inferMimeKind(input = {}) {
@@ -207,6 +216,21 @@ function redactionScan(text = "") {
     });
   }
   return { state: secretDetected ? "redacted" : "passed", text: redacted, secretDetected };
+}
+
+function utf8ByteTruncate(text = "", maxBytes = MAX_EXCERPT_BYTES) {
+  const source = String(text);
+  if (byteLengthFor(source) <= maxBytes) return source;
+  let end = Math.min(source.length, maxBytes);
+  while (end > 0 && byteLengthFor(source.slice(0, end)) > maxBytes) end -= 1;
+  return source.slice(0, end);
+}
+
+function resourceDisplayHasRawSecret(display = "") {
+  const text = String(display || "");
+  const rawCredentialAuthority = /\/\/(?!\.\.\.@)[^/@\s]+@/.test(text);
+  const rawSecretQuery = /[?&](?:token|api[_-]?key|password|secret)=/i.test(text);
+  return rawCredentialAuthority || rawSecretQuery;
 }
 
 function contentPolicyFor({ mimeKind, byteCount, requestedContextAdmission }) {
@@ -332,7 +356,9 @@ function buildMcpResourceReadEnvelope(input = {}) {
     });
   validateMcpResourceIdentity(identity);
 
-  const blockerCodes = [];
+  const blockerCodes = arrayOrEmpty(source.blockerCodes || source.blockers)
+    .map((code) => normalizeString(code, ""))
+    .filter(Boolean);
   if (!serverIdentityId) blockerCodes.push("mcp_server_missing");
   if (serverIdentityId && !server) blockerCodes.push("mcp_server_unknown");
   if (server && !serverSelectable(server)) blockerCodes.push(`mcp_server_not_selectable:${server.enabledState}:${server.freshness}:${server.trustState}`);
@@ -342,7 +368,7 @@ function buildMcpResourceReadEnvelope(input = {}) {
   if (source.resourceUriDigest && source.resourceUriDigest !== identity.resourceUriDigest) blockerCodes.push("resource_uri_digest_mismatch");
 
   const suppliedPayload = source.payload ?? source.content ?? source.text ?? "";
-  const payloadText = typeof suppliedPayload === "string" ? suppliedPayload : "";
+  const payloadText = payloadToText(suppliedPayload);
   const byteCount = Number.isFinite(Number(source.byteCount)) ? Number(source.byteCount) : byteLengthFor(payloadText);
   const mimeKind = inferMimeKind(source);
   const policy = contentPolicyFor({
@@ -352,13 +378,14 @@ function buildMcpResourceReadEnvelope(input = {}) {
   });
   const redaction = policy.status === "completed" ? redactionScan(payloadText) : { state: payloadText ? "not_scanned" : "not_scanned", text: "", secretDetected: false };
   const payloadDigest = payloadText ? digestFor("mcp-resource-read-payload@1", payloadText) : "";
-  const canAdmitExcerpt = policy.status === "completed" && !blockerCodes.length && redaction.state !== "blocked";
-  const payloadExcerpt = canAdmitExcerpt
-    ? boundedString(redaction.text.slice(0, MAX_EXCERPT_BYTES), MAX_EXCERPT_BYTES)
-    : "";
+  const requestedStatus = normalizeEnum(source.status, READ_STATUSES, policy.status);
   const status = blockerCodes.length
     ? "blocked"
-    : normalizeEnum(source.status, READ_STATUSES, policy.status);
+    : policy.status !== "completed"
+      ? policy.status
+      : requestedStatus;
+  const canAdmitExcerpt = status === "completed" && policy.status === "completed" && !blockerCodes.length && redaction.state !== "blocked";
+  const payloadExcerpt = canAdmitExcerpt ? utf8ByteTruncate(redaction.text, MAX_EXCERPT_BYTES) : "";
   const contextAdmission = status === "completed"
     ? policy.contextAdmission
     : status === "unsupported"
@@ -398,7 +425,7 @@ function buildMcpResourceReadEnvelope(input = {}) {
     mimeKind,
     contentHandling: policy.contentHandling,
     byteCount,
-    truncationState: status === "completed" ? policy.truncationState : policy.truncationState === "none" ? "omitted" : policy.truncationState,
+    truncationState: status === "completed" ? policy.truncationState : "omitted",
     redactionState: status === "completed" ? redaction.state : "not_scanned",
     payloadRetention: retention,
     payloadArtifactRef: source.payloadArtifactRef ? normalizeEvidenceRef(source.payloadArtifactRef, "mcp_resource_payload_artifact") : undefined,
@@ -468,14 +495,14 @@ function validateMcpResourceReadEnvelope(envelope = {}) {
   if (envelope.contentHandling === "binary_ref_only" && envelope.contextAdmission !== "ref_only") errors.push("mcp_resource_read_binary_not_ref_only");
   if (envelope.contentHandling === "unknown_blocked" && envelope.contextAdmission !== "blocked") errors.push("mcp_resource_read_unknown_not_blocked");
   if (envelope.status !== "completed" && envelope.contextAdmission !== "blocked" && envelope.contextAdmission !== "ref_only") errors.push("mcp_resource_read_noncompleted_context_overadmission");
-  if (String(envelope.payloadExcerpt || "").length > MAX_EXCERPT_BYTES) errors.push("mcp_resource_read_excerpt_over_cap");
+  if (byteLengthFor(envelope.payloadExcerpt || "") > MAX_EXCERPT_BYTES) errors.push("mcp_resource_read_excerpt_over_cap");
   if (!isPlainObject(envelope.readReplayPolicy)) {
     errors.push("mcp_resource_read_missing_replay_policy");
   } else {
     if (envelope.readReplayPolicy.mayAutoRetry !== false) errors.push("mcp_resource_read_auto_retry_allowed");
     if (envelope.readReplayPolicy.mayReplayAfterHandoffUnknown !== false) errors.push("mcp_resource_read_handoff_replay_allowed");
   }
-  if (String(envelope.resourceDisplay || "").includes("secret") || String(envelope.resourceDisplay || "").includes("token=")) errors.push("mcp_resource_read_resource_display_raw_secret");
+  if (resourceDisplayHasRawSecret(envelope.resourceDisplay)) errors.push("mcp_resource_read_resource_display_raw_secret");
   try {
     assertFalseFlags(envelope, FALSE_ENVELOPE_FLAGS, "mcp_resource_read_envelope");
   } catch (error) {

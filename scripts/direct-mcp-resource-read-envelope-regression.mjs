@@ -53,6 +53,13 @@ assert(!identity.resourceDisplay.includes("secret"), "resource display must reda
 assert(!identity.resourceDisplay.includes("token=secret"), "resource display must redact query values");
 validateMcpResourceIdentity(identity);
 
+const fileLikeIdentity = buildMcpResourceIdentity({
+  serverIdentityId: "mcp_server_project_fixture",
+  resourceUri: "file:///tmp/secrets/config.json",
+});
+assert.equal(fileLikeIdentity.resourceDisplay, "file:///tmp/secrets/config.json", "file display should preserve file URI slashes and allow legitimate secret-like path segments");
+validateMcpResourceIdentity(fileLikeIdentity);
+
 const completed = buildMcpResourceReadEnvelope({
   profile,
   serverIdentityId: "mcp_server_project_fixture",
@@ -82,15 +89,71 @@ assert.equal(completed.readReplayPolicy.mayAutoRetry, false, "read must not auto
 assert.equal(completed.readReplayPolicy.mayReplayAfterHandoffUnknown, false, "read must not replay after handoff unknown");
 validateMcpResourceReadEnvelope(completed);
 
+const jsonObjectPayload = buildMcpResourceReadEnvelope({
+  profile,
+  serverIdentityId: "mcp_server_project_fixture",
+  resourceUri: "mcp://fixture/resource/json",
+  mimeType: "application/json",
+  payload: { ok: true, nested: { value: 42 } },
+  callId: "call_json_object_fixture",
+});
+assert.equal(jsonObjectPayload.status, "completed", "JSON object payload should complete");
+assert.equal(jsonObjectPayload.mimeKind, "json", "JSON object payload should infer JSON kind");
+assert(jsonObjectPayload.payloadDigest, "JSON object payload should produce digest");
+assert(jsonObjectPayload.payloadExcerpt.includes("\"ok\":true"), "JSON object payload should produce serialized excerpt");
+validateMcpResourceReadEnvelope(jsonObjectPayload);
+
+const failedWithPayload = buildMcpResourceReadEnvelope({
+  profile,
+  serverIdentityId: "mcp_server_project_fixture",
+  resourceUri: "mcp://fixture/resource/failed",
+  mimeType: "text/plain",
+  payload: "partial failure text should not be admitted",
+  status: "failed",
+  blockerCodes: ["provider_reported_failure"],
+  callId: "call_failed_payload_fixture",
+});
+assert.equal(failedWithPayload.status, "blocked", "caller blockers should make the envelope blocked");
+assert(failedWithPayload.blockerCodes.includes("provider_reported_failure"), "caller blocker codes should be preserved");
+assert.equal(failedWithPayload.payloadExcerpt, "", "failed/blocked payload should not admit excerpt");
+assert.equal(failedWithPayload.truncationState, "omitted", "non-completed reads should omit payload projection");
+validateMcpResourceReadEnvelope(failedWithPayload);
+
+const unavailableWithPayload = buildMcpResourceReadEnvelope({
+  profile,
+  serverIdentityId: "mcp_server_project_fixture",
+  resourceUri: "mcp://fixture/resource/unavailable",
+  mimeType: "text/plain",
+  payload: "transport error body should not be admitted",
+  status: "unavailable",
+  callId: "call_unavailable_payload_fixture",
+});
+assert.equal(unavailableWithPayload.status, "unavailable", "caller unavailable status should be preserved for text resources");
+assert.equal(unavailableWithPayload.contextAdmission, "blocked", "unavailable payload should block context admission");
+assert.equal(unavailableWithPayload.payloadExcerpt, "", "unavailable payload should not admit excerpt");
+validateMcpResourceReadEnvelope(unavailableWithPayload);
+
+const multibyte = buildMcpResourceReadEnvelope({
+  profile,
+  serverIdentityId: "mcp_server_project_fixture",
+  resourceUri: "mcp://fixture/resource/multibyte",
+  mimeType: "text/plain",
+  payload: "λ".repeat(4096),
+  callId: "call_multibyte_fixture",
+});
+assert(Buffer.byteLength(multibyte.payloadExcerpt, "utf8") <= 4096, "excerpt should be capped by UTF-8 bytes");
+validateMcpResourceReadEnvelope(multibyte);
+
 const binary = buildMcpResourceReadEnvelope({
   profile,
   serverIdentityId: "mcp_server_project_fixture",
   resourceUri: "mcp://fixture/resource/image",
   mimeType: "image/png",
   byteCount: 2048,
+  status: "completed",
   callId: "call_binary_fixture",
 });
-assert.equal(binary.status, "unsupported", "binary resources should be unsupported in PR111");
+assert.equal(binary.status, "unsupported", "binary resources should stay unsupported even if caller reports completed");
 assert.equal(binary.contentHandling, "binary_ref_only", "binary resources should be ref-only");
 assert.equal(binary.contextAdmission, "ref_only", "binary resources should be ref-only");
 assert.equal(binary.payloadRetention, "stored_digest_only", "binary resources should retain digest only");
@@ -102,11 +165,13 @@ const oversized = buildMcpResourceReadEnvelope({
   resourceUri: "mcp://fixture/resource/oversized",
   mimeType: "text/plain",
   payload: "x".repeat(70 * 1024),
+  status: "completed",
   callId: "call_oversized_fixture",
 });
-assert.equal(oversized.status, "unsupported", "oversized text should be unsupported");
+assert.equal(oversized.status, "unsupported", "oversized text should stay unsupported even if caller reports completed");
 assert.equal(oversized.contentHandling, "oversize_blocked", "oversized text should be blocked by size policy");
 assert.equal(oversized.contextAdmission, "ref_only", "oversized text should not admit excerpt");
+assert.equal(oversized.truncationState, "omitted", "oversized text should omit payload projection");
 validateMcpResourceReadEnvelope(oversized);
 
 const blockedServer = buildMcpResourceReadEnvelope({
@@ -169,7 +234,12 @@ assert(audit.rows.some((row) => row.id === "ic57.mcp-resource-read-envelope"), "
 
 const serialized = JSON.stringify({
   identity,
+  fileLikeIdentity,
   completed,
+  jsonObjectPayload,
+  failedWithPayload,
+  unavailableWithPayload,
+  multibyte,
   binary,
   oversized,
   blockedServer,
