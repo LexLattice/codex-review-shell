@@ -1160,6 +1160,27 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     bridgeFit: "Adapts the existing provider-backed child route to produce sanitized child-result summaries, ODEU result envelopes, context-admission records, family-specific admission envelopes, and child usage attribution/unavailable rows.",
     realignment: "This PR 94 slice does not declare a resident provider tool yet: child tools, recursive spawn, workspace mutation, primary transcript promotion, raw child prompt/transcript/output, and raw provider payload exposure remain blocked; handoff_unknown returns status-only evidence and is not admitted to parent context.",
   },
+  {
+    id: "ic41.sub-agent-resident-declaration",
+    name: "Wave 15 resident sub-agent declaration and usability witness",
+    role: "observability_surface",
+    implementationState: "implemented",
+    directPathPosture: "keep_guarded",
+    sourceFiles: [
+      "src/main/direct/agents/sub-agent-resident-declaration.js",
+      "src/main/direct/agents/provider-backed-route.js",
+      "src/main/direct/bridge/resident-tool-epistemic-catalog.js",
+      "src/main/direct/odeu/proof.js",
+      "scripts/direct-sub-agent-resident-declaration-regression.mjs",
+      "docs/DIRECT_WAVE15_RESIDENT_SUB_AGENT_MVP_SPEC.md",
+    ],
+    ontology: ontologyShape(["resident_sub_agent_tool_declaration", "resident_tool_epistemic_catalog", "odeu_capability_usability_proof", "odeu_capability_witness_row"], "harness", {
+      identityFields: ["declarationId", "catalogId", "proofId", "witnessRowId"],
+      schema: "resident_sub_agent_tool_declaration@1",
+    }),
+    bridgeFit: "Freezes spawn/list/inspect/wait as resident-callable sub-agent tools only after declaration digest, resident epistemic rows, ODEU usability proof, witness rows, per-call authority, provider-backed route, result envelope, and context admission evidence exist.",
+    realignment: "This PR 95 slice does not widen operator UI authority or interference controls: send/followup/close/interrupt/resume/recursive spawn remain undeclared, child tools remain disabled, model self-report is supplemental only, and child output cannot flatten into the primary transcript.",
+  },
 ]);
 
 function isPlainObject(value) {
