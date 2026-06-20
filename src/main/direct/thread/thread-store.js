@@ -264,24 +264,28 @@ function emptyHostedToolAggregate() {
     unavailable: 0,
     blocked: 0,
     unknown: 0,
-    inputTokens: 0,
-    cachedInputTokens: 0,
-    nonCachedInputTokens: 0,
-    outputTokens: 0,
-    reasoningTokens: 0,
-    totalTokens: 0,
+    inputTokens: null,
+    cachedInputTokens: null,
+    nonCachedInputTokens: null,
+    outputTokens: null,
+    reasoningTokens: null,
+    totalTokens: null,
     byKind: [],
     byState: [],
   };
 }
 
 function addHostedUsageTokens(target, hosted = {}) {
-  target.inputTokens += normalizeNumber(hosted.inputTokens, 0);
-  target.cachedInputTokens += normalizeNumber(hosted.cachedInputTokens, 0);
-  target.nonCachedInputTokens += normalizeNumber(hosted.nonCachedInputTokens, 0);
-  target.outputTokens += normalizeNumber(hosted.outputTokens, 0);
-  target.reasoningTokens += normalizeNumber(hosted.reasoningTokens, 0);
-  target.totalTokens += normalizeNumber(hosted.totalTokens, 0);
+  const addField = (key) => {
+    const value = nullableNumber(hosted[key]);
+    if (value !== null) target[key] = (target[key] ?? 0) + value;
+  };
+  addField("inputTokens");
+  addField("cachedInputTokens");
+  addField("nonCachedInputTokens");
+  addField("outputTokens");
+  addField("reasoningTokens");
+  addField("totalTokens");
 }
 
 function usageFactPriority(row = {}) {

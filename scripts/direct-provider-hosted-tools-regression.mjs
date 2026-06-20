@@ -433,6 +433,8 @@ assert(webSearchResultEnvelope.sourceRefs.length === 1, "safe web result should 
 assert(webSearchResultEnvelope.sourceRefs[0].urlEvidenceKey.startsWith("web_url_"), "source URL should be evidence-keyed");
 assert(webSearchResultEnvelope.rawPageContentIncluded === false, "web result must not include raw page content");
 assert(webSearchResultEnvelope.rawProviderPayloadIncluded === false, "web result must not include raw provider payload");
+assert(webSearchResultEnvelope.hostedUsageAttribution.usageState === "unavailable", "web result with no provider usage should emit unavailable hosted usage");
+assert(webSearchResultEnvelope.hostedUsageAttribution.unavailableReason === "provider_did_not_report", "web no-usage path should cite provider_did_not_report");
 assertProviderHostedWebSearchResultEnvelopeSafe(webSearchResultEnvelope);
 
 const webSearchUsageAttribution = buildProviderHostedUsageAttribution({

@@ -1133,9 +1133,7 @@ function buildProviderHostedWebSearchResultEnvelope(input = {}) {
     : normalizeEnum(source.summaryAuthority, WEB_SEARCH_SUMMARY_AUTHORITIES, "external_evidence_summary");
   const usageAttribution = source.usageAttribution?.schema === PROVIDER_HOSTED_USAGE_ATTRIBUTION_SCHEMA
     ? source.usageAttribution
-    : source.usage || source.usageState || source.unavailableReason
-      ? buildProviderHostedUsageAttribution({ ...source, toolKind: "web_search", callEnvelope, nowMs: source.nowMs, generatedAt })
-      : undefined;
+    : buildProviderHostedUsageAttribution({ ...source, toolKind: "web_search", callEnvelope, nowMs: source.nowMs, generatedAt });
   const envelope = {
     schema: PROVIDER_HOSTED_WEB_SEARCH_RESULT_ENVELOPE_SCHEMA,
     resultId: boundedString(source.resultId || "", 180),
@@ -1219,9 +1217,7 @@ function buildProviderHostedImageGenerationArtifactEnvelope(input = {}) {
         : requestedState || "unknown";
   const usageAttribution = source.usageAttribution?.schema === PROVIDER_HOSTED_USAGE_ATTRIBUTION_SCHEMA
     ? source.usageAttribution
-    : source.usage || source.usageState || source.unavailableReason
-      ? buildProviderHostedUsageAttribution({ ...source, toolKind: "image_generation", callEnvelope, nowMs: source.nowMs, generatedAt })
-      : undefined;
+    : buildProviderHostedUsageAttribution({ ...source, toolKind: "image_generation", callEnvelope, nowMs: source.nowMs, generatedAt });
   const envelope = {
     schema: PROVIDER_HOSTED_IMAGE_GENERATION_ARTIFACT_ENVELOPE_SCHEMA,
     artifactId: boundedString(source.artifactId || "", 180),

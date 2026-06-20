@@ -283,13 +283,14 @@ function normalizeHostedUsageAttribution(value = {}) {
 }
 
 function hostedUsageAttributionFromToolResult(result = {}) {
+  const source = isPlainObject(result) ? result : {};
   const candidates = [
-    result.hostedUsageAttribution,
-    result.result?.hostedUsageAttribution,
-    result.providerHostedUsageAttribution,
-    result.result?.providerHostedUsageAttribution,
-    result.usageAttribution,
-    result.result?.usageAttribution,
+    source.hostedUsageAttribution,
+    source.result?.hostedUsageAttribution,
+    source.providerHostedUsageAttribution,
+    source.result?.providerHostedUsageAttribution,
+    source.usageAttribution,
+    source.result?.usageAttribution,
   ];
   for (const candidate of candidates) {
     const normalized = normalizeHostedUsageAttribution(candidate);
