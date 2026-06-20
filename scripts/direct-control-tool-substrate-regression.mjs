@@ -158,7 +158,11 @@ function main() {
   assert(viewImage.schema === DIRECT_VIEW_IMAGE_PROJECTION_SCHEMA, "view image schema mismatch");
   assert(viewImage.providerVisibilityState === "metadata_only", "view image should default to metadata-only");
   assert(viewImage.providerVisibilityEvidence === "not_sent", "view image should not claim provider visibility");
+  assert(viewImage.residentPerceptionLevel === "renderer_preview_only", "renderer preview should be distinct from model vision");
+  assert(viewImage.providerImagePayloadSupported === false, "image payload support must remain false");
+  assert(viewImage.imagePayloadSent === false, "image payload must not be sent");
   assert(viewImage.modelSawPixels === false, "renderer preview must not imply model saw pixels");
+  assert(viewImage.inlineSvgRendered === false, "SVG must not be rendered inline");
   assert(viewImage.rawImageBytesIncluded === false, "image projection must not expose raw bytes");
   assert(viewImage.rawPathIncluded === false, "image projection must not expose raw path");
 

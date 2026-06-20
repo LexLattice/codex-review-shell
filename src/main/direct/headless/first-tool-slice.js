@@ -17,6 +17,7 @@ const {
   buildPermissionWideningRequest,
   buildPlanProjectionMutationEnvelope,
   buildPlanProjectionStore,
+  buildViewImageProjection,
 } = require("../tools/control-perception-decision-substrate");
 
 const DIRECT_FIRST_TOOL_SLICE_SCHEMA = "direct_first_tool_slice@1";
@@ -24,9 +25,10 @@ const DIRECT_FIRST_TOOL_DECLARATION_ROW_SCHEMA = "direct_first_tool_declaration_
 const DIRECT_FIRST_TOOL_CALL_GATE_SCHEMA = "direct_first_tool_call_gate@1";
 const DIRECT_FIRST_TOOL_RESULT_ENVELOPE_SCHEMA = "direct_first_tool_result_envelope@1";
 
-const FIRST_SLICE_TOOLS = new Set(["read_file", "get_context_remaining", "update_plan", "request_user_input", "request_permissions"]);
+const FIRST_SLICE_TOOLS = new Set(["read_file", "get_context_remaining", "update_plan", "request_user_input", "request_permissions", "view_image"]);
 const TOOL_CLASS_TO_TOOL_NAME = new Map([
   ["local_perception.workspace_read", "read_file"],
+  ["local_perception.image_view_metadata", "view_image"],
   ["session_control.plan_and_context_witness", "get_context_remaining"],
   ["session_control.get_context_remaining", "get_context_remaining"],
   ["session_control.update_plan", "update_plan"],
@@ -87,6 +89,7 @@ function firstSliceToolName(row = {}) {
   if (requestShape === "plan_projection") return "update_plan";
   if (requestShape === "direct_human_decision_tool_packet@1") return "request_user_input";
   if (requestShape === "permission_widening_request@1") return "request_permissions";
+  if (requestShape === "image_view_staging_envelope@1") return "view_image";
   return "";
 }
 
@@ -245,12 +248,52 @@ function requestPermissionsDeclarationSchema() {
   };
 }
 
+function viewImageDeclarationSchema() {
+  return {
+    type: "function",
+    name: "view_image",
+    description: "Project a local image as contained metadata only. This does not send image pixels to the provider, prove the model saw pixels, or render inline SVG.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Relative workspace path to the image. Absolute paths and traversal are rejected.",
+        },
+        mimeType: {
+          type: "string",
+          description: "Optional MIME hint; the harness classifies final type evidence.",
+        },
+        width: {
+          type: "number",
+          description: "Optional decoded width if already known.",
+        },
+        height: {
+          type: "number",
+          description: "Optional decoded height if already known.",
+        },
+        sizeBytes: {
+          type: "number",
+          description: "Optional file size if already known.",
+        },
+        providerPayloadRequested: {
+          type: "boolean",
+          description: "If true, the request is blocked in Wave 17 because image payload submission is unsupported.",
+        },
+      },
+      required: ["path"],
+      additionalProperties: false,
+    },
+  };
+}
+
 function providerToolSchemaFor(toolName) {
   if (toolName === "read_file") return readFileDeclarationSchema();
   if (toolName === "get_context_remaining") return contextRemainingDeclarationSchema();
   if (toolName === "update_plan") return updatePlanDeclarationSchema();
   if (toolName === "request_user_input") return requestUserInputDeclarationSchema();
   if (toolName === "request_permissions") return requestPermissionsDeclarationSchema();
+  if (toolName === "view_image") return viewImageDeclarationSchema();
   return null;
 }
 
@@ -358,6 +401,7 @@ function buildDirectFirstToolSlice(options = {}) {
       updatePlanDeclared: declarations.some((row) => row.toolName === "update_plan"),
       requestUserInputDeclared: declarations.some((row) => row.toolName === "request_user_input"),
       requestPermissionsDeclared: declarations.some((row) => row.toolName === "request_permissions"),
+      viewImageDeclared: declarations.some((row) => row.toolName === "view_image"),
     },
     rawPromptIncluded: false,
     rawResultIncluded: false,
@@ -420,6 +464,16 @@ function normalizeRelativePath(value) {
     throw error;
   }
   return text.replace(/^\.\/+/, "");
+}
+
+function displayNameFromRelativePath(relativePath = "") {
+  const parts = normalizeString(relativePath, "").split("/").filter(Boolean);
+  return parts.length ? parts[parts.length - 1].slice(0, 160) : "";
+}
+
+function optionalNumber(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) && number > 0 ? number : 0;
 }
 
 function normalizeHumanChoice(choice, index = 0) {
@@ -500,6 +554,19 @@ function validateToolArguments(toolName, args) {
       proposedCallId: normalizeString(scalarString(args.proposedCallId || args.callId || args.targetCallId), "").slice(0, 120),
       scope: ["single_action", "session", "project", "workspace", "full_access"].includes(scope) ? scope : "unsupported",
       reason: normalizeString(scalarString(args.reason || args.reasonPreview || args.promptPreview), "").slice(0, 240),
+    };
+  }
+  if (toolName === "view_image") {
+    const path = normalizeRelativePath(args.path || args.relPath || args.relativePath || args.fileRef);
+    return {
+      path,
+      pathEvidenceKey: `image_path_${digestFor("direct-view-image-path@1", path).slice(0, 24)}`,
+      displayName: displayNameFromRelativePath(path),
+      mimeType: normalizeString(scalarString(args.mimeType || args.sniffedMime), "").slice(0, 120),
+      width: optionalNumber(args.width),
+      height: optionalNumber(args.height),
+      sizeBytes: optionalNumber(args.sizeBytes),
+      providerPayloadRequested: args.providerPayloadRequested === true || args.imagePayloadRequested === true,
     };
   }
   return {};
@@ -885,6 +952,85 @@ function buildRequestPermissionsResultEnvelope(options = {}) {
   return envelope;
 }
 
+function buildViewImageResultEnvelope(options = {}) {
+  const gate = isPlainObject(options.gate) ? options.gate : buildDirectFirstToolCallGate(options);
+  const parsed = isPlainObject(gate.parsedArguments) ? gate.parsedArguments : {};
+  const pathEvidenceKey = normalizeString(parsed.pathEvidenceKey, "");
+  const projection = buildViewImageProjection({
+    ...(options.viewImageInput || {}),
+    ...parsed,
+    projectId: normalizeString(options.projectId, options.viewImageInput?.projectId || ""),
+    threadId: normalizeString(options.threadId, options.viewImageInput?.threadId || ""),
+    turnId: normalizeString(options.turnId, options.viewImageInput?.turnId || ""),
+    pathEvidenceKey,
+    displayPath: pathEvidenceKey ? parsed.path : "",
+    pathContained: gate.status === "accepted",
+    providerPayloadRequested: parsed.providerPayloadRequested === true || options.viewImageInput?.providerPayloadRequested === true,
+    nowMs: options.nowMs,
+  });
+  const blockerCodes = [];
+  if (gate.status !== "accepted") blockerCodes.push("tool_call_gate_not_accepted");
+  if (gate.toolName !== "view_image") blockerCodes.push("wrong_tool_for_view_image_envelope");
+  blockerCodes.push(...projection.blockerCodes.map((code) => `image:${code}`));
+  const status = blockerCodes.length ? "blocked" : "ready_for_provider_continuation";
+  const envelope = {
+    schema: DIRECT_FIRST_TOOL_RESULT_ENVELOPE_SCHEMA,
+    envelopeId: `first_tool_result_${digestFor("direct-first-tool-view-image-result-id@1", {
+      gateDigest: gate.gateDigest,
+      projectionDigest: projection.projectionDigest,
+    }).slice(0, 24)}`,
+    toolName: "view_image",
+    callId: normalizeString(gate.callId, ""),
+    gateId: normalizeString(gate.gateId, ""),
+    gateDigest: normalizeString(gate.gateDigest, ""),
+    resultKind: "image_metadata_projection",
+    status,
+    blockerCodes: normalizeStringList(blockerCodes),
+    providerOutput: {
+      kind: "view_image_result",
+      status: projection.status,
+      projectionId: projection.projectionId,
+      pathEvidenceKey: projection.pathEvidenceKey,
+      displayName: projection.displayName,
+      mimeType: projection.mimeType,
+      sizeBytes: projection.sizeBytes,
+      width: projection.width,
+      height: projection.height,
+      residentPerceptionLevel: projection.residentPerceptionLevel,
+      providerVisibilityState: projection.providerVisibilityState,
+      providerVisibilityEvidence: projection.providerVisibilityEvidence,
+      providerImagePayloadSupported: false,
+      providerPayloadRequested: projection.providerPayloadRequested,
+      payloadUnsupportedWitness: projection.payloadUnsupportedWitness,
+      rendererPreviewAvailable: projection.rendererPreviewAvailable,
+      inlineSvgRendered: false,
+      modelSawPixels: false,
+      imagePayloadSent: false,
+      providerUseProven: false,
+      rawPathIncluded: false,
+      rawImageBytesIncluded: false,
+    },
+    viewImageProjection: projection,
+    contextAdmission: {
+      admittedAs: "image_metadata_projection",
+      admissionState: status,
+      residentPerceptionLevel: projection.residentPerceptionLevel,
+      modelSawPixels: false,
+      imagePayloadSent: false,
+      rawPathIncluded: false,
+      rawImageBytesIncluded: false,
+      mutatesWorkspace: false,
+      mutatesProjectTruth: false,
+    },
+    rawPromptIncluded: false,
+    rawResultIncluded: false,
+    rawWorkspacePathIncluded: false,
+    rawSecretIncluded: false,
+  };
+  envelope.envelopeDigest = digestFor("direct-first-tool-result-envelope@1", envelope);
+  return envelope;
+}
+
 function validateDirectFirstToolSlice(slice = {}) {
   const errors = [];
   if (!isPlainObject(slice) || slice.schema !== DIRECT_FIRST_TOOL_SLICE_SCHEMA) return ["direct_first_tool_slice_schema_mismatch"];
@@ -940,6 +1086,7 @@ module.exports = {
   buildRequestPermissionsResultEnvelope,
   buildRequestUserInputResultEnvelope,
   buildUpdatePlanResultEnvelope,
+  buildViewImageResultEnvelope,
   validateDirectFirstToolCallGate,
   validateDirectFirstToolSlice,
 };

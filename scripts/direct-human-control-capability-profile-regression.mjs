@@ -112,7 +112,10 @@ for (const toolName of GUARDED_PROFILE_TOOLS) {
   const promotion = promotionByCapability.get(capability.capabilityId);
   assert(promotion?.decision === "blocked", "guarded promotion should block");
   assert(promotion.blockers.length >= 1, "guarded promotion should include blocker");
-  assert(promotion.restrictions.some((row) => row.reason.includes("owner=PR")), "guarded restriction should cite PR owner");
+  assert(
+    promotion.restrictions.some((row) => row.reason.includes("owner=PR") || row.reason.includes("owner=Future provider image payload wave")),
+    "guarded restriction should cite future owner",
+  );
 
   const activation = activationByCapability.get(capability.capabilityId);
   assert(activation.state === "suspended", "guarded activation should be suspended");
