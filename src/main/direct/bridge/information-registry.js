@@ -1282,6 +1282,36 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "PR111 represents read results safely but does not execute dynamic MCP calls, install plugins, stage workspace artifacts, auto-replay ambiguous reads, promote external payloads to project truth or durable memory, or expose raw resource URIs, full raw payloads, endpoints, credentials, or secrets.",
   },
   {
+    id: "ic58.external-result-context-admission",
+    name: "Wave 18 external result context admission",
+    role: "context_construction",
+    implementationState: "implemented",
+    directPathPosture: "keep_guarded",
+    sourceFiles: [
+      "src/main/direct/external/external-result-context-admission.js",
+      "src/main/direct/external/external-discovery-tools.js",
+      "src/main/direct/external/mcp-resource-read-envelope.js",
+      "scripts/direct-external-result-context-admission-regression.mjs",
+      "docs/DIRECT_WAVE18_EXTERNAL_DISCOVERY_MCP_READ_SPEC.md",
+      "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md",
+    ],
+    ontology: ontologyShape(
+      [
+        "external_result_context_admission_policy",
+        "external_result_context_admission",
+        "external_result_visibility_channels",
+        "external_trust_warning",
+      ],
+      "harness",
+      {
+        identityFields: ["admissionId", "admissionDigest", "policyId", "policyDigest", "sourceEnvelopeId", "resultKind"],
+        schema: "external_result_context_admission@1",
+      }
+    ),
+    bridgeFit: "Adds explicit context admission policy and rows for external discovery and MCP read results, separating resident/operator/provider visibility, summary/excerpt/ref-only/blocked states, trust/freshness warnings, redaction/truncation posture, and provider-continuation suppression.",
+    realignment: "PR112 admits only bounded summaries, excerpts, or refs; it never turns external results into project truth, workspace evidence, durable memory, authority, provider raw payloads, raw URIs, secrets, browser state, workspace staging, or external action approval.",
+  },
+  {
     id: "ic33.odeu-live-capability-artifact-kernel",
     name: "ODEU live-capability artifact/source/digest/raw-exposure kernel",
     role: "canonical_evidence",
