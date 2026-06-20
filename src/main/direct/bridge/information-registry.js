@@ -1252,6 +1252,36 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "PR110 discovery calls return descriptor evidence only: no read_mcp_resource declaration, dynamic MCP action, plugin install, provider-hosted tool, discovered-tool auto-promotion, workspace mutation, external payload persistence, raw URI exposure, or project-truth/memory promotion exists.",
   },
   {
+    id: "ic57.mcp-resource-read-envelope",
+    name: "Wave 18 MCP resource read envelope",
+    role: "authority_gate",
+    implementationState: "implemented",
+    directPathPosture: "keep_guarded",
+    sourceFiles: [
+      "src/main/direct/external/mcp-resource-read-envelope.js",
+      "src/main/direct/external/external-capability-profile.js",
+      "src/main/direct/external/mcp-boundary.js",
+      "scripts/direct-mcp-resource-read-envelope-regression.mjs",
+      "docs/DIRECT_WAVE18_EXTERNAL_DISCOVERY_MCP_READ_SPEC.md",
+      "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md",
+    ],
+    ontology: ontologyShape(
+      [
+        "mcp_resource_identity",
+        "mcp_resource_read_envelope",
+        "mcp_server_selector",
+        "mcp_resource_read_replay_policy",
+      ],
+      "harness",
+      {
+        identityFields: ["envelopeId", "envelopeDigest", "serverIdentityId", "resourceIdentityId", "resourceUriEvidenceKey", "resourceUriDigest"],
+        schema: "mcp_resource_read_envelope@1",
+      }
+    ),
+    bridgeFit: "Adds the guarded MCP resource read evidence envelope: exact server selector, digested URI identity, sanitized display labels, MIME/size content handling, redaction and truncation posture, payload retention, freshness, replay policy, and explicit context admission.",
+    realignment: "PR111 represents read results safely but does not execute dynamic MCP calls, install plugins, stage workspace artifacts, auto-replay ambiguous reads, promote external payloads to project truth or durable memory, or expose raw resource URIs, full raw payloads, endpoints, credentials, or secrets.",
+  },
+  {
     id: "ic33.odeu-live-capability-artifact-kernel",
     name: "ODEU live-capability artifact/source/digest/raw-exposure kernel",
     role: "canonical_evidence",
