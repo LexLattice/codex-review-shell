@@ -4460,7 +4460,7 @@ no workspace mutation
 | `#105` | merged | `codex/direct-bounded-human-decision-tool` | Bounded human decision bridge | Resident-callable bounded `request_user_input`, single-pending policy, pending/answered/expired/cancelled/superseded ledger, non-authoritative bounded-choice result envelope, free-text context-only witness | No free-form approval, permission widening, or provider turn auto-start |
 | `#106` | merged | `codex/direct-permission-widening-request-gate` | Permission widening request gate | `request_permissions` request packet, separate PermissionWideningDecision, single-action target capability/proposed call id, broad/session/project blockers, operator-confirm-required witness | No broad authority widening, request-as-grant collapse, or full-access grant |
 | `#107` | merged | `codex/direct-image-view-projection-tool` | Image metadata/projection tool | `view_image` guarded metadata/projection capability, path containment, type sniffing, decoded caps, residentPerceptionLevel, modelSawPixels=false, payload unsupported witness | No provider image payload submission, model pixel-vision claim, or inline SVG rendering |
-| `#108` | in review | `codex/direct-human-control-wave17-usability-gate` | Wave 17 usability proof and declaration gate | Human/control usability proof, resident/operator witness rows, manual gate, headless scenarios, negative matrix, registry/roadmap update | No Wave 18 external discovery/MCP, Wave 19 provider-hosted tools, or Wave 20 new_context execution |
+| `#108` | merged | `codex/direct-human-control-wave17-usability-gate` | Wave 17 usability proof and declaration gate | Human/control usability proof, resident/operator witness rows, manual gate, headless scenarios, negative matrix, registry/roadmap update | No Wave 18 external discovery/MCP, Wave 19 provider-hosted tools, or Wave 20 new_context execution |
 
 Wave 17 completion gate:
 
@@ -4469,6 +4469,62 @@ The resident can lawfully inspect context pressure, update a scoped plan
 projection, ask bounded human questions, request authority through a guarded
 permission packet, and inspect image metadata/projections, while broad authority
 widening, image payload submission, and context-world transition execution stay
+blocked until later waves.
+```
+
+## Wave 18: External Discovery And MCP Resource Read
+
+Detailed spec:
+
+```text
+docs/DIRECT_WAVE18_EXTERNAL_DISCOVERY_MCP_READ_SPEC.md
+```
+
+Purpose:
+
+```text
+Promote the first external capability family into lawful resident-visible direct
+capabilities without collapsing discovery, external read, dynamic external
+action, and plugin mutation into one authority class.
+```
+
+First usable slice:
+
+```text
+resident-visible external capability posture
+resident-callable tool_search discovery where source metadata is available
+resident-callable MCP resource/template listing with server identity
+guarded read_mcp_resource with URI digest, caps, redaction, provenance, and
+context admission
+dynamic MCP actions and plugin install visible as blocked/deferred
+```
+
+Standing non-goals:
+
+```text
+no dynamic MCP action execution
+no plugin installation
+no provider-hosted web_search or image_generation
+no browser/network action execution
+no external result as project truth or workspace evidence
+no raw external URI/payload/secret exposure
+```
+
+| PR | Status | Branch | Purpose | Planned deliverable | Explicit non-goals |
+| --- | --- | --- | --- | --- | --- |
+| `#109` | planned | `codex/direct-external-capability-profile` | External capability profile | ExternalCapabilityProfile, McpServerIdentityWitness, McpServerSelector blockers, descriptorKind/executionState rows for discovery/read/action/plugin families, blocked/deferred dynamic/plugin rows, resident/operator compact witness | No provider declarations, resource reads, dynamic MCP execution, or plugin install |
+| `#110` | planned | `codex/direct-external-discovery-tools` | Resident external discovery tools | Resident-callable discovery declarations for `tool_search`, `list_mcp_resources`, `list_mcp_resource_templates`, ExternalToolSearchInput, plugin candidate discovery-only descriptors, schema/source digests, unavailable/degraded evidence | No `read_mcp_resource`, dynamic MCP calls, plugin install, or discovered-tool auto-promotion |
+| `#111` | planned | `codex/direct-mcp-resource-read-envelope` | MCP resource read envelope | McpServerIdentityWitness, McpResourceIdentity, guarded McpResourceReadEnvelope, URI digest/display policy, MIME/size caps, status/redaction/truncation separation, readReplayPolicy, payloadRetention, blocked binary/oversize/unknown-source rows | No dynamic MCP action calls, workspace staging, raw full payload admission, automatic replay after ambiguity, or project-truth mutation |
+| `#112` | planned | `codex/direct-external-result-context-admission` | External result context admission | ExternalResultContextAdmissionPolicy, resident/operator/provider visibility channels, summary/ref/excerpt/blocked rows, trust/freshness projection, trust warning, no-memory-admission law, raw-leak negative tests | No MCP resource browser UI, persistent artifact import/staging, durable memory admission, or external action approval |
+| `#113` | planned | `codex/direct-external-wave18-usability-gate` | Wave 18 usability proof gate | ExternalToolUsabilityProof, resident/operator witness rows, manual gate, headless scenarios, negative matrix for server ambiguity, raw leaks, replay, memory smuggling, dynamic actions, plugin install, registry/roadmap update | No Wave 19 provider-hosted tools, Wave 20 new_context/compaction, or Wave 21 code-mode execution |
+
+Wave 18 completion gate:
+
+```text
+The resident can lawfully discover external capabilities and perform bounded
+read-only MCP resource perception with source identity, caps, redaction,
+provenance, and context-admission witnesses, while dynamic external actions,
+plugin installation, provider-hosted tools, and context-world transitions stay
 blocked until later waves.
 ```
 
