@@ -9,6 +9,8 @@ const PLAN_PROJECTION_MUTATION_ENVELOPE_SCHEMA = "plan_projection_mutation_envel
 const PLAN_PROJECTION_STORE_SCHEMA = "plan_projection_store@1";
 const DIRECT_VIEW_IMAGE_PROJECTION_SCHEMA = "direct_view_image_projection@1";
 const DIRECT_HUMAN_DECISION_TOOL_PACKET_SCHEMA = "direct_human_decision_tool_packet@1";
+const HUMAN_DECISION_RESULT_ENVELOPE_SCHEMA = "human_decision_result_envelope@1";
+const HUMAN_DECISION_LEDGER_SCHEMA = "human_decision_ledger@1";
 const DIRECT_NEW_CONTEXT_BLOCKED_PROJECTION_SCHEMA = "direct_new_context_blocked_projection@1";
 
 const ESTIMATE_KINDS = new Set(["provider_reported", "local_tokenizer_estimate", "budget_policy_estimate", "unknown"]);
@@ -31,6 +33,9 @@ const PROVIDER_VISIBILITY_EVIDENCE = new Set([
   "unsupported",
 ]);
 const HUMAN_DECISION_TOOL_KINDS = new Set(["request_user_input", "request_permissions"]);
+const HUMAN_DECISION_STATUSES = new Set(["pending", "answered", "expired", "cancelled", "superseded", "stale_reply_rejected"]);
+const HUMAN_DECISION_PENDING_POLICIES = new Set(["single_pending_per_turn", "single_pending_per_work_thread", "multiple_allowed"]);
+const HUMAN_DECISION_RESULT_STATES = new Set(["answered", "expired", "cancelled", "superseded", "stale_reply_rejected"]);
 
 function isPlainObject(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -45,6 +50,13 @@ function normalizeString(value, fallback = "") {
 function boundedString(value, maxLength = 320) {
   const text = normalizeString(value, "");
   return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
+}
+
+function scalarString(value) {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value);
+  return "";
 }
 
 function stableStringify(value) {
@@ -110,14 +122,16 @@ function normalizeChoices(value) {
   return (Array.isArray(value) ? value : [])
     .map((choice, index) => {
       if (typeof choice === "string") {
-        return { choiceId: `choice_${index + 1}`, label: boundedString(choice, 120), carriesAuthority: false };
+        return { choiceId: `choice_${index + 1}`, label: boundedString(choice, 120), carriesAuthority: false, authorityScope: "none" };
       }
       if (!isPlainObject(choice)) return null;
+      const choiceId = scalarString(choice.choiceId).trim() || scalarString(choice.id).trim() || `choice_${index + 1}`;
+      const label = scalarString(choice.label).trim() || scalarString(choice.text).trim() || scalarString(choice.value).trim();
       return {
-        choiceId: boundedString(choice.choiceId || choice.id || `choice_${index + 1}`, 80),
-        label: boundedString(choice.label || choice.text || choice.value, 160),
-        carriesAuthority: choice.carriesAuthority === true,
-        authorityScope: choice.carriesAuthority === true ? boundedString(choice.authorityScope || "single_action", 80) : "",
+        choiceId: boundedString(choiceId, 80),
+        label: boundedString(label, 160),
+        carriesAuthority: false,
+        authorityScope: "none",
       };
     })
     .filter(Boolean);
@@ -455,21 +469,27 @@ function buildViewImageProjection(input = {}) {
 }
 
 function buildHumanDecisionToolPacket(input = {}) {
+  input = isPlainObject(input) ? input : {};
   const toolKind = normalizeEnum(input.toolKind, HUMAN_DECISION_TOOL_KINDS, "request_user_input");
   const choices = normalizeChoices(input.choices);
   const packet = {
     schema: DIRECT_HUMAN_DECISION_TOOL_PACKET_SCHEMA,
     decisionPacketId: normalizeString(input.decisionPacketId, ""),
+    decisionId: normalizeString(input.decisionId, ""),
     projectId: normalizeString(input.projectId, ""),
+    workThreadId: normalizeString(input.workThreadId, ""),
     threadId: normalizeString(input.threadId, ""),
     turnId: normalizeString(input.turnId, ""),
     toolKind,
+    status: normalizeEnum(input.status, HUMAN_DECISION_STATUSES, "pending"),
+    pendingPolicy: normalizeEnum(input.pendingPolicy, HUMAN_DECISION_PENDING_POLICIES, "single_pending_per_turn"),
+    supersedesPacketId: normalizeString(input.supersedesPacketId, ""),
     promptPreview: boundedString(input.promptPreview || input.prompt, 240),
     choices,
     boundedChoiceCount: choices.length,
     freeTextAllowed: input.freeTextAllowed === true,
     freeTextPolicy: "context_only",
-    boundedChoiceMayCarryAuthority: choices.some((choice) => choice.carriesAuthority === true),
+    boundedChoiceMayCarryAuthority: false,
     freeTextCanWidenAuthority: false,
     permissionWideningRequested: toolKind === "request_permissions" || input.permissionWideningRequested === true,
     defaultWideningScope: toolKind === "request_permissions" ? normalizeString(input.defaultWideningScope, "single_action") : "",
@@ -478,13 +498,115 @@ function buildHumanDecisionToolPacket(input = {}) {
     mayMutateProjectConfig: false,
     mayStartProviderTurn: false,
     providerDeclarationEnabled: false,
+    expiresAt: normalizeString(input.expiresAt, ""),
+    evidenceRefs: normalizeEvidenceRefs(input.evidenceRefs),
     rawTextIncluded: false,
     rawSecretIncluded: false,
     createdAt: normalizeString(input.createdAt, nowIso(input.nowMs)),
   };
   packet.decisionPacketId = packet.decisionPacketId || `human_decision_${digestFor("human-decision-source@1", packet).slice(0, 24)}`;
+  packet.decisionId = packet.decisionId || packet.decisionPacketId;
   packet.packetDigest = digestFor("direct-human-decision-tool-packet@1", packet);
   return packet;
+}
+
+function buildHumanDecisionResultEnvelope(input = {}) {
+  input = isPlainObject(input) ? input : {};
+  const selectedChoiceIds = (Array.isArray(input.selectedChoiceIds) ? input.selectedChoiceIds : [input.selectedChoiceId || input.choiceId])
+    .map((choiceId) => boundedString(choiceId, 80))
+    .filter(Boolean);
+  const freeTextPresent = normalizeString(input.freeText || input.freeTextNote || input.note, "") !== "";
+  const result = {
+    schema: HUMAN_DECISION_RESULT_ENVELOPE_SCHEMA,
+    resultEnvelopeId: normalizeString(input.resultEnvelopeId, ""),
+    decisionPacketId: normalizeString(input.decisionPacketId || input.decisionId, ""),
+    selectedChoiceIds,
+    freeTextPresent,
+    freeTextAdmittedAs: freeTextPresent ? "context_only" : "not_admitted",
+    authorityGranted: false,
+    mayStartProviderTurn: false,
+    resultState: normalizeEnum(input.resultState || input.status, HUMAN_DECISION_RESULT_STATES, "answered"),
+    evidenceRefs: normalizeEvidenceRefs(input.evidenceRefs),
+    rawTextIncluded: false,
+    rawSecretIncluded: false,
+    createdAt: normalizeString(input.createdAt, nowIso(input.nowMs)),
+  };
+  result.resultEnvelopeId = result.resultEnvelopeId || `human_decision_result_${digestFor("human-decision-result-source@1", result).slice(0, 24)}`;
+  result.resultDigest = digestFor("human_decision_result_envelope@1", result);
+  return result;
+}
+
+function packetScopeKey(packet = {}, policy = "single_pending_per_turn") {
+  const workThreadId = normalizeString(packet.workThreadId, "");
+  const threadId = normalizeString(packet.threadId, "");
+  const turnId = normalizeString(packet.turnId, "");
+  if (policy === "single_pending_per_work_thread") return `work_thread:${workThreadId || threadId}`;
+  if (policy === "single_pending_per_turn") return `turn:${workThreadId || threadId}:${turnId || "unknown_turn"}`;
+  return `packet:${packet.decisionPacketId || packet.decisionId}`;
+}
+
+function isHumanDecisionPacketExpired(packet = {}, nowMs) {
+  if (!normalizeString(packet.expiresAt, "")) return false;
+  const expiresAtMs = Date.parse(packet.expiresAt);
+  return Number.isFinite(expiresAtMs) && Number.isFinite(nowMs) && expiresAtMs <= nowMs;
+}
+
+function buildHumanDecisionLedger(input = {}) {
+  input = isPlainObject(input) ? input : {};
+  const packets = (Array.isArray(input.packets) ? input.packets : [])
+    .filter(isPlainObject)
+    .map((packet) => (packet.schema === DIRECT_HUMAN_DECISION_TOOL_PACKET_SCHEMA ? packet : buildHumanDecisionToolPacket(packet)));
+  const results = (Array.isArray(input.results) ? input.results : [])
+    .filter(isPlainObject)
+    .map((result) => (result.schema === HUMAN_DECISION_RESULT_ENVELOPE_SCHEMA ? result : buildHumanDecisionResultEnvelope(result)));
+  const resultByPacket = new Map(results.map((result) => [result.decisionPacketId, result]));
+  const latestPendingByScope = new Map();
+  const ledgerPackets = packets.map((packet) => ({ ...packet }));
+  for (const packet of ledgerPackets) {
+    if (resultByPacket.has(packet.decisionPacketId)) {
+      packet.status = resultByPacket.get(packet.decisionPacketId).resultState;
+      continue;
+    }
+    if (packet.status === "pending" && isHumanDecisionPacketExpired(packet, input.nowMs)) {
+      packet.status = "expired";
+      continue;
+    }
+    if (packet.status !== "pending") continue;
+    const policy = normalizeEnum(packet.pendingPolicy, HUMAN_DECISION_PENDING_POLICIES, "single_pending_per_turn");
+    if (policy === "multiple_allowed") continue;
+    const scopeKey = packetScopeKey(packet, policy);
+    const prior = latestPendingByScope.get(scopeKey);
+    if (prior) {
+      prior.status = "superseded";
+      prior.supersededByPacketId = packet.decisionPacketId;
+      packet.supersedesPacketId = packet.supersedesPacketId || prior.decisionPacketId;
+    }
+    latestPendingByScope.set(scopeKey, packet);
+  }
+  const ledger = {
+    schema: HUMAN_DECISION_LEDGER_SCHEMA,
+    ledgerId: normalizeString(input.ledgerId, ""),
+    projectId: normalizeString(input.projectId, ""),
+    workThreadId: normalizeString(input.workThreadId, ""),
+    threadId: normalizeString(input.threadId, ""),
+    packets: ledgerPackets,
+    results,
+    pendingPacketCount: ledgerPackets.filter((packet) => packet.status === "pending").length,
+    answeredPacketCount: ledgerPackets.filter((packet) => packet.status === "answered").length,
+    expiredPacketCount: ledgerPackets.filter((packet) => packet.status === "expired").length,
+    supersededPacketCount: ledgerPackets.filter((packet) => packet.status === "superseded").length,
+    authorityGranted: false,
+    mayStartProviderTurn: false,
+    rawTextIncluded: false,
+    rawSecretIncluded: false,
+    updatedAt: normalizeString(input.updatedAt, nowIso(input.nowMs)),
+  };
+  ledger.ledgerId = ledger.ledgerId || `human_decision_ledger_${digestFor("human-decision-ledger-source@1", {
+    packets: ledgerPackets.map((packet) => packet.packetDigest),
+    results: results.map((result) => result.resultDigest),
+  }).slice(0, 24)}`;
+  ledger.ledgerDigest = digestFor("human_decision_ledger@1", ledger);
+  return ledger;
 }
 
 function buildNewContextBlockedProjection(input = {}) {
@@ -621,6 +743,9 @@ function assertControlToolSubstrateSafe(status = {}) {
   if (tools.requestUserInput?.freeTextCanWidenAuthority !== false) {
     throw new Error("direct_control_tool_substrate_free_text_authority_leak");
   }
+  if (tools.requestUserInput?.boundedChoiceMayCarryAuthority !== false || tools.requestUserInput?.mayStartProviderTurn !== false) {
+    throw new Error("direct_control_tool_substrate_human_decision_authority_leak");
+  }
   if (tools.viewImage?.rawImageBytesIncluded !== false || tools.viewImage?.rawPathIncluded !== false) {
     throw new Error("direct_control_tool_substrate_image_raw_exposure");
   }
@@ -631,6 +756,8 @@ module.exports = {
   DIRECT_CONTEXT_REMAINING_WITNESS_SCHEMA,
   DIRECT_CONTROL_TOOL_SUBSTRATE_STATUS_SCHEMA,
   DIRECT_HUMAN_DECISION_TOOL_PACKET_SCHEMA,
+  HUMAN_DECISION_LEDGER_SCHEMA,
+  HUMAN_DECISION_RESULT_ENVELOPE_SCHEMA,
   DIRECT_NEW_CONTEXT_BLOCKED_PROJECTION_SCHEMA,
   DIRECT_PLAN_ARTIFACT_SCHEMA,
   DIRECT_VIEW_IMAGE_PROJECTION_SCHEMA,
@@ -640,6 +767,8 @@ module.exports = {
   buildContextRemainingWitness,
   buildControlToolSubstrateStatus,
   buildHumanDecisionToolPacket,
+  buildHumanDecisionLedger,
+  buildHumanDecisionResultEnvelope,
   buildNewContextBlockedProjection,
   buildPlanArtifact,
   buildLegacyPlanArtifact,

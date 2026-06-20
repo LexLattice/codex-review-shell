@@ -1069,6 +1069,36 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "Context witnesses cannot be request-blocking or authorize continuation/compaction; plan updates cannot mutate WorkThread, operator, project, tool approval, obligation, or completion truth and stale plan digests are blocked.",
   },
   {
+    id: "ic51.bounded-human-decision-tool",
+    name: "Wave 17 bounded human decision tool",
+    role: "authority_gate",
+    implementationState: "implemented",
+    directPathPosture: "keep_guarded",
+    sourceFiles: [
+      "src/main/direct/tools/control-perception-decision-substrate.js",
+      "src/main/direct/headless/first-tool-slice.js",
+      "scripts/direct-bounded-human-decision-tool-regression.mjs",
+      "scripts/direct-control-tool-substrate-regression.mjs",
+      "docs/DIRECT_WAVE17_HUMAN_CONTROL_READONLY_TOOLS_SPEC.md",
+      "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md",
+    ],
+    ontology: ontologyShape(
+      [
+        "direct_human_decision_tool_packet",
+        "human_decision_result_envelope",
+        "human_decision_ledger",
+        "direct_first_tool_result_envelope",
+      ],
+      "harness",
+      {
+        identityFields: ["decisionPacketId", "decisionId", "workThreadId", "threadId", "turnId", "gateId", "callId"],
+        schema: "direct_human_decision_tool_packet@1",
+      }
+    ),
+    bridgeFit: "Promotes bounded request_user_input into a first-slice resident-callable declaration when activated, producing pending human decision packets, answer/expiry/cancel/supersession result envelopes, and a single-pending ledger.",
+    realignment: "Choices and free text are context-only in Wave 17: no permission widening, no tool approval, no workspace mutation, no provider turn auto-start, and no request-as-grant collapse.",
+  },
+  {
     id: "ic33.odeu-live-capability-artifact-kernel",
     name: "ODEU live-capability artifact/source/digest/raw-exposure kernel",
     role: "canonical_evidence",
