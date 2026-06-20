@@ -67,7 +67,7 @@ function main() {
   assert(contextWitness.schema === DIRECT_CONTEXT_REMAINING_WITNESS_SCHEMA, "context witness schema mismatch");
   assert(contextWitness.tokensLeft === 12345, "context witness should preserve tokens left");
   assert(contextWitness.remainingTokens === 12345, "context witness should expose canonical remaining tokens");
-  assert(contextWitness.pressurePercent === 38.27, "context witness should compute pressure percent");
+  assert(contextWitness.pressurePercent === 38.28, "context witness should compute pressure percent");
   assert(contextWitness.freshness === "fresh", "context witness with evidence should be fresh by default");
   assert(contextWitness.usableFor !== "request_blocking", "context witness must not be request blocking");
   assert(contextWitness.permissionToContinue === false, "context witness must not grant permission to continue");
@@ -130,6 +130,18 @@ function main() {
   assert(planStore.envelopeCount === 2, "plan store should dedupe update ids");
   assert(planStore.acceptedEnvelopeCount === 1, "plan store should count accepted envelopes");
   assert(planStore.blockedEnvelopeCount === 1, "plan store should count blocked envelopes");
+
+  const appendedPlanStore = buildPlanProjectionStore({
+    projectId,
+    workThreadId: "work_thread_control_tool_fixture",
+    threadId,
+    planId: "plan_control_tool_fixture",
+    envelopes: [plan],
+    envelope: stalePlan,
+    nowMs: 0,
+  });
+  assert(appendedPlanStore.envelopeCount === 2, "plan store should append single envelope to existing envelope array");
+  assert(appendedPlanStore.blockedEnvelopeCount === 1, "appended blocked envelope should remain visible as evidence");
 
   const viewImage = buildViewImageProjection({
     projectId,

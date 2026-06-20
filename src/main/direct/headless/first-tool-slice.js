@@ -342,13 +342,13 @@ function validateToolArguments(toolName, args) {
     const steps = Array.isArray(args.steps)
       ? args.steps
         .filter(isPlainObject)
-        .map((step, index) => ({
-          stepId: normalizeString(step.stepId || step.id, `step_${index + 1}`),
-          text: normalizeString(step.text || step.step, ""),
-          status: ["pending", "in_progress", "completed_in_plan", "blocked", "deferred"].includes(normalizeString(step.status, "pending"))
-            ? normalizeString(step.status, "pending")
-            : "pending",
-        }))
+        .map((step, index) => {
+          return {
+            stepId: normalizeString(step.stepId || step.id, `step_${index + 1}`),
+            text: normalizeString(step.text || step.step, ""),
+            status: normalizePlanArgumentStatus(step.status, "pending"),
+          };
+        })
         .filter((step) => step.text)
       : [];
     return {
@@ -357,11 +357,17 @@ function validateToolArguments(toolName, args) {
       mutationKind: ["replace_plan", "append_steps", "update_step_status", "clear_plan"].includes(mutationKind) ? mutationKind : "replace_plan",
       expectedBeforePlanDigest: normalizeString(args.expectedBeforePlanDigest, ""),
       stepId: normalizeString(args.stepId, ""),
-      stepStatus: ["pending", "in_progress", "completed_in_plan", "blocked", "deferred"].includes(stepStatus) ? stepStatus : "",
+      stepStatus: stepStatus ? normalizePlanArgumentStatus(stepStatus, "") : "",
       steps,
     };
   }
   return {};
+}
+
+function normalizePlanArgumentStatus(value, fallback = "pending") {
+  const rawStatus = normalizeString(value, fallback);
+  const status = rawStatus === "completed" ? "completed_in_plan" : rawStatus;
+  return ["pending", "in_progress", "completed_in_plan", "blocked", "deferred"].includes(status) ? status : fallback;
 }
 
 function buildDirectFirstToolCallGate(options = {}) {
@@ -471,13 +477,21 @@ function buildContextRemainingResultEnvelope(options = {}) {
 function buildUpdatePlanResultEnvelope(options = {}) {
   const gate = isPlainObject(options.gate) ? options.gate : buildDirectFirstToolCallGate(options);
   const parsed = isPlainObject(gate.parsedArguments) ? gate.parsedArguments : {};
+  const planStoreInput = isPlainObject(options.planStoreInput) ? options.planStoreInput : {};
+  const explicitPlanInput = isPlainObject(options.planInput) ? options.planInput : {};
   const planInput = {
-    ...(options.planInput || {}),
+    currentPlan: isPlainObject(explicitPlanInput.currentPlan)
+      ? explicitPlanInput.currentPlan
+      : isPlainObject(planStoreInput.currentPlan)
+        ? planStoreInput.currentPlan
+        : undefined,
+    currentPlanDigest: normalizeString(explicitPlanInput.currentPlanDigest, normalizeString(planStoreInput.currentPlanDigest, "")),
+    ...explicitPlanInput,
     ...parsed,
-    projectId: normalizeString(options.projectId, options.planInput?.projectId || ""),
-    workThreadId: normalizeString(options.workThreadId, options.planInput?.workThreadId || ""),
-    threadId: normalizeString(options.threadId, options.planInput?.threadId || ""),
-    sourceTurnId: normalizeString(options.turnId, options.planInput?.sourceTurnId || options.planInput?.turnId || ""),
+    projectId: normalizeString(options.projectId, explicitPlanInput.projectId || ""),
+    workThreadId: normalizeString(options.workThreadId, explicitPlanInput.workThreadId || ""),
+    threadId: normalizeString(options.threadId, explicitPlanInput.threadId || ""),
+    sourceTurnId: normalizeString(options.turnId, explicitPlanInput.sourceTurnId || explicitPlanInput.turnId || ""),
     actorKind: "resident_model",
     planOwner: "resident_model",
     planAuthority: "assistant_working_plan",
@@ -485,7 +499,7 @@ function buildUpdatePlanResultEnvelope(options = {}) {
   };
   const planEnvelope = buildPlanProjectionMutationEnvelope(planInput);
   const planStore = buildPlanProjectionStore({
-    ...(options.planStoreInput || {}),
+    ...planStoreInput,
     projectId: planInput.projectId,
     workThreadId: planInput.workThreadId,
     threadId: planInput.threadId,

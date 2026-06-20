@@ -317,6 +317,61 @@ assert.equal(updatePlanEnvelope.providerOutput.mutatesWorkThreadTruth, false, "p
 assert.equal(updatePlanEnvelope.providerOutput.provesCompletion, false, "plan result must not prove completion");
 assert.equal(updatePlanEnvelope.contextAdmission.admittedAs, "plan_evidence", "plan result should enter only as plan evidence");
 
+const appendPlanGate = buildDirectFirstToolCallGate({
+  slice,
+  toolCall: {
+    itemId: "tool_item_plan_append",
+    callId: "call_plan_append",
+    name: "update_plan",
+    arguments: JSON.stringify({
+      planId: "plan_first_slice_fixture",
+      mutationKind: "append_steps",
+      expectedBeforePlanDigest: updatePlanEnvelope.planStore.currentPlanDigest,
+      steps: [{ stepId: "step_b", text: "Append without dropping prior step", status: "completed" }],
+    }),
+  },
+});
+const appendPlanEnvelope = buildUpdatePlanResultEnvelope({
+  gate: appendPlanGate,
+  projectId: "project_first_tool_slice_fixture",
+  workThreadId: "work_thread_first_tool_slice_fixture",
+  threadId: "thread_first_tool_slice_fixture",
+  turnId: "turn_first_tool_slice_fixture",
+  planStoreInput: updatePlanEnvelope.planStore,
+  nowMs: 0,
+});
+assert.equal(appendPlanEnvelope.status, "ready_for_provider_continuation", "follow-up append should be accepted against current plan digest");
+assert.equal(appendPlanEnvelope.planStore.currentPlan.steps.length, 2, "follow-up append should preserve existing steps");
+assert.equal(appendPlanEnvelope.planStore.currentPlan.steps[1].status, "completed_in_plan", "completed should normalize to completed_in_plan in arguments");
+
+const statusPlanGate = buildDirectFirstToolCallGate({
+  slice,
+  toolCall: {
+    itemId: "tool_item_plan_status",
+    callId: "call_plan_status",
+    name: "update_plan",
+    arguments: JSON.stringify({
+      planId: "plan_first_slice_fixture",
+      mutationKind: "update_step_status",
+      expectedBeforePlanDigest: appendPlanEnvelope.planStore.currentPlanDigest,
+      stepId: "step_a",
+      stepStatus: "completed",
+    }),
+  },
+});
+const statusPlanEnvelope = buildUpdatePlanResultEnvelope({
+  gate: statusPlanGate,
+  projectId: "project_first_tool_slice_fixture",
+  workThreadId: "work_thread_first_tool_slice_fixture",
+  threadId: "thread_first_tool_slice_fixture",
+  turnId: "turn_first_tool_slice_fixture",
+  planStoreInput: appendPlanEnvelope.planStore,
+  nowMs: 0,
+});
+assert.equal(statusPlanEnvelope.status, "ready_for_provider_continuation", "follow-up status update should be accepted against current plan digest");
+assert.equal(statusPlanEnvelope.planStore.currentPlan.steps.length, 2, "status update should preserve existing step list");
+assert.equal(statusPlanEnvelope.planStore.currentPlan.steps[0].status, "completed_in_plan", "completed status update should normalize to completed_in_plan");
+
 const stalePlanGate = buildDirectFirstToolCallGate({
   slice,
   toolCall: {

@@ -133,7 +133,7 @@ function buildContextRemainingWitness(input = {}) {
   const computedPressure = Number.isFinite(pressureInput)
     ? pressureInput
     : Number.isFinite(contextWindow) && contextWindow > 0 && Number.isFinite(usedTokens)
-      ? Math.max(0, Math.min(100, Number(((usedTokens / contextWindow) * 100).toFixed(2))))
+      ? Math.max(0, Math.min(100, Math.round((usedTokens / contextWindow) * 10000) / 100))
       : null;
   const observedAt = normalizeString(input.observedAt, nowIso(input.nowMs));
   const staleAfterMs = input.staleAfterMs === null || input.staleAfterMs === undefined ? null : Number(input.staleAfterMs);
@@ -182,16 +182,18 @@ function buildContextRemainingWitness(input = {}) {
 
 function normalizePlanStep(step, index = 0) {
   const basis = isPlainObject(step) ? step : { text: step };
-  const requestedStatus = normalizeString(basis.status || basis.stepStatus, "pending");
-  const status = requestedStatus === "completed"
-    ? "completed_in_plan"
-    : normalizeEnum(requestedStatus, PLAN_STEP_STATUSES, "pending");
+  const status = normalizePlanStepStatus(basis.status || basis.stepStatus, "pending");
   return {
     stepId: boundedString(basis.stepId || basis.id || `step_${index + 1}`, 80),
     text: boundedString(basis.text || basis.step || basis.label || "", 420),
     status,
     owner: normalizeEnum(basis.owner || basis.planOwner, PLAN_OWNERS, "resident_model"),
   };
+}
+
+function normalizePlanStepStatus(value, fallback = "pending") {
+  const requestedStatus = normalizeString(value, fallback);
+  return normalizeEnum(requestedStatus === "completed" ? "completed_in_plan" : requestedStatus, PLAN_STEP_STATUSES, fallback);
 }
 
 function normalizePlanSteps(value) {
@@ -222,7 +224,7 @@ function applyPlanMutation(beforePlan, input = {}, blocked = false) {
   if (mutationKind === "append_steps") return { ...beforePlan, steps: [...beforePlan.steps, ...nextSteps] };
   if (mutationKind === "update_step_status") {
     const stepId = boundedString(input.stepId || nextSteps[0]?.stepId, 80);
-    const stepStatus = normalizeEnum(input.stepStatus || nextSteps[0]?.status, PLAN_STEP_STATUSES, "pending");
+    const stepStatus = normalizePlanStepStatus(input.stepStatus || nextSteps[0]?.status, "pending");
     return {
       ...beforePlan,
       steps: beforePlan.steps.map((step) => (step.stepId === stepId ? { ...step, status: stepStatus } : step)),
@@ -290,7 +292,7 @@ function buildPlanProjectionMutationEnvelope(input = {}) {
     sourceTurnId: normalizeString(input.sourceTurnId || input.turnId, ""),
     beforePlanDigest,
     afterPlanDigest: digestPlanState(afterPlan),
-    stepStatus: normalizeEnum(input.stepStatus || input.steps?.[0]?.status, PLAN_STEP_STATUSES, "pending"),
+    stepStatus: normalizePlanStepStatus(input.stepStatus || input.steps?.[0]?.status, "pending"),
     mutationKind: blocked ? "blocked" : requestedMutationKind,
     blocked,
     blockerCodes: blockers.sort((a, b) => a.localeCompare(b)),
@@ -328,7 +330,7 @@ function buildPlanProjectionMutationEnvelope(input = {}) {
 function buildPlanProjectionStore(input = {}) {
   input = isPlainObject(input) ? input : {};
   const sourceEnvelopes = Array.isArray(input.envelopes)
-    ? input.envelopes
+    ? (input.envelope ? [...input.envelopes, input.envelope] : input.envelopes)
     : [input.envelope || buildPlanProjectionMutationEnvelope(input)];
   const envelopes = [];
   const seenUpdates = new Set();
