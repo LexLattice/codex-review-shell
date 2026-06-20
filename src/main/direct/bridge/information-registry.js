@@ -1128,6 +1128,35 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "Resident permission requests are never grants: broad/session/project/workspace/full-access widening is blocked, single-action requests must name a target capability and proposed call id, and a separate operator decision artifact is required before any future authority mutation.",
   },
   {
+    id: "ic53.image-view-projection-tool",
+    name: "Wave 17 image metadata projection tool",
+    role: "authority_gate",
+    implementationState: "implemented",
+    directPathPosture: "keep_guarded",
+    sourceFiles: [
+      "src/main/direct/tools/control-perception-decision-substrate.js",
+      "src/main/direct/headless/first-tool-slice.js",
+      "scripts/direct-image-view-projection-tool-regression.mjs",
+      "scripts/direct-control-tool-substrate-regression.mjs",
+      "docs/DIRECT_WAVE17_HUMAN_CONTROL_READONLY_TOOLS_SPEC.md",
+      "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md",
+    ],
+    ontology: ontologyShape(
+      [
+        "image_view_staging_envelope",
+        "direct_view_image_projection",
+        "direct_first_tool_result_envelope",
+      ],
+      "harness",
+      {
+        identityFields: ["projectionId", "pathEvidenceKey", "threadId", "turnId", "gateId", "callId"],
+        schema: "direct_view_image_projection@1",
+      }
+    ),
+    bridgeFit: "Promotes guarded view_image into a first-slice resident-callable declaration when activated, returning contained image metadata, type evidence, decoded-cap witnesses, and renderer-safe perception posture.",
+    realignment: "Wave 17 view_image never sends provider image payloads, never claims model pixel vision, never renders inline SVG, and exposes only evidence keys/metadata rather than raw paths or image bytes.",
+  },
+  {
     id: "ic33.odeu-live-capability-artifact-kernel",
     name: "ODEU live-capability artifact/source/digest/raw-exposure kernel",
     role: "canonical_evidence",

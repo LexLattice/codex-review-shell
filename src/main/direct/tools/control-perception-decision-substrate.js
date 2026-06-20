@@ -34,6 +34,15 @@ const PROVIDER_VISIBILITY_EVIDENCE = new Set([
   "image_payload_accepted_provider_event",
   "unsupported",
 ]);
+const IMAGE_VIEW_STAGING_ENVELOPE_SCHEMA = "image_view_staging_envelope@1";
+const IMAGE_VIEW_STATUSES = new Set(["metadata_only", "blocked"]);
+const IMAGE_RESIDENT_PERCEPTION_LEVELS = new Set(["metadata_only", "renderer_preview_only", "not_available"]);
+const IMAGE_TYPE_RISKS = new Set(["normal", "active_content", "extension_mismatch", "binary_unknown", "unsupported", "too_large", "path_escape"]);
+const IMAGE_SAFE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "image/gif", "image/bmp"]);
+const IMAGE_ACTIVE_MIME_TYPES = new Set(["image/svg+xml"]);
+const DEFAULT_IMAGE_MAX_DECODED_PIXELS = 40_000_000;
+const DEFAULT_IMAGE_MAX_WIDTH = 20_000;
+const DEFAULT_IMAGE_MAX_HEIGHT = 20_000;
 const HUMAN_DECISION_TOOL_KINDS = new Set(["request_user_input", "request_permissions"]);
 const HUMAN_DECISION_STATUSES = new Set(["pending", "answered", "expired", "cancelled", "superseded", "stale_reply_rejected"]);
 const HUMAN_DECISION_PENDING_POLICIES = new Set(["single_pending_per_turn", "single_pending_per_work_thread", "multiple_allowed"]);
@@ -75,6 +84,11 @@ function scalarString(value) {
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value);
   return "";
+}
+
+function normalizeStringList(values, fallback = []) {
+  const source = Array.isArray(values) ? values : fallback;
+  return [...new Set(source.map((value) => normalizeString(value, "")).filter(Boolean))].sort((a, b) => a.localeCompare(b));
 }
 
 function stableStringify(value) {
@@ -447,34 +461,135 @@ function buildLegacyPlanArtifact(input = {}) {
   return plan;
 }
 
-function buildViewImageProjection(input = {}) {
-  const providerVisibilityState = normalizeEnum(input.providerVisibilityState, PROVIDER_VISIBILITY_STATES, "metadata_only");
-  const providerVisibilityEvidence = normalizeEnum(
-    input.providerVisibilityEvidence,
-    PROVIDER_VISIBILITY_EVIDENCE,
-    providerVisibilityState === "unsupported" ? "unsupported" : "not_sent",
+function imageMimeFromName(name = "") {
+  const lower = normalizeString(name, "").toLowerCase();
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  if (lower.endsWith(".webp")) return "image/webp";
+  if (lower.endsWith(".gif")) return "image/gif";
+  if (lower.endsWith(".bmp")) return "image/bmp";
+  if (lower.endsWith(".svg")) return "image/svg+xml";
+  return "";
+}
+
+function positiveNumber(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) && number > 0 ? number : 0;
+}
+
+function buildImageTypeEvidence(input = {}, displayName = "") {
+  const extensionMime = boundedString(input.extensionMime || imageMimeFromName(displayName), 120);
+  const browserMime = boundedString(input.browserMime || input.mimeType, 120);
+  const sniffedMime = boundedString(input.sniffedMime, 120);
+  const finalMime = boundedString(sniffedMime || browserMime || extensionMime || "unknown", 120);
+  const mismatch = Boolean(
+    (extensionMime && finalMime !== "unknown" && extensionMime !== finalMime)
+    || (browserMime && finalMime !== "unknown" && browserMime !== finalMime)
   );
+  let risk = "normal";
+  if (IMAGE_ACTIVE_MIME_TYPES.has(extensionMime) || IMAGE_ACTIVE_MIME_TYPES.has(browserMime) || IMAGE_ACTIVE_MIME_TYPES.has(sniffedMime) || IMAGE_ACTIVE_MIME_TYPES.has(finalMime)) risk = "active_content";
+  else if (mismatch) risk = "extension_mismatch";
+  else if (finalMime === "unknown") risk = "binary_unknown";
+  else if (!IMAGE_SAFE_MIME_TYPES.has(finalMime)) risk = "unsupported";
+  return {
+    extensionMime,
+    browserMime,
+    sniffedMime,
+    finalMime,
+    mismatch,
+    risk: normalizeEnum(risk, IMAGE_TYPE_RISKS, "unsupported"),
+  };
+}
+
+function buildImageDecodeCaps(input = {}) {
+  const width = positiveNumber(input.width);
+  const height = positiveNumber(input.height);
+  const decodedPixelCount = width > 0 && height > 0 ? width * height : 0;
+  const maxDecodedPixels = positiveNumber(input.maxDecodedPixels) || DEFAULT_IMAGE_MAX_DECODED_PIXELS;
+  const maxWidth = positiveNumber(input.maxWidth) || DEFAULT_IMAGE_MAX_WIDTH;
+  const maxHeight = positiveNumber(input.maxHeight) || DEFAULT_IMAGE_MAX_HEIGHT;
+  const capsApplied = input.decodeCapsApplied !== false;
+  const withinCaps = !capsApplied
+    || (
+      (!width || width <= maxWidth)
+      && (!height || height <= maxHeight)
+      && (!decodedPixelCount || decodedPixelCount <= maxDecodedPixels)
+    );
+  return {
+    capsApplied,
+    width,
+    height,
+    decodedPixelCount,
+    maxDecodedPixels,
+    maxWidth,
+    maxHeight,
+    withinCaps,
+  };
+}
+
+function buildViewImageProjection(input = {}) {
+  input = isPlainObject(input) ? input : {};
+  const displayName = boundedString(input.displayName || input.fileName, 160);
+  const typeEvidence = buildImageTypeEvidence(input, displayName);
+  const decodeCaps = buildImageDecodeCaps(input);
+  const pathContained = input.pathContained !== false;
+  const providerPayloadRequested = input.providerPayloadRequested === true
+    || input.imagePayloadRequested === true
+    || normalizeString(input.providerVisibilityState, "") === "image_payload_sent";
+  const blockerCodes = [];
+  if (!pathContained) blockerCodes.push("image_path_not_contained");
+  if (providerPayloadRequested) blockerCodes.push("provider_image_payload_unsupported");
+  if (typeEvidence.risk === "active_content") blockerCodes.push("image_active_content_blocked");
+  if (typeEvidence.risk === "extension_mismatch") blockerCodes.push("image_type_evidence_mismatch");
+  if (typeEvidence.risk === "unsupported") blockerCodes.push("image_mime_unsupported");
+  if (typeEvidence.risk === "binary_unknown") blockerCodes.push("image_mime_unknown");
+  if (!decodeCaps.withinCaps) blockerCodes.push("image_decoded_pixel_cap_exceeded");
+  const requestedStatus = normalizeEnum(input.status, IMAGE_VIEW_STATUSES, "");
+  const status = blockerCodes.length ? "blocked" : (requestedStatus || "metadata_only");
+  if (status === "blocked" && !blockerCodes.length) blockerCodes.push("image_explicitly_blocked");
+  const rendererPreviewAvailable = input.rendererPreviewAvailable === true && status === "metadata_only" && typeEvidence.risk === "normal";
+  const residentPerceptionLevel = normalizeEnum(
+    input.residentPerceptionLevel,
+    IMAGE_RESIDENT_PERCEPTION_LEVELS,
+    rendererPreviewAvailable ? "renderer_preview_only" : "metadata_only",
+  );
+  const providerVisibilityState = providerPayloadRequested || status === "blocked" ? "unsupported" : "metadata_only";
+  const providerVisibilityEvidence = providerPayloadRequested || status === "blocked" ? "unsupported" : "not_sent";
   const projection = {
     schema: DIRECT_VIEW_IMAGE_PROJECTION_SCHEMA,
+    stagingEnvelopeSchema: IMAGE_VIEW_STAGING_ENVELOPE_SCHEMA,
     projectionId: normalizeString(input.projectionId, ""),
     projectId: normalizeString(input.projectId, ""),
     threadId: normalizeString(input.threadId, ""),
     turnId: normalizeString(input.turnId, ""),
+    status,
+    blockerCodes: normalizeStringList(blockerCodes),
     pathEvidenceKey: boundedString(input.pathEvidenceKey, 180),
-    displayName: boundedString(input.displayName || input.fileName, 160),
+    displayName,
     displayPath: boundedString(input.displayPath, 240),
-    mimeType: boundedString(input.mimeType || input.sniffedMime || "unknown", 120),
-    sizeBytes: Number(input.sizeBytes || 0),
-    width: Number(input.width || 0),
-    height: Number(input.height || 0),
-    rendererPreviewAvailable: input.rendererPreviewAvailable === true,
-    providerVisibilityState,
-    providerVisibilityEvidence,
+    mimeType: typeEvidence.finalMime,
+    sizeBytes: positiveNumber(input.sizeBytes),
+    width: decodeCaps.width,
+    height: decodeCaps.height,
+    typeEvidence,
+    decodeCaps,
+    rendererPreviewAvailable,
+    residentPerceptionLevel,
+    providerVisibilityState: normalizeEnum(providerVisibilityState, PROVIDER_VISIBILITY_STATES, "unsupported"),
+    providerVisibilityEvidence: normalizeEnum(providerVisibilityEvidence, PROVIDER_VISIBILITY_EVIDENCE, "unsupported"),
     metadataStrippingPolicy: normalizeString(input.metadataStrippingPolicy, "not_payload_sent"),
-    decodeCapsApplied: input.decodeCapsApplied !== false,
-    pathContained: input.pathContained !== false,
-    modelSawPixels: providerVisibilityState === "image_payload_sent" && providerVisibilityEvidence === "image_payload_accepted_provider_event",
-    imagePayloadSent: providerVisibilityState === "image_payload_sent",
+    decodeCapsApplied: decodeCaps.capsApplied,
+    pathContained,
+    providerImagePayloadSupported: false,
+    providerPayloadRequested,
+    payloadUnsupportedWitness: {
+      requested: providerPayloadRequested,
+      supported: false,
+      reason: providerPayloadRequested ? "provider_image_payload_unsupported_wave17" : "not_requested",
+    },
+    inlineSvgRendered: false,
+    modelSawPixels: false,
+    imagePayloadSent: false,
     providerUseProven: false,
     rawPathIncluded: false,
     rawImageBytesIncluded: false,
@@ -854,6 +969,15 @@ function assertControlToolSubstrateSafe(status = {}) {
   if (tools.viewImage?.rawImageBytesIncluded !== false || tools.viewImage?.rawPathIncluded !== false) {
     throw new Error("direct_control_tool_substrate_image_raw_exposure");
   }
+  if (
+    tools.viewImage?.modelSawPixels !== false
+    || tools.viewImage?.imagePayloadSent !== false
+    || tools.viewImage?.providerImagePayloadSupported !== false
+    || tools.viewImage?.inlineSvgRendered !== false
+    || tools.viewImage?.providerVisibilityState === "image_payload_sent"
+  ) {
+    throw new Error("direct_control_tool_substrate_image_payload_visibility_leak");
+  }
   return true;
 }
 
@@ -868,6 +992,7 @@ module.exports = {
   DIRECT_NEW_CONTEXT_BLOCKED_PROJECTION_SCHEMA,
   DIRECT_PLAN_ARTIFACT_SCHEMA,
   DIRECT_VIEW_IMAGE_PROJECTION_SCHEMA,
+  IMAGE_VIEW_STAGING_ENVELOPE_SCHEMA,
   PLAN_PROJECTION_MUTATION_ENVELOPE_SCHEMA,
   PLAN_PROJECTION_STORE_SCHEMA,
   assertControlToolSubstrateSafe,
