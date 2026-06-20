@@ -37,11 +37,18 @@ const proof = buildExternalWave18UsabilityGate({
   threadId: "thread_wave18_gate_fixture",
   turnId: "turn_wave18_gate_fixture",
 }, { nowMs });
+const repeatedProof = buildExternalWave18UsabilityGate({
+  projectId: "project_wave18_gate_fixture",
+  workThreadId: "work_thread_wave18_gate_fixture",
+  threadId: "thread_wave18_gate_fixture",
+  turnId: "turn_wave18_gate_fixture",
+}, { nowMs });
 
 assert.equal(proof.schema, EXTERNAL_WAVE18_USABILITY_PROOF_SCHEMA, "proof schema mismatch");
 validateExternalWave18UsabilityGate(proof);
 assert.equal(proof.status, "pass", "Wave 18 proof should pass");
 assert.equal(proof.wave, "18", "wave mismatch");
+assert.equal(proof.proofDigest, repeatedProof.proofDigest, "fixed-time proof digest should be deterministic");
 
 const declaredTools = new Set(proof.residentDeclaration.declaredTools);
 for (const required of ["tool_search", "list_mcp_resources", "list_mcp_resource_templates"]) {
@@ -103,6 +110,12 @@ for (const row of proof.negativeScenarioMatrix.rows) {
   assert.equal(row.pluginInstallStarted, false, `negative row started plugin install: ${row.rowId}`);
   assert.equal(row.rawExternalPayloadIncluded, false, `negative row included raw payload: ${row.rowId}`);
 }
+assert(
+  proof.negativeScenarioMatrix.rows
+    .find((row) => row.rowId === "multiple_mcp_servers_without_selector_blocked")
+    ?.blockerCodes.includes("mcp_server_ambiguous"),
+  "ambiguous selector negative row should exercise mcp_server_ambiguous"
+);
 
 const witnessByTool = new Map(proof.residentWitnessRows.map((row) => [row.toolName, row]));
 assert.equal(witnessByTool.get("tool_search").capabilityState, "callable_now");

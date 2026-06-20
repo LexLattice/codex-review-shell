@@ -228,7 +228,7 @@ function buildCoreArtifacts(context, nowMs) {
     excerptByteLimit: 1024,
     generatedAt,
   });
-  const discoveryAdmission = buildExternalResultContextAdmission({ policy, envelope: discoveryEnvelope });
+  const discoveryAdmission = buildExternalResultContextAdmission({ policy, envelope: discoveryEnvelope, nowMs });
   const readEnvelope = buildMcpResourceReadEnvelope({
     profile,
     projectId: context.projectId,
@@ -243,17 +243,18 @@ function buildCoreArtifacts(context, nowMs) {
     nowMs,
   });
   validateMcpResourceReadEnvelope(readEnvelope);
-  const readAdmission = buildExternalResultContextAdmission({ policy, envelope: readEnvelope });
+  const readAdmission = buildExternalResultContextAdmission({ policy, envelope: readEnvelope, nowMs });
 
-  const missingServerEnvelope = buildMcpResourceReadEnvelope({
+  const ambiguousSelectorEnvelope = buildMcpResourceReadEnvelope({
     profile,
     projectId: context.projectId,
     workThreadId: context.workThreadId,
-    serverIdentityId: "mcp_server_unknown_fixture",
-    resourceUri: "mcp://fixture/resource/missing-server",
+    serverIdentityId: "mcp_server_project_fixture",
+    resourceUri: "mcp://fixture/resource/ambiguous-selector",
     mimeType: "text/plain",
-    payload: "should not be admitted",
-    callId: "call_wave18_missing_server",
+    payload: "ambiguous selector payload should not be admitted",
+    blockerCodes: ["mcp_server_ambiguous"],
+    callId: "call_wave18_ambiguous_selector",
   });
   const disabledServerEnvelope = buildMcpResourceReadEnvelope({
     profile,
@@ -285,11 +286,12 @@ function buildCoreArtifacts(context, nowMs) {
     payload: "x".repeat(300000),
     callId: "call_wave18_oversize_resource",
   });
-  const blockedAdmission = buildExternalResultContextAdmission({ policy, envelope: disabledServerEnvelope });
-  const binaryAdmission = buildExternalResultContextAdmission({ policy, envelope: binaryEnvelope });
+  const blockedAdmission = buildExternalResultContextAdmission({ policy, envelope: disabledServerEnvelope, nowMs });
+  const binaryAdmission = buildExternalResultContextAdmission({ policy, envelope: binaryEnvelope, nowMs });
   const noProviderAdmission = buildExternalResultContextAdmission({
-    policy: buildExternalResultContextAdmissionPolicy({ providerContinuationMode: "not_sent" }),
+    policy: buildExternalResultContextAdmissionPolicy({ providerContinuationMode: "not_sent", generatedAt }),
     envelope: readEnvelope,
+    nowMs,
   });
 
   return {
@@ -307,7 +309,7 @@ function buildCoreArtifacts(context, nowMs) {
     discoveryAdmission,
     readEnvelope,
     readAdmission,
-    missingServerEnvelope,
+    ambiguousSelectorEnvelope,
     disabledServerEnvelope,
     binaryEnvelope,
     oversizeEnvelope,
@@ -423,7 +425,7 @@ function negativeRow(rowId, label, artifactRef, expectedOutcome, blockers = []) 
 function buildNegativeMatrix(context, artifacts, generatedAt) {
   const rows = [
     negativeRow("discovered_as_declared_collapse_blocked", "Discovered descriptors cannot become resident declarations", evidenceRef("external_tool_declaration", artifacts.declaration.declarationId, "Resident declaration", artifacts.declaration.declarationDigest), "not_declared", ["read_mcp_resource_not_declared_in_wave18"]),
-    negativeRow("multiple_mcp_servers_without_selector_blocked", "MCP resource listing without exact server selector is blocked", evidenceRef("mcp_resource_read_envelope", artifacts.missingServerEnvelope.envelopeId, "Missing server read", artifacts.missingServerEnvelope.envelopeDigest), "blocked", artifacts.missingServerEnvelope.blockerCodes),
+    negativeRow("multiple_mcp_servers_without_selector_blocked", "MCP resource read without an unambiguous exact server selector is blocked", evidenceRef("mcp_resource_read_envelope", artifacts.ambiguousSelectorEnvelope.envelopeId, "Ambiguous selector read", artifacts.ambiguousSelectorEnvelope.envelopeDigest), "blocked", artifacts.ambiguousSelectorEnvelope.blockerCodes),
     negativeRow("stale_or_unknown_server_identity_blocked", "Disabled/stale/unknown server identity blocks read and admission", evidenceRef("mcp_resource_read_envelope", artifacts.disabledServerEnvelope.envelopeId, "Disabled server read", artifacts.disabledServerEnvelope.envelopeDigest), "blocked", artifacts.disabledServerEnvelope.blockerCodes),
     negativeRow("raw_endpoint_token_leak_blocked", "Endpoint, credential, URI query token, and bearer payload are not visible", evidenceRef("external_result_context_admission", artifacts.readAdmission.admissionId, "Redacted read admission", artifacts.readAdmission.admissionDigest), "redacted", ["raw_uri_false", "raw_secret_false"]),
     negativeRow("raw_resource_uri_payload_leak_blocked", "Raw resource URI and full payload do not enter resident/provider projection", evidenceRef("mcp_resource_read_envelope", artifacts.readEnvelope.envelopeId, "MCP read envelope", artifacts.readEnvelope.envelopeDigest), "sanitized_projection_only", ["raw_resource_uri_false", "payload_excerpt_only"]),
