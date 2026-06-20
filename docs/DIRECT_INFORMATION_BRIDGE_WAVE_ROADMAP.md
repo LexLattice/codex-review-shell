@@ -4355,7 +4355,7 @@ flattening child work into the primary transcript.
 
 ## Wave 16: Sub-Agent Lifecycle, Follow-Up, Compatibility, And Transcript Maturity
 
-Status: planned.
+Status: active; PR 97 in review.
 
 Dedicated spec:
 
@@ -4397,7 +4397,7 @@ no lifecycle mutation without per-call authority
 
 | PR | Status | Branch | Purpose | Planned deliverable | Explicit non-goals |
 | --- | --- | --- | --- | --- | --- |
-| `#97` | planned | `codex/direct-subagent-lifecycle-compatibility` | Lifecycle state model and compatibility mapper | Direct-native lifecycle/readiness/control/transport/mailbox/transcript/usage/conflict axes, state precedence law, compatibility-only legacy mapping rows, negative tests for alias bypass | No send/follow-up or lifecycle mutation |
+| `#97` | in review | `codex/direct-subagent-lifecycle-compatibility` | Lifecycle state model and compatibility mapper | Direct-native lifecycle/readiness/control/transport/mailbox/transcript/usage/conflict axes, state precedence law, compatibility-only legacy mapping rows, negative tests for alias bypass | No send/follow-up or lifecycle mutation |
 | `#98` | planned | `codex/direct-subagent-transcript-projection-v2` | Child transcript projection maturity | Turn-activity, projection-only full-history, and result-summary projections with visibility metadata, pagination, author identity, source refs, and raw-exposure sentinels | No primary transcript flattening, context admission of full child history, or right-pane redesign |
 | `#99` | planned | `codex/direct-subagent-interaction-policy` | Interaction policy and no-interference envelope | Actor/target/scope policy witness, declaration/catalog removal or blocked-result proof, blocked-control projection, resident catalog policy rows, self-binding negative tests | No follow-up or lifecycle transport |
 | `#100` | planned | `codex/direct-subagent-followup-send` | Follow-up and send controlled continuation | `send_message` / `followup_task` plans, authority decisions, mailbox ledger, delivery support/mode witness, idempotency, stale-target blocking, summary result admission | No fallback spawn, close/interrupt/resume, or child tool inheritance |

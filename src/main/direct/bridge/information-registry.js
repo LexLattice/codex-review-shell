@@ -1211,6 +1211,35 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     bridgeFit: "Projects the PR 95 resident-callable sub-agent slice to the operator as primary transcript activity summaries, proof/status rows, a manual usability gate, and child usage analytics hook without minting proof.",
     realignment: "This PR 96 slice is projection-only: it reads PR 95 proof/declaration artifacts, keeps operatorCallable=false, blocks interference/lifecycle expansion, does not inject child transcripts, and keeps raw prompt/result/provider payload flags false.",
   },
+  {
+    id: "ic43.sub-agent-lifecycle-compatibility",
+    name: "Wave 16 sub-agent lifecycle state and compatibility mapper",
+    role: "observability_surface",
+    implementationState: "implemented",
+    directPathPosture: "keep_guarded",
+    sourceFiles: [
+      "src/main/direct/agents/sub-agent-lifecycle-compatibility.js",
+      "scripts/direct-sub-agent-lifecycle-compatibility-regression.mjs",
+      "docs/DIRECT_WAVE16_SUB_AGENT_LIFECYCLE_FOLLOWUP_TRANSCRIPT_SPEC.md",
+      "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md",
+    ],
+    ontology: ontologyShape(
+      [
+        "sub_agent_lifecycle_compatibility_packet",
+        "agent_lifecycle_state_model",
+        "agent_lifecycle_authority_matrix",
+        "agent_compatibility_name_mapper",
+        "agent_compatibility_bypass_probe",
+      ],
+      "harness",
+      {
+        identityFields: ["packetId", "stateModelId", "matrixId", "mapperId", "probeId"],
+        schema: "sub_agent_lifecycle_compatibility_packet@1",
+      }
+    ),
+    bridgeFit: "Adds PR 97 direct-native child lifecycle/readiness axes, state precedence, compatibility-only legacy mappings, and alias-bypass probes without making lifecycle controls live.",
+    realignment: "This PR 97 slice is projection/status only: legacy names map one-way to direct-native rows, compatibility cannot be source authority, and provider transport, lifecycle mutation, workspace mutation, and primary transcript injection remain false.",
+  },
 ]);
 
 function isPlainObject(value) {
