@@ -4355,7 +4355,7 @@ flattening child work into the primary transcript.
 
 ## Wave 16: Sub-Agent Lifecycle, Follow-Up, Compatibility, And Transcript Maturity
 
-Status: active; PR 99 in review.
+Status: complete through PR 102.
 
 Dedicated spec:
 
@@ -4402,7 +4402,7 @@ no lifecycle mutation without per-call authority
 | `#99` | merged | `codex/direct-subagent-interaction-policy` | Interaction policy and no-interference envelope | Actor/target/scope policy witness, declaration/catalog removal or blocked-result proof, blocked-control projection, resident catalog policy rows, self-binding negative tests | No follow-up or lifecycle transport |
 | `#100` | merged | `codex/direct-subagent-followup-send` | Follow-up and send controlled continuation | `send_message` / `followup_task` plans, authority decisions, mailbox ledger, delivery support/mode witness, idempotency, stale-target blocking, summary result admission | No fallback spawn, close/interrupt/resume, or child tool inheritance |
 | `#101` | merged | `codex/direct-subagent-lifecycle-controls` | Operator-gated lifecycle mutation controls | Close/interrupt/resume authority gates, before/after transition ledger, cancellation/resume witnesses, closeMode rows, unsupported-provider rows | No simulated provider support, resident-callable lifecycle mutation by default, or mutation without per-call authority |
-| `#102` | in review | `codex/direct-subagent-wave16-usability-gate` | Wave 16 usability gate and headless scenario suite | Usability proof, resident/operator witness rows, manual gate, negative scenario matrix, headless scenarios, analytics hooks, roadmap/audit completion update | No Wave 17 human/control tools or Wave 18 external discovery tools |
+| `#102` | merged | `codex/direct-subagent-wave16-usability-gate` | Wave 16 usability gate and headless scenario suite | Usability proof, resident/operator witness rows, manual gate, negative scenario matrix, headless scenarios, analytics hooks, roadmap/audit completion update | No Wave 17 human/control tools or Wave 18 external discovery tools |
 
 Wave 16 completion gate:
 
@@ -4411,6 +4411,65 @@ Resident and operator can see lifecycle, compatibility, transcript, policy, and
 follow-up/lifecycle-control posture for direct sub-agents; any mutating action
 is per-call-authorized, provider-supported or explicitly unavailable, and child
 work still never flattens into the primary transcript.
+```
+
+## Wave 17: Human-Control And Local Perception Tools
+
+Status: planned.
+
+Dedicated spec:
+
+```text
+docs/DIRECT_WAVE17_HUMAN_CONTROL_READONLY_TOOLS_SPEC.md
+```
+
+Purpose:
+
+```text
+Promote lower-side-effect human/control/local-perception tools into resident-visible
+direct capabilities without treating human reply, plan state, image preview, or
+context-budget status as authority by default.
+```
+
+First usable slice:
+
+```text
+resident-callable get_context_remaining
+resident-callable update_plan scoped to plan projection/store
+resident-callable bounded request_user_input
+guarded request_permissions request packet with separate decision artifact
+view_image metadata/projection with modelSawPixels=false
+new_context visible as known_disabled, never provider-declared
+```
+
+Standing non-goals:
+
+```text
+no provider-visible image payload submission
+no free-form user text as approval
+no broad/session/project authority widening
+no provider or local compaction/new_context execution
+no browser/MCP/plugin/provider-hosted external tools
+no workspace mutation
+```
+
+| PR | Status | Branch | Purpose | Planned deliverable | Explicit non-goals |
+| --- | --- | --- | --- | --- | --- |
+| `#103` | planned | `codex/direct-human-control-capability-profile` | Human/control capability profile | Capability rows, promotion/activation rows, declaration eligibility, unavailable reasons for `get_context_remaining`, `update_plan`, `request_user_input`, `request_permissions`, `view_image`, `new_context` | No resident-callable declaration or permission grant execution |
+| `#104` | planned | `codex/direct-context-plan-control-tools` | Context remaining and plan projection tools | Resident-callable context witness with freshness and no `request_blocking`, scoped plan projection mutation envelope/store with planOwner/planAuthority, stale digest blocking, result/context admission | No WorkThread/operator/project truth mutation, goal completion proof, or compaction authority |
+| `#105` | planned | `codex/direct-bounded-human-decision-tool` | Bounded human decision bridge | Resident-callable bounded `request_user_input`, single-pending policy, pending/answered/expired/cancelled/superseded ledger, non-authoritative bounded-choice result envelope, free-text context-only witness | No free-form approval, permission widening, or provider turn auto-start |
+| `#106` | planned | `codex/direct-permission-widening-request-gate` | Permission widening request gate | `request_permissions` request packet, separate PermissionWideningDecision, single-action target capability/proposed call id, broad/session/project blockers, operator-confirm-required witness | No broad authority widening, request-as-grant collapse, or full-access grant |
+| `#107` | planned | `codex/direct-image-view-projection-tool` | Image metadata/projection tool | `view_image` guarded metadata/projection capability, path containment, type sniffing, decoded caps, residentPerceptionLevel, modelSawPixels=false, payload unsupported witness | No provider image payload submission, model pixel-vision claim, or inline SVG rendering |
+| `#108` | planned | `codex/direct-human-control-wave17-usability-gate` | Wave 17 usability proof and declaration gate | Human/control usability proof, resident/operator witness rows, manual gate, headless scenarios, negative matrix, registry/roadmap update | No Wave 18 external discovery/MCP, Wave 19 provider-hosted tools, or Wave 20 new_context execution |
+
+Wave 17 completion gate:
+
+```text
+The resident can lawfully inspect context pressure, update a scoped plan
+projection, ask bounded human questions, request authority through a guarded
+permission packet, and inspect image metadata/projections, while broad authority
+widening, image payload submission, and context-world transition execution stay
+blocked until later waves.
 ```
 
 
