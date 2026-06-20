@@ -114,6 +114,13 @@ assert.equal(witnessByTool.get("request_permissions").capabilityState, "guarded_
 assert.equal(witnessByTool.get("view_image").capabilityState, "guarded_request");
 assert.equal(witnessByTool.get("new_context").capabilityState, "known_disabled");
 assert.equal(witnessByTool.get("new_context").residentCallable, false, "known-disabled tool must not be callable");
+for (const toolName of ["get_context_remaining", "update_plan", "request_user_input", "request_permissions", "view_image"]) {
+  const witness = witnessByTool.get(toolName);
+  assert.equal(witness.providerDeclared, true, `${toolName} witness should cite provider declaration posture`);
+  assert.equal(witness.modelCallable, true, `${toolName} witness should cite model-callable posture`);
+  assert(witness.evidenceRefs.some((ref) => ref.kind === "direct_first_tool_slice"), `${toolName} witness should cite first tool slice`);
+  assert(witness.evidenceRefs.some((ref) => ref.kind === "direct_first_tool_declaration_row"), `${toolName} witness should cite declaration row`);
+}
 
 for (const row of proof.manualGateRows) {
   assert.equal(row.status, "pass", `manual gate row failed: ${row.gateId}`);
@@ -137,6 +144,16 @@ assert(!serialized.includes("\"wave20NewContextExecutionStarted\":true"), "Wave 
   const malformed = clone(proof);
   malformed.operatorProjection.mintsProof = true;
   expectThrows(() => validateHumanControlWave17UsabilityGate(malformed), "operator_projection_authority_leak");
+}
+{
+  const malformed = clone(proof);
+  malformed.wave = "18";
+  expectThrows(() => validateHumanControlWave17UsabilityGate(malformed), "wave_mismatch");
+}
+{
+  const malformed = clone(proof);
+  malformed.status = "partial";
+  expectThrows(() => validateHumanControlWave17UsabilityGate(malformed), "proof_status_not_pass");
 }
 {
   const malformed = clone(proof);
@@ -172,6 +189,32 @@ assert(!serialized.includes("\"wave20NewContextExecutionStarted\":true"), "Wave 
   const malformed = clone(proof);
   malformed.capabilityWitnessRows = malformed.capabilityWitnessRows.filter((row) => row.capabilityState !== "known_disabled");
   expectThrows(() => validateHumanControlWave17UsabilityGate(malformed), "capability_witness_state_missing:known_disabled");
+}
+{
+  const malformed = clone(proof);
+  delete malformed.capabilityWitnessRows;
+  expectThrows(() => validateHumanControlWave17UsabilityGate(malformed), "missing_capability_witness_rows");
+}
+{
+  const malformed = clone(proof);
+  malformed.capabilityWitnessRows.find((row) => row.toolName === "view_image").evidenceRefs =
+    malformed.capabilityWitnessRows.find((row) => row.toolName === "view_image").evidenceRefs.filter((ref) => ref.kind !== "direct_first_tool_declaration_row");
+  expectThrows(() => validateHumanControlWave17UsabilityGate(malformed), "capability_witness_declaration_evidence_missing:view_image");
+}
+{
+  const malformed = clone(proof);
+  malformed.firstToolSlice.declarations = malformed.firstToolSlice.declarations.filter((row) => row.toolName !== "request_permissions");
+  expectThrows(() => validateHumanControlWave17UsabilityGate(malformed), "capability_witness_declaration_missing:request_permissions");
+}
+{
+  const malformed = clone(proof);
+  delete malformed.userInputEnvelope;
+  expectThrows(() => validateHumanControlWave17UsabilityGate(malformed), "missing_user_input_envelope");
+}
+{
+  const malformed = clone(proof);
+  delete malformed.contextEnvelope;
+  expectThrows(() => validateHumanControlWave17UsabilityGate(malformed), "missing_context_envelope");
 }
 
 console.log(JSON.stringify({

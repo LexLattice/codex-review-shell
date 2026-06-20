@@ -474,9 +474,23 @@ function witnessState(toolName) {
   return "callable_now";
 }
 
+function firstSliceDeclarationFor(slice = {}, toolName = "") {
+  return arrayOrEmpty(slice.declarations).find((row) => row.toolName === toolName) || null;
+}
+
 function buildCapabilityWitnessRows(context, artifacts, generatedAt) {
   return [...EXPECTED_RESIDENT_CALLABLE_TOOLS, ...EXPECTED_KNOWN_DISABLED_TOOLS].map((toolName) => {
     const state = witnessState(toolName);
+    const declaration = firstSliceDeclarationFor(artifacts.slice, toolName);
+    const evidenceRefs = [
+      evidenceRef("human_control_profile", artifacts.profile.profileId, "Human-control profile", artifacts.profile.profileDigest),
+    ];
+    if (declaration) {
+      evidenceRefs.push(
+        evidenceRef("direct_first_tool_slice", artifacts.slice.sliceId, "First tool slice", artifacts.slice.sliceDigest),
+        evidenceRef("direct_first_tool_declaration_row", declaration.declarationRowId, `${toolName} declaration`, declaration.declarationDigest)
+      );
+    }
     const row = {
       schema: HUMAN_CONTROL_CAPABILITY_WITNESS_ROW_SCHEMA,
       rowId: `human_control_witness_${toolName}`,
@@ -499,7 +513,7 @@ function buildCapabilityWitnessRows(context, artifacts, generatedAt) {
       rawPromptIncluded: false,
       rawImageBytesIncluded: false,
       rawPathIncluded: false,
-      evidenceRefs: [evidenceRef("human_control_profile", artifacts.profile.profileId, "Human-control profile", artifacts.profile.profileDigest)],
+      evidenceRefs,
       generatedAt,
     };
     row.rowDigest = digestFor("human-control-capability-witness-row@1", row);
@@ -639,6 +653,8 @@ function validateHumanControlWave17UsabilityGate(proof = {}) {
   for (const field of ["proofId", "projectId", "workThreadId", "threadId", "generatedAt", "proofDigest"]) {
     if (!normalizeString(proof[field], "")) errors.push(`missing_required_string:${field}`);
   }
+  if (proof.wave !== "17") errors.push("wave_mismatch");
+  if (proof.status !== "pass") errors.push("proof_status_not_pass");
   for (const flag of [
     "rawProviderPayloadIncluded",
     "rawPromptIncluded",
@@ -722,34 +738,89 @@ function validateHumanControlWave17UsabilityGate(proof = {}) {
     if (proof.operatorProjection.readsProofArtifacts !== true) errors.push("operator_projection_not_reading_proof");
     if (proof.operatorProjection.mintsProof !== false || proof.operatorProjection.grantsAuthority !== false) errors.push("operator_projection_authority_leak");
   }
-  const witnessStates = new Set(arrayOrEmpty(proof.capabilityWitnessRows).map((row) => row.capabilityState));
-  for (const required of RESIDENT_WITNESS_STATES) {
-    if (!witnessStates.has(required)) errors.push(`capability_witness_state_missing:${required}`);
-  }
-  const witnessTools = new Set(arrayOrEmpty(proof.capabilityWitnessRows).map((row) => row.toolName));
-  for (const toolName of [...EXPECTED_RESIDENT_CALLABLE_TOOLS, ...EXPECTED_KNOWN_DISABLED_TOOLS]) {
-    if (!witnessTools.has(toolName)) errors.push(`capability_witness_tool_missing:${toolName}`);
-  }
-  for (const row of arrayOrEmpty(proof.capabilityWitnessRows)) {
-    if (row.schema !== HUMAN_CONTROL_CAPABILITY_WITNESS_ROW_SCHEMA) errors.push(`capability_witness_schema_mismatch:${row.rowId}`);
-    if (!RESIDENT_WITNESS_STATES.includes(row.capabilityState)) errors.push(`capability_witness_invalid_state:${row.rowId}`);
-    if (row.grantsAuthority !== false || row.permissionGrantStarted !== false || row.providerTransportStarted !== false) errors.push(`capability_witness_authority_leak:${row.rowId}`);
-    if (row.capabilityState === "known_disabled" && row.residentCallable !== false) errors.push(`known_disabled_witness_callable:${row.rowId}`);
+  if (!Array.isArray(proof.capabilityWitnessRows)) {
+    errors.push("missing_capability_witness_rows");
+  } else {
+    const witnessStates = new Set(proof.capabilityWitnessRows.map((row) => row.capabilityState));
+    for (const required of RESIDENT_WITNESS_STATES) {
+      if (!witnessStates.has(required)) errors.push(`capability_witness_state_missing:${required}`);
+    }
+    const witnessTools = new Set(proof.capabilityWitnessRows.map((row) => row.toolName));
+    for (const toolName of [...EXPECTED_RESIDENT_CALLABLE_TOOLS, ...EXPECTED_KNOWN_DISABLED_TOOLS]) {
+      if (!witnessTools.has(toolName)) errors.push(`capability_witness_tool_missing:${toolName}`);
+    }
+    for (const row of proof.capabilityWitnessRows) {
+      const declaration = firstSliceDeclarationFor(proof.firstToolSlice, row.toolName);
+      if (row.schema !== HUMAN_CONTROL_CAPABILITY_WITNESS_ROW_SCHEMA) errors.push(`capability_witness_schema_mismatch:${row.rowId}`);
+      if (!RESIDENT_WITNESS_STATES.includes(row.capabilityState)) errors.push(`capability_witness_invalid_state:${row.rowId}`);
+      if (row.grantsAuthority !== false || row.permissionGrantStarted !== false || row.providerTransportStarted !== false) errors.push(`capability_witness_authority_leak:${row.rowId}`);
+      if (row.capabilityState === "known_disabled") {
+        if (row.residentCallable !== false) errors.push(`known_disabled_witness_callable:${row.rowId}`);
+        if (row.providerDeclared !== false || row.modelCallable !== false) errors.push(`known_disabled_witness_declared:${row.rowId}`);
+        if (declaration) errors.push(`known_disabled_declaration_present:${row.toolName}`);
+      } else {
+        if (!declaration) errors.push(`capability_witness_declaration_missing:${row.toolName}`);
+        if (row.residentCallable !== true || row.providerDeclared !== true || row.modelCallable !== true) errors.push(`capability_witness_declaration_flag_mismatch:${row.toolName}`);
+        const evidenceKinds = new Set(arrayOrEmpty(row.evidenceRefs).map((ref) => ref.kind));
+        if (!evidenceKinds.has("direct_first_tool_slice") || !evidenceKinds.has("direct_first_tool_declaration_row")) errors.push(`capability_witness_declaration_evidence_missing:${row.toolName}`);
+      }
+    }
   }
   for (const row of arrayOrEmpty(proof.manualGateRows)) {
     if (row.schema !== HUMAN_CONTROL_MANUAL_USABILITY_GATE_ROW_SCHEMA) errors.push(`manual_gate_schema_mismatch:${row.gateId}`);
     if (row.status !== "pass") errors.push(`manual_gate_not_pass:${row.gateId}`);
   }
-  if (proof.contextEnvelope?.providerOutput?.usableFor !== "display_only") errors.push("context_envelope_not_display_only");
-  if (proof.contextEnvelope?.providerOutput?.permissionToContinue !== false) errors.push("context_permission_to_continue_leak");
-  if (proof.planEnvelope?.providerOutput?.provesCompletion !== false) errors.push("plan_completion_proof_leak");
-  if (proof.userInputAnswerEnvelope?.providerOutput?.authorityGranted !== false) errors.push("human_decision_authority_leak");
-  if (proof.permissionEnvelope?.providerOutput?.permissionGranted !== false) errors.push("permission_request_grant_leak");
-  if (proof.broadPermissionEnvelope?.status !== "blocked") errors.push("broad_permission_not_blocked");
-  if (proof.viewImageEnvelope?.providerOutput?.modelSawPixels !== false || proof.viewImageEnvelope?.providerOutput?.imagePayloadSent !== false) errors.push("image_metadata_visibility_leak");
-  if (proof.imagePayloadEnvelope?.status !== "blocked") errors.push("image_payload_not_blocked");
-  if (proof.spoofedSvgEnvelope?.status !== "blocked") errors.push("spoofed_svg_not_blocked");
-  if (proof.newContextGate?.status !== "blocked") errors.push("new_context_not_blocked");
+  if (!isPlainObject(proof.contextEnvelope)) {
+    errors.push("missing_context_envelope");
+  } else {
+    if (proof.contextEnvelope.providerOutput?.usableFor !== "display_only") errors.push("context_envelope_not_display_only");
+    if (proof.contextEnvelope.providerOutput?.permissionToContinue !== false) errors.push("context_permission_to_continue_leak");
+  }
+  if (!isPlainObject(proof.planEnvelope)) {
+    errors.push("missing_plan_envelope");
+  } else if (proof.planEnvelope.providerOutput?.provesCompletion !== false) {
+    errors.push("plan_completion_proof_leak");
+  }
+  if (!isPlainObject(proof.userInputEnvelope)) {
+    errors.push("missing_user_input_envelope");
+  } else if (proof.userInputEnvelope.providerOutput?.authorityGranted !== false) {
+    errors.push("human_decision_authority_leak");
+  }
+  if (!isPlainObject(proof.userInputAnswerEnvelope)) {
+    errors.push("missing_user_input_answer_envelope");
+  } else if (proof.userInputAnswerEnvelope.providerOutput?.authorityGranted !== false) {
+    errors.push("human_decision_authority_leak");
+  }
+  if (!isPlainObject(proof.permissionEnvelope)) {
+    errors.push("missing_permission_envelope");
+  } else if (proof.permissionEnvelope.providerOutput?.permissionGranted !== false) {
+    errors.push("permission_request_grant_leak");
+  }
+  if (!isPlainObject(proof.broadPermissionEnvelope)) {
+    errors.push("missing_broad_permission_envelope");
+  } else if (proof.broadPermissionEnvelope.status !== "blocked") {
+    errors.push("broad_permission_not_blocked");
+  }
+  if (!isPlainObject(proof.viewImageEnvelope)) {
+    errors.push("missing_view_image_envelope");
+  } else if (proof.viewImageEnvelope.providerOutput?.modelSawPixels !== false || proof.viewImageEnvelope.providerOutput?.imagePayloadSent !== false) {
+    errors.push("image_metadata_visibility_leak");
+  }
+  if (!isPlainObject(proof.imagePayloadEnvelope)) {
+    errors.push("missing_image_payload_envelope");
+  } else if (proof.imagePayloadEnvelope.status !== "blocked") {
+    errors.push("image_payload_not_blocked");
+  }
+  if (!isPlainObject(proof.spoofedSvgEnvelope)) {
+    errors.push("missing_spoofed_svg_envelope");
+  } else if (proof.spoofedSvgEnvelope.status !== "blocked") {
+    errors.push("spoofed_svg_not_blocked");
+  }
+  if (!isPlainObject(proof.newContextGate)) {
+    errors.push("missing_new_context_gate");
+  } else if (proof.newContextGate.status !== "blocked") {
+    errors.push("new_context_not_blocked");
+  }
   if (!errors.length) return true;
   throw new Error(`human_control_wave17_usability_gate_validation_failed:${errors.join(",")}`);
 }
