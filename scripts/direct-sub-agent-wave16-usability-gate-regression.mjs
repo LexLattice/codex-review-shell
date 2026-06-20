@@ -66,10 +66,13 @@ assert.equal(proof.operatorProjection.grantsAuthority, false, "operator projecti
 assert.equal(proof.operatorProjection.childTranscriptFlattened, false, "operator projection must not flatten child transcript");
 
 assert.equal(proof.turnActivityProjection.visibility.primaryTranscriptVisible, "activity_summary_only");
+assert.equal(proof.turnActivityProjection.parentThreadId, proof.primaryThreadId, "turn activity projection should scope to primary thread");
 assert.equal(proof.turnActivityProjection.primaryTranscriptSummary.rawChildTranscriptIncluded, false);
+assert.equal(proof.fullHistoryProjection.parentThreadId, proof.primaryThreadId, "full history projection should scope to primary thread");
 assert.equal(proof.fullHistoryProjection.visibility.residentContextVisible, "none");
 assert.equal(proof.fullHistoryProjection.visibility.primaryTranscriptVisible, "none");
 assert.equal(proof.fullHistoryProjection.contextAdmissionWritten, false);
+assert.equal(proof.resultSummaryProjection.parentThreadId, proof.primaryThreadId, "result summary projection should scope to primary thread");
 
 assert.equal(proof.followupAllowed.authorityDecision.finalDecision, "allow");
 assert.equal(proof.followupAllowed.resultEnvelope.providerTransportStarted, true);
@@ -150,8 +153,33 @@ assert(!serialized.includes("\"wave18ExternalDiscoveryToolsStarted\":true"), "Wa
 }
 {
   const malformed = clone(proof);
+  delete malformed.scenarioSuite;
+  expectThrows(() => validateSubAgentWave16UsabilityGate(malformed), "missing_scenario_suite");
+}
+{
+  const malformed = clone(proof);
+  delete malformed.negativeScenarioMatrix;
+  expectThrows(() => validateSubAgentWave16UsabilityGate(malformed), "missing_negative_scenario_matrix");
+}
+{
+  const malformed = clone(proof);
+  delete malformed.operatorProjection;
+  expectThrows(() => validateSubAgentWave16UsabilityGate(malformed), "missing_operator_projection");
+}
+{
+  const malformed = clone(proof);
   malformed.fullHistoryProjection.visibility.residentContextVisible = "summary_only";
   expectThrows(() => validateSubAgentWave16UsabilityGate(malformed), "full_history_context_admission_leak");
+}
+{
+  const malformed = clone(proof);
+  delete malformed.fullHistoryProjection;
+  expectThrows(() => validateSubAgentWave16UsabilityGate(malformed), "missing_full_history_projection");
+}
+{
+  const malformed = clone(proof);
+  delete malformed.turnActivityProjection;
+  expectThrows(() => validateSubAgentWave16UsabilityGate(malformed), "missing_turn_activity_projection");
 }
 {
   const malformed = clone(proof);

@@ -73,15 +73,13 @@ function stableStringify(value) {
       return serialized === undefined ? "null" : serialized;
     }).join(",")}]`;
   }
-  return `{${Object.keys(value)
-    .filter((key) => !key.endsWith("Digest") && stableStringify(value[key]) !== undefined)
-    .sort()
-    .map((key) => {
-      const serialized = stableStringify(value[key]);
-      return serialized === undefined ? "" : `${JSON.stringify(key)}:${serialized}`;
-    })
-    .filter(Boolean)
-    .join(",")}}`;
+  const parts = [];
+  for (const key of Object.keys(value).sort()) {
+    if (key.endsWith("Digest")) continue;
+    const serialized = stableStringify(value[key]);
+    if (serialized !== undefined) parts.push(`${JSON.stringify(key)}:${serialized}`);
+  }
+  return `{${parts.join(",")}}`;
 }
 
 function digestFor(domain, value) {
@@ -267,6 +265,7 @@ function buildCoreArtifacts(context, nowMs) {
   }, { now: nowMs });
   const transcriptBase = {
     ...context,
+    parentThreadId: context.primaryThreadId,
     mode: "turn_activity",
     parentTurnId: "parent_turn_wave16_a",
     sourceRefs,
@@ -789,44 +788,64 @@ function validateSubAgentWave16UsabilityGate(proof = {}) {
   ]) {
     if (proof[flag] !== false) errors.push(`proof_boundary_leak:${flag}`);
   }
-  if (proof.scenarioSuite?.schema !== SUB_AGENT_HEADLESS_SCENARIO_SUITE_SCHEMA) errors.push("scenario_suite_schema_mismatch");
-  if (proof.scenarioSuite?.failCount !== 0) errors.push("scenario_suite_failed");
-  if (!Array.isArray(proof.scenarioSuite?.scenarios) || proof.scenarioSuite.scenarios.length < 10) errors.push("scenario_coverage_missing");
-  const scenarioIds = new Set(arrayOrEmpty(proof.scenarioSuite?.scenarios).map((row) => row.scenarioId));
-  for (const required of [
-    "lifecycle_read_available",
-    "compatibility_mapping_no_authority",
-    "turn_activity_projection_available",
-    "full_child_history_projection_excluded_from_context",
-    "no_interference_blocks_mutation",
-    "followup_send_allowed",
-    "lifecycle_allowed_interrupt",
-    "lifecycle_unsupported_resume",
-  ]) {
-    if (!scenarioIds.has(required)) errors.push(`scenario_missing:${required}`);
-  }
-  for (const row of arrayOrEmpty(proof.scenarioSuite?.scenarios)) {
-    if (row.schema !== SUB_AGENT_HEADLESS_SCENARIO_ROW_SCHEMA) errors.push(`scenario_schema_mismatch:${row.scenarioId}`);
-    if (row.status !== "pass") errors.push(`scenario_not_pass:${row.scenarioId}`);
-    for (const flag of ["workspaceMutationStarted", "rawProviderPayloadIncluded", "rawChildTranscriptIncluded", "primaryTranscriptFlattened"]) {
-      if (row[flag] !== false) errors.push(`scenario_boundary_leak:${row.scenarioId}:${flag}`);
+  if (!isPlainObject(proof.scenarioSuite)) {
+    errors.push("missing_scenario_suite");
+  } else {
+    if (proof.scenarioSuite.schema !== SUB_AGENT_HEADLESS_SCENARIO_SUITE_SCHEMA) errors.push("scenario_suite_schema_mismatch");
+    if (proof.scenarioSuite.failCount !== 0) errors.push("scenario_suite_failed");
+    if (!Array.isArray(proof.scenarioSuite.scenarios) || proof.scenarioSuite.scenarios.length < 10) errors.push("scenario_coverage_missing");
+    const scenarioIds = new Set(arrayOrEmpty(proof.scenarioSuite.scenarios).map((row) => row.scenarioId));
+    for (const required of [
+      "lifecycle_read_available",
+      "compatibility_mapping_no_authority",
+      "turn_activity_projection_available",
+      "full_child_history_projection_excluded_from_context",
+      "no_interference_blocks_mutation",
+      "followup_send_allowed",
+      "lifecycle_allowed_interrupt",
+      "lifecycle_unsupported_resume",
+    ]) {
+      if (!scenarioIds.has(required)) errors.push(`scenario_missing:${required}`);
+    }
+    for (const row of arrayOrEmpty(proof.scenarioSuite.scenarios)) {
+      if (row.schema !== SUB_AGENT_HEADLESS_SCENARIO_ROW_SCHEMA) errors.push(`scenario_schema_mismatch:${row.scenarioId}`);
+      if (row.status !== "pass") errors.push(`scenario_not_pass:${row.scenarioId}`);
+      for (const flag of ["workspaceMutationStarted", "rawProviderPayloadIncluded", "rawChildTranscriptIncluded", "primaryTranscriptFlattened"]) {
+        if (row[flag] !== false) errors.push(`scenario_boundary_leak:${row.scenarioId}:${flag}`);
+      }
     }
   }
-  if (proof.negativeScenarioMatrix?.schema !== SUB_AGENT_NEGATIVE_SCENARIO_MATRIX_SCHEMA) errors.push("negative_matrix_schema_mismatch");
-  const negativeRows = arrayOrEmpty(proof.negativeScenarioMatrix?.rows);
-  if (negativeRows.length < 8) errors.push("negative_matrix_coverage_missing");
-  for (const row of negativeRows) {
-    if (row.schema !== SUB_AGENT_NEGATIVE_SCENARIO_ROW_SCHEMA) errors.push(`negative_row_schema_mismatch:${row.rowId}`);
-    if (row.status !== "pass") errors.push(`negative_row_not_pass:${row.rowId}`);
-    for (const flag of ["providerTransportStarted", "lifecycleMutationStarted", "followupTransportStarted", "workspaceMutationStarted", "grantsAuthority", "rawProviderPayloadIncluded", "rawChildTranscriptIncluded"]) {
-      if (row[flag] !== false) errors.push(`negative_row_boundary_leak:${row.rowId}:${flag}`);
+  if (!isPlainObject(proof.negativeScenarioMatrix)) {
+    errors.push("missing_negative_scenario_matrix");
+  } else {
+    if (proof.negativeScenarioMatrix.schema !== SUB_AGENT_NEGATIVE_SCENARIO_MATRIX_SCHEMA) errors.push("negative_matrix_schema_mismatch");
+    const negativeRows = arrayOrEmpty(proof.negativeScenarioMatrix.rows);
+    if (negativeRows.length < 8) errors.push("negative_matrix_coverage_missing");
+    for (const row of negativeRows) {
+      if (row.schema !== SUB_AGENT_NEGATIVE_SCENARIO_ROW_SCHEMA) errors.push(`negative_row_schema_mismatch:${row.rowId}`);
+      if (row.status !== "pass") errors.push(`negative_row_not_pass:${row.rowId}`);
+      for (const flag of ["providerTransportStarted", "lifecycleMutationStarted", "followupTransportStarted", "workspaceMutationStarted", "grantsAuthority", "rawProviderPayloadIncluded", "rawChildTranscriptIncluded"]) {
+        if (row[flag] !== false) errors.push(`negative_row_boundary_leak:${row.rowId}:${flag}`);
+      }
     }
   }
-  if (proof.operatorProjection?.schema !== SUB_AGENT_OPERATOR_LIFECYCLE_PROJECTION_SCHEMA) errors.push("operator_projection_schema_mismatch");
-  if (proof.operatorProjection?.readsProofArtifacts !== true) errors.push("operator_projection_not_reading_proof");
-  if (proof.operatorProjection?.mintsProof !== false || proof.operatorProjection?.grantsAuthority !== false) errors.push("operator_projection_authority_leak");
-  if (proof.fullHistoryProjection?.visibility?.residentContextVisible !== "none") errors.push("full_history_context_admission_leak");
-  if (proof.turnActivityProjection?.primaryTranscriptSummary?.rawChildTranscriptIncluded !== false) errors.push("turn_activity_child_transcript_leak");
+  if (!isPlainObject(proof.operatorProjection)) {
+    errors.push("missing_operator_projection");
+  } else {
+    if (proof.operatorProjection.schema !== SUB_AGENT_OPERATOR_LIFECYCLE_PROJECTION_SCHEMA) errors.push("operator_projection_schema_mismatch");
+    if (proof.operatorProjection.readsProofArtifacts !== true) errors.push("operator_projection_not_reading_proof");
+    if (proof.operatorProjection.mintsProof !== false || proof.operatorProjection.grantsAuthority !== false) errors.push("operator_projection_authority_leak");
+  }
+  if (!isPlainObject(proof.fullHistoryProjection)) {
+    errors.push("missing_full_history_projection");
+  } else if (proof.fullHistoryProjection.visibility?.residentContextVisible !== "none") {
+    errors.push("full_history_context_admission_leak");
+  }
+  if (!isPlainObject(proof.turnActivityProjection)) {
+    errors.push("missing_turn_activity_projection");
+  } else if (proof.turnActivityProjection.primaryTranscriptSummary?.rawChildTranscriptIncluded !== false) {
+    errors.push("turn_activity_child_transcript_leak");
+  }
   const witnessStates = new Set(arrayOrEmpty(proof.residentCapabilityWitnessRows).map((row) => row.capabilityState));
   for (const required of RESIDENT_CAPABILITY_STATES) {
     if (!witnessStates.has(required)) errors.push(`resident_capability_state_missing:${required}`);
