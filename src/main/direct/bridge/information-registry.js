@@ -1330,6 +1330,38 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     bridgeFit: "Adds PR 100 controlled continuation for send_message and followup_task through policy-gated plans, per-call authority decisions, mailbox idempotency, delivery-support witnesses, and summary-only result admission.",
     realignment: "This PR 100 slice only targets existing child agents with provider-supported delivery; it does not spawn fallback children, inherit child tools, mutate lifecycle state, or admit full child transcripts into parent context.",
   },
+  {
+    id: "ic47.sub-agent-lifecycle-controls",
+    name: "Wave 16 sub-agent lifecycle mutation controls",
+    role: "authority_gate",
+    implementationState: "implemented",
+    directPathPosture: "keep_guarded",
+    sourceFiles: [
+      "src/main/direct/agents/sub-agent-lifecycle-controls.js",
+      "scripts/direct-sub-agent-lifecycle-controls-regression.mjs",
+      "docs/DIRECT_WAVE16_SUB_AGENT_LIFECYCLE_FOLLOWUP_TRANSCRIPT_SPEC.md",
+      "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md",
+    ],
+    ontology: ontologyShape(
+      [
+        "sub_agent_lifecycle_control_plan",
+        "sub_agent_lifecycle_authority_decision",
+        "sub_agent_lifecycle_provider_support_witness",
+        "agent_lifecycle_transition_ledger",
+        "agent_cancellation_witness",
+        "agent_resume_viability_witness",
+        "sub_agent_lifecycle_control_result_envelope",
+        "sub_agent_lifecycle_control_resident_witness",
+      ],
+      "harness",
+      {
+        identityFields: ["workThreadId", "targetAgentId", "action", "planId"],
+        schema: "sub_agent_lifecycle_control_packet@1",
+      }
+    ),
+    bridgeFit: "Adds PR 101 operator-gated close/interrupt/resume lifecycle controls with per-call authority, provider-support witnesses, before/after transition ledger rows, cancellation/resume witnesses, and safe unsupported/idempotent states.",
+    realignment: "This PR 101 slice keeps lifecycle mutation operator-gated first: resident-callable lifecycle controls remain disabled, unsupported provider actions are not simulated, and no child transcript or inherited child tools enter the parent context.",
+  },
 ]);
 
 function isPlainObject(value) {
