@@ -395,14 +395,14 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     id: "ic29.provider-hosted-tool-contracts",
     name: "Provider-hosted web/image tool contracts",
     role: "authority_gate",
-    implementationState: "partial",
+    implementationState: "implemented",
     directPathPosture: "keep_guarded",
     sourceFiles: ["src/main/direct/provider/hosted-tools.js", "src/main/direct/provider/metadata-adapter.js", "src/main/direct/bridge/tool-capability-registry.js", "src/main/direct/ui/settings-surface.js", "scripts/direct-provider-hosted-tools-regression.mjs", "src/main.js"],
-    ontology: ontologyShape(["provider_hosted_tool_capability", "provider_hosted_request_shape_proof", "provider_hosted_declaration_policy", "provider_hosted_tool_activation_snapshot", "provider_hosted_tool_call_envelope", "provider_hosted_web_search_query_policy", "provider_hosted_web_search_query_envelope", "provider_hosted_web_search_result_envelope", "provider_hosted_result_context_admission", "provider_hosted_image_prompt_policy", "provider_hosted_image_prompt_envelope", "provider_hosted_image_generation_artifact_envelope", "provider_hosted_raw_exposure_scan", "provider_web_search_evidence_contract", "provider_image_generation_artifact_contract", "provider_hosted_tools_status"], "model_provider", {
+    ontology: ontologyShape(["provider_hosted_tool_capability", "provider_hosted_request_shape_proof", "provider_hosted_declaration_policy", "provider_hosted_tool_activation_snapshot", "provider_hosted_tool_call_envelope", "provider_hosted_web_search_query_policy", "provider_hosted_web_search_query_envelope", "provider_hosted_web_search_result_envelope", "provider_hosted_result_context_admission", "provider_hosted_image_prompt_policy", "provider_hosted_image_prompt_envelope", "provider_hosted_image_generation_artifact_envelope", "provider_hosted_usage_attribution", "provider_hosted_raw_exposure_scan", "provider_web_search_evidence_contract", "provider_image_generation_artifact_contract", "provider_hosted_tools_status"], "model_provider", {
       identityFields: ["projectId", "workThreadId", "toolKind", "providerMetadataDigest", "capabilityDigest", "proofDigest", "activationDigest", "contractDigest"],
       schema: "provider_hosted_tools_status@1",
     }),
-    bridgeFit: "Models provider-hosted web search and image generation as metadata-backed capability rows with activation snapshots, request-shape proof, declaration policy, per-call envelopes, outbound query/prompt policies, raw exposure scans, web-search result envelopes, image artifact envelopes, context-admission records, distinct external evidence and generated artifact contracts, source/result policy, and provider metadata refs.",
+    bridgeFit: "Models provider-hosted web search and image generation as metadata-backed capability rows with activation snapshots, request-shape proof, declaration policy, per-call envelopes, outbound query/prompt policies, raw exposure scans, web-search result envelopes, image artifact envelopes, context-admission records, usage attribution rows, distinct external evidence and generated artifact contracts, source/result policy, and provider metadata refs.",
     realignment: "This slice enables no browser navigation, local web cache ingestion, automatic workspace artifact insertion, raw prompt/query/result/page/image storage, durable memory, or trust promotion. Web result and image artifact envelopes can classify sanitized refs and summaries/artifact refs, but hosted execution and durable admission remain separately gated.",
   },
   {
@@ -1344,6 +1344,37 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     ),
     bridgeFit: "Closes Wave 18 with a deterministic usability proof over external discovery and guarded MCP read tools, resident/operator witnesses, positive headless scenarios, negative scenario matrix, and manual gate rows.",
     realignment: "This gate observes and proves readiness only: it starts no provider transport by itself, executes no dynamic MCP action, installs no plugin, mutates no workspace/context truth, starts no durable memory admission, grants no project/workspace truth, and does not begin Wave 19 provider-hosted tools, Wave 20 new_context execution, or Wave 21 code-mode execution.",
+  },
+  {
+    id: "ic60.provider-hosted-wave19-usability-gate",
+    name: "Wave 19 provider-hosted usability proof gate",
+    role: "observability_surface",
+    implementationState: "implemented",
+    directPathPosture: "keep_guarded",
+    sourceFiles: [
+      "src/main/direct/provider/hosted-wave19-usability-gate.js",
+      "src/main/direct/provider/hosted-tools.js",
+      "scripts/direct-provider-hosted-wave19-usability-gate-regression.mjs",
+      "docs/DIRECT_WAVE19_PROVIDER_HOSTED_TOOLS_SPEC.md",
+      "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md",
+    ],
+    ontology: ontologyShape(
+      [
+        "provider_hosted_wave19_usability_proof",
+        "provider_hosted_wave19_operator_projection",
+        "provider_hosted_wave19_resident_witness_row",
+        "provider_hosted_wave19_headless_scenario_suite",
+        "provider_hosted_wave19_negative_scenario_matrix",
+        "provider_hosted_wave19_manual_usability_gate_row",
+      ],
+      "harness",
+      {
+        identityFields: ["proofId", "projectionId", "rowId", "scenarioId", "gateId", "toolName"],
+        schema: "provider_hosted_wave19_usability_proof@1",
+      }
+    ),
+    bridgeFit: "Closes Wave 19 with deterministic usability proof over provider-hosted web search and image generation, resident/operator witnesses, positive headless scenarios, negative scenario matrix, manual gate rows, and usage-unavailable witnesses.",
+    realignment: "This gate observes and proves readiness only: it starts no browser navigation, local web cache ingestion, workspace insertion, durable memory admission, automatic replay, plugin/MCP/dynamic action, Wave 20 new_context execution, Wave 21 code-mode execution, or Wave 22 batch orchestration.",
   },
   {
     id: "ic33.odeu-live-capability-artifact-kernel",
