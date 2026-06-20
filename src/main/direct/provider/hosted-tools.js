@@ -9,6 +9,12 @@ const PROVIDER_HOSTED_TOOLS_STATUS_SCHEMA = "provider_hosted_tools_status@1";
 const PROVIDER_HOSTED_REQUEST_SHAPE_PROOF_SCHEMA = "provider_hosted_request_shape_proof@1";
 const PROVIDER_HOSTED_DECLARATION_POLICY_SCHEMA = "provider_hosted_declaration_policy@1";
 const PROVIDER_HOSTED_ACTIVATION_SNAPSHOT_SCHEMA = "provider_hosted_tool_activation_snapshot@1";
+const PROVIDER_HOSTED_TOOL_CALL_ENVELOPE_SCHEMA = "provider_hosted_tool_call_envelope@1";
+const PROVIDER_HOSTED_WEB_SEARCH_QUERY_POLICY_SCHEMA = "provider_hosted_web_search_query_policy@1";
+const PROVIDER_HOSTED_WEB_SEARCH_QUERY_ENVELOPE_SCHEMA = "provider_hosted_web_search_query_envelope@1";
+const PROVIDER_HOSTED_IMAGE_PROMPT_POLICY_SCHEMA = "provider_hosted_image_prompt_policy@1";
+const PROVIDER_HOSTED_IMAGE_PROMPT_ENVELOPE_SCHEMA = "provider_hosted_image_prompt_envelope@1";
+const PROVIDER_HOSTED_RAW_EXPOSURE_SCAN_SCHEMA = "provider_hosted_raw_exposure_scan@1";
 
 const TOOL_KINDS = new Set(["web_search", "image_generation"]);
 const EVIDENCE_STATES = new Set(["accepted", "runtime_probed", "profile_declared", "known_available_unprobed", "unknown", "unsupported"]);
@@ -16,6 +22,7 @@ const PROVIDER_DECLARATION_STATES = new Set(["not_declared", "metadata_declared"
 const RESULT_POSTURES = new Set(["external_epistemic_evidence", "generated_artifact", "not_available", "unknown"]);
 const REQUEST_SOURCES = new Set(["provider_metadata_profile", "runtime_probe", "fixture", "unknown"]);
 const INVOCATION_MODES = new Set(["model_mediated_provider_tool", "harness_requested_provider_operation", "operator_triggered_provider_operation", "headless_route_provider_operation"]);
+const CALL_SURFACES = new Set(["resident_tool", "operator_ui", "headless_route", "system"]);
 const DECLARATION_DECISIONS = new Set([
   "resident_callable",
   "operator_callable",
@@ -28,8 +35,27 @@ const DECLARATION_DECISIONS = new Set([
   "blocked_result_shape_unobserved",
   "blocked_operator_gate_required",
 ]);
+const AUTHORITY_DECISIONS = new Set([
+  "allowed",
+  "blocked_unknown_capability",
+  "blocked_unsupported",
+  "blocked_missing_declaration",
+  "blocked_stale_declaration",
+  "blocked_missing_result_policy",
+  "blocked_raw_exposure_risk",
+  "blocked_operator_gate_required",
+]);
+const HOSTED_SIDE_EFFECT_CLASSES = new Set(["external_epistemic_read", "generated_artifact_production"]);
+const REDACTION_STATES = new Set(["passed", "redacted", "blocked"]);
+const WEB_SEARCH_QUERY_KINDS = new Set(["single_query", "followup_query", "site_scoped_query"]);
+const RAW_EXPOSURE_FINDINGS = new Set(["credentialed_url", "raw_secret", "private_file_path", "raw_provider_payload", "unbounded_personal_data", "oversized_input"]);
 
 const CALLABLE_EVIDENCE_STATES = new Set(["accepted", "runtime_probed"]);
+const CREDENTIAL_URL_PATTERN = /\bhttps?:\/\/[^\s/:@]+:[^@\s]+@[^\s]+/i;
+const SECRET_PATTERN = /\b(?:bearer\s+[a-z0-9._~+/=-]{12,}|sk-[a-z0-9_-]{12,}|api[_-]?key\s*[:=]\s*[a-z0-9._~+/=-]{8,}|password\s*[:=]\s*\S+)/i;
+const PRIVATE_PATH_PATTERN = /(?:^|\s)(?:\/home\/[^/\s]+|\/mnt\/[a-z]\/Users\/[^/\s]+|[A-Z]:\\Users\\[^\\\s]+)/i;
+const PROVIDER_PAYLOAD_PATTERN = /(?:\"rawProviderPayload\"|\"messages\"\s*:\s*\[|\"authorization\"\s*:|\"cookie\"\s*:)/i;
+const PERSONAL_DATA_PATTERN = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b|\b(?:\+?\d[\d .()-]{7,}\d)\b/i;
 
 function isPlainObject(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -99,6 +125,18 @@ function normalizeBoolean(value, fallback = false) {
   return fallback;
 }
 
+function normalizePositiveInteger(value, fallback) {
+  const number = Math.trunc(Number(value));
+  return Number.isFinite(number) && number > 0 ? number : fallback;
+}
+
+function normalizeStringList(value, fallback = []) {
+  const list = arrayOrEmpty(value)
+    .map((item) => normalizeString(item, ""))
+    .filter(Boolean);
+  return list.length ? [...new Set(list)] : fallback;
+}
+
 function normalizeEvidenceRef(input = {}, fallbackKind = "provider_hosted_tool") {
   const source = isPlainObject(input) ? input : {};
   const ref = {
@@ -151,6 +189,17 @@ function requestShapeProofIsFresh(proof = {}, nowMs) {
   const expiresAtMs = Date.parse(proof.expiresAt);
   const currentMs = typeof nowMs === "number" && Number.isFinite(nowMs) ? nowMs : Date.now();
   return Number.isFinite(expiresAtMs) && expiresAtMs > currentMs;
+}
+
+function timestampIsFresh(expiresAt, nowMs) {
+  if (!expiresAt) return true;
+  const expiresAtMs = Date.parse(expiresAt);
+  const currentMs = typeof nowMs === "number" && Number.isFinite(nowMs) ? nowMs : Date.now();
+  return Number.isFinite(expiresAtMs) && expiresAtMs > currentMs;
+}
+
+function inputDigestFor(text) {
+  return digestFor("provider-hosted-input-text@1", normalizeString(text, ""));
 }
 
 function requestShapeProofIsCallable(proof = {}, nowMs) {
@@ -474,6 +523,322 @@ function buildProviderHostedActivationSnapshot(input = {}) {
   return snapshot;
 }
 
+function buildProviderHostedWebSearchQueryPolicy(input = {}) {
+  const source = isPlainObject(input) ? input : {};
+  const policy = {
+    schema: PROVIDER_HOSTED_WEB_SEARCH_QUERY_POLICY_SCHEMA,
+    policyId: boundedString(source.policyId || "", 180),
+    projectId: boundedString(source.projectId, 160),
+    workThreadId: boundedString(source.workThreadId, 160),
+    maxQueryChars: normalizePositiveInteger(source.maxQueryChars, 512),
+    maxQueriesPerTurn: normalizePositiveInteger(source.maxQueriesPerTurn, 3),
+    allowedQueryKinds: normalizeStringList(source.allowedQueryKinds, ["single_query", "followup_query", "site_scoped_query"])
+      .filter((kind) => WEB_SEARCH_QUERY_KINDS.has(kind)),
+    disallowedQueryClasses: normalizeStringList(source.disallowedQueryClasses, ["credentialed_url", "raw_secret", "private_file_path", "raw_provider_payload", "unbounded_personal_data"])
+      .filter((kind) => RAW_EXPOSURE_FINDINGS.has(kind)),
+    operatorConfirmationRequired: normalizeBoolean(source.operatorConfirmationRequired, false),
+    rawQueryStored: false,
+    rawProviderPayloadIncluded: false,
+    rawSecretIncluded: false,
+    generatedAt: normalizeString(source.generatedAt, nowIso(source.nowMs)),
+  };
+  if (!policy.allowedQueryKinds.length) policy.allowedQueryKinds = ["single_query"];
+  policy.policyId = policy.policyId || `provider_hosted_web_query_policy_${digestFor("provider-hosted-web-query-policy-source@1", policy).slice(0, 24)}`;
+  policy.policyDigest = digestFor("provider-hosted-web-query-policy@1", policy);
+  return policy;
+}
+
+function buildProviderHostedImagePromptPolicy(input = {}) {
+  const source = isPlainObject(input) ? input : {};
+  const retention = normalizeEnum(source.rawPromptRetention, new Set(["digest_only", "redacted_preview", "private_artifact", "not_stored"]), "digest_only");
+  const policy = {
+    schema: PROVIDER_HOSTED_IMAGE_PROMPT_POLICY_SCHEMA,
+    policyId: boundedString(source.policyId || "", 180),
+    projectId: boundedString(source.projectId, 160),
+    workThreadId: boundedString(source.workThreadId, 160),
+    maxPromptChars: normalizePositiveInteger(source.maxPromptChars, 1200),
+    allowProjectContext: normalizeBoolean(source.allowProjectContext, false),
+    allowFileContentInPrompt: normalizeBoolean(source.allowFileContentInPrompt, false),
+    allowPersonalData: normalizeBoolean(source.allowPersonalData, false),
+    operatorGateRequired: normalizeBoolean(source.operatorGateRequired, true),
+    rawPromptRetention: retention,
+    rawPromptStored: false,
+    rawProviderPayloadIncluded: false,
+    rawSecretIncluded: false,
+    generatedAt: normalizeString(source.generatedAt, nowIso(source.nowMs)),
+  };
+  policy.policyId = policy.policyId || `provider_hosted_image_prompt_policy_${digestFor("provider-hosted-image-prompt-policy-source@1", policy).slice(0, 24)}`;
+  policy.policyDigest = digestFor("provider-hosted-image-prompt-policy@1", policy);
+  return policy;
+}
+
+function detectRawExposureFindings(text, { maxChars = 1000, disallowed = [] } = {}) {
+  const value = normalizeString(text, "");
+  const disallowedSet = new Set(disallowed);
+  const findings = [];
+  function maybeAdd(kind, condition) {
+    if (condition && (kind === "oversized_input" || !disallowedSet.size || disallowedSet.has(kind))) findings.push(kind);
+  }
+  maybeAdd("credentialed_url", CREDENTIAL_URL_PATTERN.test(value));
+  maybeAdd("raw_secret", SECRET_PATTERN.test(value));
+  maybeAdd("private_file_path", PRIVATE_PATH_PATTERN.test(value));
+  maybeAdd("raw_provider_payload", PROVIDER_PAYLOAD_PATTERN.test(value));
+  maybeAdd("unbounded_personal_data", PERSONAL_DATA_PATTERN.test(value));
+  maybeAdd("oversized_input", value.length > maxChars);
+  return [...new Set(findings)];
+}
+
+function trustedRawExposureScan(scan, { toolKind, inputText }) {
+  if (scan?.schema !== PROVIDER_HOSTED_RAW_EXPOSURE_SCAN_SCHEMA) return null;
+  if (scan.toolKind !== toolKind) return null;
+  if (scan.inputDigest !== inputDigestFor(inputText)) return null;
+  return scan;
+}
+
+function buildProviderHostedRawExposureScan(input = {}) {
+  const source = isPlainObject(input) ? input : {};
+  const toolKind = normalizeEnum(source.toolKind || source.kind, TOOL_KINDS, "web_search");
+  const policy = isPlainObject(source.policy) ? source.policy : {};
+  const maxChars = toolKind === "web_search"
+    ? normalizePositiveInteger(policy.maxQueryChars, 512)
+    : normalizePositiveInteger(policy.maxPromptChars, 1200);
+  const disallowed = toolKind === "web_search"
+    ? normalizeStringList(policy.disallowedQueryClasses, ["credentialed_url", "raw_secret", "private_file_path", "raw_provider_payload", "unbounded_personal_data"])
+    : ["credentialed_url", "raw_secret", "private_file_path", "raw_provider_payload"];
+  const findings = detectRawExposureFindings(source.inputText, { maxChars, disallowed });
+  const scan = {
+    schema: PROVIDER_HOSTED_RAW_EXPOSURE_SCAN_SCHEMA,
+    scanId: boundedString(source.scanId || "", 180),
+    toolKind,
+    inputDigest: inputDigestFor(source.inputText),
+    findingClasses: findings,
+    blockerClasses: findings,
+    redactionState: findings.length ? "blocked" : "passed",
+    rawInputIncluded: false,
+    rawProviderPayloadIncluded: false,
+    rawSecretIncluded: false,
+    scannedAt: normalizeString(source.scannedAt, nowIso(source.nowMs)),
+  };
+  scan.scanId = scan.scanId || `provider_hosted_raw_scan_${toolKind}_${digestFor("provider-hosted-raw-scan-source@1", scan).slice(0, 24)}`;
+  scan.scanDigest = digestFor("provider-hosted-raw-exposure-scan@1", scan);
+  return scan;
+}
+
+function buildProviderHostedWebSearchQueryEnvelope(input = {}) {
+  const source = isPlainObject(input) ? input : {};
+  const policy = source.queryPolicy?.schema === PROVIDER_HOSTED_WEB_SEARCH_QUERY_POLICY_SCHEMA
+    ? source.queryPolicy
+    : buildProviderHostedWebSearchQueryPolicy({
+      projectId: source.projectId,
+      workThreadId: source.workThreadId,
+      nowMs: source.nowMs,
+      ...source.queryPolicy,
+    });
+  const queryText = normalizeString(source.queryText || source.inputText, "");
+  const suppliedScan = trustedRawExposureScan(source.rawExposureScan, { toolKind: "web_search", inputText: queryText });
+  const scan = suppliedScan
+    ? suppliedScan
+    : buildProviderHostedRawExposureScan({ toolKind: "web_search", inputText: queryText, policy, nowMs: source.nowMs });
+  const redactionState = normalizeEnum(scan.redactionState, REDACTION_STATES, "blocked");
+  const envelope = {
+    schema: PROVIDER_HOSTED_WEB_SEARCH_QUERY_ENVELOPE_SCHEMA,
+    queryEnvelopeId: boundedString(source.queryEnvelopeId || "", 180),
+    callId: boundedString(source.callId, 180),
+    queryDigest: scan.inputDigest,
+    queryPreview: redactionState === "passed" ? boundedString(queryText, Math.min(160, policy.maxQueryChars)) : "",
+    queryKind: normalizeEnum(source.queryKind, WEB_SEARCH_QUERY_KINDS, "single_query"),
+    queryPolicyId: policy.policyId,
+    queryPolicyDigest: policy.policyDigest,
+    rawExposureScanRef: normalizeEvidenceRef({
+      kind: "provider_hosted_raw_exposure_scan",
+      id: scan.scanId,
+      digest: scan.scanDigest,
+      label: "web_search query scan",
+      confidence: scan.redactionState,
+    }, "provider_hosted_raw_exposure_scan"),
+    rawQueryStored: false,
+    rawSecretsDetected: arrayOrEmpty(scan.findingClasses).includes("raw_secret"),
+    redactionState,
+    generatedAt: normalizeString(source.generatedAt, nowIso(source.nowMs)),
+  };
+  envelope.queryEnvelopeId = envelope.queryEnvelopeId || `provider_hosted_web_query_${digestFor("provider-hosted-web-query-envelope-source@1", envelope).slice(0, 24)}`;
+  envelope.envelopeDigest = digestFor("provider-hosted-web-search-query-envelope@1", envelope);
+  return { envelope, policy, scan };
+}
+
+function buildProviderHostedImagePromptEnvelope(input = {}) {
+  const source = isPlainObject(input) ? input : {};
+  const policy = source.promptPolicy?.schema === PROVIDER_HOSTED_IMAGE_PROMPT_POLICY_SCHEMA
+    ? source.promptPolicy
+    : buildProviderHostedImagePromptPolicy({
+      projectId: source.projectId,
+      workThreadId: source.workThreadId,
+      nowMs: source.nowMs,
+      ...source.promptPolicy,
+    });
+  const promptText = normalizeString(source.promptText || source.inputText, "");
+  const suppliedScan = trustedRawExposureScan(source.rawExposureScan, { toolKind: "image_generation", inputText: promptText });
+  const scan = suppliedScan
+    ? suppliedScan
+    : buildProviderHostedRawExposureScan({ toolKind: "image_generation", inputText: promptText, policy, nowMs: source.nowMs });
+  const redactionState = normalizeEnum(scan.redactionState, REDACTION_STATES, "blocked");
+  const envelope = {
+    schema: PROVIDER_HOSTED_IMAGE_PROMPT_ENVELOPE_SCHEMA,
+    promptEnvelopeId: boundedString(source.promptEnvelopeId || "", 180),
+    callId: boundedString(source.callId, 180),
+    promptDigest: scan.inputDigest,
+    promptPreview: policy.rawPromptRetention === "redacted_preview" && redactionState === "passed" ? boundedString(promptText, Math.min(160, policy.maxPromptChars)) : "",
+    promptPolicyId: policy.policyId,
+    promptPolicyDigest: policy.policyDigest,
+    rawExposureScanRef: normalizeEvidenceRef({
+      kind: "provider_hosted_raw_exposure_scan",
+      id: scan.scanId,
+      digest: scan.scanDigest,
+      label: "image_generation prompt scan",
+      confidence: scan.redactionState,
+    }, "provider_hosted_raw_exposure_scan"),
+    rawPromptStored: false,
+    rawSecretsDetected: arrayOrEmpty(scan.findingClasses).includes("raw_secret"),
+    redactionState,
+    generatedAt: normalizeString(source.generatedAt, nowIso(source.nowMs)),
+  };
+  envelope.promptEnvelopeId = envelope.promptEnvelopeId || `provider_hosted_image_prompt_${digestFor("provider-hosted-image-prompt-envelope-source@1", envelope).slice(0, 24)}`;
+  envelope.envelopeDigest = digestFor("provider-hosted-image-prompt-envelope@1", envelope);
+  return { envelope, policy, scan };
+}
+
+function findActivationDecision(snapshot = {}, toolKind, invocationMode) {
+  return arrayOrEmpty(snapshot.declarationDecisions)
+    .find((decision) => decision?.toolKind === toolKind && decision?.invocationMode === invocationMode) || null;
+}
+
+function authorityDecisionFromActivation({ activationSnapshot = {}, toolKind, invocationMode, callSurface, caller, scan, inputPolicy, nowMs }) {
+  if (invocationMode === "operator_triggered_provider_operation" && (callSurface !== "operator_ui" || caller !== "operator")) {
+    return { authorityDecision: "blocked_operator_gate_required", blocker: "operator_invocation_requires_operator_surface" };
+  }
+  if (!isPlainObject(activationSnapshot) || activationSnapshot.schema !== PROVIDER_HOSTED_ACTIVATION_SNAPSHOT_SCHEMA) {
+    return { authorityDecision: "blocked_missing_declaration", blocker: "missing_activation_snapshot" };
+  }
+  if (!timestampIsFresh(activationSnapshot.expiresAt, nowMs)) {
+    return { authorityDecision: "blocked_stale_declaration", blocker: "stale_activation_snapshot" };
+  }
+  if (!activationSnapshot.resultAdmissionPolicyId) {
+    return { authorityDecision: "blocked_missing_result_policy", blocker: "missing_result_admission_policy" };
+  }
+  if (scan?.redactionState === "blocked") {
+    const blockerClasses = arrayOrEmpty(scan.blockerClasses).filter(Boolean);
+    return { authorityDecision: "blocked_raw_exposure_risk", blocker: blockerClasses.join(",") || "raw_exposure_risk" };
+  }
+  if (toolKind === "web_search" && !inputPolicy?.policyId) {
+    return { authorityDecision: "blocked_missing_result_policy", blocker: "missing_query_policy" };
+  }
+  if (toolKind === "image_generation" && !inputPolicy?.policyId) {
+    return { authorityDecision: "blocked_missing_result_policy", blocker: "missing_prompt_policy" };
+  }
+  const decision = findActivationDecision(activationSnapshot, toolKind, invocationMode);
+  if (!decision) return { authorityDecision: "blocked_missing_declaration", blocker: "missing_declaration_decision" };
+  if (decision.callable === true) return { authorityDecision: "allowed", blocker: "" };
+  if (decision.decision === "blocked_unknown_capability") return { authorityDecision: "blocked_unknown_capability", blocker: decision.blocker || decision.decision };
+  if (decision.decision === "blocked_unsupported") return { authorityDecision: "blocked_unsupported", blocker: decision.blocker || decision.decision };
+  if (decision.decision === "blocked_stale_request_shape_proof") return { authorityDecision: "blocked_stale_declaration", blocker: decision.blocker || decision.decision };
+  if (decision.decision === "blocked_operator_gate_required") return { authorityDecision: "blocked_operator_gate_required", blocker: decision.blocker || decision.decision };
+  return { authorityDecision: "blocked_missing_declaration", blocker: decision.blocker || decision.decision };
+}
+
+function buildProviderHostedToolCallEnvelope(input = {}) {
+  const source = isPlainObject(input) ? input : {};
+  const toolKind = normalizeEnum(source.toolKind || source.kind, TOOL_KINDS, "web_search");
+  const callSurface = normalizeEnum(source.callSurface, CALL_SURFACES, toolKind === "image_generation" ? "operator_ui" : "resident_tool");
+  const invocationMode = normalizeEnum(
+    source.invocationMode,
+    INVOCATION_MODES,
+    callSurface === "operator_ui"
+      ? "operator_triggered_provider_operation"
+      : callSurface === "headless_route"
+        ? "headless_route_provider_operation"
+        : "model_mediated_provider_tool",
+  );
+  const callId = boundedString(source.callId || "", 180) || `provider_hosted_call_${toolKind}_${digestFor("provider-hosted-call-source@1", {
+    toolKind,
+    invocationMode,
+    callSurface,
+    turnId: source.turnId,
+    inputText: source.inputText || source.queryText || source.promptText,
+  }).slice(0, 24)}`;
+  const inputBundle = toolKind === "web_search"
+    ? buildProviderHostedWebSearchQueryEnvelope({ ...source, callId })
+    : buildProviderHostedImagePromptEnvelope({ ...source, callId });
+  const sideEffectClass = toolKind === "web_search" ? "external_epistemic_read" : "generated_artifact_production";
+  const inputPolicy = inputBundle.policy;
+  const scan = inputBundle.scan;
+  const activation = isPlainObject(source.activationSnapshot) ? source.activationSnapshot : {};
+  const caller = normalizeEnum(source.caller, new Set(["resident", "operator", "headless", "system"]), callSurface === "operator_ui" ? "operator" : "resident");
+  const authority = authorityDecisionFromActivation({
+    activationSnapshot: activation,
+    toolKind,
+    invocationMode,
+    callSurface,
+    caller,
+    scan,
+    inputPolicy,
+    nowMs: source.nowMs,
+  });
+  const decision = findActivationDecision(activation, toolKind, invocationMode);
+  const envelope = {
+    schema: PROVIDER_HOSTED_TOOL_CALL_ENVELOPE_SCHEMA,
+    callId,
+    toolKind,
+    invocationMode,
+    callSurface,
+    workThreadId: boundedString(source.workThreadId || activation.workThreadId, 160),
+    turnId: boundedString(source.turnId, 180),
+    agentId: boundedString(source.agentId, 180),
+    activationId: boundedString(activation.activationId, 180),
+    activationDigest: boundedString(activation.activationDigest, 180),
+    declarationDigest: boundedString(activation.declarationDigest, 180),
+    caller,
+    sideEffectClass: normalizeEnum(sideEffectClass, HOSTED_SIDE_EFFECT_CLASSES, "external_epistemic_read"),
+    authorityDecision: normalizeEnum(authority.authorityDecision, AUTHORITY_DECISIONS, "blocked_missing_declaration"),
+    blocker: boundedString(authority.blocker, 220),
+    replayPolicy: {
+      mayAutoRetry: false,
+      requiresFreshOperatorIntent: toolKind === "image_generation" || callSurface === "operator_ui",
+      idempotencyKey: boundedString(source.idempotencyKey || digestFor("provider-hosted-call-idempotency@1", { toolKind, invocationMode, callSurface, turnId: source.turnId, inputDigest: scan.inputDigest }).slice(0, 40), 80),
+    },
+    inputEvidenceRef: normalizeEvidenceRef({
+      kind: toolKind === "web_search" ? "provider_hosted_web_search_query_envelope" : "provider_hosted_image_prompt_envelope",
+      id: inputBundle.envelope.queryEnvelopeId || inputBundle.envelope.promptEnvelopeId,
+      digest: inputBundle.envelope.envelopeDigest,
+      label: toolKind === "web_search" ? "web_search query envelope" : "image_generation prompt envelope",
+      confidence: inputBundle.envelope.redactionState,
+    }, "provider_hosted_input_envelope"),
+    requestShapeProofId: boundedString(decision?.proofId, 180),
+    requestShapeProofDigest: boundedString(decision?.proofDigest, 180),
+    inputPolicyId: boundedString(inputPolicy.policyId, 180),
+    inputPolicyDigest: boundedString(inputPolicy.policyDigest, 180),
+    outboundDisclosureScanRef: normalizeEvidenceRef({
+      kind: "provider_hosted_raw_exposure_scan",
+      id: scan.scanId,
+      digest: scan.scanDigest,
+      label: "hosted outbound disclosure scan",
+      confidence: scan.redactionState,
+    }, "provider_hosted_raw_exposure_scan"),
+    inputEnvelope: inputBundle.envelope,
+    rawPromptIncluded: false,
+    rawQueryIncluded: false,
+    rawProviderPayloadIncluded: false,
+    rawResultIncluded: false,
+    rawSecretIncluded: false,
+    providerTransportAllowed: false,
+    providerHostedToolCallAllowed: false,
+    contextInjectionAllowed: false,
+    workspaceMutationAllowed: false,
+    createdAt: normalizeString(source.createdAt, nowIso(source.nowMs)),
+  };
+  envelope.callDigest = digestFor("provider-hosted-tool-call-envelope@1", envelope);
+  return envelope;
+}
+
 function buildWebSearchEvidenceContract(input = {}) {
   const source = isPlainObject(input) ? input : {};
   const contract = {
@@ -708,20 +1073,70 @@ function assertProviderHostedToolsStatusSafe(status = {}) {
   return true;
 }
 
+function assertProviderHostedToolCallEnvelopeSafe(envelope = {}) {
+  if (!isPlainObject(envelope) || envelope.schema !== PROVIDER_HOSTED_TOOL_CALL_ENVELOPE_SCHEMA) {
+    throw new Error("provider_hosted_tool_call_envelope_schema_mismatch");
+  }
+  for (const flag of [
+    "rawPromptIncluded",
+    "rawQueryIncluded",
+    "rawProviderPayloadIncluded",
+    "rawResultIncluded",
+    "rawSecretIncluded",
+    "providerTransportAllowed",
+    "providerHostedToolCallAllowed",
+    "contextInjectionAllowed",
+    "workspaceMutationAllowed",
+  ]) {
+    if (envelope[flag] !== false) throw new Error(`provider_hosted_call_envelope_authority_leak:${flag}`);
+  }
+  if (!isPlainObject(envelope.replayPolicy) || envelope.replayPolicy.mayAutoRetry !== false) {
+    throw new Error("provider_hosted_call_replay_policy_unsafe");
+  }
+  if (!isPlainObject(envelope.inputEnvelope)) throw new Error("provider_hosted_call_input_envelope_missing");
+  const expectedInputSchema = envelope.toolKind === "web_search"
+    ? PROVIDER_HOSTED_WEB_SEARCH_QUERY_ENVELOPE_SCHEMA
+    : PROVIDER_HOSTED_IMAGE_PROMPT_ENVELOPE_SCHEMA;
+  if (envelope.inputEnvelope.schema !== expectedInputSchema) {
+    throw new Error(`provider_hosted_call_input_envelope_schema_mismatch:${envelope.inputEnvelope.schema || "missing"}`);
+  }
+  if (envelope.inputEnvelope.redactionState === "blocked" && envelope.authorityDecision !== "blocked_raw_exposure_risk") {
+    throw new Error("provider_hosted_call_raw_block_not_reflected");
+  }
+  if (envelope.inputEnvelope.redactionState !== "passed") {
+    if (envelope.inputEnvelope.queryPreview) throw new Error("provider_hosted_call_blocked_query_preview_leak");
+    if (envelope.inputEnvelope.promptPreview) throw new Error("provider_hosted_call_blocked_prompt_preview_leak");
+  }
+  return true;
+}
+
 module.exports = {
   PROVIDER_HOSTED_ACTIVATION_SNAPSHOT_SCHEMA,
   PROVIDER_HOSTED_DECLARATION_POLICY_SCHEMA,
+  PROVIDER_HOSTED_IMAGE_PROMPT_ENVELOPE_SCHEMA,
+  PROVIDER_HOSTED_IMAGE_PROMPT_POLICY_SCHEMA,
+  PROVIDER_HOSTED_RAW_EXPOSURE_SCAN_SCHEMA,
   PROVIDER_HOSTED_REQUEST_SHAPE_PROOF_SCHEMA,
+  PROVIDER_HOSTED_TOOL_CALL_ENVELOPE_SCHEMA,
   PROVIDER_HOSTED_TOOL_CAPABILITY_SCHEMA,
   PROVIDER_HOSTED_TOOLS_STATUS_SCHEMA,
+  PROVIDER_HOSTED_WEB_SEARCH_QUERY_ENVELOPE_SCHEMA,
+  PROVIDER_HOSTED_WEB_SEARCH_QUERY_POLICY_SCHEMA,
   PROVIDER_IMAGE_GENERATION_ARTIFACT_CONTRACT_SCHEMA,
   PROVIDER_WEB_SEARCH_EVIDENCE_CONTRACT_SCHEMA,
   buildProviderHostedActivationSnapshot,
   buildProviderHostedDeclarationPolicy,
+  buildProviderHostedImagePromptEnvelope,
+  buildProviderHostedImagePromptPolicy,
+  buildProviderHostedRawExposureScan,
   buildProviderHostedRequestShapeProof,
+  buildProviderHostedToolCallEnvelope,
   buildImageGenerationArtifactContract,
   buildProviderHostedToolCapability,
   buildProviderHostedToolsStatus,
+  buildProviderHostedWebSearchQueryEnvelope,
+  buildProviderHostedWebSearchQueryPolicy,
   buildWebSearchEvidenceContract,
+  assertProviderHostedToolCallEnvelopeSafe,
   assertProviderHostedToolsStatusSafe,
 };
