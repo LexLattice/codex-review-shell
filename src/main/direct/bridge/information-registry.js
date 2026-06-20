@@ -1189,6 +1189,39 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "This gate observes and proves readiness only: it starts no provider transport, grants no permission, mutates no workspace/context truth, and does not begin Wave 18 external discovery, Wave 19 hosted tools, or Wave 20 new_context execution.",
   },
   {
+    id: "ic55.external-capability-profile",
+    name: "Wave 18 external capability profile",
+    role: "authority_gate",
+    implementationState: "implemented",
+    directPathPosture: "keep_guarded",
+    sourceFiles: [
+      "src/main/direct/external/external-capability-profile.js",
+      "src/main/direct/external/capability-discovery.js",
+      "src/main/direct/external/mcp-boundary.js",
+      "src/main/direct/external/plugin-governance.js",
+      "scripts/direct-external-capability-profile-regression.mjs",
+      "docs/DIRECT_WAVE18_EXTERNAL_DISCOVERY_MCP_READ_SPEC.md",
+      "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md",
+    ],
+    ontology: ontologyShape(
+      [
+        "external_capability_profile",
+        "external_source_identity_witness",
+        "mcp_server_identity_witness",
+        "mcp_server_selector_blocker",
+        "external_capability_witness_row",
+        "external_capability_compact_witness",
+      ],
+      "harness",
+      {
+        identityFields: ["profileId", "sourceIdentityId", "serverIdentityId", "blockerId", "capabilityId", "toolName"],
+        schema: "external_capability_profile@1",
+      }
+    ),
+    bridgeFit: "Maps external discovery, MCP resource read, dynamic external action, plugin candidate/install, and provider-hosted tool families into profile-only lifecycle rows with exact source/server identity, selector blockers, descriptorKind, executionState, and compact resident/operator witness.",
+    realignment: "PR109 declares no resident-callable provider tools, performs no external resource read, executes no dynamic MCP action, installs no plugin, admits no external context, persists no external payload, and exposes no raw endpoint, credential, URI, payload, schema, or secret.",
+  },
+  {
     id: "ic33.odeu-live-capability-artifact-kernel",
     name: "ODEU live-capability artifact/source/digest/raw-exposure kernel",
     role: "canonical_evidence",
