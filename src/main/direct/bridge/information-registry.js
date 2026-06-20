@@ -1270,6 +1270,35 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     bridgeFit: "Adds PR 98 direct-native child transcript projection modes for turn activity, full child history, and result summaries with author identity, visibility metadata, pagination, source refs, and raw-exposure sentinels.",
     realignment: "This PR 98 slice is projection-only: child user messages do not render as operator unless human-authored, child answers do not render as primary Codex, full child history remains context-inadmissible by default, and primary transcript receives summary links only.",
   },
+  {
+    id: "ic45.sub-agent-interaction-policy",
+    name: "Wave 16 sub-agent interaction policy and no-interference envelope",
+    role: "authority_gate",
+    implementationState: "implemented",
+    directPathPosture: "keep_guarded",
+    sourceFiles: [
+      "src/main/direct/agents/sub-agent-interaction-policy.js",
+      "scripts/direct-sub-agent-interaction-policy-regression.mjs",
+      "docs/DIRECT_WAVE16_SUB_AGENT_LIFECYCLE_FOLLOWUP_TRANSCRIPT_SPEC.md",
+      "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md",
+    ],
+    ontology: ontologyShape(
+      [
+        "sub_agent_interaction_policy_envelope",
+        "no_interference_policy_witness",
+        "resident_tool_catalog_policy_row",
+        "operator_blocked_control_projection",
+        "deterministic_blocked_result_envelope",
+      ],
+      "harness",
+      {
+        identityFields: ["policyId", "actorKind", "targetKind", "targetId", "scope"],
+        schema: "sub_agent_interaction_policy_envelope@1",
+      }
+    ),
+    bridgeFit: "Adds PR 99 explicit observe-only/no-interference policy envelopes before follow-up or lifecycle controls become live, with resident catalog filtering, operator blocked-control projection, deterministic blocked results, policy digest, and source refs.",
+    realignment: "This PR 99 slice is authority-policy only: active observe-only/no-interference blocks send/followup/close/interrupt/resume for the bound actor, never infers policy from UI labels, starts no provider/follow-up/lifecycle transport, and grants no policy relaxation flow.",
+  },
 ]);
 
 function isPlainObject(value) {
