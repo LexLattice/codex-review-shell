@@ -1181,6 +1181,36 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     bridgeFit: "Freezes spawn/list/inspect/wait as resident-callable sub-agent tools only after declaration digest, resident epistemic rows, ODEU usability proof, witness rows, per-call authority, provider-backed route, result envelope, and context admission evidence exist.",
     realignment: "This PR 95 slice does not widen operator UI authority or interference controls: send/followup/close/interrupt/resume/recursive spawn remain undeclared, child tools remain disabled, model self-report is supplemental only, and child output cannot flatten into the primary transcript.",
   },
+  {
+    id: "ic42.sub-agent-operator-projection",
+    name: "Wave 15 operator sub-agent projection and manual usability gate",
+    role: "observability_surface",
+    implementationState: "implemented",
+    directPathPosture: "keep_guarded",
+    sourceFiles: [
+      "src/main/direct/agents/sub-agent-operator-projection.js",
+      "src/main/direct/agents/sub-agent-resident-declaration.js",
+      "src/main/direct/odeu/proof.js",
+      "scripts/direct-sub-agent-operator-projection-regression.mjs",
+      "docs/DIRECT_WAVE15_RESIDENT_SUB_AGENT_MVP_SPEC.md",
+    ],
+    ontology: ontologyShape(
+      [
+        "resident_sub_agent_operator_projection",
+        "resident_sub_agent_primary_transcript_activity_summary",
+        "resident_sub_agent_manual_usability_gate",
+        "resident_sub_agent_analytics_hook",
+        "odeu_capability_witness_row",
+      ],
+      "harness",
+      {
+        identityFields: ["projectionId", "gateId", "hookId", "witnessRowId"],
+        schema: "resident_sub_agent_operator_projection@1",
+      }
+    ),
+    bridgeFit: "Projects the PR 95 resident-callable sub-agent slice to the operator as primary transcript activity summaries, proof/status rows, a manual usability gate, and child usage analytics hook without minting proof.",
+    realignment: "This PR 96 slice is projection-only: it reads PR 95 proof/declaration artifacts, keeps operatorCallable=false, blocks interference/lifecycle expansion, does not inject child transcripts, and keeps raw prompt/result/provider payload flags false.",
+  },
 ]);
 
 function isPlainObject(value) {

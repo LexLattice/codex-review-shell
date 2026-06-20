@@ -858,6 +858,12 @@ async function buildResidentSubAgentToolDeclaration(input = {}, options = {}) {
       rawChildPromptIncluded: routeResult.resultAdmissionEnvelope?.rawChildPromptIncluded === true,
       rawChildTranscriptIncluded: routeResult.resultAdmissionEnvelope?.rawChildTranscriptIncluded === true,
       rawProviderPayloadIncluded: routeResult.resultAdmissionEnvelope?.rawProviderPayloadIncluded === true,
+      usageAttributionAvailable: Boolean(routeResult.usageAttributionRow),
+      usageAttributionId: routeResult.usageAttributionRow?.usageAttributionId || "",
+      usageAttribution: routeResult.usageAttribution || "unknown",
+      parentUsageMerged: routeResult.usageAttributionRow?.parentUsageMerged === true,
+      tokenUsage: routeResult.usageAttributionRow?.tokenUsage || null,
+      usageUnavailableReason: routeResult.usageUnavailableRow?.reason || "",
     },
     negativeSmoke,
     selfReportPosture: {
