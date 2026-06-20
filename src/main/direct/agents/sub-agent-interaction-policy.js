@@ -94,12 +94,13 @@ function policyBlocksInterference(policy) {
   return policy === "observe_only" || policy === "no_interference";
 }
 
-function allowedActionsFor(policy, actorKind, otherwiseAuthorized = []) {
-  const authorized = new Set(Array.isArray(otherwiseAuthorized) && otherwiseAuthorized.length ? otherwiseAuthorized : OBSERVATION_ACTIONS);
+function allowedActionsFor(policy, actorKind, otherwiseAuthorized) {
+  const safeOtherwise = Array.isArray(otherwiseAuthorized) ? otherwiseAuthorized : [];
+  const authorized = new Set(safeOtherwise.length ? safeOtherwise : OBSERVATION_ACTIONS);
   const allowedObservation = OBSERVATION_ACTIONS.filter((action) => authorized.has(action));
   if (policyBlocksInterference(policy)) return allowedObservation;
   if (policy === "followup_allowed") {
-    return [...new Set([...allowedObservation, ...FOLLOWUP_ACTIONS.filter((action) => authorized.has(action) || otherwiseAuthorized.length === 0)])];
+    return [...new Set([...allowedObservation, ...FOLLOWUP_ACTIONS.filter((action) => authorized.has(action))])];
   }
   if (policy === "lifecycle_operator_gated" && actorKind === "operator") {
     return [...new Set([...allowedObservation, ...LIFECYCLE_CONTROL_ACTIONS.filter((action) => authorized.has(action))])];
@@ -126,8 +127,14 @@ function blockerReasonFor(action, policy, actorKind) {
   if (policyBlocksInterference(policy) && INTERFERING_ACTIONS.includes(action)) {
     return policy === "no_interference" ? "blocked_by_no_interference_policy" : "blocked_by_observe_only_policy";
   }
+  if (policy === "followup_allowed" && FOLLOWUP_ACTIONS.includes(action)) {
+    return "blocked_followup_not_otherwise_authorized";
+  }
   if (policy === "followup_allowed" && LIFECYCLE_CONTROL_ACTIONS.includes(action)) {
     return "blocked_lifecycle_controls_not_promoted_in_pr99";
+  }
+  if (policy === "lifecycle_operator_gated" && FOLLOWUP_ACTIONS.includes(action)) {
+    return "blocked_followup_not_promoted_in_lifecycle_gate";
   }
   if (policy === "lifecycle_operator_gated" && actorKind !== "operator" && LIFECYCLE_CONTROL_ACTIONS.includes(action)) {
     return "blocked_lifecycle_operator_gate";
@@ -138,8 +145,18 @@ function blockerReasonFor(action, policy, actorKind) {
 function catalogDispositionFor(action, policy, actorKind, allowed) {
   if (allowed) return "callable";
   if (policyBlocksInterference(policy) && INTERFERING_ACTIONS.includes(action)) return "removed_or_blocked_result";
+  if (policy === "followup_allowed" && FOLLOWUP_ACTIONS.includes(action)) return "removed_or_blocked_result";
+  if (policy === "lifecycle_operator_gated" && FOLLOWUP_ACTIONS.includes(action)) return "removed_or_blocked_result";
   if (LIFECYCLE_CONTROL_ACTIONS.includes(action)) return actorKind === "operator" ? "blocked_result" : "removed_or_blocked_result";
   return "blocked_result";
+}
+
+function requiredBlockedActionsFor(policy, actorKind) {
+  if (policyBlocksInterference(policy)) return INTERFERING_ACTIONS;
+  if (policy === "followup_allowed") return LIFECYCLE_CONTROL_ACTIONS;
+  if (policy === "lifecycle_operator_gated" && actorKind !== "operator") return INTERFERING_ACTIONS;
+  if (policy === "lifecycle_operator_gated") return FOLLOWUP_ACTIONS;
+  return [];
 }
 
 function buildBlockedResultEnvelope({ action, blockerReason, policyId, policyDigest, actorKind, targetId, generatedAt }) {
@@ -351,6 +368,10 @@ function validateSubAgentInteractionPolicyEnvelope(envelope = {}) {
       if (envelope.allowedActions.includes(action)) errors.push(`interfering_action_allowed:${action}`);
     }
   }
+  for (const action of requiredBlockedActionsFor(envelope.policy, envelope.actorKind)) {
+    if (!envelope.blockedActions.includes(action)) errors.push(`policy_required_action_not_blocked:${action}`);
+    if (envelope.allowedActions.includes(action)) errors.push(`policy_required_action_allowed:${action}`);
+  }
   const catalogRows = Array.isArray(envelope.residentToolCatalogPolicyRows) ? envelope.residentToolCatalogPolicyRows : [];
   if (!catalogRows.length) errors.push("resident_catalog_rows_missing");
   const rowsByAction = new Map(catalogRows.map((row) => [row?.action, row]));
@@ -364,6 +385,10 @@ function validateSubAgentInteractionPolicyEnvelope(envelope = {}) {
     }
     if (row.schema !== RESIDENT_TOOL_CATALOG_POLICY_ROW_SCHEMA) errors.push(`catalog_row_schema_mismatch:${row.action}`);
     if (row.policyDigest !== envelope.policyDigest) errors.push(`catalog_row_policy_digest_mismatch:${row.action}`);
+    const actionAllowed = Array.isArray(envelope.allowedActions) && envelope.allowedActions.includes(row.action);
+    const actionBlocked = Array.isArray(envelope.blockedActions) && envelope.blockedActions.includes(row.action);
+    if (row.callableInCurrentRequest !== actionAllowed) errors.push(`catalog_row_callability_mismatch:${row.action}`);
+    if (actionBlocked && row.callableInCurrentRequest !== false) errors.push(`catalog_row_blocked_but_callable:${row.action}`);
     if (row.declaredAsProviderTool !== row.callableInCurrentRequest) errors.push(`provider_declaration_mismatch:${row.action}`);
     if (row.callableInCurrentRequest === false) {
       if (!normalizeString(row.blockerReason, "")) errors.push(`blocked_row_missing_reason:${row.action}`);

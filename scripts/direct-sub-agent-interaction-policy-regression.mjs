@@ -97,6 +97,34 @@ for (const action of LIFECYCLE_CONTROL_ACTIONS) {
   assert.equal(followupAllowed.residentToolCatalogPolicyRows.find((row) => row.action === action).blockerReason, "blocked_lifecycle_controls_not_promoted_in_pr99");
 }
 
+const followupMissingAuthority = buildSubAgentInteractionPolicyEnvelope({
+  actorKind: "resident_model",
+  targetKind: "child_agent",
+  targetId: "agent_carver",
+  policy: "followup_allowed",
+}, { now: fixedNow });
+
+validateSubAgentInteractionPolicyEnvelope(followupMissingAuthority);
+for (const action of ["send_message", "followup_task"]) {
+  const row = followupMissingAuthority.residentToolCatalogPolicyRows.find((entry) => entry.action === action);
+  assert.ok(followupMissingAuthority.blockedActions.includes(action), `${action} should be blocked without explicit authorization`);
+  assert.equal(row.callableInCurrentRequest, false, `${action} should not be callable without authorization`);
+  assert.equal(row.declaredAsProviderTool, false, `${action} should not be provider-declared without authorization`);
+  assert.equal(row.blockerReason, "blocked_followup_not_otherwise_authorized", `${action} missing-authority blocker mismatch`);
+}
+
+const followupNullAuthority = buildSubAgentInteractionPolicyEnvelope({
+  actorKind: "resident_model",
+  targetKind: "child_agent",
+  targetId: "agent_carver",
+  policy: "followup_allowed",
+  otherwiseAuthorizedActions: null,
+}, { now: fixedNow });
+
+validateSubAgentInteractionPolicyEnvelope(followupNullAuthority);
+assert.equal(followupNullAuthority.allowedActions.includes("send_message"), false, "null authorization must not wildcard send_message");
+assert.equal(followupNullAuthority.allowedActions.includes("followup_task"), false, "null authorization must not wildcard followup_task");
+
 const residentLifecycleGated = buildSubAgentInteractionPolicyEnvelope({
   actorKind: "resident_model",
   targetKind: "child_agent",
@@ -108,6 +136,10 @@ const residentLifecycleGated = buildSubAgentInteractionPolicyEnvelope({
 validateSubAgentInteractionPolicyEnvelope(residentLifecycleGated);
 for (const action of LIFECYCLE_CONTROL_ACTIONS) {
   assert.equal(residentLifecycleGated.residentToolCatalogPolicyRows.find((row) => row.action === action).blockerReason, "blocked_lifecycle_operator_gate");
+}
+for (const action of ["send_message", "followup_task"]) {
+  assert.ok(residentLifecycleGated.blockedActions.includes(action), `resident lifecycle gate should block ${action}`);
+  assert.equal(residentLifecycleGated.residentToolCatalogPolicyRows.find((row) => row.action === action).blockerReason, "blocked_followup_not_promoted_in_lifecycle_gate");
 }
 
 const operatorLifecycleGated = buildSubAgentInteractionPolicyEnvelope({
@@ -143,6 +175,21 @@ for (const action of LIFECYCLE_CONTROL_ACTIONS) {
   const malformed = clone(observeOnly);
   malformed.residentToolCatalogPolicyRows.find((row) => row.action === "send_message").declaredAsProviderTool = true;
   expectThrows(() => validateSubAgentInteractionPolicyEnvelope(malformed), "provider_declaration_mismatch:send_message");
+}
+{
+  const malformed = clone(observeOnly);
+  malformed.residentToolCatalogPolicyRows.find((row) => row.action === "send_message").callableInCurrentRequest = true;
+  expectThrows(() => validateSubAgentInteractionPolicyEnvelope(malformed), "catalog_row_callability_mismatch:send_message");
+}
+{
+  const malformed = clone(followupAllowed);
+  malformed.blockedActions = malformed.blockedActions.filter((action) => action !== "interrupt_agent");
+  expectThrows(() => validateSubAgentInteractionPolicyEnvelope(malformed), "policy_required_action_not_blocked:interrupt_agent");
+}
+{
+  const malformed = clone(residentLifecycleGated);
+  malformed.allowedActions.push("followup_task");
+  expectThrows(() => validateSubAgentInteractionPolicyEnvelope(malformed), "policy_required_action_allowed:followup_task");
 }
 {
   const malformed = clone(observeOnly);
