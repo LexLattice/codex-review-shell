@@ -149,7 +149,7 @@ function normalizeEnum(value, allowed, fallback) {
 }
 
 function countBy(rows = [], field) {
-  const counts = {};
+  const counts = Object.create(null);
   for (const row of Array.isArray(rows) ? rows : []) {
     const key = normalizeString(row?.[field], "unknown");
     counts[key] = Number(counts[key] || 0) + 1;
@@ -543,6 +543,14 @@ function assertFalseFlags(target = {}, flags = [], label = "external_capability_
   }
 }
 
+function assertNestedMcpBoundaryRawUriSafe(status = {}) {
+  for (const boundary of arrayOrEmpty(status.resourceReadBoundaries)) {
+    if (boundary.rawUriIncluded !== false) {
+      throw new Error(`external_capability_profile_nested_raw_uri:${boundary.boundaryId || "unknown"}`);
+    }
+  }
+}
+
 function validateExternalCapabilityProfile(profile = {}) {
   if (!isPlainObject(profile) || profile.schema !== EXTERNAL_CAPABILITY_PROFILE_SCHEMA) {
     throw new Error("external_capability_profile_schema_mismatch");
@@ -550,10 +558,12 @@ function validateExternalCapabilityProfile(profile = {}) {
   assertFalseFlags(profile, FALSE_PROFILE_FLAGS, "external_capability_profile");
   assertExternalCapabilityDiscoveryRegistrySafe(profile.discoveryRegistry);
   assertMcpResourceToolBoundarySafe(profile.mcpBoundaryStatus);
+  assertNestedMcpBoundaryRawUriSafe(profile.mcpBoundaryStatus);
   assertPluginGovernanceStatusSafe(profile.pluginGovernanceStatus);
 
   const servers = arrayOrEmpty(profile.serverIdentities);
   if (!servers.length) throw new Error("external_capability_profile_missing_server_identity");
+  const serverIdentityIds = new Set(servers.map((server) => server.serverIdentityId).filter(Boolean));
   const selectableServers = servers.filter((server) => server.enabledState === "enabled" && server.freshness === "fresh" && !["unknown", "untrusted"].includes(server.trustState));
   if (!selectableServers.length) throw new Error("external_capability_profile_no_selectable_mcp_server");
   for (const server of servers) {
@@ -598,6 +608,9 @@ function validateExternalCapabilityProfile(profile = {}) {
     if (!DESCRIPTOR_KINDS.has(row.descriptorKind)) throw new Error(`external_capability_witness_bad_descriptor_kind:${row.toolName}`);
     if (!EXECUTION_STATES.has(row.executionState)) throw new Error(`external_capability_witness_bad_execution_state:${row.toolName}`);
     if (!CAPABILITY_STATES.has(row.capabilityState)) throw new Error(`external_capability_witness_bad_capability_state:${row.toolName}`);
+    if (row.serverIdentityId && !serverIdentityIds.has(row.serverIdentityId)) {
+      throw new Error(`external_capability_witness_unknown_server_identity:${row.toolName}:${row.serverIdentityId}`);
+    }
     if (row.toolName === "mcp_dynamic_tool_call" && row.executionState !== "not_executable_in_wave18") {
       throw new Error("external_capability_dynamic_action_not_blocked");
     }

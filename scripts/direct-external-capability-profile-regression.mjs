@@ -17,6 +17,9 @@ const {
   validateExternalCapabilityProfile,
 } = require("../src/main/direct/external/external-capability-profile");
 const {
+  buildMcpResourceReadBoundary,
+} = require("../src/main/direct/external/mcp-boundary");
+const {
   buildDirectInformationBridgeAudit,
 } = require("../src/main/direct/bridge/information-registry");
 
@@ -146,6 +149,27 @@ expectThrows(() => validateExternalCapabilityProfile(missingBlockerProfile), "mi
 const rawEndpointProfile = clone(profile);
 rawEndpointProfile.serverIdentities[0].rawEndpointIncluded = true;
 expectThrows(() => validateExternalCapabilityProfile(rawEndpointProfile), "mcp_server_identity_authority_leak:rawEndpointIncluded");
+
+expectThrows(() => buildExternalCapabilityProfile({
+  projectId: "project_wave18_missing_server_fixture",
+  workThreadId: "work_thread_wave18_missing_server_fixture",
+  serverIdentities: [{
+    serverIdentityId: "mcp_server_custom_fixture",
+    trustState: "configured",
+    enabledState: "enabled",
+    freshness: "fresh",
+  }],
+  generatedAt: "2026-06-20T09:00:00.000Z",
+}), "external_capability_witness_unknown_server_identity:list_mcp_resources:mcp_server_project_fixture");
+
+const rawNestedUriProfile = clone(profile);
+const rawUriBoundary = buildMcpResourceReadBoundary({
+  boundaryId: "mcp_read_raw_uri_fixture",
+  uri: "mcp://fixture-server/resource/path?token=secret",
+});
+rawUriBoundary.rawUriIncluded = true;
+rawNestedUriProfile.mcpBoundaryStatus.resourceReadBoundaries = [rawUriBoundary];
+expectThrows(() => validateExternalCapabilityProfile(rawNestedUriProfile), "external_capability_profile_nested_raw_uri:mcp_read_raw_uri_fixture");
 
 const dynamicExecutableProfile = clone(profile);
 const dynamicIndex = dynamicExecutableProfile.capabilityRows.findIndex((row) => row.toolName === "mcp_dynamic_tool_call");
