@@ -398,12 +398,12 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     implementationState: "partial",
     directPathPosture: "keep_guarded",
     sourceFiles: ["src/main/direct/provider/hosted-tools.js", "src/main/direct/provider/metadata-adapter.js", "src/main/direct/bridge/tool-capability-registry.js", "src/main/direct/ui/settings-surface.js", "scripts/direct-provider-hosted-tools-regression.mjs", "src/main.js"],
-    ontology: ontologyShape(["provider_hosted_tool_capability", "provider_web_search_evidence_contract", "provider_image_generation_artifact_contract", "provider_hosted_tools_status"], "model_provider", {
-      identityFields: ["projectId", "workThreadId", "toolKind", "providerMetadataDigest", "capabilityDigest", "contractDigest"],
+    ontology: ontologyShape(["provider_hosted_tool_capability", "provider_hosted_request_shape_proof", "provider_hosted_declaration_policy", "provider_hosted_tool_activation_snapshot", "provider_web_search_evidence_contract", "provider_image_generation_artifact_contract", "provider_hosted_tools_status"], "model_provider", {
+      identityFields: ["projectId", "workThreadId", "toolKind", "providerMetadataDigest", "capabilityDigest", "proofDigest", "activationDigest", "contractDigest"],
       schema: "provider_hosted_tools_status@1",
     }),
-    bridgeFit: "Models provider-hosted web search and image generation as metadata-backed capability rows with distinct external evidence and generated artifact contracts, source/result policy, and provider metadata refs.",
-    realignment: "This slice enables no hosted provider tool call, provider request-shape mutation, context injection, workspace artifact write, raw prompt/result storage, or trust promotion without a future provider-accepted execution contract.",
+    bridgeFit: "Models provider-hosted web search and image generation as metadata-backed capability rows with activation snapshots, request-shape proof, declaration policy, distinct external evidence and generated artifact contracts, source/result policy, and provider metadata refs.",
+    realignment: "This slice enables no hosted provider tool call, provider transport, context injection, workspace artifact write, raw prompt/result storage, or trust promotion. Profile-declared support remains activation-ready only until request-shape proof and later per-call gates exist.",
   },
   {
     id: "ic30.plugin-governance",

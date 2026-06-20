@@ -21,7 +21,7 @@ const ODEU_TOOL_FAMILIES = new Set([
 
 const CAPABILITY_STATES = new Set(["unknown", "vanilla_known", "profile_declared", "provider_accepted", "runtime_probed"]);
 const IMPLEMENTATION_STATES = new Set(["none", "schema_only", "projection_only", "fixture_executor", "restricted_executor", "full_executor"]);
-const PROMOTION_STATES = new Set(["unsupported", "diagnostic_only", "fixture_only", "direct_restricted", "direct_enabled", "deferred_external_authority"]);
+const PROMOTION_STATES = new Set(["unsupported", "diagnostic_only", "activation_gated", "fixture_only", "direct_restricted", "direct_enabled", "deferred_external_authority"]);
 const PROVIDER_DECLARATION_STATES = new Set([
   "not_declared",
   "declared_fixture_only",
@@ -679,18 +679,19 @@ function defaultToolCapabilityInputs() {
       odeuFamily: "provider_hosted_tools",
       capabilityState: "vanilla_known",
       implementationState: "projection_only",
-      promotionState: "diagnostic_only",
+      promotionState: "activation_gated",
       providerDeclarationState: "not_declared",
       localExecutorState: "scaffolded",
       localExecutor: "src/main/direct/provider/hosted-tools.js",
       requestShapeFamilies: name === "web_search"
-        ? ["provider_hosted_tool_capability", "provider_web_search_evidence_contract", "provider_hosted_result"]
-        : ["provider_hosted_tool_capability", "provider_image_generation_artifact_contract", "generated_artifact_ref"],
+        ? ["provider_hosted_tool_capability", "provider_hosted_request_shape_proof", "provider_hosted_tool_activation_snapshot", "provider_web_search_evidence_contract", "provider_hosted_result"]
+        : ["provider_hosted_tool_capability", "provider_hosted_request_shape_proof", "provider_hosted_tool_activation_snapshot", "provider_image_generation_artifact_contract", "generated_artifact_ref"],
       approvalMode: "future_gate_required",
+      unsupportedReason: "hosted_tool_requires_activation_snapshot_and_request_shape_proof",
       providerResultEnvelopeType: name === "web_search" ? "provider_hosted_result" : "generated_artifact_ref",
       recoveryLaw: name === "web_search"
-        ? "Web search result is external epistemic evidence requiring source refs, retrieval time, citation policy, and staleness."
-        : "Image generation result is generated artifact requiring prompt evidence, asset id, storage, and metadata/redaction policy.",
+        ? "Web search result is external epistemic evidence requiring activation snapshot, request-shape proof, source refs, retrieval time, citation policy, and staleness."
+        : "Image generation result is generated artifact requiring activation snapshot, request-shape proof, prompt evidence, asset id, storage, and metadata/redaction policy. Resident-callable image generation remains blocked by default.",
       failureClasses: ["projection_laundering", "authority_inflation", "context_smuggling"],
     })),
     ...["code_mode_execute", "code_mode_wait"].map((name) => ({
