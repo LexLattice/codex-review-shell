@@ -193,6 +193,98 @@ assert(runtimeActivationSnapshot.activationReadyTools.some((tool) => tool.toolKi
 assert(!runtimeActivationSnapshot.activationReadyTools.some((tool) => tool.toolKind === "image_generation" && tool.invocationMode === "model_mediated_provider_tool"), "image generation must not be resident-callable by default");
 assert(runtimeActivationSnapshot.declarationDecisions.some((decision) => decision.toolKind === "image_generation" && decision.invocationMode === "model_mediated_provider_tool" && decision.decision === "blocked_operator_gate_required"), "image generation resident mode should be operator-gated");
 
+const inlineProofSnapshot = buildProviderHostedActivationSnapshot({
+  projectId: providerMetadataProfile.projectId,
+  providerMetadataProfile,
+  modelRef: { model: "gpt-5.5", reasoningEffort: "medium", serviceTier: "standard" },
+  capabilities: [
+    buildProviderHostedToolCapability({
+      projectId: providerMetadataProfile.projectId,
+      toolKind: "web_search",
+      evidenceState: "runtime_probed",
+      providerDeclarationState: "activation_ready",
+      providerMetadataProfile,
+      nowMs: 0,
+    }),
+  ],
+  requestShapeProofs: [{
+    toolKind: "web_search",
+    invocationMode: "model_mediated_provider_tool",
+    requestShapeDigest: "inline_web_search_shape_digest",
+    requestBuilderVersion: "fixture-inline-web-search-builder@1",
+    runtimeAccepted: true,
+    resultShapeObserved: true,
+  }],
+  nowMs: 0,
+});
+assert(inlineProofSnapshot.requestShapeProofs[0].observedAt === "1970-01-01T00:00:00.000Z", "inline proof should inherit snapshot nowMs deterministically");
+assert(inlineProofSnapshot.activationReadyTools.some((tool) => tool.toolKind === "web_search" && tool.invocationMode === "model_mediated_provider_tool"), "inline proof should be scoped to snapshot provider/model and become activation-ready");
+
+const mismatchedProofSnapshot = buildProviderHostedActivationSnapshot({
+  projectId: providerMetadataProfile.projectId,
+  providerMetadataProfile,
+  modelRef: { model: "gpt-5.5", reasoningEffort: "medium", serviceTier: "standard" },
+  capabilities: [
+    buildProviderHostedToolCapability({
+      projectId: providerMetadataProfile.projectId,
+      toolKind: "web_search",
+      evidenceState: "runtime_probed",
+      providerDeclarationState: "activation_ready",
+      providerMetadataProfile,
+      nowMs: 0,
+    }),
+  ],
+  requestShapeProofs: [
+    buildProviderHostedRequestShapeProof({
+      toolKind: "web_search",
+      invocationMode: "model_mediated_provider_tool",
+      providerProfileDigest: "different_provider_profile_digest",
+      modelRef: { model: "gpt-5.5", reasoningEffort: "medium", serviceTier: "standard" },
+      requestShapeDigest: "foreign_provider_shape_digest",
+      requestBuilderVersion: "fixture-foreign-provider-builder@1",
+      runtimeAccepted: true,
+      resultShapeObserved: true,
+      nowMs: 0,
+    }),
+    buildProviderHostedRequestShapeProof({
+      toolKind: "web_search",
+      invocationMode: "model_mediated_provider_tool",
+      providerProfileDigest: providerMetadataProfile.profileDigest,
+      modelRef: { model: "different-model", reasoningEffort: "medium", serviceTier: "standard" },
+      requestShapeDigest: "foreign_model_shape_digest",
+      requestBuilderVersion: "fixture-foreign-model-builder@1",
+      runtimeAccepted: true,
+      resultShapeObserved: true,
+      nowMs: 0,
+    }),
+  ],
+  nowMs: 0,
+});
+assert(mismatchedProofSnapshot.activationReadyTools.length === 0, "foreign provider/model proofs must not activate current snapshot");
+assert(mismatchedProofSnapshot.declarationDecisions.some((decision) => decision.toolKind === "web_search" && decision.decision === "blocked_missing_request_shape_proof"), "mismatched proofs should behave as missing request-shape proof");
+
+const missingShapeDigestSnapshot = buildProviderHostedActivationSnapshot({
+  projectId: providerMetadataProfile.projectId,
+  providerMetadataProfile,
+  modelRef: { model: "gpt-5.5", reasoningEffort: "medium", serviceTier: "standard" },
+  capabilities: [
+    buildProviderHostedToolCapability({
+      projectId: providerMetadataProfile.projectId,
+      toolKind: "web_search",
+      evidenceState: "runtime_probed",
+      providerDeclarationState: "activation_ready",
+      providerMetadataProfile,
+      nowMs: 0,
+    }),
+  ],
+  requestShapeProofs: [{
+    ...webRequestShapeProof,
+    requestShapeDigest: "",
+  }],
+  nowMs: 0,
+});
+assert(missingShapeDigestSnapshot.activationReadyTools.length === 0, "request-shape proof without digest must not be callable");
+
 const runtimeStatus = buildProviderHostedToolsStatus({
   projectId: providerMetadataProfile.projectId,
   providerMetadataProfile,

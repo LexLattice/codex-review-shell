@@ -130,6 +130,15 @@ function normalizeModelRef(value = {}) {
   };
 }
 
+function modelRefsMatch(proofModelRef = {}, expectedModelRef = {}) {
+  const proof = normalizeModelRef(proofModelRef);
+  const expected = normalizeModelRef(expectedModelRef);
+  if (expected.model && expected.model !== "unknown" && proof.model !== expected.model) return false;
+  if (expected.serviceTier && proof.serviceTier !== expected.serviceTier) return false;
+  if (expected.reasoningEffort && proof.reasoningEffort !== expected.reasoningEffort) return false;
+  return true;
+}
+
 function normalizeInvocationModes(value) {
   const modes = arrayOrEmpty(value)
     .map((mode) => normalizeEnum(mode, INVOCATION_MODES, ""))
@@ -148,7 +157,14 @@ function requestShapeProofIsCallable(proof = {}, nowMs) {
   return proof.schema === PROVIDER_HOSTED_REQUEST_SHAPE_PROOF_SCHEMA
     && proof.runtimeAccepted === true
     && proof.resultShapeObserved === true
+    && Boolean(normalizeString(proof.requestShapeDigest, ""))
     && requestShapeProofIsFresh(proof, nowMs);
+}
+
+function requestShapeProofMatchesScope(proof = {}, scope = {}) {
+  const providerProfileDigest = normalizeString(scope.providerProfileDigest, "");
+  if (!providerProfileDigest || proof.providerProfileDigest !== providerProfileDigest) return false;
+  return modelRefsMatch(proof.modelRef, scope.modelRef);
 }
 
 function capabilityValueIsSupported(value) {
@@ -290,11 +306,12 @@ function buildProviderHostedRequestShapeProof(input = {}) {
   return proof;
 }
 
-function bestRequestShapeProof({ proofs = [], toolKind, invocationMode, nowMs }) {
+function bestRequestShapeProof({ proofs = [], toolKind, invocationMode, providerProfileDigest, modelRef, nowMs }) {
   const candidates = arrayOrEmpty(proofs)
     .filter((proof) => proof?.schema === PROVIDER_HOSTED_REQUEST_SHAPE_PROOF_SCHEMA)
     .filter((proof) => proof.toolKind === toolKind)
-    .filter((proof) => !invocationMode || proof.invocationMode === invocationMode);
+    .filter((proof) => !invocationMode || proof.invocationMode === invocationMode)
+    .filter((proof) => requestShapeProofMatchesScope(proof, { providerProfileDigest, modelRef }));
   return candidates.find((proof) => requestShapeProofIsCallable(proof, nowMs)) || candidates[0] || null;
 }
 
@@ -309,6 +326,7 @@ function providerHostedDeclarationDecision({ capability = {}, proof = null, invo
   }
   if (!proof) return { decision: "blocked_missing_request_shape_proof", blocker: "missing_request_shape_proof", callable: false };
   if (!requestShapeProofIsFresh(proof, nowMs)) return { decision: "blocked_stale_request_shape_proof", blocker: "stale_request_shape_proof", callable: false };
+  if (!normalizeString(proof.requestShapeDigest, "")) return { decision: "blocked_missing_request_shape_proof", blocker: "missing_request_shape_digest", callable: false };
   if (proof.runtimeAccepted !== true) return { decision: "blocked_missing_request_shape_proof", blocker: "runtime_not_accepted", callable: false };
   if (proof.resultShapeObserved !== true) return { decision: "blocked_result_shape_unobserved", blocker: "result_shape_unobserved", callable: false };
   if (invocationMode === "operator_triggered_provider_operation") return { decision: "operator_callable", blocker: "", callable: true };
@@ -351,6 +369,7 @@ function buildProviderHostedActivationSnapshot(input = {}) {
   const workThreadId = boundedString(source.workThreadId, 160);
   const generatedAt = normalizeString(source.generatedAt, nowIso(source.nowMs));
   const providerProfileDigest = boundedString(source.providerMetadataProfile?.profileDigest || source.providerProfileDigest || source.providerMetadataDigest, 180);
+  const modelRef = normalizeModelRef(source.modelRef);
   const capabilities = (Array.isArray(source.capabilities) ? source.capabilities : [
     { toolKind: "web_search", providerMetadataProfile: source.providerMetadataProfile },
     { toolKind: "image_generation", providerMetadataProfile: source.providerMetadataProfile },
@@ -364,8 +383,10 @@ function buildProviderHostedActivationSnapshot(input = {}) {
     }));
   const requestShapeProofs = arrayOrEmpty(source.requestShapeProofs)
     .map((proof) => proof?.schema === PROVIDER_HOSTED_REQUEST_SHAPE_PROOF_SCHEMA ? proof : buildProviderHostedRequestShapeProof({
-      providerProfileDigest,
       ...proof,
+      providerProfileDigest: proof?.providerProfileDigest || providerProfileDigest,
+      modelRef: isPlainObject(proof?.modelRef) ? proof.modelRef : modelRef,
+      nowMs: typeof proof?.nowMs === "number" && Number.isFinite(proof.nowMs) ? proof.nowMs : source.nowMs,
     }));
   const declarationPolicy = source.declarationPolicy?.schema === PROVIDER_HOSTED_DECLARATION_POLICY_SCHEMA
     ? source.declarationPolicy
@@ -383,7 +404,7 @@ function buildProviderHostedActivationSnapshot(input = {}) {
   const activationReadyTools = [];
   for (const capability of capabilities) {
     for (const invocationMode of invocationModes) {
-      const proof = bestRequestShapeProof({ proofs: requestShapeProofs, toolKind: capability.toolKind, invocationMode, nowMs: source.nowMs });
+      const proof = bestRequestShapeProof({ proofs: requestShapeProofs, toolKind: capability.toolKind, invocationMode, providerProfileDigest, modelRef, nowMs: source.nowMs });
       const decision = providerHostedDeclarationDecision({ capability, proof, invocationMode, nowMs: source.nowMs });
       const row = {
         toolKind: capability.toolKind,
@@ -407,7 +428,7 @@ function buildProviderHostedActivationSnapshot(input = {}) {
     providerRuntimeRef: boundedString(source.providerRuntimeRef || "unknown", 180),
     providerProfileDigest,
     accountEvidenceRef: isPlainObject(source.accountEvidenceRef) ? normalizeEvidenceRef(source.accountEvidenceRef, "provider_hosted_account_evidence") : undefined,
-    modelRef: normalizeModelRef(source.modelRef),
+    modelRef,
     invocationModes,
     requestShapeProofRefs: requestShapeProofs.map((proof) => normalizeEvidenceRef({
       kind: "provider_hosted_request_shape_proof",
