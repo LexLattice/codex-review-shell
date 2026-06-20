@@ -1240,6 +1240,36 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     bridgeFit: "Adds PR 97 direct-native child lifecycle/readiness axes, state precedence, compatibility-only legacy mappings, and alias-bypass probes without making lifecycle controls live.",
     realignment: "This PR 97 slice is projection/status only: legacy names map one-way to direct-native rows, compatibility cannot be source authority, and provider transport, lifecycle mutation, workspace mutation, and primary transcript injection remain false.",
   },
+  {
+    id: "ic44.sub-agent-transcript-projection-v2",
+    name: "Wave 16 child transcript projection maturity",
+    role: "observability_surface",
+    implementationState: "implemented",
+    directPathPosture: "keep_guarded",
+    sourceFiles: [
+      "src/main/direct/agents/sub-agent-transcript-projection-v2.js",
+      "scripts/direct-sub-agent-transcript-projection-v2-regression.mjs",
+      "docs/DIRECT_WAVE16_SUB_AGENT_LIFECYCLE_FOLLOWUP_TRANSCRIPT_SPEC.md",
+      "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md",
+    ],
+    ontology: ontologyShape(
+      [
+        "sub_agent_transcript_projection_v2",
+        "sub_agent_transcript_author_projection",
+        "sub_agent_turn_activity_projection",
+        "sub_agent_full_child_history_projection",
+        "sub_agent_result_summary_projection",
+        "sub_agent_transcript_visibility",
+      ],
+      "harness",
+      {
+        identityFields: ["projectionId", "childAgentId", "childThreadId", "parentThreadId", "workThreadId"],
+        schema: "sub_agent_transcript_projection_v2@1",
+      }
+    ),
+    bridgeFit: "Adds PR 98 direct-native child transcript projection modes for turn activity, full child history, and result summaries with author identity, visibility metadata, pagination, source refs, and raw-exposure sentinels.",
+    realignment: "This PR 98 slice is projection-only: child user messages do not render as operator unless human-authored, child answers do not render as primary Codex, full child history remains context-inadmissible by default, and primary transcript receives summary links only.",
+  },
 ]);
 
 function isPlainObject(value) {
