@@ -90,74 +90,86 @@ function normalizeLimit(limit) {
 }
 
 function isChildUserMessage(item = {}) {
+  if (!item || typeof item !== "object") return false;
   return ["user", "user_message", "child_user_message", "parent_prompt"].includes(normalizeString(item.messageRole || item.role || item.itemKind || item.kind || item.type, ""));
 }
 
 function isChildAgentMessage(item = {}) {
+  if (!item || typeof item !== "object") return false;
   return ["assistant", "agent", "agent_message", "child_agent_message", "child_answer"].includes(normalizeString(item.messageRole || item.role || item.itemKind || item.kind || item.type, ""));
 }
 
+function isToolEvidenceItem(item = {}) {
+  if (!item || typeof item !== "object") return false;
+  return ["tool", "tool_call", "tool_result", "command", "patch", "harness"].includes(normalizeString(item.rowKind || item.itemKind || item.kind || item.type || item.role, ""));
+}
+
 function normalizeAuthorProjection(item = {}, context = {}) {
-  const humanAuthored = item.humanAuthored === true;
-  let kind = normalizeEnum(item.authorKind, AUTHOR_KINDS, "");
+  const safeItem = item && typeof item === "object" ? item : {};
+  const safeContext = context && typeof context === "object" ? context : {};
+  const humanAuthored = safeItem.humanAuthored === true;
+  let kind = normalizeEnum(safeItem.authorKind, AUTHOR_KINDS, "");
   if (!kind) {
     if (humanAuthored) kind = "operator";
-    else if (isChildAgentMessage(item)) kind = "child_agent";
-    else if (isChildUserMessage(item)) kind = normalizeString(context.parentAgentId || item.parentAgentId, "") ? "parent_agent" : "harness_controller";
-    else if (["tool", "tool_call", "command", "patch"].includes(normalizeString(item.kind || item.type, ""))) kind = "tool";
-    else if (normalizeString(item.role || item.kind || item.type, "") === "system") kind = "system";
+    else if (isChildAgentMessage(safeItem)) kind = "child_agent";
+    else if (isChildUserMessage(safeItem)) kind = normalizeString(safeContext.parentAgentId || safeItem.parentAgentId, "") ? "parent_agent" : "harness_controller";
+    else if (isToolEvidenceItem(safeItem)) kind = "tool";
+    else if (normalizeString(safeItem.role || safeItem.kind || safeItem.type, "") === "system") kind = "system";
     else kind = "unknown_agent";
   }
   const fallbackLabel = (() => {
     if (kind === "operator") return "Operator";
-    if (kind === "parent_agent") return normalizeString(context.parentAgentLabel || item.parentAgentLabel, "Parent agent");
-    if (kind === "child_agent") return normalizeString(context.childAgentLabel || item.childAgentLabel, "Child agent");
+    if (kind === "parent_agent") return normalizeString(safeContext.parentAgentLabel || safeItem.parentAgentLabel, "Parent agent");
+    if (kind === "child_agent") return normalizeString(safeContext.childAgentLabel || safeItem.childAgentLabel, "Child agent");
     if (kind === "harness_controller") return "Harness controller";
-    if (kind === "tool") return normalizeString(item.toolName || item.label, "Tool");
+    if (kind === "tool") return normalizeString(safeItem.toolName || safeItem.label || safeItem.itemKind, "Tool");
     if (kind === "system") return "System";
     return "Unknown agent";
   })();
   return {
     schema: SUB_AGENT_TRANSCRIPT_AUTHOR_PROJECTION_SCHEMA,
     kind,
-    displayLabel: normalizeString(item.authorLabel || item.displayLabel, fallbackLabel),
-    childAgentId: normalizeString(item.childAgentId || context.childAgentId, ""),
-    childThreadId: normalizeString(item.childThreadId || context.childThreadId, ""),
-    parentThreadId: normalizeString(item.parentThreadId || context.parentThreadId, ""),
-    parentAgentId: normalizeString(item.parentAgentId || context.parentAgentId, ""),
-    confidence: normalizeEnum(item.authorConfidence || item.confidence, AUTHOR_CONFIDENCE, humanAuthored ? "human_authored" : "harness_record"),
+    displayLabel: normalizeString(safeItem.authorLabel || safeItem.displayLabel, fallbackLabel),
+    childAgentId: normalizeString(safeItem.childAgentId || safeContext.childAgentId, ""),
+    childThreadId: normalizeString(safeItem.childThreadId || safeContext.childThreadId, ""),
+    parentThreadId: normalizeString(safeItem.parentThreadId || safeContext.parentThreadId, ""),
+    parentAgentId: normalizeString(safeItem.parentAgentId || safeContext.parentAgentId, ""),
+    confidence: normalizeEnum(safeItem.authorConfidence || safeItem.confidence, AUTHOR_CONFIDENCE, humanAuthored ? "human_authored" : "harness_record"),
     humanAuthored,
-    evidenceRefs: Array.isArray(item.authorEvidenceRefs) && item.authorEvidenceRefs.length
-      ? item.authorEvidenceRefs
-      : [sourceRef("author_projection", item.itemId || item.eventId, "author projection source")],
+    evidenceRefs: Array.isArray(safeItem.authorEvidenceRefs) && safeItem.authorEvidenceRefs.length
+      ? safeItem.authorEvidenceRefs
+      : [sourceRef("author_projection", safeItem.itemId || safeItem.eventId, "author projection source")],
   };
 }
 
 function normalizeTranscriptRow(item = {}, context = {}, options = {}) {
-  const rowKind = normalizeEnum(item.rowKind || item.kind || item.type, [
+  const safeItem = item && typeof item === "object" ? item : {};
+  const safeContext = context && typeof context === "object" ? context : {};
+  const safeOptions = options && typeof options === "object" ? options : {};
+  const rowKind = isToolEvidenceItem(safeItem) ? "tool" : normalizeEnum(safeItem.rowKind || safeItem.kind || safeItem.type, [
     "message",
     "tool",
     "system",
     "result_summary",
     "diagnostic",
     "activity",
-  ], isChildAgentMessage(item) || isChildUserMessage(item) ? "message" : "activity");
-  const { displayText, textTruncated } = boundedText(item.displayText || item.text || item.summary || item.outputPreview, options.maxDisplayText);
+  ], isChildAgentMessage(safeItem) || isChildUserMessage(safeItem) ? "message" : "activity");
+  const { displayText, textTruncated } = boundedText(safeItem.displayText || safeItem.text || safeItem.summary || safeItem.outputPreview, safeOptions.maxDisplayText);
   const row = {
-    rowId: normalizeString(item.rowId || item.itemId || item.eventId, `child_transcript_row_${digestFor("child-transcript-row-id@1", item).slice(0, 16)}`),
+    rowId: normalizeString(safeItem.rowId || safeItem.itemId || safeItem.eventId, `child_transcript_row_${digestFor("child-transcript-row-id@1", safeItem).slice(0, 16)}`),
     rowKind,
-    itemKind: normalizeString(item.itemKind || item.kind || item.type, rowKind),
-    messageRole: normalizeString(item.messageRole || item.role, rowKind === "message" && isChildAgentMessage(item) ? "assistant" : rowKind === "message" ? "user" : ""),
-    parentTurnId: normalizeString(item.parentTurnId || context.parentTurnId, ""),
-    childTurnId: normalizeString(item.childTurnId || item.turnId, ""),
-    childThreadId: normalizeString(item.childThreadId || context.childThreadId, ""),
-    childAgentId: normalizeString(item.childAgentId || context.childAgentId, ""),
-    author: normalizeAuthorProjection(item, context),
+    itemKind: normalizeString(safeItem.itemKind || safeItem.kind || safeItem.type, rowKind),
+    messageRole: normalizeString(safeItem.messageRole || safeItem.role, rowKind === "message" && isChildAgentMessage(safeItem) ? "assistant" : rowKind === "message" ? "user" : ""),
+    parentTurnId: normalizeString(safeItem.parentTurnId || safeContext.parentTurnId, ""),
+    childTurnId: normalizeString(safeItem.childTurnId || safeItem.turnId, ""),
+    childThreadId: normalizeString(safeItem.childThreadId || safeContext.childThreadId, ""),
+    childAgentId: normalizeString(safeItem.childAgentId || safeContext.childAgentId, ""),
+    author: normalizeAuthorProjection(safeItem, safeContext),
     displayText,
     textTruncated,
-    sourceRefs: Array.isArray(item.sourceRefs) && item.sourceRefs.length
-      ? item.sourceRefs
-      : [sourceRef("child_transcript_item", item.itemId || item.eventId || item.rowId, "child transcript item")],
+    sourceRefs: Array.isArray(safeItem.sourceRefs) && safeItem.sourceRefs.length
+      ? safeItem.sourceRefs
+      : [sourceRef("child_transcript_item", safeItem.itemId || safeItem.eventId || safeItem.rowId, "child transcript item")],
     rawProviderPayloadIncluded: false,
     rawHiddenPromptIncluded: false,
     rawPromptPayloadIncluded: false,
@@ -197,13 +209,14 @@ function visibilityForMode(mode) {
 }
 
 function selectItemsForMode(items, mode, context = {}) {
-  const rows = Array.isArray(items) ? items : [];
+  const safeContext = context && typeof context === "object" ? context : {};
+  const rows = Array.isArray(items) ? items.filter((item) => item && typeof item === "object") : [];
   if (mode === "turn_activity") {
-    const parentTurnId = normalizeString(context.parentTurnId, "");
+    const parentTurnId = normalizeString(safeContext.parentTurnId, "");
     return parentTurnId ? rows.filter((item) => normalizeString(item.parentTurnId, "") === parentTurnId) : rows;
   }
   if (mode === "result_summary") {
-    return rows.filter((item) => normalizeString(item.rowKind || item.kind || item.type, "") === "result_summary" || item.resultSummary === true);
+    return rows.filter((item) => normalizeString(item.rowKind || item.kind || item.itemKind || item.type, "") === "result_summary" || item.resultSummary === true);
   }
   return rows;
 }
@@ -246,25 +259,27 @@ function buildPrimaryTranscriptSummary(projection, context = {}) {
 }
 
 function buildSubAgentTranscriptProjectionV2(input = {}, options = {}) {
-  const mode = normalizeEnum(input.mode, TRANSCRIPT_PROJECTION_MODES, "turn_activity");
-  const childAgentId = normalizeString(input.childAgentId || input.agentId, "agent_unknown");
-  const childThreadId = normalizeString(input.childThreadId || input.threadId, childAgentId);
+  const safeInput = input && typeof input === "object" ? input : {};
+  const safeOptions = options && typeof options === "object" ? options : {};
+  const mode = normalizeEnum(safeInput.mode, TRANSCRIPT_PROJECTION_MODES, "turn_activity");
+  const childAgentId = normalizeString(safeInput.childAgentId || safeInput.agentId, "agent_unknown");
+  const childThreadId = normalizeString(safeInput.childThreadId || safeInput.threadId, childAgentId);
   const context = {
     childAgentId,
     childThreadId,
-    parentThreadId: normalizeString(input.parentThreadId, "thread_parent_unknown"),
-    parentAgentId: normalizeString(input.parentAgentId, ""),
-    parentAgentLabel: normalizeString(input.parentAgentLabel, "Parent agent"),
-    parentTurnId: normalizeString(input.parentTurnId, ""),
-    childAgentLabel: normalizeString(input.childAgentLabel || input.agentLabel, "Child agent"),
+    parentThreadId: normalizeString(safeInput.parentThreadId, "thread_parent_unknown"),
+    parentAgentId: normalizeString(safeInput.parentAgentId, ""),
+    parentAgentLabel: normalizeString(safeInput.parentAgentLabel, "Parent agent"),
+    parentTurnId: normalizeString(safeInput.parentTurnId, ""),
+    childAgentLabel: normalizeString(safeInput.childAgentLabel || safeInput.agentLabel, "Child agent"),
   };
-  const limit = normalizeLimit(input.limit || options.limit);
-  const selectedForMode = selectItemsForMode(input.items, mode, context);
-  const page = paginateItems(selectedForMode, mode, input.cursor, limit);
-  const rows = page.selected.map((item) => normalizeTranscriptRow(item, context, options));
+  const limit = normalizeLimit(safeInput.limit || safeOptions.limit);
+  const selectedForMode = selectItemsForMode(safeInput.items, mode, context);
+  const page = paginateItems(selectedForMode, mode, safeInput.cursor, limit);
+  const rows = page.selected.map((item) => normalizeTranscriptRow(item, context, safeOptions));
   const projection = {
     schema: SUB_AGENT_TRANSCRIPT_PROJECTION_V2_SCHEMA,
-    projectionId: normalizeString(input.projectionId, `sub_agent_transcript_projection_${digestFor("sub-agent-transcript-projection-id@1", {
+    projectionId: normalizeString(safeInput.projectionId, `sub_agent_transcript_projection_${digestFor("sub-agent-transcript-projection-id@1", {
       mode,
       childAgentId,
       childThreadId,
@@ -277,8 +292,8 @@ function buildSubAgentTranscriptProjectionV2(input = {}, options = {}) {
     childThreadId,
     parentThreadId: context.parentThreadId,
     parentTurnId: context.parentTurnId,
-    workThreadId: normalizeString(input.workThreadId, "work_thread_unknown"),
-    generatedAt: nowIso(options.now || Date.now),
+    workThreadId: normalizeString(safeInput.workThreadId, "work_thread_unknown"),
+    generatedAt: nowIso(safeOptions.now || Date.now),
     visibility: visibilityForMode(mode),
     childTranscriptFlattened: false,
     rawProviderPayloadIncluded: false,
@@ -294,8 +309,8 @@ function buildSubAgentTranscriptProjectionV2(input = {}, options = {}) {
     hasMore: page.hasMore,
     nextCursor: page.nextCursor,
     rows,
-    sourceRefs: Array.isArray(input.sourceRefs) && input.sourceRefs.length
-      ? input.sourceRefs
+    sourceRefs: Array.isArray(safeInput.sourceRefs) && safeInput.sourceRefs.length
+      ? safeInput.sourceRefs
       : [sourceRef("sub_agent_transcript_source", childThreadId, "child transcript projection source")],
     operatorProjectionCompatibility: {
       compatibleWith: "resident_sub_agent_operator_projection@1",
@@ -311,6 +326,9 @@ function buildSubAgentTranscriptProjectionV2(input = {}, options = {}) {
 
 function validateSubAgentTranscriptProjectionV2(projection = {}) {
   const errors = [];
+  if (!projection || typeof projection !== "object" || Array.isArray(projection)) {
+    throw new Error("sub_agent_transcript_projection_v2_invalid_object");
+  }
   if (projection.schema !== SUB_AGENT_TRANSCRIPT_PROJECTION_V2_SCHEMA) throw new Error("sub_agent_transcript_projection_v2_schema_mismatch");
   for (const field of ["projectionId", "mode", "childAgentId", "childThreadId", "parentThreadId", "workThreadId", "projectionDigest"]) {
     if (!normalizeString(projection[field], "")) errors.push(`missing_required_string:${field}`);
@@ -345,6 +363,10 @@ function validateSubAgentTranscriptProjectionV2(projection = {}) {
   }
   const rows = Array.isArray(projection.rows) ? projection.rows : [];
   for (const row of rows) {
+    if (!row || typeof row !== "object" || Array.isArray(row)) {
+      errors.push("row_invalid_object");
+      continue;
+    }
     if (!normalizeString(row.rowId, "")) errors.push("row_missing_id");
     if (row.author?.schema !== SUB_AGENT_TRANSCRIPT_AUTHOR_PROJECTION_SCHEMA) errors.push(`row_author_schema_mismatch:${row.rowId}`);
     if (isChildUserMessage(row) && row.author?.kind === "operator" && row.author?.humanAuthored !== true) {

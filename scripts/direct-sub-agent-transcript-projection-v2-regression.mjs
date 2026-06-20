@@ -71,6 +71,17 @@ const baseInput = {
       text: "read_file completed",
       sourceRefs: [{ kind: "child_tool_call", id: "tool_read_a" }],
     },
+    null,
+    {
+      rowId: "renderer_tool_a",
+      parentTurnId: "parent_turn_a",
+      childTurnId: "child_turn_a1",
+      itemKind: "tool_call",
+      role: "harness",
+      toolName: "apply_patch",
+      displayText: "apply_patch completed",
+      sourceRefs: [{ kind: "renderer_transcript_projection", id: "renderer_tool_a" }],
+    },
     {
       itemId: "result_summary_a",
       parentTurnId: "parent_turn_a",
@@ -112,7 +123,7 @@ const turnActivity = buildSubAgentTranscriptProjectionV2({
 assert.equal(turnActivity.schema, SUB_AGENT_TRANSCRIPT_PROJECTION_V2_SCHEMA, "schema mismatch");
 validateSubAgentTranscriptProjectionV2(turnActivity);
 assert.equal(turnActivity.mode, "turn_activity", "mode mismatch");
-assert.equal(turnActivity.rows.length, 4, "turn_activity should include only parent_turn_a rows");
+assert.equal(turnActivity.rows.length, 5, "turn_activity should include only parent_turn_a rows");
 assert(turnActivity.rows.every((row) => row.parentTurnId === "parent_turn_a"), "turn_activity leaked another parent turn");
 assert.equal(turnActivity.visibility.primaryTranscriptVisible, "activity_summary_only", "turn activity should expose only primary summary link");
 assert.equal(turnActivity.visibility.residentContextVisible, "summary_only", "turn activity should allow summary only");
@@ -123,6 +134,9 @@ assert.equal(turnActivity.rows.find((row) => row.rowId === "parent_prompt_a").au
 assert.equal(turnActivity.rows.find((row) => row.rowId === "parent_prompt_a").author.displayLabel, "Primary Codex", "parent prompt label mismatch");
 assert.equal(turnActivity.rows.find((row) => row.rowId === "child_answer_a").author.kind, "child_agent", "child answer must not render as primary");
 assert.equal(turnActivity.rows.find((row) => row.rowId === "child_answer_a").author.displayLabel, "Carver", "child label mismatch");
+assert.equal(turnActivity.rows.find((row) => row.rowId === "renderer_tool_a").rowKind, "tool", "renderer tool_call rows should retain tool row kind");
+assert.equal(turnActivity.rows.find((row) => row.rowId === "renderer_tool_a").itemKind, "tool_call", "renderer tool_call itemKind should be preserved");
+assert.equal(turnActivity.rows.find((row) => row.rowId === "renderer_tool_a").author.kind, "tool", "renderer tool_call rows should render as tool evidence");
 
 const fullPageOne = buildSubAgentTranscriptProjectionV2({
   ...baseInput,
@@ -150,6 +164,7 @@ const fullPageTwo = buildSubAgentTranscriptProjectionV2({
 validateSubAgentTranscriptProjectionV2(fullPageTwo);
 assert.equal(fullPageTwo.cursor, "offset:2", "cursor should be preserved");
 assert.equal(fullPageTwo.rows[0].rowId, "child_tool_a", "second page should start at third item");
+assert.equal(fullPageTwo.rows[1].rowId, "renderer_tool_a", "second page should preserve renderer tool item");
 assert.equal(fullPageTwo.hasMore, true, "second page should still have more rows");
 
 const resultSummary = buildSubAgentTranscriptProjectionV2({
@@ -180,6 +195,11 @@ const humanChildPrompt = buildSubAgentTranscriptProjectionV2({
 }, { now: fixedNow });
 validateSubAgentTranscriptProjectionV2(humanChildPrompt);
 assert.equal(humanChildPrompt.rows[0].author.kind, "operator", "human-authored child message may render as operator");
+
+const nullInputProjection = buildSubAgentTranscriptProjectionV2(null, null);
+validateSubAgentTranscriptProjectionV2(nullInputProjection);
+assert.equal(nullInputProjection.childAgentId, "agent_unknown", "null input should use safe child fallback");
+assert.equal(nullInputProjection.rows.length, 0, "null input should not create rows");
 
 {
   const malformed = clone(fullPageOne);
@@ -215,6 +235,14 @@ assert.equal(humanChildPrompt.rows[0].author.kind, "operator", "human-authored c
   const malformed = clone(fullPageOne);
   delete malformed.nextCursor;
   expectThrows(() => validateSubAgentTranscriptProjectionV2(malformed), "pagination_missing_next_cursor");
+}
+{
+  expectThrows(() => validateSubAgentTranscriptProjectionV2(null), "sub_agent_transcript_projection_v2_invalid_object");
+}
+{
+  const malformed = clone(turnActivity);
+  malformed.rows.push(null);
+  expectThrows(() => validateSubAgentTranscriptProjectionV2(malformed), "row_invalid_object");
 }
 
 const serialized = JSON.stringify({
