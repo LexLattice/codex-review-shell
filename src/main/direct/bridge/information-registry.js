@@ -1299,6 +1299,37 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     bridgeFit: "Adds PR 99 explicit observe-only/no-interference policy envelopes before follow-up or lifecycle controls become live, with resident catalog filtering, operator blocked-control projection, deterministic blocked results, policy digest, and source refs.",
     realignment: "This PR 99 slice is authority-policy only: active observe-only/no-interference blocks send/followup/close/interrupt/resume for the bound actor, never infers policy from UI labels, starts no provider/follow-up/lifecycle transport, and grants no policy relaxation flow.",
   },
+  {
+    id: "ic46.sub-agent-followup-send",
+    name: "Wave 16 sub-agent follow-up and send controlled continuation",
+    role: "authority_gate",
+    implementationState: "implemented",
+    directPathPosture: "keep_guarded",
+    sourceFiles: [
+      "src/main/direct/agents/sub-agent-followup-send.js",
+      "scripts/direct-sub-agent-followup-send-regression.mjs",
+      "docs/DIRECT_WAVE16_SUB_AGENT_LIFECYCLE_FOLLOWUP_TRANSCRIPT_SPEC.md",
+      "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md",
+    ],
+    ontology: ontologyShape(
+      [
+        "sub_agent_send_message_plan",
+        "sub_agent_followup_task_plan",
+        "sub_agent_followup_authority_decision",
+        "sub_agent_followup_mailbox_ledger",
+        "sub_agent_delivery_support_witness",
+        "sub_agent_followup_result_envelope",
+        "sub_agent_followup_resident_witness",
+      ],
+      "harness",
+      {
+        identityFields: ["workThreadId", "targetAgentId", "idempotencyKey", "planId"],
+        schema: "sub_agent_controlled_continuation@1",
+      }
+    ),
+    bridgeFit: "Adds PR 100 controlled continuation for send_message and followup_task through policy-gated plans, per-call authority decisions, mailbox idempotency, delivery-support witnesses, and summary-only result admission.",
+    realignment: "This PR 100 slice only targets existing child agents with provider-supported delivery; it does not spawn fallback children, inherit child tools, mutate lifecycle state, or admit full child transcripts into parent context.",
+  },
 ]);
 
 function isPlainObject(value) {
