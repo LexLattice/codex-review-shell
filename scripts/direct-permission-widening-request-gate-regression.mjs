@@ -93,6 +93,27 @@ assert.equal(broadRequest.status, "blocked", "project-scope request should be bl
 assert(broadRequest.blockerCodes.includes("permission_widening_scope_blocked:project"), "project scope blocker should be explicit");
 assert.equal(broadRequest.requiresOperatorConfirmation, false, "blocked broad request should not ask operator to confirm");
 
+const broadPhraseRequest = buildPermissionWideningRequest({
+  targetCapability: "full access",
+  proposedCallId: "proposed_call_broad_phrase",
+  scope: "single_action",
+  reason: "continue freely with all files",
+  nowMs: 0,
+});
+assert.equal(broadPhraseRequest.status, "blocked", "broad phrase request should be blocked");
+assert(broadPhraseRequest.blockerCodes.some((code) => code.startsWith("permission_widening_broad_phrase_blocked:")), "broad phrase blocker should be explicit");
+assert.equal(broadPhraseRequest.requiresOperatorConfirmation, false, "broad phrase request should not ask operator to confirm");
+
+const cancelledRequest = buildPermissionWideningRequest({
+  targetCapability: "exec_command",
+  proposedCallId: "proposed_call_cancelled",
+  scope: "single_action",
+  status: "cancelled",
+  nowMs: 0,
+});
+assert.equal(cancelledRequest.status, "cancelled", "explicit cancelled request should preserve status");
+assert.equal(cancelledRequest.requiresOperatorConfirmation, false, "cancelled request should not require operator confirmation");
+
 const malformedRequest = buildPermissionWideningRequest({
   scope: "single_action",
   nowMs: 0,
@@ -163,6 +184,22 @@ assert.equal(envelope.permissionRequest.proposedCallId, "proposed_call_3", "prop
 assert.equal(envelope.permissionDecision.decisionState, "operator_confirm_required", "decision should require operator confirmation");
 assert.equal(envelope.contextAdmission.admissionState, "operator_confirmation_required", "context admission should carry request status");
 
+const deniedOverrideEnvelope = buildRequestPermissionsResultEnvelope({
+  gate,
+  projectId: "project_permission_fixture",
+  workThreadId: "work_thread_permission_fixture",
+  threadId: "thread_permission_fixture",
+  turnId: "turn_permission_fixture",
+  permissionDecisionInput: {
+    decisionState: "denied",
+    operatorConfirmationRequired: false,
+  },
+  nowMs: 0,
+});
+assert.equal(deniedOverrideEnvelope.permissionDecision.decisionState, "denied", "valid request should preserve supplied decision state");
+assert.equal(deniedOverrideEnvelope.permissionDecision.operatorConfirmationRequired, false, "valid request should preserve supplied confirmation state");
+assert.equal(deniedOverrideEnvelope.permissionDecision.authorityGranted, false, "decision override still must not grant authority");
+
 const broadGate = buildDirectFirstToolCallGate({
   slice,
   toolCall: {
@@ -190,6 +227,21 @@ assert.equal(broadEnvelope.status, "blocked", "session-scope widening should be 
 assert(broadEnvelope.blockerCodes.includes("permission_widening_scope_blocked:session"), "session scope blocker should be explicit");
 assert.equal(broadEnvelope.providerOutput.authorityGranted, false, "blocked broad request must not grant authority");
 assert.equal(broadEnvelope.permissionDecision.decisionState, "denied", "blocked request should produce denied decision scaffold");
+
+const blockedOverrideEnvelope = buildRequestPermissionsResultEnvelope({
+  gate: broadGate,
+  projectId: "project_permission_fixture",
+  workThreadId: "work_thread_permission_fixture",
+  threadId: "thread_permission_fixture",
+  turnId: "turn_permission_fixture",
+  permissionDecisionInput: {
+    decisionState: "approved_by_operator",
+    operatorConfirmationRequired: false,
+  },
+  nowMs: 0,
+});
+assert.equal(blockedOverrideEnvelope.permissionDecision.decisionState, "denied", "blocked request must not accept approving override");
+assert.equal(blockedOverrideEnvelope.permissionDecision.authorityGranted, false, "blocked override must not grant authority");
 
 const unsupportedScopeGate = buildDirectFirstToolCallGate({
   slice,

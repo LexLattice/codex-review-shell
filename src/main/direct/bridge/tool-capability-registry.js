@@ -93,6 +93,7 @@ const PROVIDER_RESULT_ENVELOPES = new Set([
   "bounded_result_envelope",
   "plan_projection",
   "human_decision_packet",
+  "permission_widening_decision",
   "agent_mailbox_event",
   "external_evidence_ref",
   "provider_hosted_result",

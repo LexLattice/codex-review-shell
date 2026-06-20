@@ -41,6 +41,19 @@ const HUMAN_DECISION_RESULT_STATES = new Set(["answered", "expired", "cancelled"
 const PERMISSION_WIDENING_SCOPES = new Set(["single_action", "session", "project", "workspace", "full_access", "unsupported"]);
 const PERMISSION_WIDENING_REQUEST_STATUSES = new Set(["operator_confirmation_required", "blocked", "cancelled", "denied"]);
 const PERMISSION_WIDENING_DECISION_STATES = new Set(["operator_confirm_required", "approved_by_operator", "denied", "cancelled", "expired"]);
+const BROAD_PERMISSION_PHRASES = [
+  "all files",
+  "all tools",
+  "always allow",
+  "continue freely",
+  "full access",
+  "network",
+  "project-wide",
+  "project wide",
+  "session-wide",
+  "session wide",
+  "unrestricted",
+];
 
 function isPlainObject(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -556,6 +569,12 @@ function isHumanDecisionPacketExpired(packet = {}, nowMs) {
   return Number.isFinite(expiresAtMs) && Number.isFinite(nowMs) && expiresAtMs <= nowMs;
 }
 
+function broadPermissionPhrase(value) {
+  const text = scalarString(value).toLowerCase();
+  if (!text) return "";
+  return BROAD_PERMISSION_PHRASES.find((phrase) => text.includes(phrase)) || "";
+}
+
 function buildHumanDecisionLedger(input = {}) {
   input = isPlainObject(input) ? input : {};
   const packets = (Array.isArray(input.packets) ? input.packets : [])
@@ -620,10 +639,16 @@ function buildPermissionWideningRequest(input = {}) {
   const scope = PERMISSION_WIDENING_SCOPES.has(rawScope) ? rawScope : "unsupported";
   const targetCapability = boundedString(scalarString(input.targetCapability || input.capabilityId || input.toolName), 120);
   const proposedCallId = boundedString(scalarString(input.proposedCallId || input.callId || input.targetCallId), 120);
+  const reasonPreview = boundedString(scalarString(input.reason || input.reasonPreview || input.promptPreview), 240);
+  const broadPhrase = broadPermissionPhrase(`${targetCapability} ${reasonPreview}`);
   const blockerCodes = [];
   if (scope !== "single_action") blockerCodes.push(`permission_widening_scope_blocked:${scope}`);
+  if (broadPhrase) blockerCodes.push(`permission_widening_broad_phrase_blocked:${broadPhrase.replace(/\s+/g, "_")}`);
   if (!targetCapability) blockerCodes.push("permission_widening_missing_target_capability");
   if (!proposedCallId) blockerCodes.push("permission_widening_missing_proposed_call_id");
+  const status = blockerCodes.length
+    ? "blocked"
+    : normalizeEnum(input.status, PERMISSION_WIDENING_REQUEST_STATUSES, "operator_confirmation_required");
   const request = {
     schema: PERMISSION_WIDENING_REQUEST_SCHEMA,
     requestId: normalizeString(input.requestId, ""),
@@ -635,12 +660,10 @@ function buildPermissionWideningRequest(input = {}) {
     targetCapability,
     proposedCallId,
     scope,
-    reasonPreview: boundedString(input.reason || input.reasonPreview || input.promptPreview, 240),
-    status: blockerCodes.length
-      ? "blocked"
-      : normalizeEnum(input.status, PERMISSION_WIDENING_REQUEST_STATUSES, "operator_confirmation_required"),
+    reasonPreview,
+    status,
     blockerCodes,
-    requiresOperatorConfirmation: blockerCodes.length === 0,
+    requiresOperatorConfirmation: status === "operator_confirmation_required",
     decisionRequiredBeforeGrant: true,
     grantsAuthority: false,
     authorityGranted: false,

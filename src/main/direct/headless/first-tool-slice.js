@@ -822,11 +822,15 @@ function buildRequestPermissionsResultEnvelope(options = {}) {
     sourceCallId: normalizeString(gate.callId, options.permissionRequestInput?.sourceCallId || ""),
     nowMs: options.nowMs,
   });
-  const permissionDecision = buildPermissionWideningDecision({
-    ...(options.permissionDecisionInput || {}),
-    requestId: permissionRequest.requestId,
+  const decisionDefaults = {
     decisionState: permissionRequest.status === "blocked" ? "denied" : "operator_confirm_required",
     operatorConfirmationRequired: permissionRequest.status !== "blocked",
+  };
+  const decisionOverride = permissionRequest.status === "blocked" ? {} : (options.permissionDecisionInput || {});
+  const permissionDecision = buildPermissionWideningDecision({
+    ...decisionDefaults,
+    ...decisionOverride,
+    requestId: permissionRequest.requestId,
     nowMs: options.nowMs,
   });
   const blockerCodes = [];
