@@ -1292,7 +1292,7 @@ function buildRows(sections) {
       statusRow("Surface", controlTools.rowCount ? "available" : "not exposed", controlTools.rowCount ? "diagnostic" : "missing"),
       statusRow("Status", controlTools.status),
       statusRow("Tool projections", controlTools.rowCount),
-      statusRow("Context remaining", controlTools.contextTokensLeft === null ? "unknown" : controlTools.contextTokensLeft, controlTools.contextEstimateUsableFor === "request_blocking" ? "blocked" : "diagnostic", controlTools.contextEstimateUsableFor),
+      statusRow("Context remaining", controlTools.contextTokensLeft === null ? "unknown" : controlTools.contextTokensLeft, "diagnostic", controlTools.contextEstimateUsableFor),
       statusRow("Plan", controlTools.planStatus, controlTools.planMayAuthorizeAction ? "blocked" : "ok"),
       statusRow("Image visibility", controlTools.imageProviderVisibilityState, controlTools.imageProviderVisibilityState === "image_payload_sent" ? "diagnostic" : "ok"),
       statusRow("Human choices", controlTools.humanDecisionChoiceCount),

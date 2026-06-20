@@ -9,14 +9,16 @@ const {
   DIRECT_CONTROL_TOOL_SUBSTRATE_STATUS_SCHEMA,
   DIRECT_HUMAN_DECISION_TOOL_PACKET_SCHEMA,
   DIRECT_NEW_CONTEXT_BLOCKED_PROJECTION_SCHEMA,
-  DIRECT_PLAN_ARTIFACT_SCHEMA,
   DIRECT_VIEW_IMAGE_PROJECTION_SCHEMA,
+  PLAN_PROJECTION_MUTATION_ENVELOPE_SCHEMA,
+  PLAN_PROJECTION_STORE_SCHEMA,
   assertControlToolSubstrateSafe,
   buildContextRemainingWitness,
   buildControlToolSubstrateStatus,
   buildHumanDecisionToolPacket,
   buildNewContextBlockedProjection,
   buildPlanArtifact,
+  buildPlanProjectionStore,
   buildViewImageProjection,
   stableStringify,
 } = require("../src/main/direct/tools/control-perception-decision-substrate");
@@ -55,6 +57,8 @@ function main() {
     projectId,
     threadId,
     tokensLeft: 12345,
+    contextWindow: 20000,
+    usedTokens: 7655,
     confidence: "derived",
     estimateKind: "budget_policy_estimate",
     usableFor: "context_maintenance_diagnostic",
@@ -62,6 +66,10 @@ function main() {
   });
   assert(contextWitness.schema === DIRECT_CONTEXT_REMAINING_WITNESS_SCHEMA, "context witness schema mismatch");
   assert(contextWitness.tokensLeft === 12345, "context witness should preserve tokens left");
+  assert(contextWitness.remainingTokens === 12345, "context witness should expose canonical remaining tokens");
+  assert(contextWitness.pressurePercent === 38.27, "context witness should compute pressure percent");
+  assert(contextWitness.freshness === "fresh", "context witness with evidence should be fresh by default");
+  assert(contextWitness.usableFor !== "request_blocking", "context witness must not be request blocking");
   assert(contextWitness.permissionToContinue === false, "context witness must not grant permission to continue");
   assert(contextWitness.compactionAuthority === false, "context witness must not grant compaction authority");
   assert(contextWitness.providerTruth === false, "local estimate must not become provider truth");
@@ -72,25 +80,56 @@ function main() {
     nowMs: 0,
   });
   assert(unknownContextWitness.tokensLeft === null, "missing usage evidence must keep context remaining unknown");
+  assert(unknownContextWitness.remainingTokens === null, "missing usage evidence must keep canonical remaining unknown");
+  assert(unknownContextWitness.freshness === "unknown", "missing usage evidence should have unknown freshness");
   assert(unknownContextWitness.confidence === "unknown", "missing usage evidence should not become derived confidence");
   assert(unknownContextWitness.source === "unavailable", "missing usage evidence should not claim a context source");
 
   const plan = buildPlanArtifact({
     projectId,
+    workThreadId: "work_thread_control_tool_fixture",
     threadId,
-    source: "model_tool_call",
+    planId: "plan_control_tool_fixture",
+    mutationKind: "replace_plan",
     sourceTurnId: "turn_1",
-    conflictsWithCurrentUserIntent: true,
-    steps: [{ text: "Declare task complete", status: "completed" }],
+    steps: [{ text: "Track local plan state", status: "completed" }],
     nowMs: 0,
   });
-  assert(plan.schema === DIRECT_PLAN_ARTIFACT_SCHEMA, "plan schema mismatch");
-  assert(plan.status === "blocked", "conflicting model plan should be blocked");
+  assert(plan.schema === PLAN_PROJECTION_MUTATION_ENVELOPE_SCHEMA, "plan schema mismatch");
+  assert(plan.mutationKind === "replace_plan", "resident plan projection should accept scoped replacement");
+  assert(plan.afterPlan.steps[0].status === "completed_in_plan", "completed must be normalized to completed_in_plan");
   assert(plan.humanInstructionWins === true, "human instruction should outrank model plan");
   assert(plan.mayAuthorizeAction === false, "plan must not authorize action");
   assert(plan.mayApproveTools === false, "plan must not approve tools");
   assert(plan.mayProveCompletion === false, "plan must not prove completion");
+  assert(plan.mutatesWorkThreadTruth === false, "plan must not mutate WorkThread truth");
   assert(plan.mayEnterContextAs === "plan_evidence", "plan may only enter context as plan evidence");
+
+  const stalePlan = buildPlanArtifact({
+    projectId,
+    workThreadId: "work_thread_control_tool_fixture",
+    threadId,
+    planId: "plan_control_tool_fixture",
+    expectedBeforePlanDigest: "stale_digest",
+    steps: [{ text: "Overwrite stale plan" }],
+    nowMs: 0,
+  });
+  assert(stalePlan.schema === PLAN_PROJECTION_MUTATION_ENVELOPE_SCHEMA, "stale plan schema mismatch");
+  assert(stalePlan.mutationKind === "blocked", "stale plan update should be blocked");
+  assert(stalePlan.blockerCodes.includes("stale_plan_digest"), "stale plan blocker should be explicit");
+
+  const planStore = buildPlanProjectionStore({
+    projectId,
+    workThreadId: "work_thread_control_tool_fixture",
+    threadId,
+    planId: "plan_control_tool_fixture",
+    envelopes: [plan, { ...plan }, stalePlan],
+    nowMs: 0,
+  });
+  assert(planStore.schema === PLAN_PROJECTION_STORE_SCHEMA, "plan store schema mismatch");
+  assert(planStore.envelopeCount === 2, "plan store should dedupe update ids");
+  assert(planStore.acceptedEnvelopeCount === 1, "plan store should count accepted envelopes");
+  assert(planStore.blockedEnvelopeCount === 1, "plan store should count blocked envelopes");
 
   const viewImage = buildViewImageProjection({
     projectId,
@@ -150,6 +189,7 @@ function main() {
     threadId,
     contextRemaining: contextWitness,
     planArtifact: plan,
+    planStore,
     viewImage,
     humanDecision: userInput,
     newContext,

@@ -10,6 +10,8 @@ const {
 } = require("../transport/codex-responses-transport");
 const {
   buildContextRemainingWitness,
+  buildPlanProjectionMutationEnvelope,
+  buildPlanProjectionStore,
 } = require("../tools/control-perception-decision-substrate");
 
 const DIRECT_FIRST_TOOL_SLICE_SCHEMA = "direct_first_tool_slice@1";
@@ -17,11 +19,12 @@ const DIRECT_FIRST_TOOL_DECLARATION_ROW_SCHEMA = "direct_first_tool_declaration_
 const DIRECT_FIRST_TOOL_CALL_GATE_SCHEMA = "direct_first_tool_call_gate@1";
 const DIRECT_FIRST_TOOL_RESULT_ENVELOPE_SCHEMA = "direct_first_tool_result_envelope@1";
 
-const FIRST_SLICE_TOOLS = new Set(["read_file", "get_context_remaining"]);
+const FIRST_SLICE_TOOLS = new Set(["read_file", "get_context_remaining", "update_plan"]);
 const TOOL_CLASS_TO_TOOL_NAME = new Map([
   ["local_perception.workspace_read", "read_file"],
   ["session_control.plan_and_context_witness", "get_context_remaining"],
   ["session_control.get_context_remaining", "get_context_remaining"],
+  ["session_control.update_plan", "update_plan"],
 ]);
 
 function isPlainObject(value) {
@@ -67,6 +70,7 @@ function firstSliceToolName(row = {}) {
   const requestShape = normalizeString(row.providerRequestShapeSupport?.requestShapeFamily, "");
   if (requestShape === "read_file") return "read_file";
   if (requestShape === "context_status_or_control") return "get_context_remaining";
+  if (requestShape === "plan_projection") return "update_plan";
   return "";
 }
 
@@ -93,9 +97,64 @@ function contextRemainingDeclarationSchema() {
   };
 }
 
+function updatePlanDeclarationSchema() {
+  return {
+    type: "function",
+    name: "update_plan",
+    description: "Update the assistant working plan projection only. This does not prove completion, mutate project truth, approve tools, or change the WorkThread objective.",
+    parameters: {
+      type: "object",
+      properties: {
+        planId: {
+          type: "string",
+          description: "Stable plan id for the active assistant working plan.",
+        },
+        updateId: {
+          type: "string",
+          description: "Optional idempotency key for this plan update.",
+        },
+        mutationKind: {
+          type: "string",
+          enum: ["replace_plan", "append_steps", "update_step_status", "clear_plan"],
+        },
+        expectedBeforePlanDigest: {
+          type: "string",
+          description: "Optional stale-write guard. If supplied and mismatched, the update is blocked.",
+        },
+        stepId: {
+          type: "string",
+          description: "Step id for update_step_status.",
+        },
+        stepStatus: {
+          type: "string",
+          enum: ["pending", "in_progress", "completed_in_plan", "blocked", "deferred"],
+        },
+        steps: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              stepId: { type: "string" },
+              text: { type: "string" },
+              status: {
+                type: "string",
+                enum: ["pending", "in_progress", "completed_in_plan", "blocked", "deferred"],
+              },
+            },
+            required: ["text"],
+            additionalProperties: false,
+          },
+        },
+      },
+      additionalProperties: false,
+    },
+  };
+}
+
 function providerToolSchemaFor(toolName) {
   if (toolName === "read_file") return readFileDeclarationSchema();
   if (toolName === "get_context_remaining") return contextRemainingDeclarationSchema();
+  if (toolName === "update_plan") return updatePlanDeclarationSchema();
   return null;
 }
 
@@ -200,6 +259,7 @@ function buildDirectFirstToolSlice(options = {}) {
       declaredToolNames: declarations.map((row) => row.toolName),
       readFileDeclared: declarations.some((row) => row.toolName === "read_file"),
       contextRemainingDeclared: declarations.some((row) => row.toolName === "get_context_remaining"),
+      updatePlanDeclared: declarations.some((row) => row.toolName === "update_plan"),
     },
     rawPromptIncluded: false,
     rawResultIncluded: false,
@@ -274,6 +334,31 @@ function validateToolArguments(toolName, args) {
     const detail = normalizeString(args.detail, "compact");
     return {
       detail: ["compact", "full"].includes(detail) ? detail : "compact",
+    };
+  }
+  if (toolName === "update_plan") {
+    const mutationKind = normalizeString(args.mutationKind, "replace_plan");
+    const stepStatus = normalizeString(args.stepStatus, "");
+    const steps = Array.isArray(args.steps)
+      ? args.steps
+        .filter(isPlainObject)
+        .map((step, index) => ({
+          stepId: normalizeString(step.stepId || step.id, `step_${index + 1}`),
+          text: normalizeString(step.text || step.step, ""),
+          status: ["pending", "in_progress", "completed_in_plan", "blocked", "deferred"].includes(normalizeString(step.status, "pending"))
+            ? normalizeString(step.status, "pending")
+            : "pending",
+        }))
+        .filter((step) => step.text)
+      : [];
+    return {
+      planId: normalizeString(args.planId, ""),
+      updateId: normalizeString(args.updateId, ""),
+      mutationKind: ["replace_plan", "append_steps", "update_step_status", "clear_plan"].includes(mutationKind) ? mutationKind : "replace_plan",
+      expectedBeforePlanDigest: normalizeString(args.expectedBeforePlanDigest, ""),
+      stepId: normalizeString(args.stepId, ""),
+      stepStatus: ["pending", "in_progress", "completed_in_plan", "blocked", "deferred"].includes(stepStatus) ? stepStatus : "",
+      steps,
     };
   }
   return {};
@@ -361,6 +446,11 @@ function buildContextRemainingResultEnvelope(options = {}) {
     providerOutput: {
       kind: "get_context_remaining_result",
       tokensLeft: witness.tokensLeft,
+      remainingTokens: witness.remainingTokens,
+      usedTokens: witness.usedTokens,
+      contextWindow: witness.contextWindow,
+      pressurePercent: witness.pressurePercent,
+      freshness: witness.freshness,
       confidence: witness.confidence,
       estimateKind: witness.estimateKind,
       usableFor: "display_only",
@@ -369,6 +459,84 @@ function buildContextRemainingResultEnvelope(options = {}) {
       providerCompactionAuthority: false,
     },
     witness,
+    rawPromptIncluded: false,
+    rawResultIncluded: false,
+    rawWorkspacePathIncluded: false,
+    rawSecretIncluded: false,
+  };
+  envelope.envelopeDigest = digestFor("direct-first-tool-result-envelope@1", envelope);
+  return envelope;
+}
+
+function buildUpdatePlanResultEnvelope(options = {}) {
+  const gate = isPlainObject(options.gate) ? options.gate : buildDirectFirstToolCallGate(options);
+  const parsed = isPlainObject(gate.parsedArguments) ? gate.parsedArguments : {};
+  const planInput = {
+    ...(options.planInput || {}),
+    ...parsed,
+    projectId: normalizeString(options.projectId, options.planInput?.projectId || ""),
+    workThreadId: normalizeString(options.workThreadId, options.planInput?.workThreadId || ""),
+    threadId: normalizeString(options.threadId, options.planInput?.threadId || ""),
+    sourceTurnId: normalizeString(options.turnId, options.planInput?.sourceTurnId || options.planInput?.turnId || ""),
+    actorKind: "resident_model",
+    planOwner: "resident_model",
+    planAuthority: "assistant_working_plan",
+    nowMs: options.nowMs,
+  };
+  const planEnvelope = buildPlanProjectionMutationEnvelope(planInput);
+  const planStore = buildPlanProjectionStore({
+    ...(options.planStoreInput || {}),
+    projectId: planInput.projectId,
+    workThreadId: planInput.workThreadId,
+    threadId: planInput.threadId,
+    planId: planEnvelope.planId,
+    envelope: planEnvelope,
+    nowMs: options.nowMs,
+  });
+  const blockerCodes = [];
+  if (gate.status !== "accepted") blockerCodes.push("tool_call_gate_not_accepted");
+  if (gate.toolName !== "update_plan") blockerCodes.push("wrong_tool_for_update_plan_envelope");
+  if (planEnvelope.blocked === true) blockerCodes.push(...planEnvelope.blockerCodes.map((code) => `plan:${code}`));
+  const envelope = {
+    schema: DIRECT_FIRST_TOOL_RESULT_ENVELOPE_SCHEMA,
+    envelopeId: `first_tool_result_${digestFor("direct-first-tool-plan-result-id@1", {
+      gateDigest: gate.gateDigest,
+      planEnvelopeDigest: planEnvelope.envelopeDigest,
+      planStoreDigest: planStore.storeDigest,
+    }).slice(0, 24)}`,
+    toolName: "update_plan",
+    callId: normalizeString(gate.callId, ""),
+    gateId: normalizeString(gate.gateId, ""),
+    gateDigest: normalizeString(gate.gateDigest, ""),
+    resultKind: "plan_projection_update",
+    status: blockerCodes.length ? "blocked" : "ready_for_provider_continuation",
+    blockerCodes: normalizeStringList(blockerCodes),
+    providerOutput: {
+      kind: "update_plan_result",
+      planId: planEnvelope.planId,
+      updateId: planEnvelope.updateId,
+      mutationKind: planEnvelope.mutationKind,
+      blocked: planEnvelope.blocked,
+      blockerCodes: planEnvelope.blockerCodes,
+      planOwner: planEnvelope.planOwner,
+      planAuthority: planEnvelope.planAuthority,
+      currentPlanDigest: planStore.currentPlanDigest,
+      mutatesWorkThreadTruth: false,
+      mutatesProjectTruth: false,
+      mutatesOperatorPlan: false,
+      closesObligations: false,
+      marksWorkThreadComplete: false,
+      approvesTools: false,
+      provesCompletion: false,
+    },
+    planEnvelope,
+    planStore,
+    contextAdmission: {
+      admittedAs: "plan_evidence",
+      rawTextIncluded: false,
+      mutatesWorkThreadTruth: false,
+      provesCompletion: false,
+    },
     rawPromptIncluded: false,
     rawResultIncluded: false,
     rawWorkspacePathIncluded: false,
@@ -429,6 +597,7 @@ module.exports = {
   buildContextRemainingResultEnvelope,
   buildDirectFirstToolCallGate,
   buildDirectFirstToolSlice,
+  buildUpdatePlanResultEnvelope,
   validateDirectFirstToolCallGate,
   validateDirectFirstToolSlice,
 };

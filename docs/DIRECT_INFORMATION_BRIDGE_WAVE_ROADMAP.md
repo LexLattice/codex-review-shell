@@ -4415,7 +4415,7 @@ work still never flattens into the primary transcript.
 
 ## Wave 17: Human-Control And Local Perception Tools
 
-Status: active; PR 103 in review.
+Status: active; PR 104 in review.
 
 Dedicated spec:
 
@@ -4455,8 +4455,8 @@ no workspace mutation
 
 | PR | Status | Branch | Purpose | Planned deliverable | Explicit non-goals |
 | --- | --- | --- | --- | --- | --- |
-| `#103` | in review | `codex/direct-human-control-capability-profile` | Human/control capability profile | Capability rows, promotion/activation rows, declaration eligibility, unavailable reasons for `get_context_remaining`, `update_plan`, `request_user_input`, `request_permissions`, `view_image`, `new_context` | No resident-callable declaration or permission grant execution |
-| `#104` | planned | `codex/direct-context-plan-control-tools` | Context remaining and plan projection tools | Resident-callable context witness with freshness and no `request_blocking`, scoped plan projection mutation envelope/store with planOwner/planAuthority, stale digest blocking, result/context admission | No WorkThread/operator/project truth mutation, goal completion proof, or compaction authority |
+| `#103` | merged | `codex/direct-human-control-capability-profile` | Human/control capability profile | Capability rows, promotion/activation rows, declaration eligibility, unavailable reasons for `get_context_remaining`, `update_plan`, `request_user_input`, `request_permissions`, `view_image`, `new_context` | No resident-callable declaration or permission grant execution |
+| `#104` | in review | `codex/direct-context-plan-control-tools` | Context remaining and plan projection tools | Resident-callable context witness with freshness and no `request_blocking`, scoped plan projection mutation envelope/store with planOwner/planAuthority, stale digest blocking, result/context admission | No WorkThread/operator/project truth mutation, goal completion proof, or compaction authority |
 | `#105` | planned | `codex/direct-bounded-human-decision-tool` | Bounded human decision bridge | Resident-callable bounded `request_user_input`, single-pending policy, pending/answered/expired/cancelled/superseded ledger, non-authoritative bounded-choice result envelope, free-text context-only witness | No free-form approval, permission widening, or provider turn auto-start |
 | `#106` | planned | `codex/direct-permission-widening-request-gate` | Permission widening request gate | `request_permissions` request packet, separate PermissionWideningDecision, single-action target capability/proposed call id, broad/session/project blockers, operator-confirm-required witness | No broad authority widening, request-as-grant collapse, or full-access grant |
 | `#107` | planned | `codex/direct-image-view-projection-tool` | Image metadata/projection tool | `view_image` guarded metadata/projection capability, path containment, type sniffing, decoded caps, residentPerceptionLevel, modelSawPixels=false, payload unsupported witness | No provider image payload submission, model pixel-vision claim, or inline SVG rendering |
