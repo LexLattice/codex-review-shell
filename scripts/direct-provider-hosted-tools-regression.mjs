@@ -336,6 +336,24 @@ assert(rawScan.schema === PROVIDER_HOSTED_RAW_EXPOSURE_SCAN_SCHEMA, "raw scan sc
 assert(rawScan.redactionState === "passed", "normal query should pass raw scan");
 assert(rawScan.rawInputIncluded === false, "raw scan must not include input text");
 
+const oversizedScan = buildProviderHostedRawExposureScan({
+  toolKind: "web_search",
+  inputText: "x".repeat(webQueryPolicy.maxQueryChars + 1),
+  policy: webQueryPolicy,
+  nowMs: 0,
+});
+assert(oversizedScan.redactionState === "blocked", "oversized query should block raw scan");
+assert(oversizedScan.findingClasses.includes("oversized_input"), "oversized query should report oversized_input");
+
+const personalDataScan = buildProviderHostedRawExposureScan({
+  toolKind: "web_search",
+  inputText: "find contact for alice@example.com",
+  policy: webQueryPolicy,
+  nowMs: 0,
+});
+assert(personalDataScan.redactionState === "blocked", "personal-data query should block raw scan");
+assert(personalDataScan.findingClasses.includes("unbounded_personal_data"), "personal-data query should report unbounded_personal_data");
+
 const webQueryEnvelope = buildProviderHostedWebSearchQueryEnvelope({
   callId: "call_query_fixture",
   queryText: "OpenAI Codex app-server docs",
@@ -388,7 +406,25 @@ const blockedSecretWebCall = buildProviderHostedToolCallEnvelope({
 });
 assert(blockedSecretWebCall.authorityDecision === "blocked_raw_exposure_risk", "secret query should block hosted call envelope");
 assert(blockedSecretWebCall.inputEnvelope.redactionState === "blocked", "secret query envelope should be blocked");
+assert(blockedSecretWebCall.inputEnvelope.queryPreview === "", "blocked secret query must not expose preview text");
 assertProviderHostedToolCallEnvelopeSafe(blockedSecretWebCall);
+
+const stalePassedScanWebCall = buildProviderHostedToolCallEnvelope({
+  toolKind: "web_search",
+  callSurface: "resident_tool",
+  invocationMode: "model_mediated_provider_tool",
+  caller: "resident",
+  turnId: "turn_provider_hosted_stale_scan_fixture",
+  activationSnapshot: runtimeActivationSnapshot,
+  queryText: "search https://user:pass@example.com with bearer abcdefghijklmnop",
+  queryPolicy: webQueryPolicy,
+  rawExposureScan: rawScan,
+  nowMs: 0,
+});
+assert(stalePassedScanWebCall.authorityDecision === "blocked_raw_exposure_risk", "mismatched passed scan must not authorize secret query");
+assert(stalePassedScanWebCall.inputEnvelope.redactionState === "blocked", "mismatched passed scan should be recomputed against current query");
+assert(stalePassedScanWebCall.inputEnvelope.queryPreview === "", "recomputed blocked query must not expose preview text");
+assertProviderHostedToolCallEnvelopeSafe(stalePassedScanWebCall);
 
 const missingActivationCall = buildProviderHostedToolCallEnvelope({
   toolKind: "web_search",
@@ -418,6 +454,20 @@ assert(residentImageCall.authorityDecision === "blocked_operator_gate_required",
 assert(residentImageCall.sideEffectClass === "generated_artifact_production", "image call side-effect class mismatch");
 assertProviderHostedToolCallEnvelopeSafe(residentImageCall);
 
+const spoofedResidentOperatorImageCall = buildProviderHostedToolCallEnvelope({
+  toolKind: "image_generation",
+  callSurface: "resident_tool",
+  invocationMode: "operator_triggered_provider_operation",
+  caller: "resident",
+  turnId: "turn_provider_hosted_spoofed_resident_image_fixture",
+  activationSnapshot: runtimeActivationSnapshot,
+  promptText: "Create a neutral geometric study image.",
+  promptPolicy: imagePromptPolicy,
+  nowMs: 0,
+});
+assert(spoofedResidentOperatorImageCall.authorityDecision === "blocked_operator_gate_required", "resident caller must not select operator invocation mode");
+assertProviderHostedToolCallEnvelopeSafe(spoofedResidentOperatorImageCall);
+
 const operatorImageCall = buildProviderHostedToolCallEnvelope({
   toolKind: "image_generation",
   callSurface: "operator_ui",
@@ -433,6 +483,23 @@ assert(operatorImageCall.authorityDecision === "allowed", "operator-gated image 
 assert(operatorImageCall.replayPolicy.requiresFreshOperatorIntent === true, "operator image call should require fresh operator intent");
 assert(operatorImageCall.providerTransportAllowed === false, "operator image envelope still must not enable provider transport");
 assertProviderHostedToolCallEnvelopeSafe(operatorImageCall);
+
+const staleActivationWebCall = buildProviderHostedToolCallEnvelope({
+  toolKind: "web_search",
+  callSurface: "resident_tool",
+  invocationMode: "model_mediated_provider_tool",
+  caller: "resident",
+  turnId: "turn_provider_hosted_stale_activation_fixture",
+  activationSnapshot: {
+    ...runtimeActivationSnapshot,
+    expiresAt: "1970-01-01T00:00:01.000Z",
+  },
+  queryText: "OpenAI Codex app-server docs",
+  queryPolicy: webQueryPolicy,
+  nowMs: Date.parse("1970-01-01T00:00:02.000Z"),
+});
+assert(staleActivationWebCall.authorityDecision === "blocked_stale_declaration", "stale activation snapshot must not authorize hosted call envelope");
+assertProviderHostedToolCallEnvelopeSafe(staleActivationWebCall);
 
 const unknownStatus = buildProviderHostedToolsStatus({
   projectId: "project_unknown_provider_hosted_fixture",

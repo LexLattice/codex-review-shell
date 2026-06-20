@@ -40,6 +40,7 @@ const AUTHORITY_DECISIONS = new Set([
   "blocked_unknown_capability",
   "blocked_unsupported",
   "blocked_missing_declaration",
+  "blocked_stale_declaration",
   "blocked_missing_result_policy",
   "blocked_raw_exposure_risk",
   "blocked_operator_gate_required",
@@ -54,6 +55,7 @@ const CREDENTIAL_URL_PATTERN = /\bhttps?:\/\/[^\s/:@]+:[^@\s]+@[^\s]+/i;
 const SECRET_PATTERN = /\b(?:bearer\s+[a-z0-9._~+/=-]{12,}|sk-[a-z0-9_-]{12,}|api[_-]?key\s*[:=]\s*[a-z0-9._~+/=-]{8,}|password\s*[:=]\s*\S+)/i;
 const PRIVATE_PATH_PATTERN = /(?:^|\s)(?:\/home\/[^/\s]+|\/mnt\/[a-z]\/Users\/[^/\s]+|[A-Z]:\\Users\\[^\\\s]+)/i;
 const PROVIDER_PAYLOAD_PATTERN = /(?:\"rawProviderPayload\"|\"messages\"\s*:\s*\[|\"authorization\"\s*:|\"cookie\"\s*:)/i;
+const PERSONAL_DATA_PATTERN = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b|\b(?:\+?\d[\d .()-]{7,}\d)\b/i;
 
 function isPlainObject(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -187,6 +189,17 @@ function requestShapeProofIsFresh(proof = {}, nowMs) {
   const expiresAtMs = Date.parse(proof.expiresAt);
   const currentMs = typeof nowMs === "number" && Number.isFinite(nowMs) ? nowMs : Date.now();
   return Number.isFinite(expiresAtMs) && expiresAtMs > currentMs;
+}
+
+function timestampIsFresh(expiresAt, nowMs) {
+  if (!expiresAt) return true;
+  const expiresAtMs = Date.parse(expiresAt);
+  const currentMs = typeof nowMs === "number" && Number.isFinite(nowMs) ? nowMs : Date.now();
+  return Number.isFinite(expiresAtMs) && expiresAtMs > currentMs;
+}
+
+function inputDigestFor(text) {
+  return digestFor("provider-hosted-input-text@1", normalizeString(text, ""));
 }
 
 function requestShapeProofIsCallable(proof = {}, nowMs) {
@@ -564,14 +577,22 @@ function detectRawExposureFindings(text, { maxChars = 1000, disallowed = [] } = 
   const disallowedSet = new Set(disallowed);
   const findings = [];
   function maybeAdd(kind, condition) {
-    if (condition && (!disallowedSet.size || disallowedSet.has(kind))) findings.push(kind);
+    if (condition && (kind === "oversized_input" || !disallowedSet.size || disallowedSet.has(kind))) findings.push(kind);
   }
   maybeAdd("credentialed_url", CREDENTIAL_URL_PATTERN.test(value));
   maybeAdd("raw_secret", SECRET_PATTERN.test(value));
   maybeAdd("private_file_path", PRIVATE_PATH_PATTERN.test(value));
   maybeAdd("raw_provider_payload", PROVIDER_PAYLOAD_PATTERN.test(value));
+  maybeAdd("unbounded_personal_data", PERSONAL_DATA_PATTERN.test(value));
   maybeAdd("oversized_input", value.length > maxChars);
   return [...new Set(findings)];
+}
+
+function trustedRawExposureScan(scan, { toolKind, inputText }) {
+  if (scan?.schema !== PROVIDER_HOSTED_RAW_EXPOSURE_SCAN_SCHEMA) return null;
+  if (scan.toolKind !== toolKind) return null;
+  if (scan.inputDigest !== inputDigestFor(inputText)) return null;
+  return scan;
 }
 
 function buildProviderHostedRawExposureScan(input = {}) {
@@ -589,7 +610,7 @@ function buildProviderHostedRawExposureScan(input = {}) {
     schema: PROVIDER_HOSTED_RAW_EXPOSURE_SCAN_SCHEMA,
     scanId: boundedString(source.scanId || "", 180),
     toolKind,
-    inputDigest: digestFor("provider-hosted-input-text@1", normalizeString(source.inputText, "")),
+    inputDigest: inputDigestFor(source.inputText),
     findingClasses: findings,
     blockerClasses: findings,
     redactionState: findings.length ? "blocked" : "passed",
@@ -614,15 +635,17 @@ function buildProviderHostedWebSearchQueryEnvelope(input = {}) {
       ...source.queryPolicy,
     });
   const queryText = normalizeString(source.queryText || source.inputText, "");
-  const scan = source.rawExposureScan?.schema === PROVIDER_HOSTED_RAW_EXPOSURE_SCAN_SCHEMA
-    ? source.rawExposureScan
+  const suppliedScan = trustedRawExposureScan(source.rawExposureScan, { toolKind: "web_search", inputText: queryText });
+  const scan = suppliedScan
+    ? suppliedScan
     : buildProviderHostedRawExposureScan({ toolKind: "web_search", inputText: queryText, policy, nowMs: source.nowMs });
+  const redactionState = normalizeEnum(scan.redactionState, REDACTION_STATES, "blocked");
   const envelope = {
     schema: PROVIDER_HOSTED_WEB_SEARCH_QUERY_ENVELOPE_SCHEMA,
     queryEnvelopeId: boundedString(source.queryEnvelopeId || "", 180),
     callId: boundedString(source.callId, 180),
     queryDigest: scan.inputDigest,
-    queryPreview: boundedString(queryText, Math.min(160, policy.maxQueryChars)),
+    queryPreview: redactionState === "passed" ? boundedString(queryText, Math.min(160, policy.maxQueryChars)) : "",
     queryKind: normalizeEnum(source.queryKind, WEB_SEARCH_QUERY_KINDS, "single_query"),
     queryPolicyId: policy.policyId,
     queryPolicyDigest: policy.policyDigest,
@@ -634,8 +657,8 @@ function buildProviderHostedWebSearchQueryEnvelope(input = {}) {
       confidence: scan.redactionState,
     }, "provider_hosted_raw_exposure_scan"),
     rawQueryStored: false,
-    rawSecretsDetected: scan.findingClasses.includes("raw_secret"),
-    redactionState: normalizeEnum(scan.redactionState, REDACTION_STATES, "blocked"),
+    rawSecretsDetected: arrayOrEmpty(scan.findingClasses).includes("raw_secret"),
+    redactionState,
     generatedAt: normalizeString(source.generatedAt, nowIso(source.nowMs)),
   };
   envelope.queryEnvelopeId = envelope.queryEnvelopeId || `provider_hosted_web_query_${digestFor("provider-hosted-web-query-envelope-source@1", envelope).slice(0, 24)}`;
@@ -654,15 +677,17 @@ function buildProviderHostedImagePromptEnvelope(input = {}) {
       ...source.promptPolicy,
     });
   const promptText = normalizeString(source.promptText || source.inputText, "");
-  const scan = source.rawExposureScan?.schema === PROVIDER_HOSTED_RAW_EXPOSURE_SCAN_SCHEMA
-    ? source.rawExposureScan
+  const suppliedScan = trustedRawExposureScan(source.rawExposureScan, { toolKind: "image_generation", inputText: promptText });
+  const scan = suppliedScan
+    ? suppliedScan
     : buildProviderHostedRawExposureScan({ toolKind: "image_generation", inputText: promptText, policy, nowMs: source.nowMs });
+  const redactionState = normalizeEnum(scan.redactionState, REDACTION_STATES, "blocked");
   const envelope = {
     schema: PROVIDER_HOSTED_IMAGE_PROMPT_ENVELOPE_SCHEMA,
     promptEnvelopeId: boundedString(source.promptEnvelopeId || "", 180),
     callId: boundedString(source.callId, 180),
     promptDigest: scan.inputDigest,
-    promptPreview: policy.rawPromptRetention === "redacted_preview" ? boundedString(promptText, Math.min(160, policy.maxPromptChars)) : "",
+    promptPreview: policy.rawPromptRetention === "redacted_preview" && redactionState === "passed" ? boundedString(promptText, Math.min(160, policy.maxPromptChars)) : "",
     promptPolicyId: policy.policyId,
     promptPolicyDigest: policy.policyDigest,
     rawExposureScanRef: normalizeEvidenceRef({
@@ -673,8 +698,8 @@ function buildProviderHostedImagePromptEnvelope(input = {}) {
       confidence: scan.redactionState,
     }, "provider_hosted_raw_exposure_scan"),
     rawPromptStored: false,
-    rawSecretsDetected: scan.findingClasses.includes("raw_secret"),
-    redactionState: normalizeEnum(scan.redactionState, REDACTION_STATES, "blocked"),
+    rawSecretsDetected: arrayOrEmpty(scan.findingClasses).includes("raw_secret"),
+    redactionState,
     generatedAt: normalizeString(source.generatedAt, nowIso(source.nowMs)),
   };
   envelope.promptEnvelopeId = envelope.promptEnvelopeId || `provider_hosted_image_prompt_${digestFor("provider-hosted-image-prompt-envelope-source@1", envelope).slice(0, 24)}`;
@@ -687,15 +712,22 @@ function findActivationDecision(snapshot = {}, toolKind, invocationMode) {
     .find((decision) => decision?.toolKind === toolKind && decision?.invocationMode === invocationMode) || null;
 }
 
-function authorityDecisionFromActivation({ activationSnapshot = {}, toolKind, invocationMode, scan, inputPolicy }) {
+function authorityDecisionFromActivation({ activationSnapshot = {}, toolKind, invocationMode, callSurface, caller, scan, inputPolicy, nowMs }) {
+  if (invocationMode === "operator_triggered_provider_operation" && (callSurface !== "operator_ui" || caller !== "operator")) {
+    return { authorityDecision: "blocked_operator_gate_required", blocker: "operator_invocation_requires_operator_surface" };
+  }
   if (!isPlainObject(activationSnapshot) || activationSnapshot.schema !== PROVIDER_HOSTED_ACTIVATION_SNAPSHOT_SCHEMA) {
     return { authorityDecision: "blocked_missing_declaration", blocker: "missing_activation_snapshot" };
+  }
+  if (!timestampIsFresh(activationSnapshot.expiresAt, nowMs)) {
+    return { authorityDecision: "blocked_stale_declaration", blocker: "stale_activation_snapshot" };
   }
   if (!activationSnapshot.resultAdmissionPolicyId) {
     return { authorityDecision: "blocked_missing_result_policy", blocker: "missing_result_admission_policy" };
   }
   if (scan?.redactionState === "blocked") {
-    return { authorityDecision: "blocked_raw_exposure_risk", blocker: scan.blockerClasses.join(",") || "raw_exposure_risk" };
+    const blockerClasses = arrayOrEmpty(scan.blockerClasses).filter(Boolean);
+    return { authorityDecision: "blocked_raw_exposure_risk", blocker: blockerClasses.join(",") || "raw_exposure_risk" };
   }
   if (toolKind === "web_search" && !inputPolicy?.policyId) {
     return { authorityDecision: "blocked_missing_result_policy", blocker: "missing_query_policy" };
@@ -708,6 +740,7 @@ function authorityDecisionFromActivation({ activationSnapshot = {}, toolKind, in
   if (decision.callable === true) return { authorityDecision: "allowed", blocker: "" };
   if (decision.decision === "blocked_unknown_capability") return { authorityDecision: "blocked_unknown_capability", blocker: decision.blocker || decision.decision };
   if (decision.decision === "blocked_unsupported") return { authorityDecision: "blocked_unsupported", blocker: decision.blocker || decision.decision };
+  if (decision.decision === "blocked_stale_request_shape_proof") return { authorityDecision: "blocked_stale_declaration", blocker: decision.blocker || decision.decision };
   if (decision.decision === "blocked_operator_gate_required") return { authorityDecision: "blocked_operator_gate_required", blocker: decision.blocker || decision.decision };
   return { authorityDecision: "blocked_missing_declaration", blocker: decision.blocker || decision.decision };
 }
@@ -739,7 +772,17 @@ function buildProviderHostedToolCallEnvelope(input = {}) {
   const inputPolicy = inputBundle.policy;
   const scan = inputBundle.scan;
   const activation = isPlainObject(source.activationSnapshot) ? source.activationSnapshot : {};
-  const authority = authorityDecisionFromActivation({ activationSnapshot: activation, toolKind, invocationMode, scan, inputPolicy });
+  const caller = normalizeEnum(source.caller, new Set(["resident", "operator", "headless", "system"]), callSurface === "operator_ui" ? "operator" : "resident");
+  const authority = authorityDecisionFromActivation({
+    activationSnapshot: activation,
+    toolKind,
+    invocationMode,
+    callSurface,
+    caller,
+    scan,
+    inputPolicy,
+    nowMs: source.nowMs,
+  });
   const decision = findActivationDecision(activation, toolKind, invocationMode);
   const envelope = {
     schema: PROVIDER_HOSTED_TOOL_CALL_ENVELOPE_SCHEMA,
@@ -753,7 +796,7 @@ function buildProviderHostedToolCallEnvelope(input = {}) {
     activationId: boundedString(activation.activationId, 180),
     activationDigest: boundedString(activation.activationDigest, 180),
     declarationDigest: boundedString(activation.declarationDigest, 180),
-    caller: normalizeEnum(source.caller, new Set(["resident", "operator", "headless", "system"]), callSurface === "operator_ui" ? "operator" : "resident"),
+    caller,
     sideEffectClass: normalizeEnum(sideEffectClass, HOSTED_SIDE_EFFECT_CLASSES, "external_epistemic_read"),
     authorityDecision: normalizeEnum(authority.authorityDecision, AUTHORITY_DECISIONS, "blocked_missing_declaration"),
     blocker: boundedString(authority.blocker, 220),
@@ -1059,6 +1102,10 @@ function assertProviderHostedToolCallEnvelopeSafe(envelope = {}) {
   }
   if (envelope.inputEnvelope.redactionState === "blocked" && envelope.authorityDecision !== "blocked_raw_exposure_risk") {
     throw new Error("provider_hosted_call_raw_block_not_reflected");
+  }
+  if (envelope.inputEnvelope.redactionState !== "passed") {
+    if (envelope.inputEnvelope.queryPreview) throw new Error("provider_hosted_call_blocked_query_preview_leak");
+    if (envelope.inputEnvelope.promptPreview) throw new Error("provider_hosted_call_blocked_prompt_preview_leak");
   }
   return true;
 }
