@@ -1222,6 +1222,36 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "PR109 declares no resident-callable provider tools, performs no external resource read, executes no dynamic MCP action, installs no plugin, admits no external context, persists no external payload, and exposes no raw endpoint, credential, URI, payload, schema, or secret.",
   },
   {
+    id: "ic56.external-discovery-tools",
+    name: "Wave 18 resident external discovery tools",
+    role: "authority_gate",
+    implementationState: "implemented",
+    directPathPosture: "keep_guarded",
+    sourceFiles: [
+      "src/main/direct/external/external-discovery-tools.js",
+      "src/main/direct/external/external-capability-profile.js",
+      "src/main/direct/external/capability-discovery.js",
+      "scripts/direct-external-discovery-tools-regression.mjs",
+      "docs/DIRECT_WAVE18_EXTERNAL_DISCOVERY_MCP_READ_SPEC.md",
+      "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md",
+    ],
+    ontology: ontologyShape(
+      [
+        "external_tool_search_input",
+        "external_tool_resident_declaration",
+        "external_discovery_tool_call_gate",
+        "external_discovery_result_envelope",
+      ],
+      "harness",
+      {
+        identityFields: ["declarationId", "declarationDigest", "gateId", "callId", "toolName", "serverIdentityId", "envelopeId"],
+        schema: "external_discovery_result_envelope@1",
+      }
+    ),
+    bridgeFit: "Promotes Wave 18-safe external discovery tools into resident-callable provider declarations for tool_search, list_mcp_resources, and list_mcp_resource_templates, with frozen declaration digests, exact MCP server selector gates, bounded result caps, sanitized descriptor envelopes, and unavailable/degraded evidence.",
+    realignment: "PR110 discovery calls return descriptor evidence only: no read_mcp_resource declaration, dynamic MCP action, plugin install, provider-hosted tool, discovered-tool auto-promotion, workspace mutation, external payload persistence, raw URI exposure, or project-truth/memory promotion exists.",
+  },
+  {
     id: "ic33.odeu-live-capability-artifact-kernel",
     name: "ODEU live-capability artifact/source/digest/raw-exposure kernel",
     role: "canonical_evidence",
