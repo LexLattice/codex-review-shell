@@ -1008,6 +1008,36 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "The substrate exposes no provider tool declarations, no local tool execution, no workspace mutation, no agent spawning, no external action, no free-text authority widening, and no plan-derived task-completion proof.",
   },
   {
+    id: "ic49.human-control-capability-profile",
+    name: "Wave 17 human-control capability profile",
+    role: "authority_gate",
+    implementationState: "implemented",
+    directPathPosture: "keep_guarded",
+    sourceFiles: [
+      "src/main/direct/tools/human-control-capability-profile.js",
+      "scripts/direct-human-control-capability-profile-regression.mjs",
+      "docs/DIRECT_WAVE17_HUMAN_CONTROL_READONLY_TOOLS_SPEC.md",
+      "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md",
+    ],
+    ontology: ontologyShape(
+      [
+        "human_control_capability_profile",
+        "human_control_declaration_eligibility",
+        "odeu_capability_row",
+        "odeu_promotion_decision",
+        "odeu_activation_row",
+        "odeu_declaration_snapshot",
+      ],
+      "harness",
+      {
+        identityFields: ["profileId", "capabilityId", "promotionDecisionId", "activationId", "declarationSnapshotId", "toolName"],
+        schema: "human_control_capability_profile@1",
+      }
+    ),
+    bridgeFit: "Maps get_context_remaining, update_plan, request_user_input, request_permissions, view_image, and new_context into shared ODEU lifecycle rows with explicit shadow, guarded, and known-disabled postures before any resident-callable declaration exists.",
+    realignment: "This PR 103 slice is profile-only: provider declarations, model-callable tools, local executors, permission grants, request-shape mutation, image payload submission, and context-world mutation remain disabled.",
+  },
+  {
     id: "ic33.odeu-live-capability-artifact-kernel",
     name: "ODEU live-capability artifact/source/digest/raw-exposure kernel",
     role: "canonical_evidence",
