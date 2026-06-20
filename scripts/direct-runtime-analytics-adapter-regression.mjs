@@ -210,6 +210,43 @@ const turn = {
       completedAt: "2026-06-15T10:00:02.200Z",
       durationMs: 200,
     },
+    {
+      resultId: "hosted_web_adapter_1",
+      name: "web_search",
+      status: "completed",
+      completedAt: "2026-06-15T10:00:03.000Z",
+      hostedUsageAttribution: {
+        schema: "provider_hosted_usage_attribution@1",
+        attributionId: "provider_hosted_usage_adapter",
+        attributionDigest: "sha256:provider_hosted_usage_adapter",
+        callId: "provider_hosted_call_adapter",
+        resultId: "hosted_web_adapter_1",
+        toolKind: "web_search",
+        usageKind: "provider_hosted_web_search",
+        usageState: "provider_reported",
+        usageSource: "provider_hosted_tool_usage",
+        usageRecordKind: "diagnostic",
+        tokenFields: {
+          inputTokens: 44,
+          cachedInputTokens: 4,
+          nonCachedInputTokens: 40,
+          outputTokens: 6,
+          totalTokens: 50,
+        },
+        attributionScope: {
+          separatedFromParentInference: true,
+          separateFromLocalTools: true,
+          separateFromMcp: true,
+        },
+        rawPromptIncluded: false,
+        rawQueryIncluded: false,
+        rawResultIncluded: false,
+        rawProviderPayloadIncluded: false,
+        rawTokenDetailsIncluded: false,
+        rawSecretIncluded: false,
+        billingGrade: false,
+      },
+    },
   ],
   usageAttribution: {
     rows: [
@@ -389,6 +426,10 @@ assert.equal(directProjection.context.source, "derived_from_direct");
 assert.equal(directProjection.context.modelContextWindow, 272000);
 assert.equal(directProjection.context.usedPercent, 2);
 assert.equal(directProjection.tools.commands, 1);
+assert.equal(directProjection.hostedTools.status, "available");
+assert.equal(directProjection.hostedTools.providerReported, 1);
+assert.equal(directProjection.hostedTools.totalTokens, 50);
+assert(directProjection.hostedTools.byKind.some((row) => row.xValue === "provider_hosted_web_search" && row.yValue === 1));
 assert(directProjection.turnUsageRows.some((row) => row.turnId === "direct_turn_adapter" && row.model === "gpt-5.5" && row.reasoningEffort === "high"));
 assert(directProjection.turnUsageRows.some((row) => row.turnId === "direct_child_turn_adapter" && row.agentKind === "sub_worker" && row.model === "gpt-5.4-mini" && row.reasoningEffort === "medium"));
 assert(directProjection.agentUsageRows.some((row) => row.agentThreadId === "direct_session_adapter" && row.agentKind === "primary_agent" && row.totalTokens === 8815));
@@ -417,6 +458,72 @@ const metadataWindowProjection = buildRuntimeAnalyticsProjection({
 assert.equal(metadataWindowProjection.context.modelContextWindow, 272000);
 assert.equal(metadataWindowProjection.context.usedPercent, 2);
 assert(metadataWindowProjection.context.blockers.includes("context_window_filled_from_provider_metadata"));
+
+const unavailableHostedProjectId = "project_direct_runtime_hosted_unavailable";
+const unavailableHostedSession = {
+  sessionId: "direct_session_hosted_unavailable",
+  projectId: unavailableHostedProjectId,
+  model: "gpt-5.5",
+  reasoningEffort: "medium",
+  agentKind: "main_agent",
+  agentThreadId: "direct_session_hosted_unavailable",
+};
+const unavailableHostedTurn = {
+  ...turn,
+  sessionId: unavailableHostedSession.sessionId,
+  threadId: unavailableHostedSession.sessionId,
+  turnId: "direct_turn_hosted_unavailable",
+  toolResults: [{
+    resultId: "hosted_image_unavailable_1",
+    name: "image_generation",
+    status: "completed",
+    completedAt: "2026-06-15T10:02:04.000Z",
+    hostedUsageAttribution: {
+      schema: "provider_hosted_usage_attribution@1",
+      attributionId: "provider_hosted_usage_unavailable_adapter",
+      attributionDigest: "sha256:provider_hosted_usage_unavailable_adapter",
+      callId: "provider_hosted_call_unavailable_adapter",
+      resultId: "hosted_image_unavailable_1",
+      toolKind: "image_generation",
+      usageKind: "provider_hosted_image_generation",
+      usageState: "unavailable",
+      unavailableReason: "provider_did_not_report",
+      usageSource: "provider_hosted_tool_usage_unavailable",
+      usageRecordKind: "missing",
+      tokenFields: {},
+      attributionScope: {
+        separatedFromParentInference: true,
+        separateFromLocalTools: true,
+        separateFromMcp: true,
+      },
+      rawPromptIncluded: false,
+      rawQueryIncluded: false,
+      rawResultIncluded: false,
+      rawProviderPayloadIncluded: false,
+      rawTokenDetailsIncluded: false,
+      rawSecretIncluded: false,
+      billingGrade: false,
+    },
+  }],
+  usageAttribution: { rows: [] },
+};
+store.recordDirectRuntimeAnalyticsFacts({
+  projectId: unavailableHostedProjectId,
+  sessionTurns: [{ session: unavailableHostedSession, turns: [unavailableHostedTurn] }],
+});
+const unavailableHostedProjection = buildRuntimeAnalyticsProjection({
+  projectId: unavailableHostedProjectId,
+  threadId: unavailableHostedSession.sessionId,
+  runtimePath: "direct-implementation",
+  directFactSnapshot: store.getDirectRuntimeAnalyticsFactSnapshot(unavailableHostedProjectId, {
+    threadId: unavailableHostedSession.sessionId,
+  }),
+  generatedAt: "2026-06-15T10:02:05.000Z",
+});
+assert.equal(unavailableHostedProjection.hostedTools.total, 1);
+assert.equal(unavailableHostedProjection.hostedTools.unavailable, 1);
+assert.equal(unavailableHostedProjection.hostedTools.totalTokens, null);
+assert.equal(unavailableHostedProjection.hostedTools.inputTokens, null);
 
 const siblingSession = {
   sessionId: "direct_sibling_adapter",

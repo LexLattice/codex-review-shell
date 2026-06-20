@@ -16,6 +16,7 @@ const {
   PROVIDER_HOSTED_TOOL_CALL_ENVELOPE_SCHEMA,
   PROVIDER_HOSTED_TOOL_CAPABILITY_SCHEMA,
   PROVIDER_HOSTED_TOOLS_STATUS_SCHEMA,
+  PROVIDER_HOSTED_USAGE_ATTRIBUTION_SCHEMA,
   PROVIDER_HOSTED_WEB_SEARCH_QUERY_ENVELOPE_SCHEMA,
   PROVIDER_HOSTED_WEB_SEARCH_QUERY_POLICY_SCHEMA,
   PROVIDER_HOSTED_WEB_SEARCH_RESULT_ENVELOPE_SCHEMA,
@@ -30,6 +31,7 @@ const {
   buildProviderHostedResultContextAdmission,
   buildProviderHostedRequestShapeProof,
   buildProviderHostedToolCallEnvelope,
+  buildProviderHostedUsageAttribution,
   buildImageGenerationArtifactContract,
   buildProviderHostedToolCapability,
   buildProviderHostedToolsStatus,
@@ -39,10 +41,14 @@ const {
   buildWebSearchEvidenceContract,
   assertProviderHostedImageGenerationArtifactEnvelopeSafe,
   assertProviderHostedResultContextAdmissionSafe,
+  assertProviderHostedUsageAttributionSafe,
   assertProviderHostedToolCallEnvelopeSafe,
   assertProviderHostedWebSearchResultEnvelopeSafe,
   assertProviderHostedToolsStatusSafe,
 } = require("../src/main/direct/provider/hosted-tools");
+const {
+  buildDirectRuntimeAnalyticsFacts,
+} = require("../src/main/direct/analytics/runtime-facts");
 const {
   buildToolCapabilityRegistry,
   validateToolCapabilityRegistry,
@@ -427,7 +433,52 @@ assert(webSearchResultEnvelope.sourceRefs.length === 1, "safe web result should 
 assert(webSearchResultEnvelope.sourceRefs[0].urlEvidenceKey.startsWith("web_url_"), "source URL should be evidence-keyed");
 assert(webSearchResultEnvelope.rawPageContentIncluded === false, "web result must not include raw page content");
 assert(webSearchResultEnvelope.rawProviderPayloadIncluded === false, "web result must not include raw provider payload");
+assert(webSearchResultEnvelope.hostedUsageAttribution.usageState === "unavailable", "web result with no provider usage should emit unavailable hosted usage");
+assert(webSearchResultEnvelope.hostedUsageAttribution.unavailableReason === "provider_did_not_report", "web no-usage path should cite provider_did_not_report");
 assertProviderHostedWebSearchResultEnvelopeSafe(webSearchResultEnvelope);
+
+const webSearchUsageAttribution = buildProviderHostedUsageAttribution({
+  projectId: providerMetadataProfile.projectId,
+  callEnvelope: webCallEnvelope,
+  resultEnvelope: webSearchResultEnvelope,
+  threadId: "direct_session_provider_hosted_fixture",
+  turnId: "turn_provider_hosted_web_fixture",
+  agentId: "primary_agent_fixture",
+  usage: {
+    inputTokens: 11,
+    cachedInputTokens: 3,
+    nonCachedInputTokens: 8,
+    outputTokens: 5,
+    totalTokens: 16,
+  },
+  nowMs: 0,
+});
+assert(webSearchUsageAttribution.schema === PROVIDER_HOSTED_USAGE_ATTRIBUTION_SCHEMA, "web hosted usage schema mismatch");
+assert(webSearchUsageAttribution.usageKind === "provider_hosted_web_search", "web hosted usage kind mismatch");
+assert(webSearchUsageAttribution.usageState === "provider_reported", "web hosted usage should be provider-reported");
+assert(webSearchUsageAttribution.attributionScope.separatedFromParentInference === true, "hosted usage must stay separate from parent inference");
+assert(webSearchUsageAttribution.billingGrade === false, "hosted usage must not be billing-grade");
+assertProviderHostedUsageAttributionSafe(webSearchUsageAttribution);
+
+const webSearchResultWithUsage = buildProviderHostedWebSearchResultEnvelope({
+  callEnvelope: webCallEnvelope,
+  providerResultRef: "provider_web_result_ref_usage_fixture",
+  resultSummary: "Usage-attributed web result.",
+  sourceRefs: [{
+    sourceId: "source_usage_docs",
+    url: "https://developers.openai.com/codex/app-server",
+    title: "Codex app-server docs",
+    sourceType: "documentation",
+    retrievalConfidence: "provider_cited",
+    contentAccess: "provider_citation_only",
+  }],
+  admittedSourceIds: ["source_usage_docs"],
+  usageAttribution: webSearchUsageAttribution,
+  nowMs: 0,
+});
+assert(webSearchResultWithUsage.hostedUsageAttribution.usageState === "provider_reported", "web result should carry hosted usage attribution");
+assert(webSearchResultWithUsage.usageAttribution.kind === "provider_hosted_usage_attribution", "web result should carry usage evidence ref");
+assertProviderHostedWebSearchResultEnvelopeSafe(webSearchResultWithUsage);
 
 const webSearchAdmission = buildProviderHostedResultContextAdmission({
   resultEnvelope: webSearchResultEnvelope,
@@ -660,6 +711,99 @@ assert(completedImageArtifact.generationState === "completed", "operator image a
 assert(completedImageArtifact.rawImageBytesInRendererState === false, "image artifact must not expose raw image bytes");
 assert(completedImageArtifact.retentionPolicy.workspaceInsertionAllowed === false, "image artifact must not allow workspace insertion");
 assertProviderHostedImageGenerationArtifactEnvelopeSafe(completedImageArtifact);
+
+const imageUsageUnavailable = buildProviderHostedUsageAttribution({
+  projectId: providerMetadataProfile.projectId,
+  callEnvelope: operatorImageCall,
+  resultEnvelope: completedImageArtifact,
+  threadId: "direct_session_provider_hosted_fixture",
+  turnId: "turn_provider_hosted_operator_image_fixture",
+  usageState: "unavailable",
+  unavailableReason: "provider_did_not_report",
+  nowMs: 0,
+});
+assert(imageUsageUnavailable.usageKind === "provider_hosted_image_generation", "image usage kind mismatch");
+assert(imageUsageUnavailable.usageState === "unavailable", "image usage should preserve unavailable state");
+assert(imageUsageUnavailable.unavailableReason === "provider_did_not_report", "image usage should cite unavailable reason");
+assertProviderHostedUsageAttributionSafe(imageUsageUnavailable);
+
+const imageArtifactWithUnavailableUsage = buildProviderHostedImageGenerationArtifactEnvelope({
+  callEnvelope: operatorImageCall,
+  providerResultRef: "provider_image_result_usage_ref_fixture",
+  modelRef: { model: "gpt-5.5", imageModel: "gpt-image-1" },
+  artifactRefs: [{
+    artifactRef: "provider_artifact_usage_ref_fixture",
+    displayName: "generated-usage-study.png",
+    mimeType: "image/png",
+    dimensions: { width: 512, height: 512 },
+    storagePosture: "ephemeral_provider_ref",
+    rendererProjection: "metadata_only",
+  }],
+  usageAttribution: imageUsageUnavailable,
+  nowMs: 0,
+});
+assert(imageArtifactWithUnavailableUsage.hostedUsageAttribution.usageState === "unavailable", "image artifact should carry unavailable hosted usage");
+assertProviderHostedImageGenerationArtifactEnvelopeSafe(imageArtifactWithUnavailableUsage);
+
+const hostedAnalyticsFacts = buildDirectRuntimeAnalyticsFacts({
+  projectId: providerMetadataProfile.projectId,
+  sessionTurns: [{
+    session: {
+      sessionId: "direct_session_provider_hosted_fixture",
+      projectId: providerMetadataProfile.projectId,
+      agentKind: "main_agent",
+      agentThreadId: "direct_session_provider_hosted_fixture",
+      model: "gpt-5.5",
+      reasoningEffort: "medium",
+    },
+    turns: [{
+      schema: "direct_codex_turn@1",
+      sessionId: "direct_session_provider_hosted_fixture",
+      threadId: "direct_session_provider_hosted_fixture",
+      turnId: "turn_provider_hosted_usage_fixture",
+      state: "completed",
+      createdAt: "1970-01-01T00:00:00.000Z",
+      completedAt: "1970-01-01T00:00:01.000Z",
+      updatedAt: "1970-01-01T00:00:01.000Z",
+      toolResults: [
+        {
+          resultId: webSearchResultWithUsage.resultId,
+          name: "web_search",
+          status: "completed",
+          completedAt: "1970-01-01T00:00:00.500Z",
+          hostedUsageAttribution: webSearchUsageAttribution,
+        },
+        {
+          resultId: imageArtifactWithUnavailableUsage.artifactId,
+          name: "image_generation",
+          status: "completed",
+          completedAt: "1970-01-01T00:00:00.750Z",
+          hostedUsageAttribution: imageUsageUnavailable,
+        },
+      ],
+      usageAttribution: {
+        rows: [{
+          rowId: "parent_inference_usage_only",
+          usageSource: "response_completed_usage",
+          usageRecordKind: "terminal",
+          responseId: "resp_parent_usage_only",
+          inputTokens: 100,
+          cachedInputTokens: 10,
+          nonCachedInputTokens: 90,
+          outputTokens: 20,
+          reasoningTokens: 5,
+          totalTokens: 120,
+        }],
+      },
+    }],
+  }],
+});
+assert(hostedAnalyticsFacts.usageFacts.length === 1, "hosted usage must not be folded into parent inference usage rows");
+assert(hostedAnalyticsFacts.usageFacts[0].totalTokens === 120, "parent usage total should remain parent-only");
+const hostedToolFacts = hostedAnalyticsFacts.toolFacts.filter((fact) => fact.sourceRef.hostedUsageAttribution);
+assert(hostedToolFacts.length === 2, "expected hosted usage attribution on two hosted tool facts");
+assert(hostedToolFacts.some((fact) => fact.sourceRef.hostedUsageAttribution.usageKind === "provider_hosted_web_search" && fact.sourceRef.hostedUsageAttribution.totalTokens === 16), "web hosted usage tokens should be carried on tool fact");
+assert(hostedToolFacts.some((fact) => fact.sourceRef.hostedUsageAttribution.usageKind === "provider_hosted_image_generation" && fact.sourceRef.hostedUsageAttribution.usageState === "unavailable"), "image hosted usage unavailable row should be carried on tool fact");
 
 const imageArtifactAdmission = buildProviderHostedResultContextAdmission({
   resultEnvelope: completedImageArtifact,

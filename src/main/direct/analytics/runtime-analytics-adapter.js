@@ -94,6 +94,7 @@ function baseProjection(input = {}) {
     context: emptyContext(),
     turns: emptyTurns(),
     tools: emptyTools(),
+    hostedTools: emptyHostedTools(),
     requests: emptyRequests(),
     quota: emptyQuota(),
     series: {
@@ -189,6 +190,32 @@ function emptyTools(blockers = ["tool_activity_unavailable"]) {
     patches: 0,
     subagents: 0,
     byKind: [],
+    evidenceRefs: [],
+    blockers,
+  };
+}
+
+function emptyHostedTools(blockers = ["provider_hosted_usage_unavailable"]) {
+  return {
+    status: "unavailable",
+    source: "unavailable",
+    confidence: "unavailable",
+    observedAt: "",
+    total: 0,
+    providerReported: 0,
+    unavailable: 0,
+    blocked: 0,
+    unknown: 0,
+    inputTokens: null,
+    cachedInputTokens: null,
+    nonCachedInputTokens: null,
+    outputTokens: null,
+    reasoningTokens: null,
+    totalTokens: null,
+    byKind: [],
+    byState: [],
+    billingGrade: false,
+    costComputed: false,
     evidenceRefs: [],
     blockers,
   };
@@ -367,6 +394,7 @@ function finalizeProjection(projection) {
     projection.quota.observedAt,
     projection.turns.observedAt,
     projection.tools.observedAt,
+    projection.hostedTools.observedAt,
     projection.requests.observedAt,
   );
   const sources = [
@@ -375,6 +403,7 @@ function finalizeProjection(projection) {
     projection.quota.source,
     projection.turns.source,
     projection.tools.source,
+    projection.hostedTools.source,
     projection.requests.source,
   ].filter((source) => source && source !== "unavailable");
   const confidences = [
@@ -383,6 +412,7 @@ function finalizeProjection(projection) {
     projection.quota.confidence,
     projection.turns.confidence,
     projection.tools.confidence,
+    projection.hostedTools.confidence,
     projection.requests.confidence,
   ].filter((confidence) => confidence && confidence !== "unavailable");
   projection.status = sources.length
@@ -414,6 +444,7 @@ function finalizeProjection(projection) {
     projection.quota,
     projection.turns,
     projection.tools,
+    projection.hostedTools,
   ]);
   return projection;
 }
@@ -674,6 +705,33 @@ function buildDirectRuntimeAnalyticsProjection(input = {}) {
       byKind: normalizeSeries(tools.byKind),
       evidenceRefs: [evidenceRef("direct_runtime_analytics_facts@1", "tool_analytics_facts", observedAt)],
       blockers: [],
+    };
+  }
+
+  const hostedTools = isPlainObject(snapshot.hostedTools) ? snapshot.hostedTools : {};
+  if (numberOrZero(hostedTools.total) > 0) {
+    projection.hostedTools = {
+      status: "available",
+      source: "direct_native",
+      confidence: numberOrZero(hostedTools.providerReported) > 0 ? "provider_exact" : "unavailable",
+      observedAt,
+      total: numberOrZero(hostedTools.total),
+      providerReported: numberOrZero(hostedTools.providerReported),
+      unavailable: numberOrZero(hostedTools.unavailable),
+      blocked: numberOrZero(hostedTools.blocked),
+      unknown: numberOrZero(hostedTools.unknown),
+      inputTokens: nullableNumber(hostedTools.inputTokens),
+      cachedInputTokens: nullableNumber(hostedTools.cachedInputTokens),
+      nonCachedInputTokens: nullableNumber(hostedTools.nonCachedInputTokens),
+      outputTokens: nullableNumber(hostedTools.outputTokens),
+      reasoningTokens: nullableNumber(hostedTools.reasoningTokens),
+      totalTokens: nullableNumber(hostedTools.totalTokens),
+      byKind: normalizeSeries(hostedTools.byKind),
+      byState: normalizeSeries(hostedTools.byState),
+      billingGrade: false,
+      costComputed: false,
+      evidenceRefs: [evidenceRef("direct_runtime_analytics_facts@1", "provider_hosted_tool_usage_refs", observedAt)],
+      blockers: numberOrZero(hostedTools.providerReported) > 0 ? [] : ["provider_hosted_usage_unavailable"],
     };
   }
 
