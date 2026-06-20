@@ -13,6 +13,8 @@ const {
   buildHumanDecisionLedger,
   buildHumanDecisionResultEnvelope,
   buildHumanDecisionToolPacket,
+  buildPermissionWideningDecision,
+  buildPermissionWideningRequest,
   buildPlanProjectionMutationEnvelope,
   buildPlanProjectionStore,
 } = require("../tools/control-perception-decision-substrate");
@@ -22,13 +24,14 @@ const DIRECT_FIRST_TOOL_DECLARATION_ROW_SCHEMA = "direct_first_tool_declaration_
 const DIRECT_FIRST_TOOL_CALL_GATE_SCHEMA = "direct_first_tool_call_gate@1";
 const DIRECT_FIRST_TOOL_RESULT_ENVELOPE_SCHEMA = "direct_first_tool_result_envelope@1";
 
-const FIRST_SLICE_TOOLS = new Set(["read_file", "get_context_remaining", "update_plan", "request_user_input"]);
+const FIRST_SLICE_TOOLS = new Set(["read_file", "get_context_remaining", "update_plan", "request_user_input", "request_permissions"]);
 const TOOL_CLASS_TO_TOOL_NAME = new Map([
   ["local_perception.workspace_read", "read_file"],
   ["session_control.plan_and_context_witness", "get_context_remaining"],
   ["session_control.get_context_remaining", "get_context_remaining"],
   ["session_control.update_plan", "update_plan"],
   ["human_decision.request_user_input", "request_user_input"],
+  ["human_decision.request_permissions", "request_permissions"],
 ]);
 
 function isPlainObject(value) {
@@ -83,6 +86,7 @@ function firstSliceToolName(row = {}) {
   if (requestShape === "context_status_or_control") return "get_context_remaining";
   if (requestShape === "plan_projection") return "update_plan";
   if (requestShape === "direct_human_decision_tool_packet@1") return "request_user_input";
+  if (requestShape === "permission_widening_request@1") return "request_permissions";
   return "";
 }
 
@@ -209,11 +213,44 @@ function requestUserInputDeclarationSchema() {
   };
 }
 
+function requestPermissionsDeclarationSchema() {
+  return {
+    type: "function",
+    name: "request_permissions",
+    description: "Request operator-confirmed permission widening for one proposed tool call only. This cannot grant permissions, approve the call, widen session/project/full access, or start a provider turn.",
+    parameters: {
+      type: "object",
+      properties: {
+        targetCapability: {
+          type: "string",
+          description: "Exact capability/tool authority being requested for one proposed call.",
+        },
+        proposedCallId: {
+          type: "string",
+          description: "The specific proposed call id this request refers to.",
+        },
+        scope: {
+          type: "string",
+          enum: ["single_action", "session", "project", "workspace", "full_access"],
+          description: "Only single_action can produce an operator-confirmation-required request in Wave 17.",
+        },
+        reason: {
+          type: "string",
+          description: "Short context-only reason for the permission request.",
+        },
+      },
+      required: ["targetCapability", "proposedCallId", "scope"],
+      additionalProperties: false,
+    },
+  };
+}
+
 function providerToolSchemaFor(toolName) {
   if (toolName === "read_file") return readFileDeclarationSchema();
   if (toolName === "get_context_remaining") return contextRemainingDeclarationSchema();
   if (toolName === "update_plan") return updatePlanDeclarationSchema();
   if (toolName === "request_user_input") return requestUserInputDeclarationSchema();
+  if (toolName === "request_permissions") return requestPermissionsDeclarationSchema();
   return null;
 }
 
@@ -320,6 +357,7 @@ function buildDirectFirstToolSlice(options = {}) {
       contextRemainingDeclared: declarations.some((row) => row.toolName === "get_context_remaining"),
       updatePlanDeclared: declarations.some((row) => row.toolName === "update_plan"),
       requestUserInputDeclared: declarations.some((row) => row.toolName === "request_user_input"),
+      requestPermissionsDeclared: declarations.some((row) => row.toolName === "request_permissions"),
     },
     rawPromptIncluded: false,
     rawResultIncluded: false,
@@ -453,6 +491,15 @@ function validateToolArguments(toolName, args) {
         ? pendingPolicy
         : "single_pending_per_turn",
       expiresAt: normalizeString(args.expiresAt, ""),
+    };
+  }
+  if (toolName === "request_permissions") {
+    const scope = normalizeString(args.scope || args.requestedScope || args.wideningScope, "single_action");
+    return {
+      targetCapability: normalizeString(scalarString(args.targetCapability || args.capabilityId || args.toolName), "").slice(0, 120),
+      proposedCallId: normalizeString(scalarString(args.proposedCallId || args.callId || args.targetCallId), "").slice(0, 120),
+      scope: ["single_action", "session", "project", "workspace", "full_access"].includes(scope) ? scope : "unsupported",
+      reason: normalizeString(scalarString(args.reason || args.reasonPreview || args.promptPreview), "").slice(0, 240),
     };
   }
   return {};
@@ -762,6 +809,78 @@ function buildHumanDecisionAnswerResultEnvelope(input = {}) {
   return envelope;
 }
 
+function buildRequestPermissionsResultEnvelope(options = {}) {
+  const gate = isPlainObject(options.gate) ? options.gate : buildDirectFirstToolCallGate(options);
+  const parsed = isPlainObject(gate.parsedArguments) ? gate.parsedArguments : {};
+  const permissionRequest = buildPermissionWideningRequest({
+    ...(options.permissionRequestInput || {}),
+    ...parsed,
+    projectId: normalizeString(options.projectId, options.permissionRequestInput?.projectId || ""),
+    workThreadId: normalizeString(options.workThreadId, options.permissionRequestInput?.workThreadId || ""),
+    threadId: normalizeString(options.threadId, options.permissionRequestInput?.threadId || ""),
+    turnId: normalizeString(options.turnId, options.permissionRequestInput?.turnId || ""),
+    sourceCallId: normalizeString(gate.callId, options.permissionRequestInput?.sourceCallId || ""),
+    nowMs: options.nowMs,
+  });
+  const permissionDecision = buildPermissionWideningDecision({
+    ...(options.permissionDecisionInput || {}),
+    requestId: permissionRequest.requestId,
+    decisionState: permissionRequest.status === "blocked" ? "denied" : "operator_confirm_required",
+    operatorConfirmationRequired: permissionRequest.status !== "blocked",
+    nowMs: options.nowMs,
+  });
+  const blockerCodes = [];
+  if (gate.status !== "accepted") blockerCodes.push("tool_call_gate_not_accepted");
+  if (gate.toolName !== "request_permissions") blockerCodes.push("wrong_tool_for_request_permissions_envelope");
+  blockerCodes.push(...permissionRequest.blockerCodes);
+  const status = blockerCodes.length ? "blocked" : "operator_confirmation_required";
+  const envelope = {
+    schema: DIRECT_FIRST_TOOL_RESULT_ENVELOPE_SCHEMA,
+    envelopeId: `first_tool_result_${digestFor("direct-first-tool-permission-result-id@1", {
+      gateDigest: gate.gateDigest,
+      requestDigest: permissionRequest.requestDigest,
+      decisionDigest: permissionDecision.decisionDigest,
+    }).slice(0, 24)}`,
+    toolName: "request_permissions",
+    callId: normalizeString(gate.callId, ""),
+    gateId: normalizeString(gate.gateId, ""),
+    gateDigest: normalizeString(gate.gateDigest, ""),
+    resultKind: "permission_widening_request",
+    status,
+    blockerCodes: normalizeStringList(blockerCodes),
+    providerOutput: {
+      kind: "request_permissions_result",
+      requestId: permissionRequest.requestId,
+      status,
+      targetCapability: permissionRequest.targetCapability,
+      proposedCallId: permissionRequest.proposedCallId,
+      scope: permissionRequest.scope,
+      requiresOperatorConfirmation: permissionRequest.requiresOperatorConfirmation,
+      decisionRequiredBeforeGrant: true,
+      authorityGranted: false,
+      permissionGranted: false,
+      mayStartProviderTurn: false,
+      mayMutateWorkspace: false,
+      broadAuthorityRequested: permissionRequest.broadAuthorityRequested,
+    },
+    permissionRequest,
+    permissionDecision,
+    contextAdmission: {
+      admittedAs: "permission_request_status",
+      admissionState: status,
+      rawTextIncluded: false,
+      authorityGranted: false,
+      mayStartProviderTurn: false,
+    },
+    rawPromptIncluded: false,
+    rawResultIncluded: false,
+    rawWorkspacePathIncluded: false,
+    rawSecretIncluded: false,
+  };
+  envelope.envelopeDigest = digestFor("direct-first-tool-result-envelope@1", envelope);
+  return envelope;
+}
+
 function validateDirectFirstToolSlice(slice = {}) {
   const errors = [];
   if (!isPlainObject(slice) || slice.schema !== DIRECT_FIRST_TOOL_SLICE_SCHEMA) return ["direct_first_tool_slice_schema_mismatch"];
@@ -814,6 +933,7 @@ module.exports = {
   buildDirectFirstToolCallGate,
   buildDirectFirstToolSlice,
   buildHumanDecisionAnswerResultEnvelope,
+  buildRequestPermissionsResultEnvelope,
   buildRequestUserInputResultEnvelope,
   buildUpdatePlanResultEnvelope,
   validateDirectFirstToolCallGate,

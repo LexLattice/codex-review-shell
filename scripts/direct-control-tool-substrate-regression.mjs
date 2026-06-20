@@ -10,6 +10,7 @@ const {
   DIRECT_HUMAN_DECISION_TOOL_PACKET_SCHEMA,
   DIRECT_NEW_CONTEXT_BLOCKED_PROJECTION_SCHEMA,
   DIRECT_VIEW_IMAGE_PROJECTION_SCHEMA,
+  PERMISSION_WIDENING_REQUEST_SCHEMA,
   PLAN_PROJECTION_MUTATION_ENVELOPE_SCHEMA,
   PLAN_PROJECTION_STORE_SCHEMA,
   assertControlToolSubstrateSafe,
@@ -17,6 +18,7 @@ const {
   buildControlToolSubstrateStatus,
   buildHumanDecisionToolPacket,
   buildNewContextBlockedProjection,
+  buildPermissionWideningRequest,
   buildPlanArtifact,
   buildPlanProjectionStore,
   buildViewImageProjection,
@@ -180,18 +182,24 @@ function main() {
   assert(userInput.freeTextCanWidenAuthority === false, "free text must not widen authority");
   assert(userInput.mayApproveToolAction === false, "packet alone must not approve tool action");
 
-  const permissionInput = buildHumanDecisionToolPacket({
+  const permissionInput = buildPermissionWideningRequest({
     projectId,
+    workThreadId: "work_thread_control_tool_fixture",
     threadId,
-    toolKind: "request_permissions",
-    promptPreview: "Widen access?",
-    choices: ["Allow once", "Deny"],
-    freeTextAllowed: false,
+    turnId: "turn_control_tool_fixture",
+    sourceCallId: "call_request_permissions",
+    targetCapability: "exec_command",
+    proposedCallId: "proposed_call_control_tool_fixture",
+    scope: "single_action",
+    reason: "Widen access once?",
     nowMs: 0,
   });
-  assert(permissionInput.permissionWideningRequested === true, "request_permissions should be marked as widening request");
-  assert(permissionInput.defaultWideningScope === "single_action", "request_permissions should default to single-action scope");
-  assert(permissionInput.mayMutateWorkspace === false, "permission packet itself must not mutate workspace");
+  assert(permissionInput.schema === PERMISSION_WIDENING_REQUEST_SCHEMA, "permission request schema mismatch");
+  assert(permissionInput.status === "operator_confirmation_required", "single-action permission request should require operator confirmation");
+  assert(permissionInput.requiresOperatorConfirmation === true, "permission request should require operator confirmation");
+  assert(permissionInput.decisionRequiredBeforeGrant === true, "permission request should require separate decision");
+  assert(permissionInput.authorityGranted === false, "permission request itself must not grant authority");
+  assert(permissionInput.mayMutateWorkspace === false, "permission request itself must not mutate workspace");
 
   const newContext = buildNewContextBlockedProjection({ projectId, threadId, nowMs: 0 });
   assert(newContext.schema === DIRECT_NEW_CONTEXT_BLOCKED_PROJECTION_SCHEMA, "new_context blocked schema mismatch");
@@ -209,11 +217,12 @@ function main() {
     planStore,
     viewImage,
     humanDecision: userInput,
+    requestPermissions: permissionInput,
     newContext,
     nowMs: 0,
   });
   assert(status.schema === DIRECT_CONTROL_TOOL_SUBSTRATE_STATUS_SCHEMA, "status schema mismatch");
-  assert(status.rowCount === 5, "status should summarize five tool projections");
+  assert(status.rowCount === 6, "status should summarize six tool projections");
   assert(status.executableToolCount === 0, "status must not enable executable tools");
   assert(status.providerDeclaredToolCount === 0, "status must not declare provider tools");
   assert(status.newContextBlocked === true, "status must report new_context blocked");
@@ -237,7 +246,7 @@ function main() {
     toolCapabilityStatus,
     controlToolStatus: status,
   });
-  assert(settingsProjection.sections.controlTools.rowCount === 5, "settings surface should include control tool rows");
+  assert(settingsProjection.sections.controlTools.rowCount === 6, "settings surface should include control tool rows");
   assert(settingsProjection.sections.controlTools.newContextBlocked === true, "settings surface should show new_context blocked");
   assert(settingsProjection.sections.controlTools.freeTextCanWidenAuthority === false, "settings surface should block free-text authority");
   assert(settingsProjection.sections.controlTools.planMayAuthorizeAction === false, "settings surface should block plan authority");

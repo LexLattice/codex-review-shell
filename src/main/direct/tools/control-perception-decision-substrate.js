@@ -11,6 +11,8 @@ const DIRECT_VIEW_IMAGE_PROJECTION_SCHEMA = "direct_view_image_projection@1";
 const DIRECT_HUMAN_DECISION_TOOL_PACKET_SCHEMA = "direct_human_decision_tool_packet@1";
 const HUMAN_DECISION_RESULT_ENVELOPE_SCHEMA = "human_decision_result_envelope@1";
 const HUMAN_DECISION_LEDGER_SCHEMA = "human_decision_ledger@1";
+const PERMISSION_WIDENING_REQUEST_SCHEMA = "permission_widening_request@1";
+const PERMISSION_WIDENING_DECISION_SCHEMA = "permission_widening_decision@1";
 const DIRECT_NEW_CONTEXT_BLOCKED_PROJECTION_SCHEMA = "direct_new_context_blocked_projection@1";
 
 const ESTIMATE_KINDS = new Set(["provider_reported", "local_tokenizer_estimate", "budget_policy_estimate", "unknown"]);
@@ -36,6 +38,9 @@ const HUMAN_DECISION_TOOL_KINDS = new Set(["request_user_input", "request_permis
 const HUMAN_DECISION_STATUSES = new Set(["pending", "answered", "expired", "cancelled", "superseded", "stale_reply_rejected"]);
 const HUMAN_DECISION_PENDING_POLICIES = new Set(["single_pending_per_turn", "single_pending_per_work_thread", "multiple_allowed"]);
 const HUMAN_DECISION_RESULT_STATES = new Set(["answered", "expired", "cancelled", "superseded", "stale_reply_rejected"]);
+const PERMISSION_WIDENING_SCOPES = new Set(["single_action", "session", "project", "workspace", "full_access", "unsupported"]);
+const PERMISSION_WIDENING_REQUEST_STATUSES = new Set(["operator_confirmation_required", "blocked", "cancelled", "denied"]);
+const PERMISSION_WIDENING_DECISION_STATES = new Set(["operator_confirm_required", "approved_by_operator", "denied", "cancelled", "expired"]);
 
 function isPlainObject(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -609,6 +614,76 @@ function buildHumanDecisionLedger(input = {}) {
   return ledger;
 }
 
+function buildPermissionWideningRequest(input = {}) {
+  input = isPlainObject(input) ? input : {};
+  const rawScope = normalizeString(scalarString(input.scope || input.requestedScope || input.wideningScope), "single_action");
+  const scope = PERMISSION_WIDENING_SCOPES.has(rawScope) ? rawScope : "unsupported";
+  const targetCapability = boundedString(scalarString(input.targetCapability || input.capabilityId || input.toolName), 120);
+  const proposedCallId = boundedString(scalarString(input.proposedCallId || input.callId || input.targetCallId), 120);
+  const blockerCodes = [];
+  if (scope !== "single_action") blockerCodes.push(`permission_widening_scope_blocked:${scope}`);
+  if (!targetCapability) blockerCodes.push("permission_widening_missing_target_capability");
+  if (!proposedCallId) blockerCodes.push("permission_widening_missing_proposed_call_id");
+  const request = {
+    schema: PERMISSION_WIDENING_REQUEST_SCHEMA,
+    requestId: normalizeString(input.requestId, ""),
+    projectId: normalizeString(input.projectId, ""),
+    workThreadId: normalizeString(input.workThreadId, ""),
+    threadId: normalizeString(input.threadId, ""),
+    turnId: normalizeString(input.turnId, ""),
+    sourceCallId: boundedString(scalarString(input.sourceCallId || input.requestingCallId), 120),
+    targetCapability,
+    proposedCallId,
+    scope,
+    reasonPreview: boundedString(input.reason || input.reasonPreview || input.promptPreview, 240),
+    status: blockerCodes.length
+      ? "blocked"
+      : normalizeEnum(input.status, PERMISSION_WIDENING_REQUEST_STATUSES, "operator_confirmation_required"),
+    blockerCodes,
+    requiresOperatorConfirmation: blockerCodes.length === 0,
+    decisionRequiredBeforeGrant: true,
+    grantsAuthority: false,
+    authorityGranted: false,
+    permissionGrantEnabled: false,
+    mayStartProviderTurn: false,
+    mayMutateWorkspace: false,
+    mayMutateProjectConfig: false,
+    broadAuthorityRequested: scope !== "single_action",
+    rawTextIncluded: false,
+    rawSecretIncluded: false,
+    createdAt: normalizeString(input.createdAt, nowIso(input.nowMs)),
+  };
+  request.requestId = request.requestId || `permission_widening_request_${digestFor("permission-widening-request-source@1", request).slice(0, 24)}`;
+  request.requestDigest = digestFor("permission_widening_request@1", request);
+  return request;
+}
+
+function buildPermissionWideningDecision(input = {}) {
+  input = isPlainObject(input) ? input : {};
+  const decision = {
+    schema: PERMISSION_WIDENING_DECISION_SCHEMA,
+    decisionId: normalizeString(input.decisionId, ""),
+    requestId: normalizeString(input.requestId, ""),
+    decisionState: normalizeEnum(input.decisionState || input.status, PERMISSION_WIDENING_DECISION_STATES, "operator_confirm_required"),
+    operatorConfirmationRequired: input.operatorConfirmationRequired !== false,
+    operatorConfirmed: input.operatorConfirmed === true,
+    grantState: "not_granted",
+    authorityGranted: false,
+    permissionGrantEnabled: false,
+    grantApplied: false,
+    mayStartProviderTurn: false,
+    mayMutateWorkspace: false,
+    mayMutateProjectConfig: false,
+    evidenceRefs: normalizeEvidenceRefs(input.evidenceRefs),
+    rawTextIncluded: false,
+    rawSecretIncluded: false,
+    createdAt: normalizeString(input.createdAt, nowIso(input.nowMs)),
+  };
+  decision.decisionId = decision.decisionId || `permission_widening_decision_${digestFor("permission-widening-decision-source@1", decision).slice(0, 24)}`;
+  decision.decisionDigest = digestFor("permission_widening_decision@1", decision);
+  return decision;
+}
+
 function buildNewContextBlockedProjection(input = {}) {
   const projection = {
     schema: DIRECT_NEW_CONTEXT_BLOCKED_PROJECTION_SCHEMA,
@@ -663,6 +738,9 @@ function buildControlToolSubstrateStatus(input = {}) {
   const humanDecision = isPlainObject(input.humanDecision)
     ? input.humanDecision
     : buildHumanDecisionToolPacket(input.humanDecisionInput || input);
+  const requestPermissions = isPlainObject(input.requestPermissions)
+    ? input.requestPermissions
+    : buildPermissionWideningRequest(input.requestPermissionsInput || input);
   const newContext = isPlainObject(input.newContext)
     ? input.newContext
     : buildNewContextBlockedProjection(input.newContextInput || input);
@@ -677,9 +755,10 @@ function buildControlToolSubstrateStatus(input = {}) {
       planStore,
       viewImage,
       requestUserInput: humanDecision,
+      requestPermissions,
       newContext,
     },
-    rowCount: 5,
+    rowCount: 6,
     executableToolCount: 0,
     providerDeclaredToolCount: 0,
     localExecutorEnabledInThisPr: false,
@@ -746,6 +825,9 @@ function assertControlToolSubstrateSafe(status = {}) {
   if (tools.requestUserInput?.boundedChoiceMayCarryAuthority !== false || tools.requestUserInput?.mayStartProviderTurn !== false) {
     throw new Error("direct_control_tool_substrate_human_decision_authority_leak");
   }
+  if (tools.requestPermissions?.permissionGrantEnabled !== false || tools.requestPermissions?.mayStartProviderTurn !== false) {
+    throw new Error("direct_control_tool_substrate_permission_widening_authority_leak");
+  }
   if (tools.viewImage?.rawImageBytesIncluded !== false || tools.viewImage?.rawPathIncluded !== false) {
     throw new Error("direct_control_tool_substrate_image_raw_exposure");
   }
@@ -758,6 +840,8 @@ module.exports = {
   DIRECT_HUMAN_DECISION_TOOL_PACKET_SCHEMA,
   HUMAN_DECISION_LEDGER_SCHEMA,
   HUMAN_DECISION_RESULT_ENVELOPE_SCHEMA,
+  PERMISSION_WIDENING_DECISION_SCHEMA,
+  PERMISSION_WIDENING_REQUEST_SCHEMA,
   DIRECT_NEW_CONTEXT_BLOCKED_PROJECTION_SCHEMA,
   DIRECT_PLAN_ARTIFACT_SCHEMA,
   DIRECT_VIEW_IMAGE_PROJECTION_SCHEMA,
@@ -770,6 +854,8 @@ module.exports = {
   buildHumanDecisionLedger,
   buildHumanDecisionResultEnvelope,
   buildNewContextBlockedProjection,
+  buildPermissionWideningDecision,
+  buildPermissionWideningRequest,
   buildPlanArtifact,
   buildLegacyPlanArtifact,
   buildPlanProjectionMutationEnvelope,
