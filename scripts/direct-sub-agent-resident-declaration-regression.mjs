@@ -45,6 +45,16 @@ for (const toolName of RESIDENT_FIRST_SLICE_TOOLS) {
   assert.equal(snapshot.familyExtension.childToolsAllowed, false, `child tools must remain disabled: ${toolName}`);
   assert.equal(snapshot.familyExtension.recursiveSpawnAllowed, false, `recursive spawn must remain disabled: ${toolName}`);
 }
+const spawnDeclaration = declaration.declarationSlice.declarations.find((row) => row.toolName === "spawn_agent");
+const spawnParameters = spawnDeclaration.providerToolSchema.parameters;
+assert.deepEqual(spawnParameters.required, ["task"], "spawn_agent schema should require task, not model-supplied child identity");
+assert(spawnParameters.properties.task, "spawn_agent schema should expose task");
+assert(spawnParameters.properties.agentRole, "spawn_agent schema should expose agentRole");
+assert(spawnParameters.properties.model, "spawn_agent schema should expose model");
+assert(spawnParameters.properties.reasoningEffort, "spawn_agent schema should expose reasoningEffort");
+assert(spawnParameters.properties.idempotencyKey, "spawn_agent schema should expose idempotencyKey");
+assert(!spawnParameters.properties.childAgentId, "spawn_agent schema must not require model-supplied childAgentId");
+assert(!spawnParameters.properties.prompt, "spawn_agent schema should use task instead of prompt");
 for (const toolName of DEFERRED_SUB_AGENT_CONTROLS) {
   assert(!declaredNames.has(toolName), `deferred control must not be declared: ${toolName}`);
 }

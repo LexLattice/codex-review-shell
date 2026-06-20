@@ -34,6 +34,11 @@ const {
   validateSubAgentCapabilityProfile,
 } = require("./sub-agent-capability-profile");
 const {
+  ALLOWED_AGENT_ROLES,
+  ALLOWED_REASONING_EFFORTS,
+  DEFAULT_ALLOWED_MODELS,
+} = require("./sub-agent-call-authority");
+const {
   createDirectProviderBackedSubAgentRoute,
 } = require("./provider-backed-route");
 
@@ -72,6 +77,13 @@ function sourceRef(options = {}) {
     freshness: "fresh",
     rowId: "wave15_pr95_resident_sub_agent_tool_declaration",
   }, options);
+}
+
+function optionNow(options = {}) {
+  if (typeof options.now === "function") return options.now();
+  if (Number.isFinite(Number(options.now))) return Number(options.now);
+  if (Number.isFinite(Number(options.nowMs))) return Number(options.nowMs);
+  return Date.now();
 }
 
 function capabilityIdFor(toolName) {
@@ -301,11 +313,16 @@ function toolSchemaFor(toolName) {
       parameters: {
         type: "object",
         properties: {
-          ...baseProperties,
-          role: { type: "string", enum: ["worker", "auditor", "reviewer"] },
-          prompt: { type: "string", description: "Child task prompt; raw prompt is not retained in declaration artifacts." },
+          task: { type: "string", description: "Bounded child task. Raw task text is digested and policy-gated before provider transport." },
+          agentRole: { type: "string", enum: [...ALLOWED_AGENT_ROLES] },
+          model: { type: "string", enum: [...DEFAULT_ALLOWED_MODELS] },
+          reasoningEffort: { type: "string", enum: [...ALLOWED_REASONING_EFFORTS] },
+          idempotencyKey: { type: "string", description: "Optional stable idempotency key; omitted keys are derived from canonical safe metadata." },
+          noInterferencePolicy: { type: "string", enum: ["observe_only", "sealed_audit"] },
+          contextPackId: { type: "string" },
+          requestManifestId: { type: "string" },
         },
-        required: ["childAgentId", "prompt"],
+        required: ["task"],
         additionalProperties: false,
       },
     };
@@ -658,9 +675,9 @@ function buildProofArtifacts({ context, routeResult, declarationSlice, activatio
     declarationSnapshotId: declarationSlice.sliceId,
     authorityDecisionId: authorityDecision.authorityDecisionId,
     transactionId: transaction.transactionId,
-    resultEnvelopeId: routeResult.resultEnvelope.resultEnvelopeId,
-    contextAdmissionId: routeResult.contextAdmission.admissionId,
-    residentSnapshotId: routeResult.eChannelSnapshot.residentSnapshot.snapshotId,
+    resultEnvelopeId: routeResult.resultEnvelope?.resultEnvelopeId || "",
+    contextAdmissionId: routeResult.contextAdmission?.admissionId || "",
+    residentSnapshotId: routeResult.eChannelSnapshot?.residentSnapshot?.snapshotId || "",
     usableFor: "resident_callable",
     proofClass: "fixture",
     proofEvidence: {
@@ -719,7 +736,7 @@ async function buildResidentSubAgentToolDeclaration(input = {}, options = {}) {
   const projectId = normalizeString(input.projectId, "project_resident_sub_agent_pr95");
   const workThreadId = normalizeString(input.workThreadId, "work_thread_resident_sub_agent_pr95");
   const primaryThreadId = normalizeString(input.primaryThreadId, "primary_thread_resident_sub_agent_pr95");
-  const generatedAt = normalizeString(input.generatedAt, nowIso(options.now || options.nowMs || Date.now));
+  const generatedAt = normalizeString(input.generatedAt, nowIso(optionNow(options)));
   const context = {
     projectId,
     workThreadId,
@@ -830,17 +847,17 @@ async function buildResidentSubAgentToolDeclaration(input = {}, options = {}) {
     witnessRows,
     routeSmoke: {
       schema: "resident_sub_agent_positive_smoke@1",
-      status: routeResult.status,
-      childAgentId: routeResult.agentThreadId,
-      requestShape: routeResult.requestShape,
-      resultEnvelopeId: routeResult.resultEnvelope.resultEnvelopeId,
-      contextAdmissionId: routeResult.contextAdmission.admissionId,
-      resultAdmissionEnvelopeId: routeResult.resultAdmissionEnvelope.envelopeId,
-      childOutputPromotedToPrimaryTranscript: routeResult.childOutputPromotedToPrimaryTranscript,
-      primaryTranscriptMutationStarted: routeResult.primaryTranscriptMutationStarted,
-      rawChildPromptIncluded: routeResult.resultAdmissionEnvelope.rawChildPromptIncluded,
-      rawChildTranscriptIncluded: routeResult.resultAdmissionEnvelope.rawChildTranscriptIncluded,
-      rawProviderPayloadIncluded: routeResult.resultAdmissionEnvelope.rawProviderPayloadIncluded,
+      status: routeResult.status || "unknown",
+      childAgentId: routeResult.agentThreadId || "",
+      requestShape: routeResult.requestShape || {},
+      resultEnvelopeId: routeResult.resultEnvelope?.resultEnvelopeId || "",
+      contextAdmissionId: routeResult.contextAdmission?.admissionId || "",
+      resultAdmissionEnvelopeId: routeResult.resultAdmissionEnvelope?.envelopeId || "",
+      childOutputPromotedToPrimaryTranscript: routeResult.childOutputPromotedToPrimaryTranscript === true,
+      primaryTranscriptMutationStarted: routeResult.primaryTranscriptMutationStarted === true,
+      rawChildPromptIncluded: routeResult.resultAdmissionEnvelope?.rawChildPromptIncluded === true,
+      rawChildTranscriptIncluded: routeResult.resultAdmissionEnvelope?.rawChildTranscriptIncluded === true,
+      rawProviderPayloadIncluded: routeResult.resultAdmissionEnvelope?.rawProviderPayloadIncluded === true,
     },
     negativeSmoke,
     selfReportPosture: {
