@@ -266,22 +266,24 @@ function normalizeImageDimensions(value = {}) {
 function normalizeImageArtifactRef(input = {}, index = 0) {
   const source = isPlainObject(input) ? input : {};
   const storagePosture = normalizeEnum(source.storagePosture, IMAGE_STORAGE_POSTURES, "ephemeral_provider_ref");
+  const explicitArtifactRef = boundedString(source.artifactRef || source.providerArtifactRef, 180);
   const artifact = {
-    artifactRef: boundedString(source.artifactRef || source.providerArtifactRef || `artifact_${index + 1}`, 180),
+    artifactRef: explicitArtifactRef,
+    providerArtifactRefPresent: Boolean(explicitArtifactRef),
     displayName: boundedString(source.displayName || `generated-image-${index + 1}`, 180),
     mimeType: normalizeEnum(source.mimeType, IMAGE_MIME_TYPES, "unknown"),
     byteSize: normalizePositiveInteger(source.byteSize, 0),
     dimensions: normalizeImageDimensions(source.dimensions),
     artifactProvenance: normalizeEnum(source.artifactProvenance, IMAGE_ARTIFACT_PROVENANCES, "provider_generated"),
     storagePosture,
-    rendererProjection: normalizeEnum(source.rendererProjection, IMAGE_RENDERER_PROJECTIONS, storagePosture === "blocked" ? "blocked" : "metadata_only"),
+    rendererProjection: storagePosture === "blocked" ? "blocked" : normalizeEnum(source.rendererProjection, IMAGE_RENDERER_PROJECTIONS, "metadata_only"),
     stagingManifestRef: isPlainObject(source.stagingManifestRef) ? normalizeEvidenceRef(source.stagingManifestRef, "provider_hosted_image_staging_manifest") : undefined,
     stagingManifestDigest: boundedString(source.stagingManifestDigest, 180),
     cleanupPolicyId: boundedString(source.cleanupPolicyId, 160),
   };
   artifact.stagingPolicyComplete = storagePosture !== "shell_staged_artifact"
     || (Boolean(artifact.stagingManifestRef?.id) && Boolean(artifact.stagingManifestDigest) && Boolean(artifact.cleanupPolicyId));
-  if (!artifact.stagingPolicyComplete) {
+  if (!artifact.stagingPolicyComplete || !artifact.providerArtifactRefPresent) {
     artifact.storagePosture = "blocked";
     artifact.rendererProjection = "blocked";
   }
@@ -1064,12 +1066,20 @@ function buildProviderHostedImageGenerationArtifactEnvelope(input = {}) {
   const callAllowed = callEnvelope.toolKind === "image_generation" && callEnvelope.authorityDecision === "allowed";
   const requestedState = normalizeEnum(source.generationState, IMAGE_GENERATION_STATES, "");
   const artifactPolicyComplete = artifactRefs.every((artifact) => artifact.stagingPolicyComplete);
+  const artifactRefsPresent = artifactRefs.every((artifact) => artifact.providerArtifactRefPresent);
   const artifactMimeAllowed = artifactRefs.every((artifact) => artifact.mimeType === "unknown" || limits.allowedMimeTypes.includes(artifact.mimeType));
+  const artifactStorageAllowed = artifactRefs.every((artifact) => artifact.storagePosture !== "blocked");
+  const artifactBytesAllowed = !limits.maxTotalBytes || artifactRefs.reduce((sum, artifact) => sum + Number(artifact.byteSize || 0), 0) <= limits.maxTotalBytes;
+  const artifactWidthAllowed = !limits.maxWidth || artifactRefs.every((artifact) => !artifact.dimensions?.width || artifact.dimensions.width <= limits.maxWidth);
+  const artifactHeightAllowed = !limits.maxHeight || artifactRefs.every((artifact) => !artifact.dimensions?.height || artifact.dimensions.height <= limits.maxHeight);
   const providerBlocked = requestedState === "blocked_by_provider";
+  const terminalNonCompleted = ["failed", "partial", "unknown"].includes(requestedState);
   const generationState = providerBlocked
     ? "blocked_by_provider"
-    : !callAllowed || !artifactPolicyComplete || !artifactMimeAllowed
+    : !callAllowed || !artifactPolicyComplete || !artifactRefsPresent || !artifactMimeAllowed || !artifactStorageAllowed || !artifactBytesAllowed || !artifactWidthAllowed || !artifactHeightAllowed
       ? "blocked_by_policy"
+      : terminalNonCompleted
+        ? requestedState
       : providerResultRef && artifactRefs.length
         ? "completed"
         : requestedState || "unknown";
@@ -1100,8 +1110,13 @@ function buildProviderHostedImageGenerationArtifactEnvelope(input = {}) {
       ...(callAllowed ? [] : ["call_not_allowed"]),
       ...(providerResultRef || generationState !== "completed" ? [] : ["provider_result_ref_missing"]),
       ...(artifactRefs.length || generationState !== "completed" ? [] : ["artifact_refs_missing"]),
+      ...(artifactRefsPresent ? [] : ["provider_artifact_ref_missing"]),
       ...(artifactPolicyComplete ? [] : ["staging_manifest_or_cleanup_policy_missing"]),
       ...(artifactMimeAllowed ? [] : ["artifact_mime_not_allowed"]),
+      ...(artifactStorageAllowed ? [] : ["artifact_storage_blocked"]),
+      ...(artifactBytesAllowed ? [] : ["artifact_bytes_exceed_limit"]),
+      ...(artifactWidthAllowed ? [] : ["artifact_width_exceed_limit"]),
+      ...(artifactHeightAllowed ? [] : ["artifact_height_exceed_limit"]),
       ...(providerBlocked ? ["provider_blocked_generation"] : []),
     ],
     retentionPolicy: {
@@ -1133,7 +1148,8 @@ function buildProviderHostedResultContextAdmission(input = {}) {
   const toolKind = normalizeEnum(source.toolKind || result.toolKind, TOOL_KINDS, "web_search");
   const hasSources = toolKind === "web_search" && arrayOrEmpty(result.sourceRefs).length > 0;
   const hasArtifacts = toolKind === "image_generation" && arrayOrEmpty(result.artifactRefs).length > 0;
-  const resultBlocked = result.redactionState === "blocked" || result.generationState?.startsWith("blocked") || arrayOrEmpty(result.blockerCodes).length > 0;
+  const imageGenerationIncomplete = toolKind === "image_generation" && result.generationState !== "completed";
+  const resultBlocked = result.redactionState === "blocked" || result.generationState?.startsWith("blocked") || imageGenerationIncomplete || arrayOrEmpty(result.blockerCodes).length > 0;
   let admissionKind = requestedKind;
   let admissionDecision = "admit";
   if (!result?.schema) {
@@ -1151,6 +1167,9 @@ function buildProviderHostedResultContextAdmission(input = {}) {
   } else if (toolKind === "image_generation" && !hasArtifacts) {
     admissionKind = "blocked";
     admissionDecision = "block_source_unknown";
+  } else if (imageGenerationIncomplete) {
+    admissionKind = "blocked";
+    admissionDecision = "block_policy";
   } else if (requestedKind === "bounded_excerpt" && result.quotePolicy?.rawPageContentIncluded !== false) {
     admissionKind = "blocked";
     admissionDecision = "block_policy";

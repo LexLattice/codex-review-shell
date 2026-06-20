@@ -693,6 +693,23 @@ assert(providerBlockedImageArtifact.safetyPosture === "provider_blocked", "provi
 assert(providerBlockedImageArtifact.blockerCodes.includes("provider_blocked_generation"), "provider-blocked generation should record blocker");
 assertProviderHostedImageGenerationArtifactEnvelopeSafe(providerBlockedImageArtifact);
 
+const failedImageWithRef = buildProviderHostedImageGenerationArtifactEnvelope({
+  callEnvelope: operatorImageCall,
+  providerResultRef: "provider_image_result_failed_with_ref_fixture",
+  generationState: "failed",
+  artifactRefs: [{ artifactRef: "diagnostic_artifact_ref_should_not_admit", mimeType: "image/png" }],
+  nowMs: 0,
+});
+const failedImageAdmission = buildProviderHostedResultContextAdmission({
+  resultEnvelope: failedImageWithRef,
+  admissionKind: "artifact_ref",
+  nowMs: 0,
+});
+assert(failedImageWithRef.generationState === "failed", "failed generation state should be preserved");
+assert(failedImageAdmission.admissionDecision === "block_policy", "failed image artifact refs must not be admitted");
+assertProviderHostedImageGenerationArtifactEnvelopeSafe(failedImageWithRef);
+assertProviderHostedResultContextAdmissionSafe(failedImageAdmission);
+
 const stagedImageArtifact = buildProviderHostedImageGenerationArtifactEnvelope({
   callEnvelope: operatorImageCall,
   providerResultRef: "provider_image_result_staged_fixture",
@@ -733,6 +750,51 @@ assert(incompleteStagedImageArtifact.blockerCodes.includes("staging_manifest_or_
 assert(incompleteStagedImageArtifact.artifactRefs[0].storagePosture === "blocked", "incomplete staged artifact should downgrade storage posture to blocked");
 assert(incompleteStagedImageArtifact.artifactRefs[0].rendererProjection === "blocked", "incomplete staged artifact should not expose a download projection");
 assertProviderHostedImageGenerationArtifactEnvelopeSafe(incompleteStagedImageArtifact);
+
+const explicitlyBlockedProjectionArtifact = buildProviderHostedImageGenerationArtifactEnvelope({
+  callEnvelope: operatorImageCall,
+  providerResultRef: "provider_image_result_blocked_projection_fixture",
+  artifactRefs: [{
+    artifactRef: "blocked_projection_ref_fixture",
+    mimeType: "image/png",
+    storagePosture: "blocked",
+    rendererProjection: "download_ref",
+  }],
+  nowMs: 0,
+});
+assert(explicitlyBlockedProjectionArtifact.generationState === "blocked_by_policy", "blocked storage posture should block artifact envelope");
+assert(explicitlyBlockedProjectionArtifact.artifactRefs[0].rendererProjection === "blocked", "blocked storage posture must force blocked renderer projection");
+assert(explicitlyBlockedProjectionArtifact.blockerCodes.includes("artifact_storage_blocked"), "blocked storage posture should record blocker");
+assertProviderHostedImageGenerationArtifactEnvelopeSafe(explicitlyBlockedProjectionArtifact);
+
+const missingProviderArtifactRef = buildProviderHostedImageGenerationArtifactEnvelope({
+  callEnvelope: operatorImageCall,
+  providerResultRef: "provider_image_result_missing_artifact_ref_fixture",
+  artifactRefs: [{ mimeType: "image/png" }],
+  nowMs: 0,
+});
+assert(missingProviderArtifactRef.generationState === "blocked_by_policy", "missing provider artifact ref should block artifact envelope");
+assert(missingProviderArtifactRef.blockerCodes.includes("provider_artifact_ref_missing"), "missing provider artifact ref should record blocker");
+assert(missingProviderArtifactRef.artifactRefs[0].artifactRef === "", "missing provider artifact ref should not be fabricated");
+assertProviderHostedImageGenerationArtifactEnvelopeSafe(missingProviderArtifactRef);
+
+const oversizedImageArtifact = buildProviderHostedImageGenerationArtifactEnvelope({
+  callEnvelope: operatorImageCall,
+  providerResultRef: "provider_image_result_oversized_fixture",
+  generationLimits: { maxTotalBytes: 100, maxWidth: 512, maxHeight: 512 },
+  artifactRefs: [{
+    artifactRef: "oversized_artifact_ref_fixture",
+    mimeType: "image/png",
+    byteSize: 101,
+    dimensions: { width: 1024, height: 1024 },
+  }],
+  nowMs: 0,
+});
+assert(oversizedImageArtifact.generationState === "blocked_by_policy", "oversized image artifact should block");
+assert(oversizedImageArtifact.blockerCodes.includes("artifact_bytes_exceed_limit"), "oversized image should report byte blocker");
+assert(oversizedImageArtifact.blockerCodes.includes("artifact_width_exceed_limit"), "oversized image should report width blocker");
+assert(oversizedImageArtifact.blockerCodes.includes("artifact_height_exceed_limit"), "oversized image should report height blocker");
+assertProviderHostedImageGenerationArtifactEnvelopeSafe(oversizedImageArtifact);
 
 const staleActivationWebCall = buildProviderHostedToolCallEnvelope({
   toolKind: "web_search",
