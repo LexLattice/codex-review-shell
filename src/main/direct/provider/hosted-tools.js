@@ -16,6 +16,7 @@ const PROVIDER_HOSTED_WEB_SEARCH_RESULT_ENVELOPE_SCHEMA = "provider_hosted_web_s
 const PROVIDER_HOSTED_RESULT_CONTEXT_ADMISSION_SCHEMA = "provider_hosted_result_context_admission@1";
 const PROVIDER_HOSTED_IMAGE_PROMPT_POLICY_SCHEMA = "provider_hosted_image_prompt_policy@1";
 const PROVIDER_HOSTED_IMAGE_PROMPT_ENVELOPE_SCHEMA = "provider_hosted_image_prompt_envelope@1";
+const PROVIDER_HOSTED_IMAGE_GENERATION_ARTIFACT_ENVELOPE_SCHEMA = "provider_hosted_image_generation_artifact_envelope@1";
 const PROVIDER_HOSTED_RAW_EXPOSURE_SCAN_SCHEMA = "provider_hosted_raw_exposure_scan@1";
 
 const TOOL_KINDS = new Set(["web_search", "image_generation"]);
@@ -63,6 +64,12 @@ const CONTEXT_ADMISSION_DECISIONS = new Set(["admit", "admit_degraded", "block_s
 const RESIDENT_CONTEXT_VISIBILITIES = new Set(["none", "summary", "source_refs", "bounded_excerpt", "artifact_ref"]);
 const OPERATOR_PROJECTION_VISIBILITIES = new Set(["none", "summary", "source_refs", "artifact_preview", "artifact_ref"]);
 const PROVIDER_CONTINUATION_VISIBILITIES = new Set(["not_sent", "summary_only", "source_refs", "artifact_ref"]);
+const IMAGE_MIME_TYPES = new Set(["image/png", "image/jpeg", "image/webp", "unknown"]);
+const IMAGE_ARTIFACT_PROVENANCES = new Set(["provider_generated", "operator_exported_copy", "derived_thumbnail", "unknown"]);
+const IMAGE_STORAGE_POSTURES = new Set(["ephemeral_provider_ref", "shell_staged_artifact", "operator_exported", "blocked"]);
+const IMAGE_RENDERER_PROJECTIONS = new Set(["thumbnail_ref", "download_ref", "metadata_only", "blocked"]);
+const IMAGE_GENERATION_STATES = new Set(["completed", "blocked_by_provider", "blocked_by_policy", "failed", "partial", "unknown"]);
+const IMAGE_SAFETY_POSTURES = new Set(["provider_allowed", "provider_filtered", "provider_blocked", "unknown", "not_applicable"]);
 const RAW_EXPOSURE_FINDINGS = new Set(["credentialed_url", "raw_secret", "private_file_path", "raw_provider_payload", "unbounded_personal_data", "oversized_input"]);
 
 const CALLABLE_EVIDENCE_STATES = new Set(["accepted", "runtime_probed"]);
@@ -233,6 +240,53 @@ function normalizeWebSearchLimits(input = {}) {
     maxExcerptChars: normalizePositiveInteger(source.maxExcerptChars, 480),
     maxFollowupSearchesPerTurn: normalizePositiveInteger(source.maxFollowupSearchesPerTurn, 2),
   };
+}
+
+function normalizeImageGenerationLimits(input = {}) {
+  const source = isPlainObject(input) ? input : {};
+  const allowedMimeTypes = normalizeStringList(source.allowedMimeTypes, ["image/png", "image/jpeg", "image/webp"])
+    .filter((mime) => IMAGE_MIME_TYPES.has(mime) && mime !== "unknown");
+  return {
+    maxImages: normalizePositiveInteger(source.maxImages, 4),
+    maxTotalBytes: normalizePositiveInteger(source.maxTotalBytes, 0),
+    allowedMimeTypes: allowedMimeTypes.length ? allowedMimeTypes : ["image/png", "image/jpeg", "image/webp"],
+    maxWidth: normalizePositiveInteger(source.maxWidth, 0),
+    maxHeight: normalizePositiveInteger(source.maxHeight, 0),
+  };
+}
+
+function normalizeImageDimensions(value = {}) {
+  if (!isPlainObject(value)) return undefined;
+  const width = normalizePositiveInteger(value.width, 0);
+  const height = normalizePositiveInteger(value.height, 0);
+  if (!width || !height) return undefined;
+  return { width, height };
+}
+
+function normalizeImageArtifactRef(input = {}, index = 0) {
+  const source = isPlainObject(input) ? input : {};
+  const storagePosture = normalizeEnum(source.storagePosture, IMAGE_STORAGE_POSTURES, "ephemeral_provider_ref");
+  const artifact = {
+    artifactRef: boundedString(source.artifactRef || source.providerArtifactRef || `artifact_${index + 1}`, 180),
+    displayName: boundedString(source.displayName || `generated-image-${index + 1}`, 180),
+    mimeType: normalizeEnum(source.mimeType, IMAGE_MIME_TYPES, "unknown"),
+    byteSize: normalizePositiveInteger(source.byteSize, 0),
+    dimensions: normalizeImageDimensions(source.dimensions),
+    artifactProvenance: normalizeEnum(source.artifactProvenance, IMAGE_ARTIFACT_PROVENANCES, "provider_generated"),
+    storagePosture,
+    rendererProjection: normalizeEnum(source.rendererProjection, IMAGE_RENDERER_PROJECTIONS, storagePosture === "blocked" ? "blocked" : "metadata_only"),
+    stagingManifestRef: isPlainObject(source.stagingManifestRef) ? normalizeEvidenceRef(source.stagingManifestRef, "provider_hosted_image_staging_manifest") : undefined,
+    stagingManifestDigest: boundedString(source.stagingManifestDigest, 180),
+    cleanupPolicyId: boundedString(source.cleanupPolicyId, 160),
+  };
+  artifact.stagingPolicyComplete = storagePosture !== "shell_staged_artifact"
+    || (Boolean(artifact.stagingManifestRef?.id) && Boolean(artifact.stagingManifestDigest) && Boolean(artifact.cleanupPolicyId));
+  if (!artifact.stagingPolicyComplete) {
+    artifact.storagePosture = "blocked";
+    artifact.rendererProjection = "blocked";
+  }
+  artifact.artifactDigest = digestFor("provider-hosted-image-artifact-ref@1", artifact);
+  return artifact;
 }
 
 function safeWebUrlParts(rawUrl) {
@@ -998,12 +1052,88 @@ function buildProviderHostedWebSearchResultEnvelope(input = {}) {
   return envelope;
 }
 
+function buildProviderHostedImageGenerationArtifactEnvelope(input = {}) {
+  const source = isPlainObject(input) ? input : {};
+  const callEnvelope = source.callEnvelope?.schema === PROVIDER_HOSTED_TOOL_CALL_ENVELOPE_SCHEMA ? source.callEnvelope : {};
+  const generatedAt = normalizeString(source.generatedAt, nowIso(source.nowMs));
+  const limits = normalizeImageGenerationLimits(source.generationLimits || source.limits);
+  const artifactRefs = arrayOrEmpty(source.artifactRefs || source.artifacts)
+    .map((entry, index) => normalizeImageArtifactRef(entry, index))
+    .slice(0, limits.maxImages);
+  const providerResultRef = boundedString(source.providerResultRef || "", 180);
+  const callAllowed = callEnvelope.toolKind === "image_generation" && callEnvelope.authorityDecision === "allowed";
+  const requestedState = normalizeEnum(source.generationState, IMAGE_GENERATION_STATES, "");
+  const artifactPolicyComplete = artifactRefs.every((artifact) => artifact.stagingPolicyComplete);
+  const artifactMimeAllowed = artifactRefs.every((artifact) => artifact.mimeType === "unknown" || limits.allowedMimeTypes.includes(artifact.mimeType));
+  const providerBlocked = requestedState === "blocked_by_provider";
+  const generationState = providerBlocked
+    ? "blocked_by_provider"
+    : !callAllowed || !artifactPolicyComplete || !artifactMimeAllowed
+      ? "blocked_by_policy"
+      : providerResultRef && artifactRefs.length
+        ? "completed"
+        : requestedState || "unknown";
+  const envelope = {
+    schema: PROVIDER_HOSTED_IMAGE_GENERATION_ARTIFACT_ENVELOPE_SCHEMA,
+    artifactId: boundedString(source.artifactId || "", 180),
+    toolKind: "image_generation",
+    callId: boundedString(source.callId || callEnvelope.callId, 180),
+    workThreadId: boundedString(source.workThreadId || callEnvelope.workThreadId, 160),
+    turnId: boundedString(source.turnId || callEnvelope.turnId, 180),
+    providerResultRef,
+    promptEvidenceRef: normalizeEvidenceRef({
+      kind: "provider_hosted_image_prompt_envelope",
+      id: callEnvelope.inputEnvelope?.promptEnvelopeId,
+      digest: callEnvelope.inputEnvelope?.envelopeDigest,
+      label: "image_generation prompt envelope",
+      confidence: callEnvelope.inputEnvelope?.redactionState,
+    }, "provider_hosted_image_prompt_envelope"),
+    promptPreview: callEnvelope.inputEnvelope?.redactionState === "passed" ? boundedString(source.promptPreview || callEnvelope.inputEnvelope?.promptPreview, 160) : "",
+    modelRef: {
+      ...normalizeModelRef(source.modelRef),
+      imageModel: boundedString(source.imageModel || source.modelRef?.imageModel, 160),
+    },
+    artifactRefs,
+    generationLimits: limits,
+    generationState,
+    blockerCodes: [
+      ...(callAllowed ? [] : ["call_not_allowed"]),
+      ...(providerResultRef || generationState !== "completed" ? [] : ["provider_result_ref_missing"]),
+      ...(artifactRefs.length || generationState !== "completed" ? [] : ["artifact_refs_missing"]),
+      ...(artifactPolicyComplete ? [] : ["staging_manifest_or_cleanup_policy_missing"]),
+      ...(artifactMimeAllowed ? [] : ["artifact_mime_not_allowed"]),
+      ...(providerBlocked ? ["provider_blocked_generation"] : []),
+    ],
+    retentionPolicy: {
+      retainAfterTurn: normalizeBoolean(source.retentionPolicy?.retainAfterTurn, false),
+      ttlHours: normalizePositiveInteger(source.retentionPolicy?.ttlHours, 0),
+      workspaceInsertionAllowed: false,
+    },
+    safetyMetadataRef: isPlainObject(source.safetyMetadataRef) ? normalizeEvidenceRef(source.safetyMetadataRef, "provider_hosted_image_safety_metadata") : undefined,
+    safetyPosture: normalizeEnum(source.safetyPosture, IMAGE_SAFETY_POSTURES, providerBlocked ? "provider_blocked" : "unknown"),
+    rawPromptIncluded: false,
+    rawImageBytesInRendererState: false,
+    rawProviderPayloadIncluded: false,
+    rawResultIncluded: false,
+    rawSecretIncluded: false,
+    contextAdmission: source.contextAdmission?.schema === PROVIDER_HOSTED_RESULT_CONTEXT_ADMISSION_SCHEMA
+      ? resultAdmissionRef(source.contextAdmission)
+      : undefined,
+    createdAt: generatedAt,
+  };
+  envelope.artifactId = envelope.artifactId || `provider_hosted_image_artifact_${digestFor("provider-hosted-image-artifact-source@1", envelope).slice(0, 24)}`;
+  envelope.artifactDigest = digestFor("provider-hosted-image-generation-artifact-envelope@1", envelope);
+  return envelope;
+}
+
 function buildProviderHostedResultContextAdmission(input = {}) {
   const source = isPlainObject(input) ? input : {};
-  const result = source.resultEnvelope?.schema === PROVIDER_HOSTED_WEB_SEARCH_RESULT_ENVELOPE_SCHEMA ? source.resultEnvelope : {};
+  const result = [PROVIDER_HOSTED_WEB_SEARCH_RESULT_ENVELOPE_SCHEMA, PROVIDER_HOSTED_IMAGE_GENERATION_ARTIFACT_ENVELOPE_SCHEMA].includes(source.resultEnvelope?.schema) ? source.resultEnvelope : {};
   const requestedKind = normalizeEnum(source.admissionKind, CONTEXT_ADMISSION_KINDS, "summary");
-  const hasSources = arrayOrEmpty(result.sourceRefs).length > 0;
-  const resultBlocked = result.redactionState === "blocked" || arrayOrEmpty(result.blockerCodes).length > 0;
+  const toolKind = normalizeEnum(source.toolKind || result.toolKind, TOOL_KINDS, "web_search");
+  const hasSources = toolKind === "web_search" && arrayOrEmpty(result.sourceRefs).length > 0;
+  const hasArtifacts = toolKind === "image_generation" && arrayOrEmpty(result.artifactRefs).length > 0;
+  const resultBlocked = result.redactionState === "blocked" || result.generationState?.startsWith("blocked") || arrayOrEmpty(result.blockerCodes).length > 0;
   let admissionKind = requestedKind;
   let admissionDecision = "admit";
   if (!result?.schema) {
@@ -1012,13 +1142,19 @@ function buildProviderHostedResultContextAdmission(input = {}) {
   } else if (result.redactionState === "blocked") {
     admissionKind = "blocked";
     admissionDecision = "block_raw_exposure";
-  } else if (!hasSources) {
+  } else if (toolKind === "web_search" && !hasSources) {
+    admissionKind = "blocked";
+    admissionDecision = "block_source_unknown";
+  } else if (toolKind === "image_generation" && requestedKind !== "artifact_ref") {
+    admissionKind = "blocked";
+    admissionDecision = "block_policy";
+  } else if (toolKind === "image_generation" && !hasArtifacts) {
     admissionKind = "blocked";
     admissionDecision = "block_source_unknown";
   } else if (requestedKind === "bounded_excerpt" && result.quotePolicy?.rawPageContentIncluded !== false) {
     admissionKind = "blocked";
     admissionDecision = "block_policy";
-  } else if (requestedKind === "artifact_ref") {
+  } else if (requestedKind === "artifact_ref" && toolKind !== "image_generation") {
     admissionKind = "blocked";
     admissionDecision = "block_policy";
   } else if (requestedKind === "blocked") {
@@ -1034,23 +1170,25 @@ function buildProviderHostedResultContextAdmission(input = {}) {
     admissionDecision = "not_requested";
   }
   const residentContext = admissionDecision === "admit" || admissionDecision === "admit_degraded"
-    ? admissionKind === "source_refs"
+    ? admissionKind === "artifact_ref"
+      ? "artifact_ref"
+      : admissionKind === "source_refs"
       ? "source_refs"
       : admissionKind === "bounded_excerpt"
         ? "bounded_excerpt"
         : "summary"
     : "none";
   const operatorProjection = admissionDecision === "admit" || admissionDecision === "admit_degraded"
-    ? admissionKind === "source_refs" ? "source_refs" : "summary"
+    ? admissionKind === "artifact_ref" ? "artifact_ref" : admissionKind === "source_refs" ? "source_refs" : "summary"
     : "none";
   const providerContinuation = admissionDecision === "admit" || admissionDecision === "admit_degraded"
-    ? admissionKind === "source_refs" ? "source_refs" : "summary_only"
+    ? admissionKind === "artifact_ref" ? "artifact_ref" : admissionKind === "source_refs" ? "source_refs" : "summary_only"
     : "not_sent";
   const admission = {
     schema: PROVIDER_HOSTED_RESULT_CONTEXT_ADMISSION_SCHEMA,
     admissionId: boundedString(source.admissionId || "", 180),
     resultId: boundedString(source.resultId || result.resultId, 180),
-    toolKind: normalizeEnum(source.toolKind || result.toolKind, TOOL_KINDS, "web_search"),
+    toolKind,
     workThreadId: boundedString(source.workThreadId || result.workThreadId, 160),
     turnId: boundedString(source.turnId || result.turnId, 180),
     admissionKind,
@@ -1063,6 +1201,9 @@ function buildProviderHostedResultContextAdmission(input = {}) {
     },
     admittedSourceIds: admissionDecision === "admit" || admissionDecision === "admit_degraded"
       ? arrayOrEmpty(result.citationParity?.admittedSourceIds)
+      : [],
+    admittedArtifactRefs: admissionDecision === "admit" || admissionDecision === "admit_degraded"
+      ? arrayOrEmpty(result.artifactRefs).map((artifact) => artifact.artifactRef).filter(Boolean)
       : [],
     trustWarning: boundedString(source.trustWarning || "Provider-hosted web-search result is external evidence, not project truth or durable memory.", 320),
     freshnessWarning: result.freshnessPosture === "current_at_retrieval"
@@ -1396,8 +1537,36 @@ function assertProviderHostedResultContextAdmissionSafe(admission = {}) {
   if (admission.admissionDecision.startsWith("block") && admission.visibility?.residentContext !== "none") {
     throw new Error("provider_hosted_context_admission_block_visibility_leak");
   }
-  if ((admission.admissionDecision === "admit" || admission.admissionDecision === "admit_degraded") && !arrayOrEmpty(admission.admittedSourceIds).length) {
+  if ((admission.admissionDecision === "admit" || admission.admissionDecision === "admit_degraded") && admission.admissionKind !== "artifact_ref" && !arrayOrEmpty(admission.admittedSourceIds).length) {
     throw new Error("provider_hosted_context_admission_source_refs_missing");
+  }
+  if ((admission.admissionDecision === "admit" || admission.admissionDecision === "admit_degraded") && admission.admissionKind === "artifact_ref" && !arrayOrEmpty(admission.admittedArtifactRefs).length) {
+    throw new Error("provider_hosted_context_admission_artifact_refs_missing");
+  }
+  return true;
+}
+
+function assertProviderHostedImageGenerationArtifactEnvelopeSafe(envelope = {}) {
+  if (!isPlainObject(envelope) || envelope.schema !== PROVIDER_HOSTED_IMAGE_GENERATION_ARTIFACT_ENVELOPE_SCHEMA) {
+    throw new Error("provider_hosted_image_generation_artifact_envelope_schema_mismatch");
+  }
+  for (const flag of ["rawPromptIncluded", "rawImageBytesInRendererState", "rawProviderPayloadIncluded", "rawResultIncluded", "rawSecretIncluded"]) {
+    if (envelope[flag] !== false) throw new Error(`provider_hosted_image_artifact_authority_leak:${flag}`);
+  }
+  if (envelope.retentionPolicy?.workspaceInsertionAllowed !== false) {
+    throw new Error("provider_hosted_image_artifact_workspace_insertion_leak");
+  }
+  if (envelope.generationState === "completed") {
+    if (!envelope.providerResultRef) throw new Error("provider_hosted_image_artifact_provider_ref_missing");
+    if (!arrayOrEmpty(envelope.artifactRefs).length) throw new Error("provider_hosted_image_artifact_refs_missing");
+  }
+  for (const artifact of arrayOrEmpty(envelope.artifactRefs)) {
+    if (artifact.storagePosture === "shell_staged_artifact" && artifact.stagingPolicyComplete !== true) {
+      throw new Error("provider_hosted_image_artifact_staging_policy_incomplete");
+    }
+    if (artifact.storagePosture === "blocked" && artifact.rendererProjection !== "blocked") {
+      throw new Error("provider_hosted_image_artifact_blocked_projection_leak");
+    }
   }
   return true;
 }
@@ -1407,6 +1576,7 @@ module.exports = {
   PROVIDER_HOSTED_DECLARATION_POLICY_SCHEMA,
   PROVIDER_HOSTED_IMAGE_PROMPT_ENVELOPE_SCHEMA,
   PROVIDER_HOSTED_IMAGE_PROMPT_POLICY_SCHEMA,
+  PROVIDER_HOSTED_IMAGE_GENERATION_ARTIFACT_ENVELOPE_SCHEMA,
   PROVIDER_HOSTED_RAW_EXPOSURE_SCAN_SCHEMA,
   PROVIDER_HOSTED_RESULT_CONTEXT_ADMISSION_SCHEMA,
   PROVIDER_HOSTED_REQUEST_SHAPE_PROOF_SCHEMA,
@@ -1422,6 +1592,7 @@ module.exports = {
   buildProviderHostedDeclarationPolicy,
   buildProviderHostedImagePromptEnvelope,
   buildProviderHostedImagePromptPolicy,
+  buildProviderHostedImageGenerationArtifactEnvelope,
   buildProviderHostedRawExposureScan,
   buildProviderHostedResultContextAdmission,
   buildProviderHostedRequestShapeProof,
@@ -1434,6 +1605,7 @@ module.exports = {
   buildProviderHostedWebSearchResultEnvelope,
   buildWebSearchEvidenceContract,
   assertProviderHostedResultContextAdmissionSafe,
+  assertProviderHostedImageGenerationArtifactEnvelopeSafe,
   assertProviderHostedToolCallEnvelopeSafe,
   assertProviderHostedWebSearchResultEnvelopeSafe,
   assertProviderHostedToolsStatusSafe,
