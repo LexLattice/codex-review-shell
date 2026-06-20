@@ -1312,6 +1312,40 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "PR112 admits only bounded summaries, excerpts, or refs; it never turns external results into project truth, workspace evidence, durable memory, authority, provider raw payloads, raw URIs, secrets, browser state, workspace staging, or external action approval.",
   },
   {
+    id: "ic59.external-wave18-usability-gate",
+    name: "Wave 18 external discovery/read usability proof gate",
+    role: "observability_surface",
+    implementationState: "implemented",
+    directPathPosture: "keep_guarded",
+    sourceFiles: [
+      "src/main/direct/external/external-wave18-usability-gate.js",
+      "src/main/direct/external/external-capability-profile.js",
+      "src/main/direct/external/external-discovery-tools.js",
+      "src/main/direct/external/mcp-resource-read-envelope.js",
+      "src/main/direct/external/external-result-context-admission.js",
+      "scripts/direct-external-wave18-usability-gate-regression.mjs",
+      "docs/DIRECT_WAVE18_EXTERNAL_DISCOVERY_MCP_READ_SPEC.md",
+      "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md",
+    ],
+    ontology: ontologyShape(
+      [
+        "external_wave18_usability_proof",
+        "external_wave18_operator_projection",
+        "external_wave18_resident_witness_row",
+        "external_wave18_headless_scenario_suite",
+        "external_wave18_negative_scenario_matrix",
+        "external_wave18_manual_usability_gate_row",
+      ],
+      "harness",
+      {
+        identityFields: ["proofId", "projectionId", "rowId", "scenarioId", "gateId", "toolName"],
+        schema: "external_wave18_usability_proof@1",
+      }
+    ),
+    bridgeFit: "Closes Wave 18 with a deterministic usability proof over external discovery and guarded MCP read tools, resident/operator witnesses, positive headless scenarios, negative scenario matrix, and manual gate rows.",
+    realignment: "This gate observes and proves readiness only: it starts no provider transport by itself, executes no dynamic MCP action, installs no plugin, mutates no workspace/context truth, starts no durable memory admission, grants no project/workspace truth, and does not begin Wave 19 provider-hosted tools, Wave 20 new_context execution, or Wave 21 code-mode execution.",
+  },
+  {
     id: "ic33.odeu-live-capability-artifact-kernel",
     name: "ODEU live-capability artifact/source/digest/raw-exposure kernel",
     role: "canonical_evidence",
