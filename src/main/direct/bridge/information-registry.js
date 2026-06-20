@@ -1038,6 +1038,37 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "This PR 103 slice is profile-only: provider declarations, model-callable tools, local executors, permission grants, request-shape mutation, image payload submission, and context-world mutation remain disabled.",
   },
   {
+    id: "ic50.context-plan-control-tools",
+    name: "Wave 17 context remaining and plan projection tools",
+    role: "authority_gate",
+    implementationState: "implemented",
+    directPathPosture: "keep_guarded",
+    sourceFiles: [
+      "src/main/direct/tools/control-perception-decision-substrate.js",
+      "src/main/direct/headless/first-tool-slice.js",
+      "scripts/direct-context-plan-control-tools-regression.mjs",
+      "scripts/direct-control-tool-substrate-regression.mjs",
+      "scripts/direct-first-tool-slice-regression.mjs",
+      "docs/DIRECT_WAVE17_HUMAN_CONTROL_READONLY_TOOLS_SPEC.md",
+      "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md",
+    ],
+    ontology: ontologyShape(
+      [
+        "direct_context_remaining_witness",
+        "plan_projection_mutation_envelope",
+        "plan_projection_store",
+        "direct_first_tool_result_envelope",
+      ],
+      "harness",
+      {
+        identityFields: ["witnessId", "planId", "updateId", "workThreadId", "threadId", "gateId", "callId"],
+        schema: "plan_projection_mutation_envelope@1",
+      }
+    ),
+    bridgeFit: "Promotes get_context_remaining and update_plan into first-slice resident-callable declarations when activated, returning display-only context witnesses and assistant-working-plan projection envelopes.",
+    realignment: "Context witnesses cannot be request-blocking or authorize continuation/compaction; plan updates cannot mutate WorkThread, operator, project, tool approval, obligation, or completion truth and stale plan digests are blocked.",
+  },
+  {
     id: "ic33.odeu-live-capability-artifact-kernel",
     name: "ODEU live-capability artifact/source/digest/raw-exposure kernel",
     role: "canonical_evidence",

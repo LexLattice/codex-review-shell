@@ -13,6 +13,7 @@ const {
   buildContextRemainingResultEnvelope,
   buildDirectFirstToolCallGate,
   buildDirectFirstToolSlice,
+  buildUpdatePlanResultEnvelope,
   validateDirectFirstToolCallGate,
   validateDirectFirstToolSlice,
 } = require("../src/main/direct/headless/first-tool-slice");
@@ -97,6 +98,13 @@ function promotionReport() {
       requestShapeFamily: "context_status_or_control",
       authorityFamily: "session_control",
     }),
+    promotionDecision({
+      decisionId: "decision_update_plan",
+      toolClassId: "session_control.update_plan",
+      toolName: "update_plan",
+      requestShapeFamily: "plan_projection",
+      authorityFamily: "session_control",
+    }),
   ];
   return {
     schema: "direct_tool_promotion_decision_report@1",
@@ -166,21 +174,22 @@ const activationRegistry = buildDirectToolActivationRegistry({
   activationRequests: [
     activationRequest("local_perception.workspace_read", "active", "project_default"),
     activationRequest("session_control.plan_and_context_witness", "active", "global_default"),
+    activationRequest("session_control.update_plan", "active", "project_default"),
   ],
   nowMs: 0,
 });
 assert.deepEqual(validateDirectToolActivationRegistry(activationRegistry), [], "activation registry should validate");
-assert.equal(activationRegistry.summary.byState.active, 2, "two first-slice rows should be active");
+assert.equal(activationRegistry.summary.byState.active, 3, "three first-slice rows should be active");
 
 const slice = buildDirectFirstToolSlice({
   activationRegistry,
   nowMs: 0,
 });
 assert.deepEqual(validateDirectFirstToolSlice(slice), [], "first tool slice should validate");
-assert.equal(slice.declarationCount, 2, "slice should declare two tools");
-assert.deepEqual(slice.summary.declaredToolNames.sort(), ["get_context_remaining", "read_file"]);
+assert.equal(slice.declarationCount, 3, "slice should declare three tools");
+assert.deepEqual(slice.summary.declaredToolNames.sort(), ["get_context_remaining", "read_file", "update_plan"]);
 assert.equal(slice.providerRequestPatch.parallel_tool_calls, false, "parallel calls must stay disabled");
-assert.equal(slice.providerRequestPatch.tools.length, 2, "provider request patch should contain two tools");
+assert.equal(slice.providerRequestPatch.tools.length, 3, "provider request patch should contain three tools");
 assert(slice.toolDeclarationDigest, "tool declaration digest should be frozen");
 assert(slice.activationRegistryDigest === activationRegistry.registryDigest, "slice should cite activation registry digest");
 
@@ -278,12 +287,123 @@ assert.equal(contextEnvelope.providerOutput.permissionToContinue, false, "contex
 assert.equal(contextEnvelope.providerOutput.compactionAuthority, false, "context estimate must not authorize compaction");
 assert.equal(contextEnvelope.rawResultIncluded, false, "context result must not expose raw result");
 
+const updatePlanGate = buildDirectFirstToolCallGate({
+  slice,
+  toolCall: {
+    itemId: "tool_item_plan",
+    callId: "call_plan",
+    name: "update_plan",
+    arguments: JSON.stringify({
+      planId: "plan_first_slice_fixture",
+      mutationKind: "replace_plan",
+      steps: [{ stepId: "step_a", text: "Inspect current affordance state", status: "completed_in_plan" }],
+    }),
+  },
+});
+assert.deepEqual(validateDirectFirstToolCallGate(updatePlanGate), [], "update_plan gate should validate");
+assert.equal(updatePlanGate.status, "accepted", "update_plan should be accepted when declared");
+
+const updatePlanEnvelope = buildUpdatePlanResultEnvelope({
+  gate: updatePlanGate,
+  projectId: "project_first_tool_slice_fixture",
+  workThreadId: "work_thread_first_tool_slice_fixture",
+  threadId: "thread_first_tool_slice_fixture",
+  turnId: "turn_first_tool_slice_fixture",
+  nowMs: 0,
+});
+assert.equal(updatePlanEnvelope.status, "ready_for_provider_continuation", "plan result should be continuation-ready");
+assert.equal(updatePlanEnvelope.providerOutput.kind, "update_plan_result", "plan result should expose plan result kind");
+assert.equal(updatePlanEnvelope.providerOutput.mutatesWorkThreadTruth, false, "plan result must not mutate WorkThread truth");
+assert.equal(updatePlanEnvelope.providerOutput.provesCompletion, false, "plan result must not prove completion");
+assert.equal(updatePlanEnvelope.contextAdmission.admittedAs, "plan_evidence", "plan result should enter only as plan evidence");
+
+const appendPlanGate = buildDirectFirstToolCallGate({
+  slice,
+  toolCall: {
+    itemId: "tool_item_plan_append",
+    callId: "call_plan_append",
+    name: "update_plan",
+    arguments: JSON.stringify({
+      planId: "plan_first_slice_fixture",
+      mutationKind: "append_steps",
+      expectedBeforePlanDigest: updatePlanEnvelope.planStore.currentPlanDigest,
+      steps: [{ stepId: "step_b", text: "Append without dropping prior step", status: "completed" }],
+    }),
+  },
+});
+const appendPlanEnvelope = buildUpdatePlanResultEnvelope({
+  gate: appendPlanGate,
+  projectId: "project_first_tool_slice_fixture",
+  workThreadId: "work_thread_first_tool_slice_fixture",
+  threadId: "thread_first_tool_slice_fixture",
+  turnId: "turn_first_tool_slice_fixture",
+  planStoreInput: updatePlanEnvelope.planStore,
+  nowMs: 0,
+});
+assert.equal(appendPlanEnvelope.status, "ready_for_provider_continuation", "follow-up append should be accepted against current plan digest");
+assert.equal(appendPlanEnvelope.planStore.currentPlan.steps.length, 2, "follow-up append should preserve existing steps");
+assert.equal(appendPlanEnvelope.planStore.currentPlan.steps[1].status, "completed_in_plan", "completed should normalize to completed_in_plan in arguments");
+
+const statusPlanGate = buildDirectFirstToolCallGate({
+  slice,
+  toolCall: {
+    itemId: "tool_item_plan_status",
+    callId: "call_plan_status",
+    name: "update_plan",
+    arguments: JSON.stringify({
+      planId: "plan_first_slice_fixture",
+      mutationKind: "update_step_status",
+      expectedBeforePlanDigest: appendPlanEnvelope.planStore.currentPlanDigest,
+      stepId: "step_a",
+      stepStatus: "completed",
+    }),
+  },
+});
+const statusPlanEnvelope = buildUpdatePlanResultEnvelope({
+  gate: statusPlanGate,
+  projectId: "project_first_tool_slice_fixture",
+  workThreadId: "work_thread_first_tool_slice_fixture",
+  threadId: "thread_first_tool_slice_fixture",
+  turnId: "turn_first_tool_slice_fixture",
+  planStoreInput: appendPlanEnvelope.planStore,
+  nowMs: 0,
+});
+assert.equal(statusPlanEnvelope.status, "ready_for_provider_continuation", "follow-up status update should be accepted against current plan digest");
+assert.equal(statusPlanEnvelope.planStore.currentPlan.steps.length, 2, "status update should preserve existing step list");
+assert.equal(statusPlanEnvelope.planStore.currentPlan.steps[0].status, "completed_in_plan", "completed status update should normalize to completed_in_plan");
+
+const stalePlanGate = buildDirectFirstToolCallGate({
+  slice,
+  toolCall: {
+    itemId: "tool_item_plan_stale",
+    callId: "call_plan_stale",
+    name: "update_plan",
+    arguments: JSON.stringify({
+      planId: "plan_first_slice_fixture",
+      mutationKind: "append_steps",
+      expectedBeforePlanDigest: "stale_digest",
+      steps: [{ text: "Attempt stale append" }],
+    }),
+  },
+});
+const stalePlanEnvelope = buildUpdatePlanResultEnvelope({
+  gate: stalePlanGate,
+  projectId: "project_first_tool_slice_fixture",
+  workThreadId: "work_thread_first_tool_slice_fixture",
+  threadId: "thread_first_tool_slice_fixture",
+  turnId: "turn_first_tool_slice_fixture",
+  nowMs: 0,
+});
+assert.equal(stalePlanEnvelope.status, "blocked", "stale plan update should be blocked");
+assert(stalePlanEnvelope.providerOutput.blockerCodes.includes("stale_plan_digest"), "stale plan blocker should be provider-visible");
+
 const revokedRegistry = buildDirectToolActivationRegistry({
   promotionReport: report,
   projectId: "project_first_tool_slice_fixture",
   activationRequests: [
     activationRequest("local_perception.workspace_read", "revoked", "project_default"),
     activationRequest("session_control.plan_and_context_witness", "active", "global_default"),
+    activationRequest("session_control.update_plan", "active", "project_default"),
   ],
   nowMs: 0,
 });
@@ -294,6 +414,7 @@ const revokedSlice = buildDirectFirstToolSlice({
 assert.deepEqual(validateDirectFirstToolSlice(revokedSlice), [], "revoked slice should validate");
 assert.equal(revokedSlice.declarations.some((row) => row.toolName === "read_file"), false, "revoked read_file must not be declared");
 assert.equal(revokedSlice.declarations.some((row) => row.toolName === "get_context_remaining"), true, "active context status may remain declared");
+assert.equal(revokedSlice.declarations.some((row) => row.toolName === "update_plan"), true, "active update_plan may remain declared");
 
 console.log(JSON.stringify({
   ok: true,
@@ -301,4 +422,5 @@ console.log(JSON.stringify({
   declaredToolNames: slice.summary.declaredToolNames,
   toolDeclarationDigest: slice.toolDeclarationDigest,
   contextEnvelopeStatus: contextEnvelope.status,
+  updatePlanEnvelopeStatus: updatePlanEnvelope.status,
 }, null, 2));
