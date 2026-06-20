@@ -242,6 +242,62 @@ function toolNameFrom(value = {}, fallback = "") {
   );
 }
 
+function normalizeHostedUsageAttribution(value = {}) {
+  const source = isPlainObject(value) ? value : {};
+  if (source.schema !== "provider_hosted_usage_attribution@1") return null;
+  const tokenFields = isPlainObject(source.tokenFields) ? source.tokenFields : {};
+  const core = {
+    schema: "direct_hosted_tool_usage_analytics_ref@1",
+    attributionId: normalizeString(source.attributionId, ""),
+    attributionDigest: normalizeString(source.attributionDigest, ""),
+    callId: normalizeString(source.callId, ""),
+    resultId: normalizeString(source.resultId, ""),
+    toolKind: normalizeString(source.toolKind, "unknown"),
+    usageKind: normalizeString(source.usageKind, "provider_hosted_tool_call"),
+    usageState: normalizeString(source.usageState, "unknown"),
+    unavailableReason: normalizeString(source.unavailableReason, ""),
+    usageSource: normalizeString(source.usageSource, "provider_hosted_tool_usage_unavailable"),
+    usageRecordKind: normalizeString(source.usageRecordKind, source.usageState === "provider_reported" ? "diagnostic" : "missing"),
+    inputTokens: nullableNumber(tokenFields.inputTokens),
+    cachedInputTokens: nullableNumber(tokenFields.cachedInputTokens),
+    nonCachedInputTokens: nullableNumber(tokenFields.nonCachedInputTokens),
+    outputTokens: nullableNumber(tokenFields.outputTokens),
+    reasoningTokens: nullableNumber(tokenFields.reasoningTokens),
+    totalTokens: nullableNumber(tokenFields.totalTokens),
+    separatedFromParentInference: source.attributionScope?.separatedFromParentInference === true,
+    separateFromLocalTools: source.attributionScope?.separateFromLocalTools === true,
+    separateFromMcp: source.attributionScope?.separateFromMcp === true,
+    billingGrade: false,
+    costComputed: false,
+    rawPromptIncluded: false,
+    rawQueryIncluded: false,
+    rawResultIncluded: false,
+    rawProviderPayloadIncluded: false,
+    rawTokenDetailsIncluded: false,
+    rawSecretIncluded: false,
+  };
+  return {
+    ...core,
+    refDigest: digestFor("direct-hosted-tool-usage-analytics-ref@1", core),
+  };
+}
+
+function hostedUsageAttributionFromToolResult(result = {}) {
+  const candidates = [
+    result.hostedUsageAttribution,
+    result.result?.hostedUsageAttribution,
+    result.providerHostedUsageAttribution,
+    result.result?.providerHostedUsageAttribution,
+    result.usageAttribution,
+    result.result?.usageAttribution,
+  ];
+  for (const candidate of candidates) {
+    const normalized = normalizeHostedUsageAttribution(candidate);
+    if (normalized) return normalized;
+  }
+  return null;
+}
+
 function toolFactsForTurn(projectId, session, turn) {
   const threadId = normalizeString(turn.threadId || turn.sessionId || session.sessionId, "");
   const scope = agentScope(session, turn);
@@ -251,6 +307,7 @@ function toolFactsForTurn(projectId, session, turn) {
   const facts = [];
   results.forEach((result, index) => {
     const toolName = toolNameFrom(result, "");
+    const hostedUsageAttribution = hostedUsageAttributionFromToolResult(result);
     const core = {
       projectId,
       threadId,
@@ -273,6 +330,7 @@ function toolFactsForTurn(projectId, session, turn) {
         resultId: normalizeString(result.resultId || result.id, ""),
         obligationId: normalizeString(result.obligationId, ""),
         ordinal: index + 1,
+        hostedUsageAttribution,
       },
     };
     facts.push({

@@ -17,6 +17,7 @@ const PROVIDER_HOSTED_RESULT_CONTEXT_ADMISSION_SCHEMA = "provider_hosted_result_
 const PROVIDER_HOSTED_IMAGE_PROMPT_POLICY_SCHEMA = "provider_hosted_image_prompt_policy@1";
 const PROVIDER_HOSTED_IMAGE_PROMPT_ENVELOPE_SCHEMA = "provider_hosted_image_prompt_envelope@1";
 const PROVIDER_HOSTED_IMAGE_GENERATION_ARTIFACT_ENVELOPE_SCHEMA = "provider_hosted_image_generation_artifact_envelope@1";
+const PROVIDER_HOSTED_USAGE_ATTRIBUTION_SCHEMA = "provider_hosted_usage_attribution@1";
 const PROVIDER_HOSTED_RAW_EXPOSURE_SCAN_SCHEMA = "provider_hosted_raw_exposure_scan@1";
 
 const TOOL_KINDS = new Set(["web_search", "image_generation"]);
@@ -71,6 +72,16 @@ const IMAGE_RENDERER_PROJECTIONS = new Set(["thumbnail_ref", "download_ref", "me
 const IMAGE_GENERATION_STATES = new Set(["completed", "blocked_by_provider", "blocked_by_policy", "failed", "partial", "unknown"]);
 const IMAGE_SAFETY_POSTURES = new Set(["provider_allowed", "provider_filtered", "provider_blocked", "unknown", "not_applicable"]);
 const RAW_EXPOSURE_FINDINGS = new Set(["credentialed_url", "raw_secret", "private_file_path", "raw_provider_payload", "unbounded_personal_data", "oversized_input"]);
+const HOSTED_USAGE_KINDS = new Set(["provider_hosted_tool_call", "provider_hosted_web_search", "provider_hosted_image_generation"]);
+const HOSTED_USAGE_STATES = new Set(["provider_reported", "unavailable", "unknown", "blocked"]);
+const HOSTED_USAGE_UNAVAILABLE_REASONS = new Set([
+  "provider_did_not_report",
+  "provider_tool_blocked",
+  "provider_tool_failed",
+  "usage_not_supported",
+  "usage_redacted",
+  "unknown",
+]);
 
 const CALLABLE_EVIDENCE_STATES = new Set(["accepted", "runtime_probed"]);
 const CREDENTIAL_URL_PATTERN = /\bhttps?:\/\/[^\s/:@]+:[^@\s]+@[^\s]+/i;
@@ -253,6 +264,44 @@ function normalizeImageGenerationLimits(input = {}) {
     maxWidth: normalizePositiveInteger(source.maxWidth, 0),
     maxHeight: normalizePositiveInteger(source.maxHeight, 0),
   };
+}
+
+function normalizeUsageTokenField(value) {
+  if (value === null || value === undefined || value === "") return undefined;
+  const number = Math.trunc(Number(value));
+  return Number.isFinite(number) && number >= 0 ? number : undefined;
+}
+
+function normalizeHostedToolUsage(input = {}) {
+  const source = isPlainObject(input) ? input : {};
+  const usage = isPlainObject(source.usage) ? source.usage : source;
+  return {
+    inputTokens: normalizeUsageTokenField(usage.inputTokens ?? usage.input_tokens),
+    cachedInputTokens: normalizeUsageTokenField(usage.cachedInputTokens ?? usage.cached_input_tokens),
+    nonCachedInputTokens: normalizeUsageTokenField(usage.nonCachedInputTokens ?? usage.non_cached_input_tokens),
+    outputTokens: normalizeUsageTokenField(usage.outputTokens ?? usage.output_tokens),
+    reasoningTokens: normalizeUsageTokenField(usage.reasoningTokens ?? usage.reasoning_output_tokens ?? usage.reasoning_tokens),
+    totalTokens: normalizeUsageTokenField(usage.totalTokens ?? usage.total_tokens),
+  };
+}
+
+function hostedUsageHasKnownTokens(tokens = {}) {
+  return Object.values(tokens).some((value) => value !== undefined);
+}
+
+function hostedUsageKindFor(toolKind, fallback = "provider_hosted_tool_call") {
+  if (toolKind === "web_search") return "provider_hosted_web_search";
+  if (toolKind === "image_generation") return "provider_hosted_image_generation";
+  return fallback;
+}
+
+function hostedUsageUnavailableReason(input = {}, usageState) {
+  const source = isPlainObject(input) ? input : {};
+  const reason = normalizeEnum(source.unavailableReason || source.usageUnavailableReason, HOSTED_USAGE_UNAVAILABLE_REASONS, "");
+  if (reason) return reason;
+  if (usageState === "blocked") return "provider_tool_blocked";
+  if (usageState === "unavailable") return "provider_did_not_report";
+  return "";
 }
 
 function normalizeImageDimensions(value = {}) {
@@ -976,6 +1025,84 @@ function buildProviderHostedToolCallEnvelope(input = {}) {
   return envelope;
 }
 
+function buildProviderHostedUsageAttribution(input = {}) {
+  const source = isPlainObject(input) ? input : {};
+  const callEnvelope = source.callEnvelope?.schema === PROVIDER_HOSTED_TOOL_CALL_ENVELOPE_SCHEMA ? source.callEnvelope : {};
+  const resultEnvelope = [PROVIDER_HOSTED_WEB_SEARCH_RESULT_ENVELOPE_SCHEMA, PROVIDER_HOSTED_IMAGE_GENERATION_ARTIFACT_ENVELOPE_SCHEMA].includes(source.resultEnvelope?.schema)
+    ? source.resultEnvelope
+    : {};
+  const toolKind = normalizeEnum(source.toolKind || resultEnvelope.toolKind || callEnvelope.toolKind, TOOL_KINDS, "web_search");
+  const usageKind = normalizeEnum(source.usageKind, HOSTED_USAGE_KINDS, hostedUsageKindFor(toolKind));
+  const tokens = normalizeHostedToolUsage(source);
+  const tokenFieldsKnown = hostedUsageHasKnownTokens(tokens);
+  const requestedState = normalizeEnum(source.usageState, HOSTED_USAGE_STATES, "");
+  const resultBlocked = resultEnvelope.redactionState === "blocked" ||
+    normalizeString(resultEnvelope.generationState, "").startsWith("blocked") ||
+    arrayOrEmpty(resultEnvelope.blockerCodes).length > 0 ||
+    callEnvelope.authorityDecision?.startsWith("blocked");
+  const usageState = requestedState ||
+    (tokenFieldsKnown ? "provider_reported" : resultBlocked ? "blocked" : "unavailable");
+  const generatedAt = normalizeString(source.generatedAt, nowIso(source.nowMs));
+  const attribution = {
+    schema: PROVIDER_HOSTED_USAGE_ATTRIBUTION_SCHEMA,
+    attributionId: boundedString(source.attributionId || "", 180),
+    projectId: boundedString(source.projectId, 160),
+    workThreadId: boundedString(source.workThreadId || resultEnvelope.workThreadId || callEnvelope.workThreadId, 160),
+    threadId: boundedString(source.threadId || source.primaryThreadId || "", 180),
+    turnId: boundedString(source.turnId || resultEnvelope.turnId || callEnvelope.turnId, 180),
+    agentId: boundedString(source.agentId || callEnvelope.agentId, 180),
+    parentTurnId: boundedString(source.parentTurnId, 180),
+    callId: boundedString(source.callId || resultEnvelope.callId || callEnvelope.callId, 180),
+    resultId: boundedString(source.resultId || resultEnvelope.resultId || resultEnvelope.artifactId, 180),
+    toolKind,
+    usageKind,
+    usageState,
+    unavailableReason: hostedUsageUnavailableReason(source, usageState),
+    providerReported: usageState === "provider_reported",
+    usageSource: usageState === "provider_reported" ? "provider_hosted_tool_usage" : "provider_hosted_tool_usage_unavailable",
+    usageRecordKind: usageState === "provider_reported" ? "diagnostic" : "missing",
+    tokenFields: tokens,
+    tokenFieldConfidence: {
+      inputTokens: tokens.inputTokens === undefined ? "unavailable" : "provider_reported",
+      cachedInputTokens: tokens.cachedInputTokens === undefined ? "unavailable" : "provider_reported",
+      nonCachedInputTokens: tokens.nonCachedInputTokens === undefined ? "unavailable" : "derived_or_provider_reported",
+      outputTokens: tokens.outputTokens === undefined ? "unavailable" : "provider_reported",
+      reasoningTokens: tokens.reasoningTokens === undefined ? "unavailable" : "provider_reported",
+      totalTokens: tokens.totalTokens === undefined ? "unavailable" : "provider_reported",
+    },
+    attributionScope: {
+      separatedFromParentInference: true,
+      separateFromLocalTools: true,
+      separateFromMcp: true,
+      billingGrade: false,
+      costComputed: false,
+    },
+    evidenceRefs: normalizeEvidenceRefs(source.evidenceRefs, "provider_hosted_usage_attribution"),
+    rawPromptIncluded: false,
+    rawQueryIncluded: false,
+    rawResultIncluded: false,
+    rawProviderPayloadIncluded: false,
+    rawTokenDetailsIncluded: false,
+    rawSecretIncluded: false,
+    billingGrade: false,
+    createdAt: generatedAt,
+  };
+  attribution.attributionId = attribution.attributionId || `provider_hosted_usage_${digestFor("provider-hosted-usage-source@1", attribution).slice(0, 24)}`;
+  attribution.attributionDigest = digestFor("provider-hosted-usage-attribution@1", attribution);
+  return attribution;
+}
+
+function hostedUsageAttributionRef(attribution = {}) {
+  if (attribution?.schema !== PROVIDER_HOSTED_USAGE_ATTRIBUTION_SCHEMA) return undefined;
+  return normalizeEvidenceRef({
+    kind: "provider_hosted_usage_attribution",
+    id: attribution.attributionId,
+    digest: attribution.attributionDigest,
+    label: `${attribution.usageKind}:${attribution.usageState}`,
+    confidence: attribution.usageState,
+  }, "provider_hosted_usage_attribution");
+}
+
 function buildProviderHostedWebSearchResultEnvelope(input = {}) {
   const source = isPlainObject(input) ? input : {};
   const callEnvelope = source.callEnvelope?.schema === PROVIDER_HOSTED_TOOL_CALL_ENVELOPE_SCHEMA ? source.callEnvelope : {};
@@ -1004,6 +1131,11 @@ function buildProviderHostedWebSearchResultEnvelope(input = {}) {
   const summaryAuthority = summaryKind === "none"
     ? "diagnostic"
     : normalizeEnum(source.summaryAuthority, WEB_SEARCH_SUMMARY_AUTHORITIES, "external_evidence_summary");
+  const usageAttribution = source.usageAttribution?.schema === PROVIDER_HOSTED_USAGE_ATTRIBUTION_SCHEMA
+    ? source.usageAttribution
+    : source.usage || source.usageState || source.unavailableReason
+      ? buildProviderHostedUsageAttribution({ ...source, toolKind: "web_search", callEnvelope, nowMs: source.nowMs, generatedAt })
+      : undefined;
   const envelope = {
     schema: PROVIDER_HOSTED_WEB_SEARCH_RESULT_ENVELOPE_SCHEMA,
     resultId: boundedString(source.resultId || "", 180),
@@ -1044,6 +1176,8 @@ function buildProviderHostedWebSearchResultEnvelope(input = {}) {
     rawPageContentIncluded: false,
     rawQueryIncluded: false,
     rawSecretIncluded: false,
+    usageAttribution: usageAttribution ? hostedUsageAttributionRef(usageAttribution) : undefined,
+    hostedUsageAttribution: usageAttribution,
     contextAdmission: source.contextAdmission?.schema === PROVIDER_HOSTED_RESULT_CONTEXT_ADMISSION_SCHEMA
       ? resultAdmissionRef(source.contextAdmission)
       : undefined,
@@ -1083,6 +1217,11 @@ function buildProviderHostedImageGenerationArtifactEnvelope(input = {}) {
       : providerResultRef && artifactRefs.length
         ? "completed"
         : requestedState || "unknown";
+  const usageAttribution = source.usageAttribution?.schema === PROVIDER_HOSTED_USAGE_ATTRIBUTION_SCHEMA
+    ? source.usageAttribution
+    : source.usage || source.usageState || source.unavailableReason
+      ? buildProviderHostedUsageAttribution({ ...source, toolKind: "image_generation", callEnvelope, nowMs: source.nowMs, generatedAt })
+      : undefined;
   const envelope = {
     schema: PROVIDER_HOSTED_IMAGE_GENERATION_ARTIFACT_ENVELOPE_SCHEMA,
     artifactId: boundedString(source.artifactId || "", 180),
@@ -1131,6 +1270,8 @@ function buildProviderHostedImageGenerationArtifactEnvelope(input = {}) {
     rawProviderPayloadIncluded: false,
     rawResultIncluded: false,
     rawSecretIncluded: false,
+    usageAttribution: usageAttribution ? hostedUsageAttributionRef(usageAttribution) : undefined,
+    hostedUsageAttribution: usageAttribution,
     contextAdmission: source.contextAdmission?.schema === PROVIDER_HOSTED_RESULT_CONTEXT_ADMISSION_SCHEMA
       ? resultAdmissionRef(source.contextAdmission)
       : undefined,
@@ -1535,6 +1676,7 @@ function assertProviderHostedWebSearchResultEnvelopeSafe(envelope = {}) {
   if (envelope.quotePolicy?.rawPageContentIncluded !== false) {
     throw new Error("provider_hosted_web_result_raw_page_content_leak");
   }
+  if (envelope.hostedUsageAttribution) assertProviderHostedUsageAttributionSafe(envelope.hostedUsageAttribution);
   return true;
 }
 
@@ -1565,6 +1707,32 @@ function assertProviderHostedResultContextAdmissionSafe(admission = {}) {
   return true;
 }
 
+function assertProviderHostedUsageAttributionSafe(attribution = {}) {
+  if (!isPlainObject(attribution) || attribution.schema !== PROVIDER_HOSTED_USAGE_ATTRIBUTION_SCHEMA) {
+    throw new Error("provider_hosted_usage_attribution_schema_mismatch");
+  }
+  if (!HOSTED_USAGE_KINDS.has(attribution.usageKind)) throw new Error("provider_hosted_usage_kind_mismatch");
+  if (!HOSTED_USAGE_STATES.has(attribution.usageState)) throw new Error("provider_hosted_usage_state_mismatch");
+  if (attribution.usageState !== "provider_reported" && !attribution.unavailableReason) {
+    throw new Error("provider_hosted_usage_unavailable_reason_missing");
+  }
+  if (attribution.attributionScope?.separatedFromParentInference !== true) {
+    throw new Error("provider_hosted_usage_parent_inference_folded");
+  }
+  for (const flag of [
+    "rawPromptIncluded",
+    "rawQueryIncluded",
+    "rawResultIncluded",
+    "rawProviderPayloadIncluded",
+    "rawTokenDetailsIncluded",
+    "rawSecretIncluded",
+    "billingGrade",
+  ]) {
+    if (attribution[flag] !== false) throw new Error(`provider_hosted_usage_attribution_authority_leak:${flag}`);
+  }
+  return true;
+}
+
 function assertProviderHostedImageGenerationArtifactEnvelopeSafe(envelope = {}) {
   if (!isPlainObject(envelope) || envelope.schema !== PROVIDER_HOSTED_IMAGE_GENERATION_ARTIFACT_ENVELOPE_SCHEMA) {
     throw new Error("provider_hosted_image_generation_artifact_envelope_schema_mismatch");
@@ -1587,6 +1755,7 @@ function assertProviderHostedImageGenerationArtifactEnvelopeSafe(envelope = {}) 
       throw new Error("provider_hosted_image_artifact_blocked_projection_leak");
     }
   }
+  if (envelope.hostedUsageAttribution) assertProviderHostedUsageAttributionSafe(envelope.hostedUsageAttribution);
   return true;
 }
 
@@ -1596,6 +1765,7 @@ module.exports = {
   PROVIDER_HOSTED_IMAGE_PROMPT_ENVELOPE_SCHEMA,
   PROVIDER_HOSTED_IMAGE_PROMPT_POLICY_SCHEMA,
   PROVIDER_HOSTED_IMAGE_GENERATION_ARTIFACT_ENVELOPE_SCHEMA,
+  PROVIDER_HOSTED_USAGE_ATTRIBUTION_SCHEMA,
   PROVIDER_HOSTED_RAW_EXPOSURE_SCAN_SCHEMA,
   PROVIDER_HOSTED_RESULT_CONTEXT_ADMISSION_SCHEMA,
   PROVIDER_HOSTED_REQUEST_SHAPE_PROOF_SCHEMA,
@@ -1612,6 +1782,7 @@ module.exports = {
   buildProviderHostedImagePromptEnvelope,
   buildProviderHostedImagePromptPolicy,
   buildProviderHostedImageGenerationArtifactEnvelope,
+  buildProviderHostedUsageAttribution,
   buildProviderHostedRawExposureScan,
   buildProviderHostedResultContextAdmission,
   buildProviderHostedRequestShapeProof,
@@ -1625,6 +1796,7 @@ module.exports = {
   buildWebSearchEvidenceContract,
   assertProviderHostedResultContextAdmissionSafe,
   assertProviderHostedImageGenerationArtifactEnvelopeSafe,
+  assertProviderHostedUsageAttributionSafe,
   assertProviderHostedToolCallEnvelopeSafe,
   assertProviderHostedWebSearchResultEnvelopeSafe,
   assertProviderHostedToolsStatusSafe,

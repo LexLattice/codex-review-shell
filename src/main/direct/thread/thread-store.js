@@ -240,6 +240,50 @@ function jsonText(value) {
   return JSON.stringify(value === undefined ? null : value);
 }
 
+function parseJsonObject(value) {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return isPlainObject(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function hostedUsageFromSourceRefJson(value) {
+  const sourceRef = parseJsonObject(value);
+  const hosted = isPlainObject(sourceRef.hostedUsageAttribution) ? sourceRef.hostedUsageAttribution : {};
+  if (hosted.schema !== "direct_hosted_tool_usage_analytics_ref@1") return null;
+  return hosted;
+}
+
+function emptyHostedToolAggregate() {
+  return {
+    total: 0,
+    providerReported: 0,
+    unavailable: 0,
+    blocked: 0,
+    unknown: 0,
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    nonCachedInputTokens: 0,
+    outputTokens: 0,
+    reasoningTokens: 0,
+    totalTokens: 0,
+    byKind: [],
+    byState: [],
+  };
+}
+
+function addHostedUsageTokens(target, hosted = {}) {
+  target.inputTokens += normalizeNumber(hosted.inputTokens, 0);
+  target.cachedInputTokens += normalizeNumber(hosted.cachedInputTokens, 0);
+  target.nonCachedInputTokens += normalizeNumber(hosted.nonCachedInputTokens, 0);
+  target.outputTokens += normalizeNumber(hosted.outputTokens, 0);
+  target.reasoningTokens += normalizeNumber(hosted.reasoningTokens, 0);
+  target.totalTokens += normalizeNumber(hosted.totalTokens, 0);
+}
+
 function usageFactPriority(row = {}) {
   const kind = normalizeString(row.usage_record_kind, "missing");
   if (kind === "terminal") return 5;
@@ -1750,6 +1794,7 @@ class DirectThreadStore {
         latestContext: { status: "unavailable" },
         timing: { started: 0, completed: 0, active: 0, durationMs: 0, timeToFirstTokenMs: 0 },
         tools: { total: 0, completed: 0, failed: 0, commands: 0, patches: 0, subagents: 0, byKind: [] },
+        hostedTools: emptyHostedToolAggregate(),
         quotaWindows: [],
         quotaObservedAt: "",
         quotaPlanType: "",
@@ -1842,6 +1887,20 @@ class DirectThreadStore {
           from direct_tool_analytics_facts
           where (? = '' or thread_id = ?)
           group by tool_kind, status
+        `).all(safeThreadId, safeThreadId);
+    const hostedToolRows = safeProjectId
+      ? this.db.prepare(`
+          select tool_kind, status, source_ref_json
+          from direct_tool_analytics_facts
+          where project_id = ?
+            and (? = '' or thread_id = ?)
+            and source_ref_json like '%direct_hosted_tool_usage_analytics_ref@1%'
+        `).all(safeProjectId, safeThreadId, safeThreadId)
+      : this.db.prepare(`
+          select tool_kind, status, source_ref_json
+          from direct_tool_analytics_facts
+          where (? = '' or thread_id = ?)
+            and source_ref_json like '%direct_hosted_tool_usage_analytics_ref@1%'
         `).all(safeThreadId, safeThreadId);
     const quotaRows = safeProjectId
       ? this.db.prepare(`
@@ -2017,6 +2076,30 @@ class DirectThreadStore {
       .map(([xValue, yValue]) => ({ xValue, yValue }))
       .sort((a, b) => Number(b.yValue || 0) - Number(a.yValue || 0));
 
+    const hostedTools = emptyHostedToolAggregate();
+    const hostedByKind = new Map();
+    const hostedByState = new Map();
+    for (const row of hostedToolRows) {
+      const hosted = hostedUsageFromSourceRefJson(row.source_ref_json);
+      if (!hosted) continue;
+      const usageKind = normalizeString(hosted.usageKind, normalizeString(row.tool_kind, "provider_hosted_tool_call"));
+      const usageState = normalizeString(hosted.usageState, "unknown");
+      hostedTools.total += 1;
+      if (usageState === "provider_reported") hostedTools.providerReported += 1;
+      else if (usageState === "unavailable") hostedTools.unavailable += 1;
+      else if (usageState === "blocked") hostedTools.blocked += 1;
+      else hostedTools.unknown += 1;
+      addHostedUsageTokens(hostedTools, hosted);
+      hostedByKind.set(usageKind, (hostedByKind.get(usageKind) || 0) + 1);
+      hostedByState.set(usageState, (hostedByState.get(usageState) || 0) + 1);
+    }
+    hostedTools.byKind = [...hostedByKind.entries()]
+      .map(([xValue, yValue]) => ({ xValue, yValue }))
+      .sort((a, b) => Number(b.yValue || 0) - Number(a.yValue || 0));
+    hostedTools.byState = [...hostedByState.entries()]
+      .map(([xValue, yValue]) => ({ xValue, yValue }))
+      .sort((a, b) => Number(b.yValue || 0) - Number(a.yValue || 0));
+
     const timingByKind = new Map(timingRows.map((row) => [normalizeString(row.mark_kind, "unknown"), normalizeNumber(row.count, 0)]));
     const completedDurations = [];
     const firstTokenDurations = [];
@@ -2106,6 +2189,7 @@ class DirectThreadStore {
         : { status: "unavailable" },
       timing,
       tools,
+      hostedTools,
       quotaWindows,
       quotaObservedAt: normalizeString(quotaWindows[0]?.observedAt, ""),
       quotaPlanType: normalizeString(quotaWindows[0]?.planType, ""),
