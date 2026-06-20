@@ -12,6 +12,8 @@ const PROVIDER_HOSTED_ACTIVATION_SNAPSHOT_SCHEMA = "provider_hosted_tool_activat
 const PROVIDER_HOSTED_TOOL_CALL_ENVELOPE_SCHEMA = "provider_hosted_tool_call_envelope@1";
 const PROVIDER_HOSTED_WEB_SEARCH_QUERY_POLICY_SCHEMA = "provider_hosted_web_search_query_policy@1";
 const PROVIDER_HOSTED_WEB_SEARCH_QUERY_ENVELOPE_SCHEMA = "provider_hosted_web_search_query_envelope@1";
+const PROVIDER_HOSTED_WEB_SEARCH_RESULT_ENVELOPE_SCHEMA = "provider_hosted_web_search_result_envelope@1";
+const PROVIDER_HOSTED_RESULT_CONTEXT_ADMISSION_SCHEMA = "provider_hosted_result_context_admission@1";
 const PROVIDER_HOSTED_IMAGE_PROMPT_POLICY_SCHEMA = "provider_hosted_image_prompt_policy@1";
 const PROVIDER_HOSTED_IMAGE_PROMPT_ENVELOPE_SCHEMA = "provider_hosted_image_prompt_envelope@1";
 const PROVIDER_HOSTED_RAW_EXPOSURE_SCAN_SCHEMA = "provider_hosted_raw_exposure_scan@1";
@@ -47,7 +49,20 @@ const AUTHORITY_DECISIONS = new Set([
 ]);
 const HOSTED_SIDE_EFFECT_CLASSES = new Set(["external_epistemic_read", "generated_artifact_production"]);
 const REDACTION_STATES = new Set(["passed", "redacted", "blocked"]);
+const RESULT_REDACTION_STATES = new Set(["not_needed", "redacted", "blocked"]);
 const WEB_SEARCH_QUERY_KINDS = new Set(["single_query", "followup_query", "site_scoped_query"]);
+const WEB_SEARCH_SOURCE_TYPES = new Set(["web_page", "news", "documentation", "forum", "pdf", "unknown"]);
+const WEB_SEARCH_RETRIEVAL_CONFIDENCES = new Set(["provider_reported", "provider_cited", "harness_verified", "unknown"]);
+const WEB_SEARCH_CONTENT_ACCESSES = new Set(["snippet_only", "summary_only", "provider_citation_only", "fetched_content", "unknown"]);
+const WEB_SEARCH_TRUST_POSTURES = new Set(["provider_reported", "operator_known", "unknown"]);
+const WEB_SEARCH_FRESHNESS_POSTURES = new Set(["current_at_retrieval", "stale_possible", "unknown"]);
+const WEB_SEARCH_SUMMARY_KINDS = new Set(["provider_reported_summary", "harness_reduced_summary", "resident_generated_after_admission", "none"]);
+const WEB_SEARCH_SUMMARY_AUTHORITIES = new Set(["external_evidence_summary", "assistant_answer", "diagnostic"]);
+const CONTEXT_ADMISSION_KINDS = new Set(["summary", "source_refs", "bounded_excerpt", "artifact_ref", "blocked"]);
+const CONTEXT_ADMISSION_DECISIONS = new Set(["admit", "admit_degraded", "block_source_unknown", "block_raw_exposure", "block_policy", "not_requested"]);
+const RESIDENT_CONTEXT_VISIBILITIES = new Set(["none", "summary", "source_refs", "bounded_excerpt", "artifact_ref"]);
+const OPERATOR_PROJECTION_VISIBILITIES = new Set(["none", "summary", "source_refs", "artifact_preview", "artifact_ref"]);
+const PROVIDER_CONTINUATION_VISIBILITIES = new Set(["not_sent", "summary_only", "source_refs", "artifact_ref"]);
 const RAW_EXPOSURE_FINDINGS = new Set(["credentialed_url", "raw_secret", "private_file_path", "raw_provider_payload", "unbounded_personal_data", "oversized_input"]);
 
 const CALLABLE_EVIDENCE_STATES = new Set(["accepted", "runtime_probed"]);
@@ -56,6 +71,7 @@ const SECRET_PATTERN = /\b(?:bearer\s+[a-z0-9._~+/=-]{12,}|sk-[a-z0-9_-]{12,}|ap
 const PRIVATE_PATH_PATTERN = /(?:^|\s)(?:\/home\/[^/\s]+|\/mnt\/[a-z]\/Users\/[^/\s]+|[A-Z]:\\Users\\[^\\\s]+)/i;
 const PROVIDER_PAYLOAD_PATTERN = /(?:\"rawProviderPayload\"|\"messages\"\s*:\s*\[|\"authorization\"\s*:|\"cookie\"\s*:)/i;
 const PERSONAL_DATA_PATTERN = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b|\b(?:\+?\d[\d .()-]{7,}\d)\b/i;
+const UNSAFE_URL_SCHEMES = new Set(["javascript:", "data:", "blob:", "file:"]);
 
 function isPlainObject(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -200,6 +216,69 @@ function timestampIsFresh(expiresAt, nowMs) {
 
 function inputDigestFor(text) {
   return digestFor("provider-hosted-input-text@1", normalizeString(text, ""));
+}
+
+function normalizeIsoTimestamp(value, fallback) {
+  const text = normalizeString(value, "");
+  if (text && Number.isFinite(Date.parse(text))) return new Date(Date.parse(text)).toISOString();
+  return fallback;
+}
+
+function normalizeWebSearchLimits(input = {}) {
+  const source = isPlainObject(input) ? input : {};
+  return {
+    maxSources: normalizePositiveInteger(source.maxSources, 8),
+    maxSummaryChars: normalizePositiveInteger(source.maxSummaryChars, 1200),
+    maxExcerptChars: normalizePositiveInteger(source.maxExcerptChars, 480),
+    maxFollowupSearchesPerTurn: normalizePositiveInteger(source.maxFollowupSearchesPerTurn, 2),
+  };
+}
+
+function safeWebUrlParts(rawUrl) {
+  const text = normalizeString(rawUrl, "");
+  if (!text) return null;
+  try {
+    const parsed = new URL(text);
+    if (!["http:", "https:"].includes(parsed.protocol)) return null;
+    if (UNSAFE_URL_SCHEMES.has(parsed.protocol)) return null;
+    if (parsed.username || parsed.password) return null;
+    return {
+      display: boundedString(parsed.toString(), 360),
+      evidenceKey: `web_url_${digestFor("provider-hosted-web-url@1", parsed.toString()).slice(0, 32)}`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function normalizeWebSearchSourceRef(input = {}, index = 0, fallbackRetrievedAt = "") {
+  const source = isPlainObject(input) ? input : {};
+  const url = safeWebUrlParts(source.url || source.urlDisplay || source.href);
+  if (!url) return null;
+  const sourceRef = {
+    sourceId: boundedString(source.sourceId || `source_${index + 1}`, 120),
+    urlDisplay: url.display,
+    urlEvidenceKey: boundedString(source.urlEvidenceKey || url.evidenceKey, 180),
+    title: boundedString(source.title, 220),
+    retrievedAt: normalizeIsoTimestamp(source.retrievedAt, fallbackRetrievedAt),
+    citationLabel: boundedString(source.citationLabel || `[${index + 1}]`, 80),
+    sourceType: normalizeEnum(source.sourceType, WEB_SEARCH_SOURCE_TYPES, "unknown"),
+    retrievalConfidence: normalizeEnum(source.retrievalConfidence, WEB_SEARCH_RETRIEVAL_CONFIDENCES, "provider_cited"),
+    contentAccess: normalizeEnum(source.contentAccess, WEB_SEARCH_CONTENT_ACCESSES, "provider_citation_only"),
+    trustPosture: normalizeEnum(source.trustPosture, WEB_SEARCH_TRUST_POSTURES, "provider_reported"),
+  };
+  sourceRef.sourceDigest = digestFor("provider-hosted-web-source-ref@1", sourceRef);
+  return sourceRef;
+}
+
+function resultAdmissionRef(admission = {}) {
+  return normalizeEvidenceRef({
+    kind: "provider_hosted_result_context_admission",
+    id: admission.admissionId,
+    digest: admission.admissionDigest,
+    label: "provider-hosted result context admission",
+    confidence: admission.admissionDecision,
+  }, "provider_hosted_result_context_admission");
 }
 
 function requestShapeProofIsCallable(proof = {}, nowMs) {
@@ -839,6 +918,163 @@ function buildProviderHostedToolCallEnvelope(input = {}) {
   return envelope;
 }
 
+function buildProviderHostedWebSearchResultEnvelope(input = {}) {
+  const source = isPlainObject(input) ? input : {};
+  const callEnvelope = source.callEnvelope?.schema === PROVIDER_HOSTED_TOOL_CALL_ENVELOPE_SCHEMA ? source.callEnvelope : {};
+  const generatedAt = normalizeString(source.generatedAt, nowIso(source.nowMs));
+  const retrievedAt = normalizeIsoTimestamp(source.retrievedAt, generatedAt);
+  const limits = normalizeWebSearchLimits(source.webSearchLimits || source.limits);
+  const sourceRefs = arrayOrEmpty(source.sourceRefs || source.sources)
+    .slice(0, limits.maxSources)
+    .map((entry, index) => normalizeWebSearchSourceRef(entry, index, retrievedAt))
+    .filter(Boolean);
+  const droppedSourceCount = Math.max(0, arrayOrEmpty(source.sourceRefs || source.sources).length - sourceRefs.length);
+  const callAllowed = callEnvelope.toolKind === "web_search" && callEnvelope.authorityDecision === "allowed";
+  const providerResultRef = boundedString(source.providerResultRef || "", 180);
+  const requestedSourceIds = normalizeStringList(source.admittedSourceIds, sourceRefs.map((ref) => ref.sourceId));
+  const sourceIds = new Set(sourceRefs.map((ref) => ref.sourceId));
+  const admittedSourceIds = requestedSourceIds.filter((id) => sourceIds.has(id));
+  const missingSourceIds = requestedSourceIds.filter((id) => !sourceIds.has(id));
+  const redactionState = callAllowed && sourceRefs.length && providerResultRef && !missingSourceIds.length ? "not_needed" : "blocked";
+  const summaryKind = normalizeEnum(
+    source.resultSummary || source.summary ? source.summaryKind : "none",
+    WEB_SEARCH_SUMMARY_KINDS,
+    source.resultSummary || source.summary ? "provider_reported_summary" : "none",
+  );
+  const summaryAuthority = summaryKind === "none"
+    ? "diagnostic"
+    : normalizeEnum(source.summaryAuthority, WEB_SEARCH_SUMMARY_AUTHORITIES, "external_evidence_summary");
+  const envelope = {
+    schema: PROVIDER_HOSTED_WEB_SEARCH_RESULT_ENVELOPE_SCHEMA,
+    resultId: boundedString(source.resultId || "", 180),
+    toolKind: "web_search",
+    callId: boundedString(source.callId || callEnvelope.callId, 180),
+    workThreadId: boundedString(source.workThreadId || callEnvelope.workThreadId, 160),
+    turnId: boundedString(source.turnId || callEnvelope.turnId, 180),
+    providerResultRef,
+    queryDigest: boundedString(source.queryDigest || callEnvelope.inputEnvelope?.queryDigest, 180),
+    queryPreview: redactionState === "not_needed" ? boundedString(source.queryPreview || callEnvelope.inputEnvelope?.queryPreview, 160) : "",
+    retrievedAt,
+    freshnessPosture: normalizeEnum(source.freshnessPosture, WEB_SEARCH_FRESHNESS_POSTURES, "current_at_retrieval"),
+    sourceRefs,
+    droppedSourceCount,
+    resultSummary: summaryKind === "none" || redactionState === "blocked" ? "" : boundedString(source.resultSummary || source.summary, limits.maxSummaryChars),
+    summaryKind,
+    summaryAuthority,
+    webSearchLimits: limits,
+    citationParity: {
+      admittedSourceIds,
+      missingSourceIds,
+      inventedCitationDetected: missingSourceIds.length > 0,
+    },
+    quotePolicy: {
+      verbatimLimitApplied: true,
+      maxExcerptChars: limits.maxExcerptChars,
+      rawPageContentIncluded: false,
+    },
+    blockerCodes: [
+      ...(callAllowed ? [] : ["call_not_allowed"]),
+      ...(providerResultRef ? [] : ["provider_result_ref_missing"]),
+      ...(sourceRefs.length ? [] : ["source_refs_missing"]),
+      ...(missingSourceIds.length ? ["citation_parity_missing_source"] : []),
+    ],
+    redactionState,
+    rawProviderPayloadIncluded: false,
+    rawPageContentIncluded: false,
+    rawQueryIncluded: false,
+    rawSecretIncluded: false,
+    contextAdmission: source.contextAdmission?.schema === PROVIDER_HOSTED_RESULT_CONTEXT_ADMISSION_SCHEMA
+      ? resultAdmissionRef(source.contextAdmission)
+      : undefined,
+    createdAt: generatedAt,
+  };
+  envelope.resultId = envelope.resultId || `provider_hosted_web_result_${digestFor("provider-hosted-web-result-source@1", envelope).slice(0, 24)}`;
+  envelope.resultDigest = digestFor("provider-hosted-web-search-result-envelope@1", envelope);
+  return envelope;
+}
+
+function buildProviderHostedResultContextAdmission(input = {}) {
+  const source = isPlainObject(input) ? input : {};
+  const result = source.resultEnvelope?.schema === PROVIDER_HOSTED_WEB_SEARCH_RESULT_ENVELOPE_SCHEMA ? source.resultEnvelope : {};
+  const requestedKind = normalizeEnum(source.admissionKind, CONTEXT_ADMISSION_KINDS, "summary");
+  const hasSources = arrayOrEmpty(result.sourceRefs).length > 0;
+  const resultBlocked = result.redactionState === "blocked" || arrayOrEmpty(result.blockerCodes).length > 0;
+  let admissionKind = requestedKind;
+  let admissionDecision = "admit";
+  if (!result?.schema) {
+    admissionKind = "blocked";
+    admissionDecision = "block_policy";
+  } else if (result.redactionState === "blocked") {
+    admissionKind = "blocked";
+    admissionDecision = "block_raw_exposure";
+  } else if (!hasSources) {
+    admissionKind = "blocked";
+    admissionDecision = "block_source_unknown";
+  } else if (requestedKind === "bounded_excerpt" && result.quotePolicy?.rawPageContentIncluded !== false) {
+    admissionKind = "blocked";
+    admissionDecision = "block_policy";
+  } else if (requestedKind === "artifact_ref") {
+    admissionKind = "blocked";
+    admissionDecision = "block_policy";
+  } else if (resultBlocked) {
+    admissionKind = "blocked";
+    admissionDecision = "block_policy";
+  } else if (requestedKind === "bounded_excerpt") {
+    admissionDecision = "admit_degraded";
+  }
+  if (normalizeEnum(source.admissionDecision, CONTEXT_ADMISSION_DECISIONS, admissionDecision) === "not_requested") {
+    admissionKind = "blocked";
+    admissionDecision = "not_requested";
+  }
+  const residentContext = admissionDecision === "admit" || admissionDecision === "admit_degraded"
+    ? admissionKind === "source_refs"
+      ? "source_refs"
+      : admissionKind === "bounded_excerpt"
+        ? "bounded_excerpt"
+        : "summary"
+    : "none";
+  const operatorProjection = admissionDecision === "admit" || admissionDecision === "admit_degraded"
+    ? admissionKind === "source_refs" ? "source_refs" : "summary"
+    : "none";
+  const providerContinuation = admissionDecision === "admit" || admissionDecision === "admit_degraded"
+    ? admissionKind === "source_refs" ? "source_refs" : "summary_only"
+    : "not_sent";
+  const admission = {
+    schema: PROVIDER_HOSTED_RESULT_CONTEXT_ADMISSION_SCHEMA,
+    admissionId: boundedString(source.admissionId || "", 180),
+    resultId: boundedString(source.resultId || result.resultId, 180),
+    toolKind: normalizeEnum(source.toolKind || result.toolKind, TOOL_KINDS, "web_search"),
+    workThreadId: boundedString(source.workThreadId || result.workThreadId, 160),
+    turnId: boundedString(source.turnId || result.turnId, 180),
+    admissionKind,
+    admissionDecision,
+    visibility: {
+      residentContext: normalizeEnum(residentContext, RESIDENT_CONTEXT_VISIBILITIES, "none"),
+      operatorProjection: normalizeEnum(operatorProjection, OPERATOR_PROJECTION_VISIBILITIES, "none"),
+      providerContinuation: normalizeEnum(providerContinuation, PROVIDER_CONTINUATION_VISIBILITIES, "not_sent"),
+      usageLedger: true,
+    },
+    admittedSourceIds: admissionDecision === "admit" || admissionDecision === "admit_degraded"
+      ? arrayOrEmpty(result.citationParity?.admittedSourceIds)
+      : [],
+    trustWarning: boundedString(source.trustWarning || "Provider-hosted web-search result is external evidence, not project truth or durable memory.", 320),
+    freshnessWarning: result.freshnessPosture === "current_at_retrieval"
+      ? ""
+      : boundedString(source.freshnessWarning || "Web-search result freshness is uncertain; re-query before relying on time-sensitive claims.", 320),
+    rawPayloadIncluded: false,
+    rawPageContentIncluded: false,
+    rawProviderPayloadIncluded: false,
+    memoryCandidateCreated: false,
+    durableMemoryAdmission: false,
+    projectTruthGranted: false,
+    workspaceMutationAllowed: false,
+    createdAt: normalizeString(source.createdAt, nowIso(source.nowMs)),
+  };
+  admission.admissionId = admission.admissionId || `provider_hosted_context_admission_${digestFor("provider-hosted-result-context-admission-source@1", admission).slice(0, 24)}`;
+  admission.admissionDigest = digestFor("provider-hosted-result-context-admission@1", admission);
+  return admission;
+}
+
 function buildWebSearchEvidenceContract(input = {}) {
   const source = isPlainObject(input) ? input : {};
   const contract = {
@@ -1110,18 +1346,69 @@ function assertProviderHostedToolCallEnvelopeSafe(envelope = {}) {
   return true;
 }
 
+function assertProviderHostedWebSearchResultEnvelopeSafe(envelope = {}) {
+  if (!isPlainObject(envelope) || envelope.schema !== PROVIDER_HOSTED_WEB_SEARCH_RESULT_ENVELOPE_SCHEMA) {
+    throw new Error("provider_hosted_web_search_result_envelope_schema_mismatch");
+  }
+  for (const flag of ["rawProviderPayloadIncluded", "rawPageContentIncluded", "rawQueryIncluded", "rawSecretIncluded"]) {
+    if (envelope[flag] !== false) throw new Error(`provider_hosted_web_result_authority_leak:${flag}`);
+  }
+  if (envelope.toolKind !== "web_search") throw new Error("provider_hosted_web_result_tool_kind_mismatch");
+  if (envelope.redactionState === "not_needed") {
+    if (!envelope.providerResultRef) throw new Error("provider_hosted_web_result_provider_ref_missing");
+    if (!arrayOrEmpty(envelope.sourceRefs).length) throw new Error("provider_hosted_web_result_source_refs_missing");
+  }
+  for (const sourceRef of arrayOrEmpty(envelope.sourceRefs)) {
+    if (!sourceRef.urlEvidenceKey || !sourceRef.urlDisplay) throw new Error("provider_hosted_web_result_source_ref_incomplete");
+    if (!safeWebUrlParts(sourceRef.urlDisplay)) throw new Error("provider_hosted_web_result_unsafe_source_url");
+  }
+  if (envelope.citationParity?.inventedCitationDetected === true && envelope.redactionState === "not_needed") {
+    throw new Error("provider_hosted_web_result_invented_citation_admitted");
+  }
+  if (envelope.quotePolicy?.rawPageContentIncluded !== false) {
+    throw new Error("provider_hosted_web_result_raw_page_content_leak");
+  }
+  return true;
+}
+
+function assertProviderHostedResultContextAdmissionSafe(admission = {}) {
+  if (!isPlainObject(admission) || admission.schema !== PROVIDER_HOSTED_RESULT_CONTEXT_ADMISSION_SCHEMA) {
+    throw new Error("provider_hosted_result_context_admission_schema_mismatch");
+  }
+  for (const flag of [
+    "rawPayloadIncluded",
+    "rawPageContentIncluded",
+    "rawProviderPayloadIncluded",
+    "memoryCandidateCreated",
+    "durableMemoryAdmission",
+    "projectTruthGranted",
+    "workspaceMutationAllowed",
+  ]) {
+    if (admission[flag] !== false) throw new Error(`provider_hosted_context_admission_authority_leak:${flag}`);
+  }
+  if (admission.admissionDecision.startsWith("block") && admission.visibility?.residentContext !== "none") {
+    throw new Error("provider_hosted_context_admission_block_visibility_leak");
+  }
+  if ((admission.admissionDecision === "admit" || admission.admissionDecision === "admit_degraded") && !arrayOrEmpty(admission.admittedSourceIds).length) {
+    throw new Error("provider_hosted_context_admission_source_refs_missing");
+  }
+  return true;
+}
+
 module.exports = {
   PROVIDER_HOSTED_ACTIVATION_SNAPSHOT_SCHEMA,
   PROVIDER_HOSTED_DECLARATION_POLICY_SCHEMA,
   PROVIDER_HOSTED_IMAGE_PROMPT_ENVELOPE_SCHEMA,
   PROVIDER_HOSTED_IMAGE_PROMPT_POLICY_SCHEMA,
   PROVIDER_HOSTED_RAW_EXPOSURE_SCAN_SCHEMA,
+  PROVIDER_HOSTED_RESULT_CONTEXT_ADMISSION_SCHEMA,
   PROVIDER_HOSTED_REQUEST_SHAPE_PROOF_SCHEMA,
   PROVIDER_HOSTED_TOOL_CALL_ENVELOPE_SCHEMA,
   PROVIDER_HOSTED_TOOL_CAPABILITY_SCHEMA,
   PROVIDER_HOSTED_TOOLS_STATUS_SCHEMA,
   PROVIDER_HOSTED_WEB_SEARCH_QUERY_ENVELOPE_SCHEMA,
   PROVIDER_HOSTED_WEB_SEARCH_QUERY_POLICY_SCHEMA,
+  PROVIDER_HOSTED_WEB_SEARCH_RESULT_ENVELOPE_SCHEMA,
   PROVIDER_IMAGE_GENERATION_ARTIFACT_CONTRACT_SCHEMA,
   PROVIDER_WEB_SEARCH_EVIDENCE_CONTRACT_SCHEMA,
   buildProviderHostedActivationSnapshot,
@@ -1129,6 +1416,7 @@ module.exports = {
   buildProviderHostedImagePromptEnvelope,
   buildProviderHostedImagePromptPolicy,
   buildProviderHostedRawExposureScan,
+  buildProviderHostedResultContextAdmission,
   buildProviderHostedRequestShapeProof,
   buildProviderHostedToolCallEnvelope,
   buildImageGenerationArtifactContract,
@@ -1136,7 +1424,10 @@ module.exports = {
   buildProviderHostedToolsStatus,
   buildProviderHostedWebSearchQueryEnvelope,
   buildProviderHostedWebSearchQueryPolicy,
+  buildProviderHostedWebSearchResultEnvelope,
   buildWebSearchEvidenceContract,
+  assertProviderHostedResultContextAdmissionSafe,
   assertProviderHostedToolCallEnvelopeSafe,
+  assertProviderHostedWebSearchResultEnvelopeSafe,
   assertProviderHostedToolsStatusSafe,
 };

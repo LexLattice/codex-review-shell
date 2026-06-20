@@ -684,13 +684,13 @@ function defaultToolCapabilityInputs() {
       localExecutorState: "scaffolded",
       localExecutor: "src/main/direct/provider/hosted-tools.js",
       requestShapeFamilies: name === "web_search"
-        ? ["provider_hosted_tool_capability", "provider_hosted_request_shape_proof", "provider_hosted_tool_activation_snapshot", "provider_hosted_tool_call_envelope", "provider_hosted_web_search_query_policy", "provider_hosted_web_search_query_envelope", "provider_hosted_raw_exposure_scan", "provider_web_search_evidence_contract", "provider_hosted_result"]
+        ? ["provider_hosted_tool_capability", "provider_hosted_request_shape_proof", "provider_hosted_tool_activation_snapshot", "provider_hosted_tool_call_envelope", "provider_hosted_web_search_query_policy", "provider_hosted_web_search_query_envelope", "provider_hosted_raw_exposure_scan", "provider_hosted_web_search_result_envelope", "provider_hosted_result_context_admission", "provider_web_search_evidence_contract", "provider_hosted_result"]
         : ["provider_hosted_tool_capability", "provider_hosted_request_shape_proof", "provider_hosted_tool_activation_snapshot", "provider_hosted_tool_call_envelope", "provider_hosted_image_prompt_policy", "provider_hosted_image_prompt_envelope", "provider_hosted_raw_exposure_scan", "provider_image_generation_artifact_contract", "generated_artifact_ref"],
       approvalMode: "future_gate_required",
       unsupportedReason: "hosted_tool_requires_activation_snapshot_request_shape_proof_and_call_envelope",
       providerResultEnvelopeType: name === "web_search" ? "provider_hosted_result" : "generated_artifact_ref",
       recoveryLaw: name === "web_search"
-        ? "Web search result is external epistemic evidence requiring activation snapshot, request-shape proof, call envelope, outbound query scan, source refs, retrieval time, citation policy, and staleness."
+        ? "Web search result is external epistemic evidence requiring activation snapshot, request-shape proof, call envelope, outbound query scan, result envelope, source refs, retrieval time, citation policy, context-admission law, and staleness."
         : "Image generation result is generated artifact requiring activation snapshot, request-shape proof, call envelope, outbound prompt scan, prompt evidence, asset id, storage, and metadata/redaction policy. Resident-callable image generation remains blocked by default.",
       failureClasses: ["projection_laundering", "authority_inflation", "context_smuggling"],
     })),
