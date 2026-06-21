@@ -3613,7 +3613,7 @@ class DirectLiveTextController {
     const stepOrdinal = Number(currentObligation.stepOrdinal || 1) || 1;
     const stepId = normalizeString(currentObligation.stepId, "");
     const originalUserIntent = userPromptTextFromTurn(turn);
-    const continuationToolNames = implementationContinuationToolNames(this.statusForProject(project), originalUserIntent);
+    const continuationToolNames = implementationContinuationToolNames(this.statusForProject(project || {}), originalUserIntent);
     const continuationToolComposition = composeImplementationToolBundleForRequest({
       projectId: normalizeString(project?.id || project?.projectId || project?.name, ""),
       sessionId,
@@ -3623,7 +3623,7 @@ class DirectLiveTextController {
       sourceMessageId: `${turnId}_${obligationId}_read_continuation`,
       normalizedLaneRequestId: `normalized_lane_request_${turnId}_${obligationId}_${stepOrdinal}`,
       workThreadId: directWorkThreadContextCarrier(options).workThreadId,
-      runtimeFactsId: this.statusForProject(project).evidenceId || "direct_runtime_facts",
+      runtimeFactsId: this.statusForProject(project || {}).evidenceId || "direct_runtime_facts",
     });
     const continuationTools = continuationToolComposition.tools;
     const declaredContinuationToolNames = continuationToolComposition.toolNames;
@@ -3834,7 +3834,7 @@ class DirectLiveTextController {
     const parentResponseSource = parentResponseSourceForToolStep(currentObligation);
     const stepOrdinal = Number(currentObligation.stepOrdinal || 1) || 1;
     const originalUserIntent = userPromptTextFromTurn(turn);
-    const continuationToolNames = implementationContinuationToolNames(this.statusForProject(project), originalUserIntent);
+    const continuationToolNames = implementationContinuationToolNames(this.statusForProject(project || {}), originalUserIntent);
     const continuationToolComposition = composeImplementationToolBundleForRequest({
       projectId: normalizeString(project?.id || project?.projectId || project?.name, ""),
       sessionId,
@@ -3844,7 +3844,7 @@ class DirectLiveTextController {
       sourceMessageId: `${turnId}_${obligationId}_patch_continuation`,
       normalizedLaneRequestId: `normalized_lane_request_${turnId}_${obligationId}_${stepOrdinal}`,
       workThreadId: directWorkThreadContextCarrier(options).workThreadId,
-      runtimeFactsId: this.statusForProject(project).evidenceId || "direct_runtime_facts",
+      runtimeFactsId: this.statusForProject(project || {}).evidenceId || "direct_runtime_facts",
     });
     const continuationTools = continuationToolComposition.tools;
     const declaredContinuationToolNames = continuationToolComposition.toolNames;

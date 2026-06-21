@@ -296,6 +296,7 @@ function buildComposerInput(input = {}) {
       laneSelectionId: laneSelection.selectionId,
       requestedToolFamilies: input.requestedToolFamilies,
       toolNames: input.toolNames,
+      useLaneDefaultTools: input.useLaneDefaultTools !== false,
     }).slice(7, 31)}`),
     laneSelection,
     providerProfileRef: normalizeEvidenceRef(input.providerProfileRef, "provider_profile", "direct_provider_profile"),
