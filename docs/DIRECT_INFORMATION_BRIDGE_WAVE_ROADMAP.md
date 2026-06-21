@@ -4460,7 +4460,7 @@ no workspace mutation
 | `#105` | merged | `codex/direct-bounded-human-decision-tool` | Bounded human decision bridge | Resident-callable bounded `request_user_input`, single-pending policy, pending/answered/expired/cancelled/superseded ledger, non-authoritative bounded-choice result envelope, free-text context-only witness | No free-form approval, permission widening, or provider turn auto-start |
 | `#106` | merged | `codex/direct-permission-widening-request-gate` | Permission widening request gate | `request_permissions` request packet, separate PermissionWideningDecision, single-action target capability/proposed call id, broad/session/project blockers, operator-confirm-required witness | No broad authority widening, request-as-grant collapse, or full-access grant |
 | `#107` | merged | `codex/direct-image-view-projection-tool` | Image metadata/projection tool | `view_image` guarded metadata/projection capability, path containment, type sniffing, decoded caps, residentPerceptionLevel, modelSawPixels=false, payload unsupported witness | No provider image payload submission, model pixel-vision claim, or inline SVG rendering |
-| `#108` | merged | `codex/direct-human-control-wave17-usability-gate` | Wave 17 usability proof and declaration gate | Human/control usability proof, resident/operator witness rows, manual gate, headless scenarios, negative matrix, registry/roadmap update | No Wave 18 external discovery/MCP, Wave 19 provider-hosted tools, or Wave 20 new_context execution |
+| `#108` | merged | `codex/direct-human-control-wave17-usability-gate` | Wave 17 usability proof and declaration gate | Human/control usability proof, resident/operator witness rows, manual gate, headless scenarios, negative matrix, registry/roadmap update | No Wave 18 external discovery/MCP, Wave 19 provider-hosted tools, or future context-world transition/new_context execution |
 
 Wave 17 completion gate:
 
@@ -4516,7 +4516,7 @@ no raw external URI/payload/secret exposure
 | `#110` | merged | `codex/direct-external-discovery-tools` | Resident external discovery tools | Resident-callable discovery declarations for `tool_search`, `list_mcp_resources`, `list_mcp_resource_templates`, ExternalToolSearchInput, plugin candidate discovery-only descriptors, schema/source digests, unavailable/degraded evidence | No `read_mcp_resource`, dynamic MCP calls, plugin install, or discovered-tool auto-promotion |
 | `#111` | merged | `codex/direct-mcp-resource-read-envelope` | MCP resource read envelope | McpServerIdentityWitness, McpResourceIdentity, guarded McpResourceReadEnvelope, URI digest/display policy, MIME/size caps, status/redaction/truncation separation, readReplayPolicy, payloadRetention, blocked binary/oversize/unknown-source rows | No dynamic MCP action calls, workspace staging, raw full payload admission, automatic replay after ambiguity, or project-truth mutation |
 | `#112` | merged | `codex/direct-external-result-context-admission` | External result context admission | ExternalResultContextAdmissionPolicy, resident/operator/provider visibility channels, summary/ref/excerpt/blocked rows, trust/freshness projection, trust warning, no-memory-admission law, raw-leak negative tests | No MCP resource browser UI, persistent artifact import/staging, durable memory admission, or external action approval |
-| `#113` | merged | `codex/direct-external-wave18-usability-gate` | Wave 18 usability proof gate | ExternalToolUsabilityProof, resident/operator witness rows, manual gate, headless scenarios, negative matrix for server ambiguity, raw leaks, replay, memory smuggling, dynamic actions, plugin install, registry/roadmap update | No Wave 19 provider-hosted tools, Wave 20 new_context/compaction, or Wave 21 code-mode execution |
+| `#113` | merged | `codex/direct-external-wave18-usability-gate` | Wave 18 usability proof gate | ExternalToolUsabilityProof, resident/operator witness rows, manual gate, headless scenarios, negative matrix for server ambiguity, raw leaks, replay, memory smuggling, dynamic actions, plugin install, registry/roadmap update | No Wave 19 provider-hosted tools, future context-world transition/new_context/compaction, or Wave 21+ code-mode execution |
 
 Wave 18 completion gate:
 
@@ -4580,7 +4580,7 @@ no automatic replay after unknown/restart/handoff
 | `#116` | merged | `codex/direct-provider-hosted-web-search` | Hosted web search result/context admission | ProviderHostedWebSearchResultEnvelope, source URL display/evidence-key policy, sourceType/retrievalConfidence/contentAccess, retrieved-at/freshness/citation posture, summary authority, limits, citation parity, quote/raw-page policy, ProviderHostedResultContextAdmission, resident-callable web_search only when activation says callable | No browser navigation, local web cache ingestion, raw page HTML admission, durable memory, or project-truth mutation |
 | `#117` | merged | `codex/direct-provider-hosted-image-artifacts` | Hosted image artifact governance | ProviderHostedImageGenerationArtifactEnvelope, operator-gated default, resident-callable disabled unless explicitly activated later, artifact refs/projection policy, generation limits/provenance/state/safety posture, storage/retention/staging manifest contract, prompt evidence policy, unsupported/operator-gated scenarios | No automatic workspace insertion, raw image bytes in renderer state, image editor workflow, durable memory admission, or provider safety bypass |
 | `#118` | merged | `codex/direct-provider-hosted-usage-attribution` | Hosted usage attribution and analytics | ProviderHostedUsageAttribution, per-call analytics rows, usageKind/usageState/unavailableReason, thread/turn/agent attribution, unknown/unavailable evidence rows, analytics/runtime witness integration, parent-turn breakdown, fixtures proving hosted usage is distinct from inference/local tools/MCP | No billing-grade cost unless provider reports it, no missing usage as zero, no retroactive exact usage for old transcripts |
-| `#119` | in review | `codex/direct-provider-hosted-wave19-usability-gate` | Wave 19 usability proof gate | ProviderHostedUsabilityProof, resident/operator/headless scenarios, web_search available/blocked and image_generation available/operator-gated/blocked proofs, negative matrix for profile-declared-but-unprobed calls, static labels, outbound query leaks, invented citations, raw prompt retention, missing staging manifests, provider-blocked generations, image bytes, workspace insertion, durable memory, replay, stale activation, undeclared calls, registry/roadmap/audit update | No Wave 20 new_context/compaction, Wave 21 code-mode execution, Wave 22 batch orchestration, plugin install, or dynamic MCP action execution |
+| `#119` | merged | `codex/direct-provider-hosted-wave19-usability-gate` | Wave 19 usability proof gate | ProviderHostedUsabilityProof, resident/operator/headless scenarios, web_search available/blocked and image_generation available/operator-gated/blocked proofs, negative matrix for profile-declared-but-unprobed calls, static labels, outbound query leaks, invented citations, raw prompt retention, missing staging manifests, provider-blocked generations, image bytes, workspace insertion, durable memory, replay, stale activation, undeclared calls, registry/roadmap/audit update | No future context-world transition/new_context/compaction, Wave 21+ code-mode execution, Wave 22+ batch orchestration, plugin install, or dynamic MCP action execution |
 
 Wave 19 completion gate:
 
@@ -4592,6 +4592,77 @@ governance by default, with per-call authority envelopes, sanitized
 result/artifact envelopes, explicit context admission, and usage attribution.
 Unsupported or unsafe hosted paths remain visible as blocked/deferred with
 reasons.
+```
+
+## Wave 20: Role-Lane Tool Bundle Composition
+
+Status: planned.
+
+Detailed specs:
+
+- `docs/ODEU_ROLE_LANE_MULTI_AGENT_ARCHITECTURE_SPEC.md`
+- `docs/DIRECT_ROLE_LANE_TOOL_BUNDLE_COMPOSER_SPEC.md`
+
+Problem:
+
+```text
+Wave 15-19 capabilities exist and have proof rows, but the default live Direct
+implementation lane still provider-declares only read_file, apply_patch, and
+run_command.
+
+Implemented/proved capability != resident-callable tool in the current request.
+```
+
+Purpose:
+
+```text
+current WorkThread + role lane + objective + authority boundary + runtime facts
+  -> lane-scoped provider tool bundle
+  -> resident-visible capability catalogue for blocked/deferred tools
+  -> composition witness for audit and live self-report tests
+```
+
+Standing laws:
+
+```text
+tool catalog != model-visible declaration
+semantic relevance != access permission
+role lane decides tool family eligibility
+deterministic policy decides declaration and per-call authority
+resident catalogue explains unavailable tools without granting them
+composer compiles already-lawful artifacts; it does not decide user intent,
+grant authority, create roles, or rewrite policy
+```
+
+Initial target posture:
+
+```text
+Keep implementation-lane read_file/apply_patch/run_command behavior stable.
+Add composition witnesses and resident catalogue first.
+Promote safe read/status utilities before mutation/interference tools.
+Promote sub-agent status before sub-agent spawn/follow-up/lifecycle mutation.
+Promote MCP/resource discovery before dynamic MCP actions or plugin install.
+Promote hosted web_search only with exact activation evidence.
+Keep image_generation operator-gated by default.
+```
+
+| PR | Status | Branch | Purpose | Planned deliverable | Explicit non-goals |
+| --- | --- | --- | --- | --- | --- |
+| `#120` | planned | TBD | Role lane registry and static composition witness | DirectRoleLaneRegistry bound to AgentClassSpec/controlled route/normalized request refs, DirectRoleLaneSelection, ProviderDeclaredToolBundle schema, DirectToolBundleComposerInput, ToolBundleCompositionWitness schema, fixture implementation-worker composition, negative fixture for missing request grounding | No provider declaration behavior change |
+| `#121` | planned | TBD | Composer over existing implementation tools | Route read_file/apply_patch/run_command through DirectToolBundleComposer with identical live behavior, composition witness, resident catalogue, digest parity, same tool names, same `parallel_tool_calls=false`, same post-tool behavior | No new tools declared |
+| `#122` | planned | TBD | Safe resident utility tools | Declare get_context_remaining, update_plan, and request_user_input where policy allows; test each U-function separately: status witness, plan projection mutation only, bounded human-decision packet | No permission widening, new_context, raw image payloads, or hidden authority |
+| `#123` | planned | TBD | Read-only sub-agent status tools | For default implementation-worker lane declare list_agents and inspect_agent; optionally bounded wait_agent only if read-like and non-interfering; preserve Wave 15/16 orchestrator/sub-agent lane spawn path under separate lane policy | No implementation-worker spawn_agent, send_message, close_agent, interrupt_agent, resume_agent, or recursive_spawn declaration |
+| `#124` | planned | TBD | External discovery read-only tools | Declare tool_search, list_mcp_resources, list_mcp_resource_templates, and read_mcp_resource only when source identity is explicit; ambiguous server/resource becomes blocked catalogue row | No dynamic MCP tool execution, plugin install, or discovered-tool auto-trust |
+| `#125` | planned | TBD | Conditional provider-hosted web search | Declare web_search only when exact provider activation/request-shape evidence says callable; keep image_generation catalogue-visible/operator-gated; include stale/missing request-shape negative fixture | No browser-session authority, raw page HTML admission, image_generation resident-callable default, or memory admission |
+
+Wave 20 completion gate:
+
+```text
+The live Direct resident can accurately report both callable and unavailable
+capabilities because each request is built from a role-lane tool bundle
+composition witness. Safe read/status tools from prior waves can be declared
+under lane policy, while mutation/interference/provider-hosted risky tools stay
+blocked, operator-gated, or deferred with explicit reasons.
 ```
 
 

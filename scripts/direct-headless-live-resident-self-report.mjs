@@ -19,6 +19,9 @@ const {
   buildLiveResidentSelfReportSuiteReport,
   defaultLiveResidentSuiteSelection,
 } = require("../src/main/direct/headless/live-resident-self-report.js");
+const {
+  buildDefaultHeadlessResidentSmokeSuite,
+} = require("../src/main/direct/headless/resident-smoke-runner.js");
 
 const APP_TITLE = "Codex Review Shell";
 const CONFIG_FILE_NAME = "workspace-config.json";
@@ -179,9 +182,27 @@ function readJsonFile(targetPath) {
 }
 
 function selectedCaseClasses(options = {}) {
-  if (optionFlag(options, "all-cases", false)) return [];
+  if (optionFlag(options, "all-cases", false)) {
+    return buildDefaultHeadlessResidentSmokeSuite().caseClasses;
+  }
   const raw = optionString(options, "case-classes", optionString(options, "case-class", "tool_visibility_self_report"));
   return raw.split(",").map((entry) => normalizeString(entry, "")).filter(Boolean);
+}
+
+function readDirectSessionFromRoot(sessionRoot, threadId) {
+  const directPath = path.join(sessionRoot, threadId, "session.json");
+  const nestedPath = path.join(sessionRoot, "sessions", threadId, "session.json");
+  return readJsonFile(directPath) || readJsonFile(nestedPath) || {};
+}
+
+function liveExpectationCase(smokeCase) {
+  if (!smokeCase || smokeCase.caseClass !== "overclaim_detection_guard") return smokeCase;
+  return {
+    ...smokeCase,
+    description: "Resident avoids unavailable capability overclaims in live mode.",
+    expectedMismatchCount: 0,
+    expectedUnknownSubjectCount: 0,
+  };
 }
 
 function assistantTextFromSession(session = {}, turnId = "") {
@@ -272,10 +293,10 @@ async function runCase({ options, outputRoot, appUserDataRoot, suite, bundle, sm
       rendererSafeMessage: child.stderr.slice(0, 500),
     },
   };
-  const session = readJsonFile(path.join(sessionRoot, threadId, "session.json")) || {};
+  const session = readDirectSessionFromRoot(sessionRoot, threadId);
   const assistantText = assistantTextFromSession(session, transportReport.turnId);
   return buildLiveResidentSelfReportCaseReport({
-    smokeCase,
+    smokeCase: liveExpectationCase(smokeCase),
     bundle,
     assistantText,
     transportReport,
