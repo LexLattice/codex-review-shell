@@ -665,7 +665,7 @@ function isReadOnlySubAgentStatusToolName(toolName = "") {
 
 function parseToolArgumentsObject(obligation = {}) {
   try {
-    const parsed = JSON.parse(normalizeString(obligation.argumentsText, "{}"));
+    const parsed = JSON.parse(normalizeString(obligation?.argumentsText, "{}"));
     return isPlainObject(parsed) ? parsed : {};
   } catch (_error) {
     return {};
@@ -740,12 +740,13 @@ function assistantTextFromDirectEvents(normalizedEvents = []) {
 }
 
 function summarizeSubAgentStatusResult(toolName, result = {}) {
-  const payload = isPlainObject(result.result) ? result.result : {};
+  const payload = isPlainObject(result?.result) ? result.result : {};
   if (toolName === "list_agents") {
     const projection = isPlainObject(payload.listProjection) ? payload.listProjection : {};
     return {
       kind: "list_agents_result",
-      status: normalizeString(result.status, "completed"),
+      status: normalizeString(result?.status, "completed"),
+      blockerCode: normalizeString(result?.blockerCode, ""),
       agentCount: Number(projection.rowCount || 0),
       activeCount: Number(projection.activeCount || 0),
       terminalCount: Number(projection.terminalCount || 0),
@@ -753,8 +754,8 @@ function summarizeSubAgentStatusResult(toolName, result = {}) {
         agentId: normalizeString(row.agentThreadId, ""),
         label: normalizeString(row.displayLabel, ""),
         role: normalizeString(row.agentClassKind || row.role, ""),
-        lifecycleState: normalizeString(row.lifecycleState, ""),
-        activityState: normalizeString(row.nodeState, ""),
+        lifecycleState: normalizeString(row.lifecycleState || row.nodeState, ""),
+        activityState: normalizeString(row.activityState || row.nodeState, ""),
         terminal: row.terminal === true,
         model: normalizeString(row.model, ""),
         reasoningEffort: normalizeString(row.reasoningEffort, ""),
@@ -769,18 +770,60 @@ function summarizeSubAgentStatusResult(toolName, result = {}) {
     : isPlainObject(inspectPacket.agentNode) ? inspectPacket.agentNode : {};
   return {
     kind: "inspect_agent_result",
-    status: normalizeString(result.status, "completed"),
-    blockerCode: normalizeString(result.blockerCode, ""),
-    agentId: normalizeString(agentNode.agentThreadId || inspectPacket.requestedAgentThreadId, ""),
+    status: normalizeString(result?.status, "completed"),
+    blockerCode: normalizeString(result?.blockerCode, ""),
+    agentId: normalizeString(agentNode.agentThreadId || inspectPacket.requestedAgentThreadId || payload.targetAgentId, ""),
     label: normalizeString(agentNode.displayLabel, ""),
     role: normalizeString(agentNode.agentClassKind || agentNode.role, ""),
     lifecycleState: normalizeString(agentNode.lifecycleState || agentNode.nodeState, ""),
     activityState: normalizeString(agentNode.activityState, ""),
     model: normalizeString(agentNode.model, ""),
     reasoningEffort: normalizeString(agentNode.reasoningEffort, ""),
-    graphRevision: Number(result.graphRevision || inspectPacket.graphRevision || 0),
+    graphRevision: Number(result?.graphRevision || inspectPacket.graphRevision || 0),
     readOnly: true,
     canInterfere: false,
+  };
+}
+
+function unavailableSubAgentStatusSurface(sessionId, project = {}) {
+  const baseResult = (toolName, targetAgentId = "") => ({
+    schema: "direct_live_sub_agent_tool_result@1",
+    toolName,
+    status: "blocked",
+    blockerCode: "sub_agent_graph_evidence_unavailable",
+    projectId: normalizeString(project?.id || project?.projectId || project?.name, "project_direct_live_sub_agents"),
+    workThreadId: normalizeString(directWorkThreadContextCarrier(project).workThreadId, "work_thread_direct_live_sub_agents"),
+    primaryThreadId: normalizeString(sessionId, "primary_direct_agent"),
+    graphRevision: 0,
+    providerTransportStarted: false,
+    providerDeclarationStarted: false,
+    workspaceMutationStarted: false,
+    childTranscriptPromotionStarted: false,
+    parentSelfBindingRespected: true,
+    result: toolName === "list_agents"
+      ? {
+          listProjection: {
+            schema: "direct_sub_agent_list_projection@1",
+            rowCount: 0,
+            activeCount: 0,
+            terminalCount: 0,
+            rows: [],
+            unavailableReason: "sub_agent_graph_evidence_unavailable",
+          },
+        }
+      : {
+          targetAgentId,
+          unavailableReason: "sub_agent_graph_evidence_unavailable",
+        },
+    rawPromptIncluded: false,
+    rawTranscriptIncluded: false,
+    rawProviderFrameIncluded: false,
+    rawSecretIncluded: false,
+    observedAt: nowIso(),
+  });
+  return {
+    listAgents: () => baseResult("list_agents"),
+    inspectAgent: (input = {}) => baseResult("inspect_agent", normalizeString(input.childAgentId || input.agentThreadId || input.targetAgentId, "")),
   };
 }
 
@@ -3474,31 +3517,32 @@ class DirectLiveTextController {
   }
 
   isReadOnlySubAgentStatusObligation(obligation = {}) {
-    return isReadOnlySubAgentStatusToolName(obligation.name);
+    return isReadOnlySubAgentStatusToolName(obligation?.name);
   }
 
   buildReadOnlySubAgentStatusSurface(sessionId, turnId, project = {}) {
     if (this.subAgentStatusSurfaceResolver) {
-      const resolved = this.subAgentStatusSurfaceResolver({ sessionId, turnId, project });
-      if (resolved && typeof resolved.listAgents === "function" && typeof resolved.inspectAgent === "function") {
-        return resolved;
+      try {
+        const resolved = this.subAgentStatusSurfaceResolver({ sessionId, turnId, project });
+        if (resolved && typeof resolved.listAgents === "function" && typeof resolved.inspectAgent === "function") {
+          return resolved;
+        }
+      } catch (_error) {
+        return unavailableSubAgentStatusSurface(sessionId, project);
       }
     }
-    return createDirectLiveSubAgentToolSurface({
-      projectId: normalizeString(project?.id || project?.projectId || project?.name, "project_direct_live_sub_agents"),
-      workThreadId: normalizeString(directWorkThreadContextCarrier(project).workThreadId, "work_thread_direct_live_sub_agents"),
-      primaryThreadId: normalizeString(sessionId, "primary_direct_agent"),
-      parentAgentId: normalizeString(sessionId, "primary_direct_agent"),
-    });
+    return unavailableSubAgentStatusSurface(sessionId, project);
   }
 
   buildReadOnlySubAgentStatusEnvelope(sessionId, turnId, obligation = {}, project = {}) {
-    const toolName = normalizeString(obligation.name, "");
+    const toolName = normalizeString(obligation?.name, "");
     const args = parseToolArgumentsObject(obligation);
     const statusSurface = this.buildReadOnlySubAgentStatusSurface(sessionId, turnId, project);
-    const result = toolName === "list_agents"
-      ? statusSurface.listAgents()
-      : statusSurface.inspectAgent({
+    const result = (toolName === "list_agents"
+      ? statusSurface?.listAgents?.()
+      : statusSurface?.inspectAgent?.({
+          childAgentId: normalizeString(args.childAgentId || args.agentThreadId || args.targetAgentId, ""),
+        })) || unavailableSubAgentStatusSurface(sessionId, project).inspectAgent({
           childAgentId: normalizeString(args.childAgentId || args.agentThreadId || args.targetAgentId, ""),
         });
     const providerOutput = summarizeSubAgentStatusResult(toolName, result);

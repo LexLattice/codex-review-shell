@@ -145,6 +145,9 @@ const {
   buildTextOnlySubAgentToolSurface,
 } = require("./main/direct/agents/text-tool-surface");
 const {
+  createDirectLiveSubAgentToolSurface,
+} = require("./main/direct/agents/live-tool-surface");
+const {
   assertBatchAgentJobSurfaceSafe,
   buildBatchAgentJobSurface,
 } = require("./main/direct/agents/batch-job-surface");
@@ -378,6 +381,7 @@ const latestCodexOpenTargetByProject = new Map();
 const latestCodexThreadFailureByProject = new Map();
 const latestContextManagementEvidenceByProject = new Map();
 const contextManagementObservationsByProject = new Map();
+const latestCodexAgentGraphByProjectThread = new Map();
 
 function nowIso() {
   return new Date().toISOString();
@@ -2190,6 +2194,7 @@ function ensureDirectLiveTextController() {
     modelEvidenceResolver: (context) => ensureDirectLiveProbeEvidenceStore().resolveModelEvidence(context),
     implementationProofEvidenceResolver: (context) => ensureDirectImplementationProofEvidenceStore().resolveScopedProofEvidence(context),
     activationStatusResolver: (project) => directActivationEvaluationForProject(project).status,
+    subAgentStatusSurfaceResolver: (context) => directSubAgentStatusSurfaceFor(context),
     workspaceRequest: (project, method, params, timeoutMs) => requestWorkspace(project, method, params, timeoutMs),
   });
   return directLiveTextController;
@@ -2207,6 +2212,50 @@ function latestDirectSessionForProject(sessionStore, projectId) {
   } catch {
     return null;
   }
+}
+
+function codexAgentGraphCacheKey(projectId = "", primaryThreadId = "") {
+  return `${normalizeString(projectId, "")}::${normalizeString(primaryThreadId, "")}`;
+}
+
+function normalizeCachedAgentGraphAgent(agent = {}) {
+  const key = agent.key && typeof agent.key === "object" ? agent.key : {};
+  const agentThreadId = normalizeString(
+    agent.agentThreadId || agent.threadId || key.threadId || agent.receiverThreadId || agent.childAgentId,
+    "",
+  );
+  return {
+    agentThreadId,
+    parentAgentThreadId: normalizeString(agent.parentAgentThreadId || agent.parentThreadId || key.parentThreadId, ""),
+    displayLabel: normalizeString(agent.displayLabel || agent.nickname || agent.label || agent.role, agentThreadId ? `Agent ${agentThreadId.slice(0, 8)}` : "Agent"),
+    nickname: normalizeString(agent.nickname || agent.displayLabel || agent.label, ""),
+    role: normalizeString(agent.role || agent.agentRole || "worker", "worker"),
+    agentClassKind: normalizeString(agent.agentClassKind || agent.kind || "sub_agent_worker", "sub_agent_worker"),
+    model: normalizeString(agent.model || agent.runtime?.model, ""),
+    reasoningEffort: normalizeString(agent.reasoningEffort || agent.reasoning_effort || agent.runtime?.reasoningEffort, ""),
+    lifecycleState: normalizeString(agent.lifecycleState || agent.lifecycleStatus || agent.status || agent.nodeState, "unknown"),
+    activityState: normalizeString(agent.activityState || agent.activityStatus || agent.nodeState, "unknown"),
+    completedAt: normalizeString(agent.completedAt, ""),
+    updatedAt: normalizeString(agent.updatedAt || agent.lastEventAt, ""),
+    evidenceRefs: Array.isArray(agent.evidenceRefs) ? agent.evidenceRefs : [],
+  };
+}
+
+function directSubAgentStatusSurfaceFor({ sessionId = "", project = {} } = {}) {
+  const projectId = normalizeString(project?.id || project?.projectId || project?.name, "");
+  const primaryThreadId = normalizeString(sessionId, "");
+  if (!projectId || !primaryThreadId) return null;
+  const graphState = latestCodexAgentGraphByProjectThread.get(codexAgentGraphCacheKey(projectId, primaryThreadId));
+  if (!graphState) return null;
+  const agents = (Array.isArray(graphState.agents) ? graphState.agents : [])
+    .map((agent) => normalizeCachedAgentGraphAgent(agent))
+    .filter((agent) => agent.agentThreadId);
+  return createDirectLiveSubAgentToolSurface({
+    projectId,
+    workThreadId: normalizeString(project.workThreadId, ""),
+    primaryThreadId,
+    agents,
+  });
 }
 
 function readContextMaintenanceArtifactSafe(threadStore, projectId, threadId, artifactName) {
@@ -8451,6 +8500,9 @@ ipcMain.handle("codex-surface:agent-graph", async (event, payload) => {
     connectionId: session.connectionId || "",
     at: nowIso(),
   };
+  if (state.projectId && state.primaryThreadId) {
+    latestCodexAgentGraphByProjectThread.set(codexAgentGraphCacheKey(state.projectId, state.primaryThreadId), state);
+  }
   emitToShell("surface:event", state);
   return { ok: true };
 });

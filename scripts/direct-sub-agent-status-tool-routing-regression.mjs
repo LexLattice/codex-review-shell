@@ -161,6 +161,52 @@ try {
   assert.equal(inspectTurn.unresolvedObligations[0].result.resultKind, "sub_agent_inspect_status");
   assert.equal(inspectTurn.unresolvedObligations[0].result.providerOutputText.includes("canInterfere"), true);
 
+  sessionStore.createTurn("direct_session_sub_agent_status", {
+    turnId: "turn_unavailable",
+    state: "tool_waiting",
+    model: "gpt-5.4",
+    input: [{ role: "user", text: "List agents without graph." }],
+    responseId: "resp_initial_unavailable",
+  });
+  const unavailableController = new DirectLiveTextController({
+    sessionStore,
+    profileDoc: { profile: { ontology: { models: [{ id: "gpt-5.4", status: "accepted" }] } } },
+    authStore: {
+      readStatus: () => ({ status: "authenticated", hasAccessToken: true, hasRefreshToken: false }),
+      readCredentials: () => ({ accessToken: "fixture-token" }),
+    },
+    endpoint: "https://chatgpt.test/backend-api/codex/responses",
+    fetchImpl: async (_url, init) => {
+      fetchCalls += 1;
+      providerBodies.push(JSON.parse(init.body));
+      return {
+        ok: true,
+        status: 200,
+        headers: { get: () => "text/event-stream" },
+        text: async () => continuationSse,
+      };
+    },
+    activationStatusResolver: () => ({ status: "ready", model: "gpt-5.4" }),
+  });
+  const unavailableSurface = new DirectLiveTextSurfaceSession({ send: () => {}, isDestroyed: () => false }, { controller: unavailableController, project });
+  await unavailableSurface.connect({});
+  const unavailableObligations = sessionStore.addToolObligations(
+    "direct_session_sub_agent_status",
+    "turn_unavailable",
+    [toolEvent("list_agents", {}, 3)],
+  ).obligations;
+  await unavailableController.emitToolApprovalRequests(
+    unavailableSurface,
+    "direct_session_sub_agent_status",
+    "turn_unavailable",
+    unavailableObligations,
+    project,
+  );
+  const unavailableTurn = sessionStore.readTurn("direct_session_sub_agent_status", "turn_unavailable");
+  assert.equal(unavailableTurn.state, "completed");
+  assert.equal(unavailableTurn.unresolvedObligations[0].result.resultKind, "sub_agent_list_status");
+  assert.equal(unavailableTurn.unresolvedObligations[0].result.providerOutputText.includes("sub_agent_graph_evidence_unavailable"), true);
+
   console.log(JSON.stringify({
     ok: true,
     fetchCalls,
