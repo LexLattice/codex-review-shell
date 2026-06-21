@@ -12,6 +12,10 @@ const {
   buildExternalCapabilityProfile,
   validateExternalCapabilityProfile,
 } = require("../external/external-capability-profile");
+const {
+  PROVIDER_HOSTED_ACTIVATION_SNAPSHOT_SCHEMA,
+  PROVIDER_HOSTED_TOOLS_STATUS_SCHEMA,
+} = require("../provider/hosted-tools");
 
 const DIRECT_ROLE_LANE_REGISTRY_SCHEMA = "direct_role_lane_registry@1";
 const DIRECT_ROLE_LANE_SELECTION_SCHEMA = "direct_role_lane_selection@1";
@@ -60,8 +64,8 @@ const DEFAULT_ROLE_LANES = Object.freeze([
     roleId: "implementation_worker",
     displayName: "Implementation worker",
     agentClassSpecId: "agent_class_spec_implementation_worker",
-    defaultToolNames: ["read_file", "apply_patch", "run_command", "get_context_remaining", "update_plan", "request_user_input", "list_agents", "inspect_agent", "tool_search", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"],
-    allowedToolFamilies: ["workspace_process_authority", "local_perception", "session_control_state", "plan_projection", "human_authority_bridge", "agent_runtime_status", "external_capability_discovery", "external_resource_read"],
+    defaultToolNames: ["read_file", "apply_patch", "run_command", "get_context_remaining", "update_plan", "request_user_input", "list_agents", "inspect_agent", "tool_search", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "web_search", "image_generation"],
+    allowedToolFamilies: ["workspace_process_authority", "local_perception", "session_control_state", "plan_projection", "human_authority_bridge", "agent_runtime_status", "external_capability_discovery", "external_resource_read", "provider_hosted_web_search", "provider_hosted_image_generation"],
     laneLawIds: ["direct_implementation_lane_tool_law@1", "direct_workspace_authority_law@1"],
   },
   {
@@ -278,11 +282,30 @@ const TOOL_METADATA = Object.freeze({
     resultEnvelopePolicyId: "mcp_resource_read_envelope@1",
     contextAdmissionPolicyId: "mcp_resource_read_context_admission@1",
   },
+  web_search: {
+    capabilityId: "vanilla.hosted.web_search",
+    toolFamily: "provider_hosted_web_search",
+    implementedState: "restricted_executor",
+    promotionState: "activation_gated",
+    targetScopePolicyId: "provider_hosted_web_search_query_policy@1",
+    resultEnvelopePolicyId: "provider_hosted_web_search_result_envelope@1",
+    contextAdmissionPolicyId: "provider_hosted_result_context_admission@1",
+  },
+  image_generation: {
+    capabilityId: "vanilla.hosted.image_generation",
+    toolFamily: "provider_hosted_image_generation",
+    implementedState: "restricted_executor",
+    promotionState: "activation_gated",
+    targetScopePolicyId: "provider_hosted_image_prompt_policy@1",
+    resultEnvelopePolicyId: "provider_hosted_image_generation_artifact_envelope@1",
+    contextAdmissionPolicyId: "provider_hosted_result_context_admission@1",
+  },
 });
 
 const EXTERNAL_DISCOVERY_TOOL_NAMES = new Set(["tool_search", "list_mcp_resources", "list_mcp_resource_templates"]);
 const EXTERNAL_READ_TOOL_NAMES = new Set(["read_mcp_resource"]);
 const EXTERNAL_PROMOTED_TOOL_NAMES = new Set([...EXTERNAL_DISCOVERY_TOOL_NAMES, ...EXTERNAL_READ_TOOL_NAMES]);
+const PROVIDER_HOSTED_TOOL_NAMES = new Set(["web_search", "image_generation"]);
 
 function isPlainObject(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -374,6 +397,58 @@ function externalSourceIdentityState(input = {}) {
       evidenceRefs: [evidenceRef("external_source_identity", "invalid_external_source_identity", "Invalid external source identity")],
     };
   }
+}
+
+function providerHostedState(input = {}) {
+  const status = input?.providerHostedToolsStatus;
+  const activation = input?.providerHostedActivationSnapshot || status?.activationSnapshot;
+  if (!isPlainObject(status) && !isPlainObject(activation)) {
+    return {
+      state: "missing",
+      status: null,
+      activationSnapshot: null,
+      blocker: "provider_hosted_activation_snapshot_missing",
+      evidenceRefs: [evidenceRef("provider_hosted_activation_snapshot", "missing_provider_hosted_activation_snapshot", "Missing provider-hosted activation snapshot")],
+    };
+  }
+  if (isPlainObject(status) && status.schema !== PROVIDER_HOSTED_TOOLS_STATUS_SCHEMA) {
+    return {
+      state: "invalid",
+      status: null,
+      activationSnapshot: null,
+      blocker: "provider_hosted_tools_status_invalid",
+      evidenceRefs: [evidenceRef("provider_hosted_tools_status", "invalid_provider_hosted_tools_status", "Invalid provider-hosted tools status")],
+    };
+  }
+  if (!isPlainObject(activation) || activation.schema !== PROVIDER_HOSTED_ACTIVATION_SNAPSHOT_SCHEMA) {
+    return {
+      state: "invalid",
+      status: isPlainObject(status) ? status : null,
+      activationSnapshot: null,
+      blocker: "provider_hosted_activation_snapshot_invalid",
+      evidenceRefs: [evidenceRef("provider_hosted_activation_snapshot", "invalid_provider_hosted_activation_snapshot", "Invalid provider-hosted activation snapshot")],
+    };
+  }
+  return {
+    state: "ready",
+    status: isPlainObject(status) ? status : null,
+    activationSnapshot: activation,
+    blocker: "",
+    evidenceRefs: [
+      evidenceRef("provider_hosted_activation_snapshot", activation.activationDigest || activation.activationId || "unknown_provider_hosted_activation", "Provider-hosted activation snapshot"),
+      ...(status ? [evidenceRef("provider_hosted_tools_status", status.statusId || status.activationSnapshotDigest || "unknown_provider_hosted_status", "Provider-hosted tools status")] : []),
+    ],
+  };
+}
+
+function providerHostedDecisionFor(toolName, hostedState) {
+  const toolKind = toolName === "web_search" ? "web_search" : "image_generation";
+  const activation = hostedState?.activationSnapshot || {};
+  return (Array.isArray(activation.declarationDecisions) ? activation.declarationDecisions : [])
+    .find((decision) => (
+      decision?.toolKind === toolKind &&
+      decision?.invocationMode === "model_mediated_provider_tool"
+    )) || null;
 }
 
 function stableStringify(value) {
@@ -519,6 +594,7 @@ function buildComposerInput(input = {}) {
   input = isPlainObject(input) ? input : {};
   const laneSelection = isPlainObject(input.laneSelection) ? input.laneSelection : buildDirectRoleLaneSelection(input);
   const externalSourceIdentity = externalSourceIdentityState(input);
+  const providerHostedToolState = providerHostedState(input);
   const composerInput = {
     schema: DIRECT_TOOL_BUNDLE_COMPOSER_INPUT_SCHEMA,
     compositionId: normalizeString(input.compositionId, `direct_tool_bundle_composition_${digestFor("direct-tool-bundle-composer-input-source@1", {
@@ -554,6 +630,10 @@ function buildComposerInput(input = {}) {
     externalSourceIdentity,
     externalCapabilityProfileRef: externalSourceIdentity.profile
       ? evidenceRef("external_capability_profile", externalSourceIdentity.profile.profileDigest || externalSourceIdentity.profile.profileId, "External capability profile")
+      : undefined,
+    providerHostedToolState,
+    providerHostedActivationSnapshotRef: providerHostedToolState.activationSnapshot
+      ? evidenceRef("provider_hosted_activation_snapshot", providerHostedToolState.activationSnapshot.activationDigest || providerHostedToolState.activationSnapshot.activationId, "Provider-hosted activation snapshot")
       : undefined,
     observedAt: normalizeString(input.observedAt, nowIso(input.nowMs)),
   };
@@ -662,6 +742,15 @@ function providerSchemaFor(toolName) {
         required: ["serverIdentityId", "resourceUri"],
         additionalProperties: false,
       },
+    };
+  }
+  if (toolName === "web_search") {
+    return {
+      type: "web_search_preview",
+      user_location: {
+        type: "approximate",
+      },
+      search_context_size: "medium",
     };
   }
   if (toolName === "list_agents") {
@@ -874,6 +963,53 @@ function classifyToolDeclarationCandidates(toolNames = [], lane, laneSelection, 
         ],
       }));
       continue;
+    }
+    if (PROVIDER_HOSTED_TOOL_NAMES.has(toolName)) {
+      const hostedState = composerInput.providerHostedToolState || {};
+      const decision = providerHostedDecisionFor(toolName, hostedState);
+      const evidenceRefs = Array.isArray(hostedState.evidenceRefs) && hostedState.evidenceRefs.length
+        ? hostedState.evidenceRefs
+        : [evidenceRef("provider_hosted_activation_snapshot", "missing_provider_hosted_activation_snapshot", "Missing provider-hosted activation snapshot")];
+      if (hostedState.state !== "ready") {
+        unavailableRows.push(catalogueRow(toolName, "blocked_by_runtime", `Declaration blocked: ${normalizeString(hostedState.blocker, "provider_hosted_activation_snapshot_missing")}.`, {
+          nextEnablementClass: "provider_hosted_activation_snapshot",
+          nonOmittable: true,
+          axes: {
+            declarationState: "blocked",
+            currentRequestStatus: "blocked",
+            activationState: "active",
+          },
+          evidenceRefs,
+        }));
+        continue;
+      }
+      if (toolName === "image_generation") {
+        unavailableRows.push(catalogueRow(toolName, "operator_gated", "Declaration blocked: image_generation requires an explicit operator-gated artifact workflow and is not resident-callable by default.", {
+          nextEnablementClass: "operator_gate",
+          nonOmittable: true,
+          axes: {
+            declarationState: "not_declared",
+            currentRequestStatus: "operator_gated",
+            activationState: "active",
+          },
+          evidenceRefs,
+        }));
+        continue;
+      }
+      if (!decision || decision.callable !== true) {
+        const blocker = normalizeString(decision?.blocker || decision?.decision, "provider_hosted_request_shape_proof_missing");
+        unavailableRows.push(catalogueRow(toolName, "blocked_by_provider", `Declaration blocked: ${blocker}.`, {
+          nextEnablementClass: "provider_hosted_runtime_probe",
+          nonOmittable: true,
+          axes: {
+            declarationState: "blocked",
+            currentRequestStatus: "blocked",
+            activationState: blocker.includes("stale") ? "expired" : "active",
+          },
+          evidenceRefs,
+        }));
+        continue;
+      }
     }
 
     const row = declaredToolRow(toolName, laneSelection, activationRef);

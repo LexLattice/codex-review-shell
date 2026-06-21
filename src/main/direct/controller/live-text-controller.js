@@ -699,6 +699,18 @@ function appendExternalPromotedTools(toolNames = [], status = {}) {
   ].map((name) => normalizeString(name, "")).filter(Boolean))];
 }
 
+function providerHostedToolNames(status = {}) {
+  const runtimeReady = status && normalizeString(status.status, "") === "ready";
+  return runtimeReady ? ["web_search", "image_generation"] : [];
+}
+
+function appendProviderHostedTools(toolNames = [], status = {}) {
+  return [...new Set([
+    ...(Array.isArray(toolNames) ? toolNames : []),
+    ...providerHostedToolNames(status),
+  ].map((name) => normalizeString(name, "")).filter(Boolean))];
+}
+
 function isSafeResidentUtilityToolName(toolName = "") {
   return SAFE_RESIDENT_UTILITY_TOOL_SET.has(normalizeString(toolName, ""));
 }
@@ -951,7 +963,7 @@ function implementationContinuationToolNames(status = {}, prompt = "") {
   if (asksPatch && patchReady) names.push("apply_patch");
   if (asksCommand && commandReady) names.push("run_command");
   if (!names.length && readReady) names.push("read_file");
-  return appendExternalPromotedTools(appendReadOnlySubAgentStatusTools(appendSafeResidentUtilities(names, status), status), status);
+  return appendProviderHostedTools(appendExternalPromotedTools(appendReadOnlySubAgentStatusTools(appendSafeResidentUtilities(names, status), status), status), status);
 }
 
 function commandRepairContinuationToolNames(status = {}, prompt = "") {
@@ -961,9 +973,9 @@ function commandRepairContinuationToolNames(status = {}, prompt = "") {
     names.length > 0 &&
     !names.includes("read_file")
   ) {
-    return appendExternalPromotedTools(["read_file", ...names], status);
+    return appendProviderHostedTools(appendExternalPromotedTools(["read_file", ...names], status), status);
   }
-  return appendExternalPromotedTools(names, status);
+  return appendProviderHostedTools(appendExternalPromotedTools(names, status), status);
 }
 
 function implementationContextInstructions(contextInstructions = "") {
@@ -977,7 +989,13 @@ function initialDirectTurnRequestShape(requestBody = {}, options = {}) {
   const useRecentDialogue = options.useRecentDialogue === true;
   const shape = requestShapeForDiagnostic(requestBody);
   const declaredToolNames = Array.isArray(requestBody.tools)
-    ? requestBody.tools.map((tool) => normalizeString(tool?.name, "")).filter(Boolean)
+    ? requestBody.tools.map((tool) => {
+      const name = normalizeString(tool?.name, "");
+      if (name) return name;
+      const type = normalizeString(tool?.type, "");
+      if (type === "web_search_preview") return "web_search";
+      return type;
+    }).filter(Boolean)
     : [];
   return {
     ...shape,
@@ -1036,6 +1054,11 @@ function composeImplementationToolBundleForRequest(input = {}) {
     contextResult?.contextPack?.workThreadId,
     "work_thread_direct_live",
   );
+  const providerHostedActivationDigest = normalizeString(
+    input.providerHostedToolsStatus?.activationSnapshotDigest ||
+    input.providerHostedToolsStatus?.activationSnapshot?.activationDigest,
+    "",
+  );
   const composition = composeDirectToolBundle({
     projectId,
     workThreadId,
@@ -1047,8 +1070,13 @@ function composeImplementationToolBundleForRequest(input = {}) {
     runtimeFactsRef: directToolEvidenceRef("runtime_facts", input.runtimeFactsId || "direct_runtime_facts", "Direct runtime facts"),
     activationSnapshotRefs: [
       directToolEvidenceRef("activation_snapshot", input.activationSnapshotId || "direct_tool_activation_snapshot", "Direct tool activation snapshot"),
+      ...(providerHostedActivationDigest
+        ? [directToolEvidenceRef("provider_hosted_activation_snapshot", providerHostedActivationDigest, "Provider-hosted activation snapshot")]
+        : []),
     ],
     externalCapabilityProfile: input.externalCapabilityProfile,
+    providerHostedToolsStatus: input.providerHostedToolsStatus,
+    providerHostedActivationSnapshot: input.providerHostedToolsStatus?.activationSnapshot,
     sourceMessageRef: directToolEvidenceRef("source_message", input.sourceMessageId || `${turnId}_user`, "Direct user message"),
     normalizedLaneRequestRef: directToolEvidenceRef("normalized_lane_request", input.normalizedLaneRequestId || `normalized_lane_request_${turnId}`, "Implementation lane request"),
     controlledRouteRef: controlledRoutingResult?.route?.routeId
@@ -1265,6 +1293,7 @@ class DirectLiveTextController {
     this.activationStatusResolver = typeof options.activationStatusResolver === "function" ? options.activationStatusResolver : null;
     this.subAgentStatusSurfaceResolver = typeof options.subAgentStatusSurfaceResolver === "function" ? options.subAgentStatusSurfaceResolver : null;
     this.externalCapabilityProfileResolver = typeof options.externalCapabilityProfileResolver === "function" ? options.externalCapabilityProfileResolver : null;
+    this.providerHostedToolsStatusResolver = typeof options.providerHostedToolsStatusResolver === "function" ? options.providerHostedToolsStatusResolver : null;
     this.fetchImpl = typeof options.fetchImpl === "function" ? options.fetchImpl : null;
     this.workspaceRequest = typeof options.workspaceRequest === "function" ? options.workspaceRequest : null;
     this.endpoint = normalizeString(options.endpoint, "");
@@ -1442,6 +1471,31 @@ class DirectLiveTextController {
     };
   }
 
+  resolveProviderHostedToolsStatus(project = {}) {
+    if (this.providerHostedToolsStatusResolver) {
+      try {
+        const resolved = this.providerHostedToolsStatusResolver({
+          project,
+          projectId: normalizeString(project?.id || project?.projectId || project?.name, ""),
+          workThreadId: normalizeString(directWorkThreadContextCarrier(project)?.workThreadId, ""),
+          endpoint: this.endpoint,
+          authStatus: this.authStatus(),
+        });
+        if (isPlainObject(resolved)) return resolved;
+      } catch (error) {
+        return {
+          status: "unavailable",
+          reason: normalizeString(error?.message, "provider_hosted_tools_status_unavailable"),
+          resolverError: true,
+        };
+      }
+    }
+    return {
+      status: "unavailable",
+      reason: "provider_hosted_tools_status_resolver_missing",
+    };
+  }
+
   modelEvidenceForProject(project = {}) {
     const requestedModel = this.requestedModelForProject(project);
     const staticEvidence = modelEvidenceFor(this.profileDoc, requestedModel);
@@ -1460,6 +1514,7 @@ class DirectLiveTextController {
     const evidence = this.modelEvidenceForProject(project);
     const implementationLaneProof = this.resolveImplementationProofEvidence(project, evidence.model);
     const externalCapabilityProfile = this.resolveExternalCapabilityProfile(project);
+    const providerHostedToolsStatus = this.resolveProviderHostedToolsStatus(project);
     const readOnlyToolContinuation = mergeScopedProofWithProfileEvidence(
       readOnlyContinuationEvidenceFor(this.profileDoc),
       implementationLaneProof,
@@ -1508,6 +1563,7 @@ class DirectLiveTextController {
       patchApplyContinuation,
       commandExecutionContinuation,
       externalCapabilityProfile,
+      providerHostedToolsStatus,
       externalDiscovery: {
         status: externalSourceIdentityReady(externalCapabilityProfile) ? "ready" : "blocked",
         tools: externalPromotedToolNames({ status, externalCapabilityProfile }),
@@ -4595,6 +4651,7 @@ class DirectLiveTextController {
       workThreadId: directWorkThreadContextCarrier(options).workThreadId,
       runtimeFactsId: directStatus.evidenceId || "direct_runtime_facts",
       externalCapabilityProfile: directStatus.externalCapabilityProfile,
+      providerHostedToolsStatus: directStatus.providerHostedToolsStatus,
     });
     const continuationTools = continuationToolComposition.tools;
     const declaredContinuationToolNames = continuationToolComposition.toolNames;
@@ -4818,6 +4875,7 @@ class DirectLiveTextController {
       workThreadId: directWorkThreadContextCarrier(options).workThreadId,
       runtimeFactsId: directStatus.evidenceId || "direct_runtime_facts",
       externalCapabilityProfile: directStatus.externalCapabilityProfile,
+      providerHostedToolsStatus: directStatus.providerHostedToolsStatus,
     });
     const continuationTools = continuationToolComposition.tools;
     const declaredContinuationToolNames = continuationToolComposition.toolNames;
@@ -5066,6 +5124,7 @@ class DirectLiveTextController {
       workThreadId: directWorkThreadContextCarrier(options).workThreadId,
       runtimeFactsId: directStatus.evidenceId || "direct_runtime_facts",
       externalCapabilityProfile: directStatus.externalCapabilityProfile,
+      providerHostedToolsStatus: directStatus.providerHostedToolsStatus,
     });
     const continuationTools = continuationToolComposition.tools;
     const declaredContinuationToolNames = continuationToolComposition.toolNames;
@@ -5342,7 +5401,7 @@ class DirectLiveTextController {
     const implementationTier = directLiveTier &&
       binding.directTier === "implementation-lane";
     const implementationToolNames = implementationTier
-      ? appendExternalPromotedTools(appendReadOnlySubAgentStatusTools(appendSafeResidentUtilities(implementationInitialToolNames(status, prompt), status), status), status)
+      ? appendProviderHostedTools(appendExternalPromotedTools(appendReadOnlySubAgentStatusTools(appendSafeResidentUtilities(implementationInitialToolNames(status, prompt), status), status), status), status)
       : [];
     const useRecentDialogue = existingTurnCount > 0;
     let frozenContextProjection = null;
@@ -5442,6 +5501,7 @@ class DirectLiveTextController {
           workThreadId: workThreadCarrier.workThreadId,
           runtimeFactsId: status.evidenceId || status.modelEvidenceId || "direct_runtime_facts",
           externalCapabilityProfile: status.externalCapabilityProfile,
+          providerHostedToolsStatus: status.providerHostedToolsStatus,
         })
       : null;
     let requestBody = implementationTier
@@ -5501,6 +5561,7 @@ class DirectLiveTextController {
               controlledRoutingResult,
               runtimeFactsId: status.evidenceId || status.modelEvidenceId || "direct_runtime_facts",
               externalCapabilityProfile: status.externalCapabilityProfile,
+              providerHostedToolsStatus: status.providerHostedToolsStatus,
             })
           : null;
         contextResult = this.directThreadStore.buildAndPersistContextForTextTurn({
