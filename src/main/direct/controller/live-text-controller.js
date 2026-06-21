@@ -1415,7 +1415,7 @@ class DirectLiveTextController {
   }
 
   resolveExternalCapabilityProfile(project = {}) {
-    const workThreadId = normalizeString(directWorkThreadContextCarrier(project).workThreadId, "");
+    const workThreadId = normalizeString(directWorkThreadContextCarrier(project)?.workThreadId, "");
     if (this.externalCapabilityProfileResolver) {
       try {
         const resolved = this.externalCapabilityProfileResolver({
@@ -3732,14 +3732,73 @@ class DirectLiveTextController {
 
   buildExternalPromotedEnvelope(sessionId, turnId, obligation = {}, project = {}) {
     const toolName = normalizeString(obligation?.name, "");
-    const args = parseToolArgumentsObject(obligation);
+    const args = parseToolArgumentsObject(obligation) || {};
     const projectId = normalizeString(project?.id || project?.projectId || project?.name, "project_direct_external");
-    const workThreadId = normalizeString(directWorkThreadContextCarrier(project).workThreadId, "work_thread_direct_external");
+    const workThreadId = normalizeString(directWorkThreadContextCarrier(project)?.workThreadId, "work_thread_direct_external");
+    const stableObligationId = normalizeString(
+      obligation.obligationId || obligation.itemId || obligation.sourceItemId || obligation.callId,
+      `${toolName}_${sha256(stableStringify({
+        sessionId,
+        turnId,
+        toolName,
+        args,
+      })).slice(0, 12)}`,
+    );
     const profile = this.resolveExternalCapabilityProfile({
       ...project,
       workThreadId,
     });
     if (toolName === "read_mcp_resource") {
+      const serverIdentityId = normalizeString(args.serverIdentityId || args.serverId, "");
+      const resourceUri = normalizeString(args.resourceUri || args.uri, "");
+      if (!serverIdentityId || !resourceUri) {
+        const providerOutput = {
+          kind: "read_mcp_resource_result",
+          status: "blocked",
+          blockerCodes: ["mcp_resource_read_invalid_arguments"],
+          serverIdentityId,
+          resourceDisplay: "",
+          contextAdmission: "blocked",
+          mimeKind: "unknown",
+          contentHandling: "unknown_blocked",
+          byteCount: 0,
+          excerpt: "",
+          rawResourceUriIncluded: false,
+          rawResourcePayloadIncluded: false,
+          dynamicMcpActionPerformed: false,
+          pluginInstallPerformed: false,
+          workspaceMutationStarted: false,
+        };
+        const resultDigest = sha256(stableStringify(providerOutput));
+        const envelope = {
+          schema: "direct_external_promoted_tool_result_envelope@1",
+          envelopeId: `external_tool_result_${sha256(`${sessionId}:${turnId}:${stableObligationId}:${resultDigest}`).slice(0, 24)}`,
+          toolName,
+          callId: normalizeString(obligation.callId, ""),
+          resultKind: "mcp_resource_read_status",
+          status: "blocked",
+          blockerCodes: ["mcp_resource_read_invalid_arguments"],
+          resultDigest,
+          providerOutput,
+          contextAdmission: {
+            admittedAs: "external_resource_read_evidence",
+            admissionState: "blocked",
+            readOnly: true,
+            mutatesWorkspace: false,
+            grantsDynamicMcpAuthority: false,
+            pluginInstallAllowed: false,
+            discoveredToolAutoPromotionAllowed: false,
+          },
+          rawPromptIncluded: false,
+          rawResultIncluded: false,
+          rawWorkspacePathIncluded: false,
+          rawExternalPayloadIncluded: false,
+          rawResourceUriIncluded: false,
+          rawSecretIncluded: false,
+        };
+        envelope.envelopeDigest = sha256(stableStringify(envelope));
+        return envelope;
+      }
       const readEnvelope = buildMcpResourceReadEnvelope({
         profile,
         projectId,
@@ -3747,18 +3806,16 @@ class DirectLiveTextController {
         threadId: sessionId,
         turnId,
         callId: normalizeString(obligation.callId, ""),
-        serverIdentityId: normalizeString(args.serverIdentityId || args.serverId, ""),
-        resourceUri: normalizeString(args.resourceUri || args.uri, ""),
+        serverIdentityId,
+        resourceUri,
         mimeType: normalizeString(args.mimeType || args.contentType, "text/plain"),
         status: "unavailable",
-        blockerCodes: normalizeString(args.serverIdentityId || args.serverId, "") && normalizeString(args.resourceUri || args.uri, "")
-          ? ["mcp_resource_payload_backend_unavailable"]
-          : [],
+        blockerCodes: ["mcp_resource_payload_backend_unavailable"],
       });
       const providerOutput = summarizeExternalDiscoveryResult(toolName, readEnvelope);
       const envelope = {
         schema: "direct_external_promoted_tool_result_envelope@1",
-        envelopeId: `external_tool_result_${sha256(`${sessionId}:${turnId}:${obligation.obligationId}:${readEnvelope.envelopeDigest}`).slice(0, 24)}`,
+        envelopeId: `external_tool_result_${sha256(`${sessionId}:${turnId}:${stableObligationId}:${readEnvelope.envelopeDigest}`).slice(0, 24)}`,
         toolName,
         callId: normalizeString(obligation.callId, ""),
         resultKind: "mcp_resource_read_status",
@@ -3812,7 +3869,7 @@ class DirectLiveTextController {
     const providerOutput = summarizeExternalDiscoveryResult(toolName, discoveryEnvelope);
     const envelope = {
       schema: "direct_external_promoted_tool_result_envelope@1",
-      envelopeId: `external_tool_result_${sha256(`${sessionId}:${turnId}:${obligation.obligationId}:${discoveryEnvelope.envelopeDigest}`).slice(0, 24)}`,
+      envelopeId: `external_tool_result_${sha256(`${sessionId}:${turnId}:${stableObligationId}:${discoveryEnvelope.envelopeDigest}`).slice(0, 24)}`,
       toolName,
       callId: normalizeString(obligation.callId, ""),
       resultKind: "external_discovery_status",

@@ -324,6 +324,18 @@ function externalSourceIdentityState(input = {}) {
       evidenceRefs: [evidenceRef("external_source_identity", "missing_external_source_identity", "Missing external source identity")],
     };
   }
+  if (
+    explicitProfile.schema !== EXTERNAL_CAPABILITY_PROFILE_SCHEMA &&
+    !Array.isArray(explicitProfile.serverIdentities)
+  ) {
+    return {
+      state: "missing",
+      profile: null,
+      selectableServers: [],
+      blocker: normalizeString(explicitProfile.reason, "external_source_identity_missing"),
+      evidenceRefs: [evidenceRef("external_source_identity", "missing_external_source_identity", "Missing external source identity")],
+    };
+  }
   try {
     const profile = explicitProfile.schema === EXTERNAL_CAPABILITY_PROFILE_SCHEMA
       ? explicitProfile
@@ -336,7 +348,7 @@ function externalSourceIdentityState(input = {}) {
         profile,
         selectableServers: [],
         blocker: "external_source_identity_not_selectable",
-        evidenceRefs: [evidenceRef("external_capability_profile", profile.profileDigest || profile.profileId, "External capability profile")],
+        evidenceRefs: [evidenceRef("external_capability_profile", profile.profileDigest || profile.profileId || "unknown_profile", "External capability profile")],
       };
     }
     return {
@@ -345,8 +357,12 @@ function externalSourceIdentityState(input = {}) {
       selectableServers: servers,
       blocker: "",
       evidenceRefs: [
-        evidenceRef("external_capability_profile", profile.profileDigest || profile.profileId, "External capability profile"),
-        ...servers.map((server) => evidenceRef("mcp_server_identity_witness", server.identityDigest || server.serverIdentityId, server.displayName || server.serverIdentityId)),
+        evidenceRef("external_capability_profile", profile.profileDigest || profile.profileId || "unknown_profile", "External capability profile"),
+        ...servers.map((server) => evidenceRef(
+          "mcp_server_identity_witness",
+          server.identityDigest || server.serverIdentityId || "unknown_server",
+          server.displayName || server.serverIdentityId || "Unknown MCP server",
+        )),
       ],
     };
   } catch (error) {

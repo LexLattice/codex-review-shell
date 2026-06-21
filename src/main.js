@@ -2762,6 +2762,27 @@ function buildDirectExternalCapabilityProfileForProject(input = {}) {
   const projectId = normalizeString(project.id || project.projectId, "");
   const workThreadId = normalizeString(input.workThreadId || project.workThreadId, "");
   const generatedAt = normalizeString(input.generatedAt, nowIso());
+  const serverIdentities = [
+    ...(Array.isArray(input.serverIdentities) ? input.serverIdentities : []),
+    ...(Array.isArray(project.serverIdentities) ? project.serverIdentities : []),
+    ...(Array.isArray(project.mcpServerIdentities) ? project.mcpServerIdentities : []),
+    ...(Array.isArray(project.externalCapabilityProfile?.serverIdentities) ? project.externalCapabilityProfile.serverIdentities : []),
+    ...(Array.isArray(project.directExternalCapabilityProfile?.serverIdentities) ? project.directExternalCapabilityProfile.serverIdentities : []),
+    ...(Array.isArray(project.codex?.mcpServerIdentities) ? project.codex.mcpServerIdentities : []),
+    ...(Array.isArray(project.surfaceBinding?.codex?.mcpServerIdentities) ? project.surfaceBinding.codex.mcpServerIdentities : []),
+  ];
+  if (!serverIdentities.length) {
+    return {
+      status: "unavailable",
+      reason: "external_source_identity_missing",
+      projectId,
+      workThreadId,
+      serverIdentities: [],
+      rawEndpointIncluded: false,
+      rawCredentialIncluded: false,
+      rawSecretIncluded: false,
+    };
+  }
   const discoveryRegistry = buildExternalCapabilityDiscoveryRegistry({
     projectId,
     workThreadId,
@@ -2780,6 +2801,7 @@ function buildDirectExternalCapabilityProfileForProject(input = {}) {
     generatedAt,
     discoveryRegistry,
     mcpBoundaryStatus,
+    serverIdentities,
   });
 }
 

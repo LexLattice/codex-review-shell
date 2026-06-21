@@ -15,6 +15,7 @@ const {
 const { DirectSessionStore } = require("../src/main/direct/session/session-store");
 const {
   buildExternalCapabilityProfile,
+  mcpServerIdentityFor,
 } = require("../src/main/direct/external/external-capability-profile");
 
 const continuationSse = [
@@ -85,6 +86,18 @@ try {
     projectId: "project_external_tools",
     workThreadId: "work_thread_external_tools",
     generatedAt: "2026-06-21T13:00:00.000Z",
+    serverIdentities: [
+      mcpServerIdentityFor({
+        serverIdentityId: "mcp_server_project_fixture",
+        displayName: "Project MCP server",
+        selectorKey: "project_fixture",
+        transportKind: "stdio",
+        authPosture: "local_config",
+        trustState: "configured",
+        enabledState: "enabled",
+        freshness: "fresh",
+      }),
+    ],
   });
 
   let fetchCalls = 0;
@@ -110,11 +123,28 @@ try {
     activationStatusResolver: () => ({ status: "ready", model: "gpt-5.4" }),
     externalCapabilityProfileResolver: () => externalProfile,
   });
+  const blockedController = new DirectLiveTextController({
+    sessionStore,
+    profileDoc: { profile: { ontology: { models: [{ id: "gpt-5.4", status: "accepted" }] } } },
+    authStore: {
+      readStatus: () => ({ status: "authenticated", hasAccessToken: true, hasRefreshToken: false }),
+      readCredentials: () => ({ accessToken: "fixture-token" }),
+    },
+    endpoint: "https://chatgpt.test/backend-api/codex/responses",
+    fetchImpl: async () => {
+      throw new Error("blocked controller must not call provider");
+    },
+    activationStatusResolver: () => ({ status: "ready", model: "gpt-5.4" }),
+  });
   const project = {
     id: "project_external_tools",
     name: "External tools fixture",
     workThreadId: "work_thread_external_tools",
   };
+  const blockedStatus = blockedController.statusForProject(project);
+  assert.equal(blockedStatus.externalDiscovery.status, "blocked");
+  assert.deepEqual(blockedStatus.externalDiscovery.tools, []);
+
   const surface = new DirectLiveTextSurfaceSession({ send: () => {}, isDestroyed: () => false }, { controller, project });
   await surface.connect({});
 
@@ -155,8 +185,22 @@ try {
   });
   assert.match(readTurn.unresolvedObligations[0].result.providerOutputText, /read_mcp_resource_result/);
   assert.match(readTurn.unresolvedObligations[0].result.providerOutputText, /mcp_resource_payload_backend_unavailable/);
-  assert.equal(fetchCalls, 3, "each promoted external tool should continue provider once");
-  assert.equal(providerBodies.length, 3);
+
+  const malformedReadTurn = await runExternalObligation({
+    sessionStore,
+    controller,
+    surface,
+    project,
+    turnId: "turn_read_missing_args",
+    event: toolEvent("read_mcp_resource", {
+      serverIdentityId: "mcp_server_project_fixture",
+    }, 4),
+  });
+  assert.match(malformedReadTurn.unresolvedObligations[0].result.providerOutputText, /read_mcp_resource_result/);
+  assert.match(malformedReadTurn.unresolvedObligations[0].result.providerOutputText, /mcp_resource_read_invalid_arguments/);
+
+  assert.equal(fetchCalls, 4, "each promoted external tool should continue provider once");
+  assert.equal(providerBodies.length, 4);
   assert(!JSON.stringify(providerBodies).includes("rawResourcePayloadIncluded\":true"), "raw resource payload must not be exposed");
   assert(!JSON.stringify(providerBodies).includes("pluginInstallPerformed\":true"), "plugin install must not be performed");
   assert(!JSON.stringify(providerBodies).includes("dynamicMcpActionPerformed\":true"), "dynamic MCP action must not be performed");
@@ -167,6 +211,7 @@ try {
     searchResultKind: searchTurn.unresolvedObligations[0].result.resultKind,
     listResultKind: listTurn.unresolvedObligations[0].result.resultKind,
     readResultKind: readTurn.unresolvedObligations[0].result.resultKind,
+    malformedReadResultKind: malformedReadTurn.unresolvedObligations[0].result.resultKind,
     serverRequestCount: surface.serverRequests.size,
   }, null, 2));
 } finally {

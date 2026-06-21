@@ -15,6 +15,7 @@ const {
 } = require("../src/main/direct/bridge/role-lane-tool-bundle-composer");
 const {
   buildExternalCapabilityProfile,
+  mcpServerIdentityFor,
 } = require("../src/main/direct/external/external-capability-profile");
 const nowMs = Date.UTC(2026, 5, 21, 12, 30, 0);
 const implementationToolNames = [
@@ -79,6 +80,18 @@ const externalCapabilityProfile = buildExternalCapabilityProfile({
   projectId: "project_role_lane_fixture",
   workThreadId: "work_thread_role_lane_fixture",
   generatedAt: "2026-06-21T12:30:00.000Z",
+  serverIdentities: [
+    mcpServerIdentityFor({
+      serverIdentityId: "mcp_server_project_fixture",
+      displayName: "Project MCP server",
+      selectorKey: "project_fixture",
+      transportKind: "stdio",
+      authPosture: "local_config",
+      trustState: "configured",
+      enabledState: "enabled",
+      freshness: "fresh",
+    }),
+  ],
 });
 
 const grounded = composeDirectToolBundle({
