@@ -319,6 +319,7 @@ function buildComposerInput(input = {}) {
     requestManifestRef: input.requestManifestRef ? normalizeEvidenceRef(input.requestManifestRef, "request_manifest", "request_manifest") : undefined,
     requestedToolFamilies: normalizeStringList(input.requestedToolFamilies),
     toolNames: normalizeStringList(input.toolNames),
+    useLaneDefaultTools: input.useLaneDefaultTools !== false,
     requireRequestGrounding: input.requireRequestGrounding !== false,
     observedAt: normalizeString(input.observedAt, nowIso(input.nowMs)),
   };
@@ -568,7 +569,9 @@ function composeDirectToolBundle(input = {}) {
   const registry = isPlainObject(input?.registry) ? input.registry : buildDirectRoleLaneRegistry(input);
   const lane = laneFor(laneSelection, registry);
   const explicitToolNames = normalizeStringList(composerInput.toolNames);
-  const toolNames = explicitToolNames.length ? explicitToolNames : normalizeStringList(lane?.defaultToolNames);
+  const toolNames = explicitToolNames.length
+    ? explicitToolNames
+    : composerInput.useLaneDefaultTools === false ? [] : normalizeStringList(lane?.defaultToolNames);
   const groundingMissing = composerInput.requireRequestGrounding && !composerInput.normalizedLaneRequestRef;
   const classifiedRows = groundingMissing
     ? { declaredRows: [], unavailableRows: blockedRowsForMissingGrounding(toolNames, laneSelection) }

@@ -8,12 +8,14 @@ const {
   DEFAULT_IMPLEMENTATION_TOOL_INSTRUCTIONS,
   DEFAULT_REPAIR_LOOP_CONTINUATION_INSTRUCTIONS,
   DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS,
-  directImplementationToolSchemas,
   requestShapeForDiagnostic,
   runImplementationToolInitialProbe,
   runPersistedReadOnlyToolContinuation,
   runTextOnlyDirectProbe,
 } = require("../transport/codex-responses-transport");
+const {
+  composeDirectToolBundle,
+} = require("../bridge/role-lane-tool-bundle-composer");
 const {
   DIRECT_IMPORT_CHECKPOINT_REQUEST_SHAPE,
   assistantTextFromNormalizedEvents,
@@ -662,6 +664,92 @@ function initialDirectTurnRequestShape(requestBody = {}, options = {}) {
       : useRecentDialogue ? "direct_text_turn_recent_dialogue@1" : "direct_text_turn_empty_context@1",
     tools: declaredToolNames.length > 0,
     declaredToolNames,
+    ...directToolCompositionRequestShapeFields(options.toolComposition),
+  };
+}
+
+function directToolEvidenceRef(kind, id, label = "") {
+  const safeKind = normalizeString(kind, "evidence");
+  const safeId = normalizeString(id, safeKind);
+  return {
+    kind: safeKind,
+    id: safeId,
+    label: normalizeString(label, safeId),
+    digest: `sha256:${sha256(`${safeKind}\0${safeId}\0${normalizeString(label, safeId)}`)}`,
+    rendererSafe: true,
+    rawTextIncluded: false,
+    rawPathIncluded: false,
+    rawSecretIncluded: false,
+  };
+}
+
+function directToolCompositionRequestShapeFields(composition = {}) {
+  if (!isPlainObject(composition)) return {};
+  const providerBundle = isPlainObject(composition.providerDeclaredToolBundle) ? composition.providerDeclaredToolBundle : {};
+  const catalogue = isPlainObject(composition.residentCapabilityCatalogue) ? composition.residentCapabilityCatalogue : {};
+  const witness = isPlainObject(composition.witness) ? composition.witness : {};
+  if (!providerBundle.bundleId || !witness.witnessDigest) return {};
+  return {
+    directToolBundleCompositionId: normalizeString(composition.compositionId, ""),
+    directToolBundleCompositionStatus: normalizeString(composition.status, ""),
+    providerDeclaredToolBundleId: normalizeString(providerBundle.bundleId, ""),
+    providerDeclaredToolBundleDigest: normalizeString(providerBundle.declarationDigest, ""),
+    residentCapabilityCatalogueId: normalizeString(catalogue.catalogueId, ""),
+    residentCapabilityCatalogueDigest: normalizeString(catalogue.catalogueDigest, ""),
+    toolBundleCompositionWitnessDigest: normalizeString(witness.witnessDigest, ""),
+    toolBundleCompositionWitnessAttached: true,
+  };
+}
+
+function composeImplementationToolBundleForRequest(input = {}) {
+  const sessionId = normalizeString(input.sessionId || input.threadId, "direct_session");
+  const turnId = normalizeString(input.turnId, "turn");
+  const projectId = normalizeString(input.projectId, "project_direct");
+  const toolNames = Array.isArray(input.toolNames) ? input.toolNames : ["read_file", "apply_patch", "run_command"];
+  const contextResult = isPlainObject(input.contextResult) ? input.contextResult : null;
+  const controlledRoutingResult = isPlainObject(input.controlledRoutingResult) ? input.controlledRoutingResult : null;
+  const workThreadId = normalizeString(
+    controlledRoutingResult?.route?.selectedWorkThreadId ||
+    input.workThreadId ||
+    contextResult?.contextPack?.workThreadId,
+    "work_thread_direct_live",
+  );
+  const composition = composeDirectToolBundle({
+    projectId,
+    workThreadId,
+    threadId: sessionId,
+    laneKind: "implementation_worker",
+    toolNames,
+    useLaneDefaultTools: input.useLaneDefaultTools !== false,
+    providerProfileRef: directToolEvidenceRef("provider_profile", input.providerProfileId || "direct_provider_profile", "Direct provider profile"),
+    runtimeFactsRef: directToolEvidenceRef("runtime_facts", input.runtimeFactsId || "direct_runtime_facts", "Direct runtime facts"),
+    activationSnapshotRefs: [
+      directToolEvidenceRef("activation_snapshot", input.activationSnapshotId || "direct_tool_activation_snapshot", "Direct tool activation snapshot"),
+    ],
+    sourceMessageRef: directToolEvidenceRef("source_message", input.sourceMessageId || `${turnId}_user`, "Direct user message"),
+    normalizedLaneRequestRef: directToolEvidenceRef("normalized_lane_request", input.normalizedLaneRequestId || `normalized_lane_request_${turnId}`, "Implementation lane request"),
+    controlledRouteRef: controlledRoutingResult?.route?.routeId
+      ? directToolEvidenceRef("controlled_route", controlledRoutingResult.route.routeId, "Controlled route")
+      : input.controlledRouteId
+        ? directToolEvidenceRef("controlled_route", input.controlledRouteId, "Controlled route")
+        : undefined,
+    roleHandoffPacketRef: input.roleHandoffPacketId
+      ? directToolEvidenceRef("role_handoff_packet", input.roleHandoffPacketId, "Role handoff packet")
+      : undefined,
+    contextPacketRef: contextResult?.contextPack?.contextBuildId
+      ? directToolEvidenceRef("context_packet", contextResult.contextPack.contextBuildId, "Context packet")
+      : undefined,
+    requestManifestRef: contextResult?.requestManifest?.requestManifestId
+      ? directToolEvidenceRef("request_manifest", contextResult.requestManifest.requestManifestId, "Request manifest")
+      : undefined,
+    observedAt: normalizeString(input.observedAt, nowIso()),
+    requireRequestGrounding: true,
+  });
+  return {
+    composition,
+    tools: composition.providerDeclaredToolBundle.toolDeclarations,
+    toolNames: composition.providerDeclaredToolBundle.declaredToolNames,
+    requestShapeFields: directToolCompositionRequestShapeFields(composition),
   };
 }
 
@@ -3526,7 +3614,19 @@ class DirectLiveTextController {
     const stepId = normalizeString(currentObligation.stepId, "");
     const originalUserIntent = userPromptTextFromTurn(turn);
     const continuationToolNames = implementationContinuationToolNames(this.statusForProject(project), originalUserIntent);
-    const continuationTools = directImplementationToolSchemas(continuationToolNames);
+    const continuationToolComposition = composeImplementationToolBundleForRequest({
+      projectId: normalizeString(project?.id || project?.projectId || project?.name, ""),
+      sessionId,
+      turnId,
+      toolNames: continuationToolNames,
+      useLaneDefaultTools: false,
+      sourceMessageId: `${turnId}_${obligationId}_read_continuation`,
+      normalizedLaneRequestId: `normalized_lane_request_${turnId}_${obligationId}_${stepOrdinal}`,
+      workThreadId: directWorkThreadContextCarrier(options).workThreadId,
+      runtimeFactsId: this.statusForProject(project).evidenceId || "direct_runtime_facts",
+    });
+    const continuationTools = continuationToolComposition.tools;
+    const declaredContinuationToolNames = continuationToolComposition.toolNames;
     const implementationRepairContinuation = continuationToolNames.some((name) => name === "apply_patch" || name === "run_command");
     let continuationRequest = null;
     let continuationContext = null;
@@ -3567,7 +3667,7 @@ class DirectLiveTextController {
         store: false,
         tools: continuationTools.length > 0,
         toolCount: continuationTools.length,
-        declaredToolNames: continuationToolNames,
+        declaredToolNames: declaredContinuationToolNames,
         parallelToolCalls: false,
         hasInstructions: true,
         hasPreviousResponseId: false,
@@ -3584,6 +3684,7 @@ class DirectLiveTextController {
         toolLoopId,
         stepId,
         stepOrdinal,
+        ...continuationToolComposition.requestShapeFields,
       };
       continuationContext = this.directThreadStore.buildAndPersistContextForToolContinuation({
         sessionStore: this.sessionStore,
@@ -3734,7 +3835,19 @@ class DirectLiveTextController {
     const stepOrdinal = Number(currentObligation.stepOrdinal || 1) || 1;
     const originalUserIntent = userPromptTextFromTurn(turn);
     const continuationToolNames = implementationContinuationToolNames(this.statusForProject(project), originalUserIntent);
-    const continuationTools = directImplementationToolSchemas(continuationToolNames);
+    const continuationToolComposition = composeImplementationToolBundleForRequest({
+      projectId: normalizeString(project?.id || project?.projectId || project?.name, ""),
+      sessionId,
+      turnId,
+      toolNames: continuationToolNames,
+      useLaneDefaultTools: false,
+      sourceMessageId: `${turnId}_${obligationId}_patch_continuation`,
+      normalizedLaneRequestId: `normalized_lane_request_${turnId}_${obligationId}_${stepOrdinal}`,
+      workThreadId: directWorkThreadContextCarrier(options).workThreadId,
+      runtimeFactsId: this.statusForProject(project).evidenceId || "direct_runtime_facts",
+    });
+    const continuationTools = continuationToolComposition.tools;
+    const declaredContinuationToolNames = continuationToolComposition.toolNames;
     const implementationRepairContinuation = continuationToolNames.some((name) => name === "apply_patch" || name === "run_command");
     let continuationRequest = null;
     let continuationContext = null;
@@ -3773,7 +3886,7 @@ class DirectLiveTextController {
         store: false,
         tools: continuationTools.length > 0,
         toolCount: continuationTools.length,
-        declaredToolNames: continuationToolNames,
+        declaredToolNames: declaredContinuationToolNames,
         toolDeclarations: continuationTools.length > 0,
         toolOutputItem: false,
         parallelToolCalls: false,
@@ -3792,6 +3905,7 @@ class DirectLiveTextController {
         stepOrdinal,
         patchPlanId: normalizeString(currentObligation.patchPlan?.patchPlanId, ""),
         patchResultId: normalizeString(executed.result?.resultId, ""),
+        ...continuationToolComposition.requestShapeFields,
       };
       continuationContext = this.directThreadStore.buildAndPersistContextForToolContinuation({
         sessionStore: this.sessionStore,
@@ -3967,7 +4081,19 @@ class DirectLiveTextController {
     const stepOrdinal = Number(currentObligation.stepOrdinal || 1) || 1;
     const originalUserIntent = userPromptTextFromTurn(turn);
     const continuationToolNames = commandRepairContinuationToolNames(this.statusForProject(project || {}), originalUserIntent);
-    const continuationTools = directImplementationToolSchemas(continuationToolNames);
+    const continuationToolComposition = composeImplementationToolBundleForRequest({
+      projectId: normalizeString(project?.id || project?.projectId || project?.name, ""),
+      sessionId,
+      turnId,
+      toolNames: continuationToolNames,
+      useLaneDefaultTools: false,
+      sourceMessageId: `${turnId}_${obligationId}_command_continuation`,
+      normalizedLaneRequestId: `normalized_lane_request_${turnId}_${obligationId}_${stepOrdinal}`,
+      workThreadId: directWorkThreadContextCarrier(options).workThreadId,
+      runtimeFactsId: this.statusForProject(project || {}).evidenceId || "direct_runtime_facts",
+    });
+    const continuationTools = continuationToolComposition.tools;
+    const declaredContinuationToolNames = continuationToolComposition.toolNames;
     const implementationRepairContinuation = continuationToolNames.some((name) => name === "apply_patch" || name === "run_command");
     let continuationRequest = null;
     let continuationContext = null;
@@ -4008,7 +4134,7 @@ class DirectLiveTextController {
         store: false,
         tools: continuationTools.length > 0,
         toolCount: continuationTools.length,
-        declaredToolNames: continuationToolNames,
+        declaredToolNames: declaredContinuationToolNames,
         toolDeclarations: continuationTools.length > 0,
         toolOutputItem: false,
         parallelToolCalls: false,
@@ -4027,6 +4153,7 @@ class DirectLiveTextController {
         stepOrdinal,
         commandPlanId: normalizeString(currentObligation.commandPlan?.commandPlanId, ""),
         commandResultId: normalizeString(executed.result?.resultId, ""),
+        ...continuationToolComposition.requestShapeFields,
       };
       continuationContext = this.directThreadStore.buildAndPersistContextForToolContinuation({
         sessionStore: this.sessionStore,
@@ -4325,13 +4452,27 @@ class DirectLiveTextController {
       error.code = "controlled_routing_unsupported";
       throw error;
     }
+    let implementationToolComposition = implementationTier
+      ? composeImplementationToolBundleForRequest({
+          projectId: project.id,
+          sessionId: session.sessionId,
+          turnId: clientTurnRequestId,
+          clientTurnRequestId,
+          toolNames: implementationToolNames,
+          useLaneDefaultTools: false,
+          sourceMessageId: `${clientTurnRequestId}_user`,
+          normalizedLaneRequestId: `normalized_lane_request_${clientTurnRequestId}`,
+          workThreadId: workThreadCarrier.workThreadId,
+          runtimeFactsId: status.evidenceId || status.modelEvidenceId || "direct_runtime_facts",
+        })
+      : null;
     let requestBody = implementationTier
         ? buildImplementationToolInitialRequest({
             profileDoc: this.profileDoc,
             model,
             prompt,
             reasoningEffort,
-            tools: directImplementationToolSchemas(implementationToolNames),
+            tools: implementationToolComposition.tools,
             toolChoicePolicy: "auto",
           })
       : buildTextOnlyProbeRequest({
@@ -4345,7 +4486,7 @@ class DirectLiveTextController {
       model: requestBody.model,
       reasoningEffort,
       clientTurnRequestId,
-      requestShape: initialDirectTurnRequestShape(requestBody, { implementationTier, useRecentDialogue }),
+      requestShape: initialDirectTurnRequestShape(requestBody, { implementationTier, useRecentDialogue, toolComposition: implementationToolComposition?.composition }),
     });
     this.rememberClientTurnRequest(session.sessionId, clientTurnRequestId, turn.turnId);
     let contextResult = null;
@@ -4368,6 +4509,21 @@ class DirectLiveTextController {
             ...workThreadCarrier,
           });
         }
+        implementationToolComposition = implementationTier
+          ? composeImplementationToolBundleForRequest({
+              projectId: session.projectId,
+              sessionId: session.sessionId,
+              turnId: turn.turnId,
+              clientTurnRequestId,
+              toolNames: implementationToolNames,
+              useLaneDefaultTools: false,
+              sourceMessageId: `${turn.turnId}_user`,
+              normalizedLaneRequestId: `normalized_lane_request_${turn.turnId}`,
+              workThreadId: controlledRoutingResult?.route?.selectedWorkThreadId || workThreadCarrier.workThreadId,
+              controlledRoutingResult,
+              runtimeFactsId: status.evidenceId || status.modelEvidenceId || "direct_runtime_facts",
+            })
+          : null;
         contextResult = this.directThreadStore.buildAndPersistContextForTextTurn({
           session: this.sessionStore.readSession(session.sessionId) || session,
           projectId: session.projectId,
@@ -4383,7 +4539,7 @@ class DirectLiveTextController {
           expectedContextProjectionId: normalizeString(params.expectedContextProjectionId, frozenContextProjection?.projectionId || ""),
           expectedContextProjectionDigest: normalizeString(params.expectedContextProjectionDigest, frozenContextProjection?.projectionDigest || ""),
           model: requestBody.model,
-          requestShape: initialDirectTurnRequestShape(requestBody, { implementationTier, useRecentDialogue }),
+          requestShape: initialDirectTurnRequestShape(requestBody, { implementationTier, useRecentDialogue, toolComposition: implementationToolComposition?.composition }),
           endpointClass: "chatgpt-codex-responses",
           endpointHash: this.endpoint ? sha256(this.endpoint) : "",
           modelEvidenceRef: normalizeString(status.evidenceId, status.modelEvidenceId || ""),
@@ -4409,7 +4565,7 @@ class DirectLiveTextController {
               prompt: contextResult.providerInput.prompt,
               instructions: implementationContextInstructions(contextResult.providerInput.instructions),
               reasoningEffort,
-              tools: directImplementationToolSchemas(implementationToolNames),
+              tools: implementationToolComposition.tools,
               toolChoicePolicy: "auto",
             })
           : buildTextOnlyProbeRequest({
@@ -4421,7 +4577,7 @@ class DirectLiveTextController {
             });
       }
       requestShape = {
-        ...initialDirectTurnRequestShape(requestBody, { implementationTier, useRecentDialogue }),
+        ...initialDirectTurnRequestShape(requestBody, { implementationTier, useRecentDialogue, toolComposition: implementationToolComposition?.composition }),
         directAttachmentCapabilityProjectionDigest: attachmentSubmit.capabilityProjection.projectionDigest,
         directAttachmentSubmitPacketId: attachmentSubmit.packet.packetId,
         directAttachmentSubmitPacketDigest: attachmentSubmit.packet.packetDigest,
@@ -4465,7 +4621,7 @@ class DirectLiveTextController {
           code: error.code || "direct_turn_pre_transport_failed",
           message: error.message || "Direct text turn failed before provider transport.",
         },
-        requestShape: requestShape || initialDirectTurnRequestShape(requestBody, { implementationTier, useRecentDialogue }),
+        requestShape: requestShape || initialDirectTurnRequestShape(requestBody, { implementationTier, useRecentDialogue, toolComposition: implementationToolComposition?.composition }),
         controlledRoutingGateState: controlledRoutingResult?.route?.gateState || "",
         preTransportFailed: true,
       });
