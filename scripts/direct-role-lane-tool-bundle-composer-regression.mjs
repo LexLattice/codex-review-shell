@@ -13,11 +13,16 @@ const {
   validateDirectToolBundleComposition,
   validateResidentCapabilityCatalogue,
 } = require("../src/main/direct/bridge/role-lane-tool-bundle-composer");
-const {
-  directImplementationToolSchemas,
-} = require("../src/main/direct/transport/codex-responses-transport");
-
 const nowMs = Date.UTC(2026, 5, 21, 12, 30, 0);
+const implementationToolNames = [
+  "apply_patch",
+  "get_context_remaining",
+  "read_file",
+  "request_user_input",
+  "run_command",
+  "update_plan",
+];
+const safeResidentUtilityToolNames = ["get_context_remaining", "request_user_input", "update_plan"];
 
 function ref(kind, id, label = id) {
   return {
@@ -77,10 +82,10 @@ const grounded = composeDirectToolBundle({
 assert.equal(grounded.status, "passed");
 assert.deepEqual(validateDirectToolBundleComposition(grounded), []);
 assert.equal(grounded.providerDeclaredToolBundle.schema, "provider_declared_tool_bundle@1");
-assert.deepEqual(grounded.providerDeclaredToolBundle.declaredToolNames, ["apply_patch", "read_file", "run_command"]);
+assert.deepEqual(grounded.providerDeclaredToolBundle.declaredToolNames, implementationToolNames);
 assert.equal(grounded.providerDeclaredToolBundle.parallelToolCalls, false);
 assert.equal(grounded.providerDeclaredToolBundle.toolChoice, "auto");
-assert.equal(grounded.residentCapabilityCatalogue.callableNow.length, 3);
+assert.equal(grounded.residentCapabilityCatalogue.callableNow.length, implementationToolNames.length);
 assert.equal(grounded.residentCapabilityCatalogue.knownUnavailable.length, 0);
 assert.equal(grounded.witness.providerDeclaredToolBundleRef, grounded.providerDeclaredToolBundle.bundleId);
 assert.equal(grounded.witness.residentCatalogueRef, grounded.residentCapabilityCatalogue.catalogueId);
@@ -99,8 +104,12 @@ for (const row of grounded.witness.declaredTools) {
   assert.equal(row.axes.currentRequestStatus, "callable_now");
 }
 
-const oldToolNames = directImplementationToolSchemas(["read_file", "apply_patch", "run_command"]).map((schema) => schema.name).sort();
-assert.deepEqual(grounded.providerDeclaredToolBundle.declaredToolNames, oldToolNames, "composer must preserve current implementation tool set in PR120");
+for (const toolName of safeResidentUtilityToolNames) {
+  const row = grounded.witness.declaredTools.find((entry) => entry.toolName === toolName);
+  assert(row, `missing safe resident utility declaration for ${toolName}`);
+  assert.equal(row.perCallAuthorityRequired, true, `${toolName} must still require concrete per-call authority`);
+  assert.equal(row.axes.currentRequestStatus, "callable_now", `${toolName} must be callable in the current resident catalogue`);
+}
 
 const reviewLaneSelection = buildDirectRoleLaneSelection({
   registry,
@@ -174,7 +183,7 @@ const defaultToolsFromEmptyList = composeDirectToolBundle({
   nowMs,
 });
 assert.notEqual(noDefaultTools.compositionId, defaultToolsFromEmptyList.compositionId, "default-tool policy must participate in composition identity");
-assert.deepEqual(defaultToolsFromEmptyList.providerDeclaredToolBundle.declaredToolNames, ["apply_patch", "read_file", "run_command"]);
+assert.deepEqual(defaultToolsFromEmptyList.providerDeclaredToolBundle.declaredToolNames, implementationToolNames);
 
 assert.doesNotThrow(() => composeDirectToolBundle(null));
 assert.doesNotThrow(() => composeDirectToolBundle({ registry: {} }));
@@ -213,9 +222,9 @@ assert.deepEqual(validateDirectToolBundleComposition(ungrounded), []);
 assert.deepEqual(ungrounded.providerDeclaredToolBundle.declaredToolNames, [], "missing normalized request grounding must block declarations");
 assert.equal(ungrounded.providerDeclaredToolBundle.toolChoice, "none");
 assert.equal(ungrounded.residentCapabilityCatalogue.callableNow.length, 0);
-assert.equal(ungrounded.residentCapabilityCatalogue.knownUnavailable.length, 3);
-assert.equal(ungrounded.residentCapabilityCatalogue.nonOmittableRows.length, 3);
-assert.equal(ungrounded.residentCapabilityCatalogue.omittedByClass.blockedTools, 3);
+assert.equal(ungrounded.residentCapabilityCatalogue.knownUnavailable.length, implementationToolNames.length);
+assert.equal(ungrounded.residentCapabilityCatalogue.nonOmittableRows.length, implementationToolNames.length);
+assert.equal(ungrounded.residentCapabilityCatalogue.omittedByClass.blockedTools, implementationToolNames.length);
 assert(ungrounded.witness.omittedReasonRows.every((row) => row.reason.includes("normalized lane request grounding")), "omission should cite missing grounding");
 for (const row of ungrounded.residentCapabilityCatalogue.knownUnavailable) {
   assert.equal(row.status, "blocked_by_policy");

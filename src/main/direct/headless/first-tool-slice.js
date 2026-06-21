@@ -1088,6 +1088,7 @@ module.exports = {
   buildRequestUserInputResultEnvelope,
   buildUpdatePlanResultEnvelope,
   buildViewImageResultEnvelope,
+  providerToolSchemaFor,
   validateDirectFirstToolCallGate,
   validateDirectFirstToolSlice,
 };
