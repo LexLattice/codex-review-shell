@@ -17,12 +17,16 @@ const nowMs = Date.UTC(2026, 5, 21, 12, 30, 0);
 const implementationToolNames = [
   "apply_patch",
   "get_context_remaining",
+  "inspect_agent",
+  "list_agents",
   "read_file",
   "request_user_input",
   "run_command",
   "update_plan",
 ];
 const safeResidentUtilityToolNames = ["get_context_remaining", "request_user_input", "update_plan"];
+const readOnlySubAgentStatusToolNames = ["inspect_agent", "list_agents"];
+const blockedSubAgentControlToolNames = ["close_agent", "interrupt_agent", "recursive_spawn", "resume_agent", "send_message", "spawn_agent"];
 
 function ref(kind, id, label = id) {
   return {
@@ -110,6 +114,49 @@ for (const toolName of safeResidentUtilityToolNames) {
   assert.equal(row.perCallAuthorityRequired, true, `${toolName} must still require concrete per-call authority`);
   assert.equal(row.axes.currentRequestStatus, "callable_now", `${toolName} must be callable in the current resident catalogue`);
 }
+
+for (const toolName of readOnlySubAgentStatusToolNames) {
+  const row = grounded.witness.declaredTools.find((entry) => entry.toolName === toolName);
+  assert(row, `missing read-only sub-agent status declaration for ${toolName}`);
+  assert.equal(row.toolFamily, "agent_runtime_status", `${toolName} must be status-only, not agent control`);
+  assert.equal(row.perCallAuthorityRequired, true, `${toolName} must still require concrete per-call authority`);
+  assert.equal(row.providerToolSchema.name, toolName, `${toolName} provider schema mismatch`);
+  assert.equal(row.authorityTemplate.allowedOperationClasses[0], "agent_runtime_status", `${toolName} authority class mismatch`);
+}
+
+const unsafeSubAgentControls = composeDirectToolBundle({
+  registry,
+  laneSelection,
+  providerProfileRef: ref("provider_profile", "provider_profile_direct_fixture"),
+  runtimeFactsRef: ref("runtime_facts", "runtime_facts_direct_fixture"),
+  activationSnapshotRefs: [ref("activation_snapshot", "activation_snapshot_direct_fixture")],
+  normalizedLaneRequestRef: ref("normalized_lane_request", "normalized_request_impl_001"),
+  toolNames: blockedSubAgentControlToolNames,
+  nowMs,
+});
+assert.equal(unsafeSubAgentControls.status, "passed");
+assert.deepEqual(unsafeSubAgentControls.providerDeclaredToolBundle.declaredToolNames, []);
+assert.equal(unsafeSubAgentControls.residentCapabilityCatalogue.knownUnavailable.length, blockedSubAgentControlToolNames.length);
+for (const row of unsafeSubAgentControls.residentCapabilityCatalogue.knownUnavailable) {
+  assert.equal(row.status, "blocked_by_lane", `${row.toolName} should be blocked by implementation-worker lane`);
+  assert.equal(row.toolFamily, "agent_runtime_control", `${row.toolName} should remain classified as control/interference`);
+  assert.equal(row.callableInCurrentRequest, false);
+  assert.equal(row.nonOmittable, true);
+}
+const waitAgentConditional = composeDirectToolBundle({
+  registry,
+  laneSelection,
+  providerProfileRef: ref("provider_profile", "provider_profile_direct_fixture"),
+  runtimeFactsRef: ref("runtime_facts", "runtime_facts_direct_fixture"),
+  activationSnapshotRefs: [ref("activation_snapshot", "activation_snapshot_direct_fixture")],
+  normalizedLaneRequestRef: ref("normalized_lane_request", "normalized_request_impl_001"),
+  toolNames: ["wait_agent"],
+  nowMs,
+});
+assert.deepEqual(waitAgentConditional.providerDeclaredToolBundle.declaredToolNames, []);
+assert.equal(waitAgentConditional.residentCapabilityCatalogue.knownUnavailable[0].toolName, "wait_agent");
+assert.equal(waitAgentConditional.residentCapabilityCatalogue.knownUnavailable[0].status, "blocked_by_provider");
+assert.equal(waitAgentConditional.residentCapabilityCatalogue.knownUnavailable[0].toolFamily, "agent_runtime_status");
 
 const reviewLaneSelection = buildDirectRoleLaneSelection({
   registry,

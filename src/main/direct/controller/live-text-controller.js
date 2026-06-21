@@ -65,6 +65,9 @@ const {
   buildWorkerGraphAlignment,
   validateWorkerGraphAlignment,
 } = require("../agents/observability");
+const {
+  createDirectLiveSubAgentToolSurface,
+} = require("../agents/live-tool-surface");
 const { buildDirectThreadDeckProjection } = require("../thread/thread-deck");
 const {
   assertDirectAttachmentCapabilityProjectionSafe,
@@ -117,6 +120,11 @@ const SAFE_RESIDENT_UTILITY_TOOL_NAMES = Object.freeze([
   "request_user_input",
 ]);
 const SAFE_RESIDENT_UTILITY_TOOL_SET = new Set(SAFE_RESIDENT_UTILITY_TOOL_NAMES);
+const READ_ONLY_SUB_AGENT_STATUS_TOOL_NAMES = Object.freeze([
+  "list_agents",
+  "inspect_agent",
+]);
+const READ_ONLY_SUB_AGENT_STATUS_TOOL_SET = new Set(READ_ONLY_SUB_AGENT_STATUS_TOOL_NAMES);
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -635,8 +643,33 @@ function appendSafeResidentUtilities(toolNames = [], status = {}) {
   ].map((name) => normalizeString(name, "")).filter(Boolean))];
 }
 
+function readOnlySubAgentStatusToolNames(status = {}) {
+  const runtimeReady = status && normalizeString(status.status, "") === "ready";
+  return runtimeReady ? [...READ_ONLY_SUB_AGENT_STATUS_TOOL_NAMES] : [];
+}
+
+function appendReadOnlySubAgentStatusTools(toolNames = [], status = {}) {
+  return [...new Set([
+    ...(Array.isArray(toolNames) ? toolNames : []),
+    ...readOnlySubAgentStatusToolNames(status),
+  ].map((name) => normalizeString(name, "")).filter(Boolean))];
+}
+
 function isSafeResidentUtilityToolName(toolName = "") {
   return SAFE_RESIDENT_UTILITY_TOOL_SET.has(normalizeString(toolName, ""));
+}
+
+function isReadOnlySubAgentStatusToolName(toolName = "") {
+  return READ_ONLY_SUB_AGENT_STATUS_TOOL_SET.has(normalizeString(toolName, ""));
+}
+
+function parseToolArgumentsObject(obligation = {}) {
+  try {
+    const parsed = JSON.parse(normalizeString(obligation?.argumentsText, "{}"));
+    return isPlainObject(parsed) ? parsed : {};
+  } catch (_error) {
+    return {};
+  }
 }
 
 function safeResidentUtilityActivationRow(toolName, projectId = "") {
@@ -706,6 +739,94 @@ function assistantTextFromDirectEvents(normalizedEvents = []) {
     .join("");
 }
 
+function summarizeSubAgentStatusResult(toolName, result = {}) {
+  const payload = isPlainObject(result?.result) ? result.result : {};
+  if (toolName === "list_agents") {
+    const projection = isPlainObject(payload.listProjection) ? payload.listProjection : {};
+    return {
+      kind: "list_agents_result",
+      status: normalizeString(result?.status, "completed"),
+      blockerCode: normalizeString(result?.blockerCode, ""),
+      agentCount: Number(projection.rowCount || 0),
+      activeCount: Number(projection.activeCount || 0),
+      terminalCount: Number(projection.terminalCount || 0),
+      agents: (Array.isArray(projection.rows) ? projection.rows : []).map((row) => ({
+        agentId: normalizeString(row.agentThreadId, ""),
+        label: normalizeString(row.displayLabel, ""),
+        role: normalizeString(row.agentClassKind || row.role, ""),
+        lifecycleState: normalizeString(row.lifecycleState || row.nodeState, ""),
+        activityState: normalizeString(row.activityState || row.nodeState, ""),
+        terminal: row.terminal === true,
+        model: normalizeString(row.model, ""),
+        reasoningEffort: normalizeString(row.reasoningEffort, ""),
+      })),
+      readOnly: true,
+      canInterfere: false,
+    };
+  }
+  const inspectPacket = isPlainObject(payload.inspectPacket) ? payload.inspectPacket : {};
+  const agentNode = isPlainObject(inspectPacket.agent)
+    ? inspectPacket.agent
+    : isPlainObject(inspectPacket.agentNode) ? inspectPacket.agentNode : {};
+  return {
+    kind: "inspect_agent_result",
+    status: normalizeString(result?.status, "completed"),
+    blockerCode: normalizeString(result?.blockerCode, ""),
+    agentId: normalizeString(agentNode.agentThreadId || inspectPacket.requestedAgentThreadId || payload.targetAgentId, ""),
+    label: normalizeString(agentNode.displayLabel, ""),
+    role: normalizeString(agentNode.agentClassKind || agentNode.role, ""),
+    lifecycleState: normalizeString(agentNode.lifecycleState || agentNode.nodeState, ""),
+    activityState: normalizeString(agentNode.activityState, ""),
+    model: normalizeString(agentNode.model, ""),
+    reasoningEffort: normalizeString(agentNode.reasoningEffort, ""),
+    graphRevision: Number(result?.graphRevision || inspectPacket.graphRevision || 0),
+    readOnly: true,
+    canInterfere: false,
+  };
+}
+
+function unavailableSubAgentStatusSurface(sessionId, project = {}) {
+  const baseResult = (toolName, targetAgentId = "") => ({
+    schema: "direct_live_sub_agent_tool_result@1",
+    toolName,
+    status: "blocked",
+    blockerCode: "sub_agent_graph_evidence_unavailable",
+    projectId: normalizeString(project?.id || project?.projectId || project?.name, "project_direct_live_sub_agents"),
+    workThreadId: normalizeString(directWorkThreadContextCarrier(project).workThreadId, "work_thread_direct_live_sub_agents"),
+    primaryThreadId: normalizeString(sessionId, "primary_direct_agent"),
+    graphRevision: 0,
+    providerTransportStarted: false,
+    providerDeclarationStarted: false,
+    workspaceMutationStarted: false,
+    childTranscriptPromotionStarted: false,
+    parentSelfBindingRespected: true,
+    result: toolName === "list_agents"
+      ? {
+          listProjection: {
+            schema: "direct_sub_agent_list_projection@1",
+            rowCount: 0,
+            activeCount: 0,
+            terminalCount: 0,
+            rows: [],
+            unavailableReason: "sub_agent_graph_evidence_unavailable",
+          },
+        }
+      : {
+          targetAgentId,
+          unavailableReason: "sub_agent_graph_evidence_unavailable",
+        },
+    rawPromptIncluded: false,
+    rawTranscriptIncluded: false,
+    rawProviderFrameIncluded: false,
+    rawSecretIncluded: false,
+    observedAt: nowIso(),
+  });
+  return {
+    listAgents: () => baseResult("list_agents"),
+    inspectAgent: (input = {}) => baseResult("inspect_agent", normalizeString(input.childAgentId || input.agentThreadId || input.targetAgentId, "")),
+  };
+}
+
 function promptImpliesFileMutation(prompt) {
   const text = normalizeString(prompt, "").toLowerCase();
   return /\b(apply_patch|patch|edit|modify|update|change|fix|replace|insert|delete|remove|rename|write)\b/.test(text) ||
@@ -728,7 +849,7 @@ function implementationContinuationToolNames(status = {}, prompt = "") {
   if (asksPatch && patchReady) names.push("apply_patch");
   if (asksCommand && commandReady) names.push("run_command");
   if (!names.length && readReady) names.push("read_file");
-  return appendSafeResidentUtilities(names, status);
+  return appendReadOnlySubAgentStatusTools(appendSafeResidentUtilities(names, status), status);
 }
 
 function commandRepairContinuationToolNames(status = {}, prompt = "") {
@@ -1039,6 +1160,7 @@ class DirectLiveTextController {
     this.modelEvidenceResolver = typeof options.modelEvidenceResolver === "function" ? options.modelEvidenceResolver : null;
     this.implementationProofEvidenceResolver = typeof options.implementationProofEvidenceResolver === "function" ? options.implementationProofEvidenceResolver : null;
     this.activationStatusResolver = typeof options.activationStatusResolver === "function" ? options.activationStatusResolver : null;
+    this.subAgentStatusSurfaceResolver = typeof options.subAgentStatusSurfaceResolver === "function" ? options.subAgentStatusSurfaceResolver : null;
     this.fetchImpl = typeof options.fetchImpl === "function" ? options.fetchImpl : null;
     this.workspaceRequest = typeof options.workspaceRequest === "function" ? options.workspaceRequest : null;
     this.endpoint = normalizeString(options.endpoint, "");
@@ -3394,6 +3516,71 @@ class DirectLiveTextController {
     return 1;
   }
 
+  isReadOnlySubAgentStatusObligation(obligation = {}) {
+    return isReadOnlySubAgentStatusToolName(obligation?.name);
+  }
+
+  buildReadOnlySubAgentStatusSurface(sessionId, turnId, project = {}) {
+    if (this.subAgentStatusSurfaceResolver) {
+      try {
+        const resolved = this.subAgentStatusSurfaceResolver({ sessionId, turnId, project });
+        if (resolved && typeof resolved.listAgents === "function" && typeof resolved.inspectAgent === "function") {
+          return resolved;
+        }
+      } catch (_error) {
+        return unavailableSubAgentStatusSurface(sessionId, project);
+      }
+    }
+    return unavailableSubAgentStatusSurface(sessionId, project);
+  }
+
+  buildReadOnlySubAgentStatusEnvelope(sessionId, turnId, obligation = {}, project = {}) {
+    const toolName = normalizeString(obligation?.name, "");
+    const args = parseToolArgumentsObject(obligation);
+    const statusSurface = this.buildReadOnlySubAgentStatusSurface(sessionId, turnId, project);
+    const result = (toolName === "list_agents"
+      ? statusSurface?.listAgents?.()
+      : statusSurface?.inspectAgent?.({
+          childAgentId: normalizeString(args.childAgentId || args.agentThreadId || args.targetAgentId, ""),
+        })) || unavailableSubAgentStatusSurface(sessionId, project).inspectAgent({
+          childAgentId: normalizeString(args.childAgentId || args.agentThreadId || args.targetAgentId, ""),
+        });
+    const providerOutput = summarizeSubAgentStatusResult(toolName, result);
+    const envelope = {
+      schema: "direct_read_only_sub_agent_status_result_envelope@1",
+      envelopeId: `sub_agent_status_result_${sha256(`${sessionId}:${turnId}:${obligation.obligationId}:${result.resultDigest || stableStringify(providerOutput)}`).slice(0, 24)}`,
+      toolName,
+      callId: normalizeString(obligation.callId, ""),
+      resultKind: toolName === "list_agents" ? "sub_agent_list_status" : "sub_agent_inspect_status",
+      status: result.status === "completed" ? "ready_for_provider_continuation" : "blocked",
+      blockerCodes: normalizeString(result.blockerCode, "") ? [normalizeString(result.blockerCode, "")] : [],
+      resultDigest: normalizeString(result.resultDigest, ""),
+      providerOutput,
+      contextAdmission: {
+        admittedAs: "sub_agent_status_e_channel",
+        admissionState: result.status === "completed" ? "admitted" : "blocked",
+        readOnly: true,
+        mutatesAgentGraph: false,
+        mutatesWorkspace: false,
+        childTranscriptPromoted: false,
+        grantsInterferenceAuthority: false,
+      },
+      rawPromptIncluded: false,
+      rawResultIncluded: false,
+      rawWorkspacePathIncluded: false,
+      rawTranscriptIncluded: false,
+      rawSecretIncluded: false,
+    };
+    envelope.envelopeDigest = sha256(stableStringify(envelope));
+    return envelope;
+  }
+
+  async emitReadOnlySubAgentStatusRequest(surfaceSession, sessionId, turnId, obligation = {}, project = {}) {
+    const envelope = this.buildReadOnlySubAgentStatusEnvelope(sessionId, turnId, obligation, project);
+    await this.continueAfterSafeResidentUtilityResult(surfaceSession, sessionId, turnId, obligation, envelope, project);
+    return 1;
+  }
+
   async emitToolApprovalRequests(surfaceSession, sessionId, turnId, obligations = [], project = {}) {
     if (!surfaceSession) return 0;
     const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
@@ -3422,6 +3609,10 @@ class DirectLiveTextController {
     for (const obligation of obligations) {
       if (this.isSafeResidentUtilityObligation(obligation)) {
         createdCount += await this.emitSafeResidentUtilityRequest(surfaceSession, sessionId, turnId, obligation, project);
+        continue;
+      }
+      if (this.isReadOnlySubAgentStatusObligation(obligation)) {
+        createdCount += await this.emitReadOnlySubAgentStatusRequest(surfaceSession, sessionId, turnId, obligation, project);
         continue;
       }
       if (this.isPatchApplyObligation(obligation)) {
@@ -4816,7 +5007,9 @@ class DirectLiveTextController {
       binding.directTier === "text-only";
     const implementationTier = directLiveTier &&
       binding.directTier === "implementation-lane";
-    const implementationToolNames = implementationTier ? appendSafeResidentUtilities(implementationInitialToolNames(status, prompt), status) : [];
+    const implementationToolNames = implementationTier
+      ? appendReadOnlySubAgentStatusTools(appendSafeResidentUtilities(implementationInitialToolNames(status, prompt), status), status)
+      : [];
     const useRecentDialogue = existingTurnCount > 0;
     let frozenContextProjection = null;
     if (useRecentDialogue) {

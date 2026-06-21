@@ -55,8 +55,8 @@ const DEFAULT_ROLE_LANES = Object.freeze([
     roleId: "implementation_worker",
     displayName: "Implementation worker",
     agentClassSpecId: "agent_class_spec_implementation_worker",
-    defaultToolNames: ["read_file", "apply_patch", "run_command", "get_context_remaining", "update_plan", "request_user_input"],
-    allowedToolFamilies: ["workspace_process_authority", "local_perception", "session_control_state", "plan_projection", "human_authority_bridge"],
+    defaultToolNames: ["read_file", "apply_patch", "run_command", "get_context_remaining", "update_plan", "request_user_input", "list_agents", "inspect_agent"],
+    allowedToolFamilies: ["workspace_process_authority", "local_perception", "session_control_state", "plan_projection", "human_authority_bridge", "agent_runtime_status"],
     laneLawIds: ["direct_implementation_lane_tool_law@1", "direct_workspace_authority_law@1"],
   },
   {
@@ -155,6 +155,87 @@ const TOOL_METADATA = Object.freeze({
     targetScopePolicyId: "direct_bounded_human_decision_scope_policy@1",
     resultEnvelopePolicyId: "direct_request_user_input_result_envelope@1",
     contextAdmissionPolicyId: "direct_request_user_input_context_admission@1",
+  },
+  list_agents: {
+    capabilityId: "direct.list_agents",
+    toolFamily: "agent_runtime_status",
+    implementedState: "restricted_executor",
+    promotionState: "direct_enabled",
+    targetScopePolicyId: "direct_sub_agent_status_read_scope_policy@1",
+    resultEnvelopePolicyId: "direct_list_agents_result_envelope@1",
+    contextAdmissionPolicyId: "direct_sub_agent_status_context_admission@1",
+  },
+  inspect_agent: {
+    capabilityId: "direct.inspect_agent",
+    toolFamily: "agent_runtime_status",
+    implementedState: "restricted_executor",
+    promotionState: "direct_enabled",
+    targetScopePolicyId: "direct_sub_agent_status_read_scope_policy@1",
+    resultEnvelopePolicyId: "direct_inspect_agent_result_envelope@1",
+    contextAdmissionPolicyId: "direct_sub_agent_status_context_admission@1",
+  },
+  wait_agent: {
+    capabilityId: "direct.wait_agent",
+    toolFamily: "agent_runtime_status",
+    implementedState: "restricted_executor",
+    promotionState: "activation_gated",
+    targetScopePolicyId: "direct_sub_agent_bounded_wait_scope_policy@1",
+    resultEnvelopePolicyId: "direct_wait_agent_result_envelope@1",
+    contextAdmissionPolicyId: "direct_sub_agent_status_context_admission@1",
+  },
+  spawn_agent: {
+    capabilityId: "direct.spawn_agent",
+    toolFamily: "agent_runtime_control",
+    implementedState: "restricted_executor",
+    promotionState: "direct_restricted",
+    targetScopePolicyId: "direct_sub_agent_spawn_scope_policy@1",
+    resultEnvelopePolicyId: "direct_spawn_agent_result_envelope@1",
+    contextAdmissionPolicyId: "direct_sub_agent_result_context_admission@1",
+  },
+  send_message: {
+    capabilityId: "direct.send_message",
+    toolFamily: "agent_runtime_control",
+    implementedState: "restricted_executor",
+    promotionState: "direct_restricted",
+    targetScopePolicyId: "direct_sub_agent_followup_scope_policy@1",
+    resultEnvelopePolicyId: "direct_send_message_result_envelope@1",
+    contextAdmissionPolicyId: "direct_sub_agent_result_context_admission@1",
+  },
+  close_agent: {
+    capabilityId: "direct.close_agent",
+    toolFamily: "agent_runtime_control",
+    implementedState: "restricted_executor",
+    promotionState: "direct_restricted",
+    targetScopePolicyId: "direct_sub_agent_lifecycle_scope_policy@1",
+    resultEnvelopePolicyId: "direct_close_agent_result_envelope@1",
+    contextAdmissionPolicyId: "direct_sub_agent_status_context_admission@1",
+  },
+  interrupt_agent: {
+    capabilityId: "direct.interrupt_agent",
+    toolFamily: "agent_runtime_control",
+    implementedState: "restricted_executor",
+    promotionState: "direct_restricted",
+    targetScopePolicyId: "direct_sub_agent_lifecycle_scope_policy@1",
+    resultEnvelopePolicyId: "direct_interrupt_agent_result_envelope@1",
+    contextAdmissionPolicyId: "direct_sub_agent_status_context_admission@1",
+  },
+  resume_agent: {
+    capabilityId: "direct.resume_agent",
+    toolFamily: "agent_runtime_control",
+    implementedState: "restricted_executor",
+    promotionState: "direct_restricted",
+    targetScopePolicyId: "direct_sub_agent_lifecycle_scope_policy@1",
+    resultEnvelopePolicyId: "direct_resume_agent_result_envelope@1",
+    contextAdmissionPolicyId: "direct_sub_agent_status_context_admission@1",
+  },
+  recursive_spawn: {
+    capabilityId: "direct.recursive_spawn",
+    toolFamily: "agent_runtime_control",
+    implementedState: "not_implemented",
+    promotionState: "unsupported",
+    targetScopePolicyId: "direct_recursive_spawn_forbidden_policy@1",
+    resultEnvelopePolicyId: "none",
+    contextAdmissionPolicyId: "none",
   },
 });
 
@@ -403,6 +484,36 @@ function authorityTemplateFor(toolName, laneSelection) {
 }
 
 function providerSchemaFor(toolName) {
+  if (toolName === "list_agents") {
+    return {
+      type: "function",
+      name: "list_agents",
+      description: "List current direct sub-agents for this work thread as read-only status evidence. This cannot spawn, message, stop, resume, or otherwise interfere with agents.",
+      parameters: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+    };
+  }
+  if (toolName === "inspect_agent") {
+    return {
+      type: "function",
+      name: "inspect_agent",
+      description: "Inspect one direct sub-agent through the read-only E-channel. This cannot message, wait-block, stop, resume, or mutate the child agent.",
+      parameters: {
+        type: "object",
+        properties: {
+          childAgentId: {
+            type: "string",
+            description: "Stable child agent id in the current work thread.",
+          },
+        },
+        required: ["childAgentId"],
+        additionalProperties: false,
+      },
+    };
+  }
   const schema = firstSliceProviderToolSchemaFor(toolName) || directImplementationToolSchemas([toolName])[0];
   return isPlainObject(schema) ? schema : null;
 }

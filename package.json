@@ -166,7 +166,8 @@
     "direct:external-result-context-admission": "node ./scripts/direct-external-result-context-admission-regression.mjs",
     "direct:external-wave18-usability-gate": "node ./scripts/direct-external-wave18-usability-gate-regression.mjs",
     "direct:role-lane-tool-bundle-composer": "node ./scripts/direct-role-lane-tool-bundle-composer-regression.mjs",
-    "direct:safe-resident-utility-routing": "node ./scripts/direct-safe-resident-utility-routing-regression.mjs"
+    "direct:safe-resident-utility-routing": "node ./scripts/direct-safe-resident-utility-routing-regression.mjs",
+    "direct:sub-agent-status-tool-routing": "node ./scripts/direct-sub-agent-status-tool-routing-regression.mjs"
   },
   "dependencies": {
     "electron": "^41.2.0",
