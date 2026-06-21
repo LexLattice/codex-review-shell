@@ -82,6 +82,14 @@ const {
   validateDirectWorkerStartResult,
   validateDirectWorkerStartTransition,
 } = require("../bridge/worker-start");
+const {
+  buildExternalDiscoveryResultEnvelope,
+  buildExternalDiscoveryToolCallGate,
+  buildExternalToolResidentDeclaration,
+} = require("../external/external-discovery-tools");
+const {
+  buildMcpResourceReadEnvelope,
+} = require("../external/mcp-resource-read-envelope");
 
 const DIRECT_LIVE_TEXT_SURFACE_TRANSPORT = "direct-live-text";
 const DIRECT_FORK_PREVIEW_START_REQUEST_SHAPE = "direct_fork_preview_start_live_text@1";
@@ -125,6 +133,19 @@ const READ_ONLY_SUB_AGENT_STATUS_TOOL_NAMES = Object.freeze([
   "inspect_agent",
 ]);
 const READ_ONLY_SUB_AGENT_STATUS_TOOL_SET = new Set(READ_ONLY_SUB_AGENT_STATUS_TOOL_NAMES);
+const EXTERNAL_DISCOVERY_TOOL_NAMES = Object.freeze([
+  "tool_search",
+  "list_mcp_resources",
+  "list_mcp_resource_templates",
+]);
+const EXTERNAL_READ_TOOL_NAMES = Object.freeze([
+  "read_mcp_resource",
+]);
+const EXTERNAL_PROMOTED_TOOL_NAMES = Object.freeze([
+  ...EXTERNAL_DISCOVERY_TOOL_NAMES,
+  ...EXTERNAL_READ_TOOL_NAMES,
+]);
+const EXTERNAL_PROMOTED_TOOL_SET = new Set(EXTERNAL_PROMOTED_TOOL_NAMES);
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -655,12 +676,39 @@ function appendReadOnlySubAgentStatusTools(toolNames = [], status = {}) {
   ].map((name) => normalizeString(name, "")).filter(Boolean))];
 }
 
+function externalSourceIdentityReady(externalProfile = {}) {
+  const servers = Array.isArray(externalProfile?.serverIdentities) ? externalProfile.serverIdentities : [];
+  return servers.some((server) => (
+    server?.enabledState === "enabled" &&
+    server?.freshness === "fresh" &&
+    !["unknown", "untrusted"].includes(normalizeString(server?.trustState, "unknown"))
+  ));
+}
+
+function externalPromotedToolNames(status = {}) {
+  const runtimeReady = status && normalizeString(status.status, "") === "ready";
+  return runtimeReady && externalSourceIdentityReady(status.externalCapabilityProfile)
+    ? [...EXTERNAL_PROMOTED_TOOL_NAMES]
+    : [];
+}
+
+function appendExternalPromotedTools(toolNames = [], status = {}) {
+  return [...new Set([
+    ...(Array.isArray(toolNames) ? toolNames : []),
+    ...externalPromotedToolNames(status),
+  ].map((name) => normalizeString(name, "")).filter(Boolean))];
+}
+
 function isSafeResidentUtilityToolName(toolName = "") {
   return SAFE_RESIDENT_UTILITY_TOOL_SET.has(normalizeString(toolName, ""));
 }
 
 function isReadOnlySubAgentStatusToolName(toolName = "") {
   return READ_ONLY_SUB_AGENT_STATUS_TOOL_SET.has(normalizeString(toolName, ""));
+}
+
+function isExternalPromotedToolName(toolName = "") {
+  return EXTERNAL_PROMOTED_TOOL_SET.has(normalizeString(toolName, ""));
 }
 
 function parseToolArgumentsObject(obligation = {}) {
@@ -785,6 +833,60 @@ function summarizeSubAgentStatusResult(toolName, result = {}) {
   };
 }
 
+function summarizeExternalDiscoveryResult(toolName, envelope = {}) {
+  if (toolName === "read_mcp_resource") {
+    return {
+      kind: "read_mcp_resource_result",
+      status: normalizeString(envelope.status, "blocked"),
+      blockerCodes: Array.isArray(envelope.blockerCodes) ? envelope.blockerCodes : [],
+      serverIdentityId: normalizeString(envelope.serverSelector?.serverIdentityId, ""),
+      resourceDisplay: normalizeString(envelope.resourceDisplay, ""),
+      contextAdmission: normalizeString(envelope.contextAdmission, "blocked"),
+      mimeKind: normalizeString(envelope.mimeKind, "unknown"),
+      contentHandling: normalizeString(envelope.contentHandling, ""),
+      byteCount: Number(envelope.byteCount || 0),
+      excerpt: normalizeString(envelope.payloadExcerpt, ""),
+      rawResourceUriIncluded: false,
+      rawResourcePayloadIncluded: false,
+      dynamicMcpActionPerformed: false,
+      pluginInstallPerformed: false,
+      workspaceMutationStarted: false,
+    };
+  }
+  return {
+    kind: `${toolName}_result`,
+    status: normalizeString(envelope.status, "blocked"),
+    blockerCodes: Array.isArray(envelope.blockerCodes) ? envelope.blockerCodes : [],
+    descriptorCount: Number(envelope.descriptorCount || 0),
+    totalAvailableDescriptorCount: Number(envelope.totalAvailableDescriptorCount || 0),
+    truncated: envelope.truncated === true,
+    serverSelector: envelope.serverSelector ? {
+      serverIdentityId: normalizeString(envelope.serverSelector.serverIdentityId, ""),
+      selectorState: normalizeString(envelope.serverSelector.selectorState, ""),
+      exactServerIdentityRequired: envelope.serverSelector.exactServerIdentityRequired === true,
+      rawEndpointIncluded: false,
+      rawCredentialIncluded: false,
+    } : null,
+    descriptors: (Array.isArray(envelope.descriptors) ? envelope.descriptors : []).map((descriptor) => ({
+      descriptorId: normalizeString(descriptor.descriptorId, ""),
+      sourceKind: normalizeString(descriptor.sourceKind, ""),
+      displayName: normalizeString(descriptor.displayName, ""),
+      serverIdentity: normalizeString(descriptor.serverIdentity, ""),
+      permissionClass: normalizeString(descriptor.permissionClass, ""),
+      enabledState: normalizeString(descriptor.enabledState, ""),
+      deferredToolExposureStatus: normalizeString(descriptor.deferredToolExposureStatus, ""),
+      resourceReadAllowed: false,
+      dynamicToolCallAllowed: false,
+      pluginInstallAllowed: false,
+    })),
+    rawResourceUriIncluded: false,
+    rawExternalPayloadIncluded: false,
+    dynamicMcpActionPerformed: false,
+    pluginInstallPerformed: false,
+    workspaceMutationStarted: false,
+  };
+}
+
 function unavailableSubAgentStatusSurface(sessionId, project = {}) {
   const baseResult = (toolName, targetAgentId = "") => ({
     schema: "direct_live_sub_agent_tool_result@1",
@@ -849,7 +951,7 @@ function implementationContinuationToolNames(status = {}, prompt = "") {
   if (asksPatch && patchReady) names.push("apply_patch");
   if (asksCommand && commandReady) names.push("run_command");
   if (!names.length && readReady) names.push("read_file");
-  return appendReadOnlySubAgentStatusTools(appendSafeResidentUtilities(names, status), status);
+  return appendExternalPromotedTools(appendReadOnlySubAgentStatusTools(appendSafeResidentUtilities(names, status), status), status);
 }
 
 function commandRepairContinuationToolNames(status = {}, prompt = "") {
@@ -859,9 +961,9 @@ function commandRepairContinuationToolNames(status = {}, prompt = "") {
     names.length > 0 &&
     !names.includes("read_file")
   ) {
-    return ["read_file", ...names];
+    return appendExternalPromotedTools(["read_file", ...names], status);
   }
-  return names;
+  return appendExternalPromotedTools(names, status);
 }
 
 function implementationContextInstructions(contextInstructions = "") {
@@ -946,6 +1048,7 @@ function composeImplementationToolBundleForRequest(input = {}) {
     activationSnapshotRefs: [
       directToolEvidenceRef("activation_snapshot", input.activationSnapshotId || "direct_tool_activation_snapshot", "Direct tool activation snapshot"),
     ],
+    externalCapabilityProfile: input.externalCapabilityProfile,
     sourceMessageRef: directToolEvidenceRef("source_message", input.sourceMessageId || `${turnId}_user`, "Direct user message"),
     normalizedLaneRequestRef: directToolEvidenceRef("normalized_lane_request", input.normalizedLaneRequestId || `normalized_lane_request_${turnId}`, "Implementation lane request"),
     controlledRouteRef: controlledRoutingResult?.route?.routeId
@@ -1161,6 +1264,7 @@ class DirectLiveTextController {
     this.implementationProofEvidenceResolver = typeof options.implementationProofEvidenceResolver === "function" ? options.implementationProofEvidenceResolver : null;
     this.activationStatusResolver = typeof options.activationStatusResolver === "function" ? options.activationStatusResolver : null;
     this.subAgentStatusSurfaceResolver = typeof options.subAgentStatusSurfaceResolver === "function" ? options.subAgentStatusSurfaceResolver : null;
+    this.externalCapabilityProfileResolver = typeof options.externalCapabilityProfileResolver === "function" ? options.externalCapabilityProfileResolver : null;
     this.fetchImpl = typeof options.fetchImpl === "function" ? options.fetchImpl : null;
     this.workspaceRequest = typeof options.workspaceRequest === "function" ? options.workspaceRequest : null;
     this.endpoint = normalizeString(options.endpoint, "");
@@ -1310,6 +1414,34 @@ class DirectLiveTextController {
     }
   }
 
+  resolveExternalCapabilityProfile(project = {}) {
+    const workThreadId = normalizeString(directWorkThreadContextCarrier(project).workThreadId, "");
+    if (this.externalCapabilityProfileResolver) {
+      try {
+        const resolved = this.externalCapabilityProfileResolver({
+          project,
+          projectId: normalizeString(project?.id || project?.projectId || project?.name, ""),
+          workThreadId,
+          endpoint: this.endpoint,
+          authStatus: this.authStatus(),
+        });
+        if (isPlainObject(resolved)) return resolved;
+      } catch (error) {
+        return {
+          status: "unavailable",
+          reason: normalizeString(error?.message, "external_capability_profile_unavailable"),
+          serverIdentities: [],
+          resolverError: true,
+        };
+      }
+    }
+    return {
+      status: "unavailable",
+      reason: "external_capability_profile_resolver_missing",
+      serverIdentities: [],
+    };
+  }
+
   modelEvidenceForProject(project = {}) {
     const requestedModel = this.requestedModelForProject(project);
     const staticEvidence = modelEvidenceFor(this.profileDoc, requestedModel);
@@ -1327,6 +1459,7 @@ class DirectLiveTextController {
     const auth = this.authStatus();
     const evidence = this.modelEvidenceForProject(project);
     const implementationLaneProof = this.resolveImplementationProofEvidence(project, evidence.model);
+    const externalCapabilityProfile = this.resolveExternalCapabilityProfile(project);
     const readOnlyToolContinuation = mergeScopedProofWithProfileEvidence(
       readOnlyContinuationEvidenceFor(this.profileDoc),
       implementationLaneProof,
@@ -1374,6 +1507,18 @@ class DirectLiveTextController {
       readOnlyToolContinuation,
       patchApplyContinuation,
       commandExecutionContinuation,
+      externalCapabilityProfile,
+      externalDiscovery: {
+        status: externalSourceIdentityReady(externalCapabilityProfile) ? "ready" : "blocked",
+        tools: externalPromotedToolNames({ status, externalCapabilityProfile }),
+        sourceIdentityReady: externalSourceIdentityReady(externalCapabilityProfile),
+        reason: externalSourceIdentityReady(externalCapabilityProfile)
+          ? ""
+          : normalizeString(externalCapabilityProfile?.reason, "external_source_identity_missing"),
+        rawEndpointIncluded: false,
+        rawCredentialIncluded: false,
+        rawSecretIncluded: false,
+      },
       implementationLaneProof: {
         ...(implementationLaneProof || {}),
         readLoopReady: proofCapabilityReady(implementationLaneProof, "read_file_loop"),
@@ -3581,6 +3726,128 @@ class DirectLiveTextController {
     return 1;
   }
 
+  isExternalPromotedObligation(obligation = {}) {
+    return isExternalPromotedToolName(obligation?.name);
+  }
+
+  buildExternalPromotedEnvelope(sessionId, turnId, obligation = {}, project = {}) {
+    const toolName = normalizeString(obligation?.name, "");
+    const args = parseToolArgumentsObject(obligation);
+    const projectId = normalizeString(project?.id || project?.projectId || project?.name, "project_direct_external");
+    const workThreadId = normalizeString(directWorkThreadContextCarrier(project).workThreadId, "work_thread_direct_external");
+    const profile = this.resolveExternalCapabilityProfile({
+      ...project,
+      workThreadId,
+    });
+    if (toolName === "read_mcp_resource") {
+      const readEnvelope = buildMcpResourceReadEnvelope({
+        profile,
+        projectId,
+        workThreadId,
+        threadId: sessionId,
+        turnId,
+        callId: normalizeString(obligation.callId, ""),
+        serverIdentityId: normalizeString(args.serverIdentityId || args.serverId, ""),
+        resourceUri: normalizeString(args.resourceUri || args.uri, ""),
+        mimeType: normalizeString(args.mimeType || args.contentType, "text/plain"),
+        status: "unavailable",
+        blockerCodes: normalizeString(args.serverIdentityId || args.serverId, "") && normalizeString(args.resourceUri || args.uri, "")
+          ? ["mcp_resource_payload_backend_unavailable"]
+          : [],
+      });
+      const providerOutput = summarizeExternalDiscoveryResult(toolName, readEnvelope);
+      const envelope = {
+        schema: "direct_external_promoted_tool_result_envelope@1",
+        envelopeId: `external_tool_result_${sha256(`${sessionId}:${turnId}:${obligation.obligationId}:${readEnvelope.envelopeDigest}`).slice(0, 24)}`,
+        toolName,
+        callId: normalizeString(obligation.callId, ""),
+        resultKind: "mcp_resource_read_status",
+        status: readEnvelope.status === "completed" || readEnvelope.status === "unsupported" || readEnvelope.status === "unavailable"
+          ? "ready_for_provider_continuation"
+          : "blocked",
+        blockerCodes: Array.isArray(readEnvelope.blockerCodes) ? readEnvelope.blockerCodes : [],
+        resultDigest: normalizeString(readEnvelope.envelopeDigest, ""),
+        providerOutput,
+        contextAdmission: {
+          admittedAs: "external_resource_read_evidence",
+          admissionState: readEnvelope.contextAdmission === "blocked" ? "blocked" : "admitted",
+          readOnly: true,
+          mutatesWorkspace: false,
+          grantsDynamicMcpAuthority: false,
+          pluginInstallAllowed: false,
+          discoveredToolAutoPromotionAllowed: false,
+        },
+        rawPromptIncluded: false,
+        rawResultIncluded: false,
+        rawWorkspacePathIncluded: false,
+        rawExternalPayloadIncluded: false,
+        rawResourceUriIncluded: false,
+        rawSecretIncluded: false,
+      };
+      envelope.envelopeDigest = sha256(stableStringify(envelope));
+      return envelope;
+    }
+
+    const declaration = buildExternalToolResidentDeclaration({
+      profile,
+      generatedAt: nowIso(),
+    });
+    const gate = buildExternalDiscoveryToolCallGate({
+      declaration,
+      toolCall: {
+        name: toolName,
+        callId: normalizeString(obligation.callId, ""),
+        arguments: normalizeString(obligation.argumentsText, "{}"),
+      },
+    });
+    const discoveryEnvelope = buildExternalDiscoveryResultEnvelope({
+      profile,
+      declaration,
+      gate,
+      projectId,
+      workThreadId,
+      threadId: sessionId,
+      turnId,
+    });
+    const providerOutput = summarizeExternalDiscoveryResult(toolName, discoveryEnvelope);
+    const envelope = {
+      schema: "direct_external_promoted_tool_result_envelope@1",
+      envelopeId: `external_tool_result_${sha256(`${sessionId}:${turnId}:${obligation.obligationId}:${discoveryEnvelope.envelopeDigest}`).slice(0, 24)}`,
+      toolName,
+      callId: normalizeString(obligation.callId, ""),
+      resultKind: "external_discovery_status",
+      status: discoveryEnvelope.status === "completed" || discoveryEnvelope.status === "degraded" || discoveryEnvelope.status === "unavailable"
+        ? "ready_for_provider_continuation"
+        : "blocked",
+      blockerCodes: Array.isArray(discoveryEnvelope.blockerCodes) ? discoveryEnvelope.blockerCodes : [],
+      resultDigest: normalizeString(discoveryEnvelope.envelopeDigest, ""),
+      providerOutput,
+      contextAdmission: {
+        admittedAs: "external_discovery_descriptor_summary",
+        admissionState: discoveryEnvelope.contextAdmission === "blocked" ? "blocked" : "admitted",
+        readOnly: true,
+        mutatesWorkspace: false,
+        grantsDynamicMcpAuthority: false,
+        pluginInstallAllowed: false,
+        discoveredToolAutoPromotionAllowed: false,
+      },
+      rawPromptIncluded: false,
+      rawResultIncluded: false,
+      rawWorkspacePathIncluded: false,
+      rawExternalPayloadIncluded: false,
+      rawResourceUriIncluded: false,
+      rawSecretIncluded: false,
+    };
+    envelope.envelopeDigest = sha256(stableStringify(envelope));
+    return envelope;
+  }
+
+  async emitExternalPromotedRequest(surfaceSession, sessionId, turnId, obligation = {}, project = {}) {
+    const envelope = this.buildExternalPromotedEnvelope(sessionId, turnId, obligation, project);
+    await this.continueAfterSafeResidentUtilityResult(surfaceSession, sessionId, turnId, obligation, envelope, project);
+    return 1;
+  }
+
   async emitToolApprovalRequests(surfaceSession, sessionId, turnId, obligations = [], project = {}) {
     if (!surfaceSession) return 0;
     const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
@@ -3613,6 +3880,10 @@ class DirectLiveTextController {
       }
       if (this.isReadOnlySubAgentStatusObligation(obligation)) {
         createdCount += await this.emitReadOnlySubAgentStatusRequest(surfaceSession, sessionId, turnId, obligation, project);
+        continue;
+      }
+      if (this.isExternalPromotedObligation(obligation)) {
+        createdCount += await this.emitExternalPromotedRequest(surfaceSession, sessionId, turnId, obligation, project);
         continue;
       }
       if (this.isPatchApplyObligation(obligation)) {
@@ -4254,7 +4525,8 @@ class DirectLiveTextController {
     const stepOrdinal = Number(currentObligation.stepOrdinal || 1) || 1;
     const stepId = normalizeString(currentObligation.stepId, "");
     const originalUserIntent = userPromptTextFromTurn(turn);
-    const continuationToolNames = implementationContinuationToolNames(this.statusForProject(project || {}), originalUserIntent);
+    const directStatus = this.statusForProject(project || {});
+    const continuationToolNames = implementationContinuationToolNames(directStatus, originalUserIntent);
     const continuationToolComposition = composeImplementationToolBundleForRequest({
       projectId: normalizeString(project?.id || project?.projectId || project?.name, ""),
       sessionId,
@@ -4264,7 +4536,8 @@ class DirectLiveTextController {
       sourceMessageId: `${turnId}_${obligationId}_read_continuation`,
       normalizedLaneRequestId: `normalized_lane_request_${turnId}_${obligationId}_${stepOrdinal}`,
       workThreadId: directWorkThreadContextCarrier(options).workThreadId,
-      runtimeFactsId: this.statusForProject(project || {}).evidenceId || "direct_runtime_facts",
+      runtimeFactsId: directStatus.evidenceId || "direct_runtime_facts",
+      externalCapabilityProfile: directStatus.externalCapabilityProfile,
     });
     const continuationTools = continuationToolComposition.tools;
     const declaredContinuationToolNames = continuationToolComposition.toolNames;
@@ -4475,7 +4748,8 @@ class DirectLiveTextController {
     const parentResponseSource = parentResponseSourceForToolStep(currentObligation);
     const stepOrdinal = Number(currentObligation.stepOrdinal || 1) || 1;
     const originalUserIntent = userPromptTextFromTurn(turn);
-    const continuationToolNames = implementationContinuationToolNames(this.statusForProject(project || {}), originalUserIntent);
+    const directStatus = this.statusForProject(project || {});
+    const continuationToolNames = implementationContinuationToolNames(directStatus, originalUserIntent);
     const continuationToolComposition = composeImplementationToolBundleForRequest({
       projectId: normalizeString(project?.id || project?.projectId || project?.name, ""),
       sessionId,
@@ -4485,7 +4759,8 @@ class DirectLiveTextController {
       sourceMessageId: `${turnId}_${obligationId}_patch_continuation`,
       normalizedLaneRequestId: `normalized_lane_request_${turnId}_${obligationId}_${stepOrdinal}`,
       workThreadId: directWorkThreadContextCarrier(options).workThreadId,
-      runtimeFactsId: this.statusForProject(project || {}).evidenceId || "direct_runtime_facts",
+      runtimeFactsId: directStatus.evidenceId || "direct_runtime_facts",
+      externalCapabilityProfile: directStatus.externalCapabilityProfile,
     });
     const continuationTools = continuationToolComposition.tools;
     const declaredContinuationToolNames = continuationToolComposition.toolNames;
@@ -4721,7 +4996,8 @@ class DirectLiveTextController {
     const parentResponseSource = parentResponseSourceForToolStep(currentObligation);
     const stepOrdinal = Number(currentObligation.stepOrdinal || 1) || 1;
     const originalUserIntent = userPromptTextFromTurn(turn);
-    const continuationToolNames = commandRepairContinuationToolNames(this.statusForProject(project || {}), originalUserIntent);
+    const directStatus = this.statusForProject(project || {});
+    const continuationToolNames = commandRepairContinuationToolNames(directStatus, originalUserIntent);
     const continuationToolComposition = composeImplementationToolBundleForRequest({
       projectId: normalizeString(project?.id || project?.projectId || project?.name, ""),
       sessionId,
@@ -4731,7 +5007,8 @@ class DirectLiveTextController {
       sourceMessageId: `${turnId}_${obligationId}_command_continuation`,
       normalizedLaneRequestId: `normalized_lane_request_${turnId}_${obligationId}_${stepOrdinal}`,
       workThreadId: directWorkThreadContextCarrier(options).workThreadId,
-      runtimeFactsId: this.statusForProject(project || {}).evidenceId || "direct_runtime_facts",
+      runtimeFactsId: directStatus.evidenceId || "direct_runtime_facts",
+      externalCapabilityProfile: directStatus.externalCapabilityProfile,
     });
     const continuationTools = continuationToolComposition.tools;
     const declaredContinuationToolNames = continuationToolComposition.toolNames;
@@ -5008,7 +5285,7 @@ class DirectLiveTextController {
     const implementationTier = directLiveTier &&
       binding.directTier === "implementation-lane";
     const implementationToolNames = implementationTier
-      ? appendReadOnlySubAgentStatusTools(appendSafeResidentUtilities(implementationInitialToolNames(status, prompt), status), status)
+      ? appendExternalPromotedTools(appendReadOnlySubAgentStatusTools(appendSafeResidentUtilities(implementationInitialToolNames(status, prompt), status), status), status)
       : [];
     const useRecentDialogue = existingTurnCount > 0;
     let frozenContextProjection = null;
@@ -5107,6 +5384,7 @@ class DirectLiveTextController {
           normalizedLaneRequestId: `normalized_lane_request_${clientTurnRequestId}`,
           workThreadId: workThreadCarrier.workThreadId,
           runtimeFactsId: status.evidenceId || status.modelEvidenceId || "direct_runtime_facts",
+          externalCapabilityProfile: status.externalCapabilityProfile,
         })
       : null;
     let requestBody = implementationTier
@@ -5165,6 +5443,7 @@ class DirectLiveTextController {
               workThreadId: controlledRoutingResult?.route?.selectedWorkThreadId || workThreadCarrier.workThreadId,
               controlledRoutingResult,
               runtimeFactsId: status.evidenceId || status.modelEvidenceId || "direct_runtime_facts",
+              externalCapabilityProfile: status.externalCapabilityProfile,
             })
           : null;
         contextResult = this.directThreadStore.buildAndPersistContextForTextTurn({

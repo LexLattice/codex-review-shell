@@ -165,6 +165,9 @@ const {
   buildExternalCapabilityDiscoveryStatusProjection,
 } = require("./main/direct/external/capability-discovery");
 const {
+  buildExternalCapabilityProfile,
+} = require("./main/direct/external/external-capability-profile");
+const {
   assertMcpResourceToolBoundarySafe,
   buildMcpResourceToolBoundaryStatus,
 } = require("./main/direct/external/mcp-boundary");
@@ -2195,6 +2198,7 @@ function ensureDirectLiveTextController() {
     implementationProofEvidenceResolver: (context) => ensureDirectImplementationProofEvidenceStore().resolveScopedProofEvidence(context),
     activationStatusResolver: (project) => directActivationEvaluationForProject(project).status,
     subAgentStatusSurfaceResolver: (context) => directSubAgentStatusSurfaceFor(context),
+    externalCapabilityProfileResolver: (context) => buildDirectExternalCapabilityProfileForProject(context),
     workspaceRequest: (project, method, params, timeoutMs) => requestWorkspace(project, method, params, timeoutMs),
   });
   return directLiveTextController;
@@ -2751,6 +2755,32 @@ function buildDirectExternalCapabilityDiscoveryStatusForProject(input = {}) {
   });
   assertExternalCapabilityDiscoveryRegistrySafe(registry);
   return buildExternalCapabilityDiscoveryStatusProjection(registry);
+}
+
+function buildDirectExternalCapabilityProfileForProject(input = {}) {
+  const project = input.project || input || {};
+  const projectId = normalizeString(project.id || project.projectId, "");
+  const workThreadId = normalizeString(input.workThreadId || project.workThreadId, "");
+  const generatedAt = normalizeString(input.generatedAt, nowIso());
+  const discoveryRegistry = buildExternalCapabilityDiscoveryRegistry({
+    projectId,
+    workThreadId,
+    generatedAt,
+  });
+  assertExternalCapabilityDiscoveryRegistrySafe(discoveryRegistry);
+  const mcpBoundaryStatus = buildMcpResourceToolBoundaryStatus({
+    projectId,
+    workThreadId,
+    generatedAt,
+  });
+  assertMcpResourceToolBoundarySafe(mcpBoundaryStatus);
+  return buildExternalCapabilityProfile({
+    projectId,
+    workThreadId,
+    generatedAt,
+    discoveryRegistry,
+    mcpBoundaryStatus,
+  });
 }
 
 function buildDirectMcpBoundaryStatusForProject(input = {}) {

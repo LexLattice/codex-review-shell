@@ -7,6 +7,11 @@ const {
 const {
   providerToolSchemaFor: firstSliceProviderToolSchemaFor,
 } = require("../headless/first-tool-slice");
+const {
+  EXTERNAL_CAPABILITY_PROFILE_SCHEMA,
+  buildExternalCapabilityProfile,
+  validateExternalCapabilityProfile,
+} = require("../external/external-capability-profile");
 
 const DIRECT_ROLE_LANE_REGISTRY_SCHEMA = "direct_role_lane_registry@1";
 const DIRECT_ROLE_LANE_SELECTION_SCHEMA = "direct_role_lane_selection@1";
@@ -55,8 +60,8 @@ const DEFAULT_ROLE_LANES = Object.freeze([
     roleId: "implementation_worker",
     displayName: "Implementation worker",
     agentClassSpecId: "agent_class_spec_implementation_worker",
-    defaultToolNames: ["read_file", "apply_patch", "run_command", "get_context_remaining", "update_plan", "request_user_input", "list_agents", "inspect_agent"],
-    allowedToolFamilies: ["workspace_process_authority", "local_perception", "session_control_state", "plan_projection", "human_authority_bridge", "agent_runtime_status"],
+    defaultToolNames: ["read_file", "apply_patch", "run_command", "get_context_remaining", "update_plan", "request_user_input", "list_agents", "inspect_agent", "tool_search", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"],
+    allowedToolFamilies: ["workspace_process_authority", "local_perception", "session_control_state", "plan_projection", "human_authority_bridge", "agent_runtime_status", "external_capability_discovery", "external_resource_read"],
     laneLawIds: ["direct_implementation_lane_tool_law@1", "direct_workspace_authority_law@1"],
   },
   {
@@ -237,7 +242,47 @@ const TOOL_METADATA = Object.freeze({
     resultEnvelopePolicyId: "none",
     contextAdmissionPolicyId: "none",
   },
+  tool_search: {
+    capabilityId: "external.tool_search",
+    toolFamily: "external_capability_discovery",
+    implementedState: "restricted_executor",
+    promotionState: "direct_enabled",
+    targetScopePolicyId: "direct_external_tool_search_scope_policy@1",
+    resultEnvelopePolicyId: "external_discovery_result_envelope@1",
+    contextAdmissionPolicyId: "external_discovery_summary_ref_only@1",
+  },
+  list_mcp_resources: {
+    capabilityId: "external.list_mcp_resources",
+    toolFamily: "external_capability_discovery",
+    implementedState: "restricted_executor",
+    promotionState: "direct_enabled",
+    targetScopePolicyId: "direct_mcp_resource_list_scope_policy@1",
+    resultEnvelopePolicyId: "external_discovery_result_envelope@1",
+    contextAdmissionPolicyId: "external_discovery_summary_ref_only@1",
+  },
+  list_mcp_resource_templates: {
+    capabilityId: "external.list_mcp_resource_templates",
+    toolFamily: "external_capability_discovery",
+    implementedState: "restricted_executor",
+    promotionState: "direct_enabled",
+    targetScopePolicyId: "direct_mcp_resource_template_list_scope_policy@1",
+    resultEnvelopePolicyId: "external_discovery_result_envelope@1",
+    contextAdmissionPolicyId: "external_discovery_summary_ref_only@1",
+  },
+  read_mcp_resource: {
+    capabilityId: "external.read_mcp_resource",
+    toolFamily: "external_resource_read",
+    implementedState: "restricted_executor",
+    promotionState: "direct_enabled",
+    targetScopePolicyId: "direct_mcp_resource_read_scope_policy@1",
+    resultEnvelopePolicyId: "mcp_resource_read_envelope@1",
+    contextAdmissionPolicyId: "mcp_resource_read_context_admission@1",
+  },
 });
+
+const EXTERNAL_DISCOVERY_TOOL_NAMES = new Set(["tool_search", "list_mcp_resources", "list_mcp_resource_templates"]);
+const EXTERNAL_READ_TOOL_NAMES = new Set(["read_mcp_resource"]);
+const EXTERNAL_PROMOTED_TOOL_NAMES = new Set([...EXTERNAL_DISCOVERY_TOOL_NAMES, ...EXTERNAL_READ_TOOL_NAMES]);
 
 function isPlainObject(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -257,6 +302,62 @@ function normalizeEnum(value, allowed, fallback) {
 function normalizeStringList(value, fallback = []) {
   const source = Array.isArray(value) ? value : fallback;
   return [...new Set(source.map((entry) => normalizeString(entry, "")).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+}
+
+function selectableExternalServers(profile = {}) {
+  return (Array.isArray(profile?.serverIdentities) ? profile.serverIdentities : [])
+    .filter((server) => (
+      server?.enabledState === "enabled" &&
+      server?.freshness === "fresh" &&
+      !["unknown", "untrusted"].includes(normalizeString(server?.trustState, "unknown"))
+    ));
+}
+
+function externalSourceIdentityState(input = {}) {
+  const explicitProfile = input?.externalCapabilityProfile || input?.externalDiscoveryProfile || input?.mcpCapabilityProfile;
+  if (!isPlainObject(explicitProfile)) {
+    return {
+      state: "missing",
+      profile: null,
+      selectableServers: [],
+      blocker: "external_source_identity_missing",
+      evidenceRefs: [evidenceRef("external_source_identity", "missing_external_source_identity", "Missing external source identity")],
+    };
+  }
+  try {
+    const profile = explicitProfile.schema === EXTERNAL_CAPABILITY_PROFILE_SCHEMA
+      ? explicitProfile
+      : buildExternalCapabilityProfile(explicitProfile);
+    validateExternalCapabilityProfile(profile);
+    const servers = selectableExternalServers(profile);
+    if (!servers.length) {
+      return {
+        state: "blocked",
+        profile,
+        selectableServers: [],
+        blocker: "external_source_identity_not_selectable",
+        evidenceRefs: [evidenceRef("external_capability_profile", profile.profileDigest || profile.profileId, "External capability profile")],
+      };
+    }
+    return {
+      state: "ready",
+      profile,
+      selectableServers: servers,
+      blocker: "",
+      evidenceRefs: [
+        evidenceRef("external_capability_profile", profile.profileDigest || profile.profileId, "External capability profile"),
+        ...servers.map((server) => evidenceRef("mcp_server_identity_witness", server.identityDigest || server.serverIdentityId, server.displayName || server.serverIdentityId)),
+      ],
+    };
+  } catch (error) {
+    return {
+      state: "invalid",
+      profile: null,
+      selectableServers: [],
+      blocker: normalizeString(error?.message, "external_source_identity_invalid"),
+      evidenceRefs: [evidenceRef("external_source_identity", "invalid_external_source_identity", "Invalid external source identity")],
+    };
+  }
 }
 
 function stableStringify(value) {
@@ -401,6 +502,7 @@ function buildDirectRoleLaneSelection(input = {}) {
 function buildComposerInput(input = {}) {
   input = isPlainObject(input) ? input : {};
   const laneSelection = isPlainObject(input.laneSelection) ? input.laneSelection : buildDirectRoleLaneSelection(input);
+  const externalSourceIdentity = externalSourceIdentityState(input);
   const composerInput = {
     schema: DIRECT_TOOL_BUNDLE_COMPOSER_INPUT_SCHEMA,
     compositionId: normalizeString(input.compositionId, `direct_tool_bundle_composition_${digestFor("direct-tool-bundle-composer-input-source@1", {
@@ -433,6 +535,10 @@ function buildComposerInput(input = {}) {
     toolNames: normalizeStringList(input.toolNames),
     useLaneDefaultTools: input.useLaneDefaultTools !== false,
     requireRequestGrounding: input.requireRequestGrounding !== false,
+    externalSourceIdentity,
+    externalCapabilityProfileRef: externalSourceIdentity.profile
+      ? evidenceRef("external_capability_profile", externalSourceIdentity.profile.profileDigest || externalSourceIdentity.profile.profileId, "External capability profile")
+      : undefined,
     observedAt: normalizeString(input.observedAt, nowIso(input.nowMs)),
   };
   composerInput.inputDigest = digestFor("direct-tool-bundle-composer-input@1", composerInput);
@@ -484,6 +590,64 @@ function authorityTemplateFor(toolName, laneSelection) {
 }
 
 function providerSchemaFor(toolName) {
+  if (toolName === "tool_search") {
+    return {
+      type: "function",
+      name: "tool_search",
+      description: "Discover external capability descriptors only. This cannot execute discovered tools, read resources, install plugins, or promote capabilities.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "Optional bounded descriptor search text." },
+          families: {
+            type: "array",
+            items: {
+              type: "string",
+              enum: ["mcp_resource", "mcp_tool", "plugin_candidate", "hosted_provider_tool", "local_direct_tool"],
+            },
+          },
+          includeBlocked: { type: "boolean", description: "Whether blocked/deferred descriptors may appear in results." },
+          maxResults: { type: "number", description: "Bounded result cap; harness clamps to policy maximum." },
+        },
+        additionalProperties: false,
+      },
+    };
+  }
+  if (toolName === "list_mcp_resources" || toolName === "list_mcp_resource_templates") {
+    return {
+      type: "function",
+      name: toolName,
+      description: toolName === "list_mcp_resources"
+        ? "List MCP resource descriptors for one exact server identity. This cannot read resource payloads."
+        : "List MCP resource template descriptors for one exact server identity. This cannot expand or read resource payloads.",
+      parameters: {
+        type: "object",
+        properties: {
+          serverIdentityId: { type: "string", description: "Exact MCP server identity witness id." },
+          maxResults: { type: "number", description: "Bounded result cap; harness clamps to policy maximum." },
+        },
+        required: ["serverIdentityId"],
+        additionalProperties: false,
+      },
+    };
+  }
+  if (toolName === "read_mcp_resource") {
+    return {
+      type: "function",
+      name: "read_mcp_resource",
+      description: "Read one MCP resource only when the call cites an exact server identity and resource URI. The harness returns a bounded evidence envelope and cannot execute dynamic MCP tools, install plugins, or mutate workspace truth.",
+      parameters: {
+        type: "object",
+        properties: {
+          serverIdentityId: { type: "string", description: "Exact MCP server identity witness id." },
+          resourceUri: { type: "string", description: "Exact MCP resource URI to read." },
+          mimeType: { type: "string", description: "Optional expected MIME/content type." },
+        },
+        required: ["serverIdentityId", "resourceUri"],
+        additionalProperties: false,
+      },
+    };
+  }
   if (toolName === "list_agents") {
     return {
       type: "function",
@@ -647,6 +811,22 @@ function classifyToolDeclarationCandidates(toolNames = [], lane, laneSelection, 
   for (const toolName of toolNames) {
     const metadata = toolMetadata(toolName);
     const family = metadata.toolFamily;
+    if (EXTERNAL_PROMOTED_TOOL_NAMES.has(toolName) && composerInput.externalSourceIdentity?.state !== "ready") {
+      const blocker = normalizeString(composerInput.externalSourceIdentity?.blocker, "external_source_identity_missing");
+      unavailableRows.push(catalogueRow(toolName, "blocked_by_runtime", `Declaration blocked: ${blocker}.`, {
+        nextEnablementClass: "source_identity_witness",
+        nonOmittable: true,
+        axes: {
+          declarationState: "blocked",
+          currentRequestStatus: "blocked",
+          activationState: "active",
+        },
+        evidenceRefs: Array.isArray(composerInput.externalSourceIdentity?.evidenceRefs) && composerInput.externalSourceIdentity.evidenceRefs.length
+          ? composerInput.externalSourceIdentity.evidenceRefs
+          : [evidenceRef("external_source_identity", "missing_external_source_identity", "Missing external source identity")],
+      }));
+      continue;
+    }
     if (laneAllowedFamilies.size && !laneAllowedFamilies.has(family)) {
       unavailableRows.push(catalogueRow(toolName, "blocked_by_lane", `Declaration blocked: lane ${laneSelection.laneKind} does not allow tool family ${family}.`, {
         nextEnablementClass: "role_lane_change",
