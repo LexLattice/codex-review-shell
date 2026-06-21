@@ -165,6 +165,9 @@ const {
   buildExternalCapabilityDiscoveryStatusProjection,
 } = require("./main/direct/external/capability-discovery");
 const {
+  buildExternalCapabilityProfile,
+} = require("./main/direct/external/external-capability-profile");
+const {
   assertMcpResourceToolBoundarySafe,
   buildMcpResourceToolBoundaryStatus,
 } = require("./main/direct/external/mcp-boundary");
@@ -2195,6 +2198,7 @@ function ensureDirectLiveTextController() {
     implementationProofEvidenceResolver: (context) => ensureDirectImplementationProofEvidenceStore().resolveScopedProofEvidence(context),
     activationStatusResolver: (project) => directActivationEvaluationForProject(project).status,
     subAgentStatusSurfaceResolver: (context) => directSubAgentStatusSurfaceFor(context),
+    externalCapabilityProfileResolver: (context) => buildDirectExternalCapabilityProfileForProject(context),
     workspaceRequest: (project, method, params, timeoutMs) => requestWorkspace(project, method, params, timeoutMs),
   });
   return directLiveTextController;
@@ -2751,6 +2755,54 @@ function buildDirectExternalCapabilityDiscoveryStatusForProject(input = {}) {
   });
   assertExternalCapabilityDiscoveryRegistrySafe(registry);
   return buildExternalCapabilityDiscoveryStatusProjection(registry);
+}
+
+function buildDirectExternalCapabilityProfileForProject(input = {}) {
+  const project = input.project || input || {};
+  const projectId = normalizeString(project.id || project.projectId, "");
+  const workThreadId = normalizeString(input.workThreadId || project.workThreadId, "");
+  const generatedAt = normalizeString(input.generatedAt, nowIso());
+  const serverIdentities = [
+    ...(Array.isArray(input.serverIdentities) ? input.serverIdentities : []),
+    ...(Array.isArray(project.serverIdentities) ? project.serverIdentities : []),
+    ...(Array.isArray(project.mcpServerIdentities) ? project.mcpServerIdentities : []),
+    ...(Array.isArray(project.externalCapabilityProfile?.serverIdentities) ? project.externalCapabilityProfile.serverIdentities : []),
+    ...(Array.isArray(project.directExternalCapabilityProfile?.serverIdentities) ? project.directExternalCapabilityProfile.serverIdentities : []),
+    ...(Array.isArray(project.codex?.mcpServerIdentities) ? project.codex.mcpServerIdentities : []),
+    ...(Array.isArray(project.surfaceBinding?.codex?.mcpServerIdentities) ? project.surfaceBinding.codex.mcpServerIdentities : []),
+  ];
+  if (!serverIdentities.length) {
+    return {
+      status: "unavailable",
+      reason: "external_source_identity_missing",
+      projectId,
+      workThreadId,
+      serverIdentities: [],
+      rawEndpointIncluded: false,
+      rawCredentialIncluded: false,
+      rawSecretIncluded: false,
+    };
+  }
+  const discoveryRegistry = buildExternalCapabilityDiscoveryRegistry({
+    projectId,
+    workThreadId,
+    generatedAt,
+  });
+  assertExternalCapabilityDiscoveryRegistrySafe(discoveryRegistry);
+  const mcpBoundaryStatus = buildMcpResourceToolBoundaryStatus({
+    projectId,
+    workThreadId,
+    generatedAt,
+  });
+  assertMcpResourceToolBoundarySafe(mcpBoundaryStatus);
+  return buildExternalCapabilityProfile({
+    projectId,
+    workThreadId,
+    generatedAt,
+    discoveryRegistry,
+    mcpBoundaryStatus,
+    serverIdentities,
+  });
 }
 
 function buildDirectMcpBoundaryStatusForProject(input = {}) {

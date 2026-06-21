@@ -13,19 +13,28 @@ const {
   validateDirectToolBundleComposition,
   validateResidentCapabilityCatalogue,
 } = require("../src/main/direct/bridge/role-lane-tool-bundle-composer");
+const {
+  buildExternalCapabilityProfile,
+  mcpServerIdentityFor,
+} = require("../src/main/direct/external/external-capability-profile");
 const nowMs = Date.UTC(2026, 5, 21, 12, 30, 0);
 const implementationToolNames = [
   "apply_patch",
   "get_context_remaining",
   "inspect_agent",
   "list_agents",
+  "list_mcp_resource_templates",
+  "list_mcp_resources",
   "read_file",
+  "read_mcp_resource",
   "request_user_input",
   "run_command",
+  "tool_search",
   "update_plan",
 ];
 const safeResidentUtilityToolNames = ["get_context_remaining", "request_user_input", "update_plan"];
 const readOnlySubAgentStatusToolNames = ["inspect_agent", "list_agents"];
+const externalPromotedToolNames = ["list_mcp_resource_templates", "list_mcp_resources", "read_mcp_resource", "tool_search"];
 const blockedSubAgentControlToolNames = ["close_agent", "interrupt_agent", "recursive_spawn", "resume_agent", "send_message", "spawn_agent"];
 
 function ref(kind, id, label = id) {
@@ -67,6 +76,24 @@ assert.equal(laneSelection.agentClassSpecRef.kind, "agent_class_spec");
 assert.equal(laneSelection.normalizedLaneRequestRef.id, "normalized_request_impl_001");
 assert(laneSelection.laneLawRefs.length > 0, "lane selection should carry lane law refs");
 
+const externalCapabilityProfile = buildExternalCapabilityProfile({
+  projectId: "project_role_lane_fixture",
+  workThreadId: "work_thread_role_lane_fixture",
+  generatedAt: "2026-06-21T12:30:00.000Z",
+  serverIdentities: [
+    mcpServerIdentityFor({
+      serverIdentityId: "mcp_server_project_fixture",
+      displayName: "Project MCP server",
+      selectorKey: "project_fixture",
+      transportKind: "stdio",
+      authPosture: "local_config",
+      trustState: "configured",
+      enabledState: "enabled",
+      freshness: "fresh",
+    }),
+  ],
+});
+
 const grounded = composeDirectToolBundle({
   registry,
   laneSelection,
@@ -78,6 +105,7 @@ const grounded = composeDirectToolBundle({
   sourceSpanRefs: [ref("source_span", "source_span_impl_001")],
   semanticParseRef: ref("semantic_parse", "semantic_parse_impl_001"),
   normalizedLaneRequestRef: ref("normalized_lane_request", "normalized_request_impl_001"),
+  externalCapabilityProfile,
   contextPacketRef: ref("context_packet", "context_packet_impl_001"),
   requestManifestRef: ref("request_manifest", "request_manifest_impl_001"),
   nowMs,
@@ -124,6 +152,35 @@ for (const toolName of readOnlySubAgentStatusToolNames) {
   assert.equal(row.authorityTemplate.allowedOperationClasses[0], "agent_runtime_status", `${toolName} authority class mismatch`);
 }
 
+for (const toolName of externalPromotedToolNames) {
+  const row = grounded.witness.declaredTools.find((entry) => entry.toolName === toolName);
+  assert(row, `missing external promoted declaration for ${toolName}`);
+  assert(["external_capability_discovery", "external_resource_read"].includes(row.toolFamily), `${toolName} must stay in an external read/discovery family`);
+  assert.equal(row.perCallAuthorityRequired, true, `${toolName} must still require concrete per-call authority`);
+  assert.equal(row.providerToolSchema.name, toolName, `${toolName} provider schema mismatch`);
+  assert.equal(row.authorityTemplate.requiresConcreteCallDecision, true, `${toolName} must keep per-call gate`);
+}
+
+const missingExternalSource = composeDirectToolBundle({
+  registry,
+  laneSelection,
+  providerProfileRef: ref("provider_profile", "provider_profile_direct_fixture"),
+  runtimeFactsRef: ref("runtime_facts", "runtime_facts_direct_fixture"),
+  activationSnapshotRefs: [ref("activation_snapshot", "activation_snapshot_direct_fixture")],
+  normalizedLaneRequestRef: ref("normalized_lane_request", "normalized_request_impl_001"),
+  toolNames: externalPromotedToolNames,
+  nowMs,
+});
+assert.equal(missingExternalSource.status, "passed");
+assert.deepEqual(missingExternalSource.providerDeclaredToolBundle.declaredToolNames, []);
+assert.equal(missingExternalSource.residentCapabilityCatalogue.knownUnavailable.length, externalPromotedToolNames.length);
+for (const row of missingExternalSource.residentCapabilityCatalogue.knownUnavailable) {
+  assert.equal(row.status, "blocked_by_runtime", `${row.toolName} should require external source identity`);
+  assert.equal(row.callableInCurrentRequest, false);
+  assert.equal(row.nonOmittable, true);
+  assert(row.reason.includes("external_source_identity"), `${row.toolName} should cite source identity blocker`);
+}
+
 const unsafeSubAgentControls = composeDirectToolBundle({
   registry,
   laneSelection,
@@ -131,6 +188,7 @@ const unsafeSubAgentControls = composeDirectToolBundle({
   runtimeFactsRef: ref("runtime_facts", "runtime_facts_direct_fixture"),
   activationSnapshotRefs: [ref("activation_snapshot", "activation_snapshot_direct_fixture")],
   normalizedLaneRequestRef: ref("normalized_lane_request", "normalized_request_impl_001"),
+  externalCapabilityProfile,
   toolNames: blockedSubAgentControlToolNames,
   nowMs,
 });
@@ -150,6 +208,7 @@ const waitAgentConditional = composeDirectToolBundle({
   runtimeFactsRef: ref("runtime_facts", "runtime_facts_direct_fixture"),
   activationSnapshotRefs: [ref("activation_snapshot", "activation_snapshot_direct_fixture")],
   normalizedLaneRequestRef: ref("normalized_lane_request", "normalized_request_impl_001"),
+  externalCapabilityProfile,
   toolNames: ["wait_agent"],
   nowMs,
 });
@@ -177,6 +236,7 @@ const explicitReviewTools = composeDirectToolBundle({
   runtimeFactsRef: ref("runtime_facts", "runtime_facts_direct_fixture"),
   activationSnapshotRefs: [ref("activation_snapshot", "activation_snapshot_direct_fixture")],
   normalizedLaneRequestRef: ref("normalized_lane_request", "normalized_request_review_001"),
+  externalCapabilityProfile,
   toolNames: ["apply_patch", "read_file"],
   nowMs,
 });
@@ -194,6 +254,7 @@ const familyRestricted = composeDirectToolBundle({
   runtimeFactsRef: ref("runtime_facts", "runtime_facts_direct_fixture"),
   activationSnapshotRefs: [ref("activation_snapshot", "activation_snapshot_direct_fixture")],
   normalizedLaneRequestRef: ref("normalized_lane_request", "normalized_request_impl_001"),
+  externalCapabilityProfile,
   requestedToolFamilies: ["local_perception"],
   toolNames: ["apply_patch", "read_file"],
   nowMs,
@@ -210,6 +271,7 @@ const noDefaultTools = composeDirectToolBundle({
   runtimeFactsRef: ref("runtime_facts", "runtime_facts_direct_fixture"),
   activationSnapshotRefs: [ref("activation_snapshot", "activation_snapshot_direct_fixture")],
   normalizedLaneRequestRef: ref("normalized_lane_request", "normalized_request_impl_001"),
+  externalCapabilityProfile,
   toolNames: [],
   useLaneDefaultTools: false,
   nowMs,
@@ -225,6 +287,7 @@ const defaultToolsFromEmptyList = composeDirectToolBundle({
   runtimeFactsRef: ref("runtime_facts", "runtime_facts_direct_fixture"),
   activationSnapshotRefs: [ref("activation_snapshot", "activation_snapshot_direct_fixture")],
   normalizedLaneRequestRef: ref("normalized_lane_request", "normalized_request_impl_001"),
+  externalCapabilityProfile,
   toolNames: [],
   useLaneDefaultTools: true,
   nowMs,
