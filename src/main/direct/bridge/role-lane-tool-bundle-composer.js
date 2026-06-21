@@ -171,11 +171,12 @@ function nowIso(nowMs) {
 function evidenceRef(kind, id, label = "") {
   const safeKind = normalizeString(kind, "evidence");
   const safeId = normalizeString(id, safeKind);
+  const safeLabel = normalizeString(label, safeId);
   return {
     kind: safeKind,
     id: safeId,
-    label: normalizeString(label, safeId),
-    digest: digestFor(`direct-role-lane-${safeKind}@1`, { id: safeId, label }),
+    label: safeLabel,
+    digest: digestFor(`direct-role-lane-${safeKind}@1`, { id: safeId, label: safeLabel }),
     rendererSafe: true,
     rawTextIncluded: false,
     rawPathIncluded: false,
@@ -205,6 +206,7 @@ function defaultLaneRows() {
 }
 
 function buildDirectRoleLaneRegistry(input = {}) {
+  input = isPlainObject(input) ? input : {};
   const rows = (Array.isArray(input.lanes) && input.lanes.length ? input.lanes : defaultLaneRows()).map((lane) => {
     const laneKind = normalizeEnum(lane.laneKind, LANE_KINDS, "implementation_worker");
     const laneId = normalizeString(lane.laneId, `lane_${laneKind}`);
@@ -237,14 +239,16 @@ function laneFor(input = {}, registry = buildDirectRoleLaneRegistry(input)) {
   const laneKind = normalizeString(input.laneKind, "");
   const laneId = normalizeString(input.laneId, "");
   const roleId = normalizeString(input.roleId, "");
-  return registry.rows.find((row) => (
+  const rows = Array.isArray(registry?.rows) ? registry.rows : [];
+  return rows.find((row) => (
     (laneId && row.laneId === laneId)
     || (laneKind && row.laneKind === laneKind)
     || (roleId && row.roleId === roleId)
-  )) || registry.rows.find((row) => row.laneKind === "implementation_worker") || registry.rows[0];
+  )) || rows.find((row) => row.laneKind === "implementation_worker") || rows[0];
 }
 
 function buildDirectRoleLaneSelection(input = {}) {
+  input = isPlainObject(input) ? input : {};
   const registry = isPlainObject(input.registry) ? input.registry : buildDirectRoleLaneRegistry(input);
   const lane = laneFor(input, registry);
   const laneKind = normalizeEnum(lane?.laneKind, LANE_KINDS, "implementation_worker");
@@ -284,6 +288,7 @@ function buildDirectRoleLaneSelection(input = {}) {
 }
 
 function buildComposerInput(input = {}) {
+  input = isPlainObject(input) ? input : {};
   const laneSelection = isPlainObject(input.laneSelection) ? input.laneSelection : buildDirectRoleLaneSelection(input);
   const composerInput = {
     schema: DIRECT_TOOL_BUNDLE_COMPOSER_INPUT_SCHEMA,
@@ -489,21 +494,86 @@ function blockedRowsForMissingGrounding(toolNames = [], laneSelection) {
   }));
 }
 
+function classifyToolDeclarationCandidates(toolNames = [], lane, laneSelection, composerInput) {
+  const laneAllowedFamilies = new Set(normalizeStringList(lane?.allowedToolFamilies));
+  const requestedFamilies = new Set(normalizeStringList(composerInput.requestedToolFamilies));
+  const declaredRows = [];
+  const unavailableRows = [];
+  const activationRef = composerInput.activationSnapshotRefs[0] || evidenceRef("activation_snapshot", "direct_tool_activation_snapshot");
+
+  for (const toolName of toolNames) {
+    const metadata = toolMetadata(toolName);
+    const family = metadata.toolFamily;
+    if (laneAllowedFamilies.size && !laneAllowedFamilies.has(family)) {
+      unavailableRows.push(catalogueRow(toolName, "blocked_by_lane", `Declaration blocked: lane ${laneSelection.laneKind} does not allow tool family ${family}.`, {
+        nextEnablementClass: "role_lane_change",
+        nonOmittable: true,
+        axes: {
+          declarationState: "blocked",
+          currentRequestStatus: "blocked",
+          activationState: "active",
+        },
+        evidenceRefs: [
+          evidenceRef("role_lane", laneSelection.laneId, laneSelection.laneKind),
+          ...laneSelection.laneLawRefs,
+        ],
+      }));
+      continue;
+    }
+    if (requestedFamilies.size && !requestedFamilies.has(family)) {
+      unavailableRows.push(catalogueRow(toolName, "blocked_by_policy", `Declaration blocked: requested tool families do not include ${family}.`, {
+        nextEnablementClass: "request_policy_change",
+        nonOmittable: true,
+        axes: {
+          declarationState: "blocked",
+          currentRequestStatus: "blocked",
+          activationState: "active",
+        },
+        evidenceRefs: [
+          evidenceRef("requested_tool_family", `${composerInput.compositionId}_${family}_not_requested`, family),
+          laneSelection.authorityBoundaryRef,
+        ],
+      }));
+      continue;
+    }
+
+    const row = declaredToolRow(toolName, laneSelection, activationRef);
+    if (row.providerSupported) {
+      declaredRows.push(row);
+    } else {
+      unavailableRows.push(catalogueRow(toolName, "blocked_by_provider", "Declaration blocked: provider schema is unavailable for this tool.", {
+        nextEnablementClass: "provider_capability_change",
+        nonOmittable: true,
+        axes: {
+          declarationState: "blocked",
+          currentRequestStatus: "blocked",
+          activationState: "active",
+        },
+        evidenceRefs: [
+          evidenceRef("provider_profile", composerInput.providerProfileRef.id, "Provider profile"),
+          evidenceRef("tool_capability", metadata.capabilityId, toolName),
+        ],
+      }));
+    }
+  }
+
+  return { declaredRows, unavailableRows };
+}
+
 function composeDirectToolBundle(input = {}) {
-  const composerInput = isPlainObject(input.schema === DIRECT_TOOL_BUNDLE_COMPOSER_INPUT_SCHEMA ? input : null)
+  const composerInput = (isPlainObject(input) && input.schema === DIRECT_TOOL_BUNDLE_COMPOSER_INPUT_SCHEMA)
     ? input
     : buildComposerInput(input);
   const laneSelection = composerInput.laneSelection;
-  const registry = isPlainObject(input.registry) ? input.registry : buildDirectRoleLaneRegistry(input);
+  const registry = isPlainObject(input?.registry) ? input.registry : buildDirectRoleLaneRegistry(input);
   const lane = laneFor(laneSelection, registry);
   const explicitToolNames = normalizeStringList(composerInput.toolNames);
   const toolNames = explicitToolNames.length ? explicitToolNames : normalizeStringList(lane?.defaultToolNames);
   const groundingMissing = composerInput.requireRequestGrounding && !composerInput.normalizedLaneRequestRef;
-  const activationRef = composerInput.activationSnapshotRefs[0] || evidenceRef("activation_snapshot", "direct_tool_activation_snapshot");
-  const declaredRows = groundingMissing ? [] : toolNames
-    .map((toolName) => declaredToolRow(toolName, laneSelection, activationRef))
-    .filter((row) => row.providerSupported);
-  const unavailableRows = groundingMissing ? blockedRowsForMissingGrounding(toolNames, laneSelection) : [];
+  const classifiedRows = groundingMissing
+    ? { declaredRows: [], unavailableRows: blockedRowsForMissingGrounding(toolNames, laneSelection) }
+    : classifyToolDeclarationCandidates(toolNames, lane, laneSelection, composerInput);
+  const { declaredRows, unavailableRows } = classifiedRows;
   const providerBundle = buildProviderDeclaredToolBundle({
     compositionId: composerInput.compositionId,
     laneSelection,
@@ -595,9 +665,11 @@ function validateResidentCapabilityCatalogue(catalogue = {}) {
   if (!Array.isArray(catalogue.knownUnavailable)) errors.push("known_unavailable_not_array");
   if (!isPlainObject(catalogue.omittedByClass)) errors.push("missing_omitted_by_class");
   if (!Array.isArray(catalogue.nonOmittableRows)) errors.push("non_omittable_rows_not_array");
-  for (const row of [...(catalogue.callableNow || []), ...(catalogue.knownUnavailable || [])]) {
-    if (!CATALOGUE_STATUSES.has(row.status)) errors.push(`invalid_catalogue_status:${row.toolName || ""}`);
-    if (!isPlainObject(row.axes)) errors.push(`missing_axes:${row.toolName || ""}`);
+  const callableNow = Array.isArray(catalogue.callableNow) ? catalogue.callableNow : [];
+  const knownUnavailable = Array.isArray(catalogue.knownUnavailable) ? catalogue.knownUnavailable : [];
+  for (const row of [...callableNow, ...knownUnavailable]) {
+    if (!CATALOGUE_STATUSES.has(row?.status)) errors.push(`invalid_catalogue_status:${row?.toolName || ""}`);
+    if (!isPlainObject(row?.axes)) errors.push(`missing_axes:${row?.toolName || ""}`);
   }
   return errors;
 }

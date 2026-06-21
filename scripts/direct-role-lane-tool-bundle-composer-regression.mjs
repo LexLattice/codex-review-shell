@@ -11,6 +11,7 @@ const {
   composeDirectToolBundle,
   validateDirectRoleLaneSelection,
   validateDirectToolBundleComposition,
+  validateResidentCapabilityCatalogue,
 } = require("../src/main/direct/bridge/role-lane-tool-bundle-composer");
 const {
   directImplementationToolSchemas,
@@ -100,6 +101,64 @@ for (const row of grounded.witness.declaredTools) {
 
 const oldToolNames = directImplementationToolSchemas(["read_file", "apply_patch", "run_command"]).map((schema) => schema.name).sort();
 assert.deepEqual(grounded.providerDeclaredToolBundle.declaredToolNames, oldToolNames, "composer must preserve current implementation tool set in PR120");
+
+const reviewLaneSelection = buildDirectRoleLaneSelection({
+  registry,
+  projectId: "project_role_lane_fixture",
+  workThreadId: "work_thread_role_lane_fixture",
+  threadId: "direct_session_role_lane_fixture",
+  laneKind: "review_auditor",
+  normalizedLaneRequestRef: ref("normalized_lane_request", "normalized_request_review_001"),
+  controlledRouteRef: ref("controlled_route", "controlled_route_review_001"),
+  roleHandoffPacketRef: ref("role_handoff_packet", "role_handoff_review_001"),
+  authorityBoundaryRef: ref("authority_boundary", "authority_boundary_review_001"),
+  nowMs,
+});
+const explicitReviewTools = composeDirectToolBundle({
+  registry,
+  laneSelection: reviewLaneSelection,
+  providerProfileRef: ref("provider_profile", "provider_profile_direct_fixture"),
+  runtimeFactsRef: ref("runtime_facts", "runtime_facts_direct_fixture"),
+  activationSnapshotRefs: [ref("activation_snapshot", "activation_snapshot_direct_fixture")],
+  normalizedLaneRequestRef: ref("normalized_lane_request", "normalized_request_review_001"),
+  toolNames: ["apply_patch", "read_file"],
+  nowMs,
+});
+assert.equal(explicitReviewTools.status, "passed");
+assert.deepEqual(explicitReviewTools.providerDeclaredToolBundle.declaredToolNames, ["read_file"]);
+assert.equal(explicitReviewTools.residentCapabilityCatalogue.knownUnavailable.length, 1);
+assert.equal(explicitReviewTools.residentCapabilityCatalogue.knownUnavailable[0].toolName, "apply_patch");
+assert.equal(explicitReviewTools.residentCapabilityCatalogue.knownUnavailable[0].status, "blocked_by_lane");
+assert.equal(explicitReviewTools.residentCapabilityCatalogue.knownUnavailable[0].nonOmittable, true);
+
+const familyRestricted = composeDirectToolBundle({
+  registry,
+  laneSelection,
+  providerProfileRef: ref("provider_profile", "provider_profile_direct_fixture"),
+  runtimeFactsRef: ref("runtime_facts", "runtime_facts_direct_fixture"),
+  activationSnapshotRefs: [ref("activation_snapshot", "activation_snapshot_direct_fixture")],
+  normalizedLaneRequestRef: ref("normalized_lane_request", "normalized_request_impl_001"),
+  requestedToolFamilies: ["local_perception"],
+  toolNames: ["apply_patch", "read_file"],
+  nowMs,
+});
+assert.deepEqual(familyRestricted.providerDeclaredToolBundle.declaredToolNames, ["read_file"]);
+assert.equal(familyRestricted.residentCapabilityCatalogue.knownUnavailable.length, 1);
+assert.equal(familyRestricted.residentCapabilityCatalogue.knownUnavailable[0].toolName, "apply_patch");
+assert.equal(familyRestricted.residentCapabilityCatalogue.knownUnavailable[0].status, "blocked_by_policy");
+
+assert.doesNotThrow(() => composeDirectToolBundle(null));
+assert.doesNotThrow(() => composeDirectToolBundle({ registry: {} }));
+assert.deepEqual(
+  validateResidentCapabilityCatalogue({
+    schema: "resident_capability_catalogue@1",
+    callableNow: "not-array",
+    knownUnavailable: true,
+    omittedByClass: {},
+    nonOmittableRows: [],
+  }).sort(),
+  ["callable_now_not_array", "known_unavailable_not_array"].sort(),
+);
 
 const ungroundedSelection = buildDirectRoleLaneSelection({
   registry,
