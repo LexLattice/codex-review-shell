@@ -1762,6 +1762,38 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     bridgeFit: "Closes Wave 16 by composing lifecycle, compatibility, transcript, interaction-policy, follow-up, and lifecycle-control artifacts into a proof-backed headless scenario suite with resident/operator witness rows.",
     realignment: "This PR 102 slice is a usability/proof gate only: it starts no new provider transport beyond lower-level allowed fixture rows, mints no authority in operator projection, keeps child full history context-inadmissible, and does not implement Wave 17 human/control/read-only tools or Wave 18 external discovery tools.",
   },
+  {
+    id: "ic61.role-lane-tool-bundle-composer-foundation",
+    name: "Wave 20 role-lane tool bundle composer foundation",
+    role: "authority_gate",
+    implementationState: "partial",
+    directPathPosture: "keep_gated",
+    sourceFiles: [
+      "src/main/direct/bridge/role-lane-tool-bundle-composer.js",
+      "scripts/direct-role-lane-tool-bundle-composer-regression.mjs",
+      "docs/DIRECT_ROLE_LANE_TOOL_BUNDLE_COMPOSER_SPEC.md",
+      "docs/ODEU_ROLE_LANE_MULTI_AGENT_ARCHITECTURE_SPEC.md",
+      "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md",
+    ],
+    ontology: ontologyShape(
+      [
+        "direct_role_lane_registry",
+        "direct_role_lane_selection",
+        "direct_tool_bundle_composer_input",
+        "provider_declared_tool_bundle",
+        "resident_capability_catalogue",
+        "direct_tool_bundle_composition_witness",
+        "tool_declaration_authority_template",
+      ],
+      "harness",
+      {
+        identityFields: ["projectId", "workThreadId", "threadId", "laneId", "compositionId", "bundleId", "catalogueId"],
+        schema: "direct_tool_bundle_composition_witness@1",
+      }
+    ),
+    bridgeFit: "Adds the PR 120 request-time compiler substrate that binds role lanes to existing AgentClassSpec/route/request evidence and emits a first-class provider bundle, resident capability catalogue, and composition witness.",
+    realignment: "This PR 120 slice changes no live provider declaration behavior: missing normalized request grounding blocks declarations in fixtures, declared implementation tools match the existing read/patch/command set, and concrete per-call authority remains separate from declaration eligibility.",
+  },
 ]);
 
 function isPlainObject(value) {
