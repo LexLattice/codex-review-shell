@@ -285,10 +285,11 @@ try {
 
   const persistedTurn = sessionStore.readTurn("direct_session_headless_impl", terminal.turnId);
   assert.equal(persistedTurn.state, "completed");
-  assert.deepEqual(capturedProviderBodies[0].tools.map((tool) => tool.name), ["read_file"]);
+  const expectedInitialToolNames = ["get_context_remaining", "read_file", "request_user_input", "update_plan"];
+  assert.deepEqual(capturedProviderBodies[0].tools.map((tool) => tool.name), expectedInitialToolNames);
   assert.equal(capturedProviderBodies[0].parallel_tool_calls, false);
   assert.equal(capturedProviderBodies[0].tool_choice, "auto");
-  assert.equal(persistedTurn.requestShape.declaredToolNames.join(","), "read_file");
+  assert.equal(persistedTurn.requestShape.declaredToolNames.join(","), expectedInitialToolNames.join(","));
   assert.equal(persistedTurn.requestShape.toolBundleCompositionWitnessAttached, true);
   assert(persistedTurn.requestShape.directToolBundleCompositionId, "missing direct tool bundle composition id");
   assert(persistedTurn.requestShape.providerDeclaredToolBundleDigest, "missing provider tool bundle digest");

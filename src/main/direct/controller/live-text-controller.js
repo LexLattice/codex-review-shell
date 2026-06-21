@@ -101,6 +101,11 @@ const DEFAULT_MAX_PROMPT_CHARS = 64_000;
 const DEFAULT_MAX_ASSISTANT_CHARS = 256_000;
 const DEFAULT_READONLY_WORKSPACE_TIMEOUT_MS = 30_000;
 const DEFAULT_TOOL_DECISION_CACHE_LIMIT = 512;
+const SAFE_RESIDENT_UTILITY_TOOL_NAMES = Object.freeze([
+  "get_context_remaining",
+  "update_plan",
+  "request_user_input",
+]);
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -607,6 +612,18 @@ function implementationInitialToolNames(status = {}, prompt = "") {
   return names;
 }
 
+function safeResidentUtilityToolNames(status = {}) {
+  const runtimeReady = normalizeString(status.status, "") === "ready";
+  return runtimeReady ? [...SAFE_RESIDENT_UTILITY_TOOL_NAMES] : [];
+}
+
+function appendSafeResidentUtilities(toolNames = [], status = {}) {
+  return [...new Set([
+    ...(Array.isArray(toolNames) ? toolNames : []),
+    ...safeResidentUtilityToolNames(status),
+  ].map((name) => normalizeString(name, "")).filter(Boolean))];
+}
+
 function promptImpliesFileMutation(prompt) {
   const text = normalizeString(prompt, "").toLowerCase();
   return /\b(apply_patch|patch|edit|modify|update|change|fix|replace|insert|delete|remove|rename|write)\b/.test(text) ||
@@ -629,7 +646,7 @@ function implementationContinuationToolNames(status = {}, prompt = "") {
   if (asksPatch && patchReady) names.push("apply_patch");
   if (asksCommand && commandReady) names.push("run_command");
   if (!names.length && readReady) names.push("read_file");
-  return names;
+  return appendSafeResidentUtilities(names, status);
 }
 
 function commandRepairContinuationToolNames(status = {}, prompt = "") {
@@ -4366,7 +4383,7 @@ class DirectLiveTextController {
       binding.directTier === "text-only";
     const implementationTier = directLiveTier &&
       binding.directTier === "implementation-lane";
-    const implementationToolNames = implementationTier ? implementationInitialToolNames(status, prompt) : [];
+    const implementationToolNames = implementationTier ? appendSafeResidentUtilities(implementationInitialToolNames(status, prompt), status) : [];
     const useRecentDialogue = existingTurnCount > 0;
     let frozenContextProjection = null;
     if (useRecentDialogue) {

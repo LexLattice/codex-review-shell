@@ -4,6 +4,9 @@ const crypto = require("node:crypto");
 const {
   directImplementationToolSchemas,
 } = require("../transport/codex-responses-transport");
+const {
+  providerToolSchemaFor: firstSliceProviderToolSchemaFor,
+} = require("../headless/first-tool-slice");
 
 const DIRECT_ROLE_LANE_REGISTRY_SCHEMA = "direct_role_lane_registry@1";
 const DIRECT_ROLE_LANE_SELECTION_SCHEMA = "direct_role_lane_selection@1";
@@ -52,8 +55,8 @@ const DEFAULT_ROLE_LANES = Object.freeze([
     roleId: "implementation_worker",
     displayName: "Implementation worker",
     agentClassSpecId: "agent_class_spec_implementation_worker",
-    defaultToolNames: ["read_file", "apply_patch", "run_command"],
-    allowedToolFamilies: ["workspace_process_authority", "local_perception"],
+    defaultToolNames: ["read_file", "apply_patch", "run_command", "get_context_remaining", "update_plan", "request_user_input"],
+    allowedToolFamilies: ["workspace_process_authority", "local_perception", "session_control_state", "plan_projection", "human_authority_bridge"],
     laneLawIds: ["direct_implementation_lane_tool_law@1", "direct_workspace_authority_law@1"],
   },
   {
@@ -125,6 +128,33 @@ const TOOL_METADATA = Object.freeze({
     targetScopePolicyId: "direct_command_execution_scope_policy@1",
     resultEnvelopePolicyId: "direct_run_command_result_envelope@1",
     contextAdmissionPolicyId: "direct_run_command_context_admission@1",
+  },
+  get_context_remaining: {
+    capabilityId: "direct.get_context_remaining",
+    toolFamily: "session_control_state",
+    implementedState: "restricted_executor",
+    promotionState: "direct_enabled",
+    targetScopePolicyId: "direct_context_remaining_display_scope_policy@1",
+    resultEnvelopePolicyId: "direct_context_remaining_result_envelope@1",
+    contextAdmissionPolicyId: "direct_context_remaining_context_admission@1",
+  },
+  update_plan: {
+    capabilityId: "direct.update_plan",
+    toolFamily: "plan_projection",
+    implementedState: "restricted_executor",
+    promotionState: "direct_enabled",
+    targetScopePolicyId: "direct_plan_projection_scope_policy@1",
+    resultEnvelopePolicyId: "direct_update_plan_result_envelope@1",
+    contextAdmissionPolicyId: "direct_update_plan_context_admission@1",
+  },
+  request_user_input: {
+    capabilityId: "direct.request_user_input",
+    toolFamily: "human_authority_bridge",
+    implementedState: "restricted_executor",
+    promotionState: "direct_enabled",
+    targetScopePolicyId: "direct_bounded_human_decision_scope_policy@1",
+    resultEnvelopePolicyId: "direct_request_user_input_result_envelope@1",
+    contextAdmissionPolicyId: "direct_request_user_input_context_admission@1",
   },
 });
 
@@ -373,7 +403,7 @@ function authorityTemplateFor(toolName, laneSelection) {
 }
 
 function providerSchemaFor(toolName) {
-  const schema = directImplementationToolSchemas([toolName])[0];
+  const schema = firstSliceProviderToolSchemaFor(toolName) || directImplementationToolSchemas([toolName])[0];
   return isPlainObject(schema) ? schema : null;
 }
 
