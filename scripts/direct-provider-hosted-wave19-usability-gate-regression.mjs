@@ -180,8 +180,38 @@ for (const forbidden of [
 }
 {
   const malformed = clone(proof);
+  malformed.operatorImageCall = { authorityDecision: "allowed" };
+  expectThrows(() => validateProviderHostedWave19UsabilityGate(malformed), "operator_image_call_schema_mismatch");
+}
+{
+  const malformed = clone(proof);
+  delete malformed.imageAdmission;
+  expectThrows(() => validateProviderHostedWave19UsabilityGate(malformed), "image_admission_schema_mismatch");
+}
+{
+  const malformed = clone(proof);
   malformed.completedImageArtifact.rawImageBytesInRendererState = true;
   expectThrows(() => validateProviderHostedWave19UsabilityGate(malformed), "provider_hosted_image_artifact_authority_leak:rawImageBytesInRendererState");
+}
+{
+  const malformed = clone(proof);
+  malformed.scenarioSuite.scenarios.push(null);
+  expectThrows(() => validateProviderHostedWave19UsabilityGate(malformed), "scenario_invalid_object");
+}
+{
+  const malformed = clone(proof);
+  malformed.negativeScenarioMatrix.rows.push("not-a-row");
+  expectThrows(() => validateProviderHostedWave19UsabilityGate(malformed), "negative_row_invalid_object");
+}
+{
+  const malformed = clone(proof);
+  malformed.residentWitnessRows.push(null);
+  expectThrows(() => validateProviderHostedWave19UsabilityGate(malformed), "resident_witness_invalid_object");
+}
+{
+  const malformed = clone(proof);
+  malformed.manualGateRows.push(false);
+  expectThrows(() => validateProviderHostedWave19UsabilityGate(malformed), "manual_gate_invalid_object");
 }
 {
   const malformed = clone(proof);

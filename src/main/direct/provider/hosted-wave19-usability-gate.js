@@ -803,6 +803,8 @@ function validateProviderHostedWave19UsabilityGate(proof = {}) {
   if (proof.wave !== "19") errors.push("wave_mismatch");
   if (proof.status !== "pass") errors.push("proof_status_not_pass");
   assertFalseFlags(proof, FALSE_BOUNDARY_FLAGS, errors, "proof_boundary_leak");
+  if (proof.profileDeclaredStatus?.schema !== PROVIDER_HOSTED_TOOLS_STATUS_SCHEMA) errors.push("profile_declared_status_schema_mismatch");
+  else assertProviderHostedToolsStatusSafe(proof.profileDeclaredStatus);
   if (proof.runtimeStatus?.schema !== PROVIDER_HOSTED_TOOLS_STATUS_SCHEMA) errors.push("runtime_status_schema_mismatch");
   else assertProviderHostedToolsStatusSafe(proof.runtimeStatus);
   if (proof.runtimeActivation?.schema !== PROVIDER_HOSTED_ACTIVATION_SNAPSHOT_SCHEMA) errors.push("runtime_activation_schema_mismatch");
@@ -825,11 +827,26 @@ function validateProviderHostedWave19UsabilityGate(proof = {}) {
     if (proof.webAdmission.admissionDecision !== "admit") errors.push("web_admission_not_admitted");
     if (proof.webAdmission.projectTruthGranted !== false || proof.webAdmission.durableMemoryAdmission !== false || proof.webAdmission.memoryCandidateCreated !== false) errors.push("web_admission_authority_leak");
   }
-  if (proof.operatorImageCall?.authorityDecision !== "allowed") errors.push("operator_image_not_allowed");
-  if (proof.residentImageCall?.authorityDecision === "allowed") errors.push("resident_image_allowed");
+  if (proof.operatorImageCall?.schema !== PROVIDER_HOSTED_TOOL_CALL_ENVELOPE_SCHEMA) errors.push("operator_image_call_schema_mismatch");
+  else {
+    assertProviderHostedToolCallEnvelopeSafe(proof.operatorImageCall);
+    if (proof.operatorImageCall.authorityDecision !== "allowed") errors.push("operator_image_not_allowed");
+    if (proof.operatorImageCall.replayPolicy?.mayAutoRetry !== false) errors.push("operator_image_replay_allowed");
+  }
+  if (proof.residentImageCall?.schema !== PROVIDER_HOSTED_TOOL_CALL_ENVELOPE_SCHEMA) errors.push("resident_image_call_schema_mismatch");
+  else {
+    assertProviderHostedToolCallEnvelopeSafe(proof.residentImageCall);
+    if (proof.residentImageCall.authorityDecision === "allowed") errors.push("resident_image_allowed");
+  }
   for (const field of ["completedImageArtifact", "providerBlockedArtifact"]) {
     if (proof[field]?.schema !== PROVIDER_HOSTED_IMAGE_GENERATION_ARTIFACT_ENVELOPE_SCHEMA) errors.push(`${field}_schema_mismatch`);
     else assertProviderHostedImageGenerationArtifactEnvelopeSafe(proof[field]);
+  }
+  if (proof.imageAdmission?.schema !== PROVIDER_HOSTED_RESULT_CONTEXT_ADMISSION_SCHEMA) errors.push("image_admission_schema_mismatch");
+  else {
+    assertProviderHostedResultContextAdmissionSafe(proof.imageAdmission);
+    if (proof.imageAdmission.admissionDecision !== "admit") errors.push("image_admission_not_admitted");
+    if (proof.imageAdmission.projectTruthGranted !== false || proof.imageAdmission.durableMemoryAdmission !== false || proof.imageAdmission.memoryCandidateCreated !== false) errors.push("image_admission_authority_leak");
   }
   if (proof.completedImageArtifact?.retentionPolicy?.workspaceInsertionAllowed !== false) errors.push("image_workspace_insertion_allowed");
   if (proof.completedImageArtifact?.rawImageBytesInRendererState !== false) errors.push("image_raw_bytes_visible");
@@ -838,11 +855,15 @@ function validateProviderHostedWave19UsabilityGate(proof = {}) {
     errors.push("scenario_suite_schema_mismatch");
   } else {
     if (proof.scenarioSuite.failCount !== 0) errors.push("scenario_suite_failed");
-    const scenarioIds = new Set(arrayOrEmpty(proof.scenarioSuite.scenarios).map((row) => row.scenarioId));
+    const scenarioIds = new Set(arrayOrEmpty(proof.scenarioSuite.scenarios).filter(isPlainObject).map((row) => row.scenarioId));
     for (const required of REQUIRED_SCENARIOS) {
       if (!scenarioIds.has(required)) errors.push(`scenario_missing:${required}`);
     }
     for (const row of arrayOrEmpty(proof.scenarioSuite.scenarios)) {
+      if (!isPlainObject(row)) {
+        errors.push("scenario_invalid_object");
+        continue;
+      }
       if (row.schema !== PROVIDER_HOSTED_WAVE19_HEADLESS_SCENARIO_ROW_SCHEMA) errors.push(`scenario_schema_mismatch:${row.scenarioId}`);
       if (row.status !== "pass") errors.push(`scenario_not_pass:${row.scenarioId}`);
       assertFalseFlags(row, FALSE_BOUNDARY_FLAGS, errors, `scenario_boundary_leak:${row.scenarioId}`);
@@ -853,11 +874,15 @@ function validateProviderHostedWave19UsabilityGate(proof = {}) {
   } else {
     const rows = arrayOrEmpty(proof.negativeScenarioMatrix.rows);
     if (rows.length < REQUIRED_NEGATIVES.length) errors.push("negative_matrix_coverage_missing");
-    const negativeIds = new Set(rows.map((row) => row.rowId));
+    const negativeIds = new Set(rows.filter(isPlainObject).map((row) => row.rowId));
     for (const required of REQUIRED_NEGATIVES) {
       if (!negativeIds.has(required)) errors.push(`negative_row_missing:${required}`);
     }
     for (const row of rows) {
+      if (!isPlainObject(row)) {
+        errors.push("negative_row_invalid_object");
+        continue;
+      }
       if (row.schema !== PROVIDER_HOSTED_WAVE19_NEGATIVE_SCENARIO_ROW_SCHEMA) errors.push(`negative_row_schema_mismatch:${row.rowId}`);
       if (row.status !== "pass") errors.push(`negative_row_not_pass:${row.rowId}`);
       assertFalseFlags(row, FALSE_BOUNDARY_FLAGS, errors, `negative_row_boundary_leak:${row.rowId}`);
@@ -866,11 +891,15 @@ function validateProviderHostedWave19UsabilityGate(proof = {}) {
   if (!Array.isArray(proof.residentWitnessRows)) {
     errors.push("resident_witness_rows_missing");
   } else {
-    const witnessTools = new Set(proof.residentWitnessRows.map((row) => row.toolName));
+    const witnessTools = new Set(proof.residentWitnessRows.filter(isPlainObject).map((row) => row.toolName));
     for (const required of ["web_search", "image_generation", "web_search_profile_declared"]) {
       if (!witnessTools.has(required)) errors.push(`resident_witness_missing:${required}`);
     }
     for (const row of proof.residentWitnessRows) {
+      if (!isPlainObject(row)) {
+        errors.push("resident_witness_invalid_object");
+        continue;
+      }
       if (row.schema !== PROVIDER_HOSTED_WAVE19_RESIDENT_WITNESS_ROW_SCHEMA) errors.push(`resident_witness_schema_mismatch:${row.rowId}`);
       if (row.grantsAuthority !== false) errors.push(`resident_witness_authority_leak:${row.rowId}`);
       assertFalseFlags(row, FALSE_BOUNDARY_FLAGS, errors, `resident_witness_boundary_leak:${row.rowId}`);
@@ -884,9 +913,17 @@ function validateProviderHostedWave19UsabilityGate(proof = {}) {
     if (proof.operatorProjection.readsProofArtifacts !== true || proof.operatorProjection.mintsProof !== false || proof.operatorProjection.grantsAuthority !== false) errors.push("operator_projection_authority_leak");
     assertFalseFlags(proof.operatorProjection, FALSE_BOUNDARY_FLAGS, errors, "operator_projection_boundary_leak");
   }
-  for (const row of arrayOrEmpty(proof.manualGateRows)) {
-    if (row.schema !== PROVIDER_HOSTED_WAVE19_MANUAL_GATE_ROW_SCHEMA) errors.push(`manual_gate_schema_mismatch:${row.gateId}`);
-    if (row.status !== "pass") errors.push(`manual_gate_not_pass:${row.gateId}`);
+  if (!Array.isArray(proof.manualGateRows)) {
+    errors.push("manual_gate_rows_missing");
+  } else {
+    for (const row of proof.manualGateRows) {
+      if (!isPlainObject(row)) {
+        errors.push("manual_gate_invalid_object");
+        continue;
+      }
+      if (row.schema !== PROVIDER_HOSTED_WAVE19_MANUAL_GATE_ROW_SCHEMA) errors.push(`manual_gate_schema_mismatch:${row.gateId}`);
+      if (row.status !== "pass") errors.push(`manual_gate_not_pass:${row.gateId}`);
+    }
   }
   const serialized = JSON.stringify(proof);
   for (const forbidden of [
