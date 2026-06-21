@@ -203,6 +203,7 @@ const continuationSse = [
 
 let fetchCalls = 0;
 let workspaceReads = 0;
+const capturedProviderBodies = [];
 const controller = new DirectLiveTextController({
   sessionStore,
   directThreadStore: threadStore,
@@ -235,6 +236,7 @@ const controller = new DirectLiveTextController({
   fetchImpl: async (_url, init = {}) => {
     fetchCalls += 1;
     const body = JSON.parse(init.body || "{}");
+    capturedProviderBodies.push(body);
     const isContinuation = JSON.stringify(body.input || "").includes("read_file_result");
     if (isContinuation) {
       assert.equal(body.store, false);
@@ -283,6 +285,15 @@ try {
 
   const persistedTurn = sessionStore.readTurn("direct_session_headless_impl", terminal.turnId);
   assert.equal(persistedTurn.state, "completed");
+  assert.deepEqual(capturedProviderBodies[0].tools.map((tool) => tool.name), ["read_file"]);
+  assert.equal(capturedProviderBodies[0].parallel_tool_calls, false);
+  assert.equal(capturedProviderBodies[0].tool_choice, "auto");
+  assert.equal(persistedTurn.requestShape.declaredToolNames.join(","), "read_file");
+  assert.equal(persistedTurn.requestShape.toolBundleCompositionWitnessAttached, true);
+  assert(persistedTurn.requestShape.directToolBundleCompositionId, "missing direct tool bundle composition id");
+  assert(persistedTurn.requestShape.providerDeclaredToolBundleDigest, "missing provider tool bundle digest");
+  assert(persistedTurn.requestShape.residentCapabilityCatalogueDigest, "missing resident catalogue digest");
+  assert(persistedTurn.requestShape.toolBundleCompositionWitnessDigest, "missing composition witness digest");
   assert.equal(persistedTurn.unresolvedObligations[0].status, "continuation_sent");
   assert.equal(JSON.parse(persistedTurn.unresolvedObligations[0].result.providerOutputText).kind, "read_file_result");
 

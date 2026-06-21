@@ -147,6 +147,35 @@ assert.equal(familyRestricted.residentCapabilityCatalogue.knownUnavailable.lengt
 assert.equal(familyRestricted.residentCapabilityCatalogue.knownUnavailable[0].toolName, "apply_patch");
 assert.equal(familyRestricted.residentCapabilityCatalogue.knownUnavailable[0].status, "blocked_by_policy");
 
+const noDefaultTools = composeDirectToolBundle({
+  registry,
+  laneSelection,
+  providerProfileRef: ref("provider_profile", "provider_profile_direct_fixture"),
+  runtimeFactsRef: ref("runtime_facts", "runtime_facts_direct_fixture"),
+  activationSnapshotRefs: [ref("activation_snapshot", "activation_snapshot_direct_fixture")],
+  normalizedLaneRequestRef: ref("normalized_lane_request", "normalized_request_impl_001"),
+  toolNames: [],
+  useLaneDefaultTools: false,
+  nowMs,
+});
+assert.deepEqual(noDefaultTools.providerDeclaredToolBundle.declaredToolNames, []);
+assert.equal(noDefaultTools.providerDeclaredToolBundle.toolChoice, "none");
+assert.equal(noDefaultTools.residentCapabilityCatalogue.knownUnavailable.length, 0);
+
+const defaultToolsFromEmptyList = composeDirectToolBundle({
+  registry,
+  laneSelection,
+  providerProfileRef: ref("provider_profile", "provider_profile_direct_fixture"),
+  runtimeFactsRef: ref("runtime_facts", "runtime_facts_direct_fixture"),
+  activationSnapshotRefs: [ref("activation_snapshot", "activation_snapshot_direct_fixture")],
+  normalizedLaneRequestRef: ref("normalized_lane_request", "normalized_request_impl_001"),
+  toolNames: [],
+  useLaneDefaultTools: true,
+  nowMs,
+});
+assert.notEqual(noDefaultTools.compositionId, defaultToolsFromEmptyList.compositionId, "default-tool policy must participate in composition identity");
+assert.deepEqual(defaultToolsFromEmptyList.providerDeclaredToolBundle.declaredToolNames, ["apply_patch", "read_file", "run_command"]);
+
 assert.doesNotThrow(() => composeDirectToolBundle(null));
 assert.doesNotThrow(() => composeDirectToolBundle({ registry: {} }));
 assert.deepEqual(
