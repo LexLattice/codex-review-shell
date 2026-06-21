@@ -11,11 +11,21 @@ const {
   requestShapeForDiagnostic,
   runImplementationToolInitialProbe,
   runPersistedReadOnlyToolContinuation,
+  runReadOnlyToolContinuationProbe,
   runTextOnlyDirectProbe,
+  terminalStateFromNormalizedEvents,
 } = require("../transport/codex-responses-transport");
 const {
   composeDirectToolBundle,
 } = require("../bridge/role-lane-tool-bundle-composer");
+const {
+  buildContextRemainingResultEnvelope,
+  buildDirectFirstToolCallGate,
+  buildDirectFirstToolSlice,
+  buildHumanDecisionAnswerResultEnvelope,
+  buildRequestUserInputResultEnvelope,
+  buildUpdatePlanResultEnvelope,
+} = require("../headless/first-tool-slice");
 const {
   DIRECT_IMPORT_CHECKPOINT_REQUEST_SHAPE,
   assistantTextFromNormalizedEvents,
@@ -106,6 +116,7 @@ const SAFE_RESIDENT_UTILITY_TOOL_NAMES = Object.freeze([
   "update_plan",
   "request_user_input",
 ]);
+const SAFE_RESIDENT_UTILITY_TOOL_SET = new Set(SAFE_RESIDENT_UTILITY_TOOL_NAMES);
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -613,7 +624,7 @@ function implementationInitialToolNames(status = {}, prompt = "") {
 }
 
 function safeResidentUtilityToolNames(status = {}) {
-  const runtimeReady = normalizeString(status.status, "") === "ready";
+  const runtimeReady = status && normalizeString(status.status, "") === "ready";
   return runtimeReady ? [...SAFE_RESIDENT_UTILITY_TOOL_NAMES] : [];
 }
 
@@ -622,6 +633,77 @@ function appendSafeResidentUtilities(toolNames = [], status = {}) {
     ...(Array.isArray(toolNames) ? toolNames : []),
     ...safeResidentUtilityToolNames(status),
   ].map((name) => normalizeString(name, "")).filter(Boolean))];
+}
+
+function isSafeResidentUtilityToolName(toolName = "") {
+  return SAFE_RESIDENT_UTILITY_TOOL_SET.has(normalizeString(toolName, ""));
+}
+
+function safeResidentUtilityActivationRow(toolName, projectId = "") {
+  const requestShapeByTool = {
+    get_context_remaining: "context_status_or_control",
+    update_plan: "plan_projection",
+    request_user_input: "direct_human_decision_tool_packet@1",
+  };
+  const classByTool = {
+    get_context_remaining: "session_control.get_context_remaining",
+    update_plan: "session_control.update_plan",
+    request_user_input: "human_decision.request_user_input",
+  };
+  const safeToolName = normalizeString(toolName, "");
+  return {
+    schema: "direct_tool_activation_row@1",
+    activationRowId: `${safeToolName}_live_activation`,
+    toolClassId: classByTool[safeToolName] || safeToolName,
+    toolName: safeToolName,
+    toolSchemaVersion: "direct_tool_class@1",
+    state: "active",
+    activationEffect: "allow",
+    scope: { kind: "project_default", projectId: normalizeString(projectId, "project_direct") },
+    promotionDecisionRef: {
+      decisionId: `${safeToolName}_live_promotion`,
+      decisionDigest: sha256(`safe-resident-utility:${safeToolName}`),
+      decisionState: "promotable",
+      evidenceClass: "real_provider_full_loop",
+    },
+    providerRequestShapeSupport: {
+      requestShapeFamily: requestShapeByTool[safeToolName] || safeToolName,
+      providerProfileId: "direct_live_provider_profile",
+      modelId: "direct_live_model",
+      declarationEligibleByRegistry: true,
+    },
+    localExecutorState: { authorityFamily: "safe_resident_utility" },
+    authorityEnvelope: { authorityEnvelopeVersion: "authority_envelope@1" },
+    recoveryReplayClassifier: { classifierId: "direct_recovery_replay_classifier@1" },
+    contextResultEnvelopePolicy: { resultEnvelopeVersion: "tool_result_envelope@1" },
+    blockerCodes: [],
+    rowDigest: sha256(`safe-resident-utility-row:${safeToolName}`),
+    rawPromptIncluded: false,
+    rawResultIncluded: false,
+    rawWorkspacePathIncluded: false,
+    rawSecretIncluded: false,
+  };
+}
+
+function buildSafeResidentUtilitySlice(toolName, projectId = "") {
+  return buildDirectFirstToolSlice({
+    activationRegistry: {
+      schema: "direct_tool_activation_registry@1",
+      registryId: `safe_resident_utility_registry_${normalizeString(toolName, "utility")}`,
+      registryDigest: sha256(`safe-resident-utility-registry:${toolName}:${projectId}`),
+      status: "passed",
+      validationErrors: [],
+      snapshot: { snapshotId: `safe_resident_utility_snapshot_${normalizeString(toolName, "utility")}` },
+      rows: [safeResidentUtilityActivationRow(toolName, projectId)],
+    },
+  });
+}
+
+function assistantTextFromDirectEvents(normalizedEvents = []) {
+  return (Array.isArray(normalizedEvents) ? normalizedEvents : [])
+    .filter((event) => event?.type === "message_delta")
+    .map((event) => normalizeString(event.text, ""))
+    .join("");
 }
 
 function promptImpliesFileMutation(prompt) {
@@ -3008,6 +3090,310 @@ class DirectLiveTextController {
     return 1;
   }
 
+  isSafeResidentUtilityObligation(obligation = {}) {
+    return isSafeResidentUtilityToolName(obligation.name);
+  }
+
+  buildSafeResidentUtilityEnvelope(obligation = {}, options = {}) {
+    const projectId = normalizeString(options.project?.id || options.project?.projectId || options.project?.name, "");
+    const toolName = normalizeString(obligation.name, "");
+    const slice = buildSafeResidentUtilitySlice(toolName, projectId);
+    const gate = buildDirectFirstToolCallGate({
+      slice,
+      toolCall: {
+        itemId: normalizeString(obligation.sourceItemId, ""),
+        callId: normalizeString(obligation.callId, ""),
+        name: toolName,
+        arguments: normalizeString(obligation.argumentsText, "{}"),
+      },
+    });
+    const workThreadId = normalizeString(directWorkThreadContextCarrier(options).workThreadId, "");
+    const baseInput = {
+      projectId,
+      workThreadId,
+      threadId: normalizeString(options.sessionId, obligation.sessionId),
+      turnId: normalizeString(options.turnId, obligation.turnId),
+    };
+    if (toolName === "get_context_remaining") {
+      const status = this.statusForProject(options.project || {});
+      const context = isPlainObject(status.context) ? status.context : {};
+      return buildContextRemainingResultEnvelope({
+        gate,
+        contextRemainingInput: {
+          ...baseInput,
+          model: normalizeString(status.model, ""),
+          contextWindow: Number(context.contextWindow || context.windowTokens || status.contextWindow || 0),
+          usedTokens: Number(context.usedTokens || context.contextTokensUsed || status.contextUsedTokens || 0),
+          remainingTokens: Number(context.remainingTokens || context.contextTokensRemaining || status.contextRemainingTokens || 0),
+          confidence: normalizeString(context.confidence, "estimated"),
+          estimateKind: normalizeString(context.estimateKind, "harness_estimate"),
+        },
+      });
+    }
+    if (toolName === "update_plan") {
+      return buildUpdatePlanResultEnvelope({
+        gate,
+        ...baseInput,
+      });
+    }
+    return buildRequestUserInputResultEnvelope({
+      gate,
+      ...baseInput,
+    });
+  }
+
+  utilityContinuationRequestFromEnvelope(sessionId, turnId, obligation = {}, envelope = {}) {
+    const outputType = normalizeString(obligation.providerCallType || obligation.toolType, "") === "custom_tool_call"
+      ? "custom_tool_call_output"
+      : "function_call_output";
+    const resultId = normalizeString(envelope.envelopeId, `utility_result_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`);
+    const providerOutputText = JSON.stringify(envelope.providerOutput || {
+      kind: `${normalizeString(obligation.name, "utility")}_result`,
+      status: normalizeString(envelope.status, "ready_for_provider_continuation"),
+    });
+    return {
+      schema: "direct_safe_resident_utility_continuation_request@1",
+      continuationId: `utility_continuation_${sha256(`${obligation.obligationId}:${resultId}`).slice(0, 20)}`,
+      sessionId,
+      turnId,
+      obligationId: obligation.obligationId,
+      createdAt: nowIso(),
+      source: {
+        fromRecordedResult: true,
+        recordedResultId: resultId,
+        recordedAt: nowIso(),
+      },
+      toolLoop: {
+        toolLoopId: normalizeString(obligation.toolLoopId, `utility_loop_${sha256(`${sessionId}:${turnId}`).slice(0, 20)}`),
+        stepId: normalizeString(obligation.stepId, `utility_step_${sha256(`${obligation.obligationId}:${resultId}`).slice(0, 20)}`),
+        stepOrdinal: Number(obligation.stepOrdinal || 1) || 1,
+        parentResponseId: normalizeString(obligation.parentResponseId, ""),
+        parentResponseSource: normalizeString(obligation.parentResponseSource, ""),
+        parentResponseDigest: normalizeString(obligation.parentResponseDigest, ""),
+      },
+      toolResult: {
+        obligationId: obligation.obligationId,
+        callId: normalizeString(obligation.callId, ""),
+        itemId: normalizeString(obligation.sourceItemId, ""),
+        toolCallId: normalizeString(obligation.callId, ""),
+        name: normalizeString(obligation.name, ""),
+        providerCallType: normalizeString(obligation.providerCallType || obligation.toolType, "function_call"),
+        outputType,
+        content: [{ type: outputType, text: providerOutputText }],
+        metadata: {
+          resultId,
+          status: normalizeString(envelope.status, "ready_for_provider_continuation"),
+          resultKind: normalizeString(envelope.resultKind, "safe_resident_utility"),
+        },
+      },
+      safety: {
+        fromRecordedResult: true,
+        originalRequestRetried: false,
+        sideEffectExecuted: false,
+        workspaceBackendOnly: false,
+        utilityToolResult: true,
+        continuationLiveSendEnabled: true,
+      },
+      requestControls: {
+        store: false,
+        parallelToolCalls: false,
+        toolDeclarations: false,
+        toolOutputItem: true,
+        previousResponseId: false,
+      },
+      rawAuthHeadersExposed: false,
+      rawBackendRequestsExposed: false,
+      rawBackendFramesExposed: false,
+    };
+  }
+
+  recordSafeResidentUtilityResult(sessionId, turnId, obligation = {}, envelope = {}) {
+    const continuationRequest = this.utilityContinuationRequestFromEnvelope(sessionId, turnId, obligation, envelope);
+    const providerOutputText = normalizeString(continuationRequest.toolResult?.content?.[0]?.text, "{}");
+    const result = {
+      schema: "direct_safe_resident_utility_result@1",
+      resultId: normalizeString(continuationRequest.toolResult?.metadata?.resultId, ""),
+      envelopeId: normalizeString(envelope.envelopeId, ""),
+      envelopeDigest: normalizeString(envelope.envelopeDigest, ""),
+      gateId: normalizeString(envelope.gateId, ""),
+      gateDigest: normalizeString(envelope.gateDigest, ""),
+      resultKind: normalizeString(envelope.resultKind, "safe_resident_utility"),
+      status: normalizeString(envelope.status, "ready_for_provider_continuation"),
+      providerOutputText,
+      providerOutputChars: providerOutputText.length,
+      sideEffectExecuted: false,
+      rawWorkspacePathExposed: false,
+      rawSecretExposed: false,
+      recordedAt: nowIso(),
+    };
+    const updated = this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
+      status: "result_recorded",
+      authorityState: "utility_result_recorded",
+      approvalAvailable: false,
+      executionAllowed: false,
+      sideEffectExecuted: false,
+      continuationAllowed: true,
+      result,
+      continuationRequest,
+      resultRecordedAt: result.recordedAt,
+    }, {
+      nextTurnState: "continuation_ready",
+    });
+    return { result, continuationRequest, obligation: updated.obligation };
+  }
+
+  appendUtilityContinuationMessage(sessionId, turnId, continuationId, normalizedEvents = [], terminal = {}) {
+    const text = assistantTextFromDirectEvents(normalizedEvents);
+    if (!text) return;
+    const session = this.sessionStore.readSession(sessionId);
+    if (!session || !Array.isArray(session.messages)) return;
+    this.sessionStore.writeSession({
+      ...session,
+      status: normalizeString(terminal.state, session.status),
+      updatedAt: nowIso(),
+      messages: session.messages.map((message) => {
+        if (message.id !== turnId) return message;
+        const itemId = `${turnId}_${continuationId}_assistant`;
+        const existingItems = Array.isArray(message.items) ? message.items : [];
+        return {
+          ...message,
+          status: normalizeString(terminal.state, message.status),
+          items: [
+            ...existingItems.filter((item) => item?.id !== itemId),
+            { id: itemId, type: "agentMessage", turnId, text },
+          ],
+        };
+      }),
+    });
+  }
+
+  async continueAfterSafeResidentUtilityResult(surfaceSession, sessionId, turnId, obligation = {}, envelope = {}, project = {}) {
+    const recorded = this.recordSafeResidentUtilityResult(sessionId, turnId, obligation, envelope);
+    const continuationRequest = recorded.continuationRequest;
+    const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
+    this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
+      status: "continuation_sent",
+      authorityState: "continuation_sent",
+      continuationAllowed: false,
+      continuationSentAt: nowIso(),
+    }, {
+      nextTurnState: "continuation_sent",
+    });
+    const result = await runReadOnlyToolContinuationProbe({
+      continuationRequest,
+      continuationTransportMode: "fresh_context",
+      endpoint: this.endpoint || undefined,
+      authStore: this.currentAuthStore(),
+      refreshCredentials: this.refreshCredentials,
+      profileDoc: this.profileDoc,
+      model: normalizeString(turn.model, ""),
+      fetchImpl: this.fetchImpl || undefined,
+      instructions: DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS,
+      continuationTools: [],
+      onLifecycle: (event) => {
+        if (event.phase === "streaming") {
+          this.emitNotification(surfaceSession, "turn/started", {
+            threadId: sessionId,
+            turnId,
+            turn: { id: turnId, status: "inProgress", startedAt: nowSeconds(), streamPhase: "utility-continuation" },
+          });
+        }
+      },
+    });
+    this.sessionStore.writeDiagnostic(sessionId, "direct_safe_resident_utility_continuation", result.diagnostic, {});
+    if (Array.isArray(result.normalizedEvents) && result.normalizedEvents.length) {
+      this.sessionStore.appendNormalizedEvents(sessionId, turnId, result.normalizedEvents, {});
+    }
+    const terminal = result.terminal || terminalStateFromNormalizedEvents(result.normalizedEvents || []);
+    const completedTurn = this.sessionStore.updateTurnState(sessionId, turnId, terminal.state, {
+      continuationResponseId: normalizeString(result.responseId, ""),
+      continuationResult: {
+        schema: result.schema,
+        ok: result.ok === true && terminal.state === "completed",
+        terminal,
+        responseId: result.responseId,
+        continuationOutcome: terminal.state === "completed" ? "assistant_final" : normalizeString(terminal.error?.code, "utility_continuation_failed"),
+        normalizedEventCount: Array.isArray(result.normalizedEvents) ? result.normalizedEvents.length : 0,
+        originalRequestRetried: false,
+      },
+    }, {});
+    const continuationId = normalizeString(result.continuation?.continuationId || continuationRequest.continuationId, "utility_continuation");
+    this.appendUtilityContinuationMessage(sessionId, turnId, continuationId, result.normalizedEvents || [], terminal);
+    this.emitContinuationAssistant(surfaceSession, sessionId, turnId, continuationId, result.normalizedEvents || []);
+    this.emitNotification(surfaceSession, "turn/completed", {
+      threadId: sessionId,
+      turnId,
+      turn: {
+        id: turnId,
+        status: terminalStatusForState(completedTurn.state),
+        completedAt: nowSeconds(),
+        streamPhase: "utility-continuation",
+      },
+    });
+    this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
+      status: "continuation_sent",
+      authorityState: "continuation_sent",
+      continuationResult: {
+        schema: result.schema,
+        ok: result.ok === true && terminal.state === "completed",
+        terminal,
+        responseId: result.responseId,
+      },
+    }, {});
+    return {
+      decision: "utility_continued",
+      turn: turnSnapshot(this.sessionStore.readTurn(sessionId, turnId)),
+      obligation: this.sessionStore.findToolObligation(sessionId, turnId, obligation.obligationId).obligation,
+      envelope,
+      continuation: {
+        ok: result.ok === true && terminal.state === "completed",
+        continuationId,
+        terminal,
+      },
+    };
+  }
+
+  async emitSafeResidentUtilityRequest(surfaceSession, sessionId, turnId, obligation = {}, project = {}) {
+    const envelope = this.buildSafeResidentUtilityEnvelope(obligation, { sessionId, turnId, project });
+    if (obligation.name === "request_user_input") {
+      if (!surfaceSession || typeof surfaceSession.createUserInputRequest !== "function") return 0;
+      const recorded = this.recordSafeResidentUtilityResult(sessionId, turnId, obligation, envelope);
+      this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
+        status: "waiting",
+        authorityState: "human_decision_waiting",
+        approvalAvailable: true,
+        continuationAllowed: true,
+      }, {
+        nextTurnState: "authority_waiting",
+      });
+      surfaceSession.createUserInputRequest({
+        params: {
+          sessionId,
+          turnId,
+          obligationId: obligation.obligationId,
+          envelopeId: envelope.envelopeId,
+          decisionPacketId: envelope.decisionPacket?.decisionPacketId,
+          questions: [{
+            id: normalizeString(envelope.decisionPacket?.decisionPacketId, "decision"),
+            header: "Codex asks",
+            question: normalizeString(envelope.decisionPacket?.promptPreview, "Codex requested user input."),
+            options: (Array.isArray(envelope.decisionPacket?.choices) ? envelope.decisionPacket.choices : []).map((choice) => ({
+              id: normalizeString(choice.choiceId, choice.label),
+              label: normalizeString(choice.label, "Option"),
+              description: normalizeString(choice.description, ""),
+            })),
+          }],
+          rawPromptIncluded: false,
+          authorityGranted: false,
+        },
+        summary: normalizeString(envelope.decisionPacket?.promptPreview, "request_user_input"),
+      });
+      return recorded ? 1 : 0;
+    }
+    await this.continueAfterSafeResidentUtilityResult(surfaceSession, sessionId, turnId, obligation, envelope, project);
+    return 1;
+  }
+
   async emitToolApprovalRequests(surfaceSession, sessionId, turnId, obligations = [], project = {}) {
     if (!surfaceSession) return 0;
     const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
@@ -3034,6 +3420,10 @@ class DirectLiveTextController {
     }
     let createdCount = 0;
     for (const obligation of obligations) {
+      if (this.isSafeResidentUtilityObligation(obligation)) {
+        createdCount += await this.emitSafeResidentUtilityRequest(surfaceSession, sessionId, turnId, obligation, project);
+        continue;
+      }
       if (this.isPatchApplyObligation(obligation)) {
         createdCount += await this.emitPatchApplyApprovalRequest(surfaceSession, sessionId, turnId, obligation, project);
         continue;
@@ -3463,6 +3853,49 @@ class DirectLiveTextController {
     this.toolDecisionResults.set(decisionKey, { obligationId, decision: canonicalDecision, response });
     this.pruneToolDecisionCache();
     return response;
+  }
+
+  async handleUserInputResponse(record = {}, result = {}, context = {}) {
+    const params = record.params || {};
+    const sessionId = normalizeString(params.sessionId, "");
+    const turnId = normalizeString(params.turnId, "");
+    const obligationId = normalizeString(params.obligationId, "");
+    if (!sessionId || !turnId || !obligationId) {
+      const error = new Error("Direct user-input response is missing tool obligation identity.");
+      error.code = "missing_user_input_obligation_identity";
+      throw error;
+    }
+    const found = this.sessionStore.findToolObligation(sessionId, turnId, obligationId);
+    const obligation = found.obligation;
+    const answers = isPlainObject(result.answers) ? result.answers : {};
+    const selectedChoiceIds = [];
+    let freeText = "";
+    for (const answer of Object.values(answers)) {
+      const answerList = Array.isArray(answer?.answers) ? answer.answers : [];
+      for (const value of answerList) {
+        const text = normalizeString(value, "");
+        if (!text) continue;
+        selectedChoiceIds.push(text);
+        if (!freeText) freeText = text;
+      }
+    }
+    const envelope = buildHumanDecisionAnswerResultEnvelope({
+      decisionPacketId: normalizeString(params.decisionPacketId, ""),
+      callId: normalizeString(obligation.callId, ""),
+      gateId: normalizeString(obligation.result?.gateId, ""),
+      gateDigest: normalizeString(obligation.result?.gateDigest, ""),
+      selectedChoiceIds,
+      freeText,
+      status: "answered",
+    });
+    return this.continueAfterSafeResidentUtilityResult(
+      context.surfaceSession,
+      sessionId,
+      turnId,
+      obligation,
+      envelope,
+      context.project || {},
+    );
   }
 
   emitContinuationAssistant(surfaceSession, sessionId, turnId, continuationId, normalizedEvents = []) {
@@ -5193,6 +5626,40 @@ class DirectLiveTextSurfaceSession extends EventEmitter {
     });
   }
 
+  createUserInputRequest(input = {}) {
+    const params = isPlainObject(input.params) ? input.params : {};
+    const id = normalizeString(input.id, `direct_user_input_${crypto.randomUUID().replace(/-/g, "").slice(0, 12)}`);
+    const key = `direct:${id}`;
+    const now = nowIso();
+    const record = {
+      id,
+      key,
+      method: "item/tool/requestUserInput",
+      title: "Tool user input",
+      summary: normalizeString(input.summary || params.questions?.[0]?.question || "request_user_input", "request_user_input"),
+      riskCategory: "user-input",
+      status: "pending",
+      params,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.serverRequests.set(key, record);
+    this.sendEvent({
+      type: "rpc-request",
+      request: this.publicServerRequest(record),
+    });
+    return this.publicServerRequest(record);
+  }
+
+  async handleUserInputResponse(record = {}, result = {}, context = {}) {
+    return this.controller.handleUserInputResponse(record, result || {}, {
+      project: this.project,
+      surfaceSession: this,
+      connection: this.connection,
+      ...context,
+    });
+  }
+
   async connect(connection = {}) {
     this.connectionId = crypto.randomUUID();
     const status = this.controller?.statusForProject?.(this.project || {}) || {};
@@ -5329,7 +5796,9 @@ class DirectLiveTextSurfaceSession extends EventEmitter {
         ? "handlePatchApplyResponse"
         : record.method === "direct/tool/command/requestApproval"
           ? "handleCommandExecutionResponse"
-          : "handleReadOnlyToolResponse";
+          : record.method === "item/tool/requestUserInput"
+            ? "handleUserInputResponse"
+            : "handleReadOnlyToolResponse";
       const response = await this.controller[handler](record, result || {}, {
         project: this.project,
         surfaceSession: this,
