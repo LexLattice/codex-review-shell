@@ -436,15 +436,53 @@ function providerHostedState(input = {}) {
     blocker: "",
     evidenceRefs: [
       evidenceRef("provider_hosted_activation_snapshot", activation.activationDigest || activation.activationId || "unknown_provider_hosted_activation", "Provider-hosted activation snapshot"),
-      ...(status ? [evidenceRef("provider_hosted_tools_status", status.statusId || status.activationSnapshotDigest || "unknown_provider_hosted_status", "Provider-hosted tools status")] : []),
+      ...(isPlainObject(status) ? [evidenceRef("provider_hosted_tools_status", status.statusId || status.activationSnapshotDigest || "unknown_provider_hosted_status", "Provider-hosted tools status")] : []),
     ],
   };
 }
 
-function providerHostedDecisionFor(toolName, hostedState) {
+function timestampIsFresh(expiresAt, observedAt) {
+  const text = normalizeString(expiresAt, "");
+  if (!text) return true;
+  const expiresAtMs = Date.parse(text);
+  const observedAtMs = Date.parse(normalizeString(observedAt, ""));
+  const currentMs = Number.isFinite(observedAtMs) ? observedAtMs : Date.now();
+  return Number.isFinite(expiresAtMs) && expiresAtMs > currentMs;
+}
+
+function providerHostedDecisionFor(toolName, hostedState, observedAt) {
   const toolKind = toolName === "web_search" ? "web_search" : "image_generation";
   const activation = hostedState?.activationSnapshot || {};
+  if (!timestampIsFresh(activation.expiresAt, observedAt)) {
+    return {
+      toolKind,
+      invocationMode: "model_mediated_provider_tool",
+      decision: "blocked_stale_request_shape_proof",
+      blocker: "stale_activation_snapshot",
+      callable: false,
+    };
+  }
+  const requestShapeProofs = Array.isArray(activation.requestShapeProofs) ? activation.requestShapeProofs : [];
+  function proofFor(decision = {}) {
+    return requestShapeProofs.find((proof) => (
+      proof?.proofId === decision.proofId ||
+      proof?.proofDigest === decision.proofDigest
+    )) || null;
+  }
   return (Array.isArray(activation.declarationDecisions) ? activation.declarationDecisions : [])
+    .map((decision) => {
+      if (!decision?.callable) return decision;
+      const proof = proofFor(decision);
+      if (proof && !timestampIsFresh(proof.expiresAt, observedAt)) {
+        return {
+          ...decision,
+          decision: "blocked_stale_request_shape_proof",
+          blocker: "stale_request_shape_proof",
+          callable: false,
+        };
+      }
+      return decision;
+    })
     .find((decision) => (
       decision?.toolKind === toolKind &&
       decision?.invocationMode === "model_mediated_provider_tool"
@@ -966,7 +1004,7 @@ function classifyToolDeclarationCandidates(toolNames = [], lane, laneSelection, 
     }
     if (PROVIDER_HOSTED_TOOL_NAMES.has(toolName)) {
       const hostedState = composerInput.providerHostedToolState || {};
-      const decision = providerHostedDecisionFor(toolName, hostedState);
+      const decision = providerHostedDecisionFor(toolName, hostedState, composerInput.observedAt);
       const evidenceRefs = Array.isArray(hostedState.evidenceRefs) && hostedState.evidenceRefs.length
         ? hostedState.evidenceRefs
         : [evidenceRef("provider_hosted_activation_snapshot", "missing_provider_hosted_activation_snapshot", "Missing provider-hosted activation snapshot")];

@@ -2822,15 +2822,37 @@ function buildDirectProviderHostedToolsStatusForProject(input = {}) {
   const project = input.project || {};
   const projectId = normalizeString(project.id, "");
   const directProviderMetadata = input.directProviderMetadata || {};
+  const existingStatus = [
+    input.providerHostedToolsStatus,
+    project.providerHostedToolsStatus,
+    project.directProviderHostedToolsStatus,
+    project.surfaceBinding?.codex?.providerHostedToolsStatus,
+  ].find(isPlainObject) || {};
+  const existingActivationSnapshot = [
+    input.providerHostedActivationSnapshot,
+    existingStatus.activationSnapshot,
+    project.providerHostedActivationSnapshot,
+    project.surfaceBinding?.codex?.providerHostedActivationSnapshot,
+  ].find(isPlainObject) || null;
+  const existingCapabilities = [
+    input.capabilities,
+    existingStatus.capabilities,
+    existingActivationSnapshot?.capabilities,
+    project.providerHostedCapabilities,
+    project.surfaceBinding?.codex?.providerHostedCapabilities,
+  ].find(Array.isArray) || [];
   const status = buildProviderHostedToolsStatus({
     projectId,
     workThreadId: normalizeString(project.workThreadId, ""),
     providerMetadataProfile: directProviderMetadata.profile || input.providerMetadataProfile || null,
+    ...(existingActivationSnapshot ? { activationSnapshot: existingActivationSnapshot } : {}),
+    ...(existingCapabilities.length ? { capabilities: existingCapabilities } : {}),
     requestShapeProofs: [
       ...(Array.isArray(input.requestShapeProofs) ? input.requestShapeProofs : []),
       ...(Array.isArray(project.providerHostedRequestShapeProofs) ? project.providerHostedRequestShapeProofs : []),
       ...(Array.isArray(project.providerHostedToolsStatus?.activationSnapshot?.requestShapeProofs) ? project.providerHostedToolsStatus.activationSnapshot.requestShapeProofs : []),
       ...(Array.isArray(project.directProviderHostedToolsStatus?.activationSnapshot?.requestShapeProofs) ? project.directProviderHostedToolsStatus.activationSnapshot.requestShapeProofs : []),
+      ...(Array.isArray(existingActivationSnapshot?.requestShapeProofs) ? existingActivationSnapshot.requestShapeProofs : []),
       ...(Array.isArray(project.surfaceBinding?.codex?.providerHostedRequestShapeProofs) ? project.surfaceBinding.codex.providerHostedRequestShapeProofs : []),
     ],
     generatedAt: normalizeString(input.generatedAt, nowIso()),

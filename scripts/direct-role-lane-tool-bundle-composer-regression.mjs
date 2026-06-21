@@ -277,6 +277,34 @@ assert.equal(staleHostedWeb.residentCapabilityCatalogue.knownUnavailable[0].tool
 assert.equal(staleHostedWeb.residentCapabilityCatalogue.knownUnavailable[0].status, "blocked_by_provider");
 assert.match(staleHostedWeb.residentCapabilityCatalogue.knownUnavailable[0].reason, /stale_request_shape_proof/);
 
+const staleCachedProviderHostedToolsStatus = JSON.parse(JSON.stringify(providerHostedToolsStatus));
+staleCachedProviderHostedToolsStatus.activationSnapshot.expiresAt = "2026-06-21T11:30:00.000Z";
+staleCachedProviderHostedToolsStatus.activationSnapshot.requestShapeProofs = staleCachedProviderHostedToolsStatus.activationSnapshot.requestShapeProofs.map((proof) => ({
+  ...proof,
+  expiresAt: "2026-06-21T11:30:00.000Z",
+}));
+assert(staleCachedProviderHostedToolsStatus.activationSnapshot.declarationDecisions.some((decision) => (
+  decision.toolKind === "web_search" &&
+  decision.invocationMode === "model_mediated_provider_tool" &&
+  decision.callable === true
+)), "fixture should preserve a stale cached callable decision before composer revalidation");
+const staleCachedHostedWeb = composeDirectToolBundle({
+  registry,
+  laneSelection,
+  providerProfileRef: ref("provider_profile", "provider_profile_direct_fixture"),
+  runtimeFactsRef: ref("runtime_facts", "runtime_facts_direct_fixture"),
+  activationSnapshotRefs: [ref("activation_snapshot", "activation_snapshot_direct_fixture")],
+  normalizedLaneRequestRef: ref("normalized_lane_request", "normalized_request_impl_001"),
+  externalCapabilityProfile,
+  providerHostedToolsStatus: staleCachedProviderHostedToolsStatus,
+  toolNames: ["web_search"],
+  nowMs,
+});
+assert.deepEqual(staleCachedHostedWeb.providerDeclaredToolBundle.declaredToolNames, []);
+assert.equal(staleCachedHostedWeb.residentCapabilityCatalogue.knownUnavailable[0].toolName, "web_search");
+assert.equal(staleCachedHostedWeb.residentCapabilityCatalogue.knownUnavailable[0].status, "blocked_by_provider");
+assert.match(staleCachedHostedWeb.residentCapabilityCatalogue.knownUnavailable[0].reason, /stale_activation_snapshot|stale_request_shape_proof/);
+
 const missingExternalSource = composeDirectToolBundle({
   registry,
   laneSelection,

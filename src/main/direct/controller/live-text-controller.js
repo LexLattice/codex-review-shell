@@ -1472,28 +1472,32 @@ class DirectLiveTextController {
   }
 
   resolveProviderHostedToolsStatus(project = {}) {
-    if (this.providerHostedToolsStatusResolver) {
-      try {
-        const resolved = this.providerHostedToolsStatusResolver({
-          project,
-          projectId: normalizeString(project?.id || project?.projectId || project?.name, ""),
-          workThreadId: normalizeString(directWorkThreadContextCarrier(project)?.workThreadId, ""),
-          endpoint: this.endpoint,
-          authStatus: this.authStatus(),
-        });
-        if (isPlainObject(resolved)) return resolved;
-      } catch (error) {
-        return {
-          status: "unavailable",
-          reason: normalizeString(error?.message, "provider_hosted_tools_status_unavailable"),
-          resolverError: true,
-        };
-      }
+    if (!this.providerHostedToolsStatusResolver) {
+      return {
+        status: "unavailable",
+        reason: "provider_hosted_tools_status_resolver_missing",
+      };
     }
-    return {
-      status: "unavailable",
-      reason: "provider_hosted_tools_status_resolver_missing",
-    };
+    try {
+      const resolved = this.providerHostedToolsStatusResolver({
+        project,
+        projectId: normalizeString(project?.id || project?.projectId || project?.name, ""),
+        workThreadId: normalizeString(directWorkThreadContextCarrier(project)?.workThreadId, ""),
+        endpoint: this.endpoint,
+        authStatus: this.authStatus(),
+      });
+      if (isPlainObject(resolved)) return resolved;
+      return {
+        status: "unavailable",
+        reason: "provider_hosted_tools_status_resolver_invalid_result",
+      };
+    } catch (error) {
+      return {
+        status: "unavailable",
+        reason: normalizeString(error?.message, "provider_hosted_tools_status_unavailable"),
+        resolverError: true,
+      };
+    }
   }
 
   modelEvidenceForProject(project = {}) {
