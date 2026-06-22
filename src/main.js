@@ -31,6 +31,7 @@ const { DirectSessionStore } = require("./main/direct/session/session-store");
 const { DirectThreadStore } = require("./main/direct/thread/thread-store");
 const { DirectThreadWorkbenchController } = require("./main/direct/thread/thread-workbench-controller");
 const { DirectWorkThreadRegistryStore } = require("./main/direct/bridge/work-thread-registry");
+const { DirectAgentRegistryStore } = require("./main/direct/bridge/agent-registry");
 const { DirectImportController } = require("./main/direct/import/import-controller");
 const {
   DirectMetaSessionStore,
@@ -358,6 +359,7 @@ let directCodexProfileDoc = null;
 let directSessionStore = null;
 let directThreadStore = null;
 let directWorkThreadStore = null;
+let directAgentRegistryStore = null;
 let directThreadWorkbenchController = null;
 let directImportController = null;
 let directMetaSessionStore = null;
@@ -368,6 +370,7 @@ let directLiveTextController = null;
 let directProviderMetadataAdapter = null;
 let directActivationStore = null;
 const directActivationLocks = new Map();
+const directAgentRegistryBackfillStateByProject = new Map();
 let chatgptDownloadHandler = null;
 let pendingChatgptDownloadMacroRequests = [];
 let activeChatgptContext = null;
@@ -2029,6 +2032,14 @@ function ensureDirectWorkThreadStore() {
   return directWorkThreadStore;
 }
 
+function ensureDirectAgentRegistryStore() {
+  if (directAgentRegistryStore) return directAgentRegistryStore;
+  directAgentRegistryStore = new DirectAgentRegistryStore({
+    rootDir: directSessionRootDir(),
+  });
+  return directAgentRegistryStore;
+}
+
 function ensureDirectThreadWorkbenchController() {
   if (directThreadWorkbenchController) return directThreadWorkbenchController;
   directThreadWorkbenchController = new DirectThreadWorkbenchController({
@@ -2620,6 +2631,7 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     legacySession: currentLegacyAppServerSnapshot(),
   });
   const workThreadBundle = directWorkThreadProjectionForProject(project);
+  const agentRegistryBundle = directAgentRegistryProjectionForProject(project);
   const runtimeWitnessProjection = buildDirectRuntimeWitnessProjectionForProject({
     project,
     runtimeStatus,
@@ -2681,6 +2693,7 @@ function buildDirectSettingsSurfaceStatusForProject(project) {
     runtimeStatus,
     registryAudit,
     workThreads: workThreadBundle,
+    agents: agentRegistryBundle,
     operatorBroker,
     metaSessionStatus,
     moduleStatus,
@@ -3181,6 +3194,93 @@ function directWorkThreadProjectionForProject(project = {}) {
   }
 }
 
+function emptyDirectAgentRegistryProjection(projectId, reason = "agent_registry_unavailable") {
+  return {
+    status: {
+      schema: "direct_agent_registry_status@1",
+      available: false,
+      state: "degraded",
+      reason,
+      projectId,
+      agentCount: 0,
+      backfilledCount: 0,
+      activeCount: 0,
+      threadLinkCount: 0,
+      registryPathExposed: false,
+      projectionDigest: "",
+      rawTextIncluded: false,
+      rawPathIncluded: false,
+      rawSecretIncluded: false,
+    },
+    projection: {
+      schema: "direct_agent_registry_projection@1",
+      projectId,
+      generatedAt: nowIso(),
+      rowCount: 0,
+      backfilledCount: 0,
+      activeCount: 0,
+      rows: [],
+      projectionDigest: "",
+      rawTextIncluded: false,
+      rawPathIncluded: false,
+      rawSecretIncluded: false,
+    },
+    backfillReport: null,
+  };
+}
+
+function directAgentRegistryProjectionForProject(project = {}) {
+  const projectId = normalizeString(project?.id, "");
+  if (!projectId) return emptyDirectAgentRegistryProjection("", "project_missing");
+  try {
+    const store = ensureDirectAgentRegistryStore();
+    const sessionStore = ensureDirectSessionStore();
+    const sessionStatus = sessionStore.status({ projectId });
+    const cacheKey = [
+      normalizeString(sessionStatus.lastSessionUpdatedAt, ""),
+      Number(sessionStatus.sessionCount || 0),
+      Number(sessionStatus.turnCount || 0),
+    ].join("::");
+    let backfillReport = null;
+    if (directAgentRegistryBackfillStateByProject.get(projectId) !== cacheKey) {
+      backfillReport = store.backfillFromSessionStore(sessionStore, { projectId });
+      directAgentRegistryBackfillStateByProject.set(projectId, cacheKey);
+    } else {
+      const projection = store.buildProjection({ projectId });
+      backfillReport = {
+        schema: "direct_agent_registry_backfill_report@1",
+        projectId,
+        generatedAt: nowIso(),
+        touchedAgentCount: 0,
+        touchedThreadLinkCount: 0,
+        projection,
+        status: store.status({ projectId, projection, threadLinkCount: projection.rows.reduce((count, row) => count + Number(row.linkedThreadCount || 0), 0) }),
+        sessionRewritePerformed: false,
+        rawTextIncluded: false,
+        rawPathIncluded: false,
+        rawSecretIncluded: false,
+      };
+    }
+    return {
+      status: backfillReport.status,
+      projection: backfillReport.projection,
+      backfillReport: {
+        schema: backfillReport.schema,
+        projectId: backfillReport.projectId,
+        generatedAt: backfillReport.generatedAt,
+        touchedAgentCount: backfillReport.touchedAgentCount,
+        touchedThreadLinkCount: backfillReport.touchedThreadLinkCount,
+        sessionRewritePerformed: false,
+        rawTextIncluded: false,
+        rawPathIncluded: false,
+        rawSecretIncluded: false,
+      },
+    };
+  } catch (error) {
+    return emptyDirectAgentRegistryProjection(projectId, normalizeString(error?.code || error?.message, "agent_registry_unavailable"));
+  }
+}
+
 function directOperatorBrokerProjectionForProject(project = {}, workThreadBundle = null) {
   const projectId = normalizeString(project?.id, "");
   if (!projectId) return null;
@@ -3671,6 +3771,7 @@ function buildDirectCodexSurfaceProjectionForProject(project = {}, input = {}) {
   const runtimeStatus = input.runtimeStatus || buildDirectRuntimeStatusForProject(project);
   const agentUsageStatus = input.agentUsageStatus || buildDirectAgentUsageStatusForProject(projectId);
   const workThreadBundle = input.workThreadBundle || directWorkThreadProjectionForProject(project);
+  const agentRegistryBundle = input.agentRegistryBundle || directAgentRegistryProjectionForProject(project);
   const appServerFallbackParity = input.appServerFallbackParity || runtimeStatus.appServerFallbackParity || buildAppServerFallbackParityReport({
     projectId,
     runtimeStatus,
@@ -3738,6 +3839,11 @@ function buildDirectCodexSurfaceProjectionForProject(project = {}, input = {}) {
       status: workThreadBundle.status,
       projection: workThreadBundle.projection,
       resolutionReport: workThreadBundle.resolutionReport,
+    },
+    agents: {
+      status: agentRegistryBundle.status,
+      projection: agentRegistryBundle.projection,
+      backfillReport: agentRegistryBundle.backfillReport,
     },
     attachmentCapability: input.attachmentCapability || null,
     authority: {
@@ -8296,6 +8402,8 @@ async function createWindow() {
     directThreadStore = null;
     directSessionStore = null;
     directWorkThreadStore = null;
+    directAgentRegistryStore = null;
+    directAgentRegistryBackfillStateByProject.clear();
     middleWebHost?.dispose();
     middleWebHost = null;
     if (chatgptDownloadHandler && chatgptView?.webContents && !chatgptView.webContents.isDestroyed()) {
@@ -9211,6 +9319,8 @@ app.on("before-quit", () => {
     directThreadStore = null;
     directSessionStore = null;
     directWorkThreadStore = null;
+    directAgentRegistryStore = null;
+    directAgentRegistryBackfillStateByProject.clear();
 });
 
 function emitDirectAuthAndRuntimeStatus(event) {
