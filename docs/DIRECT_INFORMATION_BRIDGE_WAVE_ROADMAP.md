@@ -4516,7 +4516,7 @@ no raw external URI/payload/secret exposure
 | `#110` | merged | `codex/direct-external-discovery-tools` | Resident external discovery tools | Resident-callable discovery declarations for `tool_search`, `list_mcp_resources`, `list_mcp_resource_templates`, ExternalToolSearchInput, plugin candidate discovery-only descriptors, schema/source digests, unavailable/degraded evidence | No `read_mcp_resource`, dynamic MCP calls, plugin install, or discovered-tool auto-promotion |
 | `#111` | merged | `codex/direct-mcp-resource-read-envelope` | MCP resource read envelope | McpServerIdentityWitness, McpResourceIdentity, guarded McpResourceReadEnvelope, URI digest/display policy, MIME/size caps, status/redaction/truncation separation, readReplayPolicy, payloadRetention, blocked binary/oversize/unknown-source rows | No dynamic MCP action calls, workspace staging, raw full payload admission, automatic replay after ambiguity, or project-truth mutation |
 | `#112` | merged | `codex/direct-external-result-context-admission` | External result context admission | ExternalResultContextAdmissionPolicy, resident/operator/provider visibility channels, summary/ref/excerpt/blocked rows, trust/freshness projection, trust warning, no-memory-admission law, raw-leak negative tests | No MCP resource browser UI, persistent artifact import/staging, durable memory admission, or external action approval |
-| `#113` | merged | `codex/direct-external-wave18-usability-gate` | Wave 18 usability proof gate | ExternalToolUsabilityProof, resident/operator witness rows, manual gate, headless scenarios, negative matrix for server ambiguity, raw leaks, replay, memory smuggling, dynamic actions, plugin install, registry/roadmap update | No Wave 19 provider-hosted tools, future context-world transition/new_context/compaction, or Wave 21+ code-mode execution |
+| `#113` | merged | `codex/direct-external-wave18-usability-gate` | Wave 18 usability proof gate | ExternalToolUsabilityProof, resident/operator witness rows, manual gate, headless scenarios, negative matrix for server ambiguity, raw leaks, replay, memory smuggling, dynamic actions, plugin install, registry/roadmap update | No Wave 19 provider-hosted tools, future context-world transition/new_context/compaction, or later code-mode execution |
 
 Wave 18 completion gate:
 
@@ -4580,7 +4580,7 @@ no automatic replay after unknown/restart/handoff
 | `#116` | merged | `codex/direct-provider-hosted-web-search` | Hosted web search result/context admission | ProviderHostedWebSearchResultEnvelope, source URL display/evidence-key policy, sourceType/retrievalConfidence/contentAccess, retrieved-at/freshness/citation posture, summary authority, limits, citation parity, quote/raw-page policy, ProviderHostedResultContextAdmission, resident-callable web_search only when activation says callable | No browser navigation, local web cache ingestion, raw page HTML admission, durable memory, or project-truth mutation |
 | `#117` | merged | `codex/direct-provider-hosted-image-artifacts` | Hosted image artifact governance | ProviderHostedImageGenerationArtifactEnvelope, operator-gated default, resident-callable disabled unless explicitly activated later, artifact refs/projection policy, generation limits/provenance/state/safety posture, storage/retention/staging manifest contract, prompt evidence policy, unsupported/operator-gated scenarios | No automatic workspace insertion, raw image bytes in renderer state, image editor workflow, durable memory admission, or provider safety bypass |
 | `#118` | merged | `codex/direct-provider-hosted-usage-attribution` | Hosted usage attribution and analytics | ProviderHostedUsageAttribution, per-call analytics rows, usageKind/usageState/unavailableReason, thread/turn/agent attribution, unknown/unavailable evidence rows, analytics/runtime witness integration, parent-turn breakdown, fixtures proving hosted usage is distinct from inference/local tools/MCP | No billing-grade cost unless provider reports it, no missing usage as zero, no retroactive exact usage for old transcripts |
-| `#119` | merged | `codex/direct-provider-hosted-wave19-usability-gate` | Wave 19 usability proof gate | ProviderHostedUsabilityProof, resident/operator/headless scenarios, web_search available/blocked and image_generation available/operator-gated/blocked proofs, negative matrix for profile-declared-but-unprobed calls, static labels, outbound query leaks, invented citations, raw prompt retention, missing staging manifests, provider-blocked generations, image bytes, workspace insertion, durable memory, replay, stale activation, undeclared calls, registry/roadmap/audit update | No future context-world transition/new_context/compaction, Wave 21+ code-mode execution, Wave 22+ batch orchestration, plugin install, or dynamic MCP action execution |
+| `#119` | merged | `codex/direct-provider-hosted-wave19-usability-gate` | Wave 19 usability proof gate | ProviderHostedUsabilityProof, resident/operator/headless scenarios, web_search available/blocked and image_generation available/operator-gated/blocked proofs, negative matrix for profile-declared-but-unprobed calls, static labels, outbound query leaks, invented citations, raw prompt retention, missing staging manifests, provider-blocked generations, image bytes, workspace insertion, durable memory, replay, stale activation, undeclared calls, registry/roadmap/audit update | No future context-world transition/new_context/compaction, later code-mode execution, later batch orchestration, plugin install, or dynamic MCP action execution |
 
 Wave 19 completion gate:
 
@@ -4663,6 +4663,79 @@ capabilities because each request is built from a role-lane tool bundle
 composition witness. Safe read/status tools from prior waves can be declared
 under lane policy, while mutation/interference/provider-hosted risky tools stay
 blocked, operator-gated, or deferred with explicit reasons.
+```
+
+## Wave 21: Agent Continuity And Governed Memory
+
+Status: planned.
+
+Detailed spec:
+
+```text
+docs/DIRECT_WAVE21_AGENT_CONTINUITY_MEMORY_SPEC.md
+```
+
+Purpose:
+
+```text
+Add Agent as the first-order institutional actor above thread/session, while
+preserving thread/session as interaction evidence witnesses. Memory becomes a
+governed derivation from evidence scoped to agent/work-thread/project role,
+and context becomes the selected projection over current request, recent thread
+witness, WorkThread, agent identity, agent memory, capability state, and
+authority boundary.
+```
+
+Standing laws:
+
+```text
+Agent != Thread.
+Thread != Memory.
+Memory != Context.
+Context != Provider Truth.
+Provider Output != Local Authority.
+Transcript is evidence.
+Memory is governed derivation.
+Context is selected projection.
+Agent is institutional continuity.
+Thread is interaction witness.
+```
+
+Initial target posture:
+
+```text
+Do not replace DirectSessionStore or thread ids.
+Add AgentRegistryStore and compatibility links over existing sessions.
+Backfill default resident agents by project + roleLane without destructive
+migration.
+Keep memory manual/fixture/admission-gated first.
+Do not inject memory into provider context except through context-safe
+AgentMemoryContextProjection refs.
+Expose resident epistemic identity as status/evidence, not authority.
+Use durable AgentIdentity plus bounded AgentRuns; never use one immortal
+resident run as an all-purpose provenance bucket.
+```
+
+| PR | Status | Branch | Purpose | Planned deliverable | Explicit non-goals |
+| --- | --- | --- | --- | --- | --- |
+| `#126` | planned | `codex/direct-agent-registry` | Agent registry substrate | AgentRegistryStore, AgentIdentity/AgentIdentityKey schemas, AgentBackfillPolicy, AgentThreadLink schema, default resident agent backfill by project + roleLane, renderer-safe registry status projection | No memory admission, context injection, resident behavior change, or session/thread replacement |
+| `#127` | planned | `codex/direct-agent-run-session-links` | AgentRun and session linking | AgentRun schema with objective/output contract, bounded run lifecycle, optional `session.agentId` / `session.agentRunId`, compatibility mapper from old session agent fields, thread-link relationship/uniqueness, agent-run/thread indices | No new sub-agent capabilities, parent-authority inheritance, one immortal resident run, or automatic cross-thread memory |
+| `#128` | planned | `codex/direct-agent-memory-store` | Agent memory store V0 | AgentMemoryStore, AgentMemoryRow with eligibility/conflict/supersession/digest fields, AgentMemoryExtractionTransition, manual/fixture memory rows only, provenance validator, renderer-safe memory inventory projection | No automatic memory extraction, provider-context memory injection, or cross-project memory |
+| `#129` | planned | `codex/direct-agent-context-source-refs` | Agent context source-class refactor | DirectContextSourceRef normalizer with confidence/freshness/authority labels, AgentMemoryContextProjection with selection policy/context role, context-pack adapter for agent identity/run/memory projection refs, omission counters | No automatic memory selection, default behavior change, hidden provider continuity, or memory-derived authority |
+| `#130` | planned | `codex/direct-resident-agent-identity-snapshot` | Resident agent epistemic snapshot | Structured resident identity/continuity/capability snapshot, linked-thread counts/current refs by default, memory scope inventory, capability/status catalogue bridge citing registry/promotion/activation evidence, compact context witness | No mutable memory through resident calls, new tool families, full linked-thread transcript exposure, or broad cross-thread transcript exposure |
+| `#131` | planned | `codex/direct-agent-memory-admission-gate` | Agent memory admission workflow and proof gate | Memory candidate envelope, extraction/admission transitions, accept/reject/review states, memory supersession/conflict resolution, headless fixture for transcript/artifact -> candidate -> accepted memory, negative laundering matrix, roadmap/audit update | No autonomous memory mining daemon, cross-project memory, automatic durable memory from hosted/MCP results, or full memory editor |
+
+Wave 21 completion gate:
+
+```text
+Direct has a first-order AgentIdentity/AgentRun layer above thread/session.
+Existing sessions can be linked to agents without destructive migration.
+Agent memory exists as governed, provenance-cited derivation, not transcript.
+Context packs can cite agent identity/run/memory projections through typed
+source refs.
+Resident epistemic snapshots can explain "who am I, what threads belong to me,
+what memory scopes exist, what capabilities are active/blocked" without
+granting authority.
 ```
 
 
