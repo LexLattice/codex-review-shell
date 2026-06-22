@@ -17,6 +17,11 @@ const {
   buildExternalCapabilityProfile,
   mcpServerIdentityFor,
 } = require("../src/main/direct/external/external-capability-profile");
+const {
+  buildProviderHostedRequestShapeProof,
+  buildProviderHostedToolCapability,
+  buildProviderHostedToolsStatus,
+} = require("../src/main/direct/provider/hosted-tools");
 const nowMs = Date.UTC(2026, 5, 21, 12, 30, 0);
 const implementationToolNames = [
   "apply_patch",
@@ -32,6 +37,8 @@ const implementationToolNames = [
   "tool_search",
   "update_plan",
 ];
+const implementationToolNamesWithHostedWeb = [...implementationToolNames, "web_search"].sort((a, b) => a.localeCompare(b));
+const defaultCandidateToolNames = [...implementationToolNames, "image_generation", "web_search"].sort((a, b) => a.localeCompare(b));
 const safeResidentUtilityToolNames = ["get_context_remaining", "request_user_input", "update_plan"];
 const readOnlySubAgentStatusToolNames = ["inspect_agent", "list_agents"];
 const externalPromotedToolNames = ["list_mcp_resource_templates", "list_mcp_resources", "read_mcp_resource", "tool_search"];
@@ -93,6 +100,46 @@ const externalCapabilityProfile = buildExternalCapabilityProfile({
     }),
   ],
 });
+const providerProfileDigest = "provider_profile_digest_direct_fixture";
+const providerHostedToolsStatus = buildProviderHostedToolsStatus({
+  projectId: "project_role_lane_fixture",
+  workThreadId: "work_thread_role_lane_fixture",
+  providerMetadataDigest: providerProfileDigest,
+  generatedAt: "2026-06-21T12:30:00.000Z",
+  nowMs,
+  capabilities: [
+    buildProviderHostedToolCapability({
+      projectId: "project_role_lane_fixture",
+      workThreadId: "work_thread_role_lane_fixture",
+      toolKind: "web_search",
+      evidenceState: "runtime_probed",
+      providerDeclarationState: "runtime_accepted",
+      generatedAt: "2026-06-21T12:30:00.000Z",
+    }),
+    buildProviderHostedToolCapability({
+      projectId: "project_role_lane_fixture",
+      workThreadId: "work_thread_role_lane_fixture",
+      toolKind: "image_generation",
+      evidenceState: "runtime_probed",
+      providerDeclarationState: "runtime_accepted",
+      generatedAt: "2026-06-21T12:30:00.000Z",
+    }),
+  ],
+  requestShapeProofs: [
+    buildProviderHostedRequestShapeProof({
+      toolKind: "web_search",
+      invocationMode: "model_mediated_provider_tool",
+      providerProfileDigest,
+      modelRef: { model: "unknown" },
+      requestShapeDigest: "web_search_request_shape_digest_fixture",
+      requestBuilderVersion: "role-lane-composer-regression",
+      runtimeAccepted: true,
+      resultShapeObserved: true,
+      observedAt: "2026-06-21T12:30:00.000Z",
+      expiresAt: "2026-06-21T13:30:00.000Z",
+    }),
+  ],
+});
 
 const grounded = composeDirectToolBundle({
   registry,
@@ -106,6 +153,7 @@ const grounded = composeDirectToolBundle({
   semanticParseRef: ref("semantic_parse", "semantic_parse_impl_001"),
   normalizedLaneRequestRef: ref("normalized_lane_request", "normalized_request_impl_001"),
   externalCapabilityProfile,
+  providerHostedToolsStatus,
   contextPacketRef: ref("context_packet", "context_packet_impl_001"),
   requestManifestRef: ref("request_manifest", "request_manifest_impl_001"),
   nowMs,
@@ -114,11 +162,13 @@ const grounded = composeDirectToolBundle({
 assert.equal(grounded.status, "passed");
 assert.deepEqual(validateDirectToolBundleComposition(grounded), []);
 assert.equal(grounded.providerDeclaredToolBundle.schema, "provider_declared_tool_bundle@1");
-assert.deepEqual(grounded.providerDeclaredToolBundle.declaredToolNames, implementationToolNames);
+assert.deepEqual(grounded.providerDeclaredToolBundle.declaredToolNames, implementationToolNamesWithHostedWeb);
 assert.equal(grounded.providerDeclaredToolBundle.parallelToolCalls, false);
 assert.equal(grounded.providerDeclaredToolBundle.toolChoice, "auto");
-assert.equal(grounded.residentCapabilityCatalogue.callableNow.length, implementationToolNames.length);
-assert.equal(grounded.residentCapabilityCatalogue.knownUnavailable.length, 0);
+assert.equal(grounded.residentCapabilityCatalogue.callableNow.length, implementationToolNamesWithHostedWeb.length);
+assert.equal(grounded.residentCapabilityCatalogue.knownUnavailable.length, 1);
+assert.equal(grounded.residentCapabilityCatalogue.knownUnavailable[0].toolName, "image_generation");
+assert.equal(grounded.residentCapabilityCatalogue.knownUnavailable[0].status, "operator_gated");
 assert.equal(grounded.witness.providerDeclaredToolBundleRef, grounded.providerDeclaredToolBundle.bundleId);
 assert.equal(grounded.witness.residentCatalogueRef, grounded.residentCapabilityCatalogue.catalogueId);
 assert.equal(grounded.witness.normalizedLaneRequestRef.id, "normalized_request_impl_001");
@@ -160,6 +210,100 @@ for (const toolName of externalPromotedToolNames) {
   assert.equal(row.providerToolSchema.name, toolName, `${toolName} provider schema mismatch`);
   assert.equal(row.authorityTemplate.requiresConcreteCallDecision, true, `${toolName} must keep per-call gate`);
 }
+
+const hostedWebRow = grounded.witness.declaredTools.find((entry) => entry.toolName === "web_search");
+assert(hostedWebRow, "missing conditional hosted web_search declaration");
+assert.equal(hostedWebRow.toolFamily, "provider_hosted_web_search");
+assert.equal(hostedWebRow.providerToolSchema.type, "web_search_preview");
+assert.equal(hostedWebRow.providerToolSchema.name, undefined);
+assert.equal(hostedWebRow.perCallAuthorityRequired, true);
+
+const missingHostedStatus = composeDirectToolBundle({
+  registry,
+  laneSelection,
+  providerProfileRef: ref("provider_profile", "provider_profile_direct_fixture"),
+  runtimeFactsRef: ref("runtime_facts", "runtime_facts_direct_fixture"),
+  activationSnapshotRefs: [ref("activation_snapshot", "activation_snapshot_direct_fixture")],
+  normalizedLaneRequestRef: ref("normalized_lane_request", "normalized_request_impl_001"),
+  externalCapabilityProfile,
+  toolNames: ["web_search", "image_generation"],
+  nowMs,
+});
+assert.deepEqual(missingHostedStatus.providerDeclaredToolBundle.declaredToolNames, []);
+assert.equal(missingHostedStatus.residentCapabilityCatalogue.knownUnavailable.length, 2);
+assert(missingHostedStatus.residentCapabilityCatalogue.knownUnavailable.every((row) => row.status === "blocked_by_runtime"));
+
+const staleProviderHostedToolsStatus = buildProviderHostedToolsStatus({
+  projectId: "project_role_lane_fixture",
+  workThreadId: "work_thread_role_lane_fixture",
+  providerMetadataDigest: providerProfileDigest,
+  generatedAt: "2026-06-21T12:30:00.000Z",
+  nowMs,
+  capabilities: [
+    buildProviderHostedToolCapability({
+      toolKind: "web_search",
+      evidenceState: "runtime_probed",
+      providerDeclarationState: "runtime_accepted",
+    }),
+  ],
+  requestShapeProofs: [
+    buildProviderHostedRequestShapeProof({
+      toolKind: "web_search",
+      invocationMode: "model_mediated_provider_tool",
+      providerProfileDigest,
+      modelRef: { model: "unknown" },
+      requestShapeDigest: "stale_web_search_request_shape_digest_fixture",
+      runtimeAccepted: true,
+      resultShapeObserved: true,
+      observedAt: "2026-06-21T10:30:00.000Z",
+      expiresAt: "2026-06-21T11:30:00.000Z",
+    }),
+  ],
+});
+const staleHostedWeb = composeDirectToolBundle({
+  registry,
+  laneSelection,
+  providerProfileRef: ref("provider_profile", "provider_profile_direct_fixture"),
+  runtimeFactsRef: ref("runtime_facts", "runtime_facts_direct_fixture"),
+  activationSnapshotRefs: [ref("activation_snapshot", "activation_snapshot_direct_fixture")],
+  normalizedLaneRequestRef: ref("normalized_lane_request", "normalized_request_impl_001"),
+  externalCapabilityProfile,
+  providerHostedToolsStatus: staleProviderHostedToolsStatus,
+  toolNames: ["web_search"],
+  nowMs,
+});
+assert.deepEqual(staleHostedWeb.providerDeclaredToolBundle.declaredToolNames, []);
+assert.equal(staleHostedWeb.residentCapabilityCatalogue.knownUnavailable[0].toolName, "web_search");
+assert.equal(staleHostedWeb.residentCapabilityCatalogue.knownUnavailable[0].status, "blocked_by_provider");
+assert.match(staleHostedWeb.residentCapabilityCatalogue.knownUnavailable[0].reason, /stale_request_shape_proof/);
+
+const staleCachedProviderHostedToolsStatus = JSON.parse(JSON.stringify(providerHostedToolsStatus));
+staleCachedProviderHostedToolsStatus.activationSnapshot.expiresAt = "2026-06-21T11:30:00.000Z";
+staleCachedProviderHostedToolsStatus.activationSnapshot.requestShapeProofs = staleCachedProviderHostedToolsStatus.activationSnapshot.requestShapeProofs.map((proof) => ({
+  ...proof,
+  expiresAt: "2026-06-21T11:30:00.000Z",
+}));
+assert(staleCachedProviderHostedToolsStatus.activationSnapshot.declarationDecisions.some((decision) => (
+  decision.toolKind === "web_search" &&
+  decision.invocationMode === "model_mediated_provider_tool" &&
+  decision.callable === true
+)), "fixture should preserve a stale cached callable decision before composer revalidation");
+const staleCachedHostedWeb = composeDirectToolBundle({
+  registry,
+  laneSelection,
+  providerProfileRef: ref("provider_profile", "provider_profile_direct_fixture"),
+  runtimeFactsRef: ref("runtime_facts", "runtime_facts_direct_fixture"),
+  activationSnapshotRefs: [ref("activation_snapshot", "activation_snapshot_direct_fixture")],
+  normalizedLaneRequestRef: ref("normalized_lane_request", "normalized_request_impl_001"),
+  externalCapabilityProfile,
+  providerHostedToolsStatus: staleCachedProviderHostedToolsStatus,
+  toolNames: ["web_search"],
+  nowMs,
+});
+assert.deepEqual(staleCachedHostedWeb.providerDeclaredToolBundle.declaredToolNames, []);
+assert.equal(staleCachedHostedWeb.residentCapabilityCatalogue.knownUnavailable[0].toolName, "web_search");
+assert.equal(staleCachedHostedWeb.residentCapabilityCatalogue.knownUnavailable[0].status, "blocked_by_provider");
+assert.match(staleCachedHostedWeb.residentCapabilityCatalogue.knownUnavailable[0].reason, /stale_activation_snapshot|stale_request_shape_proof/);
 
 const missingExternalSource = composeDirectToolBundle({
   registry,
@@ -332,9 +476,9 @@ assert.deepEqual(validateDirectToolBundleComposition(ungrounded), []);
 assert.deepEqual(ungrounded.providerDeclaredToolBundle.declaredToolNames, [], "missing normalized request grounding must block declarations");
 assert.equal(ungrounded.providerDeclaredToolBundle.toolChoice, "none");
 assert.equal(ungrounded.residentCapabilityCatalogue.callableNow.length, 0);
-assert.equal(ungrounded.residentCapabilityCatalogue.knownUnavailable.length, implementationToolNames.length);
-assert.equal(ungrounded.residentCapabilityCatalogue.nonOmittableRows.length, implementationToolNames.length);
-assert.equal(ungrounded.residentCapabilityCatalogue.omittedByClass.blockedTools, implementationToolNames.length);
+assert.equal(ungrounded.residentCapabilityCatalogue.knownUnavailable.length, defaultCandidateToolNames.length);
+assert.equal(ungrounded.residentCapabilityCatalogue.nonOmittableRows.length, defaultCandidateToolNames.length);
+assert.equal(ungrounded.residentCapabilityCatalogue.omittedByClass.blockedTools, defaultCandidateToolNames.length);
 assert(ungrounded.witness.omittedReasonRows.every((row) => row.reason.includes("normalized lane request grounding")), "omission should cite missing grounding");
 for (const row of ungrounded.residentCapabilityCatalogue.knownUnavailable) {
   assert.equal(row.status, "blocked_by_policy");
