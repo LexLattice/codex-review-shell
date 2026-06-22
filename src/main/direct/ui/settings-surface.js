@@ -197,6 +197,29 @@ function summarizeWorkThreads(input = {}) {
   };
 }
 
+function summarizeAgentRegistry(input = {}) {
+  const status = objectOrEmpty(input.status || input.agentRegistryStatus);
+  const projection = objectOrEmpty(input.projection || input.agentRegistryProjection);
+  const backfillReport = objectOrEmpty(input.backfillReport || input.agentRegistryBackfillReport);
+  return {
+    available: status.available === true || projection.schema === "direct_agent_registry_projection@1",
+    state: normalizeString(status.state, status.available === false ? "degraded" : "unknown"),
+    availabilityReason: normalizeString(status.reason || input.availabilityReason, status.available === false ? "not_wired" : ""),
+    agentCount: Number(status.agentCount || projection.rowCount || 0),
+    backfilledCount: Number(status.backfilledCount || projection.backfilledCount || 0),
+    activeCount: Number(status.activeCount || projection.activeCount || 0),
+    threadLinkCount: Number(status.threadLinkCount || 0),
+    projectionDigest: normalizeString(status.projectionDigest || projection.projectionDigest, ""),
+    backfillTouchedAgentCount: Number(backfillReport.touchedAgentCount || 0),
+    backfillTouchedThreadLinkCount: Number(backfillReport.touchedThreadLinkCount || 0),
+    sessionRewritePerformed: backfillReport.sessionRewritePerformed === true,
+    rawTextIncluded: status.rawTextIncluded === true || projection.rawTextIncluded === true || backfillReport.rawTextIncluded === true,
+    rawPathIncluded: status.rawPathIncluded === true || projection.rawPathIncluded === true || backfillReport.rawPathIncluded === true,
+    rawSecretIncluded: status.rawSecretIncluded === true || projection.rawSecretIncluded === true || backfillReport.rawSecretIncluded === true,
+    statusDigest: normalizeString(status.statusDigest, ""),
+  };
+}
+
 function summarizeOperatorBroker(input = {}) {
   const broker = objectOrEmpty(input.operatorBroker || input.operatorBrokerResolution || input.operatorBrokerProjection || input);
   const constraints = arrayOrEmpty(broker.nonTargetPreservationConstraints || broker.downstreamRoutePacketConstraints?.constraintCodes)
@@ -1107,6 +1130,7 @@ function buildRows(sections) {
   const runtime = sections.runtime;
   const registry = sections.registry;
   const workThreads = sections.workThreads;
+  const agents = sections.agents;
   const workThreadControl = sections.workThreadControl;
   const clarificationTargetPicker = sections.clarificationTargetPicker;
   const operatorBroker = sections.operatorBroker;
@@ -1157,6 +1181,17 @@ function buildRows(sections) {
       statusRow("Blockers", workThreads.ambiguityBlockers.length ? workThreads.ambiguityBlockers.join(", ") : "none", workThreads.ambiguityBlockers.length ? "blocked" : "ok"),
       statusRow("Mutation", workThreads.mutationBlocked ? "blocked" : "not granted", workThreads.mutationAllowed ? "blocked" : "ok"),
       statusRow("Routing", workThreads.routingEnforced ? "unexpected enforce" : "shadow only", workThreads.routingEnforced ? "blocked" : "ok"),
+    ],
+    agents: [
+      statusRow("Store", agents.available ? "available" : "not wired", agents.available ? "diagnostic" : "missing"),
+      statusRow("State", agents.state),
+      statusRow("Agents", agents.agentCount),
+      statusRow("Backfilled", agents.backfilledCount),
+      statusRow("Active", agents.activeCount),
+      statusRow("Thread links", agents.threadLinkCount),
+      statusRow("Backfill touched", `${agents.backfillTouchedAgentCount} agents / ${agents.backfillTouchedThreadLinkCount} links`, agents.backfillTouchedAgentCount || agents.backfillTouchedThreadLinkCount ? "diagnostic" : "ok"),
+      statusRow("Session rewrite", agents.sessionRewritePerformed ? "unexpected rewrite" : "none", agents.sessionRewritePerformed ? "blocked" : "ok"),
+      statusRow("Raw exposure", agents.rawTextIncluded || agents.rawPathIncluded || agents.rawSecretIncluded ? "unsafe" : "none", agents.rawTextIncluded || agents.rawPathIncluded || agents.rawSecretIncluded ? "blocked" : "ok"),
     ],
     workThreadControl: [
       statusRow("Surface", workThreadControl.available ? "available" : "not exposed", workThreadControl.available ? "diagnostic" : "missing"),
@@ -1491,6 +1526,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
   const runtime = summarizeRuntime(input.runtimeStatus);
   const registry = summarizeRegistry(input.registryAudit);
   const workThreads = summarizeWorkThreads(input.workThreads || input);
+  const agents = summarizeAgentRegistry(input.agents || input.agentRegistry || input);
   const workThreadControl = summarizeWorkThreadControlDeck(input.workThreadControlDeck || input.workThreadControl || input);
   const clarificationTargetPicker = summarizeClarificationTargetPicker(input.clarificationTargetPicker || input.targetPicker || input);
   const operatorBroker = summarizeOperatorBroker(input.operatorBroker || input.operatorBrokerResolution || input.operatorBrokerProjection || input);
@@ -1633,7 +1669,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
     rawPathIncluded: false,
     rawSecretIncluded: false,
   };
-  const sections = { runtime, registry, workThreads, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, toolCapabilities, externalDiscovery, mcpBoundary, providerHostedTools, pluginGovernance, controlTools, agentRuntime, agentToolSurface, batchAgentJobSurface, statefulExec, codeModeExecutionLane, continuity, contextPreview, memoryWorkbench, runtimeWitness, agentUsage, appServerFallbackParity, manualSmokeGate, headlessDaemon };
+  const sections = { runtime, registry, workThreads, agents, workThreadControl, clarificationTargetPicker, operatorBroker, governance, modules, moduleContextIntake, agentClasses, toolCapabilities, externalDiscovery, mcpBoundary, providerHostedTools, pluginGovernance, controlTools, agentRuntime, agentToolSurface, batchAgentJobSurface, statefulExec, codeModeExecutionLane, continuity, contextPreview, memoryWorkbench, runtimeWitness, agentUsage, appServerFallbackParity, manualSmokeGate, headlessDaemon };
   const sourceDigest = digestFor("direct-settings-surface-source@1", sections);
   const projection = {
     schema: DIRECT_SETTINGS_SURFACE_PROJECTION_SCHEMA,
@@ -1646,6 +1682,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       "runtime",
       "registry",
       "work_thread",
+      "agent_registry",
       "work_thread_control",
       "clarification_target_picker",
       "operator_broker",
@@ -1685,6 +1722,7 @@ function buildDirectSettingsSurfaceProjection(input = {}) {
       { kind: "registry_audit", digest: normalizeString(input.registryAudit?.summary?.valid === false ? "" : input.registryAudit?.generatedAt, ""), label: "Direct information bridge registry" },
       { kind: "runtime_status", digest: normalizeString(input.runtimeStatus?.sourceDigest || input.runtimeStatus?.statusDigest, ""), label: "Direct runtime status" },
       { kind: "work_thread_projection", digest: normalizeString(workThreads.projectionDigest, ""), label: "WorkThread projection" },
+      { kind: "agent_registry_projection", digest: normalizeString(agents.projectionDigest, ""), label: "Agent registry projection" },
       { kind: "work_thread_control_deck", digest: normalizeString(workThreadControl.controlDeckDigest, ""), label: "WorkThread control deck" },
       { kind: "clarification_target_picker", digest: normalizeString(clarificationTargetPicker.targetPickerDigest, ""), label: "Clarification target picker" },
       { kind: "operator_broker_resolution", digest: normalizeString(operatorBroker.brokerResolutionDigest, ""), label: "Operator broker resolution" },

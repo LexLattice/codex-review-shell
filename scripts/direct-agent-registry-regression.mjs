@@ -80,6 +80,7 @@ function main() {
     assert(report.sessionRewritePerformed === false, "agent backfill must not rewrite sessions");
     assert(report.touchedAgentCount === 2, `expected primary + worker identities, got ${report.touchedAgentCount}`);
     assert(report.touchedThreadLinkCount === 3, `expected 3 project thread links, got ${report.touchedThreadLinkCount}`);
+    assert(report.status.projectionDigest === report.projection.projectionDigest, "backfill status must cite the attached projection digest");
 
     const afterPrimaryA = sessionStore.readSession(sessions.primaryA.sessionId);
     const afterPrimaryB = sessionStore.readSession(sessions.primaryB.sessionId);
@@ -133,6 +134,7 @@ function main() {
     const secondReport = registry.backfillFromSessionStore(sessionStore, {
       projectId: "codex-review-shell-direct",
     });
+    assert(secondReport.status.projectionDigest === secondReport.projection.projectionDigest, "second backfill status/projection digest mismatch");
     assert(secondReport.projection.rowCount === 2, "idempotent backfill changed agent count");
     assert(registry.listThreadLinks({ projectId: "codex-review-shell-direct" }).length === 3, "idempotent backfill duplicated links");
 

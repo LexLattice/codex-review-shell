@@ -370,6 +370,7 @@ let directLiveTextController = null;
 let directProviderMetadataAdapter = null;
 let directActivationStore = null;
 const directActivationLocks = new Map();
+const directAgentRegistryBackfillStateByProject = new Map();
 let chatgptDownloadHandler = null;
 let pendingChatgptDownloadMacroRequests = [];
 let activeChatgptContext = null;
@@ -3233,7 +3234,33 @@ function directAgentRegistryProjectionForProject(project = {}) {
   if (!projectId) return emptyDirectAgentRegistryProjection("", "project_missing");
   try {
     const store = ensureDirectAgentRegistryStore();
-    const backfillReport = store.backfillFromSessionStore(ensureDirectSessionStore(), { projectId });
+    const sessionStore = ensureDirectSessionStore();
+    const sessionStatus = sessionStore.status({ projectId });
+    const cacheKey = [
+      normalizeString(sessionStatus.lastSessionUpdatedAt, ""),
+      Number(sessionStatus.sessionCount || 0),
+      Number(sessionStatus.turnCount || 0),
+    ].join("::");
+    let backfillReport = null;
+    if (directAgentRegistryBackfillStateByProject.get(projectId) !== cacheKey) {
+      backfillReport = store.backfillFromSessionStore(sessionStore, { projectId });
+      directAgentRegistryBackfillStateByProject.set(projectId, cacheKey);
+    } else {
+      const projection = store.buildProjection({ projectId });
+      backfillReport = {
+        schema: "direct_agent_registry_backfill_report@1",
+        projectId,
+        generatedAt: nowIso(),
+        touchedAgentCount: 0,
+        touchedThreadLinkCount: 0,
+        projection,
+        status: store.status({ projectId, projection, threadLinkCount: projection.rows.reduce((count, row) => count + Number(row.linkedThreadCount || 0), 0) }),
+        sessionRewritePerformed: false,
+        rawTextIncluded: false,
+        rawPathIncluded: false,
+        rawSecretIncluded: false,
+      };
+    }
     return {
       status: backfillReport.status,
       projection: backfillReport.projection,
@@ -8376,6 +8403,7 @@ async function createWindow() {
     directSessionStore = null;
     directWorkThreadStore = null;
     directAgentRegistryStore = null;
+    directAgentRegistryBackfillStateByProject.clear();
     middleWebHost?.dispose();
     middleWebHost = null;
     if (chatgptDownloadHandler && chatgptView?.webContents && !chatgptView.webContents.isDestroyed()) {
@@ -9292,6 +9320,7 @@ app.on("before-quit", () => {
     directSessionStore = null;
     directWorkThreadStore = null;
     directAgentRegistryStore = null;
+    directAgentRegistryBackfillStateByProject.clear();
 });
 
 function emitDirectAuthAndRuntimeStatus(event) {

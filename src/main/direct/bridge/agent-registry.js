@@ -446,7 +446,7 @@ class DirectAgentRegistryStore {
     return readJsonFile(this.threadLinkPath(id));
   }
 
-  upsertAgentIdentity(input = {}) {
+  upsertAgentIdentity(input = {}, options = {}) {
     this.ensureRoot();
     const candidate = buildAgentIdentity(input, { nowMs: this.now() });
     const existing = this.readAgentIdentity(candidate.agentId);
@@ -459,11 +459,11 @@ class DirectAgentRegistryStore {
       sourceRefs: [...(existing?.sourceRefs || []), ...(candidate.sourceRefs || [])],
     }, { nowMs: this.now() });
     writeJsonAtomic(this.identityPath(merged.agentId), merged);
-    this.updateIndex({ identity: merged });
+    if (options.skipIndexUpdate !== true) this.updateIndex({ identity: merged });
     return merged;
   }
 
-  upsertThreadLink(input = {}) {
+  upsertThreadLink(input = {}, options = {}) {
     this.ensureRoot();
     const candidate = buildAgentThreadLink(input, { nowMs: this.now() });
     const existing = this.readThreadLink(candidate.linkId);
@@ -474,36 +474,36 @@ class DirectAgentRegistryStore {
       sourceRefs: [...(existing?.sourceRefs || []), ...(candidate.sourceRefs || [])],
     }, { nowMs: this.now() });
     writeJsonAtomic(this.threadLinkPath(merged.linkId), merged);
-    this.updateIndex({ threadLink: merged });
+    if (options.skipIndexUpdate !== true) this.updateIndex({ threadLink: merged });
     return merged;
   }
 
-  updateIndex({ identity = null, threadLink = null } = {}) {
+  updateIndex({ identity = null, threadLink = null, identities = [], threadLinks = [] } = {}) {
     const index = this.readIndex();
     const agentRefs = new Map((index.agentRefs || []).map((ref) => [ref.agentId, ref]));
     const threadLinkRefs = new Map((index.threadLinkRefs || []).map((ref) => [ref.linkId, ref]));
-    if (identity) {
-      agentRefs.set(identity.agentId, {
-        agentId: identity.agentId,
-        projectId: identity.projectId,
-        agentClass: identity.agentClass,
-        roleLane: identity.roleLane,
-        identityConfidence: identity.identityConfidence,
-        lifecycleState: identity.lifecycleState,
-        updatedAt: identity.updatedAt,
-        identityDigest: identity.identityDigest,
+    for (const entry of [identity, ...(Array.isArray(identities) ? identities : [])].filter(Boolean)) {
+      agentRefs.set(entry.agentId, {
+        agentId: entry.agentId,
+        projectId: entry.projectId,
+        agentClass: entry.agentClass,
+        roleLane: entry.roleLane,
+        identityConfidence: entry.identityConfidence,
+        lifecycleState: entry.lifecycleState,
+        updatedAt: entry.updatedAt,
+        identityDigest: entry.identityDigest,
       });
     }
-    if (threadLink) {
-      threadLinkRefs.set(threadLink.linkId, {
-        linkId: threadLink.linkId,
-        projectId: threadLink.projectId,
-        agentId: threadLink.agentId,
-        threadId: threadLink.threadId,
-        relationship: threadLink.relationship,
-        linkState: threadLink.linkState,
-        updatedAt: threadLink.updatedAt,
-        linkDigest: threadLink.linkDigest,
+    for (const entry of [threadLink, ...(Array.isArray(threadLinks) ? threadLinks : [])].filter(Boolean)) {
+      threadLinkRefs.set(entry.linkId, {
+        linkId: entry.linkId,
+        projectId: entry.projectId,
+        agentId: entry.agentId,
+        threadId: entry.threadId,
+        relationship: entry.relationship,
+        linkState: entry.linkState,
+        updatedAt: entry.updatedAt,
+        linkDigest: entry.linkDigest,
       });
     }
     this.writeIndex(
@@ -539,19 +539,20 @@ class DirectAgentRegistryStore {
     const projectId = normalizeString(options.projectId, "");
     const touchedAgentIds = new Set();
     const touchedLinkIds = new Set();
+    const updatedIdentities = [];
+    const updatedThreadLinks = [];
     for (const sessionId of sessionStore.listSessionIdsFromDisk()) {
       const session = sessionStore.readSession(sessionId);
       if (!session || session.schema !== "direct_codex_session@1") continue;
       if (projectId && normalizeString(session.projectId, "") !== projectId) continue;
       const agentInput = defaultResidentAgentInputForSession(session);
-      const priorAgent = this.readAgentIdentity(agentIdFor(agentInput));
       const identity = this.upsertAgentIdentity({
-        ...(priorAgent || {}),
         ...agentInput,
-        linkedThreadIds: [...new Set([...(priorAgent?.linkedThreadIds || []), session.sessionId])],
-        sourceRefs: [...(priorAgent?.sourceRefs || []), ...sessionSourceRefs(session)],
-      });
+        linkedThreadIds: [session.sessionId],
+        sourceRefs: sessionSourceRefs(session),
+      }, { skipIndexUpdate: true });
       touchedAgentIds.add(identity.agentId);
+      updatedIdentities.push(identity);
       const link = this.upsertThreadLink({
         projectId: identity.projectId,
         agentId: identity.agentId,
@@ -564,10 +565,15 @@ class DirectAgentRegistryStore {
         linkState: "active",
         linkConfidence: "backfilled",
         sourceRefs: sessionSourceRefs(session),
-      });
+      }, { skipIndexUpdate: true });
       touchedLinkIds.add(link.linkId);
+      updatedThreadLinks.push(link);
+    }
+    if (updatedIdentities.length || updatedThreadLinks.length) {
+      this.updateIndex({ identities: updatedIdentities, threadLinks: updatedThreadLinks });
     }
     const projection = this.buildProjection({ projectId });
+    const status = this.status({ projectId, projection, threadLinkCount: projection.rows.reduce((count, row) => count + Number(row.linkedThreadCount || 0), 0) });
     return {
       schema: "direct_agent_registry_backfill_report@1",
       projectId,
@@ -577,7 +583,7 @@ class DirectAgentRegistryStore {
       touchedAgentIds: [...touchedAgentIds].sort(),
       touchedLinkIds: [...touchedLinkIds].sort(),
       projection,
-      status: this.status({ projectId }),
+      status,
       sessionRewritePerformed: false,
       rawTextIncluded: false,
       rawPathIncluded: false,
@@ -596,9 +602,11 @@ class DirectAgentRegistryStore {
   status(options = {}) {
     const projectId = normalizeString(options.projectId, "");
     try {
-      const projection = this.buildProjection({ projectId });
-      const links = this.listThreadLinks({ projectId });
-      const state = projection.rowCount > 0 || links.length > 0 ? "healthy" : "recovery";
+      const projection = isPlainObject(options.projection)
+        ? options.projection
+        : this.buildProjection({ projectId });
+      const threadLinkCount = Number(options.threadLinkCount ?? this.listThreadLinks({ projectId }).length);
+      const state = projection.rowCount > 0 || threadLinkCount > 0 ? "healthy" : "recovery";
       const status = {
         schema: DIRECT_AGENT_REGISTRY_STATUS_SCHEMA,
         available: true,
@@ -607,7 +615,7 @@ class DirectAgentRegistryStore {
         agentCount: projection.rowCount,
         backfilledCount: projection.backfilledCount,
         activeCount: projection.activeCount,
-        threadLinkCount: links.length,
+        threadLinkCount,
         registryPathExposed: false,
         projectionDigest: projection.projectionDigest,
         updatedAt: projection.generatedAt,
