@@ -79,6 +79,7 @@ function main() {
     assert(report.schema === "direct_agent_registry_backfill_report@1", "backfill report schema mismatch");
     assert(report.sessionRewritePerformed === false, "agent backfill must not rewrite sessions");
     assert(report.touchedAgentCount === 2, `expected primary + worker identities, got ${report.touchedAgentCount}`);
+    assert(report.touchedAgentRunCount === 3, `expected 3 bounded runs, got ${report.touchedAgentRunCount}`);
     assert(report.touchedThreadLinkCount === 3, `expected 3 project thread links, got ${report.touchedThreadLinkCount}`);
     assert(report.status.projectionDigest === report.projection.projectionDigest, "backfill status must cite the attached projection digest");
 
@@ -97,6 +98,7 @@ function main() {
     assert(primaryIdentity.linkedThreadIds.length === 2, `expected 2 primary links, got ${primaryIdentity.linkedThreadIds.length}`);
     assert(primaryIdentity.linkedThreadIds.includes("direct_session_primary_a"), "missing primary A link");
     assert(primaryIdentity.linkedThreadIds.includes("direct_session_primary_b"), "missing primary B link");
+    assert(primaryIdentity.activeRunIds.length === 2, `expected 2 bounded primary runs, got ${primaryIdentity.activeRunIds.length}`);
     assert(!primaryIdentity.linkedThreadIds.includes("direct_session_other_project"), "cross-project session leaked into identity");
     assert(primaryIdentity.agentId !== sessions.primaryA.sessionId, "agent identity must not be the thread id");
     assert(primaryIdentity.agentId !== sessions.primaryA.agentLabel, "agent identity must not be the display label");
@@ -108,19 +110,29 @@ function main() {
     assert(workerIdentity.agentClass === "implementation_worker", "worker class not preserved");
     assert(workerIdentity.roleLane === "implementation", "worker role lane mismatch");
     assert(workerIdentity.linkedThreadIds.length === 1, "worker identity should link only one worker thread");
+    assert(workerIdentity.activeRunIds.length === 1, "worker identity should cite one bounded worker run");
+
+    const runs = registry.listAgentRuns({ projectId: "codex-review-shell-direct" });
+    assert(runs.length === 3, `expected 3 agent runs, got ${runs.length}`);
+    assert(runs.every((run) => run.schema === "direct_agent_run@1"), "agent run schema mismatch");
+    assert(runs.every((run) => run.threadIds.length === 1), "each backfilled run should be bounded to one session/thread");
+    assert(runs.some((run) => run.runKind === "resident_thread" && run.agentId === primaryIdentity.agentId), "missing bounded resident-thread run");
+    assert(runs.some((run) => run.runKind === "spawned_worker" && run.agentId === workerIdentity.agentId), "missing bounded worker run");
 
     const links = registry.listThreadLinks({ projectId: "codex-review-shell-direct" });
     assert(links.length === 3, `expected 3 thread links, got ${links.length}`);
     assert(links.every((link) => link.schema === "direct_agent_thread_link@1"), "thread link schema mismatch");
     assert(links.every((link) => link.sourceRefs.length >= 1), "thread links must cite session/thread evidence");
     assert(links.every((link) => link.rawTextIncluded === false && link.rawPathIncluded === false), "thread links must be renderer-safe");
-    assert(links.some((link) => link.threadId === "direct_session_worker_a" && link.relationship === "worker_thread"), "worker relationship missing");
-    assert(links.some((link) => link.threadId === "direct_session_primary_a" && link.relationship === "primary_thread"), "primary relationship missing");
+    assert(links.every((link) => link.agentRunId), "thread links must cite bounded agent runs");
+    assert(links.some((link) => link.threadId === "direct_session_worker_a" && link.linkKind === "worker_thread" && link.relationship === "parent_child"), "worker relationship missing");
+    assert(links.some((link) => link.threadId === "direct_session_primary_a" && link.linkKind === "resident_primary" && link.relationship === "owned_by_agent"), "primary relationship missing");
 
     const projection = registry.buildProjection({ projectId: "codex-review-shell-direct" });
     assert(projection.schema === "direct_agent_registry_projection@1", "projection schema mismatch");
     assert(projection.rowCount === 2, "projection should include primary + worker");
     assert(projection.backfilledCount === 2, "projection should report backfilled identities");
+    assert(projection.runCount === 3, "projection should include bounded runs");
     assert(projection.rows.every((row) => row.rawTextIncluded === false && row.rawPathIncluded === false), "projection rows must be renderer-safe");
 
     const status = registry.status({ projectId: "codex-review-shell-direct" });
@@ -128,6 +140,7 @@ function main() {
     assert(status.available === true, "registry should be available");
     assert(status.state === "healthy", `expected healthy status, got ${status.state}`);
     assert(status.agentCount === 2, "status agent count mismatch");
+    assert(status.runCount === 3, "status run count mismatch");
     assert(status.threadLinkCount === 3, "status thread link count mismatch");
     assert(status.registryPathExposed === false, "status must not expose registry path");
 
