@@ -110,6 +110,9 @@ function threadSnapshotFromSession(session, model = "") {
     preview: normalizeString(session.title, "Direct fixture session"),
     turns: Array.isArray(session.messages) ? session.messages : [],
     model: normalizeString(model, session.model),
+    agentId: normalizeString(session.agentId, ""),
+    agentRunId: normalizeString(session.agentRunId, ""),
+    agentRefState: normalizeString(session.agentId, "") && normalizeString(session.agentRunId, "") ? "linked" : "legacy_unlinked",
   };
 }
 
