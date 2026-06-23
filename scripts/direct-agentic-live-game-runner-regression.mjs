@@ -9,6 +9,7 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const {
   DIRECT_AGENTIC_LIVE_GAME_SUITE_REPORT_SCHEMA,
+  buildLiveAgenticGamePrompt,
   persistLiveAgenticGameSuiteReport,
   runLiveAgenticGameSuite,
   selectLiveGameScenarios,
@@ -24,6 +25,13 @@ assert.deepEqual(selected.map((scenario) => scenario.scenarioId), [
   "g1_resident_tool_truth_baseline",
   "g8_external_discovery_is_not_execution",
 ]);
+assert.deepEqual(selectLiveGameScenarios(suite, { gameIds: ["G1"], maxGames: 0 }), []);
+
+const g1Scenario = suite.scenarios.find((scenario) => scenario.scenarioId === "g1_resident_tool_truth_baseline");
+const g1LivePrompt = buildLiveAgenticGamePrompt(g1Scenario);
+assert(!g1LivePrompt.includes("read_file is callable"), "live prompt must not leak mustSay assertions");
+assert(!g1LivePrompt.includes("apply_patch is callable"), "live prompt must not leak mustNotClaim assertions");
+assert(!g1LivePrompt.includes("Expected behavior witnesses"), "live prompt must not label expected answers");
 
 let defaultRunnerCalls = 0;
 const blocked = await runLiveAgenticGameSuite({
@@ -105,6 +113,44 @@ assert.equal(budgetReport.providerCallCount, 1);
 assert.equal(budgetReport.caseReports[0].status, "passed");
 assert.equal(budgetReport.caseReports[1].status, "blocked_budget_exhausted");
 assert.deepEqual(validateLiveAgenticGameSuiteReport(budgetReport), []);
+
+fakeRunnerCalls = 0;
+const zeroBudgetReport = await runLiveAgenticGameSuite({
+  suite,
+  gameIds: ["G1"],
+  maxGames: 1,
+  maxProviderCalls: 0,
+  liveOptIn: true,
+  liveRunner: fakeLiveRunner,
+  nowMs: 0,
+});
+assert.equal(fakeRunnerCalls, 0);
+assert.equal(zeroBudgetReport.providerCallCount, 0);
+assert.equal(zeroBudgetReport.caseReports[0].status, "blocked_budget_exhausted");
+assert.deepEqual(validateLiveAgenticGameSuiteReport(zeroBudgetReport), []);
+
+let failedNoStartRunnerCalls = 0;
+const failedNoStartReport = await runLiveAgenticGameSuite({
+  suite,
+  gameIds: ["G1", "G8"],
+  maxGames: 2,
+  maxProviderCalls: 1,
+  liveOptIn: true,
+  liveRunner: async () => {
+    failedNoStartRunnerCalls += 1;
+    return {
+      assistantText: "",
+      providerTransportStarted: false,
+      providerTransportCompleted: false,
+      providerCallCount: 0,
+    };
+  },
+  nowMs: 0,
+});
+assert.equal(failedNoStartRunnerCalls, 2);
+assert.equal(failedNoStartReport.providerCallCount, 0);
+assert.equal(failedNoStartReport.caseReports.every((row) => row.status === "failed_transport"), true);
+assert.deepEqual(validateLiveAgenticGameSuiteReport(failedNoStartReport), []);
 
 const missingRunner = await runLiveAgenticGameSuite({
   suite,

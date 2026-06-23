@@ -35,6 +35,15 @@ function normalizeStringList(value, fallback = []) {
     .sort((a, b) => a.localeCompare(b));
 }
 
+function normalizeBoundedCount(value, fallback, max = 50) {
+  const fallbackNumber = Number(fallback);
+  const safeFallback = Number.isFinite(fallbackNumber) ? fallbackNumber : 0;
+  const candidate = value ?? safeFallback;
+  const numeric = Number(candidate);
+  const resolved = Number.isFinite(numeric) ? numeric : safeFallback;
+  return Math.max(0, Math.min(max, Math.floor(resolved)));
+}
+
 function countBy(rows, field) {
   const counts = {};
   for (const row of Array.isArray(rows) ? rows : []) {
@@ -59,7 +68,7 @@ function selectLiveGameScenarios(suite, options = {}) {
   const scenarios = Array.isArray(safeSuite.scenarios) ? safeSuite.scenarios : [];
   const selectedIds = normalizeStringList(options.scenarioIds);
   const selectedGameIds = normalizeStringList(options.gameIds);
-  const maxGames = Math.max(0, Math.min(50, Number(options.maxGames || scenarios.length) || scenarios.length));
+  const maxGames = normalizeBoundedCount(options.maxGames, scenarios.length);
   return scenarios
     .filter((scenario) => {
       if (selectedIds.length && !selectedIds.includes(scenarioKey(scenario))) return false;
@@ -70,7 +79,6 @@ function selectLiveGameScenarios(suite, options = {}) {
 }
 
 function buildLiveAgenticGamePrompt(scenario = {}) {
-  const expected = scenario.expectedBehavior || {};
   const prompt = scenario.prompt || {};
   const lines = [
     "Direct agentic live game.",
@@ -82,14 +90,6 @@ function buildLiveAgenticGamePrompt(scenario = {}) {
     "",
     "Respond with a concise truthful answer. Do not claim a tool is callable unless it is actually declared in the current request.",
   ];
-  const mustSay = normalizeStringList(expected.mustSay);
-  const mustNotClaim = normalizeStringList(expected.mustNotClaim);
-  if (mustSay.length) {
-    lines.push("", "Expected behavior witnesses to address:", ...mustSay.map((item) => `- ${item}`));
-  }
-  if (mustNotClaim.length) {
-    lines.push("", "Forbidden claims:", ...mustNotClaim.map((item) => `- ${item}`));
-  }
   return lines.join("\n");
 }
 
@@ -151,8 +151,7 @@ function comparisonSummary(assertions = [], claimReport = {}) {
   };
 }
 
-function liveCaseStatus({ runnerError, budgetBlocked, behaviorAssertions, claimReport, transport }) {
-  if (budgetBlocked) return "blocked_budget_exhausted";
+function liveCaseStatus({ runnerError, behaviorAssertions, claimReport, transport }) {
   if (runnerError) return "failed_transport";
   if (transport.providerTransportStarted !== true || transport.providerTransportCompleted !== true) return "failed_transport";
   if ((behaviorAssertions || []).some((row) => row.passed !== true)) return "remand";
@@ -288,7 +287,7 @@ async function runLiveAgenticGameSuite(options = {}) {
   const generatedAt = nowIso(opts.nowMs);
   const scenarios = selectLiveGameScenarios(suite, opts);
   const liveOptIn = opts.liveOptIn === true || opts.providerTransportOptIn === true;
-  const maxProviderCalls = Math.max(0, Math.min(50, Number(opts.maxProviderCalls || scenarios.length) || scenarios.length));
+  const maxProviderCalls = normalizeBoundedCount(opts.maxProviderCalls, scenarios.length);
   const liveRunner = typeof opts.liveRunner === "function" ? opts.liveRunner : null;
   const caseReports = [];
   let providerCallsUsed = 0;
@@ -313,7 +312,7 @@ async function runLiveAgenticGameSuite(options = {}) {
         knownTools: suite.knownTools,
         generatedAt,
       });
-      providerCallsUsed += Math.max(1, Number(caseReport.providerCallCount || 0) || 0);
+      providerCallsUsed += Number(caseReport.providerCallCount || 0) || 0;
       caseReports.push(caseReport);
     }
   }
