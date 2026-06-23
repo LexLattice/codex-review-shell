@@ -15,6 +15,9 @@ const {
 const {
   buildWorkThreadContextBinding,
 } = require("../bridge/work-thread-alignment");
+const {
+  adaptAgentContextSourcesForContextPack,
+} = require("../bridge/agent-context-source-refs");
 
 const CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND = "context_recent_dialogue";
 const CONTEXT_RECENT_DIALOGUE_PROJECTION_VERSION = "context_recent_dialogue@1";
@@ -764,6 +767,8 @@ function buildContextPack({
   authorityBoundary = null,
   openObligations = [],
   bridgeInformationRefs = [],
+  agentContextSourceRefs = [],
+  agentMemoryContextProjection = null,
   nowMs = Date.now(),
 } = {}) {
   const safeProjectId = normalizeString(projectId, "");
@@ -871,6 +876,25 @@ function buildContextPack({
       appPrivate: true,
     });
   }
+  const agentContextSources = adaptAgentContextSourcesForContextPack({
+    agentContextSourceRefs,
+    agentMemoryContextProjection,
+  }, {
+    projectId: safeProjectId,
+    threadId: safeThreadId,
+    turnId: safeTurnId,
+    workThreadId: effectiveWorkThreadBinding?.workThreadId || normalizeString(workThreadId, ""),
+    nowMs,
+  });
+  if (agentContextSources.memoryProjectionRef) {
+    sourceArtifacts.push({
+      artifactKind: "agent_memory_context_projection",
+      artifactId: agentContextSources.memoryProjectionRef.projectionId,
+      artifactDigest: agentContextSources.memoryProjectionRef.projectionDigest,
+      appPrivate: true,
+    });
+  }
+  mergeCounts(omittedCounts, agentContextSources.omittedCounts);
   if (contextProjection?.projectionId && contextItems.length) {
     const evidenceText = contextItems.map((item) => {
       const label = `${normalizeString(item.role, "evidence").toUpperCase()} ${normalizeString(item.itemKind, "message")}`;
@@ -1079,6 +1103,10 @@ function buildContextPack({
     caps: contextCaps(),
     omittedCounts,
   };
+  if (agentContextSources.sourceRefCount) {
+    shapeInput.agentContextSourceRefDigests = agentContextSources.sourceRefs.map((ref) => ref.sourceRefDigest);
+    shapeInput.agentContextSourceAdapterDigest = agentContextSources.adapterDigest;
+  }
   const contextPackShapeHash = sha256(stableStringify(shapeInput));
   const contextPackContentHash = textDigestForMessages(messages);
   const contextBuildId = `context_build_${sha256(`${safeProjectId}:${safeThreadId}:${safeTurnId}:${contextPackShapeHash}:${contextPackContentHash}`).slice(0, 24)}`;
@@ -1151,6 +1179,9 @@ function buildContextPack({
       artifactDigest: "",
     },
   };
+  if (agentContextSources.sourceRefCount || agentContextSources.memoryProjectionRef) {
+    contextPack.agentContextSources = agentContextSources;
+  }
   contextPack.integrity.artifactDigest = contextPackIntegrity(contextPack);
   return contextPack;
 }
@@ -1286,6 +1317,15 @@ function buildRequestManifest({
     workThreadId: normalizeString(contextPack.workThreadId, ""),
     governanceRefs: isPlainObject(contextPack.governanceRefs) ? contextPack.governanceRefs : null,
     maintenanceRefs: isPlainObject(contextPack.maintenanceRefs) ? contextPack.maintenanceRefs : null,
+    agentContextSources: isPlainObject(contextPack.agentContextSources) ? {
+      schema: contextPack.agentContextSources.schema,
+      sourceRefCount: contextPack.agentContextSources.sourceRefCount,
+      sourceRefs: contextPack.agentContextSources.sourceRefs,
+      memoryProjectionRef: contextPack.agentContextSources.memoryProjectionRef,
+      omittedCounts: contextPack.agentContextSources.omittedCounts,
+      adapterDigest: contextPack.agentContextSources.adapterDigest,
+      providerInputMutation: false,
+    } : null,
     providerInputProjection: providerInput.projection,
     providerInputProjectionGovernanceRefs: contextPack.governanceRefs ? {
       compiledPromptLayersDigest: normalizeString(contextPack.governanceRefs.compiledPromptLayersDigest, ""),
@@ -1331,6 +1371,9 @@ function rendererSafeContextSummary(contextPack = {}, requestManifest = null) {
     governanceRefsPresent: Boolean(contextPack.governanceRefs),
     maintenanceRefsPresent: Boolean(contextPack.maintenanceRefs),
     workThreadBindingPresent: Boolean(contextPack.workThreadBinding),
+    agentContextSourcesPresent: Boolean(contextPack.agentContextSources),
+    agentContextSourceRefCount: Number(contextPack.agentContextSources?.sourceRefCount || 0),
+    agentMemoryProjectionPresent: Boolean(contextPack.agentContextSources?.memoryProjectionRef),
     contextTextExposed: false,
     requestManifestTextExposed: false,
     rawPathExposed: false,
