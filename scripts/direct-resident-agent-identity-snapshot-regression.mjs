@@ -64,6 +64,16 @@ const priorRun = buildAgentRun({
   sourceRefs: [{ kind: "session", id: "direct_session_prior", digest: "sha256:session_prior" }],
 }, { nowMs });
 
+const staleSameThreadRun = buildAgentRun({
+  agentRunId: "agent_run_stale_same_thread",
+  projectId: "project_alpha",
+  agentId: identity.agentId,
+  runKind: "resident_thread",
+  lifecycle: "completed",
+  threadIds: ["direct_session_current"],
+  sourceRefs: [{ kind: "session", id: "direct_session_current", digest: "sha256:session_stale" }],
+}, { nowMs });
+
 const currentLink = buildAgentThreadLink({
   projectId: "project_alpha",
   agentId: identity.agentId,
@@ -150,12 +160,15 @@ const toolCapabilityStatusProjection = buildToolCapabilityStatusProjection({
 
 const snapshot = buildResidentAgentIdentitySnapshot({
   identity,
-  threadLinks: [currentLink, priorLink],
-  agentRuns: [currentRun, priorRun],
+  threadLinks: [null, currentLink, priorLink],
+  agentRuns: [staleSameThreadRun, null, currentRun, priorRun],
   currentThreadId: "direct_session_current",
   currentWorkThreadId: "work_thread_alpha",
   memoryInventoryProjection,
-  toolCapabilityRegistry,
+  toolCapabilityRegistry: {
+    ...toolCapabilityRegistry,
+    rows: [null, ...toolCapabilityRegistry.rows],
+  },
   toolCapabilityStatusProjection,
   nowMs,
   projectionBudget: { maxRows: 18, maxChars: 3200, truncationPolicy: "priority_then_summary" },
@@ -167,6 +180,7 @@ assert.equal(snapshot.identity.roleLane, "primary");
 assert.equal(snapshot.identity.agentClass, "primary_resident");
 assert.equal(snapshot.identity.currentThreadRef.threadId, "direct_session_current");
 assert.equal(snapshot.continuity.linkedThreadCount, 2);
+assert.equal(snapshot.continuity.runCount, 3);
 assert.equal(snapshot.continuity.activeRunCount, 1);
 assert.equal(snapshot.continuity.currentRunRef.agentRunId, "agent_run_current");
 assert.equal(snapshot.continuity.fullLinkedThreadIdsIncluded, false);

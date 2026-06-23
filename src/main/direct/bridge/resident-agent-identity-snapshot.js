@@ -146,10 +146,13 @@ function buildIdentitySection({ identity = {}, currentThreadId = "", currentWork
 
 function buildContinuitySection({ identity = {}, threadLinks = [], agentRuns = [], currentThreadId = "", nowMs = Date.now() } = {}) {
   const agentId = normalizeString(identity.agentId, "");
-  const links = (Array.isArray(threadLinks) ? threadLinks : []).filter((link) => !agentId || link.agentId === agentId);
-  const runs = (Array.isArray(agentRuns) ? agentRuns : []).filter((run) => !agentId || run.agentId === agentId);
+  const links = (Array.isArray(threadLinks) ? threadLinks : []).filter((link) => !agentId || link?.agentId === agentId);
+  const runs = (Array.isArray(agentRuns) ? agentRuns : []).filter((run) => !agentId || run?.agentId === agentId);
   const currentLink = findCurrentThreadLink(links, currentThreadId);
-  const currentRun = runs.find((run) => Array.isArray(run.threadIds) && run.threadIds.includes(currentThreadId)) || null;
+  const linkedRunId = normalizeString(currentLink?.agentRunId, "");
+  const currentRun = (linkedRunId ? runs.find((run) => run?.agentRunId === linkedRunId) : null)
+    || runs.find((run) => Array.isArray(run?.threadIds) && run.threadIds.includes(currentThreadId))
+    || null;
   return {
     schema: "resident_agent_continuity_section@1",
     linkedThreadCount: links.length,
@@ -180,8 +183,8 @@ function buildMemoryScopeInventory(memoryInventoryProjection = {}, options = {})
   const projectId = normalizeString(options.projectId || memoryInventoryProjection.projectId, "");
   const agentId = normalizeString(options.agentId || memoryInventoryProjection.agentId, "");
   const filteredRows = rows
-    .filter((row) => !projectId || row.projectId === projectId)
-    .filter((row) => !agentId || row.agentId === agentId);
+    .filter((row) => !projectId || row?.projectId === projectId)
+    .filter((row) => !agentId || row?.agentId === agentId);
   return {
     schema: "resident_agent_memory_scope_inventory@1",
     projectionId: normalizeString(memoryInventoryProjection.projectionId, ""),
@@ -212,7 +215,7 @@ function capabilityStatusForTool(row = {}) {
 
 function capabilityRowsFromRegistry(registry = {}, statusProjection = {}) {
   const rows = Array.isArray(registry.rows) ? registry.rows : [];
-  return rows.slice(0, 80).map((row) => buildResidentEpistemicRow({
+  return rows.slice(0, 80).filter(Boolean).map((row) => buildResidentEpistemicRow({
     subjectKind: "tool",
     subjectId: row.toolId,
     displayLabel: row.displayName || row.toolId,
@@ -255,7 +258,7 @@ function capabilityRowsFromRegistry(registry = {}, statusProjection = {}) {
 }
 
 function buildCapabilitySection({ toolCapabilityRegistry = {}, toolCapabilityStatusProjection = {} } = {}) {
-  const rows = Array.isArray(toolCapabilityRegistry.rows) ? toolCapabilityRegistry.rows : [];
+  const rows = (Array.isArray(toolCapabilityRegistry.rows) ? toolCapabilityRegistry.rows : []).filter(Boolean);
   const status = isPlainObject(toolCapabilityStatusProjection) ? toolCapabilityStatusProjection : {};
   return {
     schema: "resident_agent_capability_section@1",
@@ -263,8 +266,8 @@ function buildCapabilitySection({ toolCapabilityRegistry = {}, toolCapabilitySta
     registryDigest: normalizeString(toolCapabilityRegistry.registryDigest, ""),
     statusProjectionDigest: normalizeString(status.projectionDigest, ""),
     rowCount: rows.length,
-    directRestrictedCount: Number(status.directRestrictedCount ?? rows.filter((row) => row.promotionState === "direct_restricted").length),
-    unsupportedCount: Number(status.unsupportedCount ?? rows.filter((row) => row.promotionState === "unsupported").length),
+    directRestrictedCount: Number(status.directRestrictedCount ?? rows.filter((row) => row?.promotionState === "direct_restricted").length),
+    unsupportedCount: Number(status.unsupportedCount ?? rows.filter((row) => row?.promotionState === "unsupported").length),
     byPromotionState: isPlainObject(status.byPromotionState) ? status.byPromotionState : countBy(rows, (row) => row.promotionState),
     byFamily: isPlainObject(status.byFamily) ? status.byFamily : countBy(rows, (row) => row.odeuFamily),
     statusRows: capabilityRowsFromRegistry(toolCapabilityRegistry, status),
