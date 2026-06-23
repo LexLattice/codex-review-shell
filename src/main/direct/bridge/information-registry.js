@@ -728,6 +728,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "The live runner starts no provider transport without explicit opt-in, enforces a provider-call budget, stores digests instead of raw prompts/responses/provider payloads, mutates no workspace, and treats live remands as evidence gaps rather than automatic tool promotion.",
   },
   {
+    id: "ic13.agentic-activation-remand-queue",
+    name: "Direct agentic activation remand queue and promotion gap gate",
+    role: "observability_surface",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/headless/agentic-activation-remand-queue.js", "src/main/direct/headless/agentic-fixture-games.js", "src/main/direct/headless/agentic-live-game-runner.js", "src/main/direct/headless/tool-promotion-decision-report.js", "scripts/direct-agentic-activation-remand-queue-regression.mjs", "docs/DIRECT_AGENTIC_TESTING_GAME_MATRIX_SPEC.md", "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md"],
+    ontology: ontologyShape(["direct_agentic_activation_remand_queue", "direct_agentic_activation_remand_row", "direct_agentic_promotion_gap_report", "direct_agentic_followup_pr_candidate"], "harness", {
+      identityFields: ["queueId", "rowId", "candidateId", "reportDigest"],
+      schema: "direct_agentic_activation_remand_queue@1",
+    }),
+    bridgeFit: "Collects fixture/live game remands and promotion decision gaps into owner-scoped follow-up PR candidates so missing wiring can be handled as targeted bridge work rather than hidden activation.",
+    realignment: "The queue grants no activation, builds no provider declarations, starts no provider calls, mutates no workspace, and treats promotable/restricted/gap evidence as planning input only.",
+  },
+  {
     id: "ic13.headless-resident-smoke-runner",
     name: "Headless resident-agent smoke runner",
     role: "observability_surface",
