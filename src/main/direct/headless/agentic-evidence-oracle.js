@@ -88,6 +88,57 @@ function classifyClaimState(windowText) {
   return "unknown";
 }
 
+function toolMentionMatcher(toolName) {
+  return new RegExp(`(?:^|[^A-Za-z0-9_./-])((?:functions\\.)?${escapeRegExp(toolName)})(?:$|[^A-Za-z0-9_./-])`, "ig");
+}
+
+function collectToolMentions(windowText, tools = []) {
+  const mentions = [];
+  for (const toolName of tools) {
+    const matcher = toolMentionMatcher(toolName);
+    let match = matcher.exec(windowText);
+    while (match) {
+      const capturedOffset = match[0].indexOf(match[1]);
+      const start = match.index + capturedOffset;
+      mentions.push({
+        toolName,
+        start,
+        end: start + match[1].length,
+      });
+      match = matcher.exec(windowText);
+    }
+  }
+  return mentions.sort((a, b) => a.start - b.start || a.end - b.end);
+}
+
+function clauseBoundaryBefore(text, index) {
+  const matcher = /(?:[,;:]|\band\b|\bbut\b|\bwhile\b|\bwhereas\b|\bthen\b)/gi;
+  let boundary = 0;
+  let match = matcher.exec(text);
+  while (match) {
+    if (match.index >= index) break;
+    boundary = matcher.lastIndex;
+    match = matcher.exec(text);
+  }
+  return boundary;
+}
+
+function clauseBoundaryAfter(text, index) {
+  const matcher = /(?:[,;:]|\band\b|\bbut\b|\bwhile\b|\bwhereas\b|\bthen\b)/gi;
+  let match = matcher.exec(text);
+  while (match) {
+    if (match.index > index) return match.index;
+    match = matcher.exec(text);
+  }
+  return text.length;
+}
+
+function claimWindowForToolMention(windowText, mention) {
+  const start = clauseBoundaryBefore(windowText, mention.start);
+  const end = clauseBoundaryAfter(windowText, mention.end);
+  return normalizeString(windowText.slice(start, end), windowText);
+}
+
 function claimSearchTools(options = {}) {
   const declaredToolBundle = isPlainObject(options.declaredToolBundle) ? options.declaredToolBundle : {};
   return normalizeStringList([
@@ -103,19 +154,19 @@ function extractResidentCapabilityClaims(text, options = {}) {
   const windows = splitClaimWindows(text);
   const claimsByKey = new Map();
 
-  for (const toolName of tools) {
-    const matcher = new RegExp(`(?:^|[^A-Za-z0-9_./-])(?:functions\\.)?${escapeRegExp(toolName)}(?:$|[^A-Za-z0-9_./-])`, "i");
-    for (const windowText of windows) {
-      if (!matcher.test(windowText)) continue;
-      const claimedState = classifyClaimState(windowText);
-      const key = `${toolName}:${claimedState}:${windowText}`;
+  for (const windowText of windows) {
+    const mentions = collectToolMentions(windowText, tools);
+    for (const mention of mentions) {
+      const localWindow = claimWindowForToolMention(windowText, mention);
+      const claimedState = classifyClaimState(localWindow);
+      const key = `${mention.toolName}:${claimedState}:${localWindow}`;
       if (claimsByKey.has(key)) continue;
       claimsByKey.set(key, normalizeClaim({
         subject: "tool",
-        name: toolName,
+        name: mention.toolName,
         claimedState,
         evidenceComparison: "ambiguous",
-        sourceSpanPreview: windowText.length > 240 ? `${windowText.slice(0, 237)}...` : windowText,
+        sourceSpanPreview: localWindow.length > 240 ? `${localWindow.slice(0, 237)}...` : localWindow,
       }));
     }
   }
@@ -123,12 +174,27 @@ function extractResidentCapabilityClaims(text, options = {}) {
   return [...claimsByKey.values()];
 }
 
-function expectedToolState(toolName, declaredToolBundle = {}) {
+function buildToolStateLookup(declaredToolBundle = {}) {
+  const declaredTools = normalizeStringList(declaredToolBundle.declaredTools);
+  const visibleOnlyTools = normalizeStringList(declaredToolBundle.visibleOnlyTools);
+  const operatorGatedTools = normalizeStringList(declaredToolBundle.operatorGatedTools);
+  return {
+    declaredTools,
+    visibleOnlyTools,
+    operatorGatedTools,
+    declaredSet: new Set(declaredTools),
+    visibleOnlySet: new Set(visibleOnlyTools),
+    operatorGatedSet: new Set(operatorGatedTools),
+  };
+}
+
+function expectedToolState(toolName, lookup = {}) {
   const name = normalizeString(toolName, "");
   if (!name) return "unknown";
-  if (normalizeStringList(declaredToolBundle.declaredTools).includes(name)) return "callable";
-  if (normalizeStringList(declaredToolBundle.operatorGatedTools).includes(name)) return "operator_gated";
-  if (normalizeStringList(declaredToolBundle.visibleOnlyTools).includes(name)) return "visible";
+  const toolLookup = lookup.declaredSet instanceof Set ? lookup : buildToolStateLookup(lookup);
+  if (toolLookup.declaredSet.has(name)) return "callable";
+  if (toolLookup.operatorGatedSet.has(name)) return "operator_gated";
+  if (toolLookup.visibleOnlySet.has(name)) return "visible";
   return "not_available";
 }
 
@@ -155,14 +221,15 @@ function compareClaimToExpected(claim, expectedState) {
 
 function compareCapabilityClaimsToEvidence(claims = [], declaredToolBundle = {}, options = {}) {
   const normalizedClaims = (Array.isArray(claims) ? claims : []).map(normalizeClaim);
+  const lookup = buildToolStateLookup(declaredToolBundle);
   const expectedTools = normalizeStringList([
-    ...normalizeStringList(declaredToolBundle.declaredTools),
-    ...normalizeStringList(declaredToolBundle.visibleOnlyTools),
-    ...normalizeStringList(declaredToolBundle.operatorGatedTools),
+    ...lookup.declaredTools,
+    ...lookup.visibleOnlyTools,
+    ...lookup.operatorGatedTools,
     ...normalizeStringList(options.requiredClaimTools),
   ]);
   const compared = normalizedClaims.map((claim) => {
-    const expectedState = expectedToolState(claim.name, declaredToolBundle);
+    const expectedState = expectedToolState(claim.name, lookup);
     return normalizeClaim({
       ...claim,
       expectedState,
@@ -176,7 +243,7 @@ function compareCapabilityClaimsToEvidence(claims = [], declaredToolBundle = {},
       subject: "tool",
       name: toolName,
       claimedState: "unknown",
-      expectedState: expectedToolState(toolName, declaredToolBundle),
+      expectedState: expectedToolState(toolName, lookup),
       evidenceComparison: "missing_claim",
       sourceSpanPreview: "",
     }));
@@ -310,11 +377,31 @@ function classifyRemandsForRunReport(runReport = {}, comparedClaims = []) {
   return [...unique.values()];
 }
 
-function behaviorTextFromScenario(scenario = {}) {
-  return (Array.isArray(scenario.fixture?.behaviorEvents) ? scenario.fixture.behaviorEvents : [])
+function behaviorTextFromEvents(events = []) {
+  return (Array.isArray(events) ? events : [])
     .map((event) => normalizeString(event.text || event.message || event.claim, ""))
     .filter(Boolean)
     .join("\n");
+}
+
+function behaviorTextFromClaims(claims = []) {
+  return (Array.isArray(claims) ? claims : [])
+    .map((claim) => {
+      const name = normalizeString(claim?.name, "");
+      const state = normalizeString(claim?.claimedState, "");
+      return name && state ? `${name} is ${state}` : "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function behaviorTextFromScenario(scenario = {}) {
+  return behaviorTextFromEvents(scenario.fixture?.behaviorEvents);
+}
+
+function behaviorTextFromRunReport(runReport = {}) {
+  return behaviorTextFromEvents(runReport.roleBehaviorEvents)
+    || behaviorTextFromClaims(runReport.residentCapabilityClaims);
 }
 
 function buildAgenticEvidenceOracleReport(input = {}) {
@@ -323,8 +410,11 @@ function buildAgenticEvidenceOracleReport(input = {}) {
   const declaredToolBundle = isPlainObject(runReport.declaredToolBundle)
     ? runReport.declaredToolBundle
     : compileDeclaredToolBundle(scenario);
+  const claimText = normalizeString(input.text, "")
+    || behaviorTextFromRunReport(runReport)
+    || behaviorTextFromScenario(scenario);
   const claimExtractionReport = buildResidentClaimExtractionReport({
-    text: normalizeString(input.text, behaviorTextFromScenario(scenario)),
+    text: claimText,
     declaredToolBundle,
     knownTools: input.knownTools,
     requiredClaimTools: [

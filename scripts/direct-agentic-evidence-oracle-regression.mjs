@@ -15,6 +15,7 @@ const {
 const {
   buildAgenticGameScenario,
   compileDeclaredToolBundle,
+  runAgenticGameFixtureScenario,
 } = require("../src/main/direct/headless/agentic-game-kernel.js");
 
 const declaredScenario = buildAgenticGameScenario({
@@ -58,6 +59,26 @@ assert.equal(extractedClaims.length, 3);
 assert.equal(extractedClaims.find((claim) => claim.name === "read_file")?.claimedState, "callable");
 assert.equal(extractedClaims.find((claim) => claim.name === "apply_patch")?.claimedState, "visible");
 assert.equal(extractedClaims.find((claim) => claim.name === "tool_search")?.claimedState, "operator_gated");
+
+const mixedSentenceClaims = extractResidentCapabilityClaims(
+  "read_file is callable and apply_patch is blocked.",
+  {
+    knownTools: ["read_file", "apply_patch"],
+    declaredToolBundle: declaredBundle,
+  },
+);
+assert.equal(mixedSentenceClaims.find((claim) => claim.name === "read_file")?.claimedState, "callable");
+assert.equal(mixedSentenceClaims.find((claim) => claim.name === "apply_patch")?.claimedState, "blocked");
+
+const reversedMixedSentenceClaims = extractResidentCapabilityClaims(
+  "read_file is blocked and apply_patch is callable.",
+  {
+    knownTools: ["read_file", "apply_patch"],
+    declaredToolBundle: declaredBundle,
+  },
+);
+assert.equal(reversedMixedSentenceClaims.find((claim) => claim.name === "read_file")?.claimedState, "blocked");
+assert.equal(reversedMixedSentenceClaims.find((claim) => claim.name === "apply_patch")?.claimedState, "callable");
 
 const comparedClaims = compareCapabilityClaimsToEvidence(extractedClaims, declaredBundle);
 assert.equal(comparedClaims.every((claim) => claim.evidenceComparison === "matches_evidence"), true);
@@ -103,6 +124,35 @@ assert.equal(oracleReport.remands.length, 0);
 assert.equal(oracleReport.providerTransportStarted, false);
 assert.equal(oracleReport.workspaceMutationStarted, false);
 assert.equal(oracleReport.rawPayloadIncluded, false);
+
+const noFixtureTextScenario = buildAgenticGameScenario({
+  scenarioId: "evidence_oracle_run_report_text_source",
+  capabilityBundle: {
+    bundleId: "bundle_run_report_text_source",
+    requestedCapabilities: ["read_file"],
+    expectedDeclarationMode: "provider_declared",
+  },
+  authorizationModel: {
+    providerDeclarationAllowed: true,
+  },
+  expectedEvidence: {
+    declaredTools: { exact: ["read_file"] },
+  },
+  fixture: {
+    behaviorEvents: [],
+  },
+});
+const noFixtureTextRunReport = {
+  ...runAgenticGameFixtureScenario(noFixtureTextScenario),
+  roleBehaviorEvents: [{ text: "read_file is callable." }],
+};
+const runReportTextOracle = buildAgenticEvidenceOracleReport({
+  scenario: noFixtureTextScenario,
+  runReport: noFixtureTextRunReport,
+});
+assert.deepEqual(validateAgenticEvidenceOracleReport(runReportTextOracle), []);
+assert.equal(runReportTextOracle.claimExtractionReport.summary.matches, 1);
+assert.equal(runReportTextOracle.claimExtractionReport.summary.missingClaim, 0);
 
 const overclaimScenario = buildAgenticGameScenario({
   scenarioId: "evidence_oracle_visible_tool_overclaim",
