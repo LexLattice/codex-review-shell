@@ -714,6 +714,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "The first fixture games start no live provider transport, activate no new capabilities, and do not treat fixture pass as live resident behavior proof or production tool readiness.",
   },
   {
+    id: "ic13.agentic-live-game-runner",
+    name: "Direct agentic live headless game runner",
+    role: "observability_surface",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/headless/agentic-live-game-runner.js", "src/main/direct/headless/agentic-fixture-games.js", "src/main/direct/headless/agentic-evidence-oracle.js", "scripts/direct-agentic-live-game-runner-regression.mjs", "docs/DIRECT_AGENTIC_TESTING_GAME_MATRIX_SPEC.md", "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md"],
+    ontology: ontologyShape(["direct_agentic_live_game_case_report", "direct_agentic_live_game_suite_report", "direct_agentic_first_fixture_games_suite", "direct_resident_claim_extraction_report"], "harness", {
+      identityFields: ["runId", "suiteId", "scenarioId", "reportDigest"],
+      schema: "direct_agentic_live_game_suite_report@1",
+    }),
+    bridgeFit: "Adds an explicit opt-in live headless runner that selects fixture-game scenarios, sends bounded prompts through an injected resident runner, compares resident behavior/claims to compiled harness evidence, and persists redacted reports.",
+    realignment: "The live runner starts no provider transport without explicit opt-in, enforces a provider-call budget, stores digests instead of raw prompts/responses/provider payloads, mutates no workspace, and treats live remands as evidence gaps rather than automatic tool promotion.",
+  },
+  {
     id: "ic13.headless-resident-smoke-runner",
     name: "Headless resident-agent smoke runner",
     role: "observability_surface",
