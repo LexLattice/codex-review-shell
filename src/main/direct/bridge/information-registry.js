@@ -686,6 +686,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "The kernel starts no provider transport, mutates no workspace, activates no new tools, and does not treat fixture pass as live model behavior proof.",
   },
   {
+    id: "ic13.agentic-evidence-oracle",
+    name: "Direct agentic evidence oracle and resident claim extractor",
+    role: "governance_routing",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/headless/agentic-evidence-oracle.js", "src/main/direct/headless/agentic-game-kernel.js", "scripts/direct-agentic-evidence-oracle-regression.mjs", "docs/DIRECT_AGENTIC_TESTING_GAME_MATRIX_SPEC.md", "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md"],
+    ontology: ontologyShape(["direct_agentic_evidence_oracle_report", "direct_agentic_behavior_oracle_report", "direct_resident_claim_extraction_report", "direct_agentic_game_remand"], "harness", {
+      identityFields: ["oracleRunId", "scenarioId", "extractionId", "claimId", "remandId"],
+      schema: "direct_agentic_evidence_oracle_report@1",
+    }),
+    bridgeFit: "Adds the PR 133 oracle layer that extracts bounded resident capability claims from fixture text, compares them to compiled harness declarations, summarizes behavior/evidence assertions, and classifies resident epistemic and evidence remands.",
+    realignment: "The oracle is deliberately fixture-safe: it starts no provider transport, mutates no workspace, uses no broad semantic parser, and does not promote fixture claims into live capability truth.",
+  },
+  {
     id: "ic13.headless-resident-smoke-runner",
     name: "Headless resident-agent smoke runner",
     role: "observability_surface",
