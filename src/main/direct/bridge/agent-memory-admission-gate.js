@@ -118,7 +118,7 @@ function normalizeSourceRef(input = {}, fallbackKind = "memory_source") {
 function normalizeSourceRefs(values = [], fallbackKind = "memory_source") {
   const refs = (Array.isArray(values) ? values : [])
     .map((value) => normalizeSourceRef(value, fallbackKind))
-    .filter((ref) => ref.id || ref.digest || ref.label);
+    .filter((ref) => ref.id || ref.digest);
   const byKey = new Map();
   for (const ref of refs) {
     const key = ref.id ? `${ref.kind}:${ref.id}` : ref.digest ? `digest:${ref.digest}` : ref.refDigest;
@@ -146,6 +146,8 @@ function normalizeScope(scope = {}, fallback = {}) {
 
 function normalizeProposedMemory(input = {}, fallback = {}) {
   const source = isPlainObject(input) ? input : {};
+  const agentId = normalizeString(source.agentId || fallback.agentId, "");
+  const revision = Number(source.revision);
   const scope = normalizeScope(source.scope, {
     projectId: source.projectId || fallback.projectId,
     workThreadId: source.workThreadId || fallback.workThreadId,
@@ -159,7 +161,7 @@ function normalizeProposedMemory(input = {}, fallback = {}) {
       kind: source.kind || "preference",
       contentSummary: source.contentSummary || source.summary,
     })).slice(0, 24)}`, "direct_agent_memory_candidate"),
-    agentId: safeSlotPart(source.agentId || fallback.agentId, "direct_agent"),
+    agentId: agentId ? safeSlotPart(agentId, "direct_agent") : "",
     projectId: normalizeString(source.projectId || scope.projectId || fallback.projectId, ""),
     scope,
     kind: normalizeString(source.kind, "preference"),
@@ -172,7 +174,7 @@ function normalizeProposedMemory(input = {}, fallback = {}) {
     conflictState: normalizeString(source.conflictState, "none"),
     conflictResolution: normalizeString(source.conflictResolution, "unknown"),
     auditState: normalizeString(source.auditState, "unaudited"),
-    revision: Math.max(1, Number(source.revision || 1)),
+    revision: Number.isFinite(revision) ? Math.max(1, revision) : 1,
     supersedesMemoryId: normalizeString(source.supersedesMemoryId, ""),
     supersededByMemoryId: normalizeString(source.supersededByMemoryId, ""),
     expiresAt: normalizeString(source.expiresAt, ""),
@@ -211,11 +213,11 @@ function buildMemoryCandidateEnvelope(input = {}, options = {}) {
     sourceThreadIds,
     sourceTurnIds,
     createdAt: normalizeString(source.createdAt, nowIso(options.nowMs)),
-    rawTranscriptIncluded: false,
-    rawTextIncluded: false,
-    rawPathIncluded: false,
-    rawSecretIncluded: false,
-    actionAuthorityGranted: false,
+    rawTranscriptIncluded: Boolean(source.rawTranscriptIncluded),
+    rawTextIncluded: Boolean(source.rawTextIncluded),
+    rawPathIncluded: Boolean(source.rawPathIncluded),
+    rawSecretIncluded: Boolean(source.rawSecretIncluded),
+    actionAuthorityGranted: Boolean(source.actionAuthorityGranted),
   };
   candidate.candidateDigest = digestValue("direct-agent-memory-candidate-envelope@1", candidate);
   return candidate;
@@ -250,10 +252,12 @@ function builtInBlockers(candidate = {}, options = {}) {
   if (!candidate.agentId || !candidate.projectId || !memory.agentId || !memory.projectId) {
     blockers.push({ kind: "missing_identity_scope", reason: "Memory admission requires project and agent identity." });
   }
-  if (!candidate.sourceRefs?.length && !candidate.sourceThreadIds?.length && !candidate.sourceTurnIds?.length) {
+  const hasRealSourceRef = Array.isArray(candidate.sourceRefs)
+    && candidate.sourceRefs.some((ref) => normalizeString(ref?.id || ref?.digest, ""));
+  if (!hasRealSourceRef && !candidate.sourceThreadIds?.length && !candidate.sourceTurnIds?.length) {
     blockers.push({ kind: "missing_source_evidence", reason: "Memory admission requires transcript or artifact source evidence." });
   }
-  if (projectId && memory.projectId && memory.projectId !== projectId) {
+  if (projectId && ((memory.projectId && memory.projectId !== projectId) || (memory.scope?.projectId && memory.scope.projectId !== projectId))) {
     blockers.push({ kind: "cross_project_scope", reason: "Candidate memory project does not match active project." });
   }
   if (memory.conflictState === "conflicts_with_current_user" || options.currentUserConflict === true) {
@@ -268,7 +272,7 @@ function builtInBlockers(candidate = {}, options = {}) {
   if (memory.conflictState === "conflicts_with_policy" || options.policyConflict === true) {
     blockers.push({ kind: "policy_conflict", reason: "Policy conflict blocks context admission." });
   }
-  if (memory.authorityUse === "constraint_candidate" || options.authorityEscalationAttempt === true) {
+  if (candidate.actionAuthorityGranted === true || memory.authorityUse === "constraint_candidate" || options.authorityEscalationAttempt === true) {
     blockers.push({ kind: "authority_escalation_attempt", reason: "Memory cannot grant read, patch, command, sub-agent, or hosted-provider authority." });
   }
   if (candidate.rawTranscriptIncluded || candidate.rawTextIncluded || candidate.rawPathIncluded || candidate.rawSecretIncluded) {
@@ -330,11 +334,11 @@ function buildMemoryAdmissionTransition(input = {}, options = {}) {
       ...(Array.isArray(source.evidenceRefs) ? source.evidenceRefs : []),
     ], "memory_admission_evidence"),
     decidedAt: normalizeString(source.decidedAt, nowIso(options.nowMs)),
-    rawTranscriptIncluded: false,
-    rawTextIncluded: false,
-    rawPathIncluded: false,
-    rawSecretIncluded: false,
-    actionAuthorityGranted: false,
+    rawTranscriptIncluded: Boolean(source.rawTranscriptIncluded || candidate.rawTranscriptIncluded),
+    rawTextIncluded: Boolean(source.rawTextIncluded || candidate.rawTextIncluded),
+    rawPathIncluded: Boolean(source.rawPathIncluded || candidate.rawPathIncluded),
+    rawSecretIncluded: Boolean(source.rawSecretIncluded || candidate.rawSecretIncluded),
+    actionAuthorityGranted: Boolean(source.actionAuthorityGranted || candidate.actionAuthorityGranted),
   };
   transition.transitionDigest = digestValue("direct-agent-memory-admission-transition@1", transition);
   return transition;
@@ -392,6 +396,11 @@ function buildMemoryAdmissionProof(input = {}, options = {}) {
   if (admissionTransition?.admissionState === "accepted" && !extractionTransition?.extractionTransitionId) blockers.push("missing_extraction_evidence");
   if (admissionTransition?.admissionState === "accepted" && !memoryRow?.memoryId) blockers.push("missing_memory_row");
   if (admissionTransition?.admissionState === "accepted" && !projection?.projectionId) blockers.push("missing_context_projection");
+  if (candidate?.rawTranscriptIncluded || candidate?.rawTextIncluded || candidate?.rawPathIncluded || candidate?.rawSecretIncluded
+    || admissionTransition?.rawTranscriptIncluded || admissionTransition?.rawTextIncluded || admissionTransition?.rawPathIncluded || admissionTransition?.rawSecretIncluded) {
+    blockers.push("raw_payload_leak");
+  }
+  if (candidate?.actionAuthorityGranted || admissionTransition?.actionAuthorityGranted) blockers.push("memory_authority_leak");
   if (memoryRow?.actionAuthorityGranted === true) blockers.push("memory_authority_leak");
   if (memoryRow && !memoryContextEligible(memoryRow, options)) blockers.push("memory_not_context_eligible");
   if (projection && projection.selectedMemoryRefs?.some((ref) => ref.memoryId === memoryRow?.memoryId) !== true) {
@@ -409,10 +418,10 @@ function buildMemoryAdmissionProof(input = {}, options = {}) {
     contextProjectionSatisfied: Boolean(projection && memoryRow && projection.selectedMemoryRefs?.some((ref) => ref.memoryId === memoryRow.memoryId)),
     memoryCannotOverrideCurrentUser: true,
     memoryGrantsAuthority: false,
-    rawTranscriptIncluded: false,
-    rawTextIncluded: false,
-    rawPathIncluded: false,
-    rawSecretIncluded: false,
+    rawTranscriptIncluded: Boolean(candidate?.rawTranscriptIncluded || admissionTransition?.rawTranscriptIncluded),
+    rawTextIncluded: Boolean(candidate?.rawTextIncluded || admissionTransition?.rawTextIncluded),
+    rawPathIncluded: Boolean(candidate?.rawPathIncluded || admissionTransition?.rawPathIncluded),
+    rawSecretIncluded: Boolean(candidate?.rawSecretIncluded || admissionTransition?.rawSecretIncluded),
     createdAt: nowIso(options.nowMs),
   };
   proof.proofDigest = digestValue("direct-agent-memory-admission-proof@1", proof);
@@ -465,11 +474,11 @@ function runMemoryAdmissionWorkflow(input = {}, options = {}) {
     memoryContextProjection,
     admissionProof,
     acceptedMemoryRequiresProjection: true,
-    actionAuthorityGranted: false,
-    rawTranscriptIncluded: false,
-    rawTextIncluded: false,
-    rawPathIncluded: false,
-    rawSecretIncluded: false,
+    actionAuthorityGranted: Boolean(candidate.actionAuthorityGranted || admissionTransition.actionAuthorityGranted || memoryRow?.actionAuthorityGranted),
+    rawTranscriptIncluded: Boolean(candidate.rawTranscriptIncluded || admissionTransition.rawTranscriptIncluded),
+    rawTextIncluded: Boolean(candidate.rawTextIncluded || admissionTransition.rawTextIncluded),
+    rawPathIncluded: Boolean(candidate.rawPathIncluded || admissionTransition.rawPathIncluded),
+    rawSecretIncluded: Boolean(candidate.rawSecretIncluded || admissionTransition.rawSecretIncluded),
   };
   report.reportDigest = digestValue("direct-agent-memory-admission-report@1", report);
   return report;

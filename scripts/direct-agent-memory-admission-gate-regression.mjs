@@ -82,6 +82,15 @@ assert.equal(candidate.rawTextIncluded, false);
 assert.equal(candidate.rawPathIncluded, false);
 assert.equal(candidate.rawSecretIncluded, false);
 
+const nonNumericRevision = buildMemoryCandidateEnvelope(baseCandidate({
+  proposedMemory: {
+    ...baseCandidate().proposedMemory,
+    memoryId: "direct_agent_memory_bad_revision",
+    revision: "abc",
+  },
+}), { nowMs });
+assert.equal(nonNumericRevision.proposedMemory.revision, 1);
+
 const accepted = runMemoryAdmissionWorkflow({
   candidate,
   admission: {
@@ -237,6 +246,21 @@ const negativeCases = [
     expectedBlocker: "cross_project_scope",
   },
   {
+    label: "scope project mismatch",
+    candidate: {
+      proposedMemory: {
+        ...baseCandidate().proposedMemory,
+        memoryId: "direct_agent_memory_scope_project_mismatch",
+        projectId,
+        scope: {
+          ...baseCandidate().proposedMemory.scope,
+          projectId: "other_project",
+        },
+      },
+    },
+    expectedBlocker: "cross_project_scope",
+  },
+  {
     label: "authority escalation",
     candidate: {
       proposedMemory: {
@@ -246,6 +270,28 @@ const negativeCases = [
       },
     },
     expectedBlocker: "authority_escalation_attempt",
+  },
+  {
+    label: "candidate action authority flag",
+    candidate: {
+      actionAuthorityGranted: true,
+      proposedMemory: {
+        ...baseCandidate().proposedMemory,
+        memoryId: "direct_agent_memory_action_authority_flag",
+      },
+    },
+    expectedBlocker: "authority_escalation_attempt",
+  },
+  {
+    label: "raw payload flag",
+    candidate: {
+      rawTextIncluded: true,
+      proposedMemory: {
+        ...baseCandidate().proposedMemory,
+        memoryId: "direct_agent_memory_raw_payload_flag",
+      },
+    },
+    expectedBlocker: "raw_payload_leak",
   },
 ];
 
@@ -286,6 +332,62 @@ const missingEvidenceTransition = buildMemoryAdmissionTransition({
 });
 assert.equal(missingEvidenceTransition.admissionState, "needs_review");
 assert.equal(missingEvidenceTransition.blockers.some((blocker) => blocker.kind === "missing_source_evidence"), true);
+
+const placeholderEvidenceCandidate = buildMemoryCandidateEnvelope({
+  ...baseCandidate(),
+  sourceRefs: [{}],
+  sourceThreadIds: [],
+  sourceTurnIds: [],
+  proposedMemory: {
+    ...baseCandidate().proposedMemory,
+    memoryId: "direct_agent_memory_placeholder_evidence",
+  },
+}, { nowMs });
+assert.equal(placeholderEvidenceCandidate.sourceRefs.length, 0);
+const placeholderEvidenceTransition = buildMemoryAdmissionTransition({
+  candidate: placeholderEvidenceCandidate,
+  admissionState: "accepted",
+});
+assert.equal(placeholderEvidenceTransition.admissionState, "needs_review");
+assert.equal(placeholderEvidenceTransition.blockers.some((blocker) => blocker.kind === "missing_source_evidence"), true);
+
+const missingAgentCandidate = buildMemoryCandidateEnvelope({
+  projectId,
+  workThreadId,
+  roleLane,
+  sourceRefs: [{ kind: "thread_turn_summary", id: "missing_agent_source" }],
+  proposedMemory: {
+    ...baseCandidate().proposedMemory,
+    memoryId: "direct_agent_memory_missing_agent",
+    agentId: "",
+  },
+  agentId: "",
+}, { nowMs });
+assert.equal(missingAgentCandidate.agentId, "");
+assert.equal(missingAgentCandidate.proposedMemory.agentId, "");
+const missingAgentTransition = buildMemoryAdmissionTransition({
+  candidate: missingAgentCandidate,
+  admissionState: "accepted",
+});
+assert.equal(missingAgentTransition.admissionState, "needs_review");
+assert.equal(missingAgentTransition.blockers.some((blocker) => blocker.kind === "missing_identity_scope"), true);
+
+const rawLeak = runMemoryAdmissionWorkflow({
+  candidate: baseCandidate({
+    rawSecretIncluded: true,
+    proposedMemory: {
+      ...baseCandidate().proposedMemory,
+      memoryId: "direct_agent_memory_raw_secret_flag",
+    },
+  }),
+  admission: { admissionState: "accepted", decisionSource: "operator_curated" },
+}, { projectId, agentId, workThreadId, roleLane, nowMs });
+assert.equal(rawLeak.admissionTransition.admissionState, "needs_review");
+assert.equal(rawLeak.memoryRow, null);
+assert.equal(rawLeak.rawSecretIncluded, true);
+assert.equal(rawLeak.admissionProof.rawSecretIncluded, true);
+assert.equal(rawLeak.admissionProof.blockers.includes("raw_payload_leak"), true);
+
 assert.throws(() => buildMemoryRowFromAdmission(candidate, rejected.admissionTransition, accepted.extractionTransition, { nowMs }), /accepted admission transition/);
 assert.throws(() => buildMemoryRowFromAdmission(candidate, accepted.admissionTransition, null, { nowMs }), /extraction evidence/);
 
