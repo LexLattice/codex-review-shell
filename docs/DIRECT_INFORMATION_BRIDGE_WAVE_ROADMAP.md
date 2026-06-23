@@ -4667,7 +4667,7 @@ blocked, operator-gated, or deferred with explicit reasons.
 
 ## Wave 21: Agent Continuity And Governed Memory
 
-Status: planned.
+Status: complete through PR 131.
 
 Detailed spec:
 
@@ -4723,7 +4723,7 @@ resident run as an all-purpose provenance bucket.
 | `#128` | merged | `codex/direct-agent-memory-store` | Agent memory store V0 | AgentMemoryStore, AgentMemoryRow with eligibility/conflict/supersession/digest fields, AgentMemoryExtractionTransition, manual/fixture memory rows only, provenance validator, renderer-safe memory inventory projection | No automatic memory extraction, provider-context memory injection, or cross-project memory |
 | `#129` | merged | `codex/direct-agent-context-source-refs` | Agent context source-class refactor | DirectContextSourceRef normalizer with confidence/freshness/authority labels, AgentMemoryContextProjection with selection policy/context role, context-pack adapter for agent identity/run/memory projection refs, omission counters | No automatic memory selection, default behavior change, hidden provider continuity, or memory-derived authority |
 | `#130` | merged | `codex/direct-resident-agent-identity-snapshot` | Resident agent epistemic snapshot | Structured resident identity/continuity/capability snapshot, linked-thread counts/current refs by default, memory scope inventory, capability/status catalogue bridge citing registry/promotion/activation evidence, compact context witness | No mutable memory through resident calls, new tool families, full linked-thread transcript exposure, or broad cross-thread transcript exposure |
-| `#131` | in review | `codex/direct-agent-memory-admission-gate` | Agent memory admission workflow and proof gate | Memory candidate envelope, extraction/admission transitions, accept/reject/review states, memory supersession/conflict resolution, headless fixture for transcript/artifact -> candidate -> accepted memory, negative laundering matrix, roadmap/audit update | No autonomous memory mining daemon, cross-project memory, automatic durable memory from hosted/MCP results, or full memory editor |
+| `#131` | merged | `codex/direct-agent-memory-admission-gate` | Agent memory admission workflow and proof gate | Memory candidate envelope, extraction/admission transitions, accept/reject/review states, memory supersession/conflict resolution, headless fixture for transcript/artifact -> candidate -> accepted memory, negative laundering matrix, roadmap/audit update | No autonomous memory mining daemon, cross-project memory, automatic durable memory from hosted/MCP results, or full memory editor |
 
 Wave 21 completion gate:
 
@@ -4736,6 +4736,64 @@ source refs.
 Resident epistemic snapshots can explain "who am I, what threads belong to me,
 what memory scopes exist, what capabilities are active/blocked" without
 granting authority.
+```
+
+## Wave 22: Agentic Testing Game Matrix
+
+Status: planned.
+
+Detailed spec:
+
+```text
+docs/DIRECT_AGENTIC_TESTING_GAME_MATRIX_SPEC.md
+```
+
+Purpose:
+
+```text
+Turn direct-harness validation into an executable agentic game matrix where
+role, context pack, developer prompt, capability bundle, authorization model,
+multi-agent topology, resident behavior, and harness evidence are varied
+together.
+```
+
+Standing laws:
+
+```text
+The test unit is not prompt plus expected answer.
+A game passes only when behavior and harness evidence agree.
+Raw tools are inventory, not ambient power.
+Fixture pass is not live behavior proof.
+No pass is allowed from resident transcript alone.
+```
+
+Initial target posture:
+
+```text
+Build the shared game kernel before individual games.
+Use reusable role packs, capability bundle compilation, and topology DSL.
+Compare resident claims against provider declarations and resident catalogue.
+Separate behavior verdicts from evidence verdicts.
+Produce typed remands instead of prose-only failures.
+```
+
+| PR | Status | Branch | Purpose | Planned deliverable | Explicit non-goals |
+| --- | --- | --- | --- | --- | --- |
+| `#132` | planned | TBD | Agentic game kernel and fixture runner | AgenticGameScenario, AgenticGameRunReport, AgentRolePack, CapabilityBundleSpec, AuthorizationModelSpec, AgentTopologySpec, GameRemand taxonomy, fixture-only runner/report | No live provider calls or tool promotion |
+| `#133` | planned | TBD | Evidence oracle and resident claim extractor | Behavior/evidence oracle validators, resident capability claim parser/classifier, declared bundle comparator, authority/mutation/context evidence validators, remand classifier | No broad semantic parser or live model test requirement |
+| `#134` | planned | TBD | First five fixture games | Fixture scenarios and reports for G1 resident tool truth, G10 authorization variation, G3 auditor cannot patch, G2 implementation loop, G5 observe-only sub-agent boundary | No live provider calls or new capability activation |
+| `#135` | planned | TBD | Remaining fixture games | Fixture scenarios for G4 orchestrator routing, G6 wrong-thread broker, G7 memory-current-user conflict, G8 external discovery, G9 provider-hosted web, G11 result admission, G12 declaration mismatch | No live provider calls or remediation implementation |
+| `#136` | planned | TBD | Live headless game runner | Explicit opt-in live runner, provider-call sentinel, run budget/cap, persisted reports, comparison of resident behavior to harness evidence | No default live calls, hidden provider spend, or broad manual UX testing |
+| `#137` | planned | TBD | Activation remand queue and promotion gate | Typed remand queue, promotion/declaration gap report, owner assignment by remand taxonomy, targeted follow-up PR candidates | No bulk activation of all requested tools or bypass of role-lane policy |
+
+Wave 22 completion gate:
+
+```text
+Direct can define role-specific agentic scenarios, compile their context packs
+and capability bundles through the real direct machinery, run fixture and
+opt-in live headless games, compare resident claims to actual declarations,
+compare behavior to harness evidence, and produce typed remands for missing
+wiring.
 ```
 
 
