@@ -13,6 +13,7 @@ const {
 const {
   DIRECT_AGENTIC_ACTIVATION_REMAND_QUEUE_SCHEMA,
   buildDirectAgenticActivationRemandQueue,
+  buildPromotionGapReport,
   validateDirectAgenticActivationRemandQueue,
 } = require("../src/main/direct/headless/agentic-activation-remand-queue.js");
 
@@ -129,6 +130,21 @@ assert.equal(queue.promotionGapReport.gapCount, 2);
 assert.equal(queue.promotionGapReport.summary.byDecisionState.needs_more_evidence, 1);
 assert.equal(queue.promotionGapReport.summary.byDecisionState.promotable_restricted, 1);
 assert(!queue.rows.some((row) => row.promotionDecisionId === "decision_promotable_ignored"));
+
+const defaultQueue = buildDirectAgenticActivationRemandQueue({});
+assert.deepEqual(validateDirectAgenticActivationRemandQueue(defaultQueue), []);
+assert.equal(defaultQueue.rowCount, 0);
+assert.equal(defaultQueue.promotionGapReport.gapCount, 0);
+assert.equal(defaultQueue.activationGranted, false);
+
+const nullOptionsQueue = buildDirectAgenticActivationRemandQueue(null);
+assert.deepEqual(validateDirectAgenticActivationRemandQueue(nullOptionsQueue), []);
+assert.equal(nullOptionsQueue.rowCount, 0);
+
+const nullPromotionGapReport = buildPromotionGapReport(null, null);
+assert.equal(nullPromotionGapReport.gapCount, 0);
+assert.equal(nullPromotionGapReport.activationGranted, false);
+assert.equal(nullPromotionGapReport.rawPromptIncluded, false);
 
 const residentCandidate = queue.followupCandidates.find((candidate) => candidate.suggestedOwner === "resident_epistemics");
 assert(residentCandidate, "resident epistemics candidate should be present");

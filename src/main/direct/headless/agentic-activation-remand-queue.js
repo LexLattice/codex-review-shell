@@ -213,8 +213,9 @@ function rowFromPromotionDecision(decision = {}, sourceReport = {}) {
 }
 
 function rowsFromFixtureReport(fixtureReport = {}) {
+  const safeReport = isPlainObject(fixtureReport) ? fixtureReport : {};
   const rows = [];
-  for (const oracle of Array.isArray(fixtureReport.oracleReports) ? fixtureReport.oracleReports : []) {
+  for (const oracle of Array.isArray(safeReport.oracleReports) ? safeReport.oracleReports : []) {
     for (const remand of Array.isArray(oracle.remands) ? oracle.remands : []) {
       rows.push(rowFromRemand({
         remand,
@@ -283,13 +284,14 @@ function remandsForLiveCase(liveCase = {}) {
 }
 
 function rowsFromLiveReport(liveReport = {}) {
+  const safeReport = isPlainObject(liveReport) ? liveReport : {};
   const rows = [];
-  for (const liveCase of Array.isArray(liveReport.caseReports) ? liveReport.caseReports : []) {
+  for (const liveCase of Array.isArray(safeReport.caseReports) ? safeReport.caseReports : []) {
     for (const remand of remandsForLiveCase(liveCase)) {
       rows.push(rowFromRemand({
         remand,
         sourceKind: "live_case_remand",
-        sourceReport: liveReport,
+        sourceReport: safeReport,
         liveCase,
         scenarioId: liveCase.scenarioId,
       }));
@@ -299,11 +301,12 @@ function rowsFromLiveReport(liveReport = {}) {
 }
 
 function rowsFromPromotionReport(promotionReport = {}) {
+  const safeReport = isPlainObject(promotionReport) ? promotionReport : {};
   const rows = [];
-  for (const decision of Array.isArray(promotionReport.decisions) ? promotionReport.decisions : []) {
+  for (const decision of Array.isArray(safeReport.decisions) ? safeReport.decisions : []) {
     const state = normalizeString(decision.state, "");
     if (!["needs_more_evidence", "blocked", "promotable_restricted"].includes(state)) continue;
-    rows.push(rowFromPromotionDecision(decision, promotionReport));
+    rows.push(rowFromPromotionDecision(decision, safeReport));
   }
   return rows;
 }
@@ -382,14 +385,15 @@ function buildFollowupCandidates(rows = []) {
 }
 
 function buildPromotionGapReport(rows = [], options = {}) {
+  const opts = isPlainObject(options) ? options : {};
   const promotionRows = (Array.isArray(rows) ? rows : []).filter((row) => row.sourceKind === "promotion_decision_gap");
   const report = {
     schema: DIRECT_AGENTIC_PROMOTION_GAP_REPORT_SCHEMA,
-    reportId: normalizeString(options.reportId, `direct_agentic_promotion_gap_${digestFor("direct-agentic-promotion-gap-report-source@1", {
+    reportId: normalizeString(opts.reportId, `direct_agentic_promotion_gap_${digestFor("direct-agentic-promotion-gap-report-source@1", {
       rowDigests: promotionRows.map((row) => row.rowDigest),
     }).slice(7, 23)}`),
-    generatedAt: normalizeString(options.generatedAt, nowIso(options.nowMs)),
-    sourcePromotionReportDigest: normalizeString(options.promotionReport?.reportDigest, ""),
+    generatedAt: normalizeString(opts.generatedAt, nowIso(opts.nowMs)),
+    sourcePromotionReportDigest: normalizeString(opts.promotionReport?.reportDigest, ""),
     gapCount: promotionRows.length,
     rows: promotionRows,
     summary: {
@@ -411,14 +415,15 @@ function buildPromotionGapReport(rows = [], options = {}) {
 }
 
 function buildDirectAgenticActivationRemandQueue(options = {}) {
-  const fixtureReport = isPlainObject(options.fixtureReport)
-    ? options.fixtureReport
-    : runFirstAgenticFixtureGameSuite(options);
-  const liveReport = isPlainObject(options.liveReport) ? options.liveReport : null;
-  const promotionReport = isPlainObject(options.promotionReport)
-    ? options.promotionReport
-    : isPlainObject(options.liveSmokeReport)
-      ? buildDirectToolPromotionDecisionReport(options)
+  const opts = isPlainObject(options) ? options : {};
+  const fixtureReport = isPlainObject(opts.fixtureReport)
+    ? opts.fixtureReport
+    : runFirstAgenticFixtureGameSuite(opts);
+  const liveReport = isPlainObject(opts.liveReport) ? opts.liveReport : null;
+  const promotionReport = isPlainObject(opts.promotionReport)
+    ? opts.promotionReport
+    : isPlainObject(opts.liveSmokeReport)
+      ? buildDirectToolPromotionDecisionReport(opts)
       : null;
   const rows = dedupeRows([
     ...rowsFromFixtureReport(fixtureReport),
@@ -427,18 +432,18 @@ function buildDirectAgenticActivationRemandQueue(options = {}) {
   ]);
   const followupCandidates = buildFollowupCandidates(rows);
   const promotionGapReport = buildPromotionGapReport(rows, {
-    ...options,
+    ...opts,
     promotionReport,
   });
   const queue = {
     schema: DIRECT_AGENTIC_ACTIVATION_REMAND_QUEUE_SCHEMA,
-    queueId: normalizeString(options.queueId, `direct_agentic_activation_remand_queue_${digestFor("direct-agentic-activation-remand-queue-source@1", {
+    queueId: normalizeString(opts.queueId, `direct_agentic_activation_remand_queue_${digestFor("direct-agentic-activation-remand-queue-source@1", {
       fixtureReportDigest: fixtureReport.reportDigest,
       liveReportDigest: liveReport?.reportDigest,
       promotionReportDigest: promotionReport?.reportDigest,
       rowDigests: rows.map((row) => row.rowDigest),
     }).slice(7, 23)}`),
-    generatedAt: normalizeString(options.generatedAt, nowIso(options.nowMs)),
+    generatedAt: normalizeString(opts.generatedAt, nowIso(opts.nowMs)),
     sourceEvidence: {
       fixtureReportDigest: normalizeString(fixtureReport.reportDigest, ""),
       liveReportDigest: normalizeString(liveReport?.reportDigest, ""),
