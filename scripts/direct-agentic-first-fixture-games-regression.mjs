@@ -17,8 +17,12 @@ assert.equal(suite.schema, DIRECT_AGENTIC_FIRST_FIXTURE_GAMES_SUITE_SCHEMA);
 assert.equal(suite.fixtureOnly, true);
 assert.equal(suite.providerTransportExpected, false);
 assert.equal(suite.workspaceMutationExpected, false);
-assert.deepEqual(suite.gameIds.sort(), ["G1", "G10", "G2", "G3", "G5"].sort());
+assert.deepEqual([...suite.gameIds].sort(), ["G1", "G10", "G2", "G3", "G5"].sort());
 assert.equal(suite.scenarios.length, 7);
+
+const nullOptionsSuite = buildFirstAgenticFixtureGameSuite(null);
+assert.equal(nullOptionsSuite.suiteId, "direct_agentic_first_fixture_games");
+assert.equal(nullOptionsSuite.schema, DIRECT_AGENTIC_FIRST_FIXTURE_GAMES_SUITE_SCHEMA);
 
 const scenarioIds = suite.scenarios.map((scenario) => scenario.scenarioId).sort();
 assert.deepEqual(scenarioIds, [
@@ -60,9 +64,15 @@ assert.equal(g10Operator.runReport.declaredToolBundle.operatorGatedTools.include
 assert.equal(g10Operator.evidenceOracle.authorityEventCount, 1);
 assert.equal(g10Operator.remands.length, 0);
 
+const g10RestrictedScenario = suite.scenarios.find((scenario) => scenario.scenarioId === "g10_direct_restricted_permission");
+assert.deepEqual(g10RestrictedScenario.rolePacks.map((rolePack) => rolePack.role).sort(), ["front_resident", "implementation_worker"]);
+assert.equal(g10RestrictedScenario.topology.structure, "resident_to_implementation_worker");
+assert.equal(g10RestrictedScenario.topology.edges.some((edge) => edge.from === "resident" && edge.to === "implementation_worker"), true);
+
 const g10Restricted = byScenario.get("g10_direct_restricted_permission");
 assert.equal(g10Restricted.runReport.declaredToolBundle.declaredTools.includes("apply_patch"), true);
 assert.equal(g10Restricted.runReport.roleBehaviorEvents[0].usedTools.includes("apply_patch"), true);
+assert.equal(g10Restricted.runReport.evidenceAssertions.some((row) => row.assertionId === "evidence_parent_child_identity_preserved" && row.passed), true);
 assert.equal(g10Restricted.runReport.mutationEvents.length, 1);
 
 const g3 = byScenario.get("g3_auditor_cannot_patch");
@@ -89,6 +99,29 @@ const malformedErrors = validateFirstAgenticFixtureGameReport({
 });
 assert.equal(malformedErrors.includes("first_fixture_report_missing_game:G10"), true);
 assert.equal(malformedErrors.some((error) => error.includes("oracle_report_not_object")), true);
+
+const staleRemandErrors = validateFirstAgenticFixtureGameReport({
+  ...report,
+  oracleReports: [
+    {
+      ...report.oracleReports[0],
+      remands: [{
+        schema: "direct_agentic_game_remand@1",
+        remandId: "test_remand",
+        category: "resident_overclaim",
+        severity: "major",
+        suggestedOwner: "resident_epistemics",
+        message: "test remand",
+        remandDigest: "sha256:test",
+      }],
+    },
+    ...report.oracleReports.slice(1),
+  ],
+  summary: { ...report.summary, remand: 0, oracleRemands: 0, valid: true },
+});
+assert.equal(staleRemandErrors.includes("first_fixture_report_summary_remand_mismatch"), true);
+assert.equal(staleRemandErrors.includes("first_fixture_report_summary_oracle_remands_mismatch"), true);
+assert.equal(staleRemandErrors.includes("first_fixture_report_summary_validity_mismatch"), true);
 
 console.log(JSON.stringify({
   ok: true,
