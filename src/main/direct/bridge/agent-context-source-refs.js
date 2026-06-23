@@ -32,7 +32,9 @@ const CONTEXT_ROLES = new Set([
 ]);
 
 function isPlainObject(value) {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === null || proto === Object.prototype;
 }
 
 function normalizeString(value, fallback = "") {
@@ -52,7 +54,6 @@ function stableValue(value) {
   if (isPlainObject(value)) {
     const output = {};
     for (const key of Object.keys(value).sort()) {
-      if (["digest", "projectionDigest", "sourceRefDigest", "adapterDigest"].includes(key)) continue;
       if (value[key] !== undefined) output[key] = stableValue(value[key]);
     }
     return output;
@@ -192,7 +193,8 @@ function rowExpired(row = {}, nowMs = Date.now()) {
   const expiresAt = normalizeString(row.expiresAt, "");
   if (!expiresAt) return false;
   const timestamp = Date.parse(expiresAt);
-  return Number.isFinite(timestamp) && timestamp <= Number(nowMs);
+  const currentMs = Number(nowMs);
+  return Number.isFinite(timestamp) && Number.isFinite(currentMs) && timestamp <= currentMs;
 }
 
 function memoryOmissionReason(row = {}, options = {}) {
@@ -230,20 +232,24 @@ function buildMemoryRowSourceRef(row = {}, options = {}) {
 }
 
 function buildAgentMemoryContextProjection(input = {}, options = {}) {
-  const nowMs = Number(input.nowMs ?? options.nowMs ?? Date.now());
-  const projectId = normalizeString(input.projectId || options.projectId, "");
-  const agentId = normalizeString(input.agentId || options.agentId, "");
-  const threadId = normalizeString(input.threadId || options.threadId, "");
-  const turnId = normalizeString(input.turnId || options.turnId, "");
-  const workThreadId = normalizeString(input.workThreadId || options.workThreadId, "");
-  const roleLane = normalizeString(input.roleLane || options.roleLane, "");
-  const selectedIds = new Set((Array.isArray(input.selectedMemoryIds) ? input.selectedMemoryIds : [])
+  const source = isPlainObject(input) ? input : {};
+  const opts = isPlainObject(options) ? options : {};
+  const parsedNow = Number(source.nowMs ?? opts.nowMs ?? Date.now());
+  const nowMs = Number.isFinite(parsedNow) ? parsedNow : Date.now();
+  const projectId = normalizeString(source.projectId || opts.projectId, "");
+  const agentId = normalizeString(source.agentId || opts.agentId, "");
+  const threadId = normalizeString(source.threadId || opts.threadId, "");
+  const turnId = normalizeString(source.turnId || opts.turnId, "");
+  const workThreadId = normalizeString(source.workThreadId || opts.workThreadId, "");
+  const roleLane = normalizeString(source.roleLane || opts.roleLane, "");
+  const selectedIds = new Set((Array.isArray(source.selectedMemoryIds) ? source.selectedMemoryIds : [])
     .map((id) => normalizeString(id, ""))
     .filter(Boolean));
-  const selectionEnabled = input.selectionEnabled === true || selectedIds.size > 0;
-  const maxSelectedRows = Math.max(0, Number(input.maxSelectedRows ?? options.maxSelectedRows ?? 12));
-  const selectionPolicyId = normalizeString(input.selectionPolicyId, DEFAULT_AGENT_MEMORY_SELECTION_POLICY_ID);
-  const budgetPolicyId = normalizeString(input.budgetPolicyId, DEFAULT_AGENT_MEMORY_BUDGET_POLICY_ID);
+  const selectionEnabled = source.selectionEnabled === true || selectedIds.size > 0;
+  const parsedMax = Number(source.maxSelectedRows ?? opts.maxSelectedRows ?? 12);
+  const maxSelectedRows = Math.max(0, Number.isFinite(parsedMax) ? parsedMax : 12);
+  const selectionPolicyId = normalizeString(source.selectionPolicyId, DEFAULT_AGENT_MEMORY_SELECTION_POLICY_ID);
+  const budgetPolicyId = normalizeString(source.budgetPolicyId, DEFAULT_AGENT_MEMORY_BUDGET_POLICY_ID);
   const omissionCounters = {
     outOfScope: 0,
     stale: 0,
@@ -255,9 +261,13 @@ function buildAgentMemoryContextProjection(input = {}, options = {}) {
     overBudget: 0,
   };
   const selectedMemoryRefs = [];
-  const rows = Array.isArray(input.memoryRows) ? input.memoryRows : [];
+  const rows = Array.isArray(source.memoryRows) ? source.memoryRows : [];
   for (const row of rows) {
-    const memoryId = normalizeString(row?.memoryId, "");
+    if (!isPlainObject(row)) {
+      omissionCounters.notEligible += 1;
+      continue;
+    }
+    const memoryId = normalizeString(row.memoryId, "");
     if (!selectionEnabled) {
       omissionCounters.notSelected += 1;
       continue;
@@ -306,14 +316,14 @@ function buildAgentMemoryContextProjection(input = {}, options = {}) {
   const sourceRefs = selectedMemoryRefs.map((ref) => ref.sourceRef);
   const projection = {
     schema: DIRECT_AGENT_MEMORY_CONTEXT_PROJECTION_SCHEMA,
-    projectionId: normalizeString(input.projectionId, `agent_memory_context_${sha256(`${projectId}:${agentId}:${threadId}:${turnId}:${selectionPolicyId}:${sourceRefs.map((ref) => ref.sourceRefDigest).join(":")}`).slice(0, 24)}`),
+    projectionId: normalizeString(source.projectionId, `agent_memory_context_${sha256(`${projectId}:${agentId}:${threadId}:${turnId}:${selectionPolicyId}:${sourceRefs.map((ref) => ref.sourceRefDigest).join(":")}`).slice(0, 24)}`),
     projectId,
     agentId,
     threadId,
     turnId,
     workThreadId,
     roleLane,
-    generatedAt: normalizeString(input.generatedAt, nowIso(nowMs)),
+    generatedAt: normalizeString(source.generatedAt, nowIso(nowMs)),
     selectionPolicyId,
     budgetPolicyId,
     selectionEnabled,

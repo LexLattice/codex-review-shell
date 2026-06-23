@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 
 const {
+  adaptAgentContextSourcesForContextPack,
   buildAgentIdentityContextSourceRef,
   buildAgentMemoryContextProjection,
   buildAgentRunContextSourceRef,
@@ -87,6 +88,25 @@ assert.equal(runRef.contextRole, "agent_run_witness");
 assert.equal(identityRef.providerInstruction, false);
 assert.equal(runRef.providerInstruction, false);
 
+const runRefUpdatedDigest = buildAgentRunContextSourceRef({
+  projectId: "project_alpha",
+  agentId: "direct_agent_primary",
+  agentRunId: "agent_run_1",
+  threadId: "thread_1",
+  lifecycle: "running",
+  runKind: "resident_thread",
+  runDigest: "sha256:agent_run_updated",
+}, { nowMs });
+assert.notEqual(runRefUpdatedDigest.sourceRefDigest, runRef.sourceRefDigest, "source ref digest must bind cited artifact digest");
+
+const adapterA = adaptAgentContextSourcesForContextPack({
+  agentContextSourceRefs: [runRef],
+}, { nowMs });
+const adapterB = adaptAgentContextSourcesForContextPack({
+  agentContextSourceRefs: [runRefUpdatedDigest],
+}, { nowMs });
+assert.notEqual(adapterA.adapterDigest, adapterB.adapterDigest, "adapter digest must bind nested source ref digest");
+
 const eligiblePreference = memoryRow({
   memoryId: "memory_preference_1",
   kind: "preference",
@@ -134,6 +154,20 @@ const disabledProjection = buildAgentMemoryContextProjection({
 });
 assert.equal(disabledProjection.selectedCount, 0, "memory rows should not select without explicit selection enablement");
 assert.equal(disabledProjection.omissionCounters.notSelected, 2);
+
+const invalidNumericProjection = buildAgentMemoryContextProjection({
+  projectId: "project_alpha",
+  agentId: "direct_agent_primary",
+  threadId: "thread_1",
+  turnId: "turn_1",
+  roleLane: "primary",
+  memoryRows: [eligiblePreference, null, new Date("2026-06-23T00:00:00.000Z")],
+  selectionEnabled: true,
+  maxSelectedRows: "not-a-number",
+  nowMs: "not-a-number",
+});
+assert.equal(invalidNumericProjection.selectedCount, 1, "invalid max should fall back to bounded default");
+assert.equal(invalidNumericProjection.omissionCounters.notEligible, 2, "null and non-row objects should be skipped without crashing");
 
 const projection = buildAgentMemoryContextProjection({
   projectId: "project_alpha",
