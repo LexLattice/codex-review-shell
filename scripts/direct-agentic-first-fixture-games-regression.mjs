@@ -89,8 +89,11 @@ assert.equal(g3.claimExtractionReport.claims.find((claim) => claim.name === "app
 
 const g4 = byScenario.get("g4_orchestrator_artifact_class_routing");
 assert.deepEqual(g4.runReport.declaredToolBundle.declaredTools, ["send_message"]);
-assert.equal(g4.runReport.roleBehaviorEvents[0].usedTools.includes("send_message"), true);
-assert.equal(g4.runReport.roleBehaviorEvents[0].usedTools.includes("apply_patch"), false);
+assert.equal(g4.runReport.roleBehaviorEvents.length, 2);
+assert.equal(g4.runReport.roleBehaviorEvents.every((row) => row.usedTools.includes("send_message")), true);
+assert.equal(g4.runReport.roleBehaviorEvents.some((row) => row.text.includes("implementation_worker")), true);
+assert.equal(g4.runReport.roleBehaviorEvents.some((row) => row.text.includes("review_auditor")), true);
+assert.equal(g4.runReport.roleBehaviorEvents.some((row) => row.usedTools.includes("apply_patch")), false);
 assert.equal(g4.evidenceOracle.contextAdmissionEventCount, 1);
 assert.equal(g4.runReport.evidenceAssertions.some((row) => row.assertionId === "evidence_parent_child_identity_preserved" && row.passed), true);
 
@@ -133,6 +136,9 @@ const g11 = byScenario.get("g11_result_admission_boundary");
 assert.deepEqual(g11.runReport.declaredToolBundle.declaredTools, ["read_file"]);
 assert.equal(g11.runReport.roleBehaviorEvents[0].usedTools.includes("read_file"), true);
 assert.equal(g11.runReport.evidenceAssertions.some((row) => row.assertionId === "evidence_context_admission_must_cite_source_refs" && row.passed), true);
+assert.equal(g11.runReport.authorityEvents.some((row) => row.eventKind === "durable_memory_admission_rejected"), true);
+assert.equal(g11.runReport.evidenceAssertions.some((row) => row.assertionId === "evidence_context_must_not_admit_durable_memory" && row.passed), true);
+assert.equal(g11.runReport.evidenceAssertions.some((row) => row.assertionId === "evidence_context_must_not_admit_future_context" && row.passed), true);
 
 const g12 = byScenario.get("g12_tool_declaration_mismatch_guard");
 assert.equal(g12.runReport.declaredToolBundle.visibleOnlyTools.includes("apply_patch"), true);
