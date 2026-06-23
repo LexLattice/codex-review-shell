@@ -700,6 +700,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "The oracle is deliberately fixture-safe: it starts no provider transport, mutates no workspace, uses no broad semantic parser, and does not promote fixture claims into live capability truth.",
   },
   {
+    id: "ic13.agentic-first-fixture-games",
+    name: "Direct agentic first fixture game suite",
+    role: "observability_surface",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/headless/agentic-fixture-games.js", "src/main/direct/headless/agentic-game-kernel.js", "src/main/direct/headless/agentic-evidence-oracle.js", "scripts/direct-agentic-first-fixture-games-regression.mjs", "docs/DIRECT_AGENTIC_TESTING_GAME_MATRIX_SPEC.md", "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md"],
+    ontology: ontologyShape(["direct_agentic_first_fixture_games_suite", "direct_agentic_first_fixture_games_report", "direct_agentic_game_scenario", "direct_agentic_evidence_oracle_report"], "harness", {
+      identityFields: ["suiteId", "scenarioId", "rolePackId", "bundleId", "authorizationModelId", "topologyId"],
+      schema: "direct_agentic_first_fixture_games_report@1",
+    }),
+    bridgeFit: "Adds PR 134 fixture-only games for resident tool truth, capability permission variation, auditor read-only boundary, implementation worker minimal loop, and observe-only sub-agent containment using the shared game kernel and evidence oracle.",
+    realignment: "The first fixture games start no live provider transport, activate no new capabilities, and do not treat fixture pass as live resident behavior proof or production tool readiness.",
+  },
+  {
     id: "ic13.headless-resident-smoke-runner",
     name: "Headless resident-agent smoke runner",
     role: "observability_surface",
