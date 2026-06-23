@@ -672,6 +672,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "Scenario fixtures do not run live resident self-report, sub-agent graph providers, context injection, analytics attribution probes, provider transport beyond the fixture controller, or workspace mutation unless later scenarios explicitly add those authority contracts.",
   },
   {
+    id: "ic13.agentic-game-kernel",
+    name: "Direct agentic testing game kernel",
+    role: "governance_routing",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/headless/agentic-game-kernel.js", "scripts/direct-agentic-game-kernel-regression.mjs", "docs/DIRECT_AGENTIC_TESTING_GAME_MATRIX_SPEC.md", "docs/DIRECT_INFORMATION_BRIDGE_WAVE_ROADMAP.md"],
+    ontology: ontologyShape(["direct_agentic_game_scenario", "direct_agentic_game_run_report", "direct_agent_role_pack", "direct_capability_bundle_spec", "direct_agent_topology_spec", "direct_agentic_game_remand"], "harness", {
+      identityFields: ["gameId", "scenarioId", "runId", "rolePackId", "bundleId", "topologyId", "remandId"],
+      schema: "direct_agentic_game_scenario@1",
+    }),
+    bridgeFit: "Defines the shared fixture-only game kernel for role packs, capability bundles, authorization models, topology specs, behavior/evidence verdict split, and typed remands before live headless scenario execution is promoted.",
+    realignment: "The kernel starts no provider transport, mutates no workspace, activates no new tools, and does not treat fixture pass as live model behavior proof.",
+  },
+  {
     id: "ic13.headless-resident-smoke-runner",
     name: "Headless resident-agent smoke runner",
     role: "observability_surface",

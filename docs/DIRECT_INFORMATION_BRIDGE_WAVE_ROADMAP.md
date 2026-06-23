@@ -4779,7 +4779,7 @@ Produce typed remands instead of prose-only failures.
 
 | PR | Status | Branch | Purpose | Planned deliverable | Explicit non-goals |
 | --- | --- | --- | --- | --- | --- |
-| `#132` | planned | TBD | Agentic game kernel and fixture runner | AgenticGameScenario, AgenticGameRunReport, AgentRolePack, CapabilityBundleSpec, AuthorizationModelSpec, AgentTopologySpec, GameRemand taxonomy, fixture-only runner/report | No live provider calls or tool promotion |
+| `#132` | implemented | `codex/direct-agentic-game-kernel` | Agentic game kernel and fixture runner | AgenticGameScenario, AgenticGameRunReport, AgentRolePack, CapabilityBundleSpec, AuthorizationModelSpec, AgentTopologySpec, GameRemand taxonomy, fixture-only runner/report | No live provider calls or tool promotion |
 | `#133` | planned | TBD | Evidence oracle and resident claim extractor | Behavior/evidence oracle validators, resident capability claim parser/classifier, declared bundle comparator, authority/mutation/context evidence validators, remand classifier | No broad semantic parser or live model test requirement |
 | `#134` | planned | TBD | First five fixture games | Fixture scenarios and reports for G1 resident tool truth, G10 authorization variation, G3 auditor cannot patch, G2 implementation loop, G5 observe-only sub-agent boundary | No live provider calls or new capability activation |
 | `#135` | planned | TBD | Remaining fixture games | Fixture scenarios for G4 orchestrator routing, G6 wrong-thread broker, G7 memory-current-user conflict, G8 external discovery, G9 provider-hosted web, G11 result admission, G12 declaration mismatch | No live provider calls or remediation implementation |
