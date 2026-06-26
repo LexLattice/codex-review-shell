@@ -6114,15 +6114,16 @@ function normalizeThreadReadResult(result, requestedThreadId) {
   };
 }
 
-async function resumeThreadById(threadId, sessionFilePath = "") {
+async function resumeThreadById(threadId, sessionFilePath = "", options = {}) {
   const rolloutPath = String(sessionFilePath || "").trim();
+  const excludeTurns = Boolean(options.excludeTurns);
   const attempts = [
     ...(rolloutPath ? [
-      { method: "thread/resume", params: { threadId, path: rolloutPath } },
-      { method: "thread/resume", params: { threadId, path: rolloutPath, cwd: workspaceRootText() || null } },
+      { method: "thread/resume", params: { threadId, path: rolloutPath, ...(excludeTurns ? { excludeTurns: true } : {}) } },
+      { method: "thread/resume", params: { threadId, path: rolloutPath, cwd: workspaceRootText() || null, ...(excludeTurns ? { excludeTurns: true } : {}) } },
     ] : []),
-    { method: "thread/resume", params: { threadId } },
-    { method: "thread/resume", params: { threadId, cwd: workspaceRootText() || null } },
+    { method: "thread/resume", params: { threadId, ...(excludeTurns ? { excludeTurns: true } : {}) } },
+    { method: "thread/resume", params: { threadId, cwd: workspaceRootText() || null, ...(excludeTurns ? { excludeTurns: true } : {}) } },
   ];
   let lastError = null;
   for (const attempt of attempts) {
@@ -6157,7 +6158,7 @@ async function readThreadById(threadId) {
   throw lastError || new Error("Unable to read Codex thread.");
 }
 
-async function attachLiveThread(threadId, sessionFilePath = "") {
+async function attachLiveThread(threadId, sessionFilePath = "", options = {}) {
   const requestedThreadId = String(threadId || "").trim();
   if (!requestedThreadId) throw new Error("Missing Codex thread id.");
   if (!state.connected) throw new Error("Codex surface is not connected yet.");
@@ -6166,8 +6167,9 @@ async function attachLiveThread(threadId, sessionFilePath = "") {
   }
   let result = null;
   try {
-    result = await resumeThreadById(requestedThreadId, sessionFilePath);
-  } catch {
+    result = await resumeThreadById(requestedThreadId, sessionFilePath, options);
+  } catch (error) {
+    if (options.skipReadFallback) throw error;
     result = await readThreadById(requestedThreadId);
   }
   return result;
@@ -6220,10 +6222,12 @@ async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "",
   addSystemMessage(`Loading thread ${requestedThreadId}…`);
   setComposerEnabled(false, "Loading stored transcript and attaching live Codex session…");
   let renderedStored = false;
+  let preserveStoredTranscriptOnAttach = false;
   try {
     const snapshot = await readStoredThreadTranscript(requestedThreadId, state.sourceHome, sessionFilePath);
     if (openRequestId !== state.openRequestId) return;
     if (snapshot?.entries?.length) {
+      preserveStoredTranscriptOnAttach = Boolean(snapshot?.presentationModel);
       updateSurfaceHeader(snapshot.title || titleHint || payloadTitle || requestedThreadId, workspaceText());
       renderStoredTranscript(snapshot, requestedThreadId);
       renderedStored = true;
@@ -6241,7 +6245,10 @@ async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "",
   }
 
   try {
-    const liveResult = await attachLiveThread(requestedThreadId, state.sessionFilePath);
+    const liveResult = await attachLiveThread(requestedThreadId, sessionFilePath, {
+      excludeTurns: preserveStoredTranscriptOnAttach,
+      skipReadFallback: preserveStoredTranscriptOnAttach,
+    });
     if (openRequestId !== state.openRequestId) return;
     applyLiveThreadResult(liveResult);
     await reportThreadState("attached_live", {
@@ -7671,7 +7678,11 @@ async function startCodexTurn(text, options = {}) {
 async function sendPrompt(text, options = {}) {
   if (!state.threadId) await startNewThread();
   if (!state.liveAttached && state.threadId) {
-    const liveResult = await attachLiveThread(state.threadId, state.sessionFilePath);
+    const preserveStoredTranscript = Boolean(renderedStoredSnapshotForThread(state.threadId)?.presentationModel);
+    const liveResult = await attachLiveThread(state.threadId, state.sessionFilePath, {
+      excludeTurns: preserveStoredTranscript,
+      skipReadFallback: preserveStoredTranscript,
+    });
     applyLiveThreadResult(liveResult);
   }
   state.turnPending = true;
@@ -8071,7 +8082,11 @@ function handleBridgeEvent(event) {
         const expectedThreadId = state.threadId;
         const expectedSourceHome = state.sourceHome;
         const expectedSessionFilePath = state.sessionFilePath;
-        attachLiveThread(expectedThreadId, expectedSessionFilePath)
+        const preserveStoredTranscript = Boolean(renderedStoredSnapshotForThread(expectedThreadId)?.presentationModel);
+        attachLiveThread(expectedThreadId, expectedSessionFilePath, {
+          excludeTurns: preserveStoredTranscript,
+          skipReadFallback: preserveStoredTranscript,
+        })
           .then((result) => {
             if (state.threadId !== expectedThreadId) return;
             applyLiveThreadResult(result);
