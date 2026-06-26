@@ -4681,8 +4681,13 @@ function normalizeThreadReadResult(result, requestedThreadId) {
   };
 }
 
-async function resumeThreadById(threadId) {
+async function resumeThreadById(threadId, sessionFilePath = "") {
+  const rolloutPath = String(sessionFilePath || "").trim();
   const attempts = [
+    ...(rolloutPath ? [
+      { method: "thread/resume", params: { threadId, path: rolloutPath } },
+      { method: "thread/resume", params: { threadId, path: rolloutPath, cwd: workspaceRootText() || null } },
+    ] : []),
     { method: "thread/resume", params: { threadId } },
     { method: "thread/resume", params: { threadId, cwd: workspaceRootText() || null } },
   ];
@@ -4719,7 +4724,7 @@ async function readThreadById(threadId) {
   throw lastError || new Error("Unable to read Codex thread.");
 }
 
-async function attachLiveThread(threadId) {
+async function attachLiveThread(threadId, sessionFilePath = "") {
   const requestedThreadId = String(threadId || "").trim();
   if (!requestedThreadId) throw new Error("Missing Codex thread id.");
   if (!state.connected) throw new Error("Codex surface is not connected yet.");
@@ -4728,7 +4733,7 @@ async function attachLiveThread(threadId) {
   }
   let result = null;
   try {
-    result = await resumeThreadById(requestedThreadId);
+    result = await resumeThreadById(requestedThreadId, sessionFilePath);
   } catch {
     result = await readThreadById(requestedThreadId);
   }
@@ -4803,7 +4808,7 @@ async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "",
   }
 
   try {
-    const liveResult = await attachLiveThread(requestedThreadId);
+    const liveResult = await attachLiveThread(requestedThreadId, state.sessionFilePath);
     if (openRequestId !== state.openRequestId) return;
     applyLiveThreadResult(liveResult);
     await reportThreadState("attached_live", {
@@ -6149,7 +6154,7 @@ async function startCodexTurn(text, options = {}) {
 async function sendPrompt(text, options = {}) {
   if (!state.threadId) await startNewThread();
   if (!state.liveAttached && state.threadId) {
-    const liveResult = await attachLiveThread(state.threadId);
+    const liveResult = await attachLiveThread(state.threadId, state.sessionFilePath);
     applyLiveThreadResult(liveResult);
   }
   state.turnPending = true;
@@ -6527,7 +6532,7 @@ function handleBridgeEvent(event) {
         const expectedThreadId = state.threadId;
         const expectedSourceHome = state.sourceHome;
         const expectedSessionFilePath = state.sessionFilePath;
-        attachLiveThread(expectedThreadId)
+        attachLiveThread(expectedThreadId, expectedSessionFilePath)
           .then((result) => {
             if (state.threadId !== expectedThreadId) return;
             applyLiveThreadResult(result);
