@@ -7,4 +7,5 @@ module.exports = {
   ...require("./manager"),
   ...require("./thread-manager"),
   ...require("./authorization-router"),
+  ...require("./constitutional-policy"),
 };
