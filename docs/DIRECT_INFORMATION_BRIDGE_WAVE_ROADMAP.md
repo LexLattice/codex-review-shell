@@ -4796,6 +4796,76 @@ compare behavior to harness evidence, and produce typed remands for missing
 wiring.
 ```
 
+## Wave 23: ODEU Worldmodel Manager And Role-Indexed Authorization
+
+Status: planned.
+
+Detailed spec:
+
+```text
+docs/DIRECT_WAVE23_WORLDMODEL_MANAGER_AUTHORIZATION_SPEC.md
+```
+
+Purpose:
+
+```text
+Introduce a standing ODEU Worldmodel Manager as the control-plane role that
+owns active interaction worldmodels, worker boot packets, constitutional
+policy, self-binding preferences, and role-indexed authorization routing.
+Workers do task work from scoped boot packets; they do not renegotiate policy
+directly with the user. The practical test target is a direct manager chat that
+can create/select a WorkThread, delegate it to a Thread Manager, and preserve
+recursive constitutional relay into worker agents.
+```
+
+Standing laws:
+
+```text
+No model action before model-situation typing.
+A casual user yes is not automatically constitutional authority.
+Permission is a typed deontic transition inside a role-indexed worldmodel.
+Workers do task work.
+The Worldmodel Manager preserves worldmodel, context, and authority integrity.
+Admin-mode policy formation is distinct from user-mode task preference.
+```
+
+Initial target posture:
+
+```text
+Add worldmodel, manager, boot-packet, authorization, policy, and game-test
+substrate before promoting stronger sub-agent/control tools.
+Keep worker boot packets least-context and source-ref/digest backed.
+Route blocked worker actions to the manager.
+Use admin-mode only for standing policy changes.
+Make manager -> Thread Manager delegation testable headlessly.
+Record hardening gates as witnesses/shadow checks first; do not block manager
+chat or delegation except for obvious dangerous broadening, destructive,
+account, or external mutation cases.
+Do not promote sub-agent spawn/send/lifecycle, external writes, plugin install,
+or rate-limit reset credit consumption in this wave.
+```
+
+| PR | Status | Branch | Purpose | Planned deliverable | Explicit non-goals |
+| --- | --- | --- | --- | --- | --- |
+| `#138` | planned | TBD | Active interaction worldmodel kernel | ActiveInteractionWorldmodel, WorldScopeRef, four ODEU lanes, unknown/stale/remand rows, digest/revision helpers, revision compatibility helpers, scoped fixture worldmodels, negative missing-lane fixtures | No live resident behavior change, policy engine, or tool promotion |
+| `#139` | planned | TBD | Worldmodel Manager role and ledger | ODEUWorldmodelManagerProfile, append-only worldmodel ledger rows, current active worldmodel pointer, manager direct chat identity marker, manager-safe status projection, control-plane action boundary, UserRoleState scaffold | No admin-mode policy updates or worker authorization routing |
+| `#140` | planned | TBD | Thread Manager delegation and worker boot packets | ThreadManagerProfile, WorkThreadDelegationPacket, WorkerBootPacket, AuthorityBoundary, role-lane scoped ODEU projections, omissions/stale warnings, BootPacketProjectionWitness, shadow context-pack integration | No broad policy ledger exposure, automatic provider context injection, or universal child-boundary hard block |
+| `#141` | planned | TBD | Role-indexed authorization router | AuthorizationRequest, AuthorizationDecision, ActionClassRegistryEntry, PolicyResolutionTrace scaffold, revision compatibility recording, manager/user/admin decision paths, grant/deny/remand continuation envelopes | No destructive action promotion, direct worker-to-user policy prompts, or full fail-closed policy engine |
+| `#142` | planned | TBD | Constitutional policy and self-binding records | ConstitutionalPolicyProfile, policy rules/exceptions, SelfBindingPreferenceRecord, AdminModePolicyUpdate, policy store, deterministic policy precedence trace, casual-yes and child-broadening negative fixtures | No autonomous policy mutation, hidden admin-mode inference, or broad blocker for every unresolved safe/control-plane conflict |
+| `#143` | planned | TBD | Tool catalog and agentic game integration | Resident catalog cites boot packet and manager route; unavailable capabilities explain authorization route; agentic games for manager chat, Thread Manager delegation, recursive relay, admin/user-mode boundaries, projection-leakage witnesses, future hardening backlog | No sub-agent spawn/send/lifecycle, rate-limit reset, external write, plugin-install promotion, or universal strict preflight gate |
+
+Wave 23 completion gate:
+
+```text
+Direct has a durable ODEU Worldmodel Manager that can build active interaction
+worldmodels, produce scoped worker boot packets, route authorization requests
+through role-indexed policy, distinguish user-mode from admin-mode, start a
+manager-owned WorkThread delegation to a Thread Manager, and expose resident
+capability truth without granting new dangerous actions. V0 hardening produces
+witnesses/traces first and promotes strict blockers only where the action is
+already dangerous under current authority policy.
+```
+
 
 ## Update Rules
 
