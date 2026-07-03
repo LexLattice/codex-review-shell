@@ -476,6 +476,18 @@ function resetAgentGraph(threadId = state.threadId) {
 }
 
 const els = {
+  codexShell: document.getElementById("codexShell"),
+  morphicCockpitBar: document.getElementById("morphicCockpitBar"),
+  morphicThreadTitle: document.getElementById("morphicThreadTitle"),
+  morphicThreadMeta: document.getElementById("morphicThreadMeta"),
+  morphicRuntimePathChip: document.getElementById("morphicRuntimePathChip"),
+  morphicTurnChip: document.getElementById("morphicTurnChip"),
+  morphicNewThreadButton: document.getElementById("morphicNewThreadButton"),
+  morphicAnalyticsButton: document.getElementById("morphicAnalyticsButton"),
+  morphicSettingsButton: document.getElementById("morphicSettingsButton"),
+  morphicThreadRail: document.getElementById("morphicThreadRail"),
+  morphicThreadRailList: document.getElementById("morphicThreadRailList"),
+  morphicThreadDirectoryButton: document.getElementById("morphicThreadDirectoryButton"),
   projectName: document.getElementById("projectName"),
   repoPath: document.getElementById("repoPath"),
   connectionBadge: document.getElementById("connectionBadge"),
@@ -539,11 +551,93 @@ function workspaceText() {
 function updateSurfaceHeader(title = "", detail = "") {
   const cleanTitle = String(title || "").trim();
   state.threadTitle = cleanTitle || state.threadTitle || "";
-  els.projectName.textContent = state.threadTitle || project?.name || "Codex session";
-  els.projectName.title = state.threadTitle || project?.name || "";
-  els.repoPath.textContent = detail || workspaceText();
-  els.repoPath.title = detail || workspaceText();
+  if (els.projectName) {
+    els.projectName.textContent = state.threadTitle || project?.name || "Codex session";
+    els.projectName.title = state.threadTitle || project?.name || "";
+  }
+  if (els.repoPath) {
+    els.repoPath.textContent = detail || workspaceText();
+    els.repoPath.title = detail || workspaceText();
+  }
   renderRuntimeConstitution();
+}
+
+function runtimePathLabel() {
+  if (isDirectLiveTextSurface()) return "Direct";
+  if (connectionAvailable()) return "Appserver";
+  if (payload.runtimeStartupPending) return "Starting";
+  return "Offline";
+}
+
+function canStartThreadFromCompactBar() {
+  if (state.turnPending || turnIsActive()) return false;
+  if (isDirectLiveTextSurface()) {
+    const startAction = state.directThreadDeck?.actions?.start || null;
+    if (startAction && startAction.enabled === false) return false;
+    return typeof bridge?.createDirectWorkThreadDraftSession === "function" && Boolean(project?.id);
+  }
+  return hasCapability("threads", "canStart");
+}
+
+function renderMorphicCockpit() {
+  const title = state.threadTitle || project?.name || "Codex session";
+  const meta = [
+    state.threadId ? `thread ${state.threadId}` : "no thread selected",
+    workspaceText(),
+  ].filter(Boolean).join(" · ");
+  if (els.morphicThreadTitle) {
+    els.morphicThreadTitle.textContent = title;
+    els.morphicThreadTitle.title = title;
+  }
+  if (els.morphicThreadMeta) {
+    els.morphicThreadMeta.textContent = meta;
+    els.morphicThreadMeta.title = meta;
+  }
+  if (els.morphicRuntimePathChip) {
+    const runtimeText = runtimePathLabel();
+    const ready = isDirectLiveTextSurface() || connectionAvailable();
+    els.morphicRuntimePathChip.textContent = runtimeText;
+    els.morphicRuntimePathChip.className = `compact-thread-chip runtime ${ready ? "active" : "warning"}`;
+    els.morphicRuntimePathChip.title = `Runtime path: ${runtimeText}. Open runtime/settings details.`;
+  }
+  if (els.morphicTurnChip) {
+    const active = turnIsActive();
+    const queuedCount = currentQueuedComposerMessages().length;
+    const elapsedLabel = activeTurnElapsedLabel();
+    const text = state.turnStopping
+      ? `Stopping${elapsedLabel ? ` ${elapsedLabel}` : ""}`
+      : state.turnPending
+        ? "Starting"
+        : state.queuedPromptDrainInProgress
+          ? "Sending queued"
+          : active
+            ? `Working${elapsedLabel ? ` ${elapsedLabel}` : ""}${queuedCount ? ` · Q${queuedCount}` : ""}`
+            : queuedCount
+              ? `Queued ${queuedCount}`
+              : "Idle";
+    const statusClass = active
+      ? "active"
+      : state.turnPending || state.queuedPromptDrainInProgress || queuedCount
+        ? "warning"
+        : "";
+    els.morphicTurnChip.textContent = text;
+    els.morphicTurnChip.className = `compact-thread-chip status${statusClass ? ` ${statusClass}` : ""}`;
+    els.morphicTurnChip.title = active
+      ? `Codex turn is active${elapsedLabel ? ` for ${elapsedLabel}` : ""}.`
+      : queuedCount
+        ? `${queuedCount} queued message${queuedCount === 1 ? "" : "s"}.`
+        : "Codex thread is idle.";
+  }
+  if (els.morphicNewThreadButton) {
+    const canStart = canStartThreadFromCompactBar();
+    els.morphicNewThreadButton.disabled = !canStart;
+    els.morphicNewThreadButton.title = canStart
+      ? "Start a fresh Codex thread in the current project."
+      : state.turnPending || turnIsActive()
+        ? "New thread is unavailable while the current Codex turn is active."
+        : "Current runtime has not exposed thread start capability.";
+  }
+  renderMorphicThreadRail();
 }
 
 function setBadge(element, text, className = "") {
@@ -730,6 +824,8 @@ async function removeComposerAttachment(draftId) {
 }
 
 function renderComposerAttachments() {
+  const visible = Boolean(state.composerAttachments.length || state.composerAttachmentError || state.composerDragDepth);
+  if (els.composerForm) els.composerForm.dataset.attachmentVisible = visible ? "true" : "false";
   if (!els.composerAttachmentList) return;
   els.composerAttachmentList.innerHTML = "";
   for (const attachment of state.composerAttachments) {
@@ -1762,9 +1858,10 @@ function renderThreadAnalyticsPanel() {
   const dock = ["float", "left", "right", "bottom"].includes(state.analyticsPanelDock) ? state.analyticsPanelDock : "right";
   els.threadAnalyticsPanel.hidden = !state.analyticsPanelOpen;
   els.threadAnalyticsPanel.className = `thread-analytics-panel dock-${dock}`;
-  els.analyticsPanelButton?.setAttribute("aria-expanded", state.analyticsPanelOpen ? "true" : "false");
-  els.analyticsPanelButton?.classList.toggle("ready", state.analyticsPanelOpen);
-  els.analyticsPanelButton?.classList.toggle("unknown", !state.analyticsPanelOpen);
+  const analyticsButton = els.analyticsPanelButton || els.morphicAnalyticsButton;
+  analyticsButton?.setAttribute("aria-expanded", state.analyticsPanelOpen ? "true" : "false");
+  analyticsButton?.classList.toggle("active", state.analyticsPanelOpen);
+  analyticsButton?.classList.toggle("warning", !state.analyticsPanelOpen);
   for (const button of els.threadAnalyticsDockButtons?.querySelectorAll?.("[data-analytics-dock]") || []) {
     button.classList.toggle("active", button.dataset.analyticsDock === dock);
   }
@@ -2380,6 +2477,7 @@ function renderRuntimeConstitution() {
   renderRuntimeDrawer();
   renderComposerRuntimeBand();
   renderThreadAnalyticsPanel();
+  renderMorphicCockpit();
 }
 
 function createRuntimeChip(chip) {
@@ -2871,6 +2969,7 @@ function renderComposerRuntimeBand() {
   if (state.composerMenu === "model") renderComposerModelMenu();
   updateComposerStatusTicker(active);
   updateComposerGeometry();
+  renderMorphicCockpit();
 }
 
 function refreshButton(label, onClick) {
@@ -4861,6 +4960,34 @@ function isDirectLiveTextSurface() {
   return connection?.transport === DIRECT_LIVE_TEXT_TRANSPORT;
 }
 
+function directLiveTextReadinessStatus() {
+  return directSurfaceProjection()?.liveTextStatus || connection?.directLiveText || null;
+}
+
+function directLiveTextReady() {
+  const status = directLiveTextReadinessStatus();
+  return status?.status === "ready" || status?.turnRunnable === true;
+}
+
+function directLiveTextBlockedMessage() {
+  const status = directLiveTextReadinessStatus();
+  const authStatus = status?.auth?.status || directSurfaceProjection()?.directAuthPreflight?.authStatus?.status || "";
+  if (authStatus && authStatus !== "authenticated") {
+    return authStatus === "expired" || authStatus === "refresh_failed"
+      ? "Direct auth is expired. Sign in again before starting a direct Codex turn."
+      : "Direct auth is not ready. Sign in before starting a direct Codex turn.";
+  }
+  return status?.reason || status?.status || "Direct runtime is not ready for turns.";
+}
+
+function enforceDirectLiveTextStartupReadiness() {
+  if (!isDirectLiveTextSurface()) return;
+  if (directLiveTextReady()) return;
+  const message = directLiveTextBlockedMessage();
+  setComposerEnabled(false, message);
+  addSystemMessage(`Direct runtime blocked: ${message}`);
+}
+
 function directThreadTimeLabel(value) {
   const parsed = Date.parse(String(value || ""));
   if (!Number.isFinite(parsed)) return "time unknown";
@@ -4869,6 +4996,12 @@ function directThreadTimeLabel(value) {
   const sameDay = date.toDateString() === now.toDateString();
   if (sameDay) return date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
   return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function shortThreadId(value) {
+  const text = String(value || "").trim();
+  if (text.length <= 12) return text || "thread";
+  return `${text.slice(0, 8)}...${text.slice(-4)}`;
 }
 
 function directThreadStateLabel(entry = {}) {
@@ -4897,7 +5030,88 @@ function activeDirectThreadRow() {
   }) || null;
 }
 
+function morphicRailRows() {
+  const rows = Array.isArray(state.directThreadDeck?.rows)
+    ? state.directThreadDeck.rows
+    : Array.isArray(state.directThreadList) ? state.directThreadList : [];
+  const selectedWorkThreadId = state.directSurfaceProjection?.operatorBroker?.selectedWorkThreadId ||
+    state.directSurfaceProjection?.workThreads?.resolutionReport?.selectedWorkThreadId ||
+    "";
+  const now = Date.now();
+  const recentWindowMs = 14 * 24 * 60 * 60 * 1000;
+  return rows
+    .filter(Boolean)
+    .filter((entry) => {
+      const id = String(entry.threadId || entry.id || "").trim();
+      if (!id) return false;
+      const isActive = id === String(state.threadId || "");
+      const isRunning = Number(entry.activeTurnCount || 0) > 0 || entry.displayState === "running";
+      const updated = Date.parse(entry.updatedAt || entry.createdAt || "");
+      const isRecent = Number.isFinite(updated) && now - updated <= recentWindowMs;
+      const workThreadLinked = Boolean(entry.workThreadId && selectedWorkThreadId === entry.workThreadId);
+      return isActive || isRunning || isRecent || workThreadLinked;
+    })
+    .slice(0, 12);
+}
+
+function renderMorphicThreadRail() {
+  if (!els.morphicThreadRail || !els.morphicThreadRailList) return;
+  const enabled = isDirectLiveTextSurface();
+  els.morphicThreadRail.hidden = !enabled;
+  if (!enabled) {
+    els.morphicThreadRailList.replaceChildren();
+    return;
+  }
+  const rows = morphicRailRows();
+  els.morphicThreadRailList.replaceChildren();
+  if (!rows.length) {
+    const empty = document.createElement("span");
+    empty.className = "morphic-thread-empty";
+    empty.textContent = state.directThreadListStatus === "loading"
+      ? "Refreshing direct threads..."
+      : state.directThreadListStatus === "error"
+        ? `Thread list unavailable: ${state.directThreadListError || "unknown error"}`
+        : "No recent direct threads.";
+    els.morphicThreadRailList.appendChild(empty);
+  } else {
+    for (const entry of rows) {
+      const threadId = String(entry.threadId || entry.id || "").trim();
+      if (!threadId) continue;
+      const isActive = threadId === String(state.threadId || "");
+      const isRunning = Number(entry.activeTurnCount || 0) > 0 || entry.displayState === "running";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `morphic-thread-tab${isActive ? " active" : ""}${isRunning ? " running" : ""}`;
+      button.dataset.threadId = threadId;
+      button.disabled = !directThreadActionEnabled(entry, "focus");
+      button.title = [
+        entry.title || threadId,
+        threadId,
+        entry.workThreadId ? `WorkThread ${entry.workThreadId}` : "WorkThread unresolved",
+        entry.actions?.focus?.disabledReason || entry.actions?.focus?.effect || "",
+      ].filter(Boolean).join("\n");
+      const title = document.createElement("span");
+      title.className = "morphic-thread-tab-title";
+      title.textContent = entry.title || shortThreadId(threadId);
+      const stateLabel = document.createElement("span");
+      stateLabel.className = "morphic-thread-tab-state";
+      stateLabel.textContent = isRunning ? "●" : directThreadTimeLabel(entry.updatedAt || entry.createdAt);
+      button.append(title, stateLabel);
+      button.addEventListener("click", () => {
+        openDirectThread(threadId).catch((openError) => addSystemMessage(`Unable to open direct thread: ${openError.message}`));
+      });
+      els.morphicThreadRailList.appendChild(button);
+    }
+  }
+  const loading = state.directThreadListStatus === "loading";
+  if (els.morphicThreadDirectoryButton) {
+    els.morphicThreadDirectoryButton.disabled = loading;
+    els.morphicThreadDirectoryButton.title = loading ? "Refreshing direct thread directory." : "Refresh direct thread directory.";
+  }
+}
+
 function renderDirectThreadList() {
+  renderMorphicThreadRail();
   if (!els.directThreadStrip || !els.directThreadList || !els.directThreadStatus) return;
   const enabled = isDirectLiveTextSurface();
   els.directThreadStrip.hidden = !enabled;
@@ -4908,8 +5122,10 @@ function renderDirectThreadList() {
   if (els.directThreadRefreshButton) els.directThreadRefreshButton.disabled = loading;
   const startAction = state.directThreadDeck?.actions?.start || null;
   if (els.directThreadNewButton) {
-    els.directThreadNewButton.disabled = !state.connected ||
-      !hasCapability("threads", "canStart") ||
+    const canCreateDirectDraft = isDirectLiveTextSurface() &&
+      typeof bridge?.createDirectWorkThreadDraftSession === "function" &&
+      Boolean(project?.id);
+    els.directThreadNewButton.disabled = !canCreateDirectDraft ||
       (startAction && startAction.enabled === false);
     els.directThreadNewButton.title = startAction?.disabledReason || startAction?.effect || "Start a fresh direct-native thread";
   }
@@ -7563,9 +7779,6 @@ function renderThreadHistory(thread, options = {}) {
 }
 
 async function startNewThread() {
-  if (!hasCapability("threads", "canStart")) {
-    throw new Error("Active Codex runtime does not expose thread/start capability.");
-  }
   if (isDirectLiveTextSurface() && typeof bridge?.createDirectWorkThreadDraftSession === "function" && project?.id) {
     state.directThreadOpenRequestId += 1;
     const result = await bridge.createDirectWorkThreadDraftSession(project.id, {
@@ -7592,6 +7805,9 @@ async function startNewThread() {
     addSystemMessage(`Direct WorkThread draft did not create a session${blockers ? `: ${blockers}` : "."}`);
     return;
   }
+  if (!hasCapability("threads", "canStart")) {
+    throw new Error("Active Codex runtime does not expose thread/start capability.");
+  }
   if (isDirectLiveTextSurface()) state.directThreadOpenRequestId += 1;
   const cwd = workspaceRootText();
   const params = {
@@ -7615,10 +7831,15 @@ async function startNewThread() {
 }
 
 async function startCodexTurn(text, options = {}) {
+  if (isDirectLiveTextSurface()) {
+    await refreshDirectSurfaceProjection({ render: false }).catch(() => {});
+    if (!directLiveTextReady()) {
+      throw new Error(directLiveTextBlockedMessage());
+    }
+  }
   if (!hasCapability("turns", "canStart")) {
     throw new Error("Active Codex runtime does not expose turn/start capability.");
   }
-  if (isDirectLiveTextSurface()) await refreshDirectSurfaceProjection({ render: false });
   const params = {
     threadId: state.threadId,
     input: [{ type: "text", text, text_elements: [] }],
@@ -8300,8 +8521,10 @@ async function connect() {
     } else {
       await loadExistingThreadOrStartNew();
     }
+    enforceDirectLiveTextStartupReadiness();
   } catch (error) {
     addSystemMessage(`Codex initialization failed: ${error.message}`);
+    enforceDirectLiveTextStartupReadiness();
   }
 }
 
@@ -8358,6 +8581,13 @@ els.directThreadRefreshButton?.addEventListener("click", () => {
 });
 els.directThreadNewButton?.addEventListener("click", () => {
   createDirectThreadFromStrip().catch((error) => addSystemMessage(`New direct thread failed: ${error.message}`));
+});
+els.morphicNewThreadButton?.addEventListener("click", () => {
+  const starter = isDirectLiveTextSurface() ? createDirectThreadFromStrip : startNewThread;
+  starter().catch((error) => addSystemMessage(`New thread failed: ${error.message}`));
+});
+els.morphicThreadDirectoryButton?.addEventListener("click", () => {
+  refreshDirectThreadList({ showErrors: true }).catch((error) => addSystemMessage(`Direct thread refresh failed: ${error.message}`));
 });
 els.chooseAttachmentButton?.addEventListener("click", async () => {
   if (!bridge?.chooseAttachmentFiles || !project?.id) {
@@ -8583,12 +8813,16 @@ document.addEventListener("click", (event) => {
   openRuntimeDrawer(tab);
 });
 
-els.analyticsPanelButton?.addEventListener("click", () => {
+function toggleThreadAnalyticsPanel() {
   dismissComposerOverlay("thread-analytics-open");
   state.analyticsPanelOpen = !state.analyticsPanelOpen;
   localStorageSet("codex.threadAnalyticsPanel.open", state.analyticsPanelOpen ? "true" : "false");
   renderThreadAnalyticsPanel();
-});
+}
+
+els.analyticsPanelButton?.addEventListener("click", () => toggleThreadAnalyticsPanel());
+els.morphicAnalyticsButton?.addEventListener("click", () => toggleThreadAnalyticsPanel());
+els.morphicSettingsButton?.addEventListener("click", () => openRuntimeDrawer("runtime"));
 
 els.threadAnalyticsPanelClose?.addEventListener("click", () => {
   state.analyticsPanelOpen = false;
@@ -8608,6 +8842,7 @@ els.threadAnalyticsDockButtons?.addEventListener("click", (event) => {
 els.runtimeDrawerClose?.addEventListener("click", () => closeRuntimeDrawer());
 
 installComposerGeometryObserver();
+renderMorphicCockpit();
 
 connect().catch((error) => {
   addSystemMessage(`Codex setup failed: ${error.message}`);

@@ -155,6 +155,26 @@ function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
+function normalizeDirectSurfaceRequestError(error) {
+  const message = normalizeString(error?.message || error, "");
+  const code = normalizeString(error?.code, "");
+  const normalized = `${code} ${message}`.toLowerCase().replace(/[^a-z0-9_ -]+/g, " ").trim();
+  if (
+    normalized === "expired" ||
+    normalized.startsWith("direct_auth_expired") ||
+    normalized.includes(" direct_auth_expired") ||
+    normalized.includes("invalid_grant") ||
+    normalized.includes("refresh token expired") ||
+    normalized.includes("token expired")
+  ) {
+    const wrapped = new Error("Direct auth expired. Sign in again before starting a direct Codex turn.");
+    wrapped.code = "direct_auth_expired";
+    wrapped.cause = error;
+    return wrapped;
+  }
+  return error;
+}
+
 function repairLoopContinuationInstructions(specificInstructions = "") {
   return [
     normalizeString(specificInstructions, ""),
@@ -6278,11 +6298,15 @@ class DirectLiveTextSurfaceSession extends EventEmitter {
 
   async request(method, params = {}) {
     if (!this.controller) throw new Error("Direct live text controller is unavailable.");
-    return this.controller.handleRequest(String(method || ""), params || {}, {
-      project: this.project,
-      surfaceSession: this,
-      connection: this.connection,
-    });
+    try {
+      return await this.controller.handleRequest(String(method || ""), params || {}, {
+        project: this.project,
+        surfaceSession: this,
+        connection: this.connection,
+      });
+    } catch (error) {
+      throw normalizeDirectSurfaceRequestError(error);
+    }
   }
 
   async notify() {

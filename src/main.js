@@ -3771,6 +3771,7 @@ function buildDirectCodexSurfaceProjectionForProject(project = {}, input = {}) {
   const projectId = normalizeString(project?.id, "");
   const activeThreadId = normalizeString(input.threadId || input.activeThreadId || "", "");
   const runtimeStatus = input.runtimeStatus || buildDirectRuntimeStatusForProject(project);
+  const liveTextStatus = input.liveTextStatus || ensureDirectLiveTextController().statusForProject(project);
   const agentUsageStatus = input.agentUsageStatus || buildDirectAgentUsageStatusForProject(projectId);
   const workThreadBundle = input.workThreadBundle || directWorkThreadProjectionForProject(project);
   const agentRegistryBundle = input.agentRegistryBundle || directAgentRegistryProjectionForProject(project);
@@ -3828,6 +3829,8 @@ function buildDirectCodexSurfaceProjectionForProject(project = {}, input = {}) {
     projectId,
     generatedAt,
     runtimePath: directRuntimePathFromBinding(project?.surfaceBinding?.codex || {}),
+    liveTextStatus,
+    directAuthPreflight: input.directAuthPreflight || null,
     runtimeWitnessProjection,
     composerRuntimeWitness,
     providerMetadataProfile: directProviderMetadata?.profile || null,
@@ -4179,6 +4182,33 @@ async function directEmbarkAuthStatus(steps = []) {
     steps.push(directEmbarkStep("auth_ready"));
   }
   return authStatus;
+}
+
+async function preflightDirectRuntimeAuth(reason = "direct-surface-load") {
+  const steps = [directEmbarkStep(reason, "started")];
+  try {
+    const authStatus = await directEmbarkAuthStatus(steps);
+    return {
+      ok: directAuthIsAuthenticated(authStatus),
+      authStatus,
+      steps,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      authStatus: directRuntimeAuthStore().readStatus(),
+      steps: [
+        ...steps,
+        directEmbarkStep(reason, "failed", {
+          reason: normalizeString(error?.code || error?.message, "direct_auth_preflight_failed"),
+        }),
+      ],
+      error: {
+        code: normalizeString(error?.code, "direct_auth_preflight_failed"),
+        message: normalizeString(error?.message, "Direct auth preflight failed."),
+      },
+    };
+  }
 }
 
 function directTextOnlyCanSelect(runtimeStatus = {}) {
@@ -4717,6 +4747,66 @@ function createCodexSurfaceSession(sender, connection = {}) {
   return session;
 }
 
+function refreshActiveDirectCodexSurfaceCapabilities() {
+  const transport = normalizeString(activeCodexSurfaceConnection?.transport, "");
+  if (transport === DIRECT_LIVE_TEXT_SURFACE_TRANSPORT) {
+    const liveTextStatus = currentProject ? ensureDirectLiveTextController().statusForProject(currentProject) : null;
+    activeCodexSurfaceConnection = {
+      ...activeCodexSurfaceConnection,
+      capabilities: buildDirectLiveTextCapabilities(liveTextStatus || {}),
+      directLiveText: liveTextStatus || null,
+    };
+    return activeCodexSurfaceConnection.capabilities;
+  }
+  if (transport === DIRECT_FIXTURE_SURFACE_TRANSPORT) {
+    activeCodexSurfaceConnection = {
+      ...activeCodexSurfaceConnection,
+      capabilities: buildDirectFixtureCapabilities(),
+    };
+    return activeCodexSurfaceConnection.capabilities;
+  }
+  return activeCodexSurfaceConnection?.capabilities || {};
+}
+
+function directLiveTextAuthorizationCapabilities(capabilities = {}) {
+  const clone = typeof structuredClone === "function"
+    ? structuredClone(capabilities || {})
+    : JSON.parse(JSON.stringify(capabilities || {}));
+  clone.coreRuntime = {
+    ...(clone.coreRuntime || {}),
+    canInitialize: true,
+  };
+  clone.account = {
+    ...(clone.account || {}),
+    canRead: true,
+  };
+  clone.configRequirements = {
+    ...(clone.configRequirements || {}),
+    canRead: true,
+  };
+  clone.threads = {
+    ...(clone.threads || {}),
+    canStart: true,
+    canRead: true,
+    canList: true,
+  };
+  clone.turns = {
+    ...(clone.turns || {}),
+    canStart: true,
+    canInterrupt: true,
+  };
+  return clone;
+}
+
+function codexSurfaceRequestAuthorizationCapabilities() {
+  const capabilities = refreshActiveDirectCodexSurfaceCapabilities();
+  const transport = normalizeString(activeCodexSurfaceConnection?.transport, "");
+  if (transport === DIRECT_LIVE_TEXT_SURFACE_TRANSPORT) {
+    return directLiveTextAuthorizationCapabilities(capabilities);
+  }
+  return capabilities;
+}
+
 function codexSurfaceSessionFor(sender, options = {}) {
   if (!isCodexSurfaceSender(sender)) throw new Error("Codex surface bridge is not available from this renderer.");
   requireFullCodexSurfaceBridge(sender, "codex-surface session");
@@ -4767,7 +4857,17 @@ async function directAuthTokensForCodexAppServer(options = {}) {
   if (options.refresh || status.status === "expired" || status.status === "refresh_failed") {
     const refreshResult = await refreshDirectRuntimeCredentials();
     if (!refreshResult.ok) {
-      throw new Error(refreshResult.reason || refreshResult.status || "direct_auth_refresh_failed");
+      const reason = normalizeString(refreshResult.reason || refreshResult.status, "direct_auth_refresh_failed");
+      const normalizedReason = reason.toLowerCase().replace(/[^a-z0-9_ -]+/g, " ").trim();
+      const error = new Error(
+        normalizedReason === "expired" || normalizedReason === "invalid_grant" || normalizedReason.includes("token expired")
+          ? "Direct auth expired. Sign in again before starting a direct Codex turn."
+          : reason,
+      );
+      error.code = normalizedReason === "expired" || normalizedReason === "invalid_grant" || normalizedReason.includes("token expired")
+        ? "direct_auth_expired"
+        : "direct_auth_refresh_failed";
+      throw error;
     }
     credentials = store.readCredentials();
   }
@@ -4959,6 +5059,7 @@ async function loadCodexSurface(project, options = {}) {
   const runtimeMode = normalizeDirectRuntimeModeForStatus(codex.runtimeMode);
   if (runtimeMode !== "legacy-app-server") {
     await disposeCodexAppServerManager();
+    const directAuthPreflight = await preflightDirectRuntimeAuth("direct-surface-load");
     const directProviderMetadata = await refreshDirectProviderMetadataForProject(project);
     const runtimeStatus = buildDirectRuntimeStatusForProject(project);
     const directTransport = normalizeDirectExperimentalTransport(codex.directTransport);
@@ -4970,6 +5071,8 @@ async function loadCodexSurface(project, options = {}) {
       : buildDirectFixtureCapabilities();
     const directSurfaceProjection = buildDirectCodexSurfaceProjectionForProject(project, {
       runtimeStatus,
+      liveTextStatus,
+      directAuthPreflight,
       directProviderMetadata,
       attachmentCapability: capabilities.attachments || null,
     });
@@ -8574,7 +8677,8 @@ ipcMain.handle("codex-surface:direct-projection", async (event, payload) => {
 ipcMain.handle("codex-surface:request", async (event, payload) => {
   requireFullCodexSurfaceBridge(event.sender, "codex-surface:request");
   const method = normalizeString(payload?.method, "");
-  const decision = codexClientRequestDecision(method, activeCodexSurfaceConnection?.capabilities || {});
+  const capabilities = codexSurfaceRequestAuthorizationCapabilities();
+  const decision = codexClientRequestDecision(method, capabilities);
   if (!decision.ok) {
     throw new Error(`Codex app-server request method is not authorized: ${method || "<empty>"} (${decision.reason})`);
   }
@@ -8592,7 +8696,8 @@ ipcMain.handle("codex-surface:request", async (event, payload) => {
 ipcMain.handle("codex-surface:notify", async (event, payload) => {
   requireFullCodexSurfaceBridge(event.sender, "codex-surface:notify");
   const method = normalizeString(payload?.method, "");
-  const decision = codexClientNotificationDecision(method, activeCodexSurfaceConnection?.capabilities || {});
+  const capabilities = codexSurfaceRequestAuthorizationCapabilities();
+  const decision = codexClientNotificationDecision(method, capabilities);
   if (!decision.ok) {
     throw new Error(`Codex app-server notification method is not authorized: ${method || "<empty>"} (${decision.reason})`);
   }

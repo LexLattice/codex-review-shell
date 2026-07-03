@@ -46,20 +46,224 @@ textarea {
   min-height: 100%;
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "thread-bar"
+    "thread-rail"
+    "transcript"
+    "composer";
   background:
     radial-gradient(circle at 30% -10%, rgba(121, 184, 255, 0.14), transparent 28%),
     linear-gradient(180deg, #0a0f16, #0b0f16);
   overflow: hidden;
 }
 
-.runtime-header {
+.compact-thread-bar {
+  grid-area: thread-bar;
   display: grid;
-  gap: 10px;
-  padding: 14px 16px 12px;
-  border-bottom: 1px solid var(--border);
-  background: rgba(11, 15, 22, 0.94);
-  box-shadow: 0 10px 36px rgba(0, 0, 0, 0.22);
-  z-index: 2;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  min-height: 52px;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(121, 184, 255, 0.16);
+  background:
+    radial-gradient(circle at 12% 0%, rgba(121, 184, 255, 0.16), transparent 34%),
+    linear-gradient(180deg, rgba(13, 19, 29, 0.96), rgba(9, 14, 22, 0.92));
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.2);
+  z-index: 3;
+}
+
+.compact-thread-title-block {
+  min-width: 0;
+}
+
+.compact-thread-title-block h1 {
+  margin: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 16px;
+  letter-spacing: -0.035em;
+}
+
+.compact-thread-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+}
+
+.compact-thread-chip,
+.compact-thread-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 27px;
+  border-radius: 999px;
+  border: 1px solid rgba(121, 184, 255, 0.2);
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.compact-thread-chip {
+  max-width: min(30vw, 210px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 10px;
+  color: #cfe4ff;
+  background: rgba(121, 184, 255, 0.08);
+}
+
+.compact-thread-chip.runtime {
+  cursor: pointer;
+}
+
+.compact-thread-chip.active,
+.compact-thread-chip.status.active {
+  color: var(--success);
+  border-color: rgba(111, 222, 165, 0.34);
+  background: rgba(111, 222, 165, 0.1);
+}
+
+.compact-thread-chip.warning,
+.compact-thread-chip.status.warning {
+  color: var(--warning);
+  border-color: rgba(240, 191, 116, 0.3);
+  background: rgba(240, 191, 116, 0.1);
+}
+
+.compact-thread-button {
+  padding: 0 10px;
+  background: rgba(255, 255, 255, 0.055);
+  color: var(--text);
+}
+
+.compact-thread-button.primary {
+  min-width: 30px;
+  padding: 0 9px;
+  border-color: rgba(121, 184, 255, 0.42);
+  background: rgba(121, 184, 255, 0.16);
+  color: #d8ebff;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.compact-thread-button.icon {
+  min-width: 30px;
+  padding: 0 8px;
+}
+
+.compact-thread-button:hover:not(:disabled),
+.compact-thread-chip.runtime:hover:not(:disabled) {
+  background: rgba(121, 184, 255, 0.18);
+}
+
+.compact-thread-button:disabled,
+.compact-thread-chip:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+}
+
+.morphic-thread-rail {
+  grid-area: thread-rail;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+  padding: 6px 12px;
+  border-bottom: 1px solid rgba(121, 184, 255, 0.1);
+  background: rgba(8, 12, 18, 0.78);
+  z-index: 1;
+}
+
+.morphic-thread-rail-list {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.morphic-thread-rail-list::-webkit-scrollbar {
+  display: none;
+}
+
+.morphic-thread-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  max-width: min(220px, 52vw);
+  min-height: 28px;
+  padding: 0 9px;
+  border: 1px solid rgba(121, 184, 255, 0.16);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.morphic-thread-tab.active {
+  color: var(--text);
+  border-color: rgba(121, 184, 255, 0.52);
+  background: rgba(121, 184, 255, 0.14);
+}
+
+.morphic-thread-tab.running {
+  color: var(--warning);
+  border-color: rgba(240, 191, 116, 0.3);
+}
+
+.morphic-thread-tab-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.morphic-thread-tab-state {
+  flex: 0 0 auto;
+  opacity: 0.86;
+}
+
+.morphic-thread-empty {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.morphic-thread-rail-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.morphic-rail-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 26px;
+  min-width: 0;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--muted);
+  white-space: nowrap;
+  font-size: 11px;
+}
+
+.morphic-rail-action.primary {
+  min-width: 30px;
+  padding: 0;
+  color: #baf4ce;
+  border-color: rgba(111, 222, 165, 0.32);
+  background: rgba(111, 222, 165, 0.1);
 }
 
 .runtime-identity-row,
@@ -875,6 +1079,7 @@ textarea {
 }
 
 .transcript {
+  grid-area: transcript;
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
@@ -882,6 +1087,22 @@ textarea {
   display: grid;
   align-content: start;
   gap: 14px;
+}
+
+.transcript:empty::before {
+  content: "New Codex thread ready. Send a message to begin.";
+  align-self: start;
+  justify-self: center;
+  width: min(760px, 92%);
+  margin-top: 24px;
+  padding: 18px 20px;
+  border: 1px dashed rgba(121, 184, 255, 0.22);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 18% 0%, rgba(121, 184, 255, 0.12), transparent 38%),
+    rgba(255, 255, 255, 0.025);
+  color: var(--muted);
+  text-align: center;
 }
 
 .transcript-load-more {
@@ -1539,6 +1760,7 @@ button.typed-token {
 }
 
 .composer-shell {
+  grid-area: composer;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   grid-template-rows: auto auto auto;
@@ -1574,13 +1796,18 @@ button.typed-token {
 
 .composer-attachment-row {
   grid-area: attachments;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  display: none;
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
   gap: var(--composer-control-gap);
   min-width: 0;
   overflow: hidden;
   padding: 2px 0;
+}
+
+.composer-shell[data-attachment-visible="true"] .composer-attachment-row,
+.composer-shell.drag-over .composer-attachment-row {
+  display: grid;
 }
 
 .composer-shell.drag-over {
@@ -2111,6 +2338,19 @@ button.typed-token {
 }
 
 @media (max-width: 780px) {
+  .compact-thread-bar {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .compact-thread-actions {
+    justify-content: flex-start;
+  }
+
+  .compact-thread-chip {
+    max-width: 100%;
+  }
+
   .runtime-identity-row,
   .runtime-state-row {
     grid-template-columns: 1fr;

@@ -3533,8 +3533,8 @@ function renderDirectRuntimeStatus() {
     els.directContextProviderCompactBadge.textContent = `compact ${formatDirectContextState(contextMaintenance.providerCompactState)}`;
     els.directContextProviderCompactBadge.title = `Provider compact evidence: ${formatDirectContextState(contextMaintenance.providerCompactEvidenceState)}. Provider transport allowed: ${contextMaintenance.providerTransportAllowed ? "yes" : "no"}.`;
   }
-  syncDirectRuntimePathControl(els.directRuntimePathSelect, els.directRuntimePathApplyButton, status);
-  syncDirectRuntimePathControl(els.codexRuntimeQuickSelect, els.codexRuntimeQuickApplyButton, status, { compact: true });
+  syncDirectRuntimePathControl(els.directRuntimePathSelect, els.directRuntimePathApplyButton, status, { persistDefault: true });
+  syncDirectRuntimePathControl(els.codexRuntimeQuickSelect, els.codexRuntimeQuickApplyButton, status, { compact: true, persistDefault: true });
   if (els.directTextOnlyEnableButton) {
     const canUseTextOnlyAction = Boolean(activeProject()) && Boolean(bridge.selectDirectTextOnlyRuntime) && !state.directRuntimeLoading;
     const canEnableTextOnly = (status.directTextOnly?.status === "eligible" || status.directTextOnly?.status === "enabled") && canUseTextOnlyAction;
@@ -7172,7 +7172,7 @@ async function selectDirectTextOnlyRuntime() {
 async function setDirectRuntimePathFromControl(selectEl = els.directRuntimePathSelect) {
   const project = activeProject();
   if (!project || !bridge.setDirectRuntimePath || !selectEl) return;
-  const persistDefault = false;
+  const persistDefault = true;
   const runtimePath = selectEl.value || "app-server";
   const currentPath = selectedDirectRuntimePath({ scope: persistDefault ? "default" : "active" });
   if (runtimePath === currentPath) return;

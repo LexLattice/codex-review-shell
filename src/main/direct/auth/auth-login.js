@@ -151,14 +151,24 @@ async function defaultTokenClient(request) {
     body: new URLSearchParams(request.body),
   });
   let payload = {};
+  let rawText = "";
   try {
-    const parsedPayload = await response.json();
-    payload = isPlainObject(parsedPayload) ? parsedPayload : {};
+    rawText = await response.text();
   } catch {}
+  if (rawText) {
+    try {
+      const parsedPayload = JSON.parse(rawText);
+      payload = isPlainObject(parsedPayload) ? parsedPayload : {};
+    } catch {
+      payload = {};
+    }
+  }
   if (!response.ok && !payload.error) {
+    const boundedText = normalizeString(rawText, "").slice(0, 160);
     payload = {
       ...payload,
       error: `http_${response.status}`,
+      error_description: boundedText,
     };
   }
   return {
