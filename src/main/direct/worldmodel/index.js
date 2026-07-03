@@ -6,4 +6,5 @@ module.exports = {
   ...require("./fixtures"),
   ...require("./manager"),
   ...require("./thread-manager"),
+  ...require("./authorization-router"),
 };
