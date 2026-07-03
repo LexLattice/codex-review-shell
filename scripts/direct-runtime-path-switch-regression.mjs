@@ -30,7 +30,7 @@ assert.deepEqual(DIRECT_RUNTIME_PATHS, ["app-server", "direct-text", "direct-imp
 
 assert.equal(normalizeDirectRuntimePath("legacy-app-server"), "app-server");
 assert.equal(normalizeDirectRuntimePath("appserver"), "app-server");
-assert.equal(normalizeDirectRuntimePath("direct"), "direct-text");
+assert.equal(normalizeDirectRuntimePath("direct"), "direct-implementation");
 assert.equal(normalizeDirectRuntimePath("text-only"), "direct-text");
 assert.equal(normalizeDirectRuntimePath("direct-live-text"), "direct-text");
 assert.equal(normalizeDirectRuntimePath("implementation-lane"), "direct-implementation");
@@ -124,6 +124,7 @@ const preloadSource = read("src/preload.js");
 const rendererSource = read("src/renderer/app.js");
 const codexSurfaceSource = read("src/renderer/codex-surface.js");
 const htmlSource = read("src/renderer/index.html");
+const codexSurfaceCss = read("src/renderer/codex-surface.css");
 
 assertIncludes(mainSource, "setCodexRuntimePath", "main process runtime switch");
 assertIncludes(mainSource, "direct-runtime:set-path", "main process IPC");
@@ -158,10 +159,12 @@ assertIncludes(rendererSource, "const projectForConfig = runtimePathChanged ? pr
 assertIncludes(rendererSource, "bridge.setDirectRuntimePath(project.id, requestedRuntimePath", "drawer routes project drawer runtime path changes through guarded IPC");
 assertIncludes(rendererSource, "bridge.embarkDirectRuntime(project.id, options)", "runtime switch routes user-facing Direct through Direct embark");
 assertIncludes(rendererSource, "directTextOption.disabled = false", "Direct backend option remains selectable before gate validation");
-assertIncludes(rendererSource, "const persistDefault = false", "visible runtime picker is active-session scoped");
+assertIncludes(rendererSource, "const persistDefault = true", "visible runtime picker persists the selected backend across restarts");
+assertIncludes(rendererSource, "syncDirectRuntimePathControl(els.directRuntimePathSelect, els.directRuntimePathApplyButton, status, { persistDefault: true })", "drawer runtime picker renders using the same persisted-default scope it writes");
+assertIncludes(rendererSource, "syncDirectRuntimePathControl(els.codexRuntimeQuickSelect, els.codexRuntimeQuickApplyButton, status, { compact: true, persistDefault: true })", "quick runtime picker renders using the same persisted-default scope it writes");
 assertIncludes(rendererSource, "codexDefaultPathInput", "project drawer remains the persisted default selector");
 assertIncludes(rendererSource, "persistDefault,", "runtime switch sends scope to main process");
-assertIncludes(rendererSource, "Active Codex backend switched", "quick backend switch reports active session scope");
+assertIncludes(rendererSource, "Active Codex backend switched", "quick backend switch reports completed backend switch");
 assert.ok(
   !rendererSource.includes("Set ${label} as this project's default Codex backend"),
   "Active backend switch should not show the old default-setting confirmation popup.",
@@ -202,9 +205,12 @@ assert.ok(!rendererSource.includes("Direct blocked: ${directTextOnlyBlockedDetai
 assert.ok(!rendererSource.includes("renderProjects("), "renderer should not call undefined renderProjects()");
 assertIncludes(htmlSource, "Codex backend", "shell UI label");
 assertIncludes(htmlSource, "value=\"app-server\"", "app-server option");
-assertIncludes(htmlSource, "value=\"direct-text\"", "user-facing direct option");
+assertIncludes(htmlSource, "value=\"direct-implementation\"", "user-facing direct option");
+assertIncludes(htmlSource, "value=\"direct-text\" hidden", "direct text tier remains hidden fallback");
 assert.ok(!htmlSource.includes("Direct Text"), "Direct text tier should not be a user-facing top-level option.");
 assert.ok(!htmlSource.includes("Direct Tools"), "Direct tools tier should not be a user-facing top-level option.");
-assert.ok(!htmlSource.includes("value=\"direct-implementation\""), "Implementation lane should remain an internal capability posture.");
+assertIncludes(codexSurfaceCss, "grid-template-areas:", "Codex surface shell uses named grid rows");
+assertIncludes(codexSurfaceCss, "grid-area: transcript", "transcript row must not depend on direct rail visibility");
+assertIncludes(codexSurfaceCss, "grid-area: composer", "composer row must not stretch into transcript row when direct rail is hidden");
 
 console.log("direct runtime path switch regression passed");

@@ -94,6 +94,28 @@ function shouldRefreshCredentials(credentials = {}, options = {}) {
   return expiresInMs(credentials, options.nowMs) <= Math.max(0, refreshBeforeMs);
 }
 
+function normalizeAuthRefreshFailure(reason = "") {
+  const text = normalizeString(reason, "token_refresh_failed");
+  const normalized = text.toLowerCase().replace(/[^a-z0-9_ -]+/g, " ").trim();
+  if (
+    normalized === "expired" ||
+    normalized === "invalid_grant" ||
+    normalized.includes("refresh token expired") ||
+    normalized.includes("token expired")
+  ) {
+    return {
+      code: "direct_auth_expired",
+      message: "Direct auth expired. Sign in again before starting a direct Codex turn.",
+      reason: text,
+    };
+  }
+  return {
+    code: "direct_auth_refresh_failed",
+    message: `Direct auth refresh failed: ${text}`,
+    reason: text,
+  };
+}
+
 async function resolveProbeCredentials(options = {}) {
   const authStore = options.authStore && typeof options.authStore.readCredentials === "function"
     ? options.authStore
@@ -122,8 +144,10 @@ async function resolveProbeCredentials(options = {}) {
     refresh.ok = refreshResult?.ok !== false;
     refresh.reason = normalizeString(refreshResult?.reason || refreshResult?.status, "");
     if (!refresh.ok) {
-      const error = new Error(refresh.reason || "Direct text probe credential refresh failed.");
-      error.code = "direct_auth_refresh_failed";
+      const failure = normalizeAuthRefreshFailure(refresh.reason);
+      const error = new Error(failure.message);
+      error.code = failure.code;
+      error.authReason = failure.reason;
       error.refresh = refresh;
       throw error;
     }
@@ -612,13 +636,19 @@ function isAbortError(error) {
 
 function errorCodeFromCaught(error, streamStarted = false) {
   if (isAbortError(error)) return "aborted";
+  if (error?.code === "direct_auth_expired") return "direct_auth_expired";
   if (error?.code === "direct_auth_refresh_failed" || error?.code === "direct_auth_refresh_unavailable") return "auth_error";
   return streamStarted ? "stream_failed" : "fetch_failed";
 }
 
 function isRetryablePreStreamError(error) {
   const code = normalizeString(error?.code, "").toUpperCase();
-  if (isAbortError(error) || error?.code === "direct_auth_refresh_failed" || error?.code === "direct_auth_refresh_unavailable") {
+  if (
+    isAbortError(error) ||
+    error?.code === "direct_auth_expired" ||
+    error?.code === "direct_auth_refresh_failed" ||
+    error?.code === "direct_auth_refresh_unavailable"
+  ) {
     return false;
   }
   return [

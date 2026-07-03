@@ -230,24 +230,31 @@ class CompositeDirectAuthStore {
     return resolveStore(this.fallbackStore);
   }
 
-  selectedEntry() {
+  selectedEntry(options = {}) {
     const primary = this.primary();
     const primaryCredentials = storeCredentials(primary);
-    if (primaryCredentials?.accessToken) return { kind: "primary", store: primary, credentials: primaryCredentials };
     const fallback = this.fallback();
     const fallbackCredentials = storeCredentials(fallback);
+    const primaryStatus = primaryCredentials?.accessToken ? storeStatus(primary, options) : null;
+    const fallbackStatus = fallbackCredentials?.accessToken ? storeStatus(fallback, options) : null;
+    if (primaryCredentials?.accessToken && primaryStatus?.status === "authenticated") {
+      return { kind: "primary", store: primary, credentials: primaryCredentials };
+    }
+    if (fallbackCredentials?.accessToken && fallbackStatus?.status === "authenticated") {
+      return { kind: "fallback", store: fallback, credentials: fallbackCredentials };
+    }
+    if (primaryCredentials?.accessToken) return { kind: "primary", store: primary, credentials: primaryCredentials };
     if (fallbackCredentials?.accessToken) return { kind: "fallback", store: fallback, credentials: fallbackCredentials };
     return { kind: primary ? "primary" : "fallback", store: primary || fallback || null, credentials: null };
   }
 
-  readCredentials() {
-    return this.selectedEntry().credentials;
+  readCredentials(options = {}) {
+    return this.selectedEntry(options).credentials;
   }
 
   readStatus(options = {}) {
-    const entry = this.selectedEntry();
+    const entry = this.selectedEntry(options);
     if (!entry.credentials) return statusFromCredentials(null, options);
-    if (entry.kind === "fallback") return statusFromCredentials(entry.credentials, options);
     return storeStatus(entry.store, options) || statusFromCredentials(entry.credentials, options);
   }
 

@@ -2361,6 +2361,24 @@ try {
   assert(liveInitialized.capabilities.account.canRead === true, "Expected live text surface to declare account/read.");
   assert(liveInitialized.capabilities.configRequirements.canRead === true, "Expected live text surface to declare configRequirements/read.");
   assert(liveInitialized.capabilities.diagnostics.appServerRequired === false, "Expected live text capabilities to deny app-server requirement.");
+  const authExpiredSurface = new DirectLiveTextSurfaceSession({
+    isDestroyed: () => false,
+    send: () => {},
+  }, {
+    controller: {
+      handleRequest: async () => {
+        throw new Error("expired");
+      },
+    },
+    project: liveProject,
+  });
+  try {
+    await authExpiredSurface.request("turn/start", {});
+    throw new Error("Expected raw expired direct surface failures to be normalized.");
+  } catch (error) {
+    nodeAssert.equal(error.code, "direct_auth_expired");
+    nodeAssert.equal(error.message, "Direct auth expired. Sign in again before starting a direct Codex turn.");
+  }
   const liveAccount = await liveSurface.request("account/read", {});
   assert(liveAccount.requiresOpenaiAuth === false, "Expected authenticated live text account.");
   assert(liveAccount.rawTokensExposed === false, "Expected live text account projection to redact tokens.");
@@ -3567,6 +3585,27 @@ try {
   nodeAssert.equal(compositeAuthStore.readCredentials().accountId, "acct_codex_cli_fixture_secret");
   assertFixtureRedacted(compositeStatus);
   assert(!JSON.stringify(compositeStatus).includes("fixture-codex-cli-refresh-token-secret"), "Codex CLI fallback status must not expose refresh token.");
+  const expiredPrimaryWithAuthenticatedFallback = createDirectAuthStore({ mode: "memory" });
+  expiredPrimaryWithAuthenticatedFallback.writeCredentials({
+    accessToken: syntheticJwt({ exp: Math.floor((nowMs - 60_000) / 1000) }),
+    refreshToken: "fixture-expired-direct-primary-refresh-token-secret",
+    idToken: syntheticJwt({ exp: Math.floor((nowMs - 60_000) / 1000) }),
+    accountId: "acct_expired_direct_primary_fixture_secret",
+    expiresAt: nowMs - 60_000,
+  }, { nowMs });
+  const fallbackPreferredCompositeStore = createDirectAuthCompositeStore({
+    primaryStore: expiredPrimaryWithAuthenticatedFallback,
+    fallbackStore: codexCliStore,
+  });
+  const fallbackPreferredStatus = fallbackPreferredCompositeStore.readStatus({ nowMs });
+  nodeAssert.equal(fallbackPreferredStatus.status, "authenticated");
+  nodeAssert.equal(fallbackPreferredStatus.source, "codex-cli-auth");
+  nodeAssert.equal(
+    fallbackPreferredCompositeStore.readCredentials({ nowMs }).accountId,
+    "acct_codex_cli_fixture_secret",
+    "Authenticated Codex CLI fallback must win over expired direct-primary credentials.",
+  );
+  assertFixtureRedacted(fallbackPreferredStatus);
   const fallbackIpcController = createDirectAuthIpcController({
     rootDir: path.join(authStoreParent, "ipc-empty-direct-auth"),
     fallbackStore: codexCliStore,
