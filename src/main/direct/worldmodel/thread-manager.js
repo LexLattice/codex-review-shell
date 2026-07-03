@@ -137,19 +137,20 @@ function validateRef(ref, label, options = {}) {
   requireString(ref.kind, `${label}.kind`);
   if (options.requireId !== false) requireString(ref.id, `${label}.id`);
   if (options.requireDigest !== false) requireString(ref.digest, `${label}.digest`);
-  if (ref.rawTextIncluded !== false || ref.rawPathIncluded !== false || ref.rawSecretIncluded !== false) {
+  if (ref.rawTextIncluded === true || ref.rawPathIncluded === true || ref.rawSecretIncluded === true) {
     throw validationError("direct_thread_manager_raw_ref_exposure", label);
   }
   return true;
 }
 
 function worldmodelRef(worldmodel) {
+  const source = isPlainObject(worldmodel) ? worldmodel : {};
   return {
     kind: "active_interaction_worldmodel",
-    id: normalizeString(worldmodel?.worldmodelId, ""),
-    digest: normalizeString(worldmodel?.digest, ""),
-    revision: Number(worldmodel?.revision || 0),
-    label: "Active interaction worldmodel",
+    id: normalizeString(source.worldmodelId || source.id, ""),
+    digest: normalizeString(source.digest, ""),
+    revision: Number(source.revision || 0),
+    label: normalizeString(source.label, "Active interaction worldmodel"),
     rawTextIncluded: false,
     rawPathIncluded: false,
     rawSecretIncluded: false,
@@ -157,11 +158,12 @@ function worldmodelRef(worldmodel) {
 }
 
 function managerProfileRef(managerProfile) {
+  const source = isPlainObject(managerProfile) ? managerProfile : {};
   return {
     kind: "worldmodel_manager_profile",
-    id: normalizeString(managerProfile?.managerProfileId, ""),
-    digest: normalizeString(managerProfile?.profileDigest, ""),
-    label: "Worldmodel manager profile",
+    id: normalizeString(source.managerProfileId || source.id, ""),
+    digest: normalizeString(source.profileDigest || source.digest, ""),
+    label: normalizeString(source.label, "Worldmodel manager profile"),
     rawTextIncluded: false,
     rawPathIncluded: false,
     rawSecretIncluded: false,
@@ -490,6 +492,8 @@ function validateWorkThreadDelegationPacket(packet) {
   requireString(packet.targetWorkThreadId, "delegationPacket.targetWorkThreadId");
   requireArray(packet.requestedLaneKeys, "delegationPacket.requestedLaneKeys");
   requireArray(packet.requestedSectionKeys, "delegationPacket.requestedSectionKeys");
+  requireArray(packet.capabilityBundleRefs, "delegationPacket.capabilityBundleRefs");
+  requireArray(packet.authorizationChannelRefs, "delegationPacket.authorizationChannelRefs");
   requireArray(packet.blockerCodes, "delegationPacket.blockerCodes");
   if (!DELEGATION_STATUSES.includes(packet.status)) {
     throw validationError("direct_thread_manager_invalid_delegation_status", "delegationPacket.status");
@@ -564,6 +568,14 @@ function buildWorkerBootPacket(input = {}, options = {}) {
   const worldmodel = source.worldmodel;
   validateWorkThreadDelegationPacket(delegationPacket);
   validateActiveInteractionWorldmodel(worldmodel);
+  const currentWorldmodelRef = worldmodelRef(worldmodel);
+  if (
+    delegationPacket.worldmodelRef.id !== currentWorldmodelRef.id
+    || delegationPacket.worldmodelRef.digest !== currentWorldmodelRef.digest
+  ) {
+    throw validationError("direct_thread_manager_worldmodel_mismatch", "workerBootPacket.worldmodelRef");
+  }
+  const bootPacketId = normalizeId(source.bootPacketId, "worker_boot_packet");
   const laneKeys = normalizeLaneKeys(source.laneKeys || delegationPacket.requestedLaneKeys);
   const sectionKeys = normalizeSectionKeys(source.sectionKeys || delegationPacket.requestedSectionKeys);
   const parentBoundary = isPlainObject(source.parentAuthorityBoundary)
@@ -597,7 +609,7 @@ function buildWorkerBootPacket(input = {}, options = {}) {
   ];
   const packet = {
     schema: WORKER_BOOT_PACKET_SCHEMA,
-    bootPacketId: normalizeId(source.bootPacketId, "worker_boot_packet"),
+    bootPacketId,
     delegationPacketRef: {
       id: delegationPacket.delegationPacketId,
       digest: delegationPacket.delegationDigest,
@@ -606,7 +618,7 @@ function buildWorkerBootPacket(input = {}, options = {}) {
       rawPathIncluded: false,
       rawSecretIncluded: false,
     },
-    worldmodelRef: worldmodelRef(worldmodel),
+    worldmodelRef: currentWorldmodelRef,
     targetWorkThreadId: delegationPacket.targetWorkThreadId,
     roleLane: delegationPacket.roleLane,
     objectiveSummary: delegationPacket.objectiveSummary,
@@ -620,7 +632,7 @@ function buildWorkerBootPacket(input = {}, options = {}) {
     capabilityBundleRefs: delegationPacket.capabilityBundleRefs,
     authorizationChannelRefs: delegationPacket.authorizationChannelRefs,
     shadowContextPackIntegration: buildShadowContextPackIntegration({
-      bootPacketId: source.bootPacketId,
+      bootPacketId,
       targetWorkThreadId: delegationPacket.targetWorkThreadId,
       contextPackRef: source.contextPackRef,
     }),
@@ -634,7 +646,6 @@ function buildWorkerBootPacket(input = {}, options = {}) {
     rawPathIncluded: false,
     rawSecretIncluded: false,
   };
-  packet.bootPacketDigest = digestFor("worker-boot-packet@1", packet);
   packet.projectionWitness = buildBootPacketProjectionWitness({ bootPacket: packet });
   packet.bootPacketDigest = digestFor("worker-boot-packet@1", packet);
   return packet;
@@ -662,7 +673,7 @@ function validateWorkerBootPacket(packet) {
   validateAuthorityBoundaryComparisonWitness(packet.authorityComparison);
   validateShadowContextPackIntegration(packet.shadowContextPackIntegration);
   validateBootPacketProjectionWitness(packet.projectionWitness);
-  if (packet.rawPromptIncluded !== false || packet.rawTextIncluded !== false || packet.rawPathIncluded !== false || packet.rawSecretIncluded !== false) {
+  if (packet.rawPromptIncluded === true || packet.rawTextIncluded === true || packet.rawPathIncluded === true || packet.rawSecretIncluded === true) {
     throw validationError("direct_thread_manager_raw_boot_packet_exposure", "workerBootPacket");
   }
   if (!BOOT_PACKET_STATUSES.includes(packet.status)) {
@@ -699,7 +710,7 @@ function validateBootPacketProjectionWitness(witness) {
   }
   requireString(witness.witnessId, "bootProjectionWitness.witnessId");
   requireString(witness.bootPacketId, "bootProjectionWitness.bootPacketId");
-  if (witness.rawPromptIncluded !== false || witness.rawTextIncluded !== false || witness.rawPathIncluded !== false || witness.rawSecretIncluded !== false) {
+  if (witness.rawPromptIncluded === true || witness.rawTextIncluded === true || witness.rawPathIncluded === true || witness.rawSecretIncluded === true) {
     throw validationError("direct_thread_manager_raw_projection_witness_exposure", "bootProjectionWitness");
   }
   validateDigest(witness, "projectionWitnessDigest", "boot-packet-projection-witness@1", "bootProjectionWitness");
@@ -735,8 +746,9 @@ function validateShadowContextPackIntegration(integration) {
   if (integration.mode !== "shadow_only" || integration.providerInjectionEnabled !== false) {
     throw validationError("direct_thread_manager_context_integration_not_shadow", "shadowContextPackIntegration");
   }
+  requireArray(integration.contextPackRefs, "shadowContextPackIntegration.contextPackRefs");
   integration.contextPackRefs.forEach((ref, index) => validateRef(ref, `shadowContextPackIntegration.contextPackRefs.${index}`, { requireDigest: false }));
-  if (integration.rawContextTextIncluded !== false || integration.rawPromptIncluded !== false || integration.rawPathIncluded !== false || integration.rawSecretIncluded !== false) {
+  if (integration.rawContextTextIncluded === true || integration.rawPromptIncluded === true || integration.rawPathIncluded === true || integration.rawSecretIncluded === true) {
     throw validationError("direct_thread_manager_raw_context_integration_exposure", "shadowContextPackIntegration");
   }
   validateDigest(integration, "shadowIntegrationDigest", "shadow-context-pack-integration@1", "shadowContextPackIntegration");

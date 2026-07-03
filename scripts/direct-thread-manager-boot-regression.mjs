@@ -52,6 +52,21 @@ assert.equal(threadManagerProfile.canReceiveDelegation, true);
 assert.equal(threadManagerProfile.canBuildWorkerBootPackets, true);
 assert.equal(threadManagerProfile.canExecuteWorkerTasks, false);
 
+const threadManagerProfileFromRef = buildThreadManagerProfile({
+  managerProfileRef: {
+    kind: "worldmodel_manager_profile",
+    id: managerProfile.managerProfileId,
+    digest: managerProfile.profileDigest,
+    label: "Stored manager profile ref",
+  },
+  threadManagerProfileId: "thread_manager_profile_from_ref_fixture",
+  threadManagerAgentId: "agent_thread_manager_from_ref_fixture",
+  workThreadId: "work_thread_boot_fixture",
+}, { now });
+validateThreadManagerProfile(threadManagerProfileFromRef);
+assert.equal(threadManagerProfileFromRef.managerProfileRef.id, managerProfile.managerProfileId);
+assert.equal(threadManagerProfileFromRef.managerProfileRef.digest, managerProfile.profileDigest);
+
 const worldmodel = activeWorldmodelFixture("work_thread", {
   revision: 3,
   subjectAgentId: "agent_worker_subject_fixture",
@@ -112,6 +127,20 @@ assert.equal(bootPacket.rawTextIncluded, false);
 assert.equal(bootPacket.rawPathIncluded, false);
 assert.equal(bootPacket.rawSecretIncluded, false);
 
+const generatedIdBootPacket = buildWorkerBootPacket({
+  delegationPacket: delegation,
+  worldmodel,
+  contextPackRef: {
+    kind: "context_pack",
+    id: "context_pack_generated_id_fixture",
+    digest: "sha256:context_pack_generated_id_fixture",
+    label: "Generated-id shadow context pack",
+  },
+}, { now });
+validateWorkerBootPacket(generatedIdBootPacket);
+assert.equal(generatedIdBootPacket.shadowContextPackIntegration.bootPacketId, generatedIdBootPacket.bootPacketId);
+assert.equal(generatedIdBootPacket.projectionWitness.bootPacketId, generatedIdBootPacket.bootPacketId);
+
 const broadWorkerBoundary = buildAuthorityBoundary({
   authorityBoundaryId: "authority_boundary_broad_worker",
   workThreadId: "work_thread_boot_fixture",
@@ -166,6 +195,15 @@ const staleBootPacket = buildWorkerBootPacket({
 validateWorkerBootPacket(staleBootPacket);
 assert.equal(staleBootPacket.status, "blocked");
 assert(staleBootPacket.staleWarnings.some((warning) => warning.warningKind === "worldmodel_revision_stale"));
+
+const differentWorldmodel = activeWorldmodelFixture("project", {
+  revision: 3,
+  subjectAgentId: "agent_worker_different_fixture",
+});
+expectThrows(() => buildWorkerBootPacket({
+  delegationPacket: delegation,
+  worldmodel: differentWorldmodel,
+}, { now }), "direct_thread_manager_worldmodel_mismatch");
 
 const tamperedBootPacket = {
   ...bootPacket,
