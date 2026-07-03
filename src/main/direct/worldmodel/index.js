@@ -8,4 +8,5 @@ module.exports = {
   ...require("./thread-manager"),
   ...require("./authorization-router"),
   ...require("./constitutional-policy"),
+  ...require("./tool-catalog-game-integration"),
 };
