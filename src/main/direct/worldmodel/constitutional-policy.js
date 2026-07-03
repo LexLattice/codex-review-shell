@@ -183,10 +183,20 @@ function normalizeScopeSelector(input = {}) {
 
 function scopeMatches(selector, request) {
   if (!isPlainObject(selector)) return true;
-  if (selector.actionClass && selector.actionClass !== request.requestedAction.actionClass) return false;
-  if (selector.workThreadId && selector.workThreadId !== request.workThreadId) return false;
-  if (selector.scopeKind === "action_class") return selector.actionClass === request.requestedAction.actionClass;
-  if (selector.scopeKind === "work_thread") return !selector.workThreadId || selector.workThreadId === request.workThreadId;
+  const requestedAction = isPlainObject(request.requestedAction) ? request.requestedAction : {};
+  const scopeValues = {
+    actionClass: normalizeString(requestedAction.actionClass || request.actionClass, ""),
+    workThreadId: normalizeString(request.workThreadId, ""),
+    projectId: normalizeString(request.projectId || request.worldmodelScope?.projectId || request.scope?.projectId, ""),
+    agentClass: normalizeString(request.agentClass || requestedAction.agentClass || requestedAction.roleLane, ""),
+    toolFamily: normalizeString(request.toolFamily || requestedAction.toolFamily || requestedAction.toolName, ""),
+  };
+  for (const field of ["actionClass", "workThreadId", "projectId", "agentClass", "toolFamily"]) {
+    const selectorValue = normalizeString(selector[field], "");
+    if (selectorValue && scopeValues[field] !== selectorValue) return false;
+  }
+  if (selector.scopeKind === "action_class") return Boolean(scopeValues.actionClass) && selector.actionClass === scopeValues.actionClass;
+  if (selector.scopeKind === "work_thread") return !selector.workThreadId || selector.workThreadId === scopeValues.workThreadId;
   return true;
 }
 
@@ -351,7 +361,7 @@ function validateSelfBindingPreferenceRecord(record) {
   if (!POLICY_POSTURES.includes(record.defaultPosture)) {
     throw validationError("direct_constitutional_policy_invalid_posture", "selfBindingRecord.defaultPosture");
   }
-  if (record.rawUserTextIncluded !== false || record.rawTextIncluded === true || record.rawPathIncluded === true || record.rawSecretIncluded === true) {
+  if (record.rawUserTextIncluded === true || record.rawTextIncluded === true || record.rawPathIncluded === true || record.rawSecretIncluded === true) {
     throw validationError("direct_constitutional_policy_raw_self_binding_exposure", "selfBindingRecord");
   }
   validateDigest(record, "selfBindingDigest", "direct-self-binding-preference-record@1", "selfBindingRecord");
@@ -418,7 +428,7 @@ function validateConstitutionalPolicyProfile(profile) {
   }
   requireArray(profile.selfBindingRecords, "constitutionalPolicyProfile.selfBindingRecords");
   profile.selfBindingRecords.forEach(validateSelfBindingPreferenceRecord);
-  if (profile.rawPolicyTextIncluded !== false || profile.rawUserTextIncluded !== false || profile.rawTextIncluded === true || profile.rawPathIncluded === true || profile.rawSecretIncluded === true) {
+  if (profile.rawPolicyTextIncluded === true || profile.rawUserTextIncluded === true || profile.rawTextIncluded === true || profile.rawPathIncluded === true || profile.rawSecretIncluded === true) {
     throw validationError("direct_constitutional_policy_raw_profile_exposure", "constitutionalPolicyProfile");
   }
   validateDigest(profile, "profileDigest", "direct-constitutional-policy-profile@1", "constitutionalPolicyProfile");
@@ -455,7 +465,7 @@ function validatePolicyProfileStore(store) {
   store.profiles.forEach(validateConstitutionalPolicyProfile);
   requireArray(store.currentProfileRefs, "policyProfileStore.currentProfileRefs");
   store.currentProfileRefs.forEach((ref, index) => validateRef(ref, `policyProfileStore.currentProfileRefs.${index}`));
-  if (store.rawPolicyTextIncluded !== false || store.rawUserTextIncluded !== false || store.rawTextIncluded === true || store.rawPathIncluded === true || store.rawSecretIncluded === true) {
+  if (store.rawPolicyTextIncluded === true || store.rawUserTextIncluded === true || store.rawTextIncluded === true || store.rawPathIncluded === true || store.rawSecretIncluded === true) {
     throw validationError("direct_constitutional_policy_raw_store_exposure", "policyProfileStore");
   }
   validateDigest(store, "storeDigest", "direct-constitutional-policy-profile-store@1", "policyProfileStore");
@@ -489,6 +499,7 @@ function buildConstitutionalPolicyResolutionTrace(input = {}, options = {}) {
   const postures = matchingRules.length ? matchingRules.map((rule) => rule.defaultPosture) : [defaultPosture];
   let dominantPosture = selectDominantPosture(postures);
   const missingEvidence = [];
+  const unappliedExceptions = [];
   let exceptionApplied = null;
   for (const rule of matchingRules) {
     for (const requirement of rule.evidenceRequirements) {
@@ -501,10 +512,12 @@ function buildConstitutionalPolicyResolutionTrace(input = {}, options = {}) {
       }
     }
     for (const exception of rule.exceptions) {
-      const exceptionMatches = scopeMatches(exception.scopeSelector, request)
-        && exception.beforePosture === dominantPosture
-        && exception.evidenceRequirements.every((requirement) => evidenceSatisfied(requirement, request));
-      if (exceptionMatches) {
+      const exceptionScopeAndPostureMatch = scopeMatches(exception.scopeSelector, request)
+        && exception.beforePosture === dominantPosture;
+      if (!exceptionScopeAndPostureMatch) continue;
+      const missingExceptionEvidence = exception.evidenceRequirements
+        .filter((requirement) => !evidenceSatisfied(requirement, request));
+      if (missingExceptionEvidence.length === 0) {
         exceptionApplied = {
           exceptionRef: exceptionRef(exception),
           beforePosture: dominantPosture,
@@ -512,17 +525,17 @@ function buildConstitutionalPolicyResolutionTrace(input = {}, options = {}) {
           evidenceRefs: normalizeRefs(request.evidenceRefs, "authorization_evidence"),
         };
         dominantPosture = exception.afterPosture;
-      } else {
-        for (const requirement of exception.evidenceRequirements) {
-          if (!evidenceSatisfied(requirement, request)) {
-            missingEvidence.push({
-              requirementId: requirement.requirementId,
-              actionClass: exception.actionClass,
-              exceptionId: exception.exceptionId,
-              satisfied: false,
-            });
-          }
-        }
+      } else if (!exceptionApplied) {
+        unappliedExceptions.push({
+          exceptionRef: exceptionRef(exception),
+          reason: "exception_evidence_missing",
+          missingEvidence: missingExceptionEvidence.map((requirement) => ({
+            requirementId: requirement.requirementId,
+            actionClass: exception.actionClass,
+            exceptionId: exception.exceptionId,
+            satisfied: false,
+          })),
+        });
       }
     }
   }
@@ -535,6 +548,7 @@ function buildConstitutionalPolicyResolutionTrace(input = {}, options = {}) {
     defaultPolicyRef: profileRef(profile),
     dominantPosture,
     exceptionApplied,
+    unappliedExceptions,
     evidenceSatisfied: missingEvidence.length === 0,
     missingEvidence,
     precedenceOrder: ["deny", "admin_mode_required", "explicit_user_confirmation_required", "manager_discretion", "allow"],
@@ -567,7 +581,8 @@ function validateConstitutionalPolicyResolutionTrace(trace) {
     throw validationError("direct_constitutional_policy_invalid_posture", "constitutionalPolicyTrace.dominantPosture");
   }
   requireArray(trace.missingEvidence, "constitutionalPolicyTrace.missingEvidence");
-  if (trace.shadowOnly !== true || trace.rawPolicyLedgerExposed !== false || trace.rawUserTextIncluded !== false || trace.rawTextIncluded === true || trace.rawPathIncluded === true || trace.rawSecretIncluded === true) {
+  requireArray(trace.unappliedExceptions, "constitutionalPolicyTrace.unappliedExceptions");
+  if (trace.shadowOnly !== true || trace.rawPolicyLedgerExposed === true || trace.rawUserTextIncluded === true || trace.rawTextIncluded === true || trace.rawPathIncluded === true || trace.rawSecretIncluded === true) {
     throw validationError("direct_constitutional_policy_raw_trace_exposure", "constitutionalPolicyTrace");
   }
   validateDigest(trace, "traceDigest", "direct-constitutional-policy-resolution-trace@1", "constitutionalPolicyTrace");
@@ -630,11 +645,30 @@ function validateAdminModePolicyUpdate(update) {
   requireArray(update.failureModes, "adminModePolicyUpdate.failureModes");
   requireArray(update.exceptionRules, "adminModePolicyUpdate.exceptionRules");
   update.exceptionRules.forEach(validatePolicyExceptionRule);
-  if (update.rawUserTextIncluded !== false || update.rawTextIncluded === true || update.rawPathIncluded === true || update.rawSecretIncluded === true) {
+  if (update.rawUserTextIncluded === true || update.rawTextIncluded === true || update.rawPathIncluded === true || update.rawSecretIncluded === true) {
     throw validationError("direct_constitutional_policy_raw_update_exposure", "adminModePolicyUpdate");
   }
   validateDigest(update, "updateDigest", "direct-admin-mode-policy-update@1", "adminModePolicyUpdate");
   return true;
+}
+
+function ruleRequirements(rule) {
+  return new Set((Array.isArray(rule?.evidenceRequirements) ? rule.evidenceRequirements : [])
+    .map((requirement) => normalizeString(requirement.requirementId, ""))
+    .filter(Boolean));
+}
+
+function droppedEvidenceRequirements(parentRule, childRule) {
+  const parentRequirements = ruleRequirements(parentRule);
+  const childRequirements = ruleRequirements(childRule);
+  return [...parentRequirements].filter((requirementId) => !childRequirements.has(requirementId));
+}
+
+function adminUpdateCoversBroadening(adminUpdate, row, parentProfile, childProfile) {
+  if (!adminUpdate) return false;
+  const profileMatches = adminUpdate.policyProfileId === parentProfile.profileId
+    || adminUpdate.policyProfileId === childProfile.profileId;
+  return profileMatches && adminUpdate.actionClass === row.actionClass;
 }
 
 function buildChildPolicyBoundaryWitness(input = {}, options = {}) {
@@ -646,19 +680,34 @@ function buildChildPolicyBoundaryWitness(input = {}, options = {}) {
   validateConstitutionalPolicyProfile(childProfile);
   if (adminUpdate) validateAdminModePolicyUpdate(adminUpdate);
   const parentRules = new Map(parentProfile.policies.map((rule) => [rule.actionClass, rule]));
+  const childRules = new Map(childProfile.policies.map((rule) => [rule.actionClass, rule]));
+  const actionClasses = new Set([...parentRules.keys(), ...childRules.keys()]);
   const broadeningRows = [];
-  for (const childRule of childProfile.policies) {
-    const parentRule = parentRules.get(childRule.actionClass);
+  for (const actionClass of actionClasses) {
+    const parentRule = parentRules.get(actionClass);
+    const childRule = childRules.get(actionClass);
     const parentPosture = parentRule ? parentRule.defaultPosture : DEFAULT_DECISION_TO_POSTURE[parentProfile.defaultDecision];
-    if (POSTURE_RANK[childRule.defaultPosture] < POSTURE_RANK[parentPosture]) {
+    const childPosture = childRule ? childRule.defaultPosture : DEFAULT_DECISION_TO_POSTURE[childProfile.defaultDecision];
+    const postureBroadens = POSTURE_RANK[childPosture] < POSTURE_RANK[parentPosture];
+    const droppedRequirements = POSTURE_RANK[childPosture] <= POSTURE_RANK[parentPosture]
+      ? droppedEvidenceRequirements(parentRule, childRule)
+      : [];
+    if (postureBroadens || droppedRequirements.length > 0) {
       broadeningRows.push({
-        actionClass: childRule.actionClass,
+        actionClass,
         parentPosture,
-        childPosture: childRule.defaultPosture,
-        reason: "child_policy_broadens_parent_policy",
+        childPosture,
+        droppedEvidenceRequirements: droppedRequirements,
+        reason: postureBroadens && droppedRequirements.length > 0
+          ? "child_policy_broadens_parent_policy_and_drops_evidence"
+          : postureBroadens
+            ? "child_policy_broadens_parent_policy"
+            : "child_policy_drops_parent_evidence_requirements",
       });
     }
   }
+  const unauthorizedBroadeningRows = broadeningRows
+    .filter((row) => !adminUpdateCoversBroadening(adminUpdate, row, parentProfile, childProfile));
   const witness = {
     schema: CHILD_POLICY_BOUNDARY_WITNESS_SCHEMA,
     witnessId: normalizeId(source.witnessId, "child_policy_boundary"),
@@ -666,8 +715,13 @@ function buildChildPolicyBoundaryWitness(input = {}, options = {}) {
     childProfileRef: profileRef(childProfile),
     adminUpdateRef: adminUpdate ? refFromDigest("admin_mode_policy_update", adminUpdate.updateId, adminUpdate.updateDigest, adminUpdate.changeKind) : null,
     broadeningRows,
-    blocksPromotion: broadeningRows.length > 0 && !adminUpdate,
-    decision: broadeningRows.length === 0 ? "same_or_narrower" : adminUpdate ? "admin_authorized_broadening" : "blocked_child_broadening",
+    unauthorizedBroadeningRows,
+    blocksPromotion: unauthorizedBroadeningRows.length > 0,
+    decision: broadeningRows.length === 0
+      ? "same_or_narrower"
+      : unauthorizedBroadeningRows.length === 0
+        ? "admin_authorized_broadening"
+        : "blocked_child_broadening",
     checkedAt: normalizeString(source.checkedAt, nowIso(options.now || Date.now)),
     rawPolicyLedgerExposed: false,
     rawUserTextIncluded: false,
@@ -689,7 +743,8 @@ function validateChildPolicyBoundaryWitness(witness) {
   validateRef(witness.childProfileRef, "childPolicyBoundaryWitness.childProfileRef");
   if (witness.adminUpdateRef) validateRef(witness.adminUpdateRef, "childPolicyBoundaryWitness.adminUpdateRef");
   requireArray(witness.broadeningRows, "childPolicyBoundaryWitness.broadeningRows");
-  if (witness.rawPolicyLedgerExposed !== false || witness.rawUserTextIncluded !== false || witness.rawTextIncluded === true || witness.rawPathIncluded === true || witness.rawSecretIncluded === true) {
+  requireArray(witness.unauthorizedBroadeningRows, "childPolicyBoundaryWitness.unauthorizedBroadeningRows");
+  if (witness.rawPolicyLedgerExposed === true || witness.rawUserTextIncluded === true || witness.rawTextIncluded === true || witness.rawPathIncluded === true || witness.rawSecretIncluded === true) {
     throw validationError("direct_constitutional_policy_raw_boundary_witness_exposure", "childPolicyBoundaryWitness");
   }
   validateDigest(witness, "boundaryWitnessDigest", "direct-child-policy-boundary-witness@1", "childPolicyBoundaryWitness");

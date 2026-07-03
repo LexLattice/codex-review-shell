@@ -136,6 +136,51 @@ assert.equal(missingTrace.dominantPosture, "explicit_user_confirmation_required"
 assert.equal(missingTrace.evidenceSatisfied, false);
 assert(missingTrace.missingEvidence.some((item) => item.requirementId === "blast_radius_summary"));
 assert.equal(missingTrace.exceptionApplied, null);
+assert(missingTrace.unappliedExceptions.some((item) => item.reason === "exception_evidence_missing"));
+
+const broadRequestWithBaseEvidenceOnly = buildAuthorizationRequest({
+  requestId: "authorization_request_policy_broad_base_evidence_fixture",
+  workerAgentId: "agent_worker_policy_fixture",
+  agentRunId: "agent_run_policy_broad_base_evidence_fixture",
+  workThreadId: "work_thread_policy_fixture",
+  worldmodel,
+  requestedAction: {
+    actionClass: "broad_refactor",
+    roleLane: "implementation_worker",
+    targetKind: "workspace",
+    targetRefs: [{
+      kind: "workspace",
+      id: "workspace_fixture",
+      digest: "sha256:workspace_fixture",
+      label: "Workspace",
+    }],
+    scope: "project",
+    reversibility: "partly_reversible",
+    riskLevel: "high",
+  },
+  evidenceRefs: [{
+    kind: "architecture_need",
+    id: "architecture_need",
+    digest: "sha256:architecture_need",
+    label: "Architecture need",
+  }, {
+    kind: "blast_radius_summary",
+    id: "blast_radius_summary",
+    digest: "sha256:blast_radius_summary",
+    label: "Blast radius summary",
+  }],
+}, { now });
+
+const baseEvidenceTrace = buildConstitutionalPolicyResolutionTrace({
+  profile: parentProfile,
+  request: broadRequestWithBaseEvidenceOnly,
+}, { now });
+validateConstitutionalPolicyResolutionTrace(baseEvidenceTrace);
+assert.equal(baseEvidenceTrace.dominantPosture, "explicit_user_confirmation_required");
+assert.equal(baseEvidenceTrace.evidenceSatisfied, true);
+assert.equal(baseEvidenceTrace.exceptionApplied, null);
+assert.equal(baseEvidenceTrace.missingEvidence.length, 0);
+assert(baseEvidenceTrace.unappliedExceptions.some((item) => item.reason === "exception_evidence_missing"));
 
 const broadRequestWithExceptionEvidence = buildAuthorizationRequest({
   requestId: "authorization_request_policy_broad_exception_fixture",
@@ -220,6 +265,20 @@ validateAdminModePolicyUpdate(adminUpdate);
 assert.equal(adminUpdate.userRoleState, "admin_mode");
 assert.equal(adminUpdate.rawUserTextIncluded, false);
 
+const unrelatedAdminUpdate = buildAdminModePolicyUpdate({
+  updateId: "admin_policy_update_unrelated_fixture",
+  policyProfileId: parentProfile.profileId,
+  userRoleState: "admin_mode",
+  changeKind: "modify_policy",
+  actionClass: "destructive_delete",
+  beforeDigest: parentProfile.profileDigest,
+  afterDigest: "sha256:after_policy_digest_unrelated",
+  expectedBenefits: ["Permit unrelated destructive-delete review"],
+  failureModes: ["Must not authorize broad-refactor broadening"],
+  futureAutomationAllowed: false,
+}, { now });
+validateAdminModePolicyUpdate(unrelatedAdminUpdate);
+
 const childBroadProfile = buildConstitutionalPolicyProfile({
   profileId: "constitutional_policy_child_broad_fixture",
   ownerUserId: "user_profile_fixture",
@@ -231,6 +290,12 @@ const childBroadProfile = buildConstitutionalPolicyProfile({
     defaultPosture: "allow",
     evidenceRequirements: [],
     rationale: "Attempted child broadening.",
+  }, {
+    ruleId: "policy_rule_destructive_delete_child_same",
+    actionClass: "destructive_delete",
+    defaultPosture: "admin_mode_required",
+    evidenceRequirements: ["explicit_admin_intent", "target_inventory"],
+    rationale: "Child preserves parent destructive-delete boundary.",
   }],
 }, { now });
 validateConstitutionalPolicyProfile(childBroadProfile);
@@ -243,6 +308,16 @@ validateChildPolicyBoundaryWitness(broadeningWitness);
 assert.equal(broadeningWitness.decision, "blocked_child_broadening");
 assert.equal(broadeningWitness.blocksPromotion, true);
 assert.equal(broadeningWitness.broadeningRows[0].actionClass, "broad_refactor");
+assert.equal(broadeningWitness.unauthorizedBroadeningRows[0].actionClass, "broad_refactor");
+
+const unrelatedAdminBroadeningWitness = buildChildPolicyBoundaryWitness({
+  parentProfile,
+  childProfile: childBroadProfile,
+  adminUpdate: unrelatedAdminUpdate,
+}, { now });
+validateChildPolicyBoundaryWitness(unrelatedAdminBroadeningWitness);
+assert.equal(unrelatedAdminBroadeningWitness.decision, "blocked_child_broadening");
+assert.equal(unrelatedAdminBroadeningWitness.blocksPromotion, true);
 
 const adminBroadeningWitness = buildChildPolicyBoundaryWitness({
   parentProfile,
@@ -252,6 +327,44 @@ const adminBroadeningWitness = buildChildPolicyBoundaryWitness({
 validateChildPolicyBoundaryWitness(adminBroadeningWitness);
 assert.equal(adminBroadeningWitness.decision, "admin_authorized_broadening");
 assert.equal(adminBroadeningWitness.blocksPromotion, false);
+
+const childOmittedProfile = buildConstitutionalPolicyProfile({
+  profileId: "constitutional_policy_child_omitted_fixture",
+  ownerUserId: "user_profile_fixture",
+  scope: "work_thread",
+  defaultDecision: "manager_discretion",
+  policies: [],
+}, { now });
+const omittedWitness = buildChildPolicyBoundaryWitness({
+  parentProfile,
+  childProfile: childOmittedProfile,
+}, { now });
+validateChildPolicyBoundaryWitness(omittedWitness);
+assert.equal(omittedWitness.decision, "blocked_child_broadening");
+assert.equal(omittedWitness.blocksPromotion, true);
+assert(omittedWitness.broadeningRows.some((row) => row.actionClass === "destructive_delete"));
+
+const childDropsEvidenceProfile = buildConstitutionalPolicyProfile({
+  profileId: "constitutional_policy_child_drops_evidence_fixture",
+  ownerUserId: "user_profile_fixture",
+  scope: "work_thread",
+  defaultDecision: "deny",
+  policies: [{
+    ruleId: "policy_rule_broad_refactor_child_drops_evidence",
+    actionClass: "broad_refactor",
+    defaultPosture: "explicit_user_confirmation_required",
+    evidenceRequirements: ["architecture_need"],
+    rationale: "Attempted child same-posture policy with weaker evidence requirements.",
+  }],
+}, { now });
+const droppedEvidenceWitness = buildChildPolicyBoundaryWitness({
+  parentProfile,
+  childProfile: childDropsEvidenceProfile,
+}, { now });
+validateChildPolicyBoundaryWitness(droppedEvidenceWitness);
+assert.equal(droppedEvidenceWitness.decision, "blocked_child_broadening");
+assert.equal(droppedEvidenceWitness.blocksPromotion, true);
+assert.deepEqual(droppedEvidenceWitness.broadeningRows[0].droppedEvidenceRequirements, ["blast_radius_summary"]);
 
 const childNarrowProfile = buildConstitutionalPolicyProfile({
   profileId: "constitutional_policy_child_narrow_fixture",
