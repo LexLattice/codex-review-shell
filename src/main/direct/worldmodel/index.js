@@ -5,4 +5,5 @@ module.exports = {
   ...require("./kernel"),
   ...require("./fixtures"),
   ...require("./manager"),
+  ...require("./thread-manager"),
 };
