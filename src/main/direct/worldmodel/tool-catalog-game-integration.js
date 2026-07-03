@@ -35,6 +35,18 @@ const ROUTE_REASONS = Object.freeze([
   "unsupported",
 ]);
 
+const REQUIRED_WAVE23_SCENARIO_IDS = Object.freeze([
+  "w23_g1_manager_delegates_workthread",
+  "w23_g2_thread_manager_boot_or_execute",
+  "w23_g3_recursive_relay_preserves_boundary",
+  "w23_g4_worker_broad_refactor_remands_to_manager",
+  "w23_g5_manager_grants_bounded_readonly",
+  "w23_g6_user_mode_yes_cannot_update_policy",
+  "w23_g7_admin_policy_update_creates_exception",
+  "w23_g8_worker_direct_user_prompt_invalid",
+  "w23_g9_projection_leakage_witness",
+]);
+
 const DIGEST_FIELDS = new Set([
   "overlayDigest",
   "rowDigest",
@@ -329,6 +341,10 @@ function validateResidentToolCatalogAuthorizationOverlay(overlay = {}) {
     }
     validateRef(row.bootPacketRef, "residentToolCatalogAuthorizationOverlay.overlayRows.item.bootPacketRef", { requireId: false, requireDigest: false });
     validateRef(row.managerRouteRef, "residentToolCatalogAuthorizationOverlay.overlayRows.item.managerRouteRef", { requireDigest: false });
+    requireArray(row.evidenceRefs, "residentToolCatalogAuthorizationOverlay.overlayRows.item.evidenceRefs");
+    for (const ref of row.evidenceRefs) {
+      validateRef(ref, "residentToolCatalogAuthorizationOverlay.overlayRows.item.evidenceRefs.item", { requireId: false, requireDigest: false });
+    }
     if (row.rawPolicyLedgerExposed === true || row.rawTextIncluded === true || row.rawPathIncluded === true || row.rawSecretIncluded === true) {
       throw validationError("direct_tool_catalog_games_raw_overlay_row_exposure", row.rowId);
     }
@@ -404,6 +420,17 @@ function buildWave23WorldmodelAuthorizationGameSuite(input = {}) {
     edges: [
       { from: "world_manager", to: "thread_manager", relation: "delegates_to" },
       { from: "thread_manager", to: "worker", relation: "boots" },
+    ],
+  };
+  const managerWorkerTopology = {
+    topologyId: "topology_wave23_manager_worker",
+    structure: "manager_worker",
+    agents: [
+      { alias: "world_manager", rolePackId: manager.rolePackId },
+      { alias: "worker", rolePackId: worker.rolePackId, parentAlias: "world_manager" },
+    ],
+    edges: [
+      { from: "world_manager", to: "worker", relation: "authorizes" },
     ],
   };
   const scenarios = [
@@ -537,7 +564,7 @@ function buildWave23WorldmodelAuthorizationGameSuite(input = {}) {
       title: "Wave 23 manager discretion grants bounded read-only action",
       rolePacks: [manager, worker],
       roles: [{ alias: "world_manager", rolePackId: manager.rolePackId }, { alias: "worker", rolePackId: worker.rolePackId, parentAlias: "world_manager" }],
-      topology: baseTopology,
+      topology: managerWorkerTopology,
       capabilityBundle: {
         bundleId: "bundle_w23_readonly_grant",
         requestedCapabilities: ["read_context"],
@@ -658,7 +685,7 @@ function buildWave23WorldmodelAuthorizationGameSuite(input = {}) {
       title: "Wave 23 raw admin deliberation leakage is flagged",
       rolePacks: [manager, worker],
       roles: [{ alias: "world_manager", rolePackId: manager.rolePackId }, { alias: "worker", rolePackId: worker.rolePackId, parentAlias: "world_manager" }],
-      topology: baseTopology,
+      topology: managerWorkerTopology,
       capabilityBundle: {
         bundleId: "bundle_w23_projection_leakage",
         requestedCapabilities: ["read_boot_packet_projection_witness"],
@@ -725,6 +752,7 @@ function runWave23WorldmodelAuthorizationGameSuite(input = {}) {
   const suite = isPlainObject(input) && input.schema === WORLDMODEL_AUTHORIZATION_AGENTIC_GAME_SUITE_SCHEMA
     ? input
     : buildWave23WorldmodelAuthorizationGameSuite(input);
+  validateWave23WorldmodelAuthorizationGameSuite(suite);
   const reports = suite.scenarios.map((scenario) => runAgenticGameFixtureScenario(scenario));
   const report = {
     schema: WORLDMODEL_AUTHORIZATION_AGENTIC_GAME_REPORT_SCHEMA,
@@ -754,18 +782,15 @@ function validateWave23WorldmodelAuthorizationGameSuite(suite = {}) {
     const errors = validateAgenticGameScenario(scenario);
     if (errors.length) throw validationError("direct_tool_catalog_games_invalid_scenario", errors.join(","));
   }
-  for (const expected of [
-    "w23_g1_manager_delegates_workthread",
-    "w23_g2_thread_manager_boot_or_execute",
-    "w23_g3_recursive_relay_preserves_boundary",
-    "w23_g4_worker_broad_refactor_remands_to_manager",
-    "w23_g5_manager_grants_bounded_readonly",
-    "w23_g6_user_mode_yes_cannot_update_policy",
-    "w23_g7_admin_policy_update_creates_exception",
-    "w23_g8_worker_direct_user_prompt_invalid",
-    "w23_g9_projection_leakage_witness",
-  ]) {
+  requireArray(suite.gameIds, "wave23WorldmodelAuthorizationGameSuite.gameIds");
+  if (suite.scenarios.length !== REQUIRED_WAVE23_SCENARIO_IDS.length || suite.gameIds.length !== REQUIRED_WAVE23_SCENARIO_IDS.length) {
+    throw validationError("direct_tool_catalog_games_scenario_count_mismatch", "wave23WorldmodelAuthorizationGameSuite");
+  }
+  for (const expected of REQUIRED_WAVE23_SCENARIO_IDS) {
     if (!suite.gameIds.includes(expected)) throw validationError("direct_tool_catalog_games_missing_scenario", expected);
+    if (!suite.scenarios.some((scenario) => scenario.scenarioId === expected)) {
+      throw validationError("direct_tool_catalog_games_missing_scenario", expected);
+    }
   }
   if (suite.providerTransportExpected !== false || suite.workspaceMutationExpected !== false) {
     throw validationError("direct_tool_catalog_games_suite_authority_leak", "wave23WorldmodelAuthorizationGameSuite");

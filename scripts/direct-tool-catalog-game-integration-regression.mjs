@@ -194,6 +194,12 @@ malformed.catalogGrantsAuthority = true;
 malformed.overlayDigest = "sha256:wrong";
 expectThrows(() => validateResidentToolCatalogAuthorizationOverlay(malformed), "direct_tool_catalog_games_overlay_authority_leak");
 
+const malformedEvidenceRef = structuredClone(overlay);
+malformedEvidenceRef.overlayRows[0].evidenceRefs[0].rawSecretIncluded = true;
+malformedEvidenceRef.overlayRows[0].rowDigest = "sha256:wrong";
+malformedEvidenceRef.overlayDigest = "sha256:wrong";
+expectThrows(() => validateResidentToolCatalogAuthorizationOverlay(malformedEvidenceRef), "direct_tool_catalog_games_raw_ref_exposure");
+
 const suite = buildWave23WorldmodelAuthorizationGameSuite({ now });
 validateWave23WorldmodelAuthorizationGameSuite(suite);
 assert.equal(suite.scenarios.length, 9);
@@ -201,6 +207,12 @@ assert(suite.gameIds.includes("w23_g4_worker_broad_refactor_remands_to_manager")
 assert(suite.gameIds.includes("w23_g9_projection_leakage_witness"));
 assert.equal(suite.providerTransportExpected, false);
 assert.equal(suite.workspaceMutationExpected, false);
+const managerReadonly = suite.scenarios.find((scenario) => scenario.scenarioId === "w23_g5_manager_grants_bounded_readonly");
+assert.deepEqual(managerReadonly.topology.agents.map((agent) => agent.alias).sort(), ["worker", "world_manager"]);
+assert.equal(managerReadonly.topology.agents.find((agent) => agent.alias === "worker").parentAlias, "world_manager");
+const projectionLeakage = suite.scenarios.find((scenario) => scenario.scenarioId === "w23_g9_projection_leakage_witness");
+assert.deepEqual(projectionLeakage.topology.agents.map((agent) => agent.alias).sort(), ["worker", "world_manager"]);
+assert.equal(projectionLeakage.topology.agents.find((agent) => agent.alias === "worker").parentAlias, "world_manager");
 
 const report = runWave23WorldmodelAuthorizationGameSuite(suite);
 validateWave23WorldmodelAuthorizationGameReport(report);
@@ -215,5 +227,16 @@ const invalidReport = structuredClone(report);
 invalidReport.workspaceMutationStarted = true;
 invalidReport.reportDigest = "sha256:wrong";
 expectThrows(() => validateWave23WorldmodelAuthorizationGameReport(invalidReport), "direct_tool_catalog_games_report_authority_or_raw_leak");
+
+const malformedSuiteNoGameIds = structuredClone(suite);
+delete malformedSuiteNoGameIds.gameIds;
+malformedSuiteNoGameIds.suiteDigest = "sha256:wrong";
+expectThrows(() => validateWave23WorldmodelAuthorizationGameSuite(malformedSuiteNoGameIds), "direct_tool_catalog_games_missing_array");
+
+const filteredSuite = structuredClone(suite);
+filteredSuite.gameIds = [];
+filteredSuite.scenarios = [];
+filteredSuite.suiteDigest = "sha256:wrong";
+expectThrows(() => runWave23WorldmodelAuthorizationGameSuite(filteredSuite), "direct_tool_catalog_games_scenario_count_mismatch");
 
 console.log("direct tool catalog game integration regression passed");
