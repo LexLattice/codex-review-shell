@@ -59,6 +59,7 @@ const readRequest = buildAuthorizationRequest({
   worldmodel,
   requestedAction: {
     actionClass: "read_context",
+    roleLane: "implementation_worker",
     targetKind: "context_pack",
     targetRefs: [{
       kind: "context_pack",
@@ -102,7 +103,7 @@ assert.equal(readContinuation.workerContinuationKind, "continue_with_scoped_auth
 
 const readLedgerRow = buildAuthorizationDecisionLedgerRow({
   request: readRequest,
-  policyResolutionTrace: readTrace,
+  trace: readTrace,
   decision: readDecision,
   continuation: readContinuation,
 }, { now });
@@ -118,6 +119,7 @@ const broadRefactorRequest = buildAuthorizationRequest({
   worldmodel,
   requestedAction: {
     actionClass: "broad_refactor",
+    roleLane: "implementation_worker",
     targetKind: "workspace",
     targetRefs: [{
       kind: "workspace",
@@ -174,6 +176,7 @@ const deleteRequest = buildAuthorizationRequest({
   worldmodel,
   requestedAction: {
     actionClass: "destructive_delete",
+    roleLane: "implementation_worker",
     targetKind: "workspace_file",
     targetRefs: [{
       kind: "workspace_file",
@@ -237,6 +240,7 @@ const staleRequest = buildAuthorizationRequest({
   worldmodelRevision: worldmodel.revision - 1,
   requestedAction: {
     actionClass: "apply_patch",
+    roleLane: "implementation_worker",
     targetKind: "workspace_file",
     targetRefs: [{
       kind: "workspace_file",
@@ -267,6 +271,7 @@ const unknownRequest = buildAuthorizationRequest({
   worldmodel,
   requestedAction: {
     actionClass: "unregistered_power_tool",
+    roleLane: "implementation_worker",
     targetKind: "unknown",
     scope: "global",
     reversibility: "unknown",
@@ -282,6 +287,75 @@ const unknownDecision = buildAuthorizationDecision({
 validateAuthorizationDecision(unknownDecision);
 assert.equal(unknownDecision.decision, "remand");
 
+const auditorPatchRequest = buildAuthorizationRequest({
+  requestId: "authorization_request_auditor_patch_fixture",
+  workerAgentId: "agent_auditor_authorization_fixture",
+  agentRunId: "agent_run_auditor_patch_fixture",
+  workThreadId: "work_thread_authorization_fixture",
+  worldmodel,
+  requestedAction: {
+    actionClass: "apply_patch",
+    roleLane: "review_auditor",
+    targetKind: "workspace_file",
+    targetRefs: [{
+      kind: "workspace_file",
+      id: "src/audit-target.js",
+      digest: "sha256:audit_target",
+      label: "Audit target",
+    }],
+    scope: "work_thread",
+    reversibility: "partly_reversible",
+    riskLevel: "medium",
+  },
+}, { now });
+const auditorPatchTrace = buildPolicyResolutionTrace({ request: auditorPatchRequest, registry }, { now });
+validatePolicyResolutionTrace(auditorPatchTrace);
+assert.equal(auditorPatchTrace.dominantPosture, "deny");
+assert.equal(auditorPatchTrace.evidenceSatisfied, false);
+const auditorPatchDecision = buildAuthorizationDecision({
+  request: auditorPatchRequest,
+  managerProfile,
+  currentWorldmodel: worldmodel,
+  trace: auditorPatchTrace,
+}, { now });
+validateAuthorizationDecision(auditorPatchDecision);
+assert.equal(auditorPatchDecision.decision, "remand");
+
+const criticalReadRequest = buildAuthorizationRequest({
+  requestId: "authorization_request_critical_read_fixture",
+  workerAgentId: "agent_worker_authorization_fixture",
+  agentRunId: "agent_run_critical_read_fixture",
+  workThreadId: "work_thread_authorization_fixture",
+  worldmodel,
+  requestedAction: {
+    actionClass: "read_context",
+    roleLane: "implementation_worker",
+    targetKind: "context_pack",
+    targetRefs: [{
+      kind: "context_pack",
+      id: "context_pack_critical_fixture",
+      digest: "sha256:context_pack_critical_fixture",
+      label: "Critical context pack",
+    }],
+    scope: "work_thread",
+    reversibility: "reversible",
+    riskLevel: "critical",
+  },
+}, { now });
+const criticalReadTrace = buildPolicyResolutionTrace({ request: criticalReadRequest, registry }, { now });
+validatePolicyResolutionTrace(criticalReadTrace);
+assert.equal(criticalReadTrace.dominantPosture, "allow");
+assert.equal(criticalReadTrace.evidenceSatisfied, false);
+assert(criticalReadTrace.missingEvidence.some((item) => item.requirementId === "risk_ceiling_not_exceeded"));
+const criticalReadDecision = buildAuthorizationDecision({
+  request: criticalReadRequest,
+  managerProfile,
+  currentWorldmodel: worldmodel,
+  trace: criticalReadTrace,
+}, { now });
+validateAuthorizationDecision(criticalReadDecision);
+assert.equal(criticalReadDecision.decision, "remand");
+
 const rawTargetRefRequest = buildAuthorizationRequest({
   requestId: "authorization_request_raw_ref_fixture",
   workerAgentId: "agent_worker_authorization_fixture",
@@ -290,6 +364,7 @@ const rawTargetRefRequest = buildAuthorizationRequest({
   worldmodel,
   requestedAction: {
     actionClass: "read_context",
+    roleLane: "implementation_worker",
     targetKind: "context_pack",
     targetRefs: [{
       kind: "context_pack",

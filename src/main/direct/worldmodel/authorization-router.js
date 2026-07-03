@@ -50,6 +50,13 @@ const POSTURE_RANK = Object.freeze({
   deny: 4,
 });
 
+const RISK_RANK = Object.freeze({
+  low: 0,
+  medium: 1,
+  high: 2,
+  critical: 3,
+});
+
 const DIGEST_FIELDS = new Set([
   "entryDigest",
   "requestDigest",
@@ -335,12 +342,13 @@ function buildSeedActionClassRegistry(options = {}) {
 
 function findActionClassEntry(registry, actionClass, roleLane = "") {
   const entries = Array.isArray(registry) && registry.length ? registry : buildSeedActionClassRegistry();
-  const exact = entries.find((entry) => entry.actionClass === actionClass && roleLane && entry.roleLane === roleLane);
+  const normalizedRoleLane = normalizeString(roleLane, "");
+  const exact = entries.find((entry) => entry.actionClass === actionClass && normalizedRoleLane && entry.roleLane === normalizedRoleLane);
   const any = entries.find((entry) => entry.actionClass === actionClass && entry.roleLane === "any");
-  const loose = entries.find((entry) => entry.actionClass === actionClass);
+  const loose = normalizedRoleLane ? null : entries.find((entry) => entry.actionClass === actionClass);
   return exact || any || loose || buildActionClassRegistryEntry({
     actionClass,
-    roleLane: normalizeString(roleLane, "any"),
+    roleLane: normalizeString(normalizedRoleLane, "any"),
     targetKind: "unknown",
     defaultPosture: "deny",
     riskCeiling: "critical",
@@ -358,6 +366,7 @@ function normalizeRequestedAction(input = {}) {
   return {
     actionClass: requireString(source.actionClass, "authorizationRequest.requestedAction.actionClass"),
     toolName: normalizeString(source.toolName, ""),
+    roleLane: normalizeString(source.roleLane, "any"),
     targetKind: normalizeString(source.targetKind, "unknown"),
     targetRefs: normalizeRefs(source.targetRefs, "action_target"),
     scope: normalizeString(source.scope, "work_thread"),
@@ -371,6 +380,7 @@ function validateRequestedAction(action, label = "requestedAction") {
   requireString(action.actionClass, `${label}.actionClass`);
   requireString(action.targetKind, `${label}.targetKind`);
   requireString(action.scope, `${label}.scope`);
+  requireString(action.roleLane, `${label}.roleLane`);
   if (!REVERSIBILITY_VALUES.includes(action.reversibility)) {
     throw validationError("direct_authorization_router_invalid_reversibility", `${label}.reversibility`);
   }
@@ -485,6 +495,16 @@ function buildPolicyResolutionTrace(input = {}, options = {}) {
       actionClass: registryEntry.actionClass,
       satisfied: false,
     }));
+  const riskCeilingExceeded = RISK_RANK[request.requestedAction.riskLevel] > RISK_RANK[registryEntry.riskCeiling];
+  if (riskCeilingExceeded) {
+    missingEvidence.push({
+      requirementId: "risk_ceiling_not_exceeded",
+      actionClass: registryEntry.actionClass,
+      requestedRiskLevel: request.requestedAction.riskLevel,
+      riskCeiling: registryEntry.riskCeiling,
+      satisfied: false,
+    });
+  }
   const evidenceSatisfied = missingEvidence.length === 0;
   const dominantPosture = pickEnum(source.dominantPosture, POLICY_POSTURES, registryEntry.defaultPosture);
   const trace = {
@@ -497,7 +517,9 @@ function buildPolicyResolutionTrace(input = {}, options = {}) {
     exceptionApplied: null,
     evidenceSatisfied,
     missingEvidence,
-    rationale: normalizeString(source.rationale, `Action class ${request.requestedAction.actionClass} resolves to ${dominantPosture}.`),
+    rationale: normalizeString(source.rationale, riskCeilingExceeded
+      ? `Action class ${request.requestedAction.actionClass} exceeds ${registryEntry.riskCeiling} risk ceiling.`
+      : `Action class ${request.requestedAction.actionClass} resolves to ${dominantPosture}.`),
     evaluatedAt: normalizeString(source.evaluatedAt, nowIso(options.now || Date.now)),
     shadowOnly: true,
     rawPolicyLedgerExposed: false,
@@ -562,7 +584,7 @@ function buildAuthorizationDecision(input = {}, options = {}) {
   validateAuthorizationRequest(request);
   if (managerProfile) validateWorldmodelManagerProfile(managerProfile);
   if (currentWorldmodel) validateActiveInteractionWorldmodel(currentWorldmodel);
-  const policyResolutionTrace = source.policyResolutionTrace || buildPolicyResolutionTrace({
+  const policyResolutionTrace = source.policyResolutionTrace || source.trace || buildPolicyResolutionTrace({
     request,
     registry: source.registry,
     registryEntry: source.registryEntry,
@@ -705,7 +727,7 @@ function validateAuthorizationContinuationEnvelope(envelope) {
 function buildAuthorizationDecisionLedgerRow(input = {}, options = {}) {
   const source = isPlainObject(input) ? input : {};
   const request = source.request;
-  const trace = source.policyResolutionTrace;
+  const trace = source.policyResolutionTrace || source.trace;
   const decision = source.decision || source.authorizationDecision;
   const continuation = source.continuation || source.continuationEnvelope;
   validateAuthorizationRequest(request);
