@@ -221,7 +221,7 @@ function mappingRef(mapping = null) {
 }
 
 function actionClassFor(row = {}, hint = {}) {
-  const explicit = normalizeString(hint.actionClass || row.environmentActionClass || row.actionClass, "");
+  const explicit = normalizeString(hint.actionClass, "") || normalizeString(hint.environmentActionClass, "") || normalizeString(row.environmentActionClass, "") || normalizeString(row.actionClass, "");
   if (ENVIRONMENT_TOOL_ACTION_CLASSES.includes(explicit)) return explicit;
   const family = normalizeString(row.odeuFamily, "");
   if (family === "workspace_process_authority" || family === "local_perception") return "local_workspace_action";
@@ -245,13 +245,16 @@ function topologyToolFamilyOwner(topology = {}, row = {}) {
 }
 
 function ownerFor({ row = {}, hint = null, topology = {}, turnEnvironment = {} } = {}) {
-  const hintOwner = normalizeString(hint?.ownerEnvironmentId || hint?.environmentOwnerId, "");
-  if (hintOwner) return { ownerEnvironmentId: hintOwner, ownerSource: "tool_route_hint" };
-  const rowOwner = normalizeString(row.ownerEnvironmentId || row.environmentOwnerId, "");
+  const hintOwner = normalizeString(hint?.ownerEnvironmentId, "") || normalizeString(hint?.environmentOwnerId, "");
+  if (hintOwner) {
+    const ownerSource = hint?.ownerSource === "tool_catalog_row" ? "tool_catalog_row" : "tool_route_hint";
+    return { ownerEnvironmentId: hintOwner, ownerSource };
+  }
+  const rowOwner = normalizeString(row.ownerEnvironmentId, "") || normalizeString(row.environmentOwnerId, "");
   if (rowOwner) return { ownerEnvironmentId: rowOwner, ownerSource: "tool_catalog_row" };
   const topologyOwner = topologyToolFamilyOwner(topology, row);
   if (topologyOwner) return { ownerEnvironmentId: topologyOwner, ownerSource: "topology_tool_family" };
-  const residentOwner = normalizeString(turnEnvironment.residentEnvironmentId || topology.defaultEnvironmentId, "");
+  const residentOwner = normalizeString(turnEnvironment.residentEnvironmentId, "") || normalizeString(topology.defaultEnvironmentId, "");
   if (residentOwner) return { ownerEnvironmentId: residentOwner, ownerSource: "resident_environment_default" };
   return { ownerEnvironmentId: "", ownerSource: "unknown" };
 }
@@ -280,12 +283,12 @@ function buildRouteRow({ row = {}, hint = null, topology = null, turnEnvironment
   if (!turnEnvironment) blockers.push("turn_environment_missing");
   if (topologyCompatibility?.requiresRemand === true) blockers.push("environment_topology_requires_remand");
 
-  const residentEnvironmentId = normalizeString(turnEnvironment?.residentEnvironmentId || topology?.defaultEnvironmentId, "");
+  const residentEnvironmentId = normalizeString(turnEnvironment?.residentEnvironmentId, "") || normalizeString(topology?.defaultEnvironmentId, "");
   const { ownerEnvironmentId, ownerSource } = ownerFor({ row, hint, topology: topology || {}, turnEnvironment: turnEnvironment || {} });
   const ownerEnvironment = topology ? environmentById(topology, ownerEnvironmentId) : null;
   const residentEnvironment = topology ? environmentById(topology, residentEnvironmentId) : null;
-  if (topology && ownerEnvironmentId && !ownerEnvironment) blockers.push("owner_environment_missing");
-  if (topology && residentEnvironmentId && !residentEnvironment) blockers.push("resident_environment_missing");
+  if (topology && (!ownerEnvironmentId || !ownerEnvironment)) blockers.push("owner_environment_missing");
+  if (topology && (!residentEnvironmentId || !residentEnvironment)) blockers.push("resident_environment_missing");
 
   const ownerRef = topology ? environmentRef(topology, ownerEnvironmentId) : null;
   const residentRef = topology ? environmentRef(topology, residentEnvironmentId) : null;
@@ -376,7 +379,18 @@ function buildEnvironmentAwareToolCatalog(input = {}, options = {}) {
   const topologyCompatibility = source.topologyCompatibility || null;
   if (topologyCompatibility) validateTopologyCompatibility(topologyCompatibility);
 
-  const hints = buildHintIndex(source.environmentOwnerHints || source.toolEnvironmentRoutes || source.routeHints);
+  const registryInputRows = Array.isArray(source.capabilityRegistryInput?.rows)
+    ? source.capabilityRegistryInput.rows
+    : Array.isArray(source.rows)
+      ? source.rows
+      : [];
+  const routeHints = [
+    ...registryInputRows.filter(isPlainObject).map((row) => ({ ...row, ownerSource: "tool_catalog_row" })),
+    ...(Array.isArray(source.environmentOwnerHints) ? source.environmentOwnerHints : []),
+    ...(Array.isArray(source.toolEnvironmentRoutes) ? source.toolEnvironmentRoutes : []),
+    ...(Array.isArray(source.routeHints) ? source.routeHints : []),
+  ];
+  const hints = buildHintIndex(routeHints);
   const routeRows = (Array.isArray(capabilityRegistry.rows) ? capabilityRegistry.rows : [])
     .map((row) => buildRouteRow({
       row,

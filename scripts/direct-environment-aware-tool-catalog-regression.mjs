@@ -204,6 +204,35 @@ assert.equal(byTool.get("direct.remote_probe").routeClass, "unsupported_environm
 assert.equal(byTool.get("direct.remote_probe").routeMayProceed, false);
 assert.ok(byTool.get("direct.remote_probe").blockerCodes.includes("owner_environment_missing"));
 
+const rowOwnedCatalog = buildEnvironmentAwareToolCatalog({
+  catalogId: "env_aware_tool_catalog_raw_rows_fixture",
+  topology,
+  turnEnvironment,
+  rows: [
+    {
+      toolId: "direct.browser.row_owned",
+      displayName: "browser_row_owned",
+      directNames: ["browser_row_owned"],
+      odeuFamily: "external_capability_discovery",
+      capabilityState: "runtime_probed",
+      implementationState: "projection_only",
+      promotionState: "diagnostic_only",
+      providerDeclarationState: "not_declared",
+      localExecutorState: "scaffolded",
+      requestShapeFamilies: ["browser_observation_request"],
+      localExecutor: "src/main/direct/external/browser-specialist.js",
+      ownerEnvironmentId: "env_windows_browser_catalog",
+      environmentRouteClass: "specialist_worker_required",
+      environmentActionClass: "windows_browser_action",
+    },
+  ],
+}, { now });
+validateEnvironmentAwareToolCatalog(rowOwnedCatalog);
+assert.equal(rowOwnedCatalog.routeRows[0].ownerEnvironmentId, "env_windows_browser_catalog");
+assert.equal(rowOwnedCatalog.routeRows[0].ownerSource, "tool_catalog_row");
+assert.equal(rowOwnedCatalog.routeRows[0].routeClass, "specialist_worker_required");
+assert.equal(rowOwnedCatalog.routeRows[0].actionClass, "windows_browser_action");
+
 const missingTopologyCatalog = buildEnvironmentAwareToolCatalog({
   capabilityRegistry: registry,
   turnEnvironment,
