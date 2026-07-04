@@ -186,7 +186,7 @@ function normalizeRefs(values, fallbackKind = "wakeup_evidence") {
         value.label || value.rendererSafeLabel || fallbackKind,
       );
     })
-    .filter((ref) => ref && (ref.id || ref.digest));
+    .filter((ref) => ref && ref.id);
 }
 
 function contractRefFrom(input = {}) {
@@ -544,6 +544,23 @@ function validateWakeQueueInvariants(queue) {
     if (!matchingEvent) throw validationError("direct_wakeup_missing_wake_event_for_packet", packet.packetId);
     if (packet.targetAgentId !== matchingEvent.targetAgentId || packet.targetAgentRunId !== matchingEvent.targetAgentRunId) {
       throw validationError("direct_wakeup_packet_target_mismatch", packet.packetId);
+    }
+    if (matchingEvent.sourceWorkId && !packet.sourceWorkIds.includes(matchingEvent.sourceWorkId)) {
+      throw validationError("direct_wakeup_packet_source_work_mismatch", `${packet.packetId}.${matchingEvent.sourceWorkId}`);
+    }
+    if (packet.sourceSuspensionRef) {
+      const packetSuspension = suspensions.get(packet.sourceSuspensionRef.id);
+      if (!packetSuspension) {
+        throw validationError("direct_wakeup_missing_source_suspension_for_packet", packet.sourceSuspensionRef.id);
+      }
+      if (matchingEvent.sourceSuspensionId && packet.sourceSuspensionRef.id !== matchingEvent.sourceSuspensionId) {
+        throw validationError("direct_wakeup_packet_suspension_mismatch", `${packet.packetId}.${matchingEvent.sourceSuspensionId}`);
+      }
+      if (packet.targetAgentId !== packetSuspension.agentId || packet.targetAgentRunId !== packetSuspension.agentRunId) {
+        throw validationError("direct_wakeup_packet_suspension_target_mismatch", packet.packetId);
+      }
+    } else if (matchingEvent.sourceSuspensionId) {
+      throw validationError("direct_wakeup_missing_source_suspension_for_packet", packet.packetId);
     }
   }
   return true;

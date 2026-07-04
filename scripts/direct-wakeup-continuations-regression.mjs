@@ -322,6 +322,72 @@ expectThrows(() => buildWakeQueue({
   }, { now })],
 }), "direct_wakeup_source_work_not_awaited");
 
+const digestOnlyRefSuspension = buildAgentSuspensionState({
+  suspensionId: "suspension_digest_only_source_ref",
+  agentId: "agent_digest_only",
+  agentRunId: "agent_run_digest_only",
+  reason: "awaiting_async_work",
+  awaitingWorkIds: [registration.workId],
+  continuationContractRef: suspension.continuationContractRef,
+  sourceRefs: [{
+    kind: "digest_only_ref",
+    digest: "sha256:digest_only_ref",
+    label: "Digest-only ref should be filtered before validation",
+  }],
+});
+validateAgentSuspensionState(digestOnlyRefSuspension, { registryStore });
+assert.equal(digestOnlyRefSuspension.sourceRefs.length, 0);
+
+const otherRegisteredWorkId = "async_work_registered_but_not_triggering";
+const mismatchedWorkPacket = buildTypedContinuationPacket({
+  packetId: "continuation_wrong_work",
+  suspension,
+  wakeEvent,
+  sourceWorkIds: [otherRegisteredWorkId],
+  evidenceRefs: [completedSnapshot],
+}, { registeredWorkIds: [registration.workId, otherRegisteredWorkId] });
+
+expectThrows(() => buildWakeQueue({
+  queueId: "wake_queue_packet_wrong_work",
+  registeredWorkIds: [registration.workId, otherRegisteredWorkId],
+  suspensions: [suspension],
+  wakeEvents: [wakeEvent],
+  continuationPackets: [mismatchedWorkPacket],
+}), "direct_wakeup_packet_source_work_mismatch");
+
+const otherSuspension = buildAgentSuspensionState({
+  suspensionId: "suspension_other_agent_same_work",
+  agentId: suspension.agentId,
+  agentRunId: suspension.agentRunId,
+  reason: "awaiting_async_work",
+  awaitingWorkIds: [registration.workId],
+  continuationContractRef: suspension.continuationContractRef,
+  wakePolicyRef: suspension.wakePolicyRef,
+}, { now });
+
+const mismatchedSuspensionPacket = buildTypedContinuationPacket({
+  packetId: "continuation_wrong_suspension",
+  targetAgentId: suspension.agentId,
+  targetAgentRunId: suspension.agentRunId,
+  sourceSuspensionRef: {
+    kind: "agent_suspension_state",
+    id: otherSuspension.suspensionId,
+    digest: otherSuspension.suspensionDigest,
+    label: otherSuspension.reason,
+  },
+  wakeEvent,
+  sourceWorkIds: [registration.workId],
+  evidenceRefs: [completedSnapshot],
+}, { registryStore });
+
+expectThrows(() => buildWakeQueue({
+  queueId: "wake_queue_packet_wrong_suspension",
+  registryStore,
+  suspensions: [suspension, otherSuspension],
+  wakeEvents: [wakeEvent],
+  continuationPackets: [mismatchedSuspensionPacket],
+}), "direct_wakeup_packet_suspension_mismatch");
+
 expectThrows(() => validateTypedContinuationPacket({
   ...continuationPacket,
   providerCallStartedInThisPr: true,
