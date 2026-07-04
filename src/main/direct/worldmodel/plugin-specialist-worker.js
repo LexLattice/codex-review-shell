@@ -109,7 +109,7 @@ function validateRef(ref, label, options = {}) {
   requireString(ref.kind, `${label}.kind`);
   if (options.requireId !== false) requireString(ref.id, `${label}.id`);
   if (options.requireDigest !== false) requireString(ref.digest, `${label}.digest`);
-  if (ref.rawTextIncluded === true || ref.rawPathIncluded === true || ref.rawSecretIncluded === true) {
+  if (ref.rawTextIncluded || ref.rawPathIncluded || ref.rawSecretIncluded) {
     throw validationError("direct_plugin_specialist_raw_ref_exposure", label);
   }
   return true;
@@ -177,15 +177,25 @@ function validateEvidenceReturnContract(contract, label = "evidenceReturnContrac
   if (contract.rawPayloadAllowed !== false || contract.workspaceMutationAllowed !== false) {
     throw validationError("direct_plugin_specialist_authority_leak", label);
   }
-  if (contract.rawTextIncluded === true || contract.rawPathIncluded === true || contract.rawSecretIncluded === true) {
+  if (contract.rawTextIncluded || contract.rawPathIncluded || contract.rawSecretIncluded) {
     throw validationError("direct_plugin_specialist_raw_exposure", label);
   }
   return true;
 }
 
+function routeMatchesEnvelope(routeRow = {}, envelope = null) {
+  if (!envelope) return false;
+  if (envelope.toolRouteRef?.id !== routeRow.rowId) return false;
+  if (envelope.toolRouteRef?.digest !== routeRow.rowDigest) return false;
+  if (envelope.toolId !== routeRow.toolId) return false;
+  if (envelope.actionClass !== routeRow.actionClass) return false;
+  return envelope.routeClass === routeRow.routeClass;
+}
+
 function statusFromEnvelope(routeRow = {}, envelope = null) {
   if (routeRow.routeClass !== "specialist_worker_required") return "unsupported_route";
   if (!envelope) return "authorization_missing";
+  if (!routeMatchesEnvelope(routeRow, envelope)) return "authorization_remanded";
   if (envelope.routeStatus === "route_ready_for_authorization" && envelope.transitionKind === "specialist_worker_delegation") {
     return "ready_for_specialist_delegation";
   }
@@ -237,7 +247,7 @@ function validateBrowserVerificationWorkerScaffold(scaffold) {
     if (scaffold[flag] !== false) throw validationError("direct_plugin_specialist_authority_leak", `browserVerificationWorkerScaffold.${flag}`);
   }
   for (const flag of ["rawPromptIncluded", "rawToolPayloadIncluded", "rawTextIncluded", "rawPathIncluded", "rawSecretIncluded"]) {
-    if (scaffold[flag] === true) throw validationError("direct_plugin_specialist_raw_exposure", `browserVerificationWorkerScaffold.${flag}`);
+    if (scaffold[flag]) throw validationError("direct_plugin_specialist_raw_exposure", `browserVerificationWorkerScaffold.${flag}`);
   }
   validateDigest(scaffold, "scaffoldDigest", "direct-browser-verification-worker-scaffold@1", "browserVerificationWorkerScaffold");
   return true;
@@ -273,6 +283,7 @@ function buildPluginSpecialistWorkerContract(input = {}, options = {}) {
       ...(Array.isArray(routeRow.blockerCodes) ? routeRow.blockerCodes : []),
       ...(status === "ready_for_specialist_delegation" ? [] : [status]),
       ...(normalizeString(routeRow.routeClass, "") === "specialist_worker_required" ? [] : ["route_not_specialist_worker"]),
+      ...(envelope && !routeMatchesEnvelope(routeRow, envelope) ? ["authorization_route_mismatch"] : []),
     ]),
     routeRowRef: routeRowRef(routeRow),
     authorizationRouteEnvelopeRef: envelope ? authorizationRouteEnvelopeRef(envelope) : null,
@@ -322,7 +333,7 @@ function validatePluginSpecialistWorkerContract(contract) {
     if (contract[flag] !== false) throw validationError("direct_plugin_specialist_authority_leak", `pluginSpecialistWorkerContract.${flag}`);
   }
   for (const flag of ["rawObjectiveIncluded", "rawToolPayloadIncluded", "rawTextIncluded", "rawPathIncluded", "rawSecretIncluded"]) {
-    if (contract[flag] === true) throw validationError("direct_plugin_specialist_raw_exposure", `pluginSpecialistWorkerContract.${flag}`);
+    if (contract[flag]) throw validationError("direct_plugin_specialist_raw_exposure", `pluginSpecialistWorkerContract.${flag}`);
   }
   validateDigest(contract, "contractDigest", "direct-plugin-specialist-worker-contract@1", "pluginSpecialistWorkerContract");
   return true;
@@ -331,6 +342,7 @@ function validatePluginSpecialistWorkerContract(contract) {
 function buildPluginSpecialistDelegationPacket(input = {}, options = {}) {
   const source = isPlainObject(input) ? input : {};
   const contract = source.contract || source.pluginSpecialistWorkerContract || buildPluginSpecialistWorkerContract(source, options);
+  validatePluginSpecialistWorkerContract(contract);
   const scaffold = source.scaffold || source.browserVerificationWorkerScaffold || buildBrowserVerificationWorkerScaffold({
     targetEnvironmentId: contract.targetEnvironmentId,
     pluginFamily: contract.pluginFamily,
@@ -339,7 +351,6 @@ function buildPluginSpecialistDelegationPacket(input = {}, options = {}) {
     evidenceReturnContract: contract.evidenceReturnContract,
   }, options);
   const transitionWitness = source.transitionWitness || source.environmentTransitionWitness || null;
-  validatePluginSpecialistWorkerContract(contract);
   validateBrowserVerificationWorkerScaffold(scaffold);
   if (transitionWitness) validateEnvironmentTransitionWitness(transitionWitness);
   const packet = {
@@ -400,7 +411,7 @@ function validatePluginSpecialistDelegationPacket(packet) {
     throw validationError("direct_plugin_specialist_contract_violation", "pluginSpecialistDelegationPacket.evidenceReturnOnly");
   }
   for (const flag of ["rawObjectiveIncluded", "rawToolPayloadIncluded", "rawTextIncluded", "rawPathIncluded", "rawSecretIncluded"]) {
-    if (packet[flag] === true) throw validationError("direct_plugin_specialist_raw_exposure", `pluginSpecialistDelegationPacket.${flag}`);
+    if (packet[flag]) throw validationError("direct_plugin_specialist_raw_exposure", `pluginSpecialistDelegationPacket.${flag}`);
   }
   validateDigest(packet, "packetDigest", "direct-plugin-specialist-delegation-packet@1", "pluginSpecialistDelegationPacket");
   return true;

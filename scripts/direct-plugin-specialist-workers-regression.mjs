@@ -287,6 +287,18 @@ validatePluginSpecialistWorkerContract(unsupportedContract);
 assert.equal(unsupportedContract.status, "unsupported_route");
 assert(unsupportedContract.blockerCodes.includes("route_not_specialist_worker"));
 
+const mismatchedEnvelopeContract = buildPluginSpecialistWorkerContract({
+  sourceAgentId: "agent_main_worker_plugin_specialist",
+  routeRow: {
+    ...routeRow,
+    rowId: "direct_environment_tool_route_row_different",
+  },
+  authorizationRouteEnvelope: envelope,
+}, { now });
+validatePluginSpecialistWorkerContract(mismatchedEnvelopeContract);
+assert.equal(mismatchedEnvelopeContract.status, "authorization_remanded");
+assert(mismatchedEnvelopeContract.blockerCodes.includes("authorization_route_mismatch"));
+
 expectThrows(() => validatePluginSpecialistWorkerContract({
   ...contract,
   workerRuntimeEnabledInThisPr: true,
@@ -304,6 +316,39 @@ expectThrows(() => validateBrowserVerificationWorkerScaffold({
     rawPayloadAllowed: true,
   },
 }), "direct_plugin_specialist_authority_leak");
+
+expectThrows(() => validateBrowserVerificationWorkerScaffold({
+  ...scaffold,
+  rawToolPayloadIncluded: "yes",
+}), "direct_plugin_specialist_raw_exposure");
+
+expectThrows(() => validatePluginSpecialistWorkerContract({
+  ...contract,
+  rawSecretIncluded: 1,
+}), "direct_plugin_specialist_raw_exposure");
+
+expectThrows(() => validatePluginSpecialistWorkerContract({
+  ...contract,
+  inputEvidenceRefs: [{
+    kind: "unsafe_ref",
+    id: "unsafe",
+    digest: "sha256:unsafe",
+    label: "unsafe",
+    rawTextIncluded: "yes",
+  }],
+}), "direct_plugin_specialist_raw_ref_exposure");
+
+expectThrows(() => validatePluginSpecialistDelegationPacket({
+  ...packet,
+  rawObjectiveIncluded: ["truthy"],
+}), "direct_plugin_specialist_raw_exposure");
+
+expectThrows(() => buildPluginSpecialistDelegationPacket({
+  contract: {
+    ...contract,
+    targetEnvironmentId: "",
+  },
+}), "direct_plugin_specialist_missing_string");
 
 console.log(JSON.stringify({
   ok: true,
