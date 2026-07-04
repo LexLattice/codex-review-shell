@@ -7,6 +7,7 @@ module.exports = {
   ...require("./manager"),
   ...require("./thread-manager"),
   ...require("./environment-topology"),
+  ...require("./environment-aware-tool-catalog"),
   ...require("./authorization-router"),
   ...require("./constitutional-policy"),
   ...require("./tool-catalog-game-integration"),
