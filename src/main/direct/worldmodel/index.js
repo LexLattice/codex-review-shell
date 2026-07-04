@@ -9,6 +9,7 @@ module.exports = {
   ...require("./environment-topology"),
   ...require("./environment-aware-tool-catalog"),
   ...require("./environment-transition-witness"),
+  ...require("./plugin-specialist-worker"),
   ...require("./authorization-router"),
   ...require("./constitutional-policy"),
   ...require("./tool-catalog-game-integration"),
