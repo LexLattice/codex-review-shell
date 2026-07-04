@@ -20,6 +20,10 @@ const {
 const {
   validateWorldmodelManagerProfile,
 } = require("./manager");
+const {
+  buildEnvironmentExecutionProjection,
+  validateEnvironmentExecutionProjection,
+} = require("./environment-topology");
 
 const THREAD_MANAGER_PROFILE_SCHEMA = "thread_manager_profile@1";
 const WORK_THREAD_DELEGATION_PACKET_SCHEMA = "work_thread_delegation_packet@1";
@@ -58,6 +62,7 @@ const DIGEST_FIELDS = new Set([
   "warningDigest",
   "authorityBoundaryDigest",
   "comparisonDigest",
+  "executionProjectionDigest",
   "projectionWitnessDigest",
   "shadowIntegrationDigest",
 ]);
@@ -601,11 +606,22 @@ function buildWorkerBootPacket(input = {}, options = {}) {
   validateAuthorityBoundary(parentBoundary);
   validateAuthorityBoundary(workerBoundary);
   const authorityComparison = compareAuthorityBoundaries({ parentBoundary, childBoundary: workerBoundary });
+  const environmentTopology = source.environmentTopology || source.topology;
+  const turnEnvironment = source.turnExecutionEnvironment || source.turnEnvironment;
+  const hasEnvironmentIntent = Boolean(turnEnvironment || source.topologyCompatibility);
+  const environmentBlockerCodes = [];
+  if (!source.environmentExecutionProjection && hasEnvironmentIntent && !environmentTopology) {
+    environmentBlockerCodes.push("environment_topology_missing");
+  }
+  if (source.topologyCompatibility?.requiresRemand === true) {
+    environmentBlockerCodes.push("environment_topology_requires_remand");
+  }
   const bootOmissions = omittedSectionsFor(worldmodel, laneKeys, sectionKeys);
   const staleWarnings = staleWarningsFor(worldmodel, delegationPacket.revisionCompatibility);
   const blockerCodes = [
     ...(Array.isArray(delegationPacket.blockerCodes) ? delegationPacket.blockerCodes : []),
     ...(authorityComparison.blocksBoot ? ["authority_boundary_broadened"] : []),
+    ...environmentBlockerCodes,
   ];
   const packet = {
     schema: WORKER_BOOT_PACKET_SCHEMA,
@@ -629,6 +645,18 @@ function buildWorkerBootPacket(input = {}, options = {}) {
     staleWarnings,
     authorityBoundary: workerBoundary,
     authorityComparison,
+    environmentExecutionProjection: source.environmentExecutionProjection
+      || (
+        environmentTopology
+          ? buildEnvironmentExecutionProjection({
+            bootPacketId,
+            topology: environmentTopology,
+            turnEnvironment,
+            topologyCompatibility: source.topologyCompatibility,
+            routeSummary: source.environmentRouteSummary,
+          })
+          : undefined
+      ),
     capabilityBundleRefs: delegationPacket.capabilityBundleRefs,
     authorizationChannelRefs: delegationPacket.authorizationChannelRefs,
     shadowContextPackIntegration: buildShadowContextPackIntegration({
@@ -671,6 +699,9 @@ function validateWorkerBootPacket(packet) {
   packet.authorizationChannelRefs.forEach((ref, index) => validateRef(ref, `workerBootPacket.authorizationChannelRefs.${index}`, { requireDigest: false }));
   validateAuthorityBoundary(packet.authorityBoundary);
   validateAuthorityBoundaryComparisonWitness(packet.authorityComparison);
+  if (packet.environmentExecutionProjection) {
+    validateEnvironmentExecutionProjection(packet.environmentExecutionProjection);
+  }
   validateShadowContextPackIntegration(packet.shadowContextPackIntegration);
   validateBootPacketProjectionWitness(packet.projectionWitness);
   if (packet.rawPromptIncluded === true || packet.rawTextIncluded === true || packet.rawPathIncluded === true || packet.rawSecretIncluded === true) {
