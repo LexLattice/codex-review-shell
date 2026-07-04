@@ -11,6 +11,7 @@ module.exports = {
   ...require("./environment-transition-witness"),
   ...require("./plugin-specialist-worker"),
   ...require("./async-work-registry"),
+  ...require("./wakeup-continuation"),
   ...require("./authorization-router"),
   ...require("./constitutional-policy"),
   ...require("./tool-catalog-game-integration"),
