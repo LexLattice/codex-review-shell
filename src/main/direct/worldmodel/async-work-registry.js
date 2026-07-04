@@ -329,6 +329,16 @@ function registrationRef(registration = {}) {
   });
 }
 
+function validateRefMatches(ref, expectedRef, label) {
+  validateRef(ref, label);
+  for (const field of ["kind", "id", "digest"]) {
+    if (ref[field] !== expectedRef[field]) {
+      throw validationError("direct_async_work_ref_mismatch", `${label}.${field}`);
+    }
+  }
+  return true;
+}
+
 function buildAsyncCondition(input = {}, options = {}) {
   const source = isPlainObject(input) ? input : {};
   const kind = pickEnum(source.kind, ASYNC_CONDITION_KINDS, "manual_mark");
@@ -572,13 +582,13 @@ function validateAsyncWorkRegistration(registration) {
   if (!ASYNC_WORK_KINDS.includes(registration.kind)) throw validationError("direct_async_work_invalid_kind", "asyncWorkRegistration.kind");
   validateTargetRefObject(registration.targetRef);
   validateAwaitableWorkContract(registration.contract);
-  validateRef(registration.contractRef, "asyncWorkRegistration.contractRef");
+  validateRefMatches(registration.contractRef, contractRef(registration.contract), "asyncWorkRegistration.contractRef");
   if (!ASYNC_REGISTRATION_MODES.includes(registration.registrationMode)) throw validationError("direct_async_work_invalid_registration_mode", "asyncWorkRegistration.registrationMode");
   if (registration.startedByHarness !== true && registration.startedByHarness !== false) throw validationError("direct_async_work_invalid_boolean", "asyncWorkRegistration.startedByHarness");
   if (!ASYNC_WORK_STATUSES.includes(registration.status)) throw validationError("direct_async_work_invalid_status", "asyncWorkRegistration.status");
   if (registration.latestSnapshotRef) validateRef(registration.latestSnapshotRef, "asyncWorkRegistration.latestSnapshotRef");
   validateAsyncWakePolicy(registration.wakePolicy);
-  validateRef(registration.wakePolicyRef, "asyncWorkRegistration.wakePolicyRef");
+  validateRefMatches(registration.wakePolicyRef, wakePolicyRef(registration.wakePolicy), "asyncWorkRegistration.wakePolicyRef");
   requireArray(registration.adoptionEvidenceRefs, "asyncWorkRegistration.adoptionEvidenceRefs");
   registration.adoptionEvidenceRefs.forEach((ref, index) => validateRef(ref, `asyncWorkRegistration.adoptionEvidenceRefs.${index}`, { requireDigest: false }));
   requireArray(registration.sourceRefs, "asyncWorkRegistration.sourceRefs");
@@ -746,7 +756,9 @@ function deriveCurrentStatuses(registrations = [], transitions = [], snapshots =
     current.terminal = ASYNC_WORK_TERMINAL_STATUSES.includes(transition.toStatus);
     byWork.set(transition.workId, current);
   }
-  for (const snapshot of snapshots) {
+  const sortedSnapshots = [...snapshots].sort((a, b) =>
+    a.observedAt.localeCompare(b.observedAt) || a.snapshotId.localeCompare(b.snapshotId));
+  for (const snapshot of sortedSnapshots) {
     const current = byWork.get(snapshot.workId);
     if (current) current.latestSnapshotRef = snapshotRef(snapshot);
   }
@@ -774,6 +786,9 @@ function validateTransitionSequenceIntegrity(registrations = [], transitions = [
   }
 
   for (const [workId, workTransitions] of transitionsByWorkId.entries()) {
+    if (!registrationStatusByWorkId.has(workId)) {
+      throw validationError("direct_async_work_unregistered_transition", workId);
+    }
     const sorted = [...workTransitions].sort((a, b) => a.sequence - b.sequence || a.transitionId.localeCompare(b.transitionId));
     const seenSequences = new Set();
     let previousTransition = null;

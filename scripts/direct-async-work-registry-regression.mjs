@@ -243,6 +243,7 @@ const completedSnapshot = buildAsyncWorkStatusSnapshot({
   workId: processRegistration.workId,
   status: "completed",
   progressSummary: "Process exited 0; only 20 of 25 expected traces found.",
+  observedAt: "2026-07-04T18:16:00.000Z",
   matchedConditionRefs: [doneCondition],
   evidenceRefs: [{
     kind: "bounded_stdout_excerpt",
@@ -252,6 +253,15 @@ const completedSnapshot = buildAsyncWorkStatusSnapshot({
   }],
 }, { now });
 validateAsyncWorkStatusSnapshot(completedSnapshot);
+
+const staleRunningSnapshot = buildAsyncWorkStatusSnapshot({
+  snapshotId: "snapshot_process_stale_running",
+  workId: processRegistration.workId,
+  status: "running",
+  progressSummary: "Older running snapshot that must not overwrite the latest completed snapshot.",
+  observedAt: "2026-07-04T18:14:00.000Z",
+}, { now });
+validateAsyncWorkStatusSnapshot(staleRunningSnapshot);
 
 const registeredTransition = buildAsyncWorkStateTransition({
   transitionId: "transition_process_registered",
@@ -326,7 +336,7 @@ const store = buildAsyncWorkRegistryStore({
   projectId: "project_async_work",
   workThreadId: "work_thread_async",
   registrations: [processRegistration, subAgentRegistration, browserWorkerRegistration],
-  snapshots: [runningSnapshot, completedSnapshot],
+  snapshots: [runningSnapshot, completedSnapshot, staleRunningSnapshot],
   transitions: [runningTransition, completedTransition, registeredTransition],
   outcomes: [violatedOutcome],
 }, { now });
@@ -335,6 +345,7 @@ assert.equal(store.appendOnlyTransitions, true);
 assert.equal(store.currentStatusByWorkId[processRegistration.workId].currentStatus, "completed");
 assert.equal(store.currentStatusByWorkId[processRegistration.workId].terminal, true);
 assert.equal(store.currentStatusByWorkId[processRegistration.workId].outcomeRef.processStatus, "completed");
+assert.equal(store.currentStatusByWorkId[processRegistration.workId].latestSnapshotRef.id, completedSnapshot.snapshotId);
 assert.equal(store.currentStatusByWorkId[subAgentRegistration.workId].currentStatus, "waiting");
 assert.equal(store.currentStatusByWorkId[browserWorkerRegistration.workId].currentStatus, "running");
 
@@ -362,6 +373,22 @@ expectThrows(() => validateAsyncWorkRegistration({
   ...processRegistration,
   liveProcessStartedInThisPr: true,
 }), "direct_async_work_authority_leak");
+
+expectThrows(() => validateAsyncWorkRegistration({
+  ...processRegistration,
+  contractRef: {
+    ...processRegistration.contractRef,
+    digest: "sha256:wrong_contract_digest",
+  },
+}), "direct_async_work_ref_mismatch");
+
+expectThrows(() => validateAsyncWorkRegistration({
+  ...processRegistration,
+  wakePolicyRef: {
+    ...processRegistration.wakePolicyRef,
+    id: "wrong_wake_policy",
+  },
+}), "direct_async_work_ref_mismatch");
 
 expectThrows(() => validateAsyncWorkStatusSnapshot({
   ...completedSnapshot,
@@ -411,6 +438,21 @@ expectThrows(() => buildAsyncWorkRegistryStore({
   registrations: [processRegistration],
   transitions: [registeredTransition, runningTransition, completedTransition, duplicateSequenceTransition],
 }), "direct_async_work_transition_sequence_duplicate");
+
+const unregisteredTransition = buildAsyncWorkStateTransition({
+  transitionId: "transition_unregistered_work",
+  workId: "async_work_missing_registration",
+  sequence: 1,
+  fromStatus: "unknown",
+  toStatus: "running",
+  reason: "started",
+}, { now });
+
+expectThrows(() => buildAsyncWorkRegistryStore({
+  storeId: "async_work_registry_unregistered_transition",
+  registrations: [processRegistration],
+  transitions: [unregisteredTransition],
+}), "direct_async_work_unregistered_transition");
 
 console.log(JSON.stringify({
   ok: true,
