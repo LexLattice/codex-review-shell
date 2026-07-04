@@ -10,6 +10,7 @@ module.exports = {
   ...require("./environment-aware-tool-catalog"),
   ...require("./environment-transition-witness"),
   ...require("./plugin-specialist-worker"),
+  ...require("./async-work-registry"),
   ...require("./authorization-router"),
   ...require("./constitutional-policy"),
   ...require("./tool-catalog-game-integration"),
