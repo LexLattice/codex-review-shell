@@ -240,8 +240,8 @@ function buildEnvironmentPathMapping(input = {}) {
     mappingId: normalizeId(source.mappingId || source.id, "environment_path_mapping"),
     fromEnvironmentId: normalizeId(source.fromEnvironmentId, "from_environment"),
     toEnvironmentId: normalizeId(source.toEnvironmentId, "to_environment"),
-    fromRootEvidenceKey: requireString(source.fromRootEvidenceKey, "pathMapping.fromRootEvidenceKey"),
-    toRootEvidenceKey: requireString(source.toRootEvidenceKey, "pathMapping.toRootEvidenceKey"),
+    fromRootEvidenceKey: normalizeString(source.fromRootEvidenceKey, ""),
+    toRootEvidenceKey: normalizeString(source.toRootEvidenceKey, ""),
     direction: pickEnum(source.direction, ENVIRONMENT_MAPPING_DIRECTIONS, "one_way"),
     mappingKind: pickEnum(source.mappingKind || source.kind, ENVIRONMENT_MAPPING_KINDS, "manual"),
     readAllowed: source.readAllowed !== false,
@@ -264,6 +264,9 @@ function validateEnvironmentPathMapping(mapping) {
   requireString(mapping.mappingId, "pathMapping.mappingId");
   requireString(mapping.fromEnvironmentId, "pathMapping.fromEnvironmentId");
   requireString(mapping.toEnvironmentId, "pathMapping.toEnvironmentId");
+  if (mapping.fromEnvironmentId === mapping.toEnvironmentId) {
+    throw validationError("direct_environment_invalid_mapping_endpoints", "pathMapping");
+  }
   requireString(mapping.fromRootEvidenceKey, "pathMapping.fromRootEvidenceKey");
   requireString(mapping.toRootEvidenceKey, "pathMapping.toRootEvidenceKey");
   if (!ENVIRONMENT_MAPPING_DIRECTIONS.includes(mapping.direction)) {
@@ -472,7 +475,7 @@ function validateTopologyCompatibility(value) {
   requireArray(value.relevantMappingIds, "topologyCompatibility.relevantMappingIds");
   requireArray(value.changedEnvironmentIds, "topologyCompatibility.changedEnvironmentIds");
   requireArray(value.changedMappingIds, "topologyCompatibility.changedMappingIds");
-  if (value.routeMayProceed === true && value.requiresRemand === true) {
+  if (value.routeMayProceed === value.requiresRemand) {
     throw validationError("direct_environment_invalid_topology_route_state", "topologyCompatibility");
   }
   validateDigest(value, "compatibilityDigest", "direct-environment-topology-compatibility@1", "topologyCompatibility");
@@ -489,8 +492,8 @@ function buildTurnExecutionEnvironment(input = {}) {
     schema: DIRECT_TURN_EXECUTION_ENVIRONMENT_SCHEMA,
     turnId: normalizeId(source.turnId, "direct_turn"),
     threadId: normalizeId(source.threadId, "direct_thread"),
-    defaultEnvironmentId: requireString(defaultEnvironmentId, "turnEnvironment.defaultEnvironmentId"),
-    residentEnvironmentId: requireString(residentEnvironmentId, "turnEnvironment.residentEnvironmentId"),
+    defaultEnvironmentId,
+    residentEnvironmentId,
     selectionKind: pickEnum(source.selectionKind, TURN_ENVIRONMENT_SELECTION_KINDS, "thread_default"),
     reason: pickEnum(source.reason, TURN_ENVIRONMENT_REASONS, "default_work"),
     topologyRef: source.topologyRef || topologyRef(topology || source),
@@ -566,8 +569,8 @@ function buildEnvironmentExecutionProjection(input = {}) {
       rawPathIncluded: false,
       rawSecretIncluded: false,
     },
-    defaultEnvironmentRef: environmentRef(topology, turnEnvironment?.defaultEnvironmentId || topology?.defaultEnvironmentId),
-    residentEnvironmentRef: environmentRef(topology, residentEnvironmentId),
+    defaultEnvironmentRef: source.defaultEnvironmentRef || environmentRef(topology, turnEnvironment?.defaultEnvironmentId || topology?.defaultEnvironmentId),
+    residentEnvironmentRef: source.residentEnvironmentRef || environmentRef(topology, residentEnvironmentId),
     workspaceMutationDefault: "forbidden_cross_env_without_authority",
     routeSummary: normalizeString(source.routeSummary, "resident environment uses thread default"),
     sourceRefs: normalizeRefs(source.sourceRefs, "environment_execution_projection_source"),
@@ -575,8 +578,12 @@ function buildEnvironmentExecutionProjection(input = {}) {
     rawPathIncluded: false,
     rawSecretIncluded: false,
   };
-  if (selectedToolEnvironmentId) projection.selectedToolEnvironmentRef = environmentRef(topology, selectedToolEnvironmentId);
-  if (delegatedSpecialistEnvironmentId) projection.delegatedSpecialistEnvironmentRef = environmentRef(topology, delegatedSpecialistEnvironmentId);
+  if (selectedToolEnvironmentId || source.selectedToolEnvironmentRef) {
+    projection.selectedToolEnvironmentRef = source.selectedToolEnvironmentRef || environmentRef(topology, selectedToolEnvironmentId);
+  }
+  if (delegatedSpecialistEnvironmentId || source.delegatedSpecialistEnvironmentRef) {
+    projection.delegatedSpecialistEnvironmentRef = source.delegatedSpecialistEnvironmentRef || environmentRef(topology, delegatedSpecialistEnvironmentId);
+  }
   if (source.topologyCompatibility) {
     validateTopologyCompatibility(source.topologyCompatibility);
     projection.topologyCompatibilityRef = {
@@ -588,6 +595,8 @@ function buildEnvironmentExecutionProjection(input = {}) {
       rawPathIncluded: false,
       rawSecretIncluded: false,
     };
+  } else if (source.topologyCompatibilityRef) {
+    projection.topologyCompatibilityRef = source.topologyCompatibilityRef;
   }
   projection.executionProjectionDigest = digestFor("direct-environment-execution-projection@1", projection);
   return projection;

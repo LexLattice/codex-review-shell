@@ -8,6 +8,7 @@ const require = createRequire(import.meta.url);
 const {
   activeWorldmodelFixture,
   buildDirectEnvironmentTopology,
+  buildEnvironmentExecutionProjection,
   buildTopologyCompatibility,
   buildTurnExecutionEnvironment,
   buildWorkerBootPacket,
@@ -15,6 +16,7 @@ const {
   buildWorldmodelManagerProfile,
   buildThreadManagerProfile,
   validateDirectEnvironmentTopology,
+  validateEnvironmentPathMapping,
   validateEnvironmentExecutionProjection,
   validateTopologyCompatibility,
   validateTurnExecutionEnvironment,
@@ -96,6 +98,17 @@ assert.equal(topology.environments.length, 2);
 assert.equal(topology.mappings[0].writeAllowed, false);
 assert.equal(topology.mappings[0].destructiveWriteAllowed, false);
 
+expectThrows(() => validateEnvironmentPathMapping({
+  ...topology.mappings[0],
+  fromEnvironmentId: "env_wsl_fixture",
+  toEnvironmentId: "env_wsl_fixture",
+}), "direct_environment_invalid_mapping_endpoints");
+
+expectThrows(() => validateEnvironmentPathMapping({
+  ...topology.mappings[0],
+  fromRootEvidenceKey: "",
+}), "direct_environment_missing_string");
+
 const turnEnvironment = buildTurnExecutionEnvironment({
   topology,
   turnId: "turn_env_fixture",
@@ -137,6 +150,11 @@ validateTopologyCompatibility(staleCompatibilityBlocked);
 assert.equal(staleCompatibilityBlocked.routeMayProceed, false);
 assert.equal(staleCompatibilityBlocked.requiresRemand, true);
 
+expectThrows(() => validateTopologyCompatibility({
+  ...staleCompatibilityBlocked,
+  requiresRemand: false,
+}), "direct_environment_invalid_topology_route_state");
+
 const managerProfile = buildWorldmodelManagerProfile({
   scopeKind: "work_thread",
   userProfileId: "user_profile_env_fixture",
@@ -177,6 +195,52 @@ validateEnvironmentExecutionProjection(bootPacket.environmentExecutionProjection
 assert.equal(bootPacket.environmentExecutionProjection.residentEnvironmentRef.id, "env_wsl_fixture");
 assert.equal(bootPacket.environmentExecutionProjection.delegatedSpecialistEnvironmentRef.id, "env_windows_browser_fixture");
 assert.equal(bootPacket.environmentExecutionProjection.workspaceMutationDefault, "forbidden_cross_env_without_authority");
+
+const remandedBootPacket = buildWorkerBootPacket({
+  bootPacketId: "worker_boot_packet_env_remanded_fixture",
+  delegationPacket: delegation,
+  worldmodel,
+  environmentTopology: topology,
+  turnExecutionEnvironment: turnEnvironment,
+  topologyCompatibility: staleCompatibilityBlocked,
+}, { now });
+validateWorkerBootPacket(remandedBootPacket);
+assert.equal(remandedBootPacket.status, "blocked");
+assert(remandedBootPacket.blockerCodes.includes("environment_topology_requires_remand"));
+
+const turnEnvironmentRefOnly = buildTurnExecutionEnvironment({
+  topologyRef: {
+    kind: "direct_environment_topology",
+    id: topology.topologyId,
+    digest: topology.topologyDigest,
+    label: "Stored topology ref",
+  },
+  turnId: "turn_env_ref_only_fixture",
+  threadId: "direct_thread_env_fixture",
+  defaultEnvironmentId: "env_wsl_fixture",
+  residentEnvironmentId: "env_wsl_fixture",
+}, { now });
+validateTurnExecutionEnvironment(turnEnvironmentRefOnly);
+const missingTopologyBootPacket = buildWorkerBootPacket({
+  bootPacketId: "worker_boot_packet_missing_topology_fixture",
+  delegationPacket: delegation,
+  worldmodel,
+  turnExecutionEnvironment: turnEnvironmentRefOnly,
+}, { now });
+validateWorkerBootPacket(missingTopologyBootPacket);
+assert.equal(missingTopologyBootPacket.status, "blocked");
+assert.equal(missingTopologyBootPacket.environmentExecutionProjection, undefined);
+assert(missingTopologyBootPacket.blockerCodes.includes("environment_topology_missing"));
+
+const rehydratedProjection = {
+  ...bootPacket.environmentExecutionProjection,
+  projectionId: "environment_execution_projection_rehydrated_fixture",
+  executionProjectionDigest: undefined,
+};
+const rebuiltProjection = buildEnvironmentExecutionProjection(rehydratedProjection);
+validateEnvironmentExecutionProjection(rebuiltProjection);
+assert.equal(rebuiltProjection.defaultEnvironmentRef.id, "env_wsl_fixture");
+assert.equal(rebuiltProjection.residentEnvironmentRef.id, "env_wsl_fixture");
 
 const toolScopedTurn = buildTurnExecutionEnvironment({
   topology,

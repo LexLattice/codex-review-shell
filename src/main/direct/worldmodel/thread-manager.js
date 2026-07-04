@@ -606,11 +606,22 @@ function buildWorkerBootPacket(input = {}, options = {}) {
   validateAuthorityBoundary(parentBoundary);
   validateAuthorityBoundary(workerBoundary);
   const authorityComparison = compareAuthorityBoundaries({ parentBoundary, childBoundary: workerBoundary });
+  const environmentTopology = source.environmentTopology || source.topology;
+  const turnEnvironment = source.turnExecutionEnvironment || source.turnEnvironment;
+  const hasEnvironmentIntent = Boolean(turnEnvironment || source.topologyCompatibility);
+  const environmentBlockerCodes = [];
+  if (!source.environmentExecutionProjection && hasEnvironmentIntent && !environmentTopology) {
+    environmentBlockerCodes.push("environment_topology_missing");
+  }
+  if (source.topologyCompatibility?.requiresRemand === true) {
+    environmentBlockerCodes.push("environment_topology_requires_remand");
+  }
   const bootOmissions = omittedSectionsFor(worldmodel, laneKeys, sectionKeys);
   const staleWarnings = staleWarningsFor(worldmodel, delegationPacket.revisionCompatibility);
   const blockerCodes = [
     ...(Array.isArray(delegationPacket.blockerCodes) ? delegationPacket.blockerCodes : []),
     ...(authorityComparison.blocksBoot ? ["authority_boundary_broadened"] : []),
+    ...environmentBlockerCodes,
   ];
   const packet = {
     schema: WORKER_BOOT_PACKET_SCHEMA,
@@ -636,11 +647,11 @@ function buildWorkerBootPacket(input = {}, options = {}) {
     authorityComparison,
     environmentExecutionProjection: source.environmentExecutionProjection
       || (
-        source.environmentTopology || source.topology || source.turnExecutionEnvironment || source.turnEnvironment
+        environmentTopology
           ? buildEnvironmentExecutionProjection({
             bootPacketId,
-            topology: source.environmentTopology || source.topology,
-            turnEnvironment: source.turnExecutionEnvironment || source.turnEnvironment,
+            topology: environmentTopology,
+            turnEnvironment,
             topologyCompatibility: source.topologyCompatibility,
             routeSummary: source.environmentRouteSummary,
           })
