@@ -103,7 +103,7 @@ function normalizeList(values) {
   return [...new Set((Array.isArray(values) ? values : [])
     .map((value) => normalizeString(value, ""))
     .filter(Boolean))]
-    .sort((a, b) => a.localeCompare(b));
+    .sort();
 }
 
 function refFrom(kind, id, digest, label, extra = {}) {
@@ -166,12 +166,31 @@ function authorizationDecisionRef(decision = null) {
   return refFrom("authorization_decision", decision.decisionId, decision.decisionDigest, decision.decision || "authorization decision");
 }
 
-function inferRouteStatus(routeRow = {}, authorizationDecision = null) {
+function authorizationRequestMatchesRoute(routeRow = {}, authorizationRequest = null) {
+  if (!authorizationRequest) return false;
+  if (authorizationRequest.requestedAction?.actionClass !== routeRow.actionClass) return false;
+  return (authorizationRequest.requestedAction?.targetRefs || []).some((ref) => {
+    if (ref.kind !== "tool_route_ref" && ref.kind !== "direct_environment_tool_route_row") return false;
+    if (ref.id !== routeRow.rowId) return false;
+    return !routeRow.rowDigest || !ref.digest || ref.digest === routeRow.rowDigest;
+  });
+}
+
+function authorizationDecisionMatchesRequest(authorizationRequest = null, authorizationDecision = null) {
+  if (!authorizationRequest || !authorizationDecision) return false;
+  if (authorizationDecision.requestId !== authorizationRequest.requestId) return false;
+  if (authorizationDecision.requestRef?.id !== authorizationRequest.requestId) return false;
+  return authorizationDecision.requestRef?.digest === authorizationRequest.requestDigest;
+}
+
+function inferRouteStatus(routeRow = {}, authorizationRequest = null, authorizationDecision = null) {
   if (!["cross_environment_tool_session", "specialist_worker_required"].includes(routeRow.routeClass)) {
     return "unsupported_route";
   }
   if (routeRow.routeMayProceed !== true) return "unsupported_route";
-  if (!authorizationDecision) return "authorization_missing";
+  if (!authorizationRequest || !authorizationDecision) return "authorization_missing";
+  if (!authorizationRequestMatchesRoute(routeRow, authorizationRequest)) return "authorization_remanded";
+  if (!authorizationDecisionMatchesRequest(authorizationRequest, authorizationDecision)) return "authorization_remanded";
   if (authorizationDecision.decision === "grant") return "route_ready_for_authorization";
   return "authorization_remanded";
 }
@@ -190,7 +209,7 @@ function buildCrossEnvironmentAuthorizationRouteEnvelope(input = {}, options = {
   if (authorizationRequest) validateAuthorizationRequest(authorizationRequest);
   if (authorizationDecision) validateAuthorizationDecision(authorizationDecision);
 
-  const routeStatus = pickEnum(source.routeStatus, CROSS_ENV_ROUTE_STATUSES, inferRouteStatus(routeRow, authorizationDecision));
+  const routeStatus = inferRouteStatus(routeRow, authorizationRequest, authorizationDecision);
   const transitionKind = pickEnum(source.transitionKind, ENVIRONMENT_TRANSITION_KINDS,
     routeRow.routeClass === "specialist_worker_required" ? "specialist_worker_delegation" : "single_tool_call");
   const envelope = {
@@ -231,7 +250,7 @@ function buildCrossEnvironmentAuthorizationRouteEnvelope(input = {}, options = {
   return envelope;
 }
 
-function validateCrossEnvironmentAuthorizationRouteEnvelope(envelope = {}) {
+function validateCrossEnvironmentAuthorizationRouteEnvelope(envelope) {
   requirePlainObject(envelope, "crossEnvironmentRouteEnvelope");
   if (envelope.schema !== DIRECT_CROSS_ENV_AUTHORIZATION_ROUTE_ENVELOPE_SCHEMA) {
     throw validationError("direct_environment_transition_schema_mismatch", "crossEnvironmentRouteEnvelope");
@@ -242,6 +261,14 @@ function validateCrossEnvironmentAuthorizationRouteEnvelope(envelope = {}) {
   }
   if (!CROSS_ENV_ROUTE_STATUSES.includes(envelope.routeStatus)) {
     throw validationError("direct_environment_transition_invalid_route_status", "crossEnvironmentRouteEnvelope.routeStatus");
+  }
+  if (envelope.routeStatus === "route_ready_for_authorization") {
+    if (!["cross_environment_tool_session", "specialist_worker_required"].includes(envelope.routeClass)) {
+      throw validationError("direct_environment_transition_route_status_conflict", "crossEnvironmentRouteEnvelope.routeStatus");
+    }
+    if (!envelope.authorizationRequestRef || !envelope.authorizationDecisionRef || envelope.routeBlockers?.length) {
+      throw validationError("direct_environment_transition_route_status_conflict", "crossEnvironmentRouteEnvelope.authorizationRefs");
+    }
   }
   requireString(envelope.toolId, "crossEnvironmentRouteEnvelope.toolId");
   requireString(envelope.routeClass, "crossEnvironmentRouteEnvelope.routeClass");
@@ -309,7 +336,7 @@ function buildEnvironmentTransitionWitness(input = {}, options = {}) {
   return witness;
 }
 
-function validateEnvironmentTransitionWitness(witness = {}) {
+function validateEnvironmentTransitionWitness(witness) {
   requirePlainObject(witness, "environmentTransitionWitness");
   if (witness.schema !== DIRECT_ENVIRONMENT_TRANSITION_WITNESS_SCHEMA) {
     throw validationError("direct_environment_transition_schema_mismatch", "environmentTransitionWitness");
@@ -378,7 +405,7 @@ function buildEnvironmentTransitionLifecycleRow(input = {}, options = {}) {
   return row;
 }
 
-function validateEnvironmentTransitionLifecycleRow(row = {}) {
+function validateEnvironmentTransitionLifecycleRow(row) {
   requirePlainObject(row, "environmentTransitionLifecycleRow");
   if (row.schema !== DIRECT_ENVIRONMENT_TRANSITION_LIFECYCLE_ROW_SCHEMA) {
     throw validationError("direct_environment_transition_schema_mismatch", "environmentTransitionLifecycleRow");

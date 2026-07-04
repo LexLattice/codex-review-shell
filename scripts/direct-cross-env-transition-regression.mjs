@@ -252,9 +252,23 @@ const remandedEnvelope = buildCrossEnvironmentAuthorizationRouteEnvelope({
     routeMayProceed: false,
     blockerCodes: ["environment_route_unavailable"],
   },
+  routeStatus: "route_ready_for_authorization",
 }, { now });
 validateCrossEnvironmentAuthorizationRouteEnvelope(remandedEnvelope);
 assert.equal(remandedEnvelope.routeStatus, "unsupported_route");
+
+const mismatchedGrantEnvelope = buildCrossEnvironmentAuthorizationRouteEnvelope({
+  topology,
+  turnEnvironment,
+  routeRow: {
+    ...routeRow,
+    actionClass: "different_browser_action",
+  },
+  authorizationRequest,
+  authorizationDecision,
+}, { now });
+validateCrossEnvironmentAuthorizationRouteEnvelope(mismatchedGrantEnvelope);
+assert.equal(mismatchedGrantEnvelope.routeStatus, "authorization_remanded");
 
 expectThrows(() => validateCrossEnvironmentAuthorizationRouteEnvelope({
   ...envelope,
@@ -270,6 +284,10 @@ expectThrows(() => validateEnvironmentTransitionLifecycleRow({
   ...requestedRow,
   toolSessionStarted: true,
 }), "direct_environment_transition_authority_leak");
+
+expectThrows(() => validateCrossEnvironmentAuthorizationRouteEnvelope(undefined), "direct_environment_transition_invalid_object");
+expectThrows(() => validateEnvironmentTransitionWitness(undefined), "direct_environment_transition_invalid_object");
+expectThrows(() => validateEnvironmentTransitionLifecycleRow(undefined), "direct_environment_transition_invalid_object");
 
 console.log(JSON.stringify({
   ok: true,
