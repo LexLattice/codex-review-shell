@@ -4852,7 +4852,7 @@ or rate-limit reset credit consumption in this wave.
 | `#140` | merged | `codex/direct-thread-manager-boot-pr140` | Thread Manager delegation and worker boot packets | ThreadManagerProfile, WorkThreadDelegationPacket, WorkerBootPacket, AuthorityBoundary, role-lane scoped ODEU projections, omissions/stale warnings, BootPacketProjectionWitness, shadow context-pack integration | No broad policy ledger exposure, automatic provider context injection, or universal child-boundary hard block |
 | `#141` | merged | `codex/direct-authorization-router-pr141` | Role-indexed authorization router | AuthorizationRequest, AuthorizationDecision, ActionClassRegistryEntry, PolicyResolutionTrace scaffold, revision compatibility recording, manager/user/admin decision paths, grant/deny/remand continuation envelopes | No destructive action promotion, direct worker-to-user policy prompts, or full fail-closed policy engine |
 | `#142` | merged | `codex/direct-constitutional-policy-pr142` | Constitutional policy and self-binding records | ConstitutionalPolicyProfile, policy rules/exceptions, SelfBindingPreferenceRecord, AdminModePolicyUpdate, policy store, deterministic policy precedence trace, casual-yes and child-broadening negative fixtures | No autonomous policy mutation, hidden admin-mode inference, or broad blocker for every unresolved safe/control-plane conflict |
-| `#143` | open | `codex/direct-tool-catalog-games-pr143` | Tool catalog and agentic game integration | Resident catalog cites boot packet and manager route; unavailable capabilities explain authorization route; agentic games for manager chat, Thread Manager delegation, recursive relay, admin/user-mode boundaries, projection-leakage witnesses, future hardening backlog | No sub-agent spawn/send/lifecycle, rate-limit reset, external write, plugin-install promotion, or universal strict preflight gate |
+| `#143` | merged | `codex/direct-tool-catalog-games-pr143` | Tool catalog and agentic game integration | Resident catalog cites boot packet and manager route; unavailable capabilities explain authorization route; agentic games for manager chat, Thread Manager delegation, recursive relay, admin/user-mode boundaries, projection-leakage witnesses, future hardening backlog | No sub-agent spawn/send/lifecycle, rate-limit reset, external write, plugin-install promotion, or universal strict preflight gate |
 
 Wave 23 completion gate:
 
@@ -4864,6 +4864,67 @@ manager-owned WorkThread delegation to a Thread Manager, and expose resident
 capability truth without granting new dangerous actions. V0 hardening produces
 witnesses/traces first and promotes strict blockers only where the action is
 already dangerous under current authority policy.
+```
+
+## Wave 24: Environment Topology, Cross-Env Tools, And Async Work
+
+Status: planned.
+
+Detailed spec:
+
+```text
+docs/DIRECT_WAVE24_ENVIRONMENT_AND_ASYNC_WORK_SPEC.md
+```
+
+Purpose:
+
+```text
+Make execution environment truth, cross-environment tool routing,
+plugin-specialist delegation, registered async work, and harness-managed wakeups
+first-class direct-harness objects. The resident model should know where the
+current turn runs, where each tool lives, when a specialist worker is required,
+and how long-running work will be monitored without manual polling.
+```
+
+Standing laws:
+
+```text
+Execution location is part of the active worldmodel, not an inference from tool
+failure.
+Tool availability is not authority.
+Cross-env tool use is not workspace mutation authority.
+Long-running work is registered with the harness; the model should not poll raw
+processes or sub-agents by hand.
+Wakeups are typed continuations with evidence refs.
+```
+
+Initial target posture:
+
+```text
+Add topology, routing, witness, specialist-worker, async registry, and wakeup
+substrates before promoting live browser/plugin workers. Keep V0 observable and
+headless-testable first. Strict-block only workspace escape,
+destructive/account/external mutation, and unsupported environment mappings.
+Treat stricter stale-topology and compatibility checks as witness/remand first
+until headless/manual proof justifies fail-closed behavior.
+```
+
+| PR | Status | Branch | Purpose | Planned deliverable | Explicit non-goals |
+| --- | --- | --- | --- | --- | --- |
+| `#144` | planned | `codex/direct-env-topology-pr144` | Environment topology and per-turn environment | DirectEnvironmentTopology, DirectEnvironmentRef, EnvironmentPathMapping, EnvironmentConstraint, TurnExecutionEnvironment with resident/tool/specialist env split, topology digest/revision helpers, stale-topology compatibility witness, boot-packet environment projection, WSL default + Windows browser-capable fixture | No live browser/plugin execution, per-turn UI switching, or arbitrary environment mutation |
+| `#145` | planned | `codex/direct-env-aware-tool-catalog-pr145` | Environment-aware tool catalog | Tool catalog environment owner fields, same-env/cross-env/specialist/unsupported route classes, environment-sensitive action-class mapping, resident capability explanations, stale/missing topology fixtures | No new broad tools or permission grant from environment availability |
+| `#146` | planned | `codex/direct-cross-env-transition-pr146` | Cross-environment transition witnesses | EnvironmentTransitionWitness, cross-env authorization envelope, transition lifecycle rows, boot packet + topology revision + tool route citation, single-tool-session fixtures, workspace mutation forbidden-by-default checks | No persistent Windows worker runtime or live browser plugin control |
+| `#147` | planned | `codex/direct-plugin-specialist-workers-pr147` | Plugin-specialist worker contracts | PluginSpecialistWorkerContract, BrowserVerificationWorker scaffold, main-worker to specialist delegation adapter, evidence return contract, WSL implementer -> Windows verifier headless fixture | No plugin marketplace, plugin install, or unbounded browser automation |
+| `#148` | planned | `codex/direct-async-work-registry-pr148` | Async work registry and awaitable contracts | AsyncWorkRegistration, AwaitableWorkContract, AsyncWakePolicy, AsyncCondition, AsyncProgressSignal, AsyncWorkStatusSnapshot, AsyncWorkStateTransition, AsyncWorkOutcome, append-only state transitions, meta-tool schemas for register/status/list/cancel/await | No arbitrary process manager UI or automatic model wake provider call |
+| `#149` | planned | `codex/direct-wakeup-continuations-pr149` | Wakeup/suspension continuations and headless games | AgentSuspensionState, AgentWakeEvent with idempotency, wake queue, typed continuation packet, exactly-once/requeue semantics, headless game proving completion wakeup without raw polling | No background autonomous task swarm, hidden provider spend, or wakeup without explicit registered contract |
+
+Wave 24 completion gate:
+
+```text
+Direct can represent and test one active WSL worker, one Windows-routed tool or
+specialist worker, one cross-env transition witness, one registered long-running
+work item, one harness-managed wake event, and one resident answer that
+accurately explains all of that from harness truth.
 ```
 
 
