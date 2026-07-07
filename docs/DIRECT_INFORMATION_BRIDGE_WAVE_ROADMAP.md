@@ -4916,7 +4916,7 @@ until headless/manual proof justifies fail-closed behavior.
 | `#146` | merged | `codex/direct-cross-env-transition-pr146` | Cross-environment transition witnesses | EnvironmentTransitionWitness, cross-env authorization envelope, transition lifecycle rows, boot packet + topology revision + tool route citation, single-tool-session fixtures, workspace mutation forbidden-by-default checks | No persistent Windows worker runtime or live browser plugin control |
 | `#147` | merged | `codex/direct-plugin-specialist-workers-pr147` | Plugin-specialist worker contracts | PluginSpecialistWorkerContract, BrowserVerificationWorker scaffold, main-worker to specialist delegation adapter, evidence return contract, WSL implementer -> Windows verifier headless fixture | No plugin marketplace, plugin install, or unbounded browser automation |
 | `#148` | merged | `codex/direct-async-work-registry-pr148` | Async work registry and awaitable contracts | AsyncWorkRegistration, AwaitableWorkContract, AsyncWakePolicy, AsyncCondition, AsyncProgressSignal, AsyncWorkStatusSnapshot, AsyncWorkStateTransition, AsyncWorkOutcome, append-only state transitions, meta-tool schemas for register/status/list/cancel/await | No arbitrary process manager UI or automatic model wake provider call |
-| `#149` | open | `codex/direct-wakeup-continuations-pr149` | Wakeup/suspension continuations and headless games | AgentSuspensionState, AgentWakeEvent with idempotency, wake queue, typed continuation packet, exactly-once/requeue semantics, headless game proving completion wakeup without raw polling | No background autonomous task swarm, hidden provider spend, or wakeup without explicit registered contract |
+| `#149` | merged | `codex/direct-wakeup-continuations-pr149` | Wakeup/suspension continuations and headless games | AgentSuspensionState, AgentWakeEvent with idempotency, wake queue, typed continuation packet, exactly-once/requeue semantics, headless game proving completion wakeup without raw polling | No background autonomous task swarm, hidden provider spend, or wakeup without explicit registered contract |
 
 Wave 24 completion gate:
 
@@ -4925,6 +4925,46 @@ Direct can represent and test one active WSL worker, one Windows-routed tool or
 specialist worker, one cross-env transition witness, one registered long-running
 work item, one harness-managed wake event, and one resident answer that
 accurately explains all of that from harness truth.
+```
+
+## Wave 25: Resident Checkpoint Compaction
+
+Status: in progress.
+
+Detailed spec:
+
+```text
+docs/DIRECT_WAVE25_RESIDENT_CHECKPOINT_COMPACTION_SPEC.md
+```
+
+Purpose:
+
+```text
+Restore the useful part of the old custom compaction method by asking the
+resident model for a strict JSON checkpoint when context loss is likely, then
+persisting that checkpoint as local context-maintenance evidence.
+```
+
+Standing laws:
+
+```text
+Resident checkpoint is not provider compaction.
+Resident checkpoint payload is not automatic context mutation.
+Resident checkpoint payload is not new_context authority.
+Resident checkpoint prompt is not raw transcript archival.
+```
+
+| PR | Status | Branch | Purpose | Planned deliverable | Explicit non-goals |
+| --- | --- | --- | --- | --- | --- |
+| `#150` | open | `codex/direct-resident-checkpoint-compaction-pr150` | Resident checkpoint compaction first slice | DirectResidentContextCheckpointRequest, strict resident JSON payload schema/parser/validator, checkpoint/report artifacts, context-maintenance persistence, operation type, bridge registry row, focused regression | No provider compaction execution, automatic checkpoint admission into future context packs, new_context authority, UI review flow, or hidden provider call |
+
+Wave 25 completion gate:
+
+```text
+Direct can build a checkpoint request from pressure/server-warning evidence,
+validate a strict resident JSON payload, persist the resulting checkpoint as a
+thread context-maintenance artifact, and prove that no provider compaction or
+automatic context mutation authority was granted.
 ```
 
 

@@ -159,6 +159,7 @@ const DIRECT_THREAD_OPERATION_TYPES = new Set([
   "thread_memory_refresh",
   "durable_thread_memory",
   "frontier_baton",
+  "resident_context_checkpoint",
 ]);
 const DIRECT_THREAD_OPERATION_EVENT_TYPES = new Set([
   "operation_planned",
