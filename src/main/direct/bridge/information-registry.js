@@ -140,6 +140,20 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     realignment: "Compaction now has local plan and manual-gate witnesses; actual compact execution, memory mutation/reset, provider compaction, and replay authority remain gated until separate live evidence and authority controls exist.",
   },
   {
+    id: "ic3.resident-context-checkpoint-compaction",
+    name: "Resident context checkpoint compaction",
+    role: "memory_continuity",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: ["src/main/direct/context/resident-checkpoint.js", "src/main/direct/thread/thread-store.js", "scripts/direct-resident-checkpoint-compaction-regression.mjs"],
+    ontology: ontologyShape(["direct_resident_context_checkpoint_request", "direct_resident_context_checkpoint_payload", "direct_resident_context_checkpoint", "direct_resident_context_checkpoint_report"], "harness", {
+      identityFields: ["projectId", "threadId", "turnId", "checkpointId"],
+      schema: "direct_resident_context_checkpoint@1",
+    }),
+    bridgeFit: "Creates a strict resident-authored JSON checkpoint request, payload, checkpoint, and report when context loss is likely, preserving working state as local context-maintenance evidence.",
+    realignment: "This slice does not execute provider compaction, mutate live context, claim new_context authority, admit checkpoint text into future prompts automatically, or expose raw resident output.",
+  },
+  {
     id: "ic3.context-packet-preview-workbench",
     name: "Context packet preview and omission workbench",
     role: "context_construction",
