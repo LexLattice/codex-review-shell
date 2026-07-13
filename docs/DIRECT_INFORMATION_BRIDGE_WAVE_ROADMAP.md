@@ -2392,7 +2392,7 @@ Still intentionally not authority:
 
 ## Wave 8: Direct Provider Metadata Truth, Analytics Facts, And Drift Validation
 
-Status: in progress.
+Status: complete through PR 49.
 
 Review posture after Wave 7:
 
@@ -2535,7 +2535,7 @@ on PR 46 metadata projection and later analytics-display work.
 
 ### PR 48: Runtime Analytics Adapter Projection
 
-Status: implemented on branch `codex/direct-floating-analytics-panel`; not yet merged.
+Status: merged in GitHub PR `#180`.
 
 Purpose:
 
@@ -3423,7 +3423,7 @@ No raw prompt/result/path/secret persistence.
 
 ## Wave 11: Tool Promotion And Activation
 
-Status: in progress.
+Status: complete through PR 72.
 
 Detailed handoff:
 
@@ -3824,7 +3824,7 @@ Remaining scope moves to later waves:
 
 ## Wave 13: Headless Affordance Verification Harness
 
-Status: in progress.
+Status: complete through PR 84.
 
 Detailed handoff:
 
@@ -4415,7 +4415,7 @@ work still never flattens into the primary transcript.
 
 ## Wave 17: Human-Control And Local Perception Tools
 
-Status: active; PR 106 in review.
+Status: complete through PR 108.
 
 Dedicated spec:
 
@@ -4474,6 +4474,8 @@ blocked until later waves.
 
 ## Wave 18: External Discovery And MCP Resource Read
 
+Status: complete through PR 113.
+
 Detailed spec:
 
 ```text
@@ -4530,6 +4532,8 @@ blocked until later waves.
 
 
 ## Wave 19: Provider-Hosted Tools
+
+Status: complete through PR 119.
 
 Detailed spec:
 
@@ -4596,7 +4600,7 @@ reasons.
 
 ## Wave 20: Role-Lane Tool Bundle Composition
 
-Status: planned.
+Status: complete through PR 125.
 
 Detailed specs:
 
@@ -4648,12 +4652,12 @@ Keep image_generation operator-gated by default.
 
 | PR | Status | Branch | Purpose | Planned deliverable | Explicit non-goals |
 | --- | --- | --- | --- | --- | --- |
-| `#120` | implemented | `codex/direct-role-lane-registry` | Role lane registry and static composition witness | DirectRoleLaneRegistry bound to AgentClassSpec/controlled route/normalized request refs, DirectRoleLaneSelection, ProviderDeclaredToolBundle schema, DirectToolBundleComposerInput, ToolBundleCompositionWitness schema, fixture implementation-worker composition, negative fixture for missing request grounding | No provider declaration behavior change |
-| `#121` | implemented | `codex/direct-live-tool-composer` | Composer over existing implementation tools | Route read_file/apply_patch/run_command through DirectToolBundleComposer with identical live behavior, composition witness, resident catalogue, digest parity, same tool names, same `parallel_tool_calls=false`, same post-tool behavior | No new tools declared |
-| `#122` | implemented | `codex/direct-safe-resident-utilities` | Safe resident utility tools | Declare get_context_remaining, update_plan, and request_user_input where policy allows; test each U-function separately: status witness, plan projection mutation only, bounded human-decision packet | No permission widening, new_context, raw image payloads, or hidden authority |
-| `#123` | implemented | `codex/direct-sub-agent-status-tools` | Read-only sub-agent status tools | For default implementation-worker lane declare list_agents and inspect_agent; keep wait_agent undeclared until bounded wait is promoted; preserve Wave 15/16 orchestrator/sub-agent lane spawn path under separate lane policy | No implementation-worker spawn_agent, send_message, close_agent, interrupt_agent, resume_agent, recursive_spawn, or wait_agent declaration |
-| `#124` | implemented | `codex/direct-external-discovery-read-tools` | External discovery read-only tools | Declare tool_search, list_mcp_resources, list_mcp_resource_templates, and read_mcp_resource only when source identity is explicit; ambiguous server/resource becomes blocked catalogue row; live routing returns descriptor/read envelopes and continues without approval UI | No dynamic MCP tool execution, plugin install, or discovered-tool auto-trust |
-| `#125` | implemented | `codex/direct-conditional-web-search` | Conditional provider-hosted web search | Declare web_search only when exact provider activation/request-shape evidence says callable; keep image_generation catalogue-visible/operator-gated; include stale/missing request-shape negative fixture | No browser-session authority, raw page HTML admission, image_generation resident-callable default, or memory admission |
+| `#120` | merged | `codex/direct-role-lane-registry` | Role lane registry and static composition witness | DirectRoleLaneRegistry bound to AgentClassSpec/controlled route/normalized request refs, DirectRoleLaneSelection, ProviderDeclaredToolBundle schema, DirectToolBundleComposerInput, ToolBundleCompositionWitness schema, fixture implementation-worker composition, negative fixture for missing request grounding | No provider declaration behavior change |
+| `#121` | merged | `codex/direct-live-tool-composer` | Composer over existing implementation tools | Route read_file/apply_patch/run_command through DirectToolBundleComposer with identical live behavior, composition witness, resident catalogue, digest parity, same tool names, same `parallel_tool_calls=false`, same post-tool behavior | No new tools declared |
+| `#122` | merged | `codex/direct-safe-resident-utilities` | Safe resident utility tools | Declare get_context_remaining, update_plan, and request_user_input where policy allows; test each U-function separately: status witness, plan projection mutation only, bounded human-decision packet | No permission widening, new_context, raw image payloads, or hidden authority |
+| `#123` | merged | `codex/direct-sub-agent-status-tools` | Read-only sub-agent status tools | For default implementation-worker lane declare list_agents and inspect_agent; keep wait_agent undeclared until bounded wait is promoted; preserve Wave 15/16 orchestrator/sub-agent lane spawn path under separate lane policy | No implementation-worker spawn_agent, send_message, close_agent, interrupt_agent, resume_agent, recursive_spawn, or wait_agent declaration |
+| `#124` | merged | `codex/direct-external-discovery-read-tools` | External discovery read-only tools | Declare tool_search, list_mcp_resources, list_mcp_resource_templates, and read_mcp_resource only when source identity is explicit; ambiguous server/resource becomes blocked catalogue row; live routing returns descriptor/read envelopes and continues without approval UI | No dynamic MCP tool execution, plugin install, or discovered-tool auto-trust |
+| `#125` | merged | `codex/direct-conditional-web-search` | Conditional provider-hosted web search | Declare web_search only when exact provider activation/request-shape evidence says callable; keep image_generation catalogue-visible/operator-gated; include stale/missing request-shape negative fixture | No browser-session authority, raw page HTML admission, image_generation resident-callable default, or memory admission |
 
 Wave 20 completion gate:
 
@@ -4740,7 +4744,7 @@ granting authority.
 
 ## Wave 22: Agentic Testing Game Matrix
 
-Status: planned.
+Status: complete through PR 137.
 
 Detailed spec:
 
@@ -4779,9 +4783,9 @@ Produce typed remands instead of prose-only failures.
 
 | PR | Status | Branch | Purpose | Planned deliverable | Explicit non-goals |
 | --- | --- | --- | --- | --- | --- |
-| `#132` | implemented | `codex/direct-agentic-game-kernel` | Agentic game kernel and fixture runner | AgenticGameScenario, AgenticGameRunReport, AgentRolePack, CapabilityBundleSpec, AuthorizationModelSpec, AgentTopologySpec, GameRemand taxonomy, fixture-only runner/report | No live provider calls or tool promotion |
-| `#133` | implemented | `codex/direct-agentic-evidence-oracle` | Evidence oracle and resident claim extractor | Behavior/evidence oracle validators, bounded resident capability claim extractor/classifier, declared bundle comparator, authority/mutation/context evidence summaries, remand classifier | No broad semantic parser or live model test requirement |
-| `#134` | implemented | `codex/direct-agentic-first-fixture-games` | First five fixture games | Fixture scenarios and reports for G1 resident tool truth, G10 authorization variation, G3 auditor cannot patch, G2 implementation loop, G5 observe-only sub-agent boundary | No live provider calls or new capability activation |
+| `#132` | merged | `codex/direct-agentic-game-kernel` | Agentic game kernel and fixture runner | AgenticGameScenario, AgenticGameRunReport, AgentRolePack, CapabilityBundleSpec, AuthorizationModelSpec, AgentTopologySpec, GameRemand taxonomy, fixture-only runner/report | No live provider calls or tool promotion |
+| `#133` | merged | `codex/direct-agentic-evidence-oracle` | Evidence oracle and resident claim extractor | Behavior/evidence oracle validators, bounded resident capability claim extractor/classifier, declared bundle comparator, authority/mutation/context evidence summaries, remand classifier | No broad semantic parser or live model test requirement |
+| `#134` | merged | `codex/direct-agentic-first-fixture-games` | First five fixture games | Fixture scenarios and reports for G1 resident tool truth, G10 authorization variation, G3 auditor cannot patch, G2 implementation loop, G5 observe-only sub-agent boundary | No live provider calls or new capability activation |
 | `#135` | merged | `codex/direct-remaining-agentic-fixture-games` | Remaining fixture games | Fixture scenarios for G4 orchestrator routing, G6 wrong-thread broker, G7 memory-current-user conflict, G8 external discovery, G9 provider-hosted web, G11 result admission, G12 declaration mismatch | No live provider calls or remediation implementation |
 | `#136` | merged | `codex/direct-live-headless-game-runner` | Live headless game runner | Explicit opt-in live runner, provider-call sentinel, run budget/cap, persisted reports, comparison of resident behavior to harness evidence | No default live calls, hidden provider spend, or broad manual UX testing |
 | `#137` | merged | `codex/direct-activation-remand-queue` | Activation remand queue and promotion gate | Typed remand queue, promotion/declaration gap report, owner assignment by remand taxonomy, targeted follow-up PR candidates | No bulk activation of all requested tools or bypass of role-lane policy |
@@ -4798,7 +4802,7 @@ wiring.
 
 ## Wave 23: ODEU Worldmodel Manager And Role-Indexed Authorization
 
-Status: planned.
+Status: complete through PR 143.
 
 Detailed spec:
 
@@ -4868,7 +4872,7 @@ already dangerous under current authority policy.
 
 ## Wave 24: Environment Topology, Cross-Env Tools, And Async Work
 
-Status: planned.
+Status: complete through PR 149.
 
 Detailed spec:
 
@@ -4929,7 +4933,7 @@ accurately explains all of that from harness truth.
 
 ## Wave 25: Resident Checkpoint Compaction
 
-Status: in progress.
+Status: complete through PR 150.
 
 Detailed spec:
 
@@ -4956,7 +4960,7 @@ Resident checkpoint prompt is not raw transcript archival.
 
 | PR | Status | Branch | Purpose | Planned deliverable | Explicit non-goals |
 | --- | --- | --- | --- | --- | --- |
-| `#150` | open | `codex/direct-resident-checkpoint-compaction-pr150` | Resident checkpoint compaction first slice | DirectResidentContextCheckpointRequest, strict resident JSON payload schema/parser/validator, checkpoint/report artifacts, context-maintenance persistence, operation type, bridge registry row, focused regression | No provider compaction execution, automatic checkpoint admission into future context packs, new_context authority, UI review flow, or hidden provider call |
+| `#150` | merged | `codex/direct-resident-checkpoint-compaction-pr150` | Resident checkpoint compaction first slice | DirectResidentContextCheckpointRequest, strict resident JSON payload schema/parser/validator, checkpoint/report artifacts, context-maintenance persistence, operation type, bridge registry row, focused regression | No provider compaction execution, automatic checkpoint admission into future context packs, new_context authority, UI review flow, or hidden provider call |
 
 Wave 25 completion gate:
 

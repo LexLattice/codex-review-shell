@@ -1,5 +1,8 @@
 # Docs
 
+- [Direct Harness Project Master Status](./DIRECT_PROJECT_MASTER_STATUS.md) -
+  fresh-task handoff, current architecture, implementation posture, active
+  frontier, and links to governing specs.
 - [Thread Linking Spec](./THREAD_LINKING_SPEC.md)
 - [Thread Analytics Spec](./THREAD_ANALYTICS_SPEC.md)
 - [Codex App-Server Ontology](./CODEX_APP_SERVER_ONTOLOGY.md)

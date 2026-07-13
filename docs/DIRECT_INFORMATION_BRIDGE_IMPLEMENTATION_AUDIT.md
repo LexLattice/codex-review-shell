@@ -43,14 +43,14 @@ capability. "Inherited" is not a defect when it is explicit and law-compatible.
 
 ## Current Executable Audit Snapshot
 
-Last reviewed after Wave 14.5 / PR 88 on `2026-06-19`.
+Last reviewed after Wave 25 / PR 150 on `2026-07-13`.
 
 ```text
-registry rows: 71
+registry rows: 104
 valid: yes
 missing source files: 0
-implemented rows: 12
-partial rows: 57
+implemented rows: 39
+partial rows: 63
 inherited rows: 2
 ```
 
@@ -59,6 +59,12 @@ The executable source of this snapshot is:
 ```sh
 npm run direct:information-bridge-audit
 ```
+
+The detailed wave sections below preserve implementation history and may use
+the status language that was current when each wave landed. The executable
+registry and generated audit output are authoritative for current row-level
+state; the master carryover entrypoint is
+[DIRECT_PROJECT_MASTER_STATUS.md](./DIRECT_PROJECT_MASTER_STATUS.md).
 
 ## Wave 1 Ledger
 
