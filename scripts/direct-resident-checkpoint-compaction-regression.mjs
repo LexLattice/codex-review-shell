@@ -78,6 +78,7 @@ const request = buildResidentCheckpointRequest({
       rendererSafeLabel: "Context pressure estimate",
     },
   ],
+  nowMs: 0,
 });
 
 assert.equal(request.schema, DIRECT_RESIDENT_CONTEXT_CHECKPOINT_REQUEST_SCHEMA);
@@ -85,6 +86,7 @@ assert.equal(request.providerTransportAllowed, false);
 assert.equal(request.automaticContextMutationAllowed, false);
 assert.equal(request.providerCompactionAllowed, false);
 assert.equal(request.rawPromptIncluded, false);
+assert.equal(request.createdAt, "1970-01-01T00:00:00.000Z");
 
 const prompt = buildResidentCheckpointPrompt({
   request,
@@ -183,6 +185,14 @@ assert.equal(checkpoint.payload.taskState.currentGoal, residentPayload.taskState
 assert.equal(checkpoint.automaticContextMutationAllowed, false);
 assert.equal(checkpoint.providerCompactionAllowed, false);
 assert.equal(checkpoint.rawResidentOutputIncluded, false);
+assert.equal(checkpoint.createdAt, "1970-01-01T00:00:00.000Z");
+assert.deepEqual(Object.keys(checkpoint.evidenceRefs[0]).sort(), [
+  "artifactDigest",
+  "artifactId",
+  "artifactKind",
+  "rawTextIncluded",
+  "rendererSafeLabel",
+]);
 validateResidentContextCheckpoint(checkpoint);
 
 const invalidCheckpoint = buildResidentContextCheckpoint({
@@ -215,6 +225,36 @@ const schemaMismatchCheckpoint = buildResidentContextCheckpoint({
 });
 assert.equal(schemaMismatchCheckpoint.state, "resident_output_invalid");
 assert(schemaMismatchCheckpoint.validationErrors.includes("checkpoint_payload_schema_mismatch"));
+
+const malformedPayloadCases = [
+  ["openObligations", {}, "checkpoint_openobligations_not_array"],
+  ["evidenceState", [], "checkpoint_evidencestate_not_object"],
+  ["artifactRefs", "not-an-array", "checkpoint_artifactrefs_not_array"],
+  ["decisions", {}, "checkpoint_decisions_not_array"],
+  ["risks", {}, "checkpoint_risks_not_array"],
+  ["nextActions", ["valid", 42], "checkpoint_nextactions_1_not_string"],
+];
+for (const [field, value, errorCode] of malformedPayloadCases) {
+  const malformedCheckpoint = buildResidentContextCheckpoint({
+    request,
+    residentOutput: JSON.stringify({
+      ...residentPayload,
+      [field]: value,
+    }),
+  });
+  assert.equal(malformedCheckpoint.state, "resident_output_invalid", field);
+  assert(malformedCheckpoint.validationErrors.includes(errorCode), `${field}: ${malformedCheckpoint.validationErrors.join(", ")}`);
+}
+
+const malformedNestedCheckpoint = buildResidentContextCheckpoint({
+  request,
+  residentOutput: JSON.stringify({
+    ...residentPayload,
+    decisions: [{ summary: "Decision", reason: 42, source: "resident" }],
+  }),
+});
+assert.equal(malformedNestedCheckpoint.state, "resident_output_invalid");
+assert(malformedNestedCheckpoint.validationErrors.includes("checkpoint_decisions_0_reason_not_string"));
 
 assertThrowsMessage(() => validateResidentContextCheckpoint({
   ...checkpoint,
@@ -251,6 +291,21 @@ try {
   assert.equal(report.status, "pass");
   assert.equal(report.providerCompactionUsed, false);
   assert.equal(report.automaticContextMutationUsed, false);
+  assert(report.assertions.every((assertion) => assertion.passed ? assertion.blockerCode === "" : true));
+
+  const authorityLeakReport = buildResidentContextCheckpointReport({
+    request,
+    checkpoint: {
+      ...checkpoint,
+      automaticContextMutationAllowed: true,
+    },
+    nowMs: 0,
+  });
+  assert.equal(authorityLeakReport.status, "fail");
+  assert.equal(
+    authorityLeakReport.assertions.find((assertion) => assertion.assertionId === "no_context_mutation_authority")?.blockerCode,
+    "checkpoint_authority_leak",
+  );
 
   const serialized = JSON.stringify({ request, checkpoint, persisted, report });
   assert(!serialized.includes("\"providerCompactionAllowed\":true"));

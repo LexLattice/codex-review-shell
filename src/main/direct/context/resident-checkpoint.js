@@ -55,16 +55,17 @@ function sha256(value) {
   return crypto.createHash("sha256").update(String(value || "")).digest("hex");
 }
 
-function nowIso(nowMs = Date.now()) {
-  return new Date(Number(nowMs) || Date.now()).toISOString();
+function nowIso(nowMs) {
+  const parsed = nowMs === undefined || nowMs === null ? Date.now() : Number(nowMs);
+  return new Date(Number.isFinite(parsed) ? parsed : Date.now()).toISOString();
 }
 
 function evidenceRef(kind, id, label, digest = "") {
   return {
-    kind: normalizeString(kind, "checkpoint_evidence"),
-    id: normalizeString(id, ""),
+    artifactKind: normalizeString(kind, "checkpoint_evidence"),
+    artifactId: normalizeString(id, ""),
     rendererSafeLabel: boundedString(label || kind, 180),
-    digest: normalizeString(digest, ""),
+    artifactDigest: normalizeString(digest, ""),
     rawTextIncluded: false,
   };
 }
@@ -156,6 +157,16 @@ function normalizeObjectList(values, fields, maxItems = MAX_LIST_ITEMS) {
 }
 
 function residentCheckpointJsonSchema() {
+  const stringArray = { type: "array", items: { type: "string" } };
+  const objectArray = (required, properties) => ({
+    type: "array",
+    items: {
+      type: "object",
+      additionalProperties: false,
+      required,
+      properties,
+    },
+  });
   return {
     type: "object",
     additionalProperties: false,
@@ -172,13 +183,52 @@ function residentCheckpointJsonSchema() {
           progressSummary: { type: "string" },
         },
       },
-      openObligations: { type: "array" },
-      evidenceState: { type: "object" },
-      artifactRefs: { type: "array" },
-      toolState: { type: "object" },
-      decisions: { type: "array" },
-      risks: { type: "array" },
-      nextActions: { type: "array" },
+      openObligations: objectArray(["summary", "status", "nextStep"], {
+        summary: { type: "string" },
+        status: { type: "string" },
+        nextStep: { type: "string" },
+      }),
+      evidenceState: {
+        type: "object",
+        additionalProperties: false,
+        required: ["knownFacts", "uncertainties", "sourceRefs"],
+        properties: {
+          knownFacts: stringArray,
+          uncertainties: stringArray,
+          sourceRefs: objectArray(["artifactKind", "rendererSafeLabel"], {
+            artifactKind: { type: "string" },
+            artifactId: { type: "string" },
+            artifactDigest: { type: "string" },
+            rendererSafeLabel: { type: "string" },
+          }),
+        },
+      },
+      artifactRefs: objectArray(["artifactKind", "displayPath", "purpose", "state"], {
+        artifactKind: { type: "string" },
+        displayPath: { type: "string" },
+        purpose: { type: "string" },
+        state: { type: "string" },
+      }),
+      toolState: {
+        type: "object",
+        additionalProperties: false,
+        required: ["pendingToolCalls", "importantToolResults"],
+        properties: {
+          pendingToolCalls: stringArray,
+          importantToolResults: stringArray,
+        },
+      },
+      decisions: objectArray(["summary", "reason", "source"], {
+        summary: { type: "string" },
+        reason: { type: "string" },
+        source: { type: "string" },
+      }),
+      risks: objectArray(["summary", "severity", "mitigation"], {
+        summary: { type: "string" },
+        severity: { type: "string" },
+        mitigation: { type: "string" },
+      }),
+      nextActions: stringArray,
       confidence: { type: "string" },
     },
   };
@@ -339,16 +389,98 @@ function normalizeCheckpointPayload(payload = {}) {
   };
 }
 
+function validationCode(path, suffix) {
+  return `checkpoint_${path.replace(/[^a-zA-Z0-9]+/g, "_").replace(/^_|_$/g, "").toLowerCase()}_${suffix}`;
+}
+
+function validateObjectShape(errors, value, path, requiredFields, allowedFields = requiredFields) {
+  if (!isPlainObject(value)) {
+    errors.push(validationCode(path, "not_object"));
+    return false;
+  }
+  for (const field of requiredFields) {
+    if (!Object.hasOwn(value, field)) errors.push(validationCode(`${path}.${field}`, "missing"));
+  }
+  for (const field of Object.keys(value)) {
+    if (!allowedFields.includes(field)) errors.push(validationCode(`${path}.${field}`, "unexpected"));
+  }
+  return true;
+}
+
+function validateStringArray(errors, value, path) {
+  if (!Array.isArray(value)) {
+    errors.push(validationCode(path, "not_array"));
+    return;
+  }
+  value.forEach((item, index) => {
+    if (typeof item !== "string") errors.push(validationCode(`${path}.${index}`, "not_string"));
+  });
+}
+
+function validateObjectArray(errors, value, path, requiredFields, allowedFields = requiredFields) {
+  if (!Array.isArray(value)) {
+    errors.push(validationCode(path, "not_array"));
+    return;
+  }
+  value.forEach((item, index) => {
+    if (!validateObjectShape(errors, item, `${path}.${index}`, requiredFields, allowedFields)) return;
+    for (const field of Object.keys(item)) {
+      if (typeof item[field] !== "string") errors.push(validationCode(`${path}.${index}.${field}`, "not_string"));
+    }
+  });
+}
+
 function checkpointValidationErrors(payload = {}) {
   const errors = [];
   if (!isPlainObject(payload)) return ["checkpoint_payload_missing"];
+  const rootFields = [
+    "schema",
+    "taskState",
+    "openObligations",
+    "evidenceState",
+    "artifactRefs",
+    "toolState",
+    "decisions",
+    "risks",
+    "nextActions",
+    "confidence",
+  ];
+  const requiredRootFields = rootFields.filter((field) => !["toolState", "confidence"].includes(field));
+  validateObjectShape(errors, payload, "payload", requiredRootFields, rootFields);
   if (payload.schema !== DIRECT_RESIDENT_CONTEXT_CHECKPOINT_PAYLOAD_SCHEMA) errors.push("checkpoint_payload_schema_mismatch");
-  if (!payload.taskState?.currentGoal) errors.push("checkpoint_current_goal_missing");
-  if (!payload.taskState?.progressSummary) errors.push("checkpoint_progress_summary_missing");
-  if (!Array.isArray(payload.openObligations)) errors.push("checkpoint_open_obligations_not_array");
-  if (!isPlainObject(payload.evidenceState)) errors.push("checkpoint_evidence_state_missing");
-  if (!Array.isArray(payload.nextActions) || payload.nextActions.length === 0) errors.push("checkpoint_next_actions_missing");
-  return errors;
+  if (validateObjectShape(errors, payload.taskState, "taskState", ["currentGoal", "phase", "progressSummary"])) {
+    for (const field of ["currentGoal", "phase", "progressSummary"]) {
+      if (typeof payload.taskState[field] !== "string") errors.push(validationCode(`taskState.${field}`, "not_string"));
+    }
+    if (!normalizeString(payload.taskState.currentGoal, "")) errors.push("checkpoint_current_goal_missing");
+    if (!normalizeString(payload.taskState.progressSummary, "")) errors.push("checkpoint_progress_summary_missing");
+  }
+  validateObjectArray(errors, payload.openObligations, "openObligations", ["summary", "status", "nextStep"]);
+  if (validateObjectShape(errors, payload.evidenceState, "evidenceState", ["knownFacts", "uncertainties", "sourceRefs"])) {
+    validateStringArray(errors, payload.evidenceState.knownFacts, "evidenceState.knownFacts");
+    validateStringArray(errors, payload.evidenceState.uncertainties, "evidenceState.uncertainties");
+    validateObjectArray(
+      errors,
+      payload.evidenceState.sourceRefs,
+      "evidenceState.sourceRefs",
+      ["artifactKind", "rendererSafeLabel"],
+      ["artifactKind", "artifactId", "artifactDigest", "rendererSafeLabel"],
+    );
+  }
+  validateObjectArray(errors, payload.artifactRefs, "artifactRefs", ["artifactKind", "displayPath", "purpose", "state"]);
+  if (payload.toolState !== undefined
+    && validateObjectShape(errors, payload.toolState, "toolState", ["pendingToolCalls", "importantToolResults"])) {
+    validateStringArray(errors, payload.toolState.pendingToolCalls, "toolState.pendingToolCalls");
+    validateStringArray(errors, payload.toolState.importantToolResults, "toolState.importantToolResults");
+  }
+  validateObjectArray(errors, payload.decisions, "decisions", ["summary", "reason", "source"]);
+  validateObjectArray(errors, payload.risks, "risks", ["summary", "severity", "mitigation"]);
+  validateStringArray(errors, payload.nextActions, "nextActions");
+  if (Array.isArray(payload.nextActions) && payload.nextActions.length === 0) errors.push("checkpoint_next_actions_missing");
+  if (payload.confidence !== undefined && typeof payload.confidence !== "string") {
+    errors.push("checkpoint_confidence_not_string");
+  }
+  return [...new Set(errors)];
 }
 
 function buildResidentContextCheckpoint(input = {}) {
@@ -375,11 +507,8 @@ function buildResidentContextCheckpoint(input = {}) {
       createdAt: normalizeString(input.createdAt, nowIso(input.nowMs)),
     };
   }
+  const validationErrors = checkpointValidationErrors(parse.payload);
   const payload = normalizeCheckpointPayload(parse.payload);
-  const validationErrors = checkpointValidationErrors(payload);
-  if (normalizeString(parse.payload.schema, "") !== DIRECT_RESIDENT_CONTEXT_CHECKPOINT_PAYLOAD_SCHEMA) {
-    validationErrors.unshift("checkpoint_payload_schema_mismatch");
-  }
   const sourceDigest = sha256(stableStringify({
     requestDigest: request.requestDigest,
     payload,
@@ -469,6 +598,11 @@ function buildResidentContextCheckpointReport(input = {}) {
   const request = isPlainObject(input.request) ? input.request : null;
   const checkpoint = isPlainObject(input.checkpoint) ? input.checkpoint : null;
   const persisted = isPlainObject(input.persisted) ? input.persisted : null;
+  const selectedCheckpoint = persisted || checkpoint;
+  const noAuthorityLeak = selectedCheckpoint?.automaticContextMutationAllowed === false
+    && selectedCheckpoint?.providerCompactionAllowed === false;
+  const rawOutputExcluded = selectedCheckpoint?.rawResidentOutputIncluded === false
+    && selectedCheckpoint?.rawPromptIncluded === false;
   const assertions = [
     {
       assertionId: "request_schema",
@@ -482,13 +616,13 @@ function buildResidentContextCheckpointReport(input = {}) {
     },
     {
       assertionId: "no_context_mutation_authority",
-      passed: (persisted || checkpoint)?.automaticContextMutationAllowed === false && (persisted || checkpoint)?.providerCompactionAllowed === false,
-      blockerCode: "checkpoint_authority_leak",
+      passed: noAuthorityLeak,
+      blockerCode: noAuthorityLeak ? "" : "checkpoint_authority_leak",
     },
     {
       assertionId: "raw_output_excluded",
-      passed: (persisted || checkpoint)?.rawResidentOutputIncluded === false && (persisted || checkpoint)?.rawPromptIncluded === false,
-      blockerCode: "checkpoint_raw_exposure",
+      passed: rawOutputExcluded,
+      blockerCode: rawOutputExcluded ? "" : "checkpoint_raw_exposure",
     },
   ];
   const report = {
