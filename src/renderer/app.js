@@ -5540,7 +5540,7 @@ function renderDirectImportDetail() {
   const checkpointButton = document.createElement("button");
   checkpointButton.className = "primary small";
   checkpointButton.type = "button";
-  checkpointButton.textContent = "Start checkpoint session";
+  checkpointButton.textContent = "Continue in Direct";
   checkpointButton.disabled = !continuation.runnableNow || !bridge.startDirectImportCheckpointContinuation;
   checkpointButton.title = continuation.runnableNow
     ? "Start a fresh direct-native text session from this checkpoint."
@@ -7544,6 +7544,8 @@ async function selectCodexThread(threadId, sourceHome = "", sessionFilePath = ""
   const thread = codexThreadById(threadId);
   if (result.warning) {
     setLastEvent(`Requested ${thread?.title || threadId} (read-only fallback): ${result.warning}`);
+  } else if (result.runtimeRoute?.autoSwitch && result.runtimeRoute?.selectedRuntimePath === "app-server") {
+    setLastEvent(`Opened ${thread?.title || threadId} through its native App Server backend. Continue in Direct remains available as a checkpoint continuation.`);
   } else {
     setLastEvent(`Requested Codex thread open: ${thread?.title || threadId}.`);
   }
@@ -8967,6 +8969,10 @@ function bindEvents() {
       renderDirectAuthControls();
       refreshDirectImplementationUiStatus(activeProject()?.id || "", { renderBefore: false }).catch(() => {});
       setLastEvent(`Direct runtime ${directRuntimeModeLabel(state.directRuntimeStatus)}: ${directRuntimeStatusLabel(state.directRuntimeStatus)}.`);
+    }
+    if (event.type === "codex-runtime-auto-routed" && event.projectId && event.toRuntimePath) {
+      state.activeCodexRuntimePathByProject[event.projectId] = event.toRuntimePath;
+      renderDirectRuntimeStatus();
     }
     if (event.type === "codex-request-updated" && event.request?.key) {
       const request = event.request;

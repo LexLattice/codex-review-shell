@@ -74,6 +74,7 @@ const {
   bindingForDirectRuntimePath,
   directRuntimePathFromBinding,
   normalizeDirectRuntimePath,
+  resolveCodexThreadOpenRuntime,
 } = require("./main/direct/runtime/runtime-path-selection");
 const {
   buildDirectImplementationLaneUiStatus,
@@ -5229,18 +5230,49 @@ async function ensureChatgptThreadDisplayed(project, chatThread) {
 async function requestCodexThreadOpen(projectId, threadId, sourceHome = "", sessionFilePath = "") {
   const nextThreadId = normalizeString(threadId, "");
   if (!nextThreadId) return { ok: false, error: "Codex thread id is required." };
-  let project = null;
+  let persistedProject = null;
   try {
-    project = await getProjectById(projectId);
+    persistedProject = await getProjectById(projectId);
   } catch (error) {
     return { ok: false, error: error.message || "Unable to resolve selected project." };
   }
+  let project = currentProject?.id === persistedProject?.id ? currentProject : persistedProject;
   if (!project) return { ok: false, error: "No project is selected." };
 
   let session = null;
   let sessionStartupError = "";
   const requestedHome = normalizeString(sourceHome, "");
   const requestedSessionFilePath = normalizeString(sessionFilePath, "");
+  const runtimeRoute = resolveCodexThreadOpenRuntime(project.surfaceBinding?.codex || {}, {
+    threadId: nextThreadId,
+    sourceHome: requestedHome,
+    sessionFilePath: requestedSessionFilePath,
+  });
+  if (runtimeRoute.autoSwitch && runtimeRoute.selectedRuntimePath === "app-server") {
+    const activeTurns = activeDirectTurnCountForProject(ensureDirectSessionStore(), project.id);
+    if (activeTurns > 0) {
+      return {
+        ok: false,
+        error: "A Direct turn is active. Wait before opening this app-server-native Codex thread.",
+        runtimeRoute,
+      };
+    }
+    project = projectWithCodexBinding(
+      project,
+      bindingForDirectRuntimePath(project.surfaceBinding?.codex || {}, "app-server"),
+    );
+    currentProject = project;
+    emitDirectRuntimeStatus(project);
+    emitShellEvent({
+      type: "codex-runtime-auto-routed",
+      projectId: project.id,
+      threadId: nextThreadId,
+      fromRuntimePath: runtimeRoute.currentRuntimePath,
+      toRuntimePath: runtimeRoute.selectedRuntimePath,
+      continuityMode: runtimeRoute.continuityMode,
+      at: nowIso(),
+    });
+  }
   if (project.surfaceBinding?.codex?.mode === "managed") {
     try {
       session = await ensureCodexAppServerManager().ensureForProject(
@@ -5271,6 +5303,7 @@ async function requestCodexThreadOpen(projectId, threadId, sourceHome = "", sess
     sessionFilePath: requestedSessionFilePath,
     title: "",
     projectId: project.id,
+    runtimeRoute,
     at: nowIso(),
   };
   rememberCodexThreadRestoreTarget({
@@ -5341,6 +5374,7 @@ async function requestCodexThreadOpen(projectId, threadId, sourceHome = "", sess
       threadId: nextThreadId,
       sourceHome: requestedHome || session?.codexHome || "",
       warning: sessionStartupError,
+      runtimeRoute,
     };
   }
   codexView.webContents.send("codex-surface:event", openEventPayload);
@@ -5350,6 +5384,7 @@ async function requestCodexThreadOpen(projectId, threadId, sourceHome = "", sess
     threadId: nextThreadId,
     sourceHome: requestedHome || session?.codexHome || "",
     warning: sessionStartupError,
+    runtimeRoute,
   };
 }
 

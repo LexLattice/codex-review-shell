@@ -71,10 +71,56 @@ function directRuntimePathLabel(runtimePath) {
   return "App Server";
 }
 
+function normalizeCodexThreadNativeRuntime(value) {
+  const candidate = normalizeString(value, "").toLowerCase();
+  if (["app-server", "app_server", "appserver", "codex", "vanilla-codex"].includes(candidate)) {
+    return "app-server";
+  }
+  if (["direct", "direct-native", "direct_native"].includes(candidate)) return "direct";
+  return "unknown";
+}
+
+function codexThreadNativeRuntime(threadRef = {}) {
+  const explicit = normalizeCodexThreadNativeRuntime(
+    threadRef.nativeRuntime || threadRef.native_runtime || threadRef.runtime,
+  );
+  if (explicit !== "unknown") return explicit;
+  if (normalizeString(threadRef.sessionFilePath, "") || normalizeString(threadRef.sourceHome, "")) {
+    return "app-server";
+  }
+  if (threadRef.nativeDirectSession === true || normalizeString(threadRef.sourceClass, "").startsWith("direct-")) {
+    return "direct";
+  }
+  return "unknown";
+}
+
+function resolveCodexThreadOpenRuntime(binding, threadRef = {}) {
+  const currentRuntimePath = directRuntimePathFromBinding(binding);
+  const nativeRuntime = codexThreadNativeRuntime(threadRef);
+  const selectedRuntimePath = nativeRuntime === "app-server" ? "app-server" : currentRuntimePath;
+  return {
+    schema: "codex_thread_runtime_route@1",
+    nativeRuntime,
+    currentRuntimePath,
+    selectedRuntimePath,
+    autoSwitch: selectedRuntimePath !== currentRuntimePath,
+    continuityMode: nativeRuntime === "app-server"
+      ? "native_app_server_resume"
+      : nativeRuntime === "direct"
+        ? "native_direct_session"
+        : "current_runtime",
+    directContinuationPosture: nativeRuntime === "app-server"
+      ? "secondary_checkpoint_continuation"
+      : "not_applicable",
+  };
+}
+
 module.exports = {
   DIRECT_RUNTIME_PATHS,
   bindingForDirectRuntimePath,
+  codexThreadNativeRuntime,
   directRuntimePathFromBinding,
   directRuntimePathLabel,
   normalizeDirectRuntimePath,
+  resolveCodexThreadOpenRuntime,
 };

@@ -23,7 +23,9 @@ const {
   normalizeDirectRuntimePath,
   directRuntimePathFromBinding,
   bindingForDirectRuntimePath,
+  codexThreadNativeRuntime,
   directRuntimePathLabel,
+  resolveCodexThreadOpenRuntime,
 } = runtimePath;
 
 assert.deepEqual(DIRECT_RUNTIME_PATHS, ["app-server", "direct-text", "direct-implementation"]);
@@ -38,6 +40,12 @@ assert.equal(normalizeDirectRuntimePath("tools"), "direct-implementation");
 assert.equal(normalizeDirectRuntimePath("unknown"), "app-server");
 assert.equal(directRuntimePathLabel("direct-text"), "Direct");
 assert.equal(directRuntimePathLabel("direct-implementation"), "Direct");
+assert.equal(
+  codexThreadNativeRuntime({ sessionFilePath: "/home/rose/.codex/sessions/thread.jsonl" }),
+  "app-server",
+);
+assert.equal(codexThreadNativeRuntime({ nativeDirectSession: true }), "direct");
+assert.equal(codexThreadNativeRuntime({}), "unknown");
 
 assert.equal(
   directRuntimePathFromBinding({ runtimeMode: "legacy-app-server", directTransport: "fixture" }),
@@ -50,6 +58,29 @@ assert.equal(
 assert.equal(
   directRuntimePathFromBinding({ runtimeMode: "direct-experimental", directTransport: "live-text", directTier: "implementation-lane" }),
   "direct-implementation",
+);
+
+assert.deepEqual(
+  resolveCodexThreadOpenRuntime(
+    { runtimeMode: "direct-experimental", directTransport: "live-text", directTier: "implementation-lane" },
+    { sessionFilePath: "/home/rose/.codex/sessions/thread.jsonl" },
+  ),
+  {
+    schema: "codex_thread_runtime_route@1",
+    nativeRuntime: "app-server",
+    currentRuntimePath: "direct-implementation",
+    selectedRuntimePath: "app-server",
+    autoSwitch: true,
+    continuityMode: "native_app_server_resume",
+    directContinuationPosture: "secondary_checkpoint_continuation",
+  },
+);
+assert.equal(
+  resolveCodexThreadOpenRuntime(
+    { runtimeMode: "direct-experimental", directTransport: "live-text", directTier: "implementation-lane" },
+    { nativeDirectSession: true },
+  ).autoSwitch,
+  false,
 );
 
 const existingBinding = {
@@ -136,6 +167,9 @@ assertIncludes(mainSource, "loadCodexSurface(savedProject", "main process reload
 assertIncludes(mainSource, "connectionRef: newId(\"direct_codex_conn\")", "direct local surface connection identity");
 assertIncludes(mainSource, "setManagedCodexSurfaceAuthority(project, localUrl, \"direct-local-ready\")", "direct local surface authority registration");
 assertIncludes(mainSource, "switchActiveCodexRuntimePath", "main process active-only runtime switch");
+assertIncludes(mainSource, "resolveCodexThreadOpenRuntime", "thread opens resolve their native runtime before transport selection");
+assertIncludes(mainSource, "codex-runtime-auto-routed", "native app-server thread opens expose the active-only runtime transition");
+assertIncludes(mainSource, "A Direct turn is active. Wait before opening this app-server-native Codex thread.", "native runtime auto-routing preserves active Direct work");
 assertIncludes(mainSource, "payload.persistDefault !== false", "main process runtime switch default persistence gate");
 assertIncludes(mainSource, "ipcMain.handle(\"codex-surface:direct-projection\"", "Codex surface direct projection refresh endpoint");
 assertIncludes(mainSource, "currentProject?.id && currentProject.id === requestedProjectId", "direct projection refresh uses active project before persisted config");
@@ -165,6 +199,8 @@ assertIncludes(rendererSource, "syncDirectRuntimePathControl(els.codexRuntimeQui
 assertIncludes(rendererSource, "codexDefaultPathInput", "project drawer remains the persisted default selector");
 assertIncludes(rendererSource, "persistDefault,", "runtime switch sends scope to main process");
 assertIncludes(rendererSource, "Active Codex backend switched", "quick backend switch reports completed backend switch");
+assertIncludes(rendererSource, "event.type === \"codex-runtime-auto-routed\"", "native thread auto-routing updates the shell's active runtime state");
+assertIncludes(rendererSource, "state.activeCodexRuntimePathByProject[event.projectId] = event.toRuntimePath", "native thread auto-routing leaves the persisted default separate from active runtime state");
 assert.ok(
   !rendererSource.includes("Set ${label} as this project's default Codex backend"),
   "Active backend switch should not show the old default-setting confirmation popup.",
@@ -187,6 +223,14 @@ assertIncludes(openDirectThreadSource, "guardThreadId: requestedThreadId", "dire
 assertIncludes(openDirectThreadSource, "state.directThreadOpenRequestId !== openRequestId || state.threadId !== requestedThreadId", "direct thread open rechecks stale requests after preference load");
 assertIncludes(codexSurfaceSource, "hasGuardSourceHome", "runtime preference guard distinguishes omitted source-home guard from explicit empty string");
 assertIncludes(codexSurfaceSource, "hasGuardSessionFilePath", "runtime preference guard distinguishes omitted session-file guard from explicit empty string");
+const attachLiveThreadSource = codexSurfaceSource.slice(
+  codexSurfaceSource.indexOf("async function attachLiveThread"),
+  codexSurfaceSource.indexOf("function applyLiveThreadResult"),
+);
+assertIncludes(attachLiveThreadSource, "hasCapability(\"threads\", \"canResume\")", "live attachment calls resume only when the active backend declares it");
+assertIncludes(attachLiveThreadSource, "hasCapability(\"threads\", \"canRead\")", "live attachment retains the read-only native Direct attach path");
+assertIncludes(attachLiveThreadSource, "if (!result && options.skipReadFallback)", "stored transcript preservation still suppresses read fallback when resume is unavailable");
+assertIncludes(rendererSource, "Continue in Direct", "imported app-server threads expose Direct checkpoint continuation as the secondary action");
 const directQuotaSource = codexSurfaceSource.slice(
   codexSurfaceSource.indexOf("function composerQuotaLabel"),
   codexSurfaceSource.indexOf("function numericField"),

@@ -6431,12 +6431,26 @@ async function attachLiveThread(threadId, sessionFilePath = "", options = {}) {
     throw new Error("Active Codex runtime does not expose live thread read/resume capability.");
   }
   let result = null;
-  try {
-    result = await resumeThreadById(requestedThreadId, sessionFilePath, options);
-  } catch (error) {
-    if (options.skipReadFallback) throw error;
-    result = await readThreadById(requestedThreadId);
+  let resumeError = null;
+  if (hasCapability("threads", "canResume")) {
+    try {
+      result = await resumeThreadById(requestedThreadId, sessionFilePath, options);
+    } catch (error) {
+      resumeError = error;
+      if (options.skipReadFallback) throw error;
+    }
   }
+  if (!result && options.skipReadFallback) {
+    throw resumeError || new Error("Active Codex runtime does not expose live thread resume capability.");
+  }
+  if (!result && hasCapability("threads", "canRead")) {
+    try {
+      result = await readThreadById(requestedThreadId);
+    } catch (error) {
+      throw resumeError || error;
+    }
+  }
+  if (!result) throw resumeError || new Error("Unable to attach live Codex thread.");
   return result;
 }
 
