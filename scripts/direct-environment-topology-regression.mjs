@@ -11,7 +11,7 @@ const {
   buildEnvironmentExecutionProjection,
   buildTopologyCompatibility,
   buildTurnExecutionEnvironment,
-  buildWorkerBootPacket,
+  buildLegacyWorkerBootPacket,
   buildWorkThreadDelegationPacket,
   buildWorldmodelManagerProfile,
   buildThreadManagerProfile,
@@ -180,7 +180,7 @@ const delegation = buildWorkThreadDelegationPacket({
   objectiveSummary: "Use a WSL worker and delegate browser verification to a Windows specialist.",
   roleLane: "implementation_worker",
 }, { now });
-const bootPacket = buildWorkerBootPacket({
+const bootPacket = buildLegacyWorkerBootPacket({
   bootPacketId: "worker_boot_packet_env_fixture",
   delegationPacket: delegation,
   worldmodel,
@@ -196,7 +196,7 @@ assert.equal(bootPacket.environmentExecutionProjection.residentEnvironmentRef.id
 assert.equal(bootPacket.environmentExecutionProjection.delegatedSpecialistEnvironmentRef.id, "env_windows_browser_fixture");
 assert.equal(bootPacket.environmentExecutionProjection.workspaceMutationDefault, "forbidden_cross_env_without_authority");
 
-const remandedBootPacket = buildWorkerBootPacket({
+const remandedBootPacket = buildLegacyWorkerBootPacket({
   bootPacketId: "worker_boot_packet_env_remanded_fixture",
   delegationPacket: delegation,
   worldmodel,
@@ -221,7 +221,7 @@ const turnEnvironmentRefOnly = buildTurnExecutionEnvironment({
   residentEnvironmentId: "env_wsl_fixture",
 }, { now });
 validateTurnExecutionEnvironment(turnEnvironmentRefOnly);
-const missingTopologyBootPacket = buildWorkerBootPacket({
+const missingTopologyBootPacket = buildLegacyWorkerBootPacket({
   bootPacketId: "worker_boot_packet_missing_topology_fixture",
   delegationPacket: delegation,
   worldmodel,

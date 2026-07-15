@@ -12,6 +12,12 @@ const {
   buildRuntimeProviderProfile,
   normalizeRuntimeProviderConfig,
 } = require("./runtime-provider-profile");
+const {
+  buildManagedAppServerProjectProfileConfiguration,
+  buildProjectProfileRuntimeLaunchObservation,
+  prepareProjectProfileLaunchRequest,
+  registerProjectProfileLaunchResponse,
+} = require("./direct/worldmodel/project-profile-app-server-adapter");
 
 const DEFAULT_READY_TIMEOUT_MS = 35_000;
 const DEFAULT_STARTUP_ATTEMPTS = 2;
@@ -19,6 +25,15 @@ const READY_POLL_MS = 200;
 const READY_HTTP_TIMEOUT_MS = 1_000;
 const READY_TCP_TIMEOUT_MS = 650;
 const READY_TCP_STABLE_POLLS = 3;
+const MANAGED_APP_SERVER_ORCHESTRATION_PROFILE_SCHEMA = "codex_app_server_orchestration_profile@1";
+const MANAGED_APP_SERVER_BASE_PROFILE_VERSION = "reserved-v2-schema@2";
+const MANAGED_APP_SERVER_MODEL_OVERRIDE_PROFILE_VERSION = "reserved-v2-model-overrides@2";
+const MANAGED_APP_SERVER_MODEL_OVERRIDE_CONFIG = "features.multi_agent_v2.expose_spawn_agent_model_overrides=true";
+const MANAGED_APP_SERVER_MODEL_OVERRIDE_DISABLED_CONFIG = "features.multi_agent_v2.expose_spawn_agent_model_overrides=false";
+const MANAGED_APP_SERVER_CONFIG_OVERRIDES = Object.freeze([
+  "features.multi_agent_v2.hide_spawn_agent_metadata=true",
+  MANAGED_APP_SERVER_MODEL_OVERRIDE_DISABLED_CONFIG,
+]);
 
 function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
@@ -53,6 +68,100 @@ function shellQuote(value) {
 function mkdirCommand(pathValue) {
   const text = normalizeString(pathValue, "");
   return text ? `mkdir -p ${shellQuote(text)}; ` : "";
+}
+
+function spawnAgentModelOverridesEnabled(codex = {}) {
+  return codex?.spawnAgentModelOverrides === true;
+}
+
+function managedAppServerConfigOverrides(codex = {}) {
+  return spawnAgentModelOverridesEnabled(codex)
+    ? [MANAGED_APP_SERVER_CONFIG_OVERRIDES[0], MANAGED_APP_SERVER_MODEL_OVERRIDE_CONFIG]
+    : [...MANAGED_APP_SERVER_CONFIG_OVERRIDES];
+}
+
+function managedAppServerConfigArgs(codex = {}) {
+  return managedAppServerConfigOverrides(codex).flatMap((override) => ["-c", override]);
+}
+
+function buildManagedAppServerArgs(wsUrl, codex = {}) {
+  return ["app-server", ...managedAppServerConfigArgs(codex), "--listen", wsUrl];
+}
+
+function buildManagedAppServerShellInvocation(binaryPath, wsUrl, codex = {}) {
+  return [
+    "exec",
+    shellQuote(binaryPath),
+    ...buildManagedAppServerArgs(wsUrl, codex).map(shellQuote),
+  ].join(" ");
+}
+
+function buildManagedAppServerOrchestrationProfile(codex = {}, projectProfileConfiguration = null) {
+  const modelOverridesEnabled = spawnAgentModelOverridesEnabled(codex);
+  return {
+    schema: MANAGED_APP_SERVER_ORCHESTRATION_PROFILE_SCHEMA,
+    profileVersion: modelOverridesEnabled
+      ? MANAGED_APP_SERVER_MODEL_OVERRIDE_PROFILE_VERSION
+      : MANAGED_APP_SERVER_BASE_PROFILE_VERSION,
+    runtimeSurface: "managed_app_server",
+    binarySelection: modelOverridesEnabled ? "configured_binary_required" : "default_or_home_bundled",
+    multiAgentVersionSelection: "model_selected_at_turn",
+    spawnAgentControls: {
+      reservedProviderSchema: true,
+      providerContract: modelOverridesEnabled ? "v2_split_model_overrides" : "v2_hidden_metadata",
+      requestedByProject: modelOverridesEnabled,
+      effectiveStatus: modelOverridesEnabled ? "configured_unverified" : "disabled",
+      providerAcceptanceStatus: modelOverridesEnabled ? "unverified" : "not_requested",
+      minimumCodexVersion: modelOverridesEnabled ? "0.145.0-alpha.7" : "",
+      visibleInputFields: [
+        "task_name",
+        "message",
+        "fork_turns",
+        ...(modelOverridesEnabled ? ["model", "reasoning_effort"] : []),
+      ],
+      hiddenInputFields: modelOverridesEnabled
+        ? ["agent_type", "service_tier"]
+        : ["agent_type", "model", "reasoning_effort", "service_tier"],
+      visibleResultFields: ["task_name"],
+      hiddenResultFields: ["nickname"],
+      modelOverrideConfigured: modelOverridesEnabled,
+      reasoningEffortOverrideConfigured: modelOverridesEnabled,
+      agentTypeOverrideConfigured: false,
+      serviceTierOverrideConfigured: false,
+      runtimeSelection: modelOverridesEnabled ? "root_selectable_within_active_backend" : "provider_managed",
+      fullHistoryForkInheritsParentProfile: true,
+      fullHistoryOverrideAllowed: false,
+      overrideForkTurns: modelOverridesEnabled ? ["none", "positive_integer"] : [],
+      compatibleModelSet: modelOverridesEnabled ? "active_multi_agent_backend" : "provider_managed",
+      clientSchemaExtensionAllowed: false,
+      runtimeEvidenceRequired: modelOverridesEnabled,
+    },
+    rootOrchestration: {
+      activationControl: "reasoning_effort",
+      proactiveValue: "ultra",
+      explicitDelegationBelowUltra: true,
+    },
+    workerInteraction: {
+      operatorCanObserve: true,
+      operatorCanChatDirectly: false,
+      parentAgentMediated: true,
+    },
+    configOverrides: managedAppServerConfigOverrides(codex),
+    projectProfile: projectProfileConfiguration ? {
+      resolutionRef: projectProfileConfiguration.resolutionRef,
+      selectionTraceRef: projectProfileConfiguration.selectionTraceRef,
+      resolutionInputRefsDigest: projectProfileConfiguration.resolutionInputRefsDigest,
+      requestedProfile: projectProfileConfiguration.requestedProfile,
+      configuredProfile: projectProfileConfiguration.configuredProfile,
+      specialistPosture: projectProfileConfiguration.specialistPosture,
+      requestedStatus: projectProfileConfiguration.requestedStatus,
+      configuredStatus: projectProfileConfiguration.configuredStatus,
+      providerAcceptedStatus: projectProfileConfiguration.providerAcceptedStatus,
+      runtimeVerifiedStatus: projectProfileConfiguration.runtimeVerifiedStatus,
+      authorityGranted: false,
+    } : null,
+    source: "managed_app_server_launch_config",
+  };
 }
 
 function normalizeBinaryCommand(binaryPath, runtime) {
@@ -110,6 +219,14 @@ function bundledWslCodexForHome(codexHome) {
   } catch {
     return "";
   }
+}
+
+function resolveManagedAppServerBinaryPath(runtime, configuredBinaryPath, codexHome, codex = {}, options = {}) {
+  const configured = normalizeString(configuredBinaryPath, "codex");
+  const preserveConfiguredBinary = runtime === "wsl" && spawnAgentModelOverridesEnabled(codex);
+  if (runtime !== "wsl" || configured !== "codex" || preserveConfiguredBinary) return configured;
+  const resolveBundled = typeof options.resolveBundled === "function" ? options.resolveBundled : bundledWslCodexForHome;
+  return resolveBundled(codexHome) || configured;
 }
 
 async function allocatePort() {
@@ -228,6 +345,9 @@ function buildRuntimeCapabilityProfile(session) {
       canRead: ready,
       canStartLogin: ready,
     },
+    config: {
+      canRead: ready,
+    },
     configRequirements: {
       canRead: ready,
     },
@@ -260,6 +380,43 @@ function buildRuntimeCapabilityProfile(session) {
       canSetSessionDefault: false,
       canSetProjectDefault: false,
       canLiveUpdate: false,
+    },
+    agents: {
+      runtimeAvailability: ready ? "model_selected_at_turn" : "unavailable",
+      binarySelection: normalizeString(session?.orchestrationProfile?.binarySelection, "unknown"),
+      reservedProviderToolSchema: session?.orchestrationProfile?.spawnAgentControls?.reservedProviderSchema === true,
+      spawnVisibleInputFields: Array.isArray(session?.orchestrationProfile?.spawnAgentControls?.visibleInputFields)
+        ? [...session.orchestrationProfile.spawnAgentControls.visibleInputFields]
+        : [],
+      spawnHiddenInputFields: Array.isArray(session?.orchestrationProfile?.spawnAgentControls?.hiddenInputFields)
+        ? [...session.orchestrationProfile.spawnAgentControls.hiddenInputFields]
+        : [],
+      spawnProviderContract: normalizeString(session?.orchestrationProfile?.spawnAgentControls?.providerContract, "unknown"),
+      spawnContractStatus: normalizeString(session?.orchestrationProfile?.spawnAgentControls?.effectiveStatus, "unknown"),
+      spawnProviderAcceptanceStatus: normalizeString(session?.orchestrationProfile?.spawnAgentControls?.providerAcceptanceStatus, "unknown"),
+      spawnModelOverrideMinimumCodexVersion: normalizeString(session?.orchestrationProfile?.spawnAgentControls?.minimumCodexVersion, ""),
+      modelVisibleSpawnControlsConfigured:
+        session?.orchestrationProfile?.spawnAgentControls?.modelOverrideConfigured === true
+        && session?.orchestrationProfile?.spawnAgentControls?.reasoningEffortOverrideConfigured === true,
+      spawnModelOverrideConfigured: session?.orchestrationProfile?.spawnAgentControls?.modelOverrideConfigured === true,
+      spawnReasoningEffortOverrideConfigured: session?.orchestrationProfile?.spawnAgentControls?.reasoningEffortOverrideConfigured === true,
+      activeToolSchemaWitnessRequired: true,
+      effectiveModelVisibleSpawnControls: "unknown",
+      fullHistoryForkInheritsParentProfile: true,
+      fullHistoryOverrideAllowed: session?.orchestrationProfile?.spawnAgentControls?.fullHistoryOverrideAllowed === true,
+      perSpawnOverrideForkTurns: Array.isArray(session?.orchestrationProfile?.spawnAgentControls?.overrideForkTurns)
+        ? [...session.orchestrationProfile.spawnAgentControls.overrideForkTurns]
+        : [],
+      compatibleModelSet: normalizeString(session?.orchestrationProfile?.spawnAgentControls?.compatibleModelSet, "unknown"),
+      perSpawnRuntimeSelection: normalizeString(session?.orchestrationProfile?.spawnAgentControls?.runtimeSelection, "unknown"),
+      clientSchemaExtensionAllowed: false,
+      configSource: normalizeString(session?.orchestrationProfile?.source, ""),
+      projectProfileRequestedStatus: normalizeString(session?.projectProfileConfiguration?.requestedStatus, "not_requested"),
+      projectProfileConfiguredStatus: normalizeString(session?.projectProfileConfiguration?.configuredStatus, "not_configured"),
+      projectProfileProviderAcceptedStatus: normalizeString(session?.projectProfileConfiguration?.providerAcceptedStatus, "not_yet_observed"),
+      projectProfileRuntimeVerifiedStatus: normalizeString(session?.projectProfileConfiguration?.runtimeVerifiedStatus, "not_yet_observed"),
+      projectProfileResolutionRef: session?.projectProfileConfiguration?.resolutionRef || null,
+      projectProfileAuthorityGranted: false,
     },
     serviceTier: {
       canSetNextTurn: ready,
@@ -308,13 +465,12 @@ function buildRuntimeCapabilityProfile(session) {
 
 function buildDescriptor(project, codex, port, options = {}) {
   const runtime = resolveRuntime(project, codex);
+  const hostPlatform = normalizeString(options.hostPlatform, process.platform);
   const wsUrl = `ws://127.0.0.1:${port}`;
   const readyUrl = `http://127.0.0.1:${port}/readyz`;
   const configuredBinaryPath = normalizeBinaryCommand(codex.binaryPath, runtime);
   const codexHome = normalizeString(options.codexHome, "") || defaultCodexHomeForRuntime(runtime);
-  const binaryPath = runtime === "wsl" && configuredBinaryPath === "codex"
-    ? bundledWslCodexForHome(codexHome) || configuredBinaryPath
-    : configuredBinaryPath;
+  const binaryPath = resolveManagedAppServerBinaryPath(runtime, configuredBinaryPath, codexHome, codex);
   const workspace = project?.workspace || { kind: "local", localPath: project?.repoPath || process.cwd() };
   const provider = normalizeRuntimeProviderConfig(codex);
   if (provider.kind === "direct_oai") {
@@ -337,10 +493,19 @@ function buildDescriptor(project, codex, port, options = {}) {
       error: "Direct OpenAI harness provider is not implemented in this shell workspace yet.",
     };
   }
+  const projectProfileConfiguration = buildManagedAppServerProjectProfileConfiguration(
+    options.projectProfileLaunchInput,
+    { ...options, projectId: project?.id || "" },
+  );
+  const orchestrationProfile = buildManagedAppServerOrchestrationProfile(codex, projectProfileConfiguration);
+  const orchestrationProfileVersion = orchestrationProfile.profileVersion;
+  const projectProfileKeySuffix = projectProfileConfiguration
+    ? `:${projectProfileConfiguration.configurationDigest}`
+    : "";
 
   if (runtime === "wsl") {
     const linuxPath = normalizeString(workspace.linuxPath, "/home");
-    if (process.platform === "win32") {
+    if (hostPlatform === "win32") {
       const codexHomeMkdir = mkdirCommand(codexHome);
       const codexHomeExport = codexHome ? `export CODEX_HOME=${shellQuote(codexHome)}; ` : "";
       const args = [];
@@ -351,10 +516,10 @@ function buildDescriptor(project, codex, port, options = {}) {
         "--",
         "bash",
         "-lc",
-        `set -e; ${codexHomeMkdir}${codexHomeExport}exec ${shellQuote(binaryPath)} app-server --listen ${shellQuote(wsUrl)}`,
+        `set -e; ${codexHomeMkdir}${codexHomeExport}${buildManagedAppServerShellInvocation(binaryPath, wsUrl, codex)}`,
       );
       return {
-        key: `wsl:${workspace.distro || "default"}:${linuxPath}:${binaryPath}:${codexHome || "default"}`,
+        key: `wsl:${workspace.distro || "default"}:${linuxPath}:${binaryPath}:${codexHome || "default"}:${orchestrationProfileVersion}${projectProfileKeySuffix}`,
         runtime,
         wsUrl,
         readyUrl,
@@ -365,42 +530,48 @@ function buildDescriptor(project, codex, port, options = {}) {
         workspaceRoot: linuxPath,
         codexHome,
         provider,
+        orchestrationProfile,
+        projectProfileConfiguration,
         envExtras: {},
       };
     }
     return {
-      key: `linux:${linuxPath}:${binaryPath}:${codexHome || "default"}`,
+      key: `linux:${linuxPath}:${binaryPath}:${codexHome || "default"}:${orchestrationProfileVersion}${projectProfileKeySuffix}`,
       runtime,
       wsUrl,
       readyUrl,
       command: binaryPath,
-      args: ["app-server", "--listen", wsUrl],
+      args: buildManagedAppServerArgs(wsUrl, codex),
       cwd: linuxPath,
       binaryPath,
       workspaceRoot: linuxPath,
       codexHome,
       provider,
+      orchestrationProfile,
+      projectProfileConfiguration,
       envExtras: codexHome ? { CODEX_HOME: codexHome } : {},
     };
   }
 
-  if (workspace.kind === "wsl" && process.platform === "win32") {
+  if (workspace.kind === "wsl" && hostPlatform === "win32") {
     throw new Error("Host runtime cannot target a WSL workspace on Windows. Use Codex runtime = WSL.");
   }
 
   const localPath = normalizeString(workspace.localPath, project?.repoPath || process.cwd());
   return {
-    key: `host:${localPath}:${binaryPath}:${codexHome || "default"}`,
+    key: `host:${localPath}:${binaryPath}:${codexHome || "default"}:${orchestrationProfileVersion}${projectProfileKeySuffix}`,
     runtime,
     wsUrl,
     readyUrl,
     command: binaryPath,
-    args: ["app-server", "--listen", wsUrl],
+    args: buildManagedAppServerArgs(wsUrl, codex),
     cwd: localPath,
     binaryPath,
     workspaceRoot: localPath,
     codexHome,
     provider,
+    orchestrationProfile,
+    projectProfileConfiguration,
     envExtras: codexHome ? { CODEX_HOME: codexHome } : {},
   };
 }
@@ -413,7 +584,7 @@ class CodexAppServerManager extends EventEmitter {
 
   snapshot() {
     if (!this.session) return null;
-    const { key, status, runtime, wsUrl, readyUrl, binaryPath, workspaceRoot, codexHome, provider, error, logs } = this.session;
+    const { key, status, runtime, wsUrl, readyUrl, binaryPath, workspaceRoot, codexHome, provider, orchestrationProfile, projectProfileConfiguration, error, logs } = this.session;
     return {
       key,
       status,
@@ -424,6 +595,8 @@ class CodexAppServerManager extends EventEmitter {
       workspaceRoot,
       codexHome,
       provider,
+      orchestrationProfile,
+      projectProfileConfiguration,
       error,
       capabilities: buildRuntimeCapabilityProfile(this.session),
       logs: logs.slice(-20),
@@ -578,6 +751,20 @@ class CodexAppServerManager extends EventEmitter {
 }
 
 module.exports = {
+  MANAGED_APP_SERVER_CONFIG_OVERRIDES,
+  MANAGED_APP_SERVER_MODEL_OVERRIDE_CONFIG,
+  MANAGED_APP_SERVER_MODEL_OVERRIDE_DISABLED_CONFIG,
+  buildDescriptor,
+  buildManagedAppServerArgs,
+  buildManagedAppServerOrchestrationProfile,
+  buildManagedAppServerShellInvocation,
+  buildManagedAppServerProjectProfileConfiguration,
+  buildProjectProfileRuntimeLaunchObservation,
+  prepareProjectProfileLaunchRequest,
+  registerProjectProfileLaunchResponse,
+  buildRuntimeCapabilityProfile,
   CodexAppServerManager,
+  managedAppServerConfigOverrides,
+  resolveManagedAppServerBinaryPath,
   resolveRuntime,
 };

@@ -9,7 +9,7 @@ if not defined CODEX_REVIEW_SHELL_DEFAULT_WSL_DISTRO set "CODEX_REVIEW_SHELL_DEF
 if not defined CODEX_REVIEW_SHELL_DEFAULT_WSL_PATH set "CODEX_REVIEW_SHELL_DEFAULT_WSL_PATH=/home/rose/work/LexLattice/codex-review-shell-direct"
 if not defined CODEX_REVIEW_SHELL_USER_DATA_DIR set "CODEX_REVIEW_SHELL_USER_DATA_DIR=%APPDATA%\codex-review-shell-direct"
 if not defined CODEX_REVIEW_SHELL_DEFAULT_HOST_CODEX_HOME set "CODEX_REVIEW_SHELL_DEFAULT_HOST_CODEX_HOME=%ROOT_DIR%\.codex-home"
-if not defined CODEX_REVIEW_SHELL_DEFAULT_WSL_CODEX_HOME set "CODEX_REVIEW_SHELL_DEFAULT_WSL_CODEX_HOME=/home/rose/work/LexLattice/codex-review-shell-direct/.codex-home"
+if not defined CODEX_REVIEW_SHELL_DEFAULT_WSL_CODEX_HOME set "CODEX_REVIEW_SHELL_DEFAULT_WSL_CODEX_HOME=/home/rose/.codex"
 
 set "LAUNCHER_STDOUT=%ROOT_DIR%\launcher-stdout.log"
 set "LAUNCHER_STDERR=%ROOT_DIR%\launcher-stderr.log"

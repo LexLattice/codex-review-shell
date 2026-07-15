@@ -2,12 +2,22 @@
 
 const crypto = require("node:crypto");
 const { memoryContextEligible } = require("./agent-memory-store");
+const { validateHierarchicalWorldmodelGraph } = require("../worldmodel/hierarchical-graph");
+const { validateWorldmodelGraphProjection } = require("../worldmodel/graph-projection");
+const {
+  validateMemoryAuthorityCutoverRegistry,
+  resolveMemoryAuthorityFromCutoverRuntime,
+} = require("../worldmodel/worldmodel-migration");
 
 const DIRECT_CONTEXT_SOURCE_REF_SCHEMA = "direct_context_source_ref@1";
-const DIRECT_AGENT_MEMORY_CONTEXT_PROJECTION_SCHEMA = "direct_agent_memory_context_projection@1";
-const DIRECT_AGENT_CONTEXT_SOURCE_ADAPTER_SCHEMA = "direct_agent_context_source_adapter@1";
-const DEFAULT_AGENT_MEMORY_SELECTION_POLICY_ID = "direct_agent_memory_manual_selection@1";
-const DEFAULT_AGENT_MEMORY_BUDGET_POLICY_ID = "direct_agent_memory_projection_budget@1";
+const DIRECT_AGENT_MEMORY_CONTEXT_PROJECTION_SCHEMA =
+  "direct_agent_memory_context_projection@1";
+const DIRECT_AGENT_CONTEXT_SOURCE_ADAPTER_SCHEMA =
+  "direct_agent_context_source_adapter@1";
+const DEFAULT_AGENT_MEMORY_SELECTION_POLICY_ID =
+  "direct_agent_memory_manual_selection@1";
+const DEFAULT_AGENT_MEMORY_BUDGET_POLICY_ID =
+  "direct_agent_memory_projection_budget@1";
 
 const SOURCE_CLASSES = new Set([
   "agent_identity",
@@ -19,9 +29,23 @@ const SOURCE_CLASSES = new Set([
   "request_manifest",
   "unknown",
 ]);
-const SOURCE_CONFIDENCE = new Set(["exact", "declared", "accepted", "derived", "diagnostic", "fixture", "unknown"]);
+const SOURCE_CONFIDENCE = new Set([
+  "exact",
+  "declared",
+  "accepted",
+  "derived",
+  "diagnostic",
+  "fixture",
+  "unknown",
+]);
 const SOURCE_FRESHNESS = new Set(["fresh", "stale", "superseded", "unknown"]);
-const AUTHORITY_USE = new Set(["identity_witness", "run_witness", "memory_evidence", "preference_hint", "not_authoritative"]);
+const AUTHORITY_USE = new Set([
+  "identity_witness",
+  "run_witness",
+  "memory_evidence",
+  "preference_hint",
+  "not_authoritative",
+]);
 const CONTEXT_ROLES = new Set([
   "agent_identity_witness",
   "agent_run_witness",
@@ -66,7 +90,10 @@ function stableJson(value) {
 }
 
 function sha256(value) {
-  return crypto.createHash("sha256").update(String(value || "")).digest("hex");
+  return crypto
+    .createHash("sha256")
+    .update(String(value || ""))
+    .digest("hex");
 }
 
 function digestValue(prefix, value) {
@@ -91,13 +118,36 @@ function boundedPreview(value, maxChars = 220) {
 
 function normalizeDirectContextSourceRef(input = {}, options = {}) {
   const source = isPlainObject(input) ? input : {};
-  const sourceClass = pickEnum(source.sourceClass || source.kind || source.artifactKind, SOURCE_CLASSES, "unknown");
-  const sourceId = normalizeString(source.sourceId || source.id || source.artifactId || source.memoryId || source.agentRunId || source.agentId, "");
-  const contextRole = pickEnum(source.contextRole, CONTEXT_ROLES, "diagnostic_witness");
-  const authorityUse = pickEnum(source.authorityUse, AUTHORITY_USE, contextRole === "preference_hint" ? "preference_hint" : "not_authoritative");
+  const sourceClass = pickEnum(
+    source.sourceClass || source.kind || source.artifactKind,
+    SOURCE_CLASSES,
+    "unknown",
+  );
+  const sourceId = normalizeString(
+    source.sourceId ||
+      source.id ||
+      source.artifactId ||
+      source.memoryId ||
+      source.agentRunId ||
+      source.agentId,
+    "",
+  );
+  const contextRole = pickEnum(
+    source.contextRole,
+    CONTEXT_ROLES,
+    "diagnostic_witness",
+  );
+  const authorityUse = pickEnum(
+    source.authorityUse,
+    AUTHORITY_USE,
+    contextRole === "preference_hint" ? "preference_hint" : "not_authoritative",
+  );
   const ref = {
     schema: DIRECT_CONTEXT_SOURCE_REF_SCHEMA,
-    sourceRefId: normalizeString(source.sourceRefId, `direct_context_source_${sha256(`${sourceClass}:${sourceId}:${contextRole}`).slice(0, 24)}`),
+    sourceRefId: normalizeString(
+      source.sourceRefId,
+      `direct_context_source_${sha256(`${sourceClass}:${sourceId}:${contextRole}`).slice(0, 24)}`,
+    ),
     sourceClass,
     sourceId,
     projectId: normalizeString(source.projectId || options.projectId, ""),
@@ -105,19 +155,40 @@ function normalizeDirectContextSourceRef(input = {}, options = {}) {
     agentRunId: normalizeString(source.agentRunId || options.agentRunId, ""),
     threadId: normalizeString(source.threadId || options.threadId, ""),
     turnId: normalizeString(source.turnId || options.turnId, ""),
-    workThreadId: normalizeString(source.workThreadId || options.workThreadId, ""),
-    sourceConfidence: pickEnum(source.sourceConfidence || source.confidence, SOURCE_CONFIDENCE, "unknown"),
+    workThreadId: normalizeString(
+      source.workThreadId || options.workThreadId,
+      "",
+    ),
+    sourceConfidence: pickEnum(
+      source.sourceConfidence || source.confidence,
+      SOURCE_CONFIDENCE,
+      "unknown",
+    ),
     freshness: pickEnum(source.freshness, SOURCE_FRESHNESS, "unknown"),
     authorityUse,
     contextRole,
-    label: boundedPreview(source.label || source.displayLabel || source.rendererSafeLabel || sourceClass, 180),
+    label: boundedPreview(
+      source.label ||
+        source.displayLabel ||
+        source.rendererSafeLabel ||
+        sourceClass,
+      180,
+    ),
     observedAt: normalizeString(source.observedAt, nowIso(options.nowMs)),
     rawTextIncluded: false,
     rawPathIncluded: false,
     rawSecretIncluded: false,
     providerInstruction: false,
   };
-  const digest = normalizeString(source.digest || source.sourceDigest || source.artifactDigest || source.memoryDigest || source.identityDigest || source.runDigest, "");
+  const digest = normalizeString(
+    source.digest ||
+      source.sourceDigest ||
+      source.artifactDigest ||
+      source.memoryDigest ||
+      source.identityDigest ||
+      source.runDigest,
+    "",
+  );
   if (digest) ref.digest = digest;
   ref.sourceRefDigest = digestValue("direct-context-source-ref@1", ref);
   return ref;
@@ -140,39 +211,57 @@ function normalizeDirectContextSourceRefs(values = [], options = {}) {
 }
 
 function buildAgentIdentityContextSourceRef(identity = {}, options = {}) {
-  return normalizeDirectContextSourceRef({
-    sourceClass: "agent_identity",
-    sourceId: identity.agentId || identity.identityId,
-    projectId: identity.projectId,
-    agentId: identity.agentId,
-    threadId: identity.primaryThreadId || options.threadId,
-    workThreadId: identity.workThreadId || options.workThreadId,
-    sourceConfidence: identity.identityConfidence || identity.confidence || "unknown",
-    freshness: identity.lifecycleState === "archived" || identity.lifecycleState === "superseded" ? "stale" : "fresh",
-    authorityUse: "identity_witness",
-    contextRole: "agent_identity_witness",
-    label: identity.displayName || identity.agentLabel || identity.agentId || "Agent identity",
-    digest: identity.identityDigest || identity.digest,
-  }, options);
+  return normalizeDirectContextSourceRef(
+    {
+      sourceClass: "agent_identity",
+      sourceId: identity.agentId || identity.identityId,
+      projectId: identity.projectId,
+      agentId: identity.agentId,
+      threadId: identity.primaryThreadId || options.threadId,
+      workThreadId: identity.workThreadId || options.workThreadId,
+      sourceConfidence:
+        identity.identityConfidence || identity.confidence || "unknown",
+      freshness:
+        identity.lifecycleState === "archived" ||
+        identity.lifecycleState === "superseded"
+          ? "stale"
+          : "fresh",
+      authorityUse: "identity_witness",
+      contextRole: "agent_identity_witness",
+      label:
+        identity.displayName ||
+        identity.agentLabel ||
+        identity.agentId ||
+        "Agent identity",
+      digest: identity.identityDigest || identity.digest,
+    },
+    options,
+  );
 }
 
 function buildAgentRunContextSourceRef(run = {}, options = {}) {
-  return normalizeDirectContextSourceRef({
-    sourceClass: "agent_run",
-    sourceId: run.agentRunId || run.runId,
-    projectId: run.projectId,
-    agentId: run.agentId,
-    agentRunId: run.agentRunId,
-    threadId: run.threadId || (Array.isArray(run.threadIds) ? run.threadIds[0] : ""),
-    turnId: run.turnId,
-    workThreadId: run.workThreadId || options.workThreadId,
-    sourceConfidence: run.sourceConfidence || "declared",
-    freshness: ["completed", "failed", "cancelled"].includes(run.lifecycle) ? "stale" : "fresh",
-    authorityUse: "run_witness",
-    contextRole: "agent_run_witness",
-    label: run.displayLabel || run.runKind || run.agentRunId || "Agent run",
-    digest: run.runDigest || run.digest,
-  }, options);
+  return normalizeDirectContextSourceRef(
+    {
+      sourceClass: "agent_run",
+      sourceId: run.agentRunId || run.runId,
+      projectId: run.projectId,
+      agentId: run.agentId,
+      agentRunId: run.agentRunId,
+      threadId:
+        run.threadId || (Array.isArray(run.threadIds) ? run.threadIds[0] : ""),
+      turnId: run.turnId,
+      workThreadId: run.workThreadId || options.workThreadId,
+      sourceConfidence: run.sourceConfidence || "declared",
+      freshness: ["completed", "failed", "cancelled"].includes(run.lifecycle)
+        ? "stale"
+        : "fresh",
+      authorityUse: "run_witness",
+      contextRole: "agent_run_witness",
+      label: run.displayLabel || run.runKind || run.agentRunId || "Agent run",
+      digest: run.runDigest || run.digest,
+    },
+    options,
+  );
 }
 
 function memoryRowScopeMatches(row = {}, options = {}) {
@@ -182,9 +271,18 @@ function memoryRowScopeMatches(row = {}, options = {}) {
   const roleLane = normalizeString(options.roleLane, "");
   if (projectId && row.projectId !== projectId) return false;
   if (agentId && row.agentId !== agentId) return false;
-  if (row.scope?.projectId && projectId && row.scope.projectId !== projectId) return false;
-  if (row.scope?.memoryScope === "work_thread" && (!workThreadId || row.scope.workThreadId !== workThreadId)) return false;
-  if (row.scope?.memoryScope === "project_role" && (!roleLane || row.scope.roleLane !== roleLane)) return false;
+  if (row.scope?.projectId && projectId && row.scope.projectId !== projectId)
+    return false;
+  if (
+    row.scope?.memoryScope === "work_thread" &&
+    (!workThreadId || row.scope.workThreadId !== workThreadId)
+  )
+    return false;
+  if (
+    row.scope?.memoryScope === "project_role" &&
+    (!roleLane || row.scope.roleLane !== roleLane)
+  )
+    return false;
   if (row.scope?.memoryScope === "cross_project_explicit") return false;
   return true;
 }
@@ -194,15 +292,27 @@ function rowExpired(row = {}, nowMs = Date.now()) {
   if (!expiresAt) return false;
   const timestamp = Date.parse(expiresAt);
   const currentMs = Number(nowMs);
-  return Number.isFinite(timestamp) && Number.isFinite(currentMs) && timestamp <= currentMs;
+  return (
+    Number.isFinite(timestamp) &&
+    Number.isFinite(currentMs) &&
+    timestamp <= currentMs
+  );
 }
 
 function memoryOmissionReason(row = {}, options = {}) {
   if (!memoryRowScopeMatches(row, options)) return "out_of_scope";
   if (row.auditState === "rejected") return "rejected";
   if (row.contextEligibility === "not_eligible_rejected") return "rejected";
-  if (row.contextEligibility === "not_eligible_stale" || rowExpired(row, options.nowMs)) return "stale";
-  if (row.contextEligibility === "not_eligible_conflicted" || row.conflictState && row.conflictState !== "none") return "conflicted";
+  if (
+    row.contextEligibility === "not_eligible_stale" ||
+    rowExpired(row, options.nowMs)
+  )
+    return "stale";
+  if (
+    row.contextEligibility === "not_eligible_conflicted" ||
+    (row.conflictState && row.conflictState !== "none")
+  )
+    return "conflicted";
   if (!memoryContextEligible(row, options)) return "not_eligible";
   return "";
 }
@@ -214,24 +324,63 @@ function memoryContextRole(row = {}) {
 }
 
 function buildMemoryRowSourceRef(row = {}, options = {}) {
-  return normalizeDirectContextSourceRef({
-    sourceClass: "agent_memory_row",
-    sourceId: row.memoryId,
-    projectId: row.projectId,
-    agentId: row.agentId,
-    threadId: options.threadId,
-    turnId: options.turnId,
-    workThreadId: row.scope?.workThreadId || options.workThreadId,
-    sourceConfidence: row.confidence === "exact" ? "exact" : row.confidence === "high" ? "accepted" : "derived",
-    freshness: memoryOmissionReason(row, options) === "stale" ? "stale" : "fresh",
-    authorityUse: memoryContextRole(row),
-    contextRole: memoryContextRole(row),
-    label: `${row.kind || "memory"}:${row.memoryId || "unknown"}`,
-    digest: row.digest || row.memoryDigest || row.contentSummaryDigest,
-  }, options);
+  return normalizeDirectContextSourceRef(
+    {
+      sourceClass: "agent_memory_row",
+      sourceId: row.memoryId,
+      projectId: row.projectId,
+      agentId: row.agentId,
+      threadId: options.threadId,
+      turnId: options.turnId,
+      workThreadId: row.scope?.workThreadId || options.workThreadId,
+      sourceConfidence:
+        row.confidence === "exact"
+          ? "exact"
+          : row.confidence === "high"
+            ? "accepted"
+            : "derived",
+      freshness:
+        memoryOmissionReason(row, options) === "stale" ? "stale" : "fresh",
+      authorityUse: memoryContextRole(row),
+      contextRole: memoryContextRole(row),
+      label: `${row.kind || "memory"}:${row.memoryId || "unknown"}`,
+      digest: row.digest || row.memoryDigest || row.contentSummaryDigest,
+    },
+    options,
+  );
 }
 
-function buildAgentMemoryContextProjection(input = {}, options = {}) {
+// Wave26 memory selection has one authority source: the factory-owned runtime
+// reads the durable current cutover head.  A resolver/registry is merely a
+// caller assertion and must never become selection authority.  The explicitly
+// named legacy helper below is retained only for non-Wave26 historical/readback
+// paths.
+function resolveMemoryAuthority(input, options, memoryIds) {
+  const source = isPlainObject(input) ? input : {};
+  const opts = isPlainObject(options) ? options : {};
+  if (source.memoryAuthorityResolver || opts.memoryAuthorityResolver || source.memoryAuthorityCutoverRegistry || opts.memoryAuthorityCutoverRegistry || source.registry || opts.registry || source.memoryAuthorityRuntime)
+    throw Object.assign(new Error("direct_agent_memory_caller_authority_forbidden"), {
+      code: "direct_agent_memory_caller_authority_forbidden",
+    });
+  // The runtime is an injection owned by the harness, never a request field.
+  const runtime = opts.memoryAuthorityRuntime;
+  const request = {
+    memoryIds: [...new Set(memoryIds)].sort(),
+    projectId: normalizeString(source.projectId || options.projectId, ""),
+    agentId: normalizeString(source.agentId || options.agentId, ""),
+    workThreadId: normalizeString(source.workThreadId || options.workThreadId, ""),
+    roleLane: normalizeString(source.roleLane || options.roleLane, ""),
+  };
+  try {
+    return resolveMemoryAuthorityFromCutoverRuntime(runtime, request);
+  } catch (error) {
+    throw Object.assign(new Error(error.code || "direct_agent_memory_authority_runtime_required"), {
+      code: error.code || "direct_agent_memory_authority_runtime_required",
+    });
+  }
+}
+
+function buildAgentMemoryContextProjectionInternal(input = {}, options = {}, posture = "wave26") {
   const source = isPlainObject(input) ? input : {};
   const opts = isPlainObject(options) ? options : {};
   const parsedNow = Number(source.nowMs ?? opts.nowMs ?? Date.now());
@@ -240,16 +389,77 @@ function buildAgentMemoryContextProjection(input = {}, options = {}) {
   const agentId = normalizeString(source.agentId || opts.agentId, "");
   const threadId = normalizeString(source.threadId || opts.threadId, "");
   const turnId = normalizeString(source.turnId || opts.turnId, "");
-  const workThreadId = normalizeString(source.workThreadId || opts.workThreadId, "");
+  const workThreadId = normalizeString(
+    source.workThreadId || opts.workThreadId,
+    "",
+  );
   const roleLane = normalizeString(source.roleLane || opts.roleLane, "");
-  const selectedIds = new Set((Array.isArray(source.selectedMemoryIds) ? source.selectedMemoryIds : [])
-    .map((id) => normalizeString(id, ""))
-    .filter(Boolean));
-  const selectionEnabled = source.selectionEnabled === true || selectedIds.size > 0;
-  const parsedMax = Number(source.maxSelectedRows ?? opts.maxSelectedRows ?? 12);
-  const maxSelectedRows = Math.max(0, Number.isFinite(parsedMax) ? parsedMax : 12);
-  const selectionPolicyId = normalizeString(source.selectionPolicyId, DEFAULT_AGENT_MEMORY_SELECTION_POLICY_ID);
-  const budgetPolicyId = normalizeString(source.budgetPolicyId, DEFAULT_AGENT_MEMORY_BUDGET_POLICY_ID);
+  const selectedIds = new Set(
+    (Array.isArray(source.selectedMemoryIds) ? source.selectedMemoryIds : [])
+      .map((id) => normalizeString(id, ""))
+      .filter(Boolean),
+  );
+  const selectionEnabled =
+    source.selectionEnabled === true || selectedIds.size > 0;
+  const parsedMax = Number(
+    source.maxSelectedRows ?? opts.maxSelectedRows ?? 12,
+  );
+  const maxSelectedRows = Math.max(
+    0,
+    Number.isFinite(parsedMax) ? parsedMax : 12,
+  );
+  const selectionPolicyId = normalizeString(
+    source.selectionPolicyId,
+    DEFAULT_AGENT_MEMORY_SELECTION_POLICY_ID,
+  );
+  const budgetPolicyId = normalizeString(
+    source.budgetPolicyId,
+    DEFAULT_AGENT_MEMORY_BUDGET_POLICY_ID,
+  );
+  const rows = Array.isArray(source.memoryRows) ? source.memoryRows : [];
+  const memoryIds = rows.map((row) => normalizeString(row?.memoryId, "")).filter(Boolean);
+  const wave26GraphContext = posture === "wave26";
+  if (wave26GraphContext && source.legacyNonWave26Context === true)
+    throw Object.assign(new Error("direct_agent_memory_wave26_legacy_optout_forbidden"), { code: "direct_agent_memory_wave26_legacy_optout_forbidden" });
+  let registry = null;
+  let graphContext = null;
+  if (wave26GraphContext && memoryIds.length) {
+    ({ registry, graphContext } = resolveMemoryAuthority(source, opts, memoryIds));
+  }
+  const suppliedBindings = Array.isArray(registry?.bindings) ? registry.bindings : [];
+  if (wave26GraphContext && memoryIds.length) {
+    const graph = graphContext?.graph;
+    const graphProjection = graphContext?.graphProjection;
+    try {
+      validateHierarchicalWorldmodelGraph(graph);
+      validateWorldmodelGraphProjection(graphProjection);
+      validateMemoryAuthorityCutoverRegistry(registry, {
+        graph,
+        graphProjection,
+        graphProjections: [graphProjection],
+        contextualAuthorityDecisionRefs: graphContext.contextualAuthorityDecisionRefs || [],
+        contextualAdmissionRefs: graphContext.contextualAdmissionRefs || [],
+        governanceRegistries: graphContext.governanceRegistries || [],
+      });
+    } catch (error) {
+      throw Object.assign(new Error(error.code || "direct_agent_memory_cutover_context_invalid"), {
+        code: error.code || "direct_agent_memory_cutover_context_invalid",
+      });
+    }
+    if (registry.projectId !== projectId || registry.userProfileId !== graph.userProfileId || graphProjection.graphRef?.id !== graph.graphId || graphProjection.graphRef?.digest !== graph.digest) throw Object.assign(new Error("direct_agent_memory_cutover_context_mismatch"), { code: "direct_agent_memory_cutover_context_mismatch" });
+  }
+  const governedContext = wave26GraphContext;
+  const bindings = suppliedBindings;
+  const bindingsByMemoryId = new Map();
+  for (const binding of bindings) {
+    const memoryId = normalizeString(binding?.memoryId, "");
+    if (!memoryId) continue;
+    if (bindingsByMemoryId.has(memoryId))
+      throw Object.assign(new Error("direct_agent_memory_binding_ambiguous"), {
+        code: "direct_agent_memory_binding_ambiguous",
+      });
+    bindingsByMemoryId.set(memoryId, binding);
+  }
   const omissionCounters = {
     outOfScope: 0,
     stale: 0,
@@ -261,13 +471,20 @@ function buildAgentMemoryContextProjection(input = {}, options = {}) {
     overBudget: 0,
   };
   const selectedMemoryRefs = [];
-  const rows = Array.isArray(source.memoryRows) ? source.memoryRows : [];
   for (const row of rows) {
     if (!isPlainObject(row)) {
       omissionCounters.notEligible += 1;
       continue;
     }
     const memoryId = normalizeString(row.memoryId, "");
+    const binding = bindingsByMemoryId.get(memoryId);
+    // Resolve even an unselected row.  Otherwise a caller could omit the
+    // selection flag and silently turn a graph-primary row into legacy input
+    // on a later context rebuild.
+    if (governedContext && !binding)
+      throw Object.assign(new Error("direct_agent_memory_binding_required"), {
+        code: "direct_agent_memory_binding_required",
+      });
     if (!selectionEnabled) {
       omissionCounters.notSelected += 1;
       continue;
@@ -276,7 +493,30 @@ function buildAgentMemoryContextProjection(input = {}, options = {}) {
       omissionCounters.notSelected += 1;
       continue;
     }
-    const reason = memoryOmissionReason(row, { projectId, agentId, workThreadId, roleLane, nowMs });
+    if (binding) {
+      const state = normalizeString(binding.compatibilityState, "");
+      const privateRoute =
+        source.privateMemoryRoute === true &&
+        binding.homeScope === "agent_private" &&
+        binding.custodianRole === "agent";
+      const legacyAllowed =
+        state === "legacy_memory_primary" ||
+        (state === "agent_private_unpromoted" && privateRoute);
+      if (
+        binding.mayEnterContextThroughLegacyMemoryProjection !== true ||
+        !legacyAllowed
+      ) {
+        omissionCounters.notEligible += 1;
+        continue;
+      }
+    }
+    const reason = memoryOmissionReason(row, {
+      projectId,
+      agentId,
+      workThreadId,
+      roleLane,
+      nowMs,
+    });
     if (reason) {
       if (reason === "out_of_scope") omissionCounters.outOfScope += 1;
       else if (reason === "stale") omissionCounters.stale += 1;
@@ -285,7 +525,10 @@ function buildAgentMemoryContextProjection(input = {}, options = {}) {
       else omissionCounters.notEligible += 1;
       continue;
     }
-    const digest = normalizeString(row.digest || row.memoryDigest || row.contentSummaryDigest, "");
+    const digest = normalizeString(
+      row.digest || row.memoryDigest || row.contentSummaryDigest,
+      "",
+    );
     if (!digest) {
       omissionCounters.missingDigest += 1;
       continue;
@@ -306,17 +549,48 @@ function buildAgentMemoryContextProjection(input = {}, options = {}) {
       budgetPolicyId,
       authorityUse: contextRole,
       contextRole,
-      inclusionReason: selectedIds.size ? "explicit_fixture_manual_selection" : "explicit_projection_selection",
-      sourceRef: buildMemoryRowSourceRef(row, { projectId, agentId, threadId, turnId, workThreadId, roleLane, nowMs }),
+      inclusionReason: selectedIds.size
+        ? "explicit_fixture_manual_selection"
+        : "explicit_projection_selection",
+      sourceRef: buildMemoryRowSourceRef(row, {
+        projectId,
+        agentId,
+        threadId,
+        turnId,
+        workThreadId,
+        roleLane,
+        nowMs,
+      }),
       rawMemoryTextIncluded: false,
       rawTranscriptIncluded: false,
       providerInstruction: false,
     });
   }
   const sourceRefs = selectedMemoryRefs.map((ref) => ref.sourceRef);
+  const graphProjection = wave26GraphContext
+    ? graphContext?.graphProjection
+    : source.graphProjection;
+  if (graphProjection?.selectedNodeRefs) {
+    for (const ref of selectedMemoryRefs) {
+      const binding = bindingsByMemoryId.get(ref.memoryId);
+      if (
+        binding &&
+        graphProjection.selectedNodeRefs.some(
+          (node) => node.id === binding.semanticNodeId,
+        )
+      )
+        throw Object.assign(
+          new Error("direct_agent_memory_double_context_forbidden"),
+          { code: "direct_agent_memory_double_context_forbidden" },
+        );
+    }
+  }
   const projection = {
     schema: DIRECT_AGENT_MEMORY_CONTEXT_PROJECTION_SCHEMA,
-    projectionId: normalizeString(source.projectionId, `agent_memory_context_${sha256(`${projectId}:${agentId}:${threadId}:${turnId}:${selectionPolicyId}:${sourceRefs.map((ref) => ref.sourceRefDigest).join(":")}`).slice(0, 24)}`),
+    projectionId: normalizeString(
+      source.projectionId,
+      `agent_memory_context_${sha256(`${projectId}:${agentId}:${threadId}:${turnId}:${selectionPolicyId}:${sourceRefs.map((ref) => ref.sourceRefDigest).join(":")}`).slice(0, 24)}`,
+    ),
     projectId,
     agentId,
     threadId,
@@ -326,6 +600,8 @@ function buildAgentMemoryContextProjection(input = {}, options = {}) {
     generatedAt: normalizeString(source.generatedAt, nowIso(nowMs)),
     selectionPolicyId,
     budgetPolicyId,
+    governedContext,
+    contextPosture: wave26GraphContext ? "wave26_registry_governed" : "legacy_non_wave26_readback",
     selectionEnabled,
     selectedCount: selectedMemoryRefs.length,
     selectedMemoryRefs,
@@ -338,43 +614,76 @@ function buildAgentMemoryContextProjection(input = {}, options = {}) {
     providerInstruction: false,
     providerContextTextIncluded: false,
   };
-  projection.projectionDigest = digestValue("direct-agent-memory-context-projection@1", projection);
+  projection.projectionDigest = digestValue(
+    "direct-agent-memory-context-projection@1",
+    projection,
+  );
   return projection;
 }
 
-function buildAgentMemoryProjectionContextSourceRef(projection = {}, options = {}) {
-  return normalizeDirectContextSourceRef({
-    sourceClass: "agent_memory_projection",
-    sourceId: projection.projectionId,
-    projectId: projection.projectId,
-    agentId: projection.agentId,
-    threadId: projection.threadId,
-    turnId: projection.turnId,
-    workThreadId: projection.workThreadId,
-    sourceConfidence: "derived",
-    freshness: "fresh",
-    authorityUse: "memory_evidence",
-    contextRole: "memory_evidence",
-    label: "Agent memory context projection",
-    digest: projection.projectionDigest,
-  }, options);
+function buildAgentMemoryContextProjection(input = {}, options = {}) {
+  return buildAgentMemoryContextProjectionInternal(input, options, "wave26");
+}
+
+function buildLegacyNonWave26AgentMemoryContextProjection(input = {}, options = {}) {
+  const source = isPlainObject(input) ? input : {};
+  if (source.wave26GraphContext === true || source.memoryAuthorityResolver || options.memoryAuthorityResolver || source.memoryAuthorityCutoverRegistry || options.memoryAuthorityCutoverRegistry || source.registry || options.registry || source.memoryAuthorityRuntime || options.memoryAuthorityRuntime) {
+    throw Object.assign(new Error("direct_agent_memory_legacy_non_wave26_graph_claim_forbidden"), {
+      code: "direct_agent_memory_legacy_non_wave26_graph_claim_forbidden",
+    });
+  }
+  return buildAgentMemoryContextProjectionInternal({ ...source, legacyNonWave26Context: true }, options, "legacy_non_wave26");
+}
+
+function buildAgentMemoryProjectionContextSourceRef(
+  projection = {},
+  options = {},
+) {
+  return normalizeDirectContextSourceRef(
+    {
+      sourceClass: "agent_memory_projection",
+      sourceId: projection.projectionId,
+      projectId: projection.projectId,
+      agentId: projection.agentId,
+      threadId: projection.threadId,
+      turnId: projection.turnId,
+      workThreadId: projection.workThreadId,
+      sourceConfidence: "derived",
+      freshness: "fresh",
+      authorityUse: "memory_evidence",
+      contextRole: "memory_evidence",
+      label: "Agent memory context projection",
+      digest: projection.projectionDigest,
+    },
+    options,
+  );
 }
 
 function adaptAgentContextSourcesForContextPack(input = {}, options = {}) {
-  const sourceRefs = normalizeDirectContextSourceRefs(input.sourceRefs || input.agentContextSourceRefs, options);
+  const sourceRefs = normalizeDirectContextSourceRefs(
+    input.sourceRefs || input.agentContextSourceRefs,
+    options,
+  );
   const memoryProjection = isPlainObject(input.agentMemoryContextProjection)
     ? input.agentMemoryContextProjection
     : null;
   const refs = memoryProjection?.projectionId
-    ? normalizeDirectContextSourceRefs([
-        ...sourceRefs,
-        buildAgentMemoryProjectionContextSourceRef(memoryProjection, options),
-        ...(Array.isArray(memoryProjection.sourceRefs) ? memoryProjection.sourceRefs : []),
-      ], options)
+    ? normalizeDirectContextSourceRefs(
+        [
+          ...sourceRefs,
+          buildAgentMemoryProjectionContextSourceRef(memoryProjection, options),
+          ...(Array.isArray(memoryProjection.sourceRefs)
+            ? memoryProjection.sourceRefs
+            : []),
+        ],
+        options,
+      )
     : sourceRefs;
   const omittedCounts = {};
   if (memoryProjection?.omissionCounters) {
-    for (const [key, value] of Object.entries(memoryProjection.omissionCounters)) {
+    for (const [key, value] of Object.entries(
+      memoryProjection.omissionCounters,
+    )) {
       omittedCounts[`agent_memory_${key}`] = Number(value) || 0;
     }
   }
@@ -382,23 +691,34 @@ function adaptAgentContextSourcesForContextPack(input = {}, options = {}) {
     schema: DIRECT_AGENT_CONTEXT_SOURCE_ADAPTER_SCHEMA,
     sourceRefCount: refs.length,
     sourceRefs: refs,
-    memoryProjectionRef: memoryProjection?.projectionId ? {
-      projectionId: memoryProjection.projectionId,
-      projectionDigest: normalizeString(memoryProjection.projectionDigest, ""),
-      selectedCount: Number(memoryProjection.selectedCount || 0),
-      selectionEnabled: memoryProjection.selectionEnabled === true,
-      selectionPolicyId: normalizeString(memoryProjection.selectionPolicyId, ""),
-      budgetPolicyId: normalizeString(memoryProjection.budgetPolicyId, ""),
-      rawMemoryTextIncluded: false,
-      providerInstruction: false,
-    } : null,
+    memoryProjectionRef: memoryProjection?.projectionId
+      ? {
+          projectionId: memoryProjection.projectionId,
+          projectionDigest: normalizeString(
+            memoryProjection.projectionDigest,
+            "",
+          ),
+          selectedCount: Number(memoryProjection.selectedCount || 0),
+          selectionEnabled: memoryProjection.selectionEnabled === true,
+          selectionPolicyId: normalizeString(
+            memoryProjection.selectionPolicyId,
+            "",
+          ),
+          budgetPolicyId: normalizeString(memoryProjection.budgetPolicyId, ""),
+          rawMemoryTextIncluded: false,
+          providerInstruction: false,
+        }
+      : null,
     omittedCounts,
     providerInputMutation: false,
     rawTextIncluded: false,
     rawPathIncluded: false,
     rawSecretIncluded: false,
   };
-  adapter.adapterDigest = digestValue("direct-agent-context-source-adapter@1", adapter);
+  adapter.adapterDigest = digestValue(
+    "direct-agent-context-source-adapter@1",
+    adapter,
+  );
   return adapter;
 }
 
@@ -411,6 +731,7 @@ module.exports = {
   adaptAgentContextSourcesForContextPack,
   buildAgentIdentityContextSourceRef,
   buildAgentMemoryContextProjection,
+  buildLegacyNonWave26AgentMemoryContextProjection,
   buildAgentMemoryProjectionContextSourceRef,
   buildAgentRunContextSourceRef,
   normalizeDirectContextSourceRef,

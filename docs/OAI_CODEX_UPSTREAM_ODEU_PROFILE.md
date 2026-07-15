@@ -16,11 +16,12 @@ and what did Codex CLI choose to build on top of it?
 Last verified:
 
 - Review shell repo: `/home/rose/work/LexLattice/codex-review-shell-direct`
-  at `9156707`
-- Codex fork evidence repo: `/home/rose/work/codex/fork` at `13595c36e2`
-  (`rust-v0.132.0`)
-- Upstream release branch evidence: `upstream-latest-release` at `13595c36e2`
-- Verification date: 2026-05-20
+  working tree based on `793e5d4eb3bb`
+- Codex fork evidence repo: `/home/rose/work/codex/fork` at `8c68d4c87dc5`
+  (`rust-v0.144.4`)
+- Upstream release branch evidence: `upstream-latest-release` at `8c68d4c87dc5`
+- Prior inspected release baseline: `rust-v0.142.3`
+- Verification date: 2026-07-14
 
 ## Epistemic Status
 
@@ -110,6 +111,13 @@ Evidence:
 - Compaction/memory endpoints:
   `/codex-rs/codex-api/src/endpoint/compact.rs`,
   `/codex-rs/codex-api/src/endpoint/memories.rs`
+- Standalone provider adapters:
+  `/codex-rs/codex-api/src/endpoint/images.rs`,
+  `/codex-rs/codex-api/src/endpoint/search.rs`
+- Codex-core world-state implementation (not backend law):
+  `/codex-rs/core/src/context/world_state/`,
+  `/codex-rs/core/src/session/world_state.rs`,
+  `/codex-rs/protocol/src/protocol.rs` (`WorldStateItem`)
 
 Utility:
 
@@ -119,6 +127,87 @@ Utility:
   local execution authority.
 - Existing Codex CLI threads can be imported as one source of evidence without
   inheriting CLI storage as the canonical future thread ontology.
+
+## Release 0.144.4 ODEU Baseline Refresh
+
+This refresh replaces the stale release-132 document baseline with current
+release-144 evidence. It is a current capability profile, not a claim that every
+listed primitive was introduced after the separately inspected `0.142.3` tag.
+The evidence spans three different authority layers.
+
+### Provider/backend evidence
+
+- The model catalog now treats reasoning effort as an open, non-empty
+  model-advertised string. Known values include `max` and `ultra`, but future
+  values must be preserved rather than rejected by a closed client enum.
+- Model descriptors can now carry `default_service_tier`, `tool_mode`,
+  `multi_agent_version`, `comp_hash`, `use_responses_lite`, skills-instruction
+  posture, approval/auto-review messages, and an auto-review model override.
+  These are served metadata inputs to client policy; they are not themselves
+  proof that the corresponding local tool or agent action is authorized.
+- The provider adapter has typed standalone image generation/edit endpoints and
+  an alpha standalone search endpoint in addition to Responses-hosted image and
+  web-search items. Direct must distinguish hosted tool calls from separate
+  endpoint calls because their authority, request, result, and retry envelopes
+  differ.
+- Response streams now preserve safety-buffering state, turn moderation
+  metadata, `reasoning_summary_text.done`, the server-selected model, and an
+  optional affirmative `end_turn` signal in the completed response.
+- Response items can carry stable item IDs and internal turn IDs across more
+  variants. Dynamic/custom tool namespaces and inter-agent message content are
+  now preserved more explicitly.
+- Rate-limit evidence has grown beyond window percentages: app-server can read
+  typed reset-credit rows with IDs, reset type, status, grant/expiry timestamps,
+  display text, and idempotent redemption outcomes.
+
+### Codex-core implementation evidence
+
+- Codex now constructs a per-step `WorldState`, renders full or diff fragments
+  into model context, persists full/patch snapshots, restores the baseline on
+  resume, and starts a full baseline after compaction. Core built-ins cover
+  AGENTS/instruction context, environment, app instructions, and plugin
+  instructions. Extensions contribute further sections; the skills extension
+  derives its section from selected capability roots.
+- Environment selection is now part of step context. Environment-owned
+  capability roots determine where skills/plugins are read and where their MCP
+  runtimes execute.
+- Context management has explicit history modes, context-window identities,
+  replacement histories, token-budget guidance, and a model-visible request for
+  a new context window. This materially overlaps our context-maintenance problem
+  but remains a Codex client policy, not an OAI server contract.
+- Canonical core `TurnItem`s now own more command, dynamic-tool, collaboration,
+  sub-agent, hook, review, and extension activity; legacy events are a derived
+  compatibility fan-out.
+
+### App/client environment evidence
+
+- System proxy discovery, remote-control pairing, remote plugin catalogs,
+  plugin-install policy, hosted MCP authentication, and externally supplied
+  Codex auth are real Codex application capabilities. They must not be promoted
+  into the backend primitive layer merely because the current client supports
+  them.
+- The Codex client now persists an authoritative spawned-agent graph used by
+  subtree lifecycle operations. This materially improves worker topology and
+  status evidence, but does not add constitutional inheritance, authority
+  subset proofs, scoped boot packets, or semantic closure reports.
+- Thread model and reasoning-effort changes are now explicit settings events,
+  retained as thread metadata, and restored on resume unless explicitly
+  overridden. This substantially covers thread-local control continuity, while
+  leaving nested scope/durability, authority rationale, revision vectors, and
+  per-turn ODEU control snapshots to the harness architecture.
+
+Direct rule:
+
+```text
+served model/stream/endpoint evidence
+  -> candidate provider capability
+
+Codex WorldState/app-server/plugin/environment implementation
+  -> implementation witness or adapter candidate
+
+neither
+  -> automatic Direct promotion
+```
 
 ## Upstream Primitive Families
 
@@ -165,6 +254,21 @@ Upstream-facing primitives observed in `ModelInfo`:
 - experimental supported tools
 - input modalities
 - search-tool support
+- default service tier
+- provider-selected tool mode (`direct | code_mode | code_mode_only`)
+- provider-selected multi-agent protocol version
+- compaction-compatibility hash
+- Responses-lite posture
+- skills-usage-instruction posture
+- approval/auto-review prompt metadata and optional review-model override
+
+`ReasoningEffort` is no longer a safe closed enum. Known values include:
+
+```text
+none, minimal, low, medium, high, xhigh, max, ultra
+```
+
+but the wire/model-catalog type also preserves future non-empty custom values.
 
 Direct harness implication:
 
@@ -173,6 +277,11 @@ Direct harness implication:
 - `canListModels` and `canSetModel` are different capabilities. A provider may
   accept configured model IDs without serving a full model list.
 - Speed is model-specific; it should not be a global fake enum.
+- Reasoning effort is model-advertised; Direct should preserve unknown values in
+  diagnostics and expose only descriptor-supported choices.
+- `ultra` is both a provider request value and, in current Codex, a local trigger
+  for proactive multi-agent behavior. Direct must model those as separate
+  relations rather than treating the string as self-executing agent authority.
 
 Codex CLI choice:
 
@@ -229,6 +338,7 @@ Observed upstream event families:
 - output text delta
 - custom tool call input delta
 - reasoning summary text delta
+- reasoning summary text done
 - reasoning content/text delta
 - reasoning summary part added
 - completed with token usage
@@ -237,7 +347,10 @@ Observed upstream event families:
 - reasoning-included metadata
 - model list ETag metadata
 - rate-limit snapshot events
+- safety-buffering metadata, including an optional retry/faster model
+- turn moderation metadata
 - failed/incomplete/error events
+- completed response `end_turn` evidence when supplied
 
 Direct harness implication:
 
@@ -273,10 +386,14 @@ Observed upstream/output item families:
 - `compaction`
 - `other`
 
+Current item envelopes also preserve optional provider item IDs and internal
+turn-ID passthrough metadata across most response/tool variants. `AgentMessage`
+content and tool namespaces are explicit where present.
+
 Content primitives include:
 
 - input text
-- input image with detail `high | original`
+- input image with detail `auto | low | high | original`
 - output text
 - message phase `commentary | final_answer`
 
@@ -303,6 +420,9 @@ Upstream-facing primitives:
 - Dynamic tool search/output can advertise or resolve tools.
 - Server-side tools such as web search and image generation can be model/provider
   capabilities.
+- Separate typed provider adapters also exist for image generation/edit and an
+  alpha search endpoint. These are not the same execution route as a
+  Responses-hosted tool item.
 
 Direct harness implication:
 
@@ -329,6 +449,12 @@ Observed quota primitives:
 - Plan type.
 - Credits state: has credits, unlimited, balance.
 - Rate-limit reached type.
+- Optional individual/monthly limit evidence.
+- Earned reset-credit count and, when served, per-credit ID, type, status,
+  grant/expiry time, title, and description.
+- Idempotent reset-credit consumption with optional explicit credit selection
+  and typed outcomes (`reset`, `nothingToReset`, `noCredit`,
+  `alreadyRedeemed`).
 
 Observed context primitives:
 
@@ -382,6 +508,12 @@ Codex CLI choice:
   the provider request or after successful compaction. Direct context
   maintenance should keep its own route/manifest/omission authority rather than
   inheriting this as an automatic compact permission.
+- By release 144, Codex also persists context-window identity, optional
+  replacement history, and full/patch `WorldState` snapshots. Inline and remote
+  compaction can carry a new full WorldState baseline into the next window.
+  Those mechanisms are stronger Codex-core continuity evidence, but Direct must
+  still preserve its own source spans, omission witnesses, authority decision,
+  and checkpoint provenance.
 
 ### 9. Error And Retry Semantics
 
@@ -650,6 +782,13 @@ These are Codex CLI or shell implementation choices:
 - TUI/app/VS Code source labels.
 - Approval policy names and sandbox mode names as currently surfaced by CLI.
 - MCP wiring and local dynamic tool registry.
+- Persisted/diffed Codex-core `WorldState` and its built-in sections.
+- Thread history mode, context-window IDs, replacement histories, and automatic
+  new-window policy.
+- Environment-owned capability roots and environment-routed plugin/MCP runtime.
+- Ultra-to-proactive-multi-agent policy and collaboration tool exposure.
+- Standalone code-mode hosting and extension-owned turn-item rendering.
+- System proxy discovery and remote-control relay/pairing.
 - Shell rendering choices such as collapsed thought process groups.
 - Project/lane binding and middle-plane workflow topology.
 - Local file click/open actions.
@@ -687,11 +826,18 @@ type OaiServerCapabilityProfile = {
   tools: {
     serverSide: ToolCapabilityDescriptor[];
     clientSideProtocol: ToolProtocolDescriptor[];
+    standaloneEndpoints: CapabilityDescriptor[];
     evidenceRefs: EvidenceRef[];
   };
   quota: {
     canRead: boolean;
     latest?: RateLimitSnapshot;
+    resetCredits?: {
+      availableCount: number;
+      detailsStatus: "available" | "count_only" | "unavailable" | "unknown";
+      items?: RateLimitResetCredit[];
+      canConsume: boolean;
+    };
     evidenceRefs: EvidenceRef[];
   };
   context: {
@@ -743,17 +889,20 @@ Missing metadata is unknown/unavailable, not zero, not default, and not support.
 | Modalities | `model/list`, provider capability read | Model descriptor / provider capability descriptor | `inputModalities`, `supportsPersonality`, `imageGeneration`, `webSearch`, `namespaceTools` | Gate attachment/image/web/tool affordances; unknown remains disabled/degraded. |
 | Model implementation metadata | Codex model profile cache, not all projected through app-server | Model info/preset source | context windows, max context, auto-compact limit, tool mode, truncation policy, verbosity, summary support, parallel tool support | Direct adapter may use these as internal evidence; renderer receives only normalized safe projection. |
 | Model reroute/verification | `model/rerouted`, `model/verification`, turn moderation metadata notifications | Runtime turn metadata | `fromModel`, `toModel`, `reason`, verification entries, moderation metadata | Record runtime drift; do not silently rewrite selected model as if it was operator-selected. |
-| Active turn settings | turn start / thread settings snapshot | Runtime request/session state | `model`, `modelProviderId`, `serviceTier`, `approvalPolicy`, `permissionProfile`, `reasoningEffort`, `reasoningSummary`, `personality`, `collaborationMode` | Project bottom-band/runtime drawer from actual active turn settings. |
+| Active turn settings | turn start / thread settings snapshot | Runtime request/session state | `model`, `modelProviderId`, `serviceTier`, `approvalPolicy`, `approvalsReviewer`, `permissionProfile`, `activePermissionProfile`, `cwd`, `reasoningEffort`, `reasoningSummary`, `personality`, `collaborationMode`; deprecated `multiAgentMode` is no longer proactive-agent authority | Project bottom-band/runtime drawer from actual active turn settings; treat Ultra and collaboration-tool authority separately. |
 | Request controls | provider request manifest | Responses/Codex request shape | `model`, `input`, `instructions`, `tools`, `toolChoice`, `parallelToolCalls`, `reasoning`, `serviceTier`, `store`, `stream`, `include`, `promptCacheKey`, text verbosity/format | Direct harness must produce a request manifest and cite which controls were accepted, omitted, or blocked. |
 | Stream lifecycle | app-server item lifecycle and provider stream events | SSE/WebSocket response events | response created/completed/failed/incomplete, output item added/done, text deltas, tool-call args deltas, reasoning summary/content | Normalize into local event ontology; unknown event drift becomes evidence and fails closed when semantic. |
 | Token usage | `thread/tokenUsage/updated`, turn completed usage | Provider response usage / Codex turn delta | `inputTokens`, `cachedInputTokens`, `outputTokens`, `reasoningOutputTokens`, `totalTokens`, `lastTokenUsage` | Separate provider usage from local context estimate; do not infer missing token fields as zero. |
 | Context window/pressure | turn started, token usage info, model descriptor | runtime event plus model catalog | `modelContextWindow`, descriptor context window, total tokens in active context | Bottom context chip should display only when model window plus usage evidence exist; estimates must be labeled. |
 | Turn timing | `turn/started`, `turn/completed` | Runtime turn lifecycle | `turnId`, `traceId`, `startedAt`, `completedAt`, `durationMs`, `timeToFirstTokenMs`, collaboration mode | Turn status/timer and persisted turn duration witnesses. |
-| Rate limits/quota | `account/rateLimits/read`, `account/rateLimits/updated` | account quota/rate-limit endpoint | limit id/name, primary/secondary window, `usedPercent`, window duration, reset timestamp/after, credits, individual limit, plan type, reached type | Compact quota chip and drawer usage section; reset labels come only from provider-served timestamps. |
+| Rate limits/quota | `account/rateLimits/read`, `account/rateLimits/updated`, `account/rateLimitResetCredit/consume` | account quota/rate-limit/reset-credit endpoints | limit id/name, primary/secondary windows, `usedPercent`, reset time, credits, individual limit, plan/reached type; reset-credit count and optional typed detail rows | Compact quota chip and drawer usage section; reset labels and selectable credit expiry come only from provider evidence; consumption is a separate idempotent account mutation. |
 | Account token profile | `account/tokenUsage/read` | account usage profile endpoint | lifetime tokens, peak daily tokens, longest running turn, streaks, daily usage buckets | Analytics/account view only; not a substitute for live quota or per-turn context pressure. |
 | Server requests | app-server request lifecycle | runtime/tool harness | approval/user-input/auth-refresh/MCP/dynamic-tool requests, request id, method, lifecycle | Authority evidence. Direct path must keep request id scoped by connection/session and never approve via renderer labels. |
 | Tool/item metadata | item lifecycle notifications | provider tool calls plus local tool controller | command execution, file change, MCP tool call, collab tool call, web search, image view, compaction/review items | Render process evidence and usage ledger rows; direct action authority remains local harness-owned. |
 | Collaboration/sub-agents | collab tool items and thread metadata | local Codex collaboration controller | agent nickname/role when available, sender/receiver thread ids, prompt preview, wait/close/send status | Build agent graph and right-plane worker tabs; child messages must not flatten into `You`/primary assistant. |
+| Environment/capability placement | `environment/info`, thread/turn `environments`, `selectedCapabilityRoots` | Codex execution topology, not an OAI primitive | environment id, shell, native cwd URI, sticky/turn override, environment-owned plugin/skill roots | Preserve environment as active-world evidence; tool location never grants action authority. |
+| World state/context windows | rollout `world_state`, session history mode/context-window metadata | Codex-core context implementation, not an OAI primitive | full/patch state, section ids, window identity/lineage, replacement history, persisted baseline | Useful vanilla adapter and fork-comparison evidence; Direct keeps its own explicit ODEU lanes, context manifests, and omission law. |
+| Paginated canonical history | `thread/turns/list`, `thread/items/list`, persisted canonical `TurnItem`s | local rollout/thread store | turn/item cursor, item/turn ids, canonical command/tool/collab/sub-agent/hook/review/extension items | Prefer canonical items over legacy event reconstruction when available; preserve compatibility provenance. |
 | Cache/session continuity | request manifest, provider response metadata | provider/cache/session fields | prompt cache key, response id, trace id, upstream request id, ETag/client version for model catalog | Continuity evidence and dedupe keys; never equate local thread id with provider response id. |
 | Maintenance/compaction | compaction items/endpoints where exposed | provider or local harness maintenance | compaction request/result, summary policy, context-loss witness | Direct path must distinguish provider compaction from local baton/summary artifacts. |
 
@@ -947,12 +1096,19 @@ Unsafe probes:
 When upstream changes or we update the direct backend:
 
 - Re-check model descriptor fields and reasoning effort values.
+- Confirm reasoning effort remains open-string/model-advertised rather than
+  freezing the current known values.
 - Re-check response request fields.
 - Re-check SSE/WebSocket event names and payloads.
+- Re-check standalone image/search endpoint shapes separately from hosted tool
+  items.
 - Re-check rate-limit snapshot fields and header/event names.
+- Re-check reset-credit detail and idempotent consumption shapes.
 - Re-check account plan/account types.
 - Re-check tool-call item types and tool-output input variants.
 - Re-check compaction and memory endpoint shapes.
+- Re-check Codex-core WorldState, history-window, environment, and canonical
+  TurnItem implementation without promoting them to server law.
 - Confirm direct provider profile still separates quota from context.
 - Confirm UI controls still fail closed when evidence is absent.
 - Confirm CLI compatibility adapters are not leaking into direct-provider

@@ -3,9 +3,14 @@
 - [Direct Harness Project Master Status](./DIRECT_PROJECT_MASTER_STATUS.md) -
   fresh-task handoff, current architecture, implementation posture, active
   frontier, and links to governing specs.
+- [Upstream Codex Baseline Maintenance](./UPSTREAM_CODEX_BASELINE_MAINTENANCE.md) -
+  exact-release tracking, fork divergence audit, and Direct comparison method.
+- [Upstream Codex Release 144 Impact Audit](./audits/UPSTREAM_CODEX_RELEASE_144_IMPACT_2026-07-14.md) -
+  current vanilla delta, app-server caveats, and fork/Direct disposition matrix.
 - [Thread Linking Spec](./THREAD_LINKING_SPEC.md)
 - [Thread Analytics Spec](./THREAD_ANALYTICS_SPEC.md)
 - [Codex App-Server Ontology](./CODEX_APP_SERVER_ONTOLOGY.md)
+- [Codex App-Server Orchestration Controls Spec](./CODEX_APP_SERVER_ORCHESTRATION_CONTROLS_SPEC.md)
 - [App-Server Controller Spec](./APP_SERVER_CONTROLLER_SPEC.md)
 - [Codex Surface Project And Rendering Spec](./CODEX_SURFACE_PROJECT_RENDERING_SPEC.md)
 - [Workflow Transition Graph Spec](./WORKFLOW_TRANSITION_GRAPH_SPEC.md)
@@ -59,6 +64,12 @@
 - [Direct Documentation Hygiene Backlog](./DIRECT_DOC_HYGIENE_BACKLOG.md)
 - [OAI Codex Upstream ODEU Profile](./OAI_CODEX_UPSTREAM_ODEU_PROFILE.md)
 - [Meta-Orchestrator Loop ODEU Spec](./META_ORCHESTRATOR_LOOP_ODEU_SPEC.md)
+- [Direct Wave 26: Hierarchical Worldmodel, Project Managers, And Governed Idea Graph](./DIRECT_WAVE26_HIERARCHICAL_WORLDMODEL_PROJECT_MANAGER_SPEC.md) -
+  guarded local hierarchical-worldmodel substrate; see the master status and
+  saved audit for its exact maturity boundary.
+- [Wave 26 Terra High vs. Intent - Sol Max Audit](./audits/DIRECT_WAVE26_TERRA_HIGH_VS_INTENT_SOL_MAX_AUDIT_2026-07-15.md) -
+  preserved adversarial findings, remediation history, blindspot taxonomy, and
+  final bounded acceptance verification.
 - [Codex Runtime Provider Profile Spec](./CODEX_RUNTIME_PROVIDER_PROFILE_SPEC.md)
 - [Codex Runtime Header And Drawer Spec](./CODEX_RUNTIME_HEADER_DRAWER_SPEC.md)
 - [Codex Usage Ledger Spec](./CODEX_USAGE_LEDGER_SPEC.md)

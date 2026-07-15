@@ -6,7 +6,10 @@ const {
   buildAgentMemoryRow,
   memoryContextEligible,
 } = require("./agent-memory-store");
-const { buildAgentMemoryContextProjection } = require("./agent-context-source-refs");
+const {
+  buildAgentMemoryContextProjection,
+  buildLegacyNonWave26AgentMemoryContextProjection,
+} = require("./agent-context-source-refs");
 
 const DIRECT_AGENT_MEMORY_CANDIDATE_ENVELOPE_SCHEMA = "direct_agent_memory_candidate_envelope@1";
 const DIRECT_AGENT_MEMORY_ADMISSION_TRANSITION_SCHEMA = "direct_agent_memory_admission_transition@1";
@@ -428,10 +431,11 @@ function buildMemoryAdmissionProof(input = {}, options = {}) {
   return proof;
 }
 
-function runMemoryAdmissionWorkflow(input = {}, options = {}) {
-  const candidate = buildMemoryCandidateEnvelope(input.candidate || input, options);
+function runMemoryAdmissionWorkflowInternal(input = {}, options = {}, posture = "wave26") {
+  const source = isPlainObject(input) ? input : {};
+  const candidate = buildMemoryCandidateEnvelope(source.candidate || source, options);
   const admissionTransition = buildMemoryAdmissionTransition({
-    ...(input.admission || {}),
+    ...(source.admission || {}),
     candidate,
   }, options);
   let extractionTransition = null;
@@ -440,7 +444,7 @@ function runMemoryAdmissionWorkflow(input = {}, options = {}) {
   if (admissionTransition.admissionState === "accepted") {
     extractionTransition = buildExtractionTransitionForCandidate(candidate, admissionTransition, options);
     memoryRow = buildMemoryRowFromAdmission(candidate, admissionTransition, extractionTransition, options);
-    memoryContextProjection = buildAgentMemoryContextProjection({
+    const memoryContextInput = {
       projectId: memoryRow.projectId,
       agentId: memoryRow.agentId,
       workThreadId: memoryRow.scope.workThreadId,
@@ -450,7 +454,10 @@ function runMemoryAdmissionWorkflow(input = {}, options = {}) {
       selectionEnabled: true,
       selectedMemoryIds: [memoryRow.memoryId],
       memoryRows: [memoryRow],
-    }, options);
+    };
+    memoryContextProjection = posture === "legacy_non_wave26"
+      ? buildLegacyNonWave26AgentMemoryContextProjection(memoryContextInput, options)
+      : buildAgentMemoryContextProjection(memoryContextInput, options);
   }
   const admissionProof = buildMemoryAdmissionProof({
     candidate,
@@ -484,6 +491,25 @@ function runMemoryAdmissionWorkflow(input = {}, options = {}) {
   return report;
 }
 
+// The live/Wave26 workflow is always cutover-runtime governed.  In
+// particular, an admission caller cannot select a historical path by adding a
+// boolean opt-out or by supplying a resolver/registry snapshot.
+function runMemoryAdmissionWorkflow(input = {}, options = {}) {
+  const source = isPlainObject(input) ? input : {};
+  const opts = isPlainObject(options) ? options : {};
+  if (source.legacyNonWave26Context === true || opts.legacyNonWave26Context === true)
+    throw Object.assign(new Error("direct_agent_memory_wave26_legacy_optout_forbidden"), { code: "direct_agent_memory_wave26_legacy_optout_forbidden" });
+  if (source.memoryAuthorityResolver || opts.memoryAuthorityResolver || source.memoryAuthorityCutoverRegistry || opts.memoryAuthorityCutoverRegistry || source.registry || opts.registry || source.memoryAuthorityRuntime)
+    throw Object.assign(new Error("direct_agent_memory_caller_authority_forbidden"), { code: "direct_agent_memory_caller_authority_forbidden" });
+  return runMemoryAdmissionWorkflowInternal(source, opts, "wave26");
+}
+
+// Historical AgentMemory readback remains available, but it is deliberately
+// not reachable through runMemoryAdmissionWorkflow.
+function runLegacyNonWave26MemoryAdmissionWorkflow(input = {}, options = {}) {
+  return runMemoryAdmissionWorkflowInternal(input, options, "legacy_non_wave26");
+}
+
 module.exports = {
   DIRECT_AGENT_MEMORY_ADMISSION_PROOF_SCHEMA,
   DIRECT_AGENT_MEMORY_ADMISSION_REPORT_SCHEMA,
@@ -494,4 +520,5 @@ module.exports = {
   buildMemoryCandidateEnvelope,
   buildMemoryRowFromAdmission,
   runMemoryAdmissionWorkflow,
+  runLegacyNonWave26MemoryAdmissionWorkflow,
 };

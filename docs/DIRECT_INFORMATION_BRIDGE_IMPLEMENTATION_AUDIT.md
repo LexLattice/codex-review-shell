@@ -43,14 +43,14 @@ capability. "Inherited" is not a defect when it is explicit and law-compatible.
 
 ## Current Executable Audit Snapshot
 
-Last reviewed after Wave 25 / PR 150 on `2026-07-13`.
+Last reviewed after local Wave 26 / PR151–PR157 fixture implementation on `2026-07-15`.
 
 ```text
-registry rows: 104
+registry rows: 105
 valid: yes
 missing source files: 0
 implemented rows: 39
-partial rows: 63
+partial rows: 64
 inherited rows: 2
 ```
 
@@ -59,6 +59,20 @@ The executable source of this snapshot is:
 ```sh
 npm run direct:information-bridge-audit
 ```
+
+## Wave 26 Local Fixture Status
+
+The executable registry row `ic62.wave26-hierarchical-worldmodel-fixture-substrate`
+remains `partial / keep_guarded`. It records local fixture/headless Wave 26
+evidence: hierarchical graph, Project Manager custody, governed ingress,
+projections, memory/profile bindings, additive migration games, and the
+harness-owned current-graph manager context path. The
+[final Sol Max acceptance verification](./audits/DIRECT_WAVE26_TERRA_HIGH_VS_INTENT_SOL_MAX_AUDIT_2026-07-15.md#final-acceptance-verification)
+is GREEN for that bounded gate. The row is deliberately not promoted to
+`implemented`: proof remains local single-process trust/custody and headless
+context integration, not full renderer/provider replacement, external
+signer/provider authority, hostile same-user filesystem isolation, or
+multi-process CAS.
 
 The detailed wave sections below preserve implementation history and may use
 the status language that was current when each wave landed. The executable

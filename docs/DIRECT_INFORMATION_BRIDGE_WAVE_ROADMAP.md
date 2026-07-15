@@ -4971,6 +4971,177 @@ thread context-maintenance artifact, and prove that no provider compaction or
 automatic context mutation authority was granted.
 ```
 
+## App-Server Compatibility Slice: V2 Orchestration Controls
+
+Status: implemented in the current branch; this is a retained-vanilla lane
+improvement rather than a new Direct wave.
+
+Detailed spec:
+
+```text
+docs/CODEX_APP_SERVER_ORCHESTRATION_CONTROLS_SPEC.md
+```
+
+Purpose:
+
+```text
+Use current vanilla Codex V2 orchestration through the managed app-server lane
+without waiting for Direct-native recursive orchestration. Preserve Ultra as
+the proactive-orchestration effort, retain parent-mediated worker
+observability, and keep the provider-reserved spawn schema exact.
+```
+
+Implemented posture:
+
+- managed host, native WSL/Linux, and Windows-to-WSL launch routes always add
+  `features.multi_agent_v2.hide_spawn_agent_metadata=true` as the reserved
+  schema guard;
+- disabled projects explicitly add
+  `features.multi_agent_v2.expose_spawn_agent_model_overrides=false` because
+  the alpha default is true;
+- the project-scoped alpha profile additionally adds
+  `features.multi_agent_v2.expose_spawn_agent_model_overrides=true` while
+  preserving the guard above;
+- the active Review Shell project routes Windows Electron -> Ubuntu WSL ->
+  npm-global `@openai/codex@0.145.0-alpha.11`; the stable source-audit fork,
+  Windows PATH Codex, and vanilla desktop-bundled WSL Codex remain separate;
+- enabled tasks preserve the configured WSL command even when their source home
+  is the desktop home, preventing silent fallback to its bundled older binary;
+- Review Shell launchers default WSL tasks to the authenticated
+  `/home/rose/.codex` runtime home rather than the repo-local unauthenticated
+  home;
+- model metadata remains authoritative for V2/disabled selection; the shell
+  does not force V2 globally;
+- multi-agent version remains sticky per task, so current V2 posture is
+  validated on a fresh task rather than inferred from an older V1 resume;
+- `max` and `ultra` survive project/config normalization and appear in the
+  shell effort controls;
+- a new app-server thread stores its selected effort through
+  `config.model_reasoning_effort`, while turns continue to send the effective
+  `effort` explicitly;
+- runtime truth distinguishes the fallback `provider_managed` profile from the
+  alpha `root_selectable_within_active_backend` split profile and forbids
+  client-side reserved-schema extension in both;
+- `fork_turns` remains available; full-history children inherit the root and
+  reject overrides, while fresh/bounded children may request model/effort;
+- enabled new tasks receive a project-scoped developer-instruction projection
+  preferring fresh Low-effort/model-inheriting workers for bounded specialist
+  work without broadening action authority;
+- upstream commits `ea15456284` and `92938d880e` are present in the active
+  alpha and provide the canonical model/effort-only surface;
+- no worker composer, client-side spawn RPC, global model override, or new
+  Direct-native worker authority is introduced.
+
+Acceptance:
+
+```text
+all managed app-server launch routes preserve the reserved schema
+no launch route carries hide_spawn_agent_metadata=false
+disabled launch carries expose_spawn_agent_model_overrides=false
+the enabled alpha route carries both narrow schema flags
+the project setting records requested exposure, not provider acceptance
+Ultra round-trips through shell configuration
+thread/start uses the protocol config key for its sticky effort
+V2 worker model/effort remain visible when canonical child activity reports them
+source-level handler support is not mislabeled as provider-authorized capability
+full-history overrides are rejected; none/bounded overrides use the active backend
+```
+
+## Wave 26: Hierarchical Worldmodel, Project Managers, And Governed Idea Graph
+
+Status: internal slices implemented and final-acceptance audited locally; one
+combined GitHub PR is pending.
+
+Detailed spec:
+
+```text
+docs/DIRECT_WAVE26_HIERARCHICAL_WORLDMODEL_PROJECT_MANAGER_SPEC.md
+```
+
+Purpose:
+
+```text
+Refine Wave 21 memory and Wave 23 worldmodel management into one hierarchical
+semantic worldmodel. The World Manager curates user/global/cross-project state;
+Project Managers curate project concepts, memory, progress, and WorkThread
+portfolios; Thread Managers curate bounded execution worlds. Chat transcripts
+and other artifacts remain re-inspectable evidence, while admitted ideas,
+goals, decisions, invariants, progress, and relations become versioned graph
+objects. Active model context becomes a role- and task-specific graph
+projection rather than permanent transcript replay.
+```
+
+Standing laws:
+
+```text
+Chat/thread is an ingress and evidence surface, not the semantic home of an
+idea.
+An idea is stored according to the worldmodel node it changes, not the chat that
+received it.
+World Manager and Project Manager are scoped custodians of one hierarchical
+graph, not owners of disconnected memories.
+World-level memory belongs at world scope; project-derived memory belongs at
+project scope; WorkThread output is evidence until admitted upward.
+Either human-facing manager may receive a project idea; target scope and
+custody determine the lawful update route.
+Transcript and artifact bodies remain inspectable source evidence but are not
+default active context.
+Promotion into the graph requires typed provenance, admission state, revision,
+and supersession history.
+Accepted idea is not implemented capability, and project progress remains
+evidence-backed.
+Active context is a relevance-preserving role projection, not necessarily a
+subtree and never ambient graph access.
+Profile fit and environment availability do not grant action authority.
+```
+
+Initial target posture:
+
+```text
+Build a compatibility overlay over the Wave 21 AgentMemory, Wave 23
+ActiveInteractionWorldmodel/manager, Wave 24 environment topology, and existing
+WorkThread stores. Preserve existing artifacts as historical evidence; do not
+rewrite them destructively. Add a materialized current graph plus append-only
+semantic transition history, scoped revision vectors, and source refs.
+Introduce Project Manager explicitly between World Manager and Thread Manager.
+Prove dual-ingress convergence, targeted transcript inspection, project-memory
+admission, graph-first context, profile resolution, and stale-update behavior in
+fixtures/headless games before live manager UX or automatic promotion.
+Do not mine all historical transcripts, replay full chat history into manager
+context, expose unrelated project memory, add a general graph editor, grant new
+authority, or implement physical retention/TTL policy in this wave.
+```
+
+| PR | Status | Branch | Purpose | Planned deliverable | Explicit non-goals |
+| --- | --- | --- | --- | --- | --- |
+| `#151` | implemented and accepted locally; combined PR pending | `codex/direct-hierarchical-worldmodel-graph` | Hierarchical worldmodel kernel | HierarchicalWorldmodelGraph, semantic scope paths, WorldmodelSemanticNode/Edge, scoped revision vectors, append-only WorldmodelGraphTransition ledger, materialized-view refs, compatibility refs to ActiveInteractionWorldmodel | No live context replacement, manager behavior change, or historical transcript mining |
+| `#152` | implemented and accepted locally; combined PR pending | `codex/direct-project-manager-role` | Project Manager and scoped custody | ProjectManagerProfile, ProjectWorld root/state, global-only World Manager target posture, World Manager -> Project Manager -> Thread Manager relay, path-level custody/write matrix, migration witnesses for project/work-thread manager scopes | No autonomous project work, global policy mutation by Project Manager, or worker authority broadening |
+| `#153` | implemented and accepted locally; combined PR pending | `codex/direct-worldmodel-semantic-ingress` | Governed semantic ingress and idea promotion | WorldmodelIngressEnvelope, TranscriptEvidenceRef, targeted TranscriptInspectionArtifact, distinct semantic-ingress broker packet, SemanticTargetResolution, WorldmodelDeltaCandidate, PromotionTransition, idea lifecycle/history | No broker commit authority, raw transcript graph storage, silent promotion, or broad vector search |
+| `#154` | implemented and accepted locally; combined PR pending | `codex/direct-worldmodel-graph-projections` | Role-indexed graph context | World/Project/Thread/Worker graph projections, relevance traversal, projection/omission witness, ManagerTurnBootPacket, structured dialogue frame, targeted source drill-down, graph-first context-pack adapter | No ambient graph access, full-history prompt replay, or universal context migration in one step |
+| `#155` | implemented and accepted locally; combined PR pending | `codex/direct-project-memory-propagation` | Bidirectional project updates and project memory | WorkThread closure -> ProjectMemoryCandidate -> Project Manager admission, WorldToProjectUpdatePacket, ProjectToWorldStatusProjection, projection invalidation/acknowledgement, materiality and stale-rebase rules | No worker direct graph writes, automatic cross-project promotion, or parent overwrite of newer project state |
+| `#156` | implemented and accepted locally; combined PR pending | `codex/direct-project-profile-selection` | Project execution-profile resolution | ProjectExecutionProfileBinding, evidence-backed profile-resolution trace, home environment, Project Manager model/effort posture, allowed worker profiles, preferred specialist routes, control-panel/worldmodel inputs | No capability grant from profile fit, environment availability, or catalog presence |
+| `#157` | implemented and accepted locally; combined PR pending | `codex/direct-worldmodel-migration-games` | Compatibility migration and agentic proof | AgentMemory/manager/WorkThread migration adapters, no-double-inclusion witness, dual-ingress convergence games, manager restart without transcript replay, stale/conflict/privacy/profile negative fixtures, current-state audit update | No destructive legacy-store rewrite, full manager UI, autonomous transcript mining, or physical evidence retention changes |
+
+All seven rows compose one guarded local substrate. The
+[final Sol Max verification](./audits/DIRECT_WAVE26_TERRA_HIGH_VS_INTENT_SOL_MAX_AUDIT_2026-07-15.md#final-acceptance-verification)
+covers fixture/headless behavior and the harness-owned headless current-graph
+manager context path. It excludes full renderer/provider replacement, external
+signer/provider authority, hostile same-user filesystem isolation, and
+multi-process CAS/custody.
+
+Wave 26 completion gate:
+
+```text
+Direct can boot a World Manager from a world-level graph projection and a
+Project Manager from a deeper project projection; interpret a project idea
+received by either surface against the same canonical project state; preserve
+the originating transcript as inspectable evidence; admit, defer, reject, or
+remand one typed semantic delta at the correct path; propagate relevant
+world/project/WorkThread changes through revisioned packets; admit work-derived
+project memory; and resolve an effective project execution profile without
+replaying historical chat, widening authority, or exposing unrelated memory.
+```
+
 
 ## Update Rules
 

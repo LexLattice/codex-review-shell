@@ -92,6 +92,7 @@ function createCodexSurfaceConnectionAuthority(project, session, options = {}) {
     binaryPath: cleanString(session?.binaryPath, ""),
     provider: session?.provider || null,
     capabilities: session?.capabilities || null,
+    projectProfileConfiguration: session?.projectProfileConfiguration || null,
     activationEpoch: Number(options.activationEpoch) || 0,
     remoteAuth: project?.surfaceBinding?.codex?.remoteAuth || { mode: "none" },
   };

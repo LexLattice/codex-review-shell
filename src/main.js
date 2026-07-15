@@ -572,6 +572,7 @@ function defaultConfig() {
             binaryPath: "codex",
             model: "",
             reasoningEffort: "",
+            spawnAgentModelOverrides: false,
             label: "Managed Codex lane",
             provider: {
               kind: "codex_executable",
@@ -697,7 +698,7 @@ function normalizeDownloadMacroConfig(value) {
 
 function normalizeReasoningEffort(value) {
   const candidate = normalizeString(value, "").toLowerCase();
-  return ["none", "minimal", "low", "medium", "high", "xhigh"].includes(candidate) ? candidate : "";
+  return ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(candidate) ? candidate : "";
 }
 
 function normalizeApprovalPolicy(value) {
@@ -1471,6 +1472,7 @@ function normalizeProject(input, index = 0) {
         binaryPath: normalizeString(rawCodex.binaryPath, "codex"),
         model: normalizeString(rawCodex.model, ""),
         reasoningEffort: normalizeReasoningEffort(rawCodex.reasoningEffort),
+        spawnAgentModelOverrides: rawCodex.spawnAgentModelOverrides === true,
         label: normalizeString(rawCodex.label, codexMode === "managed" ? "Managed Codex lane" : "Codex target"),
         provider: normalizeCodexProviderConfig((isPlainObject(rawCodex.provider) ? rawCodex.provider : null) || {
           kind: rawCodex.providerKind,

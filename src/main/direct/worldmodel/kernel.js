@@ -46,6 +46,7 @@ const WORLDMODEL_DIGEST_FIELDS = new Set([
   "unknownDigest",
   "remandDigest",
   "compatibilityDigest",
+  "projectionRefDigest",
 ]);
 
 function validationError(code, detail = "") {
@@ -267,6 +268,39 @@ function directWorldmodelDigest(worldmodel) {
   return worldmodelDigestFor("direct-active-interaction-worldmodel@1", worldmodel);
 }
 
+// ActiveInteractionWorldmodel remains a role/run projection.  This optional
+// witness lets newer callers say exactly which Wave 26 graph revision it was
+// compiled from without changing historical rows or making the graph required.
+function normalizeHierarchicalGraphProjectionRef(input = {}) {
+  const source = isPlainObject(input) ? input : {};
+  const ref = {
+    schema: "direct_hierarchical_worldmodel_projection_ref@1",
+    graphId: normalizeId(source.graphId, "hierarchical_worldmodel_graph"),
+    graphDigest: normalizeString(source.graphDigest, "sha256:unavailable"),
+    scopeKind: normalizeString(source.scopeKind, "user_world"),
+    scopeRevision: integerAtLeast(source.scopeRevision, 0, 0),
+    scopeRevisionDigest: normalizeString(source.scopeRevisionDigest, "sha256:unavailable"),
+  };
+  ref.projectionRefDigest = worldmodelDigestFor("direct-hierarchical-worldmodel-projection-ref@1", ref);
+  return ref;
+}
+
+function validateHierarchicalGraphProjectionRef(ref, label = "hierarchicalGraphProjectionRef") {
+  requirePlainObject(ref, label);
+  if (ref.schema !== "direct_hierarchical_worldmodel_projection_ref@1") {
+    throw validationError("direct_worldmodel_schema_mismatch", label);
+  }
+  requireString(ref.graphId, `${label}.graphId`);
+  requireString(ref.graphDigest, `${label}.graphDigest`);
+  requireString(ref.scopeKind, `${label}.scopeKind`);
+  if (!Number.isInteger(ref.scopeRevision) || ref.scopeRevision < 0) {
+    throw validationError("direct_worldmodel_invalid_revision", `${label}.scopeRevision`);
+  }
+  requireString(ref.scopeRevisionDigest, `${label}.scopeRevisionDigest`);
+  validateComputedDigest(ref, "projectionRefDigest", "direct-hierarchical-worldmodel-projection-ref@1", label);
+  return true;
+}
+
 function buildActiveInteractionWorldmodel(input = {}, options = {}) {
   const source = isPlainObject(input) ? input : {};
   const createdAt = normalizeString(source.createdAt, nowIso(options.now || Date.now));
@@ -299,6 +333,9 @@ function buildActiveInteractionWorldmodel(input = {}, options = {}) {
   if (activeThreadId) worldmodel.activeThreadId = normalizeId(activeThreadId, "direct_thread");
   const previousDigest = normalizeString(source.previousDigest, "");
   if (previousDigest) worldmodel.previousDigest = previousDigest;
+  if (isPlainObject(source.hierarchicalGraphProjectionRef)) {
+    worldmodel.hierarchicalGraphProjectionRef = normalizeHierarchicalGraphProjectionRef(source.hierarchicalGraphProjectionRef);
+  }
   worldmodel.digest = directWorldmodelDigest(worldmodel);
   return worldmodel;
 }
@@ -379,6 +416,9 @@ function validateActiveInteractionWorldmodel(worldmodel, options = {}) {
       throw validationError("direct_worldmodel_invalid_previous_digest", "worldmodel.previousDigest");
     }
   }
+  if (Object.prototype.hasOwnProperty.call(worldmodel, "hierarchicalGraphProjectionRef")) {
+    validateHierarchicalGraphProjectionRef(worldmodel.hierarchicalGraphProjectionRef);
+  }
   if (!Number.isInteger(worldmodel.revision) || worldmodel.revision < 1) {
     throw validationError("direct_worldmodel_invalid_revision", "worldmodel.revision");
   }
@@ -444,12 +484,14 @@ module.exports = {
   buildActiveInteractionWorldmodel,
   buildRevisionCompatibility,
   directWorldmodelDigest,
+  normalizeHierarchicalGraphProjectionRef,
   normalizeLaneSection,
   normalizeOdeuLane,
   normalizeWorldScopeRef,
   normalizeWorldmodelRemand,
   normalizeWorldmodelUnknown,
   validateActiveInteractionWorldmodel,
+  validateHierarchicalGraphProjectionRef,
   validateOdeuLane,
   validateRevisionCompatibility,
   validateSourceRef,

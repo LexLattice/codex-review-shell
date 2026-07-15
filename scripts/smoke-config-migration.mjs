@@ -94,6 +94,29 @@ if (runtimePref?.threadId !== "thread_abc") throw new Error("Codex thread runtim
 if (runtimePref?.model !== "gpt-5.5" || runtimePref?.reasoningEffort !== "xhigh") {
   throw new Error("Codex thread model/reasoning preference was not preserved.");
 }
+if (migrated.projects[0]?.surfaceBinding?.codex?.spawnAgentModelOverrides !== false) {
+  throw new Error("Missing spawn-agent model override intent must normalize to false.");
+}
+const truthyStringConfig = structuredClone(legacyConfig);
+truthyStringConfig.projects[0].surfaceBinding.codex.spawnAgentModelOverrides = "true";
+const normalizedTruthyString = sandbox.normalizeConfig(truthyStringConfig);
+if (normalizedTruthyString.projects[0]?.surfaceBinding?.codex?.spawnAgentModelOverrides !== false) {
+  throw new Error("String-valued spawn-agent model override intent must not become authority.");
+}
+const ultraConfig = structuredClone(legacyConfig);
+ultraConfig.codexThreadRuntimeDefaults.legacy_pref.reasoningEffort = "ultra";
+ultraConfig.projects[0].surfaceBinding.codex.reasoningEffort = "ultra";
+ultraConfig.projects[0].surfaceBinding.codex.spawnAgentModelOverrides = true;
+const normalizedUltra = sandbox.normalizeConfig(ultraConfig);
+if (Object.values(normalizedUltra.codexThreadRuntimeDefaults || {})[0]?.reasoningEffort !== "ultra") {
+  throw new Error("Ultra reasoning effort did not survive thread-preference normalization.");
+}
+if (normalizedUltra.projects[0]?.surfaceBinding?.codex?.reasoningEffort !== "ultra") {
+  throw new Error("Ultra reasoning effort did not survive project-binding normalization.");
+}
+if (normalizedUltra.projects[0]?.surfaceBinding?.codex?.spawnAgentModelOverrides !== true) {
+  throw new Error("Project-scoped spawn-agent model override intent did not survive normalization.");
+}
 const fallbackRuntimePref = sandbox.findCodexThreadRuntimePreference(migrated.codexThreadRuntimeDefaults, {
   projectId: "project_legacy",
   threadId: "thread_abc",

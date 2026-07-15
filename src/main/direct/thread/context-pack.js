@@ -18,6 +18,9 @@ const {
 const {
   adaptAgentContextSourcesForContextPack,
 } = require("../bridge/agent-context-source-refs");
+const {
+  consumeManagerGraphContextForDirectContext,
+} = require("../worldmodel/manager-context-runtime");
 
 const CONTEXT_RECENT_DIALOGUE_PROJECTION_KIND = "context_recent_dialogue";
 const CONTEXT_RECENT_DIALOGUE_PROJECTION_VERSION = "context_recent_dialogue@1";
@@ -769,6 +772,7 @@ function buildContextPack({
   bridgeInformationRefs = [],
   agentContextSourceRefs = [],
   agentMemoryContextProjection = null,
+  managerGraphContextRuntime = null,
   nowMs = Date.now(),
 } = {}) {
   const safeProjectId = normalizeString(projectId, "");
@@ -852,6 +856,39 @@ function buildContextPack({
       appPrivate: true,
     },
   ];
+  const managerGraphContextReadback = consumeManagerGraphContextForDirectContext({
+    managerGraphContextRuntime,
+    projectId: safeProjectId,
+    threadId: safeThreadId,
+    turnId: safeTurnId,
+  });
+  if (managerGraphContextReadback.active) {
+    sourceArtifacts.push({ artifactKind: "manager_graph_odeu_compilation", artifactId: managerGraphContextReadback.compilationRef.id, artifactDigest: managerGraphContextReadback.compilationRef.digest, appPrivate: true });
+    sourceArtifacts.push({ artifactKind: "manager_graph_store_admission", artifactId: managerGraphContextReadback.storeAdmissionRef.id, artifactDigest: managerGraphContextReadback.storeAdmissionRef.digest, appPrivate: true });
+    // This is the bounded semantic graph material that reaches the same
+    // provider-input path as the rest of this context pack.  It is not a
+    // capability grant: every line has a compilation/readback source ref and
+    // comes from the pinned graph provider, never from the request.
+    const graphContextText = managerGraphContextReadback.odeuEntries
+      .map((entry) => `[${entry.laneKey}] ${entry.statement} (${entry.sourceRef.sourceId}@${entry.sourceRef.sourceDigest})`)
+      .join("\n");
+    if (blockingRawExposureFindings(graphContextText).length) {
+      const error = new Error("Direct manager graph context failed context redaction.");
+      error.code = "manager_graph_context_redaction_failed";
+      throw error;
+    }
+    messages.push({
+      role: "harness",
+      authority: "governed-manager-graph-context",
+      quotedEvidence: true,
+      text: `[GOVERNED MANAGER GRAPH CONTEXT]\n${graphContextText}`,
+      textHash: sha256(`[GOVERNED MANAGER GRAPH CONTEXT]\n${graphContextText}`),
+      compilationRef: managerGraphContextReadback.compilationRef,
+      bootPacketRef: managerGraphContextReadback.bootPacketRef,
+      rawTextIncluded: false,
+      grantsAuthority: false,
+    });
+  }
   const omittedCounts = {};
   validateGovernanceRequestRefs(governanceRefs || {});
   validateMaintenanceRefs(maintenanceRefs || {});
@@ -1098,6 +1135,7 @@ function buildContextPack({
     workThreadBindingDigest: effectiveWorkThreadBinding?.bindingDigest || "",
     governanceRefsDigest: governanceRefs?.refsDigest || "",
     maintenanceRefsDigest: maintenanceRefs?.refsDigest || "",
+    managerGraphCompilationDigest: managerGraphContextReadback.compilationRef?.digest || "",
     sourceArtifactKinds: sourceArtifacts.map((artifact) => artifact.artifactKind),
     messageAuthorities: messages.map((message) => message.authority),
     caps: contextCaps(),
@@ -1146,6 +1184,7 @@ function buildContextPack({
     workThreadId: effectiveWorkThreadBinding?.workThreadId || "",
     governanceRefs: isPlainObject(governanceRefs) ? governanceRefs : null,
     maintenanceRefs: isPlainObject(maintenanceRefs) ? maintenanceRefs : null,
+    managerGraphContextReadback,
     caps: {
       ...contextCaps(),
       charCount: totalChars,

@@ -21,9 +21,18 @@ const {
   validateWorldmodelManagerProfile,
 } = require("./manager");
 const {
+  validateProjectManagerProfile,
+  validateProjectManagerContextualAdmission,
+  validateHistoricalWorldManagerThreadParentAdapter,
+} = require("./project-manager");
+const {
   buildEnvironmentExecutionProjection,
   validateEnvironmentExecutionProjection,
 } = require("./environment-topology");
+const {
+  buildGraphOdeuCompilation,
+  validateGraphOdeuCompilation,
+} = require("./manager-turn-context");
 
 const THREAD_MANAGER_PROFILE_SCHEMA = "thread_manager_profile@1";
 const WORK_THREAD_DELEGATION_PACKET_SCHEMA = "work_thread_delegation_packet@1";
@@ -37,7 +46,9 @@ const SHADOW_CONTEXT_PACK_INTEGRATION_SCHEMA = "shadow_context_pack_integration@
 
 const THREAD_MANAGER_LIFECYCLE_STATES = Object.freeze(["active", "idle", "disabled", "unknown"]);
 const DELEGATION_STATUSES = Object.freeze(["ready_for_thread_manager", "blocked", "diagnostic_only"]);
+const DELEGATION_POSTURES = Object.freeze(["wave26_contextually_admitted", "legacy_non_wave26_ref_only"]);
 const BOOT_PACKET_STATUSES = Object.freeze(["ready_for_worker_boot", "blocked", "diagnostic_only"]);
+const BOOT_CONTEXT_POSTURES = Object.freeze(["wave26_graph_derived", "legacy_non_wave26_odeu"]);
 const OMISSION_REASONS = Object.freeze([
   "irrelevant_to_role_lane",
   "sensitive_governance_detail",
@@ -175,6 +186,19 @@ function managerProfileRef(managerProfile) {
   };
 }
 
+function projectManagerProfileRef(projectManagerProfile) {
+  const source = isPlainObject(projectManagerProfile) ? projectManagerProfile : {};
+  return {
+    kind: "project_manager_profile",
+    id: normalizeString(source.projectManagerProfileId || source.id, ""),
+    digest: normalizeString(source.profileDigest || source.digest, ""),
+    label: normalizeString(source.label, "Project Manager profile"),
+    rawTextIncluded: false,
+    rawPathIncluded: false,
+    rawSecretIncluded: false,
+  };
+}
+
 function normalizeLaneKeys(value, fallback = ["task", "environment", "modelSelf", "governance"]) {
   const lanes = (Array.isArray(value) ? value : fallback)
     .map((lane) => normalizeString(lane, ""))
@@ -192,23 +216,58 @@ function normalizeSectionKeys(value, fallback = ["O", "E", "D", "U"]) {
 function buildThreadManagerProfile(input = {}, options = {}) {
   const source = isPlainObject(input) ? input : {};
   const managerProfile = source.managerProfile;
+  const projectManagerProfile = source.projectManagerProfile;
+  const legacyAdapter = source.legacyWorldManagerParentAdapter;
   if (managerProfile) validateWorldmodelManagerProfile(managerProfile);
+  if (projectManagerProfile) validateProjectManagerProfile(projectManagerProfile);
+  if (legacyAdapter) validateHistoricalWorldManagerThreadParentAdapter(legacyAdapter);
+  if (managerProfile && projectManagerProfile) {
+    throw validationError("direct_thread_manager_ambiguous_parent_manager", "threadManagerProfile");
+  }
+  const parentIsProjectManager = Boolean(projectManagerProfile || source.parentManagerRole === "project_manager" || source.projectManagerProfileRef);
+  const explicitProjectRef = source.projectManagerProfileRef || source.parentManagerProfileRef;
+  const explicitLegacyRef = source.managerProfileRef || source.legacyWorldManagerProfileRef || legacyAdapter?.historicalWorldManagerProfileRef;
+  if (!projectManagerProfile && !managerProfile && !explicitProjectRef && !explicitLegacyRef) {
+    throw validationError("direct_thread_manager_missing_explicit_parent_manager", "threadManagerProfile");
+  }
+  if (parentIsProjectManager && !projectManagerProfile && !explicitProjectRef) {
+    throw validationError("direct_thread_manager_missing_project_parent", "threadManagerProfile");
+  }
+  const parentRef = parentIsProjectManager
+    ? projectManagerProfileRef(projectManagerProfile || explicitProjectRef)
+    : managerProfileRef(managerProfile || explicitLegacyRef);
+  const projectId = normalizeString(source.projectId || projectManagerProfile?.projectId || managerProfile?.scope?.projectId || source.parentManagerProjectId || source.projectManagerProjectId || (!parentIsProjectManager && parentRef.id ? "project_historical_compatibility" : ""), "");
+  const parentManagerProjectId = normalizeString(source.parentManagerProjectId || projectManagerProfile?.projectId || managerProfile?.scope?.projectId || source.projectManagerProjectId || projectId, "");
+  if (!projectId || !parentManagerProjectId || projectId !== parentManagerProjectId || (projectManagerProfile && projectManagerProfile.projectId !== projectId)) {
+    throw validationError("direct_thread_manager_project_identity_mismatch", "threadManagerProfile");
+  }
+  const parentManagerProfileId = normalizeString(source.parentManagerProfileId || (parentIsProjectManager ? projectManagerProfile?.projectManagerProfileId : managerProfile?.managerProfileId) || parentRef.id, "");
+  const parentManagerAgentId = normalizeString(source.parentManagerAgentId || (parentIsProjectManager ? projectManagerProfile?.projectManagerAgentId : managerProfile?.managerAgentId) || (!parentIsProjectManager && parentRef.id ? "agent_historical_world_manager_compatibility" : ""), "");
+  if (!parentManagerProfileId || !parentManagerAgentId || !parentRef.id || !parentRef.digest) {
+    throw validationError("direct_thread_manager_invalid_explicit_parent_manager", "threadManagerProfile");
+  }
   const createdAt = normalizeString(source.createdAt, nowIso(options.now || Date.now));
   const profile = {
     schema: THREAD_MANAGER_PROFILE_SCHEMA,
     threadManagerProfileId: normalizeId(source.threadManagerProfileId, "thread_manager_profile"),
     threadManagerAgentId: normalizeId(source.threadManagerAgentId, "agent_thread_manager"),
-    parentManagerProfileId: normalizeString(source.parentManagerProfileId || managerProfile?.managerProfileId, ""),
-    parentManagerAgentId: normalizeString(source.parentManagerAgentId || managerProfile?.managerAgentId, ""),
-    scopeKind: normalizeString(source.scopeKind || managerProfile?.scope?.scopeKind, "unknown"),
-    projectId: normalizeString(source.projectId || managerProfile?.scope?.projectId, ""),
+    parentManagerProfileId,
+    parentManagerAgentId,
+    parentManagerProjectId,
+    parentManagerRole: parentIsProjectManager ? "project_manager" : "world_manager",
+    parentRelationship: parentIsProjectManager ? "owning_project_manager" : "historical_direct_world_manager_compatibility",
+    scopeKind: normalizeString(source.scopeKind || (parentIsProjectManager ? "project" : managerProfile?.scope?.scopeKind), "unknown"),
+    projectId,
     workThreadId: normalizeString(source.workThreadId || managerProfile?.scope?.workThreadId, ""),
     lifecycleState: pickEnum(source.lifecycleState, THREAD_MANAGER_LIFECYCLE_STATES, "active"),
     roleKind: "thread_manager",
     canReceiveDelegation: true,
     canBuildWorkerBootPackets: true,
     canExecuteWorkerTasks: false,
-    managerProfileRef: managerProfileRef(managerProfile || source.managerProfileRef),
+    // managerProfileRef remains readable for Wave 23 callers; parentManagerProfileRef
+    // is the role-typed PR 152 relationship used by new profiles.
+    managerProfileRef: parentRef,
+    parentManagerProfileRef: parentRef,
     sourceRefs: normalizeOdeuSourceRefs(source.sourceRefs, options),
     createdAt,
     updatedAt: normalizeString(source.updatedAt, createdAt),
@@ -234,6 +293,31 @@ function validateThreadManagerProfile(profile) {
     throw validationError("direct_thread_manager_boundary_violation", "threadManagerProfile");
   }
   validateRef(profile.managerProfileRef, "threadManagerProfile.managerProfileRef", { requireDigest: false });
+  validateRef(profile.parentManagerProfileRef, "threadManagerProfile.parentManagerProfileRef", { requireDigest: false });
+  requireString(profile.parentManagerProfileId, "threadManagerProfile.parentManagerProfileId");
+  requireString(profile.parentManagerAgentId, "threadManagerProfile.parentManagerAgentId");
+  requireString(profile.projectId, "threadManagerProfile.projectId");
+  if (normalizeString(profile.parentManagerProjectId, "") !== profile.projectId) {
+    throw validationError("direct_thread_manager_project_identity_mismatch", "threadManagerProfile.parentManagerProjectId");
+  }
+  if (!['project_manager', 'world_manager'].includes(profile.parentManagerRole)) {
+    throw validationError("direct_thread_manager_invalid_parent_role", "threadManagerProfile.parentManagerRole");
+  }
+  if (profile.parentManagerRole === "project_manager" && profile.parentRelationship !== "owning_project_manager") {
+    throw validationError("direct_thread_manager_project_parent_relationship_invalid", "threadManagerProfile.parentRelationship");
+  }
+  if (profile.parentManagerRole === "world_manager" && profile.parentRelationship !== "historical_direct_world_manager_compatibility") {
+    throw validationError("direct_thread_manager_world_parent_requires_compatibility", "threadManagerProfile.parentRelationship");
+  }
+  if (profile.parentManagerProfileRef.id !== profile.parentManagerProfileId || profile.managerProfileRef.id !== profile.parentManagerProfileId) {
+    throw validationError("direct_thread_manager_parent_ref_identity_mismatch", "threadManagerProfile.parentManagerProfileRef");
+  }
+  if (profile.parentManagerRole === "project_manager" && profile.parentManagerProfileRef.kind !== "project_manager_profile") {
+    throw validationError("direct_thread_manager_project_parent_ref_kind_mismatch", "threadManagerProfile.parentManagerProfileRef");
+  }
+  if (profile.parentManagerRole === "world_manager" && profile.parentManagerProfileRef.kind !== "worldmodel_manager_profile") {
+    throw validationError("direct_thread_manager_world_parent_ref_kind_mismatch", "threadManagerProfile.parentManagerProfileRef");
+  }
   validateDigest(profile, "profileDigest", "thread-manager-profile@1", "threadManagerProfile");
   return true;
 }
@@ -436,10 +520,47 @@ function roleLaneProjectionFromWorldmodel(worldmodel, laneKeys, sectionKeys) {
 function buildWorkThreadDelegationPacket(input = {}, options = {}) {
   const source = isPlainObject(input) ? input : {};
   const managerProfile = source.managerProfile;
+  const projectManagerProfile = source.projectManagerProfile;
   const threadManagerProfile = source.threadManagerProfile;
   const worldmodel = source.worldmodel;
   if (managerProfile) validateWorldmodelManagerProfile(managerProfile);
+  if (projectManagerProfile) validateProjectManagerProfile(projectManagerProfile);
+  if (managerProfile && projectManagerProfile) {
+    throw validationError("direct_thread_manager_ambiguous_parent_manager", "delegationPacket");
+  }
   if (threadManagerProfile) validateThreadManagerProfile(threadManagerProfile);
+  if (projectManagerProfile) {
+    if (!threadManagerProfile) {
+      throw validationError("direct_thread_manager_missing_project_thread_manager", "delegationPacket");
+    }
+    if (threadManagerProfile.parentManagerRole !== "project_manager"
+      || threadManagerProfile.parentManagerProfileId !== projectManagerProfile.projectManagerProfileId
+      || threadManagerProfile.parentManagerProfileRef.digest !== projectManagerProfile.profileDigest
+      || threadManagerProfile.projectId !== projectManagerProfile.projectId
+      || threadManagerProfile.parentManagerProjectId !== projectManagerProfile.projectId) {
+      throw validationError("direct_thread_manager_project_delegation_parent_mismatch", "delegationPacket");
+    }
+    if (source.legacyNonWave26Delegation !== true) {
+      const admission = source.projectManagerContextualAdmission;
+      const admissionContext = source.projectManagerAdmissionContext;
+      if (!admission || !isPlainObject(admissionContext)) {
+        throw validationError("direct_thread_manager_project_contextual_admission_required", "delegationPacket");
+      }
+      validateProjectManagerContextualAdmission(admission, {
+        ...admissionContext,
+        projectManagerProfile,
+        threadManagerProfile,
+        workThread: source.workThread || admissionContext.workThread,
+      });
+      if (admission.projectManagerProfileRef.id !== projectManagerProfile.projectManagerProfileId
+        || admission.projectManagerProfileRef.digest !== projectManagerProfile.profileDigest
+        || admission.threadManagerProfileRef?.id !== threadManagerProfile.threadManagerProfileId
+        || admission.threadManagerProfileRef?.digest !== threadManagerProfile.profileDigest
+        || admission.workThreadRef?.id !== threadManagerProfile.workThreadId) {
+        throw validationError("direct_thread_manager_project_contextual_admission_mismatch", "delegationPacket");
+      }
+    }
+  }
   validateActiveInteractionWorldmodel(worldmodel);
   const revisionCompatibility = source.revisionCompatibility || buildRevisionCompatibility({
     expectedWorldmodelId: source.expectedWorldmodelId || worldmodel.worldmodelId,
@@ -451,10 +572,17 @@ function buildWorkThreadDelegationPacket(input = {}, options = {}) {
   validateRevisionCompatibility(revisionCompatibility);
   const blockerCodes = [];
   if (revisionCompatibility.requiresRemand) blockerCodes.push("worldmodel_revision_not_current");
+  const targetWorkThreadId = normalizeId(source.targetWorkThreadId || threadManagerProfile?.workThreadId, "work_thread");
+  if (projectManagerProfile && targetWorkThreadId !== threadManagerProfile.workThreadId) {
+    throw validationError("direct_thread_manager_project_delegation_work_thread_mismatch", "delegationPacket");
+  }
+  const wave26ProjectDelegation = Boolean(projectManagerProfile && source.legacyNonWave26Delegation !== true);
   const packet = {
     schema: WORK_THREAD_DELEGATION_PACKET_SCHEMA,
     delegationPacketId: normalizeId(source.delegationPacketId, "work_thread_delegation"),
-    managerProfileRef: managerProfileRef(managerProfile || source.managerProfileRef),
+    managerProfileRef: projectManagerProfile
+      ? projectManagerProfileRef(projectManagerProfile)
+      : managerProfileRef(managerProfile || source.managerProfileRef),
     threadManagerProfileRef: {
       kind: "thread_manager_profile",
       id: normalizeString(threadManagerProfile?.threadManagerProfileId || source.threadManagerProfileId, ""),
@@ -464,16 +592,24 @@ function buildWorkThreadDelegationPacket(input = {}, options = {}) {
       rawPathIncluded: false,
       rawSecretIncluded: false,
     },
+    ...(projectManagerProfile ? {
+      projectId: projectManagerProfile.projectId,
+      threadManagerProjectId: threadManagerProfile.projectId,
+      threadManagerParentRole: threadManagerProfile.parentManagerRole,
+      threadManagerParentProfileRef: threadManagerProfile.parentManagerProfileRef,
+      delegationPosture: wave26ProjectDelegation ? "wave26_contextually_admitted" : "legacy_non_wave26_ref_only",
+      ...(wave26ProjectDelegation ? { projectManagerContextualAdmissionRef: { kind: "project_manager_contextual_admission", id: source.projectManagerContextualAdmission.admissionId, digest: source.projectManagerContextualAdmission.admissionDigest } } : {}),
+    } : {}),
     worldmodelRef: worldmodelRef(worldmodel),
     revisionCompatibility,
-    targetWorkThreadId: normalizeId(source.targetWorkThreadId || threadManagerProfile?.workThreadId, "work_thread"),
+    targetWorkThreadId,
     objectiveSummary: normalizeString(source.objectiveSummary, "Delegate work thread from active worldmodel."),
     roleLane: normalizeString(source.roleLane, "implementation_worker"),
     requestedLaneKeys: normalizeLaneKeys(source.requestedLaneKeys),
     requestedSectionKeys: normalizeSectionKeys(source.requestedSectionKeys),
     capabilityBundleRefs: normalizeRefs(source.capabilityBundleRefs, "capability_bundle"),
     authorizationChannelRefs: normalizeRefs(source.authorizationChannelRefs, "authorization_channel"),
-    status: blockerCodes.length ? "blocked" : pickEnum(source.status, DELEGATION_STATUSES, "ready_for_thread_manager"),
+    status: blockerCodes.length ? "blocked" : projectManagerProfile && !wave26ProjectDelegation ? "diagnostic_only" : pickEnum(source.status, DELEGATION_STATUSES, "ready_for_thread_manager"),
     blockerCodes,
     createdAt: normalizeString(source.createdAt, nowIso(options.now || Date.now)),
     rawTextIncluded: false,
@@ -484,7 +620,7 @@ function buildWorkThreadDelegationPacket(input = {}, options = {}) {
   return packet;
 }
 
-function validateWorkThreadDelegationPacket(packet) {
+function validateWorkThreadDelegationPacket(packet, context = {}) {
   requirePlainObject(packet, "delegationPacket");
   if (packet.schema !== WORK_THREAD_DELEGATION_PACKET_SCHEMA) {
     throw validationError("direct_thread_manager_schema_mismatch", "delegationPacket");
@@ -495,6 +631,64 @@ function validateWorkThreadDelegationPacket(packet) {
   validateRef(packet.worldmodelRef, "delegationPacket.worldmodelRef");
   validateRevisionCompatibility(packet.revisionCompatibility);
   requireString(packet.targetWorkThreadId, "delegationPacket.targetWorkThreadId");
+  if (packet.managerProfileRef.kind === "project_manager_profile") {
+    requireString(packet.projectId, "delegationPacket.projectId");
+    if (packet.threadManagerProjectId !== packet.projectId || packet.threadManagerParentRole !== "project_manager") {
+      throw validationError("direct_thread_manager_project_delegation_project_mismatch", "delegationPacket");
+    }
+    validateRef(packet.threadManagerParentProfileRef, "delegationPacket.threadManagerParentProfileRef", { requireDigest: false });
+    if (packet.threadManagerParentProfileRef.id !== packet.managerProfileRef.id
+      || packet.threadManagerParentProfileRef.digest !== packet.managerProfileRef.digest) {
+      throw validationError("direct_thread_manager_project_delegation_parent_mismatch", "delegationPacket");
+    }
+    if (!DELEGATION_POSTURES.includes(packet.delegationPosture)) {
+      throw validationError("direct_thread_manager_project_delegation_posture_invalid", "delegationPacket");
+    }
+    if (packet.delegationPosture === "wave26_contextually_admitted") {
+      validateRef(packet.projectManagerContextualAdmissionRef, "delegationPacket.projectManagerContextualAdmissionRef");
+      if (packet.status === "diagnostic_only") {
+        throw validationError("direct_thread_manager_project_contextual_admission_mismatch", "delegationPacket");
+      }
+      // A delegation reference is transport evidence, never the operational
+      // admission.  Consumption must bring the complete exact body set back to
+      // the anchored store and contextual validator.
+      const admission = context.projectManagerContextualAdmission;
+      if (!admission || !isPlainObject(context.projectManagerAdmissionContext)) {
+        throw validationError("direct_thread_manager_project_operational_context_required", "delegationPacket");
+      }
+      const admissionContext = context.projectManagerAdmissionContext;
+      const projectManagerProfile = admissionContext.projectManagerProfile;
+      const threadManagerProfile = admissionContext.threadManagerProfile;
+      const workThread = admissionContext.workThread;
+      if (!projectManagerProfile || !threadManagerProfile || !workThread
+        || packet.managerProfileRef.id !== projectManagerProfile.projectManagerProfileId
+        || packet.managerProfileRef.digest !== projectManagerProfile.profileDigest
+        || packet.threadManagerProfileRef.id !== threadManagerProfile.threadManagerProfileId
+        || packet.threadManagerProfileRef.digest !== threadManagerProfile.profileDigest
+        || packet.projectId !== projectManagerProfile.projectId
+        || packet.targetWorkThreadId !== workThread.workThreadId) {
+        throw validationError("direct_thread_manager_project_operational_context_mismatch", "delegationPacket");
+      }
+      validateProjectManagerContextualAdmission(admission, {
+        ...admissionContext,
+        projectManagerProfile,
+        threadManagerProfile,
+        workThread,
+      });
+      if (packet.projectManagerContextualAdmissionRef.id !== admission.admissionId
+        || packet.projectManagerContextualAdmissionRef.digest !== admission.admissionDigest
+        || admission.projectManagerProfileRef.id !== packet.managerProfileRef.id
+        || admission.projectManagerProfileRef.digest !== packet.managerProfileRef.digest
+        || admission.threadManagerProfileRef?.id !== packet.threadManagerProfileRef.id
+        || admission.threadManagerProfileRef?.digest !== packet.threadManagerProfileRef.digest
+        || admission.workThreadRef?.id !== packet.targetWorkThreadId
+        || admission.workThreadRef?.digest !== workThread.digest) {
+        throw validationError("direct_thread_manager_project_contextual_admission_mismatch", "delegationPacket");
+      }
+    } else if (packet.projectManagerContextualAdmissionRef || packet.status === "ready_for_thread_manager") {
+      throw validationError("direct_thread_manager_legacy_project_delegation_not_operational", "delegationPacket");
+    }
+  }
   requireArray(packet.requestedLaneKeys, "delegationPacket.requestedLaneKeys");
   requireArray(packet.requestedSectionKeys, "delegationPacket.requestedSectionKeys");
   requireArray(packet.capabilityBundleRefs, "delegationPacket.capabilityBundleRefs");
@@ -567,11 +761,14 @@ function omittedSectionsFor(worldmodel, laneKeys, sectionKeys) {
   return omissions;
 }
 
-function buildWorkerBootPacket(input = {}, options = {}) {
+function buildWorkerBootPacketInternal(input = {}, options = {}, posture = "wave26_graph_derived") {
   const source = isPlainObject(input) ? input : {};
   const delegationPacket = source.delegationPacket;
   const worldmodel = source.worldmodel;
-  validateWorkThreadDelegationPacket(delegationPacket);
+  validateWorkThreadDelegationPacket(delegationPacket, {
+    projectManagerContextualAdmission: source.projectManagerContextualAdmission,
+    projectManagerAdmissionContext: source.projectManagerAdmissionContext,
+  });
   validateActiveInteractionWorldmodel(worldmodel);
   const currentWorldmodelRef = worldmodelRef(worldmodel);
   if (
@@ -617,6 +814,12 @@ function buildWorkerBootPacket(input = {}, options = {}) {
     environmentBlockerCodes.push("environment_topology_requires_remand");
   }
   const bootOmissions = omittedSectionsFor(worldmodel, laneKeys, sectionKeys);
+  const graphOdeuCompilation = posture === "wave26_graph_derived" ? source.graphContext?.compilation : null;
+  if (posture === "wave26_graph_derived") {
+    if (!graphOdeuCompilation) throw validationError("direct_thread_manager_wave26_graph_context_required", "workerBootPacket.graphContext");
+    validateGraphOdeuCompilation(graphOdeuCompilation);
+    if (graphOdeuCompilation.activeInteractionWorldmodel.worldmodelId !== worldmodel.worldmodelId || graphOdeuCompilation.activeInteractionWorldmodel.digest !== worldmodel.digest) throw validationError("direct_thread_manager_wave26_compilation_worldmodel_mismatch", "workerBootPacket.graphContext.compilation");
+  }
   const staleWarnings = staleWarningsFor(worldmodel, delegationPacket.revisionCompatibility);
   const blockerCodes = [
     ...(Array.isArray(delegationPacket.blockerCodes) ? delegationPacket.blockerCodes : []),
@@ -638,7 +841,9 @@ function buildWorkerBootPacket(input = {}, options = {}) {
     targetWorkThreadId: delegationPacket.targetWorkThreadId,
     roleLane: delegationPacket.roleLane,
     objectiveSummary: delegationPacket.objectiveSummary,
+    contextPosture: posture,
     roleLaneProjection: roleLaneProjectionFromWorldmodel(worldmodel, laneKeys, sectionKeys),
+    ...(graphOdeuCompilation ? { graphOdeuCompilation } : {}),
     includedLaneKeys: laneKeys,
     includedSectionKeys: sectionKeys,
     bootOmissions,
@@ -679,6 +884,19 @@ function buildWorkerBootPacket(input = {}, options = {}) {
   return packet;
 }
 
+// Wave 26 boots are graph-derived only.  The legacy constructor remains
+// deliberately separate so an ODEU-only packet cannot be relabeled as a
+// graph-derived/Wave26 admission artifact.
+function buildWorkerBootPacket(input = {}, options = {}) {
+  return buildWorkerBootPacketInternal(input, options, "wave26_graph_derived");
+}
+
+function buildLegacyWorkerBootPacket(input = {}, options = {}) {
+  const source = isPlainObject(input) ? input : {};
+  if (source.graphContext || source.graphOdeuCompilation) throw validationError("direct_thread_manager_legacy_graph_claim_forbidden", "legacyWorkerBootPacket");
+  return buildWorkerBootPacketInternal(source, options, "legacy_non_wave26_odeu");
+}
+
 function validateWorkerBootPacket(packet) {
   requirePlainObject(packet, "workerBootPacket");
   if (packet.schema !== WORKER_BOOT_PACKET_SCHEMA) {
@@ -693,12 +911,22 @@ function validateWorkerBootPacket(packet) {
   requireArray(packet.staleWarnings, "workerBootPacket.staleWarnings");
   requireArray(packet.capabilityBundleRefs, "workerBootPacket.capabilityBundleRefs");
   requireArray(packet.authorizationChannelRefs, "workerBootPacket.authorizationChannelRefs");
+  if (!BOOT_CONTEXT_POSTURES.includes(packet.contextPosture)) {
+    throw validationError("direct_thread_manager_invalid_boot_context_posture", "workerBootPacket.contextPosture");
+  }
   packet.bootOmissions.forEach((omission) => validateBootPacketOmission(omission));
   packet.staleWarnings.forEach((warning) => validateBootPacketStaleWarning(warning));
   packet.capabilityBundleRefs.forEach((ref, index) => validateRef(ref, `workerBootPacket.capabilityBundleRefs.${index}`, { requireDigest: false }));
   packet.authorizationChannelRefs.forEach((ref, index) => validateRef(ref, `workerBootPacket.authorizationChannelRefs.${index}`, { requireDigest: false }));
   validateAuthorityBoundary(packet.authorityBoundary);
   validateAuthorityBoundaryComparisonWitness(packet.authorityComparison);
+  if (packet.contextPosture === "wave26_graph_derived") {
+    if (!packet.graphOdeuCompilation) throw validationError("direct_thread_manager_wave26_graph_context_required", "workerBootPacket.graphOdeuCompilation");
+    validateGraphOdeuCompilation(packet.graphOdeuCompilation);
+    if (packet.graphOdeuCompilation.activeInteractionWorldmodel.worldmodelId !== packet.worldmodelRef.id || packet.graphOdeuCompilation.activeInteractionWorldmodel.digest !== packet.worldmodelRef.digest) throw validationError("direct_thread_manager_wave26_compilation_worldmodel_mismatch", "workerBootPacket.graphOdeuCompilation");
+  } else if (packet.graphOdeuCompilation) {
+    throw validationError("direct_thread_manager_legacy_graph_claim_forbidden", "workerBootPacket.graphOdeuCompilation");
+  }
   if (packet.environmentExecutionProjection) {
     validateEnvironmentExecutionProjection(packet.environmentExecutionProjection);
   }
@@ -803,6 +1031,7 @@ module.exports = {
   buildShadowContextPackIntegration,
   buildThreadManagerProfile,
   buildWorkThreadDelegationPacket,
+  buildLegacyWorkerBootPacket,
   buildWorkerBootPacket,
   compareAuthorityBoundaries,
   validateAuthorityBoundary,

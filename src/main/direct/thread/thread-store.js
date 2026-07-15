@@ -3518,6 +3518,7 @@ class DirectThreadStore {
       governanceRefs: input.governanceRefs,
       maintenanceRefs: input.maintenanceRefs,
       maintenanceArtifacts: input.maintenanceArtifacts,
+      managerGraphContextRuntime: input.managerGraphContextRuntime,
       ...workThreadContextCarrier(input),
       nowMs: options.nowMs,
     });

@@ -11,7 +11,7 @@ const {
   buildThreadManagerProfile,
   buildWave23WorldmodelAuthorizationGameSuite,
   buildWorkThreadDelegationPacket,
-  buildWorkerBootPacket,
+  buildLegacyWorkerBootPacket,
   buildWorldmodelManagerProfile,
   runWave23WorldmodelAuthorizationGameSuite,
   validateResidentToolCatalogAuthorizationOverlay,
@@ -74,7 +74,7 @@ const delegation = buildWorkThreadDelegationPacket({
 }, { now });
 validateWorkThreadDelegationPacket(delegation);
 
-const bootPacket = buildWorkerBootPacket({
+const bootPacket = buildLegacyWorkerBootPacket({
   bootPacketId: "worker_boot_packet_tool_catalog_fixture",
   delegationPacket: delegation,
   worldmodel,
@@ -171,7 +171,7 @@ const staleDelegation = buildWorkThreadDelegationPacket({
   roleLane: "implementation_worker",
 }, { now });
 validateWorkThreadDelegationPacket(staleDelegation);
-const staleBootPacket = buildWorkerBootPacket({
+const staleBootPacket = buildLegacyWorkerBootPacket({
   bootPacketId: "worker_boot_packet_tool_catalog_stale_fixture",
   delegationPacket: staleDelegation,
   worldmodel,
