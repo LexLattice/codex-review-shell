@@ -1,0 +1,136 @@
+# Upstream Codex Baseline Maintenance
+
+Purpose: keep three different bodies of implementation truth comparable without
+collapsing them into one moving branch.
+
+```text
+current official vanilla release
+  -> exact-tag inspection baseline
+
+our Codex fork main
+  -> fork-only module lineage and integration experiment
+
+Direct review shell
+  -> current direct-native ODEU implementation
+```
+
+## Repositories And Branch Roles
+
+| World | Location | Canonical ref | Role |
+| --- | --- | --- | --- |
+| Vanilla release evidence | `/home/rose/work/codex/fork` | local `upstream-latest-release` | Exact pointer to the latest official stable `openai/codex` tag. It is an inspection baseline, not a development branch. |
+| Fork implementation | `/home/rose/work/codex/fork` | `origin/main` | Current shared fork lineage containing our custom Codex modules. Audit this ref even when local `main` is behind. |
+| Direct implementation | `/home/rose/work/LexLattice/codex-review-shell-direct` | active Direct branch | Current direct-native harness and its executable information registry. |
+
+`upstream-latest-release` is advanced to the exact official stable tag. It is
+not merged with fork `main`, and updating it does not claim that fork `main` or
+Direct acquired any upstream capability.
+
+The fork remote protects `upstream-latest-release` as a read-only inspection
+branch. The local pointer is therefore the operative baseline unless remote
+policy changes.
+
+## Operational Pre-Release Overlay
+
+A pinned pre-release binary may be used for a bounded runtime experiment
+without redefining the stable inspection baseline:
+
+```text
+upstream-latest-release
+  -> latest official stable source/tag truth
+
+pinned alpha CLI
+  -> explicitly scoped operational capability overlay
+  -> not merged into the stable baseline branch
+```
+
+The current overlay is WSL npm-global `@openai/codex@0.145.0-alpha.11`, used by
+the Review Shell managed app-server route to exercise the provider-compatible
+V2 model/effort split from commits `ea15456284` and `92938d880e`. It does not
+change the stable `rust-v0.144.4` source baseline, fork `origin/main`, Windows
+PATH Codex, or the vanilla desktop's bundled WSL binary.
+
+Every overlay must record its exact version, scope, required feature flags,
+runtime/provider witness, rollback command, and which stable source claims
+remain unchanged. Moving npm tags such as `alpha` are discovery inputs, not
+reproducible runtime identities.
+
+## Update Procedure
+
+For every stable upstream refresh:
+
+1. Fetch official upstream tags and the fork remote.
+2. Verify the latest stable release from the official GitHub release record;
+   do not select an alpha/pre-release as the stable baseline.
+3. Advance local `upstream-latest-release` to that exact tag.
+4. Compare the prior official tag with the new tag at the provider/API, Codex
+   core, app-server protocol, persistence, tool, environment, and multi-agent
+   boundaries.
+5. Update:
+   - `OAI_CODEX_UPSTREAM_ODEU_PROFILE.md` for provider/backend primitives and
+     Codex-core implementation choices;
+   - `CODEX_APP_SERVER_ONTOLOGY.md` for app-server methods, items,
+     notifications, persistence, and compatibility rules;
+   - a dated `docs/audits/UPSTREAM_CODEX_RELEASE_*_IMPACT_*.md` evidence record.
+6. Separately compare fork `origin/main` with the new vanilla tag. Group the
+   differences by conceptual module rather than by changed file or commit.
+7. For every fork-only concept, inspect the Direct source and executable
+   registry and record both current coverage and the conceptual disposition.
+
+## Required Comparison Matrix
+
+Every fork audit must distinguish:
+
+| Dimension | Values |
+| --- | --- |
+| Vanilla coverage | `none`, `adjacent`, `partial`, `substantive`, `supersedes` |
+| Direct coverage | `none`, `modeled`, `partial`, `implemented`, `live-proven` |
+| Conceptual disposition | `retire fork delta`, `retain fork delta`, `adopt vanilla adapter`, `finish Direct implementation`, `reframe`, `defer` |
+
+The judgment is semantic, not nominal. Two modules with similar names are not
+equivalent unless they preserve the same objects, evidence states, transition
+laws, authority boundary, and utility role.
+
+## Maintenance Laws
+
+```text
+upstream source existence != provider capability
+upstream implementation != fork integration
+fork implementation != Direct implementation
+modeled Direct row != promoted/live Direct capability
+similar UI behavior != equivalent transition law
+new vanilla coverage may retire code without retiring the concept
+```
+
+In particular:
+
+- Backend/provider primitives require served descriptors or safe runtime
+  evidence before Direct enables them.
+- Codex core `WorldState`, tool routing, compaction, and collaboration are
+  vanilla implementation evidence, not OAI backend law.
+- App-server methods remain compatibility-surface evidence. Direct may expose
+  the same semantic capability through a different contract.
+- A fork module should be retired only when vanilla covers its actual invariant,
+  not merely because vanilla gained a nearby feature.
+- A concept can remain valuable while its old fork implementation becomes too
+  expensive to rebase; Direct may be the correct future home.
+
+## Current Baseline
+
+As of 2026-07-14:
+
+- official stable tag: `rust-v0.144.4`;
+- official tag commit: `8c68d4c87dc5`;
+- prior inspected stable tag: `rust-v0.142.3`;
+- fork audit ref: `origin/main` at `0126a822fbab`;
+- Direct audit branch: `codex/direct-chatgpt-harness`.
+- bounded runtime overlay: WSL `@openai/codex@0.145.0-alpha.11` for the Review
+  Shell orchestration profile only.
+
+The dated impact audit is the evidence-bearing snapshot. This document defines
+the standing procedure and should change only when the maintenance architecture
+changes.
+
+Current evidence snapshot:
+
+- [`Upstream Codex Release 144 Impact Audit`](./audits/UPSTREAM_CODEX_RELEASE_144_IMPACT_2026-07-14.md)
