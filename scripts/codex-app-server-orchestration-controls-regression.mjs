@@ -373,6 +373,26 @@ assert.match(
   "managed thread/start must project the project-scoped worker intent",
 );
 assert.match(
+  managedThreadStartSlice,
+  /configuredDeveloperInstructionsForCwd\(cwd\)/,
+  "managed thread/start must read the effective cwd-scoped developer instructions before adding orchestration intent",
+);
+assert.match(
+  managedThreadStartSlice,
+  /configuredInstructions !== null[\s\S]*mergeDeveloperInstructions\([\s\S]*configuredInstructions,[\s\S]*orchestrationInstructions/,
+  "managed thread/start must preserve configured developer instructions and fail closed when they cannot be read",
+);
+assert.match(
+  rendererSource,
+  /rpc\("config\/read", \{[\s\S]*includeLayers: false,[\s\S]*cwd: cwd \|\| null,[\s\S]*response\?\.config\?\.developer_instructions/,
+  "the additive developer-instruction projection must use the effective app-server config for the task cwd",
+);
+assert.match(
+  rendererSource,
+  /developerInstructions replaces the configured value[\s\S]*return null;/,
+  "a failed effective-config read must preserve inherited developer instructions by omitting the override",
+);
+assert.match(
   rendererSource,
   /Prefer fork_turns=\\"none\\", reasoning_effort=\\"low\\", and omit model/,
   "the enabled project profile must make its bounded low-effort worker intent operational",

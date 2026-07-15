@@ -105,6 +105,27 @@ function projectSpawnAgentOrchestrationInstructions() {
   ].join("\n");
 }
 
+function mergeDeveloperInstructions(configuredInstructions, scopedInstructions) {
+  return [configuredInstructions, scopedInstructions]
+    .map((value) => String(value || "").trim())
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+async function configuredDeveloperInstructionsForCwd(cwd) {
+  try {
+    const response = await rpc("config/read", {
+      includeLayers: false,
+      cwd: cwd || null,
+    });
+    return String(response?.config?.developer_instructions || "").trim();
+  } catch (_error) {
+    // developerInstructions replaces the configured value. If the effective
+    // config cannot be read, preserve it by omitting the scoped override.
+    return null;
+  }
+}
+
 const state = {
   threadId: "",
   threadTitle: "",
@@ -7846,7 +7867,15 @@ async function startNewThread() {
     persistExtendedHistory: true,
   };
   const orchestrationInstructions = projectSpawnAgentOrchestrationInstructions();
-  if (orchestrationInstructions) params.developerInstructions = orchestrationInstructions;
+  if (orchestrationInstructions) {
+    const configuredInstructions = await configuredDeveloperInstructionsForCwd(cwd);
+    if (configuredInstructions !== null) {
+      params.developerInstructions = mergeDeveloperInstructions(
+        configuredInstructions,
+        orchestrationInstructions,
+      );
+    }
+  }
   if (reasoningEffort) params.config = { model_reasoning_effort: reasoningEffort };
   if (state.runtimeOverrides.approvalPolicy) params.approvalPolicy = state.runtimeOverrides.approvalPolicy;
   if (state.runtimeOverrides.sandboxMode) params.sandbox = state.runtimeOverrides.sandboxMode;

@@ -345,6 +345,9 @@ function buildRuntimeCapabilityProfile(session) {
       canRead: ready,
       canStartLogin: ready,
     },
+    config: {
+      canRead: ready,
+    },
     configRequirements: {
       canRead: ready,
     },
