@@ -237,6 +237,24 @@ assert(chained.parentWorldmodelId === sourceWorld.worldmodelId, "parent worldmod
 assert(chained.previousDigest === sourceWorld.digest, "previous digest chain missing");
 validateActiveInteractionWorldmodel(chained);
 
+const graphProjected = buildActiveInteractionWorldmodel({
+  ...sourceWorld,
+  worldmodelId: "worldmodel_graph_projected_fixture",
+  hierarchicalGraphProjectionRef: {
+    graphId: "hierarchical_worldmodel_fixture",
+    graphDigest: "sha256:graph_fixture",
+    scopeKind: "project",
+    scopeRevision: 4,
+    scopeRevisionDigest: "sha256:project_revision_fixture",
+  },
+}, { now: () => Date.UTC(2026, 6, 3, 9, 3, 0) });
+validateActiveInteractionWorldmodel(graphProjected);
+assert(graphProjected.hierarchicalGraphProjectionRef.graphId === "hierarchical_worldmodel_fixture", "graph projection witness should round-trip");
+const tamperedGraphProjection = resign(clone(graphProjected));
+tamperedGraphProjection.hierarchicalGraphProjectionRef.graphDigest = "sha256:tampered";
+tamperedGraphProjection.digest = directWorldmodelDigest(tamperedGraphProjection);
+expectThrows(() => validateActiveInteractionWorldmodel(tamperedGraphProjection), "direct_worldmodel_digest_mismatch");
+
 const tampered = {
   ...sourceWorld,
   managerAgentId: "agent_tampered",

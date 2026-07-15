@@ -9,6 +9,7 @@ const {
   adaptAgentContextSourcesForContextPack,
   buildAgentIdentityContextSourceRef,
   buildAgentMemoryContextProjection,
+  buildLegacyNonWave26AgentMemoryContextProjection,
   buildAgentRunContextSourceRef,
   normalizeDirectContextSourceRef,
 } = require("../src/main/direct/bridge/agent-context-source-refs");
@@ -143,7 +144,7 @@ const outOfScope = memoryRow({
   },
 });
 
-const disabledProjection = buildAgentMemoryContextProjection({
+const disabledProjection = buildLegacyNonWave26AgentMemoryContextProjection({
   projectId: "project_alpha",
   agentId: "direct_agent_primary",
   threadId: "thread_1",
@@ -155,7 +156,7 @@ const disabledProjection = buildAgentMemoryContextProjection({
 assert.equal(disabledProjection.selectedCount, 0, "memory rows should not select without explicit selection enablement");
 assert.equal(disabledProjection.omissionCounters.notSelected, 2);
 
-const invalidNumericProjection = buildAgentMemoryContextProjection({
+const invalidNumericProjection = buildLegacyNonWave26AgentMemoryContextProjection({
   projectId: "project_alpha",
   agentId: "direct_agent_primary",
   threadId: "thread_1",
@@ -169,7 +170,7 @@ const invalidNumericProjection = buildAgentMemoryContextProjection({
 assert.equal(invalidNumericProjection.selectedCount, 1, "invalid max should fall back to bounded default");
 assert.equal(invalidNumericProjection.omissionCounters.notEligible, 2, "null and non-row objects should be skipped without crashing");
 
-const projection = buildAgentMemoryContextProjection({
+const projection = buildLegacyNonWave26AgentMemoryContextProjection({
   projectId: "project_alpha",
   agentId: "direct_agent_primary",
   threadId: "thread_1",
@@ -181,6 +182,11 @@ const projection = buildAgentMemoryContextProjection({
   selectionPolicyId: "fixture_manual_memory_projection@1",
   nowMs,
 });
+const legacyBinding = { memoryId: eligiblePreference.memoryId, compatibilityState: "legacy_memory_primary", mayEnterContextThroughLegacyMemoryProjection: true, homeScope: "project", custodianRole: "project_manager", semanticNodeId: "preference_node" };
+const graphPrimaryBinding = { memoryId: eligibleDecision.memoryId, compatibilityState: "graph_primary", mayEnterContextThroughLegacyMemoryProjection: false, homeScope: "project", custodianRole: "project_manager", semanticNodeId: "decision_node" };
+assert.throws(() => buildAgentMemoryContextProjection({ projectId: "project_alpha", agentId: "direct_agent_primary", roleLane: "primary", selectedMemoryIds: [eligiblePreference.memoryId, eligibleDecision.memoryId], memoryRows: [eligiblePreference, eligibleDecision], nowMs }), (error) => error?.code === "direct_memory_authority_runtime_required");
+assert.throws(() => buildAgentMemoryContextProjection({ projectId: "project_alpha", agentId: "direct_agent_primary", roleLane: "primary", selectedMemoryIds: [eligiblePreference.memoryId], memoryRows: [eligiblePreference], memoryAuthorityResolver: () => ({}), nowMs }), (error) => error?.code === "direct_agent_memory_caller_authority_forbidden");
+assert.throws(() => buildLegacyNonWave26AgentMemoryContextProjection({ projectId: "project_alpha", agentId: "direct_agent_primary", roleLane: "primary", selectedMemoryIds: [eligiblePreference.memoryId], memoryRows: [eligiblePreference], wave26GraphContext: true, nowMs }), (error) => error?.code === "direct_agent_memory_legacy_non_wave26_graph_claim_forbidden");
 assert.equal(projection.schema, "direct_agent_memory_context_projection@1");
 assert.equal(projection.selectedCount, 1, "budget should select exactly one eligible memory");
 assert.equal(projection.selectedMemoryRefs[0].contextRole, "preference_hint");

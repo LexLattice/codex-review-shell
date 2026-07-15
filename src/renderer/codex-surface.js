@@ -37,7 +37,7 @@ const USER_MESSAGE_PAGE_SIZE = 10;
 const USER_MESSAGE_PREVIEW_LINES = 10;
 const MAX_COMMAND_OUTPUT_CHARS = 1200;
 const EMPTY_TURN_AUTO_RETRY_LIMIT = 1;
-const DEFAULT_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh"];
+const DEFAULT_REASONING_EFFORTS = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 const APPROVAL_POLICY_OPTIONS = ["", "untrusted", "on-failure", "on-request", "never"];
 const SANDBOX_MODE_OPTIONS = ["", "read-only", "workspace-write", "danger-full-access"];
 const MODEL_LIST_PAGE_LIMIT = 100;
@@ -92,6 +92,17 @@ function localStorageSet(key, value) {
   } catch (_error) {
     // Local storage can be unavailable in hardened or test contexts.
   }
+}
+
+function projectSpawnAgentOrchestrationInstructions() {
+  if (project?.codex?.spawnAgentModelOverrides !== true) return "";
+  return [
+    "Project-scoped orchestration intent:",
+    "- You may use the canonical V2 model/reasoning-effort override fields for bounded specialist workers when parallel delegation materially helps the task.",
+    "- Prefer fork_turns=\"none\", reasoning_effort=\"low\", and omit model for a lower-cost worker unless the user or project profile explicitly requires another active-backend-compatible model.",
+    "- Full-history forks inherit the parent model and effort; do not send model or reasoning_effort overrides with fork_turns=\"all\" or an omitted fork_turns value.",
+    "- This orchestration profile does not broaden worker tool, filesystem, network, or authorization scope.",
+  ].join("\n");
 }
 
 const state = {
@@ -3022,7 +3033,7 @@ function reasoningOptions() {
     ...supportedReasoningOptions()
       .map((effort) => ({
         value: effort,
-        label: `${effort}${effort === modelDefault ? " · model default" : ""}`,
+        label: `${effort}${effort === "ultra" ? " · proactive orchestration" : ""}${effort === modelDefault ? " · model default" : ""}`,
       })),
   ];
 }
@@ -3469,6 +3480,23 @@ function runtimeDrawerSections(c, tab) {
       drawerSection("Turn Operations", Object.entries(caps.turns || {}).map(([key, value]) => [key, value ? "yes" : "no"])),
       drawerSection("Model Scope", Object.entries(caps.model || {}).map(([key, value]) => [key, value ? "yes" : "no"])),
       drawerSection("Reasoning Scope", Object.entries(caps.reasoning || {}).map(([key, value]) => [key, value ? "yes" : "no"])),
+      drawerSection("Orchestration", [
+        ["binary selection", caps.agents?.binarySelection || "unknown"],
+        ["requested contract", caps.agents?.spawnProviderContract || "unknown"],
+        ["contract status", caps.agents?.spawnContractStatus || "unknown"],
+        ["provider acceptance", caps.agents?.spawnProviderAcceptanceStatus || "unknown"],
+        ["profile requested", caps.agents?.projectProfileRequestedStatus || "not requested"],
+        ["profile configured", caps.agents?.projectProfileConfiguredStatus || "not configured"],
+        ["profile provider accepted", caps.agents?.projectProfileProviderAcceptedStatus || "not yet observed"],
+        ["profile runtime verified", caps.agents?.projectProfileRuntimeVerifiedStatus || "not yet observed"],
+        ["profile authority", caps.agents?.projectProfileAuthorityGranted ? "granted" : "not granted"],
+        ["visible spawn inputs", (caps.agents?.spawnVisibleInputFields || []).join(", ") || "none"],
+        ["hidden spawn inputs", (caps.agents?.spawnHiddenInputFields || []).join(", ") || "none"],
+        ["requested runtime selection", caps.agents?.perSpawnRuntimeSelection || "unknown"],
+        ["effective model/effort controls", caps.agents?.effectiveModelVisibleSpawnControls || "unknown"],
+        ["override fork contexts", (caps.agents?.perSpawnOverrideForkTurns || []).join(", ") || "none"],
+        ["full-history override", caps.agents?.fullHistoryOverrideAllowed ? "allowed" : "blocked"],
+      ]),
       drawerSection("Authority", Object.entries(caps.authority || {}).map(([key, value]) => [key, Array.isArray(value) ? value.join(", ") || "none" : value ? "yes" : "no"])),
       drawerSection("Provider Profile", [
         ["kind", caps.provider?.kind || "unknown"],
@@ -7810,13 +7838,16 @@ async function startNewThread() {
   }
   if (isDirectLiveTextSurface()) state.directThreadOpenRequestId += 1;
   const cwd = workspaceRootText();
+  const reasoningEffort = requestedReasoningEffort();
   const params = {
     cwd,
     model: activeModelId() || null,
-    reasoningEffort: requestedReasoningEffort() || null,
     experimentalRawEvents: false,
     persistExtendedHistory: true,
   };
+  const orchestrationInstructions = projectSpawnAgentOrchestrationInstructions();
+  if (orchestrationInstructions) params.developerInstructions = orchestrationInstructions;
+  if (reasoningEffort) params.config = { model_reasoning_effort: reasoningEffort };
   if (state.runtimeOverrides.approvalPolicy) params.approvalPolicy = state.runtimeOverrides.approvalPolicy;
   if (state.runtimeOverrides.sandboxMode) params.sandbox = state.runtimeOverrides.sandboxMode;
   if (state.runtimeOverrides.serviceTier) params.serviceTier = state.runtimeOverrides.serviceTier;
@@ -8364,6 +8395,18 @@ function handleBridgeEvent(event) {
       ...state.usageLedgerStatus,
       ...(event.status || {}),
     };
+    renderRuntimeConstitution();
+    return;
+  }
+  if (event.type === "project-profile-runtime-status") {
+    const agents = connection?.capabilities?.agents;
+    if (agents) {
+      agents.projectProfileRequestedStatus = event.requestedStatus || agents.projectProfileRequestedStatus;
+      agents.projectProfileConfiguredStatus = event.configuredStatus || agents.projectProfileConfiguredStatus;
+      agents.projectProfileProviderAcceptedStatus = event.providerAcceptedStatus || agents.projectProfileProviderAcceptedStatus;
+      agents.projectProfileRuntimeVerifiedStatus = event.runtimeVerifiedStatus || agents.projectProfileRuntimeVerifiedStatus;
+      agents.projectProfileAuthorityGranted = false;
+    }
     renderRuntimeConstitution();
     return;
   }

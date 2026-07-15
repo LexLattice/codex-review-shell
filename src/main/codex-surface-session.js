@@ -9,6 +9,11 @@ const {
   AUTO_UNSUPPORTED_SERVER_REQUEST_METHODS: AUTO_UNSUPPORTED_SERVER_REQUEST_METHOD_LIST,
 } = require("./codex-app-server-protocol");
 const { publicCodexSurfaceConnection } = require("./codex-surface-connection-authority");
+const {
+  buildProjectProfileRuntimeLaunchObservation,
+  prepareProjectProfileLaunchRequest,
+  registerProjectProfileLaunchResponse,
+} = require("./direct/worldmodel/project-profile-app-server-adapter");
 
 const DEFAULT_RPC_REQUEST_TIMEOUT_MS = 60_000;
 const OVERLOAD_RETRY_CODE = -32001;
@@ -236,6 +241,7 @@ class CodexSurfaceSession extends EventEmitter {
     this.connectionId = "";
     this.nextId = 0;
     this.pending = new Map();
+    this.projectProfileLaunchReceipts = new Map();
     this.serverRequests = new Map();
     this.lastError = "";
     this.disposing = false;
@@ -343,6 +349,7 @@ class CodexSurfaceSession extends EventEmitter {
       : null;
     const { chatgptAuthTokensProvider: _chatgptAuthTokensProvider, ...publicConnection } = connection || {};
     this.connectionId = crypto.randomUUID();
+    this.projectProfileLaunchReceipts.clear();
     this.connection = {
       ...publicConnection,
       transport: "websocket",
@@ -383,6 +390,8 @@ class CodexSurfaceSession extends EventEmitter {
               this.usageLedger?.captureClientError?.(pending.method, message.error, message.id).catch(() => {});
               pending.reject(jsonRpcErrorToError(message.error));
             } else {
+              const receipt = registerProjectProfileLaunchResponse(pending.projectProfileLaunchDecision, message.result);
+              if (receipt) this.projectProfileLaunchReceipts.set(receipt.launchDecisionId, receipt);
               this.usageLedger?.captureClientResponse?.(pending.method, message.result, message.id).catch(() => {});
               pending.resolve(message.result);
             }
@@ -435,6 +444,34 @@ class CodexSurfaceSession extends EventEmitter {
       this.resolveServerRequest(params);
     }
     this.usageLedger?.captureNotification?.(method, params || {}).catch(() => {});
+    const profileObservation = buildProjectProfileRuntimeLaunchObservation(
+      this.connection?.projectProfileConfiguration,
+      { method, params },
+      {
+        connectionId: this.connectionId,
+        launchReceipts: this.projectProfileLaunchReceipts,
+      },
+    );
+    if (profileObservation) {
+      const configuration = this.connection.projectProfileConfiguration;
+      const agents = this.connection?.capabilities?.agents;
+      if (agents) {
+        agents.projectProfileProviderAcceptedStatus = profileObservation.providerAcceptedStatus;
+        agents.projectProfileRuntimeVerifiedStatus = profileObservation.runtimeVerifiedStatus;
+      }
+      this.sendEvent({
+        type: "project-profile-runtime-status",
+        projectId: configuration.projectId,
+        resolutionRef: configuration.resolutionRef,
+        requestedStatus: profileObservation.requestedStatus,
+        configuredStatus: profileObservation.configuredStatus,
+        providerAcceptedStatus: profileObservation.providerAcceptedStatus,
+        runtimeVerifiedStatus: profileObservation.runtimeVerifiedStatus,
+        reason: profileObservation.reason,
+        readback: profileObservation.readback,
+        authorityGranted: false,
+      });
+    }
     this.sendEvent({ type: "rpc-notification", method, params: params || {} });
   }
 
@@ -544,6 +581,15 @@ class CodexSurfaceSession extends EventEmitter {
       throw new Error("Codex connection is not open.");
     }
     const id = ++this.nextId;
+    const prepared = prepareProjectProfileLaunchRequest(
+      this.connection?.projectProfileConfiguration,
+      {
+        connectionId: this.connectionId,
+        requestId: String(id),
+        method,
+        params,
+      },
+    );
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         if (!this.pending.has(id)) return;
@@ -552,9 +598,9 @@ class CodexSurfaceSession extends EventEmitter {
         this.sendEvent({ type: "rpc-timeout", id, method, timeoutMs: this.requestTimeoutMs });
         reject(new Error(message));
       }, this.requestTimeoutMs);
-      this.pending.set(id, { resolve, reject, timer, method });
+      this.pending.set(id, { resolve, reject, timer, method, projectProfileLaunchDecision: prepared.launchDecision });
       try {
-        this.socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
+        this.socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params: prepared.params }));
       } catch (error) {
         clearTimeout(timer);
         this.pending.delete(id);
@@ -658,6 +704,7 @@ class CodexSurfaceSession extends EventEmitter {
     this.closeServerRequests(reason);
     await this.usageLedger?.close?.(reason).catch(() => {});
     this.connection = options.keepConnection ? this.connection : null;
+    this.projectProfileLaunchReceipts.clear();
     if (!options.keepConnection) this.connectionId = "";
     if (!options.silent) this.emitStatus("disconnected", { error: options.reason || "" });
   }

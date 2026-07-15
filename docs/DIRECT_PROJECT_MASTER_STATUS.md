@@ -1,8 +1,20 @@
 # Direct Harness Project Master Status
 
+## Wave 26 Local Status (2026-07-15)
+
+Internal slices PR151–PR157 are implemented locally as one fixture/headless
+hierarchical-worldmodel substrate, including compatibility migration games.
+The [final Sol Max acceptance verification](./audits/DIRECT_WAVE26_TERRA_HIGH_VS_INTENT_SOL_MAX_AUDIT_2026-07-15.md#final-acceptance-verification)
+is GREEN for that bounded gate. The executable bridge audit deliberately keeps
+`ic62` as `partial / keep_guarded`; one combined GitHub PR is pending and no
+per-slice GitHub PR is implied. This is not a claim of production manager UI,
+external-provider integration, automatic transcript migration, production
+custody, or new action authority.
+
 Status: canonical human-readable carryover entrypoint for the direct harness.
 
-Last updated: 2026-07-13 after merged internal PR 150 / GitHub PR 288.
+Last updated: 2026-07-15 after local Wave 26 acceptance reconciliation; one
+combined GitHub PR is pending.
 
 Authoritative branch and repository:
 
@@ -120,8 +132,51 @@ backend when the same normalized projection can serve both paths.
 Relevant documents:
 
 - [App-server ontology](./CODEX_APP_SERVER_ONTOLOGY.md)
+- [App-server orchestration controls](./CODEX_APP_SERVER_ORCHESTRATION_CONTROLS_SPEC.md)
 - [Direct app-server replacement boundary](./DIRECT_CODEX_APP_SERVER_REPLACEMENT_SPEC.md)
 - [Direct harness ODEU matrix v0.2](./CODEX_DIRECT_HARNESS_ODEU_MATRIX_v0_2.md)
+
+Current app-server compatibility slice:
+
+```text
+managed app-server launch
+  -> always preserves hide_spawn_agent_metadata=true
+  -> explicitly selects narrow exposure true or false
+
+root effort = ultra
+  -> vanilla proactive orchestration posture
+
+stock 0.144.4 fallback
+  -> task_name, message, fork_turns
+  -> child model/effort provider-managed
+
+active WSL 0.145.0-alpha.11 project profile
+  -> adds canonical model/reasoning_effort fields
+  -> keeps agent_type/service_tier hidden
+  -> none/bounded fork only; active-backend model set
+  -> projects a fresh Low-effort/model-inheriting worker intent into new tasks
+
+worker interaction
+  -> observable through canonical activity/output, not directly user-chatable
+```
+
+This is an app-server-path activation, not a claim that the Direct-native
+worker runtime has reached the same live orchestration behavior. The shared
+shell preserves `max` and `ultra` for the root and observes child runtime
+metadata when reported. It no longer claims per-spawn controls merely because
+the local Rust handler can parse fields that the hosted reserved schema does
+not authorize. The active WSL npm runtime now contains upstream commits
+`ea15456284` and `92938d880e`; a project-scoped control selects that canonical
+split profile without changing the stable source-audit fork or the separate
+Windows/bundled-desktop Codex installations. The enabled profile pins the
+configured WSL command even when a resumed task keeps its desktop source home,
+preventing silent bundled-binary substitution. Both launchers now default WSL
+tasks to the authenticated `/home/rose/.codex` runtime home rather than the
+unauthenticated repo-local home. Configured exposure remains
+distinct from provider-accepted child runtime evidence. A live
+`gpt-5.6-sol`/Ultra app-server smoke accepted the reserved split schema, emitted
+fresh-child activity, and completed its collaboration wait; a canonical child
+runtime profile remains the required witness for effective worker effort.
 
 ## Core ODEU World Model
 
@@ -225,11 +280,11 @@ Relevant documents:
 At this update, the executable registry reports:
 
 ```text
-rows: 104
+rows: 105
 valid: yes
 missing source files: 0
 implemented: 39
-partial: 63
+partial: 64
 inherited: 2
 ```
 
@@ -575,17 +630,24 @@ These are real obligations, not claims of implemented behavior.
 
 ## Known Deferred Account Capability
 
-Upstream Codex 0.141 exposes rate-limit reset-bank evidence and consumption:
+Upstream Codex 0.144 exposes rate-limit reset-bank evidence and consumption:
 
 ```text
-read: account/rateLimits/read -> rateLimitResetCredits.availableCount
-write: account/rateLimitResetCredit/consume -> { idempotencyKey }
+read: account/rateLimits/read
+  -> rateLimitResetCredits.availableCount
+  -> optional credits[] with id, resetType, status, grantedAt, expiresAt,
+     title, and description
+
+write: account/rateLimitResetCredit/consume
+  -> { idempotencyKey, creditId? }
+  -> reset | nothingToReset | noCredit | alreadyRedeemed
 ```
 
 Direct support is deferred. Consumption is an account mutation and requires
 fresh account evidence, explicit operator confirmation, idempotency, a
-post-consumption refetch, and an authority/evidence row. A reliably exposed
-per-credit expiry field was not established.
+post-consumption refetch, and an authority/evidence row. Per-credit expiry is
+now explicitly modeled when the backend serves detail rows; `null` detail still
+means only the aggregate count is known.
 
 ## Documentation Map
 
@@ -635,6 +697,8 @@ per-credit expiry field was not established.
 
 ### Vanilla And Provider Grounding
 
+- [Upstream Baseline Maintenance](./UPSTREAM_CODEX_BASELINE_MAINTENANCE.md)
+- [Upstream Codex Release 144 Impact Audit](./audits/UPSTREAM_CODEX_RELEASE_144_IMPACT_2026-07-14.md)
 - [Codex App-Server Ontology](./CODEX_APP_SERVER_ONTOLOGY.md)
 - [OAI/Codex Upstream ODEU Profile](./OAI_CODEX_UPSTREAM_ODEU_PROFILE.md)
 - [Codex Internal Knobs Map](./CODEX_INTERNAL_KNOBS_ODEU_MAP.md)
@@ -662,12 +726,18 @@ Preserve Agent > AgentRun > WorkThread > Thread/session > Turn identity law,
 ODEU worldmodel/manager boundaries, role-lane tool composition, explicit
 environment topology, and witness-first gating for ordinary safe flows.
 
-Current frontier after merged internal PR 150:
-- Wave 25 resident checkpoint first slice is merged.
-- Checkpoint generation is not yet automatically invoked/admitted.
-- Tiered physical retention/fast-load architecture remains to be specified.
-- Worldmodel Manager daily live workflow and morphic UX rework remain open.
-- Continue using headless games to prove backend semantics before UX promotion.
+Current local frontier after Wave 26 acceptance reconciliation:
+- the hierarchical-worldmodel substrate is accepted for its bounded
+  fixture/headless gate and remains `partial / keep_guarded` in the broader
+  resident-product registry;
+- the accepted manager consumer is the harness-owned headless current-graph
+  path, with explicit reinstall after an authority-head change;
+- full World Manager/Project Manager renderer UX, default production bootstrap,
+  external-provider context replacement, and production/multi-process custody
+  remain open;
+- checkpoint generation is not yet automatically invoked/admitted, and tiered
+  physical retention/fast-load architecture remains to be specified;
+- continue using headless games to prove backend semantics before UX promotion.
 ```
 
 ## Maintenance Rule
@@ -681,3 +751,10 @@ After each implementation PR:
 4. Run `direct:information-bridge-audit` and focused regressions.
 5. Do not copy detailed PR inventories here; link the dedicated spec and keep
    only the durable architectural consequence.
+
+For vanilla release refreshes, follow
+[Upstream Baseline Maintenance](./UPSTREAM_CODEX_BASELINE_MAINTENANCE.md): move
+the local exact-tag inspection pointer, update both upstream ODEU references,
+then separately audit fork `origin/main` and Direct by conceptual module. A
+release-pointer update is never evidence that either implementation acquired a
+capability.

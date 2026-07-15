@@ -19,7 +19,7 @@ if ([string]::IsNullOrWhiteSpace($env:CODEX_REVIEW_SHELL_DEFAULT_HOST_CODEX_HOME
   $env:CODEX_REVIEW_SHELL_DEFAULT_HOST_CODEX_HOME = "$wslPath/.codex-home"
 }
 if ([string]::IsNullOrWhiteSpace($env:CODEX_REVIEW_SHELL_DEFAULT_WSL_CODEX_HOME)) {
-  $env:CODEX_REVIEW_SHELL_DEFAULT_WSL_CODEX_HOME = "$wslPath/.codex-home"
+  $env:CODEX_REVIEW_SHELL_DEFAULT_WSL_CODEX_HOME = "/home/rose/.codex"
 }
 
 $stdoutPath = Join-Path $repoRoot "launcher-wsl-stdout.log"

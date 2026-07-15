@@ -7,6 +7,7 @@ const require = createRequire(import.meta.url);
 
 const {
   buildAgentMemoryContextProjection,
+  buildLegacyNonWave26AgentMemoryContextProjection,
 } = require("../src/main/direct/bridge/agent-context-source-refs");
 const {
   memoryContextEligible,
@@ -20,6 +21,7 @@ const {
   buildMemoryAdmissionTransition,
   buildMemoryCandidateEnvelope,
   buildMemoryRowFromAdmission,
+  runLegacyNonWave26MemoryAdmissionWorkflow,
   runMemoryAdmissionWorkflow,
 } = require("../src/main/direct/bridge/agent-memory-admission-gate");
 
@@ -91,7 +93,22 @@ const nonNumericRevision = buildMemoryCandidateEnvelope(baseCandidate({
 }), { nowMs });
 assert.equal(nonNumericRevision.proposedMemory.revision, 1);
 
-const accepted = runMemoryAdmissionWorkflow({
+assert.throws(() => runMemoryAdmissionWorkflow({
+  candidate,
+  admission: { admissionState: "accepted", decisionSource: "operator_curated" },
+  legacyNonWave26Context: true,
+}, { nowMs }), (error) => error?.code === "direct_agent_memory_wave26_legacy_optout_forbidden");
+assert.throws(() => runMemoryAdmissionWorkflow({
+  candidate,
+  admission: { admissionState: "accepted", decisionSource: "operator_curated" },
+  memoryAuthorityResolver: () => ({}),
+}, { nowMs }), (error) => error?.code === "direct_agent_memory_caller_authority_forbidden");
+assert.throws(() => runMemoryAdmissionWorkflow({
+  candidate,
+  admission: { admissionState: "accepted", decisionSource: "operator_curated" },
+}, { nowMs }), (error) => error?.code === "direct_memory_authority_runtime_required");
+
+const accepted = runLegacyNonWave26MemoryAdmissionWorkflow({
   candidate,
   admission: {
     admissionState: "accepted",
@@ -137,7 +154,7 @@ const noProjectionProof = buildMemoryAdmissionProof({
 assert.equal(noProjectionProof.proofState, "blocked");
 assert.equal(noProjectionProof.blockers.includes("missing_context_projection"), true);
 
-const manualProjection = buildAgentMemoryContextProjection({
+const manualProjection = buildLegacyNonWave26AgentMemoryContextProjection({
   projectId,
   agentId,
   workThreadId,
@@ -148,7 +165,7 @@ const manualProjection = buildAgentMemoryContextProjection({
 }, { projectId, agentId, workThreadId, roleLane, nowMs });
 assert.equal(manualProjection.selectedCount, 1);
 
-const superseding = runMemoryAdmissionWorkflow({
+const superseding = runLegacyNonWave26MemoryAdmissionWorkflow({
   candidate: baseCandidate({
     proposedMemory: {
       ...baseCandidate().proposedMemory,
@@ -170,7 +187,7 @@ assert.equal(superseding.memoryRow.supersedesMemoryId, accepted.memoryRow.memory
 assert.equal(superseding.memoryRow.conflictResolution, "newer_evidence_wins");
 assert.equal(superseding.admissionProof.proofState, "proved");
 
-const rejected = runMemoryAdmissionWorkflow({
+const rejected = runLegacyNonWave26MemoryAdmissionWorkflow({
   candidate: baseCandidate({
     proposedMemory: {
       ...baseCandidate().proposedMemory,
@@ -190,7 +207,7 @@ assert.equal(rejected.memoryRow, null);
 assert.equal(rejected.memoryContextProjection, null);
 assert.equal(rejected.admissionProof.proofState, "blocked");
 
-const review = runMemoryAdmissionWorkflow({
+const review = runLegacyNonWave26MemoryAdmissionWorkflow({
   candidate: baseCandidate({
     proposedMemory: {
       ...baseCandidate().proposedMemory,
@@ -296,7 +313,7 @@ const negativeCases = [
 ];
 
 for (const testCase of negativeCases) {
-  const result = runMemoryAdmissionWorkflow({
+  const result = runLegacyNonWave26MemoryAdmissionWorkflow({
     candidate: baseCandidate({
       ...(testCase.candidate || {}),
       proposedMemory: {
@@ -372,7 +389,7 @@ const missingAgentTransition = buildMemoryAdmissionTransition({
 assert.equal(missingAgentTransition.admissionState, "needs_review");
 assert.equal(missingAgentTransition.blockers.some((blocker) => blocker.kind === "missing_identity_scope"), true);
 
-const rawLeak = runMemoryAdmissionWorkflow({
+const rawLeak = runLegacyNonWave26MemoryAdmissionWorkflow({
   candidate: baseCandidate({
     rawSecretIncluded: true,
     proposedMemory: {

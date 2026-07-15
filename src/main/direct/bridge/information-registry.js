@@ -1878,6 +1878,30 @@ const DIRECT_INFORMATION_BRIDGE_ROWS = Object.freeze([
     bridgeFit: "Adds the PR 120 request-time compiler substrate that binds role lanes to existing AgentClassSpec/route/request evidence and emits a first-class provider bundle, resident capability catalogue, and composition witness.",
     realignment: "This PR 120 slice changes no live provider declaration behavior: missing normalized request grounding blocks declarations in fixtures, declared implementation tools match the existing read/patch/command set, and concrete per-call authority remains separate from declaration eligibility.",
   },
+  {
+    id: "ic62.wave26-hierarchical-worldmodel-fixture-substrate",
+    name: "Wave 26 hierarchical worldmodel compatibility substrate",
+    role: "memory_continuity",
+    implementationState: "partial",
+    directPathPosture: "keep_guarded",
+    sourceFiles: [
+      "src/main/direct/worldmodel/hierarchical-graph.js",
+      "src/main/direct/worldmodel/project-manager.js",
+      "src/main/direct/worldmodel/semantic-ingress.js",
+      "src/main/direct/worldmodel/graph-projection.js",
+      "src/main/direct/worldmodel/project-memory-propagation.js",
+      "src/main/direct/worldmodel/project-profile-resolution.js",
+      "src/main/direct/worldmodel/worldmodel-migration.js",
+      "scripts/direct-worldmodel-migration-games-regression.mjs",
+      "docs/DIRECT_WAVE26_HIERARCHICAL_WORLDMODEL_PROJECT_MANAGER_SPEC.md",
+    ],
+    ontology: ontologyShape(["hierarchical_worldmodel_graph", "project_manager_profile", "worldmodel_delta_candidate", "worldmodel_graph_projection", "scoped_world_memory_binding", "worldmodel_migration_report"], "harness", {
+      identityFields: ["graphId", "projectId", "nodeId", "transitionId", "bindingId", "reportId"],
+      schema: "direct_hierarchical_worldmodel_graph@1",
+    }),
+    bridgeFit: "Local fixture proof covers graph custody, governed ingress, scoped projections, project-memory bindings, profile selection, and additive legacy migration with no transcript replay or authority grant.",
+    realignment: "Fixture-proven local substrate only: no production manager UI, provider/context replacement, automatic historical ingestion, runtime profile observation, or new action authority is claimed; combined Sol Max audit remains pending.",
+  },
 ]);
 
 function isPlainObject(value) {

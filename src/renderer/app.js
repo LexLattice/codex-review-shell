@@ -462,6 +462,8 @@ const els = {
   codexProfileIdInput: document.getElementById("codexProfileIdInput"),
   codexModelInput: document.getElementById("codexModelInput"),
   codexReasoningEffortInput: document.getElementById("codexReasoningEffortInput"),
+  codexSpawnAgentModelOverridesRow: document.getElementById("codexSpawnAgentModelOverridesRow"),
+  codexSpawnAgentModelOverridesInput: document.getElementById("codexSpawnAgentModelOverridesInput"),
   codexTargetInput: document.getElementById("codexTargetInput"),
   projectChatgptThreadSelect: document.getElementById("projectChatgptThreadSelect"),
   projectCodexThreadSelect: document.getElementById("projectCodexThreadSelect"),
@@ -2807,6 +2809,19 @@ function syncProjectRuntimeFieldsFromDefaultPath() {
   const fields = directRuntimeBindingFieldsForPath(els.codexDefaultPathInput.value || "app-server", existing?.surfaceBinding?.codex || null);
   if (els.codexRuntimeModeInput) els.codexRuntimeModeInput.value = fields.runtimeMode;
   if (els.codexDirectTransportInput) els.codexDirectTransportInput.value = fields.directTransport;
+}
+
+function updateCodexSpawnAgentControlAvailability() {
+  const active = els.codexModeInput?.value === "managed"
+    && (els.codexProviderKindInput?.value || "codex_executable") === "codex_executable"
+    && (els.codexRuntimeModeInput?.value || "legacy-app-server") === "legacy-app-server";
+  if (els.codexSpawnAgentModelOverridesInput) els.codexSpawnAgentModelOverridesInput.disabled = !active;
+  if (els.codexSpawnAgentModelOverridesRow) {
+    els.codexSpawnAgentModelOverridesRow.setAttribute("aria-disabled", active ? "false" : "true");
+    els.codexSpawnAgentModelOverridesRow.title = active
+      ? "Project-scoped managed app-server orchestration profile."
+      : "Dormant unless this project uses the managed codex_executable app-server path.";
+  }
 }
 
 function persistedDirectRuntimePath() {
@@ -7658,6 +7673,7 @@ function openDrawer(mode) {
         target: "",
         model: "",
         reasoningEffort: "",
+        spawnAgentModelOverrides: false,
         label: "Managed Codex lane",
       },
       chatgpt: {
@@ -7728,6 +7744,8 @@ function openDrawer(mode) {
   els.codexBinaryPathInput.value = draft.surfaceBinding.codex.binaryPath || "codex";
   els.codexModelInput.value = draft.surfaceBinding.codex.model || "";
   els.codexReasoningEffortInput.value = draft.surfaceBinding.codex.reasoningEffort || "";
+  els.codexSpawnAgentModelOverridesInput.checked = draft.surfaceBinding.codex.spawnAgentModelOverrides === true;
+  updateCodexSpawnAgentControlAvailability();
   els.codexTargetInput.value = draft.surfaceBinding.codex.target;
   els.chatgptUrlInput.value = primary?.url || draft.surfaceBinding.chatgpt.reviewThreadUrl || "https://chatgpt.com/";
   populateProjectThreadSelectors(draft);
@@ -7834,6 +7852,7 @@ function projectFromForm() {
         target: els.codexTargetInput.value.trim(),
         model: els.codexModelInput.value.trim(),
         reasoningEffort: els.codexReasoningEffortInput.value,
+        spawnAgentModelOverrides: els.codexSpawnAgentModelOverridesInput.checked,
         label:
           els.codexLabelInput.value.trim() ||
           (els.codexModeInput.value === "managed" ? "Managed Codex lane" : els.codexModeInput.value === "fallback" ? "Fallback Codex lane" : "Codex target"),
@@ -8692,7 +8711,13 @@ function bindEvents() {
     chooseDirectImportRoot().catch((error) => setLastEvent(`Choose import root failed: ${error.message}`));
   });
   els.workspaceKindInput.addEventListener("change", updateWorkspaceFieldVisibility);
-  els.codexDefaultPathInput?.addEventListener("change", syncProjectRuntimeFieldsFromDefaultPath);
+  els.codexDefaultPathInput?.addEventListener("change", () => {
+    syncProjectRuntimeFieldsFromDefaultPath();
+    updateCodexSpawnAgentControlAvailability();
+  });
+  els.codexModeInput?.addEventListener("change", updateCodexSpawnAgentControlAvailability);
+  els.codexProviderKindInput?.addEventListener("change", updateCodexSpawnAgentControlAvailability);
+  els.codexRuntimeModeInput?.addEventListener("change", updateCodexSpawnAgentControlAvailability);
   els.projectChatgptThreadSelect.addEventListener("change", syncProjectChatgptUrlFromSelection);
   els.addThreadButton.addEventListener("click", () => openThreadDrawer("new"));
   els.threadForm.addEventListener("submit", handleThreadFormSubmit);
