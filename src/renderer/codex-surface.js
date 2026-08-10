@@ -8712,7 +8712,12 @@ async function loadAccountState() {
 
 async function refreshAppEvidence(options = {}) {
   const requestId = ++state.appEvidenceRequestId;
+  const threadId = String(options.threadId || state.threadId || "").trim();
+  if (state.appEvidence?.threadId !== threadId) {
+    state.appEvidence = null;
+  }
   if (DIRECT_TRANSPORTS.has(connection?.transport) || capabilityArea("apps").canReadInstalled !== true) {
+    state.appEvidence = null;
     state.appEvidenceStatus = "unsupported";
     state.appEvidenceError = "Active runtime does not declare app/installed capability.";
     renderRuntimeConstitution();
@@ -8722,10 +8727,9 @@ async function refreshAppEvidence(options = {}) {
   state.appEvidenceError = "";
   renderRuntimeConstitution();
   try {
-    const threadId = String(options.threadId || state.threadId || "").trim();
     const installed = await rpc("app/installed", {
       ...(threadId ? { threadId } : {}),
-      forceRefresh: options.forceRefresh === true,
+      forceRefetch: options.forceRefresh === true,
     });
     if (requestId !== state.appEvidenceRequestId) return null;
     const appIds = (Array.isArray(installed?.apps) ? installed.apps : [])
@@ -8756,6 +8760,7 @@ async function refreshAppEvidence(options = {}) {
     return state.appEvidence;
   } catch (error) {
     if (requestId !== state.appEvidenceRequestId) return null;
+    state.appEvidence = null;
     state.appEvidenceStatus = "failed";
     state.appEvidenceError = String(error?.message || "app/installed failed");
     renderRuntimeConstitution();

@@ -163,8 +163,24 @@ assert(rendererSource.includes('rpc("environment/status", { environmentId })'), 
 assert(rendererSource.includes("environmentStateFromNotification"), "renderer must consume environment lifecycle notifications");
 assert(rendererSource.includes('rpc("app/installed"'), "renderer must read effective installed app state");
 assert(rendererSource.includes('rpc("app/read"'), "renderer must read bounded app metadata");
+assert(
+  rendererSource.includes("forceRefetch: options.forceRefresh === true"),
+  "explicit app evidence refreshes must send the protocol forceRefetch field",
+);
+assert(
+  !rendererSource.includes("forceRefresh: options.forceRefresh === true"),
+  "renderer must not send its internal forceRefresh option as a protocol field",
+);
 assert(rendererSource.includes("includeTools: options.includeTools === true"), "tool summaries must remain opt-in");
 assert(rendererSource.includes("requestId !== state.appEvidenceRequestId"), "stale app reads must not overwrite newer thread evidence");
+assert(
+  rendererSource.includes("state.appEvidence?.threadId !== threadId"),
+  "thread changes must invalidate evidence from the prior thread before refresh",
+);
+assert(
+  rendererSource.includes("if (requestId !== state.appEvidenceRequestId) return null;\n    state.appEvidence = null;\n    state.appEvidenceStatus = \"failed\";"),
+  "failed app evidence refreshes must clear any retained snapshot",
+);
 assert(rendererSource.includes('drawerSection("Installed Application Evidence"'), "capability drawer must render app evidence");
 assert(rendererSource.includes('["action authority", appSnapshot.actionAuthorityGranted ? "granted" : "not granted"]'), "app evidence must visibly deny action authority by default");
 assert(
