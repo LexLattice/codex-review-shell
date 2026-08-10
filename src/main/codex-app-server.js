@@ -345,11 +345,23 @@ function buildRuntimeCapabilityProfile(session) {
       canRead: ready,
       canStartLogin: ready,
     },
+    apps: {
+      canReadInstalled: ready,
+      installedMethod: "app/installed",
+      canReadMetadata: ready,
+      metadataMethod: "app/read",
+      metadataToolSummariesDisplayOnly: true,
+      actionAuthorityGranted: false,
+    },
     config: {
       canRead: ready,
     },
     configRequirements: {
       canRead: ready,
+    },
+    environment: {
+      canReadStatus: ready,
+      statusMethod: "environment/status",
     },
     threads: {
       canStart: ready,

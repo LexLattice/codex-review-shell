@@ -6,7 +6,9 @@
 - [Upstream Codex Baseline Maintenance](./UPSTREAM_CODEX_BASELINE_MAINTENANCE.md) -
   exact-release tracking, fork divergence audit, and Direct comparison method.
 - [Upstream Codex Release 144 Impact Audit](./audits/UPSTREAM_CODEX_RELEASE_144_IMPACT_2026-07-14.md) -
-  current vanilla delta, app-server caveats, and fork/Direct disposition matrix.
+  prior vanilla delta, app-server caveats, and fork/Direct disposition matrix.
+- [Upstream Codex Release 145 Impact Audit](./audits/UPSTREAM_CODEX_RELEASE_145_IMPACT_2026-07-22.md) -
+  stable-145 evidence, app-server implications, and bounded Direct adoption.
 - [Thread Linking Spec](./THREAD_LINKING_SPEC.md)
 - [Thread Analytics Spec](./THREAD_ANALYTICS_SPEC.md)
 - [Codex App-Server Ontology](./CODEX_APP_SERVER_ONTOLOGY.md)
