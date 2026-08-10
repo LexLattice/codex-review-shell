@@ -32,6 +32,7 @@ const bridge = window.codexSurfaceBridge;
 const payload = decodePayload() || {};
 const project = payload.project || null;
 let connection = payload.codexConnection || null;
+const appServerEvidence = window.CodexAppServerEvidence;
 
 const USER_MESSAGE_PAGE_SIZE = 10;
 const USER_MESSAGE_PREVIEW_LINES = 10;
@@ -219,6 +220,13 @@ const state = {
   readyForThreadOpen: false,
   pendingOpenThreadEvent: null,
   threadMeta: null,
+  threadDirectInput: appServerEvidence.normalizeThreadDirectInput({}),
+  environmentRuntimeStatus: appServerEvidence.normalizeEnvironmentState({}),
+  appEvidence: null,
+  appEvidenceStatus: "idle",
+  appEvidenceError: "",
+  appEvidenceRequestId: 0,
+  lastAppServerNotificationEvidence: null,
   agentGraph: null,
   agentGraphRevision: 0,
   agentHydrationRequests: new Map(),
@@ -682,15 +690,24 @@ function setBadge(element, text, className = "") {
 function setNotice() {}
 
 function setComposerEnabled(enabled, placeholder = "") {
-  const nextEnabled = Boolean(enabled);
+  const directInputBlocked = Boolean(enabled) && state.liveAttached && state.threadDirectInput?.allowsMutation === false;
+  const nextEnabled = Boolean(enabled) && !directInputBlocked;
   els.composerInput.disabled = !nextEnabled;
   if (els.sendButton) els.sendButton.disabled = !nextEnabled && !turnIsActive();
   if (nextEnabled) {
     els.composerInput.placeholder = "Ask Codex to inspect, change, or explain the project…";
+  } else if (directInputBlocked) {
+    els.composerInput.placeholder = appServerEvidence.directInputBlockMessage(state.threadDirectInput);
   } else if (placeholder) {
     els.composerInput.placeholder = placeholder;
   }
   renderComposerRuntimeBand();
+}
+
+function assertThreadAcceptsDirectInput() {
+  if (state.liveAttached && state.threadDirectInput?.allowsMutation === false) {
+    throw new Error(appServerEvidence.directInputBlockMessage(state.threadDirectInput));
+  }
 }
 
 function compactValue(value, maxLength = 240) {
@@ -2228,6 +2245,7 @@ function buildRuntimeConstitution() {
       title: state.threadTitle || project?.name || "Codex session",
       source: state.liveAttached ? "attached_live" : state.threadId ? "rendered_stored" : "unknown",
       status: state.liveAttached ? "attached_live" : state.threadId ? "rendered_stored" : "unknown",
+      directInput: state.threadDirectInput,
       evidenceRefs: [threadEvidence],
       updatedAt: generatedAt,
     },
@@ -2352,6 +2370,7 @@ function buildRuntimeConstitution() {
       cwd,
       repo: repoName,
       workspaceStatus: workspaceStatus.status || "unknown",
+      runtime: state.environmentRuntimeStatus,
       hygiene: {
         codexSandboxPlaceholderIgnored: sandboxPlaceholderIgnored,
         reason: hygiene.reason || "",
@@ -2361,6 +2380,13 @@ function buildRuntimeConstitution() {
         evidenceRef("project_config", "Workspace/project path configuration", { confidence: "configured" }),
         ...(workspaceStatus.status
           ? [evidenceRef("workspace_backend", `Workspace backend status: ${workspaceStatus.status}`, { confidence: "observed" })]
+          : []),
+        ...(state.environmentRuntimeStatus?.evidenceSource && state.environmentRuntimeStatus.evidenceSource !== "unknown"
+          ? [evidenceRef("app_server_probe", `${state.environmentRuntimeStatus.evidenceSource}: ${state.environmentRuntimeStatus.status}`, {
+              confidence: "observed",
+              status: state.environmentRuntimeStatus.status === "ready" ? "fresh" : state.environmentRuntimeStatus.status,
+              observedAt: state.environmentRuntimeStatus.observedAt,
+            })]
           : []),
       ],
     },
@@ -2374,6 +2400,22 @@ function buildRuntimeConstitution() {
         "unknown",
       evidenceRefs: [capabilityEvidence],
       unsupported: [],
+    },
+    apps: {
+      status: state.appEvidenceStatus,
+      snapshot: state.appEvidence,
+      error: state.appEvidenceError,
+      evidenceRefs: [evidenceRef(
+        state.appEvidenceStatus === "ready" ? "app_server_probe" : "runtime_snapshot",
+        state.appEvidenceStatus === "ready"
+          ? "app/installed and app/read returned bounded application evidence"
+          : state.appEvidenceError || "Application evidence has not been read yet",
+        {
+          confidence: state.appEvidenceStatus === "ready" ? "observed" : "unknown",
+          status: state.appEvidenceStatus === "failed" ? "failed" : state.appEvidenceStatus === "ready" ? "fresh" : "unavailable",
+          observedAt: state.appEvidence?.observedAt || "",
+        },
+      )],
     },
     settingsProjection,
     schemaVersion: 1,
@@ -2500,7 +2542,23 @@ function renderRuntimeConstitution() {
       status: constitution.environment.cwd ? "ready" : "unavailable",
       evidenceRefs: constitution.environment.evidenceRefs,
     });
-    els.environmentChipCluster.append(repoChip, cwdChip);
+    const runtimeEnvironment = constitution.environment.runtime || {};
+    const environmentStatusChip = createRuntimeChip({
+      id: "runtime-environment",
+      label: runtimeEnvironment.environmentId
+        ? `env: ${runtimeEnvironment.environmentId} · ${runtimeEnvironment.status}`
+        : "env: not observed",
+      tab: "environment",
+      role: "read_only_witness",
+      truth: runtimeEnvironment.evidenceSource && runtimeEnvironment.evidenceSource !== "unknown" ? "runtime_proven" : "unknown",
+      status: runtimeEnvironment.status === "ready"
+        ? "ready"
+        : runtimeEnvironment.status === "disconnected"
+          ? "failed"
+          : runtimeEnvironment.status === "pending" ? "loading" : "unavailable",
+      evidenceRefs: constitution.environment.evidenceRefs,
+    });
+    els.environmentChipCluster.append(repoChip, cwdChip, environmentStatusChip);
   }
 
   if (els.runtimeDrawerButton) {
@@ -3348,6 +3406,20 @@ function policyRows(policy = {}) {
   ];
 }
 
+function appEvidenceRows(snapshot = {}) {
+  if (!Array.isArray(snapshot?.apps) || snapshot.apps.length === 0) {
+    return [["applications", state.appEvidenceStatus === "loading" ? "loading" : "none observed"]];
+  }
+  return snapshot.apps.slice(0, 30).map((app) => [
+    app.name || app.runtimeName || app.id,
+    [
+      app.enabled ? "enabled" : "disabled",
+      app.callable ? "callable" : "not callable",
+      app.metadataAvailable ? "metadata read" : "metadata unavailable",
+    ].join(" · "),
+  ]);
+}
+
 function runtimeDrawerSections(c, tab) {
   if (tab === "runtime") {
     return [
@@ -3365,6 +3437,10 @@ function runtimeDrawerSections(c, tab) {
         ["codex home", c.provider?.executable?.codexHome || "default"],
         ["ready URL", c.provider?.executable?.appServer?.readyUrl || connection?.readyUrlLabel || "not connected"],
         ["thread state", c.thread.status],
+        ["direct input", c.thread.directInput?.status || "unknown"],
+        ["last notification", state.lastAppServerNotificationEvidence?.method || "not observed"],
+        ["app-server emitted", state.lastAppServerNotificationEvidence?.emittedAt || "not exposed"],
+        ["locally received", state.lastAppServerNotificationEvidence?.receivedAt || "not observed"],
       ], [...(c.provider?.evidenceRefs || []), ...c.runtime.evidenceRefs, ...c.thread.evidenceRefs]),
       drawerSection("Account", [
         ["status", c.account.status],
@@ -3491,12 +3567,32 @@ function runtimeDrawerSections(c, tab) {
   }
   if (tab === "capabilities") {
     const caps = c.capabilities?.profile || {};
+    const appSnapshot = c.apps?.snapshot || {};
+    const appSection = drawerSection("Installed Application Evidence", [
+      ["status", c.apps?.status || "unknown"],
+      ["installed", appSnapshot.installedCount ?? 0],
+      ["enabled", appSnapshot.enabledCount ?? 0],
+      ["callable", appSnapshot.callableCount ?? 0],
+      ["metadata read", appSnapshot.metadataCount ?? 0],
+      ["display-only tool summaries", appSnapshot.toolSummaryCount ?? 0],
+      ["missing metadata ids", (appSnapshot.missingAppIds || []).length],
+      ["action authority", appSnapshot.actionAuthorityGranted ? "granted" : "not granted"],
+      ["provider tool declaration", appSnapshot.providerToolDeclarationGranted ? "granted" : "not granted"],
+      ["observed", appSnapshot.observedAt || "not observed"],
+      ["error", c.apps?.error || appSnapshot.metadataError || "—"],
+    ], c.apps?.evidenceRefs || []);
+    appSection.appendChild(refreshButton("Refresh app evidence", () => refreshAppEvidence({
+      threadId: state.threadId,
+      forceRefresh: true,
+    })));
     return [
       drawerSection("Capability Provenance", [
         ["status", c.capabilities?.status || "unknown"],
         ["schema source", c.capabilities?.schemaSource || "unknown"],
         ["unsupported entries", (c.capabilities?.unsupported || []).length],
       ], c.capabilities?.evidenceRefs || []),
+      appSection,
+      drawerSection("Installed Applications", appEvidenceRows(appSnapshot)),
       drawerSection("Thread Operations", Object.entries(caps.threads || {}).map(([key, value]) => [key, value ? "yes" : "no"])),
       drawerSection("Turn Operations", Object.entries(caps.turns || {}).map(([key, value]) => [key, value ? "yes" : "no"])),
       drawerSection("Model Scope", Object.entries(caps.model || {}).map(([key, value]) => [key, value ? "yes" : "no"])),
@@ -3551,6 +3647,11 @@ function runtimeDrawerSections(c, tab) {
         ["cwd", c.environment.cwd],
         ["repo", c.environment.repo || "unknown"],
         ["backend", c.environment.workspaceStatus || "unknown"],
+        ["runtime environment", c.environment.runtime?.environmentId || "not observed"],
+        ["runtime status", c.environment.runtime?.status || "unknown"],
+        ["runtime evidence", c.environment.runtime?.evidenceSource || "unknown"],
+        ["runtime observed", c.environment.runtime?.observedAt || "not observed"],
+        ["runtime error", c.environment.runtime?.error || c.environment.runtime?.probeError || "—"],
         ["branch", c.environment.branch || "not exposed"],
         ["PR", c.environment.pr?.label || "not exposed"],
         ["Codex .codex hygiene", c.environment.hygiene?.codexSandboxPlaceholderIgnored ? "ignored" : "unknown"],
@@ -6476,6 +6577,8 @@ async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "",
   state.sourceHome = String(sourceHome || "");
   state.sessionFilePath = String(sessionFilePath || "");
   state.activeModel = "";
+  state.threadDirectInput = appServerEvidence.normalizeThreadDirectInput({});
+  state.environmentRuntimeStatus = appServerEvidence.normalizeEnvironmentState({ threadId: requestedThreadId });
   await loadRuntimePreferences({
     applyThread: true,
     threadId: requestedThreadId,
@@ -6587,7 +6690,12 @@ async function openThreadHybrid(threadId, sourceHome = "", sessionFilePath = "",
 }
 
 function bindThread(thread, modelName = "", options = {}) {
-  state.threadId = thread?.id || "";
+  const nextThreadId = thread?.id || "";
+  if (state.environmentRuntimeStatus?.threadId !== nextThreadId) {
+    state.environmentRuntimeStatus = appServerEvidence.normalizeEnvironmentState({ threadId: nextThreadId });
+  }
+  state.threadId = nextThreadId;
+  state.threadDirectInput = appServerEvidence.normalizeThreadDirectInput(thread || {});
   setActiveThreadMeta(threadAgentMeta(thread || {}));
   if (!state.threadMeta?.isSubagent && options.resetAgentGraph !== false) ensureAgentGraph(state.threadId);
   state.liveAttached = options.liveAttached !== false;
@@ -6596,7 +6704,12 @@ function bindThread(thread, modelName = "", options = {}) {
   const isDirectFixture = connection?.transport === DIRECT_FIXTURE_TRANSPORT;
   const isDirectLiveText = connection?.transport === DIRECT_LIVE_TEXT_TRANSPORT;
   updateSurfaceHeader(title, workspaceText());
-  setComposerEnabled(state.liveAttached, state.liveAttached ? "" : "Read-only mode");
+  setComposerEnabled(
+    state.liveAttached,
+    state.liveAttached && state.threadDirectInput?.allowsMutation === false
+      ? appServerEvidence.directInputBlockMessage(state.threadDirectInput)
+      : state.liveAttached ? "" : "Read-only mode",
+  );
   setNotice(
     isDirectLiveText ? "Direct live text session ready" : isDirectFixture ? "Direct fixture session ready" : "Codex session ready",
     isDirectFixture
@@ -6608,6 +6721,7 @@ function bindThread(thread, modelName = "", options = {}) {
   );
   reconcileTurnStateFromLiveThread(thread);
   renderDirectThreadList();
+  refreshAppEvidence({ threadId: state.threadId }).catch(() => {});
 }
 
 function isThoughtItem(item) {
@@ -7898,6 +8012,7 @@ async function startNewThread() {
   clearRenderedThreadState();
   state.sourceHome = "";
   state.sessionFilePath = "";
+  state.environmentRuntimeStatus = appServerEvidence.normalizeEnvironmentState({ threadId: result?.thread?.id || "" });
   bindThread(result.thread, result.model);
   await persistRuntimePreferences("thread-model");
   await refreshDirectSurfaceProjection({ render: false });
@@ -7905,6 +8020,7 @@ async function startNewThread() {
 }
 
 async function startCodexTurn(text, options = {}) {
+  assertThreadAcceptsDirectInput();
   if (isDirectLiveTextSurface()) {
     await refreshDirectSurfaceProjection({ render: false }).catch(() => {});
     if (!directLiveTextReady()) {
@@ -7993,6 +8109,7 @@ async function sendPrompt(text, options = {}) {
 }
 
 async function steerCurrentTurn(text) {
+  assertThreadAcceptsDirectInput();
   if (!hasCapabilityForMutation("turns", "canSteer")) {
     throw new Error("Active Codex runtime does not expose turn/steer capability.");
   }
@@ -8202,7 +8319,49 @@ async function initializeBridgeSession() {
   });
   await bridge.notify("initialized", {});
   await loadAccountState();
-  await Promise.allSettled([refreshModelList(), refreshRateLimits(), refreshConfigRequirements()]);
+  await Promise.allSettled([
+    refreshModelList(),
+    refreshRateLimits(),
+    refreshConfigRequirements(),
+    refreshAppEvidence(),
+  ]);
+}
+
+function applyEnvironmentRuntimeStatus(environmentState) {
+  if (!environmentState?.environmentId) return false;
+  if (environmentState.threadId && state.threadId && environmentState.threadId !== state.threadId) return false;
+  state.environmentRuntimeStatus = environmentState;
+  renderRuntimeConstitution();
+  return true;
+}
+
+async function refreshEnvironmentRuntimeStatus(environmentId, threadId = "", expectedObservedAt = "") {
+  if (!environmentId || !state.connected) return null;
+  try {
+    const response = await rpc("environment/status", { environmentId });
+    const environmentState = appServerEvidence.environmentStateFromStatus(environmentId, response, {
+      threadId,
+      receivedAtMs: Date.now(),
+    });
+    if (
+      expectedObservedAt &&
+      state.environmentRuntimeStatus?.observedAt !== expectedObservedAt
+    ) return null;
+    applyEnvironmentRuntimeStatus(environmentState);
+    return environmentState;
+  } catch (error) {
+    if (
+      state.environmentRuntimeStatus?.environmentId === environmentId &&
+      (!expectedObservedAt || state.environmentRuntimeStatus?.observedAt === expectedObservedAt)
+    ) {
+      state.environmentRuntimeStatus = {
+        ...state.environmentRuntimeStatus,
+        probeError: String(error?.message || "environment/status failed"),
+      };
+      renderRuntimeConstitution();
+    }
+    return null;
+  }
 }
 
 function handleNotification(method, params) {
@@ -8279,6 +8438,11 @@ function handleNotification(method, params) {
   if (method === "account/updated") {
     loadAccountState().catch((error) => addSystemMessage(`Failed to refresh account state: ${error.message}`));
     refreshRateLimits().catch(() => {});
+    refreshAppEvidence().catch(() => {});
+    return;
+  }
+  if (method === "app/list/updated") {
+    refreshAppEvidence({ threadId: state.threadId }).catch(() => {});
     return;
   }
   if (method === "account/rateLimits/updated") {
@@ -8297,6 +8461,7 @@ function handleNotification(method, params) {
     if (params.success) {
       setNotice("Codex account ready", "Authentication completed. Refreshing account state…", { success: true, showNewThread: true });
       loadAccountState().catch((error) => addSystemMessage(`Failed to refresh account state: ${error.message}`));
+      refreshAppEvidence().catch(() => {});
     } else {
       setNotice("Login failed", params.error || "Codex account login failed.", { error: true, showLogin: true });
     }
@@ -8480,6 +8645,35 @@ function handleBridgeEvent(event) {
     return;
   }
   if (event.type === "rpc-notification") {
+    state.lastAppServerNotificationEvidence = {
+      method: event.method,
+      emittedAtMs: event.emittedAtMs ?? null,
+      emittedAt: event.emittedAt || "",
+      receivedAtMs: event.receivedAtMs ?? null,
+      receivedAt: event.receivedAt || "",
+      observedAt: event.observedAt || event.emittedAt || event.receivedAt || "",
+    };
+    const environmentState = appServerEvidence.environmentStateFromNotification(
+      event.method,
+      event.params || {},
+      event,
+    );
+    if (environmentState && applyEnvironmentRuntimeStatus(environmentState)) {
+      refreshEnvironmentRuntimeStatus(
+        environmentState.environmentId,
+        environmentState.threadId,
+        environmentState.observedAt,
+      ).catch(() => {});
+    }
+    const notificationThread = event.params?.thread;
+    if (
+      notificationThread &&
+      String(notificationThread.id || "") === String(state.threadId || "") &&
+      Object.prototype.hasOwnProperty.call(notificationThread, "canAcceptDirectInput")
+    ) {
+      state.threadDirectInput = appServerEvidence.normalizeThreadDirectInput(notificationThread);
+      setComposerEnabled(state.liveAttached, state.liveAttached ? "" : "Read-only mode");
+    }
     handleNotification(event.method, event.params || {});
     return;
   }
@@ -8514,6 +8708,59 @@ async function loadAccountState() {
     };
   }
   renderRuntimeConstitution();
+}
+
+async function refreshAppEvidence(options = {}) {
+  const requestId = ++state.appEvidenceRequestId;
+  if (DIRECT_TRANSPORTS.has(connection?.transport) || capabilityArea("apps").canReadInstalled !== true) {
+    state.appEvidenceStatus = "unsupported";
+    state.appEvidenceError = "Active runtime does not declare app/installed capability.";
+    renderRuntimeConstitution();
+    return null;
+  }
+  state.appEvidenceStatus = "loading";
+  state.appEvidenceError = "";
+  renderRuntimeConstitution();
+  try {
+    const threadId = String(options.threadId || state.threadId || "").trim();
+    const installed = await rpc("app/installed", {
+      ...(threadId ? { threadId } : {}),
+      forceRefresh: options.forceRefresh === true,
+    });
+    if (requestId !== state.appEvidenceRequestId) return null;
+    const appIds = (Array.isArray(installed?.apps) ? installed.apps : [])
+      .map((app) => String(app?.id || "").trim())
+      .filter(Boolean)
+      .slice(0, 100);
+    let metadata = { apps: [], missingAppIds: [] };
+    let metadataError = "";
+    if (appIds.length && capabilityArea("apps").canReadMetadata === true) {
+      try {
+        metadata = await rpc("app/read", {
+          appIds,
+          includeTools: options.includeTools === true,
+        });
+      } catch (error) {
+        metadataError = String(error?.message || "app/read failed");
+      }
+    }
+    if (requestId !== state.appEvidenceRequestId) return null;
+    state.appEvidence = appServerEvidence.normalizeAppEvidence(installed, metadata, {
+      threadId,
+      metadataError,
+      observedAtMs: Date.now(),
+    });
+    state.appEvidenceStatus = "ready";
+    state.appEvidenceError = metadataError;
+    renderRuntimeConstitution();
+    return state.appEvidence;
+  } catch (error) {
+    if (requestId !== state.appEvidenceRequestId) return null;
+    state.appEvidenceStatus = "failed";
+    state.appEvidenceError = String(error?.message || "app/installed failed");
+    renderRuntimeConstitution();
+    return null;
+  }
 }
 
 async function login() {
