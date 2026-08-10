@@ -305,7 +305,15 @@ function configureAppProfile() {
     const appDataPath = app.getPath("appData");
     const canonicalUserDataPath = path.join(appDataPath, APP_TITLE);
     const legacyUserDataPath = path.join(appDataPath, "codex-review-shell");
-    const candidates = uniquePaths([canonicalUserDataPath, legacyUserDataPath, app.getPath("userData")]);
+    const formerDirectUserDataPath = path.join(appDataPath, "codex-review-shell-direct");
+    // A promoted installation may have been active on either former lineage.
+    // Keep using the profile with the newest persisted workspace configuration.
+    const candidates = uniquePaths([
+      canonicalUserDataPath,
+      legacyUserDataPath,
+      formerDirectUserDataPath,
+      app.getPath("userData"),
+    ]);
     let selectedPath = canonicalUserDataPath;
     let selectedMtime = 0;
     for (const candidate of candidates) {

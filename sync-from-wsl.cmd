@@ -9,7 +9,7 @@ set "WSL_DISTRO=%CODEX_REVIEW_SHELL_DEFAULT_WSL_DISTRO%"
 if not defined WSL_DISTRO set "WSL_DISTRO=Ubuntu"
 
 set "WSL_PATH=%CODEX_REVIEW_SHELL_DEFAULT_WSL_PATH%"
-if not defined WSL_PATH set "WSL_PATH=/home/rose/work/LexLattice/codex-review-shell-direct"
+if not defined WSL_PATH set "WSL_PATH=/home/rose/work/LexLattice/codex-review-shell"
 
 set "WSL_WIN_PATH=%WSL_PATH:/=\%"
 set "WSL_ROOT=\\wsl.localhost\%WSL_DISTRO%%WSL_WIN_PATH%"
