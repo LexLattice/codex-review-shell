@@ -156,9 +156,10 @@ npm run direct:live-sub-agent-tool-surface
 ```
 
 The pool regression proves more than three active children, bounded queue
-promotion, and ten terminal child results. The controller regression proves a
-full-history Terra/low child spawned by a Sol/Ultra parent, followed by native
-wait and two parent continuations without renderer approval.
+promotion, ten terminal child results, scoped exact-ID lookup, and nonblocking
+zero-timeout polling. The controller regression proves a full-history Terra/low
+child spawned by a Sol/Ultra parent and a same-turn spawn → spawn → wait chain
+whose resident agent tools remain declared without renderer approval.
 
 ## Next maturity steps
 

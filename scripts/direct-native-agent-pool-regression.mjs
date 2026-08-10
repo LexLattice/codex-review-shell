@@ -80,6 +80,35 @@ assert.equal(calls[1].requestBody.reasoning.effort, "ultra");
 assert.equal(calls[1].requestShape.contextHandoffMode, "none");
 assert.equal(calls[1].requestShape.contextMessageCount, 0);
 
+assert.equal(pool.inspect({
+  projectId: "project_other_fixture",
+  primaryThreadId: "primary_pool_fixture",
+  childAgentId: launches[0].childAgentId,
+}), null, "exact child ids must not bypass project scope");
+assert.equal(pool.inspect({
+  projectId: "project_pool_fixture",
+  primaryThreadId: "primary_other_fixture",
+  childAgentId: launches[0].childAgentId,
+}), null, "exact child ids must not bypass primary-thread scope");
+const crossScopeWait = await pool.wait({
+  projectId: "project_other_fixture",
+  primaryThreadId: "primary_pool_fixture",
+  targets: [launches[0].childAgentId],
+  timeoutMs: 0,
+});
+assert.equal(crossScopeWait.status, "blocked");
+assert.equal(crossScopeWait.blockerCode, "target_agent_missing");
+
+const pollStartedAt = Date.now();
+const nonBlockingPoll = await pool.wait({
+  projectId: "project_pool_fixture",
+  primaryThreadId: "primary_pool_fixture",
+  targets: [launches[1].childAgentId],
+  timeoutMs: 0,
+});
+assert.equal(nonBlockingPoll.status, "timeout");
+assert(Date.now() - pollStartedAt < 250, "zero-millisecond wait should return without blocking");
+
 pending[0].resolve({ ok: true, terminalState: "completed", outputText: "child one done" });
 const firstWait = await pool.wait({
   projectId: "project_pool_fixture",

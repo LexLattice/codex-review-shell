@@ -323,9 +323,15 @@ class DirectNativeAgentPool extends EventEmitter {
 
   resolveTarget(target, input = {}) {
     const text = normalizeString(target, "");
-    if (this.jobs.has(text)) return this.jobs.get(text);
     const projectId = normalizeString(input.projectId, "");
     const primaryThreadId = normalizeString(input.primaryThreadId, "");
+    if (this.jobs.has(text)) {
+      const record = this.jobs.get(text);
+      return (
+        (!projectId || record.projectId === projectId) &&
+        (!primaryThreadId || record.primaryThreadId === primaryThreadId)
+      ) ? record : null;
+    }
     return [...this.jobs.values()].find((record) =>
       record.taskName === text &&
       (!projectId || record.projectId === projectId) &&
@@ -352,7 +358,7 @@ class DirectNativeAgentPool extends EventEmitter {
     if (terminal.length) {
       return { status: "completed", blockerCode: "", updates: terminal.map((record) => this.publicRecord(record)), pool: this.descriptor() };
     }
-    const timeoutMs = boundedInteger(input.timeoutMs || input.timeout_ms, 30_000, 0, 300_000);
+    const timeoutMs = boundedInteger(input.timeoutMs ?? input.timeout_ms, 30_000, 0, 300_000);
     if (timeoutMs === 0) {
       return { status: "timeout", blockerCode: "", updates: [], pool: this.descriptor() };
     }

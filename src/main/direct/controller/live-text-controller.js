@@ -138,6 +138,7 @@ const NATIVE_SUB_AGENT_RUNTIME_TOOL_NAMES = Object.freeze([
   "wait_agent",
 ]);
 const NATIVE_SUB_AGENT_RUNTIME_TOOL_SET = new Set(NATIVE_SUB_AGENT_RUNTIME_TOOL_NAMES);
+const MAX_AGENT_RUNTIME_TOOL_LOOP_STEPS = 32;
 const EXTERNAL_DISCOVERY_TOOL_NAMES = Object.freeze([
   "tool_search",
   "list_mcp_resources",
@@ -3551,6 +3552,7 @@ class DirectLiveTextController {
   }
 
   utilityContinuationRequestFromEnvelope(sessionId, turnId, obligation = {}, envelope = {}) {
+    const nativeAgentRuntimeResult = normalizeString(envelope.resultKind, "") === "direct_sub_agent_runtime";
     const outputType = normalizeString(obligation.providerCallType || obligation.toolType, "") === "custom_tool_call"
       ? "custom_tool_call_output"
       : "function_call_output";
@@ -3575,6 +3577,7 @@ class DirectLiveTextController {
         toolLoopId: normalizeString(obligation.toolLoopId, `utility_loop_${sha256(`${sessionId}:${turnId}`).slice(0, 20)}`),
         stepId: normalizeString(obligation.stepId, `utility_step_${sha256(`${obligation.obligationId}:${resultId}`).slice(0, 20)}`),
         stepOrdinal: Number(obligation.stepOrdinal || 1) || 1,
+        maxStepCount: nativeAgentRuntimeResult ? MAX_AGENT_RUNTIME_TOOL_LOOP_STEPS : 1,
         parentResponseId: normalizeString(obligation.parentResponseId, ""),
         parentResponseSource: normalizeString(obligation.parentResponseSource, ""),
         parentResponseDigest: normalizeString(obligation.parentResponseDigest, ""),
@@ -3609,7 +3612,7 @@ class DirectLiveTextController {
       requestControls: {
         store: false,
         parallelToolCalls: false,
-        toolDeclarations: false,
+        toolDeclarations: nativeAgentRuntimeResult,
         toolOutputItem: true,
         previousResponseId: false,
       },
@@ -3689,6 +3692,24 @@ class DirectLiveTextController {
     const recorded = this.recordSafeResidentUtilityResult(sessionId, turnId, obligation, envelope);
     const continuationRequest = recorded.continuationRequest;
     const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
+    const nativeAgentRuntimeResult = normalizeString(envelope.resultKind, "") === "direct_sub_agent_runtime";
+    const nativeAgentToolNames = [
+      ...NATIVE_SUB_AGENT_RUNTIME_TOOL_NAMES,
+      ...READ_ONLY_SUB_AGENT_STATUS_TOOL_NAMES,
+    ];
+    const continuationToolComposition = nativeAgentRuntimeResult
+      ? composeImplementationToolBundleForRequest({
+          projectId: normalizeString(project?.id || project?.projectId || project?.name, ""),
+          sessionId,
+          turnId,
+          toolNames: nativeAgentToolNames,
+          useLaneDefaultTools: false,
+          sourceMessageId: `${turnId}_${obligation.obligationId}_native_agent_continuation`,
+          normalizedLaneRequestId: `normalized_lane_request_${turnId}_${obligation.obligationId}_${Number(obligation.stepOrdinal || 1)}`,
+          workThreadId: directWorkThreadContextCarrier(project, turn, obligation).workThreadId,
+          runtimeFactsId: "direct_native_agent_runtime",
+        })
+      : { tools: [], toolNames: [] };
     this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
       status: "continuation_sent",
       authorityState: "continuation_sent",
@@ -3707,7 +3728,7 @@ class DirectLiveTextController {
       model: normalizeString(turn.model, ""),
       fetchImpl: this.fetchImpl || undefined,
       instructions: DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS,
-      continuationTools: [],
+      continuationTools: continuationToolComposition.tools,
       onLifecycle: (event) => {
         if (event.phase === "streaming") {
           this.emitNotification(surfaceSession, "turn/started", {
@@ -3722,15 +3743,78 @@ class DirectLiveTextController {
     if (Array.isArray(result.normalizedEvents) && result.normalizedEvents.length) {
       this.sessionStore.appendNormalizedEvents(sessionId, turnId, result.normalizedEvents, {});
     }
-    const terminal = result.terminal || terminalStateFromNormalizedEvents(result.normalizedEvents || []);
+    const streamTerminal = result.terminal || terminalStateFromNormalizedEvents(result.normalizedEvents || []);
+    const nestedToolCall = nativeAgentRuntimeResult && (result.normalizedEvents || []).some((event) =>
+      event?.type === "tool_call_started" ||
+      event?.type === "tool_call_delta" ||
+      event?.type === "tool_call_completed");
+    let nextToolObligations = [];
+    let terminal = streamTerminal;
+    let continuationOutcome = terminal.state === "completed"
+      ? "assistant_final"
+      : normalizeString(terminal.error?.code, "utility_continuation_failed");
+    if (nestedToolCall) {
+      const nextStepOrdinal = (Number(obligation.stepOrdinal || 1) || 1) + 1;
+      const obligationResult = this.sessionStore.addToolObligations(
+        sessionId,
+        turnId,
+        result.normalizedEvents,
+        {
+          toolLoopId: canonicalToolLoopId(obligation),
+          stepOrdinal: nextStepOrdinal,
+          parentResponseId: normalizeString(result.responseId, ""),
+          parentResponseSource: "native_direct_agent_runtime_continuation_stream",
+        },
+      );
+      nextToolObligations = obligationResult.obligations;
+      const nextToolName = normalizeString(nextToolObligations[0]?.name, "");
+      const nextToolAllowed =
+        nextToolObligations.length === 1 &&
+        (isNativeSubAgentRuntimeToolName(nextToolName) || isReadOnlySubAgentStatusToolName(nextToolName));
+      const loopCapExceeded = nextStepOrdinal > MAX_AGENT_RUNTIME_TOOL_LOOP_STEPS;
+      if (nextToolAllowed && !loopCapExceeded) {
+        terminal = { state: "tool_waiting", error: null };
+        continuationOutcome = "next_native_agent_runtime_step";
+      } else {
+        const failureKind = loopCapExceeded
+          ? "agent_runtime_tool_loop_cap_exceeded"
+          : "unsupported_native_agent_runtime_transition";
+        terminal = {
+          state: "failed",
+          error: {
+            code: failureKind,
+            message: loopCapExceeded
+              ? "Direct native-agent tool loop reached its configured step cap."
+              : "Direct native-agent continuation emitted an unsupported or ambiguous tool transition.",
+          },
+        };
+        continuationOutcome = failureKind;
+        for (const nextObligation of nextToolObligations) {
+          this.sessionStore.updateToolObligation(sessionId, turnId, nextObligation.obligationId, {
+            status: "unsupported",
+            authorityState: "unsupported",
+            approvalAvailable: false,
+            executionAllowed: false,
+            continuationAllowed: false,
+            failureKind,
+          }, {
+            nextTurnState: "failed",
+            turnPatch: { error: terminal.error },
+          });
+        }
+      }
+    }
+    const continuationOk =
+      (result.ok === true && terminal.state === "completed") ||
+      (terminal.state === "tool_waiting" && continuationOutcome === "next_native_agent_runtime_step");
     const completedTurn = this.sessionStore.updateTurnState(sessionId, turnId, terminal.state, {
       continuationResponseId: normalizeString(result.responseId, ""),
       continuationResult: {
         schema: result.schema,
-        ok: result.ok === true && terminal.state === "completed",
+        ok: continuationOk,
         terminal,
         responseId: result.responseId,
-        continuationOutcome: terminal.state === "completed" ? "assistant_final" : normalizeString(terminal.error?.code, "utility_continuation_failed"),
+        continuationOutcome,
         normalizedEventCount: Array.isArray(result.normalizedEvents) ? result.normalizedEvents.length : 0,
         originalRequestRetried: false,
       },
@@ -3738,33 +3822,45 @@ class DirectLiveTextController {
     const continuationId = normalizeString(result.continuation?.continuationId || continuationRequest.continuationId, "utility_continuation");
     this.appendUtilityContinuationMessage(sessionId, turnId, continuationId, result.normalizedEvents || [], terminal);
     this.emitContinuationAssistant(surfaceSession, sessionId, turnId, continuationId, result.normalizedEvents || []);
-    this.emitNotification(surfaceSession, "turn/completed", {
-      threadId: sessionId,
-      turnId,
-      turn: {
-        id: turnId,
-        status: terminalStatusForState(completedTurn.state),
-        completedAt: nowSeconds(),
-        streamPhase: "utility-continuation",
-      },
-    });
     this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
       status: "continuation_sent",
       authorityState: "continuation_sent",
       continuationResult: {
         schema: result.schema,
-        ok: result.ok === true && terminal.state === "completed",
+        ok: continuationOk,
         terminal,
         responseId: result.responseId,
+        continuationOutcome,
       },
     }, {});
+    if (nativeAgentRuntimeResult) {
+      await this.emitContinuationNextToolOrComplete(surfaceSession, sessionId, turnId, {
+        turnState: completedTurn.state,
+        nextToolObligations,
+      }, project, {
+        streamPhase: "native-agent-runtime-continuation",
+        approvalMessage: "Direct native-agent continuation advanced to another resident tool transition.",
+        unavailableMessage: "Direct native-agent continuation requested an unavailable transition.",
+      });
+    } else {
+      this.emitNotification(surfaceSession, "turn/completed", {
+        threadId: sessionId,
+        turnId,
+        turn: {
+          id: turnId,
+          status: terminalStatusForState(completedTurn.state),
+          completedAt: nowSeconds(),
+          streamPhase: "utility-continuation",
+        },
+      });
+    }
     return {
       decision: "utility_continued",
       turn: turnSnapshot(this.sessionStore.readTurn(sessionId, turnId)),
       obligation: this.sessionStore.findToolObligation(sessionId, turnId, obligation.obligationId).obligation,
       envelope,
       continuation: {
-        ok: result.ok === true && terminal.state === "completed",
+        ok: continuationOk,
         continuationId,
         terminal,
       },
@@ -3919,7 +4015,7 @@ class DirectLiveTextController {
         projectId,
         primaryThreadId: sessionId,
         targets: Array.isArray(args.targets) ? args.targets : [],
-        timeoutMs: args.timeout_ms || args.timeoutMs,
+        timeoutMs: args.timeout_ms ?? args.timeoutMs,
       });
     }
     const providerOutput = toolName === "spawn_agent"
