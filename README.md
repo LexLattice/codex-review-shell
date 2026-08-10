@@ -166,6 +166,25 @@ To attach to a WSL workspace, edit the project binding:
 
 Node.js must be available as `node` inside that WSL distro.
 
+## Direct-native sub-agent pool
+
+Ordinary Direct implementation turns can use an asynchronous native reasoning
+pool independently of the WorldManager path. It defaults to eight active child
+leases and 64 queued jobs, and permits full, recent-N, or empty parent-context
+handoff independently from child model and reasoning effort.
+
+Optional process-level overrides:
+
+```text
+CODEX_DIRECT_SUB_AGENT_MAX_ACTIVE
+CODEX_DIRECT_SUB_AGENT_MAX_QUEUED
+CODEX_DIRECT_SUB_AGENT_DEFAULT_MODEL
+CODEX_DIRECT_SUB_AGENT_DEFAULT_REASONING_EFFORT
+```
+
+See [the Direct native multi-agent pool spec](./docs/DIRECT_NATIVE_MULTI_AGENT_POOL_SPEC.md)
+for the current reasoning-only authority boundary and test commands.
+
 ## Validation
 
 Syntax check:

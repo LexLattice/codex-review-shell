@@ -331,6 +331,36 @@ function requestShapeFor(requestBody = {}) {
   };
 }
 
+function normalizeContextHandoffMessages(input = {}) {
+  const source = Array.isArray(input.contextMessages)
+    ? input.contextMessages
+    : Array.isArray(input.parentContextMessages)
+      ? input.parentContextMessages
+      : [];
+  return source
+    .map((message) => ({
+      role: normalizeString(message?.role, ""),
+      text: normalizeString(message?.text || message?.content, ""),
+    }))
+    .filter((message) => ["user", "assistant"].includes(message.role) && message.text)
+    .slice(-200);
+}
+
+function contextHandoffPrompt(messages = [], task = "") {
+  if (!messages.length) return task;
+  const context = messages
+    .map((message) => `${message.role === "assistant" ? "Assistant" : "User"}: ${message.text}`)
+    .join("\n\n");
+  return [
+    "[ADMITTED PARENT CONTEXT]",
+    context,
+    "[END ADMITTED PARENT CONTEXT]",
+    "",
+    "[DELEGATED TASK]",
+    task,
+  ].join("\n");
+}
+
 function buildProviderBackedSubAgentRequest(input = {}) {
   const prompt = normalizeString(input.prompt || input.text || input.task, "");
   const model = normalizeString(input.model, normalizeString(input.defaultModel, "gpt-5.5"));
@@ -344,6 +374,12 @@ function buildProviderBackedSubAgentRequest(input = {}) {
     "Do not claim primary-agent authority.",
     "Do not request tools unless the harness explicitly declares them for this child route.",
   ].join(" "));
+  const contextMessages = normalizeContextHandoffMessages(input);
+  const contextMode = normalizeString(
+    input.contextHandoffMode || input.contextMode,
+    contextMessages.length ? "full" : "none",
+  );
+  const providerPrompt = contextHandoffPrompt(contextMessages, prompt);
   const requestBody = {
     model,
     stream: true,
@@ -356,18 +392,28 @@ function buildProviderBackedSubAgentRequest(input = {}) {
         content: [
           {
             type: "input_text",
-            text: prompt,
+            text: providerPrompt,
           },
         ],
       },
     ],
   };
   if (reasoningEffort) requestBody.reasoning = { effort: reasoningEffort };
+  const requestShape = {
+    ...requestShapeFor(requestBody),
+    contextHandoffMode: contextMode,
+    contextMessageCount: contextMessages.length,
+    contextHandoffIndependentOfRuntimeProfile: true,
+  };
   return {
     requestBody,
-    requestShape: requestShapeFor(requestBody),
+    requestShape,
     promptDigest: prompt ? digestFor("direct-provider-backed-sub-agent-prompt@1", prompt) : "",
     promptChars: prompt.length,
+    contextDigest: contextMessages.length
+      ? digestFor("direct-provider-backed-sub-agent-context@1", contextMessages)
+      : "",
+    contextMessageCount: contextMessages.length,
   };
 }
 
@@ -449,6 +495,8 @@ class DirectProviderBackedSubAgentRoute {
       recursiveSpawnAllowed: false,
       workspaceMutationAllowed: false,
       childTranscriptPromotionAllowed: false,
+      contextHandoffIndependentOfModel: true,
+      contextHandoffIndependentOfReasoningEffort: true,
       usageAttribution: "agent_thread",
       rawPromptIncluded: false,
       rawProviderPayloadIncluded: false,
@@ -504,6 +552,8 @@ class DirectProviderBackedSubAgentRoute {
         requestBody: request.requestBody,
         requestShape: request.requestShape,
         promptDigest: request.promptDigest,
+        contextDigest: request.contextDigest,
+        contextMessageCount: request.contextMessageCount,
         promptChars: request.promptChars,
       }));
       const terminalStatus = providerOutcome.terminalState;
@@ -539,6 +589,8 @@ class DirectProviderBackedSubAgentRoute {
         providerCompleted: providerOutcome.ok && terminalStatus === "completed",
         requestShape: request.requestShape,
         promptDigest: request.promptDigest,
+        contextDigest: request.contextDigest,
+        contextMessageCount: request.contextMessageCount,
         agentThreadId: agent.agentThreadId,
         responseId: providerOutcome.responseId,
         upstreamRequestId: providerOutcome.upstreamRequestId,

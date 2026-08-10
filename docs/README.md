@@ -59,6 +59,9 @@
 - [Direct Implementation-Lane UI And Operation History Spec](./DIRECT_IMPLEMENTATION_LANE_UI_AND_OPERATION_HISTORY_SPEC.md)
 - [Direct Context Maintenance, Memory, And Frontier Baton Spec](./DIRECT_CONTEXT_MAINTENANCE_MEMORY_FRONTIER_BATON_SPEC.md)
 - [Direct Sub-Agent Observability And Containment Spec](./DIRECT_SUB_AGENT_OBSERVABILITY_AND_CONTAINMENT_SPEC.md)
+- [Direct Native Multi-Agent Pool](./DIRECT_NATIVE_MULTI_AGENT_POOL_SPEC.md) -
+  implemented ordinary-Direct reasoning pool with eight default child leases,
+  bounded queuing, and independent context/model/effort selection.
 - [Direct Usage, Quota, Model Evidence, And Mainline Readiness Spec](./DIRECT_USAGE_QUOTA_MODEL_EVIDENCE_AND_MAINLINE_READINESS_SPEC.md)
 - [ODEU Role-Lane Multi-Agent Architecture Spec](./ODEU_ROLE_LANE_MULTI_AGENT_ARCHITECTURE_SPEC.md)
 - [Direct Role-Lane Tool Bundle Composer Spec](./DIRECT_ROLE_LANE_TOOL_BUNDLE_COMPOSER_SPEC.md)

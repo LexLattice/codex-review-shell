@@ -61,6 +61,7 @@ const {
 const {
   DEFAULT_TEXT_PROBE_INSTRUCTIONS,
   DEFAULT_TEXT_PROBE_PROMPT,
+  runImplementationToolInitialProbe,
   runTextOnlyDirectProbe,
 } = require("./main/direct/transport/codex-responses-transport");
 const {
@@ -149,6 +150,9 @@ const {
 const {
   createDirectLiveSubAgentToolSurface,
 } = require("./main/direct/agents/live-tool-surface");
+const {
+  DirectNativeAgentPool,
+} = require("./main/direct/agents/native-agent-pool");
 const {
   assertBatchAgentJobSurfaceSafe,
   buildBatchAgentJobSurface,
@@ -383,6 +387,7 @@ let directLiveProbeEvidenceStore = null;
 let directImplementationProofEvidenceStore = null;
 let directFixtureController = null;
 let directLiveTextController = null;
+let directNativeAgentPool = null;
 let directProviderMetadataAdapter = null;
 let directActivationStore = null;
 const directActivationLocks = new Map();
@@ -2214,6 +2219,71 @@ function ensureDirectFixtureController() {
   return directFixtureController;
 }
 
+function assistantTextFromDirectProviderResult(result = {}) {
+  return (Array.isArray(result.normalizedEvents) ? result.normalizedEvents : [])
+    .filter((event) => event?.type === "message_delta")
+    .map((event) => normalizeString(event?.text, ""))
+    .join("");
+}
+
+async function runDirectNativeChildProviderTurn(input = {}) {
+  const result = await runImplementationToolInitialProbe({
+    authStore: directRuntimeAuthStore(),
+    refreshCredentials: () => refreshDirectRuntimeCredentials(),
+    profileDoc: ensureDirectCodexProfileDoc(),
+    requestBody: input.requestBody,
+  });
+  const terminal = result.terminal || {};
+  const usageEvent = [...(Array.isArray(result.normalizedEvents) ? result.normalizedEvents : [])]
+    .reverse()
+    .find((event) => event?.type === "usage_delta" && event.usage);
+  const usage = usageEvent?.usage;
+  return {
+    ok: terminal.state === "completed",
+    terminalState: terminal.state === "aborted"
+      ? "cancelled"
+      : terminal.state === "completed"
+        ? "completed"
+        : "failed",
+    errorCode: terminal.state === "tool_waiting"
+      ? "direct_child_tools_not_declared"
+      : normalizeString(terminal.error?.code || result.error?.code, ""),
+    outputText: assistantTextFromDirectProviderResult(result),
+    responseId: normalizeString(result.responseId, ""),
+    tokenUsage: usage
+      ? {
+          inputTokens: Number(usage.inputTokens || 0),
+          cachedInputTokens: Number(usage.cachedInputTokens || 0),
+          outputTokens: Number(usage.outputTokens || 0),
+          reasoningOutputTokens: Number(usage.reasoningTokens || 0),
+          totalTokens: Number(usage.totalTokens || 0),
+        }
+      : {},
+  };
+}
+
+function ensureDirectNativeAgentPool() {
+  if (directNativeAgentPool) return directNativeAgentPool;
+  directNativeAgentPool = new DirectNativeAgentPool({
+    maxActiveChildren: Number(
+      process.env.CODEX_DIRECT_SUB_AGENT_MAX_ACTIVE || 8,
+    ),
+    maxQueuedChildren: Number(
+      process.env.CODEX_DIRECT_SUB_AGENT_MAX_QUEUED || 64,
+    ),
+    defaultModel: normalizeString(
+      process.env.CODEX_DIRECT_SUB_AGENT_DEFAULT_MODEL,
+      "gpt-5.6-sol",
+    ),
+    defaultReasoningEffort: normalizeString(
+      process.env.CODEX_DIRECT_SUB_AGENT_DEFAULT_REASONING_EFFORT,
+      "medium",
+    ),
+    providerTurnRunner: (input) => runDirectNativeChildProviderTurn(input),
+  });
+  return directNativeAgentPool;
+}
+
 function ensureDirectLiveTextController() {
   if (directLiveTextController) return directLiveTextController;
   directLiveTextController = new DirectLiveTextController({
@@ -2226,6 +2296,7 @@ function ensureDirectLiveTextController() {
     modelEvidenceResolver: (context) => ensureDirectLiveProbeEvidenceStore().resolveModelEvidence(context),
     implementationProofEvidenceResolver: (context) => ensureDirectImplementationProofEvidenceStore().resolveScopedProofEvidence(context),
     activationStatusResolver: (project) => directActivationEvaluationForProject(project).status,
+    subAgentPool: ensureDirectNativeAgentPool(),
     subAgentStatusSurfaceResolver: (context) => directSubAgentStatusSurfaceFor(context),
     externalCapabilityProfileResolver: (context) => buildDirectExternalCapabilityProfileForProject(context),
     providerHostedToolsStatusResolver: (context) => buildDirectProviderHostedToolsStatusForProject(context),
@@ -2279,6 +2350,14 @@ function directSubAgentStatusSurfaceFor({ sessionId = "", project = {} } = {}) {
   const projectId = normalizeString(project?.id || project?.projectId || project?.name, "");
   const primaryThreadId = normalizeString(sessionId, "");
   if (!projectId || !primaryThreadId) return null;
+  const nativePool = directNativeAgentPool;
+  if (nativePool) {
+    return nativePool.statusSurface({
+      projectId,
+      workThreadId: normalizeString(project.workThreadId, ""),
+      primaryThreadId,
+    });
+  }
   const graphState = latestCodexAgentGraphByProjectThread.get(codexAgentGraphCacheKey(projectId, primaryThreadId));
   if (!graphState) return null;
   const agents = (Array.isArray(graphState.agents) ? graphState.agents : [])
