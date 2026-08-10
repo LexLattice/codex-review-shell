@@ -64,8 +64,8 @@ const DEFAULT_ROLE_LANES = Object.freeze([
     roleId: "implementation_worker",
     displayName: "Implementation worker",
     agentClassSpecId: "agent_class_spec_implementation_worker",
-    defaultToolNames: ["read_file", "apply_patch", "run_command", "get_context_remaining", "update_plan", "request_user_input", "list_agents", "inspect_agent", "tool_search", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "web_search", "image_generation"],
-    allowedToolFamilies: ["workspace_process_authority", "local_perception", "session_control_state", "plan_projection", "human_authority_bridge", "agent_runtime_status", "external_capability_discovery", "external_resource_read", "provider_hosted_web_search", "provider_hosted_image_generation"],
+    defaultToolNames: ["read_file", "apply_patch", "run_command", "get_context_remaining", "update_plan", "request_user_input", "spawn_agent", "list_agents", "inspect_agent", "wait_agent", "tool_search", "list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource", "web_search", "image_generation"],
+    allowedToolFamilies: ["workspace_process_authority", "local_perception", "session_control_state", "plan_projection", "human_authority_bridge", "agent_runtime_status", "agent_runtime_control", "external_capability_discovery", "external_resource_read", "provider_hosted_web_search", "provider_hosted_image_generation"],
     laneLawIds: ["direct_implementation_lane_tool_law@1", "direct_workspace_authority_law@1"],
   },
   {
@@ -84,8 +84,8 @@ const DEFAULT_ROLE_LANES = Object.freeze([
     roleId: "meta_orchestrator",
     displayName: "Meta-orchestrator",
     agentClassSpecId: "agent_class_spec_meta_orchestrator",
-    defaultToolNames: [],
-    allowedToolFamilies: ["agent_runtime", "session_control_state", "human_authority_bridge"],
+    defaultToolNames: ["spawn_agent", "list_agents", "inspect_agent", "wait_agent"],
+    allowedToolFamilies: ["agent_runtime", "agent_runtime_status", "agent_runtime_control", "session_control_state", "human_authority_bridge"],
     laneLawIds: ["direct_meta_orchestrator_transition_law@1"],
   },
   {
@@ -187,7 +187,7 @@ const TOOL_METADATA = Object.freeze({
     capabilityId: "direct.wait_agent",
     toolFamily: "agent_runtime_status",
     implementedState: "restricted_executor",
-    promotionState: "activation_gated",
+    promotionState: "direct_enabled",
     targetScopePolicyId: "direct_sub_agent_bounded_wait_scope_policy@1",
     resultEnvelopePolicyId: "direct_wait_agent_result_envelope@1",
     contextAdmissionPolicyId: "direct_sub_agent_status_context_admission@1",
@@ -196,7 +196,7 @@ const TOOL_METADATA = Object.freeze({
     capabilityId: "direct.spawn_agent",
     toolFamily: "agent_runtime_control",
     implementedState: "restricted_executor",
-    promotionState: "direct_restricted",
+    promotionState: "direct_enabled",
     targetScopePolicyId: "direct_sub_agent_spawn_scope_policy@1",
     resultEnvelopePolicyId: "direct_spawn_agent_result_envelope@1",
     contextAdmissionPolicyId: "direct_sub_agent_result_context_admission@1",
@@ -817,6 +817,68 @@ function providerSchemaFor(toolName) {
           },
         },
         required: ["childAgentId"],
+        additionalProperties: false,
+      },
+    };
+  }
+  if (toolName === "spawn_agent") {
+    return {
+      type: "function",
+      name: "spawn_agent",
+      description: "Spawn a bounded Direct child agent asynchronously. Context handoff, model, and reasoning effort are independent choices. The shared Direct pool admits more than three active children when configured capacity permits.",
+      parameters: {
+        type: "object",
+        properties: {
+          message: {
+            type: "string",
+            description: "Concrete bounded task for the child agent.",
+          },
+          task_name: {
+            type: "string",
+            description: "Stable task name, unique among live children of this parent.",
+          },
+          agent_type: {
+            type: "string",
+            description: "Optional role label for the child. This is independent of context handoff.",
+          },
+          model: {
+            type: "string",
+            description: "Optional child model. Omit to inherit the parent model; valid with every fork_turns mode.",
+          },
+          reasoning_effort: {
+            type: "string",
+            enum: ["none", "low", "medium", "high", "xhigh", "max", "ultra"],
+            description: "Optional child reasoning effort. Omit to inherit the parent effort; valid with every fork_turns mode.",
+          },
+          fork_turns: {
+            type: "string",
+            description: "Context handoff: `none`, `all`, or a positive integer string for the most recent turns. Defaults to `all` and does not constrain model or effort.",
+          },
+        },
+        required: ["message", "task_name"],
+        additionalProperties: false,
+      },
+    };
+  }
+  if (toolName === "wait_agent") {
+    return {
+      type: "function",
+      name: "wait_agent",
+      description: "Wait for any selected Direct child agent to reach a terminal state. Use sparingly; children continue in the background without a wait call.",
+      parameters: {
+        type: "object",
+        properties: {
+          targets: {
+            type: "array",
+            items: { type: "string" },
+            description: "Child agent ids or task names. The wait returns when any target completes.",
+          },
+          timeout_ms: {
+            type: "number",
+            description: "Bounded wait in milliseconds, from 0 through 300000. Defaults to 30000.",
+          },
+        },
+        required: ["targets"],
         additionalProperties: false,
       },
     };

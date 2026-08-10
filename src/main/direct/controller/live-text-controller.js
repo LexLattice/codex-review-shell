@@ -133,6 +133,11 @@ const READ_ONLY_SUB_AGENT_STATUS_TOOL_NAMES = Object.freeze([
   "inspect_agent",
 ]);
 const READ_ONLY_SUB_AGENT_STATUS_TOOL_SET = new Set(READ_ONLY_SUB_AGENT_STATUS_TOOL_NAMES);
+const NATIVE_SUB_AGENT_RUNTIME_TOOL_NAMES = Object.freeze([
+  "spawn_agent",
+  "wait_agent",
+]);
+const NATIVE_SUB_AGENT_RUNTIME_TOOL_SET = new Set(NATIVE_SUB_AGENT_RUNTIME_TOOL_NAMES);
 const EXTERNAL_DISCOVERY_TOOL_NAMES = Object.freeze([
   "tool_search",
   "list_mcp_resources",
@@ -696,6 +701,18 @@ function appendReadOnlySubAgentStatusTools(toolNames = [], status = {}) {
   ].map((name) => normalizeString(name, "")).filter(Boolean))];
 }
 
+function nativeSubAgentRuntimeToolNames(status = {}) {
+  const runtimeReady = status && normalizeString(status.status, "") === "ready";
+  return runtimeReady ? [...NATIVE_SUB_AGENT_RUNTIME_TOOL_NAMES] : [];
+}
+
+function appendNativeSubAgentRuntimeTools(toolNames = [], status = {}) {
+  return [...new Set([
+    ...(Array.isArray(toolNames) ? toolNames : []),
+    ...nativeSubAgentRuntimeToolNames(status),
+  ].map((name) => normalizeString(name, "")).filter(Boolean))];
+}
+
 function externalSourceIdentityReady(externalProfile = {}) {
   const servers = Array.isArray(externalProfile?.serverIdentities) ? externalProfile.serverIdentities : [];
   return servers.some((server) => (
@@ -737,6 +754,30 @@ function isSafeResidentUtilityToolName(toolName = "") {
 
 function isReadOnlySubAgentStatusToolName(toolName = "") {
   return READ_ONLY_SUB_AGENT_STATUS_TOOL_SET.has(normalizeString(toolName, ""));
+}
+
+function isNativeSubAgentRuntimeToolName(toolName = "") {
+  return NATIVE_SUB_AGENT_RUNTIME_TOOL_SET.has(normalizeString(toolName, ""));
+}
+
+function directParentContextMessages(session = {}) {
+  const messages = [];
+  for (const turn of Array.isArray(session.messages) ? session.messages : []) {
+    const turnId = normalizeString(turn?.id || turn?.turnId, "");
+    for (const item of Array.isArray(turn?.items) ? turn.items : []) {
+      if (item?.type === "userMessage") {
+        const text = (Array.isArray(item.content) ? item.content : [])
+          .map((entry) => normalizeString(entry?.text, ""))
+          .filter(Boolean)
+          .join("\n") || normalizeString(item.text, "");
+        if (text) messages.push({ role: "user", text, turnId });
+      } else if (item?.type === "agentMessage") {
+        const text = normalizeString(item.text, "");
+        if (text) messages.push({ role: "assistant", text, turnId });
+      }
+    }
+  }
+  return messages;
 }
 
 function isExternalPromotedToolName(toolName = "") {
@@ -983,7 +1024,19 @@ function implementationContinuationToolNames(status = {}, prompt = "") {
   if (asksPatch && patchReady) names.push("apply_patch");
   if (asksCommand && commandReady) names.push("run_command");
   if (!names.length && readReady) names.push("read_file");
-  return appendProviderHostedTools(appendExternalPromotedTools(appendReadOnlySubAgentStatusTools(appendSafeResidentUtilities(names, status), status), status), status);
+  return appendProviderHostedTools(
+    appendExternalPromotedTools(
+      appendNativeSubAgentRuntimeTools(
+        appendReadOnlySubAgentStatusTools(
+          appendSafeResidentUtilities(names, status),
+          status,
+        ),
+        status,
+      ),
+      status,
+    ),
+    status,
+  );
 }
 
 function commandRepairContinuationToolNames(status = {}, prompt = "") {
@@ -1317,6 +1370,9 @@ class DirectLiveTextController {
     this.implementationProofEvidenceResolver = typeof options.implementationProofEvidenceResolver === "function" ? options.implementationProofEvidenceResolver : null;
     this.activationStatusResolver = typeof options.activationStatusResolver === "function" ? options.activationStatusResolver : null;
     this.subAgentStatusSurfaceResolver = typeof options.subAgentStatusSurfaceResolver === "function" ? options.subAgentStatusSurfaceResolver : null;
+    this.subAgentPool = options.subAgentPool && typeof options.subAgentPool.launch === "function"
+      ? options.subAgentPool
+      : null;
     this.externalCapabilityProfileResolver = typeof options.externalCapabilityProfileResolver === "function" ? options.externalCapabilityProfileResolver : null;
     this.providerHostedToolsStatusResolver = typeof options.providerHostedToolsStatusResolver === "function" ? options.providerHostedToolsStatusResolver : null;
     this.fetchImpl = typeof options.fetchImpl === "function" ? options.fetchImpl : null;
@@ -3541,7 +3597,11 @@ class DirectLiveTextController {
       safety: {
         fromRecordedResult: true,
         originalRequestRetried: false,
-        sideEffectExecuted: false,
+        sideEffectExecuted:
+          envelope.sideEffectExecuted === true ||
+          envelope.runtimeLifecycleMutationExecuted === true,
+        semanticEffectRecorded: envelope.semanticEffectRecorded === true,
+        canonicalEffect: envelope.canonicalEffect === true,
         workspaceBackendOnly: false,
         utilityToolResult: true,
         continuationLiveSendEnabled: true,
@@ -3573,7 +3633,11 @@ class DirectLiveTextController {
       status: normalizeString(envelope.status, "ready_for_provider_continuation"),
       providerOutputText,
       providerOutputChars: providerOutputText.length,
-      sideEffectExecuted: false,
+      sideEffectExecuted:
+        envelope.sideEffectExecuted === true ||
+        envelope.runtimeLifecycleMutationExecuted === true,
+      semanticEffectRecorded: envelope.semanticEffectRecorded === true,
+      canonicalEffect: envelope.canonicalEffect === true,
       rawWorkspacePathExposed: false,
       rawSecretExposed: false,
       recordedAt: nowIso(),
@@ -3583,7 +3647,9 @@ class DirectLiveTextController {
       authorityState: "utility_result_recorded",
       approvalAvailable: false,
       executionAllowed: false,
-      sideEffectExecuted: false,
+      sideEffectExecuted:
+        envelope.sideEffectExecuted === true ||
+        envelope.runtimeLifecycleMutationExecuted === true,
       continuationAllowed: true,
       result,
       continuationRequest,
@@ -3811,6 +3877,131 @@ class DirectLiveTextController {
     return 1;
   }
 
+  isNativeSubAgentRuntimeObligation(obligation = {}) {
+    return isNativeSubAgentRuntimeToolName(obligation?.name);
+  }
+
+  async buildNativeSubAgentRuntimeEnvelope(sessionId, turnId, obligation = {}, project = {}) {
+    const toolName = normalizeString(obligation.name, "");
+    const args = parseToolArgumentsObject(obligation);
+    const session = this.sessionStore.readSession(sessionId) || {};
+    const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
+    const projectId = normalizeString(project?.id || project?.projectId || project?.name, session.projectId || "project_direct_agents");
+    const workThreadId = normalizeString(
+      directWorkThreadContextCarrier(session, turn, project).workThreadId,
+      "work_thread_direct_agents",
+    );
+    let runtimeResult;
+    if (!this.subAgentPool) {
+      runtimeResult = {
+        status: "blocked",
+        blockerCode: "direct_native_agent_pool_unavailable",
+        updates: [],
+      };
+    } else if (toolName === "spawn_agent") {
+      runtimeResult = this.subAgentPool.launch({
+        projectId,
+        workThreadId,
+        primaryThreadId: sessionId,
+        parentAgentId: normalizeString(session.agentThreadId || session.agentId, sessionId),
+        taskName: args.task_name || args.taskName,
+        message: args.message,
+        agentType: args.agent_type || args.agentType,
+        model: args.model,
+        reasoningEffort: args.reasoning_effort || args.reasoningEffort,
+        forkTurns: args.fork_turns || args.forkTurns,
+        parentModel: normalizeString(turn.model, session.model),
+        parentReasoningEffort: normalizeString(turn.reasoningEffort, session.reasoningEffort),
+        parentContextMessages: directParentContextMessages(session),
+      });
+    } else {
+      runtimeResult = await this.subAgentPool.wait({
+        projectId,
+        primaryThreadId: sessionId,
+        targets: Array.isArray(args.targets) ? args.targets : [],
+        timeoutMs: args.timeout_ms || args.timeoutMs,
+      });
+    }
+    const providerOutput = toolName === "spawn_agent"
+      ? {
+          kind: "spawn_agent_result",
+          status: normalizeString(runtimeResult.status, "blocked"),
+          blockerCode: normalizeString(runtimeResult.blockerCode, ""),
+          taskName: normalizeString(runtimeResult.taskName, ""),
+          childAgentId: normalizeString(runtimeResult.childAgentId, ""),
+          state: normalizeString(runtimeResult.state, runtimeResult.status),
+          model: normalizeString(runtimeResult.model, ""),
+          reasoningEffort: normalizeString(runtimeResult.reasoningEffort, ""),
+          contextHandoff: runtimeResult.contextHandoff || null,
+          contextMessageCount: Number(runtimeResult.contextMessageCount || 0),
+          runtimeProfileIndependentOfContext: runtimeResult.runtimeProfileIndependentOfContext === true,
+          pool: runtimeResult.pool || this.subAgentPool?.descriptor?.() || null,
+          childRunsInBackground: ["running", "queued", "accepted"].includes(runtimeResult.status),
+          rawTaskIncluded: false,
+          rawContextIncluded: false,
+        }
+      : {
+          kind: "wait_agent_result",
+          status: normalizeString(runtimeResult.status, "blocked"),
+          blockerCode: normalizeString(runtimeResult.blockerCode, ""),
+          updates: (Array.isArray(runtimeResult.updates) ? runtimeResult.updates : []).map((update) => ({
+            childAgentId: normalizeString(update.childAgentId, ""),
+            taskName: normalizeString(update.taskName, ""),
+            state: normalizeString(update.state, ""),
+            resultSummary: normalizeString(update.resultSummary, ""),
+            blockerCode: normalizeString(update.blockerCode, ""),
+            model: normalizeString(update.model, ""),
+            reasoningEffort: normalizeString(update.reasoningEffort, ""),
+          })),
+          pool: runtimeResult.pool || this.subAgentPool?.descriptor?.() || null,
+          rawChildTranscriptIncluded: false,
+        };
+    const envelope = {
+      schema: "direct_native_sub_agent_runtime_result_envelope@1",
+      envelopeId: `native_sub_agent_runtime_${sha256(`${sessionId}:${turnId}:${obligation.obligationId}:${stableStringify(providerOutput)}`).slice(0, 24)}`,
+      toolName,
+      callId: normalizeString(obligation.callId, ""),
+      resultKind: "direct_sub_agent_runtime",
+      status: normalizeString(runtimeResult.status, "blocked") === "blocked" ? "blocked" : "ready_for_provider_continuation",
+      providerOutput,
+      sideEffectExecuted:
+        toolName === "spawn_agent" &&
+        normalizeString(runtimeResult.status, "blocked") !== "blocked",
+      runtimeLifecycleMutationExecuted:
+        toolName === "spawn_agent" &&
+        normalizeString(runtimeResult.status, "blocked") !== "blocked",
+      providerTurnScheduled:
+        toolName === "spawn_agent" &&
+        ["running", "queued", "accepted"].includes(
+          normalizeString(runtimeResult.status, ""),
+        ),
+      semanticEffectRecorded: true,
+      canonicalEffect: false,
+      contextAdmission: {
+        admittedAs: "direct_sub_agent_runtime_status",
+        admissionState:
+          normalizeString(runtimeResult.status, "blocked") === "blocked"
+            ? "blocked"
+            : "admitted",
+        childTranscriptPromoted: false,
+        workspaceMutationStarted: false,
+      },
+      rawPromptIncluded: false,
+      rawResultIncluded: false,
+      rawWorkspacePathIncluded: false,
+      rawTranscriptIncluded: false,
+      rawSecretIncluded: false,
+    };
+    envelope.envelopeDigest = sha256(stableStringify(envelope));
+    return envelope;
+  }
+
+  async emitNativeSubAgentRuntimeRequest(surfaceSession, sessionId, turnId, obligation = {}, project = {}) {
+    const envelope = await this.buildNativeSubAgentRuntimeEnvelope(sessionId, turnId, obligation, project);
+    await this.continueAfterSafeResidentUtilityResult(surfaceSession, sessionId, turnId, obligation, envelope, project);
+    return 1;
+  }
+
   isExternalPromotedObligation(obligation = {}) {
     return isExternalPromotedToolName(obligation?.name);
   }
@@ -3991,7 +4182,6 @@ class DirectLiveTextController {
   }
 
   async emitToolApprovalRequests(surfaceSession, sessionId, turnId, obligations = [], project = {}) {
-    if (!surfaceSession) return 0;
     const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
     if (obligations.length !== 1) {
       for (const obligation of obligations) {
@@ -4016,12 +4206,17 @@ class DirectLiveTextController {
     }
     let createdCount = 0;
     for (const obligation of obligations) {
-      if (this.isSafeResidentUtilityObligation(obligation)) {
-        createdCount += await this.emitSafeResidentUtilityRequest(surfaceSession, sessionId, turnId, obligation, project);
+      if (this.isNativeSubAgentRuntimeObligation(obligation)) {
+        createdCount += await this.emitNativeSubAgentRuntimeRequest(surfaceSession, sessionId, turnId, obligation, project);
         continue;
       }
       if (this.isReadOnlySubAgentStatusObligation(obligation)) {
         createdCount += await this.emitReadOnlySubAgentStatusRequest(surfaceSession, sessionId, turnId, obligation, project);
+        continue;
+      }
+      if (!surfaceSession) return createdCount;
+      if (this.isSafeResidentUtilityObligation(obligation)) {
+        createdCount += await this.emitSafeResidentUtilityRequest(surfaceSession, sessionId, turnId, obligation, project);
         continue;
       }
       if (this.isExternalPromotedObligation(obligation)) {
@@ -5430,7 +5625,22 @@ class DirectLiveTextController {
     const implementationTier = directLiveTier &&
       binding.directTier === "implementation-lane";
     const implementationToolNames = implementationTier
-      ? appendProviderHostedTools(appendExternalPromotedTools(appendReadOnlySubAgentStatusTools(appendSafeResidentUtilities(implementationInitialToolNames(status, prompt), status), status), status), status)
+      ? appendProviderHostedTools(
+          appendExternalPromotedTools(
+            appendNativeSubAgentRuntimeTools(
+              appendReadOnlySubAgentStatusTools(
+                appendSafeResidentUtilities(
+                  implementationInitialToolNames(status, prompt),
+                  status,
+                ),
+                status,
+              ),
+              status,
+            ),
+            status,
+          ),
+          status,
+        )
       : [];
     const useRecentDialogue = existingTurnCount > 0;
     let frozenContextProjection = null;

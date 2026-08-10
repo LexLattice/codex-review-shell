@@ -34,15 +34,17 @@ const implementationToolNames = [
   "read_mcp_resource",
   "request_user_input",
   "run_command",
+  "spawn_agent",
   "tool_search",
   "update_plan",
+  "wait_agent",
 ];
 const implementationToolNamesWithHostedWeb = [...implementationToolNames, "web_search"].sort((a, b) => a.localeCompare(b));
 const defaultCandidateToolNames = [...implementationToolNames, "image_generation", "web_search"].sort((a, b) => a.localeCompare(b));
 const safeResidentUtilityToolNames = ["get_context_remaining", "request_user_input", "update_plan"];
 const readOnlySubAgentStatusToolNames = ["inspect_agent", "list_agents"];
 const externalPromotedToolNames = ["list_mcp_resource_templates", "list_mcp_resources", "read_mcp_resource", "tool_search"];
-const blockedSubAgentControlToolNames = ["close_agent", "interrupt_agent", "recursive_spawn", "resume_agent", "send_message", "spawn_agent"];
+const blockedSubAgentControlToolNames = ["close_agent", "interrupt_agent", "recursive_spawn", "resume_agent", "send_message"];
 
 function ref(kind, id, label = id) {
   return {
@@ -340,7 +342,7 @@ assert.equal(unsafeSubAgentControls.status, "passed");
 assert.deepEqual(unsafeSubAgentControls.providerDeclaredToolBundle.declaredToolNames, []);
 assert.equal(unsafeSubAgentControls.residentCapabilityCatalogue.knownUnavailable.length, blockedSubAgentControlToolNames.length);
 for (const row of unsafeSubAgentControls.residentCapabilityCatalogue.knownUnavailable) {
-  assert.equal(row.status, "blocked_by_lane", `${row.toolName} should be blocked by implementation-worker lane`);
+  assert.equal(row.status, "blocked_by_provider", `${row.toolName} should remain unavailable without a promoted Direct provider schema`);
   assert.equal(row.toolFamily, "agent_runtime_control", `${row.toolName} should remain classified as control/interference`);
   assert.equal(row.callableInCurrentRequest, false);
   assert.equal(row.nonOmittable, true);
@@ -356,10 +358,17 @@ const waitAgentConditional = composeDirectToolBundle({
   toolNames: ["wait_agent"],
   nowMs,
 });
-assert.deepEqual(waitAgentConditional.providerDeclaredToolBundle.declaredToolNames, []);
-assert.equal(waitAgentConditional.residentCapabilityCatalogue.knownUnavailable[0].toolName, "wait_agent");
-assert.equal(waitAgentConditional.residentCapabilityCatalogue.knownUnavailable[0].status, "blocked_by_provider");
-assert.equal(waitAgentConditional.residentCapabilityCatalogue.knownUnavailable[0].toolFamily, "agent_runtime_status");
+assert.deepEqual(waitAgentConditional.providerDeclaredToolBundle.declaredToolNames, ["wait_agent"]);
+assert.equal(waitAgentConditional.residentCapabilityCatalogue.knownUnavailable.length, 0);
+assert.equal(waitAgentConditional.witness.declaredTools[0].toolFamily, "agent_runtime_status");
+
+const spawnAgentRow = grounded.witness.declaredTools.find((row) => row.toolName === "spawn_agent");
+assert(spawnAgentRow, "spawn_agent should be declared in the implementation lane");
+assert.equal(spawnAgentRow.toolFamily, "agent_runtime_control");
+assert.equal(spawnAgentRow.providerToolSchema.parameters.properties.fork_turns.type, "string");
+assert.equal(spawnAgentRow.providerToolSchema.parameters.properties.model.type, "string");
+assert.equal(spawnAgentRow.providerToolSchema.parameters.properties.reasoning_effort.type, "string");
+assert(spawnAgentRow.providerToolSchema.description.includes("independent"));
 
 const reviewLaneSelection = buildDirectRoleLaneSelection({
   registry,
