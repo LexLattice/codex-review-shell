@@ -1082,8 +1082,11 @@ Current local frontier after Wave 26 acceptance reconciliation:
 - general `WM-K5A/K5B` plan-proposal revision, exact evidence review,
   Greenlight and typed semantic admission through one graph-CAS protocol,
   durable implementation contract, and `contract_received` WorkThread
-  creation are implemented. Worker-start authority and execution remain
-  `WM-K6`. For project
+  creation are implemented. `WM-K6` now continues that contract through a
+  compiled local-only implementation constitution, exact single-use worker
+  start, real Direct execution, per-call effects, semantic closure assessment,
+  evidence-bound completion, Project Manager project-memory admission, and
+  upward status. For project
   genesis specifically, native workspace provisioning and real WorkThread
   environment inheritance are delivered by `WM-ENV1`; the active frontier is
   authoritative hierarchical worldmodel activation and the explicit project

@@ -84,6 +84,12 @@ contextBridge.exposeInMainWorld("codexSurfaceBridge", {
     ipcRenderer.invoke("world-manager:inspect-plan-proposal", payload),
   admitWorldManagerPlanProposal: (payload = {}) =>
     ipcRenderer.invoke("world-manager:admit-plan-proposal", payload),
+  prepareWorldManagerPlanExecution: (payload = {}) =>
+    ipcRenderer.invoke("world-manager:prepare-plan-execution", payload),
+  authorizeWorldManagerPlanExecution: (payload = {}) =>
+    ipcRenderer.invoke("world-manager:authorize-plan-execution", payload),
+  completeWorldManagerPlanExecution: (payload = {}) =>
+    ipcRenderer.invoke("world-manager:complete-plan-execution", payload),
   focusWorldManagerProject: (projectId, expectedProjectionRevision = null) =>
     ipcRenderer.invoke("world-manager:focus-project", { projectId, expectedProjectionRevision }),
   inspectWorldManagerProjectGenesisCandidate: (

@@ -9,18 +9,24 @@ Abstract Reasoning Object registry/reconstruction plus `WM-SC7.1` automatic
 repository reconstruction, `WM-SC7.2` governed target definition, and
 `WM-SC8.1` provisional mutation-contract compilation are implemented and
 locally regression-proven.
-The project-genesis `WM-K5G`/`WM-K6G` slice and the general-planning
-`WM-K5A`/`WM-K5B` slices are implemented. `WM-K5A` promotes a reconciled Project Manager
-plan into an immutable `PlanProposalRevision`, exact evidence-review receipt,
+The project-genesis `WM-K5G`/`WM-K6G` slice, the general-planning
+`WM-K5A`/`WM-K5B` slices, and the general `WM-K6`
+planning-to-execution continuation are implemented. `WM-K5A` promotes a
+reconciled Project Manager plan into an immutable `PlanProposalRevision`,
+exact evidence-review receipt,
 scope-CAS graph admission, persisted `ImplementationContract`, and a real
 WorkThread in `contract_received`. `WM-K5B` gives an authenticated operator
-utterance exact semantic-admission parity with the Greenlight control. The
-`WM-K6` worker-start transition remains a subsequent bounded slice.
+utterance exact semantic-admission parity with the Greenlight control.
+`WM-K6` compiles a local-only implementation constitution, requires an exact
+single-use worker-start authorization, starts a real Direct worker, retains
+per-call effect gates, evaluates completion semantically against exact runtime
+evidence, and admits the resulting project-memory candidate only through the
+Project Manager boundary.
 K4 is proven through the persisted Direct controller with deterministic
 provider transport. A real-account live acceptance turn remains a separate
 promotion witness.
 
-Date: 2026-08-05.
+Date: 2026-08-11.
 
 Parent doctrine:
 [Direct World Manager Agent-World And Unified UX Spec](./DIRECT_WORLD_MANAGER_AGENT_WORLD_AND_UNIFIED_UX_SPEC.md).
@@ -58,6 +64,10 @@ typed user message
   -> evidence-visible operator admission
   -> actual canonical graph transition
   -> actual persisted WorkThread and implementation contract
+  -> implementation ResolvedTaskConstitution and role handoff
+  -> explicit worker-start authorization and Direct implementation turn
+  -> semantic closure assessment bound to runtime evidence
+  -> Project Manager project-memory admission and upward status
 ```
 
 Voice is intentionally deferred. A later voice adapter must enter and leave
@@ -2424,6 +2434,8 @@ npm run direct:world-manager-k5-ui
 
 ### WM-K6: Real execution continuation
 
+Status: implemented and locally regression-proven on 2026-08-11.
+
 Deliver:
 
 ```text
@@ -2443,6 +2455,48 @@ WorkThread becomes active only after worker start
 local-only policy is reflected in prompt, tools, approval, and evaluator
 completion requires closure witnesses
 worker result cannot write project/world state directly
+```
+
+The implemented state machine is:
+
+```text
+prepared
+  -> starting
+  -> active
+  -> completed
+  -> admitted
+```
+
+Preparation persists the compiled constitution and role handoff but starts no
+provider call. One exact operator action may authorize the start transition.
+The WorkThread becomes `active` only after the Direct controller returns a
+valid worker-start result. Reads, patches, and commands remain independent
+per-call requests; remote mutation, recursive worker spawning, worker
+self-certification, and worker canonical writes remain unavailable.
+
+Closure is not inferred from terminal activity. The fixed Project Manager
+closure assessor in `plan-execution-closure-runtime.js` receives the admitted
+criteria, final worker message, and an exact runtime-evidence catalog. It
+authors open semantic assessments through a typed action, while the harness
+mechanically requires a valid evidence witness for every criterion. Unknown
+evidence identifiers fail closed, and renderer-supplied witness claims are
+ignored rather than treated as closure authority. Failed or incomplete
+coverage remands the active WorkThread. Complete coverage closes the
+WorkThread, constructs a typed project-memory candidate, admits it through
+project-scoped trust-store CAS, and returns a project-to-world status
+projection.
+
+Durable execution revisions live in the WorldManager SQLite control plane and
+recover without replaying an uncertain worker start. The production renderer
+exposes separate Compile, Authorize worker start, and Evaluate closure actions
+and renders the distinct `wm_k6_execution` posture.
+
+Proof commands:
+
+```bash
+npm run check:world-manager-k6-execution-syntax
+npm run direct:world-manager-k6-execution
+npm run direct:world-manager-k6-execution-ui
 ```
 
 ### WM-K7: Renderer hardening and multi-project concurrency

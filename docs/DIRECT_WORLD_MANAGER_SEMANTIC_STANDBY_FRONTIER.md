@@ -1,7 +1,8 @@
 # Direct WorldManager Semantic Standby Frontier
 
-Status: semantic implementation is intentionally on standby as of 2026-08-08.
-This document is the resume map. It records only work that remains open after
+Status: semantic implementation resumed for one bounded frontier on
+2026-08-11. `WM-K6` is now implemented and regression-proven; this document
+continues as the dependency-ordered map for work that remains open after
 the implemented `WM-SC1` through `WM-SC11` bounded path, `WM-K1` through
 `WM-K5B`, project genesis/substrate binding, and the currently proven ARO
 reconstruction-to-verification path.
@@ -24,9 +25,9 @@ The pause changes priority, not architecture:
 - Existing bounded `ImplementationPatch` SC11 acceptance is a completed
   foundation, not a reason to claim all artifact classes are generalized.
 
-## Pending Frontier, In Dependency Order
+## Completed Since The Pause
 
-### 1. `WM-K6` — general planning-to-execution continuation
+### `WM-K6` — general planning-to-execution continuation
 
 Continue an admitted general plan through:
 
@@ -50,11 +51,20 @@ Required proof:
 - completion requires evidence-bearing closure witnesses;
 - a worker result cannot write project or world state directly.
 
-The accepted SC11 `ImplementationPatch` lifecycle should be reused for typed
-artifacts and assurance gates. `WM-K6` still owns the general plan execution
-bridge rather than being declared complete by that narrower proof.
+Delivered in `plan-execution-continuation.js`,
+`plan-execution-closure-runtime.js`, the WorldManager service, live Direct
+runtime adapter, production IPC/preload bridge, and the contract panel.
+The path is durable and revisioned; preparation starts no provider call; one
+exact operator authorization starts one worker; local effects remain per-call
+gated; closure uses a fixed Project Manager semantic assessor plus mechanical
+evidence binding; project memory enters canonical graph truth only through the
+Project Manager admission adapter. Headless and Playwright proofs are exposed
+as `direct:world-manager-k6-execution` and
+`direct:world-manager-k6-execution-ui`.
 
-### 2. Authoritative project-world activation and constitutional porting
+## Pending Frontier, In Dependency Order
+
+### 1. Authoritative project-world activation and constitutional porting
 
 The current genesis path admits a project constitution, provisions a native
 WSL or Windows workspace, proves the resident substrate, and freezes thread
@@ -72,7 +82,7 @@ Porting must remain a constitutional operation over one semantic source of
 truth. Copying databases and treating both substrates as authoritative is not
 an acceptable implementation.
 
-### 3. Canonical user-authored policy lifecycle
+### 2. Canonical user-authored policy lifecycle
 
 The current compiler can adapt settled rules into task policy closure. The
 full user-authored policy boundary remains:
@@ -90,7 +100,7 @@ This must include conflict resolution, explicit exception authority,
 supersession/revision lineage, and truthful projection of configured versus
 currently operative policy.
 
-### 4. SC11 generalization and runtime hardening
+### 3. SC11 generalization and runtime hardening
 
 The bounded end-to-end `ImplementationPatch` game is complete. Follow-on work
 is deliberately narrower than “implement SC11”:
@@ -104,7 +114,7 @@ is deliberately narrower than “implement SC11”:
 - additional artifact constitutions only when backed by an explicit lifecycle,
   assurance, admission, and recovery game.
 
-### 5. `WM-SC12` — recursive ODEU control circuit
+### 4. `WM-SC12` — recursive ODEU control circuit
 
 Implement the repo-grounded sequence from
 [Recursive ODEU Control Method — Repo Analysis](./RECURSIVE_ODEU_CONTROL_METHOD_FOR_WORLDMANAGER_v0.1_REPO_ANALYSIS.md):
@@ -122,7 +132,7 @@ The scheduler is structural, not semantic. Slot contracts decide what semantic
 work is due; models author open content inside those slots; SC11 governs the
 standing of resulting artifacts.
 
-### 6. `WM-K7` — production renderer hardening
+### 5. `WM-K7` — production renderer hardening
 
 After K6 and activation truth are stable, complete:
 
@@ -137,7 +147,7 @@ The alternate Direct GUI experiment may supply reusable geometry and component
 mechanics. It must not be mistaken for completion of K7's semantic projection
 or authority requirements.
 
-### 7. Modality and live acceptance
+### 6. Modality and live acceptance
 
 - Add live voice as an ingress/egress adapter over the same typed event and
   result contracts; do not create a second voice-only semantic pipeline.

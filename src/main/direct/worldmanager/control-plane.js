@@ -71,6 +71,7 @@ const K3_STAGE = "wm_k3";
 const K4_STAGE = "wm_k4";
 const K5_PLANNING_STAGE = "wm_k5_planning";
 const K6_GENESIS_STAGE = "wm_k6_genesis";
+const K6_EXECUTION_STAGE = "wm_k6_execution";
 const MAX_MESSAGE_CHARS = 64 * 1024;
 const MAX_SUMMARY_CHARS = 480;
 const MAX_PROJECTS = 128;
@@ -643,6 +644,9 @@ function buildWorldManagerWorkbenchProjection(input = {}) {
   const implementationContracts = Array.isArray(input.implementationContracts)
     ? input.implementationContracts
     : [];
+  const planExecutions = Array.isArray(input.planExecutions)
+    ? input.planExecutions
+    : [];
   const pendingDecisions = Array.isArray(input.pendingDecisions) ? input.pendingDecisions : [];
   const settlements = Array.isArray(input.settlements) ? input.settlements : [];
   const semanticIngressRuns = Array.isArray(
@@ -996,14 +1000,21 @@ function buildWorldManagerWorkbenchProjection(input = {}) {
   )
     ? input.operationalMetaContexts
     : [];
-  const pipelineStage = input.pipelineStage === K6_GENESIS_STAGE
+  const pipelineStage = input.pipelineStage === K6_EXECUTION_STAGE
+    ? K6_EXECUTION_STAGE
+    : input.pipelineStage === K6_GENESIS_STAGE
     ? K6_GENESIS_STAGE
     : input.pipelineStage === K5_PLANNING_STAGE
       ? K5_PLANNING_STAGE
     : input.pipelineStage === K4_STAGE
       ? K4_STAGE
       : K3_STAGE;
-  const roleRuntimeStage = [K4_STAGE, K5_PLANNING_STAGE, K6_GENESIS_STAGE].includes(
+  const roleRuntimeStage = [
+    K4_STAGE,
+    K5_PLANNING_STAGE,
+    K6_GENESIS_STAGE,
+    K6_EXECUTION_STAGE,
+  ].includes(
     pipelineStage,
   );
   const roleRuns = Array.isArray(input.roleRuns) ? input.roleRuns : [];
@@ -1055,7 +1066,7 @@ function buildWorldManagerWorkbenchProjection(input = {}) {
   );
   const graphBinding = isPlainObject(input.graphBinding) ? input.graphBinding : null;
   if (
-    ![K5_PLANNING_STAGE, K6_GENESIS_STAGE].includes(pipelineStage) &&
+    ![K5_PLANNING_STAGE, K6_GENESIS_STAGE, K6_EXECUTION_STAGE].includes(pipelineStage) &&
     candidateArtifacts.length
   ) {
     fail("world_manager_projection_k2_candidate_forbidden");
@@ -1064,7 +1075,7 @@ function buildWorldManagerWorkbenchProjection(input = {}) {
     pendingDecisions.some((decision) =>
       !(
         decision.decisionKind === "clarification" ||
-        ([K5_PLANNING_STAGE, K6_GENESIS_STAGE].includes(pipelineStage) &&
+        ([K5_PLANNING_STAGE, K6_GENESIS_STAGE, K6_EXECUTION_STAGE].includes(pipelineStage) &&
           [
             "project_constitution_admission",
             "plan_proposal_admission",
@@ -1629,6 +1640,10 @@ function buildWorldManagerWorkbenchProjection(input = {}) {
     planProposalRevisions.at(-1) || null;
   const latestPlanContractBeforeProjection =
     implementationContracts.at(-1) || null;
+  const latestPlanExecutionBeforeProjection =
+    [...planExecutions].reverse().find((record) =>
+      record.implementationContractRef?.id ===
+        latestPlanContractBeforeProjection?.implementationContractId) || null;
   const latestPlanOwnsCurrentPosture =
     !latestManagerResult ||
     latestPlanProposalBeforeProjection?.sourceSemanticEventRef?.id ===
@@ -1654,6 +1669,22 @@ function buildWorldManagerWorkbenchProjection(input = {}) {
         : "role_running"
     : aroReconstructionRunning
       ? "role_running"
+    : pipelineStage === K6_EXECUTION_STAGE &&
+        latestPlanExecutionBeforeProjection
+      ? latestPlanExecutionBeforeProjection.state === "prepared"
+        ? "execution_prepared"
+        : latestPlanExecutionBeforeProjection.state === "starting"
+          ? "role_running"
+          : latestPlanExecutionBeforeProjection.state === "active"
+            ? latestPlanExecutionBeforeProjection.closureEvaluation
+              ?.decision === "remand"
+              ? "attention_required"
+              : "role_running"
+            : latestPlanExecutionBeforeProjection.state === "completed"
+              ? "execution_completed"
+              : latestPlanExecutionBeforeProjection.state === "admitted"
+                ? "execution_admitted"
+                : "failed"
     : pipelineStage === K6_GENESIS_STAGE &&
         latestGenesisCandidateBeforeProjection?.lifecycle ===
           "admitted"
@@ -1717,6 +1748,22 @@ function buildWorldManagerWorkbenchProjection(input = {}) {
         "WorldManager is coordinating semantic child events"
     : aroReconstructionRunning
       ? "Repository semantic anatomy is being reconstructed in the background"
+    : pipelineStage === K6_EXECUTION_STAGE &&
+        latestPlanExecutionBeforeProjection
+      ? latestPlanExecutionBeforeProjection.state === "prepared"
+        ? "Implementation constitution compiled · worker authorization pending"
+        : latestPlanExecutionBeforeProjection.state === "starting"
+          ? "Authorized worker start is being realized"
+          : latestPlanExecutionBeforeProjection.state === "active"
+            ? latestPlanExecutionBeforeProjection.closureEvaluation
+              ?.decision === "remand"
+              ? "Implementation remains active · closure evidence remanded"
+              : "Implementation worker active · effects separately gated"
+            : latestPlanExecutionBeforeProjection.state === "completed"
+              ? "Implementation closure witnessed · project-memory admission pending"
+              : latestPlanExecutionBeforeProjection.state === "admitted"
+                ? "Implementation completed · project memory admitted"
+                : "Implementation execution failed"
     : pipelineStage === K6_GENESIS_STAGE &&
         latestGenesisCandidateBeforeProjection?.lifecycle ===
           "admitted"
@@ -2029,6 +2076,41 @@ function buildWorldManagerWorkbenchProjection(input = {}) {
   const latestPlanProposal = planProposalRevisions.at(-1) || null;
   const latestImplementationContract =
     implementationContracts.at(-1) || null;
+  const projectedPlanExecutions = planExecutions.map((record) => ({
+    executionId: boundedString(record.executionId, "", 180),
+    revision: Number(record.revision || 0),
+    projectId: boundedString(record.projectId, "", 180),
+    implementationContractId: boundedString(
+      record.implementationContractRef?.id,
+      "",
+      180,
+    ),
+    workThreadId: boundedString(record.workThreadRef?.id, "", 180),
+    state: boundedString(record.state, "unknown", 80),
+    workerStarted: Boolean(record.workerStart?.result?.status === "started"),
+    closureDecision: boundedString(
+      record.closureEvaluation?.decision,
+      "",
+      80,
+    ),
+    blockerCodes: Array.isArray(record.closureEvaluation?.blockerCodes)
+      ? record.closureEvaluation.blockerCodes.map((code) =>
+          boundedString(code, "", 180)).filter(Boolean)
+      : [],
+    projectMemoryAdmitted: Boolean(
+      record.projectMemory?.admission?.admitted,
+    ),
+    canonicalEffect:
+      record.state === "admitted" && record.canonicalEffect === true,
+    grantsAuthority: false,
+    digest: boundedString(record.digest, "", 180),
+    rawProviderPayloadIncluded: false,
+    rawChainOfThoughtIncluded: false,
+  }));
+  const latestPlanExecution = [...projectedPlanExecutions].reverse()
+    .find((record) =>
+      record.implementationContractId ===
+        latestImplementationContract?.implementationContractId) || null;
   const latestPlanAdmission = latestPlanProposal
     ? planAdmissions.find((record) =>
         record.request?.proposalRevisionRef?.id ===
@@ -5267,6 +5349,13 @@ function buildWorldManagerWorkbenchProjection(input = {}) {
           ? "A compound turn completed with unresolved child work"
         : splitRunning
           ? "The WorldManager is coordinating one compound turn"
+        : pipelineStage === K6_EXECUTION_STAGE &&
+            latestPlanExecution
+          ? latestPlanExecution.state === "admitted"
+            ? "Implementation closure is admitted into project memory"
+            : latestPlanExecution.state === "active"
+              ? "A governed Direct implementation worker is active"
+              : "The admitted plan is crossing its execution boundary"
         : pipelineStage === K6_GENESIS_STAGE &&
             latestProjectConstitution
           ? latestWorkspaceBinding
@@ -5299,6 +5388,13 @@ function buildWorldManagerWorkbenchProjection(input = {}) {
           ? `${latestSplitCoordination.summary} The unified response remains visible, while incomplete child outcomes remain inspectable and non-canonical.`
         : splitRunning
           ? latestSplitCoordination.summary
+        : pipelineStage === K6_EXECUTION_STAGE &&
+            latestPlanExecution
+          ? latestPlanExecution.state === "admitted"
+            ? "The worker remained outside canonical authority. Runtime-observed closure evidence was evaluated, the WorkThread closed, and the Project Manager separately admitted a project-memory candidate."
+            : latestPlanExecution.state === "active"
+              ? "The WorkThread became active only after an exact single-use worker-start authorization. Local tools remain per-call gated; remote mutation and canonical writes are unavailable."
+              : "The implementation constitution binds the admitted contract, policy closure, capabilities, authority envelope, and completion evaluator before a provider call may begin."
         : pipelineStage === K6_GENESIS_STAGE &&
             latestProjectConstitution
           ? latestWorkspaceBinding
@@ -6129,6 +6225,8 @@ function buildWorldManagerWorkbenchProjection(input = {}) {
           digest: latestImplementationContract.digest,
         }
       : null,
+    planExecutions: projectedPlanExecutions,
+    latestPlanExecution,
     latestWorkThread: latestContractWorkThread,
     reconciliation: roleRuntimeStage
       ? {
@@ -6397,7 +6495,9 @@ function buildWorldManagerWorkbenchProjection(input = {}) {
       rawProviderPayloadIncluded: false,
     },
     omissionWitness: {
-      schema: pipelineStage === K6_GENESIS_STAGE
+      schema: pipelineStage === K6_EXECUTION_STAGE
+        ? "direct_world_manager_k6_execution_omission_witness@1"
+        : pipelineStage === K6_GENESIS_STAGE
         ? "direct_world_manager_k6_genesis_omission_witness@1"
         : pipelineStage === K4_STAGE
         ? "direct_world_manager_k4_omission_witness@1"
@@ -6410,13 +6510,21 @@ function buildWorldManagerWorkbenchProjection(input = {}) {
           "provider_role_turn",
           "agent_result",
         ]),
-        ...(pipelineStage === K6_GENESIS_STAGE
+        ...(pipelineStage === K6_EXECUTION_STAGE
+          ? latestPlanExecution?.state === "admitted"
+            ? ["world_level_status_admission"]
+            : ["project_memory_admission", "world_level_status_projection"]
+          : pipelineStage === K6_GENESIS_STAGE
           ? latestWorkspaceBinding
             ? ["authoritative_project_worldmodel_activation"]
             : ["workspace_provisioning", "worker_execution"]
           : ["candidate_registration", "canonical_admission"]),
       ],
-      reason: pipelineStage === K6_GENESIS_STAGE
+      reason: pipelineStage === K6_EXECUTION_STAGE
+        ? latestPlanExecution?.state === "admitted"
+          ? "wm_k6_execution_closes_at_project_memory_admission_and_upward_status_projection"
+          : "wm_k6_execution_preserves_separate_worker_start_effect_and_closure_authority"
+        : pipelineStage === K6_GENESIS_STAGE
         ? latestWorkspaceBinding
           ? "wm_env1_binds_native_project_substrate_but_stops_before_authoritative_project_worldmodel_activation"
           : "wm_k6_genesis_admits_semantic_constitution_but_stops_before_workspace_provisioning"
@@ -6435,6 +6543,10 @@ function buildWorldManagerWorkbenchProjection(input = {}) {
         candidateCount: Number(
           input.store?.counts?.candidateCount ||
             candidateArtifacts.length,
+        ),
+        planExecutionCount: Number(
+          input.store?.counts?.planExecutionCount ||
+            projectedPlanExecutions.length,
         ),
         projectConstitutionCount: Number(
           input.store?.counts?.projectConstitutionCount ||
@@ -6539,7 +6651,13 @@ function assertWorldManagerWorkbenchProjectionSafe(projection) {
     fail("world_manager_projection_schema_mismatch");
   }
   if (
-    ![K3_STAGE, K4_STAGE, K5_PLANNING_STAGE, K6_GENESIS_STAGE].includes(
+    ![
+      K3_STAGE,
+      K4_STAGE,
+      K5_PLANNING_STAGE,
+      K6_GENESIS_STAGE,
+      K6_EXECUTION_STAGE,
+    ].includes(
       projection.pipelineStage,
     ) ||
     projection.mode !== "production"
@@ -6589,7 +6707,7 @@ function assertWorldManagerWorkbenchProjectionSafe(projection) {
     );
   }
   if (
-    ![K5_PLANNING_STAGE, K6_GENESIS_STAGE].includes(projection.pipelineStage) &&
+    ![K5_PLANNING_STAGE, K6_GENESIS_STAGE, K6_EXECUTION_STAGE].includes(projection.pipelineStage) &&
     (projection.candidateArtifacts?.length ||
       projection.latestProposal !== null ||
       projection.latestContract !== null ||
@@ -6598,7 +6716,9 @@ function assertWorldManagerWorkbenchProjectionSafe(projection) {
     fail("world_manager_projection_k1_future_state_forbidden");
   }
   if (
-    projection.pipelineStage !== K6_GENESIS_STAGE &&
+    ![K6_GENESIS_STAGE, K6_EXECUTION_STAGE].includes(
+      projection.pipelineStage,
+    ) &&
     (projection.latestProjectConstitutionCandidate !== null ||
       projection.latestProjectConstitution !== null)
   ) {
@@ -6645,6 +6765,9 @@ function assertWorldManagerWorkbenchProjectionSafe(projection) {
         "candidate_ready",
         "candidate_reviewed",
         "constitution_admitted",
+        "execution_prepared",
+        "execution_completed",
+        "execution_admitted",
         "split_materialized",
         "split_executing",
         "split_joining",
@@ -6654,7 +6777,7 @@ function assertWorldManagerWorkbenchProjectionSafe(projection) {
     projection.pendingDecisions?.some((decision) =>
       !(
         decision.decisionKind === "clarification" ||
-        ([K5_PLANNING_STAGE, K6_GENESIS_STAGE].includes(projection.pipelineStage) &&
+        ([K5_PLANNING_STAGE, K6_GENESIS_STAGE, K6_EXECUTION_STAGE].includes(projection.pipelineStage) &&
           [
             "project_constitution_admission",
             "plan_proposal_admission",
@@ -6662,9 +6785,9 @@ function assertWorldManagerWorkbenchProjectionSafe(projection) {
       ) ||
       decision.grantsAuthority !== false) ||
     projection.projects?.some((project) =>
-      (![K5_PLANNING_STAGE, K6_GENESIS_STAGE].includes(projection.pipelineStage) &&
+      (![K5_PLANNING_STAGE, K6_GENESIS_STAGE, K6_EXECUTION_STAGE].includes(projection.pipelineStage) &&
         project.candidateCount !== 0) ||
-      (![K5_PLANNING_STAGE, K6_GENESIS_STAGE].includes(projection.pipelineStage) &&
+      (![K5_PLANNING_STAGE, K6_GENESIS_STAGE, K6_EXECUTION_STAGE].includes(projection.pipelineStage) &&
         project.canonicalContractCount !== 0) ||
       project.grantsAuthority !== false)
   ) {
@@ -7932,8 +8055,10 @@ function assertWorldManagerWorkbenchProjectionSafe(projection) {
       project.inspectionPosture ===
         "semantic_candidate" &&
       (
-        projection.pipelineStage !==
-          K6_GENESIS_STAGE ||
+        ![
+          K6_GENESIS_STAGE,
+          K6_EXECUTION_STAGE,
+        ].includes(projection.pipelineStage) ||
         project.sourceKind !==
           "project_constitution_candidate" ||
         project.focusEligible !== false ||
@@ -8113,6 +8238,43 @@ function assertWorldManagerWorkbenchProjectionSafe(projection) {
       fail("world_manager_projection_k5_planning_boundary");
     }
   }
+  if (projection.pipelineStage === K6_EXECUTION_STAGE) {
+    const execution = projection.latestPlanExecution;
+    const expectedWorkThreadState =
+      ["prepared", "starting"].includes(execution?.state)
+        ? "contract_received"
+        : execution?.state === "active"
+          ? "active"
+          : ["completed", "admitted"].includes(execution?.state)
+            ? "completed"
+            : execution?.state === "failed"
+              ? "failed_boundary"
+            : "unknown";
+    const workThreadStateValid = execution?.state === "failed"
+      ? ["contract_received", "paused"].includes(
+          projection.latestWorkThread?.lifecycleState,
+        )
+      : projection.latestWorkThread?.lifecycleState ===
+          expectedWorkThreadState;
+    if (
+      projection.worldPosture?.providerRoleRuntime !== "available" ||
+      projection.connectionPosture?.directRoleRuntime !== "ready" ||
+      !projection.latestProposal ||
+      !projection.latestContract ||
+      !execution ||
+      execution.grantsAuthority !== false ||
+      execution.rawProviderPayloadIncluded !== false ||
+      execution.rawChainOfThoughtIncluded !== false ||
+      (execution.canonicalEffect === true && execution.state !== "admitted") ||
+      projection.latestContract.canonical !== true ||
+      projection.latestContract.state !== "contract_received" ||
+      projection.latestContract.workerStartAuthorized !== false ||
+      !workThreadStateValid ||
+      projection.truthPosture?.activityIsCompletion !== false
+    ) {
+      fail("world_manager_projection_k6_execution_boundary");
+    }
+  }
   if (projection.pipelineStage === K6_GENESIS_STAGE) {
     const candidate = projection.latestProjectConstitutionCandidate;
     const constitution = projection.latestProjectConstitution;
@@ -8206,6 +8368,7 @@ module.exports = {
   K4_STAGE,
   K5_PLANNING_STAGE,
   K6_GENESIS_STAGE,
+  K6_EXECUTION_STAGE,
   MAX_MESSAGE_CHARS,
   WORLD_MANAGER_BOOTSTRAP_MANIFEST_SCHEMA,
   WORLD_MANAGER_CONTROL_PLANE_STORE_SCHEMA,

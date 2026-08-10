@@ -77,6 +77,9 @@ const {
   DirectWorldManagerService,
 } = require("./main/direct/worldmanager/service");
 const {
+  DirectPlanExecutionClosureRuntime,
+} = require("./main/direct/worldmanager/plan-execution-closure-runtime");
+const {
   DirectWorldManagerEpistemicFabricRuntime,
 } = require("./main/direct/worldmanager/epistemic-fabric-runtime");
 const {
@@ -1102,6 +1105,112 @@ async function observeWorldManagerArtifactRuntimeEvidence(
   };
 }
 
+async function observeWorldManagerPlanExecution(request = {}) {
+  const projectId = normalizeString(request.projectId, "");
+  const project = await resolveWorldManagerRuntimeProject({ id: projectId });
+  if (!project) {
+    const error = new Error(
+      `WorldManager plan-execution project is unavailable: ${projectId || "<empty>"}`,
+    );
+    error.code = "world_manager_plan_execution_project_unavailable";
+    throw error;
+  }
+  const workerSessionId = normalizeString(request.workerSessionId, "");
+  const workerTurnId = normalizeString(request.workerTurnId, "");
+  const controller = ensureDirectLiveTextController();
+  await controller.waitForTurnCompletion({
+    sessionId: workerSessionId,
+    turnId: workerTurnId,
+  });
+  const sessionStore = ensureDirectSessionStore();
+  const session = sessionStore.readSession(workerSessionId);
+  const turn = sessionStore.readTurn(workerSessionId, workerTurnId);
+  if (
+    !session ||
+    !turn ||
+    session.projectId !== projectId ||
+    turn.sessionId !== workerSessionId ||
+    turn.turnId !== workerTurnId
+  ) {
+    const error = new Error(
+      "world_manager_plan_execution_worker_turn_unavailable",
+    );
+    error.code = "world_manager_plan_execution_worker_turn_unavailable";
+    throw error;
+  }
+  const turnEvidenceRef = {
+    kind: "direct_worker_turn",
+    id: turn.turnId,
+    digest: `sha256:${stableDigest({
+      sessionId: turn.sessionId,
+      turnId: turn.turnId,
+      state: turn.state,
+      createdAt: turn.createdAt,
+      updatedAt: turn.updatedAt,
+      completedAt: turn.completedAt,
+      normalizedEventCount: turn.normalizedEventCount,
+      toolResultIds: (turn.toolResults || []).map((result) =>
+        normalizeString(
+          result.resultId || result.obligationId || result.toolCallId,
+          "",
+        )).filter(Boolean),
+    })}`,
+    projectId,
+  };
+  const toolResultRefs = (Array.isArray(turn.toolResults)
+    ? turn.toolResults
+    : []).map((result, index) => ({
+      kind: "direct_tool_result",
+      id: normalizeString(
+        result.resultId || result.obligationId || result.toolCallId,
+        `tool_result_${index + 1}`,
+      ),
+      digest: `sha256:${stableDigest({
+        index,
+        result,
+      })}`,
+      projectId,
+    }));
+  const workerStartResultRef =
+    request.record?.workerStart?.resultRef || null;
+  const turnMessage = (Array.isArray(session.messages)
+    ? session.messages
+    : []).find((message) => message.id === workerTurnId) || null;
+  const finalAssistantText = (Array.isArray(turnMessage?.items)
+    ? turnMessage.items
+    : []).filter((item) =>
+      item?.type === "agentMessage" &&
+      typeof item.text === "string")
+    .at(-1)?.text || "";
+  return {
+    schema: "direct_plan_execution_runtime_observation@1",
+    projectId,
+    workerSessionId,
+    workerTurnId,
+    workerTerminalState: normalizeString(turn.state, "failed"),
+    workerStartResultRef,
+    runtimeEvidenceRefs: [
+      ...(workerStartResultRef ? [workerStartResultRef] : []),
+      turnEvidenceRef,
+      ...toolResultRefs,
+    ],
+    finalAssistantText,
+    observedAt: nowIso(),
+    observationOnly: true,
+    workspaceMutationEffect: false,
+    canonicalEffect: false,
+    grantsAuthority: false,
+    rawProviderPayloadIncluded: false,
+  };
+}
+
+async function evaluateWorldManagerPlanExecutionClosure(input = {}) {
+  const runtime = new DirectPlanExecutionClosureRuntime({
+    runner: (request) => runWorldManagerSemanticRoleThroughDirect(request),
+  });
+  return runtime.evaluate(input);
+}
+
 function ensureWorldManagerSemanticCoordinator(options = {}) {
   const projects = Array.isArray(options.projects) ? options.projects : [];
   const activeProjectId = normalizeString(options.activeProjectId, currentProject?.id || "");
@@ -1319,6 +1428,75 @@ function ensureWorldManagerService(options = {}) {
               },
             );
         },
+      },
+      planExecutionRuntime: {
+        available: () => true,
+        capabilitySnapshot: async (input = {}) => {
+          const observation =
+            await observeWorldManagerAroWorkerCapability({
+              id: input.projectId,
+            });
+          return {
+            availableToolNames: Object.entries(
+              observation.toolStates || {},
+            ).filter(([, state]) => state === "ready")
+              .map(([name]) => name),
+            environment:
+              observation.workspaceKind === "windows"
+                ? "windows_local_repository"
+                : observation.workspaceKind === "wsl"
+                  ? "wsl_local_repository"
+                  : "local_repository",
+            turnRunnable: observation.turnRunnable === true,
+            reason: observation.blockerCodes?.join(",") || "",
+            remoteMutationAvailable: false,
+            canonicalWriteAvailable: false,
+            perCallApprovalRequired: true,
+          };
+        },
+        start: async (input = {}) => {
+          const projectId = normalizeString(input.projectId, "");
+          const project = await resolveWorldManagerRuntimeProject(
+            input.project || { id: projectId },
+          );
+          if (!project) {
+            const error = new Error(
+              `WorldManager plan-execution project is unavailable: ${projectId || "<empty>"}`,
+            );
+            error.code =
+              "world_manager_plan_execution_project_unavailable";
+            throw error;
+          }
+          return ensureDirectLiveTextController()
+            .startWorkerFromHandoff(
+              {
+                handoffPacket: input.handoffPacket,
+                workerPrompt: input.workerPrompt,
+                operatorAcceptance: {
+                  decision: "accepted",
+                  accepted: true,
+                  operatorActionId: input.operatorActionId,
+                  acceptedAt: nowIso(),
+                  rendererSafeLabel:
+                    "WorldManager admitted-plan worker authorization",
+                },
+                workThread: input.workThread,
+                authorityBoundary:
+                  input.workThread?.authorityBoundary,
+                compiledAgentContextRef:
+                  input.compiledAgentContextRef,
+                reasoningEffort: "medium",
+              },
+              {
+                project,
+                surfaceSession: input.surfaceSession || null,
+              },
+            );
+        },
+        observe: (input = {}) =>
+          observeWorldManagerPlanExecution(input),
+        evaluateClosure: (input = {}) =>
+          evaluateWorldManagerPlanExecutionClosure(input),
       },
       aroTargetDefinitionRuntime:
         new DirectAroTargetDefinitionRuntime({
@@ -10466,6 +10644,18 @@ ipcMain.handle("world-manager:inspect-plan-proposal", async (event, payload) =>
 ipcMain.handle("world-manager:admit-plan-proposal", async (event, payload) =>
   runWorldManagerTransition(event, (service) =>
     service.admitPlanProposal(payload)));
+
+ipcMain.handle("world-manager:prepare-plan-execution", async (event, payload) =>
+  runWorldManagerTransition(event, (service) =>
+    service.preparePlanExecution(payload)));
+
+ipcMain.handle("world-manager:authorize-plan-execution", async (event, payload) =>
+  runWorldManagerTransition(event, (service) =>
+    service.authorizePlanExecution(payload)));
+
+ipcMain.handle("world-manager:complete-plan-execution", async (event, payload) =>
+  runWorldManagerTransition(event, (service) =>
+    service.completePlanExecution(payload)));
 
 ipcMain.handle("world-manager:focus-project", async (event, payload) =>
   runWorldManagerTransition(event, (service) => service.focusProject(payload)));

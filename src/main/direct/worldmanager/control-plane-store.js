@@ -35,6 +35,9 @@ const {
   AGENT_RESULT_SCHEMA,
 } = require("./role-runtime");
 const {
+  validatePlanExecutionRecord,
+} = require("./plan-execution-continuation");
+const {
   admitProjectConstitution,
   reviewedProjectConstitutionCandidate,
   validateProjectConstitutionCandidate,
@@ -423,6 +426,31 @@ class DirectWorldManagerControlPlaneStore {
         work_thread_id text not null,
         created_at text not null
       );
+
+      create table if not exists wm_plan_execution_records (
+        execution_id text not null,
+        revision integer not null,
+        project_id text not null,
+        implementation_contract_id text not null,
+        work_thread_id text not null,
+        state text not null,
+        current_state text not null,
+        record_json text not null,
+        record_digest text not null unique,
+        created_at text not null,
+        updated_at text not null,
+        primary key (execution_id, revision)
+      );
+
+      create unique index if not exists
+        wm_plan_execution_current_execution
+      on wm_plan_execution_records (execution_id)
+      where current_state = 'current';
+
+      create unique index if not exists
+        wm_plan_execution_current_contract
+      on wm_plan_execution_records (implementation_contract_id)
+      where current_state = 'current';
 
       create table if not exists wm_realization_snapshots (
         snapshot_id text primary key,
@@ -6592,6 +6620,131 @@ class DirectWorldManagerControlPlaneStore {
       select contract_json from wm_implementation_contracts
       order by created_at asc
     `).all().map((row) => parseJson(row.contract_json, null)).filter(Boolean);
+  }
+
+  planExecutionById(executionId, options = {}) {
+    const id = normalizeString(executionId, "");
+    if (!id) return null;
+    const revision = Number(options.revision);
+    const row = Number.isInteger(revision) && revision > 0
+      ? this.db.prepare(`
+          select record_json from wm_plan_execution_records
+          where execution_id = ? and revision = ?
+        `).get(id, revision)
+      : this.db.prepare(`
+          select record_json from wm_plan_execution_records
+          where execution_id = ? and current_state = 'current'
+        `).get(id);
+    if (!row) return null;
+    const record = parseJson(row.record_json, null);
+    validatePlanExecutionRecord(record);
+    return record;
+  }
+
+  planExecutionForContract(implementationContractId) {
+    const contractId = normalizeString(implementationContractId, "");
+    if (!contractId) return null;
+    const row = this.db.prepare(`
+      select record_json from wm_plan_execution_records
+      where implementation_contract_id = ? and current_state = 'current'
+    `).get(contractId);
+    if (!row) return null;
+    const record = parseJson(row.record_json, null);
+    validatePlanExecutionRecord(record);
+    return record;
+  }
+
+  listPlanExecutions(options = {}) {
+    const projectId = normalizeString(options.projectId, "");
+    const currentOnly = options.currentOnly !== false;
+    const clauses = [];
+    const args = [];
+    if (currentOnly) clauses.push("current_state = 'current'");
+    if (projectId) {
+      clauses.push("project_id = ?");
+      args.push(projectId);
+    }
+    const rows = this.db.prepare(`
+      select record_json from wm_plan_execution_records
+      ${clauses.length ? `where ${clauses.join(" and ")}` : ""}
+      order by created_at asc, revision asc
+    `).all(...args);
+    return rows.map((row) => parseJson(row.record_json, null))
+      .filter(Boolean)
+      .map((record) => {
+        validatePlanExecutionRecord(record);
+        return record;
+      });
+  }
+
+  registerPlanExecutionRecord(record) {
+    validatePlanExecutionRecord(record);
+    return this.transaction(() => {
+      const duplicate = this.db.prepare(`
+        select record_json from wm_plan_execution_records
+        where record_digest = ?
+      `).get(record.digest);
+      if (duplicate) {
+        const persisted = parseJson(duplicate.record_json, null);
+        validatePlanExecutionRecord(persisted);
+        return {
+          reused: true,
+          record: persisted,
+          projectionRevision: this.revision(),
+        };
+      }
+      const currentRow = this.db.prepare(`
+        select revision, record_digest, record_json
+        from wm_plan_execution_records
+        where execution_id = ? and current_state = 'current'
+      `).get(record.executionId);
+      if (!currentRow) {
+        if (record.revision !== 1 || record.priorRecordRef !== null) {
+          fail("world_manager_plan_execution_initial_revision_invalid");
+        }
+      } else {
+        const current = parseJson(currentRow.record_json, null);
+        validatePlanExecutionRecord(current);
+        if (
+          record.revision !== Number(currentRow.revision) + 1 ||
+          record.priorRecordRef?.id !== current.executionId ||
+          record.priorRecordRef?.digest !== current.digest
+        ) {
+          fail("world_manager_plan_execution_stale_revision");
+        }
+      }
+      if (currentRow) {
+        this.db.prepare(`
+          update wm_plan_execution_records
+          set current_state = 'historical'
+          where execution_id = ? and current_state = 'current'
+        `).run(record.executionId);
+      }
+      this.db.prepare(`
+        insert into wm_plan_execution_records (
+          execution_id, revision, project_id,
+          implementation_contract_id, work_thread_id, state,
+          current_state, record_json, record_digest,
+          created_at, updated_at
+        ) values (?, ?, ?, ?, ?, ?, 'current', ?, ?, ?, ?)
+      `).run(
+        record.executionId,
+        record.revision,
+        record.projectId,
+        record.implementationContractRef.id,
+        record.workThreadRef.id,
+        record.state,
+        json(record),
+        record.digest,
+        record.createdAt,
+        record.updatedAt,
+      );
+      return {
+        reused: false,
+        record,
+        projectionRevision: this.incrementRevision(),
+      };
+    });
   }
 
   realizationSnapshotByRef(ref = {}) {
@@ -14315,6 +14468,7 @@ class DirectWorldManagerControlPlaneStore {
       eventCount: Number(this.db.prepare("select count(*) as count from wm_events").get()?.count || 0),
       messageCount: Number(this.db.prepare("select count(*) as count from wm_messages").get()?.count || 0),
       candidateCount: Number(this.db.prepare("select count(*) as count from wm_candidate_artifacts").get()?.count || 0),
+      planExecutionCount: Number(this.db.prepare("select count(*) as count from wm_plan_execution_records where current_state = 'current'").get()?.count || 0),
       projectConstitutionCount: Number(this.db.prepare("select count(*) as count from wm_project_constitutions").get()?.count || 0),
       projectRuntimeDefaultCount: Number(this.db.prepare("select count(*) as count from wm_project_runtime_defaults").get()?.count || 0),
       projectWorkspaceBindingCount: Number(this.db.prepare("select count(*) as count from wm_project_workspace_bindings").get()?.count || 0),
@@ -14406,6 +14560,8 @@ class DirectWorldManagerControlPlaneStore {
         this.listPlanAdmissions(),
       implementationContracts:
         this.listImplementationContracts(),
+      planExecutions:
+        this.listPlanExecutions(),
       projectConstitutions: this.listProjectConstitutions(),
       projectRuntimeDefaults: this.listProjectRuntimeDefaults(),
       projectWorkspaceBindings: this.listProjectWorkspaceBindings(),

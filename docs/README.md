@@ -84,9 +84,10 @@
   unified communications plane, semantic policy inheritance, compiled
   agent-worlds, completion relay, and progressive semantic transparency.
 - [Direct WorldManager Semantic Standby Frontier](./DIRECT_WORLD_MANAGER_SEMANTIC_STANDBY_FRONTIER.md) -
-  dependency-ordered resume map for K6/K7, project-world activation and
+  dependency-ordered resume map recording completed K6 execution continuation
+  and the remaining K7, project-world activation and
   porting, canonical policy admission, SC11 hardening, SC12, voice, and live
-  acceptance while semantic work is intentionally paused.
+  acceptance frontiers.
 - [T3-Informed Alternate Direct GUI Experiment](./DIRECT_T3_ALTERNATE_GUI_EXPERIMENT.md) -
   source-grounded shell-topology import that keeps Direct as the sole runtime
   owner and exposes an opt-in full-window alternate renderer.
@@ -110,7 +111,10 @@
   plan revisions, exact evidence review, control and semantic Greenlight
   parity through one graph-CAS admission protocol, durable implementation
   contracts, and a real WorkThread held at `contract_received` until separate
-  worker-start authority exists.
+  worker-start authority exists. WM-K6 now compiles the implementation
+  constitution, starts one explicitly authorized Direct worker while retaining
+  per-call effect gates, evaluates closure against exact runtime evidence, and
+  admits project memory only through the Project Manager boundary.
 - [Direct WorldManager Project Genesis And Substrate Constitution](./DIRECT_WORLD_MANAGER_PROJECT_GENESIS_AND_SUBSTRATE_SPEC.md) -
   implemented WM-K5G/K6G vertical slice for grounded WSL/Windows realization
   ranking, non-canonical project-constitution candidates, evidence-gated

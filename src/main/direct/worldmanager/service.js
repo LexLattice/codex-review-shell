@@ -114,6 +114,28 @@ const {
   buildPlanProposalRevision,
   planProposalRef,
 } = require("./plan-proposal-lifecycle");
+const {
+  buildPlanExecutionAuthorization,
+  buildPlanExecutionClosureEvaluation,
+  buildPlanExecutionConstitution,
+  buildPlanExecutionHandoff,
+  buildPlanExecutionRecord,
+  planExecutionRecordRef,
+  planExecutionWorkerPrompt,
+  revisePlanExecutionRecord,
+  validateImplementationContract,
+} = require("./plan-execution-continuation");
+const {
+  validatePlanExecutionClosureAssessment,
+} = require("./plan-execution-closure-runtime");
+const {
+  buildOdeuResultEnvelope,
+} = require("../odeu/result");
+const {
+  buildProjectMemoryCandidate,
+  buildProjectToWorldStatusProjection,
+  buildWorkThreadClosureEvidenceWitness,
+} = require("../worldmodel/project-memory-propagation");
 
 function normalizeString(value, fallback = "") {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
@@ -170,6 +192,42 @@ function exactRefMatches(left, right) {
     left.id === right.id &&
     left.digest === right.digest,
   );
+}
+
+function exactExecutionRef(value = {}, label = "execution_ref") {
+  const ref = {
+    kind: normalizeString(value.kind, ""),
+    id: normalizeString(value.id || value.artifactId, ""),
+    digest: normalizeString(value.digest || value.artifactDigest, ""),
+    ...(normalizeString(value.projectId, "")
+      ? { projectId: normalizeString(value.projectId, "") }
+      : {}),
+  };
+  if (
+    !ref.kind ||
+    !ref.id ||
+    !/^sha256:[a-f0-9]{64}$/i.test(ref.digest)
+  ) {
+    serviceFail("world_manager_plan_execution_ref_invalid", label);
+  }
+  return ref;
+}
+
+function semanticExecutionSourceRef(ref, observedAt, sourceKind = "family_specific") {
+  const exact = exactExecutionRef(ref);
+  return {
+    sourceRefId: stableId("wm_plan_execution_source_ref", exact),
+    sourceKind,
+    sourceId: exact.id,
+    sourceConfidence: "exact",
+    freshness: "fresh",
+    observedAt,
+    sourceDigest: {
+      algorithm: "sha256",
+      value: exact.digest,
+      digestOf: "canonical_json",
+    },
+  };
 }
 
 function exactRefVectorMatches(left, right) {
@@ -349,6 +407,8 @@ class DirectWorldManagerService extends EventEmitter {
         : null;
     this.aroWorkerRuntime =
       options.aroWorkerRuntime || null;
+    this.planExecutionRuntime =
+      options.planExecutionRuntime || null;
     this.aroWorkerEvidenceProvider =
       typeof options.aroWorkerEvidenceProvider ===
         "function"
@@ -697,6 +757,9 @@ class DirectWorldManagerService extends EventEmitter {
         .recoverInterruptedAroTargetDefinitionRuns();
     }
     this.started = true;
+    if (firstStart && this.planProposalLifecycleEnabled) {
+      this.recoverPlanExecutions();
+    }
     return {
       ...result,
       projection: this.snapshot(),
@@ -5894,6 +5957,899 @@ class DirectWorldManagerService extends EventEmitter {
     }
   }
 
+  recoverPlanExecutions() {
+    if (!this.workThreadStore?.readWorkThread) return;
+    for (const record of this.store.listPlanExecutions()) {
+      if (record.state === "completed") {
+        try {
+          this.admitCompletedPlanExecution(record);
+        } catch {
+          // The completed record remains durable and retryable.
+        }
+        continue;
+      }
+      if (record.state !== "starting") continue;
+      const workThread = this.workThreadStore.readWorkThread(
+        record.workThreadRef.id,
+      );
+      let workThreadRef = record.workThreadRef;
+      if (workThread) {
+        const paused = this.workThreadStore.upsertWorkThread({
+          ...workThread,
+          lifecycleState: "paused",
+          objective: {
+            ...workThread.objective,
+            currentObjective:
+              "Resolve the uncertain worker-start outcome from the prior runtime before any new authorization.",
+          },
+          phaseState: {
+            phaseId: "wm_k6_plan_execution_restart",
+            phaseKind: "worker_start_recovery",
+            status: "paused_uncertain",
+          },
+          authorityBoundary: {
+            allowedActions: ["inspect_persisted_worker_lineage"],
+            forbiddenActions: [
+              "automatic_worker_start_replay",
+              "workspace_mutation",
+              "remote_mutation",
+              "canonical_worldstate_admission",
+            ],
+            summary:
+              "The runtime restarted across the worker-start boundary. Automatic replay is forbidden.",
+          },
+          updatedAt: new Date(this.now()).toISOString(),
+        });
+        workThreadRef = {
+          kind: "work_thread",
+          id: paused.workThreadId,
+          digest: paused.digest,
+          projectId: paused.projectId,
+        };
+      }
+      const failed = revisePlanExecutionRecord(
+        record,
+        {
+          state: "failed",
+          workThreadRef,
+          error: {
+            schema: "direct_world_manager_error@1",
+            code:
+              "world_manager_plan_execution_worker_start_outcome_uncertain",
+            message:
+              "The runtime restarted before the worker-start result was durably reconciled. The start was not replayed.",
+            detail: "",
+            grantsAuthority: false,
+          },
+        },
+        { now: this.now },
+      );
+      this.store.registerPlanExecutionRecord(failed);
+    }
+  }
+
+  planExecutionAvailable() {
+    return Boolean(
+      this.planProposalLifecycleEnabled &&
+      this.workThreadStore?.readWorkThread &&
+      this.workThreadStore?.upsertWorkThread &&
+      this.planExecutionRuntime &&
+      typeof this.planExecutionRuntime.start === "function" &&
+      typeof this.planExecutionRuntime.observe === "function" &&
+      typeof this.planExecutionRuntime.evaluateClosure === "function" &&
+      (typeof this.planExecutionRuntime.available !== "function" ||
+        this.planExecutionRuntime.available()),
+    );
+  }
+
+  currentPlanExecution(input = {}, allowedStates = []) {
+    const record = this.store.planExecutionById(
+      input.executionId,
+    );
+    if (!record) {
+      serviceFail(
+        "world_manager_plan_execution_missing",
+        input.executionId,
+      );
+    }
+    if (
+      normalizeString(input.executionDigest, "") &&
+      record.digest !== input.executionDigest
+    ) {
+      serviceFail(
+        "world_manager_plan_execution_stale_revision",
+        record.executionId,
+      );
+    }
+    if (
+      allowedStates.length &&
+      !allowedStates.includes(record.state)
+    ) {
+      serviceFail(
+        "world_manager_plan_execution_state_invalid",
+        `${record.state}->${allowedStates.join("|")}`,
+      );
+    }
+    return record;
+  }
+
+  async preparePlanExecution(input = {}) {
+    this.ensureStarted();
+    if (!this.planExecutionAvailable()) {
+      serviceFail("world_manager_plan_execution_runtime_unavailable");
+    }
+    const contractId = normalizeString(
+      input.implementationContractId || input.contractId,
+      "",
+    );
+    const contract = this.store.listImplementationContracts()
+      .find((candidate) =>
+        candidate.implementationContractId === contractId);
+    if (!contract) {
+      serviceFail(
+        "world_manager_plan_execution_contract_missing",
+        contractId,
+      );
+    }
+    validateImplementationContract(contract);
+    if (
+      normalizeString(input.implementationContractDigest, "") &&
+      input.implementationContractDigest !== contract.digest
+    ) {
+      serviceFail(
+        "world_manager_plan_execution_contract_stale",
+        contractId,
+      );
+    }
+    const existing = this.store.planExecutionForContract(contractId);
+    if (existing) {
+      return {
+        reused: true,
+        record: existing,
+        projection: this.snapshot(),
+      };
+    }
+    const workThread = this.workThreadStore.readWorkThread(
+      contract.workThreadId,
+    );
+    if (!workThread) {
+      serviceFail(
+        "world_manager_plan_execution_work_thread_missing",
+        contract.workThreadId,
+      );
+    }
+    const capabilitySnapshot =
+      typeof this.planExecutionRuntime.capabilitySnapshot === "function"
+        ? await this.planExecutionRuntime.capabilitySnapshot({
+            projectId: contract.projectId,
+            contract,
+            workThread,
+          }) || {}
+        : {};
+    if (capabilitySnapshot.turnRunnable === false) {
+      serviceFail(
+        "world_manager_plan_execution_runtime_not_runnable",
+        capabilitySnapshot.reason || contract.projectId,
+      );
+    }
+    const targetScope = {
+      kind: "project",
+      projectId: contract.projectId,
+    };
+    const constitution = buildPlanExecutionConstitution({
+      contract,
+      workThread,
+      userWorldId: this.userWorldId,
+      projectManagerAgentId:
+        this.worldmodel.projectManagerAdmissionActorRef(
+          contract.projectId,
+        ).id,
+      availableToolNames:
+        capabilitySnapshot.availableToolNames,
+      environment:
+        capabilitySnapshot.environment || "local_repository",
+      sourceScopeRevisions:
+        this.worldmodel.graph.scopedRevisionRefs.filter((entry) =>
+          entry.scopeKind === "project" &&
+          entry.projectId === contract.projectId),
+      compiledAt: new Date(this.now()).toISOString(),
+      now: this.now,
+    });
+    const handoffPacket = buildPlanExecutionHandoff({
+      constitution,
+      workThread,
+      now: this.now,
+    });
+    const record = buildPlanExecutionRecord({
+      constitution,
+      handoffPacket,
+      now: this.now,
+    });
+    const registered = this.store.registerPlanExecutionRecord(record);
+    const projection = this.snapshot();
+    this.emit("transition", {
+      reason: "plan-execution-prepared",
+      receipt: {
+        schema: "direct_world_manager_plan_execution_receipt@1",
+        state: "prepared",
+        executionRef: planExecutionRecordRef(registered.record),
+        workerStarted: false,
+        providerCallStarted: false,
+        canonicalEffect: false,
+        grantsAuthority: false,
+      },
+      projection,
+    });
+    return {
+      reused: registered.reused,
+      record: registered.record,
+      projection,
+    };
+  }
+
+  async authorizePlanExecution(input = {}) {
+    this.ensureStarted();
+    if (!this.planExecutionAvailable()) {
+      serviceFail("world_manager_plan_execution_runtime_unavailable");
+    }
+    const record = this.currentPlanExecution(input, ["prepared"]);
+    const workThread = this.workThreadStore.readWorkThread(
+      record.workThreadRef.id,
+    );
+    if (
+      !workThread ||
+      workThread.digest !== record.workThreadRef.digest ||
+      workThread.lifecycleState !== "contract_received"
+    ) {
+      serviceFail(
+        "world_manager_plan_execution_work_thread_stale",
+        record.workThreadRef.id,
+      );
+    }
+    const authorization = buildPlanExecutionAuthorization({
+      constitution: record.constitution,
+      handoffPacket: record.handoffPacket,
+      handoffPacketDigest: input.handoffPacketDigest,
+      operatorActionId: input.operatorActionId,
+      actorId: input.actorId || "operator",
+      authorizedAt: new Date(this.now()).toISOString(),
+      now: this.now,
+    });
+    let starting = revisePlanExecutionRecord(
+      record,
+      { state: "starting", authorization },
+      { now: this.now },
+    );
+    starting = this.store.registerPlanExecutionRecord(starting).record;
+    try {
+      if (typeof this.roleRuntime?.registerCompilation === "function") {
+        this.roleRuntime.registerCompilation({
+          compiledAgentContext:
+            record.constitution.compiledAgentContext,
+        });
+      }
+      const runtimeResult = await this.planExecutionRuntime.start({
+        projectId: record.projectId,
+        record: starting,
+        authorization,
+        handoffPacket: record.handoffPacket,
+        workerPrompt: planExecutionWorkerPrompt(
+          record.constitution,
+        ),
+        workThread,
+        operatorActionId: authorization.operatorActionId,
+        compiledAgentContext:
+          record.constitution.compiledAgentContext,
+        compiledAgentContextRef: {
+          kind: "compiled_agent_context",
+          id: record.constitution.compiledAgentContext
+            .compiledAgentContextId,
+          digest: record.constitution.compiledAgentContext.digest,
+          projectId: record.projectId,
+        },
+      });
+      const result = runtimeResult?.result || runtimeResult;
+      if (
+        result?.status !== "started" ||
+        !normalizeString(result.workerSessionId, "") ||
+        !normalizeString(result.workerTurnId, "")
+      ) {
+        serviceFail(
+          "world_manager_plan_execution_worker_start_invalid",
+        );
+      }
+      const resultRef = exactExecutionRef({
+        kind: "direct_worker_start_result",
+        id: result.resultId || stableId(
+          "wm_plan_execution_worker_start_result",
+          {
+            executionId: record.executionId,
+            workerSessionId: result.workerSessionId,
+            workerTurnId: result.workerTurnId,
+          },
+        ),
+        digest: result.resultDigest || digestFor(
+          "direct-worker-start-result-observation@1",
+          result,
+        ),
+        projectId: record.projectId,
+      });
+      const consumedAuthorization = {
+        ...authorization,
+        consumed: true,
+        consumedAt: new Date(this.now()).toISOString(),
+      };
+      consumedAuthorization.digest = digestFor(
+        consumedAuthorization.schema,
+        consumedAuthorization,
+        ["digest"],
+      );
+      const activeWorkThread = this.workThreadStore.upsertWorkThread({
+        ...workThread,
+        lifecycleState: "active",
+        objective: {
+          ...workThread.objective,
+          currentObjective:
+            "Execute the admitted implementation contract and return evidence-bearing completion witnesses.",
+        },
+        phaseState: {
+          phaseId: "wm_k6_plan_execution",
+          phaseKind: "admitted_plan_implementation",
+          status: "active",
+        },
+        authorityBoundary: {
+          allowedActions: [
+            "provider_turn",
+            "separately_approved_local_effect",
+          ],
+          forbiddenActions: [
+            "workspace_mutation_without_per_call_approval",
+            "remote_mutation",
+            "canonical_worldstate_admission",
+            "worker_self_certified_completion",
+          ],
+          summary:
+            "One Direct worker turn is active. Every local effect remains separately gated; completion and canonical admission remain Project Manager-owned.",
+        },
+        evidenceRefs: [
+          ...(workThread.evidenceRefs || []),
+          resultRef,
+        ],
+        updatedAt: new Date(this.now()).toISOString(),
+      });
+      const workerStart = {
+        authorizationRef: exactExecutionRef({
+          kind: "plan_execution_authorization",
+          id: consumedAuthorization.authorizationId,
+          digest: consumedAuthorization.digest,
+          projectId: record.projectId,
+        }),
+        result,
+        resultRef,
+        transition: runtimeResult?.transition || null,
+        canonicalEffect: false,
+      };
+      const active = revisePlanExecutionRecord(
+        starting,
+        {
+          state: "active",
+          authorization: consumedAuthorization,
+          workerStart,
+          workThreadRef: {
+            kind: "work_thread",
+            id: activeWorkThread.workThreadId,
+            digest: activeWorkThread.digest,
+            projectId: activeWorkThread.projectId,
+          },
+        },
+        { now: this.now },
+      );
+      const persisted = this.store.registerPlanExecutionRecord(active).record;
+      const projection = this.snapshot();
+      this.emit("transition", {
+        reason: "plan-execution-worker-started",
+        receipt: {
+          schema: "direct_world_manager_plan_execution_receipt@1",
+          state: "active",
+          executionRef: planExecutionRecordRef(persisted),
+          workerStartResultRef: resultRef,
+          providerCallStarted: true,
+          workThreadActive: true,
+          canonicalEffect: false,
+          grantsAuthority: false,
+        },
+        projection,
+      });
+      return { record: persisted, projection };
+    } catch (error) {
+      const current = this.store.planExecutionById(
+        starting.executionId,
+      );
+      if (current?.digest === starting.digest) {
+        const currentWorkThread = this.workThreadStore.readWorkThread(
+          starting.workThreadRef.id,
+        );
+        let failedWorkThreadRef = starting.workThreadRef;
+        if (currentWorkThread) {
+          const paused = this.workThreadStore.upsertWorkThread({
+            ...currentWorkThread,
+            lifecycleState: "paused",
+            objective: {
+              ...currentWorkThread.objective,
+              currentObjective:
+                "Resolve the failed or uncertain worker-start outcome before any new execution authority is issued.",
+            },
+            phaseState: {
+              phaseId: "wm_k6_plan_execution_start_failure",
+              phaseKind: "worker_start_recovery",
+              status: "paused_uncertain",
+            },
+            authorityBoundary: {
+              allowedActions: ["inspect_persisted_worker_lineage"],
+              forbiddenActions: [
+                "automatic_worker_start_replay",
+                "workspace_mutation",
+                "remote_mutation",
+                "canonical_worldstate_admission",
+              ],
+              summary:
+                "The worker-start operation did not produce a fully reconciled durable result. Automatic replay is forbidden.",
+            },
+            updatedAt: new Date(this.now()).toISOString(),
+          });
+          failedWorkThreadRef = {
+            kind: "work_thread",
+            id: paused.workThreadId,
+            digest: paused.digest,
+            projectId: paused.projectId,
+          };
+        }
+        const failed = revisePlanExecutionRecord(
+          starting,
+          {
+            state: "failed",
+            workThreadRef: failedWorkThreadRef,
+            error: rendererSafeError(error),
+          },
+          { now: this.now },
+        );
+        this.store.registerPlanExecutionRecord(failed);
+      }
+      throw error;
+    }
+  }
+
+  async completePlanExecution(input = {}) {
+    this.ensureStarted();
+    let record = this.currentPlanExecution(
+      input,
+      ["active", "completed", "admitted"],
+    );
+    if (record.state === "admitted") {
+      return {
+        reused: true,
+        record,
+        projection: this.snapshot(),
+      };
+    }
+    if (record.state === "active") {
+      const observation = await this.planExecutionRuntime.observe({
+        projectId: record.projectId,
+        record,
+        workerSessionId:
+          record.workerStart.result.workerSessionId,
+        workerTurnId:
+          record.workerStart.result.workerTurnId,
+      });
+      let runtimeEvidenceRefs = Array.isArray(
+        observation.runtimeEvidenceRefs,
+      )
+        ? [...observation.runtimeEvidenceRefs]
+        : [];
+      const contract = this.store.listImplementationContracts()
+        .find((candidate) =>
+          candidate.implementationContractId ===
+            record.implementationContractRef.id);
+      if (
+        !contract ||
+        contract.digest !== record.implementationContractRef.digest
+      ) {
+        serviceFail(
+          "world_manager_plan_execution_contract_stale",
+          record.implementationContractRef.id,
+        );
+      }
+      const closureAssessment =
+        await this.planExecutionRuntime.evaluateClosure({
+          projectId: record.projectId,
+          implementationContractRef:
+            record.implementationContractRef,
+          workThreadRef: record.workThreadRef,
+          objective: contract.objective,
+          deliverables: contract.deliverables,
+          completionCriteria:
+            record.constitution.completionEvaluator
+              .requiredCriteria,
+          runtimeEvidenceRefs,
+          finalAssistantText:
+            observation.finalAssistantText,
+        });
+      validatePlanExecutionClosureAssessment(closureAssessment);
+      if (
+        closureAssessment.projectId !== record.projectId ||
+        !exactRefMatches(
+          closureAssessment.implementationContractRef,
+          record.implementationContractRef,
+        ) ||
+        !exactRefMatches(
+          closureAssessment.workThreadRef,
+          record.workThreadRef,
+        )
+      ) {
+        serviceFail(
+          "world_manager_plan_execution_closure_assessment_binding_invalid",
+        );
+      }
+      const assessmentRef = exactExecutionRef({
+        kind: "plan_execution_closure_assessment",
+        id: closureAssessment.assessmentId,
+        digest: closureAssessment.digest,
+        projectId: record.projectId,
+      });
+      runtimeEvidenceRefs.push(assessmentRef);
+      const criterionWitnesses = closureAssessment.criterionWitnesses;
+      const evaluation = buildPlanExecutionClosureEvaluation({
+        record,
+        workerStartResultRef:
+          observation.workerStartResultRef ||
+          record.workerStart.resultRef,
+        workerTerminalState:
+          observation.workerTerminalState,
+        runtimeEvidenceRefs,
+        criterionWitnesses: criterionWitnesses || [],
+        now: this.now,
+      });
+      if (evaluation.decision === "remand") {
+        const remanded = revisePlanExecutionRecord(
+          record,
+          {
+            state: "active",
+            closureEvaluation: evaluation,
+            closureAssessment,
+          },
+          { now: this.now },
+        );
+        const persisted = this.store
+          .registerPlanExecutionRecord(remanded).record;
+        const projection = this.snapshot();
+        this.emit("transition", {
+          reason: "plan-execution-closure-remanded",
+          receipt: {
+            schema: "direct_world_manager_plan_execution_receipt@1",
+            state: "active",
+            executionRef: planExecutionRecordRef(persisted),
+            closureDecision: "remand",
+            blockerCodes: evaluation.blockerCodes,
+            workThreadActive: true,
+            canonicalEffect: false,
+            grantsAuthority: false,
+          },
+          projection,
+        });
+        return {
+          record: persisted,
+          closureEvaluation: evaluation,
+          projection,
+        };
+      }
+      const workThread = this.workThreadStore.readWorkThread(
+        record.workThreadRef.id,
+      );
+      if (
+        !workThread ||
+        workThread.digest !== record.workThreadRef.digest
+      ) {
+        serviceFail(
+          "world_manager_plan_execution_work_thread_stale",
+          record.workThreadRef.id,
+        );
+      }
+      const closureRef = exactExecutionRef({
+        kind: "plan_execution_closure_evaluation",
+        id: evaluation.closureEvaluationId,
+        digest: evaluation.digest,
+        projectId: record.projectId,
+      });
+      const completedWorkThread = this.workThreadStore.upsertWorkThread({
+        ...workThread,
+        lifecycleState: "completed",
+        objective: {
+          ...workThread.objective,
+          currentObjective:
+            "Implementation closure was witnessed; Project Manager memory admission is pending.",
+        },
+        phaseState: {
+          phaseId: "wm_k6_plan_execution",
+          phaseKind: "admitted_plan_implementation",
+          status: "completed",
+        },
+        authorityBoundary: {
+          allowedActions: [],
+          forbiddenActions: [
+            "additional_worker_effect",
+            "remote_mutation",
+            "worker_canonical_write",
+          ],
+          summary:
+            "The worker lifecycle is closed. Only Project Manager admission may promote the evidence into project memory.",
+        },
+        evidenceRefs: [
+          ...(workThread.evidenceRefs || []),
+          closureRef,
+          ...runtimeEvidenceRefs,
+        ],
+        updatedAt: new Date(this.now()).toISOString(),
+      });
+      const completed = revisePlanExecutionRecord(
+        record,
+        {
+          state: "completed",
+          closureEvaluation: evaluation,
+          closureAssessment,
+          workThreadRef: {
+            kind: "work_thread",
+            id: completedWorkThread.workThreadId,
+            digest: completedWorkThread.digest,
+            projectId: completedWorkThread.projectId,
+          },
+        },
+        { now: this.now },
+      );
+      record = this.store.registerPlanExecutionRecord(completed).record;
+    }
+    return this.admitCompletedPlanExecution(record);
+  }
+
+  admitCompletedPlanExecution(record) {
+    if (record.state !== "completed") {
+      serviceFail(
+        "world_manager_plan_execution_admission_requires_completed",
+      );
+    }
+    const workThread = this.workThreadStore.readWorkThread(
+      record.workThreadRef.id,
+    );
+    if (
+      !workThread ||
+      workThread.digest !== record.workThreadRef.digest ||
+      workThread.lifecycleState !== "completed"
+    ) {
+      serviceFail(
+        "world_manager_plan_execution_completed_thread_stale",
+        record.workThreadRef.id,
+      );
+    }
+    const observedAt = normalizeString(
+      record.updatedAt,
+      new Date(this.now()).toISOString(),
+    );
+    const closureRef = exactExecutionRef({
+      kind: "plan_execution_closure_evaluation",
+      id: record.closureEvaluation.closureEvaluationId,
+      digest: record.closureEvaluation.digest,
+      projectId: record.projectId,
+    });
+    const managerActorRef =
+      this.worldmodel.projectManagerAdmissionActorRef(
+        record.projectId,
+      );
+    const closureIdentity = {
+      managerProfileId: stableId("project_manager_profile", {
+        userWorldId: this.userWorldId,
+        projectId: record.projectId,
+      }),
+      managerAgentId: managerActorRef.id,
+      runId: record.executionId,
+      callId: record.closureEvaluation.closureEvaluationId,
+    };
+    const closureResultEnvelope = buildOdeuResultEnvelope({
+      resultEnvelopeId: stableId("wm_plan_execution_closure_result", {
+        closureRef,
+      }),
+      capabilityId: "wm_k6_plan_execution_closure",
+      callId: closureIdentity.callId,
+      transactionId: closureIdentity.runId,
+      resultKind: "agent_result",
+      sourceRefs: [
+        semanticExecutionSourceRef(closureRef, observedAt),
+      ],
+      rendererSafeSummary:
+        "The implementation contract completed with evidence-bearing runtime witnesses.",
+      visibility: {
+        rendererVisible: "summary",
+        residentVisible: "summary",
+        providerVisible: "not_seen",
+        transcriptVisible: "none",
+      },
+      payloadPolicy: {
+        rawPayloadStored: false,
+        rawPayloadProviderSent: false,
+        rawPayloadRendererVisible: false,
+        redactionState: "none_needed",
+        truncationState: "none",
+      },
+      rawTextIncluded: false,
+      rawPathIncluded: false,
+      rawProviderPayloadIncluded: false,
+      confidence: "exact",
+    }, { now: this.now });
+    const closureWitness = buildWorkThreadClosureEvidenceWitness({
+      projectId: record.projectId,
+      witnessId: stableId("wm_plan_execution_closure_witness", {
+        executionRef: planExecutionRecordRef(record),
+      }),
+      workThread,
+      closureResultEnvelope,
+      closureIdentity,
+      sourceRefs: [
+        semanticExecutionSourceRef(closureRef, observedAt),
+      ],
+    }, { now: this.now });
+    const closureEvidenceContexts = [{
+      witness: closureWitness,
+      workThread,
+      closureResultEnvelope,
+      closureIdentity,
+    }];
+    const graph = this.worldmodel.graph;
+    const projectRevision = graph.scopedRevisionRefs.find((entry) =>
+      entry.scopeKind === "project" &&
+      entry.projectId === record.projectId);
+    const candidate = buildProjectMemoryCandidate({
+      candidateId: stableId("wm_plan_execution_project_memory", {
+        executionRef: planExecutionRecordRef(record),
+      }),
+      projectId: record.projectId,
+      projectManagerAgentId: managerActorRef.id,
+      closureEvidenceContexts,
+      candidateKind: "progress",
+      proposedSemanticPath: [
+        "projects",
+        record.projectId,
+        "memory",
+        "implementation_closures",
+      ],
+      proposedNode: {
+        nodeId: stableId("wm_plan_execution_memory_node", {
+          executionRef: planExecutionRecordRef(record),
+        }),
+        graphId: graph.graphId,
+        nodeKind: "progress",
+        abstractionLevel: "execution",
+        semanticSummary:
+          `Implementation contract ${record.implementationContractRef.id} completed with admitted closure evidence.`,
+        odeuImpact: {
+          O: ["implementation_contract_completed"],
+          E: ["runtime_observed_closure_witnesses"],
+          D: ["project_manager_admission"],
+          U: ["project_progress_memory"],
+        },
+        epistemicStatus: "accepted",
+        normativeForce: "informational",
+        projectionEligibility: "eligible",
+      },
+      expectedProjectRevision:
+        Number(projectRevision?.revision || 0),
+      sourceRefs: [
+        semanticExecutionSourceRef(closureRef, observedAt),
+      ],
+    }, { now: this.now });
+    const targetAdmissionScope = {
+      kind: "project",
+      projectId: record.projectId,
+    };
+    const lifecycle = {
+      lifecycleId: stableId("wm_plan_execution_memory_lifecycle", {
+        candidateId: candidate.candidateId,
+      }),
+      state: "admission_pending",
+      digest: candidate.candidateDigest,
+      createdAt: observedAt,
+      updatedAt: observedAt,
+    };
+    const gateDecision = {
+      gateDecisionId: stableId("wm_plan_execution_memory_gate", {
+        candidateId: candidate.candidateId,
+      }),
+      decisionState: "gate_ready",
+      digest: record.closureEvaluation.digest,
+      targetAdmissionScope,
+      assuranceGraphRef: closureRef,
+    };
+    const admission = this.worldmodel.admitArtifactRevision({
+      lifecycle,
+      artifactRevision: {
+        artifactRevisionId: candidate.candidateId,
+        artifactDigest: candidate.candidateDigest,
+        artifactTypeId: "project_memory_candidate",
+        revision: record.revision,
+        artifactContentRef: {
+          kind: "project_memory_candidate",
+          id: candidate.candidateId,
+          digest: candidate.candidateDigest,
+          projectId: record.projectId,
+        },
+      },
+      gateDecision,
+      targetAdmissionScope,
+      expectedCanonicalRevisionRefs:
+        this.worldmodel.canonicalArtifactRevisionRefs(
+          targetAdmissionScope,
+        ),
+      actorRef: managerActorRef,
+      issuedAt: observedAt,
+    });
+    const upwardStatus = buildProjectToWorldStatusProjection({
+      projectionId: stableId("wm_plan_execution_upward_status", {
+        candidateId: candidate.candidateId,
+        canonicalGraphRef: admission.canonicalGraphRef,
+      }),
+      projectId: record.projectId,
+      graph: this.worldmodel.graph,
+      sourceRefs: [
+        semanticExecutionSourceRef({
+          kind: "project_memory_candidate",
+          id: candidate.candidateId,
+          digest: candidate.candidateDigest,
+          projectId: record.projectId,
+        }, observedAt),
+      ],
+    }, { now: this.now });
+    const admitted = revisePlanExecutionRecord(
+      record,
+      {
+        state: "admitted",
+        projectMemory: {
+          candidate,
+          closureWitness,
+          closureResultEnvelope,
+          admission,
+        },
+        upwardStatus,
+        canonicalEffect: true,
+      },
+      { now: this.now },
+    );
+    const persisted = this.store.registerPlanExecutionRecord(admitted).record;
+    const projection = this.snapshot();
+    this.emit("transition", {
+      reason: "plan-execution-project-memory-admitted",
+      receipt: {
+        schema: "direct_world_manager_plan_execution_receipt@1",
+        state: "admitted",
+        executionRef: planExecutionRecordRef(persisted),
+        projectMemoryCandidateRef: {
+          kind: "project_memory_candidate",
+          id: candidate.candidateId,
+          digest: candidate.candidateDigest,
+          projectId: record.projectId,
+        },
+        trustStoreReceiptRef: admission.trustStoreReceiptRef,
+        workThreadCompleted: true,
+        canonicalEffect: true,
+        grantsAuthority: false,
+      },
+      projection,
+    });
+    return {
+      reused: admission.reused === true,
+      record: persisted,
+      projectMemory: persisted.projectMemory,
+      upwardStatus,
+      projection,
+    };
+  }
+
   semanticPlanAdmissionDisposition(settlement) {
     const discharge =
       settlement?.semanticIngressRun?.semanticDischarge;
@@ -6026,10 +6982,18 @@ class DirectWorldManagerService extends EventEmitter {
       return this.bootstrap().projection;
     }
     const data = this.store.snapshotData();
+    const latestContract = data.implementationContracts?.at(-1) || null;
+    const latestContractExecution = latestContract
+      ? [...(data.planExecutions || [])].reverse().find((record) =>
+          record.implementationContractRef?.id ===
+            latestContract.implementationContractId)
+      : null;
     const projection = buildWorldManagerWorkbenchProjection({
       ...data,
       pipelineStage:
-        this.roleRuntime && data.planProposalRevisions?.length
+        this.roleRuntime && latestContractExecution
+          ? "wm_k6_execution"
+        : this.roleRuntime && data.planProposalRevisions?.length
           ? "wm_k5_planning"
         : this.roleRuntime && this.realizationSnapshotProvider
           ? "wm_k6_genesis"

@@ -58,7 +58,7 @@ The correct move is therefore:
 | Project/work execution | WorkThread registry/alignment, Direct role runtime | implemented in bounded paths | Bind recursive frontiers and returns to WorkThreads rather than replacing WorkThread identity |
 | Artifact production/audit/admission | SC11 artifact lifecycle and assurance DAG | implemented for the bounded `ImplementationPatch` path | Use artifact constitutions to govern expansion, join, audit, remand, and admission artifacts |
 | Event and epistemic provenance | `wm_events`, SC11 epistemic ledger, delivery/subscription runtime | implemented/partially generalized | Append recursive transitions into existing custody; do not create another general event bus |
-| General plan worker start | keyboard K6 | pending | A terminal recursive leaf can use the bounded SC11 path now; generic plan execution still waits for K6 |
+| General plan worker start | keyboard K6 | implemented | A terminal recursive leaf may now hand an admitted general plan into the durable K6 constitution/start/evidence/closure/project-memory lifecycle; SC12 still needs its own typed return/join integration |
 | Recursive ODEU control objects | none | not implemented | New SC12 kernel required |
 
 Relevant current sources:

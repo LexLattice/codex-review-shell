@@ -210,6 +210,11 @@ const elements = Object.fromEntries([
   "contractTitle",
   "contractObjective",
   "workThreadLabel",
+  "contractExecutionSummary",
+  "preparePlanExecutionButton",
+  "authorizePlanExecutionButton",
+  "completePlanExecutionButton",
+  "planExecutionGate",
   "semanticZoom",
   "semanticZoomTitle",
   "semanticZoomSummary",
@@ -9984,6 +9989,7 @@ function renderProjectGenesis() {
 function renderContract() {
   const contract = state.projection?.latestContract;
   const workThread = state.projection?.latestWorkThread;
+  const execution = state.projection?.latestPlanExecution;
   elements.contractPanel.hidden = !contract;
   if (!contract) return;
   elements.contractTitle.textContent = `Contract ${shortId(contract.implementationContractId)}`;
@@ -9996,6 +10002,59 @@ function renderContract() {
         "contract received",
       ).replace(/_/g, " ")}`
     : "WorkThread pending";
+  const executionState = execution?.state || "contract_received";
+  elements.contractExecutionSummary.textContent =
+    executionState === "contract_received"
+      ? "The canonical contract exists, but no implementation constitution or provider turn has been created."
+      : executionState === "prepared"
+        ? "Prompt, tools, approval gates, and completion evaluator agree. Worker start still requires explicit authority."
+        : executionState === "starting"
+          ? "The exact single-use worker-start authorization is being realized."
+          : executionState === "active"
+            ? execution.closureDecision === "remand"
+              ? "The worker turn is terminal, but its evidence did not satisfy every closure criterion. The WorkThread remains active."
+              : "The Direct worker is active. Every local effect is separately gated; remote and canonical effects are unavailable."
+            : executionState === "completed"
+              ? "Runtime evidence satisfied closure. Project-memory admission is being completed by the Project Manager boundary."
+              : executionState === "admitted"
+                ? "The WorkThread is complete and its evidence-backed project-memory candidate was separately admitted."
+                : "The execution transition failed visibly; no completion or canonical effect is claimed.";
+  elements.preparePlanExecutionButton.hidden = Boolean(execution);
+  elements.preparePlanExecutionButton.disabled = Boolean(
+    execution || state.projection?.busy,
+  );
+  elements.authorizePlanExecutionButton.hidden =
+    executionState !== "prepared";
+  elements.authorizePlanExecutionButton.disabled = Boolean(
+    executionState !== "prepared" || state.projection?.busy,
+  );
+  elements.completePlanExecutionButton.hidden =
+    !["active", "completed"].includes(executionState);
+  elements.completePlanExecutionButton.disabled = Boolean(
+    !["active", "completed"].includes(executionState) ||
+      state.projection?.busy,
+  );
+  elements.completePlanExecutionButton.textContent =
+    executionState === "completed"
+      ? "Retry project-memory admission"
+      : execution?.closureDecision === "remand"
+        ? "Re-evaluate closure"
+        : "Evaluate closure";
+  elements.planExecutionGate.textContent =
+    executionState === "contract_received"
+      ? "Compilation is read-only: it starts no provider turn and grants no workspace authority."
+      : executionState === "prepared"
+        ? "Authorization permits one provider turn only. Tool calls remain separately approved."
+        : executionState === "active"
+          ? execution.closureDecision === "remand"
+            ? (execution.blockerCodes || []).join(" · ") ||
+              "Closure remains remanded."
+            : "A Project Manager semantic assessment will bind completion claims to exact runtime evidence."
+          : executionState === "completed"
+            ? "Only Project Manager admission may promote the closure into project memory."
+            : executionState === "admitted"
+              ? "Execution lineage, closure witnesses, canonical admission, and upward status are persisted."
+              : "The failed transition remains immutable evidence.";
 }
 
 function evidenceRows(element, title, rows) {
@@ -11164,6 +11223,96 @@ elements.greenlightButton.addEventListener("click", async () => {
     );
   } catch (error) {
     showToast(error?.message || "Proposal admission failed.", "error");
+  }
+});
+
+elements.preparePlanExecutionButton?.addEventListener("click", async () => {
+  const contract = state.projection?.latestContract;
+  if (
+    !contract ||
+    elements.preparePlanExecutionButton.disabled ||
+    !bridge?.prepareWorldManagerPlanExecution
+  ) return;
+  try {
+    elements.preparePlanExecutionButton.disabled = true;
+    const result = await bridge.prepareWorldManagerPlanExecution({
+      implementationContractId: contract.implementationContractId,
+      implementationContractDigest: contract.digest,
+    });
+    applyProjection(result?.projection || result);
+    showToast(
+      "Implementation constitution compiled. No worker or provider turn has started.",
+    );
+  } catch (error) {
+    showToast(
+      error?.message || "Implementation constitution could not be compiled.",
+      "error",
+    );
+  } finally {
+    renderContract();
+  }
+});
+
+elements.authorizePlanExecutionButton?.addEventListener("click", async () => {
+  const execution = state.projection?.latestPlanExecution;
+  if (
+    execution?.state !== "prepared" ||
+    elements.authorizePlanExecutionButton.disabled ||
+    !bridge?.authorizeWorldManagerPlanExecution
+  ) return;
+  try {
+    elements.authorizePlanExecutionButton.disabled = true;
+    const result = await bridge.authorizeWorldManagerPlanExecution({
+      executionId: execution.executionId,
+      executionDigest: execution.digest,
+      operatorActionId:
+        globalThis.crypto?.randomUUID?.() ||
+        `plan_execution_start_${Date.now()}`,
+      actorId: "operator",
+    });
+    applyProjection(result?.projection || result);
+    showToast(
+      "One Direct implementation worker started. Tool effects remain separately gated.",
+    );
+  } catch (error) {
+    showToast(
+      error?.message || "The implementation worker could not be started.",
+      "error",
+    );
+  } finally {
+    renderContract();
+  }
+});
+
+elements.completePlanExecutionButton?.addEventListener("click", async () => {
+  const execution = state.projection?.latestPlanExecution;
+  if (
+    !["active", "completed"].includes(execution?.state) ||
+    elements.completePlanExecutionButton.disabled ||
+    !bridge?.completeWorldManagerPlanExecution
+  ) return;
+  try {
+    elements.completePlanExecutionButton.disabled = true;
+    const result = await bridge.completeWorldManagerPlanExecution({
+      executionId: execution.executionId,
+      executionDigest: execution.digest,
+    });
+    applyProjection(result?.projection || result);
+    const nextExecution = result?.record ||
+      result?.projection?.latestPlanExecution;
+    showToast(
+      nextExecution?.state === "admitted"
+        ? "Implementation closure witnessed and admitted into project memory."
+        : "Closure remains remanded; inspect the exact blocker witnesses.",
+      nextExecution?.state === "admitted" ? "info" : "error",
+    );
+  } catch (error) {
+    showToast(
+      error?.message || "Implementation closure could not be evaluated.",
+      "error",
+    );
+  } finally {
+    renderContract();
   }
 });
 
