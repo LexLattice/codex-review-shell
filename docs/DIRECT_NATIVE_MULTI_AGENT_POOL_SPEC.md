@@ -161,6 +161,20 @@ zero-timeout polling. The controller regression proves a full-history Terra/low
 child spawned by a Sol/Ultra parent and a same-turn spawn → spawn → wait chain
 whose resident agent tools remain declared without renderer approval.
 
+## Upstream Grounding
+
+Stable Codex 0.147 independently confirms that local collaboration capacity is
+configurable and centrally leased, rather than governed by a universal
+three-child rule. Its v1 and v2 spawn handlers also apply model and reasoning
+effort overrides independently of full-history handoff. The stricter binary
+observed in one hosted tool schema is therefore a surface contract, not a
+source-runtime necessity.
+
+Direct adopts those structural lessons while preserving its own scheduler,
+authority boundaries, lifecycle records, and context-selection semantics. See
+the [release-147 agent-runtime impact audit](./audits/UPSTREAM_CODEX_RELEASE_147_DIRECT_AGENT_IMPACT_2026-08-09.md)
+for source evidence and deferred capabilities.
+
 ## Next maturity steps
 
 The next useful expansions are independent and should remain separately gated:
