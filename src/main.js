@@ -220,6 +220,11 @@ const {
   buildRuntimeAnalyticsProjection,
 } = require("./main/direct/analytics/runtime-analytics-adapter");
 const { PLANE_ZOOM_DEFAULT, clampZoomFactor, zoomDeltaForDirection } = require("./shared/plane-zoom");
+const {
+  APP_EXPERIENCES,
+  publicAppExperience,
+  resolveAppExperience,
+} = require("./main/app-experience");
 
 const APP_TITLE = "Codex Review Shell";
 const CONFIG_FILE_NAME = "workspace-config.json";
@@ -242,6 +247,8 @@ const PROFILE_ENV_VAR = "CODEX_REVIEW_SHELL_PROFILE";
 const USER_DATA_DIR_ENV_VAR = "CODEX_REVIEW_SHELL_USER_DATA_DIR";
 const USER_DATA_ROOT_ENV_VAR = "CODEX_REVIEW_SHELL_USER_DATA_ROOT";
 const CHATGPT_DOWNLOAD_MACRO_REQUEST_TTL_MS = 60_000;
+const APP_EXPERIENCE = resolveAppExperience(process.env);
+const DIRECT_WORKBENCH_MODE = APP_EXPERIENCE.id === APP_EXPERIENCES.DIRECT_WORKBENCH;
 
 const appRoot = path.resolve(__dirname, "..");
 const repoRoot = appRoot;
@@ -4621,11 +4628,14 @@ function urlsShareCodexSurfaceDocument(left, right) {
   try {
     const leftUrl = new URL(String(left || ""));
     const rightUrl = new URL(String(right || ""));
+    const managedSurfacePath = (pathname) =>
+      pathname.endsWith("/codex-surface.html") ||
+      pathname.endsWith("/t3-direct-surface.html");
     return leftUrl.href === rightUrl.href ||
       (
         leftUrl.origin === rightUrl.origin &&
         leftUrl.pathname === rightUrl.pathname &&
-        leftUrl.pathname.endsWith("/codex-surface.html")
+        managedSurfacePath(leftUrl.pathname)
       );
   } catch {
     return false;
@@ -5031,6 +5041,7 @@ function encodeCodexSurfacePayload(project, extra = {}) {
       generatedAt: nowIso(),
       doctrine: "Codex plane is a work chat. ADEU control plane owns the binding. ChatGPT plane remains the review/world-model thread.",
     },
+    appExperience: publicAppExperience(APP_EXPERIENCE),
     codexConnection: extra.codexConnection || null,
     workspaceStatus: extra.workspaceStatus || null,
     activationEpoch: Number(extra.activationEpoch) || 0,
@@ -5047,7 +5058,7 @@ function encodeCodexSurfacePayload(project, extra = {}) {
 
 function codexSurfaceUrl(baseUrl, project, extra = {}) {
   const token = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-  return `${baseUrl}/codex-surface.html?reload=${token}#${encodeCodexSurfacePayload(project, extra)}`;
+  return `${baseUrl}/${APP_EXPERIENCE.rendererDocument}?reload=${token}#${encodeCodexSurfacePayload(project, extra)}`;
 }
 
 function codexSurfaceThreadExtras(options = {}) {
@@ -5067,6 +5078,7 @@ async function loadCodexSurface(project, options = {}) {
   const codex = project.surfaceBinding.codex;
   const localSurfaceBaseUrl = await ensureLocalSurfaceServer().ensureStarted();
   if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
+  const threadExtras = codexSurfaceThreadExtras(options);
   const runtimeMode = normalizeDirectRuntimeModeForStatus(codex.runtimeMode);
   if (runtimeMode !== "legacy-app-server") {
     await disposeCodexAppServerManager();
@@ -5107,7 +5119,7 @@ async function loadCodexSurface(project, options = {}) {
     const localUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, {
       codexConnection: directConnection,
       directSurfaceProjection,
-      activationEpoch: Number(options.activationEpoch) || 0,
+      ...threadExtras,
       error: [
         `Direct runtime selected: ${runtimeStatus.runtimeModeLabel}.`,
         `Direct tier: ${runtimeStatus.directTier || "none"}.`,
@@ -5142,7 +5154,6 @@ async function loadCodexSurface(project, options = {}) {
     }
   }
   if (codex.mode === "managed") {
-    const threadExtras = codexSurfaceThreadExtras(options);
     const workspaceStatus = workspaceBackends?.statusForProject(project) || null;
     try {
       const requestedCodexHome = normalizeString(options.codexHome, "");
@@ -5199,7 +5210,7 @@ async function loadCodexSurface(project, options = {}) {
   }
   await disposeCodexAppServerManager();
   activeCodexSurfaceConnection = null;
-  const localUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, { activationEpoch: Number(options.activationEpoch) || 0 });
+  const localUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, threadExtras);
   if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
   setManagedCodexSurfaceAuthority(project, localUrl, "fallback-local-surface");
   await codexView.webContents.loadURL(localUrl);
@@ -5297,7 +5308,9 @@ async function requestCodexThreadOpen(projectId, threadId, sourceHome = "", sess
   }
   const currentUrl = codexView.webContents.getURL() || "";
   const surfaceModeManaged = project.surfaceBinding?.codex?.mode === "managed";
-  const hasLocalSurface = currentUrl.includes("codex-surface.html");
+  const hasLocalSurface =
+    currentUrl.includes("codex-surface.html") ||
+    currentUrl.includes("t3-direct-surface.html");
   const needsSurfaceReload = !hasLocalSurface ||
     !surfaceModeManaged ||
     !activeCodexSurfaceConnection ||
@@ -8441,7 +8454,113 @@ async function listChatgptRecentThreads(limit = 40, options = {}) {
   }
 }
 
+async function createDirectWorkbenchWindow() {
+  Menu.setApplicationMenu(null);
+  console.log(
+    `[Direct Workbench] launch experience=${APP_EXPERIENCE.id} ` +
+      `controlPlane=${APP_EXPERIENCE.controlPlane} source=${APP_EXPERIENCE.source}`,
+  );
+  app.setName(APP_EXPERIENCE.label);
+  nativeTheme.themeSource = "dark";
+
+  mainWindow = new BaseWindow({
+    width: 1720,
+    height: 980,
+    minWidth: 720,
+    minHeight: 620,
+    title: APP_EXPERIENCE.label,
+    backgroundColor: "#090a0c",
+    show: true,
+  });
+  codexView = new WebContentsView({
+    webPreferences: {
+      preload: codexSurfacePreloadPath,
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: false,
+      partition: CODEX_PARTITION,
+      devTools: true,
+    },
+  });
+  registerWebContentsAuthority(codexView, {
+    surfaceName: "codex",
+    surfaceRole: SURFACE_ROLES.EXTERNAL_CODEX_URL,
+    codexTrustProfile: CODEX_SURFACE_TRUST_PROFILES.UNKNOWN,
+    codexBridgeProfile: CODEX_SURFACE_BRIDGE_PROFILES.NONE,
+    reason: "direct-workbench-surface-not-loaded",
+  });
+  mainWindow.contentView.addChildView(codexView);
+
+  const applyBounds = () => {
+    if (!mainWindow || !codexView || codexView.webContents.isDestroyed()) return;
+    const bounds = mainWindow.getContentBounds();
+    codexView.setBounds({
+      x: 0,
+      y: 0,
+      width: Math.max(1, bounds.width),
+      height: Math.max(1, bounds.height),
+    });
+  };
+  applyBounds();
+  for (const eventName of ["resize", "resized", "maximize", "unmaximize", "enter-full-screen", "leave-full-screen", "restore"]) {
+    mainWindow.on(eventName, applyBounds);
+  }
+  configureGuestSurface("codex", codexView);
+
+  mainWindow.on("closed", () => {
+    workspaceBackends?.disposeAll();
+    workspaceBackends = null;
+    codexAppServer?.dispose();
+    codexAppServer = null;
+    for (const session of codexSurfaceSessions?.values() || []) {
+      session.dispose({ silent: true, reason: "Direct Workbench window closed." }).catch(() => {});
+    }
+    codexSurfaceSessions = null;
+    localSurfaceServer?.dispose();
+    localSurfaceServer = null;
+    threadAnalyticsStore?.close();
+    threadAnalyticsStore = null;
+    directFixtureController = null;
+    directLiveTextController = null;
+    directLiveProbeEvidenceStore = null;
+    directImplementationProofEvidenceStore = null;
+    directActivationStore = null;
+    directThreadWorkbenchController = null;
+    directThreadStore?.close();
+    directThreadStore = null;
+    directSessionStore = null;
+    directWorkThreadStore = null;
+    directAgentRegistryStore = null;
+    directAgentRegistryBackfillStateByProject.clear();
+    middleWebHost?.dispose();
+    middleWebHost = null;
+    closeView(codexView);
+    codexView = null;
+    mainWindow = null;
+  });
+
+  const config = await loadConfig();
+  const selectedProject = getSelectedProject(config);
+  if (!selectedProject) throw new Error("Direct Workbench requires at least one configured project.");
+  const activation = applyProjectActivationBinding(selectedProject);
+  const projects = activation.project
+    ? config.projects.map((project) => (project.id === activation.project.id ? activation.project : project))
+    : config.projects;
+  const saved = await saveConfig({ ...config, projects });
+  currentProject = getSelectedProject(saved);
+  const activationBinding = activation.binding?.id
+    ? currentProject?.laneBindings?.find((item) => item.id === activation.binding.id) || activation.binding
+    : null;
+  await loadCodexSurface(currentProject, {
+    ...codexSurfaceOptionsForBinding(activationBinding),
+    activationEpoch: nextSurfaceActivationEpoch(),
+  });
+}
+
 async function createWindow() {
+  if (DIRECT_WORKBENCH_MODE) {
+    return createDirectWorkbenchWindow();
+  }
   Menu.setApplicationMenu(null);
   app.setName(APP_TITLE);
   nativeTheme.themeSource = "dark";
