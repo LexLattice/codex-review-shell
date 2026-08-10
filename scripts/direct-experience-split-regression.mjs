@@ -41,7 +41,9 @@ assert.equal(
   resolveAppExperience({ CODEX_WORLD_MANAGER: "1", CODEX_DIRECT_T3_GUI: "1" }).id,
   APP_EXPERIENCES.WORLD_MANAGER_STUDIO,
 );
-assert.equal(resolveAppExperience({}).id, APP_EXPERIENCES.LEGACY_SHELL);
+const legacy = resolveAppExperience({});
+assert.equal(legacy.id, APP_EXPERIENCES.LEGACY_SHELL);
+assert.equal(legacy.rendererDocument, "codex-surface.html");
 assert.throws(
   () => resolveAppExperience({ CODEX_EXPERIENCE: "ambiguous-surface" }),
   (error) => error?.code === "app_experience_unknown",
@@ -67,6 +69,11 @@ assert.match(mainSource, /const APP_EXPERIENCE = resolveAppExperience\(process\.
 assert.match(mainSource, /appExperience: publicAppExperience\(APP_EXPERIENCE\)/);
 assert.match(mainSource, /function requireWorldManagerStudioExperience/);
 assert.match(mainSource, /async function createDirectWorkbenchWindow/);
+assert.match(mainSource, /if \(DIRECT_WORKBENCH_MODE\)/);
+assert.match(
+  mainSource,
+  /const activation = applyProjectActivationBinding\(selectedProject\);[\s\S]*\.\.\.codexSurfaceOptionsForBinding\(activationBinding\)/,
+);
 assert.match(directHtml, /data-app-experience="direct-workbench"/);
 assert.match(directHtml, /Direct thread control plane/);
 assert.match(directRenderer, /experience\.controlPlane === "direct-thread"/);

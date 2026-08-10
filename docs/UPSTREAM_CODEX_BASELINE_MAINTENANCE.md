@@ -18,9 +18,9 @@ Direct review shell
 
 | World | Location | Canonical ref | Role |
 | --- | --- | --- | --- |
-| Vanilla release evidence | `/home/rose/work/codex/fork` | `origin/upstream-latest-release` | Exact remote pointer to the latest official stable `openai/codex` tag. It is a fetched inspection snapshot, not a local development branch. |
+| Vanilla release evidence | `/home/rose/work/codex/fork` | `origin/upstream-latest-release` | Exact remote pointer to the latest official stable `openai/codex` tag. It is a fetched inspection baseline, not a local development branch. |
 | Fork implementation | `/home/rose/work/codex/fork` | `origin/main` | Current shared fork lineage containing our custom Codex modules. Audit this ref even when local `main` is behind. |
-| Direct implementation | `/home/rose/work/LexLattice/codex-review-shell-direct` | active Direct branch | Current direct-native harness and its executable information registry. |
+| Direct implementation | `/home/rose/work/LexLattice/codex-review-shell` | `origin/main` plus the active reviewed branch | Current direct-native harness and its executable information registry. |
 
 The scheduled fork workflow advances `origin/upstream-latest-release` to the
 exact official stable tag. It is not merged with fork `main`, and updating it
@@ -43,11 +43,11 @@ pinned alpha CLI
 ```
 
 There is currently no pre-release overlay: the Review Shell managed WSL route
-uses npm-global `@openai/codex@0.145.0`, matching the stable source family. The
+uses npm-global `@openai/codex@0.147.0`, matching the stable source family. The
 former `0.145.0-alpha.11` overlay remains recorded in the release-145 audit as
-historical split-schema evidence. This managed binary still does
-not redefine fork `origin/main`, Windows PATH Codex, or the vanilla desktop's
-bundled WSL binary.
+historical split-schema evidence. The managed binary still does not redefine
+fork `origin/main`, Windows PATH Codex, or the vanilla desktop's bundled WSL
+binary.
 
 Every overlay must record its exact version, scope, required feature flags,
 runtime/provider witness, rollback command, and which stable source claims
@@ -115,19 +115,18 @@ In particular:
 - A concept can remain valuable while its old fork implementation becomes too
   expensive to rebase; Direct may be the correct future home.
 
-## Current Baseline
+## Current Bounded Baseline
 
-As of 2026-07-22:
+As of 2026-08-09:
 
-- official stable tag: `rust-v0.145.0`;
-- official tag commit: `25af12f7e615`;
-- prior documented stable tag: `rust-v0.144.4`;
-- immediate prior stable patch: `rust-v0.144.6`;
-- fork audit ref: `origin/main` at `923840b357e1`;
-- Direct audit branch: `codex/appserver-native-thread-routing` at
-  `f4c3b32fd2b3`;
-- managed runtime: WSL npm-global `@openai/codex@0.145.0` for the Review Shell;
-  live root-turn and read-only app inventory/metadata probes pass.
+- official stable tag: `rust-v0.147.0`;
+- official release-tracking commit: `be6e8eac029b183056b7e4402879f15d2c85f61b`;
+- prior agent-runtime comparison tag: `rust-v0.146.0`;
+- fork audit ref: `origin/main` at `923840b357e15195e66f7e82ac81ee0f39fc7050`;
+- Direct canonical branch: `origin/main`;
+- managed runtime: WSL npm-global `@openai/codex@0.147.0`;
+- bounded 0.147 audit coverage: multi-agent and exec-server runtime changes,
+  not a claim of full release-surface adoption.
 
 The dated impact audit is the evidence-bearing snapshot. This document defines
 the standing procedure and should change only when the maintenance architecture
@@ -135,5 +134,6 @@ changes.
 
 Current evidence snapshot:
 
+- [`Upstream Codex Release 147 Agent-Runtime Impact Audit`](./audits/UPSTREAM_CODEX_RELEASE_147_DIRECT_AGENT_IMPACT_2026-08-09.md)
 - [`Upstream Codex Release 145 Impact Audit`](./audits/UPSTREAM_CODEX_RELEASE_145_IMPACT_2026-07-22.md)
 - [`Upstream Codex Release 144 Impact Audit`](./audits/UPSTREAM_CODEX_RELEASE_144_IMPACT_2026-07-14.md)

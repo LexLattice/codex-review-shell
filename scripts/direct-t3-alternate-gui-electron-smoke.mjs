@@ -6,12 +6,14 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { _electron as electron } from "playwright";
 
 const scriptPath = fileURLToPath(import.meta.url);
 const scriptDir = path.dirname(scriptPath);
 const repoRoot = path.resolve(scriptDir, "..");
+const require = createRequire(import.meta.url);
+const { _electron: electron } = require("playwright");
 
 if (process.platform === "linux" && !process.env.DISPLAY && process.env.CODEX_T3_GUI_UNDER_XVFB !== "1") {
   const exitCode = await new Promise((resolve, reject) => {
@@ -70,6 +72,23 @@ fs.writeFileSync(path.join(userDataRoot, "workspace-config.json"), `${JSON.strin
       },
     },
     chatThreads: [],
+    laneBindings: [{
+      id: "binding_direct_workbench_startup",
+      lane: "implementation",
+      label: "Bound Direct thread",
+      codexThreadRef: {
+        threadId: "thread_direct_workbench_bound",
+        originator: "codex",
+        titleSnapshot: "Bound startup thread",
+        cwdSnapshot: repoRoot,
+        sourceHome: "/tmp/direct-workbench-bound-home",
+        sessionFilePath: path.join(testRoot, "sessions", "bound-thread.jsonl"),
+      },
+      chatThreadId: "",
+      isDefaultForLane: true,
+      openOnProjectActivate: true,
+      status: "resolved",
+    }],
     promptTemplates: {},
     flowProfile: {},
   }],
@@ -104,16 +123,22 @@ try {
   assert.equal(await page.locator(".t3-utility-rail button:disabled").count(), 4);
   assert.match(await page.locator(".t3-sidebar-footer").innerText(), /Direct thread control plane/);
 
-  const worldManagerBoundary = await page.evaluate(async () => {
-    try {
-      await window.codexSurfaceBridge.getWorldManagerSnapshot();
-      return { rejected: false, message: "" };
-    } catch (error) {
-      return { rejected: true, message: String(error?.message || error) };
-    }
-  });
-  assert.equal(worldManagerBoundary.rejected, true);
-  assert.match(worldManagerBoundary.message, /WorldManager Studio/);
+  const bootstrapPayload = JSON.parse(Buffer.from(new URL(page.url()).hash.slice(1), "base64url").toString("utf8"));
+  assert.equal(bootstrapPayload.initialThreadId, "thread_direct_workbench_bound");
+  assert.equal(bootstrapPayload.initialThreadSourceHome, "/tmp/direct-workbench-bound-home");
+  assert.equal(
+    bootstrapPayload.initialThreadSessionFilePath,
+    path.join(testRoot, "sessions", "bound-thread.jsonl"),
+  );
+  assert.equal(bootstrapPayload.initialThreadTitle, "Bound startup thread");
+  const persistedConfig = JSON.parse(fs.readFileSync(path.join(userDataRoot, "workspace-config.json"), "utf8"));
+  assert.equal(persistedConfig.projects[0].lastActiveBindingId, "binding_direct_workbench_startup");
+  assert.match(persistedConfig.projects[0].laneBindings[0].lastActivatedAt, /^\d{4}-\d{2}-\d{2}T/);
+
+  const worldManagerAuthorityExposed = await page.evaluate(
+    () => typeof window.codexSurfaceBridge.getWorldManagerSnapshot === "function",
+  );
+  assert.equal(worldManagerAuthorityExposed, false);
 
   await page.locator('.t3-utility-rail [data-runtime-tab="runtime"]').click();
   await page.locator("#runtimeDrawer:not([hidden])").waitFor({ state: "visible" });
@@ -144,7 +169,7 @@ try {
     document: "t3-direct-surface.html",
     backendOwner: "direct",
     controlPlane: "direct-thread",
-    worldManagerAuthorityRejected: true,
+    worldManagerAuthorityExposed: false,
     screenshotPath,
   }, null, 2));
 } finally {

@@ -3,15 +3,17 @@
 Purpose: stable reference for the canonical Codex thread/message ontology used by this app's middle-plane renderer.
 
 Last verified:
-- Codex fork stable snapshot: `/home/rose/work/codex/fork` at
-  `25af12f7e615` (`rust-v0.145.0`) through
-  `origin/upstream-latest-release`
-- Active Review Shell WSL CLI: npm-global `@openai/codex@0.145.0`
+- Codex stable snapshot: `/home/rose/work/codex/fork`
+  `origin/upstream-latest-release` at
+  `be6e8eac029b183056b7e4402879f15d2c85f61b` (`rust-v0.147.0`)
+- Active Review Shell WSL CLI: npm-global `@openai/codex@0.147.0`
   at `/home/rose/.nvm/versions/node/v24.14.0/bin/codex`
-- Review shell repo: `/home/rose/work/LexLattice/codex-review-shell-direct`
-  working tree based on `f4c3b32fd2b3`
-- Prior documented release baseline: `rust-v0.144.4`
-- Verification date: 2026-07-22
+- Review shell repo: `/home/rose/work/LexLattice/codex-review-shell`
+  on the reviewed `origin/main` lineage
+- Prior bounded release baseline: `rust-v0.145.0`
+- Verification date: 2026-08-09
+- Verification scope: release-147 agent/runtime delta; retained item
+  enumerations preserve their earlier full-schema audit boundary
 
 ## Why this exists
 
@@ -68,69 +70,42 @@ Capability caveats:
 - `environment/info` is an explicit environment probe, but project workspace
   authority and all runtime roots are not thereby made environment-owned.
 
-## Release 145 App-Server Delta
+## Release 145-147 App-Server Delta
 
-Stable `0.145.0` changes several release-144 caveats and adds stronger client
-evidence surfaces:
+The retained release-144 section above is historical groundwork. The current
+stable source adds these relevant contracts:
 
-- `historyMode: "paginated"` is now a usable experimental thread-start mode,
-  with durable turn/item pages, legacy-view projection, names, memories, Git
-  metadata, sub-agent history, and literal occurrence search.
-- `thread/resume(excludeTurns: true)` returns durable head cursors, and can
-  return an `initialTurnsPage`. Paginated history should be joined with live
-  notifications rather than reconstructed in full.
-- `thread/read(includeTurns: true)` remains unsupported for paginated threads,
-  so clients must keep explicit legacy and paginated read paths.
-- `thread.canAcceptDirectInput` states whether a loaded root or child thread
-  accepts `turn/start` and `turn/steer`; missing/`null` remains unknown.
-- `app/installed` reports effective installed/enabled/callable state, while
-  `app/read` returns bounded connector metadata and optional public tool
-  summaries. Neither call grants action authority.
-- `environment/status` and thread environment connection notifications expose
-  ready/pending/disconnected/unknown runtime state without granting workspace
-  authority.
-- notification envelopes carry `emittedAtMs`, which must remain distinct from
-  provider event time and local receipt time.
-- `rawResponse/completed` can expose exact per-response usage only when
-  internal experimental raw events are enabled. It is transient, not replayed,
-  and not a required third-party contract.
-- contextual forks add `beforeTurnId`, improved interruption boundaries, and
-  optional deferred goal continuation.
-- multi-agent V2 is stable, restores roles more reliably, honors configured
-  child defaults, preserves paginated child history, and makes parent-owned
-  children read-only.
-- `SessionEnd` hooks run for root-thread teardown paths but remain advisory and
-  cannot replace durable Direct checkpoint law.
+- paginated history is usable through dedicated turn/item listing paths;
+  callers must not substitute `thread/read(includeTurns=true)` where paginated
+  threads do not support it;
+- `thread.canAcceptDirectInput` is explicit runtime evidence for start/steer
+  eligibility, while missing or `null` remains unknown;
+- `environment/status` and connection notifications expose readiness without
+  granting workspace authority;
+- `app/installed` and `app/read` expose bounded installed/enabled/callable
+  metadata without granting application-tool authority;
+- notification `emittedAtMs` remains distinct from provider-event and local
+  receipt clocks;
+- stable 0.147 centralizes spawn requests and capacity, carries exact agent
+  identity/parent-turn/direct-input evidence, and inherits ready step
+  environments;
+- both 0.147 spawn handlers validate and apply requested model and reasoning
+  effort independently of full-history handoff. Stable V2 still rejects a
+  full-history `agent_type` override; that is a role restriction, not a
+  model/effort restriction.
 
-The detailed evidence, compatibility boundary, and Direct disposition are in
-[`UPSTREAM_CODEX_RELEASE_145_IMPACT_2026-07-22.md`](./audits/UPSTREAM_CODEX_RELEASE_145_IMPACT_2026-07-22.md).
+Detailed evidence:
 
-First implementation slice:
+- [release-145 impact audit](./audits/UPSTREAM_CODEX_RELEASE_145_IMPACT_2026-07-22.md)
+- [release-147 agent-runtime impact audit](./audits/UPSTREAM_CODEX_RELEASE_147_DIRECT_AGENT_IMPACT_2026-08-09.md)
 
-- the bridge now preserves `emittedAtMs` and a distinct local receipt clock;
-- usage-ledger notification rows preserve both clocks;
-- direct-input eligibility gates composer, turn start, and turn steering, with
-  explicit `false`/`null` failing closed and an absent field marked as the
-  legacy compatibility fallback;
-- environment connection notifications and `environment/status` feed a
-  read-only environment witness in the runtime drawer; the status method has
-  its own main-process `environment_read` capability contract.
-- `app/installed` and `app/read` feed a bounded application-evidence snapshot
-  in the capability drawer through separate main-process read contracts;
-  metadata and optional tool summaries explicitly grant no action authority.
-
-Stable `0.145.0` has a live authenticated root-turn witness and a read-only app
-probe: 11 installed/enabled/callable apps were observed and metadata resolved
-for all 11 with tool summaries disabled. This proves those bounded paths, not
-paginated history or effective child model/effort. The focused regression
-command is `npm run codex:release-145-evidence`.
-
-## Managed Shell Orchestration Compatibility And Stable Activation
+## Managed Shell Orchestration Compatibility And 0.147 Source Boundary
 
 The active project is hosted by the Windows Review Shell but its managed
-app-server is routed through Ubuntu WSL to npm-global stable Codex `0.145.0`.
-The source-audit snapshot and managed runtime are now on the same stable release;
-the former `0.145.0-alpha.11` installation remains historical runtime evidence.
+app-server is routed through Ubuntu WSL to npm-global stable Codex `0.147.0`.
+The stable source snapshot and managed executable are on the same release
+family; provider-schema acceptance and effective child runtime values remain
+separate evidence.
 
 Every managed app-server launch preserves the hosted V2 reserved schema base:
 
@@ -140,14 +115,14 @@ Every managed app-server launch preserves the hosted V2 reserved schema base:
 
 The disabled profile also sets
 `features.multi_agent_v2.expose_spawn_agent_model_overrides=false` explicitly,
-because the 145-family runtime defaults that narrower capability on. The
+because the 145+ runtime family defaults that narrower capability on. The
 project-scoped enabled profile changes only that value to `true`.
 
-This explicit guard corrects an earlier shell profile that set the value to
-`false`. On `0.144.4`, the false value changes the provider-reserved
-`collaboration.spawn_agent` schema by adding `agent_type`, `model`,
-`reasoning_effort`, and `service_tier` (and by changing its output shape).
-Hosted GPT-5.6 rejects that client-mutated schema before inference.
+This explicit guard corrects an earlier shell profile that set
+`hide_spawn_agent_metadata` to `false`. On `0.144.4`, that value changed the
+provider-reserved `collaboration.spawn_agent` schema by adding `agent_type`,
+`model`, `reasoning_effort`, and `service_tier` (and by changing its output
+shape). Hosted GPT-5.6 rejects that client-mutated schema before inference.
 
 The project-scoped split profile additionally requests the upstream narrow
 split:
@@ -156,8 +131,8 @@ split:
 -c features.multi_agent_v2.expose_spawn_agent_model_overrides=true
 ```
 
-Stable `0.145.0` contains the split introduced by commits `ea15456284` and
-`92938d880e`, so its canonical visible V2 input surface is:
+The split first landed in the 0.145 family and remains present in 0.147. Its
+canonical visible V2 input surface is:
 
 ```text
 task_name
@@ -174,22 +149,36 @@ control returns to the stable three-field/provider-managed profile.
 The root orchestration control remains reasoning effort: `ultra` selects the
 upstream proactive posture and lower efforts retain explicit-request
 delegation. Root effort selection does not imply per-spawn child model/effort
-authority. On the stock release-144 path those choices are provider-managed,
-whereas the enabled split-profile path lets the root request them within the
-active multi-agent backend. Any model/effort later reported on collaboration
-items is still the stronger runtime evidence.
+authority. On the historical stock release-144 path those choices were
+provider-managed, whereas the enabled split path lets the root request them
+within the active multi-agent backend. Any model/effort later reported on
+collaboration items is still the stronger runtime evidence.
 
-The fork transition law remains relevant to future worker profiles:
+Source behavior and current shell-adapter behavior are distinct:
 
 ```text
-fork_turns = all (including omission)
-  -> child inherits parent model, effort, and role
-  -> model/effort overrides are rejected
+Codex 0.147 source:
+  fork_turns = all (including omission)
+    -> full history is selected
+    -> explicit model/effort overrides are validated and applied
+    -> explicit agent_type remains rejected in stable 0.147
 
-fork_turns = none or a positive bounded turn count
-  -> split-profile path may request model/effort
-  -> a configured default child role may also be applied
+  fork_turns = none or a positive bounded turn count
+    -> explicit model/effort overrides are validated and applied
+    -> a configured/default child role may also be applied
+
+Current Review Shell app-server descriptor:
+  fork_turns = all (including omission)
+    -> still projects inherited model/effort and suppresses overrides
+
+  fork_turns = none or a positive bounded turn count
+    -> split profile may request model/effort
 ```
+
+The last restriction is local adapter posture retained pending a separately
+reviewed descriptor/runtime promotion. It must not be reported as a 0.147
+source-runtime restriction. Direct-native agents already model history mode,
+child model, and effort as independent inputs.
 
 Because hidden metadata does not expose `agent_type`, named-role selection is
 not currently available to the root. A later compatibility slice may map one
@@ -206,7 +195,8 @@ The project setting is still a requested-capability fact: the selected binary,
 active model/backend, and child collaboration result must witness actual
 acceptance. It must not be inferred merely from the checkbox.
 
-An app-server `gpt-5.6-sol` Ultra provider smoke accepted the split reserved
+The historical 0.145-alpha app-server `gpt-5.6-sol` Ultra provider smoke
+accepted the split reserved
 schema without the former tools 400. A fresh low-effort child request emitted
 canonical `childActivity`, completed its collaboration wait, and returned to
 the root. Because that child activity did not expose an effective runtime

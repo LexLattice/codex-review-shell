@@ -27,6 +27,29 @@ function completedSse(id, text) {
   ].join("\n");
 }
 
+function toolCallSse(id, name, args) {
+  const itemId = `${id}_${name}`;
+  const callId = `call_${id}_${name}`;
+  const argumentsJson = JSON.stringify(args);
+  return [
+    "event: response.created",
+    `data: ${JSON.stringify({ response: { id, model: "gpt-5.6-sol" } })}`,
+    "",
+    "event: response.output_item.added",
+    `data: ${JSON.stringify({ item: { id: itemId, type: "function_call", call_id: callId, name } })}`,
+    "",
+    "event: response.function_call_arguments.delta",
+    `data: ${JSON.stringify({ item_id: itemId, call_id: callId, delta: argumentsJson })}`,
+    "",
+    "event: response.output_item.done",
+    `data: ${JSON.stringify({ item: { id: itemId, type: "function_call", call_id: callId, name, arguments: argumentsJson } })}`,
+    "",
+    "event: response.completed",
+    `data: ${JSON.stringify({ response: { id, status: "completed" } })}`,
+    "",
+  ].join("\n");
+}
+
 function toolEvent(name, args, index) {
   return {
     type: "tool_call_completed",
@@ -78,6 +101,12 @@ try {
       };
     },
   });
+  const waitCalls = [];
+  const poolWait = pool.wait.bind(pool);
+  pool.wait = async (input) => {
+    waitCalls.push(input);
+    return poolWait(input);
+  };
   const parentBodies = [];
   const controller = new DirectLiveTextController({
     sessionStore,
@@ -90,6 +119,31 @@ try {
     endpoint: "https://chatgpt.test/backend-api/codex/responses",
     fetchImpl: async (_url, init) => {
       parentBodies.push(JSON.parse(init.body));
+      if (parentBodies.length === 1) {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => "text/event-stream" },
+          text: async () => toolCallSse("resp_spawn_second", "spawn_agent", {
+            task_name: "bounded_analysis_two",
+            message: "Analyze the second bounded concern.",
+            fork_turns: "none",
+            model: "gpt-5.6-sol",
+            reasoning_effort: "high",
+          }),
+        };
+      }
+      if (parentBodies.length === 2) {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: () => "text/event-stream" },
+          text: async () => toolCallSse("resp_poll_second", "wait_agent", {
+            targets: ["bounded_analysis_two"],
+            timeout_ms: 0,
+          }),
+        };
+      }
       return {
         ok: true,
         status: 200,
@@ -137,14 +191,19 @@ try {
   );
   assert.equal(spawnHandled, 1, "spawn_agent should execute without a renderer approval surface");
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(childCalls.length, 1);
+  assert.equal(childCalls.length, 2, "native continuation should be able to spawn another child in the same turn");
   assert.equal(childCalls[0].requestBody.model, "gpt-5.6-terra");
   assert.equal(childCalls[0].requestBody.reasoning.effort, "low");
   assert.equal(childCalls[0].requestShape.contextHandoffMode, "full");
   assert.equal(childCalls[0].requestShape.contextMessageCount, 2);
-  assert.equal(parentBodies.length, 1, "spawn result should continue the parent exactly once");
+  assert.equal(parentBodies.length, 3, "spawn, nested spawn, and nested wait should remain in one provider turn");
   assert.match(JSON.stringify(parentBodies[0]), /spawn_agent_result/);
   assert.match(JSON.stringify(parentBodies[0]), /bounded_analysis/);
+  assert(parentBodies[0].tools.some((tool) => tool.name === "spawn_agent"));
+  assert(parentBodies[0].tools.some((tool) => tool.name === "wait_agent"));
+  assert.match(JSON.stringify(parentBodies[1]), /bounded_analysis_two/);
+  assert.match(JSON.stringify(parentBodies[2]), /wait_agent_result/);
+  assert.equal(waitCalls[0].timeoutMs, 0, "controller must preserve a zero-millisecond wait timeout");
   const spawnTurn = sessionStore.readTurn("direct_parent_native_agents", "turn_spawn");
   assert.equal(
     spawnTurn.unresolvedObligations[0].result.sideEffectExecuted,
@@ -160,6 +219,10 @@ try {
   })[0];
   assert.equal(spawned.state, "completed");
   assert.equal(spawned.runtimeProfileIndependentOfContext, true);
+  assert.equal(pool.records({
+    projectId: project.id,
+    primaryThreadId: "direct_parent_native_agents",
+  }).length, 2);
 
   sessionStore.createTurn("direct_parent_native_agents", {
     turnId: "turn_wait",
@@ -185,9 +248,9 @@ try {
     project,
   );
   assert.equal(waitHandled, 1);
-  assert.equal(parentBodies.length, 2);
-  assert.match(JSON.stringify(parentBodies[1]), /wait_agent_result/);
-  assert.match(JSON.stringify(parentBodies[1]), /Child analyzed the delegated slice/);
+  assert.equal(parentBodies.length, 4);
+  assert.match(JSON.stringify(parentBodies[3]), /wait_agent_result/);
+  assert.match(JSON.stringify(parentBodies[3]), /Child analyzed the delegated slice/);
   const waitTurn = sessionStore.readTurn("direct_parent_native_agents", "turn_wait");
   assert.equal(waitTurn.state, "completed");
   assert.equal(waitTurn.unresolvedObligations[0].result.resultKind, "direct_sub_agent_runtime");
@@ -199,6 +262,7 @@ try {
     childReasoningEffort: childCalls[0].requestBody.reasoning.effort,
     contextHandoffMode: childCalls[0].requestShape.contextHandoffMode,
     parentContinuations: parentBodies.length,
+    sameTurnNativeTransitions: 3,
   }, null, 2));
 } finally {
   await fs.rm(rootDir, { recursive: true, force: true });

@@ -369,7 +369,15 @@ function configureAppProfile() {
     const appDataPath = app.getPath("appData");
     const canonicalUserDataPath = path.join(appDataPath, APP_TITLE);
     const legacyUserDataPath = path.join(appDataPath, "codex-review-shell");
-    const candidates = uniquePaths([canonicalUserDataPath, legacyUserDataPath, app.getPath("userData")]);
+    const formerDirectUserDataPath = path.join(appDataPath, "codex-review-shell-direct");
+    // A promoted installation may have been active on either former lineage.
+    // Keep using the profile with the newest persisted workspace configuration.
+    const candidates = uniquePaths([
+      canonicalUserDataPath,
+      legacyUserDataPath,
+      formerDirectUserDataPath,
+      app.getPath("userData"),
+    ]);
     let selectedPath = canonicalUserDataPath;
     let selectedMtime = 0;
     for (const candidate of candidates) {
@@ -3324,6 +3332,13 @@ function ensureDirectFixtureController() {
   return directFixtureController;
 }
 
+function assistantTextFromDirectProviderResult(result = {}) {
+  return (Array.isArray(result.normalizedEvents) ? result.normalizedEvents : [])
+    .filter((event) => event?.type === "message_delta")
+    .map((event) => normalizeString(event?.text, ""))
+    .join("");
+}
+
 async function runDirectNativeChildProviderTurn(input = {}) {
   const result = await runImplementationToolInitialProbe({
     authStore: directRuntimeAuthStore(),
@@ -3342,15 +3357,11 @@ async function runDirectNativeChildProviderTurn(input = {}) {
       ? "cancelled"
       : terminal.state === "completed"
         ? "completed"
-        : terminal.state === "failed"
-          ? "failed"
-          : terminal.state === "tool_waiting"
-            ? "failed"
-            : "failed",
+        : "failed",
     errorCode: terminal.state === "tool_waiting"
       ? "direct_child_tools_not_declared"
       : normalizeString(terminal.error?.code || result.error?.code, ""),
-    outputText: assistantTextFromDirectSemanticResult(result),
+    outputText: assistantTextFromDirectProviderResult(result),
     responseId: normalizeString(result.responseId, ""),
     tokenUsage: usage
       ? {
@@ -3373,18 +3384,15 @@ function ensureDirectNativeAgentPool() {
     maxQueuedChildren: Number(
       process.env.CODEX_DIRECT_SUB_AGENT_MAX_QUEUED || 64,
     ),
-    defaultModel:
-      normalizeString(
-        process.env.CODEX_DIRECT_SUB_AGENT_DEFAULT_MODEL,
-        "gpt-5.6-sol",
-      ),
-    defaultReasoningEffort:
-      normalizeString(
-        process.env.CODEX_DIRECT_SUB_AGENT_DEFAULT_REASONING_EFFORT,
-        "medium",
-      ),
-    providerTurnRunner: (input) =>
-      runDirectNativeChildProviderTurn(input),
+    defaultModel: normalizeString(
+      process.env.CODEX_DIRECT_SUB_AGENT_DEFAULT_MODEL,
+      "gpt-5.6-sol",
+    ),
+    defaultReasoningEffort: normalizeString(
+      process.env.CODEX_DIRECT_SUB_AGENT_DEFAULT_REASONING_EFFORT,
+      "medium",
+    ),
+    providerTurnRunner: (input) => runDirectNativeChildProviderTurn(input),
   });
   return directNativeAgentPool;
 }
@@ -6375,10 +6383,7 @@ function encodeCodexSurfacePayload(project, extra = {}) {
 
 function codexSurfaceUrl(baseUrl, project, extra = {}) {
   const token = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-  const documentName = APP_EXPERIENCE.rendererDocument === "index.html"
-    ? "codex-surface.html"
-    : APP_EXPERIENCE.rendererDocument;
-  return `${baseUrl}/${documentName}?reload=${token}#${encodeCodexSurfacePayload(project, extra)}`;
+  return `${baseUrl}/${APP_EXPERIENCE.rendererDocument}?reload=${token}#${encodeCodexSurfacePayload(project, extra)}`;
 }
 
 function codexSurfaceThreadExtras(options = {}) {
@@ -6398,6 +6403,7 @@ async function loadCodexSurface(project, options = {}) {
   const codex = project.surfaceBinding.codex;
   const localSurfaceBaseUrl = await ensureLocalSurfaceServer().ensureStarted();
   if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
+  const threadExtras = codexSurfaceThreadExtras(options);
   const runtimeMode = normalizeDirectRuntimeModeForStatus(codex.runtimeMode);
   if (runtimeMode !== "legacy-app-server") {
     await disposeCodexAppServerManager();
@@ -6438,7 +6444,7 @@ async function loadCodexSurface(project, options = {}) {
     const localUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, {
       codexConnection: directConnection,
       directSurfaceProjection,
-      activationEpoch: Number(options.activationEpoch) || 0,
+      ...threadExtras,
       error: [
         `Direct runtime selected: ${runtimeStatus.runtimeModeLabel}.`,
         `Direct tier: ${runtimeStatus.directTier || "none"}.`,
@@ -6473,7 +6479,6 @@ async function loadCodexSurface(project, options = {}) {
     }
   }
   if (codex.mode === "managed") {
-    const threadExtras = codexSurfaceThreadExtras(options);
     const workspaceStatus = workspaceBackends?.statusForProject(project) || null;
     try {
       const requestedCodexHome = normalizeString(options.codexHome, "");
@@ -6530,7 +6535,7 @@ async function loadCodexSurface(project, options = {}) {
   }
   await disposeCodexAppServerManager();
   activeCodexSurfaceConnection = null;
-  const localUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, { activationEpoch: Number(options.activationEpoch) || 0 });
+  const localUrl = codexSurfaceUrl(localSurfaceBaseUrl, project, threadExtras);
   if (isStaleSurfaceActivationEpoch(options.activationEpoch)) return { skipped: true, stale: true };
   setManagedCodexSurfaceAuthority(project, localUrl, "fallback-local-surface");
   await codexView.webContents.loadURL(localUrl);
@@ -9781,7 +9786,7 @@ async function createDirectWorkbenchWindow() {
     `[Direct Workbench] launch experience=${APP_EXPERIENCE.id} ` +
       `controlPlane=${APP_EXPERIENCE.controlPlane} source=${APP_EXPERIENCE.source}`,
   );
-  app.setName("Direct Workbench");
+  app.setName(APP_EXPERIENCE.label);
   nativeTheme.themeSource = "dark";
 
   mainWindow = new BaseWindow({
@@ -9789,7 +9794,7 @@ async function createDirectWorkbenchWindow() {
     height: 980,
     minWidth: 720,
     minHeight: 620,
-    title: "Direct Workbench",
+    title: APP_EXPERIENCE.label,
     backgroundColor: "#090a0c",
     show: true,
   });
@@ -9843,6 +9848,10 @@ async function createDirectWorkbenchWindow() {
     threadAnalyticsStore = null;
     directFixtureController = null;
     directLiveTextController = null;
+    directLiveProbeEvidenceStore = null;
+    directImplementationProofEvidenceStore = null;
+    directActivationStore = null;
+    directThreadWorkbenchController = null;
     directThreadStore?.close();
     directThreadStore = null;
     directSessionStore = null;
@@ -9857,9 +9866,19 @@ async function createDirectWorkbenchWindow() {
   });
 
   const config = await loadConfig();
-  currentProject = getSelectedProject(config);
-  if (!currentProject) throw new Error("Direct Workbench requires at least one configured project.");
+  const selectedProject = getSelectedProject(config);
+  if (!selectedProject) throw new Error("Direct Workbench requires at least one configured project.");
+  const activation = applyProjectActivationBinding(selectedProject);
+  const projects = activation.project
+    ? config.projects.map((project) => (project.id === activation.project.id ? activation.project : project))
+    : config.projects;
+  const saved = await saveConfig({ ...config, projects });
+  currentProject = getSelectedProject(saved);
+  const activationBinding = activation.binding?.id
+    ? currentProject?.laneBindings?.find((item) => item.id === activation.binding.id) || activation.binding
+    : null;
   await loadCodexSurface(currentProject, {
+    ...codexSurfaceOptionsForBinding(activationBinding),
     activationEpoch: nextSurfaceActivationEpoch(),
   });
 }

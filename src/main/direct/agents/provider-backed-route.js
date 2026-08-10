@@ -552,6 +552,8 @@ class DirectProviderBackedSubAgentRoute {
         requestBody: request.requestBody,
         requestShape: request.requestShape,
         promptDigest: request.promptDigest,
+        contextDigest: request.contextDigest,
+        contextMessageCount: request.contextMessageCount,
         promptChars: request.promptChars,
       }));
       const terminalStatus = providerOutcome.terminalState;

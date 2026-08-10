@@ -15,14 +15,16 @@ and what did Codex CLI choose to build on top of it?
 
 Last verified:
 
-- Review shell repo: `/home/rose/work/LexLattice/codex-review-shell-direct`
-  working tree based on `f4c3b32fd2b3`
-- Codex fork evidence repo: `/home/rose/work/codex/fork` at `25af12f7e615`
-  (`rust-v0.145.0`)
-- Upstream release evidence: fetched remote ref
-  `origin/upstream-latest-release` at `25af12f7e615`
-- Prior documented release baseline: `rust-v0.144.4`
-- Verification date: 2026-07-22
+- Review shell repo: `/home/rose/work/LexLattice/codex-review-shell`
+  on the reviewed `origin/main` lineage
+- Codex fork implementation evidence: `/home/rose/work/codex/fork`
+  `origin/main` at `923840b357e15195e66f7e82ac81ee0f39fc7050`
+- Upstream stable-release evidence: `origin/upstream-latest-release` at
+  `be6e8eac029b183056b7e4402879f15d2c85f61b` (`rust-v0.147.0`)
+- Prior bounded release baseline: `rust-v0.145.0`
+- Verification date: 2026-08-09
+- Verification scope: release-147 agent-runtime/exec-server delta; unchanged
+  primitive-family inventories retain their earlier source grounding
 
 ## Epistemic Status
 
@@ -131,10 +133,10 @@ Utility:
 
 ## Release 0.144.4 ODEU Baseline Refresh
 
-This refresh replaces the stale release-132 document baseline with current
-release-144 evidence. It is a current capability profile, not a claim that every
-listed primitive was introduced after the separately inspected `0.142.3` tag.
-The evidence spans three different authority layers.
+This historical refresh replaced the stale release-132 document baseline with
+release-144 evidence. It does not claim that every listed primitive was
+introduced after the separately inspected `0.142.3` tag. The evidence spans
+three different authority layers and is extended by the 145-147 section below.
 
 ### Provider/backend evidence
 
@@ -210,73 +212,64 @@ neither
   -> automatic Direct promotion
 ```
 
-## Release 0.145.0 ODEU Baseline Refresh
+## Release 0.145-0.147 ODEU Baseline Refresh
 
-Release 145 strengthens the Codex client and app-server substrate without
-collapsing the backend/client boundary above. The source baseline is stable
-`rust-v0.145.0`; the managed Review Shell runtime now uses npm-global stable
-`@openai/codex@0.145.0` and has a live authenticated root-turn witness.
+This is a layered update over the retained release-144 section above. Release
+145 supplied the broader app-server/history/environment evidence recorded in
+the [release-145 impact audit](./audits/UPSTREAM_CODEX_RELEASE_145_IMPACT_2026-07-22.md).
+The bounded release-147 refresh focuses on agent-runtime and exec-server
+changes and is not a claim that every provider or application capability was
+re-audited.
 
 ### Provider/backend evidence
 
-- Response usage now preserves prompt-cache write tokens. App-server can also
-  emit exact per-completion usage through the internal `rawResponse/completed`
-  adapter, but only when experimental raw events are enabled. That notification
-  is transient client evidence, not a guarantee that every provider reports
-  usage.
-- Responses inputs and dynamic tool outputs can carry audio, and Realtime V3
-  expands the streaming substrate. These remain provider/model-dependent
-  capabilities rather than universal Direct controls.
-- Bundled model metadata moved toward GPT-5.6 profiles, but the provider-served
-  catalog remains the authority for model, reasoning, and tool exposure.
+- Child model and reasoning-effort requests remain subject to the served model
+  catalog. Codex source validates them against that catalog; source acceptance
+  alone is not provider proof that a requested runtime profile was effective.
+- Multi-agent usage hints in Codex world state are client/runtime evidence.
+  Direct may admit exact provider token usage or an explicit unavailable row,
+  but must not manufacture usage from lifecycle activity.
+- The host-specific collaboration tool schema may expose stricter choices than
+  the Codex source runtime. A hosted root-plus-three cap or a schema coupling
+  full-history handoff to inherited model/effort is therefore an environment
+  contract, not OAI backend law.
 
 ### Codex-core implementation evidence
 
-- Projection-backed paginated history is now usable. Thread turns/items can be
-  listed backwards with cursors, turns can be excluded from reads, occurrences
-  can be searched, and names, memories, Git metadata, subagent history, and
-  legacy projections consume the paginated substrate. A paginated thread does
-  not support `thread/read(includeTurns=true)`; clients must use the list APIs.
-- Multi-agent V2 is stable, restores agent roles, applies child defaults, and
-  treats parent-owned children as read-only from sibling clients. This is
-  stronger lifecycle evidence, not proof of Direct constitutional inheritance
-  or delegated authority.
-- Retrying from an earlier turn can create a contextual branch with
-  `beforeTurnId`; goal continuation can be deferred. Compaction fallbacks,
-  remote compaction, and session teardown also gained resilience.
+- V2 collaboration capacity now uses a configured per-session concurrency
+  value and subtracts the primary thread before reserving child slots through
+  one controller.
+- Both release-147 spawn handlers apply requested child model and reasoning
+  effort independently of full-history selection. V2 still preserves the
+  parent role on a full-history fork in stable 0.147; a post-release commit
+  removes that remaining role restriction.
+- Spawn configuration is normalized through `ThreadSpawnRequest`; recent-turn
+  histories are projected rather than implemented by cloning the full rollout.
+- Ready step environments, developer instructions, registry identity,
+  parent-turn lineage, direct-input capability, and task names gained explicit
+  inheritance or evidence paths.
+- Exec-server can dispatch requests concurrently behind an opt-in control. It
+  remains an alternative Codex execution protocol, not the authority for
+  Direct's native scheduler.
 
-### App/client environment evidence
-
-- `app/installed` and `app/read` expose application inventory/detail, while
-  `environment/status` and its notifications expose connection state.
-- App-server notifications carry an `emittedAtMs` evidence clock, and thread
-  state exposes `canAcceptDirectInput` for truthful input gating.
-- External import support expanded for Cursor and Claude histories. Bedrock,
-  hosted MCP, native Windows sandboxing, audio, and Realtime support are
-  deployment-specific capabilities, not universal backend primitives.
-
-Direct disposition:
+### Current Direct disposition
 
 ```text
-adopt evidence clocks, input-readiness, paginated-history, and environment/app
-inventory as adapter candidates
+adopt:
+  stable evidence identities, model-catalog validation lessons,
+  exact environment inheritance when that Direct slice is promoted
 
-preserve provider/runtime gates for usage, audio, realtime, model metadata,
-hosted MCP, Bedrock, and platform sandboxing
+retain independently:
+  Direct scheduler, context selection, lifecycle records,
+  authority and result-admission boundaries
 
-do not promote stable-source capability into the managed runtime or the
-Direct-native path without implementation and runtime evidence
+defer:
+  exec-server delegation, follow-up/direct input, recursive spawn,
+  durable child restart, role-compiled child constitutions
 ```
 
-Current bounded evidence: the shell preserves `emittedAtMs`, direct-input
-eligibility, and environment status; it also reads installed/callable app state
-and metadata into a non-authoritative capability snapshot. A stable read-only
-probe observed 11 installed/enabled/callable apps and resolved all metadata
-with tool summaries disabled. Paginated history and effective child
-model/effort remain unproven on stable.
-
-See the detailed
-[release 145 impact audit](./audits/UPSTREAM_CODEX_RELEASE_145_IMPACT_2026-07-22.md).
+The exact fork comparison and coverage/disposition matrix are in the
+[release-147 agent-runtime impact audit](./audits/UPSTREAM_CODEX_RELEASE_147_DIRECT_AGENT_IMPACT_2026-08-09.md).
 
 ## Upstream Primitive Families
 

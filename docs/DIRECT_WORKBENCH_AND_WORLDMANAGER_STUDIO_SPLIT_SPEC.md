@@ -1,6 +1,7 @@
 # Direct Workbench And WorldManager Studio Split
 
-Status: implemented foundation, 2026-08-10.
+Status: phase 2 resumed — Direct Workbench and WorldManager Studio active on a
+shared reviewed Direct kernel.
 
 ## Run Stance
 
@@ -215,8 +216,9 @@ node scripts/direct-world-manager-project-genesis-ui-regression.mjs
 npm run check:main-syntax
 ```
 
-The Direct Workbench Electron smoke verifies the bootstrap identity and visible
-control-plane witness, then attempts a WorldManager snapshot call from the
-trusted Direct renderer. The main process rejects it before initializing the
-WorldManager service. The WorldManager launch smoke verifies the separate
-production document, title, and semantic control-plane bootstrap envelope.
+The Direct Workbench Electron smoke verifies the bootstrap identity, visible
+control-plane witness, restored project binding, and Runtime/Analytics tenants,
+then attempts a WorldManager snapshot call from the trusted Direct renderer.
+The main process rejects it before initializing the WorldManager service. The
+WorldManager launch smoke verifies the separate production document, title,
+and semantic control-plane bootstrap envelope.

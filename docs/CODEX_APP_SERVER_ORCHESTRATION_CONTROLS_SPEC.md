@@ -1,7 +1,7 @@
 # Codex App-Server Orchestration Controls
 
-Status: implemented, project-scoped stable-145 activation with a release-144 safe
-fallback.
+Status: implemented, project-scoped split-schema activation on stable 0.147
+with a provider-managed fallback.
 
 Scope:
 
@@ -35,12 +35,12 @@ root effort = ultra
 collaboration.spawn_agent
   -> canonical hosted-V2 provider schema
 
-release-144 compatibility profile
+provider-managed compatibility profile
   -> task_name, message, fork_turns
   -> child model/effort remain provider-managed
   -> narrow exposure explicitly false
 
-0.145 split-schema profile
+0.145+ split-schema profile
   -> task_name, message, fork_turns, model, reasoning_effort
   -> agent_type and service_tier remain hidden
 
@@ -53,7 +53,8 @@ fresh or bounded child context
   -> root may select model/effort inside the active multi-agent backend
 
 full-history child context
-  -> inherits parent model/effort; overrides are rejected
+  -> 0.147 source accepts independently selected model/effort
+  -> current shell descriptor still suppresses those overrides pending promotion
 ```
 
 Root model/effort controls and child model/effort controls are different
@@ -78,7 +79,7 @@ Windows Review Shell
 The WSL npm installation is pinned to:
 
 ```text
-@openai/codex@0.145.0
+@openai/codex@0.147.0
 ```
 
 The active Review Shell project profile requests:
@@ -90,7 +91,7 @@ bounded worker profile = enabled
 bounded worker default intent = fork_turns none, effort low, model inherited
 ```
 
-That release contains both required upstream commits:
+That release contains the original split-schema commits:
 
 ```text
 ea15456284  Expose model overrides for multi-agent v2 spawns (#32749)
@@ -151,8 +152,8 @@ Every managed launch therefore explicitly preserves:
 features.multi_agent_v2.hide_spawn_agent_metadata=true
 ```
 
-Because the 145-family runtime defaults the narrow exposure on, the disabled profile also
-declares:
+Because the 145+ runtime family defaults the narrow exposure on, the disabled
+profile also declares:
 
 ```text
 features.multi_agent_v2.expose_spawn_agent_model_overrides=false
@@ -172,7 +173,7 @@ replace the previous app-server process.
 
 ## Canonical Hosted-V2 Contract
 
-For the enabled stable project profile, the shell treats this as the exact
+For the enabled project profile, the shell treats this as the exact
 visible input surface:
 
 ```text
@@ -254,13 +255,20 @@ Turns continue to send the selected effective `effort`. The deprecated
 ```text
 fork_turns = all or omitted
   -> full-history child
-  -> inherits parent model, effort, and role
-  -> model/effort overrides are invalid
+  -> stable 0.147 source may apply model/effort overrides
+  -> stable 0.147 still preserves the parent role
+  -> current shell descriptor suppresses model/effort overrides
 
 fork_turns = none or positive integer string
   -> fresh/bounded child context
   -> split-schema profile may apply model/effort overrides
 ```
+
+The full-history restriction in the current capability descriptor is local
+adapter policy inherited from the 0.145 integration. It is not a stable-0.147
+Codex source restriction. Promoting the app-server path requires updating that
+descriptor, developer guidance, and runtime evidence together; Direct-native
+spawn already treats history handoff, model, and effort as independent inputs.
 
 The split profile still hides `agent_type`, so the root cannot choose a named
 role. Codex resolves omitted `agent_type` to the configured/default worker role
@@ -311,7 +319,7 @@ Perform the delegated bounded task and return concise evidence.
 model_reasoning_effort = "low"
 ```
 
-This default-profile mechanism is not materialized by the present stable
+This default-profile mechanism is not materialized by the present split-profile
 activation.
 
 ## Upstream Upgrade Adoption
@@ -333,10 +341,11 @@ so `model` and `reasoning_effort` can be exposed while `agent_type` and
 `service_tier` remain hidden. The second restricts selectable child models to
 the active multi-agent backend.
 
-The active WSL stable `0.145.0` contains both changes; the earliest normal alpha
-containing both was `0.145.0-alpha.7`. The shell exposes the split only
-when the project-scoped intent is enabled. It never restores the old broad
-metadata switch.
+The active WSL stable `0.147.0` contains both changes; the earliest normal
+alpha containing both was `0.145.0-alpha.7`. Stable 0.147 also applies model
+and effort overrides independently of full-history handoff in both spawn
+handlers. The shell exposes the split only when the project-scoped intent is
+enabled and never restores the old broad metadata switch.
 
 The project control is a requested capability exposure. Runtime readiness and
 canonical collaboration items remain separate witnesses. If a project is
@@ -395,7 +404,7 @@ versioned descriptor key and therefore restarts the managed app-server.
 
 ## Runtime Truth
 
-The enabled split app-server capability profile reports:
+The enabled app-server capability profile currently reports:
 
 ```text
 reservedProviderToolSchema = true
@@ -417,15 +426,22 @@ effectiveModelVisibleSpawnControls = unknown
 clientSchemaExtensionAllowed = false
 ```
 
-The disabled fallback profile reports the release-144 three-field surface and
-`provider_managed`, with `spawnContractStatus=disabled`. These are
+The disabled fallback profile reports the provider-managed three-field surface
+and `provider_managed`, with `spawnContractStatus=disabled`. These are
 configuration and runtime-route claims. A live
 spawn result is still needed to prove the provider accepted a concrete child
 model/effort request.
 
 ## Verification Evidence
 
-On 2026-07-15 the WSL runtime produced these witnesses:
+On 2026-08-09 the configured binary and stable source snapshot both reported
+0.147.0. Source inspection proved independent full-history model/effort
+handling, but the Review Shell descriptor remains intentionally
+`fullHistoryOverrideAllowed=false` until a separate adapter/runtime promotion.
+No new live app-server child spawn is claimed by this documentation refresh.
+
+The prior 2026-07-15 WSL runtime produced these historical split-schema
+witnesses:
 
 ```text
 command -v codex
@@ -456,13 +472,6 @@ schema acceptance and the child lifecycle path, but it does not yet prove the
 effective child effort. A canonical child runtime item remains the required
 witness for that last claim.
 
-On 2026-07-22 both the configured absolute binary and PATH command reported
-`codex-cli 0.145.0`. A stable authenticated root turn initialized, streamed the
-exact response `stable-145-ready.`, and completed without tools. This promotes
-the root app-server path to a stable-runtime witness. The 2026-07-15 alpha
-spawn evidence above remains the latest child-spawn witness until a stable
-child run reports its effective model and effort.
-
 ## Acceptance Checks
 
 ```text
@@ -477,7 +486,8 @@ child run reports its effective model and effort.
 - The managed descriptor key changes from the broken launch profile.
 - Enabling or disabling the split profile changes the descriptor key.
 - A new enabled task receives the bounded Low-effort worker intent through developerInstructions.
-- Full-history forks reject model/effort overrides.
+- The current shell descriptor rejects full-history model/effort overrides.
+- Stable 0.147 source acceptance of those overrides is documented separately from shell posture.
 - Fresh and bounded forks may use model/effort from the active backend only.
 - Ultra and max survive configuration normalization.
 - thread/start uses config.model_reasoning_effort.
@@ -500,7 +510,7 @@ force Multi-Agent V2
 expose agent_type or service_tier
 claim split controls on stock 0.144.4 or an unverified external app server
 materialize a shell-managed default worker profile
-backport release-145 commits into the release-tracking source branch
+backport release-145+ commits into the release-tracking source branch
 add user-to-worker chat
 add client-side spawn authority
 implement cross-environment Windows/WSL worker placement

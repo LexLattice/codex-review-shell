@@ -4056,6 +4056,7 @@ class DirectLiveTextController {
   }
 
   utilityContinuationRequestFromEnvelope(sessionId, turnId, obligation = {}, envelope = {}) {
+    const nativeAgentRuntimeResult = normalizeString(envelope.resultKind, "") === "direct_sub_agent_runtime";
     const outputType = normalizeString(obligation.providerCallType || obligation.toolType, "") === "custom_tool_call"
       ? "custom_tool_call_output"
       : "function_call_output";
@@ -4080,6 +4081,7 @@ class DirectLiveTextController {
         toolLoopId: normalizeString(obligation.toolLoopId, `utility_loop_${sha256(`${sessionId}:${turnId}`).slice(0, 20)}`),
         stepId: normalizeString(obligation.stepId, `utility_step_${sha256(`${obligation.obligationId}:${resultId}`).slice(0, 20)}`),
         stepOrdinal: Number(obligation.stepOrdinal || 1) || 1,
+        maxStepCount: nativeAgentRuntimeResult ? MAX_AGENT_RUNTIME_TOOL_LOOP_STEPS : 1,
         parentResponseId: normalizeString(obligation.parentResponseId, ""),
         parentResponseSource: normalizeString(obligation.parentResponseSource, ""),
         parentResponseDigest: normalizeString(obligation.parentResponseDigest, ""),
@@ -4114,7 +4116,7 @@ class DirectLiveTextController {
       requestControls: {
         store: false,
         parallelToolCalls: false,
-        toolDeclarations: false,
+        toolDeclarations: nativeAgentRuntimeResult,
         toolOutputItem: true,
         previousResponseId: false,
       },
@@ -4200,16 +4202,27 @@ class DirectLiveTextController {
     const recorded = this.recordSafeResidentUtilityResult(sessionId, turnId, obligation, envelope);
     const continuationRequest = recorded.continuationRequest;
     const turn = this.sessionStore.readTurn(sessionId, turnId) || {};
-    const ledgerContinuation =
-      normalizeString(envelope.resultKind, "") === "epistemic_ledger_act";
+    const resultKind = normalizeString(envelope.resultKind, "");
+    const ledgerContinuation = resultKind === "epistemic_ledger_act";
     const agentRuntimeContinuation = [
       "direct_sub_agent_runtime",
       "sub_agent_list_status",
       "sub_agent_inspect_status",
-    ].includes(normalizeString(envelope.resultKind, ""));
+    ].includes(resultKind);
     const residentContinuation = ledgerContinuation || agentRuntimeContinuation;
     const directStatus = this.statusForProject(project || {});
     const ledgerBinding = this.epistemicLedgerTurnBinding(sessionId, turnId);
+    const continuationToolNames = ledgerContinuation
+      ? implementationContinuationToolNames(
+          directStatus,
+          userPromptTextFromTurn(turn),
+        )
+      : agentRuntimeContinuation
+        ? [
+            ...NATIVE_SUB_AGENT_RUNTIME_TOOL_NAMES,
+            ...READ_ONLY_SUB_AGENT_STATUS_TOOL_NAMES,
+          ]
+        : [];
     const continuationToolComposition = residentContinuation
       ? composeImplementationToolBundleForRequest({
           projectId: normalizeString(
@@ -4218,16 +4231,13 @@ class DirectLiveTextController {
           ),
           sessionId,
           turnId,
-          toolNames: implementationContinuationToolNames(
-            directStatus,
-            userPromptTextFromTurn(turn),
-          ),
+          toolNames: continuationToolNames,
           useLaneDefaultTools: false,
           sourceMessageId: `${turnId}_${obligation.obligationId}_${ledgerContinuation ? "ledger" : "agent_runtime"}_continuation`,
           normalizedLaneRequestId: `normalized_lane_request_${turnId}_${obligation.obligationId}_${Number(obligation.stepOrdinal || 1)}`,
           workThreadId: normalizeString(
             ledgerBinding?.bundle?.scope?.workThreadId,
-            directWorkThreadContextCarrier(turn, project).workThreadId,
+            directWorkThreadContextCarrier(turn, project, obligation).workThreadId,
           ),
           runtimeFactsId:
             directStatus.evidenceId || "direct_runtime_facts",
@@ -4235,7 +4245,7 @@ class DirectLiveTextController {
           providerHostedToolsStatus: directStatus.providerHostedToolsStatus,
           roleLedgerToolBundle: ledgerContinuation ? ledgerBinding?.bundle : null,
         })
-      : null;
+      : { tools: [], toolNames: [] };
     this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
       status: "continuation_sent",
       authorityState: "continuation_sent",
@@ -4254,7 +4264,7 @@ class DirectLiveTextController {
       model: normalizeString(turn.model, ""),
       fetchImpl: this.fetchImpl || undefined,
       instructions: DEFAULT_TOOL_CONTINUATION_INSTRUCTIONS,
-      continuationTools: continuationToolComposition?.tools || [],
+      continuationTools: continuationToolComposition.tools,
       onLifecycle: (event) => {
         if (event.phase === "streaming") {
           this.emitNotification(surfaceSession, "turn/started", {
@@ -4269,50 +4279,83 @@ class DirectLiveTextController {
     if (Array.isArray(result.normalizedEvents) && result.normalizedEvents.length) {
       this.sessionStore.appendNormalizedEvents(sessionId, turnId, result.normalizedEvents, {});
     }
-    let terminal = result.terminal || terminalStateFromNormalizedEvents(result.normalizedEvents || []);
-    let nextToolObligations = [];
+    const streamTerminal = result.terminal || terminalStateFromNormalizedEvents(result.normalizedEvents || []);
     const nestedToolCall = residentContinuation && (result.normalizedEvents || []).some(
       (event) =>
-        event.type === "tool_call_started" ||
-        event.type === "tool_call_delta" ||
-        event.type === "tool_call_completed",
+        event?.type === "tool_call_started" ||
+        event?.type === "tool_call_delta" ||
+        event?.type === "tool_call_completed",
     );
+    let nextToolObligations = [];
+    let terminal = streamTerminal;
+    let continuationOutcome = terminal.state === "completed"
+      ? "assistant_final"
+      : normalizeString(terminal.error?.code, "utility_continuation_failed");
     if (nestedToolCall) {
-      const nested = this.sessionStore.addToolObligations(
+      const nextStepOrdinal = (Number(obligation.stepOrdinal || 1) || 1) + 1;
+      const obligationResult = this.sessionStore.addToolObligations(
         sessionId,
         turnId,
         result.normalizedEvents,
         {
-          toolLoopId: normalizeString(
-            obligation.toolLoopId,
-            `${ledgerContinuation ? "ledger" : "agent_runtime"}_loop_${sha256(`${sessionId}:${turnId}`).slice(0, 20)}`,
-          ),
-          stepOrdinal: Number(obligation.stepOrdinal || 1) + 1,
+          toolLoopId: canonicalToolLoopId(obligation),
+          stepOrdinal: nextStepOrdinal,
           parentResponseId: normalizeString(result.responseId, ""),
-          parentResponseSource: "native_direct_tool_continuation_stream",
+          parentResponseSource: "native_direct_agent_runtime_continuation_stream",
         },
       );
-      nextToolObligations = nested.obligations;
-      terminal =
+      nextToolObligations = obligationResult.obligations;
+      const nextToolName = normalizeString(nextToolObligations[0]?.name, "");
+      const nextToolAllowed =
         nextToolObligations.length === 1 &&
-        Number(nextToolObligations[0].stepOrdinal || 1) <=
-          (agentRuntimeContinuation ? MAX_AGENT_RUNTIME_TOOL_LOOP_STEPS : MAX_READONLY_TOOL_LOOP_STEPS)
-          ? { state: "tool_waiting", error: null }
-          : {
-              state: "failed",
-              error: {
-                code:
-                  nextToolObligations.length === 1
-                    ? "tool_loop_cap_exceeded"
-                    : "multiple_tool_calls_unsupported",
-                message:
-                  `Direct ${ledgerContinuation ? "epistemic ledger" : "agent runtime"} continuation rejected the next provider tool call.`,
-              },
-            };
+        (ledgerContinuation
+          ? continuationToolComposition.toolNames.includes(nextToolName)
+          : isNativeSubAgentRuntimeToolName(nextToolName) ||
+            isReadOnlySubAgentStatusToolName(nextToolName));
+      const loopCap = agentRuntimeContinuation
+        ? MAX_AGENT_RUNTIME_TOOL_LOOP_STEPS
+        : MAX_READONLY_TOOL_LOOP_STEPS;
+      const loopCapExceeded = nextStepOrdinal > loopCap;
+      if (nextToolAllowed && !loopCapExceeded) {
+        terminal = { state: "tool_waiting", error: null };
+        continuationOutcome = ledgerContinuation
+          ? "next_epistemic_ledger_step"
+          : "next_native_agent_runtime_step";
+      } else {
+        const failureKind = loopCapExceeded
+          ? `${ledgerContinuation ? "epistemic_ledger" : "agent_runtime"}_tool_loop_cap_exceeded`
+          : `unsupported_${ledgerContinuation ? "epistemic_ledger" : "native_agent_runtime"}_transition`;
+        terminal = {
+          state: "failed",
+          error: {
+            code: failureKind,
+            message: loopCapExceeded
+              ? `Direct ${ledgerContinuation ? "epistemic-ledger" : "native-agent"} tool loop reached its configured step cap.`
+              : `Direct ${ledgerContinuation ? "epistemic-ledger" : "native-agent"} continuation emitted an unsupported or ambiguous tool transition.`,
+          },
+        };
+        continuationOutcome = failureKind;
+        for (const nextObligation of nextToolObligations) {
+          this.sessionStore.updateToolObligation(sessionId, turnId, nextObligation.obligationId, {
+            status: "unsupported",
+            authorityState: "unsupported",
+            approvalAvailable: false,
+            executionAllowed: false,
+            continuationAllowed: false,
+            failureKind,
+          }, {
+            nextTurnState: "failed",
+            turnPatch: { error: terminal.error },
+          });
+        }
+      }
     }
     const continuationOk =
       (result.ok === true && terminal.state === "completed") ||
-      terminal.state === "tool_waiting";
+      (
+        terminal.state === "tool_waiting" &&
+        ["next_epistemic_ledger_step", "next_native_agent_runtime_step"].includes(continuationOutcome)
+      );
     const completedTurn = this.sessionStore.updateTurnState(sessionId, turnId, terminal.state, {
       continuationResponseId: normalizeString(result.responseId, ""),
       continuationResult: {
@@ -4320,15 +4363,7 @@ class DirectLiveTextController {
         ok: continuationOk,
         terminal,
         responseId: result.responseId,
-        continuationOutcome:
-          terminal.state === "completed"
-            ? "assistant_final"
-            : terminal.state === "tool_waiting"
-              ? "next_tool_step"
-              : normalizeString(
-                  terminal.error?.code,
-                  "utility_continuation_failed",
-                ),
+        continuationOutcome,
         normalizedEventCount: Array.isArray(result.normalizedEvents) ? result.normalizedEvents.length : 0,
         originalRequestRetried: false,
       },
@@ -4336,37 +4371,6 @@ class DirectLiveTextController {
     const continuationId = normalizeString(result.continuation?.continuationId || continuationRequest.continuationId, "utility_continuation");
     this.appendUtilityContinuationMessage(sessionId, turnId, continuationId, result.normalizedEvents || [], terminal);
     this.emitContinuationAssistant(surfaceSession, sessionId, turnId, continuationId, result.normalizedEvents || []);
-    if (nextToolObligations.length === 1 && terminal.state === "tool_waiting") {
-      await this.emitContinuationNextToolOrComplete(
-        surfaceSession,
-        sessionId,
-        turnId,
-        { turnState: "tool_waiting", nextToolObligations },
-        project,
-        {
-          streamPhase: ledgerContinuation ? "ledger-continuation" : "agent-runtime-continuation",
-          approvalMessage:
-            `Direct ${ledgerContinuation ? "ledger" : "agent runtime"} continuation requested a workspace tool. Local approval is required.`,
-          unavailableMessage:
-            `Direct ${ledgerContinuation ? "ledger" : "agent runtime"} continuation requested a tool that is unavailable in this compiled lane.`,
-        },
-      );
-    } else {
-      this.emitNotification(surfaceSession, "turn/completed", {
-        threadId: sessionId,
-        turnId,
-        turn: {
-          id: turnId,
-          status: terminalStatusForState(completedTurn.state),
-          completedAt: nowSeconds(),
-          streamPhase: ledgerContinuation
-            ? "ledger-continuation"
-            : agentRuntimeContinuation
-              ? "agent-runtime-continuation"
-            : "utility-continuation",
-        },
-      });
-    }
     this.sessionStore.updateToolObligation(sessionId, turnId, obligation.obligationId, {
       status: "continuation_sent",
       authorityState: "continuation_sent",
@@ -4375,8 +4379,32 @@ class DirectLiveTextController {
         ok: continuationOk,
         terminal,
         responseId: result.responseId,
+        continuationOutcome,
       },
     }, {});
+    if (residentContinuation) {
+      await this.emitContinuationNextToolOrComplete(surfaceSession, sessionId, turnId, {
+        turnState: completedTurn.state,
+        nextToolObligations,
+      }, project, {
+        streamPhase: ledgerContinuation
+          ? "ledger-continuation"
+          : "native-agent-runtime-continuation",
+        approvalMessage: `Direct ${ledgerContinuation ? "ledger" : "native-agent"} continuation advanced to another governed tool transition.`,
+        unavailableMessage: `Direct ${ledgerContinuation ? "ledger" : "native-agent"} continuation requested an unavailable transition.`,
+      });
+    } else {
+      this.emitNotification(surfaceSession, "turn/completed", {
+        threadId: sessionId,
+        turnId,
+        turn: {
+          id: turnId,
+          status: terminalStatusForState(completedTurn.state),
+          completedAt: nowSeconds(),
+          streamPhase: "utility-continuation",
+        },
+      });
+    }
     return {
       decision: "utility_continued",
       turn: turnSnapshot(this.sessionStore.readTurn(sessionId, turnId)),
@@ -4538,7 +4566,7 @@ class DirectLiveTextController {
         projectId,
         primaryThreadId: sessionId,
         targets: Array.isArray(args.targets) ? args.targets : [],
-        timeoutMs: args.timeout_ms || args.timeoutMs,
+        timeoutMs: args.timeout_ms ?? args.timeoutMs,
       });
     }
     const providerOutput = toolName === "spawn_agent"
@@ -4835,9 +4863,6 @@ class DirectLiveTextController {
         );
         continue;
       }
-      // Artifact workers may run without a renderer. Workspace effects remain
-      // separately authorized, but their requests must still be durably
-      // planned so an operator or higher harness surface can authorize them.
       if (this.isPatchApplyObligation(obligation)) {
         createdCount += await this.emitPatchApplyApprovalRequest(surfaceSession, sessionId, turnId, obligation, project);
         continue;

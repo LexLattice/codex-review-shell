@@ -14,7 +14,8 @@ const EXPERIENCE_DEFINITIONS = Object.freeze({
     label: "Codex Review Shell",
     controlPlane: "legacy-review-shell",
     interactionLaw: "multi-surface-review-shell",
-    rendererDocument: "index.html",
+    rendererDocument: "codex-surface.html",
+    available: true,
   }),
   [APP_EXPERIENCES.DIRECT_WORKBENCH]: Object.freeze({
     id: APP_EXPERIENCES.DIRECT_WORKBENCH,
@@ -22,6 +23,7 @@ const EXPERIENCE_DEFINITIONS = Object.freeze({
     controlPlane: "direct-thread",
     interactionLaw: "direct-thread-conversation",
     rendererDocument: "t3-direct-surface.html",
+    available: true,
   }),
   [APP_EXPERIENCES.WORLD_MANAGER_STUDIO]: Object.freeze({
     id: APP_EXPERIENCES.WORLD_MANAGER_STUDIO,
@@ -29,11 +31,18 @@ const EXPERIENCE_DEFINITIONS = Object.freeze({
     controlPlane: "worldmanager-semantic",
     interactionLaw: "semantic-settlement-and-admission",
     rendererDocument: "world-manager-surface.html",
+    available: true,
   }),
 });
 
 function cleanString(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function experienceError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
 }
 
 function resolveWorldManagerVariant(env) {
@@ -43,21 +52,21 @@ function resolveWorldManagerVariant(env) {
 function resolveAppExperience(env = process.env) {
   const explicit = cleanString(env[APP_EXPERIENCE_ENV_VAR]).toLowerCase();
   if (explicit && !EXPERIENCE_DEFINITIONS[explicit]) {
-    const error = new Error(
+    throw experienceError(
+      "app_experience_unknown",
       `${APP_EXPERIENCE_ENV_VAR} must be one of: ${Object.keys(EXPERIENCE_DEFINITIONS).join(", ")}.`,
     );
-    error.code = "app_experience_unknown";
-    throw error;
   }
 
   let id = explicit;
   let source = "explicit";
   if (!id) {
-    source = "compatibility";
     if (env.CODEX_WORLD_MANAGER === "1" || env.CODEX_WORLD_MANAGER_MOCKUP === "1") {
       id = APP_EXPERIENCES.WORLD_MANAGER_STUDIO;
+      source = "compatibility";
     } else if (env.CODEX_DIRECT_T3_GUI === "1") {
       id = APP_EXPERIENCES.DIRECT_WORKBENCH;
+      source = "compatibility";
     } else {
       id = APP_EXPERIENCES.LEGACY_SHELL;
       source = "default";
@@ -65,12 +74,18 @@ function resolveAppExperience(env = process.env) {
   }
 
   const definition = EXPERIENCE_DEFINITIONS[id];
-  const variant = id === APP_EXPERIENCES.WORLD_MANAGER_STUDIO
-    ? resolveWorldManagerVariant(env)
-    : "standard";
+  if (!definition.available) {
+    throw experienceError(
+      "app_experience_unavailable",
+      `${definition.label} is reserved but not available in this mainline slice.`,
+    );
+  }
+
   return Object.freeze({
     ...definition,
-    variant,
+    variant: id === APP_EXPERIENCES.WORLD_MANAGER_STUDIO
+      ? resolveWorldManagerVariant(env)
+      : "standard",
     source,
   });
 }
@@ -90,6 +105,6 @@ function publicAppExperience(experience) {
 module.exports = {
   APP_EXPERIENCE_ENV_VAR,
   APP_EXPERIENCES,
-  resolveAppExperience,
   publicAppExperience,
+  resolveAppExperience,
 };
