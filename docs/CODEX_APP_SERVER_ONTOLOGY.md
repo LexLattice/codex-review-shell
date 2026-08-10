@@ -3,14 +3,17 @@
 Purpose: stable reference for the canonical Codex thread/message ontology used by this app's middle-plane renderer.
 
 Last verified:
-- Codex fork: `/home/rose/work/codex/fork` at `8c68d4c87dc5`
-  (`rust-v0.144.4`)
-- Active Review Shell WSL CLI: npm-global `@openai/codex@0.145.0-alpha.11`
+- Codex stable snapshot: `/home/rose/work/codex/fork`
+  `origin/upstream-latest-release` at
+  `be6e8eac029b183056b7e4402879f15d2c85f61b` (`rust-v0.147.0`)
+- Active Review Shell WSL CLI: npm-global `@openai/codex@0.147.0`
   at `/home/rose/.nvm/versions/node/v24.14.0/bin/codex`
-- Review shell repo: `/home/rose/work/LexLattice/codex-review-shell-direct`
-  working tree based on `793e5d4eb3bb`
-- Prior inspected release baseline: `rust-v0.142.3`
-- Verification date: 2026-07-15
+- Review shell repo: `/home/rose/work/LexLattice/codex-review-shell`
+  on the reviewed `origin/main` lineage
+- Prior bounded release baseline: `rust-v0.145.0`
+- Verification date: 2026-08-09
+- Verification scope: release-147 agent/runtime delta; retained item
+  enumerations preserve their earlier full-schema audit boundary
 
 ## Why this exists
 
@@ -67,12 +70,42 @@ Capability caveats:
 - `environment/info` is an explicit environment probe, but project workspace
   authority and all runtime roots are not thereby made environment-owned.
 
-## Managed Shell Orchestration Compatibility And Alpha Activation
+## Release 145-147 App-Server Delta
+
+The retained release-144 section above is historical groundwork. The current
+stable source adds these relevant contracts:
+
+- paginated history is usable through dedicated turn/item listing paths;
+  callers must not substitute `thread/read(includeTurns=true)` where paginated
+  threads do not support it;
+- `thread.canAcceptDirectInput` is explicit runtime evidence for start/steer
+  eligibility, while missing or `null` remains unknown;
+- `environment/status` and connection notifications expose readiness without
+  granting workspace authority;
+- `app/installed` and `app/read` expose bounded installed/enabled/callable
+  metadata without granting application-tool authority;
+- notification `emittedAtMs` remains distinct from provider-event and local
+  receipt clocks;
+- stable 0.147 centralizes spawn requests and capacity, carries exact agent
+  identity/parent-turn/direct-input evidence, and inherits ready step
+  environments;
+- both 0.147 spawn handlers validate and apply requested model and reasoning
+  effort independently of full-history handoff. Stable V2 still rejects a
+  full-history `agent_type` override; that is a role restriction, not a
+  model/effort restriction.
+
+Detailed evidence:
+
+- [release-145 impact audit](./audits/UPSTREAM_CODEX_RELEASE_145_IMPACT_2026-07-22.md)
+- [release-147 agent-runtime impact audit](./audits/UPSTREAM_CODEX_RELEASE_147_DIRECT_AGENT_IMPACT_2026-08-09.md)
+
+## Managed Shell Orchestration Compatibility And 0.147 Source Boundary
 
 The active project is hosted by the Windows Review Shell but its managed
-app-server is routed through Ubuntu WSL to the npm-global Codex alpha. The
-source-audit fork remains at stable `0.144.4`; the runtime binary is a separate
-installation.
+app-server is routed through Ubuntu WSL to npm-global stable Codex `0.147.0`.
+The stable source snapshot and managed executable are on the same release
+family; provider-schema acceptance and effective child runtime values remain
+separate evidence.
 
 Every managed app-server launch preserves the hosted V2 reserved schema base:
 
@@ -82,23 +115,23 @@ Every managed app-server launch preserves the hosted V2 reserved schema base:
 
 The disabled profile also sets
 `features.multi_agent_v2.expose_spawn_agent_model_overrides=false` explicitly,
-because the alpha defaults that narrower capability on. The project-scoped
-enabled profile changes only that value to `true`.
+because the 145+ runtime family defaults that narrower capability on. The
+project-scoped enabled profile changes only that value to `true`.
 
-This explicit guard corrects an earlier shell profile that set the value to
-`false`. On `0.144.4`, the false value changes the provider-reserved
-`collaboration.spawn_agent` schema by adding `agent_type`, `model`,
-`reasoning_effort`, and `service_tier` (and by changing its output shape).
-Hosted GPT-5.6 rejects that client-mutated schema before inference.
+This explicit guard corrects an earlier shell profile that set
+`hide_spawn_agent_metadata` to `false`. On `0.144.4`, that value changed the
+provider-reserved `collaboration.spawn_agent` schema by adding `agent_type`,
+`model`, `reasoning_effort`, and `service_tier` (and by changing its output
+shape). Hosted GPT-5.6 rejects that client-mutated schema before inference.
 
-The project-scoped alpha profile additionally requests the upstream narrow
+The project-scoped split profile additionally requests the upstream narrow
 split:
 
 ```text
 -c features.multi_agent_v2.expose_spawn_agent_model_overrides=true
 ```
 
-`0.145.0-alpha.11` contains commits `ea15456284` and `92938d880e`, so its
+The split first landed in the 0.145 family and remains present in 0.147. Its
 canonical visible V2 input surface is:
 
 ```text
@@ -116,22 +149,36 @@ control returns to the stable three-field/provider-managed profile.
 The root orchestration control remains reasoning effort: `ultra` selects the
 upstream proactive posture and lower efforts retain explicit-request
 delegation. Root effort selection does not imply per-spawn child model/effort
-authority. On the stock release-144 path those choices are provider-managed,
-whereas the enabled alpha path lets the root request them within the active
-multi-agent backend. Any model/effort later reported on collaboration items is
-still the stronger runtime evidence.
+authority. On the historical stock release-144 path those choices were
+provider-managed, whereas the enabled split path lets the root request them
+within the active multi-agent backend. Any model/effort later reported on
+collaboration items is still the stronger runtime evidence.
 
-The fork transition law remains relevant to future worker profiles:
+Source behavior and current shell-adapter behavior are distinct:
 
 ```text
-fork_turns = all (including omission)
-  -> child inherits parent model, effort, and role
-  -> model/effort overrides are rejected
+Codex 0.147 source:
+  fork_turns = all (including omission)
+    -> full history is selected
+    -> explicit model/effort overrides are validated and applied
+    -> explicit agent_type remains rejected in stable 0.147
 
-fork_turns = none or a positive bounded turn count
-  -> alpha path may request model/effort
-  -> a configured default child role may also be applied
+  fork_turns = none or a positive bounded turn count
+    -> explicit model/effort overrides are validated and applied
+    -> a configured/default child role may also be applied
+
+Current Review Shell app-server descriptor:
+  fork_turns = all (including omission)
+    -> still projects inherited model/effort and suppresses overrides
+
+  fork_turns = none or a positive bounded turn count
+    -> split profile may request model/effort
 ```
+
+The last restriction is local adapter posture retained pending a separately
+reviewed descriptor/runtime promotion. It must not be reported as a 0.147
+source-runtime restriction. Direct-native agents already model history mode,
+child model, and effort as independent inputs.
 
 Because hidden metadata does not expose `agent_type`, named-role selection is
 not currently available to the root. A later compatibility slice may map one
@@ -148,7 +195,8 @@ The project setting is still a requested-capability fact: the selected binary,
 active model/backend, and child collaboration result must witness actual
 acceptance. It must not be inferred merely from the checkbox.
 
-An app-server `gpt-5.6-sol` Ultra provider smoke accepted the split reserved
+The historical 0.145-alpha app-server `gpt-5.6-sol` Ultra provider smoke
+accepted the split reserved
 schema without the former tools 400. A fresh low-effort child request emitted
 canonical `childActivity`, completed its collaboration wait, and returned to
 the root. Because that child activity did not expose an effective runtime
