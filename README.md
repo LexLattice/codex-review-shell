@@ -113,6 +113,22 @@ npm install
 npm run start
 ```
 
+## Direct Workbench
+
+Direct Workbench is the explicit thread-first experience for conventional
+Codex work. It retains the existing Direct runtime, thread, approval, and
+evidence contracts while using the T3-informed project/thread geometry:
+
+```bash
+npm run dev:direct-workbench
+```
+
+The legacy three-plane review shell remains the default `npm run dev` path.
+WorldManager Studio is a reserved, unavailable experience until its dormant
+semantic stack is reintroduced through separately reviewed slices. See the
+[experience split spec](./docs/DIRECT_WORKBENCH_AND_WORLDMANAGER_STUDIO_SPLIT_SPEC.md)
+and [T3 geometry experiment](./docs/DIRECT_T3_ALTERNATE_GUI_EXPERIMENT.md).
+
 ## Windows + WSL mirror launcher
 
 While building, use the tracked Windows launcher scripts in this repo so the Windows checkout mirrors the WSL worktree before each run:
@@ -138,6 +154,8 @@ Override source by setting:
 If your Windows checkout predates these scripts, copy these tracked files from WSL once into `C:\LexLattice\codex-review-shell`:
 
 - `start-codex-review-shell.cmd`
+- `start-direct-workbench.cmd`
+- `start-codex-review-shell-t3.cmd`
 - `sync-from-wsl.cmd`
 
 To attach to a WSL workspace, edit the project binding:
