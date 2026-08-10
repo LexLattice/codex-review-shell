@@ -15,13 +15,16 @@ and what did Codex CLI choose to build on top of it?
 
 Last verified:
 
-- Review shell repo: `/home/rose/work/LexLattice/codex-review-shell-direct`
-  working tree based on `793e5d4eb3bb`
-- Codex fork evidence repo: `/home/rose/work/codex/fork` at `8c68d4c87dc5`
-  (`rust-v0.144.4`)
-- Upstream release branch evidence: `upstream-latest-release` at `8c68d4c87dc5`
-- Prior inspected release baseline: `rust-v0.142.3`
-- Verification date: 2026-07-14
+- Review shell repo: `/home/rose/work/LexLattice/codex-review-shell`
+  on the reviewed `origin/main` lineage
+- Codex fork implementation evidence: `/home/rose/work/codex/fork`
+  `origin/main` at `923840b357e15195e66f7e82ac81ee0f39fc7050`
+- Upstream stable-release evidence: `origin/upstream-latest-release` at
+  `be6e8eac029b183056b7e4402879f15d2c85f61b` (`rust-v0.147.0`)
+- Prior bounded release baseline: `rust-v0.145.0`
+- Verification date: 2026-08-09
+- Verification scope: release-147 agent-runtime/exec-server delta; unchanged
+  primitive-family inventories retain their earlier source grounding
 
 ## Epistemic Status
 
@@ -130,10 +133,10 @@ Utility:
 
 ## Release 0.144.4 ODEU Baseline Refresh
 
-This refresh replaces the stale release-132 document baseline with current
-release-144 evidence. It is a current capability profile, not a claim that every
-listed primitive was introduced after the separately inspected `0.142.3` tag.
-The evidence spans three different authority layers.
+This historical refresh replaced the stale release-132 document baseline with
+release-144 evidence. It does not claim that every listed primitive was
+introduced after the separately inspected `0.142.3` tag. The evidence spans
+three different authority layers and is extended by the 145-147 section below.
 
 ### Provider/backend evidence
 
@@ -208,6 +211,65 @@ Codex WorldState/app-server/plugin/environment implementation
 neither
   -> automatic Direct promotion
 ```
+
+## Release 0.145-0.147 ODEU Baseline Refresh
+
+This is a layered update over the retained release-144 section above. Release
+145 supplied the broader app-server/history/environment evidence recorded in
+the [release-145 impact audit](./audits/UPSTREAM_CODEX_RELEASE_145_IMPACT_2026-07-22.md).
+The bounded release-147 refresh focuses on agent-runtime and exec-server
+changes and is not a claim that every provider or application capability was
+re-audited.
+
+### Provider/backend evidence
+
+- Child model and reasoning-effort requests remain subject to the served model
+  catalog. Codex source validates them against that catalog; source acceptance
+  alone is not provider proof that a requested runtime profile was effective.
+- Multi-agent usage hints in Codex world state are client/runtime evidence.
+  Direct may admit exact provider token usage or an explicit unavailable row,
+  but must not manufacture usage from lifecycle activity.
+- The host-specific collaboration tool schema may expose stricter choices than
+  the Codex source runtime. A hosted root-plus-three cap or a schema coupling
+  full-history handoff to inherited model/effort is therefore an environment
+  contract, not OAI backend law.
+
+### Codex-core implementation evidence
+
+- V2 collaboration capacity now uses a configured per-session concurrency
+  value and subtracts the primary thread before reserving child slots through
+  one controller.
+- Both release-147 spawn handlers apply requested child model and reasoning
+  effort independently of full-history selection. V2 still preserves the
+  parent role on a full-history fork in stable 0.147; a post-release commit
+  removes that remaining role restriction.
+- Spawn configuration is normalized through `ThreadSpawnRequest`; recent-turn
+  histories are projected rather than implemented by cloning the full rollout.
+- Ready step environments, developer instructions, registry identity,
+  parent-turn lineage, direct-input capability, and task names gained explicit
+  inheritance or evidence paths.
+- Exec-server can dispatch requests concurrently behind an opt-in control. It
+  remains an alternative Codex execution protocol, not the authority for
+  Direct's native scheduler.
+
+### Current Direct disposition
+
+```text
+adopt:
+  stable evidence identities, model-catalog validation lessons,
+  exact environment inheritance when that Direct slice is promoted
+
+retain independently:
+  Direct scheduler, context selection, lifecycle records,
+  authority and result-admission boundaries
+
+defer:
+  exec-server delegation, follow-up/direct input, recursive spawn,
+  durable child restart, role-compiled child constitutions
+```
+
+The exact fork comparison and coverage/disposition matrix are in the
+[release-147 agent-runtime impact audit](./audits/UPSTREAM_CODEX_RELEASE_147_DIRECT_AGENT_IMPACT_2026-08-09.md).
 
 ## Upstream Primitive Families
 

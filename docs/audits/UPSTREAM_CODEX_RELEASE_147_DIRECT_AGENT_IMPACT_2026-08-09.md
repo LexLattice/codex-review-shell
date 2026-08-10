@@ -78,6 +78,28 @@ separate future authority boundary.
 | `7431f10d0d` | Identify agents by name in token-budget context (#36815) | Stable task names improve budget evidence and operator comprehension. |
 | `eeae88d8a6` | Opt-in concurrent exec-server request dispatch (#36987) | Relevant to the backup app/exec-server path; Direct should keep its own scheduler. |
 
+## Fork And Direct Comparison Matrix
+
+The fork comparison target is `origin/main` at
+`923840b357e15195e66f7e82ac81ee0f39fc7050`. That lineage contains its own
+0.125-era multi-agent alignment plus fork-specific observability, containment,
+governance, and semantic-broker work. It is not assumed to inherit 0.147 merely
+because the separate release-tracking ref moved.
+
+The coverage and disposition terms below are the exact controlled vocabulary
+from [Upstream Codex Baseline Maintenance](../UPSTREAM_CODEX_BASELINE_MAINTENANCE.md).
+
+| Conceptual family | Fork `origin/main` evidence | Vanilla coverage | Direct coverage | Conceptual disposition | Bounded judgment |
+| --- | --- | --- | --- | --- | --- |
+| Shared collaboration capacity | One `agent_max_threads` limit and centralized spawn-slot reservation exist, but V2 rejects the fork's `agents.max_threads` setting. | `substantive` | `implemented` | `adopt vanilla adapter` | App-server compatibility should adopt 0.147's effective V2 limit; Direct retains its process-shared scheduler rather than delegating semantic policy to Codex. |
+| History handoff versus child model/effort | Both fork spawn handlers explicitly reject model and effort overrides for full-history forks. | `supersedes` | `implemented` | `retire fork delta` | The restriction is obsolete for model/effort in 0.147 source. Direct already proves full-history Terra/low under a Sol/Ultra parent. |
+| Normalized spawn request | Fork handlers assemble spawn configuration inline around legacy/v2 argument shapes. | `substantive` | `implemented` | `reframe` | Direct keeps its own normalized launch record and provider route; app-server adapters may consume `ThreadSpawnRequest` evidence without importing Codex custody. |
+| Ready step-environment inheritance | Fork spawn options carry environment context, but not the exact 0.147 ready-step inheritance contract. | `substantive` | `partial` | `finish Direct implementation` | Direct has environment topology and project-profile foundations; native-pool child binding remains a separately gated maturity step. |
+| Role/developer-instruction compilation and config survival | Fork roles and defaults exist, but full-history role/model restrictions and config projections predate the 0.147 behavior. | `substantive` | `partial` | `finish Direct implementation` | Direct exposes a role label but does not yet compile role-specific child constitutions and tool bundles. |
+| Stable identity, parent-turn lineage, and direct-input truth | Fork has agent paths and lifecycle observability, but lacks the complete 0.147 identity/direct-input/parent-turn combination. | `substantive` | `partial` | `finish Direct implementation` | Direct has stable child IDs, task names, and parent-agent scope; exact parent-turn binding and follow-up capability remain pending. |
+| Per-child usage evidence | Fork has agent observability but not 0.147 multi-agent world-state usage hints. | `substantive` | `implemented` | `reframe` | Direct emits attribution only from provider token evidence and an explicit unavailable row otherwise; provider hints may become adapter evidence, never fabricated truth. |
+| Concurrent exec-server dispatch | Fork contains the earlier exec-server substrate without the 0.147 opt-in dispatcher. | `substantive` | `none` | `defer` | Exec-server remains a backup protocol. Direct's native scheduler is authoritative unless a bounded adapter is selected later. |
+
 ## Adopted In The Current Direct Slice
 
 The Direct-native pool adopts the relevant structural lessons without

@@ -115,7 +115,7 @@ In particular:
 - A concept can remain valuable while its old fork implementation becomes too
   expensive to rebase; Direct may be the correct future home.
 
-## Current Baseline
+## Current Bounded Baseline
 
 As of 2026-08-09:
 
