@@ -16,12 +16,13 @@ and what did Codex CLI choose to build on top of it?
 Last verified:
 
 - Review shell repo: `/home/rose/work/LexLattice/codex-review-shell-direct`
-  working tree based on `793e5d4eb3bb`
-- Codex fork evidence repo: `/home/rose/work/codex/fork` at `8c68d4c87dc5`
-  (`rust-v0.144.4`)
-- Upstream release branch evidence: `upstream-latest-release` at `8c68d4c87dc5`
-- Prior inspected release baseline: `rust-v0.142.3`
-- Verification date: 2026-07-14
+  working tree based on `f4c3b32fd2b3`
+- Codex fork evidence repo: `/home/rose/work/codex/fork` at `25af12f7e615`
+  (`rust-v0.145.0`)
+- Upstream release evidence: fetched remote ref
+  `origin/upstream-latest-release` at `25af12f7e615`
+- Prior documented release baseline: `rust-v0.144.4`
+- Verification date: 2026-07-22
 
 ## Epistemic Status
 
@@ -208,6 +209,74 @@ Codex WorldState/app-server/plugin/environment implementation
 neither
   -> automatic Direct promotion
 ```
+
+## Release 0.145.0 ODEU Baseline Refresh
+
+Release 145 strengthens the Codex client and app-server substrate without
+collapsing the backend/client boundary above. The source baseline is stable
+`rust-v0.145.0`; the managed Review Shell runtime now uses npm-global stable
+`@openai/codex@0.145.0` and has a live authenticated root-turn witness.
+
+### Provider/backend evidence
+
+- Response usage now preserves prompt-cache write tokens. App-server can also
+  emit exact per-completion usage through the internal `rawResponse/completed`
+  adapter, but only when experimental raw events are enabled. That notification
+  is transient client evidence, not a guarantee that every provider reports
+  usage.
+- Responses inputs and dynamic tool outputs can carry audio, and Realtime V3
+  expands the streaming substrate. These remain provider/model-dependent
+  capabilities rather than universal Direct controls.
+- Bundled model metadata moved toward GPT-5.6 profiles, but the provider-served
+  catalog remains the authority for model, reasoning, and tool exposure.
+
+### Codex-core implementation evidence
+
+- Projection-backed paginated history is now usable. Thread turns/items can be
+  listed backwards with cursors, turns can be excluded from reads, occurrences
+  can be searched, and names, memories, Git metadata, subagent history, and
+  legacy projections consume the paginated substrate. A paginated thread does
+  not support `thread/read(includeTurns=true)`; clients must use the list APIs.
+- Multi-agent V2 is stable, restores agent roles, applies child defaults, and
+  treats parent-owned children as read-only from sibling clients. This is
+  stronger lifecycle evidence, not proof of Direct constitutional inheritance
+  or delegated authority.
+- Retrying from an earlier turn can create a contextual branch with
+  `beforeTurnId`; goal continuation can be deferred. Compaction fallbacks,
+  remote compaction, and session teardown also gained resilience.
+
+### App/client environment evidence
+
+- `app/installed` and `app/read` expose application inventory/detail, while
+  `environment/status` and its notifications expose connection state.
+- App-server notifications carry an `emittedAtMs` evidence clock, and thread
+  state exposes `canAcceptDirectInput` for truthful input gating.
+- External import support expanded for Cursor and Claude histories. Bedrock,
+  hosted MCP, native Windows sandboxing, audio, and Realtime support are
+  deployment-specific capabilities, not universal backend primitives.
+
+Direct disposition:
+
+```text
+adopt evidence clocks, input-readiness, paginated-history, and environment/app
+inventory as adapter candidates
+
+preserve provider/runtime gates for usage, audio, realtime, model metadata,
+hosted MCP, Bedrock, and platform sandboxing
+
+do not promote stable-source capability into the managed runtime or the
+Direct-native path without implementation and runtime evidence
+```
+
+Current bounded evidence: the shell preserves `emittedAtMs`, direct-input
+eligibility, and environment status; it also reads installed/callable app state
+and metadata into a non-authoritative capability snapshot. A stable read-only
+probe observed 11 installed/enabled/callable apps and resolved all metadata
+with tool summaries disabled. Paginated history and effective child
+model/effort remain unproven on stable.
+
+See the detailed
+[release 145 impact audit](./audits/UPSTREAM_CODEX_RELEASE_145_IMPACT_2026-07-22.md).
 
 ## Upstream Primitive Families
 

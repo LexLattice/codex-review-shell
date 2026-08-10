@@ -1,0 +1,36 @@
+services:
+  ui-test:
+    image: "${CODEX_TEST_IMAGE:-codex-review-shell-ui-test:local}"
+    build:
+      context: ..
+      dockerfile: docker/ui-test.Dockerfile
+    init: true
+    user: "${CODEX_TEST_UID:-1000}:${CODEX_TEST_GID:-1000}"
+    working_dir: /workspace
+    read_only: true
+    network_mode: "${CODEX_TEST_NETWORK_MODE:-none}"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: "${CODEX_TEST_PIDS_LIMIT:-512}"
+    mem_limit: "${CODEX_TEST_MEMORY_LIMIT:-2g}"
+    cpus: "${CODEX_TEST_CPU_LIMIT:-2.0}"
+    shm_size: "${CODEX_TEST_SHM_SIZE:-1g}"
+    stop_grace_period: 10s
+    tmpfs:
+      - "/tmp:rw,exec,nosuid,nodev,size=${CODEX_TEST_TMPFS_LIMIT:-1g}"
+    volumes:
+      - type: bind
+        source: "${CODEX_TEST_EVIDENCE_DIR:?CODEX_TEST_EVIDENCE_DIR is required}"
+        target: /artifacts
+    environment:
+      CODEX_TEST_RUN_ID: "${CODEX_TEST_RUN_ID:?CODEX_TEST_RUN_ID is required}"
+      CODEX_TEST_SCENARIO_FILE: "${CODEX_TEST_SCENARIO_FILE:-/workspace/scripts/fixtures/container-ui-test-world-manager-empty.json}"
+      CODEX_TEST_NETWORK_MODE: "${CODEX_TEST_NETWORK_MODE:-none}"
+      CODEX_TEST_SCREEN: "${CODEX_TEST_SCREEN:-1600x1050x24}"
+      CODEX_TEST_RUNNER_SCRIPT: "${CODEX_TEST_RUNNER_SCRIPT:-/workspace/scripts/direct-container-ui-test-runner.mjs}"
+      CODEX_TEST_EXECUTOR: "${CODEX_TEST_EXECUTOR:-docker_xvfb}"
+    labels:
+      io.lexlattice.test.executor: docker_xvfb
+      io.lexlattice.test.run-id: "${CODEX_TEST_RUN_ID:?CODEX_TEST_RUN_ID is required}"

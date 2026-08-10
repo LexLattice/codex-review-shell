@@ -1099,9 +1099,11 @@ function appendWorldmodelGraphTransition(graphInput, input = {}, options = {}) {
     buildScopedWorldmodelRevisionRef,
   );
   const scopes = mutationScopes(graph, mutations);
+  const expectedScopeKeys = expected.map(scopeKey).sort();
   if (
     !scopes.length ||
     new Set(scopes.map(scopeKey)).size !== scopes.length ||
+    new Set(expectedScopeKeys).size !== expectedScopeKeys.length ||
     canonicalJson(scopes.map(scopeKey).sort()) !==
       canonicalJson(authorization.targetScopeRefs.map(scopeKey).sort()) ||
     canonicalJson(expected.map((r) => r.digest).sort()) !==
@@ -1113,11 +1115,23 @@ function appendWorldmodelGraphTransition(graphInput, input = {}, options = {}) {
       graph,
       "direct_hierarchical_graph_write_authorization_scope_mismatch",
     );
-  if (
-    expected.some(
-      (r) => !graph.scopedRevisionRefs.some((c) => c.digest === r.digest),
-    )
-  )
+  const initialWorkThreadScopes = expected.filter((revisionRef) => {
+    if (graph.scopedRevisionRefs.some((current) =>
+      current.digest === revisionRef.digest)) return false;
+    return (
+      revisionRef.scopeKind === "work_thread" &&
+      revisionRef.revision === 0 &&
+      scopes.some((scope) => scopeKey(scope) === scopeKey(revisionRef)) &&
+      graph.nodes.some((node) =>
+        node.nodeKind === "project_root" &&
+        node.scope.projectId === revisionRef.projectId)
+    );
+  });
+  if (expected.some((revisionRef) =>
+    !graph.scopedRevisionRefs.some((current) =>
+      current.digest === revisionRef.digest) &&
+    !initialWorkThreadScopes.some((initial) =>
+      initial.digest === revisionRef.digest)))
     return remand(graph, "direct_hierarchical_graph_stale_scope_revision");
   if (
     graph.consumedWriteAuthorizationRefs.some(
@@ -1242,6 +1256,12 @@ function appendWorldmodelGraphTransition(graphInput, input = {}, options = {}) {
       ? buildScopedWorldmodelRevisionRef({ ...r, revision: r.revision + 1 })
       : r,
   );
+  for (const initial of initialWorkThreadScopes) {
+    touched.push(buildScopedWorldmodelRevisionRef({
+      ...initial,
+      revision: 1,
+    }));
+  }
   const transition = {
     schema: DIRECT_WORLDMODEL_GRAPH_TRANSITION_SCHEMA,
     transitionId: requestedTransitionId,

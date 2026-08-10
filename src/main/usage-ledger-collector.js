@@ -115,6 +115,21 @@ function normalizeRateLimitSnapshot(params = {}) {
   };
 }
 
+function notificationTimingFields(notification = {}) {
+  const emittedAtMs = notification.emittedAtMs === null || notification.emittedAtMs === undefined
+    ? undefined
+    : cleanOptionalNumber(notification.emittedAtMs);
+  const receivedAtMs = notification.receivedAtMs === null || notification.receivedAtMs === undefined
+    ? undefined
+    : cleanOptionalNumber(notification.receivedAtMs);
+  const fields = {};
+  if (emittedAtMs !== undefined) fields.appServerEmittedAtMs = emittedAtMs;
+  if (cleanString(notification.emittedAt, "")) fields.appServerEmittedAt = cleanString(notification.emittedAt, "");
+  if (receivedAtMs !== undefined) fields.receivedAtMs = receivedAtMs;
+  if (cleanString(notification.receivedAt, "")) fields.receivedAt = cleanString(notification.receivedAt, "");
+  return fields;
+}
+
 function turnIdFromParams(params = {}) {
   return cleanString(params.turnId || params.turn_id || params.turn?.id || params.turn?.turnId || params.turn?.turn_id, "");
 }
@@ -326,14 +341,14 @@ class UsageLedgerCollector {
     });
   }
 
-  captureNotification(method, params = {}) {
+  captureNotification(method, params = {}, notification = {}) {
     const cleanMethod = cleanString(method, "");
     if (!cleanMethod) return Promise.resolve({ ok: false, skipped: true });
-    if (cleanMethod === "turn/started") return this.captureTurnStarted(params);
-    if (cleanMethod === "turn/completed") return this.captureTurnCompleted(params);
-    if (cleanMethod === "thread/tokenUsage/updated") return this.captureTokenUsage(params);
-    if (cleanMethod === "account/rateLimits/updated") return this.captureRateLimits(params, "account/rateLimits/updated");
-    if (cleanMethod === "item/started" || cleanMethod === "item/completed") return this.captureItemLifecycle(cleanMethod, params);
+    if (cleanMethod === "turn/started") return this.captureTurnStarted(params, notification);
+    if (cleanMethod === "turn/completed") return this.captureTurnCompleted(params, notification);
+    if (cleanMethod === "thread/tokenUsage/updated") return this.captureTokenUsage(params, notification);
+    if (cleanMethod === "account/rateLimits/updated") return this.captureRateLimits(params, "account/rateLimits/updated", "", notification);
+    if (cleanMethod === "item/started" || cleanMethod === "item/completed") return this.captureItemLifecycle(cleanMethod, params, notification);
     if (cleanMethod === "serverRequest/resolved") {
       return this.append({
         rowKind: "server_request_resolved",
@@ -347,13 +362,14 @@ class UsageLedgerCollector {
         riskCategory: "unknown",
         status: "resolved",
         resolvedAt: nowIso(),
+        ...notificationTimingFields(notification),
         evidenceRefs: [evidenceRef("app_server_notification", "serverRequest/resolved notification", { confidence: "proven" })],
       });
     }
     return Promise.resolve({ ok: true, skipped: true });
   }
 
-  captureTurnStarted(params = {}) {
+  captureTurnStarted(params = {}, notification = {}) {
     const turnId = turnIdFromParams(params);
     if (!turnId) return Promise.resolve({ ok: true, skipped: true });
     const threadId = threadIdFromParams(params);
@@ -369,11 +385,12 @@ class UsageLedgerCollector {
       modelContextWindow: cleanOptionalNumber(turn.modelContextWindow ?? turn.model_context_window ?? params.modelContextWindow ?? params.model_context_window),
       collaborationModeKind: cleanString(turn.collaborationModeKind ?? turn.collaboration_mode_kind ?? params.collaborationModeKind ?? params.collaboration_mode_kind, ""),
       startedAt: cleanString(turn.startedAt ?? turn.started_at ?? params.startedAt ?? params.started_at, ""),
+      ...notificationTimingFields(notification),
       evidenceRefs: [evidenceRef("app_server_notification", "turn/started notification", { confidence: "proven" })],
     });
   }
 
-  captureTurnCompleted(params = {}) {
+  captureTurnCompleted(params = {}, notification = {}) {
     const turnId = turnIdFromParams(params);
     if (!turnId) return Promise.resolve({ ok: true, skipped: true });
     const threadId = threadIdFromParams(params);
@@ -390,11 +407,12 @@ class UsageLedgerCollector {
       completedAt: cleanString(turn.completedAt ?? turn.completed_at ?? params.completedAt ?? params.completed_at, ""),
       durationMs: cleanOptionalNumber(turn.durationMs ?? turn.duration_ms ?? params.durationMs ?? params.duration_ms),
       timeToFirstTokenMs: cleanOptionalNumber(turn.timeToFirstTokenMs ?? turn.time_to_first_token_ms ?? params.timeToFirstTokenMs ?? params.time_to_first_token_ms),
+      ...notificationTimingFields(notification),
       evidenceRefs: [evidenceRef("app_server_notification", "turn/completed notification", { confidence: "proven" })],
     });
   }
 
-  captureTokenUsage(params = {}) {
+  captureTokenUsage(params = {}, notification = {}) {
     const usage = normalizeThreadTokenUsage(params);
     const threadId = usage.threadId || cleanString(params.threadId, "");
     const snapshotSeq = (this.tokenSnapshotSeqByThread.get(threadId) || 0) + 1;
@@ -418,11 +436,12 @@ class UsageLedgerCollector {
       lastTokenUsage: usage.last || undefined,
       modelContextWindow: usage.modelContextWindow,
       sourcePayloadShape: "TokenUsageInfo",
+      ...notificationTimingFields(notification),
       evidenceRefs: [evidenceRef("app_server_notification", "thread/tokenUsage/updated notification", { confidence: "proven" })],
     });
   }
 
-  captureRateLimits(params = {}, sourceMethod = "account/rateLimits/read", requestId = "") {
+  captureRateLimits(params = {}, sourceMethod = "account/rateLimits/read", requestId = "", notification = {}) {
     const snapshot = normalizeRateLimitSnapshot(params);
     if (!snapshot) {
       return this.append({
@@ -446,11 +465,12 @@ class UsageLedgerCollector {
       accountEvidenceKey: evidenceKey("account", `${snapshot.planType || ""}:${snapshot.limitId || ""}`),
       authMode: "chatgpt",
       ...snapshot,
+      ...notificationTimingFields(notification),
       evidenceRefs: [evidenceRef(sourceMethod.includes("updated") ? "app_server_notification" : "app_server_response", sourceMethod, { confidence: "proven" })],
     });
   }
 
-  captureItemLifecycle(method, params = {}) {
+  captureItemLifecycle(method, params = {}, notification = {}) {
     const item = itemFromParams(params);
     const toolKind = classifyToolKind(item);
     if (toolKind === "unknown") return Promise.resolve({ ok: true, skipped: true });
@@ -483,6 +503,7 @@ class UsageLedgerCollector {
       cwdEvidenceKey: evidenceKey("cwd", item.cwd || item.workingDirectory || item.working_directory || ""),
       exitCode: cleanOptionalNumber(item.exitCode ?? item.exit_code),
       targetAgentId: cleanString(item.receiverThreadId || item.receiver_thread_id || item.agentId || item.agent_id, ""),
+      ...notificationTimingFields(notification),
       evidenceRefs: [evidenceRef("app_server_notification", `${method} ${cleanString(item.type || item.kind, "item")}`, { confidence: "proven" })],
     });
   }

@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws://127.0.0.1:* http://127.0.0.1:* ws://localhost:* http://localhost:*"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Direct Workbench</title>
+    <link rel="stylesheet" href="./codex-surface.css" />
+    <link rel="stylesheet" href="./t3-direct-surface.css" />
+  </head>
+  <body data-direct-gui="direct-workbench" data-app-experience="direct-workbench" data-control-plane="direct-thread">
+    <main id="codexShell" class="codex-shell t3-direct-shell" data-t3-sidebar="expanded" data-morphic-region="bounded-direct-workbench">
+      <aside class="t3-project-sidebar" aria-label="Project and Direct threads">
+        <header class="t3-sidebar-header">
+          <div class="t3-product-mark" aria-hidden="true">D</div>
+          <div class="t3-sidebar-identity">
+            <p class="t3-sidebar-kicker">Direct Workbench</p>
+            <h2 id="projectName">Codex session</h2>
+            <p id="repoPath" class="t3-sidebar-repo">Resolving workspace…</p>
+          </div>
+          <button id="t3SidebarToggle" class="t3-sidebar-toggle" type="button" aria-label="Collapse thread sidebar" aria-expanded="true">‹</button>
+        </header>
+        <div class="t3-sidebar-section-label">
+          <span>Threads</span>
+          <button id="t3SidebarNewThread" type="button" aria-label="Start a new Direct thread">+</button>
+        </div>
+        <section id="morphicThreadRail" class="morphic-thread-rail" hidden aria-label="Direct thread directory" data-morphic-region="direct-thread-rail">
+          <div id="morphicThreadRailList" class="morphic-thread-rail-list"></div>
+          <div class="morphic-thread-rail-actions">
+            <button id="morphicThreadDirectoryButton" class="morphic-rail-action" type="button">Refresh directory</button>
+          </div>
+        </section>
+        <p class="t3-sidebar-empty">The Direct thread directory becomes available when the selected runtime exposes native Direct threads.</p>
+        <footer class="t3-sidebar-footer">
+          <span class="t3-runtime-owner-dot" aria-hidden="true"></span>
+          <span id="t3ExperienceWitness">Direct thread control plane</span>
+        </footer>
+      </aside>
+
+      <header id="morphicCockpitBar" class="compact-thread-bar" aria-label="Active Direct thread" data-morphic-region="compact-thread-bar">
+        <div class="compact-thread-title-block">
+          <p class="eyebrow">Active Direct thread</p>
+          <h1 id="morphicThreadTitle" data-context-target="thread_title">Codex session</h1>
+          <p id="morphicThreadMeta" class="subline mono">—</p>
+        </div>
+        <div class="compact-thread-actions" aria-label="Thread and runtime controls">
+          <button id="morphicRuntimePathChip" class="compact-thread-chip runtime" type="button" data-runtime-tab="runtime">runtime unknown</button>
+          <span id="morphicTurnChip" class="compact-thread-chip status">idle</span>
+          <button id="morphicNewThreadButton" class="compact-thread-button primary" type="button" aria-label="Start new Codex thread">+</button>
+          <button id="morphicAnalyticsButton" class="compact-thread-button" type="button">Analytics</button>
+          <button id="morphicSettingsButton" class="compact-thread-button icon" type="button" aria-label="Open Direct runtime settings">⚙</button>
+        </div>
+      </header>
+
+      <aside id="runtimeDrawer" class="runtime-drawer" hidden aria-label="Runtime inspector" data-morphic-region="runtime-inspector-drawer">
+        <div class="runtime-drawer-header">
+          <div>
+            <p class="eyebrow">Direct inspector</p>
+            <h2 id="runtimeDrawerTitle">Runtime</h2>
+            <p id="runtimeDrawerUpdated" class="subline mono">—</p>
+          </div>
+          <button id="runtimeDrawerClose" class="drawer-close" type="button" aria-label="Close runtime inspector">×</button>
+        </div>
+        <nav id="runtimeDrawerTabs" class="runtime-drawer-tabs" aria-label="Runtime inspector tabs"></nav>
+        <section id="runtimeDrawerBody" class="runtime-drawer-body"></section>
+      </aside>
+
+      <aside id="threadAnalyticsPanel" class="thread-analytics-panel dock-right" hidden aria-label="Active thread analytics" data-morphic-region="thread-analytics-panel">
+        <div class="thread-analytics-header">
+          <div>
+            <p class="eyebrow">Thread surface</p>
+            <h2 id="threadAnalyticsPanelTitle">Thread analytics</h2>
+            <p id="threadAnalyticsPanelMeta" class="subline mono">—</p>
+          </div>
+          <div class="thread-analytics-actions">
+            <div id="threadAnalyticsDockButtons" class="thread-analytics-dock-buttons" aria-label="Analytics panel docking">
+              <button type="button" data-analytics-dock="float">Float</button>
+              <button type="button" data-analytics-dock="left">Left</button>
+              <button type="button" data-analytics-dock="right">Right</button>
+              <button type="button" data-analytics-dock="bottom">Bottom</button>
+            </div>
+            <button id="threadAnalyticsPanelClose" class="drawer-close" type="button" aria-label="Close thread analytics">×</button>
+          </div>
+        </div>
+        <section id="threadAnalyticsPanelBody" class="thread-analytics-body"></section>
+      </aside>
+
+      <nav class="t3-utility-rail" aria-label="Thread utility surfaces">
+        <button type="button" data-t3-action="threads" aria-label="Focus thread directory" title="Threads">☰</button>
+        <span class="t3-utility-separator" aria-hidden="true"></span>
+        <button type="button" data-runtime-tab="runtime" aria-label="Open runtime inspector" title="Runtime">R</button>
+        <button type="button" data-t3-action="analytics" aria-label="Open thread analytics" title="Analytics">A</button>
+        <button type="button" disabled aria-label="Files are not connected in this experiment" title="Files are not connected in this experiment">F</button>
+        <button type="button" disabled aria-label="Diff is not connected in this experiment" title="Diff is not connected in this experiment">Δ</button>
+        <button type="button" disabled aria-label="Terminal is not connected in this experiment" title="Terminal is not connected in this experiment">›_</button>
+        <button type="button" disabled aria-label="Browser preview is not connected in this experiment" title="Browser preview is not connected in this experiment">◎</button>
+        <span class="t3-utility-spacer" aria-hidden="true"></span>
+        <button type="button" data-runtime-tab="advanced" aria-label="Open advanced Direct settings" title="Settings">⚙</button>
+      </nav>
+
+      <section class="transcript" id="transcript" aria-label="Codex transcript"></section>
+
+      <form id="composerForm" class="composer-shell">
+        <textarea id="composerInput" rows="4" placeholder="Ask Direct Codex to inspect, change, or explain this project…"></textarea>
+        <div id="composerAttachmentRow" class="composer-attachment-row" data-morphic-region="composer-attachments">
+          <div id="composerAttachmentList" class="composer-attachment-list" aria-live="polite"></div>
+        </div>
+        <div class="composer-runtime-band" data-morphic-region="composer-runtime-band">
+          <div class="composer-quick-controls">
+            <button id="chooseAttachmentButton" class="composer-attachment-action" type="button" data-attachment-action="choose-file">+ file</button>
+            <button id="pasteImageButton" class="composer-attachment-action" type="button" data-attachment-action="paste-image">paste image</button>
+            <div class="composer-menu-anchor">
+              <button id="composerAccessButton" class="composer-pill access" type="button" aria-expanded="false">Access</button>
+              <div id="composerAccessMenu" class="composer-popover" hidden></div>
+            </div>
+          </div>
+          <div class="composer-runtime-witnesses" aria-label="Runtime usage and quick settings">
+            <span id="composerQuotaChip" class="composer-witness">quota: unknown</span>
+            <span id="composerContextChip" class="composer-witness">context: unknown</span>
+            <div class="composer-menu-anchor">
+              <button id="composerModelButton" class="composer-pill model" type="button" aria-expanded="false">Model</button>
+              <div id="composerModelMenu" class="composer-popover composer-popover-wide" hidden></div>
+            </div>
+          </div>
+        </div>
+        <div class="composer-action-stack" data-morphic-region="composer-turn-actions">
+          <div class="composer-turn-control" data-morphic-region="composer-turn-status">
+            <span id="composerTurnStatus" class="composer-turn-status idle">Idle</span>
+            <button id="composerStopButton" class="composer-stop-button" type="button" hidden>Stop</button>
+          </div>
+          <div class="composer-action-anchor">
+            <button id="sendButton" class="send-button" type="submit" data-morphic-region="composer-send">Send</button>
+            <div id="activeTurnActions" class="composer-split-action" hidden>
+              <button id="steerButton" class="composer-split-button steer" type="button">Steer</button>
+              <button id="queueButton" class="composer-split-button queue" type="button">Queue</button>
+            </div>
+            <div id="composerDispositionMenu" class="composer-popover composer-disposition-menu" hidden>
+              <p class="composer-menu-note">Active turn message</p>
+              <button id="steerMenuButton" class="composer-menu-item" type="button">Steer current turn</button>
+              <button id="queueMenuButton" class="composer-menu-item" type="button">Queue next turn</button>
+            </div>
+          </div>
+        </div>
+      </form>
+    </main>
+    <script src="./typed-markdown-projection.js"></script>
+    <script src="./codex-app-server-evidence.js"></script>
+    <script src="./codex-surface.js"></script>
+    <script src="./t3-direct-surface.js"></script>
+  </body>
+</html>

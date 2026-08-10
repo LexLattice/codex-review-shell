@@ -1,6 +1,6 @@
 # Codex App-Server Orchestration Controls
 
-Status: implemented, project-scoped alpha activation with a release-144 safe
+Status: implemented, project-scoped stable-145 activation with a release-144 safe
 fallback.
 
 Scope:
@@ -40,7 +40,7 @@ release-144 compatibility profile
   -> child model/effort remain provider-managed
   -> narrow exposure explicitly false
 
-0.145 alpha split-schema profile
+0.145 split-schema profile
   -> task_name, message, fork_turns, model, reasoning_effort
   -> agent_type and service_tier remain hidden
 
@@ -78,7 +78,7 @@ Windows Review Shell
 The WSL npm installation is pinned to:
 
 ```text
-@openai/codex@0.145.0-alpha.11
+@openai/codex@0.145.0
 ```
 
 The active Review Shell project profile requests:
@@ -151,14 +151,14 @@ Every managed launch therefore explicitly preserves:
 features.multi_agent_v2.hide_spawn_agent_metadata=true
 ```
 
-Because the alpha defaults the narrow exposure on, the disabled profile also
+Because the 145-family runtime defaults the narrow exposure on, the disabled profile also
 declares:
 
 ```text
 features.multi_agent_v2.expose_spawn_agent_model_overrides=false
 ```
 
-The enabled alpha split profile replaces that value with:
+The enabled split profile replaces that value with:
 
 ```text
 features.multi_agent_v2.expose_spawn_agent_model_overrides=true
@@ -172,7 +172,7 @@ replace the previous app-server process.
 
 ## Canonical Hosted-V2 Contract
 
-For the enabled alpha project profile, the shell treats this as the exact
+For the enabled stable project profile, the shell treats this as the exact
 visible input surface:
 
 ```text
@@ -259,10 +259,10 @@ fork_turns = all or omitted
 
 fork_turns = none or positive integer string
   -> fresh/bounded child context
-  -> alpha split-schema profile may apply model/effort overrides
+  -> split-schema profile may apply model/effort overrides
 ```
 
-The alpha profile still hides `agent_type`, so the root cannot choose a named
+The split profile still hides `agent_type`, so the root cannot choose a named
 role. Codex resolves omitted `agent_type` to the configured/default worker role
 for a non-full-history spawn. A managed named worker profile can therefore be
 mapped to `agents.default.config_file` without modifying the reserved schema.
@@ -311,7 +311,7 @@ Perform the delegated bounded task and return concise evidence.
 model_reasoning_effort = "low"
 ```
 
-This default-profile mechanism is not materialized by the present alpha
+This default-profile mechanism is not materialized by the present stable
 activation.
 
 ## Upstream Upgrade Adoption
@@ -333,8 +333,8 @@ so `model` and `reasoning_effort` can be exposed while `agent_type` and
 `service_tier` remain hidden. The second restricts selectable child models to
 the active multi-agent backend.
 
-The active WSL `0.145.0-alpha.11` contains both changes; the earliest normal
-alpha containing both is `0.145.0-alpha.7`. The shell exposes the split only
+The active WSL stable `0.145.0` contains both changes; the earliest normal alpha
+containing both was `0.145.0-alpha.7`. The shell exposes the split only
 when the project-scoped intent is enabled. It never restores the old broad
 metadata switch.
 
@@ -395,7 +395,7 @@ versioned descriptor key and therefore restarts the managed app-server.
 
 ## Runtime Truth
 
-The enabled alpha app-server capability profile reports:
+The enabled split app-server capability profile reports:
 
 ```text
 reservedProviderToolSchema = true
@@ -456,6 +456,13 @@ schema acceptance and the child lifecycle path, but it does not yet prove the
 effective child effort. A canonical child runtime item remains the required
 witness for that last claim.
 
+On 2026-07-22 both the configured absolute binary and PATH command reported
+`codex-cli 0.145.0`. A stable authenticated root turn initialized, streamed the
+exact response `stable-145-ready.`, and completed without tools. This promotes
+the root app-server path to a stable-runtime witness. The 2026-07-15 alpha
+spawn evidence above remains the latest child-spawn witness until a stable
+child run reports its effective model and effort.
+
 ## Acceptance Checks
 
 ```text
@@ -464,7 +471,7 @@ witness for that last claim.
 - The disabled route explicitly carries expose_spawn_agent_model_overrides=false.
 - The enabled route carries expose_spawn_agent_model_overrides=true, never both values.
 - The fallback schema contains exactly task_name, message, fork_turns.
-- The enabled alpha schema additionally contains model and reasoning_effort.
+- The enabled split schema additionally contains model and reasoning_effort.
 - agent_type and service_tier are absent from both profiles.
 - The hidden result schema contains task_name and not nickname.
 - The managed descriptor key changes from the broken launch profile.
@@ -493,7 +500,7 @@ force Multi-Agent V2
 expose agent_type or service_tier
 claim split controls on stock 0.144.4 or an unverified external app server
 materialize a shell-managed default worker profile
-backport alpha commits into the release-tracking source branch
+backport release-145 commits into the release-tracking source branch
 add user-to-worker chat
 add client-side spawn authority
 implement cross-environment Windows/WSL worker placement
@@ -507,7 +514,7 @@ The correction is complete when:
 
 ```text
 1. The malformed broad reserved schema cannot be launched by the managed shell.
-2. The project-scoped alpha intent launches both narrow schema flags.
+2. The project-scoped split intent launches both narrow schema flags.
 3. Ultra root orchestration and worker observability remain intact.
 4. Runtime truth distinguishes configured exposure from observed child runtime.
 5. The shell/app-server has been restarted under the new descriptor.

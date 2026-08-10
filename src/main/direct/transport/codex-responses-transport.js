@@ -186,6 +186,25 @@ function buildTextOnlyProbeRequest(options = {}) {
     ],
   };
   if (reasoningEffort) requestBody.reasoning = { effort: reasoningEffort };
+  const outputSchema =
+    isPlainObject(options.outputSchema)
+      ? options.outputSchema
+      : isPlainObject(options.output_schema)
+        ? options.output_schema
+        : null;
+  if (outputSchema) {
+    requestBody.text = {
+      format: {
+        type: "json_schema",
+        name: normalizeString(
+          options.textFormatName,
+          "direct_structured_output",
+        ),
+        strict: options.textFormatStrict !== false,
+        schema: outputSchema,
+      },
+    };
+  }
   return requestBody;
 }
 
@@ -398,6 +417,20 @@ function requestShapeForDiagnostic(requestBody = {}) {
     toolCount: Array.isArray(requestBody.tools) ? requestBody.tools.length : 0,
     parallelToolCalls: requestBody.parallel_tool_calls === true,
     reasoningEffort: normalizeString(requestBody.reasoning?.effort || requestBody.reasoning_effort, ""),
+    ...(isPlainObject(requestBody.text?.format)
+      ? {
+          textFormatType: normalizeString(
+            requestBody.text.format.type,
+            "",
+          ),
+          textFormatName: normalizeString(
+            requestBody.text.format.name,
+            "",
+          ),
+          textFormatStrict:
+            requestBody.text.format.strict === true,
+        }
+      : {}),
   };
 }
 
@@ -1196,7 +1229,21 @@ async function runPersistedReadOnlyToolContinuation(options = {}) {
       parentResponseId,
       parentResponseSource: "native_direct_tool_continuation_stream",
     });
-    const nextToolEvaluation = allowRepairLoop
+    const allowedResidentSemanticToolNames = new Set(
+      (Array.isArray(options.allowedResidentSemanticToolNames)
+        ? options.allowedResidentSemanticToolNames
+        : []).map((name) => normalizeString(name, "")).filter(Boolean),
+    );
+    const residentSemanticTransition = Boolean(
+      nestedObligationResult.obligations.length === 1 &&
+      allowedResidentSemanticToolNames.has(normalizeString(
+        nestedObligationResult.obligations[0]?.name,
+        "",
+      )),
+    );
+    const nextToolEvaluation = residentSemanticTransition
+      ? { ok: true, outcome: "next_resident_semantic_tool" }
+      : allowRepairLoop
       ? evaluateNextRepairTool({
           turn: sessionStore.readTurn(options.sessionId, options.turnId),
           obligations: nestedObligationResult.obligations,

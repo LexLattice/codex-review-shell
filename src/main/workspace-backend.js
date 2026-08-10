@@ -37,6 +37,17 @@ function normalizeWorkspace(input, repoPath, fallbackRoot) {
       label: normalizeString(raw.label, ""),
     };
   }
+  if (raw?.kind === "windows") {
+    return {
+      kind: "windows",
+      windowsPath: normalizeString(
+        raw.windowsPath || raw.localPath,
+        normalizeString(repoPath, "C:\\"),
+      ),
+      windowsNodePath: normalizeString(raw.windowsNodePath, ""),
+      label: normalizeString(raw.label, ""),
+    };
+  }
   return {
     kind: "local",
     localPath: normalizeString(raw?.localPath, normalizeString(repoPath, fallbackRoot)),
@@ -55,7 +66,11 @@ function shellSingleQuote(value) {
 
 function workspaceRoot(project, fallbackRoot) {
   const workspace = normalizeWorkspace(project?.workspace, project?.repoPath, fallbackRoot);
-  return workspace.kind === "wsl" ? workspace.linuxPath : workspace.localPath;
+  return workspace.kind === "wsl"
+    ? workspace.linuxPath
+    : workspace.kind === "windows"
+      ? workspace.windowsPath
+      : workspace.localPath;
 }
 
 function workspaceLabel(project, fallbackRoot) {
@@ -64,12 +79,18 @@ function workspaceLabel(project, fallbackRoot) {
     const distro = workspace.distro ? `${workspace.distro}:` : "default:";
     return `WSL ${distro}${workspace.linuxPath}`;
   }
+  if (workspace.kind === "windows") {
+    return `Windows ${workspace.windowsPath}`;
+  }
   return `Local ${workspace.localPath}`;
 }
 
 function workspaceSessionKey(project, fallbackRoot) {
   const workspace = normalizeWorkspace(project?.workspace, project?.repoPath, fallbackRoot);
   if (workspace.kind === "wsl") return `wsl:${workspace.distro || "default"}:${workspace.linuxPath}`;
+  if (workspace.kind === "windows") {
+    return `windows:${workspace.windowsPath.toLowerCase()}`;
+  }
   return `local:${path.resolve(workspace.localPath || fallbackRoot || ".")}`;
 }
 
@@ -78,6 +99,28 @@ function cleanEnvForLocalAgent() {
     ...process.env,
     ELECTRON_RUN_AS_NODE: "1",
   };
+}
+
+function windowsNodePath(workspace, options = {}) {
+  const candidates = [
+    workspace.windowsNodePath,
+    options.windowsNodePath,
+    "/mnt/c/Program Files/nodejs/node.exe",
+    "/mnt/c/Program Files (x86)/nodejs/node.exe",
+  ].map((entry) => normalizeString(entry, "")).filter(Boolean);
+  return candidates.find((entry) => fs.existsSync(entry)) || "";
+}
+
+function windowsUncPathForWslPath(value, options = {}) {
+  const source = normalizeString(value, "").replace(/\//g, "\\");
+  const distro = normalizeString(
+    options.wslDistro || process.env.WSL_DISTRO_NAME,
+    "Ubuntu",
+  );
+  if (!source.startsWith("\\")) {
+    throw new Error("Windows resident executor agent path must be absolute.");
+  }
+  return `\\\\wsl.localhost\\${distro}${source}`;
 }
 
 function launchDescriptor(project, options) {
@@ -112,9 +155,39 @@ function launchDescriptor(project, options) {
     };
   }
 
+  if (workspace.kind === "windows" && process.platform !== "win32") {
+    const nativeNodePath = windowsNodePath(workspace, options);
+    if (!nativeNodePath) {
+      throw new Error(
+        "Native Windows Node.js is required for a Windows resident workspace executor.",
+      );
+    }
+    const windowsAgentPath = windowsUncPathForWslPath(agentPath, options);
+    return {
+      command: nativeNodePath,
+      args: [
+        windowsAgentPath,
+        "--root",
+        workspace.windowsPath,
+        "--workspace-kind",
+        "windows",
+        "--project-id",
+        projectId,
+      ],
+      cwd: undefined,
+      env: process.env,
+      transport: "windows-native-resident",
+      workspace,
+    };
+  }
+
   // Local/dev path. This is also used when running from Linux/WSL directly so
   // the same config can be smoke-tested without a native Windows host.
-  const root = workspace.kind === "wsl" ? workspace.linuxPath : workspace.localPath;
+  const root = workspace.kind === "wsl"
+    ? workspace.linuxPath
+    : workspace.kind === "windows"
+      ? workspace.windowsPath
+      : workspace.localPath;
   return {
     command: process.execPath,
     args: [agentPath, "--root", root, "--workspace-kind", workspace.kind, "--project-id", projectId],
@@ -297,11 +370,11 @@ class WorkspaceSession extends EventEmitter {
     this.emit("status", payload);
   }
 
-  async attach() {
+  async attach(options = {}) {
     if (this.status === "attached" && this.transport && !this.transport.closed) return this;
     if (this.attachPromise) return this.attachPromise;
 
-    this.attachPromise = this.attachInner()
+    this.attachPromise = this.attachInner(options)
       .then(() => {
         this.attachPromise = null;
         return this;
@@ -313,7 +386,7 @@ class WorkspaceSession extends EventEmitter {
     return this.attachPromise;
   }
 
-  async attachInner() {
+  async attachInner(options = {}) {
     this.status = "starting";
     this.lastError = null;
     this.readySeen = false;
@@ -368,14 +441,23 @@ class WorkspaceSession extends EventEmitter {
     this.status = "attaching";
     try {
       this.hello = await this.transport.request("hello", {}, ATTACH_TIMEOUT_MS);
-      try {
-        this.hygiene = await this.transport.request("ensureCodexSandboxArtifactIgnored", {}, DEFAULT_REQUEST_TIMEOUT_MS);
-        if (this.hygiene?.changed) {
-          this.noteDiagnostic("workspace-hygiene", `Added local Git exclude ${this.hygiene.pattern || ""}`.trim());
+      if (options.workspaceHygiene !== false) {
+        try {
+          this.hygiene = await this.transport.request("ensureCodexSandboxArtifactIgnored", {}, DEFAULT_REQUEST_TIMEOUT_MS);
+          if (this.hygiene?.changed) {
+            this.noteDiagnostic("workspace-hygiene", `Added local Git exclude ${this.hygiene.pattern || ""}`.trim());
+          }
+        } catch (error) {
+          this.hygiene = { available: false, changed: false, error: error.message };
+          this.noteDiagnostic("workspace-hygiene", error.message);
         }
-      } catch (error) {
-        this.hygiene = { available: false, changed: false, error: error.message };
-        this.noteDiagnostic("workspace-hygiene", error.message);
+      } else {
+        this.hygiene = {
+          available: true,
+          changed: false,
+          skipped: true,
+          reason: "probe_only_attachment",
+        };
       }
       this.status = "attached";
       this.emitStatus("backend-attached");
@@ -423,9 +505,9 @@ class WorkspaceBackendManager extends EventEmitter {
     return session;
   }
 
-  async ensureForProject(project) {
+  async ensureForProject(project, options = {}) {
     const session = this.sessionForProject(project);
-    await session.attach();
+    await session.attach(options);
     return session;
   }
 

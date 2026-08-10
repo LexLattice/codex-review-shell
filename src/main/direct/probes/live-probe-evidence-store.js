@@ -853,7 +853,9 @@ class DirectLiveProbeEvidenceStore {
       storedStatus: normalizeString(evidence.status, "candidate"),
       model: normalizeString(evidence.model?.requested, ""),
       modelSource: "live-probe",
-      modelEvidenceState: usable ? "runtime_probed" : normalizeString(evidence.model?.evidenceState, "candidate"),
+      modelEvidenceState: usable
+        ? "runtime_probed"
+        : normalizeString(status, evidence.model?.evidenceState || "candidate"),
       evidenceId: normalizeString(evidence.evidenceId, ""),
       observedAt: normalizeString(evidence.createdAt, ""),
       expiresAt: normalizeString(evidence.expiresAt, ""),

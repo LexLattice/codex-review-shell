@@ -113,31 +113,61 @@ npm install
 npm run start
 ```
 
+## Direct Workbench and WorldManager Studio
+
+The two primary experiences now have explicit launch and control-plane
+identities. Direct Workbench preserves the conventional thread-first Codex
+workflow using the T3-informed project/thread geometry:
+
+```bash
+npm run dev:direct-workbench
+```
+
+WorldManager Studio retains the semantic settlement, admission, and worldstate
+path:
+
+```bash
+npm run dev:world-manager-studio
+```
+
+The normal legacy shell remains the default `npm run dev` compatibility path.
+Direct Workbench currently connects real Runtime and Analytics surfaces;
+Files, Diff, Terminal, and Browser remain visibly unavailable until bounded
+Direct tenant adapters exist. See the
+[experience split spec](./docs/DIRECT_WORKBENCH_AND_WORLDMANAGER_STUDIO_SPLIT_SPEC.md)
+and [T3 geometry experiment](./docs/DIRECT_T3_ALTERNATE_GUI_EXPERIMENT.md).
+
 ## Windows + WSL mirror launcher
 
 While building, use the tracked Windows launcher scripts in this repo so the Windows checkout mirrors the WSL worktree before each run:
 
 ```powershell
-cd C:\LexLattice\codex-review-shell
+cd C:\LexLattice\codex-review-shell-direct
 .\start-codex-review-shell.cmd
 ```
 
 What it does:
 
 - mirrors `\\wsl.localhost\<distro>\<path>` to the Windows repo root via `sync-from-wsl.cmd`
-- runs `npm install` on Windows after mirror
+- runs `npm install` only when `package.json` or `package-lock.json` changed, or when the Windows dependency installation is incomplete
 - writes `.wsl-sync-head.txt` in the Windows repo with the mirrored WSL commit hash
+- writes a timestamped log pair under `%LOCALAPPDATA%\codex-review-shell-direct\launcher-logs` and records the newest pair in `launcher-latest.txt`
+- prints the active preflight stage in the launcher console
 - starts Electron via `scripts/run-electron.mjs`
 
-Default source path is `/home/rose/work/LexLattice/codex-review-shell` in `Ubuntu`.
+Default source path is `/home/rose/work/LexLattice/codex-review-shell-direct` in `Ubuntu`.
 Override source by setting:
 
 - `CODEX_REVIEW_SHELL_DEFAULT_WSL_DISTRO`
 - `CODEX_REVIEW_SHELL_DEFAULT_WSL_PATH`
 
-If your Windows checkout predates these scripts, copy these tracked files from WSL once into `C:\LexLattice\codex-review-shell`:
+If your Windows checkout predates these scripts, copy these tracked files from WSL once into `C:\LexLattice\codex-review-shell-direct`:
 
 - `start-codex-review-shell.cmd`
+- `start-direct-workbench.cmd`
+- `start-world-manager-studio.cmd`
+- `start-world-manager-studio-mock.cmd`
+- `start-codex-review-shell-t3.cmd`
 - `sync-from-wsl.cmd`
 
 To attach to a WSL workspace, edit the project binding:
@@ -147,6 +177,25 @@ To attach to a WSL workspace, edit the project binding:
 - Canonical Linux path: `/home/<you>/<repo>`
 
 Node.js must be available as `node` inside that WSL distro.
+
+## Direct-native sub-agent pool
+
+Ordinary Direct implementation turns can use an asynchronous native reasoning
+pool independently of the WorldManager path. It defaults to eight active child
+leases and 64 queued jobs, and permits full, recent-N, or empty parent-context
+handoff independently from child model and reasoning effort.
+
+Optional process-level overrides:
+
+```text
+CODEX_DIRECT_SUB_AGENT_MAX_ACTIVE
+CODEX_DIRECT_SUB_AGENT_MAX_QUEUED
+CODEX_DIRECT_SUB_AGENT_DEFAULT_MODEL
+CODEX_DIRECT_SUB_AGENT_DEFAULT_REASONING_EFFORT
+```
+
+See [the Direct native multi-agent pool spec](./docs/DIRECT_NATIVE_MULTI_AGENT_POOL_SPEC.md)
+for the current reasoning-only authority boundary and test commands.
 
 ## Validation
 

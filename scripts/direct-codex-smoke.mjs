@@ -2269,6 +2269,26 @@ try {
   });
   assert(expiredResolved.accepted === false, "Expired live probe evidence must not unlock runtime.");
   assert(expiredResolved.liveProbeEvidence.status === "expired", "Expected expired evidence status to be computed.");
+  assert(expiredResolved.modelEvidenceState === "expired", "Expired live probe evidence must project an expired model-evidence state.");
+  const expiredEvidenceController = new DirectLiveTextController({
+    sessionStore: liveSessionStore,
+    profileDoc,
+    authStore: liveAuthStore,
+    modelEvidenceResolver: (context) => expiredEvidenceStore.resolveModelEvidence(context),
+    fetchImpl: async () => textResponse(promotionSse, 200, { "content-type": "text/event-stream" }),
+  });
+  const expiredEvidenceStatus = expiredEvidenceController.statusForProject(liveProject);
+  assert(expiredEvidenceStatus.status === "profile_required", "Expired live probe evidence must leave Direct blocked.");
+  assert(expiredEvidenceStatus.reason === "live_probe_evidence_expired", "Expired live probe evidence must expose a specific blocker reason.");
+  let expiredReadinessError = null;
+  try {
+    expiredEvidenceController.assertReady(liveProject);
+  } catch (error) {
+    expiredReadinessError = error;
+  }
+  assert(expiredReadinessError?.code === "profile_required", "Expired evidence must preserve the controller readiness error class.");
+  assert(expiredReadinessError?.blockerCode === "live_probe_evidence_expired", "Expired evidence must preserve the specific blocker code.");
+  assert(/capability evidence expired/i.test(expiredReadinessError?.message || ""), "Expired evidence must produce an actionable operator message.");
 
   const nonRunnableEvidenceStore = new DirectLiveProbeEvidenceStore({
     rootDir: path.join(liveTextControllerParent, "non-runnable-direct-probe-evidence"),

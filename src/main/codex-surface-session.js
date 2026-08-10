@@ -14,6 +14,7 @@ const {
   prepareProjectProfileLaunchRequest,
   registerProjectProfileLaunchResponse,
 } = require("./direct/worldmodel/project-profile-app-server-adapter");
+const { normalizeNotificationEnvelope } = require("../renderer/codex-app-server-evidence");
 
 const DEFAULT_RPC_REQUEST_TIMEOUT_MS = 60_000;
 const OVERLOAD_RETRY_CODE = -32001;
@@ -381,6 +382,7 @@ class CodexSurfaceSession extends EventEmitter {
 
       socket.on("message", (data) => {
         try {
+          const receivedAtMs = Date.now();
           const message = JSON.parse(String(data || ""));
           if (!message.method && hasJsonRpcId(message) && this.pending.has(message.id)) {
             const pending = this.pending.get(message.id);
@@ -404,7 +406,10 @@ class CodexSurfaceSession extends EventEmitter {
           }
 
           if (message.method) {
-            this.handleServerNotification(message.method, message.params || {});
+            this.handleServerNotification(message.method, message.params || {}, {
+              emittedAtMs: message.emittedAtMs,
+              receivedAtMs,
+            });
           }
         } catch (error) {
           this.sendEvent({ type: "protocol-error", error: toErrorMessage(error, "Invalid Codex RPC payload.") });
@@ -439,11 +444,16 @@ class CodexSurfaceSession extends EventEmitter {
     }
   }
 
-  handleServerNotification(method, params) {
+  handleServerNotification(method, params, timing = {}) {
+    const notification = normalizeNotificationEnvelope({
+      method,
+      params: params || {},
+      emittedAtMs: timing.emittedAtMs,
+    }, timing.receivedAtMs);
     if (method === "serverRequest/resolved") {
       this.resolveServerRequest(params);
     }
-    this.usageLedger?.captureNotification?.(method, params || {}).catch(() => {});
+    this.usageLedger?.captureNotification?.(method, params || {}, notification).catch(() => {});
     const profileObservation = buildProjectProfileRuntimeLaunchObservation(
       this.connection?.projectProfileConfiguration,
       { method, params },
@@ -472,7 +482,7 @@ class CodexSurfaceSession extends EventEmitter {
         authorityGranted: false,
       });
     }
-    this.sendEvent({ type: "rpc-notification", method, params: params || {} });
+    this.sendEvent({ type: "rpc-notification", ...notification });
   }
 
   handleServerRequest(message) {

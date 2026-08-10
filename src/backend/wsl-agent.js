@@ -43,6 +43,14 @@ const MAX_PATCH_FILES = 16;
 const MAX_PATCH_HUNKS = 128;
 const MAX_PATCH_LINES_CHANGED = 4000;
 const MAX_PATCH_FILE_PREVIEW_CHARS = 8000;
+const REPOSITORY_SEMANTIC_MANIFEST_LIMIT = 2000;
+const REPOSITORY_SEMANTIC_EVIDENCE_LIMIT = 18;
+const REPOSITORY_SEMANTIC_EXCERPT_BYTES = 6000;
+const REPOSITORY_SEMANTIC_TOTAL_EXCERPT_BYTES = 72 * 1024;
+const REPOSITORY_SEMANTIC_MAX_EVIDENCE_FILE_BYTES = 2 * 1024 * 1024;
+const ARO_REALIZATION_CONTEXT_FILE_LIMIT = 12;
+const ARO_REALIZATION_CONTEXT_EXCERPT_BYTES = 12 * 1024;
+const ARO_REALIZATION_CONTEXT_TOTAL_BYTES = 96 * 1024;
 const PATCH_DENY_PATTERNS = [
   /(?:^|\/)\.git(?:\/|$)/i,
   /(?:^|\/)node_modules(?:\/|$)/i,
@@ -266,6 +274,13 @@ function sensitiveReadFileReason(relPath = "") {
 
 function sha256(value) {
   return crypto.createHash("sha256").update(String(value ?? "")).digest("hex");
+}
+
+function sha256Digest(value) {
+  return `sha256:${crypto
+    .createHash("sha256")
+    .update(value)
+    .digest("hex")}`;
 }
 
 function splitLinesWithEndings(text) {
@@ -855,6 +870,553 @@ async function listTree(params = {}) {
     skipped,
     limit: DIRECTORY_ENTRY_LIMIT,
     source: workspaceKind,
+  };
+}
+
+function repositoryEvidenceKind(relPath) {
+  const normalized = String(relPath || "").replace(/\\/g, "/").toLowerCase();
+  const base = path.posix.basename(normalized);
+  if (
+    normalized.includes("/test") ||
+    normalized.includes("/spec") ||
+    /(?:^|[._-])(test|spec)\.[^.]+$/.test(base) ||
+    normalized.startsWith("test") ||
+    normalized.startsWith("spec")
+  ) {
+    return "test_file";
+  }
+  if (
+    normalized.startsWith("docs/") ||
+    /\.(md|mdx|rst|adoc|txt)$/.test(base) ||
+    /^(readme|agents|contributing|architecture|design)/.test(base)
+  ) {
+    return "documentation";
+  }
+  if (
+    /^(package\.json|pyproject\.toml|cargo\.toml|go\.mod|composer\.json|gemfile|pom\.xml|build\.gradle|makefile|cmakelists\.txt)$/.test(base) ||
+    /\.(ya?ml|toml|ini)$/.test(base)
+  ) {
+    return "configuration";
+  }
+  return "source_file";
+}
+
+function repositoryEvidencePriority(relPath) {
+  const normalized = String(relPath || "").replace(/\\/g, "/").toLowerCase();
+  const base = path.posix.basename(normalized);
+  let score = 0;
+  if (/^readme(?:\.|$)/.test(base)) score += 100;
+  if (/^agents(?:\.|$)/.test(base)) score += 86;
+  if (
+    /^(package\.json|pyproject\.toml|cargo\.toml|go\.mod|composer\.json|gemfile|pom\.xml|build\.gradle|makefile|cmakelists\.txt)$/.test(base)
+  ) {
+    score += 80;
+  }
+  if (/(architecture|design|ontology|worldmanager|world-manager|specification|master-status|roadmap)/.test(normalized)) {
+    score += 72;
+  }
+  if (normalized.startsWith("docs/")) score += 30;
+  if (/^(src|app|lib|packages)\//.test(normalized)) score += 32;
+  if (/(^|\/)(main|index|app|server|service|controller|kernel)\.[^.]+$/.test(normalized)) score += 34;
+  if (repositoryEvidenceKind(normalized) === "test_file") score += 24;
+  const depth = normalized.split("/").length - 1;
+  score -= Math.min(depth * 2, 18);
+  if (
+    /(?:^|\/)(package-lock|pnpm-lock|yarn\.lock|cargo\.lock|poetry\.lock)(?:$|\.)/.test(normalized) ||
+    /\.(map|min\.js|min\.css|snap)$/.test(normalized)
+  ) {
+    score -= 200;
+  }
+  return score;
+}
+
+async function genericRepositoryManifest() {
+  const paths = [];
+  let truncated = false;
+
+  async function walk(relDir) {
+    if (paths.length >= REPOSITORY_SEMANTIC_MANIFEST_LIMIT) {
+      truncated = true;
+      return;
+    }
+    const { fullPath, displayRel } = resolveWithinRoot(relDir);
+    let entries;
+    try {
+      entries = await fs.readdir(fullPath, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      if (paths.length >= REPOSITORY_SEMANTIC_MANIFEST_LIMIT) {
+        truncated = true;
+        return;
+      }
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory() && SKIPPED_DIR_NAMES.has(entry.name)) continue;
+      const childRel = displayRel ? `${displayRel}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        await walk(childRel);
+      } else if (entry.isFile()) {
+        paths.push(childRel);
+      }
+    }
+  }
+
+  await walk("");
+  return { paths, truncated };
+}
+
+async function repositorySemanticEvidence(manifestPaths) {
+  const ranked = [...manifestPaths]
+    .filter((relPath) => !sensitiveReadFileReason(relPath))
+    .sort((left, right) =>
+      repositoryEvidencePriority(right) - repositoryEvidencePriority(left) ||
+      left.localeCompare(right));
+  const selected = [];
+  const seenKinds = new Set();
+  let totalExcerptBytes = 0;
+
+  // Give the semantic reasoner at least one view of each available evidence
+  // class before filling remaining slots by relevance.
+  const ordered = [];
+  for (const relPath of ranked) {
+    const kind = repositoryEvidenceKind(relPath);
+    if (!seenKinds.has(kind)) {
+      ordered.push(relPath);
+      seenKinds.add(kind);
+    }
+  }
+  for (const relPath of ranked) {
+    if (!ordered.includes(relPath)) ordered.push(relPath);
+  }
+
+  for (const relPath of ordered) {
+    if (
+      selected.length >= REPOSITORY_SEMANTIC_EVIDENCE_LIMIT ||
+      totalExcerptBytes >= REPOSITORY_SEMANTIC_TOTAL_EXCERPT_BYTES
+    ) {
+      break;
+    }
+    let resolved;
+    try {
+      resolved = await resolveFileWithinRoot(relPath);
+      const requestedStat = await fs.lstat(resolved.requestedFullPath);
+      if (requestedStat.isSymbolicLink()) continue;
+      const stat = await fs.lstat(resolved.fullPath);
+      if (
+        !stat.isFile() ||
+        stat.size > REPOSITORY_SEMANTIC_MAX_EVIDENCE_FILE_BYTES
+      ) {
+        continue;
+      }
+      const content = await fs.readFile(resolved.fullPath);
+      if (looksBinary(content)) continue;
+      const remaining = REPOSITORY_SEMANTIC_TOTAL_EXCERPT_BYTES - totalExcerptBytes;
+      const excerptLimit = Math.min(REPOSITORY_SEMANTIC_EXCERPT_BYTES, remaining);
+      const excerptBuffer = content.subarray(0, excerptLimit);
+      totalExcerptBytes += excerptBuffer.length;
+      selected.push({
+        evidenceKey: `repo_evidence_${selected.length + 1}`,
+        evidenceKind: repositoryEvidenceKind(relPath),
+        relativePath: displayRelPath(relPath),
+        sizeBytes: stat.size,
+        digest: sha256Digest(content),
+        excerpt: excerptBuffer.toString("utf8"),
+        excerptTruncated: content.length > excerptBuffer.length,
+      });
+    } catch {
+      // A file can disappear between manifest observation and evidence read.
+      // The snapshot remains valid and visibly bounded to successfully read files.
+    }
+  }
+  return selected;
+}
+
+async function repositorySemanticSnapshot() {
+  const observedAt = new Date().toISOString();
+  const gitIdentity = await captureProcess(
+    "git",
+    ["rev-parse", "--show-toplevel", "HEAD", "--abbrev-ref", "HEAD"],
+    {
+      cwd: root,
+      timeoutMs: 8_000,
+      env: minimalCommandEnv(),
+    },
+  ).catch((error) => ({
+    exitCode: 1,
+    stdout: "",
+    stderr: error.message,
+  }));
+  const gitAvailable = gitIdentity.exitCode === 0;
+  let manifestPaths = [];
+  let manifestTruncated = false;
+  let trackedFileCount = 0;
+  let headOid = "";
+  let branch = "";
+  let statusText = "";
+  let diffText = "";
+  let untrackedState = [];
+
+  if (gitAvailable) {
+    const identityLines = String(gitIdentity.stdout || "")
+      .split(/\r?\n/)
+      .filter(Boolean);
+    headOid = identityLines[1] || "";
+    branch = identityLines[2] || "";
+    const [tracked, untracked, status, diff] = await Promise.all([
+      captureProcess("git", ["ls-files", "-z"], {
+        cwd: root,
+        timeoutMs: 12_000,
+        env: minimalCommandEnv(),
+      }),
+      captureProcess("git", ["ls-files", "-z", "--others", "--exclude-standard"], {
+        cwd: root,
+        timeoutMs: 12_000,
+        env: minimalCommandEnv(),
+      }),
+      captureProcess("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], {
+        cwd: root,
+        timeoutMs: 12_000,
+        env: minimalCommandEnv(),
+      }),
+      captureProcess("git", ["diff", "--binary", "--no-ext-diff", "HEAD", "--"], {
+        cwd: root,
+        timeoutMs: 20_000,
+        env: minimalCommandEnv(),
+      }),
+    ]);
+    const trackedPaths = String(tracked.stdout || "")
+      .split("\0")
+      .filter(Boolean)
+      .map((entry) => displayRelPath(entry));
+    const untrackedPaths = String(untracked.stdout || "")
+      .split("\0")
+      .filter(Boolean)
+      .map((entry) => displayRelPath(entry));
+    trackedFileCount = trackedPaths.length;
+    manifestTruncated =
+      tracked.stdoutTruncated === true ||
+      untracked.stdoutTruncated === true ||
+      trackedPaths.length + untrackedPaths.length >
+        REPOSITORY_SEMANTIC_MANIFEST_LIMIT;
+    manifestPaths = [...new Set([...trackedPaths, ...untrackedPaths])]
+      .sort()
+      .slice(0, REPOSITORY_SEMANTIC_MANIFEST_LIMIT);
+    statusText = String(status.stdout || "");
+    diffText = String(diff.stdout || "");
+    for (const relPath of untrackedPaths.slice(0, 400)) {
+      try {
+        const { fullPath } = resolveWithinRoot(relPath);
+        const stat = await fs.lstat(fullPath);
+        if (!stat.isFile() || stat.isSymbolicLink()) continue;
+        untrackedState.push({
+          relativePath: relPath,
+          sizeBytes: stat.size,
+          mtimeMs: Math.floor(stat.mtimeMs),
+        });
+      } catch {}
+    }
+  } else {
+    const generic = await genericRepositoryManifest();
+    manifestPaths = generic.paths;
+    manifestTruncated = generic.truncated;
+  }
+
+  const evidence = await repositorySemanticEvidence(manifestPaths);
+  return {
+    schema: "workspace_repository_semantic_observation@1",
+    projectId,
+    workspaceKind,
+    gitAvailable,
+    headOid,
+    branch,
+    dirtyPathCount: statusText
+      ? statusText.split("\0").filter(Boolean).length
+      : 0,
+    statusDigest: sha256Digest(statusText),
+    diffDigest: sha256Digest(diffText),
+    untrackedStateDigest: sha256Digest(JSON.stringify(untrackedState)),
+    manifestDigest: sha256Digest(JSON.stringify(manifestPaths)),
+    trackedFileCount,
+    manifestPaths,
+    manifestTruncated,
+    evidence,
+    evidenceCatalogComplete:
+      !manifestTruncated &&
+      evidence.length < REPOSITORY_SEMANTIC_EVIDENCE_LIMIT,
+    rawWorkspacePathIncluded: false,
+    rawSecretIncluded: false,
+    observedAt,
+  };
+}
+
+function sourceLanguageForPath(relPath) {
+  const extension = path.extname(
+    String(relPath || ""),
+  ).toLowerCase();
+  const languages = {
+    ".c": "c",
+    ".cc": "cpp",
+    ".cpp": "cpp",
+    ".css": "css",
+    ".go": "go",
+    ".h": "c",
+    ".hpp": "cpp",
+    ".html": "html",
+    ".java": "java",
+    ".js": "javascript",
+    ".json": "json",
+    ".jsx": "javascript",
+    ".md": "markdown",
+    ".mjs": "javascript",
+    ".py": "python",
+    ".rb": "ruby",
+    ".rs": "rust",
+    ".sh": "shell",
+    ".sql": "sql",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+  };
+  return languages[extension] || "";
+}
+
+async function repositoryRealizationContext(
+  params = {},
+) {
+  const requestedPaths = [
+    ...new Set(
+      (
+        Array.isArray(
+          params.relativePaths,
+        )
+          ? params.relativePaths
+          : []
+      )
+        .map((entry) =>
+          displayRelPath(entry))
+        .filter(Boolean),
+    ),
+  ].slice(
+    0,
+    ARO_REALIZATION_CONTEXT_FILE_LIMIT,
+  );
+  const evidence = [];
+  const rejectedPaths = [];
+  let totalExcerptBytes = 0;
+  for (const relativePath of requestedPaths) {
+    const sensitiveReason =
+      sensitiveReadFileReason(
+        relativePath,
+      );
+    if (sensitiveReason) {
+      rejectedPaths.push({
+        relativePath,
+        reason:
+          `sensitive_path:${sensitiveReason}`,
+      });
+      continue;
+    }
+    try {
+      const resolved =
+        await resolveFileWithinRoot(
+          relativePath,
+        );
+      const requestedStat =
+        await fs.lstat(
+          resolved.requestedFullPath,
+        );
+      const stat =
+        await fs.lstat(
+          resolved.fullPath,
+        );
+      if (
+        requestedStat.isSymbolicLink() ||
+        stat.isSymbolicLink()
+      ) {
+        rejectedPaths.push({
+          relativePath,
+          reason: "symlink_rejected",
+        });
+        continue;
+      }
+      if (!stat.isFile()) {
+        rejectedPaths.push({
+          relativePath,
+          reason: "not_a_file",
+        });
+        continue;
+      }
+      if (
+        stat.size >
+          REPOSITORY_SEMANTIC_MAX_EVIDENCE_FILE_BYTES
+      ) {
+        rejectedPaths.push({
+          relativePath,
+          reason: "file_too_large",
+        });
+        continue;
+      }
+      const content =
+        await fs.readFile(
+          resolved.fullPath,
+        );
+      if (looksBinary(content)) {
+        rejectedPaths.push({
+          relativePath,
+          reason: "binary_rejected",
+        });
+        continue;
+      }
+      const remaining =
+        ARO_REALIZATION_CONTEXT_TOTAL_BYTES -
+        totalExcerptBytes;
+      if (remaining <= 0) break;
+      const excerptLimit = Math.min(
+        ARO_REALIZATION_CONTEXT_EXCERPT_BYTES,
+        remaining,
+      );
+      const excerptBuffer =
+        content.subarray(
+          0,
+          excerptLimit,
+        );
+      const excerpt =
+        excerptBuffer.toString("utf8");
+      totalExcerptBytes +=
+        excerptBuffer.length;
+      evidence.push({
+        evidenceKey:
+          `realization_evidence_${
+            evidence.length + 1
+          }`,
+        evidenceKind:
+          repositoryEvidenceKind(
+            relativePath,
+          ),
+        relativePath,
+        language:
+          sourceLanguageForPath(
+            relativePath,
+          ),
+        sizeBytes: stat.size,
+        digest:
+          sha256Digest(content),
+        lineStart: 1,
+        lineEnd: Math.max(
+          1,
+          excerpt
+            .split(/\r?\n/)
+            .length,
+        ),
+        excerpt,
+        excerptTruncated:
+          content.length >
+          excerptBuffer.length,
+      });
+    } catch (error) {
+      rejectedPaths.push({
+        relativePath,
+        reason:
+          error?.code === "ENOENT"
+            ? "not_found"
+            : "read_failed",
+      });
+    }
+  }
+  const gitIdentity =
+    await captureProcess(
+      "git",
+      [
+        "rev-parse",
+        "HEAD",
+        "--abbrev-ref",
+        "HEAD",
+      ],
+      {
+        cwd: root,
+        timeoutMs: 8_000,
+        env: minimalCommandEnv(),
+      },
+    ).catch(() => ({
+      exitCode: 1,
+      stdout: "",
+    }));
+  const identityLines =
+    String(
+      gitIdentity.stdout || "",
+    )
+      .split(/\r?\n/)
+      .filter(Boolean);
+  const [status, diff] =
+    gitIdentity.exitCode === 0
+      ? await Promise.all([
+          captureProcess(
+            "git",
+            [
+              "status",
+              "--porcelain=v1",
+              "-z",
+              "--untracked-files=all",
+            ],
+            {
+              cwd: root,
+              timeoutMs: 12_000,
+              env: minimalCommandEnv(),
+            },
+          ),
+          captureProcess(
+            "git",
+            [
+              "diff",
+              "--binary",
+              "--no-ext-diff",
+              "HEAD",
+              "--",
+            ],
+            {
+              cwd: root,
+              timeoutMs: 20_000,
+              env: minimalCommandEnv(),
+            },
+          ),
+        ])
+      : [
+          { stdout: "" },
+          { stdout: "" },
+        ];
+  return {
+    schema:
+      "workspace_aro_realization_context_observation@1",
+    projectId,
+    workspaceKind,
+    repositoryIdentity: {
+      headOid:
+        identityLines[0] || "",
+      branch:
+        identityLines[1] || "",
+      statusDigest:
+        sha256Digest(
+          String(
+            status.stdout || "",
+          ),
+        ),
+      diffDigest:
+        sha256Digest(
+          String(diff.stdout || ""),
+        ),
+    },
+    requestedPaths,
+    evidence,
+    rejectedPaths,
+    sourceInspectionEffect: true,
+    workspaceMutationEffect: false,
+    rawWorkspacePathIncluded: false,
+    rawSecretIncluded: false,
+    observedAt:
+      new Date().toISOString(),
   };
 }
 
@@ -3173,6 +3735,8 @@ async function handleRequest(method, params = {}) {
         readFilePreview: true,
         applyPatch: true,
         readFileTransfer: true,
+        repositorySemanticSnapshot: true,
+        repositoryRealizationContext: true,
         runCommand: true,
         runDirectCommand: true,
         ensureCodexSandboxArtifactIgnored: true,
@@ -3192,6 +3756,17 @@ async function handleRequest(method, params = {}) {
   if (method === "readFile") return readFilePreview(params);
   if (method === "applyPatch") return applyPatchPlan(params);
   if (method === "readFileTransfer") return readFileTransfer(params);
+  if (method === "repositorySemanticSnapshot") {
+    return repositorySemanticSnapshot(params);
+  }
+  if (
+    method ===
+      "repositoryRealizationContext"
+  ) {
+    return repositoryRealizationContext(
+      params,
+    );
+  }
   if (method === "listMatchingFiles") return listMatchingFiles(params);
   if (method === "resolvePath") return resolvePathPreview(params);
   if (method === "runCommand") return runCommand(params);

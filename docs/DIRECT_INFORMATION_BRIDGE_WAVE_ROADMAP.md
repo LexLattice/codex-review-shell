@@ -4998,12 +4998,12 @@ Implemented posture:
   schema guard;
 - disabled projects explicitly add
   `features.multi_agent_v2.expose_spawn_agent_model_overrides=false` because
-  the alpha default is true;
-- the project-scoped alpha profile additionally adds
+  the 145-family default is true;
+- the project-scoped split profile additionally adds
   `features.multi_agent_v2.expose_spawn_agent_model_overrides=true` while
   preserving the guard above;
 - the active Review Shell project routes Windows Electron -> Ubuntu WSL ->
-  npm-global `@openai/codex@0.145.0-alpha.11`; the stable source-audit fork,
+  npm-global stable `@openai/codex@0.145.0`; the stable source-audit fork,
   Windows PATH Codex, and vanilla desktop-bundled WSL Codex remain separate;
 - enabled tasks preserve the configured WSL command even when their source home
   is the desktop home, preventing silent fallback to its bundled older binary;
@@ -5020,15 +5020,15 @@ Implemented posture:
   `config.model_reasoning_effort`, while turns continue to send the effective
   `effort` explicitly;
 - runtime truth distinguishes the fallback `provider_managed` profile from the
-  alpha `root_selectable_within_active_backend` split profile and forbids
+  stable `root_selectable_within_active_backend` split profile and forbids
   client-side reserved-schema extension in both;
 - `fork_turns` remains available; full-history children inherit the root and
   reject overrides, while fresh/bounded children may request model/effort;
 - enabled new tasks receive a project-scoped developer-instruction projection
   preferring fresh Low-effort/model-inheriting workers for bounded specialist
   work without broadening action authority;
-- upstream commits `ea15456284` and `92938d880e` are present in the active
-  alpha and provide the canonical model/effort-only surface;
+- upstream commits `ea15456284` and `92938d880e` are present in active stable
+  `0.145.0` and provide the canonical model/effort-only surface;
 - no worker composer, client-side spawn RPC, global model override, or new
   Direct-native worker authority is introduced.
 
@@ -5038,7 +5038,7 @@ Acceptance:
 all managed app-server launch routes preserve the reserved schema
 no launch route carries hide_spawn_agent_metadata=false
 disabled launch carries expose_spawn_agent_model_overrides=false
-the enabled alpha route carries both narrow schema flags
+the enabled split route carries both narrow schema flags
 the project setting records requested exposure, not provider acceptance
 Ultra round-trips through shell configuration
 thread/start uses the protocol config key for its sticky effort
@@ -5141,6 +5141,79 @@ world/project/WorkThread changes through revisioned packets; admit work-derived
 project memory; and resolve an effective project execution profile without
 replaying historical chat, widening authority, or exposing unrelated memory.
 ```
+
+## WorldManager Keyboard Pipeline
+
+Governing integration spec:
+
+```text
+docs/DIRECT_WORLD_MANAGER_KEYBOARD_PIPELINE_SPEC.md
+docs/DIRECT_WORLD_MANAGER_EPISTEMIC_LEDGER_AND_SEMANTIC_CI_SPEC.md
+```
+
+| Milestone | Local status | Implemented truth | Deferred boundary |
+| --- | --- | --- | --- |
+| `WM-K1` canonical control plane and bootstrap | implemented and locally regression-proven | SQLite WAL control plane, stable app-project bootstrap refs, append-only digest-linked user ingress, idempotent retry, restart reconstruction, WorkThread read projection, production `world-manager:*` IPC, keyboard production surface | No graph binding, semantic settlement, model turn, candidate, admission, canonical write, contract, or execution |
+| `WM-K2` settlement and graph-first manager context | implemented and locally regression-proven | Exact/smart/bounded-reflective settlement, graph binding, scoped manager boot, clarification/remand, restart digest verification | No policy compiler, provider role turn, candidate, or canonical write |
+| `WM-K3` policy and agent-world compilation | implemented and locally regression-proven | Policy closure, trusted role templates, compiled prompt/capability/authority/evaluator agreement, exact context ref, restart reconstruction | No provider role turn, AgentResult, candidate, or canonical write |
+| `WM-K4` persisted roles and completion relay | implemented and deterministic-provider regression-proven | Persisted Direct Project Manager and WorldManager sessions/turns, final-message AgentResult, separate telemetry, semantic inbox, unified response, advisory reconciliation | Real-account live witness pending; no proposal registration, admission, contract, or execution |
+| `WM-K5A/K5B` general plan proposal and canonical contract admission | implemented and locally regression-proven | Reconciled natural Project Manager output becomes immutable revisioned PlanProposal candidates; exact review receipt; production control admission; typed `authorize_exact_target` semantic disposition over an exact pending decision and immutable target; one shared `admitPlanProposal` authority/CAS/recovery protocol; authoritative project-scope graph CAS; durable admission recovery; persisted ImplementationContract; real WorkThread held at `contract_received`; retry and post-admission restart lineage proof | The semantic model does not grant authority or mutate canonical state; ambiguous affirmations clarify, mismatched targets remand, and no worker starts until a separate `WM-K6` authorization |
+| `WM-K5G/K6G` project genesis and constitutional admission | implemented and locally regression-proven | Harness-observed WSL/Windows realization ranking, reconciled non-canonical project candidates, evidence review, explicit admission, canonical constitution, immutable runtime default, restart recovery | Admission alone provisions no workspace and grants no execution authority |
+| `WM-ENV1` native project substrate and thread inheritance | implemented and locally regression-proven | Explicit native workspace selection, backend-private locator, harmless WSL/Windows resident identity probe, canonical renderer-safe workspace binding, real project-substrate WorkThread, immutable thread environment binding, exact step snapshot, exact child inheritance, typed worker-context refs, restart recovery, keyboard provisioning control | No authoritative project-world graph activation, ambient default rewrite, implicit port, multi-machine custody migration, or automatic multi-environment selection |
+| `WM-SC4` context import and operational meta-context | implemented and locally regression-proven | Task-compiled requirements, read-only `IMPORT_CONTEXT`, typed bundle and selection witness, exact-scope and attention-budget enforcement, dependency-keyed cache invalidation, per-instantiation operational manifest, quoted provider projection, Direct request-manifest linkage, renderer-safe ribbon and semantic zoom | Agent-requested follow-up imports use the same contract but are not yet exposed as a provider tool declaration; governed decision effects remain `WM-SC5` |
+| `WM-SC5` governed semantic decision transitions | implemented and locally regression-proven | Exact/idempotent transition requests, append-only receipts, mechanical decision revision, scoped semantic relay/evidence/authority requests, explicit no-downstream-effect boundary | No transition grants execution authority or performs project effects |
+| `WM-SC6` semantic-surface compiler | implemented and locally regression-proven | Versioned O/E/D/U lenses, projection witnesses, exact region bindings, lawful morph resolution, inline artifacts, global Decision Dock, project indicators, same-object responsive identity | The compiler projects canonical state; it is not a second state store and does not mint authority |
+| `WM-SC7` ARO registry and reconstruction | implemented and locally regression-proven | Append-only ARO candidates/reviews/canonical revisions/admission receipts, required/possible/counterfactual branches, typed edges, many-to-many realization bindings, branch coverage, current/target comparison, source-drift staleness, exact-bound semantic-registry-only admission, compact navigator plus one focused comparison/tree/graph evidence lane | The automatic producer is delivered by `WM-SC7.1`, target definition by `WM-SC7.2`, provisional contract compilation by `WM-SC8.1`, read-only realization mapping by `WM-SC8.2`, bounded worker handoff by `WM-SC8.3`, realization-evidence acquisition by `WM-SC8.4`, semantic verification/closure candidacy by `WM-SC8.5`, and temporary thought-brush extraction by `WM-SC9`; hierarchical-worldmodel promotion and canonical closure admission remain open |
+| `WM-SC7.1` automatic repository reconstruction | implemented and locally regression-proven | Substrate-native bounded repository observation, secret-filtered semantic snapshots, snapshot-digest idempotent bootstrap scheduling, required native Direct semantic discharge, provisional ARO candidate registration, durable run revisions, interrupted-run recovery, completed-run reuse, surface-lifetime background transition delivery, visible failures, and exact-run retry | No continuous repository watcher, hierarchical-worldmodel promotion, realization mutation/code effect, automatic review/admission, or thought brush |
+| `WM-SC7.2` governed current-to-target definition | implemented and locally regression-proven | Exact focused canonical-current binding, free-form target intent, required native Direct target-definition discharge, mechanically resolved current-branch lineage, provisional target candidates, append-only durable runs, restart recovery, existing review/admission gates, visible comparison prerequisites, truthful candidate/canonical coverage grouping, and comparison reachability after target admission | No source inspection, realization binding, automatic admission, mutation contract, worker launch, workspace mutation, semantic-truth certification, or execution authority |
+| `WM-SC8.1` provisional ARO mutation contract | implemented and locally regression-proven | Exact focused current/target comparison binding, mechanically derived semantic delta, required native Direct contract discharge, open-vocabulary implementation obligations/preservation/verification, append-only contract and run revisions, complete branch-coverage validation, restart recovery, exact-run retry, and focused evidence-first workbench | No realization-context import, source inspection, worker launch, workspace mutation, semantic-truth certification, canonical admission, or execution authority; those remain split across `WM-SC8.2`–`WM-SC8.5` |
+| `WM-SC8.2` realization-context import and ARO-to-code mapping | implemented and locally regression-proven | Exact contract/current/target/snapshot binding, ARO-derived bounded source paths, substrate-native sensitive/symlink/binary/size-safe read-only import, immutable source-identity imports, required Direct semantic mapping discharge, exact obligation/evidence/range validation, candidate file/symbol/range mappings, ambiguity/omission/freshness posture, append-only run/witness persistence, restart recovery, exact-run retry, backend-only source excerpts, and focused evidence-first mapping workbench | No worker constitution or launch, source mutation, tests/runtime verification, semantic-truth certification, canonical admission, or execution authority; those remain split across `WM-SC8.3`–`WM-SC8.5` |
+| `WM-SC8.3` bounded worker constitution and native handoff | implemented and locally regression-proven | Refreshed exact-source and Direct-capability observations, explicit review receipt, immutable compiled worker constitution, visible capability/budget/completion/authority envelopes, single-use operator start authorization, exact ARO WorkThread, native Direct implementation-worker start, restart-safe non-replay, worker/session/turn lineage, and separately gated read/patch/command requests | Starts one provider worker turn only; no inherited tool approval, workspace/remote mutation claim, runtime/test verification, semantic-truth certification, canonical admission, or closure. Those remain `WM-SC8.4`–`WM-SC8.5` |
+| `WM-SC8.4` realization-evidence acquisition | implemented and locally regression-proven | Exact handed-off worker/session/turn binding, immutable worker-turn/tool-result/workspace-effect/repository-after/verification-coverage witness bundles, append-only scheduled/running/observing/acquired/failed acquisition runs, restart-safe read-only recovery, terminal versus active capture truth, mechanical evidence-kind presence/absence/ambiguity, observed workspace-mutation truth, exact-region-bound IPC, and compact Turn / Tools & effects / Repository / Coverage lenses | Acquired means evidence captured, not implementation verified. SC8.4 grants no tool/workspace/remote/canonical authority and does not evaluate success conditions, preservation, semantic truth, closure, or admission; those remain `WM-SC8.5` |
+| `WM-SC8.5` semantic verification and closure candidacy | implemented and locally regression-proven | Fixed native semantic-verification discharge over one exact acquired evidence bundle; typed obligation, verification, preservation, and branch assessments; explicit harness-synthesized indeterminate omissions; witness-kind binding; drift findings; continuation paths; generated project-scoped OpenDecisions; deterministic fail-closed closure-candidate gate; append-only scheduled/running/completed/remanded/failed runs; restart recovery; exact retry; and focused Summary / Obligations / Coverage / Drift & next lenses | Semantic truth is assessed but remains non-canonical. The verifier executes no tools, reads no new source, mutates no workspace, and cannot override the deterministic gate. Closure candidates require later human/governed review; canonical admission and closure certification are unavailable. |
+| `WM-SC9` thought brushes and ContextCanvas | implemented and locally regression-proven | Trusted 11-brush registry; required native semantic discharge with open result vocabulary and exact source/preservation validation; immutable brush strokes; append-only reversible canvas revisions; mechanical Switch replacement; brush composition and undo; temporary counterfactuals; exact-bound Apply/Undo/Extract IPC; ARO-shaped insight extraction into the existing candidate review/admission path; compact preview-first Canvas / Brush stack / Insights workbench | Brushes have no tool, workspace, external, policy, project, or canonical effect. Extraction creates a provisional ARO candidate only; review and admission remain separate. |
+| `WM-SC10` complete unified UX projection | implemented and locally regression-proven | Disposable unified projection over the canonical workbench; five-dimension operational ribbon; one exact semantic-event identity across Outcome / Provenance / Governance / Compiled agent / Execution / Substrate depths; settlement/shelf/import/ARO/brush typed witness composition; object-centered same-context focus; keyboard-accessible anatomy and Escape return; modality-neutral request-schema registry for keyboard, pointer, and voice | Inspection is read-only and mints no authority. Keyboard and pointer transports are available. Voice uses the same typed contracts but its live transport remains truthfully `deferred`; canonical closure admission remains unavailable. |
+| `WM-SC11` role-governed epistemic ledger and semantic CI | bounded end-to-end milestone complete; `SC11.1`, `SC11.7`, and `SC11.8` implemented; restricted/generalized expansions in `SC11.2`-`SC11.6` remain explicitly partial/live | Same-control-plane append-only epistemic ledger and recovery, topology-independent replay, exact role-ledger bundles, nine headless-capable native non-authority worker acts, durable standing/delivery/context/invalidation state, native bounded context import, resident-role restart restoration, idle wake, active-generation safe-boundary deferral/drain, durable dispatch receipts, pinned `ImplementationPatch` lifecycles, constitution-authenticated producer and exact-revision independent auditor WorkThread starts, separately authorized headless patch/test effects, exact producer-session/turn and repository-after observation, trusted revision-bound `source_digest_current` and `focused_test_exit` witness joins, exact authorization/assignment/agent-run closure binding, immutable candidate registration, automatic registered-auditor routing, typed verdict ingestion, revision-scoped remand and producer re-dispatch, third-remand manager escalation, stale-revision fail-closure, durable lifecycle-ingestion receipts, synchronous post-gate revocation, gate-time CAS pinning, exact admission-scope matching, production hierarchical-worldmodel trust-store CAS, same-context evidence/authority workbench, exact typed renderer admission request, durable pending/admitted/failed/stale receipts, crash-safe canonical reconciliation, receipt-backed admitted projection, real Electron preload/IPC/service acceptance, restart proof, and isolated Docker/Xvfb execution | No second canonical worldstate, fabricated operator acceptance, lifecycle-inherited workspace authority, model-authored mechanical witness, renderer-selected authority actor, admission-triggered downstream effect, or silent scope widening. Generic manager ledger-provider lanes, true suspended-provider resume, and production debounce scheduling remain generalized hardening. Gate-ready is not admitted. |
+| `WM-K6` plan-contract execution continuation | planned | — | Explicit worker-start authority, implementation constitution and handoff, governed effects, completion evaluation, and upward status admission |
+
+Launch and proof:
+
+```bash
+npm run dev:worldmanager
+npm run direct:world-manager-k1
+npm run direct:world-manager-k1-ui
+npm run direct:world-manager-aro
+npm run direct:world-manager-aro-ui
+npm run direct:world-manager-aro-reconstruction-runtime
+npm run direct:world-manager-aro-reconstruction-runtime-ui
+npm run direct:world-manager-aro-target-definition
+npm run direct:world-manager-aro-target-definition-ui
+npm run direct:world-manager-aro-mutation-contract
+npm run direct:world-manager-aro-mutation-contract-ui
+npm run direct:world-manager-aro-realization-mapping
+npm run direct:world-manager-aro-realization-mapping-ui
+npm run direct:world-manager-aro-worker-handoff
+npm run direct:world-manager-aro-worker-handoff-ui
+npm run direct:world-manager-aro-execution-evidence
+npm run direct:world-manager-aro-execution-evidence-ui
+npm run direct:world-manager-aro-semantic-verification
+npm run direct:world-manager-aro-semantic-verification-ui
+npm run direct:world-manager-thought-brush
+npm run direct:world-manager-thought-brush-ui
+npm run direct:world-manager-unified-projection
+npm run direct:world-manager-unified-projection-ui
+npm run direct:world-manager-project-genesis
+npm run direct:world-manager-project-genesis-ui
+npm run direct:project-substrate-runtime
+npm run direct:native-project-substrate-executors
+npm run direct:world-manager-sc11
+npm run direct:live-epistemic-ledger-tool-loop
+```
+
+The exploratory fixture is retained only under
+`npm run dev:worldmanager:mock` and `world-manager-semantic:*`. Production K1
+does not import its synthetic routing, proposal, admission, contract, or
+WorkThread semantics.
 
 
 ## Update Rules

@@ -1,0 +1,89 @@
+{
+  "schema": "direct_semantic_acceptance_scenario@1",
+  "scenarioId": "world_manager_empty_production_boot",
+  "revision": 1,
+  "title": "WorldManager production boot in an isolated Docker-Xvfb test world",
+  "description": "Launch the production WorldManager surface with an empty project ecology, focus the ARO semantic region, and prove that no provider, workspace, or production-authority effect occurred.",
+  "executor": {
+    "requested": "docker_xvfb",
+    "allowed": [
+      "docker_xvfb",
+      "local_xvfb"
+    ]
+  },
+  "testWorld": {
+    "fixtureKind": "empty_world_manager",
+    "disposable": true,
+    "testWorldAuthorityOnly": true,
+    "liveProfileMountAllowed": false,
+    "writableHostWorkspaceAllowed": false
+  },
+  "runtime": {
+    "surface": "world_manager_production",
+    "providerTransport": "forbidden",
+    "network": "none",
+    "workspaceMutation": "forbidden"
+  },
+  "budget": {
+    "maxProviderCalls": 0,
+    "timeoutMs": 30000,
+    "memoryMb": 2048,
+    "cpuCount": 2
+  },
+  "steps": [
+    {
+      "stepId": "launch_world_manager",
+      "actionKind": "launch_surface",
+      "targetRef": {
+        "kind": "application_surface",
+        "id": "world_manager_production"
+      },
+      "expectedState": "ready",
+      "evidenceLabel": "Production WorldManager revision is visible"
+    },
+    {
+      "stepId": "focus_aro_inspector",
+      "actionKind": "focus_semantic_region",
+      "targetRef": {
+        "kind": "semantic_region",
+        "id": "aros"
+      },
+      "expectedState": "focused",
+      "evidenceLabel": "ARO inspector receives focus through its semantic region identity"
+    },
+    {
+      "stepId": "assert_empty_aro_registry",
+      "actionKind": "assert_semantic_state",
+      "targetRef": {
+        "kind": "semantic_state_surface",
+        "id": "aro_focused_object"
+      },
+      "expectedState": "empty",
+      "evidenceLabel": "Empty test world exposes no provisional or canonical ARO"
+    },
+    {
+      "stepId": "capture_final_surface",
+      "actionKind": "capture_evidence",
+      "targetRef": {
+        "kind": "evidence_surface",
+        "id": "world_manager_window"
+      },
+      "expectedState": "captured",
+      "evidenceLabel": "Final production surface screenshot"
+    }
+  ],
+  "expectedEvidence": {
+    "rendererErrorCount": 0,
+    "providerCallCount": 0,
+    "projectCount": 0,
+    "canonicalAroCount": 0,
+    "workspaceMutationCount": 0,
+    "requiredArtifactKinds": [
+      "acceptance_report",
+      "surface_screenshot"
+    ]
+  },
+  "rawPromptIncluded": false,
+  "rawProviderPayloadIncluded": false,
+  "grantsProductionAuthority": false
+}

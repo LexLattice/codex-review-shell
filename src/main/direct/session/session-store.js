@@ -830,6 +830,14 @@ class DirectSessionStore {
       workerContextPacketDigest: normalizeString(input.workerContextPacketDigest, ""),
       workerGraphAlignmentId: normalizeString(input.workerGraphAlignmentId, ""),
       workerGraphAlignmentDigest: normalizeString(input.workerGraphAlignmentDigest, ""),
+      artifactWorkThreadAuthorizationId: normalizeString(
+        input.artifactWorkThreadAuthorizationId,
+        "",
+      ),
+      artifactWorkThreadAuthorizationDigest: normalizeString(
+        input.artifactWorkThreadAuthorizationDigest,
+        "",
+      ),
       runtimeMode: normalizeString(input.runtimeMode, ""),
       directTransport: normalizeString(input.directTransport, ""),
       workspaceDisplayPath: normalizeString(input.workspaceDisplayPath, ""),
